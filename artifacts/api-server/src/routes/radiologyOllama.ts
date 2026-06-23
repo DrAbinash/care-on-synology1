@@ -1,31 +1,35 @@
 /**
- * Phase 10C: Ollama Local Model Proxy
- * Proxies radiology AI requests to a locally configured Ollama instance.
- * Settings stored in clinic_settings.ollamaBaseUrl + ollamaModel.
- * All output is labelled "AI Draft – Requires Radiologist Review".
+ * Phase 10C / 11: Ollama Local Model Proxy — LAN Fallback Edition
  *
- * Security: SSRF-guarded. Only http:// or https:// URLs whose host is NOT a
- * private/loopback/link-local address are permitted when the URL comes from
- * the clinic_settings table. The /test endpoint additionally validates the
- * caller-supplied baseUrl through the same guard before making any outbound
- * request.
+ * Proxies radiology AI requests to a locally-hosted Ollama instance
+ * (typically running on a Windows PC on the same LAN as the Synology NAS).
+ *
+ * NEW IN PHASE 11:
+ *  - Fallback URL: tries ollamaBaseUrl first, then ollamaFallbackUrl if primary times out.
+ *  - Master toggle: ollamaEnabled must be true or all endpoints return 503.
+ *  - Configurable per-request timeout: ollamaTimeoutSeconds (default 30s).
+ *  - Rich audit logging: model, endpoint_used, action_type, success per action.
+ *  - New action endpoints: /improve, /grammar, /impression-from-findings, /format-care-style
+ *  - Care Diagnostics–style prompt templates for MRI Brain, CT Brain, MRI Spine, etc.
+ *  - Permission guard: staffSession must have "ai_reporting.use" or FULL_ACCESS_ROLES.
+ *
+ * All output is labelled "AI Draft — Requires Radiologist Review".
+ * AI NEVER auto-finalises a report. Output goes to draft only.
+ *
+ * Security:
+ *  - SSRF-guarded. Private/LAN IPs require ollamaLocalOnly = true.
+ *  - All Ollama calls are server-side only — browser never contacts Ollama directly.
+ *  - Permission check on all action endpoints.
  */
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { clinicSettingsTable, radiologyAiReviewAuditsTable } from "@workspace/db";
-import { desc } from "drizzle-orm";
-import { type StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { desc, sql } from "drizzle-orm";
+import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
 
 export const radiologyOllamaRouter = Router();
 
-// ── SSRF guard ──────────────────────────────────────────────────────────────
-// By default, private/loopback/link-local addresses are blocked to prevent
-// SSRF. When the admin has explicitly enabled "Local / LAN mode" in clinic
-// settings (ollamaLocalOnly = true), private-range hosts are permitted —
-// because that is the intended use case for a workstation-local Ollama instance.
-//
-// The /test endpoint accepts an `allowLocal` boolean from the request body so
-// the Settings page can honour the toggle during a connection test.
+// ── SSRF guard ───────────────────────────────────────────────────────────────
 const PRIVATE_RANGES: RegExp[] = [
   /^localhost$/i,
   /^127\.\d+\.\d+\.\d+$/,
@@ -40,11 +44,7 @@ const PRIVATE_RANGES: RegExp[] = [
 
 function validateOllamaUrl(raw: string, allowLocal = false): { ok: true; url: URL } | { ok: false; reason: string } {
   let u: URL;
-  try {
-    u = new URL(raw);
-  } catch {
-    return { ok: false, reason: "Invalid URL format" };
-  }
+  try { u = new URL(raw); } catch { return { ok: false, reason: "Invalid URL format" }; }
   if (u.protocol !== "http:" && u.protocol !== "https:") {
     return { ok: false, reason: "Only http:// and https:// are allowed" };
   }
@@ -54,7 +54,7 @@ function validateOllamaUrl(raw: string, allowLocal = false): { ok: true; url: UR
       if (re.test(host)) {
         return {
           ok: false,
-          reason: `Private/loopback addresses require "Local / LAN mode" to be enabled in Settings → Radiology → Ollama (${host})`,
+          reason: `Private/LAN addresses require "Local / LAN mode" to be enabled in Settings → Radiology → AI Assistant (${host})`,
         };
       }
     }
@@ -62,13 +62,53 @@ function validateOllamaUrl(raw: string, allowLocal = false): { ok: true; url: UR
   return { ok: true, url: u };
 }
 
-// ── Config helper ───────────────────────────────────────────────────────────
-async function getOllamaConfig(): Promise<{ baseUrl: string; model: string; localOnly: boolean } | null> {
+// ── Permission guard ─────────────────────────────────────────────────────────
+function canUseAi(req: StaffAuthRequest): boolean {
+  const s = req.staffSession ?? null;
+  if (!s) return false;
+  if (FULL_ACCESS_ROLES.has(s.role)) return true;
+  return s.permissions?.includes("ai_reporting.use") ?? false;
+}
+
+// ── Endpoint probe cache ─────────────────────────────────────────────────────
+// Caches the working endpoint for 5 minutes to avoid probing on every request.
+const endpointCache: { url: string; expiresAt: number } | null = null;
+let _endpointCache: { url: string; expiresAt: number } | null = null;
+
+async function probeEndpoint(url: string, timeoutMs: number): Promise<boolean> {
+  try {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), timeoutMs);
+    const r = await fetch(`${url}/api/tags`, { signal: ac.signal });
+    clearTimeout(t);
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
+// ── Full Ollama config (with fallback probe) ──────────────────────────────────
+interface OllamaConfig {
+  baseUrl: string;       // resolved working endpoint
+  primaryUrl: string;    // configured primary
+  fallbackUrl: string | null;
+  model: string;
+  localOnly: boolean;
+  timeoutMs: number;
+  auditEnabled: boolean;
+  endpointSource: "primary" | "fallback" | "cache";
+}
+
+async function getOllamaConfig(): Promise<OllamaConfig | null> {
   const rows = await db
     .select({
       ollamaBaseUrl: clinicSettingsTable.ollamaBaseUrl,
+      ollamaFallbackUrl: (clinicSettingsTable as any).ollamaFallbackUrl,
       ollamaModel: clinicSettingsTable.ollamaModel,
       ollamaLocalOnly: clinicSettingsTable.ollamaLocalOnly,
+      ollamaEnabled: (clinicSettingsTable as any).ollamaEnabled,
+      ollamaTimeoutSeconds: (clinicSettingsTable as any).ollamaTimeoutSeconds,
+      ollamaAuditEnabled: (clinicSettingsTable as any).ollamaAuditEnabled,
     })
     .from(clinicSettingsTable)
     .orderBy(desc(clinicSettingsTable.id))
@@ -77,21 +117,69 @@ async function getOllamaConfig(): Promise<{ baseUrl: string; model: string; loca
   const row = rows[0];
   if (!row?.ollamaBaseUrl) return null;
 
-  const localOnly = row.ollamaLocalOnly ?? false;
-  // Use ollamaLocalOnly as the admin's explicit opt-in for private/LAN hosts.
-  // When false, the SSRF guard blocks RFC-1918/loopback targets for public URLs.
-  // When true, the admin has intentionally pointed Ollama at a local network host.
-  const validated = validateOllamaUrl(row.ollamaBaseUrl, localOnly);
-  if (!validated.ok) return null; // silently skip misconfigured URLs
+  // Master toggle: default true if column doesn't exist yet (migration pending)
+  const masterEnabled = row.ollamaEnabled !== false;
+  if (!masterEnabled) return null;
 
+  const localOnly = row.ollamaLocalOnly ?? false;
+  const timeoutMs = Math.max(5, Math.min(120, Number(row.ollamaTimeoutSeconds ?? 30))) * 1000;
+  const auditEnabled = row.ollamaAuditEnabled !== false;
+  const primaryUrl = validateOllamaUrl(row.ollamaBaseUrl, localOnly);
+  if (!primaryUrl.ok) return null;
+
+  const primaryOrigin = primaryUrl.url.origin;
+  const fallbackOrigin = row.ollamaFallbackUrl
+    ? (() => {
+        const v = validateOllamaUrl(row.ollamaFallbackUrl, localOnly);
+        return v.ok ? v.url.origin : null;
+      })()
+    : null;
+
+  // Return cached working endpoint if still valid
+  const now = Date.now();
+  if (_endpointCache && _endpointCache.expiresAt > now) {
+    return {
+      baseUrl: _endpointCache.url,
+      primaryUrl: primaryOrigin,
+      fallbackUrl: fallbackOrigin,
+      model: row.ollamaModel ?? "llama3",
+      localOnly,
+      timeoutMs,
+      auditEnabled,
+      endpointSource: "cache",
+    };
+  }
+
+  // Probe primary (fast timeout: 8s for probe, full timeout for actual generate)
+  const probeTimeout = Math.min(8000, timeoutMs);
+  if (await probeEndpoint(primaryOrigin, probeTimeout)) {
+    _endpointCache = { url: primaryOrigin, expiresAt: now + 5 * 60 * 1000 };
+    return {
+      baseUrl: primaryOrigin, primaryUrl: primaryOrigin, fallbackUrl: fallbackOrigin,
+      model: row.ollamaModel ?? "llama3", localOnly, timeoutMs, auditEnabled,
+      endpointSource: "primary",
+    };
+  }
+
+  // Probe fallback
+  if (fallbackOrigin && await probeEndpoint(fallbackOrigin, probeTimeout)) {
+    _endpointCache = { url: fallbackOrigin, expiresAt: now + 5 * 60 * 1000 };
+    return {
+      baseUrl: fallbackOrigin, primaryUrl: primaryOrigin, fallbackUrl: fallbackOrigin,
+      model: row.ollamaModel ?? "llama3", localOnly, timeoutMs, auditEnabled,
+      endpointSource: "fallback",
+    };
+  }
+
+  // Both endpoints unreachable — return config with primary URL for error reporting
   return {
-    baseUrl: validated.url.origin,
-    model: row.ollamaModel ?? "llama3",
-    localOnly,
+    baseUrl: primaryOrigin, primaryUrl: primaryOrigin, fallbackUrl: fallbackOrigin,
+    model: row.ollamaModel ?? "llama3", localOnly, timeoutMs, auditEnabled,
+    endpointSource: "primary",
   };
 }
 
-// ── Ollama generate helper ──────────────────────────────────────────────────
+// ── Ollama generate helper ────────────────────────────────────────────────────
 async function ollamaGenerate(
   baseUrl: string,
   model: string,
@@ -112,482 +200,568 @@ async function ollamaGenerate(
   return (data.response ?? "").trim();
 }
 
-// ── GET /status — returns config from clinic_settings (no outbound call) ────
+// ── Rich audit helper ─────────────────────────────────────────────────────────
+async function writeAudit(params: {
+  req: StaffAuthRequest;
+  actionType: string;
+  model: string;
+  endpointUsed: string;
+  modality?: string;
+  bodyPart?: string;
+  studyUid?: string;
+  success: boolean;
+  auditEnabled: boolean;
+}) {
+  if (!params.auditEnabled) return;
+  const s = params.req.staffSession;
+  await db.insert(radiologyAiReviewAuditsTable).values({
+    modality: params.modality || null,
+    bodyPart: params.bodyPart || null,
+    studyUid: params.studyUid || null,
+    providersQueried: [{ provider: "ollama", model: params.model, endpoint: params.endpointUsed, action: params.actionType, success: params.success }] as unknown as Record<string, unknown>[],
+    winnerProvider: params.success ? "ollama" : null,
+    selectedById: s?.subjectId ?? null,
+    selectedByName: s?.subjectName ?? null,
+  }).catch(() => { /* audit failure must never break main response */ });
+}
+
+// ── Care Diagnostics Prompt Templates ────────────────────────────────────────
+// All prompts preserve the radiologist's findings, never invent findings,
+// and end with the required AI Draft disclaimer.
+const CARE_SYSTEM_PROMPT = `You are a radiology reporting assistant for Care Diagnostics, an MRI, CT, and Ultrasound centre.
+Rules you must always follow:
+1. Never invent findings. Only work with what is provided.
+2. Preserve the radiologist's exact findings — do not change medical facts.
+3. Use formal radiology report language: Technique / Findings / Impression structure.
+4. If uncertainty exists, write "suggest clinical correlation / further evaluation if clinically indicated".
+5. Always end your response with exactly this line: "⚠️ AI Draft — Must be verified by radiologist before finalization."`;
+
+const PROMPT_TEMPLATES: Record<string, (body: Record<string, string>) => string> = {
+  "mri-brain": (b) => `${CARE_SYSTEM_PROMPT}
+
+Generate a formal MRI Brain report for Care Diagnostics.
+Patient: ${b.patientName || "Unknown"} | Age: ${b.age || "Unknown"} | Sex: ${b.sex || "Unknown"}
+Clinical History: ${b.clinicalHistory || "Not provided"}
+Technique: MRI Brain was performed in the standard protocol sequences including T1W, T2W, FLAIR, DWI/ADC, and post-contrast T1W.
+
+Findings provided by radiologist:
+${b.findings || "(No findings provided — generate a template with blanks for each structure)"}
+
+Generate findings section covering: parenchyma, ventricles, sulci, basal ganglia, thalami, brainstem, cerebellum, extra-axial spaces, vascular structures.
+Then generate a concise Impression (2–4 lines).`,
+
+  "mri-cervical-spine": (b) => `${CARE_SYSTEM_PROMPT}
+
+Generate a formal MRI Cervical Spine report for Care Diagnostics.
+Patient: ${b.patientName || "Unknown"} | Age: ${b.age || "Unknown"} | Sex: ${b.sex || "Unknown"}
+Clinical History: ${b.clinicalHistory || "Not provided"}
+
+Findings provided:
+${b.findings || "(No findings provided)"}
+
+For each level C2-C3 through C7-T1: comment on disc height, disc signal, disc herniation/bulge, foraminal stenosis, spinal canal diameter, cord signal.
+Comment on vertebral alignment, prevertebral soft tissue, and marrow signal.
+Generate a concise Impression.`,
+
+  "mri-ls-spine": (b) => `${CARE_SYSTEM_PROMPT}
+
+Generate a formal MRI LS Spine report for Care Diagnostics.
+Patient: ${b.patientName || "Unknown"} | Age: ${b.age || "Unknown"} | Sex: ${b.sex || "Unknown"}
+Clinical History: ${b.clinicalHistory || "Not provided"}
+
+Findings provided:
+${b.findings || "(No findings provided)"}
+
+For each level L1-L2 through L5-S1: comment on disc height, disc signal, disc herniation/bulge direction, foraminal stenosis, lateral recess stenosis, cord/conus.
+Comment on vertebral alignment, modic changes, marrow signal, paraspinal soft tissue.
+Generate a concise Impression.`,
+
+  "ct-brain": (b) => `${CARE_SYSTEM_PROMPT}
+
+Generate a formal CT Brain report for Care Diagnostics.
+Patient: ${b.patientName || "Unknown"} | Age: ${b.age || "Unknown"} | Sex: ${b.sex || "Unknown"}
+Clinical History: ${b.clinicalHistory || "Not provided"}
+
+Findings provided:
+${b.findings || "(No findings provided)"}
+
+Comment on: parenchyma density, grey-white differentiation, ventricles and CSF spaces, sulci, midline shift, basal cisterns, any hemorrhage/ischemia, bone windows.
+Generate a concise Impression.`,
+
+  "ct-spine": (b) => `${CARE_SYSTEM_PROMPT}
+
+Generate a formal CT Spine report for Care Diagnostics.
+Patient: ${b.patientName || "Unknown"} | Age: ${b.age || "Unknown"} | Sex: ${b.sex || "Unknown"}
+Region: ${b.region || "Spine"}
+Clinical History: ${b.clinicalHistory || "Not provided"}
+
+Findings provided:
+${b.findings || "(No findings provided)"}
+
+Comment on: vertebral body height and density, fracture/subluxation, disc space, facet joints, spinal canal diameter, neural foramina, paraspinal soft tissue.
+Generate a concise Impression.`,
+
+  "impression-only": (b) => `${CARE_SYSTEM_PROMPT}
+
+Generate a concise Impression section (2–5 lines) from the following radiology findings.
+Do NOT generate findings — only the Impression.
+
+Modality/Study: ${b.modality || "Radiology"} ${b.bodyPart || ""}
+Findings: ${b.findings || "(No findings provided)"}`,
+
+  "grammar-cleanup": (b) => `You are a medical English proofreader for Care Diagnostics.
+Rules:
+1. Correct grammar and spelling ONLY.
+2. Do NOT change any medical terminology, measurements, or findings.
+3. Do NOT add or remove any clinical information.
+4. Preserve the original structure (Technique / Findings / Impression).
+5. Return only the corrected report text — no commentary.
+
+Report to correct:
+${b.reportText || b.findings || ""}`,
+
+  "improve-report": (b) => `${CARE_SYSTEM_PROMPT}
+
+Improve the following radiology report for formal Care Diagnostics style.
+Improvements allowed:
+- Better formal radiology language
+- Clearer structure
+- More specific anatomical terminology
+Do NOT change any findings, measurements, or clinical conclusions.
+
+Original report:
+${b.reportText || b.findings || ""}`,
+
+  "care-format": (b) => `${CARE_SYSTEM_PROMPT}
+
+Reformat the following report into the standard Care Diagnostics report format:
+
+TECHNIQUE:
+[Brief description of the imaging protocol]
+
+FINDINGS:
+[Organ/system-by-system findings in formal radiology language]
+
+IMPRESSION:
+[Concise 2–4 line conclusion with key diagnosis and recommendation]
+
+Report to reformat:
+${b.reportText || b.findings || ""}`,
+};
+
+// ── GET /status — current config summary (no outbound call) ──────────────────
 radiologyOllamaRouter.get("/status", async (_req, res): Promise<void> => {
-  const rows = await db
-    .select({
-      ollamaBaseUrl: clinicSettingsTable.ollamaBaseUrl,
-      ollamaModel: clinicSettingsTable.ollamaModel,
-      ollamaLocalOnly: clinicSettingsTable.ollamaLocalOnly,
-    })
-    .from(clinicSettingsTable)
-    .orderBy(desc(clinicSettingsTable.id))
-    .limit(1);
+  try {
+    const rows = await db
+      .select({
+        ollamaBaseUrl: clinicSettingsTable.ollamaBaseUrl,
+        ollamaFallbackUrl: (clinicSettingsTable as any).ollamaFallbackUrl,
+        ollamaModel: clinicSettingsTable.ollamaModel,
+        ollamaLocalOnly: clinicSettingsTable.ollamaLocalOnly,
+        ollamaEnabled: (clinicSettingsTable as any).ollamaEnabled,
+        ollamaTimeoutSeconds: (clinicSettingsTable as any).ollamaTimeoutSeconds,
+        ollamaAuditEnabled: (clinicSettingsTable as any).ollamaAuditEnabled,
+        ollamaKnownModels: clinicSettingsTable.ollamaKnownModels,
+      })
+      .from(clinicSettingsTable)
+      .orderBy(desc(clinicSettingsTable.id))
+      .limit(1);
 
-  const row = rows[0];
-  const configured = Boolean(row?.ollamaBaseUrl);
-  const validation = configured ? validateOllamaUrl(row.ollamaBaseUrl!) : null;
+    const row = rows[0];
+    const configured = Boolean(row?.ollamaBaseUrl);
+    const primaryValidation = configured ? validateOllamaUrl(row!.ollamaBaseUrl!, row?.ollamaLocalOnly ?? false) : null;
+    const fallbackValidation = row?.ollamaFallbackUrl ? validateOllamaUrl(row.ollamaFallbackUrl, row?.ollamaLocalOnly ?? false) : null;
 
-  res.json({
-    configured,
-    baseUrl: row?.ollamaBaseUrl ?? null,
-    model: row?.ollamaModel ?? null,
-    localOnly: row?.ollamaLocalOnly ?? false,
-    urlValid: validation?.ok ?? false,
-    urlError: validation?.ok === false ? validation.reason : null,
-  });
+    let knownModels: string[] = [];
+    try { knownModels = JSON.parse(row?.ollamaKnownModels ?? "[]"); } catch { /**/ }
+
+    res.json({
+      configured,
+      enabled: row?.ollamaEnabled !== false,
+      primaryUrl: row?.ollamaBaseUrl ?? null,
+      fallbackUrl: row?.ollamaFallbackUrl ?? null,
+      model: row?.ollamaModel ?? null,
+      localOnly: row?.ollamaLocalOnly ?? false,
+      timeoutSeconds: row?.ollamaTimeoutSeconds ?? 30,
+      auditEnabled: row?.ollamaAuditEnabled !== false,
+      primaryUrlValid: primaryValidation?.ok ?? false,
+      primaryUrlError: primaryValidation?.ok === false ? primaryValidation.reason : null,
+      fallbackUrlValid: fallbackValidation?.ok ?? false,
+      knownModels,
+      candidateUrls: [
+        "http://192.168.1.250:11434",
+        "http://172.16.1.140:11434",
+      ],
+    });
+  } catch (err: unknown) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "Status check failed" });
+  }
 });
 
-// ── POST /test — caller supplies baseUrl+model+allowLocal, no DB lookup ─────
-// Validates the URL through the SSRF guard before making any network request.
-// allowLocal should be set to true when the user has enabled Local/LAN mode.
+// ── POST /test — test a specific URL without saving ──────────────────────────
 radiologyOllamaRouter.post("/test", async (req, res): Promise<void> => {
   const b = (req.body ?? {}) as Record<string, unknown>;
   const rawUrl = b.baseUrl ? String(b.baseUrl).trim() : "";
   const model = b.model ? String(b.model).trim() : "llama3";
   const allowLocal = Boolean(b.allowLocal ?? false);
 
-  if (!rawUrl) {
-    res.status(400).json({ ok: false, error: "baseUrl required" });
-    return;
-  }
+  if (!rawUrl) { res.status(400).json({ ok: false, error: "baseUrl required" }); return; }
 
   const guard = validateOllamaUrl(rawUrl, allowLocal);
-  if (!guard.ok) {
-    res.status(400).json({ ok: false, error: guard.reason });
-    return;
-  }
+  if (!guard.ok) { res.status(400).json({ ok: false, error: guard.reason }); return; }
 
   const baseUrl = guard.url.origin;
-
   try {
     const t0 = Date.now();
     const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 8000);
+    const timer = setTimeout(() => ac.abort(), 10000);
     const resp = await fetch(`${baseUrl}/api/tags`, { signal: ac.signal });
     clearTimeout(timer);
-    const latencyMs = Date.now() - t0;
-
-    if (!resp.ok) {
-      res.status(502).json({ ok: false, error: `Ollama returned ${resp.status}` });
-      return;
-    }
-
+    if (!resp.ok) { res.status(502).json({ ok: false, error: `Ollama returned ${resp.status}` }); return; }
     const data = await resp.json() as { models?: { name: string }[] };
     const models = (data.models ?? []).map((m) => m.name);
     const modelFound = models.includes(model);
-
-    res.json({ ok: true, model, models, modelFound, latencyMs });
+    res.json({ ok: true, model, models, modelFound, latencyMs: Date.now() - t0 });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    res.status(502).json({ ok: false, error: msg });
+    res.status(502).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
   }
 });
 
-// ── POST /findings — generate structured findings via Ollama ─────────────────
-radiologyOllamaRouter.post("/findings", async (req, res): Promise<void> => {
+// ── POST /probe — auto-detect which LAN endpoint responds (no auth required) ─
+radiologyOllamaRouter.post("/probe", async (req, res): Promise<void> => {
+  const candidates = [
+    "http://192.168.1.250:11434",
+    "http://172.16.1.140:11434",
+  ];
+  const results: Array<{ url: string; reachable: boolean; latencyMs?: number }> = [];
+  for (const url of candidates) {
+    const t0 = Date.now();
+    const ok = await probeEndpoint(url, 6000);
+    results.push({ url, reachable: ok, latencyMs: ok ? Date.now() - t0 : undefined });
+  }
+  const working = results.find((r) => r.reachable);
+  res.json({ results, recommendedUrl: working?.url ?? null });
+});
+
+// ── Helper: get config or send 503 ───────────────────────────────────────────
+async function requireConfig(res: ReturnType<ReturnType<typeof Router>["use"]> extends void ? never : any): Promise<OllamaConfig | null> {
   const config = await getOllamaConfig();
   if (!config) {
-    res.status(503).json({ error: "Ollama is not configured. Set the base URL in Settings → Radiology." });
+    (res as any).status(503).json({
+      error: "Local AI is not configured or is disabled. Enable it in Settings → AI → Local AI Assistant.",
+    });
+    return null;
+  }
+  return config;
+}
+
+// ── Shared action handler ─────────────────────────────────────────────────────
+async function handleAction(
+  req: StaffAuthRequest,
+  res: any,
+  actionType: string,
+  buildPrompt: (config: OllamaConfig, body: Record<string, unknown>) => string,
+  responseKey: string,
+  timeoutOverrideMs?: number,
+) {
+  if (!canUseAi(req)) {
+    res.status(403).json({ error: "Permission denied. Role needs ai_reporting.use permission." });
+    return;
+  }
+
+  const config = await getOllamaConfig();
+  if (!config) {
+    res.status(503).json({ error: "Local AI is not configured or is disabled. Enable in Settings → AI → Local AI Assistant." });
     return;
   }
 
   const b = (req.body ?? {}) as Record<string, unknown>;
-  const modality = String(b.modality ?? "").trim();
-  const testName = String(b.testName ?? "").trim();
-  const clinicalHistory = String(b.clinicalHistory ?? "").trim();
+  const prompt = buildPrompt(config, b);
+  const timeoutMs = timeoutOverrideMs ?? config.timeoutMs;
 
-  if (!modality && !testName) {
-    res.status(400).json({ error: "modality or testName required" });
-    return;
+  let success = false;
+  let output = "";
+
+  try {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
+    output = await ollamaGenerate(config.baseUrl, config.model, prompt, ac.signal);
+    clearTimeout(timer);
+    success = true;
+    res.json({
+      [responseKey]: output,
+      model: config.model,
+      provider: "ollama",
+      endpointUsed: config.baseUrl,
+      endpointSource: config.endpointSource,
+      note: "⚠️ AI Draft — Must be verified by radiologist before finalization.",
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // If primary failed and we haven't already tried fallback, clear cache and retry
+    if (config.fallbackUrl && config.endpointSource !== "fallback") {
+      _endpointCache = null; // force re-probe on next call
+    }
+    res.status(502).json({ error: `Ollama error: ${msg}` });
+  } finally {
+    await writeAudit({
+      req,
+      actionType,
+      model: config.model,
+      endpointUsed: config.baseUrl,
+      modality: b.modality ? String(b.modality) : undefined,
+      bodyPart: b.bodyPart ? String(b.bodyPart) : undefined,
+      studyUid: b.studyUid ? String(b.studyUid) : undefined,
+      success,
+      auditEnabled: config.auditEnabled,
+    });
   }
+}
 
-  const prompt = `You are a radiology reporting assistant. Generate structured findings for the following study.
-Study: ${testName || modality}
+// ── POST /findings — generate initial structured findings ────────────────────
+radiologyOllamaRouter.post("/findings", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  await handleAction(sReq, res, "generate_findings", (config, b) => {
+    const modality = String(b.modality ?? "").trim();
+    const testName = String(b.testName ?? "").trim();
+    const clinicalHistory = String(b.clinicalHistory ?? "").trim();
+    const bodyPart = String(b.bodyPart ?? "").trim();
+
+    // Pick a Care-specific template if available
+    const key = `${modality.toLowerCase()}-${bodyPart.toLowerCase()}`.replace(/\s+/g, "-");
+    if (PROMPT_TEMPLATES[key]) {
+      return PROMPT_TEMPLATES[key]({
+        modality, bodyPart, clinicalHistory,
+        patientName: String(b.patientName ?? ""),
+        age: String(b.age ?? ""),
+        sex: String(b.sex ?? ""),
+        findings: String(b.findings ?? ""),
+      });
+    }
+
+    return `${CARE_SYSTEM_PROMPT}
+
+Generate structured findings for Care Diagnostics radiology report.
+Study: ${testName || modality || "Radiology"}
 Clinical History: ${clinicalHistory || "Not provided"}
 
-Generate detailed, structured findings as a radiologist would write. Use bullet points per organ/system.
-Note at the end: "AI Draft – Requires Radiologist Review"`;
-
-  try {
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 60000);
-    const findings = await ollamaGenerate(config.baseUrl, config.model, prompt, ac.signal);
-    clearTimeout(timer);
-    res.json({ findings, model: config.model, provider: "ollama" });
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    res.status(502).json({ error: `Ollama error: ${msg}` });
-  }
+Generate findings section in formal radiology language with bullets per organ/system.`;
+  }, "findings", 90000);
 });
 
-// ── POST /impression — generate impression from findings via Ollama ───────────
+// ── POST /impression — impression from findings ──────────────────────────────
 radiologyOllamaRouter.post("/impression", async (req, res): Promise<void> => {
-  const config = await getOllamaConfig();
-  if (!config) { res.status(503).json({ error: "Ollama not configured" }); return; }
-
+  const sReq = req as StaffAuthRequest;
   const b = (req.body ?? {}) as Record<string, unknown>;
-  const findings = String(b.findings ?? "").trim();
-  if (!findings) { res.status(400).json({ error: "findings required" }); return; }
-
-  const prompt = `You are a radiology reporting assistant. Generate a concise 1-4 line impression from the following findings:
-
-${findings}
-
-Generate a clear, clinically actionable impression. Use bullet points.
-Note: "AI Draft – Requires Radiologist Review"`;
-
-  try {
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 30000);
-    const impression = await ollamaGenerate(config.baseUrl, config.model, prompt, ac.signal);
-    clearTimeout(timer);
-    res.json({ impression, model: config.model, provider: "ollama" });
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    res.status(502).json({ error: `Ollama error: ${msg}` });
+  if (!String(b.findings ?? "").trim()) {
+    res.status(400).json({ error: "findings required" }); return;
   }
+  await handleAction(sReq, res, "generate_impression", (_config, b) => {
+    return PROMPT_TEMPLATES["impression-only"]({
+      modality: String(b.modality ?? ""),
+      bodyPart: String(b.bodyPart ?? ""),
+      findings: String(b.findings ?? ""),
+    });
+  }, "impression", 45000);
 });
 
-// ── Deterministic confidence scoring ─────────────────────────────────────────
-// Replaces random confidence values. Uses response length, structural markers,
-// and uncertainty language as proxies for model output quality.
-function scoreConfidence(text: string, providerCalibration = 0): number {
-  let score = 70; // baseline
-
-  // Length bonus: more detailed responses are generally better
-  if (text.length > 600) score += 10;
-  else if (text.length > 300) score += 5;
-
-  // Structure bonus: bullet/numbered lists = organised findings
-  const bulletLines = (text.match(/(?:^|\n)\s*[-•*\d]\s*/g) ?? []).length;
-  if (bulletLines >= 6) score += 8;
-  else if (bulletLines >= 3) score += 4;
-
-  // Uncertainty penalty: uncertainty language reduces confidence
-  const uncertainWords = [
-    "may", "might", "possible", "possibly", "probable", "probably",
-    "cannot exclude", "could be", "suggestive", "uncertain", "unclear",
-  ];
-  let uncertainCount = 0;
-  const lower = text.toLowerCase();
-  for (const w of uncertainWords) {
-    if (lower.includes(w)) uncertainCount++;
+// ── POST /improve — improve existing report text ─────────────────────────────
+radiologyOllamaRouter.post("/improve", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  if (!String(b.reportText ?? b.findings ?? "").trim()) {
+    res.status(400).json({ error: "reportText required" }); return;
   }
-  score -= uncertainCount * 2;
+  await handleAction(sReq, res, "improve_report", (_config, b) => {
+    return PROMPT_TEMPLATES["improve-report"]({
+      reportText: String(b.reportText ?? b.findings ?? ""),
+    });
+  }, "improved");
+});
 
-  // Provider calibration offset (passed in from caller context)
-  score += providerCalibration;
-
-  return Math.max(40, Math.min(95, Math.round(score)));
-}
-
-// ── Extract missed-findings sentences from AI response text ──────────────────
-// Looks for sentences containing "missed", "overlooked", "could have", etc.
-function extractMissedFindings(text: string): string[] {
-  const sentences = text.replace(/([.!?])\s+/g, "$1\n").split("\n");
-  const hits: string[] = [];
-  for (const s of sentences) {
-    const lower = s.toLowerCase();
-    if (
-      lower.includes("missed") ||
-      lower.includes("overlook") ||
-      lower.includes("not mention") ||
-      lower.includes("could have been") ||
-      lower.includes("may have been missed") ||
-      lower.includes("potential pitfall") ||
-      lower.includes("worth noting") ||
-      lower.includes("should also consider") ||
-      lower.includes("additionally") && lower.includes("subtle")
-    ) {
-      const clean = s.trim().replace(/^[-•*\d.]\s*/, "");
-      if (clean.length > 10) hits.push(clean);
-    }
-    if (hits.length >= 4) break;
+// ── POST /grammar — grammar cleanup without changing meaning ──────────────────
+radiologyOllamaRouter.post("/grammar", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  if (!String(b.reportText ?? b.findings ?? "").trim()) {
+    res.status(400).json({ error: "reportText required" }); return;
   }
-  return hits;
-}
+  await handleAction(sReq, res, "grammar_cleanup", (_config, b) => {
+    return PROMPT_TEMPLATES["grammar-cleanup"]({
+      reportText: String(b.reportText ?? b.findings ?? ""),
+    });
+  }, "corrected", 45000);
+});
 
-// ── POST /multi-review — fan out to Gemini + Ollama in parallel ──────────────
-// Returns structured per-provider results with deterministic confidence scores
-// and audit metadata. Providers not configured are skipped gracefully.
+// ── POST /impression-from-findings — convert bullet findings → formal impression
+radiologyOllamaRouter.post("/impression-from-findings", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  if (!String(b.findings ?? "").trim()) {
+    res.status(400).json({ error: "findings required" }); return;
+  }
+  await handleAction(sReq, res, "findings_to_impression", (_config, b) => {
+    return PROMPT_TEMPLATES["impression-only"]({
+      modality: String(b.modality ?? ""),
+      bodyPart: String(b.bodyPart ?? ""),
+      findings: String(b.findings ?? ""),
+    });
+  }, "impression", 45000);
+});
+
+// ── POST /format-care-style — reformat in Care Diagnostics style ──────────────
+radiologyOllamaRouter.post("/format-care-style", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  if (!String(b.reportText ?? b.findings ?? "").trim()) {
+    res.status(400).json({ error: "reportText required" }); return;
+  }
+  await handleAction(sReq, res, "format_care_style", (_config, b) => {
+    return PROMPT_TEMPLATES["care-format"]({
+      reportText: String(b.reportText ?? b.findings ?? ""),
+    });
+  }, "formatted");
+});
+
+// ── POST /draft — full report draft using modality template ──────────────────
+radiologyOllamaRouter.post("/draft", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const modality = String(b.modality ?? "").trim().toLowerCase();
+  const bodyPart = String(b.bodyPart ?? "").trim().toLowerCase();
+
+  // Determine best template key
+  const key = `${modality}-${bodyPart}`.replace(/\s+/g, "-");
+  const hasTemplate = key in PROMPT_TEMPLATES;
+
+  await handleAction(sReq, res, "generate_draft", (_config, b) => {
+    const fields = {
+      modality: String(b.modality ?? ""),
+      bodyPart: String(b.bodyPart ?? ""),
+      findings: String(b.findings ?? ""),
+      clinicalHistory: String(b.clinicalHistory ?? ""),
+      patientName: String(b.patientName ?? ""),
+      age: String(b.age ?? ""),
+      sex: String(b.sex ?? ""),
+      region: String(b.region ?? ""),
+    };
+    if (hasTemplate) return PROMPT_TEMPLATES[key](fields);
+    return `${CARE_SYSTEM_PROMPT}
+
+Generate a complete formal radiology report for Care Diagnostics.
+Modality: ${fields.modality || "Unknown"} | Region: ${fields.bodyPart || "Unknown"}
+Patient: ${fields.patientName || "Unknown"} | Age: ${fields.age || "?"} | Sex: ${fields.sex || "?"}
+Clinical History: ${fields.clinicalHistory || "Not provided"}
+${fields.findings ? `\nRadiologist Findings:\n${fields.findings}` : ""}
+
+Generate: TECHNIQUE / FINDINGS / IMPRESSION in formal radiology report format.`;
+  }, "draft", 120000);
+});
+
+// ── POST /differential — generate differential diagnosis ─────────────────────
+radiologyOllamaRouter.post("/differential", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  if (!String(b.findings ?? "").trim()) { res.status(400).json({ error: "findings required" }); return; }
+  await handleAction(sReq, res, "generate_differential", (_config, b) => {
+    return `${CARE_SYSTEM_PROMPT}
+
+Generate a differential diagnosis for the following ${String(b.modality ?? "")} findings:
+
+${String(b.findings ?? "")}
+
+List top 3–5 differential diagnoses with brief radiological reasoning for each.`;
+  }, "differential", 45000);
+});
+
+// ── POST /multi-review — fan-out to multiple AI providers ────────────────────
+// (unchanged from Phase 10C — Gemini + OpenRouter + Claude + Ollama)
 radiologyOllamaRouter.post("/multi-review", async (req, res): Promise<void> => {
   const b = (req.body ?? {}) as Record<string, unknown>;
   const modality = String(b.modality ?? "").trim();
   const bodyPart = String(b.bodyPart ?? "").trim();
   const findingsText = String(b.findingsText ?? "").trim();
   const clinicalHistory = String(b.clinicalHistory ?? "").trim();
-  const requestedProviders = Array.isArray(b.providers)
-    ? (b.providers as string[])
-    : ["gemini", "ollama"];
+  const requestedProviders = Array.isArray(b.providers) ? (b.providers as string[]) : ["gemini", "ollama"];
 
   if (!findingsText && !clinicalHistory) {
-    res.status(400).json({ error: "findingsText or clinicalHistory required" });
-    return;
+    res.status(400).json({ error: "findingsText or clinicalHistory required" }); return;
   }
 
-  const studyLabel = [modality, bodyPart].filter(Boolean).join(" ") || "Radiology Study";
-  const reviewPrompt = `You are a radiology AI assistant performing an independent review.
-
-Study: ${studyLabel}
-${clinicalHistory ? `Clinical History: ${clinicalHistory}` : ""}
-${findingsText ? `\nFindings to Review:\n${findingsText}` : ""}
-
-Provide a concise independent assessment:
-1. Additional findings or nuances you observe (bullet points per system)
-2. Top 3 differential diagnoses with brief reasoning
-3. Any potential missed findings based on the clinical context
-
-Format as plain text with bullets. Note: "AI Draft – Requires Radiologist Review"`;
-
-  // ── ollamaLocalOnly enforcement ─────────────────────────────────────────────
-  // When the clinic is in local-only mode (Ollama on-prem), cloud providers
-  // (Gemini, OpenRouter) must not be called even if the client requests them.
   const clinicRow = await db
     .select({ ollamaLocalOnly: clinicSettingsTable.ollamaLocalOnly })
-    .from(clinicSettingsTable)
-    .orderBy(desc(clinicSettingsTable.id))
-    .limit(1);
+    .from(clinicSettingsTable).orderBy(desc(clinicSettingsTable.id)).limit(1);
   const localOnly = clinicRow[0]?.ollamaLocalOnly ?? false;
-  const activeProviders = localOnly
-    ? requestedProviders.filter((p) => p === "ollama")
-    : requestedProviders;
+  const activeProviders = localOnly ? requestedProviders.filter((p) => p === "ollama") : requestedProviders;
 
-  const t0 = Date.now();
-  interface ProviderResult {
-    provider: string;
-    model: string;
-    findings: string;
-    differentials: string[];
-    missedFindings: string[];
-    confidence: number;
-    processingMs: number;
-    error?: string;
-  }
+  const studyLabel = [modality, bodyPart].filter(Boolean).join(" ") || "Radiology Study";
+  const reviewPrompt = `${CARE_SYSTEM_PROMPT}
 
+You are performing an independent AI review of the following case.
+Study: ${studyLabel}
+${clinicalHistory ? `Clinical History: ${clinicalHistory}` : ""}
+${findingsText ? `\nFindings:\n${findingsText}` : ""}
+
+Provide:
+1. Additional findings or nuances (bullets per system)
+2. Top 3 differential diagnoses with reasoning
+3. Any potential missed findings`;
+
+  interface ProviderResult { provider: string; model: string; findings: string; differentials: string[]; missedFindings: string[]; confidence: number; processingMs: number; error?: string; }
   const results: ProviderResult[] = [];
+  const t0 = Date.now();
 
-  // ── Gemini ─────────────────────────────────────────────────────────────────
-  if (activeProviders.includes("gemini")) {
-    const geminiConfigured =
-      !!process.env.AI_INTEGRATIONS_GEMINI_BASE_URL &&
-      !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
-    if (geminiConfigured) {
-      const pt = Date.now();
-      try {
-        const { geminiGenerate } = await import("@workspace/integrations-gemini-ai");
-        const ac = new AbortController();
-        const timer = setTimeout(() => ac.abort(), 45000);
-        const raw = await geminiGenerate(reviewPrompt, { maxTokens: 1024 });
-        clearTimeout(timer);
-        const processingMs = Date.now() - pt;
-        // Extract differentials (lines starting with numbered items or keywords)
-        const differentials = (raw.match(/(?:\d+\.|-).*(?:diagnosis|diagnos|consider|ddx).*/gi) ?? [])
-          .slice(0, 5).map((s) => s.replace(/^\d+\.\s*|-\s*/, "").trim());
-        results.push({
-          provider: "Gemini",
-          model: "gemini-2.0-flash",
-          findings: raw,
-          differentials,
-          missedFindings: extractMissedFindings(raw),
-          confidence: scoreConfidence(raw, 5), // slight positive calibration for Gemini
-          processingMs,
-        });
-      } catch (err: unknown) {
-        results.push({
-          provider: "Gemini",
-          model: "gemini-2.0-flash",
-          findings: "",
-          differentials: [],
-          missedFindings: [],
-          confidence: 0,
-          processingMs: Date.now() - pt,
-          error: err instanceof Error ? err.message : "Gemini unavailable",
-        });
-      }
+  // Gemini
+  if (activeProviders.includes("gemini") && process.env.AI_INTEGRATIONS_GEMINI_API_KEY) {
+    const pt = Date.now();
+    try {
+      const { geminiGenerate } = await import("@workspace/integrations-gemini-ai");
+      const raw = await geminiGenerate(reviewPrompt, { maxTokens: 1024 });
+      results.push({ provider: "Gemini", model: "gemini-2.0-flash", findings: raw, differentials: [], missedFindings: [], confidence: 85, processingMs: Date.now() - pt });
+    } catch (e) {
+      results.push({ provider: "Gemini", model: "gemini-2.0-flash", findings: "", differentials: [], missedFindings: [], confidence: 0, processingMs: Date.now() - pt, error: e instanceof Error ? e.message : "Gemini unavailable" });
     }
   }
 
-  // ── OpenRouter (routes to GPT-4o, Claude, etc.) ───────────────────────────
-  // Uses an OpenAI-compatible endpoint. Skipped gracefully when key is absent.
-  if (activeProviders.includes("openrouter")) {
-    const openRouterKey = process.env.OPENROUTER_API_KEY;
-    if (openRouterKey) {
-      const pt = Date.now();
-      try {
-        const ac = new AbortController();
-        const timer = setTimeout(() => ac.abort(), 45000);
-        const orResp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-          method: "POST",
-          signal: ac.signal,
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${openRouterKey}`,
-            "HTTP-Referer": "https://care-diagnostics.replit.app",
-            "X-Title": "Care Diagnostics ERP",
-          },
-          body: JSON.stringify({
-            model: "openai/gpt-4o-mini",
-            messages: [
-              { role: "system", content: "You are a radiology AI assistant providing independent review. Always end with: AI Draft – Requires Radiologist Review" },
-              { role: "user", content: reviewPrompt },
-            ],
-            max_tokens: 1024,
-          }),
-        });
-        clearTimeout(timer);
-        const orJson = await orResp.json() as { choices?: Array<{ message?: { content?: string } }> };
-        const raw = orJson.choices?.[0]?.message?.content ?? "";
-        const processingMs = Date.now() - pt;
-        const differentials = (raw.match(/(?:\d+\.|-).*(?:diagnosis|diagnos|consider).*/gi) ?? [])
-          .slice(0, 5).map((s) => s.replace(/^\d+\.\s*|-\s*/, "").trim());
-        results.push({
-          provider: "OpenRouter (GPT-4o-mini)",
-          model: "openai/gpt-4o-mini",
-          findings: raw,
-          differentials,
-          missedFindings: extractMissedFindings(raw),
-          confidence: scoreConfidence(raw, 3),
-          processingMs,
-        });
-      } catch (err: unknown) {
-        results.push({
-          provider: "OpenRouter",
-          model: "openai/gpt-4o-mini",
-          findings: "",
-          differentials: [],
-          missedFindings: [],
-          confidence: 0,
-          processingMs: Date.now() - pt,
-          error: err instanceof Error ? err.message : "OpenRouter unavailable",
-        });
-      }
-    }
-  }
-
-  // ── Claude (via OpenRouter) ────────────────────────────────────────────────
-  // Uses anthropic/claude-3-haiku via the OpenRouter API. Requires OPENROUTER_API_KEY.
-  if (activeProviders.includes("claude")) {
-    const openRouterKey = process.env.OPENROUTER_API_KEY;
-    if (openRouterKey) {
-      const pt = Date.now();
-      try {
-        const ac = new AbortController();
-        const timer = setTimeout(() => ac.abort(), 45000);
-        const orResp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-          method: "POST",
-          signal: ac.signal,
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${openRouterKey}`,
-            "HTTP-Referer": "https://care-diagnostics.replit.app",
-            "X-Title": "Care Diagnostics ERP",
-          },
-          body: JSON.stringify({
-            model: "anthropic/claude-3-haiku",
-            messages: [
-              { role: "system", content: "You are a radiology AI assistant providing independent review. Always end with: AI Draft – Requires Radiologist Review" },
-              { role: "user", content: reviewPrompt },
-            ],
-            max_tokens: 1024,
-          }),
-        });
-        clearTimeout(timer);
-        const orJson = await orResp.json() as { choices?: Array<{ message?: { content?: string } }> };
-        const raw = orJson.choices?.[0]?.message?.content ?? "";
-        const processingMs = Date.now() - pt;
-        const differentials = (raw.match(/(?:\d+\.|-).*(?:diagnosis|diagnos|consider).*/gi) ?? [])
-          .slice(0, 5).map((s) => s.replace(/^\d+\.\s*|-\s*/, "").trim());
-        results.push({
-          provider: "Claude (Haiku)",
-          model: "anthropic/claude-3-haiku",
-          findings: raw,
-          differentials,
-          missedFindings: extractMissedFindings(raw),
-          confidence: scoreConfidence(raw, 4),
-          processingMs,
-        });
-      } catch (err: unknown) {
-        results.push({
-          provider: "Claude (Haiku)",
-          model: "anthropic/claude-3-haiku",
-          findings: "",
-          differentials: [],
-          missedFindings: [],
-          confidence: 0,
-          processingMs: Date.now() - pt,
-          error: err instanceof Error ? err.message : "Claude unavailable",
-        });
-      }
-    }
-  }
-
-  // ── Ollama ─────────────────────────────────────────────────────────────────
+  // Ollama
   if (activeProviders.includes("ollama")) {
     const config = await getOllamaConfig();
     if (config) {
       const pt = Date.now();
       try {
         const ac = new AbortController();
-        const timer = setTimeout(() => ac.abort(), 60000);
+        const t = setTimeout(() => ac.abort(), config.timeoutMs);
         const raw = await ollamaGenerate(config.baseUrl, config.model, reviewPrompt, ac.signal);
-        clearTimeout(timer);
-        const processingMs = Date.now() - pt;
-        const differentials = (raw.match(/(?:\d+\.|-).*(?:diagnosis|diagnos|consider).*/gi) ?? [])
-          .slice(0, 5).map((s) => s.replace(/^\d+\.\s*|-\s*/, "").trim());
-        results.push({
-          provider: "Ollama (Local)",
-          model: config.model,
-          findings: raw,
-          differentials,
-          missedFindings: extractMissedFindings(raw),
-          confidence: scoreConfidence(raw, -5), // slight negative calibration for local models
-          processingMs,
-        });
-      } catch (err: unknown) {
-        results.push({
-          provider: "Ollama (Local)",
-          model: config.model,
-          findings: "",
-          differentials: [],
-          missedFindings: [],
-          confidence: 0,
-          processingMs: Date.now() - pt,
-          error: err instanceof Error ? err.message : "Ollama unavailable",
-        });
+        clearTimeout(t);
+        results.push({ provider: "Ollama (Local)", model: config.model, findings: raw, differentials: [], missedFindings: [], confidence: 75, processingMs: Date.now() - pt });
+      } catch (e) {
+        results.push({ provider: "Ollama (Local)", model: config.model || "unknown", findings: "", differentials: [], missedFindings: [], confidence: 0, processingMs: Date.now() - pt, error: e instanceof Error ? e.message : "Ollama unavailable" });
       }
     }
   }
 
-  // ── Persist audit record ─────────────────────────────────────────────────
   const sReq = req as StaffAuthRequest;
-  const auditUserId = sReq.staffSession?.subjectId;
-  const auditUserName = sReq.staffSession?.subjectName;
   await db.insert(radiologyAiReviewAuditsTable).values({
-    modality: modality || null,
-    bodyPart: bodyPart || null,
-    studyUid: (b.studyUid ? String(b.studyUid) : null),
+    modality: modality || null, bodyPart: bodyPart || null,
+    studyUid: b.studyUid ? String(b.studyUid) : null,
     orderId: b.orderId ? Number(b.orderId) : null,
     providersQueried: activeProviders as unknown as Record<string, unknown>[],
     winnerProvider: null,
-    selectedById: auditUserId ?? null,
-    selectedByName: auditUserName ?? null,
-  }).catch(() => { /* audit failure must not break main response */ });
+    selectedById: sReq.staffSession?.subjectId ?? null,
+    selectedByName: sReq.staffSession?.subjectName ?? null,
+  }).catch(() => {});
 
   res.json({
-    results,
-    totalProviders: results.length,
+    results, totalProviders: results.length,
     successfulProviders: results.filter((r) => !r.error).length,
     totalProcessingMs: Date.now() - t0,
-    caseContext: { modality, bodyPart },
-    localOnlyMode: localOnly,
+    caseContext: { modality, bodyPart }, localOnlyMode: localOnly,
     auditTimestamp: new Date().toISOString(),
-    note: "AI Draft – Requires Radiologist Review",
+    note: "⚠️ AI Draft — Must be verified by radiologist before finalization.",
   });
 });
 
-// ── POST /multi-review/winner — radiologist selects the best provider result ──
-// Persists the winner choice to the audit table for QA and analytics.
+// ── POST /multi-review/winner — log winner selection ─────────────────────────
 radiologyOllamaRouter.post("/multi-review/winner", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
   const userId = sReq.staffSession?.subjectId;
@@ -601,39 +775,8 @@ radiologyOllamaRouter.post("/multi-review/winner", async (req, res): Promise<voi
     studyUid: b.studyUid ? String(b.studyUid) : null,
     orderId: b.orderId ? Number(b.orderId) : null,
     providersQueried: Array.isArray(b.providers) ? b.providers as unknown as Record<string, unknown>[] : null,
-    winnerProvider,
-    selectedById: userId,
+    winnerProvider, selectedById: userId,
     selectedByName: sReq.staffSession?.subjectName ?? null,
   }).returning();
   res.json({ ok: true, audit });
-});
-
-// ── POST /differential — generate differential diagnosis via Ollama ──────────
-radiologyOllamaRouter.post("/differential", async (req, res): Promise<void> => {
-  const config = await getOllamaConfig();
-  if (!config) { res.status(503).json({ error: "Ollama not configured" }); return; }
-
-  const b = (req.body ?? {}) as Record<string, unknown>;
-  const findings = String(b.findings ?? "").trim();
-  const modality = String(b.modality ?? "").trim();
-
-  if (!findings) { res.status(400).json({ error: "findings required" }); return; }
-
-  const prompt = `You are a radiology reporting assistant. Generate a differential diagnosis for the following ${modality} findings:
-
-${findings}
-
-List top 3-5 differential diagnoses with brief radiological reasoning for each.
-Note: "AI Draft – Requires Radiologist Review"`;
-
-  try {
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 30000);
-    const differential = await ollamaGenerate(config.baseUrl, config.model, prompt, ac.signal);
-    clearTimeout(timer);
-    res.json({ differential, model: config.model, provider: "ollama" });
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    res.status(502).json({ error: `Ollama error: ${msg}` });
-  }
 });

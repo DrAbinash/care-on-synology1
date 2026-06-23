@@ -89,6 +89,18 @@ services:
         ADD COLUMN IF NOT EXISTS ollama_known_models jsonb DEFAULT '[]'::jsonb;
 
         ALTER TABLE IF EXISTS clinic_settings
+        ADD COLUMN IF NOT EXISTS ollama_fallback_url text;
+
+        ALTER TABLE IF EXISTS clinic_settings
+        ADD COLUMN IF NOT EXISTS ollama_enabled boolean DEFAULT false;
+
+        ALTER TABLE IF EXISTS clinic_settings
+        ADD COLUMN IF NOT EXISTS ollama_timeout_seconds integer DEFAULT 30;
+
+        ALTER TABLE IF EXISTS clinic_settings
+        ADD COLUMN IF NOT EXISTS ollama_audit_enabled boolean DEFAULT true;
+
+        ALTER TABLE IF EXISTS clinic_settings
         ADD COLUMN IF NOT EXISTS mobile_scan_enabled boolean DEFAULT false;
 
         ALTER TABLE IF EXISTS clinic_settings

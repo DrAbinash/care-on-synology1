@@ -148,10 +148,20 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   jpegQuality: integer("jpeg_quality").notNull().default(85),
   maxScanWidth: integer("max_scan_width").notNull().default(1200),
 
-  // ── Ollama Local Models (Phase 10C) ──
+  // ── Ollama Local Models (Phase 10C / 11) ──
+  // Primary endpoint — set to Windows PC primary LAN IP: http://192.168.1.250:11434
   ollamaBaseUrl: text("ollama_base_url"),
+  // Fallback endpoint — set to Windows PC secondary LAN IP: http://172.16.1.140:11434
+  // The backend probes primary first, switches to fallback if primary times out.
+  ollamaFallbackUrl: text("ollama_fallback_url"),
   ollamaModel: text("ollama_model"),
   ollamaLocalOnly: boolean("ollama_local_only").notNull().default(false),
+  // Master toggle — when false ALL Ollama endpoints return 503 without calling Ollama.
+  ollamaEnabled: boolean("ollama_enabled").notNull().default(false),
+  // Request timeout in seconds for individual Ollama calls (default 30s).
+  ollamaTimeoutSeconds: integer("ollama_timeout_seconds").notNull().default(30),
+  // When true, all AI assistant actions are logged to radiology_ai_review_audits.
+  ollamaAuditEnabled: boolean("ollama_audit_enabled").notNull().default(true),
   // Cached list of models pulled on the Ollama instance — synced server-side
   // so every clinic workstation shows the dropdown without needing to "Test Connection".
   ollamaKnownModels: text("ollama_known_models").notNull().default("[]"),

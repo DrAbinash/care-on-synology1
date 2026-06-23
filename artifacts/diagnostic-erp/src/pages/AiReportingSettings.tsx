@@ -7,7 +7,7 @@ import { useToast } from "@/hooks/use-toast";
 import {
   BrainCircuit, Eye, EyeOff, Save, TestTube2, RefreshCw, ShieldCheck,
   Key, ChevronDown, ChevronUp, CheckCircle2, XCircle, AlertTriangle,
-  BookOpen, Settings2, Users, FileText,
+  BookOpen, Settings2, Users, FileText, Wifi, WifiOff, Zap, Gauge,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -230,7 +230,77 @@ export function AiReportingPanel() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const [activeSection, setActiveSection] = useState<"general" | "providers" | "prompts" | "permissions">("general");
+  const [activeSection, setActiveSection] = useState<"general" | "providers" | "prompts" | "permissions" | "local-ai">("general");
+
+  // Local AI settings state
+  const [localAi, setLocalAi] = useState({
+    primaryUrl: "http://192.168.1.250:11434",
+    fallbackUrl: "http://172.16.1.140:11434",
+    model: "medgemma:27b",
+    enabled: false,
+    localOnly: true,
+    timeoutSeconds: 30,
+    auditEnabled: true,
+  });
+  const [localAiTestStatus, setLocalAiTestStatus] = useState<"idle" | "testing" | "ok" | "fail">("idle");
+  const [localAiTestMsg, setLocalAiTestMsg] = useState("");
+  const [localAiProbing, setLocalAiProbing] = useState(false);
+  const [localAiProbeResult, setLocalAiProbeResult] = useState<{ url: string; reachable: boolean }[]>([]);
+  const [localAiSaving, setLocalAiSaving] = useState(false);
+
+  async function handleLocalAiProbe() {
+    setLocalAiProbing(true);
+    try {
+      const r = await api.post<{ results: { url: string; reachable: boolean }[]; recommendedUrl: string | null }>(
+        "/api/radiology/ollama/probe", {}
+      );
+      setLocalAiProbeResult(r.results);
+      if (r.recommendedUrl) {
+        setLocalAi((s) => ({ ...s, primaryUrl: r.recommendedUrl! }));
+        toast({ title: `Auto-detected: ${r.recommendedUrl}` });
+      } else {
+        toast({ title: "No Ollama endpoint reachable", description: "Ensure Ollama is running on the Windows PC.", variant: "destructive" });
+      }
+    } catch { toast({ title: "Probe failed", variant: "destructive" }); }
+    setLocalAiProbing(false);
+  }
+
+  async function handleLocalAiTest() {
+    setLocalAiTestStatus("testing"); setLocalAiTestMsg("");
+    try {
+      const r = await api.post<{ ok: boolean; error?: string; models?: string[] }>(
+        "/api/radiology/ollama/test",
+        { baseUrl: localAi.primaryUrl, model: localAi.model, allowLocal: localAi.localOnly }
+      );
+      if (r.ok) {
+        setLocalAiTestStatus("ok");
+        setLocalAiTestMsg(`Connected! ${r.models?.length ?? 0} models available.`);
+      } else {
+        setLocalAiTestStatus("fail"); setLocalAiTestMsg(r.error ?? "Failed");
+      }
+    } catch (e: unknown) {
+      setLocalAiTestStatus("fail"); setLocalAiTestMsg(e instanceof Error ? e.message : "Failed");
+    }
+  }
+
+  async function handleLocalAiSave() {
+    setLocalAiSaving(true);
+    try {
+      await api.post("/api/clinic-settings/ollama", {
+        ollamaEnabled: localAi.enabled,
+        ollamaBaseUrl: localAi.primaryUrl,
+        ollamaFallbackUrl: localAi.fallbackUrl,
+        ollamaModel: localAi.model,
+        ollamaLocalOnly: localAi.localOnly,
+        ollamaTimeoutSeconds: localAi.timeoutSeconds,
+        ollamaAuditEnabled: localAi.auditEnabled,
+      });
+      toast({ title: "Local AI settings saved" });
+    } catch (e: unknown) {
+      toast({ title: "Save failed", description: e instanceof Error ? e.message : "Error", variant: "destructive" });
+    }
+    setLocalAiSaving(false);
+  }
 
   const { data, isLoading } = useQuery<SettingsResponse>({
     queryKey: ["ai-reporting-settings"],
@@ -331,6 +401,7 @@ export function AiReportingPanel() {
   const SECTIONS = [
     { id: "general", icon: Settings2, label: "General" },
     { id: "providers", icon: Key, label: "AI Providers" },
+    { id: "local-ai", icon: Zap, label: "Local AI" },
     { id: "prompts", icon: BookOpen, label: "Prompt Templates" },
     { id: "permissions", icon: Users, label: "Permissions" },
   ] as const;
@@ -457,6 +528,151 @@ export function AiReportingPanel() {
               <li>AI responses are draft-only — a doctor/radiologist must review and approve before final signing.</li>
             </ul>
           </div>
+        </div>
+      )}
+
+      {/* ── Local AI / Ollama Settings ── */}
+      {activeSection === "local-ai" && (
+        <div className="space-y-4">
+          <div className="rounded-xl border bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 p-4 flex gap-3 text-xs">
+            <AlertTriangle size={14} className="text-amber-600 shrink-0 mt-0.5" />
+            <div className="text-amber-800 dark:text-amber-300 space-y-1">
+              <p><strong>Local AI runs entirely on-premise.</strong> Patient data never leaves your network.</p>
+              <p>Requires Ollama running on the Windows PC (192.168.1.250) with models downloaded. See <code className="bg-amber-200 dark:bg-amber-900 px-1 rounded">docs/OLLAMA_SETUP.md</code> for full setup guide.</p>
+            </div>
+          </div>
+
+          {/* Master enable */}
+          <div className={`rounded-xl border p-4 flex items-center justify-between ${localAi.enabled ? "bg-green-50 border-green-200 dark:bg-green-950/20 dark:border-green-800" : "bg-muted/30"}`}>
+            <div className="flex items-center gap-3">
+              <Zap size={20} className={localAi.enabled ? "text-orange-500" : "text-muted-foreground"} />
+              <div>
+                <p className="font-semibold text-sm">Local AI Assistant {localAi.enabled ? "ENABLED" : "DISABLED"}</p>
+                <p className="text-xs text-muted-foreground">Shows AI tab in Radiology Command Center</p>
+              </div>
+            </div>
+            <div
+              className={`relative w-12 h-6 rounded-full cursor-pointer transition-colors ${localAi.enabled ? "bg-orange-500" : "bg-muted-foreground/30"}`}
+              onClick={() => setLocalAi((s) => ({ ...s, enabled: !s.enabled }))}
+            >
+              <div className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-transform ${localAi.enabled ? "translate-x-7" : "translate-x-1"}`} />
+            </div>
+          </div>
+
+          {/* URL Configuration */}
+          <div className="rounded-xl border bg-card p-5 space-y-4">
+            <h3 className="text-sm font-semibold flex items-center gap-2"><Wifi size={14} /> Ollama Endpoint URLs</h3>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-muted-foreground">Primary URL (Windows PC LAN IP)</label>
+              <input
+                type="text"
+                value={localAi.primaryUrl}
+                onChange={(e) => setLocalAi((s) => ({ ...s, primaryUrl: e.target.value }))}
+                placeholder="http://192.168.1.250:11434"
+                className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-muted-foreground">Fallback URL (secondary NIC / IP)</label>
+              <input
+                type="text"
+                value={localAi.fallbackUrl}
+                onChange={(e) => setLocalAi((s) => ({ ...s, fallbackUrl: e.target.value }))}
+                placeholder="http://172.16.1.140:11434"
+                className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
+              />
+              <p className="text-[10px] text-muted-foreground">Backend probes primary first, switches to fallback if primary doesn't respond. Cached for 5 minutes.</p>
+            </div>
+
+            <div className="flex gap-2 flex-wrap">
+              <Button size="sm" variant="outline" className="h-7 text-xs gap-1" disabled={localAiProbing} onClick={handleLocalAiProbe}>
+                {localAiProbing ? <RefreshCw size={11} className="animate-spin" /> : <Wifi size={11} />}
+                Auto-Detect
+              </Button>
+              <Button size="sm" variant="outline" className="h-7 text-xs gap-1" disabled={localAiTestStatus === "testing"} onClick={handleLocalAiTest}>
+                {localAiTestStatus === "testing" ? <RefreshCw size={11} className="animate-spin" /> : <TestTube2 size={11} />}
+                Test Primary
+              </Button>
+              {localAiTestStatus === "ok" && <span className="flex items-center gap-1 text-xs text-green-600"><CheckCircle2 size={12} /> {localAiTestMsg}</span>}
+              {localAiTestStatus === "fail" && <span className="flex items-center gap-1 text-xs text-red-600"><XCircle size={12} /> {localAiTestMsg}</span>}
+            </div>
+
+            {localAiProbeResult.length > 0 && (
+              <div className="space-y-1">
+                {localAiProbeResult.map((r) => (
+                  <div key={r.url} className={`flex items-center gap-2 text-[10px] px-2 py-1 rounded border ${r.reachable ? "border-green-300 bg-green-50 dark:bg-green-950/20 text-green-700" : "border-red-300 bg-red-50 dark:bg-red-950/20 text-red-600"}`}>
+                    {r.reachable ? <Wifi size={10} /> : <WifiOff size={10} />}
+                    <code className="font-mono">{r.url}</code>
+                    <span className="ml-auto">{r.reachable ? "✓ reachable" : "✗ unreachable"}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Model & Options */}
+          <div className="rounded-xl border bg-card p-5 space-y-4">
+            <h3 className="text-sm font-semibold flex items-center gap-2"><BrainCircuit size={14} /> Model & Options</h3>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-muted-foreground">Default Model</label>
+              <input
+                type="text"
+                value={localAi.model}
+                onChange={(e) => setLocalAi((s) => ({ ...s, model: e.target.value }))}
+                placeholder="medgemma:27b"
+                className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
+              />
+              <p className="text-[10px] text-muted-foreground">
+                Recommended: <code className="bg-muted px-1 rounded">medgemma:27b</code> (best medical) · <code className="bg-muted px-1 rounded">gemma4:12b</code> (faster) · <code className="bg-muted px-1 rounded">qwen3:14b</code> (formatting)
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-muted-foreground flex items-center gap-1"><Gauge size={11} /> Timeout: {localAi.timeoutSeconds}s</label>
+              <input
+                type="range" min={10} max={120} step={5}
+                value={localAi.timeoutSeconds}
+                onChange={(e) => setLocalAi((s) => ({ ...s, timeoutSeconds: Number(e.target.value) }))}
+                className="w-full"
+              />
+              <p className="text-[10px] text-muted-foreground">Per-action timeout. 30s for impression; 60–120s for full draft generation.</p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <label className="flex items-center justify-between gap-3 p-3 rounded-lg border bg-background cursor-pointer">
+                <div>
+                  <p className="text-xs font-semibold">LAN Mode</p>
+                  <p className="text-[10px] text-muted-foreground">Allow private IP addresses</p>
+                </div>
+                <div
+                  className={`relative w-10 h-5 rounded-full cursor-pointer transition-colors shrink-0 ${localAi.localOnly ? "bg-primary" : "bg-muted"}`}
+                  onClick={() => setLocalAi((s) => ({ ...s, localOnly: !s.localOnly }))}
+                >
+                  <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${localAi.localOnly ? "translate-x-5" : "translate-x-0.5"}`} />
+                </div>
+              </label>
+              <label className="flex items-center justify-between gap-3 p-3 rounded-lg border bg-background cursor-pointer">
+                <div>
+                  <p className="text-xs font-semibold">Audit Logging</p>
+                  <p className="text-[10px] text-muted-foreground">Log all AI actions to DB</p>
+                </div>
+                <div
+                  className={`relative w-10 h-5 rounded-full cursor-pointer transition-colors shrink-0 ${localAi.auditEnabled ? "bg-primary" : "bg-muted"}`}
+                  onClick={() => setLocalAi((s) => ({ ...s, auditEnabled: !s.auditEnabled }))}
+                >
+                  <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${localAi.auditEnabled ? "translate-x-5" : "translate-x-0.5"}`} />
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <Button onClick={handleLocalAiSave} disabled={localAiSaving} className="gap-2 w-full">
+            {localAiSaving ? <RefreshCw size={14} className="animate-spin" /> : <Save size={14} />}
+            Save Local AI Settings
+          </Button>
         </div>
       )}
 

@@ -25,13 +25,15 @@ import {
   FileEdit, Save, CheckCircle2, ChevronRight, Search, ListCollapse,
   Layers, Settings, FileText, ClipboardList, BookOpen, AlertCircle, Sparkles,
   Star, Check, RotateCcw, ChevronUp, ChevronDown, Construction, Wand2, Info,
-  Ruler, GitCompare, History as HistoryIcon
+  Ruler, GitCompare, History as HistoryIcon, BrainCircuit, WandSparkles,
+  Pencil, SpellCheck, Repeat2, FileDown
 } from "lucide-react";
 import EmbeddedWadoViewer from "@/components/EmbeddedWadoViewer";
 import VoiceDictationButton from "@/components/VoiceDictationButton";
 import ChocolateBoxPanel, { type ChocolateFinding } from "@/components/ChocolateBoxPanel";
 import PreferencesPanel from "@/components/PreferencesPanel";
 import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
+import LocalAiPanel from "@/components/LocalAiPanel";
 import { Grid } from "lucide-react";
 import {
   ALL_BUILDERS, detectBuilderType, getBuilderForType, defaultSelections,
@@ -1192,7 +1194,7 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
               {/* 4. RIGHT PANEL: Structured Reporting & Context Assistant */}
               <div className="w-80 border-slate-800 bg-slate-950 overflow-y-auto p-4 flex flex-col gap-4">
                 <Tabs defaultValue="structured" className="flex flex-col flex-1 gap-3 overflow-hidden">
-                  <TabsList className="grid grid-cols-7 bg-slate-900/60 p-1 border border-slate-800 rounded-lg shrink-0">
+                  <TabsList className="grid grid-cols-8 bg-slate-900/60 p-1 border border-slate-800 rounded-lg shrink-0">
                     <TabsTrigger value="quick-findings" className="text-[10px] py-1 px-1 flex items-center justify-center gap-1">
                       <Grid size={11} className="text-emerald-400" />
                       Box
@@ -1201,7 +1203,11 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                     <TabsTrigger value="templates" className="text-[10px] py-1 px-1">Templates</TabsTrigger>
                     <TabsTrigger value="measurements" className="text-[10px] py-1 px-1 flex items-center justify-center gap-1">
                       <Ruler size={11} className="text-sky-400" />
-                      Measures
+                      Meas.
+                    </TabsTrigger>
+                    <TabsTrigger value="local-ai" className="text-[10px] py-1 px-1 flex items-center justify-center gap-1">
+                      <Zap size={11} className="text-orange-400" />
+                      AI
                     </TabsTrigger>
                     <TabsTrigger value="prior-studies" className="text-[10px] py-1 px-1 flex items-center justify-center gap-1">
                       <GitCompare size={11} className="text-violet-400" />
@@ -1820,6 +1826,25 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                         ))}
                       </div>
                     )}
+                  </TabsContent>
+
+                  {/* TAB 7: LOCAL AI ASSISTANT */}
+                  <TabsContent value="local-ai" className="flex-1 flex flex-col gap-2 overflow-y-auto min-h-0">
+                    <LocalAiPanel
+                      study={study}
+                      onInsertFindings={(text) => {
+                        setRawFindings((prev) => prev ? prev + "\n\n" + text : text);
+                        toast({ title: "AI output inserted into findings draft" });
+                      }}
+                      onInsertImpression={(text) => {
+                        setImpression((prev) => {
+                          const items = text.split("\n").map((l) => l.replace(/^[-•*\d.]+\s*/, "").trim()).filter(Boolean);
+                          return [...prev.filter(Boolean), ...items];
+                        });
+                        toast({ title: "AI impression inserted into draft" });
+                      }}
+                      currentFindings={rawFindings}
+                    />
                   </TabsContent>
 
                 </Tabs>

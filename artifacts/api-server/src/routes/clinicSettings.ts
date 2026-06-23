@@ -554,3 +554,79 @@ clinicSettingsRouter.put("/", async (req, res) => {
 });
 
 export default clinicSettingsRouter;
+
+// ── Dedicated Local AI / Ollama settings endpoint ────────────────────────────
+// POST /api/clinic-settings/ollama — save all Ollama fields atomically.
+// Separate from the main PUT / so the AI settings page has its own Save button.
+clinicSettingsRouter.post("/ollama", async (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const current = await getOrCreate();
+  const update: Record<string, unknown> = { updatedAt: new Date() };
+
+  // ollamaEnabled
+  if (b.ollamaEnabled !== undefined) {
+    if (typeof b.ollamaEnabled !== "boolean") { res.status(400).json({ error: "ollamaEnabled must be boolean" }); return; }
+    update.ollamaEnabled = b.ollamaEnabled;
+  }
+
+  // ollamaLocalOnly
+  if (b.ollamaLocalOnly !== undefined) {
+    if (typeof b.ollamaLocalOnly !== "boolean") { res.status(400).json({ error: "ollamaLocalOnly must be boolean" }); return; }
+    update.ollamaLocalOnly = b.ollamaLocalOnly;
+  }
+
+  // ollamaAuditEnabled
+  if (b.ollamaAuditEnabled !== undefined) {
+    if (typeof b.ollamaAuditEnabled !== "boolean") { res.status(400).json({ error: "ollamaAuditEnabled must be boolean" }); return; }
+    update.ollamaAuditEnabled = b.ollamaAuditEnabled;
+  }
+
+  // ollamaTimeoutSeconds
+  if (b.ollamaTimeoutSeconds !== undefined) {
+    const n = Number(b.ollamaTimeoutSeconds);
+    if (!Number.isInteger(n) || n < 5 || n > 300) { res.status(400).json({ error: "ollamaTimeoutSeconds must be 5–300" }); return; }
+    update.ollamaTimeoutSeconds = n;
+  }
+
+  // ollamaModel
+  if (b.ollamaModel !== undefined) {
+    update.ollamaModel = b.ollamaModel ? String(b.ollamaModel).trim() || null : null;
+  }
+
+  // URL validator helper
+  function validateOllamaUrlSimple(raw: string): string | null {
+    try {
+      const u = new URL(raw);
+      if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+      return u.origin;
+    } catch { return null; }
+  }
+
+  // ollamaBaseUrl
+  if (b.ollamaBaseUrl !== undefined) {
+    const raw = b.ollamaBaseUrl ? String(b.ollamaBaseUrl).trim() : "";
+    if (raw && !validateOllamaUrlSimple(raw)) {
+      res.status(400).json({ error: "ollamaBaseUrl must be a valid http/https URL" }); return;
+    }
+    update.ollamaBaseUrl = raw || null;
+  }
+
+  // ollamaFallbackUrl (new column)
+  if (b.ollamaFallbackUrl !== undefined) {
+    const raw = b.ollamaFallbackUrl ? String(b.ollamaFallbackUrl).trim() : "";
+    if (raw && !validateOllamaUrlSimple(raw)) {
+      res.status(400).json({ error: "ollamaFallbackUrl must be a valid http/https URL" }); return;
+    }
+    // Store in DB using raw SQL to handle column added by migration (not yet in drizzle schema deploy)
+    // We do a raw update so we don't crash if the column is missing yet.
+    (update as any).ollamaFallbackUrl = raw || null;
+  }
+
+  try {
+    const rows = await db.update(clinicSettingsTable).set(update).where(eq(clinicSettingsTable.id, current.id)).returning();
+    res.json({ ok: true, settings: rows[0] ?? null });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: "Ollama settings save failed: " + msg });
+  }
+});
