@@ -12,6 +12,7 @@
     "db:push": "pnpm --filter @workspace/db run push",
     "db:generate": "pnpm --filter @workspace/db run generate",
     "db:deploy": "pnpm --filter @workspace/db run deploy",
+    "db:manage": "pnpm --filter @workspace/db run manage",
     "test": "vitest run"
   },
   "private": true,

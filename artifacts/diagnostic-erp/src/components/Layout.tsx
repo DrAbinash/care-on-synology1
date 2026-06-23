@@ -316,6 +316,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("sidebarAutoMinimise") === "1");
   const session = readStaffSession();
 
+  // Auto-close the mobile overlay sidebar when the viewport expands to ≥768px
+  // (desktop). This prevents a stale open-state when the user rotates their
+  // device or resizes a browser window while the drawer is visible.
+  useEffect(() => {
+    if (!isMobile && sidebarOpen) setSidebarOpen(false);
+  }, [isMobile, sidebarOpen]);
+
   // Pass the login-time DB value so the hook seeds localStorage on a fresh device.
   // Effective theme reads purely from localStorage (via userTheme) after seeding so
   // changes and resets take effect immediately without re-login.
@@ -1044,16 +1051,42 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
       {/* Main */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
-        {/* Top bar (mobile) — minimal: just title + controls */}
-        <header className={cn(!isMobile && "hidden", "sticky top-0 z-10 flex items-center gap-3 px-4 py-3 border-b border-border bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80")}>
-          <span className="font-semibold text-sm truncate">
-            {flatNavLeaves(visibleNav).find(n => n.path === "/" ? location === "/" : location === n.path || location.startsWith(n.path + "/"))?.label ?? "Care Diagnostics"}
-          </span>
-          <div className="ml-auto flex items-center gap-1">
-            <FullscreenToggle />
-            <ThemeToggle />
-          </div>
-        </header>
+        {/* ── Mobile top bar ─────────────────────────────────────────────────
+            Hamburger (☰) opens the slide-in sidebar. Title shows current
+            module. Right side: fullscreen + dark-mode toggles. */}
+        {isMobile && (
+          <header
+            className="sticky top-0 z-10 flex items-center gap-2 px-3 py-2 border-b border-border bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80"
+            style={{ minHeight: 52 }}
+          >
+            {/* ☰ Hamburger — opens the mobile slide-in sidebar */}
+            <button
+              id="mobile-sidebar-toggle"
+              aria-label="Open navigation menu"
+              aria-expanded={sidebarOpen}
+              onClick={() => setSidebarOpen(true)}
+              className="flex items-center justify-center w-10 h-10 rounded-lg shrink-0 text-foreground hover:bg-accent transition-colors"
+            >
+              <Menu size={22} />
+            </button>
+
+            {/* Current module label */}
+            <span className="flex-1 font-semibold text-sm truncate">
+              {flatNavLeaves(visibleNav).find(
+                (n) =>
+                  n.path === "/"
+                    ? location === "/"
+                    : location === n.path || location.startsWith(n.path + "/"),
+              )?.label ?? "Care Diagnostics"}
+            </span>
+
+            {/* Right controls */}
+            <div className="flex items-center gap-0.5 shrink-0">
+              <FullscreenToggle />
+              <ThemeToggle />
+            </div>
+          </header>
+        )}
 
         {/* Desktop top-right control bar — thin strip, compact icons */}
         {!isMobile && (

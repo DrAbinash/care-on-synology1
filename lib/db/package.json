@@ -12,7 +12,9 @@
     "push-force": "drizzle-kit push --force --config ./drizzle.config.ts",
     "generate": "drizzle-kit generate --config ./drizzle.config.ts",
     "push-ci": "tsx scripts/db-deploy.ts",
-    "deploy": "tsx scripts/db-deploy.ts"
+    "deploy": "tsx scripts/db-deploy.ts",
+    "manage": "tsx scripts/db-manage.ts",
+    "db:manage": "tsx scripts/db-manage.ts"
   },
   "dependencies": {
     "drizzle-orm": "catalog:",
