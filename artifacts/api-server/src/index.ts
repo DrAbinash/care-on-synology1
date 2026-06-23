@@ -2473,6 +2473,32 @@ const server = app.listen({ port, exclusive: true }, () => {
   ensureDefaultLedger().catch((e) => logger.error({ err: e }, "Failed to seed default ledger"));
   backfillExpirePublicTokens().catch((e) => logger.error({ err: e }, "Failed to backfill public token expiry"));
   seedBootstrapAdminIfNeeded().catch((e) => logger.error({ err: e }, "Failed to seed/update bootstrap admin"));
+
+  // Seed OHIF_URL + WADO_URL from env into pacs_settings so viewerService.ts
+  // can read them from DB without needing any hardcoded IP fallback.
+  // Uses ON CONFLICT DO NOTHING — never overwrites an admin-configured value.
+  (async () => {
+    try {
+      const { pool } = await import("./db.js");
+      const pairs: Array<{ key: string; value: string | undefined; category: string }> = [
+        { key: "ohif_base_url",      value: process.env["OHIF_URL"],       category: "viewer" },
+        { key: "wado_uri_base_url",  value: process.env["WADO_URL"],       category: "viewer" },
+        { key: "orthanc_url",        value: process.env["ORTHANC_URL"],    category: "conquest" },
+      ];
+      for (const { key, value, category } of pairs) {
+        if (!value) continue;
+        await pool.query(
+          `INSERT INTO pacs_settings (key, value, category, is_secret)
+           VALUES ($1, $2, $3, false)
+           ON CONFLICT (key, category) DO NOTHING`,
+          [key, value, category]
+        );
+      }
+      logger.info("PACS env vars seeded into pacs_settings (idempotent)");
+    } catch (e) {
+      logger.warn({ err: e }, "Could not seed PACS env vars into pacs_settings — viewer URLs must be set manually");
+    }
+  })();
 });
 
 server.on("error", (err) => {

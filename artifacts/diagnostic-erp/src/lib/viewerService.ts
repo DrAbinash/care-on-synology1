@@ -5,7 +5,9 @@
 
 export function getOhifUrl(studyInstanceUID: string, settings: Record<string, string>): string {
   const rawBaseUrl = settings["ohif_base_url"]?.trim();
-  const ohifBase = rawBaseUrl || "http://192.168.1.137:3010";
+  // NOTE: No hardcoded IP fallback — OHIF URL must be set in Settings → PACS & DICOM → ohif_base_url
+  // or via the OHIF_URL env var which seeds pacs_settings on first boot.
+  const ohifBase = rawBaseUrl || "";
   const normalizedBase = ohifBase.replace(/\/$/, "");
 
   const template = settings["ohif_study_url_template"]?.trim() || "{OHIF_BASE_URL}/viewer?StudyInstanceUIDs={studyInstanceUID}";

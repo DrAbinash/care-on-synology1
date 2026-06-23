@@ -24,12 +24,14 @@ import {
   RefreshCw, ShieldCheck, ArrowUpRight, MonitorPlay, Tv2,
   FileEdit, Save, CheckCircle2, ChevronRight, Search, ListCollapse,
   Layers, Settings, FileText, ClipboardList, BookOpen, AlertCircle, Sparkles,
-  Star, Check, RotateCcw, ChevronUp, ChevronDown, Construction, Wand2, Info
+  Star, Check, RotateCcw, ChevronUp, ChevronDown, Construction, Wand2, Info,
+  Ruler, GitCompare, History as HistoryIcon
 } from "lucide-react";
 import EmbeddedWadoViewer from "@/components/EmbeddedWadoViewer";
 import VoiceDictationButton from "@/components/VoiceDictationButton";
 import ChocolateBoxPanel, { type ChocolateFinding } from "@/components/ChocolateBoxPanel";
 import PreferencesPanel from "@/components/PreferencesPanel";
+import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
 import { Grid } from "lucide-react";
 import {
   ALL_BUILDERS, detectBuilderType, getBuilderForType, defaultSelections,
@@ -208,11 +210,9 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
       return JSON.parse(localStorage.getItem("starred_findings") || "[]");
     } catch { return []; }
   });
-  const [starredTemplates, setStarredTemplates] = useState<string[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem("starred_templates") || "[]");
-    } catch { return []; }
-  });
+  // Starred templates — DB-backed via user-report-preferences.favoriteTemplates
+  // (falls back to [] on first load; localStorage key removed)
+  const [starredTemplates, setStarredTemplates] = useState<string[]>([]);
   const [recentFindings, setRecentFindings] = useState<string[]>([]);
   const [searchFindingsQuery, setSearchFindingsQuery] = useState("");
   const [checklistComm, setChecklistComm] = useState({ phoned: false, annotated: false, dispatched: false });
@@ -272,11 +272,28 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
     refetchInterval: 10000,
   });
 
-  // 7. User Report Preferences for Personal Macros
+  // 7. User Report Preferences for Personal Macros + Starred Templates
   const { data: preferences } = useQuery<any>({
     queryKey: ["user-report-preferences"],
     queryFn: () => api.get<any>("/api/radiology/user-report-preferences"),
     enabled: !!session?.user?.id,
+  });
+
+  // Seed starred templates from DB once preferences load
+  useEffect(() => {
+    if (!preferences) return;
+    try {
+      const dbStarred: string[] = JSON.parse(preferences.favoriteTemplates || "[]");
+      setStarredTemplates(dbStarred);
+    } catch { /* ignore */ }
+  }, [preferences]);
+
+  // Mutation: persist starred templates to DB
+  const saveStarredTemplates = useMutation({
+    mutationFn: (next: string[]) =>
+      api.post("/api/radiology/user-report-preferences", {
+        favoriteTemplates: JSON.stringify(next),
+      }),
   });
 
   const personalMacros = useMemo(() => {
@@ -455,11 +472,12 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
     return bt ? getBuilderForType(bt) : undefined;
   }, [activeBuilderTypes]);
 
-  // Star templates & selections preferences persistence
+  // Star templates — DB-backed
   const toggleStarTemplate = (tplName: string) => {
     setStarredTemplates((prev) => {
       const next = prev.includes(tplName) ? prev.filter((t) => t !== tplName) : [...prev, tplName];
-      localStorage.setItem("starred_templates", JSON.stringify(next));
+      // Persist to DB (fire-and-forget)
+      saveStarredTemplates.mutate(next);
       return next;
     });
   };
@@ -1174,16 +1192,24 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
               {/* 4. RIGHT PANEL: Structured Reporting & Context Assistant */}
               <div className="w-80 border-slate-800 bg-slate-950 overflow-y-auto p-4 flex flex-col gap-4">
                 <Tabs defaultValue="structured" className="flex flex-col flex-1 gap-3 overflow-hidden">
-                  <TabsList className="grid grid-cols-5 bg-slate-900/60 p-1 border border-slate-800 rounded-lg shrink-0">
+                  <TabsList className="grid grid-cols-7 bg-slate-900/60 p-1 border border-slate-800 rounded-lg shrink-0">
                     <TabsTrigger value="quick-findings" className="text-[10px] py-1 px-1 flex items-center justify-center gap-1">
                       <Grid size={11} className="text-emerald-400" />
-                      Quick Box
+                      Box
                     </TabsTrigger>
                     <TabsTrigger value="structured" className="text-[10px] py-1 px-1">Findings</TabsTrigger>
                     <TabsTrigger value="templates" className="text-[10px] py-1 px-1">Templates</TabsTrigger>
+                    <TabsTrigger value="measurements" className="text-[10px] py-1 px-1 flex items-center justify-center gap-1">
+                      <Ruler size={11} className="text-sky-400" />
+                      Measures
+                    </TabsTrigger>
+                    <TabsTrigger value="prior-studies" className="text-[10px] py-1 px-1 flex items-center justify-center gap-1">
+                      <GitCompare size={11} className="text-violet-400" />
+                      Prior
+                    </TabsTrigger>
                     <TabsTrigger value="preferences" className="text-[10px] py-1 px-1 flex items-center justify-center gap-1">
                       <Star size={11} className="text-yellow-500" />
-                      My Prefs
+                      Prefs
                     </TabsTrigger>
                     <TabsTrigger value="quality" className="text-[10px] py-1 px-1 flex items-center justify-center gap-1">
                       QA
@@ -1712,6 +1738,90 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                       }}
                     />
                   </TabsContent>
+
+                  {/* TAB 5: MEASUREMENTS */}
+                  <TabsContent value="measurements" className="flex-1 flex flex-col gap-3 overflow-y-auto min-h-0">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                      <span className="text-[11px] font-bold text-sky-400 font-mono flex items-center gap-1">
+                        <Ruler size={12} />
+                        Measurements
+                      </span>
+                      <Badge variant="outline" className="text-[9px] text-sky-400 border-sky-950/40 bg-sky-950/20">
+                        {study?.modality || "—"}
+                      </Badge>
+                    </div>
+                    {study ? (
+                      <MeasurementAssistantPanel
+                        patientId={study.patientId ?? undefined}
+                        studyId={study.studyId ?? undefined}
+                        modality={study.modality}
+                        bodyPart={study.bodyPart ?? undefined}
+                      />
+                    ) : (
+                      <div className="flex flex-col items-center justify-center gap-2 mt-6 text-slate-500">
+                        <Ruler size={28} className="opacity-30" />
+                        <p className="text-xs">Select a study to enter measurements</p>
+                      </div>
+                    )}
+                  </TabsContent>
+
+                  {/* TAB 6: PRIOR STUDIES */}
+                  <TabsContent value="prior-studies" className="flex-1 flex flex-col gap-3 overflow-y-auto min-h-0">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                      <span className="text-[11px] font-bold text-violet-400 font-mono flex items-center gap-1">
+                        <GitCompare size={12} />
+                        Prior Studies
+                      </span>
+                      {study?.patientName && (
+                        <Badge variant="outline" className="text-[9px] text-violet-400 border-violet-950/40 bg-violet-950/20 truncate max-w-[120px]">
+                          {study.patientName}
+                        </Badge>
+                      )}
+                    </div>
+                    {!study ? (
+                      <div className="flex flex-col items-center justify-center gap-2 mt-6 text-slate-500">
+                        <HistoryIcon size={28} className="opacity-30" />
+                        <p className="text-xs">Select a study to see prior reports</p>
+                      </div>
+                    ) : !(Array.isArray(priorReports) ? priorReports : priorReports?.reports ?? []).length ? (
+                      <div className="flex flex-col items-center justify-center gap-2 mt-6 text-slate-500">
+                        <HistoryIcon size={28} className="opacity-30" />
+                        <p className="text-xs text-center">No prior reports found for this patient</p>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-2">
+                        {((Array.isArray(priorReports) ? priorReports : priorReports?.reports ?? []) as any[]).slice(0, 10).map((r: any) => (
+                          <div key={r.id} className="border border-slate-800 rounded-lg p-2 bg-slate-900/40 text-[10px] flex flex-col gap-1">
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold text-violet-300">{r.modality || "—"} · {r.studyDescription || r.testName || "Report"}</span>
+                              <span className="text-slate-500">{r.studyDate ? new Date(r.studyDate).toLocaleDateString("en-IN") : r.reportedAt ? new Date(r.reportedAt).toLocaleDateString("en-IN") : "—"}</span>
+                            </div>
+                            {r.impression && (
+                              <p className="text-slate-400 line-clamp-3 leading-relaxed">
+                                <span className="text-slate-500 font-semibold">Impression: </span>{r.impression}
+                              </p>
+                            )}
+                            {r.findings && !r.impression && (
+                              <p className="text-slate-400 line-clamp-3 leading-relaxed">{r.findings}</p>
+                            )}
+                            {r.impression && (
+                              <button
+                                className="text-left text-violet-400 hover:text-violet-300 text-[9px] underline underline-offset-2 mt-0.5"
+                                onClick={() => {
+                                  const txt = `[Prior ${r.modality || "study"} — ${r.studyDate ? new Date(r.studyDate).toLocaleDateString("en-IN") : "date unknown"}]\nImpression: ${r.impression}`;
+                                  setRawFindings((prev) => prev ? prev + "\n\n" + txt : txt);
+                                  toast({ title: "Prior study added to findings" });
+                                }}
+                              >
+                                + Insert impression into findings
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </TabsContent>
+
                 </Tabs>
               </div>
 
