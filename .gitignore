@@ -1,0 +1,90 @@
+# See https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files for more about ignoring files.
+
+# compiled output
+dist
+tmp
+out-tsc
+*.tsbuildinfo
+.expo
+.expo-shared
+
+# dependencies
+node_modules
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# misc
+/.sass-cache
+/connect.lock
+/coverage
+/libpeerconnection.log
+npm-debug.log
+yarn-error.log
+testem.log
+/typings
+
+# System Files
+.DS_Store
+Thumbs.db
+
+.cursor/rules/nx-rules.mdc
+.github/instructions/nx.instructions.md
+
+# Replit
+.cache/
+.local/
+
+# Local environment files — NEVER COMMIT THESE
+.env
+.env.local
+.env.*.local
+env
+env_my_temp.txt
+env_my_temp*
+*.env.backup
+*---delete*
+superadmin.key
+
+# Large binary / database dumps — cause mmap errors on Windows git
+*.dump
+*.sql.gz
+current_*.sql
+current_*.dump
+*_backup.sql
+*_backup.dump
+
+# Scratch / temp files
+scratch/*.js
+query_db*.js
+query_db*.cjs
+run-test*.js
+test_icici_endpoints.js
+e2e-*.spec.ts
+bill_preview.html
+diff.txt
+counts*.sql
+counts_raw*.sql
+table_list.txt
+*.spec.ts.bak
+
+# Screenshots and exports (large, not needed in git)
+screenshots/
+exports/
+test-results/
+
+# Attached assets (uploaded text files, large)
+attached_assets/
