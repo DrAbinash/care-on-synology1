@@ -1,11 +1,11 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import {
   Star, Facebook, Instagram, Twitter, Youtube, Linkedin, Menu, X as XIcon,
   Phone, MessageCircle, MapPin, Clock, Brain, Activity, Waves, Zap,
   TestTube, Heart, Package, Home as HomeIcon, Cpu, UserCheck, BadgeCheck,
   CalendarCheck, Sparkles, FileText, Shield, Award, ArrowRight, ChevronRight,
-  Microscope, Scan,
+  Microscope, Scan, ChevronDown, Play,
 } from "lucide-react";
 import type { Section, SiteSettings, Page } from "./types";
 import { parseSocial } from "./types";
@@ -54,47 +54,70 @@ export function HeaderSection({ section, settings, pages, basePath }: { section:
   const ctaUrl   = get(c, "ctaUrl", "book");
   const [loc] = useLocation();
   const [open, setOpen] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
   const navPages = pages.filter((p) => p.showInNav && p.status === "published");
   useEffect(() => { setOpen(false); }, [loc]);
+  useEffect(() => {
+    const handler = () => setScrolled(window.scrollY > 60);
+    window.addEventListener("scroll", handler, { passive: true });
+    return () => window.removeEventListener("scroll", handler);
+  }, []);
 
   const safeCta = safeUrl(ctaUrl, "book");
   const ctaHref = absoluteUrl(safeCta, basePath);
   const phone   = settings.contactPhone || "9973497200";
   const waNum   = (settings.whatsappNumber || phone).replace(/[^0-9]/g, "");
-  const addr    = settings.address || "CARE DIAGNOSTICS, Subhash Chowk, Castair's Town, Near Bajla Mahila College, Deoghar\u2013814112";
+  const addr    = settings.address || "CARE DIAGNOSTICS, Subhash Chowk, Castair's Town, Deoghar";
+
+  const TICKER_ITEMS = [
+    "🏥 Mon–Sun 7 AM – 9 PM",
+    `📍 ${addr}`,
+    "✅ NABL Accredited Lab",
+    "📊 Same-Day Reports Available",
+    "🔬 200+ Diagnostic Tests",
+    "🚗 Free Home Sample Collection",
+  ];
 
   return (
     <>
-      {/* Top info bar */}
-      <div className="site-topbar">
-        <div className="container-narrow site-topbar-row">
-          <div className="site-topbar-left">
-            <span><Clock size={12} /> Mon–Sat 7 AM – 9 PM</span>
-            <span><MapPin size={12} /> {addr}</span>
+      {/* Scrolling announcement ticker */}
+      <div className="site-topbar" style={{ overflow: "hidden" }}>
+        <div className="topbar-ticker-wrap">
+          <div className="topbar-ticker-inner">
+            {[...TICKER_ITEMS, ...TICKER_ITEMS].map((item, i) => (
+              <span key={i} className="topbar-ticker-item">{item}</span>
+            ))}
           </div>
-          <div className="site-topbar-right">
-            <a href={`tel:${phone}`}><Phone size={12} /> {phone}</a>
-            {waNum && (
-              <a href={`https://wa.me/${waNum}`} target="_blank" rel="noreferrer">
-                <MessageCircle size={12} /> WhatsApp
-              </a>
-            )}
-          </div>
+        </div>
+        <div className="topbar-actions">
+          <a href={`tel:${phone}`} className="topbar-action-link"><Phone size={11} /> {phone}</a>
+          {waNum && (
+            <a href={`https://wa.me/${waNum}`} target="_blank" rel="noreferrer" className="topbar-action-link" style={{ color: "#25d366" }}>
+              <MessageCircle size={11} /> WhatsApp
+            </a>
+          )}
         </div>
       </div>
 
       {/* Main header */}
-      <header className="site-header">
+      <header className={`site-header ${scrolled ? "scrolled" : ""}`}>
         <div className="container-narrow site-header-row">
           {/* Logo / brand */}
           <Link to="/" className="header-logo" style={{ textDecoration: "none", display: "flex", alignItems: "center", gap: "0.6rem" }}>
             {settings.logoUrl
-              ? <img src={resolveAssetUrl(settings.logoUrl)} alt={settings.siteTitle} style={{ height: 32, maxWidth: 140, objectFit: "contain" }} />
+              ? <img src={resolveAssetUrl(settings.logoUrl)} alt={settings.siteTitle} style={{ height: 36, maxWidth: 160, objectFit: "contain" }} />
               : <>
-                  <span style={{ width: 34, height: 34, background: "linear-gradient(135deg, hsl(var(--site-primary)), hsl(var(--site-primary) / 0.85))", borderRadius: "10px", display: "inline-flex", alignItems: "center", justifyContent: "center", color: "white", flexShrink: 0, boxShadow: "0 4px 10px hsl(var(--site-primary) / 0.25)" }}>
-                    <Microscope size={18} />
+                  <span style={{
+                    width: 38, height: 38,
+                    background: "linear-gradient(135deg, hsl(var(--site-primary)), #4f46e5)",
+                    borderRadius: "12px",
+                    display: "inline-flex", alignItems: "center", justifyContent: "center",
+                    color: "white", flexShrink: 0,
+                    boxShadow: "0 4px 14px hsl(var(--site-primary) / 0.3)",
+                  }}>
+                    <Microscope size={20} />
                   </span>
-                  <span style={{ fontWeight: 800, letterSpacing: "-0.03em", fontSize: "1.25rem", color: "hsl(var(--site-fg))" }}>
+                  <span style={{ fontWeight: 800, letterSpacing: "-0.03em", fontSize: "1.3rem", color: "hsl(var(--site-fg))" }}>
                     Care<span style={{ color: "hsl(var(--site-primary))" }}>Diagnostics</span>
                   </span>
                 </>
@@ -108,9 +131,14 @@ export function HeaderSection({ section, settings, pages, basePath }: { section:
                 {p.title}
               </Link>
             ))}
+            {waNum && (
+              <a href={`https://wa.me/${waNum}`} target="_blank" rel="noreferrer" className="header-wa-link">
+                <MessageCircle size={14} /> WhatsApp
+              </a>
+            )}
             {ctaLabel && (
               <a href={ctaHref} className="header-cta-book" style={{ marginLeft: ".5rem" }}>
-                {ctaLabel}
+                <CalendarCheck size={14} /> {ctaLabel}
               </a>
             )}
             <a href="/erp/portal" className="header-staff-login" style={{ marginLeft: ".5rem" }}>
@@ -141,7 +169,12 @@ export function HeaderSection({ section, settings, pages, basePath }: { section:
             ))}
             {ctaLabel && (
               <a href={ctaHref} className={buttonClass(settings, "primary")} style={{ justifyContent: "center", marginTop: ".5rem" }}>
-                {ctaLabel}
+                <CalendarCheck size={15} /> {ctaLabel}
+              </a>
+            )}
+            {waNum && (
+              <a href={`https://wa.me/${waNum}`} target="_blank" rel="noreferrer" className="header-nav-link" style={{ color: "#25d366" }}>
+                <MessageCircle size={15} style={{ display: "inline", marginRight: 4 }} /> WhatsApp Us
               </a>
             )}
             <a href="/erp/portal" className="header-nav-link" style={{ opacity: .6, marginTop: ".25rem" }}>
@@ -168,9 +201,50 @@ export function HeroSection({ section, settings, basePath }: { section: Section;
   const safeCta = safeUrl(ctaUrl, "book");
   const ctaHref = absoluteUrl(safeCta, basePath);
 
+  // Premium high-quality Unsplash healthcare images as hero backgrounds
+  const HERO_IMAGES = [
+    "https://images.unsplash.com/photo-1576091160550-2173dba999ef?w=1800&q=85&auto=format",
+    "https://images.unsplash.com/photo-1551190822-a9333d879b1f?w=1800&q=85&auto=format",
+    "https://images.unsplash.com/photo-1538108149393-fbbd81895907?w=1800&q=85&auto=format",
+  ];
+  const [imgIdx, setImgIdx] = useState(0);
+  const [imgFading, setImgFading] = useState(false);
+  useEffect(() => {
+    const t = setInterval(() => {
+      setImgFading(true);
+      setTimeout(() => { setImgIdx(i => (i + 1) % HERO_IMAGES.length); setImgFading(false); }, 600);
+    }, 6000);
+    return () => clearInterval(t);
+  }, []);
+
   const heroImg = imageUrl
     ? resolveAssetUrl(imageUrl)
-    : `${basePath}assets/images/building-exterior.jpg`;
+    : HERO_IMAGES[imgIdx];
+
+  // Animated stat counters
+  const STATS = [
+    { target: 10000, suffix: "+", label: "Patients Served" },
+    { target: 200, suffix: "+", label: "Tests & Services" },
+    { target: 15, suffix: "+ yrs", label: "Of Excellence" },
+    { target: 24, suffix: "h", label: "Report Delivery" },
+  ];
+  const [counts, setCounts] = useState(STATS.map(() => 0));
+  const countRef = useRef(false);
+  useEffect(() => {
+    if (countRef.current) return;
+    countRef.current = true;
+    STATS.forEach((s, i) => {
+      const steps = 50;
+      const stepMs = 1400 / steps;
+      let step = 0;
+      const t = setInterval(() => {
+        step++;
+        const v = Math.round(s.target * (step / steps));
+        setCounts(prev => { const n = [...prev]; n[i] = v; return n; });
+        if (step >= steps) clearInterval(t);
+      }, stepMs);
+    });
+  }, []);
 
   const badges = [
     { icon: <Brain size={13} />, label: "3 Tesla MRI" },
@@ -184,10 +258,17 @@ export function HeroSection({ section, settings, basePath }: { section: Section;
 
   return (
     <section className="hero-section">
-      {/* BG */}
-      <div className="hero-gradient-bg" style={{
-        background: `linear-gradient(rgba(0,0,0,.62), rgba(0,0,0,.68)), url(${heroImg}) center/cover`,
-      }} />
+      {/* BG image with crossfade */}
+      <div
+        className="hero-gradient-bg"
+        style={{
+          background: `linear-gradient(160deg, rgba(7,21,60,.82) 0%, rgba(15,52,96,.75) 50%, rgba(0,0,0,.65) 100%), url(${heroImg}) center/cover`,
+          transition: "opacity .6s",
+          opacity: imgFading ? 0.4 : 1,
+        }}
+      />
+      {/* Subtle animated mesh overlay */}
+      <div className="hero-mesh-overlay" />
       <div className="hero-grid-overlay" />
 
       <div className="hero-content">
@@ -195,13 +276,16 @@ export function HeroSection({ section, settings, basePath }: { section: Section;
           {/* Left text */}
           <div className="hero-text-col anim-left">
             <div className="hero-eyebrow">
+              <span className="hero-eyebrow-dot" />
               <Microscope size={13} />
               Care Diagnostics · Deoghar, Jharkhand
             </div>
 
             <h1 className="hero-heading">
               {headingLines.map((line, i) => (
-                <span key={i} style={{ display: "block" }}>{line}</span>
+                <span key={i} style={{ display: "block", animationDelay: `${i * 0.12}s` }} className="hero-heading-line">
+                  {i === 0 ? line : <span className="hero-heading-accent">{line}</span>}
+                </span>
               ))}
             </h1>
 
@@ -212,32 +296,56 @@ export function HeroSection({ section, settings, basePath }: { section: Section;
                 <CalendarCheck size={18} />
                 {ctaLabel}
               </a>
+              <a href={`tel:${phone}`} className="hero-cta-secondary">
+                <Phone size={18} />
+                Call Now
+              </a>
               {waNum && (
                 <a href={`https://wa.me/${waNum}?text=${encodeURIComponent("Hi, I'd like to book a diagnostic test.")}`}
-                   target="_blank" rel="noreferrer" className="hero-cta-secondary">
+                   target="_blank" rel="noreferrer" className="hero-cta-wa">
                   <MessageCircle size={18} />
-                  WhatsApp Us
                 </a>
               )}
             </div>
 
             <div className="hero-badges">
               {badges.map((b, i) => (
-                <span key={i} className="hero-badge">
+                <span key={i} className="hero-badge" style={{ animationDelay: `${0.3 + i * 0.07}s` }}>
                   {b.icon} {b.label}
                 </span>
+              ))}
+            </div>
+
+            {/* Stat counters */}
+            <div className="hero-stats-row">
+              {STATS.map((s, i) => (
+                <div key={i} className="hero-stat">
+                  <span className="hero-stat-num">{counts[i].toLocaleString()}{s.suffix}</span>
+                  <span className="hero-stat-label">{s.label}</span>
+                </div>
               ))}
             </div>
           </div>
 
           {/* Right image (desktop) */}
           <div className="hero-image-col anim-right">
-            <img
-              src={heroImg}
-              alt="Care Diagnostics — modern diagnostic center"
-              className="hero-main-img"
-              loading="eager"
-            />
+            <div className="hero-img-frame">
+              <img
+                src={heroImg}
+                alt="Care Diagnostics — modern diagnostic center"
+                className="hero-main-img"
+                loading="eager"
+                style={{ transition: "opacity .6s", opacity: imgFading ? 0.5 : 1 }}
+              />
+              {/* Image slide indicators */}
+              <div className="hero-img-dots">
+                {HERO_IMAGES.map((_, i) => (
+                  <button key={i} onClick={() => setImgIdx(i)}
+                    style={{ width: i === imgIdx ? 24 : 8, height: 8, borderRadius: 9999, background: i === imgIdx ? "white" : "rgba(255,255,255,.4)", border: "none", cursor: "pointer", transition: "all .3s", padding: 0 }}
+                  />
+                ))}
+              </div>
+            </div>
             <div className="hero-float-card pos-tl">
               <div className="hero-float-dot" />
               MRI · CT · USG
@@ -267,6 +375,11 @@ export function HeroSection({ section, settings, basePath }: { section: Section;
           />
         </div>
       </div>
+
+      {/* Scroll indicator */}
+      <a href="#services" className="hero-scroll-indicator" aria-label="Scroll down">
+        <ChevronDown size={22} />
+      </a>
     </section>
   );
 }
@@ -480,39 +593,45 @@ export function WhyChooseUsSection({ section }: { section: Section }) {
 const TECH_ITEMS = [
   {
     title: "3 Tesla MRI",
-    desc: "Ultra-high-field imaging for brain, spine and MSK studies.",
-    img: "https://images.unsplash.com/photo-1516549655169-df83a0774514?w=700&q=80",
+    desc: "Ultra-high-field imaging for brain, spine and MSK studies with expert radiologist reporting.",
+    img: "https://images.unsplash.com/photo-1530026186672-2cd00ffc50fe?w=700&q=85&auto=format",
     icon: <Brain size={17} />,
+    color: "#3b82f6",
   },
   {
     title: "Multi-Slice CT",
-    desc: "Rapid, high-definition CT imaging for complex diagnostics.",
-    img: "https://images.unsplash.com/photo-1559757175-0eb30cd8c063?w=700&q=80",
+    desc: "Rapid, high-definition CT imaging for complex diagnostics and emergency evaluation.",
+    img: "https://images.unsplash.com/photo-1559757175-0eb30cd8c063?w=700&q=85&auto=format",
     icon: <Scan size={17} />,
+    color: "#8b5cf6",
   },
   {
     title: "Digital X-Ray",
-    desc: "Instant high-resolution radiography with minimal radiation.",
-    img: "https://images.unsplash.com/photo-1504439468489-c8920d796a29?w=700&q=80",
+    desc: "Instant high-resolution radiography with minimal radiation dose and rapid turnaround.",
+    img: "https://images.unsplash.com/photo-1504439468489-c8920d796a29?w=700&q=85&auto=format",
     icon: <Zap size={17} />,
+    color: "#f59e0b",
   },
   {
     title: "Ultrasound & Doppler",
-    desc: "Real-time imaging for obstetric, abdominal and vascular studies.",
-    img: "https://images.unsplash.com/photo-1612349317150-e413f6a5b16d?w=700&q=80",
+    desc: "Real-time imaging for obstetric, abdominal, thyroid and vascular Doppler studies.",
+    img: "https://images.unsplash.com/photo-1576669801820-a9ab287ac2f7?w=700&q=85&auto=format",
     icon: <Waves size={17} />,
+    color: "#10b981",
   },
   {
     title: "Automated Pathology",
-    desc: "High-throughput analysers for accurate lab investigations.",
-    img: "https://images.unsplash.com/photo-1579684385127-1ef15d508118?w=700&q=80",
+    desc: "High-throughput analysers for accurate blood, urine and biochemistry lab investigations.",
+    img: "https://images.unsplash.com/photo-1578496479763-c21ef1a49cf7?w=700&q=85&auto=format",
     icon: <Microscope size={17} />,
+    color: "#ec4899",
   },
   {
     title: "Online Report Access",
-    desc: "Secure digital delivery of reports to patients and doctors.",
-    img: "https://images.unsplash.com/photo-1576091160399-112ba8d25d1d?w=700&q=80",
+    desc: "Secure digital delivery of reports to patients and referring doctors instantly.",
+    img: "https://images.unsplash.com/photo-1576091160399-112ba8d25d1d?w=700&q=85&auto=format",
     icon: <FileText size={17} />,
+    color: "#06b6d4",
   },
 ];
 
@@ -521,21 +640,32 @@ export function TechnologySection({ section }: { section: Section }) {
   const heading = get(c, "heading", "Advanced Technology for Accurate Diagnosis");
   const sub     = get(c, "subheading", "High-quality imaging and lab workflow designed to support confident clinical decisions.");
   return (
-    <section className="section">
+    <section className="section" style={{ background: "linear-gradient(180deg, hsl(var(--site-muted)) 0%, hsl(var(--site-bg)) 100%)" }}>
       <div className="container-narrow">
         <div className="text-center" style={{ marginBottom: "2.5rem" }}>
           <div className="section-eyebrow"><Cpu size={13} /> Our Technology</div>
           <h2 className="h-section" style={{ marginBottom: ".6rem" }}>{heading}</h2>
-          {sub && <p className="subtle" style={{ maxWidth: 560, margin: "0 auto" }}>{sub}</p>}
+          {sub && <p className="subtle" style={{ maxWidth: 560, margin: "0 auto", lineHeight: 1.7 }}>{sub}</p>}
         </div>
         <div className="tech-grid">
           {TECH_ITEMS.map((it, i) => (
             <div key={i} className="tech-card">
-              <img src={it.img} alt={it.title} className="tech-img" loading="lazy" />
-              <div className="tech-icon-badge" aria-hidden="true">{it.icon}</div>
+              <img
+                src={it.img}
+                alt={it.title}
+                className="tech-img"
+                loading="lazy"
+                onError={(e) => { (e.target as HTMLImageElement).src = "https://images.unsplash.com/photo-1576091160550-2173dba999ef?w=700&q=80"; }}
+              />
+              <div className="tech-icon-badge" aria-hidden="true" style={{ background: it.color }}>{it.icon}</div>
               <div className="tech-overlay">
                 <h3>{it.title}</h3>
                 <p>{it.desc}</p>
+                <div style={{ marginTop: ".65rem" }}>
+                  <span style={{ fontSize: ".75rem", background: "rgba(255,255,255,.18)", padding: ".2rem .7rem", borderRadius: 9999, fontWeight: 600 }}>
+                    Learn More →
+                  </span>
+                </div>
               </div>
             </div>
           ))}
