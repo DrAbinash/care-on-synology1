@@ -1,0 +1,45 @@
+modules = ["nodejs-24", "python-3.11", "postgresql-16"]
+
+[[artifacts]]
+id = "3B4_FFSkEVBkAeYMFRJ2e"
+run = "node --enable-source-maps artifacts/api-server/dist/index.mjs"
+buildCommand = "pnpm --filter @workspace/api-server run build"
+localPort = 8080
+
+
+[deployment]
+router = "application"
+deploymentTarget = "vm"
+build = ["pnpm", "--filter", "@workspace/api-server", "run", "build:deploy"]
+run = "node --enable-source-maps artifacts/api-server/dist/index.mjs"
+
+[deployment.postBuild]
+args = ["pnpm", "store", "prune"]
+env = { "CI" = "true" }
+
+[workflows]
+
+[agent]
+stack = "PNPM_WORKSPACE"
+expertMode = true
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 120000
+
+[nix]
+channel = "stable-25_05"
+
+[userenv]
+
+[userenv.production]
+PUBLIC_OBJECT_SEARCH_PATHS = "data/uploads"
+PRIVATE_OBJECT_DIR = "data/private-objects"
+ICICI_SECRET_KEY = "db06cca0-838b-4e01-8b20-6ac446ffb6bd"
+
+[userenv.shared]
+ENABLE_DICOM_PULL_AGENT = "1"
+
+[[ports]]
+localPort = 8080
+externalPort = 80

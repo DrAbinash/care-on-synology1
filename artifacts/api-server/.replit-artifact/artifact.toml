@@ -1,0 +1,25 @@
+kind = "api"
+previewPath = "/api"
+title = "API Server"
+version = "1.0.0"
+id = "3B4_FFSkEVBkAeYMFRJ2e"
+router = "path"
+
+[[services]]
+name = "web"
+paths = ["/api"]
+localPort = 8080
+
+[services.development]
+run = "pnpm --filter @workspace/api-server run dev"
+
+[services.production]
+run = "node --enable-source-maps artifacts/api-server/dist/index.mjs"
+
+[services.production.health.startup]
+path = "/api/healthz"
+
+[services.env]
+PORT = "8080"
+NODE_ENV = "production"
+SERVE_STATIC_DIR = "artifacts/api-server/dist/web"

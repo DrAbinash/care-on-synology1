@@ -1,0 +1,32 @@
+{
+  "name": "@workspace/scripts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate:features": "tsx ./src/generate-features.ts",
+    "hello": "tsx ./src/hello.ts",
+    "trigger:cron": "tsx ./src/trigger-cron.ts",
+    "generate:textrad-doc": "tsx ./src/generate-textrad-feature-doc.ts",
+    "generate:erp-doc": "tsx ./src/generate-erp-documentation.ts",
+    "generate:erp-doc-md": "echo 'See scripts/src/generate-erp-documentation.ts for docx generator'",
+    "import:referral-doctors": "tsx ./src/import-referral-doctors.ts",
+    "import:test-catalog": "tsx ./src/import-test-catalog.ts",
+    "test:preinstall-guard": "node ./src/test-preinstall-guard.cjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@workspace/db": "workspace:*",
+    "docx": "^9.6.1",
+    "dotenv": "^16.4.7",
+    "drizzle-orm": "catalog:",
+    "pg": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^3.0.0",
+    "@types/node": "catalog:",
+    "@types/pg": "^8.18.0",
+    "bcryptjs": "^3.0.3",
+    "tsx": "catalog:"
+  }
+}

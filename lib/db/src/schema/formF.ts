@@ -1,0 +1,53 @@
+import { pgTable, serial, text, timestamp, integer, boolean } from "drizzle-orm/pg-core";
+import { patientsTable } from "./patients";
+import { billsTable } from "./bills";
+
+export const formFRecordsTable = pgTable("form_f_records", {
+  id: serial("id").primaryKey(),
+  billId: integer("bill_id").references(() => billsTable.id),
+  patientId: integer("patient_id").references(() => patientsTable.id),
+  billNumber: text("bill_number"),
+  centreName: text("centre_name").notNull().default(""),
+  registrationNo: text("registration_no").notNull().default(""),
+  patientName: text("patient_name").notNull().default(""),
+  age: text("age").notNull().default(""),
+  childrenDetails: text("children_details").notNull().default(""),
+  husbandFatherName: text("husband_father_name").notNull().default(""),
+  address: text("address").notNull().default(""),
+  mobile: text("mobile").notNull().default(""),
+  referredBy: text("referred_by").notNull().default("Self"),
+  lmpWeeks: text("lmp_weeks").notNull().default(""),
+  geneticHistory: text("genetic_history").notNull().default(""),
+  basisDiagnosis: text("basis_diagnosis").notNull().default(""),
+  previousChildIssue: text("previous_child_issue").notNull().default(""),
+  indicationOther: text("indication_other").notNull().default(""),
+  doctorName: text("doctor_name").notNull().default(""),
+  procedure: text("procedure").notNull().default(""),
+  procedurePurpose: text("procedure_purpose").notNull().default(""),
+  invasiveProcedure: text("invasive_procedure").notNull().default(""),
+  complication: text("complication").notNull().default(""),
+  labTests: text("lab_tests").notNull().default(""),
+  prenatalResult: text("prenatal_result").notNull().default(""),
+  gestationalAgeWeeks: text("gestational_age_weeks").notNull().default(""),
+  gestationalAgeDays: text("gestational_age_days").notNull().default(""),
+  ultrasoundResult: text("ultrasound_result").notNull().default(""),
+  abnormality: text("abnormality").notNull().default(""),
+  procedureDate: text("procedure_date").notNull().default(""),
+  consentDate: text("consent_date").notNull().default(""),
+  resultConveyed: text("result_conveyed").notNull().default(""),
+  mtpAdvised: text("mtp_advised").notNull().default(""),
+  mtpDate: text("mtp_date").notNull().default(""),
+  date: text("date").notNull().default(""),
+  place: text("place").notNull().default(""),
+  idCardImageUrl: text("id_card_image_url"),
+  idCardFrontUrl: text("id_card_front_url"),
+  idCardBackUrl: text("id_card_back_url"),
+  idCardExtractedName: text("id_card_extracted_name"),
+  idCardExtractedAddress: text("id_card_extracted_address"),
+  idCardVerified: boolean("id_card_verified").default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export type FormFRecord = typeof formFRecordsTable.$inferSelect;
+export type InsertFormFRecord = typeof formFRecordsTable.$inferInsert;

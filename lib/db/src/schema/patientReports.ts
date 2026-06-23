@@ -1,0 +1,80 @@
+import { pgTable, serial, integer, text, boolean, timestamp, uniqueIndex, index } from "drizzle-orm/pg-core";
+
+// patient_reports — the persisted, official record of a generated report
+// (pathology or radiology). Independent of report_templates (which are reusable
+// blueprints) and radiology_studies (which is the imaging workflow).
+//
+// Lifecycle: draft → pending_verification → verified → delivered.
+//   - "draft" — created/being edited
+//   - "pending_verification" — signed by primary doctor, awaiting verifier
+//   - "verified" — counter-signed (or self-verified by senior)
+//   - "delivered" — shared via PDF/WhatsApp/Email/Print at least once
+//
+// `parameters` is a JSON string of an array of structured parameter rows for
+// pathology; radiology reports leave it null and rely on `body` only.
+export const patientReportsTable = pgTable(
+  "patient_reports",
+  {
+    id: serial("id").primaryKey(),
+    reportNumber: text("report_number").notNull(),  // RPT-YYYYMMDD-NNN
+    type: text("type").notNull().default("pathology"), // pathology | radiology
+    patientId: integer("patient_id").notNull(),
+    testId: integer("test_id").notNull(),
+    orderTestId: integer("order_test_id"),
+    orderId: integer("order_id"),
+    billId: integer("bill_id"),
+    studyId: integer("study_id"),                   // optional FK → radiology_studies
+    title: text("title").notNull(),
+    body: text("body").notNull().default(""),       // narrative text/HTML
+    parameters: text("parameters"),                 // JSON: [{name,value,unit,refRange,flag}]
+    impression: text("impression"),                 // 1-2 line summary surfaced on previews
+    status: text("status").notNull().default("draft"),
+    isCritical: boolean("is_critical").notNull().default(false),
+    criticalNote: text("critical_note"),
+    criticalAcknowledgedAt: timestamp("critical_acknowledged_at", { withTimezone: true }),
+    criticalAcknowledgedBy: text("critical_acknowledged_by"),
+    signatureId: integer("signature_id"),
+    signedByName: text("signed_by_name"),
+    signedAt: timestamp("signed_at", { withTimezone: true }),
+    verifiedBySignatureId: integer("verified_by_signature_id"),
+    verifiedByName: text("verified_by_name"),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    verifierNotes: text("verifier_notes"),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    deliveredBy: text("delivered_by"),                // staff name who handed report to patient
+    templateId: integer("template_id"),             // last template used (for audit)
+    // Tokenized public download. Rotated on every explicit public-link request.
+    // Lets us send WhatsApp/SMS PDF links to patients without requiring them
+    // to authenticate as staff. Tokens are time-limited and must be checked
+    // against publicTokenExpiresAt before serving any content.
+    publicToken: text("public_token"),
+    publicTokenExpiresAt: timestamp("public_token_expires_at", { withTimezone: true }),
+    createdBy: text("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+  },
+  (t) => ({
+    reportNumberUq: uniqueIndex("patient_reports_number_uq").on(t.reportNumber),
+    publicTokenUq: uniqueIndex("patient_reports_public_token_uq").on(t.publicToken),
+    byPatient: index("patient_reports_patient_idx").on(t.patientId),
+    byStatus: index("patient_reports_status_idx").on(t.status),
+    byDelivered: index("patient_reports_delivered_idx").on(t.deliveredAt),
+    byCritical: index("patient_reports_critical_idx").on(t.isCritical),
+  }),
+);
+
+// Audit log of every share (PDF download / WhatsApp / email / print). Allows
+// the front desk to answer "did we send the report yet?".
+export const reportSharesTable = pgTable("report_shares", {
+  id: serial("id").primaryKey(),
+  reportId: integer("report_id").notNull(),
+  channel: text("channel").notNull(),          // whatsapp | email | pdf | print
+  recipient: text("recipient"),                // phone or email address
+  sharedBy: text("shared_by"),
+  status: text("status").notNull().default("sent"), // sent | failed
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type PatientReport = typeof patientReportsTable.$inferSelect;
+export type ReportShare = typeof reportSharesTable.$inferSelect;

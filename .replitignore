@@ -1,0 +1,86 @@
+# The format of this file is identical to `.dockerignore`.
+# It is used to reduce the size of deployed images to make the process of publishing faster.
+# Replit deployments use THIS file, not .dockerignore.
+
+# Replit local cache (pnpm store, agent state, etc.)
+.local
+.cache
+
+# Version control
+.git
+.github
+
+# IDE / editor
+.idea
+.vscode
+.cursor
+
+# Build outputs that the deploy image rebuilds itself.
+# NOTE: dockerignore-style patterns: bare names match root, **/foo matches any depth.
+# We list both forms so root-level `node_modules`, `dist`, etc. are always excluded.
+node_modules
+**/node_modules
+dist
+**/dist
+# But the api-server's dist IS the deploy artifact — it contains the bundled
+# Express server (dist/index.mjs) plus the 3 SPAs staged under dist/web/.
+# Build is produced by `pnpm --filter @workspace/api-server run build:deploy`.
+!artifacts/api-server/dist
+!artifacts/api-server/dist/**
+.turbo
+**/.turbo
+.expo
+**/.expo
+.expo-shared
+**/.expo-shared
+.replit-artifact
+**/.replit-artifact
+*.tsbuildinfo
+**/*.tsbuildinfo
+.pnpm-store
+**/.pnpm-store
+.next
+**/.next
+.svelte-kit
+**/.svelte-kit
+.parcel-cache
+**/.parcel-cache
+
+# Logs and tmp
+*.log
+tmp
+/tmp
+
+# Environment files (secrets come from Replit Secrets, not files)
+.env
+.env.*
+
+# Local archive bundles
+project.tar.gz
+project.zip
+
+# Screenshots / attached assets
+attached_assets/screenshots
+
+# Documentation that isn't needed at runtime
+README-WINDOWS.md
+DEPLOY.md
+replit.md
+
+# === HEAVY: Entire Windows offline distributables package ===
+# windows-build is a build-only package that produces .exe / .zip files for
+# on-prem Windows installs. The cloud deployment runs the source apps directly
+# (api-server, clinic-site, diagnostic-erp, super-admin-portal) and does NOT
+# need any of windows-build's source, scripts, runtimes, electron, or outputs.
+# Excluding the whole tree avoids ~250 MB of electron deps + multi-GB outputs
+# from ever entering the deploy image.
+windows-build
+windows-build/**
+
+# Mockup sandbox is a dev-only design tool, not a production artifact
+artifacts/mockup-sandbox
+
+# Test outputs
+**/playwright-report
+**/test-results
+**/coverage

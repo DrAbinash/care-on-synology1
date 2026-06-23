@@ -1,0 +1,598 @@
+import { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { api } from "@/lib/fetchApi";
+import PageHeader from "@/components/PageHeader";
+import { Button } from "@/components/ui/button";
+import { useToast } from "@/hooks/use-toast";
+import {
+  BrainCircuit, Eye, EyeOff, Save, TestTube2, RefreshCw, ShieldCheck,
+  Key, ChevronDown, ChevronUp, CheckCircle2, XCircle, AlertTriangle,
+  BookOpen, Settings2, Users, FileText,
+} from "lucide-react";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+interface GlobalSettings {
+  enabled: boolean;
+  defaultProvider: string;
+  defaultPrompt: string;
+  defaultPromptTemplate: string;
+  includeDemographics: boolean;
+  anonymize: boolean;
+  allowedRoles: string[];
+}
+
+interface ProviderInfo {
+  provider: string;
+  isEnabled: boolean;
+  isDefault: boolean;
+  hasApiKey: boolean;
+  hasEndpointUrl: boolean;
+  defaultModel: string | null;
+  endpointUrl: string | null;
+  label: string;
+  needsApiKey: boolean;
+  needsEndpointUrl: boolean;
+  defaultModels: string[];
+  placeholder: string;
+}
+
+interface SettingsResponse {
+  global: GlobalSettings;
+  providers: Record<string, ProviderInfo>;
+  promptTemplates: string[];
+}
+
+interface ProviderDraft {
+  isEnabled: boolean;
+  isDefault: boolean;
+  apiKey: string;
+  endpointUrl: string;
+  defaultModel: string;
+  showKey: boolean;
+  testStatus: "idle" | "testing" | "ok" | "fail";
+  testMessage: string;
+}
+
+const PROVIDER_COLORS: Record<string, string> = {
+  openai: "from-green-50 to-emerald-50 dark:from-green-950/20 dark:to-emerald-950/20 border-green-200 dark:border-green-800",
+  gemini: "from-blue-50 to-indigo-50 dark:from-blue-950/20 dark:to-indigo-950/20 border-blue-200 dark:border-blue-800",
+  anthropic: "from-orange-50 to-amber-50 dark:from-orange-950/20 dark:to-amber-950/20 border-orange-200 dark:border-orange-800",
+  ollama: "from-purple-50 to-violet-50 dark:from-purple-950/20 dark:to-violet-950/20 border-purple-200 dark:border-purple-800",
+};
+
+const ALL_ROLES = ["admin", "super_admin", "doctor", "radiologist", "technician", "receptionist"];
+
+const SECTION_LABELS: Record<string, string> = {
+  admin: "Admin",
+  super_admin: "Super Admin",
+  doctor: "Doctor",
+  radiologist: "Radiologist",
+  technician: "Technician",
+  receptionist: "Receptionist",
+};
+
+// ─── ProviderCard ─────────────────────────────────────────────────────────────
+function ProviderCard({
+  name,
+  meta,
+  draft,
+  onChange,
+  onTest,
+}: {
+  name: string;
+  meta: ProviderInfo;
+  draft: ProviderDraft;
+  onChange: (d: Partial<ProviderDraft>) => void;
+  onTest: () => void;
+}) {
+  const color = PROVIDER_COLORS[name] ?? "bg-muted/50 border-muted";
+  const models = meta.defaultModels ?? [];
+  const needsApiKey = meta.needsApiKey ?? false;
+
+  return (
+    <div className={`rounded-xl border bg-gradient-to-br p-5 space-y-4 ${color}`}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <h3 className="font-semibold text-sm">{meta.label}</h3>
+          {draft.isDefault && (
+            <span className="text-[10px] bg-primary text-primary-foreground px-1.5 py-0.5 rounded-full font-semibold">DEFAULT</span>
+          )}
+        </div>
+        <label className="flex items-center gap-2 cursor-pointer select-none">
+          <span className="text-xs text-muted-foreground">Enable</span>
+          <div
+            className={`relative w-10 h-5 rounded-full transition-colors ${draft.isEnabled ? "bg-primary" : "bg-muted"}`}
+            onClick={() => onChange({ isEnabled: !draft.isEnabled })}
+          >
+            <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${draft.isEnabled ? "translate-x-5" : "translate-x-0.5"}`} />
+          </div>
+        </label>
+      </div>
+
+      {/* API Key or Endpoint URL */}
+      <div className="space-y-1.5">
+        {needsApiKey ? (
+          <>
+            <label className="text-xs font-semibold text-muted-foreground flex items-center gap-1">
+              <Key size={11} /> API Key
+            </label>
+            <div className="flex gap-2">
+              <div className="flex-1 relative">
+                <input
+                  type={draft.showKey ? "text" : "password"}
+                  value={draft.apiKey}
+                  onChange={(e) => onChange({ apiKey: e.target.value })}
+                  placeholder={draft.apiKey ? "••••••••••••••••" : `Enter ${meta.label} API key (${meta.placeholder})`}
+                  className="w-full h-9 px-3 pr-9 text-xs rounded-lg border bg-background font-mono"
+                />
+                <button
+                  type="button"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground"
+                  onClick={() => onChange({ showKey: !draft.showKey })}
+                >
+                  {draft.showKey ? <EyeOff size={13} /> : <Eye size={13} />}
+                </button>
+              </div>
+            </div>
+            <p className="text-[10px] text-muted-foreground">Leave blank to keep existing key. Only updated when you type a new one.</p>
+          </>
+        ) : (
+          <>
+            <label className="text-xs font-semibold text-muted-foreground flex items-center gap-1">
+              <Key size={11} /> Endpoint URL
+            </label>
+            <div className="flex gap-2">
+              <div className="flex-1 relative">
+                <input
+                  type="text"
+                  value={draft.endpointUrl}
+                  onChange={(e) => onChange({ endpointUrl: e.target.value })}
+                  placeholder={draft.endpointUrl ? draft.endpointUrl : `Enter ${meta.label} endpoint (${meta.placeholder})`}
+                  className="w-full h-9 px-3 pr-9 text-xs rounded-lg border bg-background font-mono"
+                />
+              </div>
+            </div>
+            <p className="text-[10px] text-muted-foreground">Leave blank to keep existing URL. Only updated when you type a new one.</p>
+          </>
+        )}
+      </div>
+
+      {/* Default Model */}
+      <div className="space-y-1.5">
+        <label className="text-xs font-semibold text-muted-foreground">Default Model</label>
+        <div className="flex gap-2">
+          <select
+            value={draft.defaultModel}
+            onChange={(e) => onChange({ defaultModel: e.target.value })}
+            className="flex-1 h-9 px-3 text-xs rounded-lg border bg-background"
+          >
+            <option value="">-- select model --</option>
+            {models.map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+            {draft.defaultModel && !models.includes(draft.defaultModel) && (
+              <option value={draft.defaultModel}>{draft.defaultModel} (custom)</option>
+            )}
+          </select>
+          <input
+            type="text"
+            value={draft.defaultModel}
+            onChange={(e) => onChange({ defaultModel: e.target.value })}
+            placeholder="or type custom model name"
+            className="w-48 h-9 px-3 text-xs rounded-lg border bg-background font-mono"
+          />
+        </div>
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-xs gap-1"
+          disabled={draft.testStatus === "testing"}
+          onClick={onTest}
+        >
+          {draft.testStatus === "testing" ? (
+            <><RefreshCw size={11} className="animate-spin" /> Testing…</>
+          ) : (
+            <><TestTube2 size={11} /> Test Connection</>
+          )}
+        </Button>
+
+        {draft.testStatus === "ok" && (
+          <span className="flex items-center gap-1 text-xs text-green-600 font-medium">
+            <CheckCircle2 size={13} /> Connected
+          </span>
+        )}
+        {draft.testStatus === "fail" && (
+          <span className="flex items-center gap-1 text-xs text-red-600 font-medium max-w-xs truncate">
+            <XCircle size={13} /> {draft.testMessage || "Connection failed"}
+          </span>
+        )}
+
+        <label className="flex items-center gap-1.5 cursor-pointer ml-auto">
+          <input
+            type="checkbox"
+            checked={draft.isDefault}
+            onChange={(e) => onChange({ isDefault: e.target.checked })}
+            className="w-3.5 h-3.5"
+          />
+          <span className="text-xs text-muted-foreground">Set as default provider</span>
+        </label>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main Settings Page ───────────────────────────────────────────────────────
+export function AiReportingPanel() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+
+  const [activeSection, setActiveSection] = useState<"general" | "providers" | "prompts" | "permissions">("general");
+
+  const { data, isLoading } = useQuery<SettingsResponse>({
+    queryKey: ["ai-reporting-settings"],
+    queryFn: () => api.get("/api/ai-reporting/settings"),
+  });
+
+  // Local state
+  const [globalDraft, setGlobalDraft] = useState<GlobalSettings>({
+    enabled: false,
+    defaultProvider: "gemini",
+    defaultPrompt: "",
+    defaultPromptTemplate: "",
+    includeDemographics: false,
+    anonymize: true,
+    allowedRoles: ["admin", "super_admin", "doctor", "radiologist"],
+  });
+
+  const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderDraft>>({});
+  const [hydrated, setHydrated] = useState(false);
+
+  // Hydrate form from API data when it arrives
+  if (data && !hydrated) {
+    setHydrated(true);
+    setGlobalDraft({ ...globalDraft, ...data.global });
+    const newDrafts: Record<string, ProviderDraft> = {};
+    for (const p of Object.keys(data.providers)) {
+      const pd = data.providers[p];
+      const defaultModel = pd.defaultModel ?? (pd.defaultModels?.[0] ?? "");
+      newDrafts[p] = {
+        isEnabled: pd.isEnabled,
+        isDefault: pd.isDefault,
+        apiKey: "",
+        endpointUrl: pd.endpointUrl ?? "",
+        defaultModel,
+        showKey: false,
+        testStatus: "idle",
+        testMessage: "",
+      };
+    }
+    setProviderDrafts(newDrafts);
+  }
+
+  const saveMutation = useMutation({
+    mutationFn: (payload: { global: GlobalSettings; providers: Record<string, Omit<ProviderDraft, "showKey" | "testStatus" | "testMessage">> }) =>
+      api.post("/api/ai-reporting/settings", payload),
+    onSuccess: () => {
+      toast({ title: "AI Reporting settings saved" });
+      void queryClient.invalidateQueries({ queryKey: ["ai-reporting-settings"] });
+    },
+    onError: (e: Error) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
+  });
+
+  function handleSave() {
+    const providers: Record<string, Omit<ProviderDraft, "showKey" | "testStatus" | "testMessage">> = {};
+    for (const p of Object.keys(providerDrafts)) {
+      const d = providerDrafts[p];
+      providers[p] = { isEnabled: d.isEnabled, isDefault: d.isDefault, apiKey: d.apiKey, endpointUrl: d.endpointUrl, defaultModel: d.defaultModel };
+    }
+    saveMutation.mutate({ global: globalDraft, providers });
+  }
+
+  async function handleTestProvider(name: string) {
+    setProviderDrafts((prev) => ({
+      ...prev,
+      [name]: { ...prev[name], testStatus: "testing", testMessage: "" },
+    }));
+    try {
+      const payload: Record<string, unknown> = { provider: name, model: providerDrafts[name].defaultModel };
+      if (name === "ollama") {
+        payload.endpointUrl = providerDrafts[name].endpointUrl || undefined;
+      } else {
+        payload.apiKey = providerDrafts[name].apiKey || undefined;
+      }
+      const res = await api.post<{ success: boolean; response?: string; error?: string; availableModels?: string[] }>(
+        "/api/ai-reporting/test-provider",
+        payload,
+      );
+      setProviderDrafts((prev) => ({
+        ...prev,
+        [name]: {
+          ...prev[name],
+          testStatus: res.success ? "ok" : "fail",
+          testMessage: res.error ?? res.response ?? "",
+        },
+      }));
+    } catch (e: unknown) {
+      setProviderDrafts((prev) => ({
+        ...prev,
+        [name]: {
+          ...prev[name],
+          testStatus: "fail",
+          testMessage: e instanceof Error ? e.message : "Connection failed",
+        },
+      }));
+    }
+  }
+
+  const SECTIONS = [
+    { id: "general", icon: Settings2, label: "General" },
+    { id: "providers", icon: Key, label: "AI Providers" },
+    { id: "prompts", icon: BookOpen, label: "Prompt Templates" },
+    { id: "permissions", icon: Users, label: "Permissions" },
+  ] as const;
+
+  if (isLoading) {
+    return (
+      <div className="p-6 flex items-center justify-center h-64">
+        <RefreshCw size={24} className="animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 max-w-4xl">
+      <div className="flex justify-end">
+        <Button onClick={handleSave} disabled={saveMutation.isPending} className="gap-2">
+          {saveMutation.isPending ? <RefreshCw size={14} className="animate-spin" /> : <Save size={14} />}
+          Save Settings
+        </Button>
+      </div>
+
+      {/* AI Enabled master toggle */}
+      <div className={`rounded-xl border p-5 flex items-center justify-between ${globalDraft.enabled ? "bg-green-50 border-green-200 dark:bg-green-950/20 dark:border-green-800" : "bg-muted/30"}`}>
+        <div className="flex items-center gap-3">
+          <BrainCircuit size={22} className={globalDraft.enabled ? "text-green-600" : "text-muted-foreground"} />
+          <div>
+            <p className="font-semibold text-sm">{globalDraft.enabled ? "AI Reporting is ENABLED" : "AI Reporting is DISABLED"}</p>
+            <p className="text-xs text-muted-foreground">Toggle to allow or restrict AI assistance across all radiology workflows</p>
+          </div>
+        </div>
+        <div
+          className={`relative w-12 h-6 rounded-full cursor-pointer transition-colors ${globalDraft.enabled ? "bg-green-500" : "bg-muted-foreground/30"}`}
+          onClick={() => setGlobalDraft((g) => ({ ...g, enabled: !g.enabled }))}
+        >
+          <div className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-transform ${globalDraft.enabled ? "translate-x-7" : "translate-x-1"}`} />
+        </div>
+      </div>
+
+      {/* Section tabs */}
+      <div className="flex gap-1 rounded-xl bg-muted/50 p-1">
+        {SECTIONS.map(({ id, icon: Icon, label }) => (
+          <button
+            key={id}
+            onClick={() => setActiveSection(id)}
+            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${activeSection === id ? "bg-background shadow text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+          >
+            <Icon size={13} />
+            <span className="hidden sm:inline">{label}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* ── General Settings ── */}
+      {activeSection === "general" && (
+        <div className="space-y-5">
+          <div className="rounded-xl border bg-card p-5 space-y-4">
+            <h3 className="text-sm font-semibold flex items-center gap-2"><Settings2 size={14} /> General Settings</h3>
+
+            {/* Default Provider */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-muted-foreground">Default AI Provider</label>
+              <select
+                value={globalDraft.defaultProvider}
+                onChange={(e) => setGlobalDraft((g) => ({ ...g, defaultProvider: e.target.value }))}
+                className="w-full h-9 px-3 text-sm rounded-lg border bg-background"
+              >
+                {data && Object.values(data.providers).map((p) => (
+                  <option key={p.provider} value={p.provider}>{p.label}</option>
+                ))}
+                {!data && <option value={globalDraft.defaultProvider}>{globalDraft.defaultProvider}</option>}
+              </select>
+            </div>
+
+            {/* Privacy toggles */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <label className="flex items-center justify-between gap-3 p-3 rounded-lg border bg-background cursor-pointer select-none">
+                <div>
+                  <p className="text-xs font-semibold">Anonymize Patient Data</p>
+                  <p className="text-[10px] text-muted-foreground">Strip identifiers from DICOM images before sending to AI</p>
+                </div>
+                <div
+                  className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${globalDraft.anonymize ? "bg-primary" : "bg-muted"}`}
+                  onClick={() => setGlobalDraft((g) => ({ ...g, anonymize: !g.anonymize }))}
+                >
+                  <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${globalDraft.anonymize ? "translate-x-5" : "translate-x-0.5"}`} />
+                </div>
+              </label>
+
+              <label className="flex items-center justify-between gap-3 p-3 rounded-lg border bg-background cursor-pointer select-none">
+                <div>
+                  <p className="text-xs font-semibold">Include Patient Demographics</p>
+                  <p className="text-[10px] text-muted-foreground">Append age, gender (not name) to AI prompt for context</p>
+                </div>
+                <div
+                  className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${globalDraft.includeDemographics ? "bg-primary" : "bg-muted"}`}
+                  onClick={() => setGlobalDraft((g) => ({ ...g, includeDemographics: !g.includeDemographics }))}
+                >
+                  <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${globalDraft.includeDemographics ? "translate-x-5" : "translate-x-0.5"}`} />
+                </div>
+              </label>
+            </div>
+
+            {globalDraft.anonymize && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/20 p-3 flex gap-2 text-xs">
+                <ShieldCheck size={14} className="text-amber-600 shrink-0 mt-0.5" />
+                <p className="text-amber-800 dark:text-amber-300">
+                  <strong>Anonymization enabled</strong> — patient name, ID, and DOB will be stripped from all DICOM metadata before sending to AI. Only image pixels and non-identifying clinical context are transmitted.
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Security notice */}
+          <div className="rounded-xl border bg-muted/30 p-5 space-y-2">
+            <h3 className="text-xs font-semibold flex items-center gap-2 text-muted-foreground">
+              <ShieldCheck size={13} /> Security
+            </h3>
+            <ul className="text-xs text-muted-foreground space-y-1 list-disc list-inside">
+              <li>API keys are AES-256 encrypted at rest and never exposed to the browser.</li>
+              <li>All AI queries are routed through the ERP backend — never directly from the browser.</li>
+              <li>Only users with the <code className="bg-muted px-1 rounded">ai_reporting.use</code> permission can query AI.</li>
+              <li>Only admins can configure API keys (<code className="bg-muted px-1 rounded">ai_reporting.configure</code> permission).</li>
+              <li>Every AI query is audit-logged with user, study, provider, and anonymization status.</li>
+              <li>AI responses are draft-only — a doctor/radiologist must review and approve before final signing.</li>
+            </ul>
+          </div>
+        </div>
+      )}
+
+      {/* ── AI Providers ── */}
+      {activeSection === "providers" && (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/20 p-4 flex gap-3 text-xs">
+            <AlertTriangle size={14} className="text-amber-600 shrink-0 mt-0.5" />
+            <div className="text-amber-800 dark:text-amber-300 space-y-1">
+              <p><strong>API Keys are stored encrypted.</strong> Enter a new key to update it; leave blank to keep the existing key.</p>
+              <p>Enable at least one provider and set a default model before using AI reporting.</p>
+            </div>
+          </div>
+          {data && Object.values(data.providers).map((p) => (
+            <ProviderCard
+              key={p.provider}
+              name={p.provider}
+              meta={p}
+              draft={providerDrafts[p.provider]}
+              onChange={(d) => setProviderDrafts((prev) => ({ ...prev, [p.provider]: { ...prev[p.provider], ...d } }))}
+              onTest={() => void handleTestProvider(p.provider)}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* ── Prompt Templates ── */}
+      {activeSection === "prompts" && (
+        <div className="space-y-5">
+          <div className="rounded-xl border bg-card p-5 space-y-4">
+            <h3 className="text-sm font-semibold flex items-center gap-2"><BookOpen size={14} /> Default Prompt</h3>
+            <p className="text-xs text-muted-foreground">
+              Used when no template is selected in the AI drawer. Leave blank for a generic radiology report prompt.
+            </p>
+            <textarea
+              value={globalDraft.defaultPrompt}
+              onChange={(e) => setGlobalDraft((g) => ({ ...g, defaultPrompt: e.target.value }))}
+              placeholder="e.g. Provide a detailed, structured radiology report for the images provided. Include findings, impression and clinical recommendations."
+              className="w-full h-28 p-3 text-sm rounded-lg border bg-background resize-none"
+            />
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-muted-foreground">Default Template</label>
+              <select
+                value={globalDraft.defaultPromptTemplate}
+                onChange={(e) => setGlobalDraft((g) => ({ ...g, defaultPromptTemplate: e.target.value }))}
+                className="w-full h-9 px-3 text-sm rounded-lg border bg-background"
+              >
+                <option value="">-- No default template (use custom prompt above) --</option>
+                {(data?.promptTemplates ?? []).map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Preset templates reference */}
+          <div className="rounded-xl border bg-card p-5 space-y-3">
+            <h3 className="text-sm font-semibold flex items-center gap-2"><FileText size={14} /> Built-in Preset Templates</h3>
+            <p className="text-xs text-muted-foreground">These are available in the AI viewer drawer. They cannot be edited here but you can add a custom default prompt above.</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {(data?.promptTemplates ?? []).map((t) => (
+                <div key={t} className="flex items-center gap-2 p-2 rounded-lg border bg-background text-xs">
+                  <CheckCircle2 size={12} className="text-green-500 shrink-0" />
+                  {t}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Permissions ── */}
+      {activeSection === "permissions" && (
+        <div className="space-y-5">
+          <div className="rounded-xl border bg-card p-5 space-y-4">
+            <h3 className="text-sm font-semibold flex items-center gap-2"><Users size={14} /> Role Permissions</h3>
+            <p className="text-xs text-muted-foreground">
+              Select which roles can use AI reporting. Admins and Super Admins always have access.
+              Staff must also have the <code className="bg-muted px-1 rounded">ai_reporting.use</code> permission in their profile.
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {ALL_ROLES.map((role) => {
+                const isAlwaysOn = role === "admin" || role === "super_admin";
+                const checked = isAlwaysOn || globalDraft.allowedRoles.includes(role);
+                return (
+                  <label
+                    key={role}
+                    className={`flex items-center gap-2.5 p-3 rounded-lg border cursor-pointer select-none text-xs ${checked ? "bg-primary/10 border-primary/30" : "bg-background"} ${isAlwaysOn ? "opacity-70 cursor-not-allowed" : ""}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={isAlwaysOn}
+                      onChange={(e) => {
+                        if (isAlwaysOn) return;
+                        setGlobalDraft((g) => ({
+                          ...g,
+                          allowedRoles: e.target.checked
+                            ? [...g.allowedRoles, role]
+                            : g.allowedRoles.filter((r) => r !== role),
+                        }));
+                      }}
+                      className="w-3.5 h-3.5"
+                    />
+                    <span className="font-medium">{SECTION_LABELS[role]}</span>
+                    {isAlwaysOn && <span className="text-[10px] text-muted-foreground ml-auto">(always)</span>}
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="rounded-xl border bg-muted/30 p-5 space-y-3">
+            <h3 className="text-xs font-semibold text-muted-foreground">Permission Reference</h3>
+            <div className="space-y-2 text-xs">
+              <div className="flex gap-3 p-2 rounded border bg-background">
+                <code className="bg-muted px-1.5 py-0.5 rounded font-mono text-xs shrink-0">ai_reporting.use</code>
+                <p className="text-muted-foreground">Send images/queries to AI, view responses, save and insert drafts. Grant to doctors, radiologists, or any role above.</p>
+              </div>
+              <div className="flex gap-3 p-2 rounded border bg-background">
+                <code className="bg-muted px-1.5 py-0.5 rounded font-mono text-xs shrink-0">ai_reporting.configure</code>
+                <p className="text-muted-foreground">Manage API keys, enable/disable providers, view audit logs. Admin and Super Admin only.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function AiReportingSettings() {
+  return (
+    <div className="p-4 md:p-6 space-y-6">
+      <PageHeader title="AI Reporting Integration" subtitle="Configure AI providers for DICOM/radiology study analysis and report generation" />
+      <AiReportingPanel />
+    </div>
+  );
+}

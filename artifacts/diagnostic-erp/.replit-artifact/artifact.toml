@@ -1,0 +1,31 @@
+kind = "web"
+  previewPath = "/erp/"
+  title = "Diagnostic Center Billing ERP"
+  version = "1.0.0"
+  id = "artifacts/diagnostic-erp"
+  router = "path"
+
+  [[integratedSkills]]
+  name = "react-vite"
+  version = "1.0.0"
+
+  [[services]]
+  name = "web"
+  paths = [ "/erp/" ]
+  localPort = 23309
+
+  [services.development]
+  run = "pnpm --filter @workspace/diagnostic-erp run dev"
+
+  [services.production]
+  build = [ "pnpm", "--filter", "@workspace/diagnostic-erp", "run", "build" ]
+  run = "npx serve -s artifacts/diagnostic-erp/dist/public -l $PORT --no-clipboard"
+
+  [[services.production.rewrites]]
+  from = "/*"
+  to = "/index.html"
+
+  [services.env]
+  PORT = "23309"
+  BASE_PATH = "/erp/"
+  

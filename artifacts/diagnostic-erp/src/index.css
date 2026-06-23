@@ -1,0 +1,256 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@plugin "@tailwindcss/typography";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-card-border: hsl(var(--card-border));
+
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-popover-border: hsl(var(--popover-border));
+
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-primary-border: var(--primary-border);
+
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-secondary-border: var(--secondary-border);
+
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-muted-border: var(--muted-border);
+
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-accent-border: var(--accent-border);
+
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-destructive-border: var(--destructive-border);
+
+  --color-chart-1: hsl(var(--chart-1));
+  --color-chart-2: hsl(var(--chart-2));
+  --color-chart-3: hsl(var(--chart-3));
+  --color-chart-4: hsl(var(--chart-4));
+  --color-chart-5: hsl(var(--chart-5));
+
+  --color-sidebar: hsl(var(--sidebar));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-border: hsl(var(--sidebar-border));
+  --color-sidebar-primary: hsl(var(--sidebar-primary));
+  --color-sidebar-primary-foreground: hsl(var(--sidebar-primary-foreground));
+  --color-sidebar-primary-border: var(--sidebar-primary-border);
+  --color-sidebar-accent: hsl(var(--sidebar-accent));
+  --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
+  --color-sidebar-accent-border: var(--sidebar-accent-border);
+  --color-sidebar-ring: hsl(var(--sidebar-ring));
+
+  --font-sans: var(--app-font-sans);
+  --font-serif: var(--app-font-serif);
+  --font-mono: var(--app-font-mono);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+/* LIGHT MODE */
+:root {
+  --button-outline: rgba(0,0,0,.10);
+  --badge-outline: rgba(0,0,0,.05);
+  --opaque-button-border-intensity: -8;
+  --elevate-1: rgba(0,0,0,.03);
+  --elevate-2: rgba(0,0,0,.08);
+
+  --background: 210 40% 98%;
+  --foreground: 222 35% 12%;
+  --border: 220 30% 88%;
+  --input: 220 30% 88%;
+  --ring: 252 90% 60%;
+
+  --card: 0 0% 100%;
+  --card-foreground: 220 25% 10%;
+  --card-border: 214 25% 88%;
+
+  --sidebar: 221 68% 33%;
+  --sidebar-foreground: 214 100% 97%;
+  --sidebar-border: 221 40% 44%;
+  --sidebar-primary: 214 90% 62%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 221 50% 42%;
+  --sidebar-accent-foreground: 214 100% 97%;
+  --sidebar-ring: 214 90% 62%;
+
+  --popover: 0 0% 100%;
+  --popover-foreground: 220 25% 10%;
+  --popover-border: 214 25% 88%;
+
+  --primary: 252 90% 60%;
+  --primary-foreground: 0 0% 100%;
+
+  --secondary: 210 16% 93%;
+  --secondary-foreground: 220 25% 15%;
+
+  --muted: 210 16% 95%;
+  --muted-foreground: 215 16% 47%;
+
+  --accent: 210 16% 93%;
+  --accent-foreground: 220 25% 15%;
+
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+
+  --chart-1: 252 90% 60%;
+  --chart-2: 168 75% 42%;
+  --chart-3: 32 95% 55%;
+  --chart-4: 292 80% 60%;
+  --chart-5: 340 85% 58%;
+
+  --app-font-sans: 'Inter', sans-serif;
+  --app-font-serif: Georgia, serif;
+  --app-font-mono: Menlo, monospace;
+  --radius: 0.5rem;
+
+  --shadow-2xs: 0 1px 2px 0 rgba(0,0,0,.05);
+  --shadow-xs: 0 1px 3px 0 rgba(0,0,0,.07);
+  --shadow-sm: 0 1px 3px 0 rgba(0,0,0,.08), 0 1px 2px -1px rgba(0,0,0,.06);
+  --shadow: 0 2px 4px 0 rgba(0,0,0,.08), 0 1px 2px -1px rgba(0,0,0,.06);
+  --shadow-md: 0 4px 6px -1px rgba(0,0,0,.08), 0 2px 4px -2px rgba(0,0,0,.06);
+  --shadow-lg: 0 10px 15px -3px rgba(0,0,0,.08), 0 4px 6px -4px rgba(0,0,0,.06);
+  --shadow-xl: 0 20px 25px -5px rgba(0,0,0,.08), 0 8px 10px -6px rgba(0,0,0,.06);
+  --shadow-2xl: 0 25px 50px -12px rgba(0,0,0,.15);
+
+  /* Card elevation shadow — light-mode tuned */
+  --card-shadow: 0 2px 8px 0 rgba(0,0,0,.07), 0 1px 2px 0 rgba(0,0,0,.04);
+  --chip-shadow: 0 1px 4px 0 rgba(0,0,0,.06);
+
+  --primary-border: hsl(252 90% 52%);
+  --secondary-border: hsl(210 16% 86%);
+  --muted-border: hsl(210 16% 86%);
+  --accent-border: hsl(210 16% 86%);
+  --destructive-border: hsl(0 84% 52%);
+  --sidebar-primary-border: hsl(214 90% 55%);
+  --sidebar-accent-border: hsl(221 40% 50%);
+}
+
+.dark {
+  --button-outline: rgba(255,255,255,.10);
+  --badge-outline: rgba(255,255,255,.05);
+  --opaque-button-border-intensity: 9;
+  --elevate-1: rgba(255,255,255,.04);
+  --elevate-2: rgba(255,255,255,.09);
+
+  --background: 220 22% 9%;
+  --foreground: 210 30% 92%;
+  --border: 218 18% 22%;
+  --input: 218 18% 22%;
+  --ring: 215 90% 62%;
+
+  --card: 220 20% 12%;
+  --card-foreground: 210 30% 92%;
+  --card-border: 218 18% 22%;
+
+  --sidebar: 220 25% 7%;
+  --sidebar-foreground: 210 30% 88%;
+  --sidebar-border: 218 18% 18%;
+  --sidebar-primary: 215 90% 62%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 220 20% 16%;
+  --sidebar-accent-foreground: 210 30% 92%;
+  --sidebar-ring: 215 90% 62%;
+
+  --popover: 220 20% 12%;
+  --popover-foreground: 210 30% 92%;
+  --popover-border: 218 18% 22%;
+
+  --primary: 215 90% 62%;
+  --primary-foreground: 0 0% 100%;
+
+  --secondary: 218 18% 18%;
+  --secondary-foreground: 210 30% 88%;
+
+  --muted: 218 18% 16%;
+  --muted-foreground: 215 16% 56%;
+
+  --accent: 218 18% 18%;
+  --accent-foreground: 210 30% 88%;
+
+  --destructive: 0 72% 52%;
+  --destructive-foreground: 0 0% 100%;
+
+  --chart-1: 215 90% 62%;
+  --chart-2: 160 60% 50%;
+  --chart-3: 30 80% 60%;
+  --chart-4: 280 65% 65%;
+  --chart-5: 340 75% 60%;
+
+  --shadow-2xs: 0 1px 2px 0 rgba(0,0,0,.3);
+  --shadow-xs: 0 1px 3px 0 rgba(0,0,0,.35);
+  --shadow-sm: 0 1px 3px 0 rgba(0,0,0,.4), 0 1px 2px -1px rgba(0,0,0,.3);
+  --shadow: 0 2px 4px 0 rgba(0,0,0,.4), 0 1px 2px -1px rgba(0,0,0,.3);
+  --shadow-md: 0 4px 6px -1px rgba(0,0,0,.4), 0 2px 4px -2px rgba(0,0,0,.3);
+  --shadow-lg: 0 10px 15px -3px rgba(0,0,0,.4), 0 4px 6px -4px rgba(0,0,0,.3);
+  --shadow-xl: 0 20px 25px -5px rgba(0,0,0,.4), 0 8px 10px -6px rgba(0,0,0,.3);
+  --shadow-2xl: 0 25px 50px -12px rgba(0,0,0,.6);
+
+  /* Card elevation shadow — softened for dark mode (borders carry separation) */
+  --card-shadow: 0 2px 8px 0 rgba(0,0,0,.04), 0 1px 2px 0 rgba(0,0,0,.02);
+  --chip-shadow: 0 1px 4px 0 rgba(0,0,0,.03);
+
+  --primary-border: hsl(215 90% 55%);
+  --secondary-border: hsl(218 18% 26%);
+  --muted-border: hsl(218 18% 24%);
+  --accent-border: hsl(218 18% 26%);
+  --destructive-border: hsl(0 72% 45%);
+  --sidebar-primary-border: hsl(215 90% 55%);
+  --sidebar-accent-border: hsl(220 20% 22%);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply font-sans antialiased bg-background text-foreground;
+  }
+  h1 { @apply text-3xl font-extrabold tracking-tight; }
+  h2 { @apply text-2xl font-bold tracking-tight; }
+  h3 { @apply text-xl font-semibold; }
+}
+
+/* Card elevation helpers — use these instead of hardcoded inline boxShadow
+   so light/dark values swap automatically via CSS custom properties above. */
+.card-shadow { box-shadow: var(--card-shadow); }
+.chip-shadow  { box-shadow: var(--chip-shadow); }
+
+/* Pretty scrollbar accent */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, hsl(252 90% 65%), hsl(292 80% 60%));
+  border-radius: 6px;
+}
+::-webkit-scrollbar-track { background: transparent; }
+
+@keyframes blink-fast {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.animate-blink-fast {
+  animation: blink-fast 0.6s ease-in-out infinite;
+}
+
+/* Hide scrollbar while keeping scroll functionality (used on horizontal pill rows) */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }

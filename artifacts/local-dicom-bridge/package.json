@@ -1,0 +1,17 @@
+{
+  "name": "care-diagnostics-local-dicom-bridge",
+  "version": "1.0.0",
+  "description": "Care Diagnostics Local DICOM Bridge — runs inside your clinic LAN to pull studies from CT/MRI/USG to Conquest PACS. Uses dcmjs-dimse (pure Node.js, no DCMTK needed).",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "dcmjs-dimse": "^0.3.3"
+  }
+}

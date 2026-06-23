@@ -1,0 +1,16 @@
+{
+  "name": "care-diagnostics-scan-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local document scanner bridge for Care Diagnostics ERP. Runs on each workstation, talks to WIA (Windows) or SANE (Linux) scanners and forwards scanned images to the ERP.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "express": "^5.0.0",
+    "cors": "^2.8.5"
+  }
+}

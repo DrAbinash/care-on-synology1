@@ -1,0 +1,306 @@
+
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Bill 2026050011</title>
+<style>
+  @page { size: A5 landscape; margin: 3mm 3mm 4mm 3mm; }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: #fff; color: #000;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 11px;
+    
+  }
+  .receipt {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    width: 198mm;
+    padding: 2mm 3mm;
+    box-sizing: border-box;
+    position: relative;
+    z-index: 1;
+  }
+  .main-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+  .main-content.premium-sparse-mode {
+    gap: 10px;
+    justify-content: space-between;
+  }
+  .main-content.normal-mode {
+    gap: 6px;
+    justify-content: flex-start;
+  }
+  .main-content.compact-mode {
+    gap: 4px;
+    justify-content: flex-start;
+  }
+  .footer-panel {
+    margin-top: auto;
+    padding-bottom: 4mm;
+  }
+  .no-break { page-break-inside: avoid; }
+  .receipt table tr { page-break-inside: avoid; }
+  .page-break { page-break-before: always; }
+  .header-repeat { display: none; }
+  @media print {
+    html, body { margin: 0; padding: 0; color: #000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .receipt { margin: 0; }
+    .receipt * { color: #000 !important; border-color: #000 !important; background: transparent !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .receipt *::before, .receipt *::after { background: transparent !important; border-color: #000 !important; }
+    img { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+  <div style="position:fixed;top:0;left:0;right:0;bottom:0;z-index:0;pointer-events:none;opacity:0.06;font-size:56px;font-weight:900;text-transform:uppercase;letter-spacing:10px;color:#000;text-align:center;display:flex;align-items:center;justify-content:center;transform:rotate(-25deg)">Care Diagnostics</div>
+  <div class="receipt compact-mode">
+    
+    <div style="margin-bottom:4px;overflow:hidden"><div style="text-align:right;font-size:9px;font-weight:800;border:1px dashed #000;display:inline-block;padding:2px 6px;float:right">OFFICE COPY</div></div>
+
+    <div class="main-content compact-mode">
+    <!-- HEADER — compact single-row, 20-25% less height -->
+    <div class="header-block no-break" style="padding: 2px 0 4px; border-bottom: 2px solid #000;">
+      <table style="width:100%;border-collapse:collapse">
+        <tr>
+          <td style="vertical-align:top;padding:0;width:50%">
+            
+            <div style="font-size:14px;font-weight:900;color:#000;letter-spacing:0.5px;text-transform:uppercase;line-height:1.1">Care Diagnostics</div>
+            <div style="font-size:11px;color:#000;font-weight:700;line-height:1.2;letter-spacing:0.3px">Advanced Diagnostic &amp; Imaging Centre</div>
+          </td>
+          <td style="vertical-align:top;text-align:right;padding:0;font-size:10px;line-height:1.35;color:#000;font-weight:700">
+            <div>123 Health Street, Deoghar, Jharkhand 814112</div>
+            <div>PH: +91 98765 43210</div>
+            <div>care@diagnostics.com</div>
+            <div>www.carediagnostics.com</div>
+            <div style="margin-top:1px;font-weight:800">GSTIN: 20ABCDE1234F1Z5</div>
+          </td>
+        </tr>
+      </table>
+    </div>
+
+    <!-- TITLE + BILL NO -->
+    <div class="title-block no-break" style="border-bottom: 1px solid #000; padding: 3px 0; margin-bottom: 4px;">
+      <table style="width:100%;border-collapse:collapse">
+        <tr>
+          <td style="padding:0;vertical-align:middle">
+            <div style="font-size:13px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase">INVOICE / RECEIPT</div>
+          </td>
+          <td style="padding:0;vertical-align:middle;text-align:right;white-space:nowrap">
+            <div style="font-size:13px;font-weight:800">BILL NO: 2026050011</div>
+          </td>
+        </tr>
+      </table>
+    </div>
+
+    <!-- PATIENT INFO CARD — strong bordered box, name most prominent -->
+    <div class="patient-block no-break" style="margin-bottom: 4px; border: 1.5px solid #000; padding: 5px 8px;">
+      <table style="width:100%;border-collapse:collapse">
+        <tr>
+          <td style="vertical-align:top;padding:0;width:55%">
+            <div style="font-size:13px;font-weight:900;line-height:1.2;text-transform:uppercase;color:#000">Ramesh Kumar</div>
+            <div style="font-size:11px;font-weight:700;margin-top:4px">41 Y / MALE</div>
+            <div style="font-size:11px;font-weight:700;margin-top:2px">PH: +91 98765 12345</div>
+            <div style="font-size:11px;font-weight:700;margin-top:2px">
+              REF: <strong>DR. S. SHARMA</strong>
+            </div>
+          </td>
+          <td style="vertical-align:top;text-align:right;padding:0;font-size:11px;line-height:1.5;color:#000">
+            <div style="font-weight:800">15 MAY 2026 &nbsp;10:30 AM</div>
+            <div style="margin-top:3px;font-weight:700">ID: CD-2026-011</div>
+            <div style="margin-top:2px;font-weight:700">BILL: 2026050011</div>
+          </td>
+        </tr>
+      </table>
+    </div>
+
+    <!-- TEST TABLE -->
+    <div class="test-table no-break" style="margin-bottom: 4px;">
+      <table style="width:100%;border-collapse:collapse;font-size:10px">
+        <thead>
+          <tr>
+            <th style="padding:3px 5px;border:1px solid #000;text-align:center;font-weight:800">#</th>
+            <th style="padding:3px 5px;border:1px solid #000;text-align:left;font-weight:800">CODE</th>
+            <th style="padding:3px 5px;border:1px solid #000;text-align:left;font-weight:800">TEST NAME</th>
+            <th style="padding:3px 5px;border:1px solid #000;text-align:left;font-weight:800">CATEGORY</th>
+            <th style="padding:3px 5px;border:1px solid #000;text-align:right;font-weight:800">AMOUNT (₹)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;text-align:center;font-weight:700">1</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-family:monospace;font-size:9px;white-space:nowrap">CBC001</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;font-weight:600;word-wrap:break-word;word-break:break-word;overflow-wrap:anywhere">Complete Blood Count (CBC)</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;white-space:nowrap">Pathology</td>
+      <td style="padding:3px 5px;border:1px solid #000;text-align:right;font-weight:700;font-size:10px">₹500.00</td>
+    </tr><tr>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;text-align:center;font-weight:700">2</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-family:monospace;font-size:9px;white-space:nowrap">USG001</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;font-weight:600;word-wrap:break-word;word-break:break-word;overflow-wrap:anywhere">Whole Abdomen USG</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;white-space:nowrap">Radiology</td>
+      <td style="padding:3px 5px;border:1px solid #000;text-align:right;font-weight:700;font-size:10px">₹800.00</td>
+    </tr><tr>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;text-align:center;font-weight:700">3</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-family:monospace;font-size:9px;white-space:nowrap">THY001</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;font-weight:600;word-wrap:break-word;word-break:break-word;overflow-wrap:anywhere">Thyroid Function Test</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;white-space:nowrap">Pathology</td>
+      <td style="padding:3px 5px;border:1px solid #000;text-align:right;font-weight:700;font-size:10px">₹400.00</td>
+    </tr><tr>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;text-align:center;font-weight:700">4</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-family:monospace;font-size:9px;white-space:nowrap">LIP001</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;font-weight:600;word-wrap:break-word;word-break:break-word;overflow-wrap:anywhere">Lipid Profile</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;white-space:nowrap">Pathology</td>
+      <td style="padding:3px 5px;border:1px solid #000;text-align:right;font-weight:700;font-size:10px">₹600.00</td>
+    </tr><tr>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;text-align:center;font-weight:700">5</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-family:monospace;font-size:9px;white-space:nowrap">KFT001</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;font-weight:600;word-wrap:break-word;word-break:break-word;overflow-wrap:anywhere">Kidney Function Test</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;white-space:nowrap">Pathology</td>
+      <td style="padding:3px 5px;border:1px solid #000;text-align:right;font-weight:700;font-size:10px">₹550.00</td>
+    </tr><tr>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;text-align:center;font-weight:700">6</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-family:monospace;font-size:9px;white-space:nowrap">LFT001</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;font-weight:600;word-wrap:break-word;word-break:break-word;overflow-wrap:anywhere">Liver Function Test</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;white-space:nowrap">Pathology</td>
+      <td style="padding:3px 5px;border:1px solid #000;text-align:right;font-weight:700;font-size:10px">₹650.00</td>
+    </tr><tr>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;text-align:center;font-weight:700">7</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-family:monospace;font-size:9px;white-space:nowrap">XRC001</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;font-weight:600;word-wrap:break-word;word-break:break-word;overflow-wrap:anywhere">Chest X-Ray</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;white-space:nowrap">Radiology</td>
+      <td style="padding:3px 5px;border:1px solid #000;text-align:right;font-weight:700;font-size:10px">₹300.00</td>
+    </tr><tr>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;text-align:center;font-weight:700">8</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-family:monospace;font-size:9px;white-space:nowrap">ECG001</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;font-weight:600;word-wrap:break-word;word-break:break-word;overflow-wrap:anywhere">ECG (12-Lead)</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;white-space:nowrap">Cardiology</td>
+      <td style="padding:3px 5px;border:1px solid #000;text-align:right;font-weight:700;font-size:10px">₹250.00</td>
+    </tr><tr>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;text-align:center;font-weight:700">9</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-family:monospace;font-size:9px;white-space:nowrap">MRI001</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;font-weight:600;word-wrap:break-word;word-break:break-word;overflow-wrap:anywhere">MRI Brain (Plain)</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;white-space:nowrap">Radiology</td>
+      <td style="padding:3px 5px;border:1px solid #000;text-align:right;font-weight:700;font-size:10px">₹4,500.00</td>
+    </tr><tr>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;text-align:center;font-weight:700">10</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-family:monospace;font-size:9px;white-space:nowrap">CT001</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;font-weight:600;word-wrap:break-word;word-break:break-word;overflow-wrap:anywhere">CT Scan Brain (Plain)</td>
+      <td style="padding:3px 5px;border:1px solid #000;font-size:10px;white-space:nowrap">Radiology</td>
+      <td style="padding:3px 5px;border:1px solid #000;text-align:right;font-weight:700;font-size:10px">₹3,500.00</td>
+    </tr>
+        </tbody>
+      </table>
+      
+    </div>
+
+    <div style="font-size:9px;font-style:italic;margin:3px 0 6px">undefined Thousand Eight Hundred Forty Five Rupees Only</div>
+
+    <!-- PAYMENT + SUMMARY — three-column layout: QR | Details | Summary Box -->
+    <div class="payment-section no-break" style="padding: 4px 0; margin-bottom: 4px;">
+      <table style="width:100%;border-collapse:separate;border-spacing:0;table-layout:fixed">
+        <colgroup>
+          <col style="width:80px"/>
+          <col/>
+          <col style="width:160px"/>
+        </colgroup>
+        <tbody>
+          <tr>
+            <td style="vertical-align:top;padding:0">
+              <div><div style="text-align:center">
+      <div style="font-size:9px;font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:3px">SCAN TO VERIFY</div>
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" alt="QR" style="width:55px;height:55px;display:block;margin:0 auto;border:1px solid #000;padding:2px;background:#fff"/>
+      <div style="font-size:9px;font-weight:700;margin-top:3px;text-transform:uppercase">Verify Receipt</div>
+      <div style="font-size:8px;margin-top:1px">Download Report · View Bill Details</div>
+      <div style="font-size:8px;margin-top:2px;font-weight:600">Receipt Verification Available Online</div>
+    </div></div>
+            </td>
+            <td style="vertical-align:top;padding:0 8px 0 0;font-size:9px">
+              <div style="font-weight:800;border-bottom:1px solid #000;padding-bottom:2px;margin-bottom:3px;font-size:10px">PAYMENT DETAILS</div>
+                <table style="width:100%;border-collapse:collapse"><tbody><tr>
+      <td style="padding:2px 0;font-size:9px;text-transform:capitalize">cash</td>
+      <td style="padding:2px 0;text-align:right;font-weight:700;font-size:9px">₹10,845.00</td>
+      <td style="padding:2px 0;text-align:right;font-size:8px">15/05/26, 4:00 pm</td>
+    </tr></tbody></table>
+                <div style="font-weight:700;border-top:1px solid #000;margin-top:3px;padding-top:3px;font-size:9px">TOTAL PAID</div><table style="width:100%;border-collapse:collapse"><tbody><tr><td style="padding:2px 4px;font-size:9px">Cash</td><td style="padding:2px 4px;text-align:right;font-size:9px">₹10,845.00</td></tr></tbody></table>
+            </td>
+            <td style="vertical-align:top;padding:0">
+              <div style="border:1.5px solid #000;padding:4px 6px;">
+                <table style="width:100%;border-collapse:collapse;font-size:11px;table-layout:fixed">
+                  <tbody>
+                    <tr><td style="padding:3px 4px">SUBTOTAL</td><td style="padding:3px 4px;text-align:right;white-space:nowrap">₹12,050.00</td></tr>
+                    <tr><td style="padding:3px 4px">DISCOUNT</td><td style="padding:3px 4px;text-align:right;white-space:nowrap">₹1,205.00</td></tr>
+                    <tr>
+                      <td style="padding:4px 4px;border-top:2px solid #000;font-weight:900;font-size:13px">TOTAL</td>
+                      <td style="padding:4px 4px;border-top:2px solid #000;text-align:right;font-weight:900;font-size:13px;white-space:nowrap">₹10,845.00</td>
+                    </tr>
+                    <tr><td style="padding:3px 4px;border-top:1px solid #000;font-weight:800">PAID</td><td style="padding:3px 4px;border-top:1px solid #000;text-align:right;font-weight:800;white-space:nowrap">₹10,845.00</td></tr>
+                    <tr>
+      <td style="padding:4px 6px;border-top:2px solid #000;font-weight:900;font-size:13px;white-space:nowrap">DUE</td>
+      <td style="padding:4px 6px;border-top:2px solid #000;text-align:right;font-weight:900;font-size:13px;white-space:nowrap">₹0.00</td>
+    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- PATIENT INSTRUCTIONS (optional) -->
+    <div style="font-size:9px;text-align:center;margin:4px 0;font-weight:600">
+      Please preserve this receipt for future reference. Collect reports within 7 days. Scan QR code to download available reports.
+    </div>
+  </div>
+
+  <!-- FOOTER PANEL — pinned to bottom via margin-top:auto -->
+  <div class="footer-panel no-break" style="padding: 3px 0 2px; border-top: 1px solid #000;">
+    <!-- V3 receipt messages (priority: thank-you → collection → verified → QR msg → promotional msg → follow-up → patient since) -->
+    <div style="margin-bottom:2px"><div style="font-size:11px;font-weight:900;text-align:center;letter-spacing:0.8px;text-transform:uppercase">Thank you for choosing Care Diagnostics</div></div>
+    <div style="margin-top:2px"><div style="font-size:9px;text-align:center;margin:3px 0;font-weight:600">Please collect your reports within 7 days</div></div>
+    <div style="margin-top:2px"><div style="font-size:9px;text-align:center;margin:2px 0;font-weight:700;letter-spacing:0.5px;text-transform:uppercase">VERIFIED RECEIPT ✔</div></div>
+    <div style="margin-top:2px"><div style="font-size:9px;text-align:center;margin:2px 0;font-weight:600">Scan QR code to verify receipt and download reports</div></div>
+    <div style="margin-top:2px"><div style="font-size:9px;text-align:center;margin:2px 0;font-weight:700;letter-spacing:0.5px">Advanced Diagnostic &amp; Imaging Centre</div></div>
+    <div style="margin-top:2px"><div style="font-size:9px;text-align:center;margin:3px 0;font-weight:600;font-style:italic">For future investigations, please quote your Patient ID.</div></div>
+    <div style="margin-top:2px"><div style="font-size:9px;text-align:center;margin:2px 0;font-weight:600">Valued Patient Since May 2026</div></div>
+    
+    <!-- V3 Additional footer messages -->
+    <div style="margin-top:2px"><div style="font-size:9px;text-align:center;margin:2px 0;font-weight:600">Mon-Sat: 8 AM - 8 PM | Sun: 9 AM - 2 PM</div></div>
+    <div style="margin-top:2px"><div style="font-size:9px;text-align:center;margin:2px 0;font-weight:600">Home Collection Available. Call us to book.</div></div>
+    <div style="margin-top:2px"><div style="font-size:9px;text-align:center;margin:2px 0;font-weight:700;letter-spacing:0.5px;text-transform:uppercase">24x7 Emergency Services Available</div></div>
+    <div style="margin-top:2px"><div style="font-size:9px;text-align:center;margin:2px 0;font-weight:600">Refer a friend and get 10% off your next visit.</div></div>
+    <div style="margin-top:2px"><div style="font-size:9px;text-align:center;margin:2px 0;font-weight:600">Annual Health Checkup packages available at discounted rates.</div></div>
+    <div style="margin-top:2px"><div style="font-size:9px;text-align:center;margin:2px 0;font-weight:700">NABL Accredited / ISO 9001:2015 Certified</div></div>
+    <div style="margin-top:2px"><div style="font-size:9px;text-align:center;margin:2px 0;font-weight:600">Book appointments on WhatsApp: +91 98765 43210</div></div>
+    
+    <!-- Legacy fallback blocks -->
+    <div style="margin-bottom:2px"><div style="font-size:11px;font-weight:900;text-align:center;letter-spacing:0.8px;text-transform:uppercase">Thank you for choosing Care Diagnostics</div></div>
+    
+    <div style="margin-top:2px"><div style="font-size:9px;text-align:center;letter-spacing:0.3px;font-weight:700">MRI · CT SCAN · ULTRASOUND · DIGITAL X-RAY · MAMMOGRAPHY · PATHOLOGY</div></div>
+    <div style="font-size:9px;font-weight:700;text-align:center;letter-spacing:0.5px;text-transform:uppercase;margin-top:2px">Touching Lives With Care</div>
+    <div style="margin-top:2px"><div style="font-size:9px;text-align:center;margin:3px 0;font-weight:600">Please collect your reports within 7 days</div></div>
+    <div style="margin-top:2px"><div style="font-size:9px;text-align:center;font-weight:600">COMPUTER GENERATED INVOICE. NO SIGNATURE REQUIRED.</div></div>
+    <div style="margin-top:1px"><div style="font-size:8px;text-align:center;margin:2px 0">
+      <span style="font-weight:700">Generated On:</span> 05 Jun 2026 05:39 am &nbsp;|&nbsp;
+      <span style="font-weight:700">Printed By:</span> System
+    </div></div>
+    <table style="width:100%;border-collapse:collapse;margin-top:6px">
+      <tr>
+        <td style="text-align:left;padding:0;vertical-align:bottom">
+          <div style="border-bottom:1px solid #000;width:130px;margin-bottom:2px"></div><div style="font-size:9px;font-weight:600">Authorised Signature</div>
+        </td>
+        <td style="text-align:right;padding:0;vertical-align:bottom;font-size:9px">
+          
+          <div style="margin-top:1px">05 Jun 2026 05:39 am</div>
+        </td>
+      </tr>
+    </table>
+  </div>
+</div>
+</html>

@@ -1,0 +1,26 @@
+kind = "mobile"
+previewPath = "/mobile/"
+title = "Care Diagnostics Booking"
+version = "1.0.0"
+id = "artifacts/diagno-booking-mobile"
+router = "path"
+
+[[integratedSkills]]
+name = "expo"
+version = "1.0.0"
+
+[[services]]
+name = "expo"
+paths = [ "/mobile/" ]
+localPort = 3003
+
+[services.development]
+run = "pnpm --filter @workspace/diagno-booking-mobile run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/diagno-booking-mobile", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/diagno-booking-mobile", "run", "serve" ]
+
+[services.env]
+PORT = "3003"
+BASE_PATH = "/mobile/"

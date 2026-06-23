@@ -1,0 +1,17 @@
+{
+  "name": "care-diagnostics-pull-agent",
+  "version": "1.3.0",
+  "description": "Care Diagnostics DICOM Pull Agent — queries modalities for new studies and retrieves them to local PACS",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "start:dev": "NODE_ENV=development node src/index.js"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2",
+    "dicomweb-client": "^0.10.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,324 @@
+uploads = []
+
+[[generated]]
+id = "mUN3VMYklsHfcwrj2b-kO"
+uri = "file://artifacts/diagno-booking-mobile/assets/images/icon.png"
+type = "image"
+title = "app icon medical"
+
+[[outputs]]
+id = "oRd0cMLyeXJ02-c6LyANS"
+uri = "file://windows-build/dist/DiagnosticERP-Portable.zip"
+type = "unspecified"
+title = "DiagnosticERP-Portable.zip (Portable App)"
+
+[[outputs]]
+id = "bKz3kVPnHAUHmF36aG-Vy"
+uri = "file://windows-build/dist/DiagnosticERP-Setup.zip"
+type = "unspecified"
+title = "DiagnosticERP-Setup.exe (NSIS Installer, zipped)"
+
+[[outputs]]
+id = "8AMMDF15p_kYYgtDnoLPV"
+uri = "file://windows-build/dist/DiagnosticERP-Desktop-Setup.zip"
+type = "unspecified"
+title = "DiagnosticERP-Desktop-Setup.zip — Electron desktop app (393 MB)"
+
+[[outputs]]
+id = "EzvVTSNiNKuKLbahMpunQ"
+uri = "file://windows-build/dist/SuperAdmin-Portable.zip"
+type = "unspecified"
+title = "SuperAdmin-Portable.zip (Super Admin Portable)"
+
+[[outputs]]
+id = "y-PWSWWhXohPRHwZK9XWO"
+uri = "file://windows-build/dist/DiagnosticERP-Update.zip"
+type = "unspecified"
+title = "DiagnosticERP-Update.zip (Update Pack)"
+
+[[outputs]]
+id = "hPNumB1HuTY-QdlDyLLc0"
+uri = "file://windows-build/dist/DiagnosticERP-Windows-All.zip"
+type = "unspecified"
+title = "DiagnosticERP-Windows-All.zip (Setup + Portable + Update + SuperAdmin)"
+
+[[outputs]]
+id = "RSfpUwLkxaYdWvWKv4j-T"
+uri = "file://FEATURES.md"
+type = "text"
+title = "DiagnoCenter ERP — Complete Feature Reference"
+
+[[outputs]]
+id = "au1TM2v4p3UBTxTknonYM"
+uri = "file://.local/superadmin_key.txt"
+type = "text"
+title = "superadmin.key — download and rename"
+
+[[outputs]]
+id = "NcbySAEis2_2H9efpH-Rd"
+uri = "file://dicom-pull-agent/DICOM_Pull_Agent_Installation_Guide.pdf"
+type = "pdf"
+title = "DICOM Pull Agent — Installation Guide (PDF)"
+
+[[outputs]]
+id = "KEOQ4Qw52Z8sh3CXLy59q"
+uri = "file://exports/money-trail-audit-sample.pdf"
+type = "pdf"
+title = "Money Trail Audit — CA-printable Sample"
+
+[[outputs]]
+id = "KqNK8C4PXBtg4V8tUPHAW"
+uri = "file://CARE_DIAGNOSTICS_WEBSITE_STRUCTURE.md"
+type = "text"
+title = "Care Diagnostics Website Structure Guide for ChatGPT"
+
+[[outputs]]
+id = "y7tCcAC_kuTN4_plVK50V"
+uri = "file://exports/test_catalog_import.csv"
+type = "table"
+title = "Fixed Test Catalog (308 tests) - Import CSV"
+
+[[outputs]]
+id = "jbZz7iflGLwmi6QTp56_g"
+uri = "file://exports/referral_doctors_import.csv"
+type = "table"
+title = "Referral Doctors (799 doctors) - Import CSV"
+
+[[outputs]]
+id = "7z37YkZeMsBGMhp6CmCFT"
+uri = "file://windows-build/dist/DiagnoCenter-Portable.zip"
+type = "unspecified"
+title = "DiagnoCenter-Portable.zip (323 MB) — Portable ZIP, unzip and run"
+
+[[outputs]]
+id = "K8bALn1xY9SVJGrtYRzpb"
+uri = "file://windows-build/dist/SAdmin-Portable.zip"
+type = "unspecified"
+title = "SAdmin-Portable.zip (358 MB) — Super Admin Portal Portable"
+
+[[outputs]]
+id = "gQWkxpebGI4ajHCOTEpdr"
+uri = "file://windows-build/INSTALL.md"
+type = "text"
+title = "Step-by-Step Installation Guide (INSTALL.md)"
+
+[[outputs]]
+id = "UvZF4FWExRqxhQx_eOR7N"
+uri = "file://windows-build/docs/Windows-Installation-Guide.pdf"
+type = "pdf"
+title = "Windows Installation Guide PDF (45 KB) — Step-by-step for beginners"
+
+[[outputs]]
+id = "Xh0cd9WsIJDnGymxDmP4V"
+uri = "file://docker-synology/docs/Synology-NAS-Installation-Guide.pdf"
+type = "pdf"
+title = "Synology NAS Installation Guide PDF (62 KB) — NAS setup for beginners"
+
+[[outputs]]
+id = "P5A798LVIYMuIrjVCPnqS"
+uri = "file://windows-build/dist/DiagnoCenter-Setup.zip"
+type = "unspecified"
+title = "DiagnoCenter-Setup.zip (289 MB) — Zipped Windows Installer .exe"
+
+[[outputs]]
+id = "99wGP0ezptrC9u15x-WX1"
+uri = "file://windows-build/dist/DiagnoCenter-Update.zip"
+type = "unspecified"
+title = "DiagnoCenter-Update.zip (263 MB) — In-App Patch for existing installs"
+
+[[outputs]]
+id = "5sjHlv_osxDWRSb4WZVIx"
+uri = "file://TextRad_Feature_Integration_Document.docx"
+type = "word_document"
+title = "TextRad Feature Integration Document (Word)"
+
+[[outputs]]
+id = "c7_WycO2fjd4xtG-HRhHu"
+uri = "file://exports/care-diagnostics-mobile-playstore.tar.gz"
+type = "unspecified"
+title = "Care Diagnostics Mobile - PlayStore Package (Android)"
+
+[[outputs]]
+id = "nQPYYFJuRYL5orl0N9MOI"
+uri = "file://exports/care-diagnostics-windows.tar.gz"
+type = "unspecified"
+title = "Care Diagnostics Desktop - Windows Distribution"
+
+[[outputs]]
+id = "80ya1cF1r_6OkfHRrTfm2"
+uri = "file://windows-build/dist/CareDiagnostics-Portable.zip"
+type = "unspecified"
+title = "CareDiagnostics-Portable.zip (334 MB) — Portable Windows ERP"
+
+[[outputs]]
+id = "tstQPgUpl8OATo3knkZ7L"
+uri = "file://windows-build/dist/CareDiagnostics-Update.zip"
+type = "unspecified"
+title = "CareDiagnostics-Update.zip (272 MB) — In-place App Update"
+
+[[outputs]]
+id = "iCxjqK01QpvXAmFLC2tOP"
+uri = "file://docker-synology.zip"
+type = "unspecified"
+title = "Care Diagnostics Docker Deployment Package"
+
+[[outputs]]
+id = "zbrlyDV3XlH5ZzlOkD8GI"
+uri = "file://exports/Care_Diagnostics_ERP_Documentation.docx"
+type = "word_document"
+title = "Word Document (opens with MS Word / LibreOffice / Google Docs)"
+
+[[outputs]]
+id = "sDvWEECdNfHTdQo4Vdkw5"
+uri = "file://exports/Care_Diagnostics_ERP_Documentation.md"
+type = "text"
+title = "Markdown Version (opens in any browser / text editor)"
+
+[[outputs]]
+id = "mBWQsRfHmmN2w_1W23nog"
+uri = "file://scan-bridge/README.md"
+type = "text"
+title = "Scan Bridge README"
+
+[[outputs]]
+id = "3QNoizXmJ8y1mlm17Z3y4"
+uri = "file://docker-deployment/synology-nas-deploy.zip"
+type = "unspecified"
+title = "Synology NAS Docker Deployment Package"
+
+[[outputs]]
+id = "5yEEYtjEb402mcoAD3zvv"
+uri = "file://synology-nas-deploy.zip"
+type = "unspecified"
+title = "Synology NAS Docker Deployment (Fixed — all 9 files in same folder)"
+
+[[outputs]]
+id = "RmtEyWwmocyUTPk1JHqr3"
+uri = "file://synology-nas-deploy.tar.gz"
+type = "unspecified"
+title = "Synology NAS Deployment Package (self-contained, includes full project source + ICICI integration)"
+
+[[outputs]]
+id = "RlG5nGyvza9bJxkDK6g5Z"
+uri = "file://exports/AI_Architecture_Analysis.md"
+type = "text"
+title = "AI Architecture Analysis Report"
+
+[[outputs]]
+id = "XO9rt3QBPeVTRKnzqjO50"
+uri = "file://screenshots/v3_01_premium_1test.jpg"
+type = "image"
+title = "1. Premium A5 — 1 Test (Sparse Mode)"
+
+[[outputs]]
+id = "_OPKLxnIpeby-rpOHvCy1"
+uri = "file://screenshots/v3_02_premium_2test.jpg"
+type = "image"
+title = "2. Premium A5 — 2 Tests, Discount + UPI"
+
+[[outputs]]
+id = "oo-V0_Az2pr-E6nw-9xkx"
+uri = "file://screenshots/v3_03_premium_bw.jpg"
+type = "image"
+title = "3. Premium A5 — 1 Test, B&W Minimal"
+
+[[outputs]]
+id = "97JjiYFZFNh7UmrbUjjot"
+uri = "file://screenshots/v3_fixed_1_premium_1test.jpg"
+type = "image"
+title = "1. Premium A5 — 1 Test (Fixed Spacer)"
+
+[[outputs]]
+id = "ZJD4-JstV5DEqaM_iqsCU"
+uri = "file://screenshots/v3_fixed_2_premium_2test.jpg"
+type = "image"
+title = "2. Premium A5 — 2 Tests, Discount + UPI"
+
+[[outputs]]
+id = "5zUIZech7q3vn7q-QsZeq"
+uri = "file://screenshots/v3_fixed_3_premium_bw.jpg"
+type = "image"
+title = "3. Premium A5 — 1 Test, B&W Minimal"
+
+[[outputs]]
+id = "cHKB4Dzz0pasmZM28fxpl"
+uri = "file://screenshots/v3_all_footer_messages_1test.jpg"
+type = "image"
+title = "Premium A5 Bill with All 8 New Footer Messages"
+
+[[outputs]]
+id = "ee85RHb7ROEsIyEeB611j"
+uri = "file://RADIOLOGY_MODULE_INVENTORY.md"
+type = "text"
+title = "Radiology Module Inventory — Complete"
+
+[[outputs]]
+id = "Jx3kUDKAJRC1C4_b_z1YX"
+uri = "file://RADIOLOGY_ACTION_PLAN.md"
+type = "text"
+title = "Radiology Action Plan"
+
+[[outputs]]
+id = "nt2WveHHiXvo1qc5m-dcY"
+uri = "file://RADIOLOGY_AUDIT_REPORT.md"
+type = "text"
+title = "Radiology Module Audit Report"
+
+[[outputs]]
+id = "6J_0ld5SepqeealDbnYAA"
+uri = "file://RADIOLOGY_IMPLEMENTATION_ROADMAP.md"
+type = "text"
+title = "Radiology Implementation Roadmap"
+
+[[outputs]]
+id = "SD1ZUlvjATGAAsUpE_iI4"
+uri = "file://RADIOLOGY_IMPLEMENTATION_ROADMAP_v2.md"
+type = "text"
+title = "Revised Radiology Implementation Roadmap (v2)"
+
+[[outputs]]
+id = "qEX1OkgU2MsbSTcOnAX5X"
+uri = "file://.local/session_plan.md"
+type = "text"
+
+[[outputs]]
+id = "OiCCbTsMR1F40qXejOk_O"
+uri = "file://RADIOLOGY_AUDIT.md"
+type = "text"
+title = "Radiology Master Codebase Audit Report"
+
+[[outputs]]
+id = "In_FMBsNswytxdOVJBsLr"
+uri = "file://RADIOLOGY_PRODUCTION_READINESS_AUDIT.md"
+type = "text"
+title = "Radiology Production Readiness Audit"
+
+[[outputs]]
+id = "DKi7qAEG3uw8bfM7-g9rF"
+uri = "file://RADIOLOGY_REALITY_AUDIT.md"
+type = "text"
+title = "Radiology Reality Audit — End-to-End Workflow Test"
+
+[[outputs]]
+id = "tXcKUWcu5xCUHcD76tv8f"
+uri = "file://PRODUCTION_DEV_CONSISTENCY_AUDIT.md"
+type = "text"
+title = "Production vs Development Consistency Audit"
+
+[[outputs]]
+id = "Ju5c8_xsefiPv33V3xxc6"
+uri = "file://RE_AUDIT_PRODUCTION_JUNE_2026.md"
+type = "text"
+title = "Re-Audit: Production After Redeployment"
+
+[[outputs]]
+id = "PpYOHcNh73lRpiq6IUjQI"
+uri = "file://RADIOLOGY_PACS_EVIDENCE_AUDIT_JUNE_2026.md"
+type = "text"
+title = "Radiology PACS Evidence Audit Report"
+
+[[outputs]]
+id = "y_rKlaI8yKTIIthlsZNuY"
+uri = "file://CARE_DIAGNOSTICS_MASTER_AUDIT_2026.md"
+type = "text"
+title = "Care Diagnostics Master Audit Report"

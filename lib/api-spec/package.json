@@ -1,0 +1,13 @@
+{
+  "name": "@workspace/api-spec",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "codegen": "orval --config ./orval.config.ts && pnpm run clean:stale-dist",
+    "clean:stale-dist": "node ./scripts/clean-stale-dist.mjs",
+    "verify:codegen": "node ./scripts/verify-codegen.mjs"
+  },
+  "devDependencies": {
+    "orval": "^8.5.2"
+  }
+}
