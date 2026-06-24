@@ -2311,6 +2311,19 @@ router.get("/network/health-monitor", async (req, res) => {
         gte(pacsLogsTable.createdAt, today)
       ));
 
+    const [pullerErrorsToday] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(pacsLogsTable)
+      .where(and(
+        eq(pacsLogsTable.severity, "error"),
+        or(
+          eq(pacsLogsTable.source, "DICOM_PULL_AGENT"),
+          ilike(pacsLogsTable.message, "%pull%"),
+          ilike(pacsLogsTable.source, "%pull%")
+        ),
+        gte(pacsLogsTable.createdAt, today)
+      ));
+
     // 3. Health Status
     const fetchWithTimeout = async (url: string, timeout = 2000): Promise<boolean> => {
       if (!url) return false;
@@ -2367,8 +2380,39 @@ router.get("/network/health-monitor", async (req, res) => {
       pullerStatus = recentPull ? "green" : "yellow";
     }
 
-    // 4. Recent Errors
-    const recentErrors = await db
+    // Worklist Creation Health Logic
+    let worklistCreationStatus = "red";
+    if (lastScheduled?.createdAt) {
+      const msSinceLastScheduled = Date.now() - new Date(lastScheduled.createdAt).getTime();
+      const hoursSinceLastScheduled = msSinceLastScheduled / (1000 * 60 * 60);
+      if (hoursSinceLastScheduled <= 24) {
+        worklistCreationStatus = "green";
+      } else if (hoursSinceLastScheduled <= 24 * 7) {
+        worklistCreationStatus = "yellow";
+      } else {
+        worklistCreationStatus = "red";
+      }
+    }
+    const [recentWorklistError] = await db
+      .select({ id: pacsLogsTable.id })
+      .from(pacsLogsTable)
+      .where(and(
+        eq(pacsLogsTable.severity, "error"),
+        or(
+          ilike(pacsLogsTable.source, "%worklist%"),
+          ilike(pacsLogsTable.message, "%worklist%"),
+          ilike(pacsLogsTable.message, "%scheduled%")
+        ),
+        gte(pacsLogsTable.createdAt, today)
+      ))
+      .limit(1);
+
+    if (recentWorklistError) {
+      worklistCreationStatus = "red";
+    }
+
+    // 4. Recent Errors & Warnings Map
+    const rawErrors = await db
       .select()
       .from(pacsLogsTable)
       .where(or(
@@ -2377,6 +2421,32 @@ router.get("/network/health-monitor", async (req, res) => {
       ))
       .orderBy(desc(pacsLogsTable.createdAt))
       .limit(20);
+
+    const recentErrors = rawErrors.map((log) => {
+      const msg = log.message.toLowerCase();
+      const src = (log.source ?? "").toLowerCase();
+      let suggestedAction = "Check system configurations and logs.";
+      if (msg.includes("timeout") || msg.includes("refused") || msg.includes("connect")) {
+        suggestedAction = "Check if target server is running, the host IP is reachable, and ports are open.";
+      } else if (msg.includes("auth") || msg.includes("api key") || msg.includes("unauthorized") || msg.includes("forbidden") || msg.includes("key")) {
+        suggestedAction = "Verify API credentials and internal API key configuration in settings.";
+      } else if (msg.includes("wado") || msg.includes("weasis") || msg.includes("ohif") || msg.includes("launch") || msg.includes("viewer")) {
+        suggestedAction = "Verify viewer base URL configuration and network accessibility.";
+      } else if (msg.includes("disk") || msg.includes("storage") || msg.includes("full") || msg.includes("write error")) {
+        suggestedAction = "Check server disk space allocation and directory permissions.";
+      } else if (msg.includes("syntax") || msg.includes("format") || msg.includes("invalid dicom") || msg.includes("corrupt")) {
+        suggestedAction = "Ensure modality is sending valid DICOM files with compatible transfer syntax.";
+      } else if (src.includes("pull") || msg.includes("pull")) {
+        suggestedAction = "Verify DICOM Puller service is active in watchdog and verify pull destination AE Title.";
+      } else if (src.includes("worklist") || msg.includes("worklist") || msg.includes("scheduled")) {
+        suggestedAction = "Verify Scheduled Procedure cron agent settings and RIS sync endpoint path.";
+      }
+      
+      return {
+        ...log,
+        suggestedAction,
+      };
+    });
 
     res.json({
       ok: true,
@@ -2394,6 +2464,7 @@ router.get("/network/health-monitor", async (req, res) => {
         failedToday: failedToday?.count ?? 0,
         launchFailures: launchFailures?.count ?? 0,
         syncFailures: (syncFailuresToday?.count ?? 0) + syncs.reduce((sum, s) => sum + (s.itemsFailed ?? 0), 0),
+        pullerErrors: pullerErrorsToday?.count ?? 0,
       },
       health: {
         orthanc: orthancStatus,
@@ -2402,6 +2473,7 @@ router.get("/network/health-monitor", async (req, res) => {
         weasis: weasisStatus,
         erpSync: erpSyncStatus,
         dicomPuller: pullerStatus,
+        worklistCreation: worklistCreationStatus,
       },
       recentErrors,
     });

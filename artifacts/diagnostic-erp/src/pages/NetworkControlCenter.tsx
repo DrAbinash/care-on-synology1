@@ -100,6 +100,8 @@ type PacsErrorLog = {
   source: string | null;
   message: string;
   createdAt: string;
+  studyInstanceUid?: string | null;
+  suggestedAction?: string;
 };
 
 type HealthMonitorResponse = {
@@ -118,6 +120,7 @@ type HealthMonitorResponse = {
     failedToday: number;
     launchFailures: number;
     syncFailures: number;
+    pullerErrors: number;
   };
   health: {
     orthanc: "green" | "yellow" | "red";
@@ -126,6 +129,7 @@ type HealthMonitorResponse = {
     ohif: "green" | "yellow" | "red";
     weasis: "green" | "yellow" | "red";
     dicomPuller: "green" | "yellow" | "red";
+    worklistCreation: "green" | "yellow" | "red";
   };
   recentErrors: PacsErrorLog[];
 };
@@ -451,6 +455,7 @@ export default function NetworkControlCenter() {
                 { name: "OHIF", key: "ohif" as const },
                 { name: "Weasis", key: "weasis" as const },
                 { name: "DICOM Puller", key: "dicomPuller" as const },
+                { name: "Worklist Creation", key: "worklistCreation" as const },
               ].map((service) => {
                 const status = monitorData?.health?.[service.key] ?? "red";
                 const details = getHealthStatusDetails(status);
@@ -477,9 +482,10 @@ export default function NetworkControlCenter() {
               {[
                 { label: "Studies Received Today", value: monitorData?.counters?.receivedToday ?? 0, color: "text-sky-400" },
                 { label: "Studies Synced Today", value: monitorData?.counters?.syncedToday ?? 0, color: "text-emerald-400" },
-                { label: "Failed Today", value: monitorData?.counters?.failedToday ?? 0, color: "text-red-400" },
-                { label: "Viewer Launch Failures", value: monitorData?.counters?.launchFailures ?? 0, color: "text-amber-400" },
-                { label: "ERP Sync Failures", value: monitorData?.counters?.syncFailures ?? 0, color: "text-rose-400" },
+                { label: "Studies Failed Today", value: monitorData?.counters?.failedToday ?? 0, color: "text-red-400" },
+                { label: "Viewer Launch Failures Today", value: monitorData?.counters?.launchFailures ?? 0, color: "text-amber-400" },
+                { label: "ERP Sync Failures Today", value: monitorData?.counters?.syncFailures ?? 0, color: "text-rose-400" },
+                { label: "DICOM Puller Errors Today", value: monitorData?.counters?.pullerErrors ?? 0, color: "text-red-300" },
               ].map((counter, idx) => (
                 <div
                   key={idx}
@@ -519,7 +525,7 @@ export default function NetworkControlCenter() {
             <Terminal className="h-4 w-4 text-red-400" />
             Recent Errors & Warnings Log (Last 20)
           </h4>
-          <div className="bg-slate-950 border border-slate-850 rounded-xl p-4 font-mono text-[11px] h-52 overflow-y-auto space-y-2 scrollbar-thin scrollbar-thumb-slate-800">
+          <div className="bg-slate-950 border border-slate-850 rounded-xl p-4 font-mono text-[11px] max-h-72 overflow-y-auto space-y-3 scrollbar-thin scrollbar-thumb-slate-800">
             {!monitorData?.recentErrors || monitorData.recentErrors.length === 0 ? (
               <div className="text-slate-500 italic text-center py-4">No recent errors or warnings logged in PACS audit table.</div>
             ) : (
@@ -527,11 +533,23 @@ export default function NetworkControlCenter() {
                 const isErr = log.severity?.toLowerCase() === "error";
                 const color = isErr ? "text-red-400" : "text-amber-400";
                 return (
-                  <div key={log.id} className="flex items-start gap-2 border-b border-slate-900/60 pb-1.5 last:border-0 last:pb-0 font-mono">
-                    <span className="text-slate-500 shrink-0">{formatTime(log.createdAt)}</span>
-                    <span className={`shrink-0 font-bold ${color}`}>[{log.severity?.toUpperCase()}]</span>
-                    <span className="text-slate-400 shrink-0">[{log.source || "UNKNOWN"}]</span>
-                    <span className="text-slate-300 break-all">{log.message}</span>
+                  <div key={log.id} className="flex flex-col gap-1 border-b border-slate-900/60 pb-2.5 last:border-0 last:pb-0 font-mono">
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-500">{formatTime(log.createdAt)}</span>
+                      <span className={`font-bold ${color}`}>[{log.severity?.toUpperCase()}]</span>
+                      <span className="text-slate-400">[{log.source || "UNKNOWN"}]</span>
+                    </div>
+                    <div className="text-slate-300 break-all pl-2 border-l border-slate-800">{log.message}</div>
+                    {log.studyInstanceUid && (
+                      <div className="text-[10px] text-slate-500 font-mono pl-2">
+                        Affected Study UID: <span className="text-slate-400 select-all">{log.studyInstanceUid}</span>
+                      </div>
+                    )}
+                    {log.suggestedAction && (
+                      <div className="text-[10px] text-emerald-400 font-sans pl-2 italic">
+                        Suggested Action: {log.suggestedAction}
+                      </div>
+                    )}
                   </div>
                 );
               })
