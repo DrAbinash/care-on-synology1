@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Star, ShieldAlert, Plus, Pin, Trash2, Edit2 } from "lucide-react";
+import { Star, ShieldAlert, Plus, Pin, Trash2, Edit2, Settings } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
@@ -51,6 +51,12 @@ export default function ChocolateBoxPanel({
   const [searchQuery, setSearchQuery] = useState("");
   const [pinnedOnly, setPinnedOnly] = useState(false);
   const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
+
+  // Configuration States
+  const [columns, setColumns] = useState<string>(() => localStorage.getItem("choc_box_cols") || "auto");
+  const [tileLimit, setTileLimit] = useState<number>(() => Number(localStorage.getItem("choc_box_limit") || "0"));
+  const [layoutWidth, setLayoutWidth] = useState<string>(() => localStorage.getItem("choc_box_width") || "standard");
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Admin Form States
   const [editingFinding, setEditingFinding] = useState<Partial<ChocolateFinding> | null>(null);
@@ -253,10 +259,23 @@ export default function ChocolateBoxPanel({
     });
   }, [findings, customTiles, pinnedOnly, favoritesList, searchQuery, modality, bodyPart]);
 
+  const limitedVisibleFindings = React.useMemo(() => {
+    if (tileLimit > 0) return allVisibleFindings.slice(0, tileLimit);
+    return allVisibleFindings;
+  }, [allVisibleFindings, tileLimit]);
+
+  const getGridClass = () => {
+    if (columns === "3") return "grid-cols-3";
+    if (columns === "4") return "grid-cols-4";
+    if (columns === "5") return "grid-cols-5";
+    if (columns === "6") return "grid-cols-6";
+    return "grid-cols-[repeat(auto-fill,minmax(140px,1fr))]";
+  };
+
   const isAdmin = userRole === "admin" || userRole === "super_admin";
 
   return (
-    <div className="space-y-4">
+    <div className={`space-y-4 ${layoutWidth === "wide" ? "w-full max-w-none" : ""}`}>
       {/* Top Filter and Search Bar */}
       <div className="flex flex-wrap gap-2 items-center justify-between">
         <div className="flex items-center gap-2 flex-1 min-w-[200px]">
@@ -298,12 +317,79 @@ export default function ChocolateBoxPanel({
               Config Tiles
             </Button>
           )}
+
+          <Button
+            size="sm"
+            variant={isSettingsOpen ? "default" : "outline"}
+            onClick={() => setIsSettingsOpen(!isSettingsOpen)}
+            className="h-8 text-xs border-slate-850 bg-slate-900 text-slate-300"
+          >
+            <Settings size={12} className="mr-1" />
+            Layout
+          </Button>
         </div>
       </div>
 
+      {/* Responsive layout preference selectors */}
+      {isSettingsOpen && (
+        <div className="bg-slate-900 border border-slate-850 rounded-xl p-3.5 grid grid-cols-3 gap-3 text-xs text-slate-300 transition-all">
+          <div className="space-y-1">
+            <span className="text-[10px] text-slate-500 font-bold uppercase">Grid Columns</span>
+            <select
+              value={columns}
+              onChange={(e) => {
+                setColumns(e.target.value);
+                localStorage.setItem("choc_box_cols", e.target.value);
+              }}
+              className="w-full text-xs h-8 rounded border border-slate-800 bg-slate-950 text-slate-200 focus:outline-none"
+            >
+              <option value="auto">Auto (Responsive)</option>
+              <option value="3">3 Columns</option>
+              <option value="4">4 Columns</option>
+              <option value="5">5 Columns</option>
+              <option value="6">6 Columns</option>
+            </select>
+          </div>
+
+          <div className="space-y-1">
+            <span className="text-[10px] text-slate-500 font-bold uppercase">Max Tiles</span>
+            <select
+              value={tileLimit}
+              onChange={(e) => {
+                const val = Number(e.target.value);
+                setTileLimit(val);
+                localStorage.setItem("choc_box_limit", String(val));
+              }}
+              className="w-full text-xs h-8 rounded border border-slate-800 bg-slate-950 text-slate-200 focus:outline-none"
+            >
+              <option value="0">All Tiles</option>
+              <option value="12">12 Tiles</option>
+              <option value="24">24 Tiles</option>
+              <option value="36">36 Tiles</option>
+              <option value="48">48 Tiles</option>
+            </select>
+          </div>
+
+          <div className="space-y-1">
+            <span className="text-[10px] text-slate-500 font-bold uppercase">Wide Sizing</span>
+            <select
+              value={layoutWidth}
+              onChange={(e) => {
+                setLayoutWidth(e.target.value);
+                localStorage.setItem("choc_box_width", e.target.value);
+              }}
+              className="w-full text-xs h-8 rounded border border-slate-800 bg-slate-950 text-slate-200 focus:outline-none"
+            >
+              <option value="standard">Standard width</option>
+              <option value="wide">Wide (Stretch)</option>
+            </select>
+          </div>
+        </div>
+      )}
+
       {/* Grid of Clickable Findings (Chocolate Box) */}
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-3">
-        {allVisibleFindings.map((finding) => {
+      <div className={`grid ${getGridClass()} gap-3`}>
+        {limitedVisibleFindings.map((finding) => {
           const isSelected = selectedFindingsList.some((s) => s.id === finding.id);
           const isFavorite = favoritesList.includes(finding.id);
 

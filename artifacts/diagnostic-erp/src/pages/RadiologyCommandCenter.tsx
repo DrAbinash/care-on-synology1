@@ -635,8 +635,15 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
     setIsCritical(false);
     setCriticalNote("");
     setAiOutput("");
-    setSelectedBuilders([]);
-    setMultiSelections({});
+    // Auto-select study-aware findings builder
+    const detected = detectBuilderType(study.modality, study.studyDescription);
+    if (detected) {
+      setSelectedBuilders([detected]);
+      setMultiSelections({ [detected]: defaultSelections(detected) });
+    } else {
+      setSelectedBuilders([]);
+      setMultiSelections({});
+    }
     setSelectedChocolateFindings([]);
 
     // If pre-existing draft, use it
@@ -836,6 +843,82 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
     } finally {
       setAiLoading(false);
     }
+  };
+  
+  const concurrentPatientStudies = useMemo(() => {
+    if (!study || !study.patientId) return [];
+    return queue.filter((item) => item.patientId === study.patientId && item.id !== study.id);
+  }, [queue, study]);
+
+  const handleMergeStudy = (otherStudy: WorklistEntry) => {
+    const otherBuilder = detectBuilderType(otherStudy.modality, otherStudy.studyDescription);
+    
+    // Combine builders
+    const currentBuilders = [...selectedBuilders];
+    if (otherBuilder && !currentBuilders.includes(otherBuilder)) {
+      currentBuilders.push(otherBuilder);
+      setSelectedBuilders(currentBuilders);
+      
+      // Initialize selections
+      if (!multiSelections[otherBuilder]) {
+        setMultiSelections(prev => ({
+          ...prev,
+          [otherBuilder]: defaultSelections(otherBuilder)
+        }));
+      }
+    }
+
+    // Update title & technique automatically
+    const nextBuilders = otherBuilder && !activeBuilderTypes.includes(otherBuilder)
+      ? [...activeBuilderTypes, otherBuilder]
+      : activeBuilderTypes;
+
+    setTechnique(generateCombinedTechnique(nextBuilders));
+
+    // Merge raw findings and impressions if the other study has existing draft text
+    let additionalFindings = "";
+    let additionalImpressions: string[] = [];
+
+    if (otherStudy.aiDraftJson) {
+      try {
+        const draft = JSON.parse(otherStudy.aiDraftJson);
+        if (draft.findings) additionalFindings = draft.findings;
+        if (draft.impression) additionalImpressions = [draft.impression];
+      } catch {}
+    }
+
+    // If no draft but we have default findings from builder, use it
+    if (!additionalFindings && otherBuilder) {
+      const defaultRep = generateMultiStudyReport([otherBuilder], { [otherBuilder]: defaultSelections(otherBuilder) });
+      additionalFindings = defaultRep.findings;
+      if (defaultRep.impression && defaultRep.impression !== "No significant abnormality.") {
+        additionalImpressions = defaultRep.impression.split("\n");
+      }
+    }
+
+    // Avoid duplication
+    setRawFindings(prev => {
+      let next = prev;
+      if (additionalFindings && !prev.includes(additionalFindings)) {
+        next = prev ? prev + "\n\n" + additionalFindings : additionalFindings;
+      }
+      return next;
+    });
+
+    if (additionalImpressions.length > 0) {
+      setImpression(prev => {
+        const next = [...prev];
+        additionalImpressions.forEach(imp => {
+          if (!next.includes(imp) && imp.trim()) next.push(imp);
+        });
+        return next;
+      });
+    }
+
+    toast({
+      title: "Studies Merged",
+      description: `Merged with ${otherStudy.studyDescription || otherStudy.modality} study.`
+    });
   };
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -1789,41 +1872,78 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                         <HistoryIcon size={28} className="opacity-30" />
                         <p className="text-xs">Select a study to see prior reports</p>
                       </div>
-                    ) : !(Array.isArray(priorReports) ? priorReports : priorReports?.reports ?? []).length ? (
-                      <div className="flex flex-col items-center justify-center gap-2 mt-6 text-slate-500">
-                        <HistoryIcon size={28} className="opacity-30" />
-                        <p className="text-xs text-center">No prior reports found for this patient</p>
-                      </div>
                     ) : (
-                      <div className="flex flex-col gap-2">
-                        {((Array.isArray(priorReports) ? priorReports : priorReports?.reports ?? []) as any[]).slice(0, 10).map((r: any) => (
-                          <div key={r.id} className="border border-slate-800 rounded-lg p-2 bg-slate-900/40 text-[10px] flex flex-col gap-1">
-                            <div className="flex items-center justify-between">
-                              <span className="font-bold text-violet-300">{r.modality || "—"} · {r.studyDescription || r.testName || "Report"}</span>
-                              <span className="text-slate-500">{r.studyDate ? new Date(r.studyDate).toLocaleDateString("en-IN") : r.reportedAt ? new Date(r.reportedAt).toLocaleDateString("en-IN") : "—"}</span>
+                      <div className="space-y-4">
+                        {/* Concurrent Multi-Study Merge */}
+                        {concurrentPatientStudies.length > 0 && (
+                          <div className="space-y-2 border border-violet-850/60 bg-violet-950/10 rounded-lg p-2.5">
+                            <span className="text-[10px] font-bold text-violet-400 uppercase tracking-wider block border-b border-violet-900 pb-1">
+                              Concurrent Studies (Multi-Study Merge)
+                            </span>
+                            <div className="flex flex-col gap-1.5 mt-1.5">
+                              {concurrentPatientStudies.map((other) => (
+                                <div key={other.id} className="flex items-center justify-between bg-slate-900/50 border border-slate-850 p-2 rounded text-[11px] gap-2">
+                                  <div className="flex-1 truncate">
+                                    <p className="font-semibold text-slate-200 truncate">{other.studyDescription || other.modality}</p>
+                                    <span className="text-[9px] text-slate-500 font-mono">ACC: {other.accessionNumber}</span>
+                                  </div>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => handleMergeStudy(other)}
+                                    className="h-6 text-[9.5px] px-2 border-violet-800 text-violet-400 bg-violet-950/20 hover:bg-violet-950/40"
+                                  >
+                                    Merge Study
+                                  </Button>
+                                </div>
+                              ))}
                             </div>
-                            {r.impression && (
-                              <p className="text-slate-400 line-clamp-3 leading-relaxed">
-                                <span className="text-slate-500 font-semibold">Impression: </span>{r.impression}
-                              </p>
-                            )}
-                            {r.findings && !r.impression && (
-                              <p className="text-slate-400 line-clamp-3 leading-relaxed">{r.findings}</p>
-                            )}
-                            {r.impression && (
-                              <button
-                                className="text-left text-violet-400 hover:text-violet-300 text-[9px] underline underline-offset-2 mt-0.5"
-                                onClick={() => {
-                                  const txt = `[Prior ${r.modality || "study"} — ${r.studyDate ? new Date(r.studyDate).toLocaleDateString("en-IN") : "date unknown"}]\nImpression: ${r.impression}`;
-                                  setRawFindings((prev) => prev ? prev + "\n\n" + txt : txt);
-                                  toast({ title: "Prior study added to findings" });
-                                }}
-                              >
-                                + Insert impression into findings
-                              </button>
-                            )}
                           </div>
-                        ))}
+                        )}
+
+                        {/* Prior Reports List */}
+                        <div className="space-y-2">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block border-b border-slate-800 pb-1">
+                            Prior Reports History
+                          </span>
+                          {!(Array.isArray(priorReports) ? priorReports : priorReports?.reports ?? []).length ? (
+                            <div className="flex flex-col items-center justify-center gap-2 py-4 text-slate-500">
+                              <HistoryIcon size={24} className="opacity-30" />
+                              <p className="text-xs text-center">No prior reports found for this patient</p>
+                            </div>
+                          ) : (
+                            <div className="flex flex-col gap-2">
+                              {((Array.isArray(priorReports) ? priorReports : priorReports?.reports ?? []) as any[]).slice(0, 10).map((r: any) => (
+                                <div key={r.id} className="border border-slate-800 rounded-lg p-2 bg-slate-900/40 text-[10px] flex flex-col gap-1">
+                                  <div className="flex items-center justify-between">
+                                    <span className="font-bold text-violet-300">{r.modality || "—"} · {r.studyDescription || r.testName || "Report"}</span>
+                                    <span className="text-slate-500">{r.studyDate ? new Date(r.studyDate).toLocaleDateString("en-IN") : r.reportedAt ? new Date(r.reportedAt).toLocaleDateString("en-IN") : "—"}</span>
+                                  </div>
+                                  {r.impression && (
+                                    <p className="text-slate-400 line-clamp-3 leading-relaxed">
+                                      <span className="text-slate-500 font-semibold">Impression: </span>{r.impression}
+                                    </p>
+                                  )}
+                                  {r.findings && !r.impression && (
+                                    <p className="text-slate-400 line-clamp-3 leading-relaxed">{r.findings}</p>
+                                  )}
+                                  {r.impression && (
+                                    <button
+                                      className="text-left text-violet-400 hover:text-violet-300 text-[9px] underline underline-offset-2 mt-0.5"
+                                      onClick={() => {
+                                        const txt = `[Prior ${r.modality || "study"} — ${r.studyDate ? new Date(r.studyDate).toLocaleDateString("en-IN") : "date unknown"}]\nImpression: ${r.impression}`;
+                                        setRawFindings((prev) => prev ? prev + "\n\n" + txt : txt);
+                                        toast({ title: "Prior study added to findings" });
+                                      }}
+                                    >
+                                      + Insert impression into findings
+                                    </button>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     )}
                   </TabsContent>

@@ -357,8 +357,25 @@ export const CT_PNS_BUILDER: SmartBuilder = {
   ]
 };
 
+export const MRI_MRA_BRAIN_BUILDER: SmartBuilder = {
+  type: "mri_mra_brain",
+  label: "MRI MRA Brain",
+  studyType: "MRI MRA Brain",
+  sections: [
+    {
+      id: "vessels",
+      label: "A. Intracranial Vessels (MRA)",
+      fields: [
+        { id: "vesselsState", type: "select", label: "Vessels State", options: ["Normal", "Mild Stenosis", "Severe Stenosis", "Aneurysm Present", "Occlusion"], required: true },
+        { id: "vesselName", type: "text", label: "Vessel Name", placeholder: "e.g., Right MCA, Basilar", required: false },
+      ],
+    },
+  ],
+};
+
 export const ALL_BUILDERS: SmartBuilder[] = [
   MRI_BRAIN_BUILDER,
+  MRI_MRA_BRAIN_BUILDER,
   MRI_CERVICAL_SPINE_BUILDER,
   MRI_LUMBAR_SPINE_BUILDER,
   MRI_KNEE_BUILDER,
@@ -385,6 +402,7 @@ export function detectBuilderType(modality: string, studyDescription?: string | 
   const mod = (modality ?? "").toLowerCase();
 
   if (mod === "mr" || mod === "mri") {
+    if (desc.includes("mra") || desc.includes("angiogram") || desc.includes("angio")) return "mri_mra_brain";
     if (desc.includes("brain")) return "mri_brain";
     if (desc.includes("cervical")) return "mri_cervical_spine";
     if (desc.includes("lumbar") || desc.includes("lumbo") || desc.includes("lumbosacral") || desc.includes("spine") || desc.includes("ls")) return "mri_lumbar_spine";
@@ -400,6 +418,7 @@ export function detectBuilderType(modality: string, studyDescription?: string | 
   if (mod === "us" || mod === "ultrasound" || mod === "usg") {
     if (desc.includes("abdomen") || desc.includes("abdominal")) return "usg_abdomen";
     if (desc.includes("pelvis") || desc.includes("pelvic")) return "usg_pelvis";
+    return "usg_abdomen";
   }
   if (mod === "xr" || mod === "xray" || mod === "x-ray" || mod === "cr" || mod === "dx") {
     if (desc.includes("chest") || desc.includes("cxr")) return "xray_chest";
@@ -483,6 +502,7 @@ export const DEFAULT_SEED_RULES: ImpressionRule[] = [
 
 export const BUILDER_TECHNIQUES: Record<string, string> = {
   mri_brain: "Multiplanar multisequence MRI of brain.",
+  mri_mra_brain: "Magnetic resonance angiography (MRA) of intracranial vessels.",
   mri_cervical_spine: "Multiplanar multisequence MRI of cervical spine.",
   mri_lumbar_spine: "Multiplanar multisequence MRI of lumbar spine.",
   mri_dorsal_spine: "Multiplanar multisequence MRI of dorsal spine.",
@@ -761,6 +781,21 @@ function generateXrayChestFindings(sel: Record<string, unknown>): string {
   return parts.join("\n");
 }
 
+function generateMriMraBrainFindings(sel: Record<string, unknown>): string {
+  const parts: string[] = [];
+  const state = sel.vesselsState as string;
+  const name = sel.vesselName as string;
+
+  if (state === "Normal") {
+    parts.push("MRA Brain: Major intracranial arteries demonstrate normal caliber and flow signal. No aneurysm, stenosis, or occlusion.");
+  } else if (state) {
+    let desc = `${state}`;
+    if (name) desc += ` involving the ${name}`;
+    parts.push(`MRA Brain: ${desc}.`);
+  }
+  return parts.join("\n");
+}
+
 export function generateSmartReport(
   builderType: string,
   selections: Record<string, unknown>
@@ -768,6 +803,7 @@ export function generateSmartReport(
   let findings = "";
   switch (builderType) {
     case "mri_brain": findings = generateMriBrainFindings(selections); break;
+    case "mri_mra_brain": findings = generateMriMraBrainFindings(selections); break;
     case "mri_cervical_spine": findings = generateMriCervicalFindings(selections); break;
     case "mri_lumbar_spine": findings = generateMriLumbarFindings(selections); break;
     case "mri_dorsal_spine": findings = generateMriDorsalFindings(selections); break;
@@ -859,6 +895,21 @@ export function generateCombinedTitle(builderTypes: string[]): string {
     return "MRI BRAIN WITH SCREENING MRI LUMBOSACRAL SPINE";
   }
 
+  // 4. MRI Brain + MRA
+  if (normalized.includes("mri_brain") && normalized.includes("mri_mra_brain")) {
+    return "MRI BRAIN WITH MRA BRAIN";
+  }
+
+  // 5. MRI Cervical + Dorsal Spine
+  if (normalized.includes("mri_cervical_spine") && normalized.includes("mri_dorsal_spine")) {
+    return "MRI CERVICAL AND DORSAL SPINE";
+  }
+
+  // 6. MRI Lumbar + Whole Spine Screening
+  if (normalized.includes("mri_lumbar_spine") && (normalized.includes("mri_cervical_spine") || normalized.includes("mri_dorsal_spine"))) {
+    return "MRI LUMBAR WITH WHOLE SPINE SCREENING";
+  }
+
   // 4. USG Abdomen + Pelvis
   if (normalized.includes("usg_abdomen") && normalized.includes("usg_pelvis")) {
     return "USG ABDOMEN AND PELVIS";
@@ -893,9 +944,20 @@ export function generateCombinedTechnique(builderTypes: string[]): string {
   const hasMriBrain = normalized.includes("mri_brain");
   const hasMriCervical = normalized.includes("mri_cervical_spine");
   const hasMriLumbar = normalized.includes("mri_lumbar_spine");
+  const hasMriDorsal = normalized.includes("mri_dorsal_spine");
+  const hasMra = normalized.includes("mri_mra_brain");
   
   if (hasMriBrain && hasMriCervical && hasMriLumbar) {
     return "Multiplanar multisequence MRI of brain with screening MRI cervical and lumbosacral spine performed using standard and limited sequence protocol.";
+  }
+  if (hasMriBrain && hasMra) {
+    return "Multiplanar multisequence MRI of brain combined with 3D time-of-flight magnetic resonance angiography (MRA) of intracranial vessels.";
+  }
+  if (hasMriCervical && hasMriDorsal) {
+    return "Multiplanar multisequence MRI of cervical and dorsal spine performed using standard sequence protocol.";
+  }
+  if (hasMriLumbar && (hasMriCervical || hasMriDorsal)) {
+    return "Multiplanar multisequence MRI of lumbar spine combined with screening sagittal T2 sequence of whole spine.";
   }
   if (hasMriBrain && hasMriCervical) {
     return "Multiplanar multisequence MRI of brain with screening MRI cervical spine performed using limited planar and limited sequence protocol.";
@@ -981,6 +1043,8 @@ export function defaultSelections(builderType: string): Record<string, unknown> 
   switch (builderType) {
     case "mri_brain":
       return { whiteMatter: "Normal", atrophy: "None", hydrocephalus: "None" };
+    case "mri_mra_brain":
+      return { vesselsState: "Normal", vesselName: "" };
     case "mri_cervical_spine":
       return { levels: [], findings: [], canalDiameter: "" };
     case "mri_lumbar_spine":

@@ -311,49 +311,128 @@ export default function PreferencesPanel({
         </div>
       )}
 
-      {activeSubTab === "recents" && (
-        <div className="space-y-4">
-          {/* Frequency Analytics Cards */}
-          <div className="grid grid-cols-3 gap-2">
-            <div className="bg-slate-900/50 border border-slate-850 rounded p-2 text-center">
-              <span className="text-[8px] uppercase text-slate-500 block">Today</span>
-              <span className="text-sm font-bold text-emerald-400">{analytics.today}</span>
-            </div>
-            <div className="bg-slate-900/50 border border-slate-850 rounded p-2 text-center">
-              <span className="text-[8px] uppercase text-slate-500 block">This Week</span>
-              <span className="text-sm font-bold text-emerald-400">{analytics.week}</span>
-            </div>
-            <div className="bg-slate-900/50 border border-slate-850 rounded p-2 text-center">
-              <span className="text-[8px] uppercase text-slate-500 block">This Month</span>
-              <span className="text-sm font-bold text-emerald-400">{analytics.month}</span>
-            </div>
-          </div>
+      {activeSubTab === "recents" && (() => {
+        const mostUsed = (() => {
+          const counts: Record<string, { label: string; type: string; count: number }> = {};
+          usageLogs.forEach((log) => {
+            const key = `${log.itemType}-${log.itemId}`;
+            if (!counts[key]) {
+              counts[key] = { label: log.itemLabel, type: log.itemType, count: 0 };
+            }
+            counts[key].count++;
+          });
+          const list = Object.values(counts);
+          const templatesList = list.filter((x) => x.type === "template").sort((a, b) => b.count - a.count).slice(0, 5);
+          const findingsList = list.filter((x) => x.type === "finding").sort((a, b) => b.count - a.count).slice(0, 5);
+          const macrosList = list.filter((x) => x.type === "macro").sort((a, b) => b.count - a.count).slice(0, 5);
+          return { templatesList, findingsList, macrosList };
+        })();
 
-          {/* Recent Usage Logs */}
-          <div className="space-y-2">
-            <span className="text-[10px] uppercase font-bold text-slate-400 block border-b border-slate-800 pb-1">Recently Used Items</span>
-            <div className="flex flex-col gap-1.5 max-h-44 overflow-y-auto">
-              {usageLogs.slice(0, 15).map((log) => (
-                <div key={log.id} className="flex justify-between items-center text-[10.5px] bg-slate-905 border border-slate-850/40 p-1.5 rounded">
-                  <div className="flex gap-2 items-center">
-                    <span className={`px-1 rounded text-[8px] font-bold ${
-                      log.itemType === "macro" ? "bg-emerald-950 text-emerald-400" :
-                      log.itemType === "template" ? "bg-blue-950 text-blue-400" : "bg-purple-950 text-purple-400"
-                    }`}>
-                      {log.itemType.toUpperCase()}
-                    </span>
-                    <span className="truncate text-slate-300 max-w-[120px]">{log.itemLabel}</span>
+        const favFindingsCount = (() => {
+          if (!preferences?.favoriteFindings) return 0;
+          try { return JSON.parse(preferences.favoriteFindings).length; } catch { return 0; }
+        })();
+
+        return (
+          <div className="space-y-4">
+            {/* Frequency Analytics Cards */}
+            <div className="grid grid-cols-3 gap-2">
+              <div className="bg-slate-900/50 border border-slate-850 rounded p-2 text-center">
+                <span className="text-[8px] uppercase text-slate-500 block">Today</span>
+                <span className="text-sm font-bold text-emerald-400">{analytics.today}</span>
+              </div>
+              <div className="bg-slate-900/50 border border-slate-850 rounded p-2 text-center">
+                <span className="text-[8px] uppercase text-slate-500 block">This Week</span>
+                <span className="text-sm font-bold text-emerald-400">{analytics.week}</span>
+              </div>
+              <div className="bg-slate-900/50 border border-slate-850 rounded p-2 text-center">
+                <span className="text-[8px] uppercase text-slate-500 block">This Month</span>
+                <span className="text-sm font-bold text-emerald-400">{analytics.month}</span>
+              </div>
+            </div>
+
+            {/* Pinned/Favorites Summary */}
+            <div className="bg-slate-900/35 border border-slate-850 p-2.5 rounded-lg space-y-1.5">
+              <span className="text-[10px] uppercase font-bold text-slate-400 block border-b border-slate-800 pb-1">Favorites & Pinned</span>
+              <div className="grid grid-cols-2 gap-2 text-[10.5px] text-slate-300">
+                <div>Pinned Templates: <span className="font-bold text-emerald-400">{favTemplates.length}</span></div>
+                <div>Pinned Impressions: <span className="font-bold text-emerald-400">{favImpressions.length}</span></div>
+                <div>Personal Macros: <span className="font-bold text-emerald-400">{personalMacros.length}</span></div>
+                <div>Pinned Findings: <span className="font-bold text-emerald-400">{favFindingsCount}</span></div>
+              </div>
+            </div>
+
+            {/* Most Used sections */}
+            <div className="space-y-3">
+              {mostUsed.templatesList.length > 0 && (
+                <div className="space-y-1">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block border-b border-slate-850/50 pb-0.5">Most Used Templates</span>
+                  <div className="space-y-1">
+                    {mostUsed.templatesList.map((item, idx) => (
+                      <div key={idx} className="flex justify-between items-center text-[10.5px] bg-slate-900/20 px-2 py-1 rounded">
+                        <span className="text-slate-300 truncate max-w-[160px]">{item.label}</span>
+                        <span className="text-[9px] text-slate-500 font-mono">{item.count}x</span>
+                      </div>
+                    ))}
                   </div>
-                  <span className="text-[9px] text-slate-500">{new Date(log.usedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                 </div>
-              ))}
-              {usageLogs.length === 0 && (
-                <p className="text-[10px] text-slate-500 text-center py-4">No reporting item logs yet.</p>
+              )}
+
+              {mostUsed.findingsList.length > 0 && (
+                <div className="space-y-1">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block border-b border-slate-850/50 pb-0.5">Most Used Findings/Impressions</span>
+                  <div className="space-y-1">
+                    {mostUsed.findingsList.map((item, idx) => (
+                      <div key={idx} className="flex justify-between items-center text-[10.5px] bg-slate-900/20 px-2 py-1 rounded">
+                        <span className="text-slate-300 truncate max-w-[160px]">{item.label}</span>
+                        <span className="text-[9px] text-slate-500 font-mono">{item.count}x</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {mostUsed.macrosList.length > 0 && (
+                <div className="space-y-1">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block border-b border-slate-850/50 pb-0.5">Most Used Macros</span>
+                  <div className="space-y-1">
+                    {mostUsed.macrosList.map((item, idx) => (
+                      <div key={idx} className="flex justify-between items-center text-[10.5px] bg-slate-900/20 px-2 py-1 rounded">
+                        <span className="text-slate-300 truncate max-w-[160px]">{item.label}</span>
+                        <span className="text-[9px] text-slate-500 font-mono">{item.count}x</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
+
+            {/* Recent Usage Logs */}
+            <div className="space-y-2">
+              <span className="text-[10px] uppercase font-bold text-slate-400 block border-b border-slate-800 pb-1">Recently Used Items</span>
+              <div className="flex flex-col gap-1.5 max-h-44 overflow-y-auto">
+                {usageLogs.slice(0, 15).map((log) => (
+                  <div key={log.id} className="flex justify-between items-center text-[10.5px] bg-slate-905 border border-slate-850/40 p-1.5 rounded">
+                    <div className="flex gap-2 items-center">
+                      <span className={`px-1 rounded text-[8px] font-bold ${
+                        log.itemType === "macro" ? "bg-emerald-950 text-emerald-400" :
+                        log.itemType === "template" ? "bg-blue-950 text-blue-400" : "bg-purple-950 text-purple-400"
+                      }`}>
+                        {log.itemType.toUpperCase()}
+                      </span>
+                      <span className="truncate text-slate-300 max-w-[120px]">{log.itemLabel}</span>
+                    </div>
+                    <span className="text-[9px] text-slate-500">{new Date(log.usedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                  </div>
+                ))}
+                {usageLogs.length === 0 && (
+                  <p className="text-[10px] text-slate-500 text-center py-4">No reporting item logs yet.</p>
+                )}
+              </div>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Add Macro Dialog */}
       <Dialog open={isAddMacroOpen} onOpenChange={() => setIsAddMacroOpen(false)}>
