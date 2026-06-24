@@ -261,7 +261,7 @@ router.use(
 router.use("/expenses", requireStaffAuth, requireStaffPermission("/accounting"), expensesRouter);
 
 // Ledgers — /accounting permission for mutations; read accessible to all staff
-router.get("/ledgers", requireStaffAuth, async (_req, res) => {
+router.get("/ledgers", requireStaffAuth, requireStaffPermission("/accounting"), async (_req, res) => {
   const { ensureDefaultLedger } = await import("./ledgers");
   await ensureDefaultLedger();
   const ledgers = await db.select().from(ledgersTable).orderBy(ledgersTable.id);
@@ -416,43 +416,42 @@ router.use("/dicom-agent", requireStaffAuth, requireStaffPermission("/dicom-node
 // Enterprise PACS features (upgraded C-ECHO, viewer launch, routing rules,
 // MWL procedures, pulled-studies stats, failed-queue retry).
 // Mounted BEFORE radiologyRouter so its handlers (e.g. echo-test upgrade) win.
-// Radiology is now open to ALL authenticated staff — no /orders permission required.
-router.use("/radiology", requireStaffAuth, pacsEnterpriseRouter);
+router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), pacsEnterpriseRouter);
 
 // USG auto-measurement extraction — all authenticated staff can trigger/review;
 // settings writes require admin role (enforced inside the router).
-router.use("/usg-extraction", requireStaffAuth, usgExtractionRouter);
+router.use("/usg-extraction", requireStaffAuth, requireStaffPermission("/radiology"), usgExtractionRouter);
 
 // USG Doppler measurements — all authenticated staff can read/write.
-router.use("/usg-doppler", requireStaffAuth, usgDopplerRouter);
+router.use("/usg-doppler", requireStaffAuth, requireStaffPermission("/radiology"), usgDopplerRouter);
 
 // USG Report Drafts — all authenticated staff can create/edit drafts.
-router.use("/usg-reports", requireStaffAuth, usgReportsRouter);
-router.use("/usg-critical", requireStaffAuth, usgCriticalAlertsRouter);
-router.use("/usg-analytics", requireStaffAuth, usgAnalyticsRouter);
-router.use("/echo-cardiology", requireStaffAuth, echoCardiologyRouter);
-router.use("/fetal-usg", requireStaffAuth, fetalUsgLevel4Router);
+router.use("/usg-reports", requireStaffAuth, requireStaffPermission("/radiology"), usgReportsRouter);
+router.use("/usg-critical", requireStaffAuth, requireStaffPermission("/radiology"), usgCriticalAlertsRouter);
+router.use("/usg-analytics", requireStaffAuth, requireStaffPermission("/radiology"), usgAnalyticsRouter);
+router.use("/echo-cardiology", requireStaffAuth, requireStaffPermission("/radiology"), echoCardiologyRouter);
+router.use("/fetal-usg", requireStaffAuth, requireStaffPermission("/radiology"), fetalUsgLevel4Router);
 
 // Phase 10: RIS/PACS Foundation — DICOM study management + smart workflow
-router.use("/dicom-studies", requireStaffAuth, dicomStudyManagerRouter);
-router.use("/dicom-workflow", requireStaffAuth, dicomWorkflowRouter);
-router.use("/smart-radiology", requireStaffAuth, smartRadiologyRouter);
+router.use("/dicom-studies", requireStaffAuth, requireStaffPermission("/dicom-nodes"), dicomStudyManagerRouter);
+router.use("/dicom-workflow", requireStaffAuth, requireStaffPermission("/radiology"), dicomWorkflowRouter);
+router.use("/smart-radiology", requireStaffAuth, requireStaffPermission("/radiology"), smartRadiologyRouter);
 
 // Phase 11: RIS/PACS Production Monitoring & Hardening
-router.use("/ris-monitor", requireStaffAuth, risMonitoringRouter);
+router.use("/ris-monitor", requireStaffAuth, requireStaffPermission("/radiology"), risMonitoringRouter);
 
 // Phase 12: Real Radiology Workflow & DICOM Operations
-router.use("/radiology-workflow", requireStaffAuth, radiologyWorkflowRouter);
+router.use("/radiology-workflow", requireStaffAuth, requireStaffPermission("/radiology"), radiologyWorkflowRouter);
 
 // Radiology studies — open to all authenticated staff (doctors, radiologists, etc.)
-router.use("/radiology", requireStaffAuth, radiologyRouter);
+router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), radiologyRouter);
 
 // Radiology Report Generator — staff-accessible report builder with voice dictation,
 // key image upload, template library, draft save, and final report creation.
-// Open to all authenticated staff.
 router.use(
   "/radiology/report-generator",
   requireStaffAuth,
+  requireStaffPermission("/radiology"),
   radiologyReportGeneratorRouter,
 );
 
@@ -460,6 +459,7 @@ router.use(
 router.use(
   "/radiology/structured-report-templates",
   requireStaffAuth,
+  requireStaffPermission("/radiology"),
   structuredReportTemplatesRouter,
 );
 
@@ -467,6 +467,7 @@ router.use(
 router.use(
   "/radiology/snippets",
   requireStaffAuth,
+  requireStaffPermission("/radiology"),
   radiologySnippetsRouter,
 );
 
@@ -474,6 +475,7 @@ router.use(
 router.use(
   "/radiology/knowledge",
   requireStaffAuth,
+  requireStaffPermission("/radiology"),
   radiologyKnowledgeRouter,
 );
 
@@ -481,6 +483,7 @@ router.use(
 router.use(
   "/radiology/smart",
   requireStaffAuth,
+  requireStaffPermission("/radiology"),
   radiologySmartFindingsRouter,
 );
 
@@ -537,7 +540,7 @@ router.use("/samples", requireStaffAuth, samplesRouter);
 router.use("/resolve-barcode", requireStaffAuth, barcodeResolverRouter);
 router.use("/appointments", requireStaffAuth, appointmentsRouter);
 router.use("/online-bookings", requireStaffAuth, onlineBookingsRouter);
-router.use("/daily-summary", requireStaffAuth, dailySummaryRouter);
+router.use("/daily-summary", requireStaffAuth, requireStaffPermission("/reports"), dailySummaryRouter);
 router.use("/dashboard/advanced-summary", requireStaffAuth, advancedDashboardRouter);
 router.use("/dashboard/my-daily-summary", requireStaffAuth, myDailySummaryRouter);
 router.use("/packages", requireStaffAuth, packagesRouter);
