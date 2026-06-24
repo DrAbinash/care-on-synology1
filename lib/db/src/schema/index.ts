@@ -120,4 +120,6 @@ export * from "./scanSessions";
 export * from "./pairedDevices";
 export * from "./scanAuditLogs";
 export * from "./paymentLogs";
+export * from "./voiceDictationLogs";
+
 
