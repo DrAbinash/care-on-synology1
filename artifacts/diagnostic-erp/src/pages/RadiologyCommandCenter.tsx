@@ -223,6 +223,24 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
   const [aiLoading, setAiLoading] = useState(false);
   const [aiOutput, setAiOutput] = useState("");
 
+  // Merge Preview & Rollback states
+  const [mergePreview, setMergePreview] = useState<{
+    title: string;
+    technique: string;
+    findings: string;
+    impression: string[];
+    sourceStudyId: number;
+    studyDescription: string;
+    requiresConfirmation: boolean;
+    otherBuilder: string | null;
+  } | null>(null);
+
+  const [previousDraft, setPreviousDraft] = useState<{
+    technique: string;
+    findings: string;
+    impression: string[];
+  } | null>(null);
+
   // ══════════════════════════════════════════════════════════════════════════
   // DATA FETCHING
   // ══════════════════════════════════════════════════════════════════════════
@@ -853,27 +871,12 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
   const handleMergeStudy = (otherStudy: WorklistEntry) => {
     const otherBuilder = detectBuilderType(otherStudy.modality, otherStudy.studyDescription);
     
-    // Combine builders
-    const currentBuilders = [...selectedBuilders];
-    if (otherBuilder && !currentBuilders.includes(otherBuilder)) {
-      currentBuilders.push(otherBuilder);
-      setSelectedBuilders(currentBuilders);
-      
-      // Initialize selections
-      if (!multiSelections[otherBuilder]) {
-        setMultiSelections(prev => ({
-          ...prev,
-          [otherBuilder]: defaultSelections(otherBuilder)
-        }));
-      }
-    }
-
-    // Update title & technique automatically
     const nextBuilders = otherBuilder && !activeBuilderTypes.includes(otherBuilder)
       ? [...activeBuilderTypes, otherBuilder]
       : activeBuilderTypes;
 
-    setTechnique(generateCombinedTechnique(nextBuilders));
+    const combinedTitle = generateCombinedTitle(nextBuilders);
+    const combinedTechnique = generateCombinedTechnique(nextBuilders);
 
     // Merge raw findings and impressions if the other study has existing draft text
     let additionalFindings = "";
@@ -896,28 +899,79 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
       }
     }
 
-    // Avoid duplication
-    setRawFindings(prev => {
-      let next = prev;
-      if (additionalFindings && !prev.includes(additionalFindings)) {
-        next = prev ? prev + "\n\n" + additionalFindings : additionalFindings;
-      }
-      return next;
-    });
+    // Combine findings and impressions preview-first
+    let previewFindings = rawFindings;
+    if (additionalFindings && !previewFindings.includes(additionalFindings)) {
+      previewFindings = previewFindings ? previewFindings + "\n\n" + additionalFindings : additionalFindings;
+    }
 
+    let previewImpression = [...impression];
     if (additionalImpressions.length > 0) {
-      setImpression(prev => {
-        const next = [...prev];
-        additionalImpressions.forEach(imp => {
-          if (!next.includes(imp) && imp.trim()) next.push(imp);
-        });
-        return next;
+      additionalImpressions.forEach(imp => {
+        if (!previewImpression.includes(imp) && imp.trim()) previewImpression.push(imp);
       });
     }
 
+    // Check confirmation rules:
+    const sameAccessionGroup = otherStudy.accessionNumber === study?.accessionNumber;
+    const sameVisitDate = otherStudy.studyDate === study?.studyDate;
+    const requiresConfirmation = !sameAccessionGroup && !sameVisitDate;
+
+    setMergePreview({
+      title: combinedTitle,
+      technique: combinedTechnique,
+      findings: previewFindings,
+      impression: previewImpression,
+      sourceStudyId: otherStudy.id,
+      studyDescription: otherStudy.studyDescription || otherStudy.modality,
+      requiresConfirmation,
+      otherBuilder
+    });
+  };
+
+  const applyMerge = () => {
+    if (!mergePreview) return;
+
+    // Save previous draft for rollback
+    setPreviousDraft({
+      technique,
+      findings: rawFindings,
+      impression
+    });
+
+    // Apply merged states
+    setTechnique(mergePreview.technique);
+    setRawFindings(mergePreview.findings);
+    setImpression(mergePreview.impression);
+
+    // Apply builder mappings if not already active
+    if (mergePreview.otherBuilder && !selectedBuilders.includes(mergePreview.otherBuilder)) {
+      const nextBuilders = [...selectedBuilders, mergePreview.otherBuilder];
+      setSelectedBuilders(nextBuilders);
+      if (!multiSelections[mergePreview.otherBuilder]) {
+        setMultiSelections(prev => ({
+          ...prev,
+          [mergePreview.otherBuilder!]: defaultSelections(mergePreview.otherBuilder!)
+        }));
+      }
+    }
+
+    setMergePreview(null);
     toast({
-      title: "Studies Merged",
-      description: `Merged with ${otherStudy.studyDescription || otherStudy.modality} study.`
+      title: "Merge Applied",
+      description: "Click 'Rollback Merge' in the action bar if you need to restore the previous draft.",
+    });
+  };
+
+  const rollbackMerge = () => {
+    if (!previousDraft) return;
+    setTechnique(previousDraft.technique);
+    setRawFindings(previousDraft.findings);
+    setImpression(previousDraft.impression);
+    setPreviousDraft(null);
+    toast({
+      title: "Rollback Complete",
+      description: "Previous draft restored successfully."
     });
   };
 
@@ -2136,6 +2190,17 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                 </div>
 
                 <div className="flex gap-2">
+                  {previousDraft && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8 text-xs border-amber-850/60 text-amber-400 bg-amber-950/20 hover:bg-amber-950/40"
+                      onClick={rollbackMerge}
+                    >
+                      <RotateCcw size={12} className="mr-1.5" />
+                      Rollback Merge
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     variant="outline"
@@ -2245,6 +2310,84 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                   Force Admin Override
                 </Button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Multi-Study Merge Preview Modal */}
+      {mergePreview && (
+        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in zoom-in-95 duration-200">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl max-w-2xl w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+              <h3 className="text-sm font-bold text-violet-400 uppercase tracking-wide flex items-center gap-1.5">
+                <GitCompare size={16} />
+                Multi-Study Merge Preview
+              </h3>
+              <Badge variant="outline" className="text-[10px] text-slate-400 border-slate-800">
+                Source: {mergePreview.studyDescription}
+              </Badge>
+            </div>
+
+            {mergePreview.requiresConfirmation && (
+              <div className="bg-amber-950/20 border border-amber-900/35 p-3 rounded text-[11px] text-amber-300 flex items-start gap-2">
+                <AlertTriangle size={14} className="shrink-0 text-amber-500 mt-0.5" />
+                <div>
+                  <p className="font-semibold">Visit / Accession Mismatch Detected</p>
+                  <p className="mt-0.5">The selected study does not belong to the same visit or accession group. Please verify manually before applying.</p>
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-3 text-xs max-h-[400px] overflow-y-auto pr-1">
+              <div>
+                <span className="text-[10px] text-slate-500 font-bold uppercase block">Generated Combined Title</span>
+                <p className="text-slate-200 font-semibold font-mono bg-slate-950 p-2 rounded mt-1 border border-slate-850">
+                  {mergePreview.title}
+                </p>
+              </div>
+
+              <div>
+                <span className="text-[10px] text-slate-500 font-bold uppercase block">Generated Combined Technique</span>
+                <p className="text-slate-300 bg-slate-950 p-2 rounded mt-1 border border-slate-850 whitespace-pre-wrap">
+                  {mergePreview.technique}
+                </p>
+              </div>
+
+              <div>
+                <span className="text-[10px] text-slate-500 font-bold uppercase block">Section-Wise Merged Findings</span>
+                <div className="text-slate-300 bg-slate-950 p-2.5 rounded mt-1 border border-slate-850 whitespace-pre-wrap font-mono text-[11px] leading-relaxed max-h-40 overflow-y-auto">
+                  {mergePreview.findings}
+                </div>
+              </div>
+
+              <div>
+                <span className="text-[10px] text-slate-500 font-bold uppercase block">Combined Impressions Preview</span>
+                <ol className="list-decimal pl-4 mt-1.5 space-y-1 text-slate-300">
+                  {mergePreview.impression.filter(Boolean).map((imp, idx) => (
+                    <li key={idx}>{imp}</li>
+                  ))}
+                  {mergePreview.impression.filter(Boolean).length === 0 && (
+                    <li className="text-slate-500 italic">No impressions generated.</li>
+                  )}
+                </ol>
+              </div>
+            </div>
+
+            <div className="flex gap-3 justify-end pt-3 border-t border-slate-800">
+              <Button
+                variant="outline"
+                className="text-xs h-9 bg-slate-950 hover:bg-slate-900 border-slate-800 text-slate-303"
+                onClick={() => setMergePreview(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                className="text-xs h-9 bg-violet-600 hover:bg-violet-700 text-white font-semibold"
+                onClick={applyMerge}
+              >
+                Apply to Draft
+              </Button>
             </div>
           </div>
         </div>

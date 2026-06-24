@@ -1,6 +1,6 @@
 # Walkthrough — Radiology Reporting System Enhancements
 
-All requested radiology reporting enhancements have been successfully audited, implemented, and verified.
+All requested radiology reporting enhancements and safety modifications have been successfully audited, implemented, and verified.
 
 ## 1. Summary of Work
 
@@ -9,24 +9,46 @@ All requested radiology reporting enhancements have been successfully audited, i
 - **Structured Findings Builder**: Dedicated builders for brain, spine, CT, USG, and X-ray.
 - **Personal Macros, Favorites, and Recents**: Database and preference schemas tracking starred templates, impressions, and log usage events.
 
-### What Was Enhanced
-- **A. Configurable Chocolate Box**: Added settings controls to customize grid column counts, set limits on visible tiles, and support wide-monitor horizontal stretching.
-- **B. Study-Aware Findings**: Enhanced auto-loading detection with fallback options (e.g. USG modality defaults to USG findings if no specific abdomen/pelvis matches).
-- **D. Reporting Usage Analytics**: Expanded the analytics interface under Preferences/Analytics to aggregate and rank the top 5 most used templates, findings/impressions, and macros by frequency, alongside favorites count metrics.
+### What Was Enhanced & Newly Implemented
 
-### What Was Newly Added
-- **C. Multi-Study Merge Engine**: Added a concurrent multi-study merge selector inside the **Prior Studies** sidebar tab. Radiologists can now detect same-patient concurrent studies in the queue and merge titles, techniques, findings, and impressions into a single consolidated report with deduplication logic.
+#### A. Configurable Chocolate Box (Per-User Preferences)
+- Added new per-user browser configuration states (persisted in `localStorage`):
+  - **Grid Columns**: Select between Auto (Responsive), 3, 4, 5, or 6 columns.
+  - **Max Tiles limit**: Slice tile output.
+  - **Wide Sizing**: Support wide-screen monitor stretching.
+  - **Layout Density**: Support **Compact** (smaller tiles, optimized paddings and fonts) and **Comfortable** views.
+  - **Favorites First**: Toggle whether pinned findings should always sort first.
+
+#### B. Study-Aware Findings (Manual Override Capable)
+- Automatically detects and maps the appropriate builder on study load (including a fallback general USG -> `usg_abdomen` rule).
+- **Manual override**: The user can manually add, remove, or change builders at any time from the Body Part Map selector inside the structured findings tab.
+
+#### C. Preview-First Multi-Study Merge (Rule Conforming)
+- **Preview-First**: Clicking **Merge Study** no longer overwrites the draft directly. Instead, it opens a **Merge Preview Dialog** presenting:
+  - Generated combined Title.
+  - Generated combined Technique (with support for whole spine MRI, MRI brain + MRA combos, and USG abdomen + pelvis).
+  - Section-wise findings merge preview.
+  - Combined impressions list.
+- **Accession/Visit Validation**: Checks if visit dates or accession numbers mismatch and alerts the radiologist.
+- **Rollback Option**: Preserves the active report draft before applying the merge, offering a **Rollback Merge** button to restore the previous state.
+
+#### D. Lightweight Reporting Usage Analytics
+- Added aggregated "Most Used" templates, findings, and macros, alongside favorites summary counts in the **Analytics** sub-tab.
+- **Lightweight queries**: Keystrokes do not trigger database queries. Event logging is write-only, and analytics logs are fetched using React Query caching protocols when opening the tab.
 
 ---
 
 ## 2. Files Changed
 - **Frontend App:** [RadiologyCommandCenter.tsx](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/pages/RadiologyCommandCenter.tsx)
-  - Auto-selects builders on study change.
-  - Implements the multi-study merge helper (`handleMergeStudy`) and displays the merge interface under the **Prior Studies** tab.
+  - Implemented preview modal state (`mergePreview`) and rollback cache (`previousDraft`).
+  - Added accession/visit date checks.
 - **Smart Engine:** [radiologySmartEngine.ts](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/lib/radiologySmartEngine.ts)
-  - Adds general USG fallback matching.
+  - Added fallback general USG builder detection.
+  - Added Whole Spine combined technique composer.
 - **Preferences Component:** [PreferencesPanel.tsx](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/components/PreferencesPanel.tsx)
-  - Computes and displays most used items and favorites summary metrics in the Analytics view.
+  - Grouped and sorted usage logs by count to display top-used items and favorites summary counts.
+- **Chocolate Box:** [ChocolateBoxPanel.tsx](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/components/ChocolateBoxPanel.tsx)
+  - Added per-user density and favorites-first configurations.
 
 ---
 
@@ -37,19 +59,11 @@ All requested radiology reporting enhancements have been successfully audited, i
 
 ### Manual Test Checklist
 1. **Chocolate Box Settings**:
-   - Open any study and click the **Layout** button in the Chocolate Box panel.
-   - Change columns to 3/4/5/6 or Auto, and toggle limits (12/24/etc.) and Wide monitor stretching. Verify responsive updates.
-2. **Study-Aware Mapping**:
-   - Select an MRI Brain study. Observe that Brain Findings load automatically.
-   - Select a USG study. Observe that USG findings/builder load.
-3. **Multi-Study Merge**:
-   - Select a patient with multiple studies in the worklist (e.g., MRI Brain + MRI Cervical).
-   - In the **Prior Studies** tab, locate **Concurrent Studies** and click **Merge Study**.
-   - Verify that:
-     - The technique updates to the combined string.
-     - Findings and impressions are combined in the editor without duplication.
-     - Both builders show up as active.
-4. **Analytics View**:
-   - Select the **Prefs** tab, then switch to the **Analytics** sub-tab.
-   - Verify the counts for Pinned Templates, Pinned Impressions, Personal Macros, and Pinned Findings.
-   - Verify the top-used items frequency lists populate.
+   - Click **Layout** in the Chocolate Box panel. Change Layout Density to **Compact**; observe smaller tile heights (h-16) and fonts.
+   - Toggle **Favorites First** to see favorites sorting.
+2. **Study-Aware Override**:
+   - Check that selection defaults are active. Toggle/add other builders manually; verify the active study context updates.
+3. **Preview-First Merge**:
+   - Under the **Prior Studies** tab, select a concurrent study and click **Merge Study**.
+   - Verify the preview modal shows up showing generated Title/Technique/Merged Findings/Combined Impression.
+   - Click **Apply to Draft**; verify the report is updated. Click **Rollback Merge**; check that the previous draft is restored.

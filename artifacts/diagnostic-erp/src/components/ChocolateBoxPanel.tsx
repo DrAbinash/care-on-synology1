@@ -56,6 +56,8 @@ export default function ChocolateBoxPanel({
   const [columns, setColumns] = useState<string>(() => localStorage.getItem("choc_box_cols") || "auto");
   const [tileLimit, setTileLimit] = useState<number>(() => Number(localStorage.getItem("choc_box_limit") || "0"));
   const [layoutWidth, setLayoutWidth] = useState<string>(() => localStorage.getItem("choc_box_width") || "standard");
+  const [layoutDensity, setLayoutDensity] = useState<string>(() => localStorage.getItem("choc_box_density") || "comfortable");
+  const [favoritesFirst, setFavoritesFirst] = useState<boolean>(() => localStorage.getItem("choc_box_favs_first") !== "false");
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Admin Form States
@@ -252,12 +254,14 @@ export default function ChocolateBoxPanel({
 
     // Sort favorites first
     return [...filtered].sort((a, b) => {
-      const aFav = favoritesList.includes(a.id) ? 1 : 0;
-      const bFav = favoritesList.includes(b.id) ? 1 : 0;
-      if (aFav !== bFav) return bFav - aFav; // favorite (1) before non-favorite (0)
+      if (favoritesFirst) {
+        const aFav = favoritesList.includes(a.id) ? 1 : 0;
+        const bFav = favoritesList.includes(b.id) ? 1 : 0;
+        if (aFav !== bFav) return bFav - aFav; // favorite (1) before non-favorite (0)
+      }
       return a.sortOrder - b.sortOrder;
     });
-  }, [findings, customTiles, pinnedOnly, favoritesList, searchQuery, modality, bodyPart]);
+  }, [findings, customTiles, pinnedOnly, favoritesList, searchQuery, modality, bodyPart, favoritesFirst]);
 
   const limitedVisibleFindings = React.useMemo(() => {
     if (tileLimit > 0) return allVisibleFindings.slice(0, tileLimit);
@@ -332,7 +336,7 @@ export default function ChocolateBoxPanel({
 
       {/* Responsive layout preference selectors */}
       {isSettingsOpen && (
-        <div className="bg-slate-900 border border-slate-850 rounded-xl p-3.5 grid grid-cols-3 gap-3 text-xs text-slate-300 transition-all">
+        <div className="bg-slate-900 border border-slate-850 rounded-xl p-3.5 grid grid-cols-2 md:grid-cols-5 gap-3 text-xs text-slate-300 transition-all">
           <div className="space-y-1">
             <span className="text-[10px] text-slate-500 font-bold uppercase">Grid Columns</span>
             <select
@@ -384,6 +388,37 @@ export default function ChocolateBoxPanel({
               <option value="wide">Wide (Stretch)</option>
             </select>
           </div>
+
+          <div className="space-y-1">
+            <span className="text-[10px] text-slate-500 font-bold uppercase">Layout Density</span>
+            <select
+              value={layoutDensity}
+              onChange={(e) => {
+                setLayoutDensity(e.target.value);
+                localStorage.setItem("choc_box_density", e.target.value);
+              }}
+              className="w-full text-xs h-8 rounded border border-slate-800 bg-slate-950 text-slate-200 focus:outline-none"
+            >
+              <option value="comfortable">Comfortable</option>
+              <option value="compact">Compact</option>
+            </select>
+          </div>
+
+          <div className="space-y-1">
+            <span className="text-[10px] text-slate-500 font-bold uppercase">Favorites First</span>
+            <select
+              value={favoritesFirst ? "true" : "false"}
+              onChange={(e) => {
+                const val = e.target.value === "true";
+                setFavoritesFirst(val);
+                localStorage.setItem("choc_box_favs_first", String(val));
+              }}
+              className="w-full text-xs h-8 rounded border border-slate-800 bg-slate-950 text-slate-200 focus:outline-none"
+            >
+              <option value="true">Yes</option>
+              <option value="false">No</option>
+            </select>
+          </div>
         </div>
       )}
 
@@ -396,7 +431,9 @@ export default function ChocolateBoxPanel({
           return (
             <div
               key={finding.id}
-              className={`relative rounded-xl border p-3 cursor-pointer select-none transition-all flex flex-col justify-between h-24 ${
+              className={`relative rounded-xl border cursor-pointer select-none transition-all flex flex-col justify-between ${
+                layoutDensity === "compact" ? "h-16 p-2 text-[10.5px]" : "h-24 p-3 text-xs"
+              } ${
                 isSelected
                   ? "bg-emerald-950/40 border-emerald-500 text-emerald-400 shadow-md shadow-emerald-950/50"
                   : "bg-slate-900/60 border-slate-800 text-slate-300 hover:bg-slate-800/60"
@@ -404,7 +441,9 @@ export default function ChocolateBoxPanel({
               onClick={() => onSelectFinding(finding)}
             >
               <div className="flex justify-between items-start gap-1">
-                <span className="font-bold text-xs line-clamp-2 leading-tight">
+                <span className={`font-bold line-clamp-2 leading-tight ${
+                  layoutDensity === "compact" ? "text-[10.5px]" : "text-xs"
+                }`}>
                   {finding.shortName}
                 </span>
 

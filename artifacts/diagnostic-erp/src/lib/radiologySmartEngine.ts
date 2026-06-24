@@ -947,6 +947,9 @@ export function generateCombinedTechnique(builderTypes: string[]): string {
   const hasMriDorsal = normalized.includes("mri_dorsal_spine");
   const hasMra = normalized.includes("mri_mra_brain");
   
+  if (hasMriCervical && hasMriDorsal && hasMriLumbar) {
+    return "Multiplanar multisequence MRI of cervical, dorsal and lumbar spine (whole spine) performed using standard sagittal and axial sequence protocol.";
+  }
   if (hasMriBrain && hasMriCervical && hasMriLumbar) {
     return "Multiplanar multisequence MRI of brain with screening MRI cervical and lumbosacral spine performed using standard and limited sequence protocol.";
   }
