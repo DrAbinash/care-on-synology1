@@ -1,6 +1,6 @@
-# Walkthrough — Radiology Reporting System & Onboarding Handbook
+# Walkthrough — Radiology Reporting System, Handbooks & API Catalog
 
-All requested radiology reporting enhancements, safety modifications, and onboarding documentations have been successfully verified and completed.
+All requested radiology reporting enhancements, safety modifications, developer handbooks, and API inventories have been successfully verified and completed.
 
 ## 1. Summary of Work
 
@@ -39,6 +39,9 @@ All requested radiology reporting enhancements, safety modifications, and onboar
 #### E. Onboarding AI Developer Handbook
 - Created [AI_DEVELOPER_HANDBOOK.md](file:///c:/Users/abina/caredeoghar--antigravity/docs/AI_DEVELOPER_HANDBOOK.md) to serve as a comprehensive onboarding reference.
 
+#### F. API Catalog Document
+- Created [API_INVENTORY.md](file:///c:/Users/abina/caredeoghar--antigravity/API_INVENTORY.md) cataloging all public routes, authenticated ERP routes, and teleradiology endpoints.
+
 ---
 
 ## 2. Files Changed
@@ -46,7 +49,9 @@ All requested radiology reporting enhancements, safety modifications, and onboar
 - **Smart Engine:** [radiologySmartEngine.ts](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/lib/radiologySmartEngine.ts)
 - **Preferences Component:** [PreferencesPanel.tsx](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/components/PreferencesPanel.tsx)
 - **Chocolate Box:** [ChocolateBoxPanel.tsx](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/components/ChocolateBoxPanel.tsx)
-- **Documentation:** [AI_DEVELOPER_HANDBOOK.md](file:///c:/Users/abina/caredeoghar--antigravity/docs/AI_DEVELOPER_HANDBOOK.md)
+- **Documentation:**
+  - [AI_DEVELOPER_HANDBOOK.md](file:///c:/Users/abina/caredeoghar--antigravity/docs/AI_DEVELOPER_HANDBOOK.md)
+  - [API_INVENTORY.md](file:///c:/Users/abina/caredeoghar--antigravity/API_INVENTORY.md)
 
 ---
 
