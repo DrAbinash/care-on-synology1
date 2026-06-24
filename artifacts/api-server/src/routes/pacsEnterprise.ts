@@ -2482,6 +2482,89 @@ router.get("/network/health-monitor", async (req, res) => {
   }
 });
 
+router.get("/network/diagnostics", async (req, res) => {
+  try {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    // 1. Modalities
+    const modalities = await db.select().from(dicomNodesTable);
+    const modalityDiagnostics = modalities.map((m) => ({
+      id: m.id,
+      aeTitle: m.aeTitle,
+      ip: m.host,
+      port: m.port,
+      lastCEcho: m.lastTestAt ? m.lastTestAt.toISOString() : null,
+      lastCFind: m.lastPullAt ? m.lastPullAt.toISOString() : null,
+      lastCMove: m.lastPullAt ? m.lastPullAt.toISOString() : null,
+      lastReceivedStudy: m.lastPullAt ? m.lastPullAt.toISOString() : null,
+      lastErpSync: m.lastPullAt ? m.lastPullAt.toISOString() : null,
+      lastError: m.lastPullMessage || m.lastTestMessage || null,
+      status: m.lastPullStatus || "unknown"
+    }));
+
+    // 2. Orthanc
+    const [studiesTodayRes] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(radiologyWorklistTable)
+      .where(gte(radiologyWorklistTable.createdAt, todayStart));
+    
+    const [lastWorklistRow] = await db
+      .select({ createdAt: radiologyWorklistTable.createdAt })
+      .from(radiologyWorklistTable)
+      .orderBy(desc(radiologyWorklistTable.createdAt))
+      .limit(1);
+
+    const orthancDiagnostics = {
+      studiesToday: studiesTodayRes?.count ?? 0,
+      lastModalityConnection: lastWorklistRow?.createdAt ? lastWorklistRow.createdAt.toISOString() : null,
+      lastRetrieval: lastWorklistRow?.createdAt ? lastWorklistRow.createdAt.toISOString() : null,
+      lastErpNotification: lastWorklistRow?.createdAt ? lastWorklistRow.createdAt.toISOString() : null,
+    };
+
+    // 3. ERP
+    const [lastReceived] = await db
+      .select({ createdAt: radiologyWorklistTable.createdAt })
+      .from(radiologyWorklistTable)
+      .orderBy(desc(radiologyWorklistTable.createdAt))
+      .limit(1);
+
+    const [lastStudy] = await db
+      .select({ createdAt: radiologyStudiesTable.createdAt })
+      .from(radiologyStudiesTable)
+      .orderBy(desc(radiologyStudiesTable.createdAt))
+      .limit(1);
+
+    const [lastSyncErrLog] = await db
+      .select({ createdAt: pacsLogsTable.createdAt })
+      .from(pacsLogsTable)
+      .where(and(
+        eq(pacsLogsTable.severity, "error"),
+        or(
+          ilike(pacsLogsTable.source, "%sync%"),
+          ilike(pacsLogsTable.message, "%sync%")
+        )
+      ))
+      .orderBy(desc(pacsLogsTable.createdAt))
+      .limit(1);
+
+    const erpDiagnostics = {
+      lastStudyReceived: lastReceived?.createdAt ? lastReceived.createdAt.toISOString() : null,
+      lastWorklistInsertion: lastStudy?.createdAt ? lastStudy.createdAt.toISOString() : null,
+      lastSyncFailure: lastSyncErrLog?.createdAt ? lastSyncErrLog.createdAt.toISOString() : null,
+    };
+
+    res.json({
+      ok: true,
+      modalities: modalityDiagnostics,
+      orthanc: orthancDiagnostics,
+      erp: erpDiagnostics
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 router.get("/network/lua-hook/conquest", async (req, res) => {
   const cfg = await getRadiologyConfig();
   const erpUrl = `${cfg.erp.internalApiUrl}/radiology/studies`;

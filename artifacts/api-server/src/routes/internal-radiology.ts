@@ -158,7 +158,7 @@ router.post("/radiology/studies", async (req, res) => {
   try {
     const b = rawBody as Record<string, unknown>;
 
-    const studyId = typeof b.studyId === "number" ? b.studyId : undefined;
+    const rawStudyId = b.studyId;
     const patientId = b.patientId !== undefined ? String(b.patientId) : "";
     const patientName = typeof b.patientName === "string" ? b.patientName.trim() : "";
     const age = typeof b.age === "string" ? b.age.trim() || null : null;
@@ -186,6 +186,47 @@ router.post("/radiology/studies", async (req, res) => {
       logger.warn("Missing patientName");
       res.status(400).json({ success: false, error: "patientName is required" });
       return;
+    }
+
+    // Resolve studyId and update status in radiology_studies via accessionNumber
+    let resolvedStudyId: number | null = typeof rawStudyId === "number" ? rawStudyId : null;
+
+    if (!resolvedStudyId && accessionNumber) {
+      const [rStudy] = await db
+        .select({ id: radiologyStudiesTable.id, status: radiologyStudiesTable.status })
+        .from(radiologyStudiesTable)
+        .where(eq(radiologyStudiesTable.accessionNumber, accessionNumber))
+        .limit(1);
+      
+      if (rStudy) {
+        resolvedStudyId = rStudy.id;
+        logger.info({ accessionNumber, resolvedStudyId }, "Linked incoming PACS study to radiology_studies order via accessionNumber");
+        
+        const updates: Partial<typeof radiologyStudiesTable.$inferInsert> = {
+          updatedAt: new Date(),
+        };
+        
+        if (rStudy.status === "scheduled" || rStudy.status === "in_progress") {
+          updates.status = "acquired";
+          updates.acquiredAt = new Date();
+        }
+        
+        if (studyInstanceUID) {
+          updates.studyInstanceUid = studyInstanceUID;
+        }
+
+        await db
+          .update(radiologyStudiesTable)
+          .set(updates)
+          .where(eq(radiologyStudiesTable.id, rStudy.id));
+
+        await audit({
+          accessionNumber,
+          action: "MWL_STATUS_UPDATED",
+          actor: "pacs",
+          details: { from: rStudy.status, to: updates.status ?? rStudy.status, reason: "pacs study intake" },
+        });
+      }
     }
 
     const rawDicomPatientId = patientId || null;
@@ -249,7 +290,7 @@ router.post("/radiology/studies", async (req, res) => {
     }
 
     const values = {
-      studyId: studyId ?? null,
+      studyId: resolvedStudyId,
       patientId: resolvedPatientId,
       dicomPatientId: rawDicomPatientId,
       patientMatchStatus,
