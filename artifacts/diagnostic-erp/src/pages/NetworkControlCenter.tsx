@@ -279,6 +279,47 @@ export default function NetworkControlCenter() {
       });
   };
 
+  const formatTime = (isoString: string | null) => {
+    if (!isoString) return "Never";
+    try {
+      const d = new Date(isoString);
+      return d.toLocaleString("en-US", {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: true,
+      });
+    } catch {
+      return "Invalid Date";
+    }
+  };
+
+  const getHealthStatusDetails = (status: "green" | "yellow" | "red" | undefined) => {
+    switch (status) {
+      case "green":
+        return {
+          bg: "bg-emerald-950/40 border-emerald-800/40 text-emerald-400",
+          dot: "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)] animate-pulse",
+          label: "Green / Active"
+        };
+      case "yellow":
+        return {
+          bg: "bg-amber-950/40 border-amber-800/40 text-amber-400",
+          dot: "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.6)] animate-pulse",
+          label: "Yellow / Warning"
+        };
+      case "red":
+      default:
+        return {
+          bg: "bg-red-950/40 border-red-800/40 text-red-400",
+          dot: "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)] animate-pulse",
+          label: "Red / Offline"
+        };
+    }
+  };
+
   return (
     <div className="container mx-auto p-6 max-w-7xl space-y-6">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b pb-4">
@@ -297,11 +338,12 @@ export default function NetworkControlCenter() {
               refetchHealth();
               refetchWarnings();
               refetchModalities();
+              refetchMonitor();
               toast({ title: "Refreshing Probes", description: "Triggered live network diagnostics..." });
             }}
-            disabled={healthFetching}
+            disabled={healthFetching || monitorFetching}
           >
-            <RefreshCw className={`h-4 w-4 mr-1.5 ${healthFetching ? "animate-spin" : ""}`} />
+            <RefreshCw className={`h-4 w-4 mr-1.5 ${(healthFetching || monitorFetching) ? "animate-spin" : ""}`} />
             Refresh Diagnostics
           </Button>
         </div>
@@ -378,6 +420,122 @@ export default function NetworkControlCenter() {
             <ShieldCheck className="h-8 w-8 text-amber-400" />
             <span className="text-xs font-semibold text-amber-300">Reporting Center</span>
             <span className="text-[10px] text-slate-400 font-mono">AI Assist / Finalize</span>
+          </div>
+        </div>
+      </div>
+
+      {/* PACS Health Monitor Dashboard */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-white shadow-lg space-y-6">
+        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+          <h3 className="text-sm font-semibold tracking-wider uppercase text-slate-400 flex items-center gap-2">
+            <Activity className="h-4.5 w-4.5 text-emerald-400 animate-pulse" />
+            PACS Health Monitor
+          </h3>
+          {(monitorFetching || healthFetching) && (
+            <span className="text-xs text-slate-500 animate-pulse flex items-center gap-1.5 font-mono">
+              <RefreshCw className="h-3.5 w-3.5 animate-spin text-emerald-500" />
+              Polling Live Metrics...
+            </span>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {/* Health Status Column */}
+          <div className="space-y-4">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">Health Status</h4>
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { name: "Orthanc", key: "orthanc" as const },
+                { name: "Conquest", key: "conquest" as const },
+                { name: "ERP Sync", key: "erpSync" as const },
+                { name: "OHIF", key: "ohif" as const },
+                { name: "Weasis", key: "weasis" as const },
+                { name: "DICOM Puller", key: "dicomPuller" as const },
+              ].map((service) => {
+                const status = monitorData?.health?.[service.key] ?? "red";
+                const details = getHealthStatusDetails(status);
+                return (
+                  <div
+                    key={service.name}
+                    className={`flex flex-col p-3 rounded-xl border ${details.bg} transition-all duration-300 hover:scale-[1.02]`}
+                  >
+                    <span className="text-[10px] uppercase font-bold tracking-wide opacity-80">{service.name}</span>
+                    <div className="flex items-center gap-2 mt-2">
+                      <span className={`h-2.5 w-2.5 rounded-full ${details.dot}`} />
+                      <span className="text-xs font-semibold">{details.label}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Daily Counters Column */}
+          <div className="space-y-4">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">Daily Counters</h4>
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { label: "Studies Received Today", value: monitorData?.counters?.receivedToday ?? 0, color: "text-sky-400" },
+                { label: "Studies Synced Today", value: monitorData?.counters?.syncedToday ?? 0, color: "text-emerald-400" },
+                { label: "Failed Today", value: monitorData?.counters?.failedToday ?? 0, color: "text-red-400" },
+                { label: "Viewer Launch Failures", value: monitorData?.counters?.launchFailures ?? 0, color: "text-amber-400" },
+                { label: "ERP Sync Failures", value: monitorData?.counters?.syncFailures ?? 0, color: "text-rose-400" },
+              ].map((counter, idx) => (
+                <div
+                  key={idx}
+                  className="bg-slate-800/50 border border-slate-700/60 rounded-xl p-3 flex flex-col justify-between hover:bg-slate-800/80 transition-colors"
+                >
+                  <span className="text-[10px] text-slate-400 font-semibold leading-tight">{counter.label}</span>
+                  <span className={`text-2xl font-bold mt-2 font-mono ${counter.color}`}>{counter.value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Operational Timestamps Column */}
+          <div className="space-y-4">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">Live Operations Timestamps</h4>
+            <div className="bg-slate-800/30 border border-slate-800/80 rounded-xl p-4 space-y-3 font-mono text-xs">
+              {[
+                { label: "Last Study Received", val: monitorData?.timestamps?.lastStudyReceived },
+                { label: "Last Orthanc Import", val: monitorData?.timestamps?.lastOrthancImport },
+                { label: "Last ERP Sync", val: monitorData?.timestamps?.lastErpSync },
+                { label: "Last Worklist Creation", val: monitorData?.timestamps?.lastWorklistCreation },
+                { label: "Last OHIF Launch", val: monitorData?.timestamps?.lastOhifLaunch },
+                { label: "Last Weasis Launch", val: monitorData?.timestamps?.lastWeasisLaunch },
+              ].map((t, idx) => (
+                <div key={idx} className="flex justify-between items-center border-b border-slate-800/60 pb-1.5 last:border-0 last:pb-0">
+                  <span className="text-[11px] text-slate-400 font-sans">{t.label}</span>
+                  <span className="text-[11px] text-slate-200 font-semibold">{formatTime(t.val ?? null)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Recent Errors Section (Terminal Style) */}
+        <div className="space-y-3 border-t border-slate-850 pt-4">
+          <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+            <Terminal className="h-4 w-4 text-red-400" />
+            Recent Errors & Warnings Log (Last 20)
+          </h4>
+          <div className="bg-slate-950 border border-slate-850 rounded-xl p-4 font-mono text-[11px] h-52 overflow-y-auto space-y-2 scrollbar-thin scrollbar-thumb-slate-800">
+            {!monitorData?.recentErrors || monitorData.recentErrors.length === 0 ? (
+              <div className="text-slate-500 italic text-center py-4">No recent errors or warnings logged in PACS audit table.</div>
+            ) : (
+              monitorData.recentErrors.map((log) => {
+                const isErr = log.severity?.toLowerCase() === "error";
+                const color = isErr ? "text-red-400" : "text-amber-400";
+                return (
+                  <div key={log.id} className="flex items-start gap-2 border-b border-slate-900/60 pb-1.5 last:border-0 last:pb-0 font-mono">
+                    <span className="text-slate-500 shrink-0">{formatTime(log.createdAt)}</span>
+                    <span className={`shrink-0 font-bold ${color}`}>[{log.severity?.toUpperCase()}]</span>
+                    <span className="text-slate-400 shrink-0">[{log.source || "UNKNOWN"}]</span>
+                    <span className="text-slate-300 break-all">{log.message}</span>
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
       </div>
