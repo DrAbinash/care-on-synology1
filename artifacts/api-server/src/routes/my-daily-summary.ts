@@ -347,10 +347,17 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
   //   Cash In − Cash Refunded − Cash Expenses = Physical Cash in Hand
   //   Digital In − Digital Refunded         = Net Digital Collection
   // Shared helper
-  const isDigital = (m: string | null | undefined) =>
-    ["upi", "card", "online", "bank", "cheque", "neft", "rtgs"].includes(
-      (m ?? "").toLowerCase(),
-    );
+  const isDigital = (m: string | null | undefined) => {
+    const ml = (m ?? "").toLowerCase();
+    return ["upi", "card", "online", "bank", "cheque", "neft", "rtgs"].includes(ml) || ml.startsWith("web booking");
+  };
+  const formatMethod = (m: string | null | undefined): string => {
+    const methodStr = m ?? "cash";
+    if (methodStr.toLowerCase().startsWith("online")) {
+      return methodStr.replace(/^online/i, "Web booking");
+    }
+    return methodStr;
+  };
   const cashIn = paymentItems.reduce(
     (s, p) => s + (isDigital(p.method) ? 0 : Number(p.amount)),
     0,
@@ -386,7 +393,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
 
   const byMethod: Record<string, number> = {};
   for (const p of paymentItems) {
-    const m = (p.method ?? "cash").toLowerCase();
+    const m = formatMethod(p.method).toLowerCase();
     byMethod[m] = (byMethod[m] ?? 0) + Number(p.amount);
   }
 
@@ -561,7 +568,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       id: p.id,
       billId: p.billId,
       amount: Number(p.amount),
-      method: p.method ?? "cash",
+      method: formatMethod(p.method),
       createdAt:
         p.createdAt instanceof Date ? p.createdAt.toISOString() : String(p.createdAt),
     })),
@@ -651,7 +658,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       id: p.id,
       billId: p.billId,
       amount: Number(p.amount),
-      method: p.method ?? "cash",
+      method: formatMethod(p.method),
       recordedBy: p.recordedByName ?? null,
       createdAt:
         p.createdAt instanceof Date ? p.createdAt.toISOString() : String(p.createdAt),

@@ -140,6 +140,7 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
   const created = bill.createdAt ? new Date(bill.createdAt) : new Date();
   const isCancelled = (bill.status ?? "") === "cancelled";
   const rawDoctor = bill.order?.doctor?.name ?? "";
+  const isUnconfirmedQr = (bill.payments ?? []).some((p) => String(p.method).includes("Unconfirmed"));
   const testCount = tests.length;
   // V3: Patient since date (from patient.createdAt; not on PrintBillData so we approximate)
   const patientCreatedDate = bill.createdAt ? new Date(bill.createdAt).toLocaleDateString("en-IN", { year: "numeric", month: "short" }) : "";
@@ -239,7 +240,12 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
   const balanceDue = Number(bill.balanceAmount);
   const hasDue = balanceDue > 0;
 
-  const balanceRow = hasDue
+  const balanceRow = isUnconfirmedQr
+    ? `<tr>
+      <td style="padding:4px 6px;border-top:2px solid #000;font-weight:900;font-size:${bigTotalPx};white-space:nowrap;color:orange">DUE</td>
+      <td style="padding:4px 6px;border-top:2px solid #000;text-align:right;font-weight:900;font-size:${bigTotalPx};white-space:nowrap;color:orange">To Be Confirmed</td>
+    </tr>`
+    : hasDue
     ? `<tr>
       <td style="padding:4px 6px;border-top:2px solid #000;font-weight:900;font-size:${bigTotalPx};white-space:nowrap">DUE</td>
       <td style="padding:4px 6px;border-top:2px solid #000;text-align:right;font-weight:900;font-size:${bigTotalPx};white-space:nowrap">₹${fmt(bill.balanceAmount)}</td>
@@ -511,7 +517,7 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
       <table style="width:100%;border-collapse:collapse">
         <tr>
           <td style="padding:0;vertical-align:middle">
-            <div style="font-size:${titlePx};font-weight:800;letter-spacing:1.2px;text-transform:uppercase">INVOICE / RECEIPT${isCancelled ? " — CANCELLED" : ""}</div>
+            <div style="font-size:${titlePx};font-weight:800;letter-spacing:1.2px;text-transform:uppercase">${isCancelled ? "CANCELLED" : isUnconfirmedQr ? "Confirmed on confirmation of Payment" : "INVOICE / RECEIPT"}</div>
           </td>
           <td style="padding:0;vertical-align:middle;text-align:right;white-space:nowrap">
             <div style="font-size:${titlePx};font-weight:800">BILL NO: ${esc(billDigits)}</div>
@@ -590,7 +596,7 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
                       <td style="padding:4px 4px;border-top:2px solid #000;font-weight:900;font-size:${bigTotalPx}">TOTAL</td>
                       <td style="padding:4px 4px;border-top:2px solid #000;text-align:right;font-weight:900;font-size:${bigTotalPx};white-space:nowrap">₹${fmt(bill.totalAmount)}</td>
                     </tr>
-                    <tr><td style="padding:3px 4px;border-top:1px solid #000;font-weight:800">PAID</td><td style="padding:3px 4px;border-top:1px solid #000;text-align:right;font-weight:800;white-space:nowrap">₹${fmt(bill.paidAmount)}</td></tr>
+                    <tr><td style="padding:3px 4px;border-top:1px solid #000;font-weight:800">PAID</td><td style="padding:3px 4px;border-top:1px solid #000;text-align:right;font-weight:800;white-space:nowrap;color:${isUnconfirmedQr ? "orange" : "inherit"}">${isUnconfirmedQr ? `₹${fmt(bill.totalAmount)} (To Be Confirmed)` : `₹${fmt(bill.paidAmount)}`}</td></tr>
                     ${balanceRow}
                   </tbody>
                 </table>

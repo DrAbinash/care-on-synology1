@@ -163,6 +163,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
     name: string; phone: string; email: string; selectedDate: string; timeSlot: string;
     totalAmount: string; notes: string; testIds: string; packageIds: string;
     bookingRef: string; status: string; isVip: boolean;
+    isUnconfirmedQr?: boolean;
   } | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [tokenNo, setTokenNo] = useState<number | null>(null);
@@ -198,6 +199,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
       bookingGet<{ booking: Record<string, any>; tokenNo: number | null }>(`/api/public/booking/by-ref?ref=${encodeURIComponent(ref)}`)
         .then((res) => {
           const b = res.booking;
+          const hasGateway = b.razorpayPaymentId || b.razorpayOrderId || b.payuTxnId || b.payuPaymentId || b.phonepeTransactionId || b.bharatpeProviderRefId || b.iciciTransactionId;
           setConfirmedBooking({
             name: b.name || "",
             phone: b.phone || "",
@@ -211,6 +213,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
             bookingRef: b.bookingRef || ref,
             status: b.status || "",
             isVip: b.isVip === true || b.isVip === "true",
+            isUnconfirmedQr: !hasGateway,
           });
           setTokenNo(res.tokenNo);
           setStep(6);
@@ -419,6 +422,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
         bookingGet<{ booking: Record<string, any>; tokenNo: number | null }>(`/api/public/booking/by-ref?ref=${encodeURIComponent(qrBookingRef)}`)
           .then((detailRes) => {
             const b = detailRes.booking;
+            const hasGateway = b.razorpayPaymentId || b.razorpayOrderId || b.payuTxnId || b.payuPaymentId || b.phonepeTransactionId || b.bharatpeProviderRefId || b.iciciTransactionId;
             setConfirmedBooking({
               name: b.name || "",
               phone: b.phone || "",
@@ -432,6 +436,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
               bookingRef: b.bookingRef || qrBookingRef,
               status: b.status || "",
               isVip: b.isVip === true || b.isVip === "true",
+              isUnconfirmedQr: !hasGateway,
             });
             setTokenNo(detailRes.tokenNo);
             setStep(6);
@@ -846,10 +851,10 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                 <Check size={36} />
               </div>
               <h2 style={{ fontWeight: 800, fontSize: "1.3rem", marginBottom: ".5rem" }}>
-                Payment Successful
+                {confirmedBooking?.isUnconfirmedQr ? "Booking Received" : "Payment Successful"}
               </h2>
               <p style={{ color: "hsl(var(--site-muted-fg))", marginBottom: "1rem", fontSize: ".92rem" }}>
-                Your booking is confirmed and payment received.
+                {confirmedBooking?.isUnconfirmedQr ? "Booking is pending payment confirmation from staff." : "Your booking is confirmed and payment received."}
               </p>
 
               {confirming ? (
@@ -880,15 +885,17 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                         <span style={{ color: "hsl(var(--site-muted-fg))" }}>Time</span>
                         <span style={{ fontWeight: 600 }}>{confirmedBooking.timeSlot}</span>
                       </div>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: ".35rem" }}>
+                       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: ".35rem" }}>
                         <span style={{ color: "hsl(var(--site-muted-fg))" }}>Amount Paid</span>
-                        <span style={{ fontWeight: 800, color: "hsl(var(--site-primary))" }}>
-                          {fmt(Number(confirmedBooking.totalAmount))}
+                        <span style={{ fontWeight: 800, color: confirmedBooking?.isUnconfirmedQr ? "orange" : "hsl(var(--site-primary))" }}>
+                          {confirmedBooking?.isUnconfirmedQr ? `Amount ${fmt(Number(confirmedBooking.totalAmount))} (To Be Confirmed)` : fmt(Number(confirmedBooking.totalAmount))}
                         </span>
                       </div>
                       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: ".35rem" }}>
                         <span style={{ color: "hsl(var(--site-muted-fg))" }}>Status</span>
-                        <span style={{ fontWeight: 600, textTransform: "capitalize" }}>{confirmedBooking.status}</span>
+                        <span style={{ fontWeight: 600, textTransform: "none", color: confirmedBooking?.isUnconfirmedQr ? "orange" : "inherit" }}>
+                          {confirmedBooking?.isUnconfirmedQr ? "Confirmed on confirmation of Payment" : confirmedBooking.status}
+                        </span>
                       </div>
                       {confirmedBooking.isVip && (
                         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: ".35rem" }}>
@@ -971,8 +978,8 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                         ${itemsHtml}
 
                         <div class="section-title">Payment Summary</div>
-                        <div class="row"><span class="label">Amount Paid</span><strong class="paid">${fmt(Number(confirmedBooking?.totalAmount || 0))}</strong></div>
-                        <div class="row"><span class="label">Status</span><strong class="paid">${confirmedBooking?.status || "Paid"}</strong></div>
+                        <div class="row"><span class="label">Amount Paid</span><strong class="${confirmedBooking?.isUnconfirmedQr ? '' : 'paid'}" style="${confirmedBooking?.isUnconfirmedQr ? 'color:orange;' : ''}">${confirmedBooking?.isUnconfirmedQr ? `Amount ${fmt(Number(confirmedBooking?.totalAmount || 0))} (To Be Confirmed)` : fmt(Number(confirmedBooking?.totalAmount || 0))}</strong></div>
+                        <div class="row"><span class="label">Status</span><strong class="${confirmedBooking?.isUnconfirmedQr ? '' : 'paid'}" style="${confirmedBooking?.isUnconfirmedQr ? 'color:orange;' : ''}">${confirmedBooking?.isUnconfirmedQr ? "Confirmed on confirmation of Payment" : (confirmedBooking?.status || "Paid")}</strong></div>
                         
                         <div class="qr-box">
                           <img src="https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(window.location.origin + window.location.pathname + '?confirmed=1&ref=' + successRef)}" alt="Booking QR" class="qr-img" />

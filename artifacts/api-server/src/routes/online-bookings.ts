@@ -253,6 +253,15 @@ export async function confirmBookingInternal(bookingId: number, staffName: strin
       paymentMethod = "Online (ICICI Orange Pay)";
       paymentRef = booking.iciciProviderRefId || booking.iciciTransactionId || booking.bookingRef;
       paymentNotes = `Paid online via ICICI Orange Pay. Booking ref: ${booking.bookingRef}`;
+    } else {
+      // Self-declared QR / BharatPe booking
+      if (staffName === "Super Admin") {
+        paymentMethod = "Online (BharatPe - Unconfirmed)";
+        paymentNotes = `Self-declared QR payment. Pending staff verification. Booking ref: ${booking.bookingRef}`;
+      } else {
+        paymentMethod = "Online (BharatPe)";
+        paymentNotes = `UPI/QR Payment confirmed by staff ${staffName}. Booking ref: ${booking.bookingRef}`;
+      }
     }
 
     await tx.insert(paymentsTable).values({

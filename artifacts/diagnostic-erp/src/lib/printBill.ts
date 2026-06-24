@@ -185,6 +185,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const created = bill.createdAt ? new Date(bill.createdAt) : new Date();
   const isCancelled = (bill.status ?? "") === "cancelled";
   const rawDoctor = bill.order?.doctor?.name ?? "";
+  const isUnconfirmedQr = (bill.payments ?? []).some((p) => String(p.method).includes("Unconfirmed"));
 
   // ── Aggregated payment amounts ──
   const payByMode: Record<string, number> = {};
@@ -280,7 +281,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
         <table style="width:100%;border-collapse:collapse">
           <tr>
             <td style="padding:0;vertical-align:middle">
-              <div style="font-size:${titleSize};font-weight:800;letter-spacing:1.2px;text-transform:uppercase">INVOICE / RECEIPT${isCancelled ? " — CANCELLED" : ""}</div>
+              <div style="font-size:${titleSize};font-weight:800;letter-spacing:1.2px;text-transform:uppercase">${isCancelled ? "CANCELLED" : isUnconfirmedQr ? "Confirmed on confirmation of Payment" : "INVOICE / RECEIPT"}</div>
             </td>
             <td style="padding:0;vertical-align:middle;text-align:right;white-space:nowrap">
               <div style="font-size:${titleSize};font-weight:800">BILL NO: ${esc(billDigits)}</div>
@@ -353,10 +354,10 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
                     <td style="padding:3px 3px;border-top:2px solid #000;font-weight:900">TOTAL</td>
                     <td style="padding:3px 3px;border-top:2px solid #000;text-align:right;font-weight:900;white-space:nowrap">₹${fmt(bill.totalAmount)}</td>
                   </tr>
-                  <tr><td style="padding:2px 3px;border-top:1px solid #000;font-weight:800">PAID</td><td style="padding:2px 3px;border-top:1px solid #000;text-align:right;font-weight:800;white-space:nowrap;color:green">₹${fmt(bill.paidAmount)}</td></tr>
+                  <tr><td style="padding:2px 3px;border-top:1px solid #000;font-weight:800">PAID</td><td style="padding:2px 3px;border-top:1px solid #000;text-align:right;font-weight:800;white-space:nowrap;color:${isUnconfirmedQr ? "orange" : "green"}">${isUnconfirmedQr ? `${fmt(bill.totalAmount)} (To Be Confirmed)` : `₹${fmt(bill.paidAmount)}`}</td></tr>
                   <tr>
                     <td style="padding:3px 3px;border-top:2px solid #000;font-weight:900;font-size:${parseInt(totalPx, 10) + 2}px">BALANCE DUE</td>
-                    <td style="padding:3px 3px;border-top:2px solid #000;text-align:right;font-weight:900;white-space:nowrap;color:${Number(bill.balanceAmount) > 0 ? "#c62828" : "green"};font-size:${parseInt(totalPx, 10) + 2}px">₹${fmt(bill.balanceAmount)}</td>
+                    <td style="padding:3px 3px;border-top:2px solid #000;text-align:right;font-weight:900;white-space:nowrap;color:${isUnconfirmedQr ? "orange" : Number(bill.balanceAmount) > 0 ? "#c62828" : "green"};font-size:${parseInt(totalPx, 10) + 2}px">${isUnconfirmedQr ? "To Be Confirmed" : `₹${fmt(bill.balanceAmount)}`}</td>
                   </tr>
                   ${cashAmt > 0 ? `<tr><td style="padding:1px 3px;color:#444;font-size:${tinyPx}">Cash</td><td style="padding:1px 3px;text-align:right;white-space:nowrap;color:#444;font-size:${tinyPx}">₹${fmt(cashAmt)}</td></tr>` : ""}
                   ${upiAmt > 0 ? `<tr><td style="padding:1px 3px;color:#444;font-size:${tinyPx}">UPI</td><td style="padding:1px 3px;text-align:right;white-space:nowrap;color:#444;font-size:${tinyPx}">₹${fmt(upiAmt)}</td></tr>` : ""}

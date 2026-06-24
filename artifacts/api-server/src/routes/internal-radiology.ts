@@ -159,15 +159,15 @@ router.post("/radiology/studies", async (req, res) => {
     const b = rawBody as Record<string, unknown>;
 
     const rawStudyId = b.studyId;
-    const patientId = b.patientId !== undefined ? String(b.patientId) : "";
-    const patientName = typeof b.patientName === "string" ? b.patientName.trim() : "";
+    const patientId = (b.patientId !== undefined ? String(b.patientId) : "") || (b.PatientID !== undefined ? String(b.PatientID) : "");
+    const patientName = typeof b.patientName === "string" ? b.patientName.trim() : (typeof b.PatientName === "string" ? b.PatientName.trim() : "");
     const age = typeof b.age === "string" ? b.age.trim() || null : null;
     const sex = typeof b.sex === "string" ? b.sex.trim() || null : null;
-    const modality = typeof b.modality === "string" ? b.modality.trim() || "OT" : "OT";
-    const studyDescription = typeof b.studyDescription === "string" ? b.studyDescription.trim() || null : null;
-    const studyDate = typeof b.studyDate === "string" ? b.studyDate.trim() || null : null;
-    const accessionNumber = typeof b.accessionNumber === "string" ? b.accessionNumber.trim() : "";
-    const studyInstanceUID = typeof b.studyInstanceUID === "string" ? b.studyInstanceUID.trim() || null : null;
+    const modality = typeof b.modality === "string" ? b.modality.trim() || "OT" : (typeof b.ModalitiesInStudy === "string" ? b.ModalitiesInStudy.trim() || "OT" : "OT");
+    const studyDescription = typeof b.studyDescription === "string" ? b.studyDescription.trim() || null : (typeof b.StudyDescription === "string" ? b.StudyDescription.trim() || null : null);
+    const studyDate = typeof b.studyDate === "string" ? b.studyDate.trim() || null : (typeof b.StudyDate === "string" ? b.StudyDate.trim() || null : null);
+    const accessionNumber = typeof b.accessionNumber === "string" ? b.accessionNumber.trim() : (typeof b.AccessionNumber === "string" ? b.AccessionNumber.trim() : "");
+    const studyInstanceUID = typeof b.studyInstanceUID === "string" ? b.studyInstanceUID.trim() || null : (typeof b.StudyInstanceUID === "string" ? b.StudyInstanceUID.trim() || null : null);
     const aeTitle = typeof b.aeTitle === "string" ? b.aeTitle.trim() || null : null;
     const ipAddress = typeof b.ipAddress === "string" ? b.ipAddress.trim() || null : null;
     const port = typeof b.port === "number" ? b.port : null;
@@ -188,47 +188,19 @@ router.post("/radiology/studies", async (req, res) => {
       return;
     }
 
-    // Resolve studyId and update status in radiology_studies via accessionNumber
-    let resolvedStudyId: number | null = typeof rawStudyId === "number" ? rawStudyId : null;
-
-    if (!resolvedStudyId && accessionNumber) {
-      const [rStudy] = await db
-        .select({ id: radiologyStudiesTable.id, status: radiologyStudiesTable.status })
-        .from(radiologyStudiesTable)
-        .where(eq(radiologyStudiesTable.accessionNumber, accessionNumber))
-        .limit(1);
-      
-      if (rStudy) {
-        resolvedStudyId = rStudy.id;
-        logger.info({ accessionNumber, resolvedStudyId }, "Linked incoming PACS study to radiology_studies order via accessionNumber");
-        
-        const updates: Partial<typeof radiologyStudiesTable.$inferInsert> = {
-          updatedAt: new Date(),
-        };
-        
-        if (rStudy.status === "scheduled" || rStudy.status === "in_progress") {
-          updates.status = "acquired";
-          updates.acquiredAt = new Date();
-        }
-        
-        if (studyInstanceUID) {
-          updates.studyInstanceUid = studyInstanceUID;
-        }
-
-        await db
-          .update(radiologyStudiesTable)
-          .set(updates)
-          .where(eq(radiologyStudiesTable.id, rStudy.id));
-
-        await audit({
-          accessionNumber,
-          action: "MWL_STATUS_UPDATED",
-          actor: "pacs",
-          details: { from: rStudy.status, to: updates.status ?? rStudy.status, reason: "pacs study intake" },
-        });
-      }
+    let numericStudyId: number | undefined;
+    if (typeof rawStudyId === "number") {
+      numericStudyId = rawStudyId;
+    } else if (typeof rawStudyId === "string" && /^\d+$/.test(rawStudyId.trim())) {
+      numericStudyId = parseInt(rawStudyId.trim(), 10);
     }
 
+    let formattedStudyDate = studyDate;
+    if (studyDate && /^\d{8}$/.test(studyDate)) {
+      formattedStudyDate = `${studyDate.slice(0, 4)}-${studyDate.slice(4, 6)}-${studyDate.slice(6, 8)}`;
+    }
+
+    // Patient Resolution
     const rawDicomPatientId = patientId || null;
     let resolvedPatientId: number | null = null;
     let patientMatchStatus = "UNMATCHED";
@@ -271,22 +243,165 @@ router.post("/radiology/studies", async (req, res) => {
       }
     }
 
+    // 4-tier fallback matching cascade for radiology_studies
+    const studySelectFields = {
+      id: radiologyStudiesTable.id,
+      status: radiologyStudiesTable.status,
+      accessionNumber: radiologyStudiesTable.accessionNumber,
+      studyInstanceUid: radiologyStudiesTable.studyInstanceUid,
+      modality: radiologyStudiesTable.modality,
+      studyDescription: radiologyStudiesTable.studyDescription,
+      referringDoctor: radiologyStudiesTable.referringDoctor,
+      patientId: radiologyStudiesTable.patientId,
+      studyDate: radiologyStudiesTable.studyDate,
+      bodyPart: radiologyStudiesTable.bodyPart,
+    };
+
+    let rStudy: any = undefined;
+    let matchMethod = "";
+
+    // 1. Matched by numeric studyId
+    if (numericStudyId) {
+      const [row] = await db
+        .select(studySelectFields)
+        .from(radiologyStudiesTable)
+        .where(eq(radiologyStudiesTable.id, numericStudyId))
+        .limit(1);
+      if (row) {
+        rStudy = row;
+        matchMethod = "matched by numeric studyId";
+      }
+    }
+
+    // 2. Matched by accessionNumber
+    if (!rStudy && accessionNumber) {
+      const [row] = await db
+        .select(studySelectFields)
+        .from(radiologyStudiesTable)
+        .where(eq(radiologyStudiesTable.accessionNumber, accessionNumber))
+        .limit(1);
+      if (row) {
+        rStudy = row;
+        matchMethod = "matched by accessionNumber";
+      }
+    }
+
+    // 3. Matched by StudyInstanceUID
+    if (!rStudy && studyInstanceUID) {
+      const [row] = await db
+        .select(studySelectFields)
+        .from(radiologyStudiesTable)
+        .where(eq(radiologyStudiesTable.studyInstanceUid, studyInstanceUID))
+        .limit(1);
+      if (row) {
+        rStudy = row;
+        matchMethod = "matched by StudyInstanceUID";
+      }
+    }
+
+    // 4. Matched by fallback demographics: patientId + studyDate + modality
+    if (!rStudy && resolvedPatientId && formattedStudyDate && modality) {
+      const [row] = await db
+        .select(studySelectFields)
+        .from(radiologyStudiesTable)
+        .where(
+          and(
+            eq(radiologyStudiesTable.patientId, resolvedPatientId),
+            eq(radiologyStudiesTable.studyDate, formattedStudyDate),
+            sql`lower(${radiologyStudiesTable.modality}) = lower(${modality})`
+          )
+        )
+        .limit(1);
+      if (row) {
+        rStudy = row;
+        matchMethod = "matched by fallback demographics";
+      }
+    }
+
+    // 5. Last safe fallback: patientName + studyDate + studyDescription
+    if (!rStudy && resolvedPatientId && formattedStudyDate && studyDescription) {
+      const [row] = await db
+        .select(studySelectFields)
+        .from(radiologyStudiesTable)
+        .where(
+          and(
+            eq(radiologyStudiesTable.patientId, resolvedPatientId),
+            eq(radiologyStudiesTable.studyDate, formattedStudyDate),
+            sql`lower(${radiologyStudiesTable.studyDescription}) = lower(${studyDescription})`
+          )
+        )
+        .limit(1);
+      if (row) {
+        rStudy = row;
+        matchMethod = "matched by fallback demographics";
+      }
+    }
+
+    // Log matching result clearly
+    if (rStudy) {
+      logger.info({ studyId: rStudy.id, matchMethod }, `PACS study link: ${matchMethod}`);
+    } else {
+      logger.info("PACS study link: no match found, created PACS-only worklist row");
+    }
+
+    let resolvedStudyId: number | null = rStudy ? rStudy.id : null;
+
+    if (rStudy) {
+      const updates: Partial<typeof radiologyStudiesTable.$inferInsert> = {
+        updatedAt: new Date(),
+        status: "acquired",
+        acquiredAt: new Date(),
+      };
+
+      if (studyInstanceUID && !rStudy.studyInstanceUid) {
+        updates.studyInstanceUid = studyInstanceUID;
+      }
+      if (accessionNumber && !rStudy.accessionNumber) {
+        updates.accessionNumber = accessionNumber;
+      }
+      if (modality && (!rStudy.modality || rStudy.modality === "OT")) {
+        updates.modality = modality;
+      }
+      if (studyDescription && !rStudy.studyDescription) {
+        updates.studyDescription = studyDescription;
+      }
+      if (referringDoctor && !rStudy.referringDoctor) {
+        updates.referringDoctor = referringDoctor;
+      }
+      if (typeof b.bodyPart === "string" && b.bodyPart.trim() && !rStudy.bodyPart) {
+        updates.bodyPart = b.bodyPart.trim();
+      }
+
+      await db
+        .update(radiologyStudiesTable)
+        .set(updates)
+        .where(eq(radiologyStudiesTable.id, rStudy.id));
+
+      await audit({
+        accessionNumber: rStudy.accessionNumber || accessionNumber,
+        action: "MWL_STATUS_UPDATED",
+        actor: "pacs",
+        details: { from: rStudy.status, to: "acquired", reason: `pacs study intake: ${matchMethod}` },
+      });
+    }
+
+    // Worklist deduplication logic
     let existing: typeof radiologyWorklistTable.$inferSelect | undefined;
     if (studyInstanceUID) {
-      const rows = await db
+      const [row] = await db
         .select()
         .from(radiologyWorklistTable)
-        .where(or(
-          eq(radiologyWorklistTable.studyInstanceUID, studyInstanceUID),
-          eq(radiologyWorklistTable.accessionNumber, accessionNumber),
-        ));
-      existing = rows[0];
-    } else {
-      const rows = await db
+        .where(eq(radiologyWorklistTable.studyInstanceUID, studyInstanceUID))
+        .limit(1);
+      existing = row;
+    }
+    if (!existing && accessionNumber) {
+      const [row] = await db
         .select()
         .from(radiologyWorklistTable)
-        .where(eq(radiologyWorklistTable.accessionNumber, accessionNumber));
-      existing = rows[0];
+        .where(eq(radiologyWorklistTable.accessionNumber, accessionNumber))
+        .limit(1);
+      existing = row;
     }
 
     const values = {
