@@ -105,6 +105,234 @@ app.use("/uploads", (_req: Request, res: Response, next: NextFunction) => {
   next();
 }, express.static(path.resolve(artifactDir, "data/uploads")));
 
+// Serve the Super Admin Portal bootstrap HTML page (Zero Trace USB Isolation).
+// Reads the UI bundle directly from the paired USB key in the browser.
+app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+  <title>Super Admin Portal (Protected)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    body {
+      background: #0b0f19;
+      color: #f1f5f9;
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+      overflow: hidden;
+    }
+    .card {
+      background: rgba(17, 24, 39, 0.7);
+      border: 1px solid rgba(251, 191, 36, 0.2);
+      padding: 2.5rem;
+      border-radius: 16px;
+      max-width: 420px;
+      width: 90%;
+      text-align: center;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 0 40px rgba(251, 191, 36, 0.05);
+      backdrop-filter: blur(12px);
+    }
+    .icon {
+      font-size: 3rem;
+      margin-bottom: 1rem;
+      color: #fbbf24;
+      display: inline-block;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.05); opacity: 0.8; }
+    }
+    h1 { font-size: 1.35rem; font-weight: 700; margin: 0 0 0.75rem 0; color: #fbbf24; tracking: -0.025em; }
+    p { font-size: 0.875rem; color: #94a3b8; line-height: 1.6; margin: 0 0 1.75rem 0; }
+    button {
+      background: linear-gradient(135deg, #fbbf24, #f59e0b);
+      color: #0b0f19;
+      border: none;
+      padding: 0.75rem 1.5rem;
+      border-radius: 8px;
+      font-size: 0.875rem;
+      font-weight: 700;
+      cursor: pointer;
+      width: 100%;
+      transition: all 0.2s;
+      box-shadow: 0 4px 14px rgba(251, 191, 36, 0.3);
+    }
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px rgba(251, 191, 36, 0.4);
+    }
+    button:active {
+      transform: translateY(0);
+    }
+    #err {
+      color: #f87171;
+      font-size: 0.8rem;
+      margin-top: 1.25rem;
+      margin-bottom: 0;
+      background: rgba(248, 113, 113, 0.1);
+      padding: 0.5rem;
+      border-radius: 6px;
+      border: 1px solid rgba(248, 113, 113, 0.2);
+      display: none;
+    }
+    .loading-dots {
+      display: inline-flex;
+      gap: 4px;
+    }
+    .loading-dots span {
+      width: 6px;
+      height: 6px;
+      background-color: #fbbf24;
+      border-radius: 50%;
+      animation: dot-blink 1.4s infinite both;
+    }
+    .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes dot-blink {
+      0%, 80%, 100% { opacity: 0.2; }
+      40% { opacity: 1; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div class="card">
+      <div class="icon">🔑</div>
+      <h1 id="title">Super Admin Portal</h1>
+      <p id="desc">Please connect your Super Admin USB drive to authorize this session.</p>
+      <button id="auth-btn" style="display: none;">Authorize USB Drive</button>
+      <p id="err"></p>
+    </div>
+  </div>
+
+  <script>
+    const IDB_NAME = "sa_usb_v1";
+    const IDB_STORE = "handles";
+    const IDB_HANDLE_KEY = "pen_drive_root";
+
+    function openIdb() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open(IDB_NAME, 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    async function idbGet(key) {
+      try {
+        const db = await openIdb();
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction(IDB_STORE, "readonly");
+          const req = tx.objectStore(IDB_STORE).get(key);
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+      } catch (err) {
+        console.error("IndexedDB error:", err);
+        return null;
+      }
+    }
+
+    function showStatus(text) {
+      document.getElementById("desc").innerHTML = text;
+    }
+
+    function showError(msg) {
+      const el = document.getElementById("err");
+      el.textContent = msg;
+      el.style.display = "block";
+    }
+
+    async function tryLoadPortal() {
+      try {
+        const dir = await idbGet(IDB_HANDLE_KEY);
+        if (!dir) {
+          showError("No paired USB key found in this browser. Please pair your pen drive in the ERP sidebar settings (Ctrl+Shift+K).");
+          return;
+        }
+
+        // Check permission
+        const perm = await dir.queryPermission({ mode: "read" });
+        if (perm !== "granted") {
+          document.getElementById("auth-btn").style.display = "inline-block";
+          showStatus("Click below to authorize read access to your USB drive.");
+          return;
+        }
+
+        document.getElementById("auth-btn").style.display = "none";
+        document.getElementById("err").style.display = "none";
+        showStatus("Loading Super Admin Interface <div class='loading-dots'><span></span><span></span><span></span></div>");
+
+        // Read superadmin-ui.js
+        const fileHandle = await dir.getFileHandle("superadmin-ui.js");
+        const file = await fileHandle.getFile();
+        const code = await file.text();
+
+        if (!code) {
+          showError("The superadmin-ui.js file is empty or missing on the USB key.");
+          return;
+        }
+
+        // Execute code
+        const script = document.createElement("script");
+        script.type = "text/javascript";
+        script.textContent = code;
+        document.body.appendChild(script);
+
+        // Mount check
+        setTimeout(() => {
+          if (!window.SuperAdminPortal) {
+            showError("UI script executed but SuperAdminPortal component was not found.");
+          }
+        }, 1000);
+
+      } catch (err) {
+        showError(err.message || "Failed to load portal from USB.");
+      }
+    }
+
+    document.getElementById("auth-btn").addEventListener("click", async () => {
+      try {
+        const dir = await idbGet(IDB_HANDLE_KEY);
+        if (!dir) {
+          showError("No paired USB key found.");
+          return;
+        }
+        const next = await dir.requestPermission({ mode: "read" });
+        if (next === "granted") {
+          document.getElementById("auth-btn").style.display = "none";
+          document.getElementById("err").style.display = "none";
+          await tryLoadPortal();
+        } else {
+          showError("Permission denied. Access to the USB drive is required.");
+        }
+      } catch (err) {
+        showError(err.message || "Permission request failed.");
+      }
+    });
+
+    // Auto-load on mount
+    tryLoadPortal();
+  </script>
+</body>
+</html>`);
+});
+
+
 // =============================================================================
 // Production single-port static serving (Windows .exe / portable build /
 // Replit Autoscale Cloud Run deployment)
@@ -128,19 +356,17 @@ const staticDir = rawStaticDir ? path.resolve(rawStaticDir) : undefined;
 if (staticDir) {
   const erpDir = path.join(staticDir, "erp");
   const siteDir = path.join(staticDir, "site");
-  const adminDir = path.join(staticDir, "super-admin-portal");
   const resolvedErpDir = existsSync(erpDir) ? erpDir : null;
   const resolvedSiteDir = existsSync(siteDir) ? siteDir : null;
-  const resolvedAdminDir = existsSync(adminDir) ? adminDir : null;
 
-  if (!resolvedErpDir || !resolvedAdminDir) {
+  if (!resolvedErpDir) {
     logger.warn(
-      { staticDir, erpDir, siteDir, adminDir },
+      { staticDir, erpDir, siteDir },
       "SERVE_STATIC_DIR is set but expected sub-folders are missing; static serving disabled",
     );
   } else {
     const hasSite = Boolean(resolvedSiteDir);
-    logger.info({ erpDir: resolvedErpDir, siteDir: resolvedSiteDir, adminDir: resolvedAdminDir, hasSite }, "Serving frontends from disk");
+    logger.info({ erpDir: resolvedErpDir, siteDir: resolvedSiteDir, hasSite }, "Serving frontends from disk");
 
     // Cache-Control helper: hashed Vite assets (e.g. index-Dgaf8k.js) can be
     // cached forever because their content-addressable names change on every
@@ -161,14 +387,6 @@ if (staticDir) {
       });
     }
 
-    // Super Admin Portal (built with BASE_PATH=/super-admin-portal/)
-    app.use("/super-admin-portal", staticWithCache(resolvedAdminDir));
-    app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response, next: NextFunction) => {
-      res.sendFile(path.join(resolvedAdminDir, "index.html"), (err) => {
-        if (err) next(err);
-      });
-    });
-
     // Diagnostic ERP — staff app, mounted under /erp (built with BASE_PATH=/erp/).
     // The patient/staff portal lives at /erp/portal as a route inside this SPA.
     app.use("/erp", staticWithCache(resolvedErpDir));
@@ -184,7 +402,7 @@ if (staticDir) {
     if (hasSite) {
       app.use(staticWithCache(resolvedSiteDir!));
       app.get(
-        /^\/(?!api\/|erp\/|erp$|uploads\/|super-admin-portal\/|super-admin-portal$).*/,
+        /^\/(?!api\/|erp\/|erp$|uploads\/).*/,
         (_req: Request, res: Response, next: NextFunction) => {
           res.sendFile(path.join(resolvedSiteDir!, "index.html"), (err) => {
             if (err) next(err);
@@ -192,6 +410,7 @@ if (staticDir) {
         },
       );
     }
+
   }
 }
 

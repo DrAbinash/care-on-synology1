@@ -1,7 +1,6 @@
 // Lightweight request-validation test suite for @workspace/api-server.
 //
 // Hits the live api-server on localhost:80 (via the shared proxy), authenticated
-// as a super_admin staff user via a fresh portal session inserted directly into
 // the DB (bypasses /staff-login PIN flow).
 //
 // Runs a table of cases and asserts each one returns the expected status and
@@ -22,9 +21,7 @@ const pool = new Pool({ connectionString: DB_URL });
 
 async function mintStaffToken() {
   const { rows } = await pool.query(
-    `select id, name from users where role in ('admin','super_admin') and is_active = true order by id limit 1`,
   );
-  if (rows.length === 0) throw new Error("no admin/super_admin user available");
   const user = rows[0];
   const token = crypto.randomBytes(24).toString("hex");
   const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1h

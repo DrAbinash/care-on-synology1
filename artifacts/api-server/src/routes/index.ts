@@ -8,7 +8,6 @@ import { billsRouter, paymentsRouter } from "./bills";
 import { reportsRouter } from "./reports";
 import inventoryRouter from "./inventory";
 import accountingRouter from "./accounting";
-import commissionRouter from "./commission";
 import usersRouter from "./users";
 import emailSettingsRouter from "./email-settings";
 import discountsRouter from "./discounts";
@@ -16,7 +15,6 @@ import aiRouter from "./ai";
 import pacsRouter from "./pacs";
 import dicomRouter from "./dicom";
 import samplesRouter from "./samples";
-import { superAdminRouter } from "./super-admin";
 import { appointmentsRouter } from "./appointments";
 import { packagesRouter } from "./packages";
 import { expensesRouter } from "./expenses";
@@ -42,16 +40,13 @@ import formFRouter from "./form-f";
 import { portalRouter } from "./portal";
 import { patientReportsRouter, signaturesRouter, publicReportsRouter } from "./patient-reports";
 import { teleradiologyRouter } from "./teleradiology";
-import { doctorLedgerRouter } from "./doctor-ledger";
 import { machinesRouter } from "./machines";
 import { departmentsRouter } from "./departments";
 import { branchesRouter } from "./branches";
-import { backupRouter } from "./backup";
 import { backupReplicationRouter } from "./backupReplication";
 import internalBackupRouter from "./internal-backup";
 import { vendorsRouter } from "./vendors";
 import { websiteRouter } from "./website";
-import { systemRouter } from "./system";
 import { verifyRouter } from "./verify";
 import internalCronRouter from "./internal-cron";
 import internalRadiologyRouter from "./internal-radiology";
@@ -67,14 +62,12 @@ import { kioskRouter } from "./kiosk";
 import { dayCloseRouter } from "./day-close";
 import { booksSanityRouter } from "./books-sanity";
 import { requireSuperAdmin } from "../middleware/requireSuperAdmin";
-import { requireSuperAdminUsb } from "../middleware/requireSuperAdminUsb";
+import { requireSuperAdminUsb, isValidUsbKey, isUsbGateEnforced } from "../middleware/requireSuperAdminUsb";
 import { requireStaffAuth, requireStaffPermission, requireStaffSubPermission } from "../middleware/requireStaffAuth";
 import { db, clinicSettingsTable, ledgersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import { auditLogsRouter } from "./audit-logs";
-import { rolePermissionsRouter } from "./role-permissions";
-import systemHealthRouter from "./system-health";
-import { backupLimiter, exportLimiter, adminMutationLimiter, standardUploadLimiter } from "../middleware/rateLimits";
+import { backupLimiter, exportLimiter, adminMutationLimiter, standardUploadLimiter, loginLimiter } from "../middleware/rateLimits";
+import { activePluginRouter } from "../plugin-loader";
 import userPreferencesRouter from "./userPreferences";
 import barcodeResolverRouter from "./barcode-resolver";
 import { uploadsRouter } from "./uploads";
@@ -116,6 +109,50 @@ import { scanSessionsRouter } from "./scan-sessions";
 
 const router: IRouter = Router();
 
+// Expose USB verify and status endpoints directly on the host server
+// so they can be checked/loaded before the Super Admin plugin itself is active.
+router.get("/super-admin/usb/status", (_req, res): void => {
+  res.json({ enforced: isUsbGateEnforced() });
+});
+
+router.post("/super-admin/usb/verify", loginLimiter, (req, res): void => {
+  const presented = req.body?.key;
+  if (!presented || typeof presented !== "string") {
+    res.status(400).json({ ok: false, error: "key is required" });
+    return;
+  }
+  const ok = isValidUsbKey(presented);
+  if (!ok) {
+    res.status(401).json({ ok: false, error: "Invalid USB key" });
+    return;
+  }
+  res.json({ ok: true, enforced: isUsbGateEnforced() });
+});
+
+const SUPER_ADMIN_PREFIXES = [
+  "/super-admin",
+  "/backup",
+  "/system",
+  "/admin/audit-logs",
+  "/admin/role-permissions",
+  "/admin/system-health",
+  "/commission",
+  "/doctor-ledger",
+];
+
+router.use((req, res, next) => {
+  const matched = SUPER_ADMIN_PREFIXES.find(p => req.path === p || req.path.startsWith(p + "/"));
+  if (matched) {
+    if (activePluginRouter) {
+      activePluginRouter(req, res, next);
+    } else {
+      res.status(404).json({ error: "Super Admin plugin is not loaded." });
+    }
+  } else {
+    next();
+  }
+});
+
 // ─── Public / unauthenticated routes ─────────────────────────────────────────
 router.use(healthRouter);
 // Internal cron trigger endpoints — auth via CRON_SECRET bearer token, not staff session.
@@ -127,7 +164,6 @@ router.use("/internal/cron", internalCronRouter);
 // Internal backup download — streams pg_dump output for off-site replication.
 router.use("/internal/backup", internalBackupRouter);
 router.use("/internal", internalRadiologyRouter);
-router.use("/super-admin", superAdminRouter);
 router.use("/portal", portalRouter);
 router.use("/display", displayRouter);
 router.use("/bridge", bridgeRouter);
@@ -518,19 +554,6 @@ import { webauthnPublicRouter } from "./webauthn";
 router.use("/auth/webauthn/authenticate", webauthnPublicRouter);
 router.use("/auth/webauthn", requireStaffAuth, webauthnRouter);
 
-router.use("/backup", requireSuperAdmin, backupRouter);
-
-// Apply tighter rate limits to specific super-admin endpoints
-backupRouter.use("/run", backupLimiter);
-auditLogsRouter.use("/export", exportLimiter);
-rolePermissionsRouter.use("/seed", adminMutationLimiter);
-router.use("/system", requireSuperAdmin, systemRouter);
-
-// ─── Hospital-grade admin routes (super admin only) ─────────────────────────
-router.use("/admin/audit-logs", requireSuperAdminUsb, requireSuperAdmin, auditLogsRouter);
-router.use("/admin/role-permissions", requireSuperAdminUsb, requireSuperAdmin, rolePermissionsRouter);
-router.use("/admin/system-health", requireSuperAdminUsb, requireSuperAdmin, systemHealthRouter);
-
 // ─── Backup & Replication (admin/super-admin) ─────────────────────────────
 router.use("/admin/backup-replication", requireStaffAuth, requireStaffSubPermission("/settings", "backup"), backupReplicationRouter);
 
@@ -543,8 +566,6 @@ router.use("/admin/backup-replication", requireStaffAuth, requireStaffSubPermiss
 // Must be registered before the /settings-gated usersRouter so the PATCH handler is reachable.
 router.use("/users", requireStaffAuth, userPreferencesRouter);
 router.use("/users", requireStaffAuth, requireStaffSubPermission("/settings", "users"), usersRouter);
-router.use("/commission", requireSuperAdmin, commissionRouter);
-router.use("/doctor-ledger", requireSuperAdmin, doctorLedgerRouter);
 
 // ─── WhatsApp Chatbot module ───────────────────────────────────────────────────
 // Provider-agnostic WhatsApp chatbot: webhook receiver, bot engine,

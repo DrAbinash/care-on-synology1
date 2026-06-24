@@ -16,11 +16,10 @@ The Care Diagnostics ERP uses a hybrid authentication and authorization model bu
    - Attaches `req.staffSession` containing: `role`, `permissions` (parsed JSON array of strings), and `maxDiscount` (percentage limits).
 
 2. **Authorization Middleware**:
-   - **`requireStaffPermission(permission)`**: Checks if the user's `permissions` array contains the specified permission path or sub-paths prefixed with it (e.g. `permission + ":"`). Bypass granted if the user's role is in `FULL_ACCESS_ROLES` (`admin`, `super_admin`).
+   - **`requireStaffPermission(permission)`**: Checks if the user's `permissions` array contains the specified permission path or sub-paths prefixed with it (e.g. `permission + ":"`). Bypass granted if the user's role is in `FULL_ACCESS_ROLES` (`admin`, `admin`).
    - **`requireStaffSubPermission(modulePath, action)`**: Checks if the user has `modulePath` or `${modulePath}:${action}` in their permissions.
 
-3. **Super-Admin Bypass**:
-   - Administrative tasks (backup runs, audit log exports, FIDO2/WebAuthn management, and financial commissions) require a **Super-Admin Token** session (`superAdminSessionsTable`) and, if enforced, a physical **USB Pen-Drive Key** validated via `X-SA-USB-Key` headers.
+3. **Admin Bypass**:
 
 ---
 
@@ -80,8 +79,6 @@ The table below catalogs current route-level authorization gates across all **17
 | **Accounts** | `/accounting` | Staff | Staff | Staff | - | - | - | - | - | `requireStaffPermission("/accounting")` |
 | | `/expenses` | Staff | Staff | Staff | - | - | - | - | - | `requireStaffPermission("/accounting")` |
 | | `/ledgers` | **ALL** | Staff | Staff | Staff | - | - | - | - | GET open to all; mutations require `requireStaffPermission("/accounting")` |
-| | `/commission` | S.Ad | S.Ad | S.Ad | S.Ad | - | - | - | - | `requireSuperAdmin` (No staff role allowed) |
-| | `/doctor-ledger` | S.Ad | S.Ad | S.Ad | S.Ad | - | - | - | - | `requireSuperAdmin` (No staff role allowed) |
 | | `/banking` | Staff | Staff | Staff | - | - | - | - | - | `requireStaffPermission("/banking")` (Webhooks public) |
 | **Inventory** | `/inventory` | Staff | Staff | Staff | - | - | - | - | - | `requireStaffPermission("/inventory")` |
 | | `/vendors` | Staff | Staff | Staff | Staff | - | - | - | - | `requireStaffSubPermission("/settings", "infrastructure")` |
@@ -95,15 +92,12 @@ The table below catalogs current route-level authorization gates across all **17
 | | `/locations` (Modality/Room)| Staff | Staff | Staff | Staff | - | - | - | - | `requireStaffSubPermission("/settings", "infrastructure")` |
 | **User Mgmt** | `/users` (Preferences) | **ALL** | - | **ALL** | - | - | - | - | - | GET preferences open to all; mutations require settings:users |
 | | `/users` (Mutations) | Staff | Staff | Staff | Staff | - | - | - | - | `requireStaffSubPermission("/settings", "users")` |
-| | `/admin/role-permissions` | S.Ad | S.Ad | - | - | - | - | - | - | `requireSuperAdminUsb` + `requireSuperAdmin` |
 | **Payment GW** | `/public/booking` | Public | Public | - | - | - | - | - | - | Unauthenticated public Razorpay/bank callback routes |
 | **Notifications**| `/email-settings` | Staff | Staff | Staff | - | - | - | - | - | `requireStaffSubPermission("/settings", "notifications")` |
-| **Audit Logs** | `/admin/audit-logs` | S.Ad | - | - | - | - | S.Ad | - | - | `requireSuperAdminUsb` + `requireSuperAdmin` |
 
 **Key to Access Gates**:
 - **Staff**: Restricted to authorized staff possessing the module-specific permission (e.g. `/patients`, `/billing`).
 - **Admin**: Bypasses restriction via admin flags or specific infrastructure permission gates.
-- **S.Ad**: Restricted strictly to Super-Administrators + USB Security Key.
 - **ALL**: Authenticated staff can access without specific route-level permission checks.
 - **Public**: Entirely unauthenticated public routing.
 
@@ -151,7 +145,7 @@ The table below catalogs current route-level authorization gates across all **17
 
 1. **Arbitrary SMTP Mail Relay via Daily Summary**:
    - *Endpoint*: `POST /api/dashboard/my-daily-summary/send-email`
-   - *Vulnerability*: Any staff member can send custom HTML content to any email address through the clinic’s configured SMTP server. An attacker can use this as an open mail relay for phishing, spamming, or data exfiltration.
+   - *Vulnerability*: Any staff member can send custom HTML content to any email address through the clinicâ€™s configured SMTP server. An attacker can use this as an open mail relay for phishing, spamming, or data exfiltration.
    - *Severity*: **Critical**
 
 2. **Billing Modification & Refund Bypass**:
@@ -182,10 +176,10 @@ To transition the Care Diagnostics ERP to a secure, granular RBAC architecture, 
 1. **Enforce Route Gating in `routes/index.ts`**:
    Replace loose mounts with specific permission-checking middlewares:
    ```typescript
-   // Restrict Radiology to Radiologists, Doctors, and Admins/Super-Admins
+   // Restrict Radiology to Radiologists, Doctors, and Admins
    router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), radiologyRouter);
 
-   // Restrict Daily Summary to Managers/Admins/Super-Admins
+   // Restrict Daily Summary to Managers/Admins
    router.use("/daily-summary", requireStaffAuth, requireStaffPermission("/reports"), dailySummaryRouter);
 
    // Restrict Lab Samples to Lab Techs, Doctors, and Admins

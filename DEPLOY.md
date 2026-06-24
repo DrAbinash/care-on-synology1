@@ -36,7 +36,6 @@ pnpm dev
 ```
 
 Then open http://localhost:5173 (billing) and
-http://localhost:5174/super-admin-portal/.
 
 **Pros:** fewest moving parts, easy to inspect logs in PowerShell.
 **Cons:** you have to start it manually each day; no built-in reverse proxy
@@ -105,7 +104,6 @@ command again any time you update the project to a newer version.
 | Address | What it is |
 | --- | --- |
 | `http://localhost:8888/` | Diagnostic ERP (billing, patients, reports) |
-| `http://localhost:8888/super-admin-portal/` | Super Admin Portal |
 | `http://localhost:8888/api/healthz` | API health check (returns JSON) |
 
 ### B7. Day-to-day commands

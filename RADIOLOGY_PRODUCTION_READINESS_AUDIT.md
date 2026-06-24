@@ -599,7 +599,7 @@ The `clinic_settings` table in the database has approximately 60 columns. The Dr
 | `is_enabled` | `false` |
 | `is_default` | `false` |
 | `default_model` | `ollama` |
-| `settings_json` | `{"enabled":true,"defaultProvider":"ollama","defaultPrompt":"","defaultPromptTemplate":"","includeDemographics":false,"anonymize":true,"allowedRoles":["admin","super_admin","doctor","radiologist"]}` |
+| `settings_json` | `{"enabled":true,"defaultProvider":"ollama","defaultPrompt":"","defaultPromptTemplate":"","includeDemographics":false,"anonymize":true,"allowedRoles":["admin","admin","doctor","radiologist"]}` |
 | `endpoint_url` | `null` |
 | `encrypted_api_key` | Empty |
 

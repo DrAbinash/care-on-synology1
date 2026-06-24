@@ -230,7 +230,6 @@ services:
 
       OBJECT_STORAGE_DIR: ${OBJECT_STORAGE_DIR:-/app/data/object-storage}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://caredeoghar.com}
-      SUPER_ADMIN_USB_KEY: ${SUPER_ADMIN_USB_KEY:-d350487e-e1ec-452e-994e-bddb9fb96605}
 
       ICICI_BASE_URL: ${ICICI_BASE_URL:-https://pgpay.icicibank.com}
       ICICI_URL_PREFIX: ${ICICI_URL_PREFIX:-/pg/api/v2}

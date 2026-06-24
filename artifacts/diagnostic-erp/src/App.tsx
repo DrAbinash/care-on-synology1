@@ -1,11 +1,10 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Switch, Route, Router as WouterRouter, useLocation } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Layout from "@/components/Layout";
 import { readStaffSession, canAccess, firstPermissionedPath, firstAllowedPath, longestMatchingNavPath, FULL_ACCESS_ROLES } from "@/lib/staffSession";
-import { useEffect } from "react";
 
 const BillingDesk     = lazy(() => import("@/pages/BillingDesk"));
 const Dashboard       = lazy(() => import("@/pages/Dashboard"));
@@ -207,6 +206,11 @@ function PermissionGuard() {
       navigate("/my-daily-summary", { replace: true });
       return;
     }
+    // Super Admin Portal is super_admin only
+    if (location.startsWith("/super-admin-portal") && session.user.role !== "super_admin") {
+      navigate("/", { replace: true });
+      return;
+    }
     // Redirect root "/" to user's default start page if configured and allowed
     if (location === "/" && session.user.defaultStartPage && session.user.defaultStartPage !== "/" && canAccess(session, session.user.defaultStartPage)) {
       navigate(session.user.defaultStartPage, { replace: true });
@@ -228,6 +232,21 @@ function PermissionGuard() {
 }
 
 function Router() {
+  const [portalLoaded, setPortalLoaded] = useState(() => typeof window !== "undefined" && !!(window as any).SuperAdminPortal);
+
+  useEffect(() => {
+    const handleLoaded = () => setPortalLoaded(true);
+    const handleUnloaded = () => setPortalLoaded(false);
+
+    window.addEventListener("superadmin-ui-loaded", handleLoaded);
+    window.addEventListener("superadmin-ui-unloaded", handleUnloaded);
+
+    return () => {
+      window.removeEventListener("superadmin-ui-loaded", handleLoaded);
+      window.removeEventListener("superadmin-ui-unloaded", handleUnloaded);
+    };
+  }, []);
+
   return (
     <Suspense fallback={<PageLoader />}>
       <Switch>
@@ -422,6 +441,14 @@ function Router() {
               <Route path="/settings" component={Settings} />
               <Route path="/whatsapp-chatbot" component={WhatsAppChatbot} />
               <Route path="/system-update" component={SystemUpdate} />
+              {portalLoaded && (window as any).SuperAdminPortal && (
+                <Route path="/super-admin-portal/:rest*">
+                  {() => {
+                    const PortalComponent = (window as any).SuperAdminPortal;
+                    return <PortalComponent />;
+                  }}
+                </Route>
+              )}
               <Route component={NotFound} />
             </Switch>
           </Layout>

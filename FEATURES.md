@@ -89,7 +89,7 @@ I prefer iterative development. I want to be asked before you make any major cha
 
 ## Security Highlights
 
-- Super-admin USB key gate on privileged routes and portal unlock
+- admin USB key gate on privileged routes and portal unlock
 - Staff and patient auth separated
 - Patient API responses sanitize sensitive portal hashes
 - Server-side validation and audit logging for financial actions
@@ -103,7 +103,7 @@ I prefer iterative development. I want to be asked before you make any major cha
 - Outsourced labs CRUD and lab association for outsourced tests
 - Referral commission reports exclude cancelled tests
 
-## Super-Admin Controls
+## admin Controls
 
 - USB verification endpoint available
 - USB enforcement middleware applied

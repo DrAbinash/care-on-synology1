@@ -267,8 +267,7 @@ All other shared tables have identical columns.
 | `AI_INTEGRATIONS_GEMINI_API_KEY` | PRESENT | PRESENT | MATCH |
 | `AI_INTEGRATIONS_GEMINI_BASE_URL` | PRESENT | PRESENT | MATCH |
 | `INTERNAL_API_KEY` | PRESENT | PRESENT | MATCH |
-| `SUPER_ADMIN_USB_KEY` | PRESENT | PRESENT | MATCH |
-| `SUPER_ADMIN_USB_PIN` | PRESENT | PRESENT | MATCH |
+| `admin_USB_PIN` | PRESENT | PRESENT | MATCH |
 | `ENABLE_SCHEDULERS` | PRESENT | PRESENT | MATCH |
 | `SERVE_STATIC_DIR` | PRESENT | PRESENT | MATCH |
 | `DEFAULT_OBJECT_STORAGE_BUCKET_ID` | PRESENT | PRESENT | MATCH |
@@ -364,7 +363,7 @@ All other shared tables have identical columns.
 | `/api/bridge` | `bridge.ts` | WORKING | YES |
 | `/api/auth/webauthn` | `webauthn.ts` | WORKING | YES |
 | `/api/storage` | `storage.ts` | WORKING | YES |
-| `/api/super-admin` | `super-admin.ts` | WORKING | YES |
+| `/api/admin` | `admin.ts` | WORKING | YES |
 | `/api/portal/settings` | `portal.ts` | **BROKEN (500)** | YES |
 
 ## 4.2 Route Health Summary
@@ -446,7 +445,7 @@ All other shared tables have identical columns.
 | **Settings** | **BROKEN** (spinner) | **BROKEN** (spinner) | MATCH |
 | **Patient Portal** | **BROKEN** (spinner) | **BROKEN** (spinner) | MATCH |
 | **Admin** | **BROKEN** (spinner) | **BROKEN** (spinner) | MATCH |
-| **Super Admin** | **BROKEN** (spinner) | **BROKEN** (spinner) | MATCH |
+| **Admin** | **BROKEN** (spinner) | **BROKEN** (spinner) | MATCH |
 | **Clinic Site** | Works | Works | MATCH |
 | **Mobile Booking** | Works | Works | MATCH |
 
@@ -468,7 +467,7 @@ The Drizzle ORM query selects all columns. When a column doesn't exist, PostgreS
 |--------|-----|------|--------|
 | Clinic Site (public) | YES | YES | **MATCH** |
 | Mobile Booking | YES | YES | **MATCH** |
-| Super Admin Portal | YES | YES | **MATCH** |
+| Admin Portal | YES | YES | **MATCH** |
 | API Server (healthz) | YES | YES | **MATCH** |
 
 ---
@@ -617,7 +616,7 @@ The Drizzle ORM query selects all columns. When a column doesn't exist, PostgreS
 | `signatures.ts` | New table not in prod |
 | `role-permissions.ts` | New table not in prod |
 | `audit-logs.ts` | New table not in prod |
-| `super-admin.ts` | New table not in prod |
+| `admin.ts` | New table not in prod |
 | `webauthn.ts` | New table not in prod |
 | `bridge.ts` | New table not in prod |
 | `anomaly-alerts.ts` | New table not in prod |

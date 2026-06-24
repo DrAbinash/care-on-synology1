@@ -183,7 +183,6 @@ Care Diagnostics operates a comprehensive TypeScript/pnpm monorepo ERP with **11
 | `DATABASE_URL` | Yes | PostgreSQL connection | Set in both environments |
 | `NODE_ENV` | Yes | production/development | Set |
 | `SESSION_SECRET` | Yes | Cookie encryption | Set (production only) |
-| `SUPER_ADMIN_USB_KEY` | No | USB pen-drive gate | Set in production |
 | `SERVE_STATIC_DIR` | Yes (prod) | Static SPA serving | Set in production |
 | `AI_INTEGRATIONS_GEMINI_API_KEY` | No | Gemini AI | Set |
 | `AI_INTEGRATIONS_GEMINI_BASE_URL` | No | Gemini proxy | Set |
@@ -513,9 +512,8 @@ Recommended: All bays in RAID5 = 28TB usable (with 4x8TB) or 32TB (with 4x16TB)
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────┐│
-│  │ Clinic Site │    │ ERP Portal  │    │ Super Admin Portal  ││
+│  │ Clinic Site │    │ ERP Portal  │    │ Admin Portal  ││
 │  │   (React)   │    │   (React)   │    │       (React)       ││
-│  │   /site/    │    │    /erp/    │    │  /super-admin-portal/││
 │  └─────────────┘    └─────────────┘    └─────────────────────┘│
 │         │                  │                     │             │
 │         └──────────────────┼─────────────────────┘             │
@@ -665,7 +663,7 @@ Local Network (Clinic)
 | PostgreSQL | Replit | Synology Docker | pg_dump + restore |
 | Clinic Site | Replit SPA | Synology nginx | Static build |
 | ERP Portal | Replit SPA | Synology nginx | Static build |
-| Super Admin | Replit SPA | Synology nginx | Static build |
+| Admin | Replit SPA | Synology nginx | Static build |
 | Conquest PACS | Windows PC | Retire | Keep until validated |
 | Orthanc PACS | Not deployed | Synology Docker | Fresh install |
 | OHIF Viewer | Not installed | Synology Docker | Fresh install |
@@ -1082,7 +1080,6 @@ PRIVATE_OBJECT_DIR=/volume1/docker/shared/uploads/private
 | `NODE_ENV` | `production` | `production` | Same |
 | `PORT` | `8080` | `8080` | Same |
 | `SERVE_STATIC_DIR` | `artifacts/api-server/dist/web` | `/app/dist/web` | Docker path |
-| `SUPER_ADMIN_USB_KEY` | Set | Set | Copy value |
 | `SESSION_SECRET` | Set | Set | Copy value |
 | `AI_INTEGRATIONS_GEMINI_API_KEY` | Set | Set | Copy value |
 | `ORTHANC_URL` | Not set | `http://care-orthanc:8042` | New |
@@ -1143,9 +1140,7 @@ server {
         proxy_set_header Host $host;
     }
     
-    # Super admin
-    location /super-admin-portal/ {
-        proxy_pass http://care-web:80/super-admin-portal/;
+    # Admin
         proxy_set_header Host $host;
     }
     
@@ -1551,7 +1546,6 @@ Future AI: GPU Workstation (optional)
 | Aspect | Current | Target | Risk |
 |---|---|---|---|
 | Auth | Staff PIN + session | Same | Low |
-| USB Gate | SUPER_ADMIN_USB_KEY | Same | Low |
 | LAN-only | Configurable | Same | Low |
 | FIDO2 | Configurable | Same | Low |
 | Session timeout | Configurable | Same | Low |
@@ -1561,7 +1555,6 @@ Future AI: GPU Workstation (optional)
 
 **Recommendation:**
 - Keep all existing security features
-- Ensure `SUPER_ADMIN_USB_KEY` is set on Synology
 - Use strong database password
 - Enable session timeout for remote access
 
@@ -1617,7 +1610,7 @@ Future AI: GPU Workstation (optional)
 |---|---|---|---|
 | Staff | Username + PIN | Same | Low |
 | Patient | Mobile + PIN | Same | Low |
-| Super Admin | USB + PIN | Same | Low |
+| Admin | USB + PIN | Same | Low |
 | Portal | PIN-based | Same | Low |
 | FIDO2 | Optional | Optional | Low |
 | Biometric | Fingerprint (local) | Same | Low |

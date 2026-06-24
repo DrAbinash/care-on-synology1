@@ -3,7 +3,6 @@ import { spawn } from "node:child_process";
 const tasks = [
   { name: "api", command: "pnpm", args: ["--filter", "@workspace/api-server", "run", "dev"] },
   { name: "erp", command: "pnpm", args: ["--filter", "@workspace/diagnostic-erp", "run", "dev"] },
-  { name: "admin", command: "pnpm", args: ["--filter", "@workspace/super-admin-portal", "run", "dev"] },
 ];
 
 const running = new Map();

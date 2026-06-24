@@ -68,7 +68,6 @@ The `.env` file located in the `/volume1/care-diagnostics/deploy` directory cont
 | **`SESSION_SECRET`**| *[Require 32-char Random]* | Encryption secret for Express cookie sessions. |
 | **`INTERNAL_API_KEY`**| *[Require Hex/UUID Secret]* | Bearer key used for PACS webhooks (`erp_notify.lua` auth). |
 | **`PUBLIC_BASE_URL`** | `https://caredeoghar.com` | Base URL used to formulate public patient portal and invoice links. |
-| **`SUPER_ADMIN_USB_KEY`** | *[Require UUID Key]* | Key matching the physical security USB key for super-admin verification. |
 | **`ALLOW_PRIVATE_IPS`** | `true` | Allows outgoing API calls to LAN endpoints (e.g. PACS, Orthanc local IPs). |
 | **`ORTHANC_URL`** | `http://192.168.1.55:8042` | Connection string to the local Orthanc PACS REST API. |
 | **`ORTHANC_USERNAME`**| `admin` | Username for Orthanc credentials. |
@@ -115,8 +114,6 @@ The `.env` file located in the `/volume1/care-diagnostics/deploy` directory cont
    - `care-api` (Running)
    - `care-web` (Running)
 
-### Step 5: Initialize the Super-Admin Account
-1. Open a browser and navigate to `http://<your-nas-ip>:8888/super-admin-portal/`.
 2. The portal will prompt you for a **First-Time Setup PIN**.
 3. Define a strong numeric PIN. This credentials profile is stored in the database.
 4. Log in and navigate to **Settings** to add staff accounts and clinic settings.

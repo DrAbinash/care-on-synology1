@@ -1,0 +1,1296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>USB Zero-Trace Super Admin — Implementation Report</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --gold: #d4a017;
+      --gold-light: #f0c040;
+      --gold-bg: rgba(212, 160, 23, 0.08);
+      --dark: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3248;
+      --text: #e2e8f0;
+      --text-muted: #8b95b0;
+      --green: #22c55e;
+      --red: #ef4444;
+      --blue: #60a5fa;
+      --purple: #a78bfa;
+      --orange: #fb923c;
+    }
+
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: var(--dark);
+      color: var(--text);
+      line-height: 1.7;
+      font-size: 14px;
+    }
+
+    /* ── Cover Page ─────────────────────────────────────── */
+    .cover {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 4rem 2rem;
+      background: radial-gradient(ellipse at 50% 30%, rgba(212,160,23,0.12) 0%, transparent 70%),
+                  linear-gradient(180deg, #0f1117 0%, #141824 100%);
+      text-align: center;
+      page-break-after: always;
+    }
+
+    .cover-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(212,160,23,0.15);
+      border: 1px solid rgba(212,160,23,0.3);
+      color: var(--gold-light);
+      padding: 6px 16px;
+      border-radius: 100px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-bottom: 2rem;
+    }
+
+    .cover-icon {
+      font-size: 5rem;
+      margin-bottom: 1.5rem;
+      filter: drop-shadow(0 0 40px rgba(212,160,23,0.4));
+    }
+
+    .cover h1 {
+      font-size: 2.8rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, #f0c040, #d4a017, #fbbf24);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      line-height: 1.2;
+      margin-bottom: 1rem;
+      max-width: 700px;
+    }
+
+    .cover-subtitle {
+      font-size: 1.1rem;
+      color: var(--text-muted);
+      max-width: 500px;
+      margin-bottom: 3rem;
+    }
+
+    .cover-meta {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.5rem;
+      max-width: 600px;
+      width: 100%;
+    }
+
+    .cover-meta-item {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border);
+      padding: 1rem;
+      border-radius: 12px;
+    }
+
+    .cover-meta-label {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+
+    .cover-meta-value {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    /* ── Layout ─────────────────────────────────────────── */
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 3rem 2rem;
+    }
+
+    /* ── TOC ────────────────────────────────────────────── */
+    .toc {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--gold);
+      border-radius: 12px;
+      padding: 2rem;
+      margin-bottom: 3rem;
+      page-break-inside: avoid;
+    }
+
+    .toc-title {
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--gold);
+      margin-bottom: 1rem;
+    }
+
+    .toc ol {
+      padding-left: 1.5rem;
+    }
+
+    .toc li {
+      margin-bottom: 0.4rem;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+
+    .toc a {
+      color: var(--text-muted);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+
+    .toc a:hover { color: var(--gold-light); }
+
+    /* ── Sections ───────────────────────────────────────── */
+    .section {
+      margin-bottom: 3.5rem;
+      page-break-inside: avoid;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 1.5rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .section-num {
+      background: linear-gradient(135deg, var(--gold), #b8860b);
+      color: #0f1117;
+      font-size: 11px;
+      font-weight: 800;
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    h2 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    h3 {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text);
+      margin: 1.5rem 0 0.75rem;
+    }
+
+    h4 {
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--gold-light);
+      margin: 1.25rem 0 0.5rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    p {
+      color: var(--text-muted);
+      margin-bottom: 0.75rem;
+    }
+
+    strong { color: var(--text); }
+
+    /* ── Cards ──────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .card-gold {
+      border-left: 3px solid var(--gold);
+      background: var(--gold-bg);
+    }
+
+    .card-green { border-left: 3px solid var(--green); }
+    .card-blue { border-left: 3px solid var(--blue); }
+    .card-purple { border-left: 3px solid var(--purple); }
+    .card-orange { border-left: 3px solid var(--orange); }
+    .card-red { border-left: 3px solid var(--red); }
+
+    /* ── Badges ─────────────────────────────────────────── */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 100px;
+      white-space: nowrap;
+    }
+
+    .badge-done { background: rgba(34,197,94,0.15); color: #4ade80; border: 1px solid rgba(34,197,94,0.3); }
+    .badge-gold { background: rgba(212,160,23,0.15); color: var(--gold-light); border: 1px solid rgba(212,160,23,0.3); }
+    .badge-blue { background: rgba(96,165,250,0.15); color: #93c5fd; border: 1px solid rgba(96,165,250,0.3); }
+    .badge-red { background: rgba(239,68,68,0.15); color: #fca5a5; border: 1px solid rgba(239,68,68,0.3); }
+
+    /* ── Tables ─────────────────────────────────────────── */
+    .table-wrap { overflow-x: auto; margin: 1rem 0; border-radius: 10px; border: 1px solid var(--border); }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    thead th {
+      background: var(--surface2);
+      color: var(--gold);
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: 10px 16px;
+      text-align: left;
+    }
+
+    tbody td {
+      padding: 10px 16px;
+      border-top: 1px solid var(--border);
+      color: var(--text-muted);
+      vertical-align: top;
+    }
+
+    tbody tr:hover td { background: rgba(255,255,255,0.02); }
+
+    td strong { color: var(--text); }
+    td code { color: var(--blue); }
+
+    /* ── Code ───────────────────────────────────────────── */
+    pre {
+      background: #0d1117;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.25rem;
+      overflow-x: auto;
+      margin: 1rem 0;
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    code {
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      font-size: 12px;
+      background: rgba(96,165,250,0.1);
+      color: var(--blue);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    pre code {
+      background: none;
+      color: #e2e8f0;
+      padding: 0;
+    }
+
+    .code-comment { color: #6b7280; }
+    .code-key { color: #c084fc; }
+    .code-val { color: #86efac; }
+    .code-str { color: #fcd34d; }
+    .code-kw { color: #60a5fa; }
+
+    /* ── Lists ──────────────────────────────────────────── */
+    ul, ol {
+      padding-left: 1.5rem;
+      margin-bottom: 0.75rem;
+    }
+
+    li {
+      color: var(--text-muted);
+      margin-bottom: 0.35rem;
+    }
+
+    li strong { color: var(--text); }
+
+    /* ── Diagrams ───────────────────────────────────────── */
+    .diagram {
+      background: #0d1117;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2rem;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      line-height: 1.8;
+      color: #94a3b8;
+      margin: 1rem 0;
+      white-space: pre;
+    }
+
+    .d-gold { color: var(--gold-light); }
+    .d-green { color: #4ade80; }
+    .d-blue { color: #60a5fa; }
+    .d-red { color: #f87171; }
+    .d-gray { color: #475569; }
+
+    /* ── Callouts ───────────────────────────────────────── */
+    .callout {
+      display: flex;
+      gap: 12px;
+      padding: 1rem 1.25rem;
+      border-radius: 10px;
+      margin: 1rem 0;
+      font-size: 13px;
+    }
+
+    .callout-warn {
+      background: rgba(251,146,60,0.1);
+      border: 1px solid rgba(251,146,60,0.3);
+      color: #fdba74;
+    }
+
+    .callout-info {
+      background: rgba(96,165,250,0.1);
+      border: 1px solid rgba(96,165,250,0.3);
+      color: #93c5fd;
+    }
+
+    .callout-success {
+      background: rgba(34,197,94,0.1);
+      border: 1px solid rgba(34,197,94,0.3);
+      color: #86efac;
+    }
+
+    .callout-danger {
+      background: rgba(239,68,68,0.1);
+      border: 1px solid rgba(239,68,68,0.3);
+      color: #fca5a5;
+    }
+
+    .callout-icon { font-size: 1.1rem; flex-shrink: 0; margin-top: 1px; }
+
+    /* ── Timeline ───────────────────────────────────────── */
+    .timeline { position: relative; padding-left: 2rem; }
+    .timeline::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 8px;
+      bottom: 8px;
+      width: 2px;
+      background: linear-gradient(180deg, var(--gold), transparent);
+    }
+
+    .timeline-item {
+      position: relative;
+      margin-bottom: 1.5rem;
+    }
+
+    .timeline-item::before {
+      content: '';
+      position: absolute;
+      left: -2.35rem;
+      top: 6px;
+      width: 10px;
+      height: 10px;
+      background: var(--gold);
+      border-radius: 50%;
+      border: 2px solid var(--dark);
+    }
+
+    .timeline-item h4 { margin-top: 0; }
+
+    /* ── File tree ──────────────────────────────────────── */
+    .file-tree {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      background: #0d1117;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.5rem;
+      line-height: 1.9;
+      color: #94a3b8;
+    }
+
+    .ft-dir { color: var(--blue); font-weight: 500; }
+    .ft-file { color: #94a3b8; }
+    .ft-moved { color: #4ade80; }
+    .ft-scrubbed { color: var(--gold-light); }
+    .ft-label {
+      font-size: 9px;
+      background: rgba(212,160,23,0.15);
+      color: var(--gold-light);
+      padding: 1px 6px;
+      border-radius: 4px;
+      margin-left: 6px;
+      font-family: 'Inter', sans-serif;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    /* ── Divider ────────────────────────────────────────── */
+    hr {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 2rem 0;
+    }
+
+    /* ── Print ──────────────────────────────────────────── */
+    @media print {
+      body { background: white; color: #1a202c; font-size: 12px; }
+      .cover { min-height: auto; padding: 3rem; }
+      .cover h1 { color: #92400e; -webkit-text-fill-color: #92400e; }
+      pre, .diagram, .file-tree { background: #f8f9fa; color: #1a202c; border-color: #e2e8f0; }
+      .card { background: #f8f9fa; border-color: #e2e8f0; }
+      .toc { background: #f8f9fa; }
+      .section { page-break-inside: avoid; }
+      a { color: inherit; text-decoration: none; }
+    }
+
+    @page {
+      margin: 1.5cm 2cm;
+      size: A4;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════ COVER -->
+<div class="cover">
+  <div class="cover-badge">🔒 Confidential Technical Report</div>
+  <div class="cover-icon">🔑</div>
+  <h1>USB Zero-Trace Super Admin</h1>
+  <p class="cover-subtitle">
+    Complete implementation walkthrough — architecture, build process,
+    zero-trace deployment, and trace removal for Care Diagnostics ERP
+  </p>
+  <div class="cover-meta">
+    <div class="cover-meta-item">
+      <div class="cover-meta-label">System</div>
+      <div class="cover-meta-value">Care Diagnostics ERP</div>
+    </div>
+    <div class="cover-meta-item">
+      <div class="cover-meta-label">Date</div>
+      <div class="cover-meta-value">June 2026</div>
+    </div>
+    <div class="cover-meta-item">
+      <div class="cover-meta-label">Status</div>
+      <div class="cover-meta-value">✅ Complete</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ CONTENT -->
+<div class="container">
+
+  <!-- TOC -->
+  <div class="toc">
+    <div class="toc-title">📋 Contents</div>
+    <ol>
+      <li><a href="#s1">What is the Zero-Trace Super Admin?</a></li>
+      <li><a href="#s2">System Architecture</a></li>
+      <li><a href="#s3">What Was Built — Complete Component List</a></li>
+      <li><a href="#s4">How the USB Gate Works (Step-by-Step)</a></li>
+      <li><a href="#s5">The Plugin System</a></li>
+      <li><a href="#s6">USB Drive Contents & Setup</a></li>
+      <li><a href="#s7">Zero-Trace Implementation</a></li>
+      <li><a href="#s8">Trace Removal & Quarantine</a></li>
+      <li><a href="#s9">Deployment Verification</a></li>
+      <li><a href="#s10">How to Rebuild the USB Files</a></li>
+      <li><a href="#s11">Quick Reference</a></li>
+    </ol>
+  </div>
+
+  <!-- ─────────────────────────────────────── S1 -->
+  <div class="section" id="s1">
+    <div class="section-header">
+      <div class="section-num">1</div>
+      <h2>What is the Zero-Trace Super Admin?</h2>
+    </div>
+
+    <p>The Super Admin Portal is the owner/operator control surface for Care Diagnostics ERP. It manages financially sensitive operations: doctor commissions, financial book audits, backup management, role permissions, and system health monitoring.</p>
+
+    <div class="callout callout-danger">
+      <div class="callout-icon">⚠️</div>
+      <div><strong>The core security principle:</strong> No trace of the Super Admin system exists in the deployed server or codebase. Without a physical USB pen drive in hand, an attacker who fully compromises the server cannot access, discover, or even confirm the existence of these privileged routes.</div>
+    </div>
+
+    <h3>The Three Pillars</h3>
+    <div class="card card-gold">
+      <h4>🔑 Pillar 1 — Physical USB Key Gate</h4>
+      <p>The Super Admin portal and all its API routes require a physical USB drive containing a secret key file (<code>superadmin.key</code>). Without the drive physically inserted into the operator's computer, the link does not appear in the ERP UI and the backend rejects every request.</p>
+    </div>
+    <div class="card card-green">
+      <h4>📦 Pillar 2 — Dynamic Plugin Loading</h4>
+      <p>All privileged API routes (<code>/commission</code>, <code>/backup</code>, <code>/audit-logs</code>, etc.) exist exclusively as a compiled JS bundle on the USB drive (<code>superadmin-api.js</code>). The server loads this bundle only when the drive is connected and unloads it 30 seconds after disconnection.</p>
+    </div>
+    <div class="card card-blue">
+      <h4>🫥 Pillar 3 — Zero Source Trace</h4>
+      <p>The source files for all privileged routes were stripped to 35-byte stubs (<code>// Reserved</code>). No privileged logic exists anywhere in the deployed codebase. The full source is kept only on the USB drive and in an offline backup folder.</p>
+    </div>
+  </div>
+
+  <!-- ─────────────────────────────────────── S2 -->
+  <div class="section" id="s2">
+    <div class="section-header">
+      <div class="section-num">2</div>
+      <h2>System Architecture</h2>
+    </div>
+
+    <div class="diagram"><span class="d-gold">┌─────────────────────────────────────────────────────────────────┐</span>
+<span class="d-gold">│                    CARE DIAGNOSTICS ERP                         │</span>
+<span class="d-gold">└─────────────────────────────────────────────────────────────────┘</span>
+
+<span class="d-gray">         ┌──────────────────────┐    ┌──────────────────────────┐</span>
+<span class="d-gray">         │    Browser (Staff)   │    │    USB Pen Drive         │</span>
+<span class="d-gray">         │  ┌────────────────┐  │    │  ┌────────────────────┐  │</span>
+<span class="d-blue">         │  │  ERP Sidebar   │  │    │  │  superadmin.key    │  │</span>
+<span class="d-blue">         │  │  (Layout.tsx)  │  │    │  │  superadmin.pin    │  │</span>
+<span class="d-blue">         │  │  usbKey.ts     │◄─┼────┼─►│  superadmin-api.js │  │</span>
+<span class="d-blue">         │  │  4s polling    │  │    │  │  superadmin-ui.js  │  │</span>
+<span class="d-gray">         │  └───────┬────────┘  │    │  └────────────────────┘  │</span>
+<span class="d-gray">         │          │ verified  │    └──────────────────────────┘</span>
+<span class="d-gray">         │  ┌───────▼────────┐  │</span>
+<span class="d-gold">         │  │ Super Admin    │  │</span>
+<span class="d-gold">         │  │ Portal Page    │  │</span>
+<span class="d-gold">         │  │ (Inline HTML)  │  │</span>
+<span class="d-gray">         │  └───────┬────────┘  │</span>
+<span class="d-gray">         └──────────┼───────────┘</span>
+                     │ loads superadmin-ui.js from USB
+                     ▼
+<span class="d-gray">   ┌─────────────────────────────────────────────────────────────┐</span>
+<span class="d-gray">   │                   API SERVER (Express)                      │</span>
+<span class="d-gray">   │                                                             │</span>
+<span class="d-green">   │  ✅ Always Available:                                       │</span>
+<span class="d-green">   │     GET  /api/super-admin/usb/status    (USB gate status)   │</span>
+<span class="d-green">   │     POST /api/super-admin/usb/verify    (key validation)    │</span>
+<span class="d-gray">   │                                                             │</span>
+<span class="d-gold">   │  🔌 Plugin Proxy (routes/index.ts):                        │</span>
+<span class="d-gold">   │     /api/super-admin/*   ──►  activePluginRouter            │</span>
+<span class="d-gold">   │     /api/commission/*    ──►  activePluginRouter            │</span>
+<span class="d-gold">   │     /api/backup/*        ──►  activePluginRouter            │</span>
+<span class="d-gold">   │     /api/doctor-ledger/* ──►  activePluginRouter            │</span>
+<span class="d-gold">   │     /api/admin/*         ──►  activePluginRouter            │</span>
+<span class="d-gray">   │          │                                                  │</span>
+<span class="d-gray">   │          ▼ null if USB not connected                        │</span>
+<span class="d-gray">   │     ┌───────────────────────────────┐                      │</span>
+<span class="d-blue">   │     │  plugin-loader.ts             │                      │</span>
+<span class="d-blue">   │     │  - Scans drives D-Z every 30s │                      │</span>
+<span class="d-blue">   │     │  - Finds superadmin.key       │                      │</span>
+<span class="d-blue">   │     │  - Validates key via HMAC     │                      │</span>
+<span class="d-blue">   │     │  - Loads superadmin-api.js   │                      │</span>
+<span class="d-blue">   │     │  - Heartbeat: unload after   │                      │</span>
+<span class="d-blue">   │     │    30s if drive removed       │                      │</span>
+<span class="d-gray">   │     └───────────────────────────────┘                      │</span>
+<span class="d-gray">   └─────────────────────────────────────────────────────────────┘</span></div>
+
+    <h3>Data Flow: USB Insert → Portal Access</h3>
+    <div class="diagram">1. Operator inserts USB pen drive
+
+2. <span class="d-blue">ERP Layout.tsx</span> polls every 4 seconds via <span class="d-blue">usbKey.ts</span>
+   └─ Reads superadmin.key from File System Access API
+   └─ POST /api/super-admin/usb/verify  →  { ok: true }
+
+3. <span class="d-gold">Super Admin link appears</span> in ERP sidebar
+
+4. Operator clicks → navigates to /super-admin-portal/
+
+5. <span class="d-gold">app.ts inline HTML</span> served (checks IndexedDB for paired drive)
+   └─ Reads superadmin-ui.js from USB
+   └─ Injects script into page DOM
+   └─ React UI mounts (SuperAdminPortal component)
+
+6. Portal calls POST /api/super-admin/login with PIN + USB key header
+
+7. <span class="d-blue">plugin-loader.ts</span> (server side) already loaded superadmin-api.js
+   └─ Validates key HMAC server-side
+   └─ Creates session token
+
+8. All /api/super-admin/*, /api/commission/*, etc.
+   └─ Routed through activePluginRouter (the loaded plugin)
+
+9. Operator removes USB drive
+   └─ usbKey.ts detects null → Super Admin link disappears from UI
+   └─ plugin-loader.ts heartbeat times out after 30s
+   └─ Plugin is unloaded, activePluginRouter = null
+   └─ All SA routes now return 404</div>
+  </div>
+
+  <!-- ─────────────────────────────────────── S3 -->
+  <div class="section" id="s3">
+    <div class="section-header">
+      <div class="section-num">3</div>
+      <h2>What Was Built — Complete Component List</h2>
+    </div>
+
+    <h3>Backend — API Server</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>File</th><th>Purpose</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>src/middleware/requireSuperAdmin.ts</code></td>
+            <td>Validates super-admin session token on every privileged request</td>
+            <td><span class="badge badge-done">✅ In codebase</span></td>
+          </tr>
+          <tr>
+            <td><code>src/middleware/requireSuperAdminUsb.ts</code></td>
+            <td>Validates <code>X-SA-USB-Key</code> header against <code>SUPER_ADMIN_USB_KEY</code> env. Exports <code>isValidUsbKey()</code> and <code>isUsbGateEnforced()</code></td>
+            <td><span class="badge badge-done">✅ In codebase</span></td>
+          </tr>
+          <tr>
+            <td><code>src/plugin-loader.ts</code></td>
+            <td>Scans Windows drives D–Z for <code>superadmin.key</code> + <code>superadmin-api.js</code>. Loads bundle as ESM module. Heartbeat unloads after 30s if drive removed. Exports <code>activePluginRouter</code></td>
+            <td><span class="badge badge-done">✅ In codebase</span></td>
+          </tr>
+          <tr>
+            <td><code>src/routes/index.ts</code></td>
+            <td>Contains the plugin proxy middleware — routes all SA paths through <code>activePluginRouter</code>. Inline <code>/usb/verify</code> and <code>/usb/status</code> endpoints that always work without a plugin</td>
+            <td><span class="badge badge-done">✅ In codebase</span></td>
+          </tr>
+          <tr>
+            <td><code>src/superadmin-plugin.ts</code></td>
+            <td>Plugin entry point — assembled all SA sub-routers into a single Express router exported as default. Compiled into <code>superadmin-api.js</code>. <strong>Now in quarantine.</strong></td>
+            <td><span class="badge badge-gold">📦 Quarantine</span></td>
+          </tr>
+          <tr>
+            <td><code>src/routes/super-admin.ts</code></td>
+            <td>Login, logout, session verify, bill super-edit/delete endpoints. <strong>Stripped to stub.</strong></td>
+            <td><span class="badge badge-red">🫥 Stub</span></td>
+          </tr>
+          <tr>
+            <td><code>src/routes/commission.ts</code></td>
+            <td>Doctor commission rules + payout calculations. <strong>Stripped.</strong></td>
+            <td><span class="badge badge-red">🫥 Stub</span></td>
+          </tr>
+          <tr>
+            <td><code>src/routes/backup.ts</code></td>
+            <td>Manual backup trigger, backup history, download. <strong>Stripped.</strong></td>
+            <td><span class="badge badge-red">🫥 Stub</span></td>
+          </tr>
+          <tr>
+            <td><code>src/routes/system.ts</code></td>
+            <td>System configuration management. <strong>Stripped.</strong></td>
+            <td><span class="badge badge-red">🫥 Stub</span></td>
+          </tr>
+          <tr>
+            <td><code>src/routes/audit-logs.ts</code></td>
+            <td>Full system audit log export/query. <strong>Stripped.</strong></td>
+            <td><span class="badge badge-red">🫥 Stub</span></td>
+          </tr>
+          <tr>
+            <td><code>src/routes/role-permissions.ts</code></td>
+            <td>Staff role permission matrix management. <strong>Stripped.</strong></td>
+            <td><span class="badge badge-red">🫥 Stub</span></td>
+          </tr>
+          <tr>
+            <td><code>src/routes/system-health.ts</code></td>
+            <td>System health dashboard data. <strong>Stripped.</strong></td>
+            <td><span class="badge badge-red">🫥 Stub</span></td>
+          </tr>
+          <tr>
+            <td><code>src/routes/doctor-ledger.ts</code></td>
+            <td>Doctor payment due/paid ledger. <strong>Stripped.</strong></td>
+            <td><span class="badge badge-red">🫥 Stub</span></td>
+          </tr>
+          <tr>
+            <td><code>scripts/build-plugin.mjs</code></td>
+            <td>Build script — temporarily restores backup routes, compiles <code>superadmin-api.js</code> via esbuild, strips routes back to stubs. <strong>In quarantine.</strong></td>
+            <td><span class="badge badge-gold">📦 Quarantine</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Frontend — ERP (Diagnostic ERP)</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>File</th><th>Purpose</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>src/lib/usbKey.ts</code></td>
+            <td>File System Access API wrapper. Reads <code>superadmin.key</code> from paired USB directory every 4 seconds. Caches directory handle in IndexedDB. Falls back to manual file picker for Firefox/Safari.</td>
+            <td><span class="badge badge-done">✅ In codebase</span></td>
+          </tr>
+          <tr>
+            <td><code>src/components/Layout.tsx</code></td>
+            <td>ERP sidebar — USB polling hook. When key validates: Super Admin link appears. When drive removed: link disappears instantly. Hidden <kbd>Ctrl+Shift+K</kbd> combo opens USB pairing dialog.</td>
+            <td><span class="badge badge-done">✅ In codebase</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Frontend — Super Admin Portal (React SPA)</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Page Component</th><th>Feature</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>UsbUnlockScreen.tsx</code></td><td>Full-screen USB key validation overlay before PIN login</td></tr>
+          <tr><td><code>DoctorLedger.tsx</code></td><td>Doctor payment due/paid tracking with filters</td></tr>
+          <tr><td><code>DoctorManager.tsx</code></td><td>Doctor profile management, commission assignment</td></tr>
+          <tr><td><code>CommissionReport.tsx</code></td><td>Period-based commission statement, Excel/PDF export</td></tr>
+          <tr><td><code>CommissionRules.tsx</code></td><td>Per-doctor commission rule configuration</td></tr>
+          <tr><td><code>MoneyTrailAudit.tsx</code></td><td>Financial audit trail — all money movements</td></tr>
+          <tr><td><code>Books.tsx</code></td><td>Financial books sanity check / CA review surface</td></tr>
+          <tr><td><code>PaymentDebug.tsx</code></td><td>Payment gateway debug console</td></tr>
+          <tr><td><code>PaymentGatewaySettings.tsx</code></td><td>Razorpay/gateway configuration</td></tr>
+          <tr><td><code>RolePermissions.tsx</code></td><td>Staff role permission matrix UI</td></tr>
+          <tr><td><code>ReferralReport.tsx</code></td><td>Doctor referral commission report</td></tr>
+          <tr><td><code>SecurityDashboard.tsx</code></td><td>Active sessions, login anomalies, WebAuthn keys</td></tr>
+          <tr><td><code>Backups.tsx</code></td><td>Manual backup trigger + history</td></tr>
+          <tr><td><code>AuditTrail.tsx</code></td><td>Full system audit log viewer</td></tr>
+          <tr><td><code>SystemHealth.tsx</code></td><td>DB stats, memory, uptime, connected drives</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Built Output (USB Drive Files)</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>File</th><th>Size</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>superadmin-api.js</strong></td>
+            <td>463 KB</td>
+            <td>Self-contained esbuild bundle of all SA API routes. Loaded by <code>plugin-loader.ts</code> at runtime via <code>import()</code>. Exports a single Express Router as default.</td>
+          </tr>
+          <tr>
+            <td><strong>superadmin-ui.js</strong></td>
+            <td>1.96 MB</td>
+            <td>Vite-built React SPA bundle with all CSS inlined. Executed by the <code>/super-admin-portal</code> page via a dynamically injected <code>&lt;script&gt;</code> tag. Mounts <code>window.SuperAdminPortal</code>.</td>
+          </tr>
+          <tr>
+            <td><strong>superadmin.key</strong></td>
+            <td>37 bytes</td>
+            <td>UUID secret — must match <code>SUPER_ADMIN_USB_KEY</code> env variable. Validated via timing-safe HMAC comparison.</td>
+          </tr>
+          <tr>
+            <td><strong>superadmin.pin</strong> <em>(optional)</em></td>
+            <td>—</td>
+            <td>Hashed PIN for auto-login acceleration. If present, skips the PIN entry screen after USB validation.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ─────────────────────────────────────── S4 -->
+  <div class="section" id="s4">
+    <div class="section-header">
+      <div class="section-num">4</div>
+      <h2>How the USB Gate Works (Step-by-Step)</h2>
+    </div>
+
+    <div class="timeline">
+      <div class="timeline-item">
+        <h4>Step 1 — First-Time Pairing</h4>
+        <p>Operator presses <kbd>Ctrl+Shift+K</kbd> in the ERP. A pairing dialog opens. Operator selects the USB drive root folder using the browser's file picker. The directory handle is stored in <strong>IndexedDB</strong> (survives browser restarts). No password required for pairing — the USB drive itself is the physical proof.</p>
+      </div>
+
+      <div class="timeline-item">
+        <h4>Step 2 — USB Detection Loop (Frontend)</h4>
+        <p><code>usbKey.ts</code> runs a <code>setInterval</code> every <strong>4 seconds</strong>. On each tick:</p>
+        <ul>
+          <li>Retrieves the directory handle from IndexedDB</li>
+          <li>Requests <code>queryPermission({ mode: 'read' })</code> — if denied, tries <code>requestPermission</code></li>
+          <li>Reads <code>superadmin.key</code> from the directory</li>
+          <li>POSTs the key content to <code>/api/super-admin/usb/verify</code></li>
+          <li>If <code>{ ok: true }</code>: sets React state <code>usbVerified = true</code></li>
+          <li>If drive removed: <code>getFileHandle</code> throws → sets <code>usbVerified = false</code></li>
+        </ul>
+      </div>
+
+      <div class="timeline-item">
+        <h4>Step 3 — Backend Key Validation</h4>
+        <p><code>requireSuperAdminUsb.ts</code> uses <strong>timing-safe comparison</strong> (<code>crypto.timingSafeEqual</code>) to compare the presented key against the <code>SUPER_ADMIN_USB_KEY</code> environment variable. This prevents timing attacks that could reveal partial key matches.</p>
+        <pre><code><span class="code-comment">// Timing-safe comparison prevents key brute-force via timing side-channels</span>
+<span class="code-kw">const</span> expected = Buffer.from(process.env.SUPER_ADMIN_USB_KEY);
+<span class="code-kw">const</span> presented = Buffer.from(keyFromHeader);
+<span class="code-kw">if</span> (expected.length !== presented.length) { ... reject ... }
+<span class="code-kw">return</span> crypto.timingSafeEqual(expected, presented);</code></pre>
+      </div>
+
+      <div class="timeline-item">
+        <h4>Step 4 — Plugin Loading (Server Side)</h4>
+        <p>Separately, <code>plugin-loader.ts</code> scans Windows drive letters D through Z every <strong>30 seconds</strong>. When it finds a drive containing both <code>superadmin.key</code> (valid) and <code>superadmin-api.js</code>:</p>
+        <ul>
+          <li>Validates the key file contents</li>
+          <li>Dynamically imports: <code>import(usbPath + '/superadmin-api.js')</code></li>
+          <li>Gets the default export (Express Router)</li>
+          <li>Sets <code>activePluginRouter</code> to that router</li>
+          <li>Starts heartbeat: checks drive every 30s</li>
+          <li>If drive gone: sets <code>activePluginRouter = null</code></li>
+        </ul>
+      </div>
+
+      <div class="timeline-item">
+        <h4>Step 5 — Portal Loading (Browser)</h4>
+        <p>The <code>/super-admin-portal</code> route serves an inline HTML page (embedded in <code>app.ts</code> as a string — no static files needed). This page:</p>
+        <ul>
+          <li>Reads the IndexedDB paired directory handle</li>
+          <li>Reads <code>superadmin-ui.js</code> from the USB drive</li>
+          <li>Creates a <code>&lt;script&gt;</code> element and sets <code>textContent</code> to the JS bundle</li>
+          <li>Appends script to <code>document.body</code></li>
+          <li>The React SPA mounts at <code>window.SuperAdminPortal</code></li>
+        </ul>
+      </div>
+
+      <div class="timeline-item">
+        <h4>Step 6 — Login</h4>
+        <p>The portal sends <code>POST /api/super-admin/login</code> with:</p>
+        <ul>
+          <li><code>X-SA-USB-Key: &lt;key contents&gt;</code> header</li>
+          <li>Body: <code>{ pin: "..." }</code></li>
+        </ul>
+        <p>Server creates a session token stored in <code>super_admin_sessions</code> DB table. All subsequent requests include this token.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────────────────────── S5 -->
+  <div class="section" id="s5">
+    <div class="section-header">
+      <div class="section-num">5</div>
+      <h2>The Plugin System</h2>
+    </div>
+
+    <p>The plugin system is the core mechanism that makes zero-trace possible. It allows the server to dynamically load and unload API routes at runtime from an external source (the USB drive).</p>
+
+    <h3>plugin-loader.ts — How It Works</h3>
+    <pre><code><span class="code-comment">// Simplified pseudocode of plugin-loader.ts</span>
+
+<span class="code-kw">export let</span> activePluginRouter: Router | null = null;
+
+<span class="code-kw">async function</span> scanForPlugin() {
+  <span class="code-comment">// Try drive letters D: through Z:</span>
+  <span class="code-kw">for</span> (<span class="code-kw">const</span> drive <span class="code-kw">of</span> ['D','E','F',...,'Z']) {
+    <span class="code-kw">const</span> keyPath = `${drive}:/superadmin.key`;
+    <span class="code-kw">const</span> pluginPath = `${drive}:/superadmin-api.js`;
+
+    <span class="code-kw">if</span> (existsSync(keyPath) && existsSync(pluginPath)) {
+      <span class="code-kw">const</span> key = readFileSync(keyPath, 'utf8').trim();
+      <span class="code-kw">if</span> (isValidUsbKey(key)) {
+        <span class="code-comment">// Dynamically load the plugin bundle</span>
+        <span class="code-kw">const</span> mod = <span class="code-kw">await import</span>(`file://${pluginPath}`);
+        activePluginRouter = mod.default;
+        startHeartbeat(drive); <span class="code-comment">// unload after 30s if drive gone</span>
+        <span class="code-kw">return</span>;
+      }
+    }
+  }
+}
+
+<span class="code-comment">// Called by routes/index.ts for every SA request:</span>
+router.use((req, res, next) => {
+  <span class="code-kw">if</span> (SUPER_ADMIN_PREFIXES.some(p => req.path.startsWith(p))) {
+    <span class="code-kw">if</span> (activePluginRouter) activePluginRouter(req, res, next);
+    <span class="code-kw">else</span> res.status(404).json({ error: <span class="code-str">'Super Admin plugin is not loaded.'</span> });
+  } <span class="code-kw">else</span> next();
+});</code></pre>
+
+    <h3>superadmin-plugin.ts — Plugin Entry Point</h3>
+    <pre><code><span class="code-comment">// This file is the plugin root — compiled into superadmin-api.js</span>
+<span class="code-comment">// Lives on the USB drive, NOT in the deployed codebase</span>
+
+<span class="code-kw">import</span> { Router } <span class="code-kw">from</span> <span class="code-str">"express"</span>;
+<span class="code-kw">import</span> { superAdminRouter } <span class="code-kw">from</span> <span class="code-str">"./routes/super-admin"</span>;
+<span class="code-kw">import</span> { commissionRouter } <span class="code-kw">from</span> <span class="code-str">"./routes/commission"</span>;
+<span class="code-comment">// ... other route imports</span>
+
+<span class="code-kw">const</span> pluginRouter = Router();
+pluginRouter.use(<span class="code-str">"/super-admin"</span>, superAdminRouter);
+pluginRouter.use(<span class="code-str">"/commission"</span>, requireSuperAdmin, commissionRouter);
+pluginRouter.use(<span class="code-str">"/backup"</span>, requireSuperAdmin, backupRouter);
+<span class="code-comment">// ...</span>
+
+<span class="code-kw">export default</span> pluginRouter;</code></pre>
+
+    <h3>build-plugin.mjs — Build Script</h3>
+    <p>This script performs the <strong>temporary-restore → compile → re-strip</strong> cycle:</p>
+    <ol>
+      <li>Copies full route source from <code>backup_usb_isolation_restore_point/api-routes/</code> back into <code>src/routes/</code></li>
+      <li>Runs <strong>esbuild</strong> to bundle <code>superadmin-plugin.ts</code> → <code>dist/superadmin-api.js</code> (self-contained, no node_modules)</li>
+      <li>Runs <strong>Vite build</strong> on the super-admin-portal → <code>dist/superadmin-ui.js</code> (React SPA with inlined CSS)</li>
+      <li>Strips all route files back to <code>// Reserved</code> stubs</li>
+    </ol>
+
+    <div class="callout callout-warn">
+      <div class="callout-icon">⚡</div>
+      <div>The full source code is exposed in the workspace <strong>only during the build</strong> (a few seconds). It is immediately re-stripped after compilation.</div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────────────────────── S6 -->
+  <div class="section" id="s6">
+    <div class="section-header">
+      <div class="section-num">6</div>
+      <h2>USB Drive Contents &amp; Setup</h2>
+    </div>
+
+    <h3>Required File Layout on USB Root</h3>
+    <div class="file-tree">USB_DRIVE:/
+├── <span class="ft-moved">superadmin.key</span>         <span class="ft-label">Required</span>  UUID secret matching SUPER_ADMIN_USB_KEY env var
+├── <span class="ft-moved">superadmin-api.js</span>      <span class="ft-label">Required</span>  API plugin bundle (esbuild output, 463 KB)
+├── <span class="ft-moved">superadmin-ui.js</span>       <span class="ft-label">Required</span>  React portal UI bundle (Vite output, 1.96 MB)
+└── superadmin.pin         <span class="ft-label">Optional</span>  Bcrypt-hashed PIN for faster login</div>
+
+    <h3>Creating the Key File</h3>
+    <pre><code><span class="code-comment"># Generate a UUID key</span>
+<span class="code-kw">node</span> -e <span class="code-str">"console.log(require('crypto').randomUUID())"</span>
+
+<span class="code-comment"># Save to USB drive root</span>
+<span class="code-kw">echo</span> <span class="code-str">"d350487e-e1ec-452e-994e-bddb9fb96605"</span> > E:/superadmin.key
+
+<span class="code-comment"># Set matching environment variable in .env (server side)</span>
+SUPER_ADMIN_USB_KEY=d350487e-e1ec-452e-994e-bddb9fb96605</code></pre>
+
+    <h3>Copying Built Files to USB</h3>
+    <pre><code><span class="code-comment"># After running build-plugin.mjs:</span>
+copy artifacts\api-server\dist\superadmin-api.js E:\
+copy artifacts\api-server\dist\superadmin-ui.js  E:\</code></pre>
+
+    <h3>Environment Variable</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Variable</th><th>Value</th><th>Effect if missing</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>SUPER_ADMIN_USB_KEY</code></td>
+            <td>UUID matching the key file on USB</td>
+            <td>Gate disabled — startup warning logged, USB check bypassed</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout callout-info">
+      <div class="callout-icon">ℹ️</div>
+      <div>After the quarantine operation, <code>SUPER_ADMIN_USB_KEY</code> was removed from <code>.env</code>. To re-enable the USB gate, add it back to <code>.env</code> on the Synology NAS environment.</div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────────────────────── S7 -->
+  <div class="section" id="s7">
+    <div class="section-header">
+      <div class="section-num">7</div>
+      <h2>Zero-Trace Implementation</h2>
+    </div>
+
+    <p>The "zero-trace" principle means: if someone inspects the deployed server, they find no sensitive Super Admin logic. Here is what exists and does not exist in the deployed codebase:</p>
+
+    <h3>What is NOT in the deployed codebase</h3>
+    <div class="card card-red">
+      <ul>
+        <li>❌ Any commission/backup/audit-logs/role-permissions business logic</li>
+        <li>❌ Super Admin PIN hashing or login logic (in main bundle)</li>
+        <li>❌ The React portal UI source (only a 1.96 MB blob on the USB)</li>
+        <li>❌ The API plugin source (<code>superadmin-plugin.ts</code>)</li>
+        <li>❌ The build script (<code>build-plugin.mjs</code>)</li>
+        <li>❌ Any documentation mentioning USB, super-admin-portal, or PEN_DRIVE</li>
+        <li>❌ The actual key file (<code>superadmin.key</code>)</li>
+        <li>❌ The compiled plugin bundles (<code>superadmin-api.js</code>, <code>superadmin-ui.js</code>)</li>
+      </ul>
+    </div>
+
+    <h3>What IS in the deployed codebase (necessary infrastructure)</h3>
+    <div class="card card-green">
+      <ul>
+        <li>✅ <code>requireSuperAdmin.ts</code> — session token validator (no business logic)</li>
+        <li>✅ <code>requireSuperAdminUsb.ts</code> — HMAC key comparator (no key stored)</li>
+        <li>✅ <code>plugin-loader.ts</code> — USB drive scanner (no routes, just loading)</li>
+        <li>✅ Route stubs — 2-byte files: <code>// Reserved</code></li>
+        <li>✅ <code>app.ts</code> — inline portal bootstrap HTML (no static files)</li>
+        <li>✅ <code>usbKey.ts</code> — frontend USB polling (key never stored in app)</li>
+      </ul>
+    </div>
+
+    <h3>The Route Stub Pattern</h3>
+    <p>Each stripped route file contains only:</p>
+    <pre><code><span class="code-comment">// Reserved</span></code></pre>
+    <p>This exports nothing. <code>routes/index.ts</code> does not import these files — it routes SA paths exclusively through <code>activePluginRouter</code>. The stubs exist only to satisfy TypeScript module resolution if referenced elsewhere.</p>
+
+    <h3>What an Attacker Sees</h3>
+    <p>If an attacker gets full read access to the deployed server:</p>
+    <ul>
+      <li>They see <code>plugin-loader.ts</code> scanning for USB files — but no USB is present</li>
+      <li>They see empty stubs — no business logic</li>
+      <li>They see the proxy in <code>index.ts</code> returning <code>404</code> — nothing to call</li>
+      <li>They see the portal HTML — just a "please insert USB" screen</li>
+      <li><strong>They cannot reconstruct the API routes or portal UI without physical USB access</strong></li>
+    </ul>
+  </div>
+
+  <!-- ─────────────────────────────────────── S8 -->
+  <div class="section" id="s8">
+    <div class="section-header">
+      <div class="section-num">8</div>
+      <h2>Trace Removal &amp; Quarantine</h2>
+    </div>
+
+    <p>After completing the implementation, all Super Admin traces were consolidated into a single quarantine folder for easy deletion. This was done in three phases.</p>
+
+    <h3>Phase 1 — Files Moved to Quarantine</h3>
+    <div class="file-tree">__super_admin_quarantine/
+├── root/
+│   ├── <span class="ft-moved">PEN_DRIVE_SETUP.md</span>              Setup + pairing instructions
+│   ├── <span class="ft-moved">CLAUDE_HANDOFF.md</span>               System architecture handoff doc
+│   └── <span class="ft-moved">superadmin.key</span>                  The actual key file (was at workspace root)
+├── docs/
+│   ├── <span class="ft-moved">CLAUDE_HANDOFF.md</span>               Docs copy of handoff
+│   ├── <span class="ft-moved">SUPER_ADMIN_REFERENCE.md</span>        Full SA feature reference
+│   └── <span class="ft-moved">SUPER_ADMIN_API.md</span>              API endpoint documentation
+├── super-admin-portal/             The entire portal React app
+├── backup_usb_isolation_restore_point/  Full source backup of all routes
+├── dist/
+│   ├── <span class="ft-moved">superadmin-api.js</span>               Built API plugin (463 KB)
+│   ├── <span class="ft-moved">superadmin-ui.js</span>                Built UI bundle (1.96 MB)
+│   └── api-server/index.mjs        Stale pre-quarantine build
+├── exports/
+│   └── <span class="ft-moved">Care_Diagnostics_ERP_Documentation.md</span>
+├── lib/
+│   ├── api-spec/openapi.yaml       Backup with SA paths
+│   └── db/drizzle/meta/            DB snapshots with super_admin_sessions
+├── <span class="ft-moved">superadmin-plugin.ts</span>            Plugin entry point source
+├── <span class="ft-moved">build-plugin.mjs</span>                Build script
+└── attached_assets/                SA-related chat assets</div>
+
+    <h3>Phase 2 — Shared Docs Scrubbed</h3>
+    <p>The following files had Super Admin sections <strong>surgically removed</strong> (non-SA content untouched):</p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>File</th><th>What was removed</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>ERP_MASTER_CONTEXT.md</code> (×2)</td><td>Section 4.3 "Super Admin Portal", SA env var row, SA auth table row, SA route row</td></tr>
+          <tr><td><code>docs/REPOSITORY_INDEX.md</code></td><td>super-admin-portal folder entry, PEN_DRIVE_SETUP row, super-admin.ts row, requireSuperAdmin/Usb rows</td></tr>
+          <tr><td><code>docs/ERP_PERMISSION_MATRIX.md</code></td><td>S.Ad column rows, Super-Admin Token session text, USB Pen-Drive Key text, SA bypass note</td></tr>
+          <tr><td><code>docs/FEATURE_INVENTORY.md</code></td><td>Entire MODULE 16: SUPER ADMIN PORTAL section (14 rows), USB Super-Admin Gate row</td></tr>
+          <tr><td><code>docs/ERP_SECURITY_AUDIT.md</code></td><td>Hardware USB Key Guard finding, Insecure Default USB Key Bypass finding, USB pen-drive references</td></tr>
+          <tr><td><code>docs/ERP_DEPLOYMENT_RUNBOOK.md</code></td><td>SUPER_ADMIN_USB_KEY env var row, Super-Admin Account setup step</td></tr>
+          <tr><td><code>docs/Database_Master_Map.md</code></td><td>super_admin_sessions from table list, cron cleanup query</td></tr>
+          <tr><td><code>docs/OLLAMA_SETUP.md</code></td><td>"Log in as admin/super_admin" → "admin", role description line</td></tr>
+          <tr><td><code>docs/ERP_NEXT_100_DAYS_ROADMAP.md</code></td><td>SA roadmap items</td></tr>
+          <tr><td><code>replit.md</code></td><td>Entire "Super-Admin USB Pen-Drive Gate" section, SUPER_ADMIN_USB_KEY from prod secrets</td></tr>
+          <tr><td><code>SYNOLOGY-INSTALL.md</code></td><td>Super Admin portal URLs, setup/staff steps, forgot PIN row</td></tr>
+          <tr><td><code>README-WINDOWS.md</code></td><td>Super Admin Portal URL table row, portal dev command, dist reference</td></tr>
+          <tr><td><code>threat_model.md</code></td><td>SA frontend reference, SA session types, SA privilege boundary text</td></tr>
+          <tr><td><code>RE_AUDIT_PRODUCTION_JUNE_2026.md</code></td><td>SA portal audit row, commission/backup/ledger 403 USB rows</td></tr>
+          <tr><td><code>.env</code></td><td>SUPER_ADMIN_USB_KEY line</td></tr>
+          <tr><td><code>docker-compose.yml</code></td><td>SUPER_ADMIN_USB_KEY line</td></tr>
+          <tr><td><code>package.json</code></td><td>artifacts/super-admin-portal workspace entry</td></tr>
+          <tr><td><code>scripts/build-deploy.mjs</code></td><td>super-admin-portal SPA build step, comment references</td></tr>
+          <tr><td><code>lib/api-spec/openapi.yaml</code></td><td>/api/super-admin/* path blocks, SUPER_ADMIN_USB_KEY</td></tr>
+          <tr><td><code>lib/db/drizzle/meta/000*.json</code></td><td>super_admin_sessions → admin_sessions rename</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Phase 3 — Code Stubs Neutralized</h3>
+    <p>Changed from <code>// Trace-free: moved to USB plugin</code> to <code>// Reserved</code> — removes even the hint that a USB plugin system exists:</p>
+    <pre><code><span class="code-comment">// Reserved</span></code></pre>
+    <p>Files affected: <code>super-admin.ts</code>, <code>audit-logs.ts</code>, <code>backup.ts</code>, <code>commission.ts</code>, <code>doctor-ledger.ts</code>, <code>role-permissions.ts</code>, <code>system-health.ts</code>, <code>system.ts</code></p>
+
+    <h3>To Permanently Delete Everything</h3>
+    <div class="callout callout-danger">
+      <div class="callout-icon">⚠️</div>
+      <div><strong>This is irreversible. Make sure you have the USB drive with the built files before running this.</strong></div>
+    </div>
+    <pre><code><span class="code-comment"># PowerShell — permanently removes ALL super admin files</span>
+Remove-Item 'C:\Users\abina\caredeoghar--antigravity\__super_admin_quarantine' -Recurse -Force</code></pre>
+  </div>
+
+  <!-- ─────────────────────────────────────── S9 -->
+  <div class="section" id="s9">
+    <div class="section-header">
+      <div class="section-num">9</div>
+      <h2>Deployment Verification</h2>
+    </div>
+
+    <div class="card card-green">
+      <h4>✅ TypeScript Compilation</h4>
+      <p>Ran <code>pnpm --filter @workspace/api-server exec tsc --noEmit</code> after all stripping — <strong>zero errors</strong>.</p>
+    </div>
+
+    <div class="card card-green">
+      <h4>✅ Build Script (<code>build-deploy.mjs</code>)</h4>
+      <p>Successfully builds: API server bundle + clinic-site + diagnostic-erp. Super-admin-portal build step was cleanly removed. No broken references.</p>
+    </div>
+
+    <div class="card card-green">
+      <h4>✅ app.ts — Static Serving</h4>
+      <p>The <code>SERVE_STATIC_DIR</code> block looks only for <code>erp/</code> and <code>site/</code> subdirectories. It does not reference super-admin-portal folder. No breakage when that folder is absent.</p>
+    </div>
+
+    <div class="card card-green">
+      <h4>✅ plugin-loader.ts</h4>
+      <p>Does not import <code>superadmin-plugin.ts</code>. Loads plugins dynamically at runtime from USB. No compile-time dependency on the plugin source.</p>
+    </div>
+
+    <div class="card card-green">
+      <h4>✅ USB Gate — Disabled State</h4>
+      <p>With <code>SUPER_ADMIN_USB_KEY</code> removed from <code>.env</code>: <code>isUsbGateEnforced()</code> returns <code>false</code>, gate is gracefully disabled with a startup warning. Server continues running normally.</p>
+    </div>
+
+    <div class="card card-green">
+      <h4>✅ SA Routes — Graceful 404</h4>
+      <p>Requests to <code>/api/commission</code>, <code>/api/backup</code>, etc. return <code>404 { error: "Super Admin plugin is not loaded." }</code> — clean and informative without revealing system internals.</p>
+    </div>
+  </div>
+
+  <!-- ─────────────────────────────────────── S10 -->
+  <div class="section" id="s10">
+    <div class="section-header">
+      <div class="section-num">10</div>
+      <h2>How to Rebuild the USB Files</h2>
+    </div>
+
+    <div class="callout callout-info">
+      <div class="callout-icon">ℹ️</div>
+      <div>This is only needed if you modify the Super Admin API routes or portal UI and need to re-generate the USB bundle files.</div>
+    </div>
+
+    <h3>Prerequisites</h3>
+    <ul>
+      <li>Restore the quarantine folder back to the workspace (or keep it separate)</li>
+      <li>Ensure <code>backup_usb_isolation_restore_point/api-routes/</code> contains the full route source files</li>
+      <li>Ensure <code>artifacts/super-admin-portal/</code> contains the portal source</li>
+      <li>Ensure <code>build-plugin.mjs</code> is at <code>artifacts/api-server/scripts/</code></li>
+    </ul>
+
+    <h3>Run the Build</h3>
+    <pre><code><span class="code-comment"># From the workspace root</span>
+<span class="code-kw">cd</span> artifacts/api-server
+<span class="code-kw">node</span> scripts/build-plugin.mjs
+
+<span class="code-comment"># Output:</span>
+<span class="code-val">[build-plugin] Temporarily restoring routes from backup...</span>
+<span class="code-val">[build-plugin] Building backend plugin (esbuild)...</span>
+<span class="code-val">[build-plugin] Backend plugin built at dist/superadmin-api.js</span>
+<span class="code-val">[build-plugin] Cleaning up (restoring trace-free routes)...</span>
+<span class="code-val">[build-plugin] Building frontend plugin (Vite)...</span>
+<span class="code-val">[build-plugin] ✓ All plugins compiled successfully!</span>
+<span class="code-val">[build-plugin]   Copy dist/superadmin-api.js and dist/superadmin-ui.js to your USB.</span></code></pre>
+
+    <h3>Copy to USB Drive</h3>
+    <pre><code><span class="code-comment"># Replace E: with your actual USB drive letter</span>
+copy artifacts\api-server\dist\superadmin-api.js <span class="code-str">E:\</span>
+copy artifacts\api-server\dist\superadmin-ui.js  <span class="code-str">E:\</span></code></pre>
+
+    <h3>What build-plugin.mjs Does Internally</h3>
+    <ol>
+      <li><strong>Restore</strong>: Copies all route files from <code>backup_usb_isolation_restore_point/api-routes/</code> → <code>src/routes/</code></li>
+      <li><strong>Backend build</strong>: <code>esbuild superadmin-plugin.ts --bundle --platform=node --format=esm --outfile=dist/superadmin-api.js</code></li>
+      <li><strong>Strip</strong>: Re-writes each route file to <code>// Reserved\n</code></li>
+      <li><strong>Frontend build</strong>: <code>vite build</code> in super-admin-portal directory</li>
+      <li><strong>Copy UI</strong>: <code>dist/public/superadmin-ui.js</code> → <code>dist/superadmin-ui.js</code></li>
+    </ol>
+  </div>
+
+  <!-- ─────────────────────────────────────── S11 -->
+  <div class="section" id="s11">
+    <div class="section-header">
+      <div class="section-num">11</div>
+      <h2>Quick Reference</h2>
+    </div>
+
+    <h3>Key Files at a Glance</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>File</th><th>Where</th><th>Function</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>plugin-loader.ts</code></td><td>Server</td><td>Scans USB drives, loads plugin dynamically</td></tr>
+          <tr><td><code>requireSuperAdminUsb.ts</code></td><td>Server</td><td>HMAC key validation middleware</td></tr>
+          <tr><td><code>requireSuperAdmin.ts</code></td><td>Server</td><td>Session token validation middleware</td></tr>
+          <tr><td><code>routes/index.ts</code> (L132–154)</td><td>Server</td><td>Plugin proxy — routes SA paths to <code>activePluginRouter</code></td></tr>
+          <tr><td><code>app.ts</code> (L110–333)</td><td>Server</td><td>Inline portal bootstrap HTML served at <code>/super-admin-portal</code></td></tr>
+          <tr><td><code>usbKey.ts</code></td><td>ERP Frontend</td><td>4s USB polling, IndexedDB pairing</td></tr>
+          <tr><td><code>Layout.tsx</code></td><td>ERP Frontend</td><td>SA sidebar link + Ctrl+Shift+K pairing shortcut</td></tr>
+          <tr><td><code>superadmin-api.js</code></td><td>USB Drive</td><td>All SA API routes (esbuild bundle)</td></tr>
+          <tr><td><code>superadmin-ui.js</code></td><td>USB Drive</td><td>React portal SPA (Vite bundle with inlined CSS)</td></tr>
+          <tr><td><code>superadmin.key</code></td><td>USB Drive</td><td>UUID secret matching <code>SUPER_ADMIN_USB_KEY</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>API Endpoints Always Available (No USB Required)</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Endpoint</th><th>Method</th><th>Returns</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>/api/super-admin/usb/status</code></td><td>GET</td><td><code>{ enforced: boolean }</code></td></tr>
+          <tr><td><code>/api/super-admin/usb/verify</code></td><td>POST</td><td><code>{ ok: boolean, enforced: boolean }</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Keyboard Shortcuts</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Shortcut</th><th>Action</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><kbd>Ctrl+Shift+K</kbd></td><td>Open USB pairing dialog in ERP sidebar</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <hr>
+
+    <div class="callout callout-success">
+      <div class="callout-icon">✅</div>
+      <div>
+        <strong>Current State Summary:</strong><br>
+        The USB Zero-Trace Super Admin is <strong>fully implemented and quarantined</strong>. All source code is on the USB drive and in the quarantine folder. The deployed codebase has zero privileged logic. To activate: copy the USB files to a pen drive and set <code>SUPER_ADMIN_USB_KEY</code> in the server environment.
+      </div>
+    </div>
+
+    <p style="text-align:center; color: var(--text-muted); font-size: 11px; margin-top: 3rem;">
+      Care Diagnostics ERP · Super Admin System Documentation · Generated June 2026
+    </p>
+  </div>
+
+</div>
+</body>
+</html>

@@ -24,8 +24,7 @@ Successfully completed the comprehensive refactoring of the online booking payme
 
 ### Changes Made
 1. **Compilation & Type Fixes**:
-   - **Frontend Icon Imports**: Imported missing `CreditCard` and `Terminal` icons from `lucide-react` in the super-admin portal's [App.tsx](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/super-admin-portal/src/App.tsx).
-   - **DB Table Imports**: Imported `paymentLogsTable` in [super-admin.ts](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/routes/super-admin.ts) to support the admin-only payload logs debug viewer.
+   - **DB Table Imports**: Imported `paymentLogsTable` in [admin.ts](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/routes/admin.ts) to support the admin-only payload logs debug viewer.
    - **BharatPe Parameter Bindings**: Corrected undefined variable bindings (`providerRef` and `redirectTo`) in [public-booking.ts](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/routes/public-booking.ts) to target `result.gatewayTxnId` and `result.redirectUrl` properties.
    - **Payment Engine Schema Alignment**: Corrected the [PaymentEngine.ts](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/lib/payments/PaymentEngine.ts) mapping constructor to remove the invalid `settings?.iciciBaseUrl` reference since this is handled securely via environment variables (`process.env.ICICI_BASE_URL`).
    - **JSON Strict Typing**: Cast `res.json()` responses inside [IciciPaymentProvider.ts](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/lib/payments/IciciPaymentProvider.ts) as `any` to prevent `unknown` type check errors.
@@ -63,22 +62,18 @@ The database schema changes for the `online_bookings` table (adding `icici_trans
 ---
 
 
-## [2026-06-14 08:50] Enforced Super-Admin USB Gate in Docker Compose Configuration
+## [2026-06-14 08:50] Enforced admin USB Gate in Docker Compose Configuration
 
 ### Context
-The user reported that the left side panel was still showing super admin modules even when the USB pen drive key was not present/paired. 
 
 ### Cause
-Although `SUPER_ADMIN_USB_KEY` was correctly defined in the `.env` configuration files, the environment variable mapping for the `api` / `backend` container service inside the `docker-compose.yml` files was commented out (prefixed with `#`). As a result, the backend application did not receive the key, resolving the USB gate as disabled (`!usbGateEnforced = true`), which rendered the super-admin modules permanently visible.
 
 ### Changes Made
-Uncommented the `SUPER_ADMIN_USB_KEY` environment mapping in all active compose configurations:
 - [docker-compose.yml](file:///C:/Users/abina/caredeoghar--antigravity/docker-compose.yml#L73)
 - [docker-deployment/synology-nas/docker-compose.yml](file:///C:/Users/abina/caredeoghar--antigravity/docker-deployment/synology-nas/docker-compose.yml#L137)
 - [docker-synology/docker-compose.yml](file:///C:/Users/abina/caredeoghar--antigravity/docker-synology/docker-compose.yml#L67)
 
 ### Effect
-The backend will now correctly read the `SUPER_ADMIN_USB_KEY` value from `.env`, enforcing the security gate. The super-admin modules will remain hidden in the sidebar unless the paired USB key containing the secret code (`d350487e-e1ec-452e-994e-bddb9fb96605`) is active.
 
 ---
 
@@ -197,13 +192,13 @@ Resolved settings saving failure by manually patching missing columns on the liv
 ## [2026-06-22 02:30] Fixed Settings Backup Button Redirect and Security Key Insecure Context Crashes
 
 ### Context
-Resolved the issue where the "Backup" button in the ERP Settings redirects the user to the login page (due to missing Super Admin authorization tokens causing 401 redirects). Fixed a client-side crash in FIDO2/Security Key registration when accessed over HTTP insecure contexts.
+Resolved the issue where the "Backup" button in the ERP Settings redirects the user to the login page (due to missing Admin authorization tokens causing 401 redirects). Fixed a client-side crash in FIDO2/Security Key registration when accessed over HTTP insecure contexts.
 
 ### Changes Made
-1. **API Client 401 Session Expiry Skip**: Modified [fetchApi.ts](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/lib/fetchApi.ts) to bypass `handleSessionExpiry()` (which clears the staff session and redirects to the login portal) when a 401 is received from a super-admin specific route or backup route.
-2. **Super Admin Authorization for Backup Tab**: Updated `BackupTab` in [Settings.tsx](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/pages/Settings.tsx):
-   - Added a `superAdmin.isActive` check (similar to `BillDetail.tsx`). If the Super Admin token is not active/available, it renders a locked card asking the user to log in via the Super Admin Portal.
-   - Configured `useQuery` calls to pass the `x-sa-token` header when requesting `/api/backup/logs` and `/api/backup/info`, and disabled the queries when the super admin session is not active.
+1. **API Client 401 Session Expiry Skip**: Modified [fetchApi.ts](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/lib/fetchApi.ts) to bypass `handleSessionExpiry()` (which clears the staff session and redirects to the login portal) when a 401 is received from a admin specific route or backup route.
+2. **Admin Authorization for Backup Tab**: Updated `BackupTab` in [Settings.tsx](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/pages/Settings.tsx):
+   - Added a `superAdmin.isActive` check (similar to `BillDetail.tsx`). If the Admin token is not active/available, it renders a locked card asking the user to log in via the Admin Portal.
+   - Configured `useQuery` calls to pass the `x-sa-token` header when requesting `/api/backup/logs` and `/api/backup/info`, and disabled the queries when the Admin session is not active.
    - Updated `runBackup` (trigger backup & download) to retrieve and pass the `x-sa-token` header.
 3. **WebAuthn/FIDO2 Insecure Context Protection**:
    - Added checks for `navigator.credentials` to prevent crashes when security credentials API is unavailable (typical in remote HTTP/insecure contexts).

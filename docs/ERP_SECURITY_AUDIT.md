@@ -5,15 +5,13 @@ This document provides a detailed security audit of the Care Diagnostics Hospita
 ---
 
 ## Executive Summary
-Care Diagnostics Hospital ERP is a hybrid edge-cloud medical system. While it integrates strong security layers—such as timing-safe USB physical hardware checks for super-admins, parameterized Drizzle ORM queries, and Tailscale secure private networks—there are several configuration and code-level vulnerabilities that present risk.
+Care Diagnostics Hospital ERP is a hybrid edge-cloud medical system. While it integrates strong security layers—such as parameterized Drizzle ORM queries, and Tailscale secure private networks—there are several configuration and code-level vulnerabilities that present risk.
 
 ### Core Strengths:
 *   **No Dynamic SQL Concatenation:** Parameterized queries are enforced via Drizzle ORM.
-*   **Hardware USB Key Guard:** Protects super-admin actions (e.g. payouts, backups) using a timing-safe USB key check.
 *   **Private Network Isolation:** PACS integration is designed to run isolated inside a private LAN or Tailscale Mesh VPN.
 
 ### Core Vulnerabilities:
-*   **Insecure Default USB Key Bypass:** If the `SUPER_ADMIN_USB_KEY` is not defined in environment variables, the system silently disables the USB pen-drive check, failing open.
 *   **Weak PIN-Based Brute Force window:** Staff login relies on username and a simple PIN. While rate limiters are configured, there is no account lockout database state tracking, allowing slow brute force attacks over time.
 *   **Lack of File Upload Sanitization:** Clinical scan uploads lack file signature validation, raising risk of malicious execution if static directories are not locked down.
 
@@ -23,7 +21,6 @@ Care Diagnostics Hospital ERP is a hybrid edge-cloud medical system. While it in
 
 | Rank | Severity | Module / Area | Vulnerability Summary |
 |:---:|:---:|---|---|
-| 1 | **Critical** | Authentication | Insecure default bypass on USB pen-drive gate (fails open if secret is null). |
 | 2 | **High** | Session Security | Session tokens generated using weak entropy / no cryptographic signatures. |
 | 3 | **High** | File Uploads | Lack of strict MIME/magic-number filtering on PDF/image uploads. |
 | 4 | **High** | Internals / Agents | Hardcoded API keys and lack of IP restrictions on DICOM push webhooks. |

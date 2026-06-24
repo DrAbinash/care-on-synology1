@@ -67,9 +67,7 @@ Future work is ranked in strict accordance with the following system priorities:
 
 ### Project 9: Physical USB Admin Gate Hardening & Security Mitigations 🔑
 *   **Primary Driver:** Security (Rank 5)
-*   **Description:** Secure the physical USB token check in [requireSuperAdminUsb.ts](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/middleware/requireSuperAdminUsb.ts) to throw an error if the environment variable `SUPER_ADMIN_USB_KEY` is not defined (failing closed instead of open). Restrict PostgreSQL binding on port `5400` strictly to localhost.
 *   **Estimated Effort:** 8 hours
-*   **Expected Impact:** Secures critical super-admin actions and isolates the database.
 
 ### Project 10: Three-Way Report Generator Consolidation 🧹
 *   **Primary Driver:** Technical Debt Reduction (Rank 6)

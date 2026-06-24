@@ -226,3 +226,42 @@ export async function ensurePairedDirPermission(): Promise<boolean> {
     return false;
   }
 }
+
+export async function tryReadUiFromPairedDir(): Promise<string | null> {
+  if (!isFsAccessSupported()) return null;
+  let dir: FsDirectoryHandle | undefined;
+  try { dir = await idbGet<FsDirectoryHandle>(IDB_HANDLE_KEY); } catch { return null; }
+  if (!dir) return null;
+  try {
+    if (typeof dir.queryPermission === "function") {
+      const perm = await dir.queryPermission({ mode: "read" });
+      if (perm !== "granted") return null;
+    }
+    const fileHandle = await dir.getFileHandle("superadmin-ui.js");
+    const file = await fileHandle.getFile();
+    const text = await file.text();
+    return text.length > 0 ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function tryReadApiFromPairedDir(): Promise<string | null> {
+  if (!isFsAccessSupported()) return null;
+  let dir: FsDirectoryHandle | undefined;
+  try { dir = await idbGet<FsDirectoryHandle>(IDB_HANDLE_KEY); } catch { return null; }
+  if (!dir) return null;
+  try {
+    if (typeof dir.queryPermission === "function") {
+      const perm = await dir.queryPermission({ mode: "read" });
+      if (perm !== "granted") return null;
+    }
+    const fileHandle = await dir.getFileHandle("superadmin-api.js");
+    const file = await fileHandle.getFile();
+    const text = await file.text();
+    return text.length > 0 ? text : null;
+  } catch {
+    return null;
+  }
+}
+

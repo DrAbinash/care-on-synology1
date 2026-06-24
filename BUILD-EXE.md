@@ -144,8 +144,6 @@ install?) must be performed on a real Windows 10/11 machine.
 - **PostgreSQL**: 16.4-1 (EnterpriseDB Windows x64 binaries)
 - **API server**: bundled with esbuild + production `node_modules` from
   `pnpm deploy --prod --legacy`
-- **Frontends**: `diagnostic-erp` built with `BASE_PATH=/`, `super-admin-portal`
-  built with `BASE_PATH=/super-admin-portal/`. Both served by the same Node
   process via `SERVE_STATIC_DIR`.
 
 ---

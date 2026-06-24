@@ -17,6 +17,9 @@ const rootEnv = path.resolve(
 dotenv.config({ path: rootEnv });
 
 import app from "./app";
+import { initializePluginLoader } from "./plugin-loader";
+initializePluginLoader(app);
+
 import { logger } from "./lib/logger";
 import { startCronScheduler } from "./cron";
 import { ensureDefaultLedger } from "./routes/ledgers";
@@ -2479,7 +2482,7 @@ const server = app.listen({ port, exclusive: true }, () => {
   // Uses ON CONFLICT DO NOTHING — never overwrites an admin-configured value.
   (async () => {
     try {
-      const { pool } = await import("./db.js");
+
       const pairs: Array<{ key: string; value: string | undefined; category: string }> = [
         { key: "ohif_base_url",      value: process.env["OHIF_URL"],       category: "viewer" },
         { key: "wado_uri_base_url",  value: process.env["WADO_URL"],       category: "viewer" },

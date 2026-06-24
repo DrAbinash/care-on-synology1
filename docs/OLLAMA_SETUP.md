@@ -158,7 +158,7 @@ OLLAMA_BASE_URL=http://172.16.1.140:11434
 
 ### Enable in ERP Settings
 
-1. Log in to ERP as admin/super_admin
+1. Log in to ERP as admin
 2. Go to **Settings → AI Reporting → Local AI** tab
 3. Set:
    - **Primary URL:** `http://192.168.1.250:11434`
@@ -231,7 +231,7 @@ All AI assistant actions require the `ai_reporting.use` permission.
 
 Grant this permission in: **Staff Management → [User] → Permissions → AI Reporting: Use**
 
-Admin and Super Admin roles have this permission automatically.
+Admin role has this permission automatically.
 
 Audit logs are written to `radiology_ai_review_audits` table with:
 - `modality`, `body_part`, `study_uid`

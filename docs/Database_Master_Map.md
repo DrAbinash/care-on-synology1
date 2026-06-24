@@ -92,7 +92,7 @@ BANK_ACCOUNTS
 | Smart Radiology + RIS | ~14 | smart_radiology_worklist, smart_priority_queue, smart_assignment_log, smart_report_sessions, smart_findings_library, smart_macro_library, ris_monitoring_tables (~8) |
 | Other Radiology | 8 | radiology_snippets, radiology_smart_findings, radiology_lesions, radiology_organ_intelligence, radiology_annotations, radiology_ai_review_audits, structured_report_templates, teaching_cases |
 | Staff & HR | 9 | staff, staff_counter, staff_advances, staff_salary_payments, staff_attendance, staff_biometric_credentials, bridge_fingerprint_templates, hr_rejoining_forms, hr_rejoining_form_counter |
-| Auth & Sessions | 7 | users, portal_sessions, user_sessions, super_admin_sessions, webauthn_credentials, scan_sessions, paired_devices, scan_audit_logs |
+| Auth & Sessions | 7 | users, portal_sessions, user_sessions, webauthn_credentials, scan_sessions, paired_devices, scan_audit_logs |
 | Settings & Config | 16 | clinic_settings, ledgers, machines, departments, branches, floors, rooms, modalities, printer_settings, backup_logs, backup_replication, email (settings), role_permissions, upload_files, signatures, pacs_settings |
 | Accounting & Finance | 5 | accounting/vouchers, expenses, day_closures, user_day_closures, drawer_audit_log |
 | Banking Enterprise | 10 | bank_accounts, bank_transactions, payment_requests, webhook_logs, bank_audit_logs, reconciliation_logs, fraud_alerts, shift_closures, gateway_transactions, refund_requests |
@@ -384,7 +384,6 @@ Add a nightly cron to delete expired sessions:
 -- Run nightly
 DELETE FROM portal_sessions WHERE expires_at < NOW() - INTERVAL '7 days';
 DELETE FROM scan_sessions WHERE expires_at < NOW() - INTERVAL '1 day';
-DELETE FROM super_admin_sessions WHERE expires_at < NOW() - INTERVAL '7 days';
 ```
 
 #### C. DICOM Pull Job Cleanup

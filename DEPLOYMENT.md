@@ -38,7 +38,6 @@ This guide provides steps to deploy Care Diagnostics to:
 7. Open in browser:
    * Public Clinic Site: `http://localhost:8888`
    * Staff ERP Portal: `http://localhost:8888/erp/`
-   * Super Admin Portal: `http://localhost:8888/super-admin-portal/`
 
 ---
 
@@ -79,7 +78,6 @@ This guide provides steps to deploy Care Diagnostics to:
 6. **Access App**:
    * Public Clinic Site: `http://<your-nas-ip>:8888`
    * Staff ERP Portal: `http://<your-nas-ip>:8888/erp/`
-   * Super Admin Portal: `http://<your-nas-ip>:8888/super-admin-portal/`
 
 ---
 

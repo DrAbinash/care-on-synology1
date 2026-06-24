@@ -58,4 +58,4 @@ tar -xzf storage_backup_20260609.tar.gz -C /volume1/care-diagnostics/deploy/post
    docker compose restart
    ```
 2. Log in to the Staff ERP at `http://<ip>:8888/erp/` and verify patient list count is restored.
-3. Check the clinic logo in the Super Admin Portal.
+3. Check the clinic logo in the admin portal.

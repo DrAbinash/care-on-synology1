@@ -11,7 +11,6 @@ caredeoghar--antigravity/
 │   ├── api-server/               # Express.js backend API
 │   ├── diagnostic-erp/           # Primary internal SPA (Vite/React)
 │   ├── clinic-site/              # Public patient booking site (Vite/React)
-│   └── super-admin-portal/       # Owner admin console (Vite/React)
 ├── conquest/                     # Conquest PACS integration scripts
 ├── dicom-pull-agent/             # Legacy external DICOM pull agent
 ├── bridge-service/               # Fingerprint/scan bridge service
@@ -63,7 +62,6 @@ caredeoghar--antigravity/
 | `CONQUEST_SETUP.md` | Conquest PACS setup guide |
 | `BACKUP.md` / `RESTORE.md` | Backup and restore procedures |
 | `BUILD-EXE.md` | Executable build instructions |
-| `PEN_DRIVE_SETUP.md` | USB super-admin setup |
 | `README-WINDOWS.md` | Windows development setup |
 | `PATIENT_SELF_REGISTRATION_KIOSK.md` | Kiosk module documentation |
 | `AGENT_LOG.md` | AI agent activity log |
@@ -164,7 +162,6 @@ caredeoghar--antigravity/
 | `backup.ts` | `/api/backup` | Manual backup endpoints |
 | `backupReplication.ts` | `/api/backup/replication` | Backup replication |
 | `internal-backup.ts` | `/api/internal/backup` | Internal backup trigger |
-| `super-admin.ts` | `/api/admin` | Super-admin protected ops |
 | `system.ts` | `/api/system` | System configuration |
 | `system-health.ts` | `/api/system/health` | Health check endpoint |
 | `clinicSettings.ts` | `/api/clinic-settings` | Clinic configuration |
@@ -274,8 +271,6 @@ caredeoghar--antigravity/
 | `istDate.ts` | IST timezone date utilities |
 | `rateLimits.ts` (middleware) | Rate limiting middleware |
 | `requireStaffAuth.ts` (middleware) | Staff session authentication |
-| `requireSuperAdmin.ts` (middleware) | Super-admin access gate |
-| `requireSuperAdminUsb.ts` (middleware) | USB key validation |
 | `errorHandler.ts` (middleware) | Global error handler |
 
 ---

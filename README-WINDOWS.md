@@ -94,7 +94,6 @@ This launches three services in parallel and prints their logs side by side:
 | Service | URL |
 | --- | --- |
 | Diagnostic ERP web UI | http://localhost:5173 |
-| Super Admin Portal | http://localhost:5174/super-admin-portal/ |
 | API server | http://localhost:8080/api |
 
 The web UIs talk to the API server on the same machine, so just open the URLs above
@@ -110,7 +109,6 @@ If you want the three dev services to relaunch automatically after a crash, use:
 pnpm dev:restart
 ```
 
-This keeps the API server, ERP frontend, and Super Admin portal running and restarts any one that exits unexpectedly.
 
 ### Running services individually
 
@@ -119,7 +117,6 @@ You can also start them one at a time in separate PowerShell windows:
 ```powershell
 pnpm --filter @workspace/api-server run dev
 pnpm --filter @workspace/diagnostic-erp run dev
-pnpm --filter @workspace/super-admin-portal run dev
 ```
 
 ---
@@ -138,7 +135,6 @@ pnpm --filter @workspace/api-server run start
 
 The web frontends are built as static files into
 `artifacts/diagnostic-erp/dist/public` and
-`artifacts/super-admin-portal/dist/public`. You can host those with any static
 file server (IIS, nginx, `npx serve`, etc.).
 
 ---

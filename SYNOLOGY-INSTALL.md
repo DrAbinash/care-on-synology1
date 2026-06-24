@@ -96,7 +96,6 @@ After the build finishes:
    - Replace `your-nas-ip` with your NAS's actual IP address (e.g., `192.168.1.50`)
 3. You should see the **public clinic website**
 4. Staff login: `http://your-nas-ip:8888/erp/`
-5. Super Admin: `http://your-nas-ip:8888/super-admin-portal/`
 
 ---
 
@@ -104,8 +103,7 @@ After the build finishes:
 
 ### Create Your Admin Account
 
-1. Go to `http://your-nas-ip:8888/super-admin-portal/`
-2. Click **Setup** → create your super admin PIN
+2. Click **Setup** → create your Admin PIN
 3. Log in with that PIN
 
 ### Configure Clinic Details
@@ -121,7 +119,6 @@ After the build finishes:
 
 ### Add Your First Staff Member
 
-1. In the super admin portal, go to **Staff** → **Add Staff**
 2. Enter name, phone, email, role
 3. Set a 6-digit PIN for login
 4. The staff member can now log in at `http://your-nas-ip:8888/erp/`
@@ -178,7 +175,6 @@ Your patient data is stored in the `db_data` Docker volume. For non-technical ba
 |---------|------------|
 | Can't open the website | Check that `care-web` container is running (green dot). Make sure you're using the NAS IP, not `localhost`. |
 | "Cannot connect to database" | Check that `care-db` is running. Wait 2 minutes after NAS boot — database takes time to start. |
-| Forgot super admin PIN | Contact the software vendor. There is no self-service reset for security reasons. |
 | Want to change the port (8888) | Edit `.env` → change `HOST_PORT=8888` to another number (e.g., `8080`) → rebuild the project. |
 | Slow performance | Your NAS may be underpowered. Models like DS220+ or DS923+ handle this well. DS118 may feel slow. |
 
@@ -190,7 +186,6 @@ Your patient data is stored in the `db_data` Docker volume. For non-technical ba
 |---------------|----------------------------|
 | Public clinic website | `http://your-nas-ip:8888/` |
 | Staff ERP login | `http://your-nas-ip:8888/erp/` |
-| Super Admin portal | `http://your-nas-ip:8888/super-admin-portal/` |
 | Patient portal | `http://your-nas-ip:8888/erp/portal` |
 | Mobile app preview | `http://your-nas-ip:8888/mobile/` |
 

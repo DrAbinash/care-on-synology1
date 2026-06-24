@@ -114,6 +114,8 @@ import {
   unpairPenDrive,
   tryReadKeyFromPairedDir,
   ensurePairedDirPermission,
+  tryReadUiFromPairedDir,
+  tryReadApiFromPairedDir,
 } from "@/lib/usbKey";
 import { SIDEBAR_THEMES, DEFAULT_THEME, resolveTheme } from "@/lib/sidebarThemes";
 
@@ -446,12 +448,81 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     return off;
   }, []);
 
-  // Auto-detect loop: re-read superadmin.key from the paired pen drive every
-  // few seconds. Cleanly hides the Super Admin link when the drive is pulled.
+  // Auto-detect loop: re-read superadmin.key, load UI, and upload API plugin periodically.
   useEffect(() => {
-    if (!usbGateEnforced) return;
     let stopped = false;
     let lastKey: string | null = null;
+    let apiUploaded = false;
+
+    const cleanupUI = () => {
+      const script = document.getElementById("superadmin-plugin-ui-script");
+      if (script) script.remove();
+      if ((window as any).SuperAdminPortal) {
+        delete (window as any).SuperAdminPortal;
+      }
+      try {
+        sessionStorage.removeItem("sa_usb_key_v1");
+      } catch {}
+      window.dispatchEvent(new CustomEvent("superadmin-ui-unloaded"));
+    };
+
+    const loadUI = async () => {
+      if ((window as any).SuperAdminPortal) return;
+      try {
+        const uiCode = await tryReadUiFromPairedDir();
+        if (uiCode && !stopped) {
+          const blob = new Blob([uiCode], { type: "text/javascript" });
+          const blobUrl = URL.createObjectURL(blob);
+          const script = document.createElement("script");
+          script.src = blobUrl;
+          script.id = "superadmin-plugin-ui-script";
+          script.onload = () => {
+            URL.revokeObjectURL(blobUrl);
+            window.dispatchEvent(new CustomEvent("superadmin-ui-loaded"));
+          };
+          script.onerror = () => {
+            URL.revokeObjectURL(blobUrl);
+            console.error("Failed to load Super Admin UI script from Blob");
+          };
+          document.body.appendChild(script);
+        }
+      } catch (err) {
+        console.error("Error loading UI plugin:", err);
+      }
+    };
+
+    const handleBackendPlugin = async (key: string) => {
+      if (!apiUploaded) {
+        try {
+          const apiCode = await tryReadApiFromPairedDir();
+          if (apiCode && !stopped) {
+            const res = await fetch("/api/super-admin-setup/upload-plugin", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "x-sa-usb-key": key,
+              },
+              body: JSON.stringify({ code: apiCode }),
+            });
+            if (res.ok) {
+              apiUploaded = true;
+              console.log("Super Admin API plugin uploaded successfully");
+            }
+          }
+        } catch (err) {
+          console.error("Error uploading API plugin:", err);
+        }
+      }
+
+      // Heartbeat
+      try {
+        await fetch("/api/super-admin-setup/heartbeat", {
+          method: "POST",
+          headers: { "x-sa-usb-key": key },
+        });
+      } catch {}
+    };
+
     const tick = async () => {
       if (stopped) return;
       const key = await tryReadKeyFromPairedDir();
@@ -459,14 +530,30 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       if (!key) {
         if (getStoredUsbKey() !== null) clearUsbKey();
         lastKey = null;
+        apiUploaded = false;
+        cleanupUI();
         return;
       }
-      if (key === lastKey && getStoredUsbKey() !== null) return;
+      if (key === lastKey && getStoredUsbKey() !== null) {
+        await loadUI();
+        await handleBackendPlugin(key);
+        return;
+      }
       const ok = await verifyUsbKey(key);
       if (stopped) return;
-      if (ok) { storeUsbKey(key); lastKey = key; }
-      else { if (getStoredUsbKey() !== null) clearUsbKey(); lastKey = null; }
+      if (ok) {
+        storeUsbKey(key);
+        lastKey = key;
+        await loadUI();
+        await handleBackendPlugin(key);
+      } else {
+        if (getStoredUsbKey() !== null) clearUsbKey();
+        lastKey = null;
+        apiUploaded = false;
+        cleanupUI();
+      }
     };
+
     void tick();
     const id = window.setInterval(() => { void tick(); }, 4000);
 
@@ -474,9 +561,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     // user interaction after mount (click or keydown), silently try to
     // re-grant permission for the already-paired drive, then immediately tick
     // so the Super Admin link reappears without needing Ctrl+Shift+K again.
-    // NOTE: We use separate once-listeners for click and keydown so that the
-    // Ctrl+Shift+K keydown (which also opens the pairing dialog) does NOT
-    // consume the click slot — either gesture independently triggers re-grant.
     let permissionGrantAttempted = false;
     const tryRegrant = () => {
       if (permissionGrantAttempted || stopped) return;
@@ -485,16 +569,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         if (granted && !stopped) void tick();
       });
     };
-    // Use named wrappers so we can remove them individually on cleanup.
-    // click uses { once: true } — a click is always a clear user gesture.
-    // keydown does NOT use { once: true } because the Ctrl+Shift+K combo fires
-    // a keydown but is primarily handled by the separate onKey listener; we
-    // don't want that keydown to silently consume the re-grant opportunity
-    // before the user has actually interacted with the page content.
     const tryRegrantClick = () => { tryRegrant(); };
     const tryRegrantKey = (e: KeyboardEvent) => {
-      // Skip the pairing combo itself — it will trigger the dialog which
-      // handles its own permission flow via onPairFs / pairPenDrive.
       if (e.ctrlKey && e.shiftKey && e.code === "KeyK") return;
       tryRegrant();
     };
@@ -507,7 +583,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       window.removeEventListener("click", tryRegrantClick, { capture: true });
       window.removeEventListener("keydown", tryRegrantKey, { capture: true });
     };
-  }, [usbGateEnforced]);
+  }, []);
 
   // Hidden pairing trigger: Ctrl+Shift+K opens the one-time setup modal.
   // Operators who don't know the combo can't see anything related to USB.
@@ -571,8 +647,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   };
 
   const openSuperAdmin = (hash: string = "") => {
-    const url = `${window.location.origin}/super-admin-portal/${hash ? `#${hash}` : ""}`;
-    window.open(url, "_blank", "noopener,noreferrer");
+    navigate(`/super-admin-portal${hash ? `#${hash}` : ""}`);
   };
 
   // Super-admin modules surfaced inline in the ERP sidebar when the USB

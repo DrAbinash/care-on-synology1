@@ -7,13 +7,13 @@
 // Autoscale runs ONE container with ONE port, so we cannot deploy 4 separate
 // web artifacts. Instead we let api-server serve everything from a single
 // Express process: REST API at /api/*, plus the 3 Vite-built SPAs as static
-// assets at /, /site/, and /super-admin-portal/.
+// assets at /, /site/, and //.
 //
 // Layout produced under artifacts/api-server/dist/:
 //   dist/index.mjs          — esbuild bundle of the API server
 //   dist/web/site/          — clinic-site build         (BASE_PATH=/)        ← public root
 //   dist/web/erp/           — diagnostic-erp build      (BASE_PATH=/erp/)    ← staff app
-//   dist/web/super-admin-portal/ — super-admin build    (BASE_PATH=/super-admin-portal/)
+//   dist/web// — super-admin build    (BASE_PATH=//)
 //
 // At runtime SERVE_STATIC_DIR=artifacts/api-server/dist/web tells app.ts to
 // mount the SPA folders. Has no effect when SERVE_STATIC_DIR is unset (Replit
@@ -75,11 +75,11 @@ async function main() {
   // portal (which lives inside the ERP SPA) is now reached via /erp/portal.
   await buildFrontend("clinic-site", "/", "site");
   await buildFrontend("diagnostic-erp", "/erp/", "erp");
-  await buildFrontend("super-admin-portal", "/super-admin-portal/", "super-admin-portal");
 
   log("✓ deploy build complete");
   log(`  api bundle: dist/index.mjs`);
-  log(`  static dir: dist/web/{erp,site,super-admin-portal}`);
+  log(`  static dir: dist/web/{erp,site}`);
+
 }
 
 main().catch((err) => {

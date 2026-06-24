@@ -113,7 +113,6 @@
 | **Online Bookings** | `GET /api/online-bookings` | **401** | 401 | **EXPECTED** | Requires staff auth |
 | **WhatsApp Webhook** | `POST /api/whatsapp/webhook` | **403** | 403 | **EXPECTED** | Requires webhook signature |
 | **WA Chatbot Webhook** | `POST /api/wa-chatbot/webhook` | **401** | 401 | **EXPECTED** | Requires auth |
-| **Super Admin Portal** | `GET /super-admin-portal` | **301** | N/A | **WORKING** | Redirects to login |
 
 ### C.2 Staff-Authenticated Endpoints (tested without auth)
 
@@ -131,9 +130,6 @@
 | **Day Close** | `GET /api/day-close` | **401** | 401 | **EXPECTED** | Auth required — not a bug |
 | **Form F** | `GET /api/form-f` | **401** | 401 | **EXPECTED** | Auth required — not a bug |
 | **WhatsApp** | `GET /api/whatsapp` | **401** | 401 | **EXPECTED** | Auth required — not a bug |
-| **Commission** | `GET /api/commission` | **403 USB** | 403 USB | **EXPECTED** | Super-admin + USB required |
-| **Doctor Ledger** | `GET /api/doctor-ledger` | **403 USB** | 403 USB | **EXPECTED** | Super-admin + USB required |
-| **Backup** | `GET /api/backup` | **403 USB** | 403 USB | **EXPECTED** | Super-admin + USB required |
 
 ### C.3 Authentication Endpoints
 
@@ -321,7 +317,6 @@ The previous audit reported that **all ERP pages were broken** due to `/api/port
 | **Staff login works?** | `POST /api/portal/staff-login` | ✅ 401 (correct PIN needed) |
 | **Patient login blocked?** | `POST /api/portal/patient-login` | ✅ 403 (portal disabled) |
 | **Auth routes protected?** | Various `GET` with no auth | ✅ 401 (correct behavior) |
-| **Super-admin USB gate?** | `GET /api/commission` | ✅ 403 USB required |
 | **Table counts match?** | `information_schema.tables` | ✅ 278 = 278 |
 | **Real data in production?** | `SELECT COUNT(*)` | ✅ 3726 patients, 3617 bills |
 | **Old database exists?** | Env var search | ❌ No |

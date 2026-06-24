@@ -1,0 +1,30 @@
+kind = "web"
+previewPath = "/super-admin-portal/"
+title = "Super Admin Portal"
+version = "1.0.0"
+id = "artifacts/super-admin-portal"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/super-admin-portal/" ]
+localPort = 24741
+
+[services.development]
+run = "pnpm --filter @workspace/super-admin-portal run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/super-admin-portal", "run", "build" ]
+run = "npx serve -s artifacts/super-admin-portal/dist/public -l $PORT --no-clipboard"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "24741"
+BASE_PATH = "/super-admin-portal/"

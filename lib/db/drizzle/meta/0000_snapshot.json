@@ -1785,8 +1785,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.super_admin_sessions": {
-      "name": "super_admin_sessions",
+    "public.admin_sessions": {
+      "name": "admin_sessions",
       "schema": "",
       "columns": {
         "token": {
