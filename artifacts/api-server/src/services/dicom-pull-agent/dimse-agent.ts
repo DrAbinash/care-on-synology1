@@ -21,6 +21,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, and } from "drizzle-orm";
 import { logger } from "../../lib/logger";
+import { getRadiologyConfig } from "../../lib/pacs/pacsConfig";
 import type { DicomNode } from "@workspace/db/schema";
 
 /* ── dcmjs-dimse lazy import (ESM/CJS compat) ───────────────────────────── */
@@ -482,9 +483,10 @@ async function processNextJob(): Promise<void> {
     }
 
     // ── Determine destination (Conquest PACS) ──────────────────────────
-    const destAeTitle = node.conquestAeTitle || process.env["CONQUEST_AE_TITLE"] || "CONQUEST";
-    const destHost = node.conquestHost || process.env["CONQUEST_HOST"] || "127.0.0.1";
-    const destPort = node.conquestPort || Number(process.env["CONQUEST_PORT"] || 5678);
+    const cfg = await getRadiologyConfig();
+    const destAeTitle = node.conquestAeTitle || cfg.conquest.aeTitle || "CONQUESTPACS";
+    const destHost = node.conquestHost || cfg.conquest.ip || "192.168.1.137";
+    const destPort = node.conquestPort || cfg.conquest.dicomPort || 5678;
 
     // ── C-MOVE each study ────────────────────────────────────────────────
     let studiesPulled = 0;

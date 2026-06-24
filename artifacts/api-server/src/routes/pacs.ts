@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod/v4";
 import { requireStaffAuth } from "../middleware/requireStaffAuth";
+import { getRadiologyConfig } from "../lib/pacs/pacsConfig.js";
 
 const router = Router();
 
@@ -17,8 +18,9 @@ const OrthancId = z.string().regex(/^[A-Fa-f0-9-]{8,64}$/, "Invalid Orthanc ID")
 const OrthancPatientIdParams = z.object({ orthancPatientId: OrthancId });
 const OrthancIdParams = z.object({ id: OrthancId });
 
-function getOrthancConfig() {
-  const url = (process.env.ORTHANC_URL || "").replace(/\/$/, "");
+async function getOrthancConfig() {
+  const cfg = await getRadiologyConfig();
+  const url = cfg.orthanc.dicomWebUrl.replace(/\/dicom-web$/, "");
   const user = process.env.ORTHANC_USERNAME || "";
   const pass = process.env.ORTHANC_PASSWORD || "";
   return { url, user, pass };
@@ -33,7 +35,7 @@ function orthancHeaders(user: string, pass: string): Record<string, string> {
 }
 
 async function orthancFetch(path: string): Promise<{ ok: boolean; data: unknown; status: number }> {
-  const { url, user, pass } = getOrthancConfig();
+  const { url, user, pass } = await getOrthancConfig();
   if (!url) return { ok: false, data: { error: "PACS not configured" }, status: 503 };
   try {
     const resp = await fetch(`${url}${path}`, { headers: orthancHeaders(user, pass) });
@@ -47,14 +49,15 @@ async function orthancFetch(path: string): Promise<{ ok: boolean; data: unknown;
 
 // ─── Config / health ────────────────────────────────────────────────────────
 
-router.get("/config", (_req, res) => {
-  const { url, user } = getOrthancConfig();
+router.get("/config", async (_req, res) => {
+  const { url, user } = await getOrthancConfig();
+  const cfg = await getRadiologyConfig();
   res.json({
     configured: !!url,
     url: url || null,
     hasCredentials: !!(user),
-    viewerType: process.env.PACS_VIEWER_TYPE || "weasis",
-    ohifUrl: process.env.OHIF_URL || null,
+    viewerType: cfg.default_viewer?.toLowerCase() || "weasis",
+    ohifUrl: cfg.ohif.baseUrl || null,
   });
 });
 
@@ -134,7 +137,7 @@ router.get("/series/:id/instances", async (req, res): Promise<void> => {
 router.get("/instances/:id/preview", async (req, res): Promise<void> => {
   const p = OrthancIdParams.safeParse(req.params);
   if (!p.success) { res.status(400).json({ error: "Invalid request", details: p.error.issues }); return; }
-  const { url, user, pass } = getOrthancConfig();
+  const { url, user, pass } = await getOrthancConfig();
   if (!url) { res.status(503).json({ error: "PACS not configured" }); return; }
   try {
     const resp = await fetch(`${url}/instances/${p.data.id}/preview`, {
@@ -153,7 +156,7 @@ router.get("/instances/:id/preview", async (req, res): Promise<void> => {
 // Proxy WADO-URI requests so Weasis can fetch via our backend (avoids CORS)
 
 router.get("/wado", async (req, res): Promise<void> => {
-  const { url, user, pass } = getOrthancConfig();
+  const { url, user, pass } = await getOrthancConfig();
   if (!url) { res.status(503).json({ error: "PACS not configured" }); return; }
   const qs = new URLSearchParams(req.query as Record<string, string>).toString();
   try {
@@ -195,7 +198,7 @@ router.get("/search", async (req, res): Promise<void> => {
 router.get("/studies/:id/weasis-url", async (req, res): Promise<void> => {
   const p = OrthancIdParams.safeParse(req.params);
   if (!p.success) { res.status(400).json({ error: "Invalid request", details: p.error.issues }); return; }
-  const { url } = getOrthancConfig();
+  const { url } = await getOrthancConfig();
   if (!url) { res.status(503).json({ error: "PACS not configured" }); return; }
 
   const { ok, data } = await orthancFetch(`/studies/${p.data.id}`);
@@ -205,7 +208,8 @@ router.get("/studies/:id/weasis-url", async (req, res): Promise<void> => {
   const mainTags = study.MainDicomTags as Record<string, string> | undefined;
   const studyInstanceUID = mainTags?.StudyInstanceUID || "";
 
-  const wasiUrl = process.env.WADO_URL || `${url}/wado`;
+  const cfg = await getRadiologyConfig();
+  const wasiUrl = cfg.weasis.wadoUrl || `${url}/wado`;
   const weasisUrl =
     `weasis://$dicom:get -r "` +
     `${wasiUrl}?requestType=WADO&studyUID=${studyInstanceUID}&contentType=application/dicom"`;
@@ -214,8 +218,8 @@ router.get("/studies/:id/weasis-url", async (req, res): Promise<void> => {
     studyInstanceUID,
     weasisUrl,
     orthancViewerUrl: `${url}/app/explorer.html#study?uuid=${p.data.id}`,
-    ohifUrl: process.env.OHIF_URL
-      ? `${process.env.OHIF_URL}/viewer?StudyInstanceUIDs=${studyInstanceUID}`
+    ohifUrl: cfg.ohif.baseUrl
+      ? `${cfg.ohif.baseUrl}/viewer?StudyInstanceUIDs=${studyInstanceUID}`
       : null,
   });
 });

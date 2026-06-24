@@ -10,8 +10,11 @@ import { chromium } from "playwright";
 import { buildReportHtml } from "../routes/patient-reports.js";
 import { logger } from "./logger.js";
 
-function getOrthancConfig() {
-  const url = (process.env.ORTHANC_URL || "").replace(/\/$/, "");
+import { getRadiologyConfig } from "./pacs/pacsConfig.js";
+
+async function getOrthancConfig() {
+  const cfg = await getRadiologyConfig();
+  const url = cfg.orthanc.dicomWebUrl.replace(/\/dicom-web$/, "");
   const user = process.env.ORTHANC_USERNAME || "";
   const pass = process.env.ORTHANC_PASSWORD || "";
   return { url, user, pass };
@@ -149,9 +152,9 @@ export async function archiveReportToPacs(studyId: number): Promise<{ success: b
     }
 
     // 5. Connect to Orthanc and post
-    const { url, user, pass } = getOrthancConfig();
+    const { url, user, pass } = await getOrthancConfig();
     if (!url) {
-      throw new Error("Orthanc PACS URL not configured in environment (ORTHANC_URL)");
+      throw new Error("Orthanc PACS URL not configured in database or environment");
     }
 
     const studyInstanceUID = study.studyInstanceUid || "";

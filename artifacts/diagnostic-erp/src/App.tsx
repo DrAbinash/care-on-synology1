@@ -141,6 +141,7 @@ const ScanStation     = lazy(() => import("@/pages/ScanStation"));
 const ReportDelivery  = lazy(() => import("@/pages/ReportDelivery"));
 const Kiosk           = lazy(() => import("@/pages/Kiosk"));
 const NotFound        = lazy(() => import("@/pages/not-found"));
+const NetworkControlCenter = lazy(() => import("@/pages/NetworkControlCenter"));
 const RadiologyCommandCenter = lazy(() => import("@/pages/RadiologyCommandCenter"));
 const RadiologyAdvancedTools = lazy(() => import("@/pages/RadiologyAdvancedTools"));
 const AcquisitionGateway     = lazy(() => import("@/pages/AcquisitionGateway"));
@@ -176,7 +177,7 @@ const queryClient = new QueryClient({
 
 const ERP_NAV_ORDER = [
   "/", "/dashboard", "/my-daily-summary", "/daily-summary", "/patients", "/appointments", "/queue", "/online-bookings",
-  "/radiology", "/radiology/legacy", "/radiology/worklist", "/radiology/dicom-qr", "/radiology/report-generator", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/pacs-settings", "/radiology/pacs-logs",
+  "/radiology", "/radiology/legacy", "/radiology/worklist", "/radiology/dicom-qr", "/radiology/report-generator", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/pacs-settings", "/radiology/network-control-center", "/radiology/pacs-logs",
   "/radiology/dicom-agent-dashboard", "/radiology/modality-management",
   "/radiology/mwl-dashboard", "/radiology/agent-setup", "/radiology/ai-reporting-settings", "/radiology/ai-prompt-templates", "/radiology/ai-model-routing", "/radiology/structured-report-templates", "/radiology/ai-audit-log",
   "/radiology/viewer", "/radiology/archive-lifecycle", "/radiology/watchdog", "/radiology/ai-inference-settings", "/radiology/hl7-settings", "/teleradiology",
@@ -317,6 +318,7 @@ function Router() {
               </Route>
               <Route path="/radiology/pacs-dashboard" component={PacsDashboard} />
               <Route path="/radiology/pacs-settings" component={PacsSettings} />
+              <Route path="/radiology/network-control-center" component={NetworkControlCenter} />
               <Route path="/radiology/pacs-logs" component={PacsLogs} />
               <Route path="/radiology/dicom-agent-dashboard" component={DicomAgentDashboard} />
               <Route path="/radiology/modality-management" component={ModalityManagement} />

@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { db } from "@workspace/db";
 import { tcpProbe } from "../lib/pacs/providers.js";
 import { testNodeConnection } from "../services/dicom-pull-agent/dimse-agent";
+import { getRadiologyConfig } from "../lib/pacs/pacsConfig.js";
 import {
   dicomRoutingRulesTable,
   dicomPulledStudiesTable,
@@ -193,13 +194,13 @@ router.post("/modalities/:id/echo-test", async (req, res) => {
 
 const DEFAULT_VIEWER_SETTINGS: Record<string, string> = {
   ohif_base_url: "http://192.168.1.137:3010",
-  dicom_web_base_url: "http://172.16.1.139:8042/dicom-web",
+  dicom_web_base_url: "http://192.168.1.137:8042/dicom-web",
   ohif_study_url_template: "{OHIF_BASE_URL}/viewer?StudyInstanceUIDs={studyInstanceUID}",
-  wado_uri_base_url: "http://172.16.1.139:8042/wado",
-  weasis_manifest_url_template: 'weasis://$dicom:get -w "http://172.16.1.139:8042/weasis?studyUID={studyInstanceUID}"',
-  pacs_ip: "172.16.1.139",
-  pacs_port: "5680",
-  pacs_ae_title: "ORTHANC2",
+  wado_uri_base_url: "http://192.168.1.137:8042/wado",
+  weasis_manifest_url_template: 'weasis://$dicom:get -w "http://192.168.1.137:8042/wado?studyUID={studyInstanceUID}"',
+  pacs_ip: "192.168.1.137",
+  pacs_port: "5678",
+  pacs_ae_title: "ORTHANC",
   viewer_mode: "BOTH",
   default_viewer: "OHIF",
   ohif_enabled: "true",
@@ -419,21 +420,11 @@ router.delete("/failed-queue/:id", async (req, res) => {
 
 router.get("/studies/:studyInstanceUID/weasis-launch", async (req, res) => {
   const { studyInstanceUID } = req.params;
+  const cfg = await getRadiologyConfig();
 
-  const [viewerSettings, conquestWado, orthancBase] = await Promise.all([
-    getViewerSettings(),
-    getSetting("wado_base_url", "conquest"),
-    getSetting("orthanc_base_url", "orthanc"),
-  ]);
-
-  const wadoUrl =
-    viewerSettings["wado_uri_base_url"] ||
-    viewerSettings["wado_base_url"] ||
-    conquestWado ||
-    (orthancBase ? `${orthancBase}/wado` : "");
-
-  const manifestTemplate = viewerSettings["weasis_manifest_url_template"] ?? "";
-  const pacsType = orthancBase ? "ORTHANC" : conquestWado ? "CONQUEST" : "UNKNOWN";
+  const wadoUrl = cfg.weasis.wadoUrl;
+  const manifestTemplate = cfg.weasis.launchTemplate;
+  const pacsType = cfg.orthanc.ip ? "ORTHANC" : "UNKNOWN";
 
   if (!wadoUrl && !manifestTemplate) {
     res.json({
@@ -447,8 +438,12 @@ router.get("/studies/:studyInstanceUID/weasis-launch", async (req, res) => {
     return;
   }
 
+  // Format the template dynamically
   const weasisUrl = manifestTemplate
-    ? manifestTemplate.replace(/\{studyInstanceUID\}/g, studyInstanceUID)
+    ? manifestTemplate
+        .replace(/\{WADO_URL\}/g, wadoUrl)
+        .replace(/\{wado_url\}/g, wadoUrl)
+        .replace(/\{studyInstanceUID\}/g, studyInstanceUID)
     : `weasis://$dicom:get -w "${wadoUrl}" -r "studyUID=${studyInstanceUID}"`;
 
   const [[worklist], [pulled]] = await Promise.all([
@@ -478,26 +473,50 @@ router.get("/studies/:studyInstanceUID/weasis-launch", async (req, res) => {
     accessionNumber,
     viewerType: "WEASIS",
     weasisUrl,
-    fallbackDicomWebUrl: viewerSettings["dicom_web_base_url"] || null,
+    fallbackDicomWebUrl: cfg.orthanc.dicomWebUrl || null,
     wadoBaseUrl: wadoUrl,
     pacsType,
   });
+});
+
+// GET /api/radiology/studies/:studyInstanceUID/weasis-launch-redirect
+// Redirects client browser to local weasis:// protocol handler directly
+router.get("/studies/:studyInstanceUID/weasis-launch-redirect", async (req, res) => {
+  const { studyInstanceUID } = req.params;
+  const cfg = await getRadiologyConfig();
+
+  const wadoUrl = cfg.weasis.wadoUrl;
+  const manifestTemplate = cfg.weasis.launchTemplate;
+
+  if (!wadoUrl && !manifestTemplate) {
+    res.status(400).send("Viewer settings are not configured. Go to PACS Settings and load defaults.");
+    return;
+  }
+
+  const weasisUrl = manifestTemplate
+    ? manifestTemplate
+        .replace(/\{WADO_URL\}/g, wadoUrl)
+        .replace(/\{wado_url\}/g, wadoUrl)
+        .replace(/\{studyInstanceUID\}/g, studyInstanceUID)
+    : `weasis://$dicom:get -w "${wadoUrl}" -r "studyUID=${studyInstanceUID}"`;
+
+  void logPacsEvent("WEASIS_REDIRECT_LAUNCH", "VIEWER_LAUNCHED", `Weasis redirect executed for study ${studyInstanceUID}`, {
+    studyInstanceUID,
+  });
+
+  res.redirect(weasisUrl);
 });
 
 // ─── OHIF VIEWER LAUNCH ───────────────────────────────────────────────────────
 
 router.get("/studies/:studyInstanceUID/ohif-launch", async (req, res) => {
   const { studyInstanceUID } = req.params;
+  const cfg = await getRadiologyConfig();
 
-  const [viewerSettings, orthancBase] = await Promise.all([
-    getViewerSettings(),
-    getSetting("orthanc_base_url", "orthanc"),
-  ]);
-
-  const ohifBase = viewerSettings["ohif_base_url"] ?? "";
-  const studyTemplate = viewerSettings["ohif_study_url_template"] ?? "";
-  const dicomWebUrl = viewerSettings["dicom_web_base_url"] ?? "";
-  const pacsType = orthancBase ? "ORTHANC" : "CONQUEST";
+  const ohifBase = cfg.ohif.baseUrl;
+  const studyTemplate = cfg.ohif.studyLaunchTemplate;
+  const dicomWebUrl = cfg.orthanc.dicomWebUrl;
+  const pacsType = cfg.orthanc.ip ? "ORTHANC" : "CONQUEST";
 
   if (!ohifBase && !studyTemplate) {
     res.json({
@@ -544,7 +563,7 @@ router.get("/studies/:studyInstanceUID/ohif-launch", async (req, res) => {
     accessionNumber,
     viewerType: "OHIF",
     ohifUrl,
-    dicomWebBaseUrl: dicomWebUrl || (orthancBase ? `${orthancBase}/dicom-web` : null),
+    dicomWebBaseUrl: dicomWebUrl,
     pacsType,
   });
 });
@@ -2000,6 +2019,367 @@ router.post("/nodes/:id/echo-test", async (req, res) => {
       hint: "Make sure dcmjs-dimse is installed and the agent module loaded successfully.",
     });
   }
+});
+
+// ─── NETWORK CONTROL CENTER ENDPOINTS ─────────────────────────────────────────
+
+router.get("/network/settings", async (req, res) => {
+  try {
+    const config = await getRadiologyConfig();
+    res.json({
+      ok: true,
+      config,
+      env: {
+        ORTHANC_URL: !!process.env.ORTHANC_URL,
+        OHIF_URL: !!process.env.OHIF_URL,
+        WADO_URL: !!process.env.WADO_URL,
+        INTERNAL_API_KEY: !!process.env.INTERNAL_API_KEY,
+        PUBLIC_BASE_URL: !!process.env.PUBLIC_BASE_URL,
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.patch("/network/settings", async (req, res) => {
+  try {
+    const body = req.body as Record<string, string>;
+    
+    for (const [key, val] of Object.entries(body)) {
+      // Determine category based on prefix
+      let category = "general";
+      if (key.startsWith("orthanc_")) category = "orthanc";
+      else if (key.startsWith("conquest_")) category = "conquest";
+      else if (key.startsWith("erp_")) category = "erp";
+      else if (key.startsWith("ohif_") || key.startsWith("weasis_") || key === "pacs_ip" || key === "pacs_port" || key === "pacs_ae_title" || key === "default_viewer" || key === "viewer_mode") {
+        category = "viewer";
+      }
+
+      // Check if row exists
+      const [existing] = await db
+        .select({ id: pacsSettingsTable.id })
+        .from(pacsSettingsTable)
+        .where(and(eq(pacsSettingsTable.key, key), eq(pacsSettingsTable.category, category)))
+        .limit(1);
+
+      if (existing) {
+        await db
+          .update(pacsSettingsTable)
+          .set({ value: val, updatedAt: new Date() })
+          .where(eq(pacsSettingsTable.id, existing.id));
+      } else {
+        await db.insert(pacsSettingsTable).values({
+          key,
+          value: val,
+          category,
+          isSecret: false,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      }
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.get("/network/health", async (req, res) => {
+  try {
+    const cfg = await getRadiologyConfig();
+    
+    const fetchWithTimeout = async (url: string, timeout = 2000): Promise<{ ok: boolean; status?: number; error?: string }> => {
+      if (!url) return { ok: false, error: "Empty URL" };
+      try {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), timeout);
+        const resp = await fetch(url, { signal: controller.signal, method: "HEAD" }).catch(() => 
+          fetch(url, { signal: controller.signal, method: "GET" }) // fallback to GET if HEAD blocked
+        );
+        clearTimeout(id);
+        return { ok: resp.ok, status: resp.status };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    };
+
+    // run probes concurrently
+    const [orthancHttp, orthancDicom, ohifHttp, weasisWado, conquestDicom, ollamaAi] = await Promise.all([
+      // Orthanc HTTP
+      fetchWithTimeout(cfg.orthanc.dicomWebUrl.replace(/\/dicom-web$/, "/system")),
+      // Orthanc DICOM Port
+      tcpProbe(cfg.orthanc.ip, cfg.orthanc.dicomPort),
+      // OHIF
+      fetchWithTimeout(cfg.ohif.baseUrl),
+      // Weasis WADO
+      fetchWithTimeout(cfg.weasis.wadoUrl),
+      // Conquest DICOM
+      cfg.conquest.ip ? tcpProbe(cfg.conquest.ip, cfg.conquest.dicomPort) : Promise.resolve({ ok: false, latencyMs: 0, message: "Conquest IP not set" }),
+      // Ollama AI
+      fetchWithTimeout("http://192.168.1.250:11434/api/tags").then(res => 
+        res.ok ? res : fetchWithTimeout("http://172.16.1.140:11434/api/tags") // fallback
+      )
+    ]);
+
+    res.json({
+      ok: true,
+      timestamp: new Date().toISOString(),
+      services: {
+        orthancHttp: {
+          name: "Orthanc REST API",
+          endpoint: cfg.orthanc.dicomWebUrl.replace(/\/dicom-web$/, ""),
+          status: orthancHttp.ok ? "green" : "red",
+          details: orthancHttp.ok ? "Reachable" : orthancHttp.error || "HTTP Error",
+        },
+        orthancDicom: {
+          name: "Orthanc DICOM Port",
+          endpoint: `${cfg.orthanc.ip}:${cfg.orthanc.dicomPort}`,
+          status: orthancDicom.ok ? "green" : "red",
+          details: orthancDicom.message,
+        },
+        ohifHttp: {
+          name: "OHIF Viewer Base",
+          endpoint: cfg.ohif.baseUrl,
+          status: ohifHttp.ok ? "green" : "red",
+          details: ohifHttp.ok ? "Reachable" : ohifHttp.error || "HTTP Error",
+        },
+        weasisWado: {
+          name: "Weasis WADO Server",
+          endpoint: cfg.weasis.wadoUrl,
+          status: weasisWado.ok ? "green" : "red",
+          details: weasisWado.ok ? "Reachable" : weasisWado.error || "HTTP Error",
+        },
+        conquestDicom: {
+          name: "Conquest DICOM SCP",
+          endpoint: cfg.conquest.ip ? `${cfg.conquest.ip}:${cfg.conquest.dicomPort}` : "Unconfigured",
+          status: !cfg.conquest.ip ? "yellow" : conquestDicom.ok ? "green" : "red",
+          details: !cfg.conquest.ip ? "Conquest IP not configured" : conquestDicom.message,
+        },
+        ollamaAi: {
+          name: "Ollama AI (Radiology Copilot)",
+          endpoint: "http://192.168.1.250:11434",
+          status: ollamaAi.ok ? "green" : "yellow",
+          details: ollamaAi.ok ? "Reachable" : "Offline / Unreachable (radiology copilot will fail)",
+        }
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.get("/network/warnings", async (req, res) => {
+  try {
+    const cfg = await getRadiologyConfig();
+    const warnings: string[] = [];
+
+    // Check for Docker Bridge IP leaks
+    const isBridgeIp = (ip: string) => ip.startsWith("172.16.1.") || ip.startsWith("172.");
+    
+    if (isBridgeIp(cfg.orthanc.ip)) {
+      warnings.push("Orthanc IP uses Docker bridge network (172.x.x.x) which is unreachable by LAN workstations.");
+    }
+    if (isBridgeIp(cfg.conquest.ip)) {
+      warnings.push("Conquest IP uses Docker bridge network (172.x.x.x) which is unreachable by LAN workstations.");
+    }
+    if (cfg.ohif.baseUrl.includes("172.16.1.")) {
+      warnings.push("OHIF Base URL uses Docker bridge IP (172.x.x.x) - browser clients will fail to launch OHIF.");
+    }
+    if (cfg.weasis.wadoUrl.includes("172.16.1.")) {
+      warnings.push("Weasis WADO endpoint uses Docker bridge IP (172.x.x.x) - local Weasis installations cannot read scans.");
+    }
+
+    // Check missing settings
+    if (!cfg.orthanc.aeTitle) warnings.push("Orthanc AE Title is missing.");
+    if (!cfg.conquest.aeTitle) warnings.push("Conquest AE Title is missing.");
+    if (!cfg.orthanc.dicomPort) warnings.push("Orthanc DICOM port is missing.");
+    if (!cfg.conquest.dicomPort) warnings.push("Conquest DICOM port is missing.");
+    
+    // Check Conquest / Orthanc AE Title conflicts
+    if (cfg.conquest.aeTitle === cfg.orthanc.aeTitle) {
+      warnings.push(`Duplicate AE Title found: Both Orthanc and Conquest are named '${cfg.orthanc.aeTitle}'.`);
+    }
+
+    // Check placeholders
+    if (cfg.erp.lanUrl.includes("YOUR_DOMAIN.replit.app") || cfg.erp.internalApiUrl.includes("YOUR_DOMAIN.replit.app")) {
+      warnings.push("Placeholder Replit URL detected in ERP settings. Update to your LAN IP or caredeoghar.com domain.");
+    }
+    if (!cfg.erp.hasApiKey) {
+      warnings.push("INTERNAL_API_KEY is not set. Hook sync from Orthanc/Conquest will fail authorization.");
+    }
+
+    res.json({ ok: true, warnings });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.get("/network/lua-hook/conquest", async (req, res) => {
+  const cfg = await getRadiologyConfig();
+  const erpUrl = `${cfg.erp.internalApiUrl}/radiology/studies`;
+  const erpKey = process.env.INTERNAL_API_KEY || "REPLACE_WITH_YOUR_INTERNAL_API_KEY";
+
+  const hookContent = `-- =============================================================================
+-- erp_notify.lua  —  CONQUEST PACS → DiagnoCenter ERP study-intake hook
+-- Generated Dynamically by ERP Network Control Center
+-- =============================================================================
+local ERP_URL     = "${erpUrl}"
+local ERP_API_KEY = "${erpKey}"
+local DEBUG       = true
+
+local function json_escape(s)
+  if s == nil then return "" end
+  s = tostring(s):gsub('\\\\', '\\\\\\\\')
+                 :gsub('"',  '\\\\"')
+                 :gsub('\\n', '\\\\n')
+                 :gsub('\\r', '\\\\r')
+                 :gsub('\\t', '\\\\t')
+                 :gsub('\\0', '')
+  return s
+end
+
+local function http_post(url, key, body)
+  local ok_http, http = pcall(require, "socket.http")
+  if ok_http and http then
+    local ok_ltn12, ltn12 = pcall(require, "ltn12")
+    if ok_ltn12 then
+      local sink_t = {}
+      local _, code = http.request({
+        url     = url,
+        method  = "POST",
+        headers = {
+          ["Content-Type"]   = "application/json",
+          ["Authorization"]  = "Bearer " .. key,
+          ["Content-Length"] = tostring(#body),
+        },
+        source = ltn12.source.string(body),
+        sink   = ltn12.sink.table(sink_t),
+      })
+      return code
+    end
+  end
+
+  local tmpfile = os.tmpname() .. "_erp.json"
+  local f = io.open(tmpfile, "w")
+  if not f then return 0 end
+  f:write(body)
+  f:close()
+
+  local cmd = string.format(
+    'curl -s -o NUL -w "%%{http_code}" -X POST "%s"'
+    .. ' -H "Content-Type: application/json"'
+    .. ' -H "Authorization: Bearer %s"'
+    .. ' --data-binary "@%s"'
+    .. ' --max-time 10 --connect-timeout 5',
+    url, key, tmpfile
+  )
+  if package.config:sub(1,1) == "/" then
+    cmd = cmd:gsub("NUL", "/dev/null")
+  end
+
+  local handle = io.popen(cmd)
+  local code_str = handle and handle:read("*a") or "000"
+  if handle then handle:close() end
+  os.remove(tmpfile)
+
+  return tonumber(code_str) or 0
+end
+
+function converter(callingae, calledae, ip, port)
+  local accession = AccessionNumber or ""
+  if accession == "" then return end
+
+  local raw_name   = PatientsName or PatientName or ""
+  local patient_name = raw_name:gsub("%%^", " "):match("^%%s*(.-)%%s*$")
+  if patient_name == "" then patient_name = "UNKNOWN" end
+
+  local patient_id   = PatientID            or ""
+  local study_uid    = StudyInstanceUID     or ""
+  local modality     = Modality             or "OT"
+  local description  = StudyDescription     or ""
+  local study_date   = StudyDate            or ""
+  local referring_dr = ReferringPhysiciansName or ""
+
+  local body = string.format(
+    '{"patientId":"%%s","patientName":"%%s","accessionNumber":"%%s",'
+    .. '"studyInstanceUID":"%%s","modality":"%%s","studyDescription":"%%s",'
+    .. '"studyDate":"%%s","referringDoctor":"%%s","aeTitle":"%%s","ipAddress":"%%s"}',
+    json_escape(patient_id), json_escape(patient_name), json_escape(accession),
+    json_escape(study_uid), json_escape(modality), json_escape(description),
+    json_escape(study_date), json_escape(referring_dr), json_escape(calledae or ""),
+    json_escape(ip or "")
+  )
+
+  local code = http_post(ERP_URL, ERP_API_KEY, body)
+  if code < 200 or code >= 300 then
+    print("[ERP] Hook Sync Failure: HTTP " .. tostring(code))
+  end
+end
+`;
+
+  res.setHeader("Content-Disposition", "attachment; filename=erp_notify.lua");
+  res.setHeader("Content-Type", "text/plain");
+  res.send(hookContent);
+});
+
+router.get("/network/lua-hook/orthanc", async (req, res) => {
+  const cfg = await getRadiologyConfig();
+  const erpUrl = `${cfg.erp.internalApiUrl}/radiology/studies`;
+  const erpKey = process.env.INTERNAL_API_KEY || "REPLACE_WITH_YOUR_INTERNAL_API_KEY";
+
+  const hookContent = `-- =============================================================================
+-- orthanc_erp_notify.lua  —  ORTHANC PACS → DiagnoCenter ERP study-intake hook
+-- Generated Dynamically by ERP Network Control Center
+-- =============================================================================
+function OnStoredInstance(instanceId, tags, metadata, origin)
+  if origin and origin["RequestOrigin"] == "RestApi" then
+    return
+  end
+
+  local accession = tags["AccessionNumber"] or ""
+  if accession == "" then
+    return
+  end
+
+  local ERP_URL     = "${erpUrl}"
+  local ERP_API_KEY = "${erpKey}"
+
+  local patient_name = (tags["PatientName"] or "UNKNOWN"):gsub("%%^", " ")
+  local patient_id   = tags["PatientID"] or ""
+  local study_uid    = tags["StudyInstanceUID"] or ""
+  local modality     = tags["Modality"] or "OT"
+  local description  = tags["StudyDescription"] or ""
+  local study_date   = tags["StudyDate"] or ""
+  local referring_dr = tags["ReferringPhysicianName"] or ""
+  local called_ae    = origin and origin["CalledAet"] or ""
+  local ip_addr      = origin and origin["IpAddress"] or ""
+
+  local function escape(s)
+    if not s then return "" end
+    return tostring(s):gsub('\\\\', '\\\\\\\\'):gsub('"', '\\\\"'):gsub('\\n', '\\\\n'):gsub('\\r', '\\\\r')
+  end
+
+  local json = string.format(
+    '{"patientId":"%%s","patientName":"%%s","accessionNumber":"%%s","studyInstanceUID":"%%s","modality":"%%s","studyDescription":"%%s","studyDate":"%%s","referringDoctor":"%%s","aeTitle":"%%s","ipAddress":"%%s"}',
+    escape(patient_id), escape(patient_name), escape(accession),
+    escape(study_uid), escape(modality), escape(description),
+    escape(study_date), escape(referring_dr), escape(called_ae), escape(ip_addr)
+  )
+
+  local headers = {
+    ["Content-Type"] = "application/json",
+    ["Authorization"] = "Bearer " .. ERP_API_KEY
+  }
+
+  local response = HttpPost(ERP_URL, json, headers)
+end
+`;
+
+  res.setHeader("Content-Disposition", "attachment; filename=orthanc_erp_notify.lua");
+  res.setHeader("Content-Type", "text/plain");
+  res.send(hookContent);
 });
 
 export const pacsEnterpriseRouter = router;

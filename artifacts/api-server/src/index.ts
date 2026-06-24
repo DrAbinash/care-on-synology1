@@ -2477,16 +2477,36 @@ const server = app.listen({ port, exclusive: true }, () => {
   backfillExpirePublicTokens().catch((e) => logger.error({ err: e }, "Failed to backfill public token expiry"));
   seedBootstrapAdminIfNeeded().catch((e) => logger.error({ err: e }, "Failed to seed/update bootstrap admin"));
 
-  // Seed OHIF_URL + WADO_URL from env into pacs_settings so viewerService.ts
-  // can read them from DB without needing any hardcoded IP fallback.
+  // Seed OHIF_URL + WADO_URL and other configuration values from env into pacs_settings
+  // so the centralized configuration service can read them from DB without needing hardcoded IP fallbacks.
   // Uses ON CONFLICT DO NOTHING — never overwrites an admin-configured value.
   (async () => {
     try {
+      const defaultHost = process.env.ORTHANC_URL 
+        ? new URL(process.env.ORTHANC_URL).hostname 
+        : "192.168.1.137";
+      const erpBase = process.env["PUBLIC_BASE_URL"] || `http://${defaultHost}:8888`;
 
       const pairs: Array<{ key: string; value: string | undefined; category: string }> = [
-        { key: "ohif_base_url",      value: process.env["OHIF_URL"],       category: "viewer" },
-        { key: "wado_uri_base_url",  value: process.env["WADO_URL"],       category: "viewer" },
-        { key: "orthanc_url",        value: process.env["ORTHANC_URL"],    category: "conquest" },
+        { key: "ohif_base_url",      value: process.env["OHIF_URL"] || `http://${defaultHost}:3010`,       category: "viewer" },
+        { key: "wado_uri_base_url",  value: process.env["WADO_URL"] || `http://${defaultHost}:8042/wado`,  category: "viewer" },
+        { key: "dicom_web_base_url",  value: `${process.env["ORTHANC_URL"] || `http://${defaultHost}:8042`}/dicom-web`, category: "viewer" },
+        { key: "pacs_ip",            value: defaultHost,                                                   category: "viewer" },
+        { key: "pacs_port",          value: "5678",                                                        category: "viewer" },
+        { key: "pacs_ae_title",      value: "ORTHANC",                                                     category: "viewer" },
+        { key: "orthanc_url",        value: process.env["ORTHANC_URL"] || `http://${defaultHost}:8042`,    category: "orthanc" },
+        { key: "orthanc_ae_title",   value: process.env["ORTHANC_AE_TITLE"] || "ORTHANC",                  category: "orthanc" },
+        { key: "orthanc_ip",         value: defaultHost,                                                   category: "orthanc" },
+        { key: "orthanc_dicom_port", value: "4242",                                                        category: "orthanc" },
+        { key: "orthanc_http_port",  value: "8042",                                                        category: "orthanc" },
+        { key: "orthanc_dicomweb_url", value: `${process.env["ORTHANC_URL"] || `http://${defaultHost}:8042`}/dicom-web`, category: "orthanc" },
+        { key: "orthanc_wado_url",    value: `${process.env["ORTHANC_URL"] || `http://${defaultHost}:8042`}/wado`,      category: "orthanc" },
+        { key: "conquest_ae_title",   value: process.env["CONQUEST_AE_TITLE"] || "CONQUESTPACS",            category: "conquest" },
+        { key: "conquest_ip",         value: process.env["CONQUEST_HOST"] || defaultHost,                  category: "conquest" },
+        { key: "conquest_port",       value: process.env["CONQUEST_PORT"] || "5678",                       category: "conquest" },
+        { key: "conquest_wado_url",   value: "",                                                            category: "conquest" },
+        { key: "erp_lan_url",         value: erpBase,                                                       category: "erp" },
+        { key: "erp_internal_api_url", value: `${erpBase}/api/internal`,                                    category: "erp" },
       ];
       for (const { key, value, category } of pairs) {
         if (!value) continue;
@@ -2497,9 +2517,9 @@ const server = app.listen({ port, exclusive: true }, () => {
           [key, value, category]
         );
       }
-      logger.info("PACS env vars seeded into pacs_settings (idempotent)");
+      logger.info("PACS env vars seeded into pacs_settings (idempotent, no automatic replacements)");
     } catch (e) {
-      logger.warn({ err: e }, "Could not seed PACS env vars into pacs_settings — viewer URLs must be set manually");
+      logger.warn({ err: e }, "Could not seed PACS env vars into pacs_settings");
     }
   })();
 });

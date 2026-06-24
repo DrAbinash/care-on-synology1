@@ -234,6 +234,7 @@ const navItems: NavEntry[] = [
       { path: "/backup-replication",        icon: DatabaseBackup, label: "Backup & Replication", ownerOnly: true },
       { path: "/system-update",             icon: Download,       label: "System Update" },
       // Radiology admin items moved from main sidebar
+      { path: "/radiology/network-control-center", icon: Network,        label: "Network Control Center", ownerOnly: true },
       { path: "/radiology/pacs-settings",         icon: Server,         label: "PACS & DICOM",        ownerOnly: true },
       { path: "/dicom-nodes",                     icon: Network,        label: "DICOM Nodes",         ownerOnly: true },
       { path: "/radiology/modality-management",   icon: Monitor,        label: "Modality Management", ownerOnly: true },
