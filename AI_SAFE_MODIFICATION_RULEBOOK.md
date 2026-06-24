@@ -1,144 +1,239 @@
 # AI-Safe Modification Rulebook: CareDeoghar Hospital ERP
 
-This document serves as the formal boundary reference, safety checklist, and dependency guide for any automated agent or developer attempting modifications on the CareDeoghar Hospital ERP. 
+This document is a machine-readable and human-verifiable safeguard system for the CareDeoghar Hospital ERP. It serves to protect critical infrastructure—specifically PACS routing, medical billing, clinical reporting, payment gateway channels, user permissions, and deployment containerization.
 
-It is designed for direct ingestion by Large Language Models (LLMs) and advanced agentic developer environments. Read this entire document before proposing or executing changes.
-
----
-
-## 1. Preface for AI Systems (Autonomous Execution Directives)
-
-> [!IMPORTANT]
-> **Strict Operational Constraints for LLMs:**
-> 1. **Do Not Touch Sandbox Parameters:** Do not edit, bypass, or mock authorization middleware to resolve test failures.
-> 2. **Drizzle Schema Alignment:** Any database schema modification must be mapped *both* in Drizzle schema definitions and the production manual patch scripts (`care-db-patch-v2`).
-> 3. **Fail-Closed Principle:** All permission gates must fail-closed. If a permission token or role state is undefined or missing, access **must** be denied.
-> 4. **No Code Modification During Audit Mode:** If invoked in an audit or diagnostic role, write documentation only.
+> [!WARNING]
+> **READ-ONLY MANDATE:** Do not write code or run migrations on the live production environment without executing the regression verification suites and safety checklists documented herein.
 
 ---
 
-## 2. Tier 1: Files That Should Almost Never Be Touched
+## 1. AI Agent Instruction Block
+*Paste this block at the very start of any future LLM or autonomous coding agent session:*
 
-The following files represent the core architectural stability, auth boundary, and critical automation paths. Modifications to these files have a high blast radius and require mandatory expert human review.
-
-| File Path | Description | Risk of Modification |
-| :--- | :--- | :--- |
-| [`artifacts/api-server/src/routes/index.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/routes/index.ts) | Central router mount file. Houses all route-level permission guards (RBAC mapping). | A single error or route misplacement can bypass security for the entire diagnostic ERP, exposing clinical data or ledger details. |
-| [`artifacts/api-server/src/middleware/requireStaffAuth.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/middleware/requireStaffAuth.ts) | Staff authentication and authorization validation logic. | Bypassing or introducing logical flaws in this middleware compromises every authenticated endpoint. |
-| [`artifacts/api-server/src/lib/pacsArchive.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/lib/pacsArchive.ts) | Orchestrates the browser-based PDF-to-DICOM rendering & push pipeline via Playwright. | Breakages here will cause radiologist report signatures to complete in ERP but silently fail to push the signed PDF report back into Orthanc/PACS. |
-| [`artifacts/api-server/src/lib/payments/PaymentEngine.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/lib/payments/PaymentEngine.ts) | Gateway coordinator orchestrating all 7 payment channels. | Code adjustments can lead to double-charges, webhook processing failures, or race conditions during ledger updates. |
-| [`artifacts/diagnostic-erp/src/lib/staffSession.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/lib/staffSession.ts) | Frontend route mapping, `PERMISSIONED_PATHS`, and client-side access control. | Mismatches between this file and backend route guards will create navigation lockouts or allow front-end bypass of restricted pages. |
-| [`conquest/erp_notify.lua`](file:///c:/Users/abina/caredeoghar--antigravity/conquest/erp_notify.lua) | Lua script executed by Conquest PACS on image receive/association. | Modifying or removing this breaks study auto-linking to bills, leaving modalities and ERP disconnected. |
-| [`docker-compose.yml`](file:///c:/Users/abina/caredeoghar--antigravity/docker-compose.yml) | Service definitions, networking bridges, port assignments, and volume mounts. | Misconfiguring ports (specifically database ports) or volume paths risks permanent data loss, split-brain routing, or bridge-network isolation. |
-
----
-
-## 3. Critical System Logic & Routes
-
-### A. Critical Routes & Permissions
-The following routes must maintain exact authorization gates:
-* **Radiology Worklist & Workflows:** `/radiology`, `/usg-*`, `/echo-*`, `/fetal-*`, `/dicom-workflow`, `/smart-radiology`, `/ris-monitor`, `/radiology-workflow`
-  * *Required Gate:* `requireStaffPermission("/radiology")`
-* **DICOM Server Management:** `/dicom-studies`
-  * *Required Gate:* `requireStaffPermission("/dicom-nodes")`
-* **Financial Ledger Access:** `/ledgers`
-  * *Required Gate:* `requireStaffPermission("/accounting")`
-* **Daily Performance Summaries:** `/daily-summary`
-  * *Required Gate:* `requireStaffPermission("/reports")`
-* **Dangerous Endpoints (Open Relays):**
-  * `/samples` - Only has `requireStaffAuth` without sub-permission checks. Extremely sensitive.
-  * `/dashboard/my-daily-summary` with `send-email` action - Accepts raw `htmlBody` parameter. **Do not modify to allow external/unauthorized email relaying.**
-
-### B. Critical PACS Logic
-* **Accession Number Matching:** The ERP assigns accession numbers using the format `ACC-YYYYMMDD-[Modality]-[Seq]`. The Conquest and Orthanc pipelines rely on this exact format to link received DICOM files with ERP patient bills.
-* **Study Lock Engine:** The radiologist report-writing UI locks studies by populating the `locked_by` and `locked_at` columns. The lock automatically expires after 30 minutes. Changing this duration or logic can lead to concurrent edit conflicts or permanent study lockouts.
-* **Playwright PDF Generation:** `pacsArchive.ts` launches an headless Chromium instance to render the HTML report and convert it to a DICOM PDF. This requires specific system libraries and Chrome installed inside the Docker image.
-
-### C. Critical Billing & Payment Logic
-* **Dual Ledger Entries:** Every finalized bill must generate corresponding double-entry records in the ledger tables. Modifying the payment status without writing matching ledger transactions creates financial discrepancies.
-* **Refund Guardrails:** The payment engine prevents refund requests that exceed the original transaction value. Changing the verification sequence can allow duplicate refunds or negative ledger balances.
+```markdown
+You are an AI coding agent tasked with modifying the CareDeoghar Hospital ERP.
+Before making ANY changes to the codebase, database schemas, or configs, you MUST:
+1. Locate and read: c:\Users\abina\caredeoghar--antigravity\AI_SAFE_MODIFICATION_RULEBOOK.md
+2. Identify the risk tier of target files in the 'Top 25 High-Risk Files' registry.
+3. Apply the corresponding 'If Modifying X' rule sets.
+4. Execute the 'Safe Change Checklist' before proposing code edits.
+5. Strictly adhere to the 'Do Not Break' workflows.
+Do not modify auth middleware, database fields, or API keys without explicit override approvals.
+```
 
 ---
 
-## 4. Database Safety Rules
+## 2. Top 25 "Do Not Break" Workflows
 
-### A. Critical Database Tables
-* `bills` - Single source of truth for hospital revenue.
-* `patients` - Central demographics registry. Uniqueness constraints on mobile numbers/MRNs.
-* `radiology_studies` - Maps PACS studies (`StudyInstanceUID`) to ERP orders.
-* `payments` - Records transaction identifiers, webhook responses, and gateway metadata.
-* `portal_sessions` - Session store for active users. Dropping or truncating this log forces logout for all hospital staff.
+These workflows are the operational foundation of the 24/7 diagnostic center. Any degradation here will disrupt clinical operations.
 
-### B. Dangerous Migrations
-* **Adding `NOT NULL` Columns:** Never add a `NOT NULL` column to `bills`, `patients`, `payments`, or `radiology_studies` without providing a concrete default value. Doing so causes Drizzle to crash during startup migration execution on existing production tables.
-* **Dropping Unique Constraints:** Do not drop unique constraints on `StudyInstanceUID` or `accession_number`. These fields are key deduplication indexes for incoming HL7/DICOM traffic.
-* **Raw SQL Patches:** Always check the `care-db-patch-v2` container configuration. If a column is added via Drizzle, it must also be updated in manual DB patching layers to ensure production parity.
+1. **Patient Registration & MRN Generation:** Unique ID generation sequence (`P-YYYYMMDD-[Seq]`) must not overlap.
+2. **Walk-in Booking Checkout:** Bill generation and payment status linking must resolve under 2 seconds.
+3. **ICICI Payment Checkout & Callback:** Immediate ledger credit on payment confirmation webhook execution.
+4. **Modality Worklist (MWL) Sync:** Scans from modality (USG/Echo) query PACS and matching accession numbers must populate automatically.
+5. **Conquest PACS Event Hook:** Automatic study status updates when Conquest invokes the `/api/pacs/event` API.
+6. **Orthanc Study Proxy Queries:** Real-time retrieval of WADO images for the embedded DICOM viewer.
+7. **OHIF Viewer Launching:** Passing valid StudyInstanceUID tokens to the OHIF container without authorization drops.
+8. **Radiologist Study Locking:** Lock creation on study access to prevent concurrent overwrite, with 30-minute auto-expiry.
+9. **Report Editor Save Draft:** Automatic local and database draft saving.
+10. **Report Digital Signing:** Electronic signature integration with MD5/SHA256 verification hashes.
+11. **PDF Report Compilation:** Playwright headless Chromium rendering of signing templates.
+12. **DICOM PDF Archival:** Automatic conversion of signed report PDFs to DICOM format and push back to Orthanc PACS.
+13. **Outbound WhatsApp Alerts:** Sending notifications containing PDF download links on report finalization.
+14. **Patient OTP Verification:** Generating and verifying OTP tokens via the SMS portal.
+15. **Patient Portal Download:** Secure PDF download access via authenticated portal sessions.
+16. **User Permission Validation:** Restricting `/ledgers` and `/daily-summary` routes to authorized roles only.
+17. **Day Close Reconciliation:** Closing daily cashier ledgers and committing balances.
+18. **Doctor Commission Calculation:** Commission script computing percentage payouts based on tests completed.
+19. **Form-F Record Creation:** Legal documentation of USG/obstetric procedures.
+20. **Outsourced Lab Dispatch:** Logging and tracking tests dispatched to third-party labs.
+21. **Bank Auto-Reconciliation:** Syncing bank statement records with daily ERP ledger accounts.
+22. **Inventory Stock Deductions:** Deducting reagents and equipment cartridges on lab test execution.
+23. **Audit Log Generation:** Recording all clinical modifications, payment deletions, and session logs.
+24. **System Health Check API:** `/api/system-health` endpoint returning system metrics for status checks.
+25. **Database Automated Backups:** Periodic cron-driven replication of the database state.
 
 ---
 
-## 5. Formal Modification Rules (Condition-Action Gates)
+## 3. Top 25 High-Risk Files
 
-### Rule Set 1: Routes & Authentication
-* **If modifying `/routes/index.ts`:**
-  * **Always verify:** `requireStaffAuth` and `requireStaffPermission` middleware functions are applied to all new and existing paths.
-  * **Always test:** Unauthorized requests receive `401 Unauthorized` or `403 Forbidden` responses.
+| ID | File Path | Risk Level | Primary Function |
+| :--- | :--- | :--- | :--- |
+| 1 | [`artifacts/api-server/src/routes/index.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/routes/index.ts) | Critical | Central router mount, houses RBAC rules |
+| 2 | [`artifacts/api-server/src/middleware/requireStaffAuth.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/middleware/requireStaffAuth.ts) | Critical | Authentication/authorization verification middleware |
+| 3 | [`artifacts/api-server/src/lib/pacsArchive.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/lib/pacsArchive.ts) | Critical | Playwright PDF-to-DICOM push pipeline |
+| 4 | [`artifacts/api-server/src/lib/payments/PaymentEngine.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/lib/payments/PaymentEngine.ts) | Critical | Coordinates payment gateways (ICICI/PhonePe etc.) |
+| 5 | [`conquest/erp_notify.lua`](file:///c:/Users/abina/caredeoghar--antigravity/conquest/erp_notify.lua) | High | PACS Conquest study hook script |
+| 6 | [`docker-compose.yml`](file:///c:/Users/abina/caredeoghar--antigravity/docker-compose.yml) | High | Host orchestrations and network bridges |
+| 7 | [`artifacts/diagnostic-erp/src/lib/staffSession.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/lib/staffSession.ts) | High | Client route permissions and session management |
+| 8 | [`artifacts/api-server/src/routes/my-daily-summary.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/routes/my-daily-summary.ts) | High | Daily performance email summary generator |
+| 9 | [`artifacts/api-server/src/lib/dicomConnectors.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/lib/dicomConnectors.ts) | High | Low-level DIMSE query/retrieve commands |
+| 10 | [`artifacts/api-server/src/routes/public-booking.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/routes/public-booking.ts) | High | Public online booking and payment callback endpoints |
+| 11 | [`artifacts/api-server/src/routes/whatsapp.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/routes/whatsapp.ts) | High | WhatsApp API notification triggers |
+| 12 | [`artifacts/api-server/src/cron.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/cron.ts) | High | Orchestrator for all cron events |
+| 13 | [`services/banking/ReconciliationEngine.ts`](file:///c:/Users/abina/caredeoghar--antigravity/services/banking/ReconciliationEngine.ts) | High | Automated bank statement processing |
+| 14 | [`services/banking/ICICIBankProvider.ts`](file:///c:/Users/abina/caredeoghar--antigravity/services/banking/ICICIBankProvider.ts) | High | Direct API integration with ICICI banking |
+| 15 | [`artifacts/api-server/src/routes/accounting.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/routes/accounting.ts) | High | Ledger updates, commission rule mappings |
+| 16 | [`artifacts/api-server/src/routes/patients.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/routes/patients.ts) | High | Patient creation, updates and ID counter logic |
+| 17 | [`artifacts/api-server/src/routes/bills.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/routes/bills.ts) | High | Invoice generation, discount validation, dues handling |
+| 18 | [`artifacts/api-server/src/routes/radiology.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/routes/radiology.ts) | High | Worklist fetch, study locking, report signing |
+| 19 | [`artifacts/api-server/src/routes/samples.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/routes/samples.ts) | Medium | Barcode printing, collection status tracker |
+| 20 | [`artifacts/api-server/src/lib/usgExtractor.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/lib/usgExtractor.ts) | Medium | Parses text/measurements from USG modalities |
+| 21 | [`artifacts/diagnostic-erp/src/pages/BillingDesk.tsx`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/pages/BillingDesk.tsx) | Medium | Cashier billing interface |
+| 22 | [`artifacts/diagnostic-erp/src/pages/RadiologyReportEditor.tsx`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/pages/RadiologyReportEditor.tsx) | Medium | Radiologist reporting editor |
+| 23 | [`db/schema.ts`](file:///c:/Users/abina/caredeoghar--antigravity/db/schema.ts) | High | System-wide database definitions |
+| 24 | [`deploy-synology.sh`](file:///c:/Users/abina/caredeoghar--antigravity/deploy-synology.sh) | High | Host production deployment script |
+| 25 | [`scripts/backup.sh`](file:///c:/Users/abina/caredeoghar--antigravity/scripts/backup.sh) | High | Automated database backup process |
+
+---
+
+## 4. Critical Areas & Safety Documentation
+
+### 1. PACS / Orthanc / DICOM / RNCC
+* **File Path:** [`artifacts/api-server/src/lib/pacsArchive.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/lib/pacsArchive.ts) / [`conquest/erp_notify.lua`](file:///c:/Users/abina/caredeoghar--antigravity/conquest/erp_notify.lua)
+* **Purpose:** Ensures imaging data is mapped between modalities, local servers (Conquest/Orthanc), and ERP.
+* **Why it is Dangerous:** If modified, incoming patient studies will not match bills, leaving radiologists unable to see or write reports.
+* **What can break:** Auto-linking, OHIF viewer loading, report DICOM archiving.
+* **Required Tests Before Change:** Confirm Orthanc and Conquest endpoints are reachable.
+* **Required Tests After Change:** Trigger a mock study upload and check if status transitions to "Received".
+* **Rollback Advice:** Revert to the stable `conquest/erp_notify.lua` backup reference.
+
+---
+
+### 2. Radiology Worklist & Report Editor
+* **File Path:** [`artifacts/api-server/src/routes/radiology.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/routes/radiology.ts)
+* **Purpose:** Displays studies needing diagnostics; handles locks and status updates.
+* **Why it is Dangerous:** Modifying the query or locking mechanism can cause lockups or allow multiple radiologists to edit the same report concurrently.
+* **What can break:** Study locking, draft saves, worklist performance.
+* **Required Tests Before Change:** Confirm `locked_by` values clear properly on test databases.
+* **Required Tests After Change:** Open a study in two separate browsers and verify the lock warning displays.
+* **Rollback Advice:** Keep database backups of `radiology_studies` schema structures.
+
+---
+
+### 3. AI Draft Generation & Reporting
+* **File Path:** [`artifacts/api-server/src/routes/aiReporting.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/routes/aiReporting.ts)
+* **Purpose:** Communicates with Ollama (local) or Gemini (cloud) to draft clinical findings.
+* **Why it is Dangerous:** Faulty prompt construction or API timeouts can result in missing medical text drafts.
+* **What can break:** Draft population, prompt templates.
+* **Required Tests Before Change:** Verify OpenAI / Gemini API key validity and local Ollama server status.
+* **Required Tests After Change:** Submit a draft generation request and verify structured findings return.
+* **Rollback Advice:** Revert key configurations immediately in `.env` if timeout rates increase.
+
+---
+
+### 4. Billing Desk & Refund/Cancellation Logic
+* **File Path:** [`artifacts/api-server/src/routes/bills.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/routes/bills.ts)
+* **Purpose:** Handles invoices, line-item pricing, discounts, and cancellations.
+* **Why it is Dangerous:** Financial reporting errors can lead to audits failing, cash desk mismatch, and regulatory complications.
+* **What can break:** Ledger balances, billing desk checkout, receipt printing.
+* **Required Tests Before Change:** Verify double-entry balancing rules in accounting libraries.
+* **Required Tests After Change:** Execute mock bills with cash, UPI, and discounts; verify ledger state.
+* **Rollback Advice:** Re-run the ledger auditor tool to check for balancing violations.
+
+---
+
+### 5. ICICI Payment Gateway & Future Providers
+* **File Path:** [`artifacts/api-server/src/lib/payments/PaymentEngine.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/lib/payments/PaymentEngine.ts)
+* **Purpose:** Interfaces with payment gateways to process transactions.
+* **Why it is Dangerous:** Minor modifications to payment routes or variables can result in double-charging or unconfirmed payments.
+* **What can break:** Checkout routing, transaction validation, callback hooks.
+* **Required Tests Before Change:** Use test API credentials for ICICI payment simulation.
+* **Required Tests After Change:** Run a mock UPI checkout transaction and verify callback ledger logging.
+* **Rollback Advice:** Keep primary gateway provider files separate to allow rapid switching.
+
+---
+
+### 6. User Roles, Permissions & Auth
+* **File Path:** [`artifacts/api-server/src/middleware/requireStaffAuth.ts`](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/api-server/src/middleware/requireStaffAuth.ts)
+* **Purpose:** Controls endpoint access checks.
+* **Why it is Dangerous:** Security omissions can expose confidential patient diagnostics or financial ledgers to public paths.
+* **What can break:** Route protection, RBAC enforcement.
+* **Required Tests Before Change:** Validate staff sessions and roles on dev databases.
+* **Required Tests After Change:** Attempt accessing `/api/ledgers` with a non-admin token; verify `403 Forbidden` response.
+* **Rollback Advice:** Restrict permissions immediately to basic authorization if routing breaches occur.
+
+---
+
+## 5. Formal Modification Rule Sets
+
+* **If modifying `pacsArchive.ts`:**
+  * **Always verify:** Playwright chromium process closes under all outcomes.
+  * **Always test:** Signed PDFs translate to DICOM encapsulation formats.
+  * **Never change:** Output file structures without matching search keys in Orthanc.
 
 * **If modifying `requireStaffAuth.ts`:**
-  * **Always verify:** The token parsing matches the cookies or Authorization headers sent by both diagnostic-erp and client portals.
-  * **Always test:** Session timeout, invalid token signatures, and role-override edge cases fail securely.
+  * **Always verify:** Token decoders default to "Deny All" if session strings are corrupt.
+  * **Always test:** Login session expiry parameters.
+  * **Never change:** Authentication cookies config without verifying client-side requests in `staffSession.ts`.
 
-* **If modifying `staffSession.ts` (Frontend):**
-  * **Always verify:** The `PERMISSIONED_PATHS` map matches backend route structures exactly.
-  * **Always test:** Client navigation blocks and redirects users to `/unauthorized` when trying to access restricted modules.
-
----
-
-### Rule Set 2: PACS & Radiology Workflows
-* **If modifying `pacsArchive.ts`:**
-  * **Always verify:** The browser instance closes properly (`await browser.close()`) in both success and error handlers to prevent memory leaks.
-  * **Always test:** Generated DICOM files are pushed to Orthanc using the correct Modality type (`SR` or `OT`) and matched to the original patient.
-
-* **If modifying `conquest/erp_notify.lua`:**
-  * **Always verify:** The `INTERNAL_API_KEY` header is configured correctly and target URLs use the internal bridge network address (`http://100.65.255.115:5000` or Docker service names).
-  * **Always test:** Incoming study notifications trigger a status update to `completed` or `draft` in the ERP.
-
-* **If modifying Radiology Study statuses:**
-  * **Always verify:** The study's `locked_by` field is cleared when a radiologist navigates away or submits a report.
-  * **Always test:** Concurrent edit attempts return a locked status warning to secondary radiologists.
-
----
-
-### Rule Set 3: Billing & Payments
 * **If modifying `PaymentEngine.ts`:**
-  * **Always verify:** The transaction status check operates under a database transaction block (`db.transaction`) to prevent double-crediting.
-  * **Always test:** Webhook timeouts, partial payments, and failed gateway responses revert/hold order completion statuses.
+  * **Always verify:** Webhook routes operate with CSRF protection disabled but source IP white-listed.
+  * **Always test:** Payment callbacks under slow network scenarios.
+  * **Never change:** Transaction status rules without mapping to financial ledger records.
 
-* **If modifying Bill creation workflows:**
-  * **Always verify:** The `generateStudiesForOrder()` helper is triggered immediately to allocate study slots and generate accession numbers.
-  * **Always test:** If the patient creation in Orthanc (`dicomPatientCreator`) fails, the bill transaction is rolled back safely.
+* **If modifying `db/schema.ts`:**
+  * **Always verify:** Added columns are either nullable or have default constraints.
+  * **Always test:** The migrations execute without errors on test database states.
+  * **Never change:** Existing column names without updating Drizzle and the `care-db-patch-v2` scripts.
 
----
-
-## 6. Hidden Dependencies Directory
-
-The system contains several invisible dependencies that will not show up during static imports or standard code searches:
-
-| Trigger Element | Dependent Target | Mechanism / Protocol | Failure Mode if Broken |
-| :--- | :--- | :--- | :--- |
-| Bill Creation | Orthanc PACS Patients | REST API calls via `dicomPatientCreator` | Modality worklist gets images but cannot link to patient info. |
-| Conquest lua hook | ERP API `/api/pacs/event` | Lua script HTTP POST with `INTERNAL_API_KEY` | DICOM uploads succeed in PACS but studies remain "Scheduled" or invisible in ERP. |
-| Dockerfile/Compose | Playwright Engine | Playwright browser download script during build | Report signing crashes API server with "browser not found" error. |
-| `.env` Configuration | `ALLOW_PRIVATE_IPS` flag | SSRF Protection Middleware (`providers.ts`) | All ERP-to-Orthanc internal LAN API requests are blocked. |
-| Database column creation | `care-db-patch-v2` container | Manual SQL updates vs Drizzle migrations | SQL mismatch during runtime query execution on production database. |
-| Modality Workflow | Accession Number Format | String parsing regex in PACS scripts | Scans cannot auto-map to patient records, forcing manual reconciliation. |
-| `FULL_ACCESS_ROLES` Set | Staff Permissions Check | Hardcoded Set comparison in `requireStaffAuth.ts` | Bypasses all sub-route checks. Changing role names or names within the Set results in unauthorized administrative access. |
+* **If modifying `deploy-synology.sh`:**
+  * **Always verify:** System volume maps point to persistent NAS folders.
+  * **Always test:** Container restart behaviors.
+  * **Never change:** Port bindings without checking local Cloudflare tunnel configuration routes.
 
 ---
 
-## 7. Dangerous Refactor Patterns
+## 6. Top 25 Required Regression Tests
 
-Do not attempt the following refactors:
-1. **Converting localStorage auth to HTTP-only Cookies:** While safer in theory, the diagnostic ERP client, booking widget, and portal app share state via localStorage keys. Changing to HTTP-only cookies without simultaneously refactoring all sub-domains will break authentication across clinical sites.
-2. **Abstracting the Payment Gateways into an async queue:** Delaying bill finalization or payment verification breaks the immediate print requirement at the billing desk. Patients cannot leave with payment receipts.
-3. **Consolidating Orthanc and Conquest databases:** Orthanc is used for high-speed local image routing and OHIF viewing; Conquest acts as a legacy bridge for specific modalities. Modifying their respective database schemas or sharing volumes will lead to indexing lockouts.
-4. **Moving the `requireStaffPermission` logic to individual routes:** Central routing configuration in `index.ts` is the single source of truth. Dispersing permission guards makes auditing security controls difficult and increases the risk of missing checks.
+1. **Verify Patient ID Sequence:** Validate MRN counter increments correctly.
+2. **Verify Search Speeds:** Index scanning for patients on 10,000+ test records.
+3. **Verify Auth Middleware:** Block requests lacking authentication tokens.
+4. **Verify RBAC Access:** Ensure `/api/ledgers` is blocked for technician roles.
+5. **Verify Double Ledger Postings:** Confirm equal debits and credits on checkouts.
+6. **Verify Discount Approval PIN:** Apply overriding discount; check for block on invalid PIN.
+7. **Verify Dues Settlement:** Update billing balances on partial payments.
+8. **Verify Conquest Lua Endpoint:** Push study to mock API; check database response.
+9. **Verify Orthanc WADO Query:** Fetch image tags via API proxy.
+10. **Verify Study Lock Expiry:** Check if lock clears automatically after 30 minutes.
+11. **Verify Concurrent Locking:** Attempt to write to a locked report from a separate test user.
+12. **Verify Draft Persistence:** Save report draft; reload page; verify contents match.
+13. **Verify Report Signing Hash:** Verify digital signature calculations.
+14. **Verify Playwright Render:** Generate report PDF using mock data.
+15. **Verify DICOM Encapsulation:** Extract metadata from generated report DICOM files.
+16. **Verify WhatsApp Alert Send:** Confirm API call dispatch to Meta/Twilio.
+17. **Verify OTP Generation:** Request portal access; check OTP delivery script.
+18. **Verify Portal Report Download:** Authenticate patient; retrieve specific signed PDF.
+19. **Verify Refund Limits:** Request refund exceeding the original transaction; verify it is blocked.
+20. **Verify Form-F Fields:** Save obstetric USG details; check database validations.
+21. **Verify Day Close Verification:** Ensure daily summary balances match ledger records.
+22. **Verify Commission Script:** Test percentages against diagnostic fees.
+23. **Verify Backup Restore Runbook:** Restore dump to a test container; check record integrity.
+24. **Verify Health Check API:** `/api/system-health` returns `UP` status.
+25. **Verify Rate Limiting:** Run concurrent query loops; verify `429 Too Many Requests` is returned.
+
+---
+
+## 7. Change Verification Checklists
+
+### Safe Change Checklist
+- [ ] Create a Git checkpoint/branch before starting.
+- [ ] Validate database migration files locally using mock database states.
+- [ ] Keep backup schema patches up to date.
+- [ ] Confirm internal API endpoints are reachable.
+- [ ] Verify permission guards on new route mappings.
+- [ ] Ensure all resources and processes close on exit (e.g. databases, browser runners).
+- [ ] Document code modifications in local change logs.
+
+### Unsafe Change Examples
+* **Unsafe:** Modifying columns in `bills` without updating the `care-db-patch-v2` scripts. *(Result: Database schema mismatch crashes server on startup.)*
+* **Unsafe:** Disabling the Playwright timeout settings in `pacsArchive.ts`. *(Result: Unclosed browser instances consume server memory, leading to crashes.)*
+* **Unsafe:** Bypassing `requireStaffAuth` during route testing without restoring permissions. *(Result: Exposure of patient record systems.)*
+
+### Emergency Rollback Checklist
+- [ ] Roll back Git state immediately using `git reset --hard [Last Known Good Commit]`.
+- [ ] Restore database states from recent sql dumps using target restore scripts.
+- [ ] Verify routing tunnels are operational.
+- [ ] Validate server states via health checks.
+- [ ] Re-run regression suites to confirm normal operations.
+- [ ] Notify clinical IT desk if downtime persists.
