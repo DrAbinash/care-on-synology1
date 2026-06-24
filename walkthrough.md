@@ -1,6 +1,6 @@
-# Walkthrough — Radiology Reporting System, Handbooks & Disaster Recovery Protocols
+# Walkthrough — Radiology Reporting System, Handbooks & Knowledge Audits
 
-All requested radiology reporting enhancements, developer handbooks, API catalogs, disaster recovery audits, and tabletop failure simulations have been successfully verified and completed.
+All requested radiology reporting enhancements, developer handbooks, API catalogs, disaster recovery audits, tabletop failure simulations, and knowledge base audits have been successfully verified and completed.
 
 ## 1. Summary of Work
 
@@ -36,11 +36,12 @@ All requested radiology reporting enhancements, developer handbooks, API catalog
 - Added aggregated "Most Used" templates, findings, and macros, alongside favorites summary counts in the **Analytics** sub-tab.
 - **Lightweight queries**: Keystrokes do not trigger database queries. Event logging is write-only, and analytics logs are fetched using React Query caching protocols when opening the tab.
 
-#### E. System, API & Simulation Handbooks
+#### E. Onboarding & Safety Documentation
 - Created [AI_DEVELOPER_HANDBOOK.md](file:///c:/Users/abina/caredeoghar--antigravity/docs/AI_DEVELOPER_HANDBOOK.md) to serve as a comprehensive onboarding reference.
 - Created [API_INVENTORY.md](file:///c:/Users/abina/caredeoghar--antigravity/API_INVENTORY.md) cataloging all public routes, authenticated ERP routes, and teleradiology endpoints.
 - Created [DISASTER_RECOVERY_AUDIT.md](file:///c:/Users/abina/caredeoghar--antigravity/DISASTER_RECOVERY_AUDIT.md) detailing recovery procedures, database restore scripts, and RTO profiles.
 - Created [DICOM_PACS_FAILURE_SIMULATION.md](file:///c:/Users/abina/caredeoghar--antigravity/DICOM_PACS_FAILURE_SIMULATION.md) detailing tabletop test responses for ten critical hardware/network failure scenarios.
+- Created [RADIOLOGY_KNOWLEDGE_BASE_AUDIT.md](file:///c:/Users/abina/caredeoghar--antigravity/RADIOLOGY_KNOWLEDGE_BASE_AUDIT.md) presenting a complete audit, modality coverage maps, and consolidation recommendations for structured templates, findings, impressions, and AI prompts.
 
 ---
 
@@ -54,6 +55,7 @@ All requested radiology reporting enhancements, developer handbooks, API catalog
   - [API_INVENTORY.md](file:///c:/Users/abina/caredeoghar--antigravity/API_INVENTORY.md)
   - [DISASTER_RECOVERY_AUDIT.md](file:///c:/Users/abina/caredeoghar--antigravity/DISASTER_RECOVERY_AUDIT.md)
   - [DICOM_PACS_FAILURE_SIMULATION.md](file:///c:/Users/abina/caredeoghar--antigravity/DICOM_PACS_FAILURE_SIMULATION.md)
+  - [RADIOLOGY_KNOWLEDGE_BASE_AUDIT.md](file:///c:/Users/abina/caredeoghar--antigravity/RADIOLOGY_KNOWLEDGE_BASE_AUDIT.md)
 
 ---
 
