@@ -1,6 +1,6 @@
-# Walkthrough — Radiology Reporting System, Handbooks & API Catalog
+# Walkthrough — Radiology Reporting System, Handbooks & Disaster Recovery Protocols
 
-All requested radiology reporting enhancements, safety modifications, developer handbooks, and API inventories have been successfully verified and completed.
+All requested radiology reporting enhancements, developer handbooks, API catalogs, and disaster recovery audits have been successfully verified and completed.
 
 ## 1. Summary of Work
 
@@ -36,11 +36,12 @@ All requested radiology reporting enhancements, safety modifications, developer 
 - Added aggregated "Most Used" templates, findings, and macros, alongside favorites summary counts in the **Analytics** sub-tab.
 - **Lightweight queries**: Keystrokes do not trigger database queries. Event logging is write-only, and analytics logs are fetched using React Query caching protocols when opening the tab.
 
-#### E. Onboarding AI Developer Handbook
+#### E. System & API Handbooks
 - Created [AI_DEVELOPER_HANDBOOK.md](file:///c:/Users/abina/caredeoghar--antigravity/docs/AI_DEVELOPER_HANDBOOK.md) to serve as a comprehensive onboarding reference.
-
-#### F. API Catalog Document
 - Created [API_INVENTORY.md](file:///c:/Users/abina/caredeoghar--antigravity/API_INVENTORY.md) cataloging all public routes, authenticated ERP routes, and teleradiology endpoints.
+
+#### F. Disaster Recovery Audit Protocol
+- Created [DISASTER_RECOVERY_AUDIT.md](file:///c:/Users/abina/caredeoghar--antigravity/DISASTER_RECOVERY_AUDIT.md) detailing exact recovery procedures, storage paths, RTO estimates, system vulnerabilities, and hardening recommendations.
 
 ---
 
@@ -52,6 +53,7 @@ All requested radiology reporting enhancements, safety modifications, developer 
 - **Documentation:**
   - [AI_DEVELOPER_HANDBOOK.md](file:///c:/Users/abina/caredeoghar--antigravity/docs/AI_DEVELOPER_HANDBOOK.md)
   - [API_INVENTORY.md](file:///c:/Users/abina/caredeoghar--antigravity/API_INVENTORY.md)
+  - [DISASTER_RECOVERY_AUDIT.md](file:///c:/Users/abina/caredeoghar--antigravity/DISASTER_RECOVERY_AUDIT.md)
 
 ---
 
