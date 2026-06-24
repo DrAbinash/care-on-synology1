@@ -94,6 +94,42 @@ type SettingsResponse = {
   env: Record<string, boolean>;
 };
 
+type PacsErrorLog = {
+  id: number;
+  severity: string;
+  source: string | null;
+  message: string;
+  createdAt: string;
+};
+
+type HealthMonitorResponse = {
+  ok: boolean;
+  timestamps: {
+    lastStudyReceived: string | null;
+    lastOrthancImport: string | null;
+    lastErpSync: string | null;
+    lastWorklistCreation: string | null;
+    lastOhifLaunch: string | null;
+    lastWeasisLaunch: string | null;
+  };
+  counters: {
+    receivedToday: number;
+    syncedToday: number;
+    failedToday: number;
+    launchFailures: number;
+    syncFailures: number;
+  };
+  health: {
+    orthanc: "green" | "yellow" | "red";
+    conquest: "green" | "yellow" | "red";
+    erpSync: "green" | "yellow" | "red";
+    ohif: "green" | "yellow" | "red";
+    weasis: "green" | "yellow" | "red";
+    dicomPuller: "green" | "yellow" | "red";
+  };
+  recentErrors: PacsErrorLog[];
+};
+
 export default function NetworkControlCenter() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -121,6 +157,12 @@ export default function NetworkControlCenter() {
   const { data: modalities, isLoading: modalitiesLoading, refetch: refetchModalities } = useQuery<Modality[]>({
     queryKey: ["/api/radiology/modalities"],
     queryFn: () => api.get<Modality[]>("/api/radiology/modalities"),
+  });
+
+  const { data: monitorData, refetch: refetchMonitor, isFetching: monitorFetching } = useQuery<HealthMonitorResponse>({
+    queryKey: ["/api/radiology/network/health-monitor"],
+    queryFn: () => api.get<HealthMonitorResponse>("/api/radiology/network/health-monitor"),
+    refetchInterval: 15000,
   });
 
   // Mutations

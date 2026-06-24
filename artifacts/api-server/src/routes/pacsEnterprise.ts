@@ -2216,6 +2216,200 @@ router.get("/network/warnings", async (req, res) => {
   }
 });
 
+router.get("/network/health-monitor", async (req, res) => {
+  try {
+    const cfg = await getRadiologyConfig();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // 1. Live Operational Timestamps
+    const [lastPulled] = await db
+      .select({ createdAt: dicomPulledStudiesTable.createdAt })
+      .from(dicomPulledStudiesTable)
+      .orderBy(desc(dicomPulledStudiesTable.createdAt))
+      .limit(1);
+
+    const [lastWorklist] = await db
+      .select({ createdAt: radiologyWorklistTable.createdAt })
+      .from(radiologyWorklistTable)
+      .orderBy(desc(radiologyWorklistTable.createdAt))
+      .limit(1);
+
+    const [lastScheduled] = await db
+      .select({ createdAt: radiologyScheduledProceduresTable.createdAt })
+      .from(radiologyScheduledProceduresTable)
+      .orderBy(desc(radiologyScheduledProceduresTable.createdAt))
+      .limit(1);
+
+    const [lastSyncRow] = await db
+      .select({ updatedAt: risSyncStatusTable.updatedAt })
+      .from(risSyncStatusTable)
+      .orderBy(desc(risSyncStatusTable.updatedAt))
+      .limit(1);
+
+    const [lastOhifLaunch] = await db
+      .select({ createdAt: pacsLogsTable.createdAt })
+      .from(pacsLogsTable)
+      .where(and(eq(pacsLogsTable.source, "OHIF_VIEWER_LAUNCH"), eq(pacsLogsTable.eventType, "VIEWER_LAUNCHED")))
+      .orderBy(desc(pacsLogsTable.createdAt))
+      .limit(1);
+
+    const [lastWeasisLaunch] = await db
+      .select({ createdAt: pacsLogsTable.createdAt })
+      .from(pacsLogsTable)
+      .where(and(
+        or(eq(pacsLogsTable.source, "WEASIS_VIEWER_LAUNCH"), eq(pacsLogsTable.source, "WEASIS_REDIRECT_LAUNCH")),
+        eq(pacsLogsTable.eventType, "VIEWER_LAUNCHED")
+      ))
+      .orderBy(desc(pacsLogsTable.createdAt))
+      .limit(1);
+
+    // 2. Daily Counters
+    const [receivedToday] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(dicomPulledStudiesTable)
+      .where(gte(dicomPulledStudiesTable.createdAt, today));
+
+    const [syncedToday] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(dicomPulledStudiesTable)
+      .where(and(
+        eq(dicomPulledStudiesTable.status, "completed"),
+        gte(dicomPulledStudiesTable.updatedAt, today)
+      ));
+
+    const [failedToday] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(dicomPulledStudiesTable)
+      .where(and(
+        eq(dicomPulledStudiesTable.status, "failed"),
+        gte(dicomPulledStudiesTable.updatedAt, today)
+      ));
+
+    const [launchFailures] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(pacsLogsTable)
+      .where(and(
+        eq(pacsLogsTable.severity, "error"),
+        or(
+          ilike(pacsLogsTable.source, "%viewer%"),
+          ilike(pacsLogsTable.message, "%viewer%"),
+          ilike(pacsLogsTable.message, "%launch%")
+        ),
+        gte(pacsLogsTable.createdAt, today)
+      ));
+
+    const [syncFailuresToday] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(pacsLogsTable)
+      .where(and(
+        eq(pacsLogsTable.severity, "error"),
+        or(
+          ilike(pacsLogsTable.source, "%sync%"),
+          ilike(pacsLogsTable.message, "%sync%")
+        ),
+        gte(pacsLogsTable.createdAt, today)
+      ));
+
+    // 3. Health Status
+    const fetchWithTimeout = async (url: string, timeout = 2000): Promise<boolean> => {
+      if (!url) return false;
+      try {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), timeout);
+        const resp = await fetch(url, { signal: controller.signal, method: "HEAD" }).catch(() => 
+          fetch(url, { signal: controller.signal, method: "GET" })
+        );
+        clearTimeout(id);
+        return resp.ok;
+      } catch {
+        return false;
+      }
+    };
+
+    const [orthancOk, orthancPortOk, ohifOk, weasisOk, conquestOk] = await Promise.all([
+      fetchWithTimeout(cfg.orthanc.dicomWebUrl.replace(/\/dicom-web$/, "/system")),
+      tcpProbe(cfg.orthanc.ip, cfg.orthanc.dicomPort).then(r => r.ok),
+      fetchWithTimeout(cfg.ohif.baseUrl),
+      fetchWithTimeout(cfg.weasis.wadoUrl),
+      cfg.conquest.ip ? tcpProbe(cfg.conquest.ip, cfg.conquest.dicomPort).then(r => r.ok) : Promise.resolve(false)
+    ]);
+
+    let orthancStatus = "red";
+    if (orthancOk && orthancPortOk) orthancStatus = "green";
+    else if (orthancOk || orthancPortOk) orthancStatus = "yellow";
+
+    const conquestStatus = conquestOk ? "green" : "red";
+    const ohifStatus = ohifOk ? "green" : "red";
+    const weasisStatus = weasisOk ? "green" : "red";
+
+    const syncs = await db.select().from(risSyncStatusTable);
+    const hasSyncErrors = syncs.some(s => s.status === "failed" || (s.itemsFailed ?? 0) > 0);
+    const erpSyncStatus = hasSyncErrors ? "red" : (syncs.length > 0 ? "green" : "yellow");
+
+    const watchdogServices = await db.select().from(watchdogStatusTable);
+    const pullerService = watchdogServices.find(s => 
+      s.serviceName.toLowerCase().includes("pull") || s.displayName.toLowerCase().includes("pull")
+    );
+    let pullerStatus = "yellow";
+    if (pullerService) {
+      pullerStatus = pullerService.status === "healthy" ? "green" : "red";
+    } else {
+      const twentyMinsAgo = new Date(Date.now() - 20 * 60 * 1000);
+      const [recentPull] = await db
+        .select({ id: pacsLogsTable.id })
+        .from(pacsLogsTable)
+        .where(and(
+          eq(pacsLogsTable.source, "DICOM_PULL_AGENT"),
+          gte(pacsLogsTable.createdAt, twentyMinsAgo)
+        ))
+        .limit(1);
+      pullerStatus = recentPull ? "green" : "yellow";
+    }
+
+    // 4. Recent Errors
+    const recentErrors = await db
+      .select()
+      .from(pacsLogsTable)
+      .where(or(
+        eq(pacsLogsTable.severity, "error"),
+        eq(pacsLogsTable.severity, "warning")
+      ))
+      .orderBy(desc(pacsLogsTable.createdAt))
+      .limit(20);
+
+    res.json({
+      ok: true,
+      timestamps: {
+        lastStudyReceived: lastPulled?.createdAt || lastWorklist?.createdAt || null,
+        lastOrthancImport: lastWorklist?.createdAt || null,
+        lastErpSync: lastSyncRow?.updatedAt || null,
+        lastWorklistCreation: lastScheduled?.createdAt || null,
+        lastOhifLaunch: lastOhifLaunch?.createdAt || null,
+        lastWeasisLaunch: lastWeasisLaunch?.createdAt || null,
+      },
+      counters: {
+        receivedToday: receivedToday?.count ?? 0,
+        syncedToday: syncedToday?.count ?? 0,
+        failedToday: failedToday?.count ?? 0,
+        launchFailures: launchFailures?.count ?? 0,
+        syncFailures: (syncFailuresToday?.count ?? 0) + syncs.reduce((sum, s) => sum + (s.itemsFailed ?? 0), 0),
+      },
+      health: {
+        orthanc: orthancStatus,
+        conquest: conquestStatus,
+        ohif: ohifStatus,
+        weasis: weasisStatus,
+        erpSync: erpSyncStatus,
+        dicomPuller: pullerStatus,
+      },
+      recentErrors,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 router.get("/network/lua-hook/conquest", async (req, res) => {
   const cfg = await getRadiologyConfig();
   const erpUrl = `${cfg.erp.internalApiUrl}/radiology/studies`;
