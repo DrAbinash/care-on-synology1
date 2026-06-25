@@ -98,6 +98,7 @@ const DicomAgentDashboard   = lazy(() => import("@/pages/DicomAgentDashboard"));
 const ModalityManagement    = lazy(() => import("@/pages/ModalityManagement"));
 const DicomQueryRetrieve    = lazy(() => import("@/pages/DicomQueryRetrieve"));
 const AiReportingSettings   = lazy(() => import("@/pages/AiReportingSettings"));
+const MyCollection          = lazy(() => import("@/pages/MyCollection"));
 const PacsArchiveLifecycle  = lazy(() => import("@/pages/PacsArchiveLifecycle"));
 const PacsWatchdogDashboard = lazy(() => import("@/pages/PacsWatchdogDashboard"));
 const AiInferenceSettings   = lazy(() => import("@/pages/AiInferenceSettings"));
@@ -301,6 +302,7 @@ function Router() {
               <Route path="/queue" component={QueuePage} />
               <Route path="/radiology" component={Radiology} />
               <Route path="/radiology/cockpit" component={RadiologistCockpit} />
+              <Route path="/radiology/my-collection" component={MyCollection} />
               <Route path="/radiology/worklist" component={RadiologyWorklist} />
               <Route path="/radiology/report-generator">
                 {() => <RadiologyReportGen />}

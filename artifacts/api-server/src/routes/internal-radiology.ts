@@ -28,6 +28,8 @@ import {
   dicomPullAgentStatusTable,
   pacsSettingsTable,
   radiologyScheduledProceduresTable,
+  testsTable,
+  billsTable,
 } from "@workspace/db/schema";
 import { and, eq, or, sql, inArray, gte, lte, desc } from "drizzle-orm";
 import { logger } from "../lib/logger";
@@ -36,6 +38,142 @@ import { createOrLinkPatientFromDicom, type DicomDemographics } from "../lib/dic
 import { computeStudyPriority, applyPriorityToStudy } from "../lib/studyPriorityEngine";
 import { assignRadiologistToStudy } from "../lib/radiologistAssignment";
 import { runUsgExtraction, getUsgAdminSettings } from "../lib/usgExtractor";
+import { calculateMatchScore, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
+
+export async function runMatchingEngineForWorklist(worklistId: number): Promise<void> {
+  const [row] = await db
+    .select()
+    .from(radiologyWorklistTable)
+    .where(eq(radiologyWorklistTable.id, worklistId))
+    .limit(1);
+
+  if (!row) return;
+
+  if (!row.studyId) {
+    await db
+      .update(radiologyWorklistTable)
+      .set({
+        matchScore: "RED",
+        matchPoints: 0,
+        matchReasons: JSON.stringify(["No study linked to this worklist item"]),
+        matchWarnings: JSON.stringify(["NO_LINKED_STUDY: No billed study linked"]),
+      })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+    return;
+  }
+
+  const [study] = await db
+    .select({
+      id: radiologyStudiesTable.id,
+      patientId: radiologyStudiesTable.patientId,
+      accessionNumber: radiologyStudiesTable.accessionNumber,
+      modality: radiologyStudiesTable.modality,
+      studyDescription: radiologyStudiesTable.studyDescription,
+      studyDate: radiologyStudiesTable.studyDate,
+      patientName: sql<string>`concat(${patientsTable.firstName}, ' ', ${patientsTable.lastName})`,
+      patientUHID: patientsTable.patientId,
+      age: sql<string>`concat(${patientsTable.ageValue}, ' ', ${patientsTable.ageUnit})`,
+      sex: patientsTable.gender,
+      testName: testsTable.name,
+      billNumber: billsTable.billNumber,
+    })
+    .from(radiologyStudiesTable)
+    .innerJoin(patientsTable, eq(patientsTable.id, radiologyStudiesTable.patientId))
+    .innerJoin(testsTable, eq(testsTable.id, radiologyStudiesTable.testId))
+    .leftJoin(billsTable, eq(billsTable.id, radiologyStudiesTable.billId))
+    .where(eq(radiologyStudiesTable.id, row.studyId))
+    .limit(1);
+
+  if (!study) {
+    await db
+      .update(radiologyWorklistTable)
+      .set({
+        matchScore: "RED",
+        matchPoints: 0,
+        matchReasons: JSON.stringify(["Linked study not found in database"]),
+        matchWarnings: JSON.stringify(["STUDY_NOT_FOUND: Billed study not found"]),
+      })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+    return;
+  }
+
+  const dicomInput: DicomInput = {
+    patientName: row.patientName,
+    dicomPatientId: row.dicomPatientId,
+    age: row.age,
+    sex: row.sex,
+    modality: row.modality,
+    studyDescription: row.studyDescription,
+    accessionNumber: row.accessionNumber,
+    studyDate: row.studyDate,
+    studyTime: null,
+    studyInstanceUID: row.studyInstanceUID,
+    referringDoctor: row.referringDoctor,
+  };
+
+  const billInput: BilledTestInput = {
+    id: study.id,
+    patientId: study.patientId,
+    patientName: String(study.patientName || ""),
+    patientUHID: study.patientUHID,
+    age: study.age,
+    sex: study.sex,
+    testName: study.testName,
+    modality: study.modality,
+    accessionNumber: study.accessionNumber,
+    billNumber: study.billNumber,
+    studyDate: study.studyDate,
+  };
+
+  const matchResult = calculateMatchScore(dicomInput, billInput);
+
+  if (row.studyInstanceUID) {
+    const dupStudies = await db
+      .select({ id: radiologyWorklistTable.id, studyId: radiologyWorklistTable.studyId })
+      .from(radiologyWorklistTable)
+      .where(
+        and(
+          eq(radiologyWorklistTable.studyInstanceUID, row.studyInstanceUID),
+          sql`${radiologyWorklistTable.id} != ${worklistId}`
+        )
+      );
+
+    if (dupStudies.length > 0) {
+      matchResult.warnings.push("DUPLICATE_UID: Duplicate StudyInstanceUID across multiple worklist records");
+      const hasOtherStudyId = dupStudies.some(d => d.studyId && d.studyId !== row.studyId);
+      if (hasOtherStudyId) {
+        matchResult.warnings.push("STUDY_REUSED: Same DICOM study linked to multiple bills");
+      }
+      matchResult.score = "RED";
+    }
+  }
+
+  if (row.studyId) {
+    const multiStudies = await db
+      .select({ id: radiologyWorklistTable.id, studyInstanceUID: radiologyWorklistTable.studyInstanceUID })
+      .from(radiologyWorklistTable)
+      .where(
+        and(
+          eq(radiologyWorklistTable.studyId, row.studyId),
+          sql`${radiologyWorklistTable.id} != ${worklistId}`
+        )
+      );
+    if (multiStudies.length > 0 && multiStudies.some(m => m.studyInstanceUID !== row.studyInstanceUID)) {
+      matchResult.warnings.push("BILL_LINKED_TO_MULTIPLE_STUDIES: Same bill linked to multiple unrelated DICOM studies");
+      matchResult.score = "RED";
+    }
+  }
+
+  await db
+    .update(radiologyWorklistTable)
+    .set({
+      matchScore: matchResult.score,
+      matchPoints: matchResult.points,
+      matchReasons: JSON.stringify(matchResult.reasons),
+      matchWarnings: JSON.stringify(matchResult.warnings),
+    })
+    .where(eq(radiologyWorklistTable.id, worklistId));
+}
 
 const router = Router();
 
@@ -498,6 +636,13 @@ router.post("/radiology/studies", async (req, res) => {
       }).catch((err: unknown) => {
         logger.warn({ err, worklistId: row.id }, "USG auto-extraction failed silently");
       });
+    }
+
+    // Run matching engine to compute and store match score / warnings
+    try {
+      await runMatchingEngineForWorklist(row.id);
+    } catch (matchErr) {
+      logger.error({ err: matchErr, worklistId: row.id }, "Intake matching engine execution failed");
     }
 
     logger.info({ worklistId: row.id, accessionNumber }, "POST /api/internal/radiology/studies success");

@@ -12,6 +12,7 @@ import {
   emailSettingsTable,
   whatsappSettingsTable,
   clinicSettingsTable,
+  radiologyWorklistTable,
 } from "@workspace/db";
 import { eq, desc, and } from "drizzle-orm";
 import { type StaffAuthRequest } from "../middleware/requireStaffAuth";
@@ -71,6 +72,42 @@ reportDeliveryRouter.post("/send", async (req, res): Promise<void> => {
   const [report] = reportId
     ? await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, reportId)).limit(1)
     : [undefined];
+
+  // Verify match status for delivery
+  if (report && (report.type === "radiology" || report.studyId)) {
+    const rStudyId = report.studyId;
+    if (rStudyId) {
+      const [worklistRow] = await db
+        .select()
+        .from(radiologyWorklistTable)
+        .where(eq(radiologyWorklistTable.studyId, rStudyId))
+        .limit(1);
+
+      if (!worklistRow) {
+        res.status(400).json({
+          error: "mismatch_protection_triggered",
+          message: "No DICOM study is linked to this billing order. Please link a study in Match Center first."
+        });
+        return;
+      }
+
+      if (worklistRow.matchScore !== "GREEN" && worklistRow.matchDecision !== "APPROVED") {
+        const reason = worklistRow.matchScore === "YELLOW" ? "needs review" : "mismatch / possible wrong study";
+        res.status(400).json({
+          error: "mismatch_protection_triggered",
+          message: `Report delivery is blocked. Match score is ${worklistRow.matchScore} (${reason}). Authorized manual approval/override is required in Match Center.`
+        });
+        return;
+      }
+    } else {
+      res.status(400).json({
+        error: "mismatch_protection_triggered",
+        message: "No study linked to this report. Please link a study in Match Center first."
+      });
+      return;
+    }
+  }
+
   const [patient] = patientId
     ? await db.select().from(patientsTable).where(eq(patientsTable.id, patientId)).limit(1)
     : [undefined];

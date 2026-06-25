@@ -17,7 +17,7 @@ import { db } from "@workspace/db";
 import {
   samplesTable, ordersTable, orderTestsTable, testsTable,
   patientsTable, doctorsTable, billsTable, patientReportsTable,
-  reportDeliveryLogsTable, radiologyStudiesTable,
+  reportDeliveryLogsTable, radiologyStudiesTable, radiologyWorklistTable,
 } from "@workspace/db/schema";
 import { eq, desc } from "drizzle-orm";
 import { requireStaffAuth } from "../middleware/requireStaffAuth";
@@ -206,6 +206,41 @@ router.post("/reports/:id/deliver", async (req, res) => {
 
   const [report] = await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, id));
   if (!report) { res.status(404).json({ error: "Report not found" }); return; }
+
+  // Verify match status for delivery
+  if (report.type === "radiology" || report.studyId) {
+    const rStudyId = report.studyId;
+    if (rStudyId) {
+      const [worklistRow] = await db
+        .select()
+        .from(radiologyWorklistTable)
+        .where(eq(radiologyWorklistTable.studyId, rStudyId))
+        .limit(1);
+
+      if (!worklistRow) {
+        res.status(400).json({
+          error: "mismatch_protection_triggered",
+          message: "No DICOM study is linked to this billing order. Please link a study in Match Center first."
+        });
+        return;
+      }
+
+      if (worklistRow.matchScore !== "GREEN" && worklistRow.matchDecision !== "APPROVED") {
+        const reason = worklistRow.matchScore === "YELLOW" ? "needs review" : "mismatch / possible wrong study";
+        res.status(400).json({
+          error: "mismatch_protection_triggered",
+          message: `Report delivery is blocked. Match score is ${worklistRow.matchScore} (${reason}). Authorized manual approval/override is required in Match Center.`
+        });
+        return;
+      }
+    } else {
+      res.status(400).json({
+        error: "mismatch_protection_triggered",
+        message: "No study linked to this report. Please link a study in Match Center first."
+      });
+      return;
+    }
+  }
 
   const staffName = (req as any).staffSession?.subjectName ?? "Staff";
   const now = new Date();

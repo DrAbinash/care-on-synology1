@@ -40,6 +40,9 @@ import { startTatTracking, recordPrelimCompleted, recordFinalCompleted, getTatSt
 import { generateAiEnhancement, getAiEnhancement, acceptAiEnhancement, rejectAiEnhancement } from "../lib/aiReportEnhancer";
 import { syncStudyToSite, getMultiSiteWorklist, getSites } from "../lib/multiSiteWorklist";
 import { decideRouting, getRoutingStats } from "../lib/dicomRoutingOptimizer";
+import { runMatchingEngineForWorklist } from "./internal-radiology";
+import { calculateMatchScore } from "../lib/pacs/matchingEngine";
+import { logger } from "../lib/logger";
 
 // Build an absolute https URL for share-link composition. Trusts the standard
 // reverse-proxy headers `x-forwarded-proto` / `x-forwarded-host`. The proxy
@@ -1526,6 +1529,32 @@ radiologyRouter.post("/studies/:id/final", async (req, res) => {
   const session = sReq.staffSession;
   if (!session) { res.status(401).json({ error: "Unauthorized" }); return; }
 
+  // Verify matching engine status before finalization
+  const [worklistRow] = await db
+    .select()
+    .from(radiologyWorklistTable)
+    .where(eq(radiologyWorklistTable.studyId, id))
+    .limit(1);
+
+  if (!worklistRow) {
+    res.status(400).json({
+      error: "mismatch_protection_triggered",
+      message: "No DICOM study is linked to this billing order. Please link a study in Match Center first."
+    });
+    return;
+  }
+
+  if (worklistRow.matchScore !== "GREEN" && worklistRow.matchDecision !== "APPROVED") {
+    const reason = worklistRow.matchScore === "YELLOW" ? "needs review" : "mismatch / possible wrong study";
+    const warnings = worklistRow.matchWarnings ? JSON.parse(worklistRow.matchWarnings) : [];
+    res.status(400).json({
+      error: "mismatch_protection_triggered",
+      message: `Report finalization is blocked. Match score is ${worklistRow.matchScore} (${reason}). Authorized manual approval/override is required in Match Center.`,
+      warnings
+    });
+    return;
+  }
+
   // Verify lock ownership
   const [activeLock] = await db
     .select()
@@ -2210,6 +2239,282 @@ radiologyRouter.post("/user-item-usage", async (req: StaffAuthRequest, res) => {
 
     res.json(log);
   } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Anti-Forgery DICOM & Billing Matching Endpoints ──
+
+// GET /api/radiology/pacs-worklist — list PACS studies and match statuses
+radiologyRouter.get("/pacs-worklist", async (req, res) => {
+  try {
+    const list = await db
+      .select({
+        id: radiologyWorklistTable.id,
+        studyId: radiologyWorklistTable.studyId,
+        patientId: radiologyWorklistTable.patientId,
+        dicomPatientId: radiologyWorklistTable.dicomPatientId,
+        patientMatchStatus: radiologyWorklistTable.patientMatchStatus,
+        patientName: radiologyWorklistTable.patientName,
+        age: radiologyWorklistTable.age,
+        sex: radiologyWorklistTable.sex,
+        modality: radiologyWorklistTable.modality,
+        studyDescription: radiologyWorklistTable.studyDescription,
+        studyDate: radiologyWorklistTable.studyDate,
+        accessionNumber: radiologyWorklistTable.accessionNumber,
+        studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
+        aeTitle: radiologyWorklistTable.aeTitle,
+        referringDoctor: radiologyWorklistTable.referringDoctor,
+        weasisUrl: radiologyWorklistTable.weasisUrl,
+        sourcePacs: radiologyWorklistTable.sourcePacs,
+        status: radiologyWorklistTable.status,
+        matchScore: radiologyWorklistTable.matchScore,
+        matchPoints: radiologyWorklistTable.matchPoints,
+        matchReasons: radiologyWorklistTable.matchReasons,
+        matchWarnings: radiologyWorklistTable.matchWarnings,
+        matchDecision: radiologyWorklistTable.matchDecision,
+        matchApprovedBy: radiologyWorklistTable.matchApprovedBy,
+        matchApprovedAt: radiologyWorklistTable.matchApprovedAt,
+        matchOverrideReason: radiologyWorklistTable.matchOverrideReason,
+        // Join fields if study linked
+        billedTestName: testsTable.name,
+        billedPatientName: sql`concat(${patientsTable.firstName}, ' ', ${patientsTable.lastName})`,
+        billedPatientUHID: patientsTable.patientId,
+        billedAccessionNumber: radiologyStudiesTable.accessionNumber,
+        billedModality: radiologyStudiesTable.modality,
+        billedStudyDate: radiologyStudiesTable.studyDate,
+        billNumber: billsTable.billNumber,
+      })
+      .from(radiologyWorklistTable)
+      .leftJoin(radiologyStudiesTable, eq(radiologyStudiesTable.id, radiologyWorklistTable.studyId))
+      .leftJoin(patientsTable, eq(patientsTable.id, radiologyStudiesTable.patientId))
+      .leftJoin(testsTable, eq(testsTable.id, radiologyStudiesTable.testId))
+      .leftJoin(billsTable, eq(billsTable.id, radiologyStudiesTable.billId))
+      .orderBy(desc(radiologyWorklistTable.createdAt))
+      .limit(100);
+
+    res.json(list);
+  } catch (err: any) {
+    logger.error({ err }, "Error fetching pacs worklist");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/radiology/pacs-worklist/:id/matching-candidates — find billed studies matching PACS modality/names
+radiologyRouter.get("/pacs-worklist/:id/matching-candidates", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      res.status(400).json({ error: "Invalid ID" });
+      return;
+    }
+
+    const [worklistItem] = await db
+      .select()
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, id))
+      .limit(1);
+
+    if (!worklistItem) {
+      res.status(404).json({ error: "Worklist item not found" });
+      return;
+    }
+
+    const studies = await db
+      .select({
+        id: radiologyStudiesTable.id,
+        accessionNumber: radiologyStudiesTable.accessionNumber,
+        status: radiologyStudiesTable.status,
+        modality: radiologyStudiesTable.modality,
+        studyDescription: radiologyStudiesTable.studyDescription,
+        studyDate: radiologyStudiesTable.studyDate,
+        patientId: radiologyStudiesTable.patientId,
+        patientName: sql`concat(${patientsTable.firstName}, ' ', ${patientsTable.lastName})`,
+        patientUHID: patientsTable.patientId,
+        age: sql`concat(${patientsTable.ageValue}, ' ', ${patientsTable.ageUnit})`,
+        sex: patientsTable.gender,
+        testName: testsTable.name,
+        billNumber: billsTable.billNumber,
+      })
+      .from(radiologyStudiesTable)
+      .innerJoin(patientsTable, eq(patientsTable.id, radiologyStudiesTable.patientId))
+      .innerJoin(testsTable, eq(testsTable.id, radiologyStudiesTable.testId))
+      .leftJoin(billsTable, eq(billsTable.id, radiologyStudiesTable.billId))
+      .orderBy(desc(radiologyStudiesTable.createdAt))
+      .limit(100);
+
+    const candidates = studies.map(s => {
+      const dicomInput = {
+        patientName: worklistItem.patientName,
+        dicomPatientId: worklistItem.dicomPatientId,
+        age: worklistItem.age,
+        sex: worklistItem.sex,
+        modality: worklistItem.modality,
+        studyDescription: worklistItem.studyDescription,
+        accessionNumber: worklistItem.accessionNumber,
+        studyDate: worklistItem.studyDate,
+        studyTime: null,
+        studyInstanceUID: worklistItem.studyInstanceUID,
+        referringDoctor: worklistItem.referringDoctor,
+      };
+
+      const billInput = {
+        id: s.id,
+        patientId: s.patientId,
+        patientName: String(s.patientName || ""),
+        patientUHID: s.patientUHID,
+        age: String(s.age || ""),
+        sex: s.sex,
+        testName: s.testName,
+        modality: s.modality,
+        accessionNumber: s.accessionNumber,
+        billNumber: s.billNumber,
+        studyDate: s.studyDate,
+      };
+
+      const match = calculateMatchScore(dicomInput, billInput);
+      return {
+        study: s,
+        matchScore: match.score,
+        matchPoints: match.points,
+        matchReasons: match.reasons,
+        matchWarnings: match.warnings,
+      };
+    });
+
+    candidates.sort((a, b) => b.matchPoints - a.matchPoints);
+    res.json({ success: true, candidates });
+  } catch (err: any) {
+    logger.error({ err }, "Error in matching-candidates");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/radiology/pacs-worklist/:id/link-study — manually bind a studyId to worklist row
+radiologyRouter.post("/pacs-worklist/:id/link-study", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { studyId } = req.body;
+    if (isNaN(id) || !studyId) {
+      res.status(400).json({ error: "Invalid parameters" });
+      return;
+    }
+
+    const [worklistItem] = await db
+      .select()
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, id))
+      .limit(1);
+
+    if (!worklistItem) {
+      res.status(404).json({ error: "Worklist item not found" });
+      return;
+    }
+
+    const [study] = await db
+      .select()
+      .from(radiologyStudiesTable)
+      .where(eq(radiologyStudiesTable.id, studyId))
+      .limit(1);
+
+    if (!study) {
+      res.status(404).json({ error: "Study not found" });
+      return;
+    }
+
+    const oldLinkedStudyId = worklistItem.studyId;
+
+    await db
+      .update(radiologyWorklistTable)
+      .set({
+        studyId,
+        patientId: study.patientId,
+        updatedAt: new Date(),
+      })
+      .where(eq(radiologyWorklistTable.id, id));
+
+    const updates: Partial<typeof radiologyStudiesTable.$inferInsert> = {
+      updatedAt: new Date(),
+      status: "acquired",
+      acquiredAt: new Date(),
+    };
+    if (worklistItem.studyInstanceUID && !study.studyInstanceUid) {
+      updates.studyInstanceUid = worklistItem.studyInstanceUID;
+    }
+    await db
+      .update(radiologyStudiesTable)
+      .set(updates)
+      .where(eq(radiologyStudiesTable.id, studyId));
+
+    await db.insert(radiologyAuditLogTable).values({
+      worklistId: id,
+      accessionNumber: worklistItem.accessionNumber,
+      action: "MANUAL_LINK",
+      actor: (req as any).staffSession?.subjectName || "staff",
+      details: JSON.stringify({
+        studyId,
+        accessionNumber: study.accessionNumber,
+        oldLinkedStudyId,
+      }),
+    });
+
+    await runMatchingEngineForWorklist(id);
+    res.json({ success: true });
+  } catch (err: any) {
+    logger.error({ err }, "Error in link-study");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/radiology/pacs-worklist/:id/match-decision — approve, reject, or override match
+radiologyRouter.post("/pacs-worklist/:id/match-decision", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { decision, overrideReason } = req.body;
+    if (isNaN(id) || !decision) {
+      res.status(400).json({ error: "Invalid parameters" });
+      return;
+    }
+
+    const [worklistItem] = await db
+      .select()
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, id))
+      .limit(1);
+
+    if (!worklistItem) {
+      res.status(404).json({ error: "Worklist item not found" });
+      return;
+    }
+
+    const actor = (req as any).staffSession?.subjectName || "staff";
+
+    await db
+      .update(radiologyWorklistTable)
+      .set({
+        matchDecision: decision,
+        matchApprovedBy: decision === "APPROVED" ? actor : null,
+        matchApprovedAt: decision === "APPROVED" ? new Date() : null,
+        matchOverrideReason: overrideReason || null,
+        updatedAt: new Date(),
+      })
+      .where(eq(radiologyWorklistTable.id, id));
+
+    await db.insert(radiologyAuditLogTable).values({
+      worklistId: id,
+      accessionNumber: worklistItem.accessionNumber,
+      action: `MATCH_${decision}`,
+      actor,
+      details: JSON.stringify({
+        overrideReason,
+        matchScore: worklistItem.matchScore,
+        matchPoints: worklistItem.matchPoints,
+      }),
+    });
+
+    res.json({ success: true });
+  } catch (err: any) {
+    logger.error({ err }, "Error in match-decision");
     res.status(500).json({ error: err.message });
   }
 });
