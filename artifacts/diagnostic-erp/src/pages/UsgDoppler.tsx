@@ -17,6 +17,7 @@ import {
   CheckCircle2,
   Clock,
   BarChart2,
+  Baby,
 } from "lucide-react";
 
 interface UsgStats {
@@ -108,6 +109,15 @@ const CARDS: ModuleCard[] = [
     path: "/usg/reporting",
     gradient: "from-cyan-50 via-sky-50 to-blue-50 dark:from-cyan-950/40 dark:via-sky-950/40 dark:to-blue-950/40",
     iconBg: "bg-cyan-100 text-cyan-600 dark:bg-cyan-900/50 dark:text-cyan-300",
+  },
+  {
+    id: "pregnancy-dashboard",
+    title: "Pregnancy Dashboard",
+    description: "Pregnancy Timeline, interactive Growth Charts, AI key image selection, and comparative analysis.",
+    icon: Baby,
+    path: "/usg/pregnancy-dashboard",
+    gradient: "from-pink-50 via-rose-50 to-amber-50 dark:from-pink-950/40 dark:via-rose-950/40 dark:to-amber-950/40",
+    iconBg: "bg-pink-100 text-pink-600 dark:bg-pink-900/50 dark:text-pink-300",
   },
   {
     id: "analytics",

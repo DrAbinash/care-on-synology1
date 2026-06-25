@@ -22,6 +22,10 @@ export const fetalUsgStudiesTable = pgTable("fetal_usg_studies", {
   dopplerStudyDone: boolean("doppler_study_done").default(false),
   bppDone: boolean("bpp_done").default(false),
   status: varchar("status", { length: 20 }).notNull().default("received"),
+  pregnancyEpisodeId: integer("pregnancy_episode_id"),
+  visitNumber: integer("visit_number"),
+  studyOrder: integer("study_order"),
+  growthHistory: json("growth_history"),
   createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { mode: "date" }).defaultNow().notNull(),
 });

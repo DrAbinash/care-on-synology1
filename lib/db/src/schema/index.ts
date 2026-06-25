@@ -121,5 +121,7 @@ export * from "./pairedDevices";
 export * from "./scanAuditLogs";
 export * from "./paymentLogs";
 export * from "./voiceDictationLogs";
+export * from "./pregnancyEpisodes";
+export * from "./radiologistLearningSettings";
 
 

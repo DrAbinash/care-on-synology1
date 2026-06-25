@@ -304,74 +304,80 @@ radiologyRouter.get("/pacs-worklist/count", async (req, res) => {
 // Staff-authenticated view of radiology_worklist (PACS-pushed studies).
 // Different from /api/radiology/worklist which queries radiology_studies (RIS-driven).
 radiologyRouter.get("/pacs-worklist", async (req, res) => {
-  const status = (req.query.status as string) || "";
-  const modality = (req.query.modality as string) || "";
-  const search = (req.query.search as string)?.trim() || "";
+  try {
+    const status = (req.query.status as string) || "";
+    const modality = (req.query.modality as string) || "";
+    const search = (req.query.search as string)?.trim() || "";
 
-  req.log.info({ status: status || "all", modality: modality || "all", search: search || "" }, "[pacs-worklist] route hit — staff auth passed");
+    req.log.info({ status: status || "all", modality: modality || "all", search: search || "" }, "[pacs-worklist] route hit — staff auth passed");
 
-  const conds: ReturnType<typeof eq>[] = [];
-  if (status && status !== "all") conds.push(eq(radiologyWorklistTable.status, status));
-  if (modality && modality !== "all") conds.push(eq(radiologyWorklistTable.modality, modality));
+    const conds: ReturnType<typeof eq>[] = [];
+    if (status && status !== "all") conds.push(eq(radiologyWorklistTable.status, status));
+    if (modality && modality !== "all") conds.push(eq(radiologyWorklistTable.modality, modality));
 
-  const rows = await db
-    .select({
-      id: radiologyWorklistTable.id,
-      studyId: radiologyWorklistTable.studyId,
-      patientId: radiologyWorklistTable.patientId,
-      dicomPatientId: radiologyWorklistTable.dicomPatientId,
-      patientMatchStatus: radiologyWorklistTable.patientMatchStatus,
-      patientName: radiologyWorklistTable.patientName,
-      age: radiologyWorklistTable.age,
-      sex: radiologyWorklistTable.sex,
-      modality: radiologyWorklistTable.modality,
-      studyDescription: radiologyWorklistTable.studyDescription,
-      studyDate: radiologyWorklistTable.studyDate,
-      accessionNumber: radiologyWorklistTable.accessionNumber,
-      studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
-      aeTitle: radiologyWorklistTable.aeTitle,
-      ipAddress: radiologyWorklistTable.ipAddress,
-      port: radiologyWorklistTable.port,
-      referringDoctor: radiologyWorklistTable.referringDoctor,
-      weasisUrl: radiologyWorklistTable.weasisUrl,
-      sourcePacs: radiologyWorklistTable.sourcePacs,
-      sourceAeTitle: radiologyWorklistTable.sourceAeTitle,
-      dicomMetadata: radiologyWorklistTable.dicomMetadata,
-      status: radiologyWorklistTable.status,
-      assignedRadiologist: radiologyWorklistTable.assignedRadiologist,
-      aiDraftStatus: radiologyWorklistTable.aiDraftStatus,
-      aiDraftJson: radiologyWorklistTable.aiDraftJson,
-      aiFeedback: radiologyWorklistTable.aiFeedback,
-      aiFeedbackAt: radiologyWorklistTable.aiFeedbackAt,
-      reportId: radiologyWorklistTable.reportId,
-      deliveryStatus: radiologyWorklistTable.deliveryStatus,
-      createdAt: radiologyWorklistTable.createdAt,
-      updatedAt: radiologyWorklistTable.updatedAt,
-      lockUserId: sql<number | null>`NULL`,
-      lockUserName: sql<string | null>`NULL`,
-      lockTime: sql<Date | null>`NULL`,
-      lockLastActivityAt: sql<Date | null>`NULL`,
-      lockWorkstation: sql<string | null>`NULL`,
-    })
-    .from(radiologyWorklistTable)
-    .where(conds.length > 0 ? and(...conds) : undefined)
-    .orderBy(desc(radiologyWorklistTable.createdAt))
-    .limit(500);
+    const rows = await db
+      .select({
+        id: radiologyWorklistTable.id,
+        studyId: radiologyWorklistTable.studyId,
+        patientId: radiologyWorklistTable.patientId,
+        dicomPatientId: radiologyWorklistTable.dicomPatientId,
+        patientMatchStatus: radiologyWorklistTable.patientMatchStatus,
+        patientName: radiologyWorklistTable.patientName,
+        age: radiologyWorklistTable.age,
+        sex: radiologyWorklistTable.sex,
+        modality: radiologyWorklistTable.modality,
+        studyDescription: radiologyWorklistTable.studyDescription,
+        studyDate: radiologyWorklistTable.studyDate,
+        accessionNumber: radiologyWorklistTable.accessionNumber,
+        studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
+        aeTitle: radiologyWorklistTable.aeTitle,
+        ipAddress: radiologyWorklistTable.ipAddress,
+        port: radiologyWorklistTable.port,
+        referringDoctor: radiologyWorklistTable.referringDoctor,
+        weasisUrl: radiologyWorklistTable.weasisUrl,
+        sourcePacs: radiologyWorklistTable.sourcePacs,
+        sourceAeTitle: radiologyWorklistTable.sourceAeTitle,
+        dicomMetadata: radiologyWorklistTable.dicomMetadata,
+        status: radiologyWorklistTable.status,
+        assignedRadiologist: radiologyWorklistTable.assignedRadiologist,
+        aiDraftStatus: radiologyWorklistTable.aiDraftStatus,
+        aiDraftJson: radiologyWorklistTable.aiDraftJson,
+        aiFeedback: radiologyWorklistTable.aiFeedback,
+        aiFeedbackAt: radiologyWorklistTable.aiFeedbackAt,
+        reportId: radiologyWorklistTable.reportId,
+        deliveryStatus: radiologyWorklistTable.deliveryStatus,
+        createdAt: radiologyWorklistTable.createdAt,
+        updatedAt: radiologyWorklistTable.updatedAt,
+        lockUserId: sql<number | null>`NULL::integer`,
+        lockUserName: sql<string | null>`NULL::text`,
+        lockTime: sql<Date | null>`NULL::timestamp with time zone`,
+        lockLastActivityAt: sql<Date | null>`NULL::timestamp with time zone`,
+        lockWorkstation: sql<string | null>`NULL::text`,
+      })
+      .from(radiologyWorklistTable)
+      .where(conds.length > 0 ? and(...conds) : undefined)
+      .orderBy(desc(radiologyWorklistTable.createdAt))
+      .limit(500);
 
-  let filtered = rows;
-  if (search) {
-    const s = search.toLowerCase();
-    filtered = rows.filter((r) =>
-      r.patientName.toLowerCase().includes(s) ||
-      r.accessionNumber.toLowerCase().includes(s) ||
-      (r.studyDescription ?? "").toLowerCase().includes(s) ||
-      (r.referringDoctor ?? "").toLowerCase().includes(s)
-    );
+    let filtered = rows;
+    if (search) {
+      const s = search.toLowerCase();
+      filtered = rows.filter((r) =>
+        (r.patientName ?? "").toLowerCase().includes(s) ||
+        (r.accessionNumber ?? "").toLowerCase().includes(s) ||
+        (r.studyDescription ?? "").toLowerCase().includes(s) ||
+        (r.referringDoctor ?? "").toLowerCase().includes(s)
+      );
+    }
+
+    req.log.info({ rowsReturned: filtered.length, rawRows: rows.length, status: status || "all", modality: modality || "all" }, "[pacs-worklist] query complete");
+    res.json(filtered);
+  } catch (err: any) {
+    req.log.error(err, "[pacs-worklist] Route Error");
+    res.status(500).json({ error: "Internal server error", message: err.message, stack: err.stack });
   }
-
-  req.log.info({ rowsReturned: filtered.length, rawRows: rows.length, status: status || "all", modality: modality || "all" }, "[pacs-worklist] query complete");
-  res.json(filtered);
 });
+
 
 /**
  * GET /api/radiology/pacs-worklist/:id/ai-draft

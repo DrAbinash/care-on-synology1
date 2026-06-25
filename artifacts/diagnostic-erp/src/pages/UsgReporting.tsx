@@ -2,6 +2,7 @@ import { useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { fetchApi } from "@/lib/fetchApi";
+import SonologistAssistantPanel from "@/components/SonologistAssistantPanel";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -712,13 +713,27 @@ export default function UsgReporting() {
 
                 {isExpanded && (
                   <div className="px-4 pb-4 space-y-3 border-t border-border/50 pt-3">
-                    <Textarea
-                      rows={14}
-                      className="font-mono text-xs resize-y"
-                      value={content}
-                      onChange={(e) => handleTextChange(draft.id, e.target.value)}
-                      readOnly={isFinalized}
-                    />
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                      <div className="lg:col-span-2">
+                        <Textarea
+                          rows={14}
+                          className="font-mono text-xs resize-y w-full"
+                          value={content}
+                          onChange={(e) => handleTextChange(draft.id, e.target.value)}
+                          readOnly={isFinalized}
+                        />
+                      </div>
+                      <div className="lg:col-span-1">
+                        {!isFinalized && (
+                          <SonologistAssistantPanel
+                            studyId={draft.id}
+                            activeText={content}
+                            onUpdateText={(newText) => handleTextChange(draft.id, newText)}
+                            staffId={1}
+                          />
+                        )}
+                      </div>
+                    </div>
 
                     {!isFinalized && (
                       <div className="space-y-2">

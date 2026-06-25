@@ -170,6 +170,13 @@ export const usgKeyImagesTable = pgTable(
     sortOrder: integer("sort_order").notNull().default(0),
     addedBy: text("added_by"),
     addedByUserId: integer("added_by_user_id"),
+    pregnancyEpisodeId: integer("pregnancy_episode_id"),
+    rank: integer("rank"),
+    confidence: real("confidence"),
+    isApproved: boolean("is_approved").default(false),
+    isRejected: boolean("is_rejected").default(false),
+    source: text("source"),
+    measurementKey: text("measurement_key"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

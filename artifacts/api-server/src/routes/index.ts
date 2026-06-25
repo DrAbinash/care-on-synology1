@@ -100,6 +100,8 @@ import { usgCriticalAlertsRouter } from "./usgCriticalAlerts";
 import { usgAnalyticsRouter } from "./usgAnalytics";
 import echoCardiologyRouter from "./echoCardiology";
 import fetalUsgLevel4Router from "./fetalUsgLevel4";
+import pregnancyDashboardRouter from "./pregnancyDashboard";
+import sonologistAssistantRouter from "./sonologistAssistant";
 import dicomStudyManagerRouter from "./dicomStudyManager";
 import dicomWorkflowRouter from "./dicomWorkflow";
 import smartRadiologyRouter from "./smartRadiology";
@@ -431,6 +433,8 @@ router.use("/usg-critical", requireStaffAuth, requireStaffPermission("/radiology
 router.use("/usg-analytics", requireStaffAuth, requireStaffPermission("/radiology"), usgAnalyticsRouter);
 router.use("/echo-cardiology", requireStaffAuth, requireStaffPermission("/radiology"), echoCardiologyRouter);
 router.use("/fetal-usg", requireStaffAuth, requireStaffPermission("/radiology"), fetalUsgLevel4Router);
+router.use("/fetal-usg-dashboard", requireStaffAuth, requireStaffPermission("/radiology"), pregnancyDashboardRouter);
+router.use("/radiology-copilot/sonologist-assistant", requireStaffAuth, requireStaffPermission("/radiology"), sonologistAssistantRouter);
 
 // Phase 10: RIS/PACS Foundation — DICOM study management + smart workflow
 router.use("/dicom-studies", requireStaffAuth, requireStaffPermission("/dicom-nodes"), dicomStudyManagerRouter);

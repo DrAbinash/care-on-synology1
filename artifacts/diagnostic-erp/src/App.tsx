@@ -110,6 +110,7 @@ const UsgDopplerReporting   = lazy(() => import("@/pages/UsgDopplerReporting"));
 const UsgKeyImagesGallery   = lazy(() => import("@/pages/UsgKeyImagesGallery"));
 const UsgCriticalAlerts     = lazy(() => import("@/pages/UsgCriticalAlerts"));
 const UsgAnalytics          = lazy(() => import("@/pages/UsgAnalytics"));
+const PregnancyDashboard    = lazy(() => import("@/pages/PregnancyDashboard"));
 const ReportHub       = lazy(() => import("@/pages/ReportHub"));
 const Machines        = lazy(() => import("@/pages/Machines"));
 const FormF           = lazy(() => import("@/pages/FormF"));
@@ -399,6 +400,7 @@ function Router() {
               <Route path="/usg/critical" component={UsgCriticalAlerts} />
               <Route path="/usg/settings" component={UsgAdminSettings} />
               <Route path="/usg/analytics" component={UsgAnalytics} />
+              <Route path="/usg/pregnancy-dashboard" component={PregnancyDashboard} />
               <Route path="/backup-replication" component={BackupReplication} />
               {/* Phase 10 RIS/PACS Foundation */}
               <Route path="/radiology/dicom-study-worklist" component={DicomStudyWorklist} />
