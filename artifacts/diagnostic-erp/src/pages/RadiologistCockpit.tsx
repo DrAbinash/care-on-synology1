@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { api } from "@/lib/fetchApi";
@@ -128,6 +128,38 @@ export default function RadiologistCockpit() {
   const [priorsCompared, setPriorsCompared] = useState(false);
   const [activeRightTab, setActiveRightTab] = useState("assist");
   const [showWarningModal, setShowWarningModal] = useState(false);
+  const [lastVoiceCommand, setLastVoiceCommand] = useState("");
+  const [measurementCalcs, setMeasurementCalcs] = useState<Record<string, any>>({});
+
+  const handleMeasurementsApplied = useCallback((text: string, calcs: Record<string, any>) => {
+    setMeasurementCalcs(calcs);
+    setRawFindings((prev) => {
+      const parts = prev.split("MEASUREMENTS LOG:");
+      const base = parts[0].trim();
+      return base ? base + "\n\n" + text : text;
+    });
+
+    setImpression((prev) => {
+      const next = [...prev.filter(Boolean)];
+      if (calcs.tumorVolume && calcs.tumorVolume > 10) {
+        const item = `Large space-occupying lesion with volume of ${calcs.tumorVolume} cc.`;
+        if (!next.includes(item)) next.push(item);
+      }
+      if (calcs.evansIndex && calcs.evansIndex > 0.3) {
+        const item = `Evans Index is ${calcs.evansIndex}, consistent with ventriculomegaly/hydrocephalus.`;
+        if (!next.includes(item)) next.push(item);
+      }
+      if (calcs.slipPct && calcs.slipPct > 25) {
+        const item = `Spondylolisthesis (${calcs.slipGrade}).`;
+        if (!next.includes(item)) next.push(item);
+      }
+      if (calcs.efw) {
+        const item = `Estimated Fetal Weight is ${calcs.efw} g.`;
+        if (!next.includes(item)) next.push(item);
+      }
+      return next;
+    });
+  }, []);
 
   // ══════════════════════════════════════════════════════════════════════════
   // DATA FETCHING
@@ -146,6 +178,43 @@ export default function RadiologistCockpit() {
     queryFn: () => api.get<WorklistEntry>(`/api/internal/radiology/worklist/${activeStudyId}`),
     enabled: activeStudyId !== null,
   });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // QUALITY CHECK GATE
+  // ══════════════════════════════════════════════════════════════════════════
+  const qualityCheckIssues = useMemo(() => {
+    const issues: string[] = [];
+    if (!study) return issues;
+
+    const desc = (study.studyDescription || "").toUpperCase();
+    const hasDiscProtrusion = rawFindings.toLowerCase().includes("protrusion") || rawFindings.toLowerCase().includes("extrusion") || rawFindings.toLowerCase().includes("herniation");
+    
+    if (study.modality === "MRI" && (desc.includes("SPINE") || desc.includes("LUMBAR"))) {
+      if (hasDiscProtrusion && !rawFindings.includes("AP Canal Diameter")) {
+        issues.push("Disc protrusion/herniation noted, but spinal canal diameter is missing.");
+      }
+    }
+
+    if (study.modality === "US" && desc.includes("OBSTETRIC")) {
+      if (!rawFindings.includes("BPD") && !rawFindings.includes("FL") && !rawFindings.includes("CRL")) {
+        issues.push("OB USG study is missing mandatory fetal biometry metrics (BPD/FL/CRL).");
+      }
+    }
+
+    if (rawFindings.toLowerCase().includes("hydrocephalus") || rawFindings.toLowerCase().includes("ventriculomegaly")) {
+      if (!rawFindings.includes("Evans Index") && !rawFindings.includes("Frontal Horn Width")) {
+        issues.push("Hydrocephalus mentioned, but ventricles metrics / Evans index is missing.");
+      }
+    }
+
+    if (study.modality === "MG" && (desc.includes("BREAST") || desc.includes("MAMMOGRAPHY"))) {
+      if (!rawFindings.includes("BI-RADS")) {
+        issues.push("Mammography report is missing BI-RADS Category score.");
+      }
+    }
+
+    return issues;
+  }, [study, rawFindings]);
 
   // 3. Structured Templates Library
   const { data: templates = [] } = useQuery<StructuredTemplate[]>({
@@ -366,7 +435,7 @@ export default function RadiologistCockpit() {
 
   // Handle finalization submission with completeness gate
   const handleFinalizeClick = () => {
-    if (completenessDetails.pct < 100) {
+    if (completenessDetails.pct < 100 || qualityCheckIssues.length > 0) {
       setShowWarningModal(true);
     } else {
       finalizeMutation.mutate();
@@ -924,7 +993,10 @@ export default function RadiologistCockpit() {
                   <div className="flex items-center justify-between">
                     <Label className="text-xs font-bold text-slate-300">Findings & Observations</Label>
                     <VoiceDictationButton
-                      onInsert={(text: string) => handleFindingsTextChange(rawFindings ? rawFindings + " " + text : text)}
+                      onInsert={(text: string) => {
+                        setLastVoiceCommand(text);
+                        handleFindingsTextChange(rawFindings ? rawFindings + " " + text : text);
+                      }}
                       className="scale-90"
                     />
                   </div>
@@ -1201,6 +1273,8 @@ export default function RadiologistCockpit() {
                     studyId={study.studyId || undefined}
                     modality={study.modality}
                     bodyPart={study.studyDescription || ""}
+                    onMeasurementsChange={handleMeasurementsApplied}
+                    voiceTextCommand={lastVoiceCommand}
                   />
                 </div>
               ) : (
@@ -1262,7 +1336,7 @@ export default function RadiologistCockpit() {
               <AlertTriangle className="h-4 w-4 animate-bounce" /> Report Is Incomplete ({completenessDetails.pct}%)
             </DialogTitle>
             <DialogDescription className="text-xs text-slate-400 mt-1">
-              Some recommended sections are missing or empty:
+              Some recommended sections or mandatory measurements are missing:
               <ul className="list-disc list-inside mt-2 space-y-1">
                 {!completenessDetails.checks.clinicalHistory && <li>Clinical Indication</li>}
                 {!completenessDetails.checks.technique && <li>Technique details</li>}
@@ -1270,6 +1344,14 @@ export default function RadiologistCockpit() {
                 {!completenessDetails.checks.impression && <li>Diagnostic conclusions/Impression</li>}
                 {!completenessDetails.checks.recommendation && <li>Recommendation text</li>}
               </ul>
+              {qualityCheckIssues.length > 0 && (
+                <div className="mt-3 border-t border-slate-800 pt-2">
+                  <span className="text-[11px] font-bold text-red-400">Missing Mandatory Measurements:</span>
+                  <ul className="list-disc list-inside mt-1 space-y-1 text-red-300">
+                    {qualityCheckIssues.map((issue, i) => <li key={i}>{issue}</li>)}
+                  </ul>
+                </div>
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="flex gap-2 sm:justify-end mt-4">
