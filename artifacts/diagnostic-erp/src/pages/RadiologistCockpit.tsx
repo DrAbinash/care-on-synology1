@@ -219,6 +219,12 @@ export default function RadiologistCockpit() {
     enabled: !!activePatientId,
   });
 
+  // 6. Global Institutional Style Settings
+  const { data: styleSetting } = useQuery<any>({
+    queryKey: ["institutional-style"],
+    queryFn: () => api.get("/api/radiology/institutional-style"),
+  });
+
   // 6. User Preferences (macros, templates)
   const { data: preferences } = useQuery<any>({
     queryKey: ["user-report-preferences"],
@@ -691,12 +697,145 @@ export default function RadiologistCockpit() {
       }
     }
 
+    // ── 7. INSTITUTIONAL STYLE CHECKS ──
+    if (styleSetting) {
+      if (styleSetting.showClinicalHistory && !clinicalHistory.trim()) {
+        issues.push({
+          id: "style-missing-history",
+          category: "style",
+          severity: "important",
+          title: "Required Section Missing: Clinical History",
+          message: "Institutional style requires the Clinical History section to be present.",
+          suggestion: "Please provide clinical history context.",
+          field: "clinicalHistory"
+        });
+      }
+      if (styleSetting.showComparison && !priorsCompared && priorReports.length > 0) {
+        issues.push({
+          id: "style-missing-comparison",
+          category: "style",
+          severity: "important",
+          title: "Required Section Missing: Comparison",
+          message: "Institutional style requires a Comparison section when prior studies exist.",
+          suggestion: "Please document comparison with prior studies.",
+          field: "findings"
+        });
+      }
+      if (styleSetting.showRecommendation && !recommendation.trim()) {
+        issues.push({
+          id: "style-missing-recommendation",
+          category: "style",
+          severity: "important",
+          title: "Required Section Missing: Recommendation",
+          message: "Institutional style requires a Recommendation section.",
+          suggestion: "Please add diagnostic recommendations or correlations.",
+          field: "recommendation"
+        });
+      }
+      if (styleSetting.showCriticalCommunication && isCritical && !checklistComm.phoned) {
+        issues.push({
+          id: "style-missing-critical-comm",
+          category: "style",
+          severity: "critical",
+          title: "Style Rule: Critical Alert Not Documented",
+          message: "For critical findings, the hospital style requires documenting the phoned/dispatch status.",
+          suggestion: "Check the phoned/annotated checkbox in Checklist Communication.",
+          field: "findings"
+        });
+      }
+      if (styleSetting.showMeasurements && Object.keys(measurementCalcs).length === 0 && (studyDesc.includes("SPINE") || studyDesc.includes("OB") || studyDesc.includes("BRAIN"))) {
+        issues.push({
+          id: "style-missing-measurements",
+          category: "style",
+          severity: "important",
+          title: "Required Section Missing: Measurements",
+          message: "Institutional style requires measurements block for this study type.",
+          suggestion: "Launch Measurement Assistant to record values.",
+          field: "findings"
+        });
+      }
+
+      if (styleSetting.headingStyle === "bold" || styleSetting.headingStyle === "bold_underlined") {
+        const hasUnboldedHeadings = /^[A-Z][a-z]+:\s*$/m.test(textFindings);
+        if (hasUnboldedHeadings) {
+          issues.push({
+            id: "style-unbolded-headings",
+            category: "style",
+            severity: "suggestion",
+            title: "Style Rule: Unbolded Headings",
+            message: "Headings inside report text should be bolded as per style settings.",
+            suggestion: "Prefix heading lines with '**' (e.g. **Findings**).",
+            field: "findings"
+          });
+        }
+      }
+
+      if (styleSetting.spacing === "compact") {
+        if (textFindings.includes("\n\n\n")) {
+          issues.push({
+            id: "style-excessive-spacing",
+            category: "style",
+            severity: "suggestion",
+            title: "Style Rule: Excessive Spacing",
+            message: "Compact style setting is active, but excessive consecutive line breaks were found.",
+            suggestion: "Reduce spacing between paragraphs.",
+            field: "findings"
+          });
+        }
+      } else if (styleSetting.spacing === "comfortable") {
+        if (textFindings.length > 50 && !textFindings.includes("\n\n")) {
+          issues.push({
+            id: "style-cramped-spacing",
+            category: "style",
+            severity: "suggestion",
+            title: "Style Rule: Cramped Spacing",
+            message: "Comfortable style is active, but findings have no paragraph breaks.",
+            suggestion: "Add double line breaks to split text paragraphs.",
+            field: "findings"
+          });
+        }
+      }
+
+      if (styleSetting.abnormalEmphasis === "bold_abnormal" || styleSetting.abnormalEmphasis === "bold_both") {
+        const hasAbnormalKeywords = abnormalKeywords.some(kw => textFindings.toLowerCase().includes(kw));
+        const hasBoldMarkdown = textFindings.includes("**") || textFindings.includes("<b>");
+        if (hasAbnormalKeywords && !hasBoldMarkdown) {
+          issues.push({
+            id: "style-unbolded-abnormalities",
+            category: "style",
+            severity: "important",
+            title: "Style Rule: Abnormalities Not Bolded",
+            message: "Institutional style requires abnormal findings to be bolded.",
+            suggestion: "Use bold formatting for diagnostic abnormalities.",
+            field: "findings"
+          });
+        }
+      }
+
+      if (styleSetting.abnormalEmphasis === "bold_impression" || styleSetting.abnormalEmphasis === "bold_both") {
+        const hasImpressionText = textImpression.trim().length > 0;
+        const hasBoldImpression = textImpression.includes("**") || textImpression.includes("<b>");
+        if (hasImpressionText && !hasBoldImpression) {
+          issues.push({
+            id: "style-unbolded-impression",
+            category: "style",
+            severity: "important",
+            title: "Style Rule: Impression Points Not Bolded",
+            message: "Institutional style requires Impression summary points to be bolded.",
+            suggestion: "Use bold formatting for impression points.",
+            field: "impression"
+          });
+        }
+      }
+    }
+
     // Calculate score details
     let medicalScore = 100;
     let measurementScore = 100;
     let completenessScore = 100;
     let comparisonScore = priorReports.length > 0 ? 50 : 100;
     let grammarScore = 100;
+    let styleScore = 100;
 
     issues.forEach(issue => {
       const isIgnored = ignoredIssueIds.includes(issue.id) || reviewedIssueIds.includes(issue.id);
@@ -712,6 +851,8 @@ export default function RadiologistCockpit() {
         comparisonScore = 50;
       } else if (issue.category === "voice") {
         grammarScore -= 5;
+      } else if (issue.category === "style") {
+        styleScore -= issue.severity === "critical" ? 20 : 10;
       }
     });
 
@@ -719,10 +860,11 @@ export default function RadiologistCockpit() {
     measurementScore = Math.max(0, measurementScore);
     completenessScore = Math.max(0, completenessScore);
     grammarScore = Math.max(0, grammarScore);
+    styleScore = Math.max(0, styleScore);
 
     const recommendationsScore = recommendation.trim() ? 100 : 70;
     const overallScore = Math.round(
-      (medicalScore + measurementScore + completenessScore + comparisonScore + grammarScore + recommendationsScore) / 6
+      (medicalScore + measurementScore + completenessScore + comparisonScore + grammarScore + recommendationsScore + styleScore) / 7
     );
 
     return {

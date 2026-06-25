@@ -312,3 +312,34 @@ export const radiologySmartMacrosTable = pgTable(
     byBodyPart: index("smart_macros_body_part_idx").on(t.bodyPart),
   }),
 );
+
+export const radiologyInstitutionalStylesTable = pgTable(
+  "radiology_institutional_styles",
+  {
+    id: serial("id").primaryKey(),
+    presetName: text("preset_name").notNull().default("Care Diagnostics Default"),
+    sectionOrder: text("section_order").notNull().default("Technique,Findings,Impression"),
+    showClinicalHistory: boolean("show_clinical_history").notNull().default(true),
+    showComparison: boolean("show_comparison").notNull().default(true),
+    showRecommendation: boolean("show_recommendation").notNull().default(true),
+    showCriticalCommunication: boolean("show_critical_communication").notNull().default(true),
+    showMeasurements: boolean("show_measurements").notNull().default(true),
+    headingStyle: text("heading_style").notNull().default("underlined"), // plain | bold | underlined | bold_underlined
+    abnormalEmphasis: text("abnormal_emphasis").notNull().default("bold_abnormal"), // none | bold_abnormal | bold_impression | bold_both
+    spacing: text("spacing").notNull().default("standard"), // compact | standard | comfortable
+    printLayout: text("print_layout").notNull().default("letterhead"), // a4_plain | letterhead | half_page | screen_only
+    margins: text("margins").notNull().default("standard"), // narrow | standard | wide | custom
+    fontSize: text("font_size").notNull().default("standard"), // small | standard | large
+    showRadiologistName: boolean("show_radiologist_name").notNull().default(true),
+    showDegree: boolean("show_degree").notNull().default(true),
+    showRegNumber: boolean("show_reg_number").notNull().default(true),
+    showDigitalSignature: boolean("show_digital_signature").notNull().default(true),
+    showTimestamp: boolean("show_timestamp").notNull().default(true),
+    showQrVerification: boolean("show_qr_verification").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  }
+);

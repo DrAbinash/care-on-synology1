@@ -13,7 +13,7 @@ import {
   Network, Server, MonitorPlay, Radio, BrainCircuit,
   Wrench, Activity, ShieldAlert, Laptop, CheckCircle2,
   XCircle, AlertTriangle, RefreshCw, Plus, Save, Trash2,
-  Tv2, Zap, ShieldCheck, PlayCircle, Info
+  Tv2, Zap, ShieldCheck, PlayCircle, Info, Palette
 } from "lucide-react";
 import { readStaffSession, FULL_ACCESS_ROLES } from "@/lib/staffSession";
 
@@ -24,6 +24,7 @@ import { AgentSetupPanel } from "@/pages/AgentSetup";
 import { ArchiveLifecyclePanel } from "@/pages/PacsArchiveLifecycle";
 import { AiInferencePanel } from "@/pages/AiInferenceSettings";
 import { AiReportingPanel } from "@/pages/AiReportingSettings";
+import { RadiologyStylePanel } from "@/pages/RadiologyStyleSettings";
 import {
   AiImpressionCard, QualityCheckerCard, FollowUpRecommendationsCard,
   TemplateLearningCard, MultiLanguageCard, RoutingRulesCard,
@@ -240,6 +241,7 @@ export default function RadiologySettingsCenter() {
           <TabsTrigger value="viewers"><MonitorPlay size={14} className="mr-1.5" />Viewers</TabsTrigger>
           <TabsTrigger value="mwl"><Wrench size={14} className="mr-1.5" />DICOM &amp; MWL</TabsTrigger>
           <TabsTrigger value="reporting"><BrainCircuit size={14} className="mr-1.5" />AI &amp; Templates</TabsTrigger>
+          <TabsTrigger value="style"><Palette size={14} className="mr-1.5" />Report Style</TabsTrigger>
           <TabsTrigger value="diagnostics"><Activity size={14} className="mr-1.5" />Diagnostics</TabsTrigger>
           <TabsTrigger value="history"><Info size={14} className="mr-1.5" />History</TabsTrigger>
           <TabsTrigger value="advanced"><ShieldAlert size={14} className="mr-1.5" />Advanced</TabsTrigger>
@@ -679,6 +681,11 @@ export default function RadiologySettingsCenter() {
               </table>
             </div>
           </div>
+        </TabsContent>
+
+        {/* Tab content 8.5: Institutional Report Style */}
+        <TabsContent value="style" className="space-y-4">
+          <RadiologyStylePanel />
         </TabsContent>
 
         {/* Tab content 9: Advanced */}

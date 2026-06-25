@@ -49,6 +49,7 @@ export const patientReportsTable = pgTable(
     // against publicTokenExpiresAt before serving any content.
     publicToken: text("public_token"),
     publicTokenExpiresAt: timestamp("public_token_expires_at", { withTimezone: true }),
+    stylePresetUsed: text("style_preset_used"),
     createdBy: text("created_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),

@@ -28,6 +28,7 @@ import {
   radiologyUserFindingsPreferencesTable,
   radiologyUserReportPreferencesTable,
   radiologyUserItemUsageLogsTable,
+  radiologyInstitutionalStylesTable,
 } from "@workspace/db/schema";
 import { and, asc, desc, eq, gte, ilike, isNull, lte, or, sql } from "drizzle-orm";
 import crypto from "node:crypto";

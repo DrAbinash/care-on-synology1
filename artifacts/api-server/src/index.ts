@@ -367,6 +367,46 @@ async function runStartupMigrations(): Promise<void> {
       ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS match_approved_by TEXT;
       ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS match_approved_at TIMESTAMPTZ;
       ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS match_override_reason TEXT;
+
+      ALTER TABLE patient_reports ADD COLUMN IF NOT EXISTS style_preset_used TEXT;
+
+      CREATE TABLE IF NOT EXISTS radiology_institutional_styles (
+        id SERIAL PRIMARY KEY,
+        preset_name TEXT NOT NULL DEFAULT 'Care Diagnostics Default',
+        section_order TEXT NOT NULL DEFAULT 'Technique,Findings,Impression',
+        show_clinical_history BOOLEAN NOT NULL DEFAULT TRUE,
+        show_comparison BOOLEAN NOT NULL DEFAULT TRUE,
+        show_recommendation BOOLEAN NOT NULL DEFAULT TRUE,
+        show_critical_communication BOOLEAN NOT NULL DEFAULT TRUE,
+        show_measurements BOOLEAN NOT NULL DEFAULT TRUE,
+        heading_style TEXT NOT NULL DEFAULT 'underlined',
+        abnormal_emphasis TEXT NOT NULL DEFAULT 'bold_abnormal',
+        spacing TEXT NOT NULL DEFAULT 'standard',
+        print_layout TEXT NOT NULL DEFAULT 'letterhead',
+        margins TEXT NOT NULL DEFAULT 'standard',
+        font_size TEXT NOT NULL DEFAULT 'standard',
+        show_radiologist_name BOOLEAN NOT NULL DEFAULT TRUE,
+        show_degree BOOLEAN NOT NULL DEFAULT TRUE,
+        show_reg_number BOOLEAN NOT NULL DEFAULT TRUE,
+        show_digital_signature BOOLEAN NOT NULL DEFAULT TRUE,
+        show_timestamp BOOLEAN NOT NULL DEFAULT TRUE,
+        show_qr_verification BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      INSERT INTO radiology_institutional_styles (
+        id, preset_name, section_order, show_clinical_history, show_comparison,
+        show_recommendation, show_critical_communication, show_measurements,
+        heading_style, abnormal_emphasis, spacing, print_layout, margins, font_size,
+        show_radiologist_name, show_degree, show_reg_number, show_digital_signature,
+        show_timestamp, show_qr_verification
+      ) VALUES (
+        1, 'Care Diagnostics Default', 'Technique,Findings,Impression', true, true,
+        true, true, true, 'underlined', 'bold_abnormal', 'standard', 'letterhead', 'standard', 'standard',
+        true, true, true, true, true, true
+      ) ON CONFLICT (id) DO NOTHING;
+
       CREATE TABLE IF NOT EXISTS pacs_settings (
         id SERIAL PRIMARY KEY,
         key TEXT NOT NULL,
