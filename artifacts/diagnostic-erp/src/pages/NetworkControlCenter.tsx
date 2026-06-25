@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import PageHeader from "@/components/PageHeader";
@@ -23,7 +24,8 @@ import {
   Save,
   ShieldCheck,
   Wrench,
-  CheckCircle2
+  CheckCircle2,
+  Info
 } from "lucide-react";
 
 type ServiceHealth = {
@@ -135,6 +137,7 @@ type HealthMonitorResponse = {
 };
 
 export default function NetworkControlCenter() {
+  const [, navigate] = useLocation();
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [form, setForm] = useState<Partial<Record<string, string>>>({});
@@ -351,6 +354,21 @@ export default function NetworkControlCenter() {
             Refresh Diagnostics
           </Button>
         </div>
+      </div>
+
+      <div className="rounded-xl border bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-start gap-2.5">
+          <Info className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" size={18} />
+          <div>
+            <h4 className="font-semibold text-sm">These settings have moved!</h4>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              To simplify configuration and avoid profile/IP mismatches, all PACS, DICOM, Modality, and AI settings are now consolidated in the unified Settings Center.
+            </p>
+          </div>
+        </div>
+        <Button variant="default" size="sm" onClick={() => navigate("/radiology/settings-center")} className="shrink-0">
+          Go to Settings Center
+        </Button>
       </div>
 
       {/* Prevention Warnings Box */}

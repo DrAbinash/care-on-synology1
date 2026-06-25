@@ -49,6 +49,7 @@ const RadiologyReportingWorkspace = lazy(() => import("@/pages/RadiologyReportin
 const PacsDashboard         = lazy(() => import("@/pages/PacsDashboard"));
 const MwlDashboard          = lazy(() => import("@/pages/MwlDashboard"));
 const RadiologySettings     = lazy(() => import("@/pages/RadiologySettings"));
+const RadiologySettingsCenter = lazy(() => import("@/pages/RadiologySettingsCenter"));
 const AiPromptTemplates     = lazy(() => import("@/pages/AiPromptTemplates"));
 const AiPromptManager       = lazy(() => import("@/pages/AiPromptManager"));
 const AiComparisonWorkspace = lazy(() => import("@/pages/AiComparisonWorkspace"));
@@ -442,6 +443,7 @@ function Router() {
               <Route path="/scan-station" component={ScanStation} />
               <Route path="/report-delivery" component={ReportDelivery} />
               <Route path="/settings/radiology" component={RadiologySettings} />
+              <Route path="/radiology/settings-center" component={RadiologySettingsCenter} />
               <Route path="/settings" component={Settings} />
               <Route path="/whatsapp-chatbot" component={WhatsAppChatbot} />
               <Route path="/system-update" component={SystemUpdate} />

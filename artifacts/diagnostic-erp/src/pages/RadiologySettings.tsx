@@ -4,7 +4,7 @@ import { api } from "@/lib/fetchApi";
 import PageHeader from "@/components/PageHeader";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { Settings2, Server, Radio, Cpu, BrainCircuit, Archive, Wrench, ExternalLink, Sparkles, ShieldAlert } from "lucide-react";
+import { Settings2, Server, Radio, Cpu, BrainCircuit, Archive, Wrench, ExternalLink, Sparkles, ShieldAlert, Info } from "lucide-react";
 import { ModalityPanel } from "@/pages/ModalityManagement";
 import { DicomNodesPanel } from "@/pages/DicomNodes";
 import { AgentSetupPanel } from "@/pages/AgentSetup";
@@ -74,12 +74,28 @@ function PacsConfigPanel() {
 }
 
 export default function RadiologySettings() {
+  const [, navigate] = useLocation();
   return (
     <div className="p-4 md:p-6 space-y-6">
       <PageHeader
         title="Radiology Settings"
         subtitle="PACS configuration, imaging devices, DICOM nodes, agents, storage, and AI"
       />
+
+      <div className="rounded-xl border bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-start gap-2.5">
+          <Info className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" size={18} />
+          <div>
+            <h4 className="font-semibold text-sm">These settings have moved!</h4>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              To simplify configuration and avoid profile/IP mismatches, all PACS, DICOM, Modality, and AI settings are now consolidated in the unified Settings Center.
+            </p>
+          </div>
+        </div>
+        <Button variant="default" size="sm" onClick={() => navigate("/radiology/settings-center")} className="shrink-0">
+          Go to Settings Center
+        </Button>
+      </div>
 
       <Tabs defaultValue="pacs-config" className="space-y-4">
         <TabsList className="flex flex-wrap h-auto gap-1">

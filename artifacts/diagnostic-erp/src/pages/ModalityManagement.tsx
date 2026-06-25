@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/fetchApi";
@@ -8,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import {
   Plus, Pencil, Trash2, Wifi, WifiOff, RefreshCw,
-  Activity, Radio, AlertCircle, CheckCircle2, Clock, Server,
+  Activity, Radio, AlertCircle, CheckCircle2, Clock, Server, Info
 } from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -770,9 +771,26 @@ export function ModalityPanel() {
 }
 
 export default function ModalityManagement() {
+  const [, navigate] = useLocation();
   return (
     <div className="p-4 md:p-6 space-y-6">
       <PageHeader title="Modality Management" subtitle="Configure imaging devices (MRI, CT, X-Ray, USG) for DICOM Q/R and Worklist" />
+      
+      <div className="rounded-xl border bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-start gap-2.5">
+          <Info className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" size={18} />
+          <div>
+            <h4 className="font-semibold text-sm">These settings have moved!</h4>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              To simplify configuration and avoid profile/IP mismatches, all PACS, DICOM, Modality, and AI settings are now consolidated in the unified Settings Center.
+            </p>
+          </div>
+        </div>
+        <Button variant="default" size="sm" onClick={() => navigate("/radiology/settings-center")} className="shrink-0">
+          Go to Settings Center
+        </Button>
+      </div>
+
       <ModalityPanel />
     </div>
   );

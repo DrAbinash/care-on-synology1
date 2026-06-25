@@ -1,0 +1,735 @@
+{
+  "fileMap": [
+    {
+      "name": "AGENT_LOG.md",
+      "category": "12_CHANGELOG",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\AGENT_LOG.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\12_CHANGELOG\\AGENT_LOG.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "AI_SAFE_MODIFICATION_RULEBOOK.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\AI_SAFE_MODIFICATION_RULEBOOK.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\AI_SAFE_MODIFICATION_RULEBOOK.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "API_INVENTORY.md",
+      "category": "06_API",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\API_INVENTORY.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\06_API\\API_INVENTORY.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "BACKUP.md",
+      "category": "07_DEPLOYMENT",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\BACKUP.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\07_DEPLOYMENT\\BACKUP.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "BUILD-EXE.md",
+      "category": "07_DEPLOYMENT",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\BUILD-EXE.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\07_DEPLOYMENT\\BUILD-EXE.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "CARE_DIAGNOSTICS_MASTER_AUDIT_2026.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\CARE_DIAGNOSTICS_MASTER_AUDIT_2026.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\CARE_DIAGNOSTICS_MASTER_AUDIT_2026.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "CARE_DIAGNOSTICS_WEBSITE_STRUCTURE.md",
+      "category": "04_MODULE_DOCUMENTATION",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\CARE_DIAGNOSTICS_WEBSITE_STRUCTURE.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\04_MODULE_DOCUMENTATION\\CARE_DIAGNOSTICS_WEBSITE_STRUCTURE.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "CONQUEST_SETUP.md",
+      "category": "08_PACS_DICOM",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\CONQUEST_SETUP.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\08_PACS_DICOM\\CONQUEST_SETUP.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "DEPLOY.md",
+      "category": "07_DEPLOYMENT",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\DEPLOY.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\07_DEPLOYMENT\\DEPLOY.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "DEPLOYMENT.md",
+      "category": "07_DEPLOYMENT",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\DEPLOYMENT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\07_DEPLOYMENT\\DEPLOYMENT.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "DICOM_PACS_FAILURE_SIMULATION.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\DICOM_PACS_FAILURE_SIMULATION.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\DICOM_PACS_FAILURE_SIMULATION.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "DISASTER_RECOVERY_AUDIT.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\DISASTER_RECOVERY_AUDIT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\DISASTER_RECOVERY_AUDIT.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "ERP_AUDIT_CONTRADICTIONS_AND_REVALIDATION.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\ERP_AUDIT_CONTRADICTIONS_AND_REVALIDATION.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\ERP_AUDIT_CONTRADICTIONS_AND_REVALIDATION.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "ERP_DATABASE_DICTIONARY.md",
+      "category": "05_DATABASE",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\ERP_DATABASE_DICTIONARY.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\05_DATABASE\\ERP_DATABASE_DICTIONARY.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "ERP_DATA_FLOW_MAP.md",
+      "category": "01_ARCHITECTURE",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\ERP_DATA_FLOW_MAP.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\01_ARCHITECTURE\\ERP_DATA_FLOW_MAP.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "ERP_DEPLOYMENT_RUNBOOK.md",
+      "category": "07_DEPLOYMENT",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\ERP_DEPLOYMENT_RUNBOOK.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\07_DEPLOYMENT\\ERP_DEPLOYMENT_RUNBOOK.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "ERP_FEATURE_INVENTORY.md",
+      "category": "04_MODULE_DOCUMENTATION",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\ERP_FEATURE_INVENTORY.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\04_MODULE_DOCUMENTATION\\ERP_FEATURE_INVENTORY.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "ERP_FINAL_EXECUTIVE_AUDIT.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\ERP_FINAL_EXECUTIVE_AUDIT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\ERP_FINAL_EXECUTIVE_AUDIT.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "ERP_KNOWLEDGE_GRAPH.md",
+      "category": "Archive",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\ERP_KNOWLEDGE_GRAPH.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\ERP_KNOWLEDGE_GRAPH.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "ERP_MASTER_CONTEXT.md",
+      "category": "01_ARCHITECTURE",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\ERP_MASTER_CONTEXT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\01_ARCHITECTURE\\ERP_MASTER_CONTEXT.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "ERP_MODULE_DEPENDENCY_MAP.md",
+      "category": "01_ARCHITECTURE",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\ERP_MODULE_DEPENDENCY_MAP.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\01_ARCHITECTURE\\ERP_MODULE_DEPENDENCY_MAP.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "ERP_PACS_DOCUMENTATION.md",
+      "category": "08_PACS_DICOM",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\ERP_PACS_DOCUMENTATION.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\08_PACS_DICOM\\ERP_PACS_DOCUMENTATION.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "ERP_PERMISSION_MATRIX.md",
+      "category": "Archive",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\ERP_PERMISSION_MATRIX.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\ERP_PERMISSION_MATRIX.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "ERP_PRODUCTION_READINESS_SCORE.md",
+      "category": "Archive",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\ERP_PRODUCTION_READINESS_SCORE.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\ERP_PRODUCTION_READINESS_SCORE.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "ERP_RUNTIME_FAILURE_SIMULATION.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\ERP_RUNTIME_FAILURE_SIMULATION.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\ERP_RUNTIME_FAILURE_SIMULATION.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "ERP_SECURITY_AUDIT.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\ERP_SECURITY_AUDIT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\ERP_SECURITY_AUDIT.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "ERP_TECHNICAL_DEBT.md",
+      "category": "Archive",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\ERP_TECHNICAL_DEBT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\ERP_TECHNICAL_DEBT.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "FEATURES.md",
+      "category": "04_MODULE_DOCUMENTATION",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\FEATURES.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\04_MODULE_DOCUMENTATION\\FEATURES.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "FEATURE_INVENTORY.md",
+      "category": "04_MODULE_DOCUMENTATION",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\FEATURE_INVENTORY.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\04_MODULE_DOCUMENTATION\\FEATURE_INVENTORY.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "implementation_plan_favorites_macros.md",
+      "category": "Archive",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\implementation_plan_favorites_macros.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\implementation_plan_favorites_macros.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "MODALITY_SYNC_FORENSIC_AUDIT.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\MODALITY_SYNC_FORENSIC_AUDIT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\MODALITY_SYNC_FORENSIC_AUDIT.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "PACS_WORKLIST_API_FORENSIC.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\PACS_WORKLIST_API_FORENSIC.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\PACS_WORKLIST_API_FORENSIC.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "PATIENT_SELF_REGISTRATION_KIOSK.md",
+      "category": "04_MODULE_DOCUMENTATION",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\PATIENT_SELF_REGISTRATION_KIOSK.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\04_MODULE_DOCUMENTATION\\PATIENT_SELF_REGISTRATION_KIOSK.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "PCPNDT_INTEGRATION_AUDIT.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\PCPNDT_INTEGRATION_AUDIT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\PCPNDT_INTEGRATION_AUDIT.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "PERMISSION_PENETRATION_AUDIT.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\PERMISSION_PENETRATION_AUDIT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\PERMISSION_PENETRATION_AUDIT.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "PRODUCTION_DEV_CONSISTENCY_AUDIT.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\PRODUCTION_DEV_CONSISTENCY_AUDIT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\PRODUCTION_DEV_CONSISTENCY_AUDIT.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "RADIOLOGY_ACTION_PLAN.md",
+      "category": "12_CHANGELOG",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\RADIOLOGY_ACTION_PLAN.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\12_CHANGELOG\\RADIOLOGY_ACTION_PLAN.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "Radiology_Architecture_Master.md",
+      "category": "01_ARCHITECTURE",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\Radiology_Architecture_Master.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\01_ARCHITECTURE\\Radiology_Architecture_Master.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "RADIOLOGY_AUDIT.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\RADIOLOGY_AUDIT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\RADIOLOGY_AUDIT.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "RADIOLOGY_AUDIT_REPORT.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\RADIOLOGY_AUDIT_REPORT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\RADIOLOGY_AUDIT_REPORT.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "RADIOLOGY_IMPLEMENTATION_ROADMAP_v2.md",
+      "category": "11_ROADMAP",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\RADIOLOGY_IMPLEMENTATION_ROADMAP_v2.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\11_ROADMAP\\RADIOLOGY_IMPLEMENTATION_ROADMAP_v2.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "RADIOLOGY_KNOWLEDGE_BASE_AUDIT.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\RADIOLOGY_KNOWLEDGE_BASE_AUDIT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\RADIOLOGY_KNOWLEDGE_BASE_AUDIT.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "RADIOLOGY_MODULE_INVENTORY.md",
+      "category": "12_CHANGELOG",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\RADIOLOGY_MODULE_INVENTORY.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\12_CHANGELOG\\RADIOLOGY_MODULE_INVENTORY.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "RADIOLOGY_PACS_EVIDENCE_AUDIT_JUNE_2026.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\RADIOLOGY_PACS_EVIDENCE_AUDIT_JUNE_2026.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\RADIOLOGY_PACS_EVIDENCE_AUDIT_JUNE_2026.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "RADIOLOGY_PRODUCTION_READINESS_AUDIT.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\RADIOLOGY_PRODUCTION_READINESS_AUDIT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\RADIOLOGY_PRODUCTION_READINESS_AUDIT.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "RADIOLOGY_REALITY_AUDIT.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\RADIOLOGY_REALITY_AUDIT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\RADIOLOGY_REALITY_AUDIT.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "README-WINDOWS.md",
+      "category": "07_DEPLOYMENT",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\README-WINDOWS.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\07_DEPLOYMENT\\README-WINDOWS.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "replit.md",
+      "category": "07_DEPLOYMENT",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\replit.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\07_DEPLOYMENT\\replit.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "REPOSITORY_INDEX.md",
+      "category": "06_API",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\REPOSITORY_INDEX.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\06_API\\REPOSITORY_INDEX.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "RESTORE.md",
+      "category": "07_DEPLOYMENT",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\RESTORE.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\07_DEPLOYMENT\\RESTORE.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "RE_AUDIT_PRODUCTION_JUNE_2026.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\RE_AUDIT_PRODUCTION_JUNE_2026.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\RE_AUDIT_PRODUCTION_JUNE_2026.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "RNCC_FINAL_PRODUCTION_VALIDATION.md",
+      "category": "Archive",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\RNCC_FINAL_PRODUCTION_VALIDATION.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\RNCC_FINAL_PRODUCTION_VALIDATION.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "RNCC_PACS_NAMING_CONSISTENCY_AUDIT.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\RNCC_PACS_NAMING_CONSISTENCY_AUDIT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\RNCC_PACS_NAMING_CONSISTENCY_AUDIT.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "SYNOLOGY-INSTALL.md",
+      "category": "07_DEPLOYMENT",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\SYNOLOGY-INSTALL.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\07_DEPLOYMENT\\SYNOLOGY-INSTALL.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "table_list.txt",
+      "category": "05_DATABASE",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\table_list.txt",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\05_DATABASE\\table_list.txt",
+      "isDuplicate": false
+    },
+    {
+      "name": "threat_model.md",
+      "category": "Archive",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\threat_model.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\threat_model.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "walkthrough.md",
+      "category": "03_WALKTHROUGHS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\walkthrough.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\03_WALKTHROUGHS\\walkthrough.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "walkthrough_favorites_macros.md",
+      "category": "03_WALKTHROUGHS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\walkthrough_favorites_macros.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\03_WALKTHROUGHS\\walkthrough_favorites_macros.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "walkthrough_seeding.md",
+      "category": "03_WALKTHROUGHS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\walkthrough_seeding.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\03_WALKTHROUGHS\\walkthrough_seeding.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "AI_DEVELOPER_HANDBOOK.md",
+      "category": "09_AI",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\AI_DEVELOPER_HANDBOOK.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\09_AI\\AI_DEVELOPER_HANDBOOK.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "CONFIGURATION_INVENTORY.md",
+      "category": "Archive",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\CONFIGURATION_INVENTORY.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\CONFIGURATION_INVENTORY.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "Database_Master_Map.md",
+      "category": "05_DATABASE",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\Database_Master_Map.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\05_DATABASE\\Database_Master_Map.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "ERP_DATABASE_DICTIONARY.md",
+      "category": "05_DATABASE",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\ERP_DATABASE_DICTIONARY.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\05_DATABASE\\ERP_DATABASE_DICTIONARY_from_docs.md",
+      "isDuplicate": true
+    },
+    {
+      "name": "ERP_DEPLOYMENT_RUNBOOK.md",
+      "category": "07_DEPLOYMENT",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\ERP_DEPLOYMENT_RUNBOOK.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\07_DEPLOYMENT\\ERP_DEPLOYMENT_RUNBOOK_from_docs.md",
+      "isDuplicate": true
+    },
+    {
+      "name": "ERP_MASTER_CONTEXT.md",
+      "category": "01_ARCHITECTURE",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\ERP_MASTER_CONTEXT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\01_ARCHITECTURE\\ERP_MASTER_CONTEXT_from_docs.md",
+      "isDuplicate": true
+    },
+    {
+      "name": "ERP_NEXT_100_DAYS_ROADMAP.md",
+      "category": "11_ROADMAP",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\ERP_NEXT_100_DAYS_ROADMAP.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\11_ROADMAP\\ERP_NEXT_100_DAYS_ROADMAP.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "ERP_PACS_DOCUMENTATION.md",
+      "category": "08_PACS_DICOM",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\ERP_PACS_DOCUMENTATION.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\08_PACS_DICOM\\ERP_PACS_DOCUMENTATION_from_docs.md",
+      "isDuplicate": true
+    },
+    {
+      "name": "ERP_PERMISSION_MATRIX.md",
+      "category": "Archive",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\ERP_PERMISSION_MATRIX.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\ERP_PERMISSION_MATRIX_from_docs.md",
+      "isDuplicate": true
+    },
+    {
+      "name": "ERP_SECURITY_AUDIT.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\ERP_SECURITY_AUDIT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\ERP_SECURITY_AUDIT_from_docs.md",
+      "isDuplicate": true
+    },
+    {
+      "name": "ERP_TECHNICAL_DEBT.md",
+      "category": "Archive",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\ERP_TECHNICAL_DEBT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\ERP_TECHNICAL_DEBT_from_docs.md",
+      "isDuplicate": true
+    },
+    {
+      "name": "FEATURE_INVENTORY.md",
+      "category": "04_MODULE_DOCUMENTATION",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\FEATURE_INVENTORY.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\04_MODULE_DOCUMENTATION\\FEATURE_INVENTORY_from_docs.md",
+      "isDuplicate": true
+    },
+    {
+      "name": "implementation_plan_favorites_macros.md",
+      "category": "Archive",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\implementation_plan_favorites_macros.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\implementation_plan_favorites_macros_from_docs.md",
+      "isDuplicate": true
+    },
+    {
+      "name": "LIVE_NETWORK_CONFIGURATION.md",
+      "category": "Archive",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\LIVE_NETWORK_CONFIGURATION.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\LIVE_NETWORK_CONFIGURATION.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "MIGRATION_README.md",
+      "category": "Archive",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\MIGRATION_README.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\MIGRATION_README.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "NETWORK_DEPENDENCY_AUDIT.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\NETWORK_DEPENDENCY_AUDIT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\NETWORK_DEPENDENCY_AUDIT.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "NETWORK_MISMATCH_REPORT.md",
+      "category": "Archive",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\NETWORK_MISMATCH_REPORT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\NETWORK_MISMATCH_REPORT.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "NETWORK_STANDARDIZATION_PLAN.md",
+      "category": "Archive",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\NETWORK_STANDARDIZATION_PLAN.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\NETWORK_STANDARDIZATION_PLAN.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "OLLAMA_SETUP.md",
+      "category": "09_AI",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\OLLAMA_SETUP.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\09_AI\\OLLAMA_SETUP.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "PACS_Architecture_Master.md",
+      "category": "01_ARCHITECTURE",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\PACS_Architecture_Master.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\01_ARCHITECTURE\\PACS_Architecture_Master.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "PACS_CURRENT_STATE_REPORT.md",
+      "category": "08_PACS_DICOM",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\PACS_CURRENT_STATE_REPORT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\08_PACS_DICOM\\PACS_CURRENT_STATE_REPORT.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "Radiology_Architecture_Master.md",
+      "category": "01_ARCHITECTURE",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\Radiology_Architecture_Master.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\01_ARCHITECTURE\\Radiology_Architecture_Master_from_docs.md",
+      "isDuplicate": true
+    },
+    {
+      "name": "REPOSITORY_INDEX.md",
+      "category": "06_API",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\REPOSITORY_INDEX.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\06_API\\REPOSITORY_INDEX_from_docs.md",
+      "isDuplicate": true
+    },
+    {
+      "name": "RNCC_POST_IMPLEMENTATION_VERIFICATION.md",
+      "category": "Archive",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\RNCC_POST_IMPLEMENTATION_VERIFICATION.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\RNCC_POST_IMPLEMENTATION_VERIFICATION.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "VOICE_DICTATION_AUDIT.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\VOICE_DICTATION_AUDIT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\VOICE_DICTATION_AUDIT.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "walkthrough_favorites_macros.md",
+      "category": "03_WALKTHROUGHS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\walkthrough_favorites_macros.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\03_WALKTHROUGHS\\walkthrough_favorites_macros_from_docs.md",
+      "isDuplicate": true
+    },
+    {
+      "name": "walkthrough_seeding.md",
+      "category": "03_WALKTHROUGHS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\walkthrough_seeding.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\03_WALKTHROUGHS\\walkthrough_seeding_from_docs.md",
+      "isDuplicate": true
+    },
+    {
+      "name": "implementation_plan.md",
+      "category": "Archive",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\USG_DOPPLER\\implementation_plan.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\implementation_plan.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "PCPNDT_INTEGRATION_AUDIT.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\USG_DOPPLER\\PCPNDT_INTEGRATION_AUDIT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\PCPNDT_INTEGRATION_AUDIT_from_USG_DOPPLER.md",
+      "isDuplicate": true
+    },
+    {
+      "name": "USG_DOPPLER_MASTER_DOCUMENTATION.md",
+      "category": "Archive",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\USG_DOPPLER\\USG_DOPPLER_MASTER_DOCUMENTATION.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\USG_DOPPLER_MASTER_DOCUMENTATION.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "USG_FEATURE_INDEX.md",
+      "category": "04_MODULE_DOCUMENTATION",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\USG_DOPPLER\\USG_FEATURE_INDEX.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\04_MODULE_DOCUMENTATION\\USG_FEATURE_INDEX.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "USG_IMPLEMENTATION_HISTORY.md",
+      "category": "Archive",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\USG_DOPPLER\\USG_IMPLEMENTATION_HISTORY.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\USG_IMPLEMENTATION_HISTORY.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "USG_PRODUCTION_CHECKLIST.md",
+      "category": "Archive",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\USG_DOPPLER\\USG_PRODUCTION_CHECKLIST.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\USG_PRODUCTION_CHECKLIST.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "USG_ROADMAP.md",
+      "category": "11_ROADMAP",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\USG_DOPPLER\\USG_ROADMAP.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\11_ROADMAP\\USG_ROADMAP.md",
+      "isDuplicate": false
+    },
+    {
+      "name": "VOICE_DICTATION_AUDIT.md",
+      "category": "02_AUDITS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\USG_DOPPLER\\VOICE_DICTATION_AUDIT.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\VOICE_DICTATION_AUDIT_from_USG_DOPPLER.md",
+      "isDuplicate": true
+    },
+    {
+      "name": "walkthrough.md",
+      "category": "03_WALKTHROUGHS",
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\USG_DOPPLER\\walkthrough.md",
+      "current": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\03_WALKTHROUGHS\\walkthrough_from_USG_DOPPLER.md",
+      "isDuplicate": true
+    }
+  ],
+  "duplicateList": [
+    {
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\ERP_DATABASE_DICTIONARY.md",
+      "duplicate": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\05_DATABASE\\ERP_DATABASE_DICTIONARY_from_docs.md"
+    },
+    {
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\ERP_DEPLOYMENT_RUNBOOK.md",
+      "duplicate": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\07_DEPLOYMENT\\ERP_DEPLOYMENT_RUNBOOK_from_docs.md"
+    },
+    {
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\ERP_MASTER_CONTEXT.md",
+      "duplicate": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\01_ARCHITECTURE\\ERP_MASTER_CONTEXT_from_docs.md"
+    },
+    {
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\ERP_PACS_DOCUMENTATION.md",
+      "duplicate": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\08_PACS_DICOM\\ERP_PACS_DOCUMENTATION_from_docs.md"
+    },
+    {
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\ERP_PERMISSION_MATRIX.md",
+      "duplicate": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\ERP_PERMISSION_MATRIX_from_docs.md"
+    },
+    {
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\ERP_SECURITY_AUDIT.md",
+      "duplicate": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\ERP_SECURITY_AUDIT_from_docs.md"
+    },
+    {
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\ERP_TECHNICAL_DEBT.md",
+      "duplicate": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\ERP_TECHNICAL_DEBT_from_docs.md"
+    },
+    {
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\FEATURE_INVENTORY.md",
+      "duplicate": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\04_MODULE_DOCUMENTATION\\FEATURE_INVENTORY_from_docs.md"
+    },
+    {
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\implementation_plan_favorites_macros.md",
+      "duplicate": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\Archive\\implementation_plan_favorites_macros_from_docs.md"
+    },
+    {
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\Radiology_Architecture_Master.md",
+      "duplicate": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\01_ARCHITECTURE\\Radiology_Architecture_Master_from_docs.md"
+    },
+    {
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\REPOSITORY_INDEX.md",
+      "duplicate": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\06_API\\REPOSITORY_INDEX_from_docs.md"
+    },
+    {
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\walkthrough_favorites_macros.md",
+      "duplicate": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\03_WALKTHROUGHS\\walkthrough_favorites_macros_from_docs.md"
+    },
+    {
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\docs\\walkthrough_seeding.md",
+      "duplicate": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\03_WALKTHROUGHS\\walkthrough_seeding_from_docs.md"
+    },
+    {
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\USG_DOPPLER\\PCPNDT_INTEGRATION_AUDIT.md",
+      "duplicate": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\PCPNDT_INTEGRATION_AUDIT_from_USG_DOPPLER.md"
+    },
+    {
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\USG_DOPPLER\\VOICE_DICTATION_AUDIT.md",
+      "duplicate": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\02_AUDITS\\VOICE_DICTATION_AUDIT_from_USG_DOPPLER.md"
+    },
+    {
+      "original": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\USG_DOPPLER\\walkthrough.md",
+      "duplicate": "c:\\Users\\abina\\caredeoghar--antigravity\\Antigravity\\03_WALKTHROUGHS\\walkthrough_from_USG_DOPPLER.md"
+    }
+  ]
+}

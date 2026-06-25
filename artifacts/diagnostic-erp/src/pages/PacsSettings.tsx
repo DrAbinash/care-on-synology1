@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import PageHeader from "@/components/PageHeader";
@@ -7,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Save, RefreshCw, Trash2, Server, Settings2, Radio, Search, ScanLine, MonitorPlay, Network, ToggleLeft, ToggleRight, CheckCircle2, XCircle, Wifi, WifiOff, Copy, ExternalLink, Lock, Tv2 } from "lucide-react";
+import { Plus, Save, RefreshCw, Trash2, Server, Settings2, Radio, Search, ScanLine, MonitorPlay, Network, ToggleLeft, ToggleRight, CheckCircle2, XCircle, Wifi, WifiOff, Copy, ExternalLink, Lock, Tv2, Info } from "lucide-react";
 import { readStaffSession, FULL_ACCESS_ROLES } from "@/lib/staffSession";
 import { getOhifUrl, getWeasisUrl } from "@/lib/viewerService";
 
@@ -430,10 +431,13 @@ function DicomMwlTestsTab() {
 }
 
 export default function PacsSettings() {
+  const [, navigate] = useLocation();
   const { toast } = useToast();
   const qc = useQueryClient();
 
-  const [activeTab, setActiveTab] = useState<"settings" | "modalities" | "mwl" | "viewer" | "routing" | "tests">("settings");
+  const [activeTab, setActiveTab] = useState<"settings" | "modalities" | "mwl" | "viewer" | "routing" | "tests">(
+    "settings"
+  );
   const [newKey, setNewKey] = useState("");
   const [newVal, setNewVal] = useState("");
   const [newCat, setNewCat] = useState("general");
@@ -527,6 +531,21 @@ export default function PacsSettings() {
           </Button>
         }
       />
+
+      <div className="rounded-xl border bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-start gap-2.5">
+          <Info className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" size={18} />
+          <div>
+            <h4 className="font-semibold text-sm">These settings have moved!</h4>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              To simplify configuration and avoid profile/IP mismatches, all PACS, DICOM, Modality, and AI settings are now consolidated in the unified Settings Center.
+            </p>
+          </div>
+        </div>
+        <Button variant="default" size="sm" onClick={() => navigate("/radiology/settings-center")} className="shrink-0">
+          Go to Settings Center
+        </Button>
+      </div>
 
       {/* Tab bar */}
       <div className="flex flex-wrap gap-2 border-b">

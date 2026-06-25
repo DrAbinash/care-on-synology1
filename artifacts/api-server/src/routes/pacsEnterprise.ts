@@ -6,6 +6,7 @@
  * requireStaffAuth + requireStaffPermission("/orders").
  */
 import { Router } from "express";
+import { z } from "zod";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { db } from "@workspace/db";
@@ -177,6 +178,92 @@ router.post("/modalities/:id/echo-test", async (req, res) => {
     message,
     { severity: ok ? "info" : "warn" },
   );
+
+  res.json({
+    ok,
+    testType,
+    latencyMs,
+    message,
+    aeTitle,
+    associationStatus,
+    host,
+    port,
+  });
+});
+
+// POST /api/radiology/test-modality
+// Non-persisted server-side modality connectivity tester.
+// Tries real DICOM C-ECHO via echoscu (DCMTK) if available on the server.
+// Falls back to TCP reachability probe when DCMTK is not installed.
+router.post("/test-modality", async (req, res) => {
+  const body = z.object({
+    host: z.string().min(1),
+    port: z.number().int().min(1).max(65535),
+    aeTitle: z.string().optional(),
+  }).safeParse(req.body);
+
+  if (!body.success) {
+    res.status(400).json({ error: "Host and port are required" });
+    return;
+  }
+
+  const { host, port, aeTitle: aeTitleOpt } = body.data;
+  const aeTitle = aeTitleOpt ?? "DIAGNOCENTER";
+  const start = Date.now();
+
+  // Detect whether echoscu (DCMTK) is installed on this server
+  let hasDcmtk = false;
+  try {
+    await execAsync("which echoscu", { timeout: 3000 });
+    hasDcmtk = true;
+  } catch {
+    hasDcmtk = false;
+  }
+
+  let ok = false;
+  let testType: "DICOM_C_ECHO" | "TCP_FALLBACK" = "TCP_FALLBACK";
+  let message = "";
+  let latencyMs = 0;
+  let associationStatus: "ACCEPTED" | "REJECTED" | "UNREACHABLE" = "UNREACHABLE";
+
+  if (hasDcmtk) {
+    testType = "DICOM_C_ECHO";
+    try {
+      const { stdout, stderr } = await execAsync(
+        `echoscu -aec "${aeTitle}" -aet "DIAGNOCENTER" --timeout 5 "${host}" ${port}`,
+        { timeout: 8000 },
+      );
+      latencyMs = Date.now() - start;
+      const output = (stdout + stderr).toLowerCase();
+      if (output.includes("association accepted") || output.includes("successful")) {
+        ok = true;
+        associationStatus = "ACCEPTED";
+        message = "DICOM C-ECHO successful — association accepted";
+      } else if (output.includes("association rejected") || output.includes("refused")) {
+        ok = false;
+        associationStatus = "REJECTED";
+        message = `DICOM C-ECHO rejected: ${stdout.trim() || stderr.trim()}`;
+      } else {
+        ok = true;
+        associationStatus = "ACCEPTED";
+        message = "DICOM C-ECHO completed (echoscu exit 0)";
+      }
+    } catch (err: any) {
+      latencyMs = Date.now() - start;
+      ok = false;
+      associationStatus = "UNREACHABLE";
+      message = `DICOM C-ECHO failed: ${err.stderr ?? err.message ?? "unknown error"}`;
+    }
+  } else {
+    // TCP fallback
+    const tcpResult = await tcpProbe(host, port, 5000);
+    latencyMs = tcpResult.latencyMs ?? (Date.now() - start);
+    ok = tcpResult.ok;
+    message = tcpResult.ok
+      ? "TCP reachable — DICOM association not verified (install DCMTK on server for full C-ECHO)"
+      : tcpResult.message;
+    associationStatus = tcpResult.ok ? "ACCEPTED" : "UNREACHABLE";
+  }
 
   res.json({
     ok,

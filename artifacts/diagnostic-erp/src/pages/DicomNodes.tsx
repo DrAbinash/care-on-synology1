@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import PageHeader from "@/components/PageHeader";
@@ -16,7 +17,7 @@ import {
 import {
   Server, Plus, Pencil, Trash2, PlugZap, CheckCircle2, XCircle, Wifi,
   WifiOff, AlertTriangle, Network, RefreshCw, Download, Clock, AlertCircle,
-  PlayCircle, History, Settings2,
+  PlayCircle, History, Settings2, Info,
 } from "lucide-react";
 
 type DicomNode = {
@@ -1008,9 +1009,26 @@ function Capability({ label, enabled }: { label: string; enabled: boolean }) {
 }
 
 export default function DicomNodes() {
+  const [, navigate] = useLocation();
   return (
     <div className="p-4 md:p-6 space-y-6">
       <PageHeader title="DICOM Nodes" subtitle="Modality registry & automatic Q/R pull scheduler" />
+      
+      <div className="rounded-xl border bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-start gap-2.5">
+          <Info className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" size={18} />
+          <div>
+            <h4 className="font-semibold text-sm">These settings have moved!</h4>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              To simplify configuration and avoid profile/IP mismatches, all PACS, DICOM, Modality, and AI settings are now consolidated in the unified Settings Center.
+            </p>
+          </div>
+        </div>
+        <Button variant="default" size="sm" onClick={() => navigate("/radiology/settings-center")} className="shrink-0">
+          Go to Settings Center
+        </Button>
+      </div>
+
       <DicomNodesPanel />
     </div>
   );
