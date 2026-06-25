@@ -84,6 +84,17 @@ type TemplateSections = {
   findingsItems: Array<{ label: string; normal: string }>;
 };
 
+interface InspectorIssue {
+  id: string;
+  category: "consistency" | "measurement" | "completeness" | "cds" | "priors" | "voice";
+  severity: "critical" | "important" | "suggestion";
+  title: string;
+  message: string;
+  suggestion?: string;
+  field?: "technique" | "findings" | "impression" | "recommendation" | "clinicalHistory";
+  reviewed?: boolean;
+}
+
 export default function RadiologistCockpit() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
@@ -130,6 +141,8 @@ export default function RadiologistCockpit() {
   const [showWarningModal, setShowWarningModal] = useState(false);
   const [lastVoiceCommand, setLastVoiceCommand] = useState("");
   const [measurementCalcs, setMeasurementCalcs] = useState<Record<string, any>>({});
+  const [ignoredIssueIds, setIgnoredIssueIds] = useState<string[]>([]);
+  const [reviewedIssueIds, setReviewedIssueIds] = useState<string[]>([]);
 
   const handleMeasurementsApplied = useCallback((text: string, calcs: Record<string, any>) => {
     setMeasurementCalcs(calcs);
@@ -179,42 +192,7 @@ export default function RadiologistCockpit() {
     enabled: activeStudyId !== null,
   });
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // QUALITY CHECK GATE
-  // ══════════════════════════════════════════════════════════════════════════
-  const qualityCheckIssues = useMemo(() => {
-    const issues: string[] = [];
-    if (!study) return issues;
 
-    const desc = (study.studyDescription || "").toUpperCase();
-    const hasDiscProtrusion = rawFindings.toLowerCase().includes("protrusion") || rawFindings.toLowerCase().includes("extrusion") || rawFindings.toLowerCase().includes("herniation");
-    
-    if (study.modality === "MRI" && (desc.includes("SPINE") || desc.includes("LUMBAR"))) {
-      if (hasDiscProtrusion && !rawFindings.includes("AP Canal Diameter")) {
-        issues.push("Disc protrusion/herniation noted, but spinal canal diameter is missing.");
-      }
-    }
-
-    if (study.modality === "US" && desc.includes("OBSTETRIC")) {
-      if (!rawFindings.includes("BPD") && !rawFindings.includes("FL") && !rawFindings.includes("CRL")) {
-        issues.push("OB USG study is missing mandatory fetal biometry metrics (BPD/FL/CRL).");
-      }
-    }
-
-    if (rawFindings.toLowerCase().includes("hydrocephalus") || rawFindings.toLowerCase().includes("ventriculomegaly")) {
-      if (!rawFindings.includes("Evans Index") && !rawFindings.includes("Frontal Horn Width")) {
-        issues.push("Hydrocephalus mentioned, but ventricles metrics / Evans index is missing.");
-      }
-    }
-
-    if (study.modality === "MG" && (desc.includes("BREAST") || desc.includes("MAMMOGRAPHY"))) {
-      if (!rawFindings.includes("BI-RADS")) {
-        issues.push("Mammography report is missing BI-RADS Category score.");
-      }
-    }
-
-    return issues;
-  }, [study, rawFindings]);
 
   // 3. Structured Templates Library
   const { data: templates = [] } = useQuery<StructuredTemplate[]>({
@@ -266,6 +244,506 @@ export default function RadiologistCockpit() {
       return [];
     }
   }, [preferences]);
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // AI QUALITY INSPECTOR & CLINICAL RULES ENGINE
+  // ══════════════════════════════════════════════════════════════════════════
+  const aiInspectorResults = useMemo(() => {
+    const issues: InspectorIssue[] = [];
+    if (!study) {
+      return {
+        issues,
+        score: {
+          overall: 100,
+          medical: 100,
+          measurement: 100,
+          completeness: 100,
+          comparison: 100,
+          grammar: 100,
+          recommendation: 100
+        }
+      };
+    }
+
+    const textFindings = rawFindings || "";
+    const textImpression = (impression || []).filter(Boolean).join("\n");
+    const fullText = (clinicalHistory + " " + technique + " " + textFindings + " " + textImpression + " " + recommendation).trim();
+    const fullTextLower = fullText.toLowerCase();
+
+    // Parse measurement values from findings
+    const parsedValues: Record<string, string> = {};
+    textFindings.split("\n").forEach(line => {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("- ") && trimmed.includes(":")) {
+        const parts = trimmed.substring(2).split(":");
+        const key = parts[0].trim();
+        const val = parts.slice(1).join(":").trim();
+        parsedValues[key] = val;
+      }
+    });
+
+    // ── 1. MEDICAL CONSISTENCY ──
+    const studyDesc = (study.studyDescription || "").toUpperCase();
+
+    // Left/Right contradictions
+    if (studyDesc.includes("LEFT") && fullTextLower.includes("right") && !fullTextLower.includes("left")) {
+      issues.push({
+        id: "med-lateral-desc-mismatch",
+        category: "consistency",
+        severity: "critical",
+        title: "Laterality Contradiction",
+        message: "Study description specifies LEFT, but report text only mentions RIGHT.",
+        suggestion: "Verify laterality and change findings to Left.",
+        field: "findings"
+      });
+    }
+    if (studyDesc.includes("RIGHT") && fullTextLower.includes("left") && !fullTextLower.includes("right")) {
+      issues.push({
+        id: "med-lateral-desc-mismatch-2",
+        category: "consistency",
+        severity: "critical",
+        title: "Laterality Contradiction",
+        message: "Study description specifies RIGHT, but report text only mentions LEFT.",
+        suggestion: "Verify laterality and change findings to Right.",
+        field: "findings"
+      });
+    }
+
+    const structures = ["femur", "knee", "meniscus", "lung", "kidney", "breast", "ovary", "adrenal", "shoulder", "hip"];
+    structures.forEach(s => {
+      const regexLeft = new RegExp(`\\bleft\\b.*\\b${s}\\b`, "i");
+      const regexRight = new RegExp(`\\bright\\b.*\\b${s}\\b`, "i");
+      if (regexLeft.test(fullText) && regexRight.test(fullText)) {
+        issues.push({
+          id: `med-lateral-${s}`,
+          category: "consistency",
+          severity: "important",
+          title: `Laterality Warning: ${s}`,
+          message: `Both left and right mentions of '${s}' are present. Ensure no contradiction.`,
+          suggestion: `Confirm if the finding is bilateral or unilateral.`,
+          field: "findings"
+        });
+      }
+    });
+
+    // Upper/Lower, Anterior/Posterior
+    if (fullTextLower.includes("anterior protrusion") && fullTextLower.includes("posterior protrusion")) {
+      issues.push({
+        id: "med-ant-post-spinal",
+        category: "consistency",
+        severity: "important",
+        title: "Anterior / Posterior Direction Mismatch",
+        message: "Report mentions both anterior and posterior protrusions in similar segments.",
+        suggestion: "Verify primary protrusion direction on sagittal view.",
+        field: "findings"
+      });
+    }
+
+    // Gender contradictions
+    const isFemale = study.sex?.toUpperCase() === "F";
+    const isMale = study.sex?.toUpperCase() === "M";
+    if (isFemale && (fullTextLower.includes("prostate") || fullTextLower.includes("seminal vesicle"))) {
+      issues.push({
+        id: "med-gender-prostate",
+        category: "consistency",
+        severity: "critical",
+        title: "Gender Contradiction",
+        message: "Report for Female patient mentions male anatomy (prostate/seminal vesicle).",
+        suggestion: "Remove prostate/seminal vesicle references.",
+        field: "findings"
+      });
+    }
+    if (isMale && (fullTextLower.includes("uterus") || fullTextLower.includes("ovary") || fullTextLower.includes("ovarian") || fullTextLower.includes("endometrium") || fullTextLower.includes("cervix") || fullTextLower.includes("uterine"))) {
+      issues.push({
+        id: "med-gender-uterus",
+        category: "consistency",
+        severity: "critical",
+        title: "Gender Contradiction",
+        message: "Report for Male patient mentions female anatomy (uterus/ovary/endometrium/cervix).",
+        suggestion: "Remove gynecological references.",
+        field: "findings"
+      });
+    }
+
+    // Pediatric vs Adult Case
+    const ageMatch = (study.age || "").match(/(\d+)/);
+    const ageVal = ageMatch ? parseInt(ageMatch[1]) : null;
+    const isPediatric = ageVal !== null && ageVal < 18;
+    if (isPediatric) {
+      if (fullTextLower.includes("degenerative changes") || fullTextLower.includes("senile") || fullTextLower.includes("osteoarthritis")) {
+        issues.push({
+          id: "med-pediatric-adult-wording",
+          category: "consistency",
+          severity: "important",
+          title: "Age-Inappropriate Wording",
+          message: `Pediatric patient (${study.age}) described using adult degenerative terms.`,
+          suggestion: "Use age-appropriate description.",
+          field: "findings"
+        });
+      }
+    } else if (ageVal !== null && ageVal > 18) {
+      if (fullTextLower.includes("growth plates open") || fullTextLower.includes("physes open")) {
+        issues.push({
+          id: "med-adult-pediatric-wording",
+          category: "consistency",
+          severity: "important",
+          title: "Age-Inappropriate Wording",
+          message: `Adult patient (${study.age}) described with pediatric phrasing (e.g., open growth plates).`,
+          suggestion: "Replace with bone maturity status or remove.",
+          field: "findings"
+        });
+      }
+    }
+
+    // Wrong modality wording
+    if (study.modality === "CT") {
+      if (fullTextLower.includes("magnetic resonance") || fullTextLower.includes("flair") || fullTextLower.includes("t1-weighted") || fullTextLower.includes("t2-weighted") || fullTextLower.includes("signal intensity")) {
+        issues.push({
+          id: "med-modality-ct-mri",
+          category: "consistency",
+          severity: "critical",
+          title: "Modality Terminology Mismatch",
+          message: "MRI terminology (FLAIR, T1/T2 weighted, signal intensity) found inside CT report.",
+          suggestion: "Replace with CT terminology (attenuation, Hounsfield units).",
+          field: "technique"
+        });
+      }
+    }
+    if (study.modality === "MRI") {
+      const hasHU = /\bhu\b/.test(fullTextLower);
+      if (hasHU || fullTextLower.includes("hounsfield") || fullTextLower.includes("computed tomography") || fullTextLower.includes("radiation dose")) {
+        issues.push({
+          id: "med-modality-mri-ct",
+          category: "consistency",
+          severity: "critical",
+          title: "Modality Terminology Mismatch",
+          message: "CT terminology (HU, Hounsfield, computed tomography) found inside MRI report.",
+          suggestion: "Replace with MRI terminology (signal intensity, sequences).",
+          field: "technique"
+        });
+      }
+    }
+    if (study.modality === "CT" || study.modality === "MRI") {
+      if (fullTextLower.includes("hyperechoic") || fullTextLower.includes("anechoic") || fullTextLower.includes("acoustic shadowing") || fullTextLower.includes("transducer")) {
+        issues.push({
+          id: "med-modality-cross-us",
+          category: "consistency",
+          severity: "important",
+          title: "Modality Terminology Mismatch",
+          message: "Ultrasound wording (hyperechoic, acoustic shadowing) found inside cross-sectional report.",
+          suggestion: "Replace with density/signal intensity wording.",
+          field: "findings"
+        });
+      }
+    }
+
+    // Contrast contradictions
+    const isContrastStudy = studyDesc.includes("CONTRAST") || studyDesc.includes("CECT") || studyDesc.includes("CEMRI");
+    const isNonContrastStudy = studyDesc.includes("WITHOUT CONTRAST") || studyDesc.includes("NCCT") || studyDesc.includes("NON-CONTRAST");
+    if (isNonContrastStudy && (fullTextLower.includes("gadolinium") || fullTextLower.includes("contrast enhancement") || fullTextLower.includes("post-contrast"))) {
+      issues.push({
+        id: "med-contrast-noncon-mismatch",
+        category: "consistency",
+        severity: "important",
+        title: "Contrast Contradiction",
+        message: "Non-contrast study mentions contrast enhancement or gadolinium.",
+        suggestion: "Remove enhancement/agent references.",
+        field: "findings"
+      });
+    }
+    if (isContrastStudy && (fullTextLower.includes("no contrast was administered") || fullTextLower.includes("non-contrast study"))) {
+      issues.push({
+        id: "med-contrast-con-mismatch",
+        category: "consistency",
+        severity: "important",
+        title: "Contrast Contradiction",
+        message: "Contrast study mentions no contrast was administered.",
+        suggestion: "Update technique section with contrast injection parameters.",
+        field: "technique"
+      });
+    }
+
+    // Findings vs Impression mismatch
+    const normalKeywords = ["no abnormality", "within normal limits", "unremarkable"];
+    const hasNormalFindings = normalKeywords.some(kw => textFindings.toLowerCase().includes(kw));
+    const abnormalKeywords = ["acute infarct", "fracture", "hemorrhage", "stenosis", "mass", "lesion", "metastasis"];
+    const hasAbnormalImpression = abnormalKeywords.some(kw => textImpression.toLowerCase().includes(kw));
+    if (hasNormalFindings && hasAbnormalImpression) {
+      issues.push({
+        id: "med-normal-findings-abnormal-imp",
+        category: "consistency",
+        severity: "important",
+        title: "Findings / Impression Contradiction",
+        message: "Findings show normal/unremarkable status, but Impression lists abnormal diagnosis.",
+        suggestion: "Detail abnormal observations inside the Findings section.",
+        field: "impression"
+      });
+    }
+
+    const abnormalFindingsKeywords = ["herniation", "fracture", "hemorrhage", "lesion", "infarct", "stenosis"];
+    const hasAbnormalFindings = abnormalFindingsKeywords.some(kw => textFindings.toLowerCase().includes(kw));
+    const normalImpressionKeywords = ["no significant abnormality", "normal study", "unremarkable exam"];
+    const hasNormalImpression = normalImpressionKeywords.some(kw => textImpression.toLowerCase().includes(kw));
+    if (hasAbnormalFindings && hasNormalImpression) {
+      issues.push({
+        id: "med-abnormal-findings-normal-imp",
+        category: "consistency",
+        severity: "important",
+        title: "Findings / Impression Contradiction",
+        message: "Findings mention abnormalities, but Impression describes study as normal/unremarkable.",
+        suggestion: "Summarize major findings inside the Impression section.",
+        field: "impression"
+      });
+    }
+
+    // ── 2. MEASUREMENT CONSISTENCY ──
+    const hasDiscProtrusion = textFindings.toLowerCase().includes("protrusion") || textFindings.toLowerCase().includes("extrusion") || textFindings.toLowerCase().includes("herniation");
+    if (study.modality === "MRI" && (studyDesc.includes("SPINE") || studyDesc.includes("LUMBAR"))) {
+      if (hasDiscProtrusion && !fullTextLower.includes("ap canal diameter")) {
+        issues.push({
+          id: "meas-spine-canal-diameter",
+          category: "measurement",
+          severity: "critical",
+          title: "Missing Canal Diameter",
+          message: "Disc protrusion/herniation is noted, but AP Spinal Canal Diameter is missing.",
+          suggestion: "Add AP Canal Diameter to verify spinal stenosis status.",
+          field: "findings"
+        });
+      }
+    }
+    if (study.modality === "US" && studyDesc.includes("OBSTETRIC")) {
+      if (!fullTextLower.includes("bpd") && !fullTextLower.includes("fl") && !fullTextLower.includes("crl")) {
+        issues.push({
+          id: "meas-ob-biometry",
+          category: "measurement",
+          severity: "critical",
+          title: "Missing Fetal Biometry",
+          message: "Obstetric USG is missing fetal biometry metrics (CRL/BPD/FL).",
+          suggestion: "Record BPD/FL or CRL measurements to estimate gestational age.",
+          field: "findings"
+        });
+      }
+    }
+    if (fullTextLower.includes("hydrocephalus") || fullTextLower.includes("ventriculomegaly")) {
+      if (!fullTextLower.includes("evans index") && !fullTextLower.includes("frontal horn")) {
+        issues.push({
+          id: "meas-brain-evans",
+          category: "measurement",
+          severity: "important",
+          title: "Missing Evans Index",
+          message: "Hydrocephalus/ventriculomegaly mentioned, but Evans Index or Frontal Horn Width is missing.",
+          suggestion: "Add Evans Index to quantify ventriculomegaly.",
+          field: "findings"
+        });
+      }
+    }
+    if (study.modality === "MG" && (studyDesc.includes("BREAST") || studyDesc.includes("MAMMOGRAPHY"))) {
+      if (!fullTextLower.includes("bi-rads")) {
+        issues.push({
+          id: "meas-mg-birads",
+          category: "measurement",
+          severity: "critical",
+          title: "Missing BI-RADS Score",
+          message: "Mammography study is missing the BI-RADS Category score.",
+          suggestion: "Specify a BI-RADS category rating (e.g., BI-RADS Category 1-6).",
+          field: "impression"
+        });
+      }
+      if (!fullTextLower.includes("density")) {
+        issues.push({
+          id: "meas-mg-density",
+          category: "measurement",
+          severity: "important",
+          title: "Missing Breast Density",
+          message: "Mammography is missing Breast Density category.",
+          suggestion: "Specify Breast Density (e.g. ACR Category A-D).",
+          field: "findings"
+        });
+      }
+    }
+
+    // ── 3. REPORT COMPLETENESS ──
+    if (!technique.trim()) {
+      issues.push({
+        id: "comp-technique",
+        category: "completeness",
+        severity: "important",
+        title: "Missing Section: Technique",
+        message: "Technique/protocol section is empty.",
+        suggestion: "Add the scanner model, views, and sequences protocol.",
+        field: "technique"
+      });
+    }
+    if (!clinicalHistory.trim()) {
+      issues.push({
+        id: "comp-clinicalHistory",
+        category: "completeness",
+        severity: "important",
+        title: "Missing Section: Indication",
+        message: "Clinical history/indication section is empty.",
+        suggestion: "Provide referral symptoms or clinical query.",
+        field: "clinicalHistory"
+      });
+    }
+    if (textFindings.trim().length < 15) {
+      issues.push({
+        id: "comp-findings",
+        category: "completeness",
+        severity: "critical",
+        title: "Missing Section: Findings",
+        message: "Findings details are empty or too short.",
+        suggestion: "Add detailed clinical observations.",
+        field: "findings"
+      });
+    }
+    if (impression.filter(Boolean).length === 0) {
+      issues.push({
+        id: "comp-impression",
+        category: "completeness",
+        severity: "critical",
+        title: "Missing Section: Impression",
+        message: "Diagnostic Impression summary is empty.",
+        suggestion: "Add your main diagnostic conclusions.",
+        field: "impression"
+      });
+    }
+
+    // Duplicate sentences
+    const sList = textFindings.split(/[.!?]+/).map(s => s.trim()).filter(s => s.length > 12);
+    const seenS = new Set<string>();
+    sList.forEach(s => {
+      const normalized = s.toLowerCase().replace(/\s+/g, " ");
+      if (seenS.has(normalized)) {
+        issues.push({
+          id: `comp-dup-${normalized.slice(0, 15)}`,
+          category: "completeness",
+          severity: "suggestion",
+          title: "Duplicate Sentence Detected",
+          message: `The sentence starting with "${s.slice(0, 25)}..." is duplicated.`,
+          suggestion: "Remove duplicate text.",
+          field: "findings"
+        });
+      } else {
+        seenS.add(normalized);
+      }
+    });
+
+    // ── 4. CLINICAL DECISION SUPPORT (CDS) ──
+    if (fullTextLower.includes("tumor") || fullTextLower.includes("lesion") || fullTextLower.includes("mass")) {
+      if (study.modality === "MRI" && !fullTextLower.includes("spectroscopy") && !fullTextLower.includes("perfusion")) {
+        issues.push({
+          id: "cds-brain-tumor",
+          category: "cds",
+          severity: "suggestion",
+          title: "CDS: MR Spectroscopy",
+          message: "For cerebral lesions, Spectroscopy or Perfusion adds characterization value.",
+          suggestion: "Recommend: 'MR Spectroscopy and Perfusion correlation suggested.'",
+          field: "recommendation"
+        });
+      }
+    }
+    if (fullTextLower.includes("infarct") || fullTextLower.includes("stroke") || fullTextLower.includes("ischemia")) {
+      if (!fullTextLower.includes("mra") && !fullTextLower.includes("cta")) {
+        issues.push({
+          id: "cds-stroke",
+          category: "cds",
+          severity: "suggestion",
+          title: "CDS: Vascular Angiography",
+          message: "Vascular patency imaging is standard for cerebral ischemia.",
+          suggestion: "Recommend: 'MRA or CTA of the head and neck is suggested.'",
+          field: "recommendation"
+        });
+      }
+    }
+
+    // ── 5. PRIOR STUDY COMPARISON ──
+    if (priorReports.length > 0) {
+      const compKeywords = ["comparison", "prior", "compared", "previously", "previous study", "stable", "interval", "no significant interval change"];
+      const hasComparison = compKeywords.some(kw => fullTextLower.includes(kw));
+      if (!hasComparison) {
+        issues.push({
+          id: "prior-no-comparison",
+          category: "priors",
+          severity: "important",
+          title: "Prior Comparison Missing",
+          message: "Prior reports exist, but comparison or interval change is not described.",
+          suggestion: "Add interval wording (Stable, Improved, Progressed, Resolved).",
+          field: "findings"
+        });
+      }
+    }
+
+    // ── 6. VOICE DICTATION CLEANUP ──
+    const voiceWords = textFindings.split(/\s+/);
+    for (let i = 0; i < voiceWords.length - 1; i++) {
+      const w1 = voiceWords[i].toLowerCase().replace(/[^a-z]/g, "");
+      const w2 = voiceWords[i+1].toLowerCase().replace(/[^a-z]/g, "");
+      if (w1 && w1 === w2 && w1.length > 2) {
+        issues.push({
+          id: `voice-duplicate-word-${i}`,
+          category: "voice",
+          severity: "suggestion",
+          title: "Repeated Word",
+          message: `Repeated word '${voiceWords[i]}' detected in findings.`,
+          suggestion: `Remove the second '${voiceWords[i]}'.`,
+          field: "findings"
+        });
+      }
+    }
+
+    // Calculate score details
+    let medicalScore = 100;
+    let measurementScore = 100;
+    let completenessScore = 100;
+    let comparisonScore = priorReports.length > 0 ? 50 : 100;
+    let grammarScore = 100;
+
+    issues.forEach(issue => {
+      const isIgnored = ignoredIssueIds.includes(issue.id) || reviewedIssueIds.includes(issue.id);
+      if (isIgnored) return;
+
+      if (issue.category === "consistency") {
+        medicalScore -= issue.severity === "critical" ? 20 : 10;
+      } else if (issue.category === "measurement") {
+        measurementScore -= issue.severity === "critical" ? 20 : 10;
+      } else if (issue.category === "completeness") {
+        completenessScore -= issue.severity === "critical" ? 25 : 10;
+      } else if (issue.category === "priors") {
+        comparisonScore = 50;
+      } else if (issue.category === "voice") {
+        grammarScore -= 5;
+      }
+    });
+
+    medicalScore = Math.max(0, medicalScore);
+    measurementScore = Math.max(0, measurementScore);
+    completenessScore = Math.max(0, completenessScore);
+    grammarScore = Math.max(0, grammarScore);
+
+    const recommendationsScore = recommendation.trim() ? 100 : 70;
+    const overallScore = Math.round(
+      (medicalScore + measurementScore + completenessScore + comparisonScore + grammarScore + recommendationsScore) / 6
+    );
+
+    return {
+      issues,
+      score: {
+        overall: overallScore,
+        medical: medicalScore,
+        measurement: measurementScore,
+        completeness: completenessScore,
+        comparison: comparisonScore,
+        grammar: grammarScore,
+        recommendation: recommendationsScore
+      }
+    };
+  }, [study, clinicalHistory, technique, rawFindings, impression, recommendation, priorReports, ignoredIssueIds, reviewedIssueIds]);
+
+  const qualityCheckIssues = useMemo(() => {
+    return aiInspectorResults.issues
+      .filter(i => !ignoredIssueIds.includes(i.id) && !reviewedIssueIds.includes(i.id) && (i.severity === "critical" || i.severity === "important"))
+      .map(i => `${i.title}: ${i.message}`);
+  }, [aiInspectorResults, ignoredIssueIds, reviewedIssueIds]);
 
   // ══════════════════════════════════════════════════════════════════════════
   // SMART CONTEXT ENGINE
@@ -424,6 +902,15 @@ export default function RadiologistCockpit() {
         status: "REPORT_FINAL",
         reportId,
         actor: session?.user?.name || "Radiologist",
+        auditDetails: {
+          inspectorScore: aiInspectorResults.score,
+          issuesCount: aiInspectorResults.issues.length,
+          ignoredIssues: ignoredIssueIds,
+          reviewedIssues: reviewedIssueIds,
+          unresolvedIssues: aiInspectorResults.issues
+            .filter(i => !ignoredIssueIds.includes(i.id) && !reviewedIssueIds.includes(i.id))
+            .map(i => ({ id: i.id, title: i.title, severity: i.severity }))
+        }
       });
     },
     onSuccess: () => {
@@ -972,6 +1459,7 @@ export default function RadiologistCockpit() {
                 <div className="space-y-1.5">
                   <Label className="text-xs font-bold text-slate-300">Clinical History</Label>
                   <Input
+                    id="report-editor-clinicalHistory"
                     value={clinicalHistory}
                     onChange={(e) => setClinicalHistory(e.target.value)}
                     placeholder="Enter clinical indication..."
@@ -982,6 +1470,7 @@ export default function RadiologistCockpit() {
                 <div className="space-y-1.5">
                   <Label className="text-xs font-bold text-slate-300">Technique</Label>
                   <Input
+                    id="report-editor-technique"
                     value={technique}
                     onChange={(e) => setTechnique(e.target.value)}
                     placeholder="Describe modalities and protocols used..."
@@ -1001,6 +1490,7 @@ export default function RadiologistCockpit() {
                     />
                   </div>
                   <Textarea
+                    id="report-editor-findings"
                     value={rawFindings}
                     onChange={(e) => handleFindingsTextChange(e.target.value)}
                     rows={12}
@@ -1015,6 +1505,7 @@ export default function RadiologistCockpit() {
                     <div key={idx} className="flex gap-2 items-center">
                       <span className="text-xs text-slate-500 font-bold">{idx + 1}.</span>
                       <Input
+                        id={`report-editor-impression-${idx}`}
                         value={line}
                         onChange={(e) => {
                           const next = [...impression];
@@ -1047,6 +1538,7 @@ export default function RadiologistCockpit() {
                 <div className="space-y-1.5">
                   <Label className="text-xs font-bold text-slate-300">Recommendation</Label>
                   <Input
+                    id="report-editor-recommendation"
                     value={recommendation}
                     onChange={(e) => setRecommendation(e.target.value)}
                     className="bg-slate-900 border-slate-800 text-xs text-slate-200"
@@ -1144,15 +1636,21 @@ export default function RadiologistCockpit() {
         {/* Right Column: Assistant panel / Chocolate Box / Builders / Telemetry */}
         <div className="w-[380px] flex flex-col flex-shrink-0 bg-slate-955">
           <Tabs value={activeRightTab} onValueChange={setActiveRightTab} className="flex-1 flex flex-col min-h-0">
-            <TabsList className="grid grid-cols-4 bg-slate-900 border-b border-slate-800 rounded-none h-11 p-1">
+            <TabsList className="grid grid-cols-5 bg-slate-900 border-b border-slate-800 rounded-none h-11 p-1">
               <TabsTrigger value="assist" className="text-[10px] data-[state=active]:bg-slate-950 data-[state=active]:text-indigo-400">
-                AI & Voice
+                AI/Voice
               </TabsTrigger>
               <TabsTrigger value="chocolate" className="text-[10px] data-[state=active]:bg-slate-950 data-[state=active]:text-indigo-400">
                 Findings
               </TabsTrigger>
               <TabsTrigger value="builders" className="text-[10px] data-[state=active]:bg-slate-950 data-[state=active]:text-indigo-400">
                 Builders
+              </TabsTrigger>
+              <TabsTrigger value="inspector" className="text-[10px] data-[state=active]:bg-slate-950 data-[state=active]:text-indigo-400 flex items-center justify-center gap-1">
+                Inspector
+                {aiInspectorResults.issues.filter(i => !ignoredIssueIds.includes(i.id) && !reviewedIssueIds.includes(i.id)).length > 0 && (
+                  <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
+                )}
               </TabsTrigger>
               <TabsTrigger value="telemetry" className="text-[10px] data-[state=active]:bg-slate-950 data-[state=active]:text-indigo-400">
                 PACS Logs
@@ -1251,9 +1749,8 @@ export default function RadiologistCockpit() {
               )}
             </TabsContent>
 
-            {/* TAB: Structured Builders */}
             <TabsContent value="builders" className="flex-1 overflow-y-auto p-4 m-0 space-y-4">
-              {study ? (
+              {study && (
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <Label className="text-xs font-bold text-slate-300">Observation Checklists</Label>
@@ -1277,9 +1774,153 @@ export default function RadiologistCockpit() {
                     voiceTextCommand={lastVoiceCommand}
                   />
                 </div>
-              ) : (
-                <div className="p-10 text-center text-slate-500 text-xs">No active study selected</div>
               )}
+            </TabsContent>
+
+            {/* TAB: AI Quality Inspector */}
+            <TabsContent value="inspector" className="flex-1 overflow-y-auto p-4 m-0 space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <BrainCircuit className="h-4 w-4 text-indigo-400" />
+                  <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">AI Report Inspector</span>
+                </div>
+                <Badge className={`text-xs font-bold ${
+                  aiInspectorResults.score.overall >= 85 ? "bg-emerald-950 text-emerald-400 border border-emerald-800" :
+                  aiInspectorResults.score.overall >= 70 ? "bg-amber-950 text-amber-400 border border-amber-800" :
+                  "bg-red-950 text-red-400 border border-red-800"
+                }`}>
+                  Score: {aiInspectorResults.score.overall}/100
+                </Badge>
+              </div>
+
+              {/* Subscores breakdown */}
+              <div className="grid grid-cols-2 gap-2 bg-slate-900/60 p-3 rounded-lg border border-slate-800 text-[10px]">
+                <div className="col-span-2 font-semibold text-slate-400 border-b border-slate-800 pb-1 mb-1">Subcategory Scores:</div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Medical Consistency:</span>
+                  <span className={aiInspectorResults.score.medical >= 85 ? "text-emerald-400" : "text-amber-400"}>{aiInspectorResults.score.medical}%</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Measurements:</span>
+                  <span className={aiInspectorResults.score.measurement >= 85 ? "text-emerald-400" : "text-amber-400"}>{aiInspectorResults.score.measurement}%</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Completeness:</span>
+                  <span className={aiInspectorResults.score.completeness >= 85 ? "text-emerald-400" : "text-amber-400"}>{aiInspectorResults.score.completeness}%</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Comparison:</span>
+                  <span className={aiInspectorResults.score.comparison >= 85 ? "text-emerald-400" : "text-amber-400"}>{aiInspectorResults.score.comparison}%</span>
+                </div>
+                <div className="flex justify-between col-span-2 pt-1 border-t border-slate-800/50">
+                  <span className="text-slate-500">Grammar & Dictation:</span>
+                  <span className="text-slate-300">{aiInspectorResults.score.grammar}%</span>
+                </div>
+              </div>
+
+              {/* Issues list */}
+              <div className="space-y-2">
+                {aiInspectorResults.issues.length === 0 ? (
+                  <div className="text-center py-8 text-slate-500 text-xs flex flex-col items-center gap-2">
+                    <CheckCircle2 className="h-8 w-8 text-emerald-500" />
+                    <span>No quality issues detected. Report is verified clean!</span>
+                  </div>
+                ) : (
+                  aiInspectorResults.issues.map((issue) => {
+                    const isIgnored = ignoredIssueIds.includes(issue.id);
+                    const isReviewed = reviewedIssueIds.includes(issue.id);
+                    return (
+                      <div
+                        key={issue.id}
+                        className={`p-3 rounded-lg border text-xs space-y-2 transition-all ${
+                          isIgnored || isReviewed ? "bg-slate-900/20 border-slate-800/40 opacity-50" :
+                          issue.severity === "critical" ? "bg-red-950/20 border-red-800/60 text-slate-200" :
+                          issue.severity === "important" ? "bg-amber-950/20 border-amber-800/60 text-slate-200" :
+                          "bg-slate-900/80 border-slate-800 text-slate-200"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-1.5">
+                            {issue.severity === "critical" && <AlertOctagon size={13} className="text-red-500 flex-shrink-0" />}
+                            {issue.severity === "important" && <AlertTriangle size={13} className="text-amber-500 flex-shrink-0" />}
+                            {issue.severity === "suggestion" && <Info size={13} className="text-blue-400 flex-shrink-0" />}
+                            <span className="font-semibold text-slate-200">{issue.title}</span>
+                          </div>
+                          <Badge variant="outline" className={`text-[9px] uppercase tracking-wide px-1 py-0 ${
+                            issue.severity === "critical" ? "border-red-800 text-red-400 bg-red-950/20" :
+                            issue.severity === "important" ? "border-amber-800 text-amber-400 bg-amber-950/20" :
+                            "border-blue-800 text-blue-400 bg-blue-950/20"
+                          }`}>
+                            {issue.severity}
+                          </Badge>
+                        </div>
+                        <p className="text-[11px] text-slate-400 leading-relaxed">{issue.message}</p>
+                        {issue.suggestion && (
+                          <div className="bg-slate-950/60 p-2 rounded border border-slate-850 text-[10px] text-slate-300 font-mono">
+                            <span className="text-indigo-400 font-bold block mb-0.5 text-[9px] uppercase">Suggestion:</span>
+                            {issue.suggestion}
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-between gap-1.5 pt-1 border-t border-slate-800/30">
+                          {issue.field && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-5 text-[9px] text-indigo-400 hover:text-indigo-300 hover:bg-slate-950 p-1"
+                              onClick={() => {
+                                const el = document.getElementById(`report-editor-${issue.field}`);
+                                if (el) {
+                                  el.focus();
+                                  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                } else {
+                                  toast({ title: `Field location: ${issue.field}`, description: `Focus the ${issue.field} field in the editor.` });
+                                }
+                              }}
+                            >
+                              <ArrowUpRight size={10} className="mr-0.5" /> Jump to field
+                            </Button>
+                          )}
+                          <div className="flex gap-1 ml-auto">
+                            {!isIgnored && !isReviewed ? (
+                              <>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => setReviewedIssueIds(prev => [...prev, issue.id])}
+                                  className="h-5 text-[9px] bg-slate-950 hover:bg-slate-850 text-slate-300 px-1.5"
+                                >
+                                  Reviewed
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => setIgnoredIssueIds(prev => [...prev, issue.id])}
+                                  className="h-5 text-[9px] bg-slate-950 hover:bg-red-950/30 text-slate-400 hover:text-red-400 px-1.5"
+                                >
+                                  Ignore
+                                </Button>
+                              </>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => {
+                                  setIgnoredIssueIds(prev => prev.filter(x => x !== issue.id));
+                                  setReviewedIssueIds(prev => prev.filter(x => x !== issue.id));
+                                }}
+                                className="h-5 text-[9px] text-slate-500 hover:text-slate-300 px-1.5"
+                              >
+                                Undo Ignore
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
             </TabsContent>
 
             {/* TAB: Viewer Diagnostics & Telemetry */}
@@ -1330,38 +1971,147 @@ export default function RadiologistCockpit() {
 
       {/* WARNING DIALOG FOR INCOMPLETE REPORTS */}
       <Dialog open={showWarningModal} onOpenChange={setShowWarningModal}>
-        <DialogContent className="bg-slate-950 border border-slate-800 text-slate-100 max-w-sm rounded-lg">
+        <DialogContent className="bg-slate-950 border border-slate-800 text-slate-100 max-w-lg rounded-lg max-h-[85vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle className="text-sm font-bold flex items-center gap-2 text-amber-500">
-              <AlertTriangle className="h-4 w-4 animate-bounce" /> Report Is Incomplete ({completenessDetails.pct}%)
+            <DialogTitle className="text-sm font-bold flex items-center justify-between text-indigo-400">
+              <span className="flex items-center gap-1.5"><BrainCircuit className="h-4 w-4 text-indigo-400" /> AI Quality Inspector Review</span>
+              <Badge className={`text-xs ${
+                aiInspectorResults.score.overall >= 85 ? "bg-emerald-950 text-emerald-400 border border-emerald-800" :
+                aiInspectorResults.score.overall >= 70 ? "bg-amber-950 text-amber-400 border border-amber-800" :
+                "bg-red-950 text-red-400 border border-red-800"
+              }`}>
+                Score: {aiInspectorResults.score.overall}/100
+              </Badge>
             </DialogTitle>
-            <DialogDescription className="text-xs text-slate-400 mt-1">
-              Some recommended sections or mandatory measurements are missing:
-              <ul className="list-disc list-inside mt-2 space-y-1">
-                {!completenessDetails.checks.clinicalHistory && <li>Clinical Indication</li>}
-                {!completenessDetails.checks.technique && <li>Technique details</li>}
-                {!completenessDetails.checks.findings && <li>Findings observation (minimum 15 characters)</li>}
-                {!completenessDetails.checks.impression && <li>Diagnostic conclusions/Impression</li>}
-                {!completenessDetails.checks.recommendation && <li>Recommendation text</li>}
-              </ul>
-              {qualityCheckIssues.length > 0 && (
-                <div className="mt-3 border-t border-slate-800 pt-2">
-                  <span className="text-[11px] font-bold text-red-400">Missing Mandatory Measurements:</span>
-                  <ul className="list-disc list-inside mt-1 space-y-1 text-red-300">
-                    {qualityCheckIssues.map((issue, i) => <li key={i}>{issue}</li>)}
-                  </ul>
-                </div>
-              )}
+            <DialogDescription className="text-xs text-slate-400 mt-2">
+              Please review the following clinical quality, consistency, and completeness alerts before signing:
             </DialogDescription>
           </DialogHeader>
-          <DialogFooter className="flex gap-2 sm:justify-end mt-4">
+
+          {/* Completeness Section List */}
+          <div className="space-y-3 mt-3">
+            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">Report Structure Completeness:</div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[10px] bg-slate-900/40 p-2.5 rounded border border-slate-800">
+              <div className="flex items-center gap-1.5">
+                <span className={completenessDetails.checks.clinicalHistory ? "text-emerald-400 font-bold" : "text-amber-500 font-bold"}>
+                  {completenessDetails.checks.clinicalHistory ? "✓" : "✗"}
+                </span>
+                <span className="text-slate-300">Indication</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className={completenessDetails.checks.technique ? "text-emerald-400 font-bold" : "text-amber-500 font-bold"}>
+                  {completenessDetails.checks.technique ? "✓" : "✗"}
+                </span>
+                <span className="text-slate-300">Technique</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className={completenessDetails.checks.findings ? "text-emerald-400 font-bold" : "text-amber-500 font-bold"}>
+                  {completenessDetails.checks.findings ? "✓" : "✗"}
+                </span>
+                <span className="text-slate-300">Findings</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className={completenessDetails.checks.impression ? "text-emerald-400 font-bold" : "text-amber-500 font-bold"}>
+                  {completenessDetails.checks.impression ? "✓" : "✗"}
+                </span>
+                <span className="text-slate-300">Impression</span>
+              </div>
+              <div className="flex items-center gap-1.5 col-span-2">
+                <span className={completenessDetails.checks.recommendation ? "text-emerald-400 font-bold" : "text-amber-500 font-bold"}>
+                  {completenessDetails.checks.recommendation ? "✓" : "✗"}
+                </span>
+                <span className="text-slate-300">Recommendation</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Warnings List */}
+          <div className="space-y-2 mt-4">
+            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">Quality & Consistency Issues:</div>
+            {aiInspectorResults.issues.filter(i => !ignoredIssueIds.includes(i.id) && !reviewedIssueIds.includes(i.id)).length === 0 ? (
+              <div className="text-center py-4 text-emerald-400 text-xs font-semibold bg-emerald-950/10 border border-emerald-900/30 rounded-lg">
+                ✓ All consistency and mandatory metrics checks are resolved or reviewed!
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-[30vh] overflow-y-auto pr-1">
+                {aiInspectorResults.issues
+                  .filter(i => !ignoredIssueIds.includes(i.id) && !reviewedIssueIds.includes(i.id))
+                  .map((issue) => (
+                    <div
+                      key={issue.id}
+                      className={`p-2.5 rounded border text-[11px] space-y-1.5 ${
+                        issue.severity === "critical" ? "bg-red-950/20 border-red-900/50 text-slate-300" :
+                        issue.severity === "important" ? "bg-amber-950/20 border-amber-900/50 text-slate-300" :
+                        "bg-slate-900 border-slate-800 text-slate-300"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-slate-200">{issue.title}</span>
+                        <Badge variant="outline" className={`text-[8px] uppercase px-1 py-0 ${
+                          issue.severity === "critical" ? "border-red-800 text-red-400" :
+                          issue.severity === "important" ? "border-amber-800 text-amber-400" :
+                          "border-blue-800 text-blue-400"
+                        }`}>
+                          {issue.severity}
+                        </Badge>
+                      </div>
+                      <p className="text-[10px] text-slate-400 leading-normal">{issue.message}</p>
+                      {issue.suggestion && (
+                        <div className="bg-slate-950 p-1.5 rounded text-[9px] font-mono text-indigo-300 font-bold">
+                          {issue.suggestion}
+                        </div>
+                      )}
+                      <div className="flex justify-between items-center pt-1 border-t border-slate-800/30">
+                        {issue.field && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-4 p-0 text-[9px] text-indigo-400 hover:text-indigo-300"
+                            onClick={() => {
+                              setShowWarningModal(false);
+                              const el = document.getElementById(`report-editor-${issue.field}`);
+                              if (el) {
+                                el.focus();
+                                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                              }
+                            }}
+                          >
+                            Jump to location
+                          </Button>
+                        )}
+                        <div className="flex gap-1 ml-auto">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-4 px-1 text-[9px] bg-slate-900 text-slate-300 hover:bg-slate-800"
+                            onClick={() => setReviewedIssueIds(prev => [...prev, issue.id])}
+                          >
+                            Mark Reviewed
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-4 px-1 text-[9px] bg-slate-900 text-slate-400 hover:text-red-400"
+                            onClick={() => setIgnoredIssueIds(prev => [...prev, issue.id])}
+                          >
+                            Ignore
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="flex gap-2 sm:justify-end mt-5 pt-3 border-t border-slate-800">
             <Button size="sm" variant="outline" onClick={() => setShowWarningModal(false)} className="border-slate-800 hover:bg-slate-900 text-xs text-slate-300">
               Back to Edit
             </Button>
             <Button size="sm" onClick={() => {
               setShowWarningModal(false);
               finalizeMutation.mutate();
-            }} className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold">
+            }} className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold">
               Sign Anyway
             </Button>
           </DialogFooter>

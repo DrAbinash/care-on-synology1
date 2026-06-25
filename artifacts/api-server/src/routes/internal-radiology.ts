@@ -523,6 +523,7 @@ router.post("/radiology/report-status", async (req, res) => {
     deliveryStatus?: string;
     reportId?: number;
     actor?: string;
+    auditDetails?: unknown;
   };
 
   // Find worklist row
@@ -577,7 +578,7 @@ router.post("/radiology/report-status", async (req, res) => {
     accessionNumber: existing.accessionNumber,
     action: "REPORT_STATUS_UPDATED",
     actor: b.actor ?? "system",
-    details: { changes },
+    details: { changes, ...(typeof b.auditDetails === "object" && b.auditDetails ? b.auditDetails : {}) },
   });
 
   if (b.status === "REPORT_FINAL" && existing.studyId) {
