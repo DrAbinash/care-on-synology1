@@ -17,7 +17,7 @@ import {
   Search, Filter, Clock, CheckCheck, AlertCircle, MonitorPlay, Tv2,
   ClipboardList, CalendarDays, ShieldCheck, ShieldOff, Database,
   ChevronDown, ChevronUp, Eye, MessageSquare, ThumbsUp, ThumbsDown, Trash2,
-  X, Activity,
+  X, Activity, Stethoscope,
 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
@@ -863,6 +863,18 @@ export default function RadiologyWorklist() {
                               >
                                 <Activity className="h-3 w-3 mr-1" />
                                 Command Center
+                              </Button>
+                            )}
+
+                            {entry.id !== -1 && (
+                              <Button
+                                size="sm"
+                                className="h-7 px-2 text-xs bg-indigo-600 hover:bg-indigo-700 text-white"
+                                onClick={() => navigate(`/radiology/cockpit?studyId=${entry.id}`)}
+                                title="Open in Radiologist Cockpit"
+                              >
+                                <Stethoscope className="h-3 w-3 mr-1" />
+                                Cockpit
                               </Button>
                             )}
 

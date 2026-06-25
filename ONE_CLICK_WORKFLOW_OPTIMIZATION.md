@@ -69,13 +69,13 @@ This document audits common daily tasks across all ERP modules, comparing the pr
 
 ## 2. Optimization Summary Table
 
-| Module | Task Description | Clicks Before | Clicks After | Status | Risk Level |
-| :--- | :--- | :---: | :---: | :---: | :---: |
-| **Radiology Worklist** | Open Cockpit from Worklist | 2 | 1 | Implemented | Low |
-| **Cockpit** | Launch Viewer (OHIF/Weasis) | 2 | 1 | Implemented | Low |
-| **Report Delivery** | Mark Report as Delivered | 5 | 1 | Implemented | Low |
-| **Billing** | Send payment Link / QR | 4 | 1 | Audited | Low |
-| **Scan Station** | Upload Form F | 4 | 1 | Audited | Low |
+| Module | Task Description | Clicks Before | Clicks After | Status | Risk Level | Files Changed |
+| :--- | :--- | :---: | :---: | :---: | :---: | :--- |
+| **Radiology Worklist** | Open Cockpit from Worklist | 2 | 1 | Implemented | Low | [RadiologyWorklist.tsx](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/pages/RadiologyWorklist.tsx) |
+| **Cockpit** | Launch Viewer (OHIF/Weasis) | 2 | 1 | Implemented | Low | [RadiologistCockpit.tsx](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/pages/RadiologistCockpit.tsx) |
+| **Report Delivery** | Mark Report as Delivered | 5 | 1 | Implemented | Low | [ReportDelivery.tsx](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/pages/ReportDelivery.tsx) |
+| **Billing** | Send payment Link / QR | 4 | 1 | Audited | Low | — |
+| **Scan Station** | Upload Form F | 4 | 1 | Audited | Low | — |
 
 ---
 

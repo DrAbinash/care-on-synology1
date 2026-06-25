@@ -974,8 +974,17 @@ export default function RadiologistCockpit() {
   // EFFECTS & COMPUTATIONS
   // ══════════════════════════════════════════════════════════════════════════
 
-  // Auto-select first study on load
+  // Auto-select first study on load or URL param
   useEffect(() => {
+    const searchParams = new URLSearchParams(window.location.search);
+    const urlStudyId = searchParams.get("studyId");
+    if (urlStudyId) {
+      const numId = parseInt(urlStudyId, 10);
+      if (!isNaN(numId) && activeStudyId !== numId) {
+        setActiveStudyId(numId);
+        return;
+      }
+    }
     if (!activeStudyId && worklist.length > 0) {
       setActiveStudyId(worklist[0].id);
     }
