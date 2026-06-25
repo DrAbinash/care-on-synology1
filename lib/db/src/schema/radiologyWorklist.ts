@@ -44,6 +44,15 @@ export const radiologyWorklistTable = pgTable(
     // Delivery: null | READY_TO_SEND | SENT
     // NOTE: automated sending is NOT implemented yet — only flag the status.
     deliveryStatus: text("delivery_status"),
+    // Anti-forgery mismatch protection fields
+    matchScore: text("match_score").notNull().default("RED"),
+    matchPoints: integer("match_points").notNull().default(0),
+    matchReasons: text("match_reasons"),
+    matchWarnings: text("match_warnings"),
+    matchDecision: text("match_decision").notNull().default("PENDING"),
+    matchApprovedBy: text("match_approved_by"),
+    matchApprovedAt: timestamp("match_approved_at", { withTimezone: true }),
+    matchOverrideReason: text("match_override_reason"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },

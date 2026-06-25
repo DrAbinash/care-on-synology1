@@ -359,6 +359,14 @@ async function runStartupMigrations(): Promise<void> {
       ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS ai_feedback TEXT;
       ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS ai_feedback_at TIMESTAMPTZ;
       ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS assigned_radiologist TEXT;
+      ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS match_score TEXT NOT NULL DEFAULT 'RED';
+      ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS match_points INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS match_reasons TEXT;
+      ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS match_warnings TEXT;
+      ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS match_decision TEXT NOT NULL DEFAULT 'PENDING';
+      ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS match_approved_by TEXT;
+      ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS match_approved_at TIMESTAMPTZ;
+      ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS match_override_reason TEXT;
       CREATE TABLE IF NOT EXISTS pacs_settings (
         id SERIAL PRIMARY KEY,
         key TEXT NOT NULL,
