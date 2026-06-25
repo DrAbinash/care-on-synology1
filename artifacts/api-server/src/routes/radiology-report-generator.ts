@@ -43,6 +43,7 @@ import {
   clinicSettingsTable,
   spinalMeasurementsTable,
   radiologySmartMacrosTable,
+  radiologyInstitutionalStylesTable,
 } from "@workspace/db/schema";
 import { eq, and, desc, isNull, asc, ilike, or } from "drizzle-orm";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
@@ -653,29 +654,72 @@ function escHtml(v: string): string {
     clinicSettings?: {
       name: string; address: string; phone: string; email: string; logoDataUrl: string | null;
     };
+    institutionalStyle?: typeof radiologyInstitutionalStylesTable.$inferSelect | null;
   }): string {
     const t = input.template;
     const sections = input.findingsSections ?? {};
     const impressionBullets = (input.impression ?? []).filter(Boolean);
     const includedImages = (input.keyImages ?? []).filter((img) => img.includeInReport);
+    
+    const style = input.institutionalStyle;
     const prefs = input.preferences ?? {};
+    
+    const ss = style ? style.spacing : (prefs.sectionSpacing ?? "spaced");
+    const sp = ss === "compact" ? "2px" : ss === "comfortable" ? "18px" : "10px";
+    const sp2 = ss === "compact" ? "4px" : ss === "comfortable" ? "20px" : "12px";
+    const lineHt = ss === "compact" ? "1.2" : ss === "comfortable" ? "1.7" : "1.45";
+
+    const headingStyle = style ? style.headingStyle : "underlined";
     const hc = prefs.headingCase ?? "all_caps";
-    const ss = prefs.sectionSpacing ?? "spaced";
-    const ist = prefs.impressionStyle ?? "bulleted";
-    const sp = ss === "compact" ? "2px" : "10px";
-    const sp2 = ss === "compact" ? "4px" : "12px";
+
+    function fmtHeadingHtml(titleText: string): string {
+      const formatted = fmtHeading(titleText, hc);
+      switch (headingStyle) {
+        case "bold": return `<strong>${escHtml(formatted)}</strong>`;
+        case "underlined": return `<u>${escHtml(formatted)}</u>`;
+        case "bold_underlined": return `<strong><u>${escHtml(formatted)}</u></strong>`;
+        case "plain":
+        default: return escHtml(formatted);
+      }
+    }
+
+    const fontSzOption = style ? style.fontSize : "standard";
+    const fontSzVal = fontSzOption === "small" ? "11px" : fontSzOption === "large" ? "15px" : "13px";
+
+    const marginOption = style ? style.margins : "standard";
+    const paddingVal = marginOption === "narrow" ? "10px" : marginOption === "wide" ? "40px" : "20px";
+    const maxWVal = marginOption === "narrow" ? "800px" : marginOption === "wide" ? "640px" : "720px";
+
+    const abnormalEmphasis = style ? style.abnormalEmphasis : "bold_abnormal";
+    
+    function highlightAbnormalTerms(text: string): string {
+      const terms = [
+        "fracture", "hemorrhage", "mass", "lesion", "abnormal", "acute",
+        "stenosis", "herniation", "tear", "infarct", "ischemia", "embolism",
+        "clot", "rupture", "deviation", "effusion", "edema", "nodule", "cysts"
+      ];
+      let result = text;
+      for (const term of terms) {
+        const re = new RegExp(`\\b(${term}s?)\\b(?![^<]*>)(?![^<>]*<\\/[b|strong])`, "gi");
+        result = result.replace(re, "<strong>$1</strong>");
+      }
+      return result;
+    }
 
     const sectionsHtml = t.sections
       .map((name) => {
-        const content = sections[name] ?? input.rawFindings ?? "";
-        const title = fmtHeading(name, hc);
-        return `<p style="margin:${sp} 0;"><strong><u>${escHtml(title)}</u></strong><br/>${escHtml(content).replaceAll("\n", "<br/>") || "<em style='color:#aaa;'>—</em>"}</p>`;
+        let content = sections[name] ?? input.rawFindings ?? "";
+        if (abnormalEmphasis === "bold_abnormal" || abnormalEmphasis === "bold_both") {
+          content = highlightAbnormalTerms(content);
+        }
+        const title = fmtHeadingHtml(name);
+        return `<p style="margin:${sp} 0;">${title}<br/>${content.replaceAll("\n", "<br/>") || "<em style='color:#aaa;'>—</em>"}</p>`;
       })
       .join("\n");
 
     const imagesHtml =
       includedImages.length > 0
-        ? `<h3 style="margin:${sp2} 0 ${sp};"><u>${fmtHeading("Key Images", hc)}</u></h3>
+        ? `<h3 style="margin:${sp2} 0 ${sp};">${fmtHeadingHtml("Key Images")}</h3>
   <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin:8px 0;">
   ${includedImages
     .map(
@@ -688,14 +732,22 @@ function escHtml(v: string): string {
   </div>`
         : "";
 
+    const ist = prefs.impressionStyle ?? "bulleted";
     let impressionHtml = "";
     if (impressionBullets.length > 0) {
+      const processedBullets = impressionBullets.map((b) => {
+        let txt = escHtml(b);
+        if (abnormalEmphasis === "bold_impression" || abnormalEmphasis === "bold_both") {
+          txt = `<strong>${txt}</strong>`;
+        }
+        return txt;
+      });
       if (ist === "numbered") {
-        impressionHtml = `<ol style="margin:4px 0 0 22px;padding:0;">${impressionBullets.map((b) => `<li>${escHtml(b)}</li>`).join("")}</ol>`;
+        impressionHtml = `<ol style="margin:4px 0 0 22px;padding:0;">${processedBullets.map((b) => `<li>${b}</li>`).join("")}</ol>`;
       } else if (ist === "plain") {
-        impressionHtml = `<p style="margin:4px 0;">${impressionBullets.map((b) => escHtml(b)).join("; ")}</p>`;
+        impressionHtml = `<p style="margin:4px 0;">${processedBullets.join("; ")}</p>`;
       } else {
-        impressionHtml = `<ul style="margin:4px 0 0 18px;padding:0;">${impressionBullets.map((b) => `<li>${escHtml(b)}</li>`).join("")}</ul>`;
+        impressionHtml = `<ul style="margin:4px 0 0 18px;padding:0;">${processedBullets.map((b) => `<li>${b}</li>`).join("")}</ul>`;
       }
     } else {
       impressionHtml = `<p style="margin:4px 0;color:#aaa;"><em>Draft impression — not verified.</em></p>`;
@@ -705,7 +757,11 @@ function escHtml(v: string): string {
       ? prefs.headerLine2Custom
       : t.studyName;
 
-    const isPlainPaper = prefs.printMode === "plain_paper";
+    const layoutOption = style ? style.printLayout : (prefs.printMode || "letterhead");
+    const isPlainPaper = layoutOption === "a4_plain";
+    const isHalfPage = layoutOption === "half_page";
+    const isLetterhead = layoutOption === "letterhead";
+
     const c = input.clinicSettings;
 
     const ptHeader = isPlainPaper && c
@@ -738,27 +794,93 @@ function escHtml(v: string): string {
     <p style="font-size:11px;color:#666;font-style:italic;margin:0;">Please correlate with clinical history and findings. Report issued by authorized radiologist only.</p>`
       : "";
 
-    const contentBody = `<div style="font-family:Arial,sans-serif;font-size:13px;line-height:1.45;color:#111;max-width:720px;margin:0 auto;">
+    const sectionOrderRaw = style ? style.sectionOrder : "Technique,Findings,Impression";
+    const sectionOrder = sectionOrderRaw.split(",").map((s) => s.trim().toLowerCase());
+    
+    const renderClinicalHistory = () => {
+      const showHist = style ? style.showClinicalHistory : true;
+      if (showHist && input.clinicalHistory) {
+        return `<h3 style="margin:${sp} 0 ${sp};">${fmtHeadingHtml("Clinical History")}</h3><p style="margin:0 0 ${sp};">${escHtml(input.clinicalHistory)}</p>`;
+      }
+      return "";
+    };
+
+    const renderTechnique = () => {
+      return `<h3 style="margin:${sp} 0 ${sp};">${fmtHeadingHtml("Technique")}</h3><p style="margin:0 0 ${sp};">${escHtml(t.technique)}</p>`;
+    };
+
+    const renderFindings = () => {
+      return `<h3 style="margin:${sp} 0 ${sp};">${fmtHeadingHtml("Findings / Observation")}</h3>\n${sectionsHtml}`;
+    };
+
+    const renderImpression = () => {
+      return `<h3 style="margin:${sp2} 0 ${sp};">${fmtHeadingHtml("Impression")}</h3>\n${impressionHtml}`;
+    };
+
+    const renderRecommendation = () => {
+      const showRec = style ? style.showRecommendation : true;
+      if (showRec) {
+        return `<h3 style="margin:${sp2} 0 ${sp};">${fmtHeadingHtml("Recommendation")}</h3><p style="margin:0 0 ${sp};">${escHtml(input.recommendation ?? "Please correlate with clinical findings.")}</p>`;
+      }
+      return "";
+    };
+
+    const renderComparison = () => {
+      return "";
+    };
+
+    const renderMeasurements = () => {
+      return "";
+    };
+
+    const renderCriticalCommunication = () => {
+      return "";
+    };
+
+    const renderMap: Record<string, () => string> = {
+      "clinical history": renderClinicalHistory,
+      "clinical_history": renderClinicalHistory,
+      "technique": renderTechnique,
+      "findings": renderFindings,
+      "impression": renderImpression,
+      "recommendation": renderRecommendation,
+      "comparison": renderComparison,
+      "measurements": renderMeasurements,
+      "critical communication": renderCriticalCommunication,
+      "critical_communication": renderCriticalCommunication,
+    };
+
+    let bodySectionsHtml = "";
+    for (const secKey of sectionOrder) {
+      const fn = renderMap[secKey];
+      if (fn) {
+        bodySectionsHtml += fn();
+      }
+    }
+    if (!sectionOrder.includes("clinical history") && !sectionOrder.includes("clinical_history")) {
+      bodySectionsHtml = renderClinicalHistory() + bodySectionsHtml;
+    }
+    if (!sectionOrder.includes("recommendation")) {
+      bodySectionsHtml = bodySectionsHtml + renderRecommendation();
+    }
+
+    const topGapStyle = isLetterhead ? "padding-top: 100px;" : "";
+    const containerStyle = isHalfPage 
+      ? `font-family:Arial,sans-serif;font-size:${fontSzVal};line-height:${lineHt};color:#111;max-width:${maxWVal};margin:0 auto;padding:${paddingVal};border:1px dashed #ccc;height:50%;`
+      : `font-family:Arial,sans-serif;font-size:${fontSzVal};line-height:${lineHt};color:#111;max-width:${maxWVal};margin:0 auto;padding:${paddingVal};${topGapStyle}`;
+
+    const contentBody = `<div style="${containerStyle}">
     ${headerHtml}
     <hr style="border:none;border-top:2px solid #000;margin:6px 0;" />
     <h2 style="text-align:center;text-decoration:underline;font-size:15px;margin:8px 0;"><strong>${escHtml(t.studyName)}</strong></h2>
-    <h3 style="margin:${sp} 0 ${sp};"><u>${fmtHeading("Technique", hc)}</u></h3>
-    <p style="margin:0 0 ${sp};">${escHtml(t.technique)}</p>
-    ${input.clinicalHistory ? `<h3 style="margin:${sp} 0 ${sp};"><u>${fmtHeading("Clinical History", hc)}</u></h3><p style="margin:0 0 ${sp};">${escHtml(input.clinicalHistory)}</p>` : ""}
-    <hr style="border:none;border-top:2px solid #000;margin:6px 0;" />
-    <h3 style="margin:${sp} 0 ${sp};"><u>${fmtHeading("Findings / Observation", hc)}</u></h3>
-    ${sectionsHtml}
+    ${bodySectionsHtml}
     ${imagesHtml}
-    <h3 style="margin:${sp2} 0 ${sp};"><u>${fmtHeading("Impression", hc)}</u></h3>
-    ${impressionHtml}
-    <h3 style="margin:${sp2} 0 ${sp};"><u>${fmtHeading("Recommendation", hc)}</u></h3>
-    <p style="margin:0 0 ${sp};">${escHtml(input.recommendation ?? "Please correlate with clinical findings.")}</p>
     ${footerBlock}
   </div>`;
 
     if (!isPlainPaper) return contentBody.trim();
 
-    return `<div style="font-family:Arial,sans-serif;font-size:13px;line-height:1.45;color:#111;">
+    return `<div style="font-family:Arial,sans-serif;font-size:${fontSzVal};line-height:${lineHt};color:#111;">
       ${ptHeader}
       ${contentBody}
       ${ptFooter}
@@ -876,12 +998,24 @@ radiologyReportGeneratorRouter.post("/generate", async (req: Request, res: Respo
     }
   }
 
+  // Fetch active institutional style
+  let institutionalStyle = null;
+  try {
+    const [style] = await db.select().from(radiologyInstitutionalStylesTable).limit(1);
+    if (style) {
+      institutionalStyle = style;
+    }
+  } catch (e) {
+    // ignore query error
+  }
+
   const html = buildReportHtml({
     ...data,
     patientId: data.patientId != null ? String(data.patientId) : undefined,
     template,
     preferences: data.preferences,
     clinicSettings,
+    institutionalStyle,
   });
 
   const text = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();

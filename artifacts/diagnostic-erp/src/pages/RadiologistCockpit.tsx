@@ -86,7 +86,7 @@ type TemplateSections = {
 
 interface InspectorIssue {
   id: string;
-  category: "consistency" | "measurement" | "completeness" | "cds" | "priors" | "voice";
+  category: "consistency" | "measurement" | "completeness" | "cds" | "priors" | "voice" | "style";
   severity: "critical" | "important" | "suggestion";
   title: string;
   message: string;

@@ -9,6 +9,7 @@ import {
   clinicSettingsTable,
   reportTemplatesTable,
   radiologyStudiesTable,
+  radiologyInstitutionalStylesTable,
 } from "@workspace/db/schema";
 import { eq, and, desc, sql, ilike, or, isNull, isNotNull } from "drizzle-orm";
 import { sendReportWhatsapp, sendReportDelivery } from "./whatsapp";
@@ -374,6 +375,18 @@ patientReportsRouter.post("/", async (req, res) => {
   }
   const type = (String(b.type ?? "") || (test.department && /(USG|MRI|CT|X-?RAY|MAMMO|DEXA|RAD)/i.test(test.department) ? "radiology" : "pathology")).toLowerCase();
 
+  let presetUsed = typeof b.stylePresetUsed === "string" ? b.stylePresetUsed : null;
+  if (!presetUsed && type === "radiology") {
+    try {
+      const [style] = await db.select({ presetName: radiologyInstitutionalStylesTable.presetName }).from(radiologyInstitutionalStylesTable).limit(1);
+      if (style) {
+        presetUsed = style.presetName;
+      }
+    } catch {
+      // ignore query error
+    }
+  }
+
   // Retry on UNIQUE collision for the report number.
   for (let attempt = 0; attempt < 3; attempt++) {
     const reportNumber = await nextReportNumber();
@@ -395,6 +408,7 @@ patientReportsRouter.post("/", async (req, res) => {
         createdBy: typeof b.createdBy === "string" ? b.createdBy : null,
         isCritical: b.isCritical === true,
         criticalNote: typeof b.criticalNote === "string" ? b.criticalNote : null,
+        stylePresetUsed: presetUsed,
       }).returning();
       res.status(201).json(row);
       return;
@@ -669,7 +683,7 @@ function escapeHtml(s: string | null | undefined): string {
 
 type Param = { name: string; result?: string; value?: string; unit?: string; refRange?: string; flag?: string };
 
-export async function buildReportHtml(reportId: number, autoPrint: boolean): Promise<string | null> {
+export async function buildReportHtml(reportId: number, autoPrint: boolean, useUpdatedStyle?: boolean): Promise<string | null> {
   const [row] = await db
     .select({
       r: patientReportsTable,
@@ -689,6 +703,68 @@ export async function buildReportHtml(reportId: number, autoPrint: boolean): Pro
   const r = row.r;
 
   const [clinic] = await db.select().from(clinicSettingsTable).limit(1);
+
+  // Load institutional style if radiology report
+  let instStyle: any = null;
+  if (r.type === "radiology") {
+    try {
+      if (useUpdatedStyle || r.status === "draft" || r.status === "pending_verification") {
+        const [active] = await db.select().from(radiologyInstitutionalStylesTable).limit(1);
+        if (active) instStyle = active;
+      } else if (r.stylePresetUsed) {
+        const [active] = await db.select().from(radiologyInstitutionalStylesTable).limit(1);
+        if (active && active.presetName === r.stylePresetUsed) {
+          instStyle = active;
+        } else {
+          const PRESETS: Record<string, any> = {
+            "Care Diagnostics Default": {
+              presetName: "Care Diagnostics Default",
+              sectionOrder: "Technique,Findings,Impression",
+              showClinicalHistory: true, showComparison: true, showRecommendation: true, showCriticalCommunication: true, showMeasurements: true,
+              headingStyle: "underlined", abnormalEmphasis: "bold_abnormal", spacing: "standard", printLayout: "letterhead", margins: "standard", fontSize: "standard",
+              showRadiologistName: true, showDegree: true, showRegNumber: true, showDigitalSignature: true, showTimestamp: true, showQrVerification: true,
+            },
+            "Compact Radiology": {
+              presetName: "Compact Radiology",
+              sectionOrder: "Technique,Findings,Impression",
+              showClinicalHistory: false, showComparison: false, showRecommendation: true, showCriticalCommunication: true, showMeasurements: false,
+              headingStyle: "bold", abnormalEmphasis: "bold_both", spacing: "compact", printLayout: "half_page", margins: "narrow", fontSize: "small",
+              showRadiologistName: true, showDegree: true, showRegNumber: false, showDigitalSignature: true, showTimestamp: false, showQrVerification: false,
+            },
+            "Formal Letterpad": {
+              presetName: "Formal Letterpad",
+              sectionOrder: "Technique,Findings,Impression",
+              showClinicalHistory: true, showComparison: true, showRecommendation: true, showCriticalCommunication: true, showMeasurements: true,
+              headingStyle: "bold_underlined", abnormalEmphasis: "bold_impression", spacing: "comfortable", printLayout: "letterhead", margins: "standard", fontSize: "standard",
+              showRadiologistName: true, showDegree: true, showRegNumber: true, showDigitalSignature: true, showTimestamp: true, showQrVerification: true,
+            },
+            "Plain A4": {
+              presetName: "Plain A4",
+              sectionOrder: "Technique,Findings,Impression",
+              showClinicalHistory: true, showComparison: true, showRecommendation: true, showCriticalCommunication: true, showMeasurements: true,
+              headingStyle: "plain", abnormalEmphasis: "none", spacing: "standard", printLayout: "a4_plain", margins: "standard", fontSize: "standard",
+              showRadiologistName: true, showDegree: true, showRegNumber: true, showDigitalSignature: true, showTimestamp: true, showQrVerification: true,
+            }
+          };
+          const matchedPreset = PRESETS[r.stylePresetUsed];
+          if (matchedPreset) {
+            instStyle = matchedPreset;
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // Fallback signature settings
+  const showRadiologistName = instStyle ? instStyle.showRadiologistName : true;
+  const showDegree = instStyle ? instStyle.showDegree : true;
+  const showRegNumber = instStyle ? instStyle.showRegNumber : true;
+  const showDigitalSignature = instStyle ? instStyle.showDigitalSignature : true;
+  const showTimestamp = instStyle ? instStyle.showTimestamp : true;
+  const showQrVerification = instStyle ? instStyle.showQrVerification : true;
+
   const sigPrimary = r.signatureId ? (await db.select().from(signaturesTable).where(eq(signaturesTable.id, r.signatureId)))[0] : null;
   const sigVerifier = r.verifiedBySignatureId ? (await db.select().from(signaturesTable).where(eq(signaturesTable.id, r.verifiedBySignatureId)))[0] : null;
 
@@ -738,11 +814,12 @@ export async function buildReportHtml(reportId: number, autoPrint: boolean): Pro
 
   function sigBlock(sig: typeof sigPrimary, fallbackName: string | null, label: string, when: Date | null) {
     if (!sig && !fallbackName) return "";
-    const img = sig?.imageDataUrl ? `<img src="${sig.imageDataUrl}" alt="signature"/>` : "";
-    const name = sig?.name ?? fallbackName ?? "";
-    const reg = sig?.registrationNo ? `Reg. No: ${escapeHtml(sig.registrationNo)}` : "";
-    const qual = sig?.qualification ? escapeHtml(sig.qualification) : "";
+    const img = (sig?.imageDataUrl && showDigitalSignature) ? `<img src="${sig.imageDataUrl}" alt="signature"/>` : "";
+    const name = showRadiologistName ? (sig?.name ?? fallbackName ?? "") : "";
+    const reg = (sig?.registrationNo && showRegNumber) ? `Reg. No: ${escapeHtml(sig.registrationNo)}` : "";
+    const qual = (sig?.qualification && showDegree) ? escapeHtml(sig.qualification) : "";
     const role = sig?.role ? escapeHtml(sig.role) : "";
+    const timeStr = (when && showTimestamp) ? ` ${new Date(when).toLocaleString("en-IN")}` : "";
     return `
       <div class="sigbox">
         <div class="sigimg">${img}</div>
@@ -750,9 +827,46 @@ export async function buildReportHtml(reportId: number, autoPrint: boolean): Pro
         <div class="signame">${escapeHtml(name)}</div>
         <div class="sigmeta">${qual}${qual && role ? " • " : ""}${role}</div>
         <div class="sigmeta">${reg}</div>
-        <div class="sigmeta sigwhen">${label}${when ? ` ${new Date(when).toLocaleString("en-IN")}` : ""}</div>
+        <div class="sigmeta sigwhen">${label}${timeStr}</div>
       </div>`;
   }
+
+  // Build style overrides
+  let customStyles = "";
+  if (instStyle) {
+    const fs = instStyle.fontSize === "small" ? "11px" : instStyle.fontSize === "large" ? "15px" : "13px";
+    const marginVal = instStyle.margins === "narrow" ? "14mm 10mm" : instStyle.margins === "wide" ? "20mm 25mm" : "14mm";
+    const spacingVal = instStyle.spacing === "compact" ? "2px" : instStyle.spacing === "comfortable" ? "18px" : "10px";
+    const lineHt = instStyle.spacing === "compact" ? "1.2" : instStyle.spacing === "comfortable" ? "1.7" : "1.45";
+
+    customStyles = `
+      @page { size: A4; margin: ${marginVal}; }
+      body { font-size: ${fs} !important; line-height: ${lineHt} !important; }
+      .body p, .body div { margin-bottom: ${spacingVal} !important; }
+    `;
+
+    if (instStyle.printLayout === "screen_only") {
+      customStyles += `
+        @media print {
+          body { display: none !important; }
+        }
+      `;
+    }
+    if (instStyle.printLayout === "half_page") {
+      customStyles += `
+        body { height: 50% !important; border: 1px dashed #ccc !important; padding: 10px !important; }
+      `;
+    }
+  }
+
+  const qrHtml = (showQrVerification && r.type === "radiology") ? `
+    <div style="float:left;margin-top:10px;text-align:left;">
+      <div style="display:inline-block;padding:4px;border:1px solid #ccc;background:#fff;border-radius:4px;">
+        <span style="font-size:8px;display:block;color:#666;font-weight:bold;">QR Verification</span>
+        <div style="width:50px;height:50px;background:#000;color:#fff;font-size:7px;display:flex;align-items:center;justify-content:center;font-weight:bold;">SECURE</div>
+      </div>
+    </div>
+  ` : "";
 
   return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(r.reportNumber)} — ${escapeHtml(r.title)}</title>
     <style>
@@ -790,8 +904,9 @@ export async function buildReportHtml(reportId: number, autoPrint: boolean): Pro
       .signame { font-weight:700; font-size:12px; }
       .sigmeta { font-size:10px; color:#475569; line-height:1.3; }
       .sigwhen { margin-top:3px; font-style:italic; }
-      .ftr { margin-top:18px; font-size:9px; color:#64748b; text-align:center; border-top:1px solid #cbd5e1; padding-top:6px; }
+      .ftr { margin-top:18px; font-size:9px; color:#64748b; text-align:center; border-top:1px solid #cbd5e1; padding-top:6px; clear: both; }
       .reportno { float:right; font-family:monospace; color:#475569; font-size:10px; }
+      ${customStyles}
     </style></head><body>
       <div class="hdr">
         ${clinic?.logoDataUrl ? `<img src="${clinic.logoDataUrl}" alt="logo"/>` : ""}
@@ -820,12 +935,13 @@ export async function buildReportHtml(reportId: number, autoPrint: boolean): Pro
       ${criticalBanner}
       ${r.impression ? `<div class="impression"><strong>Impression:</strong> ${escapeHtml(r.impression)}</div>` : ""}
       ${parametersHtml}
-      ${r.body ? `<div class="body">${escapeHtml(r.body)}</div>` : ""}
+      ${r.body ? `<div class="body">${r.type === "radiology" ? r.body : escapeHtml(r.body)}</div>` : ""}
       ${verifiedBlock}
       <div class="sigs">
         ${sigBlock(sigPrimary, r.signedByName, "Signed:", r.signedAt as Date | null)}
         ${sigBlock(sigVerifier, r.verifiedByName, "Verified:", r.verifiedAt as Date | null)}
       </div>
+      ${qrHtml}
       <div class="ftr">${escapeHtml(clinic?.footerNote ?? "")} • Generated ${new Date().toLocaleString("en-IN")}</div>
       ${autoPrint ? `<script>window.onload=()=>{setTimeout(()=>window.print(),250);}</script>` : ""}
     </body></html>`;
@@ -833,7 +949,8 @@ export async function buildReportHtml(reportId: number, autoPrint: boolean): Pro
 
 patientReportsRouter.get("/:id/print", async (req, res) => {
   const id = Number(req.params.id);
-  const html = await buildReportHtml(id, true);
+  const useUpdatedStyle = req.query.useUpdatedStyle === "true";
+  const html = await buildReportHtml(id, true, useUpdatedStyle);
   if (!html) {
     res.status(404).send("Report not found");
     return;
@@ -849,7 +966,8 @@ patientReportsRouter.get("/:id/print", async (req, res) => {
 // PDF endpoint = same HTML but without auto-print (browser/user can save as PDF).
 patientReportsRouter.get("/:id/pdf", async (req, res) => {
   const id = Number(req.params.id);
-  const html = await buildReportHtml(id, false);
+  const useUpdatedStyle = req.query.useUpdatedStyle === "true";
+  const html = await buildReportHtml(id, false, useUpdatedStyle);
   if (!html) {
     res.status(404).send("Report not found");
     return;
@@ -877,7 +995,8 @@ publicReportsRouter.get("/:token/pdf", async (req, res) => {
   if (row.status !== "verified" && row.status !== "delivered") {
     res.status(403).send("Report not yet finalized"); return;
   }
-  const html = await buildReportHtml(row.id, false);
+  const useUpdatedStyle = req.query.useUpdatedStyle === "true";
+  const html = await buildReportHtml(row.id, false, useUpdatedStyle);
   if (!html) { res.status(404).send("Not found"); return; }
   await db.insert(reportSharesTable).values({
     reportId: row.id, channel: "pdf", recipient: "public-link",

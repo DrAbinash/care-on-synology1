@@ -2520,4 +2520,95 @@ radiologyRouter.post("/pacs-worklist/:id/match-decision", async (req, res) => {
   }
 });
 
+// GET /api/radiology/institutional-style
+radiologyRouter.get("/institutional-style", async (req, res) => {
+  try {
+    const [style] = await db
+      .select()
+      .from(radiologyInstitutionalStylesTable)
+      .limit(1);
+    if (!style) {
+      res.json({
+        id: 1,
+        presetName: "Care Diagnostics Default",
+        sectionOrder: "Technique,Findings,Impression",
+        showClinicalHistory: true,
+        showComparison: true,
+        showRecommendation: true,
+        showCriticalCommunication: true,
+        showMeasurements: true,
+        headingStyle: "underlined",
+        abnormalEmphasis: "bold_abnormal",
+        spacing: "standard",
+        printLayout: "letterhead",
+        margins: "standard",
+        fontSize: "standard",
+        showRadiologistName: true,
+        showDegree: true,
+        showRegNumber: true,
+        showDigitalSignature: true,
+        showTimestamp: true,
+        showQrVerification: true,
+      });
+      return;
+    }
+    res.json(style);
+  } catch (err: any) {
+    logger.error({ err }, "Error fetching institutional style");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/radiology/institutional-style
+radiologyRouter.put("/institutional-style", async (req, res) => {
+  try {
+    const body = req.body;
+    const [style] = await db
+      .select()
+      .from(radiologyInstitutionalStylesTable)
+      .limit(1);
+
+    const values = {
+      presetName: body.presetName || "Care Diagnostics Default",
+      sectionOrder: body.sectionOrder || "Technique,Findings,Impression",
+      showClinicalHistory: body.showClinicalHistory !== false,
+      showComparison: body.showComparison !== false,
+      showRecommendation: body.showRecommendation !== false,
+      showCriticalCommunication: body.showCriticalCommunication !== false,
+      showMeasurements: body.showMeasurements !== false,
+      headingStyle: body.headingStyle || "underlined",
+      abnormalEmphasis: body.abnormalEmphasis || "bold_abnormal",
+      spacing: body.spacing || "standard",
+      printLayout: body.printLayout || "letterhead",
+      margins: body.margins || "standard",
+      fontSize: body.fontSize || "standard",
+      showRadiologistName: body.showRadiologistName !== false,
+      showDegree: body.showDegree !== false,
+      showRegNumber: body.showRegNumber !== false,
+      showDigitalSignature: body.showDigitalSignature !== false,
+      showTimestamp: body.showTimestamp !== false,
+      showQrVerification: body.showQrVerification !== false,
+      updatedAt: new Date(),
+    };
+
+    if (style) {
+      const [updated] = await db
+        .update(radiologyInstitutionalStylesTable)
+        .set(values)
+        .where(eq(radiologyInstitutionalStylesTable.id, style.id))
+        .returning();
+      res.json(updated);
+    } else {
+      const [inserted] = await db
+        .insert(radiologyInstitutionalStylesTable)
+        .values({ id: 1, ...values })
+        .returning();
+      res.json(inserted);
+    }
+  } catch (err: any) {
+    logger.error({ err }, "Error updating institutional style");
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default radiologyRouter;
