@@ -34,7 +34,7 @@ const VALID_MODALITIES = new Set([
 // ─── Provider info / health ─────────────────────────────────────────────────
 
 router.get("/provider", async (_req, res) => {
-  const p = getPacsProvider();
+  const p = await getPacsProvider();
   const health = await p.health();
   res.json({
     type: p.type,

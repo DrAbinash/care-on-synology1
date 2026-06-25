@@ -90,3 +90,73 @@ export async function getRadiologyConfig(): Promise<RadiologyConfig> {
     viewer_mode: getVal("viewer_mode", "viewer") || "BOTH",
   };
 }
+
+export async function validateRadiologyConfig(): Promise<string[]> {
+  const cfg = await getRadiologyConfig();
+  const warnings: string[] = [];
+
+  // Check for Docker Bridge IP leaks
+  const isBridgeIp = (ip: string) => ip.startsWith("172.16.1.") || ip.startsWith("172.");
+  
+  if (isBridgeIp(cfg.orthanc.ip)) {
+    warnings.push("Orthanc IP uses Docker bridge network (172.x.x.x) which is unreachable by LAN workstations.");
+  }
+  if (isBridgeIp(cfg.conquest.ip)) {
+    warnings.push("Conquest IP uses Docker bridge network (172.x.x.x) which is unreachable by LAN workstations.");
+  }
+  if (cfg.ohif.baseUrl.includes("172.16.1.")) {
+    warnings.push("OHIF Base URL uses Docker bridge IP (172.x.x.x) - browser clients will fail to launch OHIF.");
+  }
+  if (cfg.weasis.wadoUrl.includes("172.16.1.")) {
+    warnings.push("Weasis WADO endpoint uses Docker bridge IP (172.x.x.x) - local Weasis installations cannot read scans.");
+  }
+
+  // Check missing settings
+  if (!cfg.orthanc.aeTitle) warnings.push("Orthanc AE Title is missing.");
+  if (!cfg.conquest.aeTitle) warnings.push("Conquest AE Title is missing.");
+  if (!cfg.orthanc.dicomPort) warnings.push("Orthanc DICOM port is missing.");
+  if (!cfg.conquest.dicomPort) warnings.push("Conquest DICOM port is missing.");
+  if (!cfg.orthanc.wadoUrl) warnings.push("Orthanc WADO URL is missing.");
+  if (!cfg.orthanc.dicomWebUrl) warnings.push("Orthanc DICOMweb URL is missing.");
+  if (!cfg.ohif.baseUrl) warnings.push("OHIF Base URL is missing.");
+  if (!cfg.weasis.launchTemplate) warnings.push("Weasis launch template is missing.");
+  if (!cfg.erp.internalApiUrl) warnings.push("ERP Internal API URL is missing.");
+
+  // Check Duplicate AE Titles
+  if (cfg.conquest.aeTitle && cfg.orthanc.aeTitle && cfg.conquest.aeTitle === cfg.orthanc.aeTitle) {
+    warnings.push(`Duplicate AE Title conflict: Both Orthanc and Conquest are named '${cfg.orthanc.aeTitle}'.`);
+  }
+
+  // Check Duplicate DICOM ports
+  if (cfg.orthanc.dicomPort && cfg.conquest.dicomPort && cfg.orthanc.dicomPort === cfg.conquest.dicomPort) {
+    warnings.push(`Duplicate Port conflict: Both Orthanc and Conquest listen on DICOM port ${cfg.orthanc.dicomPort}.`);
+  }
+
+  // Invalid LAN IP
+  const isPrivateIp = (ip: string) => 
+    /^(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(ip) || ip === "localhost" || ip === "127.0.0.1";
+  if (cfg.orthanc.ip && !isPrivateIp(cfg.orthanc.ip)) {
+    warnings.push(`Orthanc LAN IP '${cfg.orthanc.ip}' is not in a standard private subnet (192.168.x.x, 10.x.x.x, 172.16.x.x).`);
+  }
+  if (cfg.conquest.ip && !isPrivateIp(cfg.conquest.ip)) {
+    warnings.push(`Conquest LAN IP '${cfg.conquest.ip}' is not in a standard private subnet.`);
+  }
+
+  // Check Tailscale IP
+  const settings = await db.select().from(pacsSettingsTable);
+  const tailscaleHost = settings.find(s => s.key === "tailscale_host" && s.category === "network")?.value;
+  if (tailscaleHost && !tailscaleHost.startsWith("100.")) {
+    warnings.push(`Tailscale Host IP '${tailscaleHost}' does not start with 100.x.x.x.`);
+  }
+
+  // Check placeholders
+  if (cfg.erp.lanUrl.includes("YOUR_DOMAIN.replit.app") || cfg.erp.internalApiUrl.includes("YOUR_DOMAIN.replit.app")) {
+    warnings.push("Placeholder Replit URL detected in ERP settings. Update to your LAN IP or caredeoghar.com domain.");
+  }
+  if (!cfg.erp.hasApiKey) {
+    warnings.push("INTERNAL_API_KEY is not set. Hook sync from Orthanc/Conquest will fail authorization.");
+  }
+
+  return warnings;
+}
+

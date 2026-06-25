@@ -73,6 +73,65 @@ export default function RadiologySettingsCenter() {
     refetchInterval: 30000,
   });
 
+  // Load config changes history
+  const { data: changesData, refetch: refetchChanges } = useQuery<any>({
+    queryKey: ["/api/radiology/network/config/changes"],
+    queryFn: () => api.get("/api/radiology/network/config/changes"),
+  });
+
+  const [valResults, setValResults] = useState<Array<{ name: string; status: "PASS" | "WARNING" | "FAIL"; message: string }> | null>(null);
+  const [isValidating, setIsValidating] = useState(false);
+  const [changeReason, setChangeReason] = useState("");
+
+  const runValidation = async () => {
+    setIsValidating(true);
+    try {
+      const res = await api.post<any>("/api/radiology/network/config/validate", {});
+      setValResults(res.results);
+      toast({ title: "Configuration Validation Completed" });
+    } catch (err: any) {
+      toast({ title: "Validation failed", description: err.message, variant: "destructive" });
+    } finally {
+      setIsValidating(false);
+    }
+  };
+
+  const handleExport = async () => {
+    try {
+      const data = await api.get<any>("/api/radiology/network/config/export");
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `radiology_config_${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      toast({ title: "Configuration exported successfully" });
+    } catch (err: any) {
+      toast({ title: "Export failed", description: err.message, variant: "destructive" });
+    }
+  };
+
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const json = JSON.parse(event.target?.result as string);
+        await api.post("/api/radiology/network/config/import", { ...json, reason: "Imported via settings dashboard file upload" });
+        toast({ title: "Configuration imported successfully" });
+        refetchSettings();
+        refetchClinic();
+      } catch (err: any) {
+        toast({ title: "Import failed", description: err.message, variant: "destructive" });
+      }
+    };
+    reader.readAsText(file);
+  };
+
+
   // Mutation to update pacs settings
   const upsertSetting = useMutation({
     mutationFn: (body: object) => api.post("/api/radiology/pacs-settings", body),
@@ -182,6 +241,7 @@ export default function RadiologySettingsCenter() {
           <TabsTrigger value="mwl"><Wrench size={14} className="mr-1.5" />DICOM &amp; MWL</TabsTrigger>
           <TabsTrigger value="reporting"><BrainCircuit size={14} className="mr-1.5" />AI &amp; Templates</TabsTrigger>
           <TabsTrigger value="diagnostics"><Activity size={14} className="mr-1.5" />Diagnostics</TabsTrigger>
+          <TabsTrigger value="history"><Info size={14} className="mr-1.5" />History</TabsTrigger>
           <TabsTrigger value="advanced"><ShieldAlert size={14} className="mr-1.5" />Advanced</TabsTrigger>
         </TabsList>
 
@@ -505,28 +565,123 @@ export default function RadiologySettingsCenter() {
               )}
             </div>
 
+            <div className="space-y-6">
+              <div className="rounded-xl border bg-card p-5 space-y-4">
+                <h3 className="font-semibold text-sm flex items-center gap-2">
+                  <ShieldCheck size={16} className="text-primary" />
+                  Live Configuration Tester
+                </h3>
+                <p className="text-xs text-muted-foreground">
+                  Run deep startup-style checks for AE Title conflicts, port duplication, or missing endpoint parameters.
+                </p>
+                <Button
+                  className="w-full justify-center h-9"
+                  onClick={runValidation}
+                  disabled={isValidating}
+                >
+                  {isValidating ? "Testing Connection..." : "Validate Configuration"}
+                </Button>
+              </div>
+
+              <div className="rounded-xl border bg-card p-5 space-y-4">
+                <h3 className="font-semibold text-sm flex items-center gap-2">
+                  <PlayCircle size={16} className="text-primary" />
+                  Synchronization Diagnostics
+                </h3>
+                <p className="text-xs text-muted-foreground">
+                  Trigger manual ERP sync to push patient orders to MWL or update Conquest worklist queues.
+                </p>
+                <Button
+                  className="w-full justify-center h-9"
+                  onClick={() => {
+                    toast({ title: "Sync triggered" });
+                    api.post("/api/sync/trigger", {});
+                  }}
+                >
+                  Trigger Sync Now
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          {valResults && (
             <div className="rounded-xl border bg-card p-5 space-y-4">
               <h3 className="font-semibold text-sm flex items-center gap-2">
-                <PlayCircle size={16} className="text-primary" />
-                Synchronization Diagnostics
+                <ShieldAlert size={16} className="text-primary" />
+                Live Configuration Validation Results
               </h3>
-              <p className="text-xs text-muted-foreground">
-                Trigger manual ERP sync to push patient orders to MWL or update Conquest worklist queues.
-              </p>
-              <Button
-                className="w-full justify-center h-9"
-                onClick={() => {
-                  toast({ title: "Sync triggered" });
-                  api.post("/api/sync/trigger", {});
-                }}
-              >
-                Trigger Sync Now
-              </Button>
+              <div className="space-y-3">
+                {valResults.map((r, idx) => (
+                  <div key={idx} className="flex items-center justify-between p-3 rounded-lg border bg-card">
+                    <div className="space-y-0.5">
+                      <span className="text-xs font-semibold capitalize">{r.name}</span>
+                      <p className="text-[10px] text-muted-foreground">{r.message}</p>
+                    </div>
+                    <Badge
+                      variant="outline"
+                      className={
+                        r.status === "PASS"
+                          ? "text-green-600 border-green-200"
+                          : r.status === "WARNING"
+                          ? "text-amber-600 border-amber-200"
+                          : "text-red-600 border-red-200 animate-pulse"
+                      }
+                    >
+                      {r.status}
+                    </Badge>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </TabsContent>
+
+        {/* Tab content 8: Change History Log */}
+        <TabsContent value="history" className="space-y-4">
+          <div className="rounded-xl border bg-card p-5 space-y-4">
+            <h3 className="font-semibold text-sm flex items-center gap-2">
+              <Activity size={16} className="text-primary" />
+              Configuration Change Audit Log
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Review history of all changes made to PACS, viewers, and network profiles.
+            </p>
+            <div className="border rounded-lg overflow-x-auto">
+              <table className="min-w-full divide-y divide-border text-xs">
+                <thead className="bg-muted">
+                  <tr>
+                    <th className="px-4 py-2 text-left font-semibold">Date</th>
+                    <th className="px-4 py-2 text-left font-semibold">User</th>
+                    <th className="px-4 py-2 text-left font-semibold">Setting Key</th>
+                    <th className="px-4 py-2 text-left font-semibold">Old Value</th>
+                    <th className="px-4 py-2 text-left font-semibold">New Value</th>
+                    <th className="px-4 py-2 text-left font-semibold">Reason</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border bg-card">
+                  {changesData?.changes?.length > 0 ? (
+                    changesData.changes.map((c: any) => (
+                      <tr key={c.id}>
+                        <td className="px-4 py-2 whitespace-nowrap font-mono text-[10px]">{new Date(c.changedAt).toLocaleString()}</td>
+                        <td className="px-4 py-2 font-medium">{c.changedByName}</td>
+                        <td className="px-4 py-2 font-mono text-[10px]">{c.key} ({c.category})</td>
+                        <td className="px-4 py-2 font-mono text-[10px] truncate max-w-[150px]" title={c.oldValue}>{c.oldValue ?? "NULL"}</td>
+                        <td className="px-4 py-2 font-mono text-[10px] truncate max-w-[150px]" title={c.newValue}>{c.newValue ?? "NULL"}</td>
+                        <td className="px-4 py-2 text-muted-foreground">{c.reason}</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">No configuration changes logged yet.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
         </TabsContent>
 
-        {/* Tab content 8: Advanced */}
+        {/* Tab content 9: Advanced */}
         <TabsContent value="advanced" className="space-y-4">
           <div className="rounded-xl border bg-card p-5 space-y-4">
             <h3 className="font-semibold text-sm flex items-center gap-2">
@@ -534,6 +689,32 @@ export default function RadiologySettingsCenter() {
               Advanced PACS Hardening
             </h3>
             <RisMonitorCommandGrid />
+          </div>
+
+          <div className="rounded-xl border bg-card p-5 space-y-4">
+            <h3 className="font-semibold text-sm flex items-center gap-2">
+              <Zap size={16} className="text-primary" />
+              Backup &amp; Migration
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Export the current PACS, modalities, and viewer configurations to a JSON file to replicate settings on another server, or restore from a backup.
+            </p>
+            <div className="flex flex-col sm:flex-row gap-4">
+              <Button variant="outline" size="sm" onClick={handleExport} className="h-9">
+                Export Configuration
+              </Button>
+              <div className="relative">
+                <input
+                  type="file"
+                  accept=".json"
+                  onChange={handleImport}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                />
+                <Button variant="outline" size="sm" className="h-9">
+                  Import Configuration File
+                </Button>
+              </div>
+            </div>
           </div>
         </TabsContent>
       </Tabs>

@@ -71,6 +71,21 @@ export const pacsLogsTable = pgTable("pacs_logs", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// radiology_config_changes — tracks audit logs of config updates
+export const radiologyConfigChangesTable = pgTable("radiology_config_changes", {
+  id: serial("id").primaryKey(),
+  key: text("key").notNull(),
+  category: text("category").notNull(),
+  oldValue: text("old_value"),
+  newValue: text("new_value"),
+  reason: text("reason"),
+  changedBy: integer("changed_by"),
+  changedByName: text("changed_by_name"),
+  changedAt: timestamp("changed_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export type PacsSettings = typeof pacsSettingsTable.$inferSelect;
 export type DicomModality = typeof dicomModalitiesTable.$inferSelect;
 export type PacsLog = typeof pacsLogsTable.$inferSelect;
+export type RadiologyConfigChange = typeof radiologyConfigChangesTable.$inferSelect;
+

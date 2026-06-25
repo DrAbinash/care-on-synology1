@@ -100,15 +100,20 @@ class NoneProvider implements PacsProvider {
   async health() { return { ok: false, message: "No PACS provider configured" }; }
 }
 
-export function getPacsProvider(): PacsProvider {
-  const explicit = (process.env.PACS_PROVIDER || "").toLowerCase();
-  const orthancUrl = (process.env.ORTHANC_URL || "").replace(/\/$/, "");
-  const conquestUrl = (process.env.CONQUEST_URL || "").replace(/\/$/, "");
+import { getRadiologyConfig } from "./pacsConfig.js";
+
+export async function getPacsProvider(): Promise<PacsProvider> {
+  const cfg = await getRadiologyConfig();
+  const explicit = (process.env.PACS_PROVIDER || cfg.default_viewer || "").toLowerCase();
+  
+  // Use DB values primarily, falling back to env/defaults
+  const orthancUrl = (cfg.orthanc.dicomWebUrl || "").replace(/\/dicom-web$/, "").replace(/\/$/, "");
+  const conquestUrl = (cfg.conquest.wadoUrl || "").replace(/\/$/, ""); // Or conquest wado URL
 
   if (explicit === "conquest" || (!explicit && conquestUrl && !orthancUrl)) {
     return new ConquestProvider(conquestUrl);
   }
-  if (explicit === "orthanc" || (!explicit && orthancUrl)) {
+  if (explicit === "orthanc" || explicit === "ohif" || (!explicit && orthancUrl)) {
     return new OrthancProvider(orthancUrl, process.env.ORTHANC_USERNAME || "", process.env.ORTHANC_PASSWORD || "");
   }
   return new NoneProvider();

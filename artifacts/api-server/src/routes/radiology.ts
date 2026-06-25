@@ -1,12 +1,14 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { tcpProbe } from "../lib/pacs/providers.js";
+import { getRadiologyConfig } from "../lib/pacs/pacsConfig.js";
 import {
   radiologyStudiesTable, radiologyFilmIssuesTable, radiologyShareLinksTable,
   testsTable, patientsTable, ordersTable, orderTestsTable,
   billsTable, reportTemplatesTable, staffTable, radiologyPromptsTable,
   radiologyWorklistTable, radiologyAuditLogTable,
   pacsSettingsTable, dicomModalitiesTable, pacsLogsTable,
+  radiologyConfigChangesTable,
   radiologyPriorityRulesTable,
   radiologistAssignmentRulesTable,
   radiologistSubspecialtiesTable,
@@ -478,16 +480,22 @@ radiologyRouter.get("/:id/pacs-url", async (req, res) => {
     res.status(404).json({ error: "Study not found" });
     return;
   }
-  const orthancUrl = (process.env.ORTHANC_URL || "").replace(/\/$/, "");
+  
+  const cfg = await getRadiologyConfig();
+  const orthancUrl = (cfg.orthanc.dicomWebUrl || "").replace(/\/dicom-web$/, "").replace(/\/$/, "");
   const studyInstanceUID = study.studyInstanceUid || "";
+  
+  const ohifBase = cfg.ohif.baseUrl || "";
+  const wadoUrl = cfg.orthanc.wadoUrl || `${orthancUrl}/wado`;
+
   res.json({
     studyInstanceUID,
     orthancViewerUrl: orthancUrl ? `${orthancUrl}/app/explorer.html#study?uuid=${study.id}` : "",
     weasisUrl: orthancUrl && studyInstanceUID
-      ? `weasis://$dicom:get -r "${process.env.WADO_URL || `${orthancUrl}/wado`}?requestType=WADO&studyUID=${studyInstanceUID}&contentType=application/dicom"`
+      ? `weasis://$dicom:get -r "${wadoUrl}?requestType=WADO&studyUID=${studyInstanceUID}&contentType=application/dicom"`
       : "",
-    ohifUrl: process.env.OHIF_URL && studyInstanceUID
-      ? `${process.env.OHIF_URL}/viewer?StudyInstanceUIDs=${studyInstanceUID}`
+    ohifUrl: ohifBase && studyInstanceUID
+      ? `${ohifBase}/viewer?StudyInstanceUIDs=${studyInstanceUID}`
       : null,
   });
 });
@@ -1131,29 +1139,54 @@ radiologyRouter.post("/pacs-settings", async (req, res) => {
     res.status(403).json({ error: "Admin or super-admin access required to modify PACS settings." });
     return;
   }
-  const b = (req.body ?? {}) as { key?: string; value?: string; category?: string; isSecret?: boolean; id?: number };
+  const b = (req.body ?? {}) as { key?: string; value?: string; category?: string; isSecret?: boolean; id?: number; reason?: string };
   if (!b.key?.trim()) { res.status(400).json({ error: "key is required" }); return; }
 
   const key = b.key.trim();
   const category = b.category?.trim() || "general";
+  const changedBy = staffReq.staffSession?.subjectId ?? null;
+  const changedByName = staffReq.staffSession?.subjectName ?? "SYSTEM";
+  const changeReason = b.reason || "Updated via settings panel";
 
-  // If id provided, update that row; otherwise upsert by key+category
+  // Check if row exists to get old value
+  const [existing] = await db
+    .select()
+    .from(pacsSettingsTable)
+    .where(and(eq(pacsSettingsTable.key, key), eq(pacsSettingsTable.category, category)))
+    .limit(1);
+
+  const oldValue = existing ? existing.value : null;
+  const newValue = b.value ?? null;
+
+  let row;
   if (b.id) {
-    const [row] = await db.update(pacsSettingsTable)
-      .set({ value: b.value ?? null, isSecret: b.isSecret ?? false, updatedAt: new Date() })
+    [row] = await db.update(pacsSettingsTable)
+      .set({ value: newValue, isSecret: b.isSecret ?? false, updatedAt: new Date() })
       .where(eq(pacsSettingsTable.id, b.id))
       .returning();
-    res.json(row);
   } else {
-    const [row] = await db.insert(pacsSettingsTable)
-      .values({ key, value: b.value ?? null, category, isSecret: b.isSecret ?? false })
+    [row] = await db.insert(pacsSettingsTable)
+      .values({ key, value: newValue, category, isSecret: b.isSecret ?? false })
       .onConflictDoUpdate({
         target: [pacsSettingsTable.key, pacsSettingsTable.category],
-        set: { value: b.value ?? null, isSecret: b.isSecret ?? false, updatedAt: new Date() },
+        set: { value: newValue, isSecret: b.isSecret ?? false, updatedAt: new Date() },
       })
       .returning();
-    res.status(201).json(row);
   }
+
+  if (oldValue !== newValue) {
+    await db.insert(radiologyConfigChangesTable).values({
+      key,
+      category,
+      oldValue,
+      newValue,
+      reason: changeReason,
+      changedBy,
+      changedByName,
+    });
+  }
+
+  res.json(row);
 });
 
 // DELETE /api/radiology/pacs-settings/:id

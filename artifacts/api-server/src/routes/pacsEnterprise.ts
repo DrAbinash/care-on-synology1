@@ -12,7 +12,7 @@ import { promisify } from "node:util";
 import { db } from "@workspace/db";
 import { tcpProbe } from "../lib/pacs/providers.js";
 import { testNodeConnection } from "../services/dicom-pull-agent/dimse-agent";
-import { getRadiologyConfig } from "../lib/pacs/pacsConfig.js";
+import { getRadiologyConfig, validateRadiologyConfig } from "../lib/pacs/pacsConfig.js";
 import {
   dicomRoutingRulesTable,
   dicomPulledStudiesTable,
@@ -25,6 +25,7 @@ import {
   radiologyWorklistTable,
   radiologyStudiesTable,
   patientsTable,
+  radiologyConfigChangesTable,
 } from "@workspace/db/schema";
 import { and, asc, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
 
@@ -2129,11 +2130,16 @@ router.get("/network/settings", async (req, res) => {
   }
 });
 
-router.patch("/network/settings", async (req, res) => {
+router.patch("/network/settings", async (req: any, res) => {
   try {
-    const body = req.body as Record<string, string>;
-    
-    for (const [key, val] of Object.entries(body)) {
+    const { reason, ...settings } = req.body as { reason?: string; [key: string]: string | undefined };
+    const changedBy = req.staffSession?.subjectId ?? null;
+    const changedByName = req.staffSession?.subjectName ?? "SYSTEM";
+    const changeReason = reason || "Updated via settings dashboard";
+
+    for (const [key, val] of Object.entries(settings)) {
+      if (val === undefined) continue;
+
       // Determine category based on prefix
       let category = "general";
       if (key.startsWith("orthanc_")) category = "orthanc";
@@ -2145,29 +2151,293 @@ router.patch("/network/settings", async (req, res) => {
 
       // Check if row exists
       const [existing] = await db
-        .select({ id: pacsSettingsTable.id })
+        .select()
         .from(pacsSettingsTable)
         .where(and(eq(pacsSettingsTable.key, key), eq(pacsSettingsTable.category, category)))
         .limit(1);
 
-      if (existing) {
-        await db
-          .update(pacsSettingsTable)
-          .set({ value: val, updatedAt: new Date() })
-          .where(eq(pacsSettingsTable.id, existing.id));
-      } else {
-        await db.insert(pacsSettingsTable).values({
+      const oldValue = existing ? existing.value : null;
+
+      if (oldValue !== val) {
+        if (existing) {
+          await db
+            .update(pacsSettingsTable)
+            .set({ value: val, updatedAt: new Date() })
+            .where(eq(pacsSettingsTable.id, existing.id));
+        } else {
+          await db.insert(pacsSettingsTable).values({
+            key,
+            value: val,
+            category,
+            isSecret: false,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
+        }
+
+        // Log the change
+        await db.insert(radiologyConfigChangesTable).values({
           key,
-          value: val,
           category,
-          isSecret: false,
-          createdAt: new Date(),
-          updatedAt: new Date(),
+          oldValue,
+          newValue: val,
+          reason: changeReason,
+          changedBy,
+          changedByName,
+          changedAt: new Date(),
         });
       }
     }
 
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// GET /network/config/export — export settings JSON dump
+router.get("/network/config/export", async (req, res) => {
+  try {
+    const settings = await db.select().from(pacsSettingsTable);
+    const modalities = await db.select().from(dicomModalitiesTable);
+    const nodes = await db.select().from(dicomNodesTable);
+
+    res.json({
+      settings: settings.map(s => ({ key: s.key, value: s.value, category: s.category })),
+      modalities: modalities.map(m => ({
+        machineName: m.machineName,
+        modality: m.modality,
+        aeTitle: m.aeTitle,
+        ipAddress: m.ipAddress,
+        port: m.port,
+        destinationPacs: m.destinationPacs,
+      })),
+      nodes: nodes.map(n => ({
+        aeTitle: n.aeTitle,
+        host: n.host,
+        port: n.port,
+        modality: n.modality,
+        name: n.name,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// POST /network/config/import — import settings JSON dump
+router.post("/network/config/import", async (req: any, res) => {
+  try {
+    const { settings, modalities, nodes, reason } = req.body as {
+      settings?: Array<{ key: string; value: string; category: string }>;
+      modalities?: Array<any>;
+      nodes?: Array<any>;
+      reason?: string;
+    };
+    const changedBy = req.staffSession?.subjectId ?? null;
+    const changedByName = req.staffSession?.subjectName ?? "SYSTEM";
+    const changeReason = reason || "Imported via settings file";
+
+    // 1. Restore Settings
+    if (settings && Array.isArray(settings)) {
+      for (const s of settings) {
+        const [existing] = await db
+          .select()
+          .from(pacsSettingsTable)
+          .where(and(eq(pacsSettingsTable.key, s.key), eq(pacsSettingsTable.category, s.category)))
+          .limit(1);
+
+        const oldValue = existing ? existing.value : null;
+        if (oldValue !== s.value) {
+          if (existing) {
+            await db
+              .update(pacsSettingsTable)
+              .set({ value: s.value, updatedAt: new Date() })
+              .where(eq(pacsSettingsTable.id, existing.id));
+          } else {
+            await db.insert(pacsSettingsTable).values({
+              key: s.key,
+              value: s.value,
+              category: s.category,
+              isSecret: false,
+            });
+          }
+
+          await db.insert(radiologyConfigChangesTable).values({
+            key: s.key,
+            category: s.category,
+            oldValue,
+            newValue: s.value,
+            reason: changeReason,
+            changedBy,
+            changedByName,
+          });
+        }
+      }
+    }
+
+    // 2. Restore Modalities
+    if (modalities && Array.isArray(modalities)) {
+      for (const m of modalities) {
+        const [existing] = await db
+          .select()
+          .from(dicomModalitiesTable)
+          .where(eq(dicomModalitiesTable.machineName, m.machineName))
+          .limit(1);
+
+        if (existing) {
+          await db
+            .update(dicomModalitiesTable)
+            .set({
+              modality: m.modality,
+              aeTitle: m.aeTitle,
+              ipAddress: m.ipAddress,
+              port: m.port,
+              destinationPacs: m.destinationPacs,
+              updatedAt: new Date(),
+            })
+            .where(eq(dicomModalitiesTable.id, existing.id));
+        } else {
+          await db.insert(dicomModalitiesTable).values({
+            machineName: m.machineName,
+            modality: m.modality,
+            aeTitle: m.aeTitle,
+            ipAddress: m.ipAddress,
+            port: m.port,
+            destinationPacs: m.destinationPacs,
+          });
+        }
+      }
+    }
+
+    // 3. Restore Nodes
+    if (nodes && Array.isArray(nodes)) {
+      for (const n of nodes) {
+        const [existing] = await db
+          .select()
+          .from(dicomNodesTable)
+          .where(eq(dicomNodesTable.aeTitle, n.aeTitle))
+          .limit(1);
+
+        if (existing) {
+          await db
+            .update(dicomNodesTable)
+            .set({
+              host: n.host,
+              port: n.port,
+              modality: n.modality,
+              name: n.name,
+              updatedAt: new Date(),
+            })
+            .where(eq(dicomNodesTable.id, existing.id));
+        } else {
+          await db.insert(dicomNodesTable).values({
+            aeTitle: n.aeTitle,
+            host: n.host,
+            port: n.port,
+            modality: n.modality,
+            name: n.name,
+          });
+        }
+      }
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// GET /network/config/changes — get configuration history audit log
+router.get("/network/config/changes", async (req, res) => {
+  try {
+    const changes = await db
+      .select()
+      .from(radiologyConfigChangesTable)
+      .orderBy(desc(radiologyConfigChangesTable.changedAt))
+      .limit(100);
+
+    res.json({ ok: true, changes });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// POST /network/config/validate — live configuration tester (PASS/WARNING/FAIL)
+router.post("/network/config/validate", async (req, res) => {
+  try {
+    const cfg = await getRadiologyConfig();
+    const results: Array<{ name: string; status: "PASS" | "WARNING" | "FAIL"; message: string }> = [];
+
+    const testHttp = async (name: string, url: string) => {
+      if (!url) {
+        results.push({ name, status: "FAIL", message: "URL not configured" });
+        return;
+      }
+      try {
+        const resp = await fetch(url, { method: "HEAD" }).catch(() => fetch(url, { method: "GET" }));
+        if (resp.ok) {
+          results.push({ name, status: "PASS", message: `Connected successfully (HTTP ${resp.status})` });
+        } else {
+          results.push({ name, status: "WARNING", message: `Connected but returned HTTP status ${resp.status}` });
+        }
+      } catch (err) {
+        results.push({ name, status: "FAIL", message: err instanceof Error ? err.message : "Connection failed" });
+      }
+    };
+
+    // 1. Orthanc HTTP
+    await testHttp("Orthanc REST API", cfg.orthanc.dicomWebUrl.replace(/\/dicom-web$/, "/system"));
+
+    // 2. Orthanc DICOM port
+    const orthancDicom = await tcpProbe(cfg.orthanc.ip, cfg.orthanc.dicomPort);
+    results.push({
+      name: "Orthanc DICOM Port",
+      status: orthancDicom.ok ? "PASS" : "FAIL",
+      message: orthancDicom.ok ? `TCP connection passed (${cfg.orthanc.ip}:${cfg.orthanc.dicomPort})` : orthancDicom.message || "Connection timeout",
+    });
+
+    // 3. Conquest DICOM port
+    if (cfg.conquest.ip) {
+      const conquestDicom = await tcpProbe(cfg.conquest.ip, cfg.conquest.dicomPort);
+      results.push({
+        name: "Conquest DICOM Port",
+        status: conquestDicom.ok ? "PASS" : "FAIL",
+        message: conquestDicom.ok ? `TCP connection passed (${cfg.conquest.ip}:${cfg.conquest.dicomPort})` : conquestDicom.message || "Connection timeout",
+      });
+    } else {
+      results.push({ name: "Conquest DICOM Port", status: "WARNING", message: "Conquest IP not configured" });
+    }
+
+    // 4. OHIF
+    await testHttp("OHIF Viewer", cfg.ohif.baseUrl);
+
+    // 5. Weasis
+    await testHttp("Weasis WADO Server", cfg.weasis.wadoUrl);
+
+    // 6. ERP API check
+    await testHttp("ERP Internal API", cfg.erp.internalApiUrl.replace(/\/api\/internal$/, "/api/health"));
+
+    // 7. Modalities connection
+    const modalities = await db.select().from(dicomModalitiesTable);
+    for (const m of modalities) {
+      if (m.ipAddress && m.port) {
+        const probe = await tcpProbe(m.ipAddress, m.port);
+        results.push({
+          name: `Modality: ${m.machineName}`,
+          status: probe.ok ? "PASS" : "FAIL",
+          message: probe.ok ? `TCP connection passed (${m.ipAddress}:${m.port})` : probe.message || "TCP connection timeout",
+        });
+      } else {
+        results.push({
+          name: `Modality: ${m.machineName}`,
+          status: "WARNING",
+          message: "IP address or Port is missing",
+        });
+      }
+    }
+
+    res.json({ ok: true, results });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }

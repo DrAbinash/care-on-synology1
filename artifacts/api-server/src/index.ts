@@ -28,6 +28,7 @@ import { db, usersTable } from "@workspace/db";
 import { pool } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
+import { validateRadiologyConfig } from "./lib/pacs/pacsConfig.js";
 
 // Bootstrap admin account for fresh production databases.
 //
@@ -2518,6 +2519,15 @@ const server = app.listen({ port, exclusive: true }, () => {
         );
       }
       logger.info("PACS env vars seeded into pacs_settings (idempotent, no automatic replacements)");
+      validateRadiologyConfig().then((warnings) => {
+        if (warnings.length > 0) {
+          logger.warn({ warnings }, `Radiology settings startup validation warnings:\n${warnings.map(w => ` - ${w}`).join("\n")}`);
+        } else {
+          logger.info("Radiology Settings startup validation passed successfully.");
+        }
+      }).catch((err) => {
+        logger.error({ err }, "Failed to run startup validation for Radiology Settings");
+      });
     } catch (e) {
       logger.warn({ err: e }, "Could not seed PACS env vars into pacs_settings");
     }

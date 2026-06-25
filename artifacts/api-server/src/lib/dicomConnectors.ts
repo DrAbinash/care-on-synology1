@@ -10,6 +10,7 @@
  * Safety: no connector modifies report status, billing, or patient records.
  * All mutations are read-only or link-only (study → report reference).
  */
+import { getRadiologyConfig } from "./pacs/pacsConfig.js";
 
 export interface DicomStudySummary {
   studyInstanceUID: string;
@@ -137,28 +138,30 @@ class MockDicomConnector implements DicomConnector {
 // ── Orthanc connector (real implementation using ORTHANC_URL env) ──
 class OrthancConnector implements DicomConnector {
   readonly name = "Orthanc";
-  readonly isConfigured: boolean;
-  private url: string;
-  private user: string;
-  private pass: string;
+  readonly isConfigured = true;
 
-  constructor() {
-    this.url = (process.env.ORTHANC_URL || "").replace(/\/$/, "");
-    this.user = process.env.ORTHANC_USERNAME || "";
-    this.pass = process.env.ORTHANC_PASSWORD || "";
-    this.isConfigured = !!this.url;
+  private async getClient() {
+    const cfg = await getRadiologyConfig();
+    const url = (cfg.orthanc.dicomWebUrl || "").replace(/\/dicom-web$/, "").replace(/\/$/, "");
+    return {
+      url,
+      user: process.env.ORTHANC_USERNAME || "",
+      pass: process.env.ORTHANC_PASSWORD || "",
+    };
   }
 
-  private headers(): Record<string, string> {
+  private async headers(): Promise<Record<string, string>> {
+    const client = await this.getClient();
     const h: Record<string, string> = { "Content-Type": "application/json" };
-    if (this.user && this.pass) {
-      h["Authorization"] = "Basic " + Buffer.from(`${this.user}:${this.pass}`).toString("base64");
+    if (client.user && client.pass) {
+      h["Authorization"] = "Basic " + Buffer.from(`${client.user}:${client.pass}`).toString("base64");
     }
     return h;
   }
 
   private async fetchJson(path: string): Promise<unknown> {
-    const resp = await fetch(`${this.url}${path}`, { headers: this.headers() });
+    const client = await this.getClient();
+    const resp = await fetch(`${client.url}${path}`, { headers: await this.headers() });
     if (!resp.ok) throw new Error(`Orthanc ${resp.status}: ${resp.statusText}`);
     return resp.json();
   }
@@ -221,10 +224,12 @@ class OrthancConnector implements DicomConnector {
 
   async openViewer(uid: string, opts?: { viewer?: string }): Promise<{ url: string; viewer: string } | null> {
     const viewer = opts?.viewer ?? "ohif";
-    const ohifBase = process.env.OHIF_URL || "";
-    const wadoUrl = process.env.WADO_URL || `${this.url}/wado`;
+    const cfg = await getRadiologyConfig();
+    const ohifBase = cfg.ohif.baseUrl || "";
+    const client = await this.getClient();
+    const wadoUrl = cfg.orthanc.wadoUrl || `${client.url}/wado`;
     const urls: Record<string, string> = {
-      ohif: ohifBase ? `${ohifBase}/viewer?StudyInstanceUIDs=${uid}` : `${this.url}/osimis-viewer/index.html?study=${uid}`,
+      ohif: ohifBase ? `${ohifBase}/viewer?StudyInstanceUIDs=${uid}` : `${client.url}/osimis-viewer/index.html?study=${uid}`,
       weasis: `weasis://$dicom:get -r "${wadoUrl}?requestType=WADO&studyUID=${uid}&contentType=application/dicom"`,
       radiant: `radiant://open?studyUID=${uid}`,
       external: `#viewer-${uid}`,

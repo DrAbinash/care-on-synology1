@@ -1,6 +1,24 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { getPacsProvider, isBlockedHost, resolveAndCheckHost, tcpProbe } from "./providers.js";
 
+vi.mock("./pacsConfig.js", () => {
+  return {
+    getRadiologyConfig: async () => {
+      const defaultHost = process.env.ORTHANC_URL ? new URL(process.env.ORTHANC_URL).hostname : "192.168.1.137";
+      return {
+        orthanc: {
+          dicomWebUrl: process.env.ORTHANC_URL ? `${process.env.ORTHANC_URL}/dicom-web` : "",
+          wadoUrl: process.env.ORTHANC_URL ? `${process.env.ORTHANC_URL}/wado` : "",
+        },
+        conquest: {
+          wadoUrl: process.env.CONQUEST_URL || "",
+        },
+        default_viewer: process.env.PACS_PROVIDER || "OHIF",
+      };
+    }
+  };
+});
+
 // ---------------------------------------------------------------------------
 // getPacsProvider — provider detection
 // ---------------------------------------------------------------------------
@@ -21,59 +39,59 @@ describe("getPacsProvider", () => {
     process.env = originalEnv;
   });
 
-  it("returns NoneProvider when no env vars are set", () => {
-    const p = getPacsProvider();
+  it("returns NoneProvider when no env vars are set", async () => {
+    const p = await getPacsProvider();
     expect(p.type).toBe("none");
     expect(p.baseUrl).toBeNull();
     expect(p.displayName).toBe("Not configured");
   });
 
-  it("returns OrthancProvider when ORTHANC_URL is set (auto-detect)", () => {
+  it("returns OrthancProvider when ORTHANC_URL is set (auto-detect)", async () => {
     process.env.ORTHANC_URL = "http://orthanc.local:8042";
-    const p = getPacsProvider();
+    const p = await getPacsProvider();
     expect(p.type).toBe("orthanc");
     expect(p.baseUrl).toBe("http://orthanc.local:8042");
     expect(p.displayName).toBe("Orthanc");
   });
 
-  it("strips trailing slash from ORTHANC_URL", () => {
+  it("strips trailing slash from ORTHANC_URL", async () => {
     process.env.ORTHANC_URL = "http://orthanc.local:8042/";
-    const p = getPacsProvider();
+    const p = await getPacsProvider();
     expect(p.baseUrl).toBe("http://orthanc.local:8042");
   });
 
-  it("returns ConquestProvider when CONQUEST_URL is set (auto-detect)", () => {
+  it("returns ConquestProvider when CONQUEST_URL is set (auto-detect)", async () => {
     process.env.CONQUEST_URL = "http://conquest.local:5678";
-    const p = getPacsProvider();
+    const p = await getPacsProvider();
     expect(p.type).toBe("conquest");
     expect(p.baseUrl).toBe("http://conquest.local:5678");
     expect(p.displayName).toBe("Conquest");
   });
 
-  it("strips trailing slash from CONQUEST_URL", () => {
+  it("strips trailing slash from CONQUEST_URL", async () => {
     process.env.CONQUEST_URL = "http://conquest.local:5678/";
-    const p = getPacsProvider();
+    const p = await getPacsProvider();
     expect(p.baseUrl).toBe("http://conquest.local:5678");
   });
 
-  it("PACS_PROVIDER=orthanc explicit selection picks Orthanc even when only CONQUEST_URL is set", () => {
+  it("PACS_PROVIDER=orthanc explicit selection picks Orthanc even when only CONQUEST_URL is set", async () => {
     process.env.PACS_PROVIDER = "orthanc";
     process.env.CONQUEST_URL = "http://conquest.local:5678";
-    const p = getPacsProvider();
+    const p = await getPacsProvider();
     expect(p.type).toBe("orthanc");
   });
 
-  it("PACS_PROVIDER=conquest explicit selection picks Conquest even when only ORTHANC_URL is set", () => {
+  it("PACS_PROVIDER=conquest explicit selection picks Conquest even when only ORTHANC_URL is set", async () => {
     process.env.PACS_PROVIDER = "conquest";
     process.env.ORTHANC_URL = "http://orthanc.local:8042";
-    const p = getPacsProvider();
+    const p = await getPacsProvider();
     expect(p.type).toBe("conquest");
   });
 
-  it("Orthanc wins over Conquest when both URLs are set and no explicit PACS_PROVIDER", () => {
+  it("Orthanc wins over Conquest when both URLs are set and no explicit PACS_PROVIDER", async () => {
     process.env.ORTHANC_URL = "http://orthanc.local:8042";
     process.env.CONQUEST_URL = "http://conquest.local:5678";
-    const p = getPacsProvider();
+    const p = await getPacsProvider();
     expect(p.type).toBe("orthanc");
   });
 });
@@ -96,26 +114,26 @@ describe("getPacsProvider capabilities", () => {
     process.env = originalEnv;
   });
 
-  it("Orthanc advertises all capabilities", () => {
+  it("Orthanc advertises all capabilities", async () => {
     process.env.ORTHANC_URL = "http://orthanc.local:8042";
-    const p = getPacsProvider();
+    const p = await getPacsProvider();
     expect(p.capabilities.studyArchive).toBe(true);
     expect(p.capabilities.teleradiologyShare).toBe(true);
     expect(p.capabilities.mwlPush).toBe(true);
     expect(p.capabilities.instanceMetadata).toBe(true);
   });
 
-  it("Conquest advertises limited capabilities", () => {
+  it("Conquest advertises limited capabilities", async () => {
     process.env.CONQUEST_URL = "http://conquest.local:5678";
-    const p = getPacsProvider();
+    const p = await getPacsProvider();
     expect(p.capabilities.studyArchive).toBe(false);
     expect(p.capabilities.teleradiologyShare).toBe(false);
     expect(p.capabilities.mwlPush).toBe(false);
     expect(p.capabilities.instanceMetadata).toBe(true);
   });
 
-  it("NoneProvider has no capabilities", () => {
-    const p = getPacsProvider();
+  it("NoneProvider has no capabilities", async () => {
+    const p = await getPacsProvider();
     expect(p.capabilities.studyArchive).toBe(false);
     expect(p.capabilities.teleradiologyShare).toBe(false);
     expect(p.capabilities.mwlPush).toBe(false);
@@ -142,14 +160,14 @@ describe("provider health() with no URL", () => {
   });
 
   it("NoneProvider health returns ok=false", async () => {
-    const p = getPacsProvider();
+    const p = await getPacsProvider();
     const h = await p.health();
     expect(h.ok).toBe(false);
   });
 
   it("OrthancProvider health returns ok=false when URL is missing", async () => {
     process.env.PACS_PROVIDER = "orthanc";
-    const p = getPacsProvider();
+    const p = await getPacsProvider();
     const h = await p.health();
     expect(h.ok).toBe(false);
     expect(h.message).toMatch(/ORTHANC_URL/);
@@ -157,7 +175,7 @@ describe("provider health() with no URL", () => {
 
   it("ConquestProvider health returns ok=false when URL is missing", async () => {
     process.env.PACS_PROVIDER = "conquest";
-    const p = getPacsProvider();
+    const p = await getPacsProvider();
     const h = await p.health();
     expect(h.ok).toBe(false);
     expect(h.message).toMatch(/CONQUEST_URL/);
