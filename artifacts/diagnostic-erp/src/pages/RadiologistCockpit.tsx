@@ -16,6 +16,9 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
 import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter
+} from "@/components/ui/dialog";
+import {
   Activity, Clock, AlertTriangle, Cpu, Wifi, Database, Users,
   BarChart3, AlertOctagon, Send, Zap, HardDrive, Gauge, Bell,
   RefreshCw, ShieldCheck, ArrowUpRight, MonitorPlay, Tv2,
@@ -120,6 +123,12 @@ export default function RadiologistCockpit() {
   const [pingLatency, setPingLatency] = useState<number | null>(null);
   const [diagnosticsLogs, setDiagnosticsLogs] = useState<string[]>(["System started.", "PACS connection idle."]);
 
+  // Workflow tracking states
+  const [viewerLaunched, setViewerLaunched] = useState(false);
+  const [priorsCompared, setPriorsCompared] = useState(false);
+  const [activeRightTab, setActiveRightTab] = useState("assist");
+  const [showWarningModal, setShowWarningModal] = useState(false);
+
   // ══════════════════════════════════════════════════════════════════════════
   // DATA FETCHING
   // ══════════════════════════════════════════════════════════════════════════
@@ -188,6 +197,88 @@ export default function RadiologistCockpit() {
       return [];
     }
   }, [preferences]);
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SMART CONTEXT ENGINE
+  // ══════════════════════════════════════════════════════════════════════════
+  const smartContext = useMemo(() => {
+    if (!study) return null;
+    const desc = (study.studyDescription || "").toUpperCase();
+    const isContrast = desc.includes("CONTRAST") || desc.includes("CECT") || desc.includes("CEMRI") || desc.includes("+C") || desc.includes("CE");
+    const isEmergency = desc.includes("EMERGENCY") || desc.includes("TRAUMA") || desc.includes("ACUTE") || study.status === "EMERGENCY";
+
+    let bodyPart = "General";
+    if (desc.includes("BRAIN") || desc.includes("HEAD") || desc.includes("SKULL")) bodyPart = "Brain";
+    else if (desc.includes("SPINE") || desc.includes("LUMBAR") || desc.includes("CERVICAL") || desc.includes("LS") || desc.includes("DORSAL")) bodyPart = "Spine";
+    else if (desc.includes("CHEST") || desc.includes("LUNG") || desc.includes("THORAX")) bodyPart = "Chest";
+    else if (desc.includes("BREAST") || desc.includes("MAMMOGRAPHY")) bodyPart = "Breast";
+    else if (desc.includes("PELVIS") || desc.includes("PELVIC")) bodyPart = "Pelvis";
+    else if (desc.includes("LIVER") || desc.includes("ABDOMEN") || desc.includes("KIDNEY") || desc.includes("RENAL")) bodyPart = "Abdomen";
+
+    return {
+      modality: study.modality,
+      bodyPart,
+      isContrast,
+      isEmergency,
+      hasPriors: priorReports.length > 0,
+      age: study.age ?? "N/A",
+      sex: study.sex ?? "N/A",
+    };
+  }, [study, priorReports]);
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // REPORT COMPLETENESS GATE
+  // ══════════════════════════════════════════════════════════════════════════
+  const completenessDetails = useMemo(() => {
+    const checks = {
+      technique: !!technique.trim(),
+      clinicalHistory: !!clinicalHistory.trim(),
+      findings: rawFindings.trim().length >= 15,
+      impression: impression.filter(Boolean).length > 0,
+      recommendation: !!recommendation.trim(),
+    };
+    const items = Object.values(checks);
+    const completedCount = items.filter(Boolean).length;
+    const pct = Math.round((completedCount / items.length) * 100);
+    return { checks, pct };
+  }, [technique, clinicalHistory, rawFindings, impression, recommendation]);
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // WORKFLOW STEPS
+  // ══════════════════════════════════════════════════════════════════════════
+  const currentStep = useMemo(() => {
+    if (!study) return 0;
+    if (!viewerLaunched) return 1; // Step 1: Open Viewer
+    if (priorReports.length > 0 && !priorsCompared) return 2; // Step 2: Compare Priors
+    if (study.aiDraftStatus === "READY" && rawFindings.trim().length < 25) return 3; // Step 3: Check AI Suggestion
+    if (completenessDetails.pct < 100) return 4; // Step 4: Dictate & Fill details
+    return 5; // Step 5: Finalize
+  }, [study, viewerLaunched, priorReports, priorsCompared, completenessDetails.pct, rawFindings]);
+
+  // Auto-switch tabs and load default templates
+  useEffect(() => {
+    if (!study) return;
+    setViewerLaunched(false);
+    setPriorsCompared(false);
+
+    // Auto tab selection based on context
+    if (study.modality === "US" || study.modality === "USG") {
+      setActiveRightTab("builders");
+    } else if (study.aiDraftStatus === "READY") {
+      setActiveRightTab("assist");
+    } else {
+      setActiveRightTab("chocolate");
+    }
+
+    // Auto-load template if available
+    const modalityMap: Record<string, string> = { "X-RAY": "X-RAY", USG: "USG", MRI: "MRI", CT: "CT" };
+    const mod = modalityMap[study.modality] || study.modality;
+    const bodyPart = (study.studyDescription || "").toUpperCase();
+    const match = templates.find((t) => t.modality === mod && (bodyPart.includes(t.bodyPart.toUpperCase()) || t.bodyPart.toUpperCase().includes(bodyPart)));
+    if (match) {
+      handleApplyTemplate(match);
+    }
+  }, [study, templates]);
 
   // ══════════════════════════════════════════════════════════════════════════
   // ACTIONS / MUTATIONS
@@ -272,6 +363,15 @@ export default function RadiologistCockpit() {
     },
     onError: (e: any) => toast({ title: "Finalization Failed", description: e.message, variant: "destructive" }),
   });
+
+  // Handle finalization submission with completeness gate
+  const handleFinalizeClick = () => {
+    if (completenessDetails.pct < 100) {
+      setShowWarningModal(true);
+    } else {
+      finalizeMutation.mutate();
+    }
+  };
 
   // AI Draft Generation
   const generateAiDraftMutation = useMutation({
@@ -417,6 +517,7 @@ export default function RadiologistCockpit() {
     const template = pacsViewerSettings["ohif_viewer_url_template"] || "/viewer/{studyInstanceUID}";
     const url = template.replace("{studyInstanceUID}", study.studyInstanceUID);
     window.open(url, "_blank");
+    setViewerLaunched(true);
   };
 
   // Launch Weasis Viewer
@@ -425,8 +526,10 @@ export default function RadiologistCockpit() {
     const template = pacsViewerSettings["weasis_manifest_url_template"];
     if (template && study.studyInstanceUID) {
       window.open(template.replace("{studyInstanceUID}", study.studyInstanceUID), "_blank");
+      setViewerLaunched(true);
     } else if (study.weasisUrl) {
       window.open(study.weasisUrl, "_blank");
+      setViewerLaunched(true);
     } else {
       toast({ title: "Weasis configuration missing", description: "Set manifest URL template in PACS settings.", variant: "destructive" });
     }
@@ -462,6 +565,29 @@ export default function RadiologistCockpit() {
       });
     }
     toast({ title: "Findings Appended", description: "Structured observations added to report." });
+  };
+
+  // Smart Previous Studies Auto-Compare Text Generator
+  const handleAutoCompare = () => {
+    if (priorReports.length === 0) return;
+    const prior = priorReports[0];
+    const priorDate = prior.createdAt ? prior.createdAt.split("T")[0] : "previous date";
+    const priorTitle = prior.title || "prior study";
+    const priorImpression = prior.impression ? prior.impression.trim() : "no significant abnormality";
+
+    const comparisonText = `COMPARISON: Compared with prior study dated ${priorDate} for ${priorTitle}.\nInterval Changes: `;
+    setRawFindings((prev) => {
+      const base = prev ? prev + "\n\n" : "";
+      return base + comparisonText;
+    });
+    setImpression((prev) => {
+      const next = [...prev.filter(Boolean)];
+      const priorText = `Stable compared to previous findings of: ${priorImpression.split("\n")[0]}`;
+      if (!next.includes(priorText)) next.push(priorText);
+      return next;
+    });
+    setPriorsCompared(true);
+    toast({ title: "Prior Study Compared", description: "Interval comparison text generated." });
   };
 
   return (
@@ -584,6 +710,118 @@ export default function RadiologistCockpit() {
             </div>
           ) : (
             <div className="p-4 space-y-4">
+              {/* SMART CONTEXT ENGINE BANNER */}
+              {smartContext && (
+                <div className="bg-slate-950 border border-slate-800 rounded-lg p-2.5 flex items-center gap-2.5 text-xs flex-wrap">
+                  <span className="font-bold text-slate-400">Context:</span>
+                  <Badge variant="outline" className="border-indigo-800 text-indigo-400 bg-indigo-950/30 text-[10px]">
+                    Body: {smartContext.bodyPart}
+                  </Badge>
+                  <Badge variant="outline" className={`text-[10px] ${smartContext.isContrast ? "border-purple-800 text-purple-400 bg-purple-950/30" : "border-slate-800 text-slate-400"}`}>
+                    {smartContext.isContrast ? "Contrast Study" : "Non-Contrast"}
+                  </Badge>
+                  <Badge variant="outline" className={`text-[10px] ${smartContext.isEmergency ? "border-red-800 text-red-400 bg-red-950/30 animate-pulse font-bold" : "border-slate-800 text-slate-400"}`}>
+                    {smartContext.isEmergency ? "🚨 Emergency Case" : "Routine Case"}
+                  </Badge>
+                  {smartContext.hasPriors && (
+                    <Badge variant="outline" className="border-emerald-800 text-emerald-400 bg-emerald-950/30 text-[10px]">
+                      Priors Available ({priorReports.length})
+                    </Badge>
+                  )}
+                </div>
+              )}
+
+              {/* SMART WORKFLOW STEPPER */}
+              <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-2">
+                <div className="flex items-center justify-between text-xs pb-1 border-b border-slate-900">
+                  <span className="font-bold text-indigo-400">Smart Steps Dashboard</span>
+                  {currentStep === 1 && (
+                    <Button size="sm" onClick={handleLaunchOhif} className="bg-amber-600 hover:bg-amber-700 h-6 text-[10px] text-white">
+                      Suggested Action: Open OHIF Viewer
+                    </Button>
+                  )}
+                  {currentStep === 2 && (
+                    <Button size="sm" onClick={handleAutoCompare} className="bg-amber-600 hover:bg-amber-700 h-6 text-[10px] text-white">
+                      Suggested Action: Compare Previous Reports
+                    </Button>
+                  )}
+                  {currentStep === 3 && (
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        try {
+                          const draft = JSON.parse(study.aiDraftJson!);
+                          if (draft.findings) setRawFindings(draft.findings);
+                          if (draft.impression) setImpression([draft.impression]);
+                          toast({ title: "Draft Applied", description: "AI suggestions loaded." });
+                        } catch {}
+                      }}
+                      className="bg-amber-600 hover:bg-amber-700 h-6 text-[10px] text-white"
+                    >
+                      Suggested Action: Import AI suggestions
+                    </Button>
+                  )}
+                  {currentStep === 4 && (
+                    <span className="text-amber-500 text-[10px] font-bold">Suggested Action: Fill missing report fields</span>
+                  )}
+                  {currentStep === 5 && (
+                    <Button size="sm" onClick={handleFinalizeClick} className="bg-emerald-600 hover:bg-emerald-700 h-6 text-[10px] text-white font-bold">
+                      Suggested Action: Finalize & Sign
+                    </Button>
+                  )}
+                </div>
+                <div className="grid grid-cols-5 gap-1.5 text-[10px] text-center">
+                  <div className={`p-1.5 rounded border ${currentStep >= 1 ? "bg-indigo-950/20 border-indigo-800 text-indigo-300" : "bg-slate-900 border-slate-800 text-slate-500"}`}>
+                    1. Study Loaded
+                  </div>
+                  <div className={`p-1.5 rounded border ${currentStep >= 2 ? "bg-indigo-950/20 border-indigo-800 text-indigo-300" : "bg-slate-900 border-slate-800 text-slate-500"}`}>
+                    2. Viewer Open
+                  </div>
+                  <div className={`p-1.5 rounded border ${currentStep >= 3 ? "bg-indigo-950/20 border-indigo-800 text-indigo-300" : "bg-slate-900 border-slate-800 text-slate-500"}`}>
+                    3. Priors Compared
+                  </div>
+                  <div className={`p-1.5 rounded border ${currentStep >= 4 ? "bg-indigo-950/20 border-indigo-800 text-indigo-300" : "bg-slate-900 border-slate-800 text-slate-500"}`}>
+                    4. AI Reviewed
+                  </div>
+                  <div className={`p-1.5 rounded border ${currentStep >= 5 ? "bg-indigo-950/20 border-indigo-800 text-indigo-300" : "bg-slate-900 border-slate-800 text-slate-500"}`}>
+                    5. Ready to Sign
+                  </div>
+                </div>
+              </div>
+
+              {/* REPORT COMPLETENESS INDICATOR */}
+              <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-2">
+                <div className="flex justify-between items-center text-xs">
+                  <span className="font-bold text-slate-300">Live Report Quality Indicator</span>
+                  <span className={`font-bold ${completenessDetails.pct === 100 ? "text-emerald-400" : "text-amber-400"}`}>
+                    {completenessDetails.pct}% Complete
+                  </span>
+                </div>
+                <div className="w-full bg-slate-900 rounded-full h-2 overflow-hidden border border-slate-800">
+                  <div
+                    className={`h-full transition-all duration-300 ${completenessDetails.pct === 100 ? "bg-emerald-500" : "bg-indigo-500"}`}
+                    style={{ width: `${completenessDetails.pct}%` }}
+                  />
+                </div>
+                <div className="flex gap-4 text-[10px] text-slate-400 flex-wrap justify-between">
+                  <div className="flex items-center gap-1">
+                    <span className={completenessDetails.checks.clinicalHistory ? "text-emerald-400" : "text-slate-600"}>✓</span> Indication
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className={completenessDetails.checks.technique ? "text-emerald-400" : "text-slate-600"}>✓</span> Technique
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className={completenessDetails.checks.findings ? "text-emerald-400" : "text-slate-600"}>✓</span> Findings (15+ chars)
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className={completenessDetails.checks.impression ? "text-emerald-400" : "text-slate-600"}>✓</span> Impression
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className={completenessDetails.checks.recommendation ? "text-emerald-400" : "text-slate-600"}>✓</span> Recommendation
+                  </div>
+                </div>
+              </div>
+
               {/* Patient Banner & Study Action Headers */}
               <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 flex flex-wrap items-center justify-between gap-4">
                 <div className="space-y-1">
@@ -610,10 +848,18 @@ export default function RadiologistCockpit() {
               {/* Patient Prior Reports quick lookup inline */}
               {priorReports.length > 0 && (
                 <Card className="bg-slate-950 border-slate-800">
-                  <CardHeader className="p-3 pb-0">
+                  <CardHeader className="p-3 pb-0 flex flex-row items-center justify-between">
                     <CardTitle className="text-xs font-bold text-slate-300 flex items-center gap-1">
                       <HistoryIcon className="h-3.5 w-3.5 text-indigo-400" /> Patient Previous Studies ({priorReports.length})
                     </CardTitle>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleAutoCompare}
+                      className="h-6 text-[10px] border-slate-800 text-indigo-400 hover:bg-slate-900"
+                    >
+                      Auto-Compare Text
+                    </Button>
                   </CardHeader>
                   <CardContent className="p-3 space-y-2">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
@@ -811,7 +1057,7 @@ export default function RadiologistCockpit() {
                   </Button>
 
                   <Button
-                    onClick={() => finalizeMutation.mutate()}
+                    onClick={handleFinalizeClick}
                     disabled={finalizeMutation.isPending || study.status === "REPORT_FINAL"}
                     className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs h-9 font-bold"
                   >
@@ -825,7 +1071,7 @@ export default function RadiologistCockpit() {
 
         {/* Right Column: Assistant panel / Chocolate Box / Builders / Telemetry */}
         <div className="w-[380px] flex flex-col flex-shrink-0 bg-slate-955">
-          <Tabs defaultValue="assist" className="flex-1 flex flex-col min-h-0">
+          <Tabs value={activeRightTab} onValueChange={setActiveRightTab} className="flex-1 flex flex-col min-h-0">
             <TabsList className="grid grid-cols-4 bg-slate-900 border-b border-slate-800 rounded-none h-11 p-1">
               <TabsTrigger value="assist" className="text-[10px] data-[state=active]:bg-slate-950 data-[state=active]:text-indigo-400">
                 AI & Voice
@@ -878,7 +1124,7 @@ export default function RadiologistCockpit() {
                               toast({ title: "Draft Applied", description: "Replaced editor fields with AI observations." });
                             } catch {}
                           }}
-                          className="flex-1 text-[10px] h-7 border-slate-800 text-slate-300 hover:bg-slate-950"
+                          className="flex-1 text-[10px] h-7 border-slate-800 text-slate-300 hover:bg-slate-955"
                         >
                           Import Draft
                         </Button>
@@ -1007,6 +1253,38 @@ export default function RadiologistCockpit() {
           </Tabs>
         </div>
       </div>
+
+      {/* WARNING DIALOG FOR INCOMPLETE REPORTS */}
+      <Dialog open={showWarningModal} onOpenChange={setShowWarningModal}>
+        <DialogContent className="bg-slate-950 border border-slate-800 text-slate-100 max-w-sm rounded-lg">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-bold flex items-center gap-2 text-amber-500">
+              <AlertTriangle className="h-4 w-4 animate-bounce" /> Report Is Incomplete ({completenessDetails.pct}%)
+            </DialogTitle>
+            <DialogDescription className="text-xs text-slate-400 mt-1">
+              Some recommended sections are missing or empty:
+              <ul className="list-disc list-inside mt-2 space-y-1">
+                {!completenessDetails.checks.clinicalHistory && <li>Clinical Indication</li>}
+                {!completenessDetails.checks.technique && <li>Technique details</li>}
+                {!completenessDetails.checks.findings && <li>Findings observation (minimum 15 characters)</li>}
+                {!completenessDetails.checks.impression && <li>Diagnostic conclusions/Impression</li>}
+                {!completenessDetails.checks.recommendation && <li>Recommendation text</li>}
+              </ul>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex gap-2 sm:justify-end mt-4">
+            <Button size="sm" variant="outline" onClick={() => setShowWarningModal(false)} className="border-slate-800 hover:bg-slate-900 text-xs text-slate-300">
+              Back to Edit
+            </Button>
+            <Button size="sm" onClick={() => {
+              setShowWarningModal(false);
+              finalizeMutation.mutate();
+            }} className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold">
+              Sign Anyway
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
