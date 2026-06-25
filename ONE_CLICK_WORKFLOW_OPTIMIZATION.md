@@ -74,6 +74,7 @@ This document audits common daily tasks across all ERP modules, comparing the pr
 | **Radiology Worklist** | Open Cockpit from Worklist | 2 | 1 | Implemented | Low | [RadiologyWorklist.tsx](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/pages/RadiologyWorklist.tsx) |
 | **Cockpit** | Launch Viewer (OHIF/Weasis) | 2 | 1 | Implemented | Low | [RadiologistCockpit.tsx](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/pages/RadiologistCockpit.tsx) |
 | **Report Delivery** | Mark Report as Delivered | 5 | 1 | Implemented | Low | [ReportDelivery.tsx](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/pages/ReportDelivery.tsx) |
+| **Billing** | Apply 10% Standard discount | 4 | 1 | Implemented | Medium | [BillingDesk.tsx](file:///c:/Users/abina/caredeoghar--antigravity/artifacts/diagnostic-erp/src/pages/BillingDesk.tsx) |
 | **Billing** | Send payment Link / QR | 4 | 1 | Audited | Low | — |
 | **Scan Station** | Upload Form F | 4 | 1 | Audited | Low | — |
 

@@ -2225,6 +2225,28 @@ export default function BillingDesk() {
                       <button onClick={() => setDiscountType("pct")} className={`px-2 py-1 text-xs flex items-center gap-0.5 transition-colors ${discountType === "pct" ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}><Percent size={10} /> %</button>
                     </div>
                     <Input type="number" min={0} max={discountType === "pct" ? 100 : subtotal} step="0.01" value={discountValue || ""} onChange={(e) => setDiscountValue(Number(e.target.value))} placeholder="0" className="h-7 text-xs flex-1 min-w-0" />
+                    {subtotal > 0 && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        type="button"
+                        className="h-7 px-2 text-[10px] border-indigo-200 text-indigo-700 hover:bg-indigo-50 font-bold flex-shrink-0"
+                        onClick={() => {
+                          setDiscountType("pct");
+                          setDiscountValue(10);
+                          const standardReason = discountReasons.find(r => r.isActive && r.label.toLowerCase().includes("standard"))
+                            || discountReasons.find(r => r.isActive);
+                          if (standardReason) {
+                            setDiscountReason(standardReason.label);
+                          } else {
+                            setDiscountReason("Standard Discount");
+                          }
+                        }}
+                        title="Apply 10% discount"
+                      >
+                        10%
+                      </Button>
+                    )}
                     {discountAmt > 0 && <span className="text-xs text-orange-900 font-bold flex-shrink-0">−{inr(discountAmt)}</span>}
                   </div>
                   {discountAmt > 0 && (
