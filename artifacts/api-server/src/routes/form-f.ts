@@ -2,7 +2,7 @@ import { Router } from "express";
 import { db, billsTable, patientsTable, formFRecordsTable, clinicSettingsTable } from "@workspace/db";
 import { eq, or, ilike, inArray, isNotNull, desc, and, gte, lt } from "drizzle-orm";
 import { ordersTable, orderTestsTable, testsTable, doctorsTable } from "@workspace/db";
-import { whatsappConversationsTable, whatsappSettingsTable, usgMeasurementsTable } from "@workspace/db/schema";
+import { whatsappConversationsTable, whatsappSettingsTable, usgMeasurementsTable, radiologyStudiesTable, fetalUsgStudiesTable, fetalUsgMeasurementsTable, fetalUsgReportsTable, fetalUsgChecklistsTable } from "@workspace/db/schema";
 import { dateToISTString } from "../lib/istDate";
 import { geminiOcrIdCard, type IdCardOcrResult } from "@workspace/integrations-gemini-ai";
 import { requireStaffPermission } from "../middleware/requireStaffAuth";
@@ -121,6 +121,101 @@ formFRouter.get("/fetch-billing/:search", async (req, res) => {
       }
     }
 
+    // Fetch active clinic settings
+    const [settings] = await db.select().from(clinicSettingsTable).limit(1);
+
+    let lmpWeeks = "";
+    let gestationalAgeWeeks = "";
+    let gestationalAgeDays = "";
+    let ultrasoundResult = "Normal";
+    let abnormality = "";
+    let fetalUsgStudyId: number | null = null;
+
+    if (settings?.autoPopulateFormFFromObMeasurements && bill) {
+      const [study] = await db
+        .select()
+        .from(radiologyStudiesTable)
+        .where(eq(radiologyStudiesTable.billId, bill.id))
+        .limit(1);
+
+      if (study) {
+        const [fetalStudy] = await db
+          .select()
+          .from(fetalUsgStudiesTable)
+          .where(eq(fetalUsgStudiesTable.studyId, study.id))
+          .limit(1);
+
+        if (fetalStudy) {
+          fetalUsgStudyId = fetalStudy.id;
+          
+          if (fetalStudy.gaWeeks !== null && fetalStudy.gaWeeks !== undefined) {
+            gestationalAgeWeeks = String(fetalStudy.gaWeeks);
+          }
+          if (fetalStudy.gaDays !== null && fetalStudy.gaDays !== undefined) {
+            gestationalAgeDays = String(fetalStudy.gaDays);
+          }
+          
+          if (fetalStudy.lmp) {
+            try {
+              const lmpDate = new Date(fetalStudy.lmp);
+              if (!isNaN(lmpDate.getTime())) {
+                const diffTime = Math.abs(new Date().getTime() - lmpDate.getTime());
+                const diffWeeks = Math.floor(diffTime / (1000 * 60 * 60 * 24 * 7));
+                lmpWeeks = String(diffWeeks);
+              }
+            } catch (e) {
+              // Ignore invalid lmp format
+            }
+          }
+
+          const [measurements] = await db
+            .select()
+            .from(fetalUsgMeasurementsTable)
+            .where(eq(fetalUsgMeasurementsTable.studyId, fetalStudy.id))
+            .limit(1);
+
+          const [report] = await db
+            .select()
+            .from(fetalUsgReportsTable)
+            .where(eq(fetalUsgReportsTable.studyId, fetalStudy.id))
+            .limit(1);
+
+          if (report && report.status === "finalized") {
+            const hasAbnormal = report.impression?.toLowerCase().includes("abnormal") || 
+                                report.findings?.toLowerCase().includes("abnormal") ||
+                                report.findings?.toLowerCase().includes("anomaly") ||
+                                report.findings?.toLowerCase().includes("malformation");
+            if (hasAbnormal) {
+              ultrasoundResult = "Abnormal";
+              abnormality = report.impression || report.findings || "Congenital anomaly detected";
+            }
+          }
+
+          if (measurements) {
+            const summaryParts: string[] = [];
+            if (measurements.crl) summaryParts.push(`CRL: ${measurements.crl}mm`);
+            if (measurements.fetalHeartRate) summaryParts.push(`FHR: ${measurements.fetalHeartRate}bpm`);
+            if (measurements.placentaLocation) summaryParts.push(`Placenta: ${measurements.placentaLocation}`);
+            if (measurements.afi) {
+              summaryParts.push(`Liquor: AFI ${measurements.afi}cm (${measurements.afiInterpretation || "Normal"})`);
+            } else if (measurements.afiInterpretation) {
+              summaryParts.push(`Liquor: ${measurements.afiInterpretation}`);
+            }
+            if (measurements.presentation) summaryParts.push(`Presentation: ${measurements.presentation}`);
+            if (fetalStudy.edd) summaryParts.push(`EDD: ${fetalStudy.edd}`);
+
+            if (summaryParts.length > 0) {
+              if (ultrasoundResult === "Normal") {
+                ultrasoundResult = `Normal (${summaryParts.join(", ")})`;
+              } else {
+                ultrasoundResult = `Abnormal: ${abnormality} (${summaryParts.join(", ")})`;
+              }
+            }
+          }
+        }
+      }
+    }
+
     res.json({
       billNumber: bill.billNumber,
       billDate: bill.createdAt ? dateToISTString(bill.createdAt) : "",
@@ -134,7 +229,12 @@ formFRouter.get("/fetch-billing/:search", async (req, res) => {
       referredBy,
       referredByName,
       procedurePurpose: procedurePurpose || "Obstetric ultrasonography",
-      ultrasoundResult: "Normal",
+      ultrasoundResult,
+      abnormality,
+      lmpWeeks: lmpWeeks || "",
+      gestationalAgeWeeks,
+      gestationalAgeDays,
+      fetalUsgStudyId,
     });
   } catch (err) {
     console.error("[form-f] fetch-billing error:", err);
@@ -203,6 +303,7 @@ formFRouter.post("/save", async (req, res) => {
       idCardExtractedName: body.idCardExtractedName ?? null,
       idCardExtractedAddress: body.idCardExtractedAddress ?? null,
       idCardVerified: body.idCardVerified ?? false,
+      fetalUsgStudyId: body.fetalUsgStudyId ? Number(body.fetalUsgStudyId) : null,
     };
 
     const [saved] = await db.insert(formFRecordsTable).values(record).returning();

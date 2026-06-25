@@ -1,11 +1,13 @@
 import { pgTable, serial, text, timestamp, integer, boolean } from "drizzle-orm/pg-core";
 import { patientsTable } from "./patients";
 import { billsTable } from "./bills";
+import { fetalUsgStudiesTable } from "./fetalUsgLevel4";
 
 export const formFRecordsTable = pgTable("form_f_records", {
   id: serial("id").primaryKey(),
   billId: integer("bill_id").references(() => billsTable.id),
   patientId: integer("patient_id").references(() => patientsTable.id),
+  fetalUsgStudyId: integer("fetal_usg_study_id").references(() => fetalUsgStudiesTable.id),
   billNumber: text("bill_number"),
   centreName: text("centre_name").notNull().default(""),
   registrationNo: text("registration_no").notNull().default(""),

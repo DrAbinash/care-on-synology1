@@ -90,6 +90,7 @@ type FormFData = {
   place: string;
   billId?: number;
   patientId?: number;
+  fetalUsgStudyId?: number | null;
 };
 
 function defaultForm(): FormFData {
@@ -100,6 +101,7 @@ function defaultForm(): FormFData {
     patientName: "",
     billId: undefined,
     patientId: undefined,
+    fetalUsgStudyId: null,
     age: "",
     boyCount: "",
     girlCount: "",
@@ -806,6 +808,11 @@ export default function FormF() {
         date: data.billDate ?? prev.date,
         ultrasoundResult: data.ultrasoundResult ?? prev.ultrasoundResult,
         procedurePurpose: data.procedurePurpose ?? prev.procedurePurpose,
+        lmpWeeks: data.lmpWeeks ?? prev.lmpWeeks,
+        gestationalAgeWeeks: data.gestationalAgeWeeks ?? prev.gestationalAgeWeeks,
+        gestationalAgeDays: data.gestationalAgeDays ?? prev.gestationalAgeDays,
+        abnormality: data.abnormality ?? prev.abnormality,
+        fetalUsgStudyId: data.fetalUsgStudyId ? Number(data.fetalUsgStudyId) : null,
       }));
       toast({ title: "Patient data loaded", description: `Bill: ${data.billNumber ?? search}` });
     } catch {
@@ -1113,6 +1120,7 @@ export default function FormF() {
         idCardExtractedName: idCardExtractedName || null,
         idCardExtractedAddress: idCardExtractedAddress || null,
         idCardVerified: idCardVerified || false,
+        fetalUsgStudyId: form.fetalUsgStudyId ?? null,
         billId: form.billId,
         patientId: form.patientId,
       };

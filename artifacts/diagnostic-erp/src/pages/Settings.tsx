@@ -6756,6 +6756,7 @@ function ScannerSettingsTab() {
   const [autoDeleteTemp, setAutoDeleteTemp] = useState(true);
   const [ocrEnabled, setOcrEnabled] = useState(true);
   const [aadhaarQr, setAadhaarQr] = useState(true);
+  const [autoPopulateFormF, setAutoPopulateFormF] = useState(false);
 
   // Phase 2 Enhanced settings
   const [scannerGlobal, setScannerGlobal] = useState(false);
@@ -6781,6 +6782,7 @@ function ScannerSettingsTab() {
     setAutoDeleteTemp(settings.autoDeleteTempScans !== false);
     setOcrEnabled(settings.ocrEnabled !== false);
     setAadhaarQr(settings.aadhaarQrEnabled !== false);
+    setAutoPopulateFormF(settings.autoPopulateFormFFromObMeasurements === true);
 
     setScannerGlobal(settings.scannerGlobalEnabled === true);
     setKioskMode(settings.scanStationKioskModeEnabled !== false);
@@ -6805,6 +6807,7 @@ function ScannerSettingsTab() {
         autoDeleteTempScans: autoDeleteTemp,
         ocrEnabled: ocrEnabled,
         aadhaarQrEnabled: aadhaarQr,
+        autoPopulateFormFFromObMeasurements: autoPopulateFormF,
         scannerGlobalEnabled: scannerGlobal,
         scanStationKioskModeEnabled: kioskMode,
         scanStationAutoClearEnabled: autoClear,
@@ -7098,6 +7101,20 @@ function ScannerSettingsTab() {
               <p className="text-xs text-muted-foreground font-normal">Decrypt secure QR codes printed on Aadhaar cards for 100% accurate demographic extraction.</p>
             </label>
           </div>
+
+          <div className="flex items-center gap-3">
+            <input
+              id="autoPopulateFormF"
+              type="checkbox"
+              checked={autoPopulateFormF}
+              onChange={(e) => setAutoPopulateFormF(e.target.checked)}
+              className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+            />
+            <label htmlFor="autoPopulateFormF" className="text-sm font-medium">
+              Auto-populate Form F from approved OB measurements
+              <p className="text-xs text-muted-foreground font-normal">Automatically prefill gestational age and map biometric measurements (CRL, FHR, etc.) from USG scan.</p>
+            </label>
+          </div>
         </div>
 
         <div className="flex justify-end gap-2 pt-2 border-t border-card-border">
@@ -7116,6 +7133,7 @@ function ScannerSettingsTab() {
             setAutoDeleteTemp(settings.autoDeleteTempScans !== false);
             setOcrEnabled(settings.ocrEnabled !== false);
             setAadhaarQr(settings.aadhaarQrEnabled !== false);
+            setAutoPopulateFormF(settings.autoPopulateFormFFromObMeasurements === true);
             setScannerGlobal(settings.scannerGlobalEnabled === true);
             setKioskMode(settings.scanStationKioskModeEnabled !== false);
             setAutoClear(settings.scanStationAutoClearEnabled !== false);

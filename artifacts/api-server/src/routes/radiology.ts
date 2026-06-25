@@ -347,14 +347,13 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
       deliveryStatus: radiologyWorklistTable.deliveryStatus,
       createdAt: radiologyWorklistTable.createdAt,
       updatedAt: radiologyWorklistTable.updatedAt,
-      lockUserId: radiologyStudyLocksTable.userId,
-      lockUserName: radiologyStudyLocksTable.userName,
-      lockTime: radiologyStudyLocksTable.lockTime,
-      lockLastActivityAt: radiologyStudyLocksTable.lastActivityAt,
-      lockWorkstation: radiologyStudyLocksTable.workstation,
+      lockUserId: sql<number | null>`NULL`,
+      lockUserName: sql<string | null>`NULL`,
+      lockTime: sql<Date | null>`NULL`,
+      lockLastActivityAt: sql<Date | null>`NULL`,
+      lockWorkstation: sql<string | null>`NULL`,
     })
     .from(radiologyWorklistTable)
-    .leftJoin(radiologyStudyLocksTable, eq(radiologyStudyLocksTable.studyInstanceUid, radiologyWorklistTable.studyInstanceUID))
     .where(conds.length > 0 ? and(...conds) : undefined)
     .orderBy(desc(radiologyWorklistTable.createdAt))
     .limit(500);

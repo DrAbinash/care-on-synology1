@@ -150,6 +150,7 @@ async function getOrCreate() {
       customPhonepeBannerUrl: "",
       customBharatpeBannerUrl: "",
       customPayuBannerUrl: "",
+      autoPopulateFormFFromObMeasurements: false,
       updatedAt: new Date(),
     } as any;
   }
@@ -260,7 +261,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
     "showHealthPackages", "showAccreditation", "showWhatsAppBooking", "showCustomFooterMessage", "autoCropIdScan",
     "autoRotateScan", "archiveImportedScans", "ollamaLocalOnly", "serviceImagesEnabled", "disclaimerEnabled",
     "mobileScanEnabled", "phonePairingEnabled", "requireDesktopConfirmation", "autoDeleteTempScans", "ocrEnabled",
-    "aadhaarQrEnabled",
+    "aadhaarQrEnabled", "autoPopulateFormFFromObMeasurements",
     // Phase 2 Scanner Settings
     "scannerGlobalEnabled", "scanStationKioskModeEnabled", "scanStationAutoClearEnabled",
     // Refactored fields

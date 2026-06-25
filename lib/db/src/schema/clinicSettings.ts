@@ -210,6 +210,7 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   customPhonepeBannerUrl: text("custom_phonepe_banner_url").notNull().default(""),
   customBharatpeBannerUrl: text("custom_bharatpe_banner_url").notNull().default(""),
   customPayuBannerUrl: text("custom_payu_banner_url").notNull().default(""),
+  autoPopulateFormFFromObMeasurements: boolean("auto_populate_form_f_from_ob_measurements").notNull().default(false),
 
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
