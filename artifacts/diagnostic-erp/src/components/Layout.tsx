@@ -153,6 +153,7 @@ const navItems: NavEntry[] = [
     icon: Radio,
     label: "Radiology & Imaging",
     children: [
+      { path: "/radiology/cockpit",            icon: Stethoscope,    label: "Radiologist Cockpit" },
       { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist Hub" },
       { path: "/radiology/reporting-workspace", icon: FilePen,        label: "Reporting Workspace" },
       { path: "/pacs",                        icon: Monitor,        label: "PACS Viewer" },

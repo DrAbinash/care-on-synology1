@@ -42,6 +42,7 @@ const QueuePage       = lazy(() => import("@/pages/Queue"));
 const Radiology       = lazy(() => import("@/pages/Radiology"));
 const RadiologyLegacy = lazy(() => import("@/pages/RadiologyLegacy"));
 const RadiologyWorklist = lazy(() => import("@/pages/RadiologyWorklist"));
+const RadiologistCockpit = lazy(() => import("@/pages/RadiologistCockpit"));
 const RadiologyReportEditor = lazy(() => import("@/pages/RadiologyReportEditor"));
 const RadiologyReportUnified = lazy(() => import("@/pages/RadiologyReportUnified"));
 const RadiologyReportGen = lazy(() => import("@/pages/RadiologyReportGenerator"));
@@ -179,7 +180,7 @@ const queryClient = new QueryClient({
 
 const ERP_NAV_ORDER = [
   "/", "/dashboard", "/my-daily-summary", "/daily-summary", "/patients", "/appointments", "/queue", "/online-bookings",
-  "/radiology", "/radiology/legacy", "/radiology/worklist", "/radiology/dicom-qr", "/radiology/report-generator", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/pacs-settings", "/radiology/network-control-center", "/radiology/pacs-logs",
+  "/radiology", "/radiology/cockpit", "/radiology/legacy", "/radiology/worklist", "/radiology/dicom-qr", "/radiology/report-generator", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/pacs-settings", "/radiology/network-control-center", "/radiology/pacs-logs",
   "/radiology/dicom-agent-dashboard", "/radiology/modality-management",
   "/radiology/mwl-dashboard", "/radiology/agent-setup", "/radiology/ai-reporting-settings", "/radiology/ai-prompt-templates", "/radiology/ai-model-routing", "/radiology/structured-report-templates", "/radiology/ai-audit-log",
   "/radiology/viewer", "/radiology/archive-lifecycle", "/radiology/watchdog", "/radiology/ai-inference-settings", "/radiology/hl7-settings", "/teleradiology",
@@ -299,6 +300,7 @@ function Router() {
               <Route path="/online-bookings" component={OnlineBookings} />
               <Route path="/queue" component={QueuePage} />
               <Route path="/radiology" component={Radiology} />
+              <Route path="/radiology/cockpit" component={RadiologistCockpit} />
               <Route path="/radiology/worklist" component={RadiologyWorklist} />
               <Route path="/radiology/report-generator">
                 {() => <RadiologyReportGen />}
