@@ -4117,6 +4117,7 @@ function FormFTestsTab() {
     formFBillingPrompt?: boolean;
     formFAddressRequired?: boolean;
     formFGuardianRequired?: boolean;
+    serviceImages?: string;
   }>({
     queryKey: ["clinic-settings"],
     queryFn: () => api.get("/api/clinic-settings"),
@@ -4126,6 +4127,7 @@ function FormFTestsTab() {
   const [billingPrompt, setBillingPrompt] = useState(false);
   const [addressRequired, setAddressRequired] = useState(true);
   const [guardianRequired, setGuardianRequired] = useState(true);
+  const [includeBiometry, setIncludeBiometry] = useState(false);
 
   useEffect(() => {
     if (!settingsLoading && settings !== undefined) {
@@ -4136,17 +4138,30 @@ function FormFTestsTab() {
       setBillingPrompt(!!settings?.formFBillingPrompt);
       setAddressRequired(settings?.formFAddressRequired !== false);
       setGuardianRequired(settings?.formFGuardianRequired !== false);
+      try {
+        const parsed = JSON.parse(settings?.serviceImages ?? "{}");
+        setIncludeBiometry(!!parsed.formFIncludeBiometry);
+      } catch { /* ignore */ }
     }
   }, [settings, settingsLoading]);
 
   const saveMut = useMutation({
-    mutationFn: () =>
-      api.put("/api/clinic-settings", {
+    mutationFn: () => {
+      let svcImgs = "{}";
+      try {
+        const parsed = JSON.parse(settings?.serviceImages ?? "{}");
+        parsed.formFIncludeBiometry = includeBiometry;
+        svcImgs = JSON.stringify(parsed);
+      } catch { /* ignore */ }
+
+      return api.put("/api/clinic-settings", {
         formFTestIds: JSON.stringify([...selectedIds]),
         formFBillingPrompt: billingPrompt,
         formFAddressRequired: addressRequired,
         formFGuardianRequired: guardianRequired,
-      }),
+        serviceImages: svcImgs,
+      });
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["clinic-settings"] });
     },
@@ -4225,6 +4240,18 @@ function FormFTestsTab() {
                 />
                 <label htmlFor="formFAddressRequired" className="text-xs text-muted-foreground cursor-pointer">
                   <span className="font-semibold text-foreground">Full address required</span> in popup and Form F
+                </label>
+              </div>
+              <div className="flex items-center gap-2 pl-6">
+                <input
+                  id="formFIncludeBiometry"
+                  type="checkbox"
+                  checked={includeBiometry}
+                  onChange={(e) => setIncludeBiometry(e.target.checked)}
+                  className="w-4 h-4 accent-primary"
+                />
+                <label htmlFor="formFIncludeBiometry" className="text-xs text-muted-foreground cursor-pointer">
+                  <span className="font-semibold text-foreground">Include USG biometry (BPD, FL, AC, HC, CRL) in Form F export</span>
                 </label>
               </div>
             </div>

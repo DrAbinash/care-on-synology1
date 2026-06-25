@@ -870,7 +870,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               in and superadmin.key validates against the server secret.
             Each entry opens /super-admin-portal/#<view> in a new tab so the
             portal jumps straight into the chosen module after PIN login. */}
-        {(!usbGateEnforced || usbKeyPresent) && (
+        {usbKeyPresent && (
           <div className="px-3 py-2 border-t border-sidebar-border relative z-10" style={{ borderColor: "rgba(255,255,255,0.1)" }}>
             <div className="flex items-center justify-between px-2.5 pb-1.5">
               <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-300/90">

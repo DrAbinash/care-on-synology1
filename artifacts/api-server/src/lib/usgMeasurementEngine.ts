@@ -77,13 +77,13 @@ export interface CalculationResult {
 
 function volEllipsoid(l?: number | null, w?: number | null, h?: number | null): number | null {
   if (l == null || w == null || h == null || l <= 0 || w <= 0 || h <= 0) return null;
-  return Math.round((l * w * h * 0.523) * 100) / 100;
+  return Math.round((l * w * h * 0.523 / 1000) * 100) / 100;
 }
 
 function volProstate(l?: number | null, w?: number | null, h?: number | null): number | null {
   if (l == null || w == null || h == null || l <= 0 || w <= 0 || h <= 0) return null;
-  // Prostate uses same ellipsoid formula
-  return Math.round((l * w * h * 0.523) * 100) / 100;
+  // Prostate uses same ellipsoid formula, convert mm^3 to ml by dividing by 1000
+  return Math.round((l * w * h * 0.523 / 1000) * 100) / 100;
 }
 
 export function calculateMeasurements(m: MeasurementSet): CalculationResult {
@@ -142,5 +142,128 @@ export function calculateMeasurements(m: MeasurementSet): CalculationResult {
     ri,
     estimatedGaWeeks,
     gestationalAgeByFl,
+  };
+}
+
+export function parseDimension(val: string | null | undefined, defaultUnit: "mm" | "cm" = "mm"): number | null {
+  if (val == null || val === "") return null;
+  const cleaned = String(val).trim();
+  const match = cleaned.match(/^([\d.]+)\s*(mm|cm|cc|ml)?\s*$/i);
+  if (!match) {
+    const numMatch = cleaned.match(/([\d.]+)/);
+    if (!numMatch) return null;
+    const num = parseFloat(numMatch[1]);
+    if (isNaN(num)) return null;
+    return defaultUnit === "cm" ? num * 10 : num;
+  }
+  const num = parseFloat(match[1]);
+  const unit = match[2]?.toLowerCase();
+  if (isNaN(num)) return null;
+  if (unit === "cm") return num * 10;
+  if (unit === "mm") return num;
+  if (unit === "cc" || unit === "ml") return num;
+  return defaultUnit === "cm" ? num * 10 : num;
+}
+
+export function parseTripleDimensions(val: string | null | undefined): { l: number; w: number; h: number } | null {
+  if (val == null || val === "") return null;
+  const cleaned = String(val).trim();
+  const hasCm = /cm/i.test(cleaned);
+  const defaultUnit = hasCm ? "cm" : "mm";
+  const parts = cleaned.split(/[\sx*×]+/i).map(p => p.trim()).filter(Boolean);
+  if (parts.length < 3) return null;
+  const l = parseDimension(parts[0], defaultUnit);
+  const w = parseDimension(parts[1], defaultUnit);
+  const h = parseDimension(parts[2], defaultUnit);
+  if (l == null || w == null || h == null) return null;
+  return { l, w, h };
+}
+
+export function normalizeAndCalculate(m: any): {
+  normalizedFields: Partial<MeasurementSet>;
+  calculations: CalculationResult;
+} {
+  const updates: Partial<MeasurementSet> = {};
+
+  // Kidney
+  const rkDims = parseTripleDimensions(m.rightKidney);
+  if (rkDims) {
+    updates.rightKidneyLengthMm = rkDims.l;
+    updates.rightKidneyWidthMm = rkDims.w;
+    updates.rightKidneyThicknessMm = rkDims.h;
+  }
+  const lkDims = parseTripleDimensions(m.leftKidney);
+  if (lkDims) {
+    updates.leftKidneyLengthMm = lkDims.l;
+    updates.leftKidneyWidthMm = lkDims.w;
+    updates.leftKidneyThicknessMm = lkDims.h;
+  }
+
+  // Prostate
+  const prosDims = parseTripleDimensions(m.prostateVolume);
+  if (prosDims) {
+    updates.prostateLengthMm = prosDims.l;
+    updates.prostateWidthMm = prosDims.w;
+    updates.prostateHeightMm = prosDims.h;
+  }
+
+  // Uterus
+  const utDims = parseTripleDimensions(m.uterusSize);
+  if (utDims) {
+    updates.uterusLengthMm = utDims.l;
+    updates.uterusWidthMm = utDims.w;
+    updates.uterusHeightMm = utDims.h;
+  }
+
+  // Ovaries
+  const roDims = parseTripleDimensions(m.rightOvary);
+  if (roDims) {
+    updates.rightOvaryLengthMm = roDims.l;
+    updates.rightOvaryWidthMm = roDims.w;
+    updates.rightOvaryHeightMm = roDims.h;
+  }
+  const loDims = parseTripleDimensions(m.leftOvary);
+  if (loDims) {
+    updates.leftOvaryLengthMm = loDims.l;
+    updates.leftOvaryWidthMm = loDims.w;
+    updates.leftOvaryHeightMm = loDims.h;
+  }
+
+  // Liver / CBD / GB
+  const liverVal = parseDimension(m.liverSize, "cm");
+  if (liverVal) updates.liverSpanMm = liverVal;
+
+  const cbdVal = parseDimension(m.cbd, "mm");
+  if (cbdVal) updates.cbdMm = cbdVal;
+
+  const gbWallVal = parseDimension(m.gbWall, "mm");
+  if (gbWallVal) updates.gbWallMm = gbWallVal;
+
+  // Fetal
+  const bpdVal = parseDimension(m.bpd, "mm");
+  if (bpdVal) updates.bpdMm = bpdVal;
+
+  const hcVal = parseDimension(m.hc, "mm");
+  if (hcVal) updates.hcMm = hcVal;
+
+  const acVal = parseDimension(m.ac, "mm");
+  if (acVal) updates.acMm = acVal;
+
+  const flVal = parseDimension(m.fl, "mm");
+  if (flVal) updates.flMm = flVal;
+
+  const crlVal = parseDimension(m.crl, "mm");
+  if (crlVal) updates.crlMm = crlVal;
+
+  const combinedSet = {
+    ...m,
+    ...updates,
+  };
+
+  const calc = calculateMeasurements(combinedSet);
+
+  return {
+    normalizedFields: updates,
+    calculations: calc,
   };
 }

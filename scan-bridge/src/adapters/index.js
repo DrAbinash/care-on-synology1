@@ -1,16 +1,21 @@
+import wia from "./wia.js";
+import sane from "./sane.js";
+import folderWatch from "./folder-watch.js";
+import mock from "./mock.js";
+
 // Scanner adapter loader — picks the right driver.
 // Each adapter must export: { status(), scan(), name }
 export async function loadAdapter(vendor) {
   switch ((vendor || "mock").toLowerCase()) {
     case "wia":
-      return (await import("./wia.js")).default;
+      return wia;
     case "sane":
-      return (await import("./sane.js")).default;
+      return sane;
     case "folder-watch":
     case "folder":
-      return (await import("./folder-watch.js")).default;
+      return folderWatch;
     case "mock":
     default:
-      return (await import("./mock.js")).default;
+      return mock;
   }
 }

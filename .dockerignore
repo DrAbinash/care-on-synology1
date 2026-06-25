@@ -22,4 +22,6 @@ README-WINDOWS.md
 DEPLOY.md
 replit.md
 .replit
-.replitignore
+# Quarantined Super Admin folders to keep docker builds trace-free
+artifacts/super-admin-portal
+__super_admin_quarantine

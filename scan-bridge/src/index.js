@@ -57,11 +57,7 @@ if (_rawAllow.trim()) {
   ALLOW = [];
 }
 
-const adapter = await loadAdapter(VENDOR);
-console.log(`[scan-bridge] Loaded adapter: ${VENDOR} (${adapter.name})`);
-if (ALLOW.length === 0) {
-  console.warn("[scan-bridge] WARNING: No BRIDGE_ALLOW_ORIGINS configured and ERP_BASE_URL is not set. Cross-origin browser requests will be blocked.");
-}
+let adapter;
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -235,8 +231,21 @@ app.post("/open-scanner-app", async (_req, res) => {
   }
 });
 
-app.listen(PORT, "127.0.0.1", () => {
-  console.log(`[scan-bridge] Listening on http://127.0.0.1:${PORT}`);
-  console.log(`[scan-bridge] ERP: ${ERP_BASE || "(not configured)"}`);
-  console.log(`[scan-bridge] Allowed origins: ${ALLOW.join(", ") || "(none — CORS blocked)"}`);
-});
+(async () => {
+  try {
+    adapter = await loadAdapter(VENDOR);
+    console.log(`[scan-bridge] Loaded adapter: ${VENDOR} (${adapter.name})`);
+    if (ALLOW.length === 0) {
+      console.warn("[scan-bridge] WARNING: No BRIDGE_ALLOW_ORIGINS configured and ERP_BASE_URL is not set. Cross-origin browser requests will be blocked.");
+    }
+
+    app.listen(PORT, "127.0.0.1", () => {
+      console.log(`[scan-bridge] Listening on http://127.0.0.1:${PORT}`);
+      console.log(`[scan-bridge] ERP: ${ERP_BASE || "(not configured)"}`);
+      console.log(`[scan-bridge] Allowed origins: ${ALLOW.join(", ") || "(none — CORS blocked)"}`);
+    });
+  } catch (e) {
+    console.error("[scan-bridge] FATAL: Failed to load adapter:", e);
+    process.exit(1);
+  }
+})();

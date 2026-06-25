@@ -32,6 +32,7 @@ import {
   usgFindingImageLinksTable,
   radiologyWorklistTable,
   patientsTable,
+  formFRecordsTable,
 } from "@workspace/db/schema";
 import { eq, desc, and, ne, isNotNull } from "drizzle-orm";
 import { logger } from "../lib/logger";
@@ -458,7 +459,50 @@ router.post("/:id/finalize", async (req, res) => {
 
   // Mandatory quality check before finalize
   const [draftRow] = await db.select().from(usgReportDraftsTable).where(eq(usgReportDraftsTable.id, id)).limit(1);
-  const ctx = await gatherContext({ studyInstanceUID: draftRow?.studyInstanceUID, worklistId: draftRow?.worklistId });
+  if (!draftRow) { res.status(404).json({ error: "Not found" }); return; }
+
+  // PCPNDT Form F Lock
+  if (draftRow.templateType?.startsWith("OB_")) {
+    if (!existing.patientId) {
+      res.status(400).json({ error: "Patient ID is missing for this obstetric report." });
+      return;
+    }
+    const [formF] = await db
+      .select()
+      .from(formFRecordsTable)
+      .where(eq(formFRecordsTable.patientId, existing.patientId))
+      .orderBy(desc(formFRecordsTable.createdAt))
+      .limit(1);
+
+    if (!formF) {
+      res.status(400).json({ error: "PCPNDT Form F record is missing for this obstetric study." });
+      return;
+    }
+
+    const formFErrors: string[] = [];
+    if (!formF.idCardVerified) {
+      formFErrors.push("ID Card must be verified.");
+    }
+    if (!formF.husbandFatherName?.trim()) {
+      formFErrors.push("Husband/Father Name is required.");
+    }
+    if (!formF.address?.trim()) {
+      formFErrors.push("Address is required.");
+    }
+    if (!formF.consentDate?.trim() && !formF.procedureDate?.trim()) {
+      formFErrors.push("Consent Date or Procedure Date is required.");
+    }
+
+    if (formFErrors.length > 0) {
+      res.status(400).json({
+        error: "PCPNDT Form F compliance lock: Mandatory fields are missing or unverified.",
+        validationErrors: formFErrors,
+      });
+      return;
+    }
+  }
+
+  const ctx = await gatherContext({ studyInstanceUID: draftRow.studyInstanceUID, worklistId: draftRow.worklistId });
   let patientSex: string | null = null;
   if (existing.patientId) {
     const [p] = await db.select({ gender: patientsTable.gender }).from(patientsTable).where(eq(patientsTable.id, existing.patientId)).limit(1);

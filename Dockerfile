@@ -67,18 +67,15 @@ RUN BASE_PATH=/ \
     pnpm --filter @workspace/clinic-site run build
 RUN BASE_PATH=/erp/ \
     pnpm --filter @workspace/diagnostic-erp run build
-RUN BASE_PATH=/super-admin-portal/ \
-    pnpm --filter @workspace/super-admin-portal run build
 
 
 # -----------------------------------------------------------------------------
 # Stage: web
-# Static nginx image that serves all three SPAs and forwards /api/* to api svc.
+# Static nginx image that serves both SPAs and forwards /api/* to api svc.
 # -----------------------------------------------------------------------------
 FROM nginx:alpine AS web
 COPY --from=web-build /repo/artifacts/clinic-site/dist/public              /usr/share/nginx/html/site
 COPY --from=web-build /repo/artifacts/diagnostic-erp/dist/public           /usr/share/nginx/html/erp
-COPY --from=web-build /repo/artifacts/super-admin-portal/dist/public       /usr/share/nginx/html/super-admin-portal
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80
 

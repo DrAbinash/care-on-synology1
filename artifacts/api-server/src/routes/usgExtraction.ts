@@ -38,8 +38,11 @@ import {
   saveUsgAdminSettings,
   extractDicomMetadata,
   parseDicomSr,
+  parseGePrivateTags,
+  extractDopplerFromSr,
 } from "../lib/usgExtractor";
 import { logger } from "../lib/logger";
+import { normalizeAndCalculate } from "../lib/usgMeasurementEngine";
 
 const router = Router();
 
@@ -77,6 +80,19 @@ router.get("/stats", async (_req, res) => {
       .from(radiologyWorklistTable)
       .where(sql`modality IN ('US', 'USG') AND status IN ('pending', 'in_progress')`);
 
+    const [lastPush] = await db
+      .select({ createdAt: radiologyWorklistTable.createdAt })
+      .from(radiologyWorklistTable)
+      .orderBy(desc(radiologyWorklistTable.createdAt))
+      .limit(1);
+
+    const [lastUsStudy] = await db
+      .select({ createdAt: radiologyWorklistTable.createdAt })
+      .from(radiologyWorklistTable)
+      .where(sql`modality IN ('US', 'USG')`)
+      .orderBy(desc(radiologyWorklistTable.createdAt))
+      .limit(1);
+
     res.json({
       pendingWorklist:      Number(worklistCount?.total   ?? 0),
       pendingMeasurements:  Number(measStats?.pending     ?? 0),
@@ -85,9 +101,55 @@ router.get("/stats", async (_req, res) => {
       finalizedReports:     Number(draftStats?.finalized  ?? 0),
       keyImages:            Number(keyImgCount?.total     ?? 0),
       pendingDoppler:       Number(dopplerStats?.pending  ?? 0),
+      lastPushReceived:     lastPush?.createdAt ?? null,
+      lastUsStudyReceived:  lastUsStudy?.createdAt ?? null,
     });
   } catch {
-    res.json({ pendingWorklist:0, pendingMeasurements:0, approvedMeasurements:0, draftReports:0, finalizedReports:0, keyImages:0, pendingDoppler:0 });
+    res.json({ pendingWorklist:0, pendingMeasurements:0, approvedMeasurements:0, draftReports:0, finalizedReports:0, keyImages:0, pendingDoppler:0, lastPushReceived:null, lastUsStudyReceived:null });
+  }
+});
+
+// ── GET /push-monitor ─────────────────────────────────────────────────────────
+// Returns latest received ultrasound studies and their extraction status.
+
+router.get("/push-monitor", async (_req, res) => {
+  try {
+    const rows = await db
+      .select({
+        id: radiologyWorklistTable.id,
+        patientName: radiologyWorklistTable.patientName,
+        patientId: radiologyWorklistTable.dicomPatientId,
+        studyDate: radiologyWorklistTable.studyDate,
+        studyDescription: radiologyWorklistTable.studyDescription,
+        sourceAe: radiologyWorklistTable.sourceAeTitle,
+        studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
+        receivedTime: radiologyWorklistTable.createdAt,
+      })
+      .from(radiologyWorklistTable)
+      .where(sql`modality IN ('US', 'USG')`)
+      .orderBy(desc(radiologyWorklistTable.createdAt))
+      .limit(30);
+
+    const results = [];
+    for (const row of rows) {
+      const [meas] = await db
+        .select({ status: usgMeasurementsTable.status, source: usgMeasurementsTable.source })
+        .from(usgMeasurementsTable)
+        .where(eq(usgMeasurementsTable.worklistId, row.id))
+        .orderBy(desc(usgMeasurementsTable.createdAt))
+        .limit(1);
+
+      results.push({
+        ...row,
+        extractionStatus: meas?.status ?? "not_triggered",
+        extractionSource: meas?.source ?? null,
+      });
+    }
+
+    res.json(results);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -194,9 +256,19 @@ router.patch("/measurements/:id/approve", async (req, res) => {
   const session = (req as unknown as Record<string, unknown>).staffSession as { user: { name?: string; username?: string } } | undefined;
   const b = (req.body ?? {}) as { reviewNotes?: string };
 
+  const [existing] = await db
+    .select()
+    .from(usgMeasurementsTable)
+    .where(eq(usgMeasurementsTable.id, id));
+
+  if (!existing) { res.status(404).json({ error: "Measurement not found" }); return; }
+
+  const { normalizedFields } = normalizeAndCalculate(existing);
+
   const [row] = await db
     .update(usgMeasurementsTable)
     .set({
+      ...normalizedFields,
       status: "approved",
       reviewedBy: session?.user.name ?? session?.user.username ?? "radiologist",
       reviewedAt: new Date(),
@@ -206,7 +278,6 @@ router.patch("/measurements/:id/approve", async (req, res) => {
     .where(eq(usgMeasurementsTable.id, id))
     .returning();
 
-  if (!row) { res.status(404).json({ error: "Measurement not found" }); return; }
   res.json(row);
 });
 
@@ -246,6 +317,9 @@ const ALLOWED_FIELDS = new Set([
 router.patch("/measurements/:id/field", async (req, res) => {
   const id = Number(req.params.id);
   const b = (req.body ?? {}) as Record<string, string>;
+  const session = (req as unknown as Record<string, unknown>).staffSession as { user: { id: number; role: string; username?: string } } | undefined;
+  const userId = session?.user.id || 0;
+  const username = session?.user.username || "unknown";
 
   const updates: Record<string, string> = {};
   for (const [k, v] of Object.entries(b)) {
@@ -281,15 +355,38 @@ router.patch("/measurements/:id/field", async (req, res) => {
     cbd: "cbd", gb_wall: "gbWall", prostate_volume: "prostateVolume",
   };
 
+  const provenanceMap = JSON.parse(row.provenanceJson || "{}");
   const drizzleUpdates: Partial<typeof usgMeasurementsTable.$inferInsert> = { updatedAt: new Date() };
   for (const [snakeKey, val] of Object.entries(updates)) {
     const drizzleKey = fieldMap[snakeKey] ?? snakeKey;
     (drizzleUpdates as Record<string, unknown>)[drizzleKey] = val;
+
+    provenanceMap[drizzleKey as string] = {
+      studyInstanceUID: row.studyInstanceUID,
+      seriesInstanceUID: undefined,
+      sopInstanceUID: undefined,
+      frameNumber: 1,
+      sourceType: "MANUAL",
+      sourceLabel: String(drizzleKey).toUpperCase(),
+      sourceConfidence: "high",
+      sourcePath: `Manual Entry - User ID: ${userId} (${username})`,
+      rawExtractedValue: val,
+      normalizedValue: val,
+      unit: undefined,
+      extractedAt: new Date().toISOString(),
+      extractedByEngineVersion: "1.5.0"
+    };
   }
+
+  drizzleUpdates.provenanceJson = JSON.stringify(provenanceMap);
+
+  const merged = { ...row, ...drizzleUpdates };
+  const { normalizedFields } = normalizeAndCalculate(merged);
+  const finalUpdates = { ...drizzleUpdates, ...normalizedFields };
 
   const [updated] = await db
     .update(usgMeasurementsTable)
-    .set(drizzleUpdates)
+    .set(finalUpdates)
     .where(eq(usgMeasurementsTable.id, id))
     .returning();
 
@@ -413,14 +510,16 @@ router.post("/sample-test", async (req, res) => {
   try {
     const meta = b.dicomMetadataJson ? extractDicomMetadata(b.dicomMetadataJson) : {};
     const srItems = b.dicomMetadataJson ? parseDicomSr(b.dicomMetadataJson) : [];
+    const gePrivate = b.dicomMetadataJson ? parseGePrivateTags(b.dicomMetadataJson) : {};
+    const doppler = b.dicomMetadataJson ? extractDopplerFromSr(srItems) : [];
 
     res.json({
       metadata: meta,
       srMeasurements: srItems,
       srCount: srItems.length,
-      message: srItems.length > 0
-        ? `Found ${srItems.length} DICOM SR measurements`
-        : "No DICOM SR measurements found in metadata",
+      gePrivateMeasurements: gePrivate,
+      dopplerMeasurements: doppler,
+      message: `Found ${srItems.length} DICOM SR and ${doppler.length} Doppler measurements`,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

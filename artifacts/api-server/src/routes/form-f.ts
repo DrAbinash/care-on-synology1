@@ -2,7 +2,7 @@ import { Router } from "express";
 import { db, billsTable, patientsTable, formFRecordsTable, clinicSettingsTable } from "@workspace/db";
 import { eq, or, ilike, inArray, isNotNull, desc, and, gte, lt } from "drizzle-orm";
 import { ordersTable, orderTestsTable, testsTable, doctorsTable } from "@workspace/db";
-import { whatsappConversationsTable, whatsappSettingsTable } from "@workspace/db/schema";
+import { whatsappConversationsTable, whatsappSettingsTable, usgMeasurementsTable } from "@workspace/db/schema";
 import { dateToISTString } from "../lib/istDate";
 import { geminiOcrIdCard, type IdCardOcrResult } from "@workspace/integrations-gemini-ai";
 import { requireStaffPermission } from "../middleware/requireStaffAuth";
@@ -146,14 +146,14 @@ formFRouter.post("/save", async (req, res) => {
   try {
     const body = req.body ?? {};
 
-    let billId: number | undefined;
-    let patientId: number | undefined;
+    let billId = body.billId ? Number(body.billId) : undefined;
+    let patientId = body.patientId ? Number(body.patientId) : undefined;
 
-    if (body.billNumber) {
+    if (!billId && body.billNumber) {
       const [bill] = await db
         .select()
         .from(billsTable)
-        .where(ilike(billsTable.billNumber, body.billNumber))
+        .where(ilike(billsTable.billNumber, body.billNumber.trim()))
         .limit(1);
       if (bill) {
         billId = bill.id;
@@ -325,6 +325,7 @@ formFRouter.get("/pending", async (req, res) => {
       const doctor = order?.doctorId ? doctorMap.get(order.doctorId) : null;
       return {
         billId: b.billId,
+        patientId: b.patientId,
         billNumber: b.billNumber,
         billDate: b.createdAt ? dateToISTString(b.createdAt) : "",
         patientName: patient ? `${patient.firstName} ${patient.lastName}`.trim() : "",
@@ -783,6 +784,46 @@ formFRouter.get("/export-for-portal/:billNumber", requireStaffPermission("/form-
       return;
     }
 
+    let ultrasoundResult = record.ultrasoundResult;
+
+    // Fetch clinic settings to check if biometry export is enabled
+    const [settings] = await db.select().from(clinicSettingsTable).limit(1);
+    let includeBiometry = false;
+    if (settings) {
+      try {
+        const parsed = JSON.parse(settings.serviceImages ?? "{}");
+        includeBiometry = !!parsed.formFIncludeBiometry;
+      } catch { /* ignore */ }
+    }
+
+    if (includeBiometry && record.patientId) {
+      // Find the latest approved obstetric/USG measurement for this patient
+      const [usgMeas] = await db
+        .select()
+        .from(usgMeasurementsTable)
+        .where(
+          and(
+            eq(usgMeasurementsTable.patientId, record.patientId),
+            eq(usgMeasurementsTable.status, "approved")
+          )
+        )
+        .orderBy(desc(usgMeasurementsTable.createdAt))
+        .limit(1);
+
+      if (usgMeas) {
+        const parts = [];
+        if (usgMeas.bpd) parts.push(`BPD: ${usgMeas.bpd}`);
+        if (usgMeas.fl) parts.push(`FL: ${usgMeas.fl}`);
+        if (usgMeas.ac) parts.push(`AC: ${usgMeas.ac}`);
+        if (usgMeas.hc) parts.push(`HC: ${usgMeas.hc}`);
+        if (usgMeas.crl) parts.push(`CRL: ${usgMeas.crl}`);
+        if (parts.length > 0) {
+          const biometryStr = ` (${parts.join(", ")})`;
+          ultrasoundResult = `${record.ultrasoundResult}${biometryStr}`;
+        }
+      }
+    }
+
     res.json({
       centreName: record.centreName,
       registrationNo: record.registrationNo,
@@ -806,7 +847,7 @@ formFRouter.get("/export-for-portal/:billNumber", requireStaffPermission("/form-
       labTests: record.labTests,
       gestationalAgeWeeks: record.gestationalAgeWeeks,
       gestationalAgeDays: record.gestationalAgeDays,
-      ultrasoundResult: record.ultrasoundResult,
+      ultrasoundResult,
       abnormality: record.abnormality,
       procedureDate: record.procedureDate,
       consentDate: record.consentDate,

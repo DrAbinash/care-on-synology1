@@ -8,9 +8,9 @@ import crypto from "node:crypto";
 import { logger } from "./lib/logger";
 
 export let activePluginRouter: Router | null = null;
-let pluginSource: "local" | "uploaded" | null = null;
-let loadedPluginPath: string | null = null;
-let lastHeartbeatTime = 0;
+export let pluginSource: "local" | "uploaded" | null = null;
+export let loadedPluginPath: string | null = null;
+export let lastHeartbeatTime = 0;
 
 function constantTimeEqualString(a: string, b: string): boolean {
   const ab = Buffer.from(a);
@@ -69,7 +69,7 @@ async function scanLocalUsb(): Promise<{ keyPath: string; pluginPath: string } |
 }
 
 // Loader check loop (runs every 5 seconds)
-async function checkUsbStatus() {
+export async function checkUsbStatus() {
   if (pluginSource === "uploaded") {
     // Heartbeat check for uploaded plugin
     if (Date.now() - lastHeartbeatTime > 30000) {
@@ -116,6 +116,13 @@ export function unloadPlugin() {
   activePluginRouter = null;
   pluginSource = null;
   loadedPluginPath = null;
+}
+
+export function setPluginState(router: any, source: "local" | "uploaded" | null, path: string | null, heartbeat: number) {
+  activePluginRouter = router;
+  pluginSource = source;
+  loadedPluginPath = path;
+  lastHeartbeatTime = heartbeat;
 }
 
 export function initializePluginLoader(app: Express) {

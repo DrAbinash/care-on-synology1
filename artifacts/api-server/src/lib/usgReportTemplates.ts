@@ -150,8 +150,8 @@ function header(opts: AutoGenInput, titleLine: string): string {
   ].join("\n");
 }
 
-function footer(): string {
-  return [
+function footer(source?: string | null): string {
+  const disclaimerLines = [
     "",
     "RECOMMENDATIONS:",
     "(to be added by the radiologist)",
@@ -160,7 +160,11 @@ function footer(): string {
     "This report is generated from approved measurements only.",
     "Low-confidence OCR values were excluded and require manual entry.",
     "AI never finalizes a report — human verification is mandatory.",
-  ].join("\n");
+  ];
+  if (source === "ocr" || source === "combined") {
+    disclaimerLines.push("Note: Measurements in this report were auto-extracted using Gemini AI OCR from modality captures and verified/approved by the signing radiologist.");
+  }
+  return disclaimerLines.join("\n");
 }
 
 /** Render the template, filling in approved measurements and tracking stats. */
@@ -206,7 +210,7 @@ export function autoGenerateReport(input: AutoGenInput): AutoGenOutput {
         .replace("${uterus}", g("uterusSize", "uterusSizeConfidence"))
         .replace("${ro}", g("rightOvary", "rightOvaryConfidence"))
         .replace("${lo}", g("leftOvary", "leftOvaryConfidence"));
-      return { content: header(input, "USG OBSTETRIC — EARLY PREGNANCY") + body + footer(), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
+      return { content: header(input, "USG OBSTETRIC — EARLY PREGNANCY") + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
 
     case "OB_GROWTH": {
       const bpd = g("bpd", "bpdConfidence");
@@ -248,7 +252,7 @@ export function autoGenerateReport(input: AutoGenInput): AutoGenOutput {
         "",
         "IMPRESSION:",
       ].join("\n");
-      return { content: header(input, "USG OBSTETRIC — GROWTH SCAN") + body + footer(), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
+      return { content: header(input, "USG OBSTETRIC — GROWTH SCAN") + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
     }
 
     case "OB_ANOMALY": {
@@ -272,7 +276,7 @@ export function autoGenerateReport(input: AutoGenInput): AutoGenOutput {
         "",
         "IMPRESSION:",
       ].join("\n");
-      return { content: header(input, "USG OBSTETRIC — ANOMALY SCAN (18–22 wks)") + body + footer(), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
+      return { content: header(input, "USG OBSTETRIC — ANOMALY SCAN (18–22 wks)") + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
     }
 
     case "PELVIS_FEMALE": {
@@ -287,7 +291,7 @@ export function autoGenerateReport(input: AutoGenInput): AutoGenOutput {
         "",
         "IMPRESSION:",
       ].join("\n");
-      return { content: header(input, "USG PELVIS — FEMALE (TV / TA)") + body + footer(), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
+      return { content: header(input, "USG PELVIS — FEMALE (TV / TA)") + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
     }
 
     case "WHOLE_ABDOMEN": {
@@ -307,7 +311,7 @@ export function autoGenerateReport(input: AutoGenInput): AutoGenOutput {
         "",
         "IMPRESSION:",
       ].join("\n");
-      return { content: header(input, "USG WHOLE ABDOMEN") + body + footer(), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
+      return { content: header(input, "USG WHOLE ABDOMEN") + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
     }
 
     case "KUB": {
@@ -322,7 +326,7 @@ export function autoGenerateReport(input: AutoGenInput): AutoGenOutput {
         "",
         "IMPRESSION:",
       ].join("\n");
-      return { content: header(input, "USG KUB") + body + footer(), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
+      return { content: header(input, "USG KUB") + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
     }
 
     case "PROSTATE": {
@@ -339,7 +343,7 @@ export function autoGenerateReport(input: AutoGenInput): AutoGenOutput {
         "",
         "IMPRESSION:",
       ].join("\n");
-      return { content: header(input, "USG PROSTATE (TA / TRUS)") + body + footer(), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
+      return { content: header(input, "USG PROSTATE (TA / TRUS)") + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
     }
 
     case "SCROTUM":
@@ -354,7 +358,7 @@ export function autoGenerateReport(input: AutoGenInput): AutoGenOutput {
         "",
         "IMPRESSION:",
       ].join("\n");
-      return { content: header(input, "USG SCROTUM") + body + footer(), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
+      return { content: header(input, "USG SCROTUM") + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
 
     case "THYROID":
       body = [
@@ -367,7 +371,7 @@ export function autoGenerateReport(input: AutoGenInput): AutoGenOutput {
         "",
         "IMPRESSION:",
       ].join("\n");
-      return { content: header(input, "USG THYROID + NECK") + body + footer(), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
+      return { content: header(input, "USG THYROID + NECK") + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
 
     case "BREAST":
       body = [
@@ -381,7 +385,7 @@ export function autoGenerateReport(input: AutoGenInput): AutoGenOutput {
         "",
         "IMPRESSION:",
       ].join("\n");
-      return { content: header(input, "USG BREAST — BILATERAL") + body + footer(), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
+      return { content: header(input, "USG BREAST — BILATERAL") + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
 
     case "ARTERIAL_DOPPLER":
     case "VENOUS_DOPPLER":
@@ -415,7 +419,7 @@ export function autoGenerateReport(input: AutoGenInput): AutoGenOutput {
         "",
         "IMPRESSION:",
       ].join("\n");
-      return { content: header(input, `${titleMap[input.templateId]}`) + body + footer(), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds };
+      return { content: header(input, `${titleMap[input.templateId]}`) + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds };
     }
   }
 }

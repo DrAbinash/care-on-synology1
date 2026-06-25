@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useParams, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { fetchApi } from "@/lib/fetchApi";
@@ -14,6 +14,8 @@ import {
   CheckCircle2, XCircle, RefreshCw, ClipboardCopy, ImagePlus,
   Trash2, Activity, AlertCircle, Info, ChevronDown, ChevronUp,
 } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { launchViewer } from "@/lib/viewerService";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -58,6 +60,8 @@ interface UsgMeasurement {
   gbWall: string | null;           gbWallConfidence: string | null;
   prostateVolume: string | null;   prostateVolumeConfidence: string | null;
   extraMeasurementsJson: string;
+  provenanceJson: string;
+  engineVersion: string;
   createdAt: string;
 }
 
@@ -97,9 +101,10 @@ interface MeasurementRowProps {
   editValue: string;
   onEditChange: (v: string) => void;
   onSave: () => void;
+  onTrace?: () => void;
 }
 
-function MeasurementRow({ label, field: _field, value, confidence, editing, editValue, onEditChange, onSave }: MeasurementRowProps) {
+function MeasurementRow({ label, field: _field, value, confidence, editing, editValue, onEditChange, onSave, onTrace }: MeasurementRowProps) {
   if (!value && !editing) return null;
   return (
     <div className="flex items-center gap-2 py-1.5 border-b border-dashed last:border-0">
@@ -117,6 +122,19 @@ function MeasurementRow({ label, field: _field, value, confidence, editing, edit
         <span className="text-sm font-medium flex-1">{value}</span>
       )}
       <ConfidenceBadge level={confidence} />
+      {onTrace && value && !editing && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-5 px-1.5 text-[9px] font-mono text-muted-foreground border-muted hover:border-foreground shrink-0"
+          onClick={(e) => {
+            e.stopPropagation();
+            onTrace();
+          }}
+        >
+          Trace
+        </Button>
+      )}
     </div>
   );
 }
@@ -140,6 +158,22 @@ export default function UsgMeasurementReview() {
   const [showKeyImages, setShowKeyImages] = useState(true);
   const [newImageLabel, setNewImageLabel] = useState("");
   const [newImageWado, setNewImageWado] = useState("");
+  const [traceField, setTraceField] = useState<{ field: string; label: string; value: string } | null>(null);
+
+  const pacsSettingsQuery = useQuery<{ key: string; value: string; category: string }[]>({
+    queryKey: ["pacs-settings"],
+    queryFn: () => fetchApi("/api/radiology/pacs-settings"),
+  });
+
+  const pacsSettingsRecord = useMemo(() => {
+    const record: Record<string, string> = {};
+    if (pacsSettingsQuery.data) {
+      for (const item of pacsSettingsQuery.data) {
+        record[item.key] = item.value;
+      }
+    }
+    return record;
+  }, [pacsSettingsQuery.data]);
 
   // ── Queries ─────────────────────────────────────────────────────────────────
 
@@ -283,6 +317,7 @@ export default function UsgMeasurementReview() {
           label={label} field={field} value={value} confidence={confidence}
           editing={editingField === field} editValue={editValue}
           onEditChange={setEditValue} onSave={() => saveEdit(field)}
+          onTrace={() => setTraceField({ field, label, value: value || "" })}
         />
       </div>
     );
@@ -606,6 +641,197 @@ export default function UsgMeasurementReview() {
           </CardContent>
         )}
       </Card>
+
+      <Dialog open={!!traceField} onOpenChange={(open) => !open && setTraceField(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-lg font-bold">
+              <Activity className="h-5 w-5 text-primary" />
+              Measurement Provenance Traceability
+            </DialogTitle>
+            <DialogDescription>
+              Tracing the precise DICOM acquisition or OCR origin of this measurement.
+            </DialogDescription>
+          </DialogHeader>
+
+          {traceField && (() => {
+            const getSourceBadge = (sourceType: string) => {
+              const norm = (sourceType || "").toUpperCase();
+              if (norm.includes("SR") || norm.includes("DICOM_SR")) {
+                return <Badge className="bg-green-100 text-green-800 border-green-300 border hover:bg-green-100">DICOM SR</Badge>;
+              }
+              if (norm.includes("PRIVATE") || norm.includes("GE_PRIVATE_TAG")) {
+                return <Badge className="bg-blue-100 text-blue-800 border-blue-300 border hover:bg-blue-100">GE Private Tag</Badge>;
+              }
+              if (norm.includes("OCR")) {
+                return <Badge className="bg-yellow-100 text-yellow-800 border-yellow-300 border hover:bg-yellow-100">OCR</Badge>;
+              }
+              if (norm.includes("MANUAL")) {
+                return <Badge className="bg-gray-100 text-gray-800 border-gray-300 border hover:bg-gray-100">Manual</Badge>;
+              }
+              return <Badge variant="outline">{sourceType}</Badge>;
+            };
+
+            const getConfidenceBadge = (confidence: string) => {
+              const norm = (confidence || "").toLowerCase();
+              if (norm === "low") {
+                return <Badge className="bg-red-100 text-red-800 border-red-300 border hover:bg-red-100 font-bold">⚠️ Low Confidence</Badge>;
+              }
+              if (norm === "medium") {
+                return <Badge className="bg-yellow-100 text-yellow-800 border-yellow-300 border hover:bg-yellow-100">Medium Confidence</Badge>;
+              }
+              if (norm === "high") {
+                return <Badge className="bg-green-100 text-green-800 border-green-300 border hover:bg-green-100">High Confidence</Badge>;
+              }
+              return <Badge variant="outline">{confidence}</Badge>;
+            };
+
+            let provenanceItem: Record<string, unknown> | null = null;
+            if (measurement?.provenanceJson) {
+              try {
+                const parsed = JSON.parse(measurement.provenanceJson);
+                provenanceItem = parsed[traceField.field] || null;
+              } catch { /* ignore */ }
+            }
+
+            const studyUid = String(provenanceItem?.studyInstanceUID || measurement?.studyInstanceUID || studyUID);
+            const seriesUid = String(provenanceItem?.seriesInstanceUID || "N/A");
+            const sopUid = String(provenanceItem?.sopInstanceUID || "N/A");
+            const frameNum = Number(provenanceItem?.frameNumber ?? 1);
+            const sourceType = String(provenanceItem?.sourceType || measurement?.source || "OCR");
+            const confidence = String(provenanceItem?.sourceConfidence || (traceField.field ? (measurement as unknown as Record<string, unknown>)[traceField.field + "Confidence"] : null) || "medium");
+            const rawVal = String(provenanceItem?.rawExtractedValue || traceField.value || "—");
+            const normVal = String(provenanceItem?.normalizedValue || traceField.value || "—");
+            const unit = String(provenanceItem?.unit || "N/A");
+            const engineVer = String(provenanceItem?.extractedByEngineVersion || measurement?.engineVersion || "1.5.0");
+            const extTime = provenanceItem?.extractedAt ? new Date(String(provenanceItem.extractedAt)).toLocaleString() : (measurement?.createdAt ? new Date(measurement.createdAt).toLocaleString() : "N/A");
+
+            const handleLaunch = (viewer: "OHIF" | "WEASIS") => {
+              launchViewer(studyUid, viewer, pacsSettingsRecord, toast);
+            };
+
+            const handleCopy = () => {
+              if (!provenanceItem) {
+                toast({ title: "No trace JSON available to copy", description: "Defaulting to fallback metadata" });
+                navigator.clipboard.writeText(JSON.stringify({
+                  studyInstanceUID: studyUid,
+                  seriesInstanceUID: seriesUid,
+                  sopInstanceUID: sopUid,
+                  frameNumber: frameNum,
+                  sourceType,
+                  sourceLabel: traceField.field.toUpperCase(),
+                  sourceConfidence: confidence,
+                  sourcePath: "Default Trace fallback",
+                  rawExtractedValue: rawVal,
+                  normalizedValue: normVal,
+                  unit,
+                  extractedAt: measurement?.createdAt || new Date().toISOString(),
+                  extractedByEngineVersion: engineVer
+                }, null, 2));
+                return;
+              }
+              navigator.clipboard.writeText(JSON.stringify(provenanceItem, null, 2));
+              toast({ title: "Trace JSON copied to clipboard" });
+            };
+
+            return (
+              <div className="space-y-4 pt-2">
+                <div className="grid grid-cols-2 gap-4 border-b pb-4">
+                  <div>
+                    <label className="text-[10px] uppercase font-bold text-muted-foreground">Measurement</label>
+                    <div className="text-sm font-semibold">{traceField.label}</div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase font-bold text-muted-foreground">Final Value</label>
+                    <div className="text-sm font-semibold text-primary">{traceField.value}</div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+                  <div>
+                    <span className="text-muted-foreground block text-xs">Source Type</span>
+                    <div className="mt-1">{getSourceBadge(sourceType)}</div>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground block text-xs">Confidence</span>
+                    <div className="mt-1">{getConfidenceBadge(confidence)}</div>
+                  </div>
+
+                  <div className="col-span-2">
+                    <span className="text-muted-foreground block text-xs">Source Path / Reference Tag</span>
+                    <span className="font-mono text-xs break-all bg-muted p-1.5 rounded block mt-1">
+                      {String(provenanceItem?.sourcePath || "N/A (Default / Manual Entry)")}
+                    </span>
+                  </div>
+
+                  <div>
+                    <span className="text-muted-foreground block text-xs">Raw Extracted Value</span>
+                    <span className="font-mono font-medium">{rawVal}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground block text-xs">Normalized Value</span>
+                    <span className="font-mono font-medium">{normVal}</span>
+                  </div>
+
+                  <div>
+                    <span className="text-muted-foreground block text-xs">Unit</span>
+                    <span>{unit}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground block text-xs">Engine Version</span>
+                    <span className="font-mono text-xs">{engineVer}</span>
+                  </div>
+
+                  <div className="col-span-2 border-t pt-3 mt-1 space-y-2">
+                    <label className="text-[10px] uppercase font-bold text-muted-foreground block">DICOM Identifiers</label>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div>
+                        <span className="text-muted-foreground">Study UID:</span>
+                        <div className="font-mono truncate select-all" title={studyUid}>
+                          {studyUid}
+                        </div>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">Series UID:</span>
+                        <div className="font-mono truncate select-all" title={seriesUid}>
+                          {seriesUid}
+                        </div>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">SOP UID:</span>
+                        <div className="font-mono truncate select-all" title={sopUid}>
+                          {sopUid}
+                        </div>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">Frame / Time:</span>
+                        <div>
+                          Frame {frameNum} · {extTime}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex gap-2 justify-end border-t pt-4 mt-2">
+                  <Button size="sm" variant="outline" onClick={() => handleLaunch("OHIF")}>
+                    Open Source Image in OHIF
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => handleLaunch("WEASIS")}>
+                    Open Source Image in Weasis
+                  </Button>
+                  <Button size="sm" variant="secondary" onClick={handleCopy}>
+                    Copy Trace JSON
+                  </Button>
+                  <Button size="sm" onClick={() => setTraceField(null)}>
+                    Close
+                  </Button>
+                </div>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -19,6 +19,7 @@ import {
   usgExtractionLogsTable,
   usgExtractionSettingsTable,
   pacsSettingsTable,
+  usgDopplerMeasurementsTable,
 } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
 import { logger } from "./logger";
@@ -193,6 +194,21 @@ interface SrMeasurement {
   value: string;
   unit: string;
   confidence: "high";
+  vessel?: string;
+  side?: string;
+  path: string;
+  sopInstanceUID?: string;
+  seriesInstanceUID?: string;
+}
+
+interface DicomDopplerMeasurement {
+  vesselName: string;
+  side: "left" | "right" | "bilateral" | "midline" | "unknown";
+  psv?: string;
+  edv?: string;
+  ri?: string;
+  pi?: string;
+  sdRatio?: string;
 }
 
 /**
@@ -208,24 +224,50 @@ export function parseDicomSr(metadataJson: string): SrMeasurement[] {
   const measurements: SrMeasurement[] = [];
   try {
     const obj = JSON.parse(metadataJson) as Record<string, unknown>;
+    const docSopUid = (obj["00080018"] as { Value?: string[] })?.Value?.[0] || "";
+    const docSeriesUid = (obj["0008000E"] as { Value?: string[] })?.Value?.[0] || "";
 
-    // Recursive walker over ContentSequence items
-    function walk(node: Record<string, unknown>): void {
+    // Recursive walker over ContentSequence items carrying vessel and side contexts
+    function walk(node: Record<string, unknown>, currentPath = "ContentSequence", currentVessel = "unknown", currentSide = "unknown"): void {
       const cs = node["0040A730"] as { Value?: unknown[] } | undefined;
       const items = cs?.Value ?? [];
-      for (const item of items) {
+      items.forEach((item, index) => {
         const seq = item as Record<string, unknown>;
+        const path = `${currentPath}[${index}]`;
         const valueType = (seq["0040A040"] as { Value?: string[] })?.Value?.[0] ?? "";
+        
+        let vessel = currentVessel;
+        let side = currentSide;
+
+        const conceptName = extractConceptName(seq);
+
+        // Update context if we encounter vessel or side codes
+        if (conceptName.match(/umbilical artery|middle cerebral artery|uterine artery|renal artery|vessel|artery|vein/i)) {
+          vessel = conceptName;
+        }
+        if (conceptName.match(/right|lt|rt|left/i)) {
+          side = conceptName.match(/right|rt/i) ? "right" : "left";
+        }
+
         if (valueType === "NUM") {
-          const conceptName = extractConceptName(seq);
           const { value, unit } = extractMeasuredValue(seq);
           if (conceptName && value) {
-            measurements.push({ conceptName, value, unit, confidence: "high" });
+            measurements.push({
+              conceptName,
+              value,
+              unit,
+              confidence: "high",
+              vessel,
+              side,
+              path,
+              sopInstanceUID: docSopUid,
+              seriesInstanceUID: docSeriesUid
+            });
           }
         }
         // Recurse
-        walk(seq);
-      }
+        walk(seq, path, vessel, side);
+      });
     }
 
     function extractConceptName(seq: Record<string, unknown>): string {
@@ -249,6 +291,174 @@ export function parseDicomSr(metadataJson: string): SrMeasurement[] {
     // Non-fatal — we'll fall back to OCR
   }
   return measurements;
+}
+
+export interface GePrivateProvenance {
+  value: string;
+  tag: string;
+  rawVal: string;
+  xmlPath?: string;
+  privateCreator?: string;
+}
+
+export function parseGePrivateTagsWithProvenance(metadataJson: string): {
+  mapped: Record<string, string>;
+  provenance: Record<string, GePrivateProvenance>;
+} {
+  const mapped: Record<string, string> = {};
+  const provenance: Record<string, GePrivateProvenance> = {};
+  
+  try {
+    const obj = JSON.parse(metadataJson) as Record<string, unknown>;
+    
+    for (const [tagKey, tagData] of Object.entries(obj)) {
+      if (typeof tagData !== "object" || tagData === null) continue;
+      const valEntry = tagData as { Value?: unknown[]; vr?: string };
+      const rawVal = valEntry.Value?.[0];
+      if (!rawVal) continue;
+
+      const strVal = String(rawVal);
+      const creator = (obj[tagKey.slice(0, 4) + "0010"] as { Value?: string[] })?.Value?.[0] || 
+                      (tagKey.startsWith("0029") || tagKey.startsWith("0019") ? "Siemens_Samsung_USG" :
+                       tagKey.startsWith("2001") || tagKey.startsWith("200d") || tagKey.startsWith("200D") ? "Philips_USG" : "Private_USG");
+
+      const isPrivateTag =
+        tagKey.startsWith("0079") ||
+        tagKey.startsWith("0009") ||
+        tagKey.startsWith("0021") ||
+        tagKey.startsWith("0029") ||
+        tagKey.startsWith("0019") ||
+        tagKey.startsWith("2001") ||
+        tagKey.startsWith("200d") ||
+        tagKey.startsWith("200D") ||
+        tagKey.startsWith("0033");
+
+      if (isPrivateTag) {
+        if (strVal.includes("<") && strVal.includes(">")) {
+          // Parse XML tags like <Measurement Name="BPD" Value="7.4" Unit="cm"/> or <BPD>74</BPD>
+          const MAP: [RegExp, string][] = [
+            [/<Measurement\s+[^>]*Name="BPD"[^>]*Value="([^"]+)"[^>]*>/i, "bpd"],
+            [/<BPD>([^<]+)<\/BPD>/i, "bpd"],
+            [/<Measurement\s+[^>]*Name="HC"[^>]*Value="([^"]+)"[^>]*>/i, "hc"],
+            [/<HC>([^<]+)<\/HC>/i, "hc"],
+            [/<Measurement\s+[^>]*Name="AC"[^>]*Value="([^"]+)"[^>]*>/i, "ac"],
+            [/<AC>([^<]+)<\/AC>/i, "ac"],
+            [/<Measurement\s+[^>]*Name="FL"[^>]*Value="([^"]+)"[^>]*>/i, "fl"],
+            [/<FL>([^<]+)<\/FL>/i, "fl"],
+            [/<Measurement\s+[^>]*Name="CRL"[^>]*Value="([^"]+)"[^>]*>/i, "crl"],
+            [/<CRL>([^<]+)<\/CRL>/i, "crl"],
+            [/<Measurement\s+[^>]*Name="FHR"[^>]*Value="([^"]+)"[^>]*>/i, "fhr"],
+            [/<FHR>([^<]+)<\/FHR>/i, "fhr"],
+            [/<Measurement\s+[^>]*Name="AFI"[^>]*Value="([^"]+)"[^>]*>/i, "liquorAfi"],
+            [/<AFI>([^<]+)<\/AFI>/i, "liquorAfi"],
+            [/<Measurement\s+[^>]*Name="Endometrium"[^>]*Value="([^"]+)"[^>]*>/i, "endometrium"],
+            [/<Endometrium>([^<]+)<\/Endometrium>/i, "endometrium"],
+          ];
+
+          for (const [re, key] of MAP) {
+            const m = strVal.match(re);
+            if (m) {
+              mapped[key] = m[1];
+              provenance[key] = {
+                value: m[1],
+                tag: tagKey,
+                rawVal: strVal,
+                xmlPath: m[0],
+                privateCreator: creator,
+              };
+            }
+          }
+        } else {
+          // Key-value text dump structure (e.g. "BPD=74.2mm\nHC=280mm")
+          const lines = strVal.split(/[\r\n]+/);
+          for (const line of lines) {
+            const parts = line.split("=");
+            if (parts.length === 2) {
+              const k = parts[0].trim().toLowerCase();
+              const v = parts[1].trim();
+              const standardKeys: Record<string, string> = {
+                bpd: "bpd",
+                hc: "hc",
+                ac: "ac",
+                fl: "fl",
+                crl: "crl",
+                fhr: "fhr",
+                afi: "liquorAfi",
+              };
+              const mappedKey = standardKeys[k];
+              if (mappedKey) {
+                mapped[mappedKey] = v;
+                provenance[mappedKey] = {
+                  value: v,
+                  tag: tagKey,
+                  rawVal: line,
+                  privateCreator: creator,
+                };
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return { mapped, provenance };
+}
+
+export function parseGePrivateTags(metadataJson: string): Record<string, string> {
+  return parseGePrivateTagsWithProvenance(metadataJson).mapped;
+}
+
+/**
+ * Group Doppler measurements (PSV, EDV, RI, PI) from extracted DICOM SR elements.
+ */
+export function extractDopplerFromSr(srItems: SrMeasurement[]): DicomDopplerMeasurement[] {
+  const dopplers: Record<string, DicomDopplerMeasurement> = {};
+
+  for (const sr of srItems) {
+    const name = sr.conceptName.toLowerCase();
+    
+    const isPsv = /\bpsv\b/i.test(name) || name.includes("peak systolic") || name.includes("11726-7");
+    const isEdv = /\bedv\b/i.test(name) || name.includes("end diastolic") || name.includes("11653-3");
+    const isRi = /\bri\b/i.test(name) || name.includes("resistive index") || name.includes("12008-9");
+    const isPi = /\bpi\b/i.test(name) || name.includes("pulsatility index") || name.includes("12006-3");
+    const isSd = /\bs\/d\b/i.test(name) || name.includes("systolic/diastolic") || name.includes("12144-0");
+
+    if (isPsv || isEdv || isRi || isPi || isSd) {
+      let vessel = sr.vessel || "unknown";
+      let side: "left" | "right" | "bilateral" | "midline" | "unknown" = "unknown";
+      
+      const sideStr = (sr.side || "").toLowerCase() || name;
+      if (sideStr.includes("right") || sideStr.includes("rt")) side = "right";
+      else if (sideStr.includes("left") || sideStr.includes("lt")) side = "left";
+      
+      if (vessel === "unknown") {
+        if (name.includes("umbilical")) vessel = "Umbilical Artery";
+        else if (name.includes("cerebral") || name.includes("mca")) vessel = "Middle Cerebral Artery";
+        else if (name.includes("uterine")) vessel = "Uterine Artery";
+        else if (name.includes("renal")) vessel = "Renal Artery";
+      }
+
+      const valStr = sr.value + (sr.unit ? ` ${sr.unit}` : "");
+      const key = `${vessel}_${side}`.toLowerCase();
+
+      if (!dopplers[key]) {
+        dopplers[key] = {
+          vesselName: vessel,
+          side,
+        };
+      }
+
+      if (isPsv) dopplers[key].psv = valStr;
+      if (isEdv) dopplers[key].edv = valStr;
+      if (isRi) dopplers[key].ri = valStr;
+      if (isPi) dopplers[key].pi = valStr;
+      if (isSd) dopplers[key].sdRatio = valStr;
+    }
+  }
+
+  return Object.values(dopplers);
 }
 
 /**
@@ -421,13 +631,36 @@ export async function runUsgExtraction(input: UsgExtractionInput): Promise<UsgEx
     const srMapped = mapSrToJson(srMeasurements);
     const srFound = srMeasurements.length > 0;
 
-    // ── Step 3: Gemini Vision OCR (if enabled and no perfect SR) ────────────
+    // ── Step 2.5: GE Private Tags parse ──────────────────────────────────────
+    const gePrivateResult = dicomMetadataJson ? parseGePrivateTagsWithProvenance(dicomMetadataJson) : { mapped: {}, provenance: {} };
+    const gePrivateMapped = gePrivateResult.mapped;
+    const gePrivateFound = Object.keys(gePrivateMapped).length > 0;
+
+    // ── Step 3: Gemini Vision OCR (if enabled and no high-fidelity source found)
     let ocrResult: UsgMeasurementJson | null = null;
     let framesProcessed = 0;
     let framesFailed = 0;
     let rawOcrTexts: string[] = [];
+    const provenanceMap: Record<string, any> = {};
 
-    if (settings.ocrEnabled) {
+    let mainSopUid = "";
+    let mainSeriesUid = "";
+    let srSopUid = "";
+    let srSeriesUid = "";
+
+    try {
+      if (dicomMetadataJson) {
+        const rootObj = JSON.parse(dicomMetadataJson);
+        mainSopUid = rootObj["00080018"]?.Value?.[0] || "";
+        mainSeriesUid = rootObj["0008000E"]?.Value?.[0] || "";
+        srSopUid = mainSopUid;
+        srSeriesUid = mainSeriesUid;
+      }
+    } catch {}
+
+    const skipOcr = srFound || gePrivateFound;
+
+    if (settings.ocrEnabled && !skipOcr) {
       // Get WADO base URLs from pacs_settings
       const pacsRows = await db
         .select()
@@ -448,6 +681,29 @@ export async function runUsgExtraction(input: UsgExtractionInput): Promise<UsgEx
             const ocr = await geminiUsgOcr(frame.base64, frame.mimeType);
             framesProcessed++;
             if (ocr.rawText) rawOcrTexts.push(ocr.rawText);
+            
+            // Record provenance for fields extracted in this frame!
+            for (const [k, v] of Object.entries(ocr)) {
+              if (k === "extraMeasurements" || k === "perFieldConfidence" || k === "rawText") continue;
+              if (v && typeof v === "string" && (!ocrResult || !ocrResult[k as keyof UsgMeasurementJson])) {
+                provenanceMap[k] = {
+                  studyInstanceUID,
+                  seriesInstanceUID: inst.seriesUID,
+                  sopInstanceUID: inst.sopUID,
+                  frameNumber: 1,
+                  sourceType: "OCR",
+                  sourceLabel: k.toUpperCase(),
+                  sourceConfidence: ocr.perFieldConfidence?.[k] || "medium",
+                  sourcePath: "Frame 1",
+                  rawExtractedValue: v,
+                  normalizedValue: v,
+                  unit: k === "fhr" ? "bpm" : "mm",
+                  extractedAt: new Date().toISOString(),
+                  extractedByEngineVersion: "1.5.0"
+                };
+              }
+            }
+
             if (!ocrResult) {
               ocrResult = ocr;
             } else {
@@ -459,6 +715,23 @@ export async function runUsgExtraction(input: UsgExtractionInput): Promise<UsgEx
                   if (ocr.perFieldConfidence[k as string]) {
                     ocrResult.perFieldConfidence[k as string] = ocr.perFieldConfidence[k as string];
                   }
+
+                  // Also record provenance here because this frame is supplying the value!
+                  provenanceMap[k as string] = {
+                    studyInstanceUID,
+                    seriesInstanceUID: inst.seriesUID,
+                    sopInstanceUID: inst.sopUID,
+                    frameNumber: 1,
+                    sourceType: "OCR",
+                    sourceLabel: (k as string).toUpperCase(),
+                    sourceConfidence: ocr.perFieldConfidence?.[k as string] || "medium",
+                    sourcePath: "Frame 1",
+                    rawExtractedValue: ocr[k as keyof UsgMeasurementJson],
+                    normalizedValue: ocr[k as keyof UsgMeasurementJson],
+                    unit: k === "fhr" ? "bpm" : "mm",
+                    extractedAt: new Date().toISOString(),
+                    extractedByEngineVersion: "1.5.0"
+                  };
                 }
               }
               // Merge extra measurements
@@ -477,7 +750,7 @@ export async function runUsgExtraction(input: UsgExtractionInput): Promise<UsgEx
     // ── Step 4: AI normalization fallback ────────────────────────────────────
     // If OCR failed entirely but we have SR text or metadata, normalize via Gemini
     let aiNormalized = false;
-    if (!ocrResult && settings.aiNormalizeEnabled && srMeasurements.length === 0) {
+    if (!ocrResult && settings.aiNormalizeEnabled && srMeasurements.length === 0 && !gePrivateFound) {
       const rawText = [
         meta.studyDescription ?? "",
         meta.manufacturer ?? "",
@@ -490,30 +763,107 @@ export async function runUsgExtraction(input: UsgExtractionInput): Promise<UsgEx
     }
 
     // ── Step 5: Merge all sources ────────────────────────────────────────────
-    // Priority: DICOM SR (high) > OCR (medium/low)
+    // Priority: DICOM SR (high) > GE Private Tags (high) > OCR (medium/low)
     const merged: Partial<UsgMeasurementJson> = { ...ocrResult };
     const perField: Record<string, string> = { ...(ocrResult?.perFieldConfidence ?? {}) };
 
-    // SR values override OCR
+    const MAP: [RegExp, keyof UsgMeasurementJson][] = [
+      [/bpd|biparietal/i,              "bpd"],
+      [/\bhc\b|head circumference/i,   "hc"],
+      [/\bac\b|abdominal circum/i,     "ac"],
+      [/\bfl\b|femur length/i,         "fl"],
+      [/\bcrl\b|crown.rump/i,          "crl"],
+      [/efw|estimated fetal weight/i,  "efw"],
+      [/\bga\b|gestational age/i,      "ga"],
+      [/\bedd\b|due date/i,            "edd"],
+      [/\bfhr\b|fetal heart rate/i,    "fhr"],
+      [/uterus|uterine/i,              "uterusSize"],
+      [/endometr/i,                    "endometrium"],
+      [/right ovary|rt ovary/i,        "rightOvary"],
+      [/left ovary|lt ovary/i,         "leftOvary"],
+      [/liver/i,                       "liverSize"],
+      [/spleen/i,                      "spleenSize"],
+      [/right kidney|rt kidney/i,      "rightKidney"],
+      [/left kidney|lt kidney/i,       "leftKidney"],
+      [/\bcbd\b|common bile/i,         "cbd"],
+      [/gall.?bladder wall|gb wall/i,  "gbWall"],
+      [/prostate/i,                    "prostateVolume"],
+      [/placenta/i,                    "placentaPosition"],
+      [/\bafi\b|amniotic|liquor/i,     "liquorAfi"],
+      [/presentation/i,                "fetalPresentation"],
+      [/follicle/i,                    "follicles"],
+      [/adnex/i,                       "adnexalLesion"],
+    ];
+
+    // GE Private values override OCR
+    for (const [k, v] of Object.entries(gePrivateMapped)) {
+      if (v && typeof v === "string") {
+        (merged as Record<string, string>)[k] = v;
+        perField[k] = "high";
+
+        const prov = gePrivateResult.provenance[k];
+        provenanceMap[k] = {
+          studyInstanceUID,
+          seriesInstanceUID: mainSeriesUid || undefined,
+          sopInstanceUID: mainSopUid || undefined,
+          frameNumber: 1,
+          sourceType: "GE_PRIVATE_TAG",
+          sourceLabel: k.toUpperCase(),
+          sourceConfidence: "high",
+          sourcePath: prov ? `${prov.tag} - creator: ${prov.privateCreator || "GE_USG"}` : "GE Private Tag",
+          rawExtractedValue: prov ? prov.rawVal : v,
+          normalizedValue: v,
+          unit: prov?.xmlPath ? (prov.xmlPath.match(/Unit="([^"]+)"/) || [])[1] : undefined,
+          extractedAt: new Date().toISOString(),
+          extractedByEngineVersion: "1.5.0"
+        };
+      }
+    }
+
+    // SR values override GE Private & OCR
     for (const [k, v] of Object.entries(srMapped)) {
       if (k === "extraMeasurements" || k === "perFieldConfidence" || k === "overallConfidence") continue;
       if (v && typeof v === "string") {
         (merged as Record<string, string>)[k] = v;
         perField[k] = "high";
+
+        const srItem = srMeasurements.find(sr => {
+          for (const [re, key] of MAP) {
+            if (key === k && re.test(sr.conceptName)) return true;
+          }
+          return false;
+        });
+
+        provenanceMap[k] = {
+          studyInstanceUID,
+          seriesInstanceUID: srItem?.seriesInstanceUID || srSeriesUid || undefined,
+          sopInstanceUID: srItem?.sopInstanceUID || srSopUid || undefined,
+          frameNumber: 1,
+          sourceType: "DICOM_SR",
+          sourceLabel: k.toUpperCase(),
+          sourceConfidence: "high",
+          sourcePath: srItem?.path || "ContentSequence",
+          rawExtractedValue: srItem?.value || v,
+          normalizedValue: v,
+          unit: srItem?.unit || undefined,
+          extractedAt: new Date().toISOString(),
+          extractedByEngineVersion: "1.5.0"
+        };
       }
     }
+
     if (srMapped.extraMeasurements) {
       merged.extraMeasurements = { ...(ocrResult?.extraMeasurements ?? {}), ...srMapped.extraMeasurements };
     }
 
     const source: UsgExtractionResult["source"] =
-      srFound && framesProcessed > 0 ? "combined" :
+      (srFound || gePrivateFound) && framesProcessed > 0 ? "combined" :
       srFound ? "dicom_sr" :
+      gePrivateFound ? "dicom_sr" :
       framesProcessed > 0 ? "ocr" : "manual";
 
-    // Overall confidence: high if SR found, medium if OCR processed frames, low otherwise
     const overallConfidence: "high" | "medium" | "low" =
-      srFound ? "high" :
+      srFound || gePrivateFound ? "high" :
       framesProcessed > 0 ? "medium" : "low";
 
     // ── Step 6: Persist measurements ─────────────────────────────────────────
@@ -560,8 +910,77 @@ export async function runUsgExtraction(input: UsgExtractionInput): Promise<UsgEx
         studyDescription:    meta.studyDescription   ?? null,
         studyDate:           meta.studyDate          ?? null,
         status: "pending_review",
+        provenanceJson:      JSON.stringify(provenanceMap),
+        engineVersion:       "1.5.0",
       })
       .returning();
+
+    // ── Step 6.5: Persist Doppler measurements if found ──────────────────────
+    const dopplerItems = extractDopplerFromSr(srMeasurements);
+    for (const dop of dopplerItems) {
+      const dopProv: Record<string, any> = {};
+      const fields: ("psv" | "edv" | "ri" | "pi" | "sdRatio")[] = ["psv", "edv", "ri", "pi", "sdRatio"];
+      let waveformSopInstanceUid = "";
+      let waveformFrameNumber: number | null = null;
+
+      for (const field of fields) {
+        if (dop[field]) {
+          const matchedSr = srMeasurements.find(sr => {
+            const name = sr.conceptName.toLowerCase();
+            const isFld = 
+              field === "psv" ? (/\bpsv\b/i.test(name) || name.includes("peak systolic")) :
+              field === "edv" ? (/\bedv\b/i.test(name) || name.includes("end diastolic")) :
+              field === "ri" ? (/\bri\b/i.test(name) || name.includes("resistive index")) :
+              field === "pi" ? (/\bpi\b/i.test(name) || name.includes("pulsatility index")) :
+              (/\bs\/d\b/i.test(name) || name.includes("systolic/diastolic"));
+            return isFld && (sr.vessel || "unknown") === dop.vesselName && (sr.side || "unknown") === dop.side;
+          });
+
+          if (matchedSr) {
+            waveformSopInstanceUid = matchedSr.sopInstanceUID || "";
+            dopProv[field] = {
+              studyInstanceUID,
+              seriesInstanceUID: matchedSr.seriesInstanceUID || undefined,
+              sopInstanceUID: matchedSr.sopInstanceUID || undefined,
+              frameNumber: 1,
+              sourceType: "DICOM_SR",
+              sourceLabel: `${dop.vesselName} ${field.toUpperCase()}`,
+              sourceConfidence: "high",
+              sourcePath: matchedSr.path,
+              rawExtractedValue: matchedSr.value,
+              normalizedValue: matchedSr.value,
+              unit: matchedSr.unit,
+              extractedAt: new Date().toISOString(),
+              extractedByEngineVersion: "1.5.0",
+              vesselName: dop.vesselName,
+              laterality: dop.side
+            };
+          }
+        }
+      }
+
+      await db.insert(usgDopplerMeasurementsTable).values({
+        worklistId: worklistId ?? null,
+        studyInstanceUID,
+        accessionNumber: accessionNumber ?? null,
+        patientId: patientId ?? null,
+        extractionRunId: logId,
+        vesselName: dop.vesselName,
+        side: dop.side,
+        psv: dop.psv ?? null,
+        edv: dop.edv ?? null,
+        ri: dop.ri ?? null,
+        pi: dop.pi ?? null,
+        sdRatio: dop.sdRatio ?? null,
+        confidence: "high",
+        source: "dicom_sr",
+        status: "pending_review",
+        waveformSopInstanceUid: waveformSopInstanceUid || null,
+        waveformFrameNumber: waveformFrameNumber,
+        provenanceJson: JSON.stringify(dopProv),
+        engineVersion: "1.5.0",
+      });
+    }
 
     // ── Step 7: Mark log as completed ────────────────────────────────────────
     const durationMs = Date.now() - startMs;
@@ -576,6 +995,7 @@ export async function runUsgExtraction(input: UsgExtractionInput): Promise<UsgEx
         durationMs,
         rawOcrTextJson: rawOcrTexts.length > 0 ? JSON.stringify(rawOcrTexts) : null,
         rawSrJson: srJson ?? null,
+        provenanceJson: JSON.stringify(provenanceMap),
         completedAt: new Date(),
       })
       .where(eq(usgExtractionLogsTable.id, logId));

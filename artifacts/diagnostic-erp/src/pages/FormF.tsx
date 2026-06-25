@@ -88,6 +88,8 @@ type FormFData = {
   mtpDate: string;
   date: string;
   place: string;
+  billId?: number;
+  patientId?: number;
 };
 
 function defaultForm(): FormFData {
@@ -96,6 +98,8 @@ function defaultForm(): FormFData {
     registrationNo: "34/2020",
     billNumber: "",
     patientName: "",
+    billId: undefined,
+    patientId: undefined,
     age: "",
     boyCount: "",
     girlCount: "",
@@ -486,6 +490,8 @@ function FormFPrint({ form, idCardFrontUrl, idCardBackUrl }: FormFPrintProps) {
 
 type RecordRow = {
   id: number;
+  billId?: number;
+  patientId?: number;
   billNumber?: string;
   patientName?: string;
   husbandFatherName?: string;
@@ -529,6 +535,7 @@ type RecordRow = {
 
 type PendingItem = {
   billId: number;
+  patientId: number;
   billNumber: string;
   billDate: string;
   patientName: string;
@@ -996,6 +1003,8 @@ export default function FormF() {
       procedurePurpose: item.formFTests.join(", ") || "Obstetric ultrasonography",
       procedureDate: item.billDate,
       date: item.billDate,
+      billId: item.billId,
+      patientId: item.patientId,
     });
     setLastSaved(null);
     setActiveTab("form");
@@ -1051,6 +1060,8 @@ export default function FormF() {
       mtpDate: r.mtpDate ?? "",
       date: r.date ?? "",
       place: r.place ?? "",
+      billId: r.billId ?? undefined,
+      patientId: r.patientId ?? undefined,
     });
     setIdCardFrontUrl(r.idCardFrontUrl ?? r.idCardImageUrl ?? "");
     setIdCardBackUrl(r.idCardBackUrl ?? "");
@@ -1102,11 +1113,14 @@ export default function FormF() {
         idCardExtractedName: idCardExtractedName || null,
         idCardExtractedAddress: idCardExtractedAddress || null,
         idCardVerified: idCardVerified || false,
+        billId: form.billId,
+        patientId: form.patientId,
       };
       await api.post("/api/form-f/save", payload);
       const now = new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
       setLastSaved(now);
       if (!silent) toast({ title: "Form F saved to database" });
+      void fetchPending();
     } catch {
       if (!silent) toast({ title: "Failed to save Form F", variant: "destructive" });
     } finally {
@@ -1646,41 +1660,31 @@ export default function FormF() {
                           }}
                         />
                       </label>
-                      {/* ── Capture ID (camera / OCR panel) ── */}
-                      <button
-                        type="button"
-                        onClick={() => setOcrPanelOpen(true)}
-                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-dashed border-blue-300 bg-blue-50 hover:bg-blue-100 text-blue-700 text-sm font-medium transition-colors"
-                        title="Open advanced capture panel with camera diagnostics, OCR tests, and Tesseract fallback"
-                      >
-                        <Camera size={14} /> Capture ID
-                      </button>
-                      {/* ── Direct WIA scan via bridge ── */}
+                      {/* ── Capture ID (triggers WIA scan directly) ── */}
                       <button
                         type="button"
                         onClick={triggerScanBridge}
-                        disabled={!scanBridgeOk || scanning || idCardUploading}
-                        className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-dashed text-sm font-medium transition-colors disabled:opacity-50 ${
-                          scanBridgeOk
-                            ? "border-green-300 bg-green-50 hover:bg-green-100 text-green-700"
-                            : "border-gray-300 bg-gray-50 text-gray-400 cursor-not-allowed"
-                        }`}
-                        title={scanBridgeOk
-                          ? "Direct scan using flatbed/ADF scanner attached to this PC"
-                          : "Scanner bridge offline — connect the desktop bridge app or use Upload/Camera instead"}
+                        disabled={scanning || idCardUploading}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-dashed border-blue-300 bg-blue-50 hover:bg-blue-100 text-blue-700 text-sm font-medium transition-colors"
+                        title="Trigger direct WIA scan from scanner"
                       >
-                        <Scan size={14} /> {scanning ? "Scanning…" : "Direct Scan"}
+                        <Scan size={14} /> Capture ID (Direct Scan)
+                      </button>
+                      {/* ── Webcam / Camera ── */}
+                      <button
+                        type="button"
+                        onClick={() => setOcrPanelOpen(true)}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-dashed border-gray-300 bg-gray-50 hover:bg-gray-100 text-gray-600 text-sm font-medium transition-colors"
+                        title="Open webcam capture panel"
+                      >
+                        <Camera size={14} /> Webcam
                       </button>
                       {/* ── Import latest scan from watch folder ── */}
                       <button
                         type="button"
                         onClick={importLatestScan}
-                        disabled={!scanBridgeOk || scanning || idCardUploading}
-                        className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-dashed text-sm font-medium transition-colors disabled:opacity-50 ${
-                          scanBridgeOk
-                            ? "border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-700"
-                            : "border-gray-300 bg-gray-50 text-gray-400 cursor-not-allowed"
-                      }`}
+                        disabled={scanning || idCardUploading}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-dashed border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-700 text-sm font-medium transition-colors"
                         title="Import the most recent scan saved to the watch folder (e.g., C:\Scans)"
                       >
                         <Upload size={14} /> {idCardUploading ? "Importing…" : "Import Latest Scan"}
@@ -1689,12 +1693,8 @@ export default function FormF() {
                       <button
                         type="button"
                         onClick={openScannerApp}
-                        disabled={!scanBridgeOk || scanning || idCardUploading}
-                        className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-dashed text-sm font-medium transition-colors disabled:opacity-50 ${
-                          scanBridgeOk
-                            ? "border-teal-300 bg-teal-50 hover:bg-teal-100 text-teal-700"
-                            : "border-gray-300 bg-gray-50 text-gray-400 cursor-not-allowed"
-                        }`}
+                        disabled={scanning || idCardUploading}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-dashed border-teal-300 bg-teal-50 hover:bg-teal-100 text-teal-700 text-sm font-medium transition-colors"
                         title="Open Windows Fax and Scan or vendor scanner app on this PC"
                       >
                         <ExternalLink size={14} /> Open Scanner App

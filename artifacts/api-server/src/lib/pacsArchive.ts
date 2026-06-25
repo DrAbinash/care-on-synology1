@@ -10,7 +10,7 @@ import { chromium } from "playwright";
 import { buildReportHtml } from "../routes/patient-reports.js";
 import { logger } from "./logger.js";
 
-import { getRadiologyConfig } from "./pacs/pacsConfig.js";
+import { getRadiologyConfig } from "./pacs/pacsConfig";
 
 async function getOrthancConfig() {
   const cfg = await getRadiologyConfig();

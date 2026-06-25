@@ -35,7 +35,7 @@ import { todayIST } from "../lib/istDate";
 import { createOrLinkPatientFromDicom, type DicomDemographics } from "../lib/dicomPatientCreator";
 import { computeStudyPriority, applyPriorityToStudy } from "../lib/studyPriorityEngine";
 import { assignRadiologistToStudy } from "../lib/radiologistAssignment";
-import { runUsgExtraction } from "../lib/usgExtractor";
+import { runUsgExtraction, getUsgAdminSettings } from "../lib/usgExtractor";
 
 const router = Router();
 
@@ -404,6 +404,10 @@ router.post("/radiology/studies", async (req, res) => {
       existing = row;
     }
 
+    const usgSettings = await getUsgAdminSettings();
+    const isVoluson = sourceAeTitle === "Voluson" || (usgSettings.geAeTitle && sourceAeTitle === usgSettings.geAeTitle);
+    const sourcePacsVal = isVoluson ? "Voluson Push" : (sourcePacs || "pacs");
+
     const values = {
       studyId: resolvedStudyId,
       patientId: resolvedPatientId,
@@ -422,7 +426,7 @@ router.post("/radiology/studies", async (req, res) => {
       port,
       referringDoctor,
       weasisUrl,
-      sourcePacs,
+      sourcePacs: sourcePacsVal,
       sourceAeTitle,
       dicomMetadata,
     };

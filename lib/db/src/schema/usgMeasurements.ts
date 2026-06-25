@@ -105,6 +105,9 @@ export const usgMeasurementsTable = pgTable(
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
     reviewNotes: text("review_notes"),
 
+    provenanceJson: text("provenance_json").notNull().default("{}"),
+    engineVersion: text("engine_version").notNull().default("1.5.0"),
+
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },
@@ -136,6 +139,7 @@ export const usgExtractionLogsTable = pgTable(
     triggeredByUserId: integer("triggered_by_user_id"),
     rawOcrTextJson: text("raw_ocr_text_json"),
     rawSrJson: text("raw_sr_json"),
+    provenanceJson: text("provenance_json").notNull().default("{}"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     completedAt: timestamp("completed_at", { withTimezone: true }),
   },
@@ -206,6 +210,11 @@ export const usgDopplerMeasurementsTable = pgTable(
     reviewedBy: text("reviewed_by"),
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
     reviewNotes: text("review_notes"),
+
+    provenanceJson: text("provenance_json").notNull().default("{}"),
+    waveformSopInstanceUid: text("waveform_sop_instance_uid"),
+    waveformFrameNumber: integer("waveform_frame_number"),
+    engineVersion: text("engine_version").notNull().default("1.5.0"),
 
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
