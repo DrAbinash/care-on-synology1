@@ -154,7 +154,7 @@ router.post("/modalities/:id/echo-test", async (req, res) => {
     }
   } else {
     // TCP fallback
-    const tcpResult = await tcpProbe(host, port, 5000);
+    const tcpResult = await tcpProbe(host, port, 5000, true);
     latencyMs = tcpResult.latencyMs ?? (Date.now() - start);
     ok = tcpResult.ok;
     message = tcpResult.ok
@@ -257,7 +257,7 @@ router.post("/test-modality", async (req, res) => {
     }
   } else {
     // TCP fallback
-    const tcpResult = await tcpProbe(host, port, 5000);
+    const tcpResult = await tcpProbe(host, port, 5000, true);
     latencyMs = tcpResult.latencyMs ?? (Date.now() - start);
     ok = tcpResult.ok;
     message = tcpResult.ok
@@ -2422,7 +2422,7 @@ router.post("/network/config/validate", async (req, res) => {
     const modalities = await db.select().from(dicomModalitiesTable);
     for (const m of modalities) {
       if (m.ipAddress && m.port) {
-        const probe = await tcpProbe(m.ipAddress, m.port);
+        const probe = await tcpProbe(m.ipAddress, m.port, 3000, true);
         results.push({
           name: `Modality: ${m.machineName}`,
           status: probe.ok ? "PASS" : "FAIL",
@@ -2467,13 +2467,13 @@ router.get("/network/health", async (req, res) => {
       // Orthanc HTTP
       fetchWithTimeout(cfg.orthanc.dicomWebUrl.replace(/\/dicom-web$/, "/system")),
       // Orthanc DICOM Port
-      tcpProbe(cfg.orthanc.ip, cfg.orthanc.dicomPort),
+      tcpProbe(cfg.orthanc.ip, cfg.orthanc.dicomPort, 3000, true),
       // OHIF
       fetchWithTimeout(cfg.ohif.baseUrl),
       // Weasis WADO
       fetchWithTimeout(cfg.weasis.wadoUrl),
       // Conquest DICOM
-      cfg.conquest.ip ? tcpProbe(cfg.conquest.ip, cfg.conquest.dicomPort) : Promise.resolve({ ok: false, latencyMs: 0, message: "Conquest IP not set" }),
+      cfg.conquest.ip ? tcpProbe(cfg.conquest.ip, cfg.conquest.dicomPort, 3000, true) : Promise.resolve({ ok: false, latencyMs: 0, message: "Conquest IP not set" }),
       // Ollama AI
       fetchWithTimeout("http://192.168.1.250:11434/api/tags").then(res => 
         res.ok ? res : fetchWithTimeout("http://172.16.1.140:11434/api/tags") // fallback
@@ -2699,10 +2699,10 @@ router.get("/network/health-monitor", async (req, res) => {
 
     const [orthancOk, orthancPortOk, ohifOk, weasisOk, conquestOk] = await Promise.all([
       fetchWithTimeout(cfg.orthanc.dicomWebUrl.replace(/\/dicom-web$/, "/system")),
-      tcpProbe(cfg.orthanc.ip, cfg.orthanc.dicomPort).then(r => r.ok),
+      tcpProbe(cfg.orthanc.ip, cfg.orthanc.dicomPort, 3000, true).then(r => r.ok),
       fetchWithTimeout(cfg.ohif.baseUrl),
       fetchWithTimeout(cfg.weasis.wadoUrl),
-      cfg.conquest.ip ? tcpProbe(cfg.conquest.ip, cfg.conquest.dicomPort).then(r => r.ok) : Promise.resolve(false)
+      cfg.conquest.ip ? tcpProbe(cfg.conquest.ip, cfg.conquest.dicomPort, 3000, true).then(r => r.ok) : Promise.resolve(false)
     ]);
 
     let orthancStatus = "red";

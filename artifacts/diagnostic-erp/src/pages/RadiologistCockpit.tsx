@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { api } from "@/lib/fetchApi";
@@ -104,6 +104,16 @@ interface InspectorIssue {
   reviewed?: boolean;
 }
 
+class ErrorBoundary extends React.Component<{ fallback: React.ReactNode; children: React.ReactNode }, { hasError: boolean }> {
+  constructor(props: { fallback: React.ReactNode; children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() { return { hasError: true }; }
+  componentDidCatch(error: any, info: any) { console.error("Cockpit Panel Crash:", error, info); }
+  render() { return this.state.hasError ? this.props.fallback : this.props.children; }
+}
+
 export default function RadiologistCockpit() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
@@ -113,11 +123,8 @@ export default function RadiologistCockpit() {
   // Active study state
   const [activeStudyId, setActiveStudyId] = useState<number | null>(null);
 
-
-
-  // Search & Filter for sidebar worklist
-  const [searchQuery, setSearchQuery] = useState("");
-  const [modalityFilter, setModalityFilter] = useState("all");
+  // Pagination for worklist
+  const [visibleWorklistCount, setVisibleWorklistCount] = useState(30);
 
   // Form Editor state
   const [clinicalHistory, setClinicalHistory] = useState("");
@@ -125,6 +132,45 @@ export default function RadiologistCockpit() {
   const [rawFindings, setRawFindings] = useState("");
   const [impression, setImpression] = useState<string[]>([""]);
   const [recommendation, setRecommendation] = useState("Please correlate with clinical findings.");
+
+  // Debounced states for heavy calculations
+  const [debouncedFindings, setDebouncedFindings] = useState("");
+  const [debouncedImpression, setDebouncedImpression] = useState<string[]>([]);
+  const [debouncedHistory, setDebouncedHistory] = useState("");
+  const [debouncedTechnique, setDebouncedTechnique] = useState("");
+  const [debouncedRecommendation, setDebouncedRecommendation] = useState("");
+
+  useEffect(() => {
+    const h = setTimeout(() => setDebouncedFindings(rawFindings), 1000);
+    return () => clearTimeout(h);
+  }, [rawFindings]);
+
+  useEffect(() => {
+    const h = setTimeout(() => setDebouncedImpression(impression), 1000);
+    return () => clearTimeout(h);
+  }, [impression]);
+
+  useEffect(() => {
+    const h = setTimeout(() => setDebouncedHistory(clinicalHistory), 1000);
+    return () => clearTimeout(h);
+  }, [clinicalHistory]);
+
+  useEffect(() => {
+    const h = setTimeout(() => setDebouncedTechnique(technique), 1000);
+    return () => clearTimeout(h);
+  }, [technique]);
+
+  useEffect(() => {
+    const h = setTimeout(() => setDebouncedRecommendation(recommendation), 1000);
+    return () => clearTimeout(h);
+  }, [recommendation]);
+
+
+
+  // Search & Filter for sidebar worklist
+  const [searchQuery, setSearchQuery] = useState("");
+  const [modalityFilter, setModalityFilter] = useState("all");
+
   const [isCritical, setIsCritical] = useState(false);
   const [criticalNote, setCriticalNote] = useState("");
   const [selectedChocolateFindings, setSelectedChocolateFindings] = useState<ChocolateFinding[]>([]);
@@ -194,6 +240,7 @@ export default function RadiologistCockpit() {
     queryKey: ["radiology-pacs-worklist"],
     queryFn: () => api.get<WorklistEntry[]>("/api/radiology/pacs-worklist"),
     refetchInterval: 30000,
+    staleTime: 15000,
   });
 
   // 2. Active Study Details
@@ -201,14 +248,14 @@ export default function RadiologistCockpit() {
     queryKey: ["workspace-entry", activeStudyId],
     queryFn: () => api.get<WorklistEntry>(`/api/internal/radiology/worklist/${activeStudyId}`),
     enabled: activeStudyId !== null,
+    staleTime: 60000,
   });
-
-
 
   // 3. Structured Templates Library
   const { data: templates = [] } = useQuery<StructuredTemplate[]>({
     queryKey: ["structured-templates"],
     queryFn: () => api.get<StructuredTemplate[]>("/api/radiology/structured-report-templates"),
+    staleTime: 300000,
   });
 
   // 4. Viewer Configuration Settings
@@ -220,6 +267,7 @@ export default function RadiologistCockpit() {
       for (const r of rows) if (r.category === "viewer") map[r.key] = r.value;
       return map;
     },
+    staleTime: 300000,
   });
 
   // 5. Patient's Prior Reports
@@ -228,6 +276,7 @@ export default function RadiologistCockpit() {
     queryKey: ["patient-prior-reports", activePatientId],
     queryFn: () => api.get<any[]>(`/api/patient-reports/patient/${activePatientId}`),
     enabled: !!activePatientId,
+    staleTime: 300000,
   });
 
   // Viewer Measurements central bridge query
@@ -237,6 +286,7 @@ export default function RadiologistCockpit() {
       ? api.get<{ measurements: any[] }>(`/api/radiology-lesions/viewer-measurements?studyInstanceUID=${study.studyInstanceUID}`).then(res => res.measurements)
       : Promise.resolve([]),
     enabled: !!study?.studyInstanceUID,
+    staleTime: 5000,
   });
 
   // Historical measurements for prior comparison
@@ -246,6 +296,7 @@ export default function RadiologistCockpit() {
       ? api.get<{ measurements: any[] }>(`/api/radiology-lesions/measurements?patientId=${activePatientId}`).then(res => res.measurements)
       : Promise.resolve([]),
     enabled: !!activePatientId,
+    staleTime: 300000,
   });
 
   // Mutation to update status (Import / Ignore) of a single measurement
@@ -283,6 +334,7 @@ export default function RadiologistCockpit() {
   const { data: copilotProfileData } = useQuery<{ profile: any }, Error>({
     queryKey: ["radiology-copilot-profile"],
     queryFn: () => api.get<{ profile: any }>("/api/radiology-copilot/profile"),
+    staleTime: 300000,
   });
 
   useEffect(() => {
@@ -330,11 +382,11 @@ export default function RadiologistCockpit() {
   // Live observations
   const coPilotSuggestions = useMemo(() => {
     if (!study) return [];
-    const obs = observeReportText(study.modality, study.studyDescription || "", rawFindings + " " + impression.join(" "));
+    const obs = observeReportText(study.modality, study.studyDescription || "", debouncedFindings + " " + debouncedImpression.join(" "));
     const reminders = getSmartReminders(study.modality, study.studyDescription || "");
     const combined = [...obs, ...reminders];
     return combined.filter((s) => !userProfile.ignoredWarnings.includes(s.id));
-  }, [study, rawFindings, impression, userProfile.ignoredWarnings]);
+  }, [study, debouncedFindings, debouncedImpression, userProfile.ignoredWarnings]);
 
   // Prior comparisons
   const coPilotPriorComparisonMetrics = useMemo(() => {
@@ -346,12 +398,12 @@ export default function RadiologistCockpit() {
       lesionCount: 2,
     };
     const currentData: Record<string, string | number> = {
-      measurement: rawFindings.includes("15 mm") ? 15 : rawFindings.includes("12 mm") ? 12 : 10,
-      birads: impression.join(" ").includes("BI-RADS 4") ? "4" : "2",
-      lesionCount: rawFindings.includes("Multiple") || rawFindings.includes("three") ? 3 : 2,
+      measurement: debouncedFindings.includes("15 mm") ? 15 : debouncedFindings.includes("12 mm") ? 12 : 10,
+      birads: debouncedImpression.join(" ").includes("BI-RADS 4") ? "4" : "2",
+      lesionCount: debouncedFindings.includes("Multiple") || debouncedFindings.includes("three") ? 3 : 2,
     };
     return comparePriorMetrics(prevData, currentData);
-  }, [priorReports, rawFindings, impression]);
+  }, [priorReports, debouncedFindings, debouncedImpression]);
 
   const handleVoiceIntent = (intent: string) => {
     toast({ title: "Voice Command", description: `Intent: ${intent}` });
@@ -409,6 +461,7 @@ export default function RadiologistCockpit() {
   const { data: styleSetting } = useQuery<any>({
     queryKey: ["institutional-style"],
     queryFn: () => api.get("/api/radiology/institutional-style"),
+    staleTime: 300000,
   });
 
   // 6. User Preferences (macros, templates)
@@ -416,6 +469,7 @@ export default function RadiologistCockpit() {
     queryKey: ["user-report-preferences"],
     queryFn: () => api.get<any>("/api/radiology/user-report-preferences"),
     enabled: !!session?.user?.id,
+    staleTime: 300000,
   });
 
   const personalMacros = useMemo(() => {
@@ -457,9 +511,9 @@ export default function RadiologistCockpit() {
       };
     }
 
-    const textFindings = rawFindings || "";
-    const textImpression = (impression || []).filter(Boolean).join("\n");
-    const fullText = (clinicalHistory + " " + technique + " " + textFindings + " " + textImpression + " " + recommendation).trim();
+    const textFindings = debouncedFindings || "";
+    const textImpression = (debouncedImpression || []).filter(Boolean).join("\n");
+    const fullText = (debouncedHistory + " " + debouncedTechnique + " " + textFindings + " " + textImpression + " " + debouncedRecommendation).trim();
     const fullTextLower = fullText.toLowerCase();
 
     // Parse measurement values from findings
@@ -1118,7 +1172,7 @@ export default function RadiologistCockpit() {
         recommendation: recommendationsScore
       }
     };
-  }, [study, clinicalHistory, technique, rawFindings, impression, recommendation, priorReports, ignoredIssueIds, reviewedIssueIds, viewerMeasurements]);
+  }, [study, debouncedHistory, debouncedTechnique, debouncedFindings, debouncedImpression, debouncedRecommendation, priorReports, ignoredIssueIds, reviewedIssueIds, viewerMeasurements]);
 
 
   const qualityCheckIssues = useMemo(() => {
@@ -1372,6 +1426,10 @@ export default function RadiologistCockpit() {
     }
   }, [worklist, activeStudyId]);
 
+  useEffect(() => {
+    setVisibleWorklistCount(30);
+  }, [searchQuery, modalityFilter]);
+
   // Load details whenever study changes
   useEffect(() => {
     if (!study) return;
@@ -1442,7 +1500,7 @@ export default function RadiologistCockpit() {
           setPingLatency(null);
           setDiagnosticsLogs((prev) => [...prev.slice(-20), "PACS Offline: timeout!"]);
         });
-    }, 15000);
+    }, 60000);
     return () => clearInterval(interval);
   }, []);
 
@@ -1607,39 +1665,53 @@ export default function RadiologistCockpit() {
             ) : filteredWorklist.length === 0 ? (
               <div className="p-10 text-center text-slate-500 text-xs">No matching studies</div>
             ) : (
-              filteredWorklist.map((item) => (
-                <div
-                  key={item.id}
-                  onClick={() => setActiveStudyId(item.id)}
-                  className={`p-3 cursor-pointer transition-colors relative ${
-                    activeStudyId === item.id
-                      ? "bg-slate-800/80 border-l-4 border-indigo-500"
-                      : "hover:bg-slate-900/60"
-                  }`}
-                >
-                  <div className="flex items-start justify-between">
-                    <span className="font-semibold text-xs text-slate-200 truncate max-w-[150px]">{item.patientName}</span>
-                    <Badge className="bg-slate-800 border-slate-700 text-[9px] font-mono px-1 py-0.5">{item.modality}</Badge>
+              <>
+                {filteredWorklist.slice(0, visibleWorklistCount).map((item) => (
+                  <div
+                    key={item.id}
+                    onClick={() => setActiveStudyId(item.id)}
+                    className={`p-3 cursor-pointer transition-colors relative ${
+                      activeStudyId === item.id
+                        ? "bg-slate-800/80 border-l-4 border-indigo-500"
+                        : "hover:bg-slate-900/60"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between">
+                      <span className="font-semibold text-xs text-slate-200 truncate max-w-[150px]">{item.patientName}</span>
+                      <Badge className="bg-slate-800 border-slate-700 text-[9px] font-mono px-1 py-0.5">{item.modality}</Badge>
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-1 flex justify-between">
+                      <span>Acc: {item.accessionNumber}</span>
+                      <span>{item.studyDate || "—"}</span>
+                    </div>
+                    <div className="text-[10px] text-slate-400 mt-0.5 truncate">{item.studyDescription || "No desc"}</div>
+                    <div className="mt-1.5 flex items-center justify-between">
+                      <span className={`text-[9px] px-1 py-0.5 rounded ${
+                        item.status === "REPORT_FINAL" ? "bg-emerald-950 text-emerald-400" : "bg-amber-950/50 text-amber-400"
+                      }`}>
+                        {item.status}
+                      </span>
+                      {item.aiDraftStatus === "READY" && (
+                        <Badge className="bg-indigo-950 text-indigo-300 text-[8px] flex items-center gap-0.5">
+                          <Sparkles className="h-2 w-2 text-violet-400" /> AI Draft
+                        </Badge>
+                      )}
+                    </div>
                   </div>
-                  <div className="text-[10px] text-slate-500 mt-1 flex justify-between">
-                    <span>Acc: {item.accessionNumber}</span>
-                    <span>{item.studyDate || "—"}</span>
+                ))}
+                {filteredWorklist.length > visibleWorklistCount && (
+                  <div className="p-2 text-center bg-slate-950/40">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-[10px] h-6 text-indigo-400 hover:text-indigo-300 w-full"
+                      onClick={() => setVisibleWorklistCount((prev) => prev + 30)}
+                    >
+                      Load More Studies ({filteredWorklist.length - visibleWorklistCount} remaining)
+                    </Button>
                   </div>
-                  <div className="text-[10px] text-slate-400 mt-0.5 truncate">{item.studyDescription || "No desc"}</div>
-                  <div className="mt-1.5 flex items-center justify-between">
-                    <span className={`text-[9px] px-1 py-0.5 rounded ${
-                      item.status === "REPORT_FINAL" ? "bg-emerald-950 text-emerald-400" : "bg-amber-950/50 text-amber-400"
-                    }`}>
-                      {item.status}
-                    </span>
-                    {item.aiDraftStatus === "READY" && (
-                      <Badge className="bg-indigo-950 text-indigo-300 text-[8px] flex items-center gap-0.5">
-                        <Sparkles className="h-2 w-2 text-violet-400" /> AI Draft
-                      </Badge>
-                    )}
-                  </div>
-                </div>
-              ))
+                )}
+              </>
             )}
           </div>
         </div>
@@ -2300,15 +2372,17 @@ export default function RadiologistCockpit() {
             <TabsContent value="chocolate" className="flex-1 overflow-y-auto p-4 m-0">
               {study ? (
                 <div className="space-y-4">
-                  <ChocolateBoxPanel
-                    modality={study.modality}
-                    bodyPart={study.studyDescription || ""}
-                    selectedFindingsList={selectedChocolateFindings}
-                    onSelectFinding={(finding: ChocolateFinding) => {
-                      setSelectedChocolateFindings((prev) => [...prev, finding]);
-                      setRawFindings((prev) => prev ? prev + "\n" + finding.findingText : finding.findingText);
-                    }}
-                  />
+                  <ErrorBoundary fallback={<div className="p-4 text-xs bg-red-950/20 text-red-400 border border-red-800/30 rounded-lg">Failed to load Findings Box. Please reload the page.</div>}>
+                    <ChocolateBoxPanel
+                      modality={study.modality}
+                      bodyPart={study.studyDescription || ""}
+                      selectedFindingsList={selectedChocolateFindings}
+                      onSelectFinding={(finding: ChocolateFinding) => {
+                        setSelectedChocolateFindings((prev) => [...prev, finding]);
+                        setRawFindings((prev) => prev ? prev + "\n" + finding.findingText : finding.findingText);
+                      }}
+                    />
+                  </ErrorBoundary>
                 </div>
               ) : (
                 <div className="p-10 text-center text-slate-500 text-xs">No active study selected</div>
@@ -2507,23 +2581,25 @@ export default function RadiologistCockpit() {
                   </div>
 
                   {/* Centralized Measurement Assistant Engine */}
-                  <MeasurementAssistantPanel
-                    patientId={study.patientId || undefined}
-                    studyId={study.studyId || undefined}
-                    modality={study.modality}
-                    bodyPart={study.studyDescription || ""}
-                    onMeasurementsChange={handleMeasurementsApplied}
-                    voiceTextCommand={lastVoiceCommand}
-                    initialValues={useMemo(() => {
-                      const vals: Record<string, string> = {};
-                      viewerMeasurements
-                        .filter(m => m.status === "imported")
-                        .forEach(m => {
-                          vals[m.measurementType] = m.value;
-                        });
-                      return vals;
-                    }, [viewerMeasurements])}
-                  />
+                  <ErrorBoundary fallback={<div className="p-4 text-xs bg-red-950/20 text-red-400 border border-red-800/30 rounded-lg">Failed to load Measurement Assistant. Please reload the page.</div>}>
+                    <MeasurementAssistantPanel
+                      patientId={study.patientId || undefined}
+                      studyId={study.studyId || undefined}
+                      modality={study.modality}
+                      bodyPart={study.studyDescription || ""}
+                      onMeasurementsChange={handleMeasurementsApplied}
+                      voiceTextCommand={lastVoiceCommand}
+                      initialValues={useMemo(() => {
+                        const vals: Record<string, string> = {};
+                        viewerMeasurements
+                          .filter(m => m.status === "imported")
+                          .forEach(m => {
+                            vals[m.measurementType] = m.value;
+                          });
+                        return vals;
+                      }, [viewerMeasurements])}
+                    />
+                  </ErrorBoundary>
                 </div>
               )}
             </TabsContent>

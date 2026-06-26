@@ -363,23 +363,27 @@ export default function MeasurementAssistantPanel({
     const filled = Object.entries(values).filter(([_, v]) => v.trim());
     if (filled.length === 0 && Object.keys(smartCalculations).length === 0) return;
 
-    let text = "MEASUREMENTS LOG:\n";
-    filled.forEach(([k, v]) => {
-      text += `- ${k}: ${v}\n`;
-    });
+    const handler = setTimeout(() => {
+      let text = "MEASUREMENTS LOG:\n";
+      filled.forEach(([k, v]) => {
+        text += `- ${k}: ${v}\n`;
+      });
 
-    if (smartCalculations.tumorVolume) text += `- Calculated Tumor Volume: ${smartCalculations.tumorVolume} cc\n`;
-    if (smartCalculations.hematomaVolume) text += `- Calculated Hematoma Volume (ABC/2): ${smartCalculations.hematomaVolume} cc\n`;
-    if (smartCalculations.evansIndex) text += `- Evans Index: ${smartCalculations.evansIndex} (Evans Index > 0.3 indicates ventriculomegaly)\n`;
-    if (smartCalculations.efw) text += `- Hadlock EFW: ${smartCalculations.efw} grams\n`;
-    if (smartCalculations.slipPct) text += `- Spondylolisthesis: ${smartCalculations.slipPct}% (${smartCalculations.slipGrade})\n`;
-    if (smartCalculations.ri) {
-      text += `- Doppler Resistive Index (RI): ${smartCalculations.ri} (S/D Ratio: ${smartCalculations.sd})\n`;
-    }
+      if (smartCalculations.tumorVolume) text += `- Calculated Tumor Volume: ${smartCalculations.tumorVolume} cc\n`;
+      if (smartCalculations.hematomaVolume) text += `- Calculated Hematoma Volume (ABC/2): ${smartCalculations.hematomaVolume} cc\n`;
+      if (smartCalculations.evansIndex) text += `- Evans Index: ${smartCalculations.evansIndex} (Evans Index > 0.3 indicates ventriculomegaly)\n`;
+      if (smartCalculations.efw) text += `- Hadlock EFW: ${smartCalculations.efw} grams\n`;
+      if (smartCalculations.slipPct) text += `- Spondylolisthesis: ${smartCalculations.slipPct}% (${smartCalculations.slipGrade})\n`;
+      if (smartCalculations.ri) {
+        text += `- Doppler Resistive Index (RI): ${smartCalculations.ri} (S/D Ratio: ${smartCalculations.sd})\n`;
+      }
 
-    if (onMeasurementsChange) {
-      onMeasurementsChange(text, smartCalculations);
-    }
+      if (onMeasurementsChange) {
+        onMeasurementsChange(text, smartCalculations);
+      }
+    }, 800);
+
+    return () => clearTimeout(handler);
   }, [values, smartCalculations, onMeasurementsChange]);
 
   const handleSave = async () => {

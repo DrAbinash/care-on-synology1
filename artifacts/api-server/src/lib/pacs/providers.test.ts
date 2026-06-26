@@ -13,7 +13,7 @@ vi.mock("./pacsConfig.js", () => {
         conquest: {
           wadoUrl: process.env.CONQUEST_URL || "",
         },
-        default_viewer: process.env.PACS_PROVIDER || "OHIF",
+        default_viewer: process.env.PACS_PROVIDER || "",
       };
     }
   };
@@ -24,10 +24,15 @@ vi.mock("./pacsConfig.js", () => {
 // ---------------------------------------------------------------------------
 
 describe("getPacsProvider", () => {
-  const originalEnv = process.env;
+  const envBackup = {
+    PACS_PROVIDER: process.env.PACS_PROVIDER,
+    ORTHANC_URL: process.env.ORTHANC_URL,
+    ORTHANC_USERNAME: process.env.ORTHANC_USERNAME,
+    ORTHANC_PASSWORD: process.env.ORTHANC_PASSWORD,
+    CONQUEST_URL: process.env.CONQUEST_URL,
+  };
 
   beforeEach(() => {
-    process.env = { ...originalEnv };
     delete process.env.PACS_PROVIDER;
     delete process.env.ORTHANC_URL;
     delete process.env.ORTHANC_USERNAME;
@@ -36,7 +41,16 @@ describe("getPacsProvider", () => {
   });
 
   afterEach(() => {
-    process.env = originalEnv;
+    if (envBackup.PACS_PROVIDER !== undefined) process.env.PACS_PROVIDER = envBackup.PACS_PROVIDER;
+    else delete process.env.PACS_PROVIDER;
+    if (envBackup.ORTHANC_URL !== undefined) process.env.ORTHANC_URL = envBackup.ORTHANC_URL;
+    else delete process.env.ORTHANC_URL;
+    if (envBackup.ORTHANC_USERNAME !== undefined) process.env.ORTHANC_USERNAME = envBackup.ORTHANC_USERNAME;
+    else delete process.env.ORTHANC_USERNAME;
+    if (envBackup.ORTHANC_PASSWORD !== undefined) process.env.ORTHANC_PASSWORD = envBackup.ORTHANC_PASSWORD;
+    else delete process.env.ORTHANC_PASSWORD;
+    if (envBackup.CONQUEST_URL !== undefined) process.env.CONQUEST_URL = envBackup.CONQUEST_URL;
+    else delete process.env.CONQUEST_URL;
   });
 
   it("returns NoneProvider when no env vars are set", async () => {

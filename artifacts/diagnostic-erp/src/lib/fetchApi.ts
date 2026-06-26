@@ -1,4 +1,4 @@
-import { ERP_SESSION_KEY, type StaffSession, clearStaffSession } from "./staffSession";
+import { ERP_SESSION_KEY, type StaffSession, clearStaffSession, readStaffSession } from "./staffSession";
 
 function getStaffToken(): string | null {
   try {
@@ -49,7 +49,12 @@ export async function fetchApi<T = unknown>(path: string, init?: RequestInit): P
         path.includes("/api/commission") || 
         path.includes("/api/doctor-ledger");
       if (!isSuperAdminRoute) {
-        handleSessionExpiry();
+        const session = readStaffSession();
+        const role = session?.user?.role ? session.user.role.toLowerCase().replace(/[^a-z0-9]/g, "_").trim() : "";
+        const isSuperAdmin = role === "superadmin" || role === "super" || role === "owner" || role === "super_admin";
+        if (!isSuperAdmin) {
+          handleSessionExpiry();
+        }
       }
     }
     const text = await res.text();

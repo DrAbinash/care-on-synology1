@@ -186,7 +186,7 @@ router.post("/nodes/:id/test", async (req, res) => {
     res.status(404).json({ error: "DICOM node not found" });
     return;
   }
-  const result = await tcpProbe(node.host, node.port, 4000);
+  const result = await tcpProbe(node.host, node.port, 4000, true);
   await db.update(dicomNodesTable).set({
     lastTestAt: new Date(),
     lastTestStatus: result.ok ? "success" : "failed",
@@ -211,7 +211,7 @@ router.post("/test-connection", async (req, res) => {
     res.status(400).json({ error: "host and port required" });
     return;
   }
-  const result = await tcpProbe(body.data.host, body.data.port, 4000);
+  const result = await tcpProbe(body.data.host, body.data.port, 4000, true);
   res.json(result);
 });
 

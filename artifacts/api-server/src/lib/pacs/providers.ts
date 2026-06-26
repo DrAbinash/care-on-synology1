@@ -211,10 +211,10 @@ function isPrivateIPv6(h: string): boolean {
   return false;
 }
 
-export function isBlockedHost(host: string): string | null {
+export function isBlockedHost(host: string, allowPrivate = false): string | null {
   const h = host.trim().toLowerCase();
   if (!h) return "host is empty";
-  if (process.env.ALLOW_PRIVATE_IPS === "true") {
+  if (process.env.ALLOW_PRIVATE_IPS === "true" || allowPrivate) {
     if (SSRF_BLOCK_LITERAL.has(h)) return `${h} is a blocked address`;
     return null;
   }
@@ -237,9 +237,9 @@ type HostCheckResult =
   | { ok: false; error: string }
   | { ok: true; resolvedIp: string };
 
-export async function resolveAndCheckHost(host: string): Promise<HostCheckResult> {
+export async function resolveAndCheckHost(host: string, allowPrivate = false): Promise<HostCheckResult> {
   // Check literal string first (catches bare IPs and "localhost").
-  const literalBlocked = isBlockedHost(host);
+  const literalBlocked = isBlockedHost(host, allowPrivate);
   if (literalBlocked) return { ok: false, error: literalBlocked };
 
   const dns = await import("node:dns/promises");
@@ -253,7 +253,7 @@ export async function resolveAndCheckHost(host: string): Promise<HostCheckResult
     return { ok: false, error: `No addresses resolved for: ${host}` };
   }
   for (const { address } of addresses) {
-    const blocked = isBlockedHost(address);
+    const blocked = isBlockedHost(address, allowPrivate);
     if (blocked) {
       return { ok: false, error: `${host} resolves to a blocked address (${address}): ${blocked}` };
     }
@@ -266,7 +266,7 @@ export async function resolveAndCheckHost(host: string): Promise<HostCheckResult
 // TCP reachability check used by the DICOM Node "Test" button. Real C-ECHO
 // requires a native DIMSE library; this verifies that the modality is at
 // least listening on the configured AE port.
-export async function tcpProbe(host: string, port: number, timeoutMs = 3000): Promise<{
+export async function tcpProbe(host: string, port: number, timeoutMs = 3000, allowPrivate = false): Promise<{
   ok: boolean; latencyMs: number; message: string;
 }> {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -274,7 +274,7 @@ export async function tcpProbe(host: string, port: number, timeoutMs = 3000): Pr
   }
   // Resolve the hostname once, check all resolved IPs against the blocklist,
   // then connect to the returned IP directly — no second lookup, no rebinding race.
-  const check = await resolveAndCheckHost(host);
+  const check = await resolveAndCheckHost(host, allowPrivate);
   if (!check.ok) return { ok: false, latencyMs: 0, message: check.error };
   const connectIp = check.resolvedIp;
 

@@ -54,7 +54,10 @@ export default function ChocolateBoxPanel({
 
   // Configuration States
   const [columns, setColumns] = useState<string>(() => localStorage.getItem("choc_box_cols") || "auto");
-  const [tileLimit, setTileLimit] = useState<number>(() => Number(localStorage.getItem("choc_box_limit") || "0"));
+  const [tileLimit, setTileLimit] = useState<number>(() => {
+    const saved = localStorage.getItem("choc_box_limit");
+    return saved !== null ? Number(saved) : 24;
+  });
   const [layoutWidth, setLayoutWidth] = useState<string>(() => localStorage.getItem("choc_box_width") || "standard");
   const [layoutDensity, setLayoutDensity] = useState<string>(() => localStorage.getItem("choc_box_density") || "comfortable");
   const [favoritesFirst, setFavoritesFirst] = useState<boolean>(() => localStorage.getItem("choc_box_favs_first") !== "false");
@@ -524,6 +527,19 @@ export default function ChocolateBoxPanel({
           </div>
         )}
       </div>
+
+      {tileLimit > 0 && allVisibleFindings.length > tileLimit && (
+        <div className="flex justify-center pt-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setTileLimit(0)}
+            className="h-8 text-xs border-slate-800 bg-slate-900 text-slate-300"
+          >
+            Show All ({allVisibleFindings.length} Tiles)
+          </Button>
+        </div>
+      )}
 
       {/* Admin Finding Tile Config Dialog */}
       <Dialog open={isAdminPanelOpen} onOpenChange={() => setIsAdminPanelOpen(false)}>
