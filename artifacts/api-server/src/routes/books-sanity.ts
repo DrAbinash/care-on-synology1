@@ -211,4 +211,138 @@ booksSanityRouter.get("/", async (req, res) => {
   res.json(report);
 });
 
+/**
+ * POST /api/books-sanity/run-backfill
+ *
+ * One-shot backfill that restores total_amount = original_total and
+ * recalculates balance_amount = total - paid - refund for all refunded bills
+ * where total_amount was mutated by the old (buggy) refund logic.
+ *
+ * Query params:
+ *   ?confirm=true   — actually apply the UPDATE (default: dry-run preview only)
+ *
+ * Safe and idempotent — if no rows match the WHERE clause, returns 0 affected.
+ * The WHERE clause only touches bills where total ≠ original_total AND refund > 0.
+ *
+ * Auth: Super Admin (applied at router level in index.ts).
+ *
+ * Usage from browser/curl:
+ *   GET  /api/books-sanity/run-backfill           → dry-run preview
+ *   POST /api/books-sanity/run-backfill?confirm=true → apply fix
+ */
+booksSanityRouter.get("/run-backfill", async (req, res): Promise<void> => {
+  // Dry-run: show what WOULD be affected
+  const preview = await db.execute<{
+    id: number;
+    bill_number: string;
+    current_total: string;
+    original_total: string;
+    refund_amount: string;
+    paid_amount: string;
+    balance_amount: string;
+    status: string;
+    drift: string;
+  }>(sql`
+    SELECT
+      id,
+      bill_number,
+      total_amount::numeric        AS current_total,
+      original_total::numeric      AS original_total,
+      refund_amount::numeric       AS refund_amount,
+      paid_amount::numeric         AS paid_amount,
+      balance_amount::numeric      AS balance_amount,
+      status,
+      ROUND((original_total::numeric - total_amount::numeric)::numeric, 2) AS drift
+    FROM bills
+    WHERE refund_amount::numeric > 0
+      AND ABS(total_amount::numeric - original_total::numeric) > 0.01
+    ORDER BY id
+  `);
+
+  res.json({
+    mode: "dry-run",
+    affected: preview.rows.length,
+    message: preview.rows.length === 0
+      ? "✅ Nothing to fix — all refunded bills have correct total_amount."
+      : `${preview.rows.length} bill(s) will be corrected. POST with ?confirm=true to apply.`,
+    bills: preview.rows,
+  });
+});
+
+booksSanityRouter.post("/run-backfill", async (req, res): Promise<void> => {
+  const confirm = req.query.confirm === "true";
+
+  if (!confirm) {
+    // Dry-run
+    const preview = await db.execute<{
+      id: number; bill_number: string; current_total: string;
+      original_total: string; refund_amount: string; drift: string;
+    }>(sql`
+      SELECT id, bill_number,
+        total_amount::numeric AS current_total,
+        original_total::numeric AS original_total,
+        refund_amount::numeric AS refund_amount,
+        ROUND((original_total::numeric - total_amount::numeric)::numeric, 2) AS drift
+      FROM bills
+      WHERE refund_amount::numeric > 0
+        AND ABS(total_amount::numeric - original_total::numeric) > 0.01
+      ORDER BY id
+    `);
+    res.json({
+      mode: "dry-run",
+      affected: preview.rows.length,
+      message: preview.rows.length === 0
+        ? "✅ Nothing to fix."
+        : `${preview.rows.length} bill(s) need correction. Add ?confirm=true to apply.`,
+      bills: preview.rows,
+    });
+    return;
+  }
+
+  // Apply in a transaction
+  try {
+    const result = await db.transaction(async (tx) => {
+      const updated = await tx.execute<{
+        id: number; bill_number: string; total_amount: string;
+        balance_amount: string; status: string;
+      }>(sql`
+        UPDATE bills
+        SET
+          total_amount    = original_total,
+          balance_amount  = GREATEST(0, original_total::numeric - paid_amount::numeric - refund_amount::numeric),
+          updated_at      = NOW()
+        WHERE refund_amount::numeric > 0
+          AND ABS(total_amount::numeric - original_total::numeric) > 0.01
+        RETURNING id, bill_number, total_amount, balance_amount, status
+      `);
+
+      // Verify zero drift
+      const verify = await tx.execute<{ remaining: string }>(sql`
+        SELECT COUNT(*)::text AS remaining
+        FROM bills
+        WHERE refund_amount::numeric > 0
+          AND ABS(total_amount::numeric - original_total::numeric) > 0.01
+      `);
+      const remaining = parseInt(verify.rows[0]?.remaining ?? "0", 10);
+      if (remaining > 0) {
+        throw new Error(`${remaining} bills still have drift after update — rolling back`);
+      }
+
+      return updated.rows;
+    });
+
+    res.json({
+      mode: "applied",
+      affected: result.length,
+      message: result.length === 0
+        ? "✅ Nothing to fix — all bills were already correct."
+        : `✅ ${result.length} bill(s) corrected and verified. Zero drift remaining.`,
+      bills: result,
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: "Backfill failed (rolled back): " + msg });
+  }
+});
+
 export default booksSanityRouter;

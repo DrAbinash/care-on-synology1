@@ -31,7 +31,8 @@ export class PaymentEngine {
       case "hdfc":
         return new HdfcPaymentProvider({
           merchantId: cleanVal(undefined, process.env.HDFC_MERCHANT_ID),
-          secretKey: cleanVal(undefined, process.env.HDFC_SECRET_KEY),
+          secretKey: cleanVal(undefined, process.env.HDFC_SECRET_KEY),   // = CCAvenue working_key
+          accessCode: cleanVal(undefined, process.env.HDFC_ACCESS_CODE), // = CCAvenue access_code
           baseUrl: process.env.HDFC_BASE_URL || undefined,
         });
 
