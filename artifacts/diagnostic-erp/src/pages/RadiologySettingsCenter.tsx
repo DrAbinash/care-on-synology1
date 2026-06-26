@@ -52,7 +52,9 @@ export default function RadiologySettingsCenter() {
 
   const [activeTab, setActiveTab] = useState("network");
   const [detectedProfile, setDetectedProfile] = useState<"LAN" | "TAILSCALE" | "PUBLIC">("PUBLIC");
-  const [profileOverride, setProfileOverride] = useState<"auto" | "LAN" | "TAILSCALE" | "PUBLIC">("auto");
+  const [profileOverride, setProfileOverride] = useState<"auto" | "LAN" | "TAILSCALE" | "PUBLIC">(() => {
+    return (localStorage.getItem("pacs_network_profile") as any) || "auto";
+  });
   const [detectionReason, setDetectionReason] = useState("Probing network routes...");
 
   // Load pacs settings
