@@ -14,7 +14,7 @@
 
 ### A. Daily Scheduled Backups
 1.  Daily database backups are executed automatically via the **Synology Task Scheduler** at `03:00` AM IST.
-2.  The script [synology-backup.sh](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/12_BACKUPS/synology-backup.sh) runs as root.
+2.  The script [synology-backup.sh](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/12_BACKUPS/synology-backup.sh) runs as root.
 3.  If the environment variable `BACKUP_PASSPHRASE` is defined on the NAS, the script automatically encrypts the SQL file using OpenSSL:
     ```bash
     openssl enc -aes-256-cbc -salt -pbkdf2 -pass "pass:${BACKUP_PASSPHRASE}"
@@ -41,8 +41,8 @@
 
 ## 3. Reference to Recovery Specifications
 For detailed scripts and configuration parameters, refer directly to:
-*   **[BACKUP.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/12_BACKUPS/BACKUP.md)**
-*   **[RESTORE.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/13_RESTORE/RESTORE.md)**
+*   **[BACKUP.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/12_BACKUPS/BACKUP.md)**
+*   **[RESTORE.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/13_RESTORE/RESTORE.md)**
 
 ---
 

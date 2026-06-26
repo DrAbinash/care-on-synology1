@@ -42,8 +42,8 @@
 
 ## 3. Reference to Financial Invariant Rules
 For details on balance formulas, change logs, and database tables subject to the financial lock policy, refer to:
-*   **[FINANCIAL_FREEZE_RULEBOOK.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/08_FINANCIAL/FINANCIAL_FREEZE_RULEBOOK.md)**
-*   **[ACCOUNTING_PROTECTED_FILES.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/08_FINANCIAL/ACCOUNTING_PROTECTED_FILES.md)**
+*   **[FINANCIAL_FREEZE_RULEBOOK.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/08_FINANCIAL/FINANCIAL_FREEZE_RULEBOOK.md)**
+*   **[ACCOUNTING_PROTECTED_FILES.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/08_FINANCIAL/ACCOUNTING_PROTECTED_FILES.md)**
 
 ---
 

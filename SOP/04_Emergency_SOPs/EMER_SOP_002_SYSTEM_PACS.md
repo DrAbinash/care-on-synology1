@@ -45,8 +45,8 @@
 
 ## 3. Reference to Recovery Catalog
 For detailed scripts, configuration parameters, and bare-metal Synology NAS restore guides, refer directly to:
-*   **[DISASTER_RECOVERY_BUSINESS_CONTINUITY_AUDIT.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/14_BUSINESS_CONTINUITY/DISASTER_RECOVERY_BUSINESS_CONTINUITY_AUDIT.md)**
-*   **[RESTORE.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/13_RESTORE/RESTORE.md)**
+*   **[DISASTER_RECOVERY_BUSINESS_CONTINUITY_AUDIT.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/14_BUSINESS_CONTINUITY/DISASTER_RECOVERY_BUSINESS_CONTINUITY_AUDIT.md)**
+*   **[RESTORE.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/13_RESTORE/RESTORE.md)**
 
 ---
 

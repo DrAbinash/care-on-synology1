@@ -39,8 +39,8 @@
 
 ## 3. Reference to PACS Documentation
 For details on network profiles, local bridge service setup, and database mapping of PACS studies, refer to:
-*   **[PACS_CURRENT_STATE_REPORT.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/04_PACS_ORTHANC/PACS_CURRENT_STATE_REPORT.md)**
-*   **[VIEWER_NETWORK_AUDIT.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/06_NETWORK/VIEWER_NETWORK_AUDIT.md)**
+*   **[PACS_CURRENT_STATE_REPORT.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/04_PACS_ORTHANC/PACS_CURRENT_STATE_REPORT.md)**
+*   **[VIEWER_NETWORK_AUDIT.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/06_NETWORK/VIEWER_NETWORK_AUDIT.md)**
 
 ---
 

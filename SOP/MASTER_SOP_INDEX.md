@@ -43,4 +43,4 @@ This document indexes all Standard Operating Procedures (SOPs) for the hospital 
 ---
 
 ## 🔗 Cross-Reference to RECOVERY folder
-For server crashes, RAID rebuilds, database restores, or backend server errors, refer directly to the **[MASTER_RECOVERY_INDEX.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/MASTER_RECOVERY_INDEX.md)**.
+For server crashes, RAID rebuilds, database restores, or backend server errors, refer directly to the **[MASTER_RECOVERY_INDEX.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/MASTER_RECOVERY_INDEX.md)**.

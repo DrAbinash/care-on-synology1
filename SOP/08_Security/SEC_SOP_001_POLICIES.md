@@ -32,8 +32,8 @@
 
 ## 3. Reference to Security Audits
 For details on password hashing algorithms, authentication middleware, and RBAC matrix evaluations, refer to:
-*   **[ERP_SECURITY_AUDIT.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/07_SECURITY/ERP_SECURITY_AUDIT.md)**
-*   **[PERMISSION_PENETRATION_AUDIT.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/07_SECURITY/PERMISSION_PENETRATION_AUDIT.md)**
+*   **[ERP_SECURITY_AUDIT.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/07_SECURITY/ERP_SECURITY_AUDIT.md)**
+*   **[PERMISSION_PENETRATION_AUDIT.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/07_SECURITY/PERMISSION_PENETRATION_AUDIT.md)**
 
 ---
 
