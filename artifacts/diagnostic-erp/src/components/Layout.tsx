@@ -87,6 +87,7 @@ import {
   Heart,
   Baby,
   GraduationCap,
+  Gauge,
 } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -152,6 +153,7 @@ const navItems: NavEntry[] = [
     icon: Radio,
     label: "Radiology & Imaging",
     children: [
+      { path: "/radiology/operations-dashboard", icon: Gauge,          label: "Operations Dashboard" },
       { path: "/radiology/cockpit",            icon: Stethoscope,    label: "Radiologist Cockpit" },
       { path: "/radiology/my-collection",       icon: ShieldAlert,    label: "DICOM Match Center" },
       { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist Hub" },
