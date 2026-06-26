@@ -46,10 +46,21 @@ type DailySummaryData = {
     expenses: number;
     netCollection: number;
     digitalCollection: number;
+    cashCollection?: number;
     physicalCashInHand: number;
     discountsGiven: number;
     billCount: number;
     orderCount: number;
+    // Reconciliation fields
+    newBillingCollected?: number;
+    oldDuesCollected?: number;
+    backdatedRefunds?: number;
+    sameDayRefunds?: number;
+    cashExpenses?: number;
+    digitalExpenses?: number;
+    netDigitalCollection?: number;
+    cancelledBillsAmount?: number;
+    totalRefunded?: number;
   };
   byMethod: Record<string, number>;
   byRefundMethod: Record<string, number>;
@@ -218,6 +229,7 @@ export default function DailySummary() {
     expenses: 0,
     netCollection: 0,
     digitalCollection: 0,
+    cashCollection: 0,
     physicalCashInHand: 0,
     discountsGiven: 0,
     billCount: 0,
@@ -249,6 +261,33 @@ export default function DailySummary() {
   const netCollection = summary.netCollection;
   const physicalCash = summary.physicalCashInHand;
   const discountsGiven = summary.discountsGiven ?? 0;
+
+  // ── Reconciliation module derived values ───────────────────────────────
+  const rec = {
+    newBillingCollected: summary.newBillingCollected ?? 0,
+    oldDuesCollected:    summary.oldDuesCollected ?? 0,
+    totalOperationalRevenue: (summary.newBillingCollected ?? 0) + (summary.oldDuesCollected ?? 0),
+    cancelledBillsAmount: summary.cancelledBillsAmount ?? cancelledAmount,
+    discountsGiven:      discountsGiven,
+    // Refunds split: same-day bill refunds vs old-bill (backdated) refunds
+    sameDayRefunds:      summary.sameDayRefunds ?? 0,
+    backdatedRefunds:    summary.backdatedRefunds ?? 0,
+    totalRefunded:       summary.totalRefunded ?? refundRows.reduce((s, r) => s + r.amount, 0),
+    cashExpenses:        summary.cashExpenses ?? expenseTotal,
+    digitalExpenses:     summary.digitalExpenses ?? 0,
+    totalExpenses:       expenseTotal,
+    cashCollection:      summary.cashCollection ?? (netCollection + expenseTotal + (summary.totalRefunded ?? 0) - summary.digitalCollection),
+    digitalCollection:   digitalCollection,
+    netDigitalCollection: summary.netDigitalCollection ?? digitalCollection,
+    // Expected Physical Cash formula:
+    // = operationalRevenue - deductions (cancelled+discounts+refunds) - expenses - netDigitalCollection
+    // Note: backdatedRefunds are ALREADY inside totalRefunded — shown for info only, NOT subtracted twice
+    get expectedPhysicalCash() {
+      const operationalRevenue = this.newBillingCollected + this.oldDuesCollected;
+      const totalDeductions = this.cancelledBillsAmount + this.discountsGiven + this.totalRefunded;
+      return operationalRevenue - totalDeductions - this.totalExpenses - this.netDigitalCollection;
+    },
+  };
 
   const staffOptions: StaffOption[] = [
     { name: "All Staff", billCount: summary.billCount },
@@ -659,6 +698,137 @@ export default function DailySummary() {
                 </table>
               </div>
             )}
+          </div>
+
+          {/* ══════════════════════════════════════════════════════════════════
+               DAILY RECONCILIATION & CASH FLOW MODULE
+               Parallel testing module — existing modules above are unchanged.
+               This module uses the same API data, enhanced with reconciliation
+               fields. After verification, legacy modules can be removed.
+          ══════════════════════════════════════════════════════════════════ */}
+          <div style={{ border: "3px solid black", borderRadius: 8, overflow: "hidden", marginTop: 24 }}>
+            {/* Header */}
+            <div style={{ background: "#1e293b", color: "white", padding: "10px 16px", display: "flex", alignItems: "center", gap: 8 }}>
+              <Wallet size={16} />
+              <span style={{ fontWeight: 700, fontSize: 14, letterSpacing: "0.05em", textTransform: "uppercase" }}>
+                Daily Reconciliation &amp; Cash Flow
+              </span>
+              <span style={{ marginLeft: "auto", fontSize: 11, opacity: 0.7 }}>As on {date}</span>
+            </div>
+
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: "#f1f5f9" }}>
+                    <th style={{ border: "1px solid black", padding: "8px 12px", textAlign: "left", fontWeight: 700 }}>Category</th>
+                    <th style={{ border: "1px solid black", padding: "8px 12px", textAlign: "left", fontWeight: 700 }}>Item</th>
+                    <th style={{ border: "1px solid black", padding: "8px 12px", textAlign: "right", fontWeight: 700 }}>Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {/* ── OPERATIONAL REVENUE ── */}
+                  <tr style={{ background: "#f0fdf4" }}>
+                    <td rowSpan={3} style={{ border: "1px solid black", padding: "8px 12px", fontWeight: 700, verticalAlign: "top", color: "#166534" }}>Operational Revenue</td>
+                    <td style={{ border: "1px solid black", padding: "6px 12px" }}>New Billing Collected</td>
+                    <td style={{ border: "1px solid black", padding: "6px 12px", textAlign: "right" }}>{inr(rec.newBillingCollected)}</td>
+                  </tr>
+                  <tr style={{ background: "#f0fdf4" }}>
+                    <td style={{ border: "1px solid black", padding: "6px 12px" }}>Old Dues Collected</td>
+                    <td style={{ border: "1px solid black", padding: "6px 12px", textAlign: "right" }}>{inr(rec.oldDuesCollected)}</td>
+                  </tr>
+                  <tr style={{ background: "#dcfce7", fontWeight: 700 }}>
+                    <td style={{ border: "1px solid black", padding: "6px 12px", fontWeight: 700 }}>Total Operational Revenue</td>
+                    <td style={{ border: "1px solid black", padding: "6px 12px", textAlign: "right", fontWeight: 700 }}>{inr(rec.totalOperationalRevenue)}</td>
+                  </tr>
+
+                  {/* ── OPERATIONAL DEDUCTIONS ── */}
+                  <tr style={{ background: "#fef9f0" }}>
+                    <td rowSpan={5} style={{ border: "1px solid black", padding: "8px 12px", fontWeight: 700, verticalAlign: "top", color: "#92400e" }}>Operational Deductions</td>
+                    <td style={{ border: "1px solid black", padding: "6px 12px" }}>Cancelled Bills</td>
+                    <td style={{ border: "1px solid black", padding: "6px 12px", textAlign: "right", color: "#dc2626" }}>{cancelledAmount > 0 ? `− ${inr(cancelledAmount)}` : inr(0)}</td>
+                  </tr>
+                  <tr style={{ background: "#fef9f0" }}>
+                    <td style={{ border: "1px solid black", padding: "6px 12px" }}>Discounts Given</td>
+                    <td style={{ border: "1px solid black", padding: "6px 12px", textAlign: "right", color: "#7c3aed" }}>{discountsGiven > 0 ? `− ${inr(discountsGiven)}` : inr(0)}</td>
+                  </tr>
+                  <tr style={{ background: "#fef9f0" }}>
+                    <td style={{ border: "1px solid black", padding: "6px 12px" }}>Refunds Today (same-day bill)</td>
+                    <td style={{ border: "1px solid black", padding: "6px 12px", textAlign: "right", color: "#dc2626" }}>{rec.sameDayRefunds > 0 ? `− ${inr(rec.sameDayRefunds)}` : inr(0)}</td>
+                  </tr>
+                  <tr style={{ background: "#fef3cd" }}>
+                    <td style={{ border: "1px solid black", padding: "6px 12px" }}>
+                      <span>Backdated Refund Adjustments </span>
+                      <span style={{ fontSize: 10, background: "#fde68a", padding: "1px 5px", borderRadius: 3, marginLeft: 4, fontStyle: "italic" }}>old bill, refunded today</span>
+                    </td>
+                    <td style={{ border: "1px solid black", padding: "6px 12px", textAlign: "right", color: "#b45309" }}>
+                      {rec.backdatedRefunds > 0 ? `− ${inr(rec.backdatedRefunds)}` : inr(0)}
+                    </td>
+                  </tr>
+                  <tr style={{ background: "#fee2e2", fontWeight: 700 }}>
+                    <td style={{ border: "1px solid black", padding: "6px 12px", fontSize: 11, color: "#6b7280", fontStyle: "italic", fontWeight: 400 }}>
+                      ⚠ Backdated refunds are included within "Refunds Today" total — not subtracted twice
+                    </td>
+                    <td style={{ border: "1px solid black", padding: "6px 12px", textAlign: "right", fontSize: 11, color: "#6b7280", fontStyle: "italic", fontWeight: 400 }}>
+                      [informational only]
+                    </td>
+                  </tr>
+
+                  {/* ── EXPENSES ── */}
+                  <tr style={{ background: "#fef2f2" }}>
+                    <td rowSpan={3} style={{ border: "1px solid black", padding: "8px 12px", fontWeight: 700, verticalAlign: "top", color: "#991b1b" }}>Expenses</td>
+                    <td style={{ border: "1px solid black", padding: "6px 12px" }}>Cash Expenses</td>
+                    <td style={{ border: "1px solid black", padding: "6px 12px", textAlign: "right", color: "#dc2626" }}>{rec.cashExpenses > 0 ? `− ${inr(rec.cashExpenses)}` : inr(0)}</td>
+                  </tr>
+                  <tr style={{ background: "#fef2f2" }}>
+                    <td style={{ border: "1px solid black", padding: "6px 12px" }}>Digital Expenses</td>
+                    <td style={{ border: "1px solid black", padding: "6px 12px", textAlign: "right", color: "#dc2626" }}>{rec.digitalExpenses > 0 ? `− ${inr(rec.digitalExpenses)}` : inr(0)}</td>
+                  </tr>
+                  <tr style={{ background: "#fee2e2", fontWeight: 700 }}>
+                    <td style={{ border: "1px solid black", padding: "6px 12px", fontWeight: 700 }}>Total Expenses</td>
+                    <td style={{ border: "1px solid black", padding: "6px 12px", textAlign: "right", fontWeight: 700, color: "#dc2626" }}>{rec.totalExpenses > 0 ? `− ${inr(rec.totalExpenses)}` : inr(0)}</td>
+                  </tr>
+
+                  {/* ── COLLECTIONS ── */}
+                  <tr style={{ background: "#eff6ff" }}>
+                    <td rowSpan={3} style={{ border: "1px solid black", padding: "8px 12px", fontWeight: 700, verticalAlign: "top", color: "#1d4ed8" }}>Collections</td>
+                    <td style={{ border: "1px solid black", padding: "6px 12px" }}>Cash Collection</td>
+                    <td style={{ border: "1px solid black", padding: "6px 12px", textAlign: "right", color: "#166534" }}>{inr(rec.cashCollection)}</td>
+                  </tr>
+                  <tr style={{ background: "#eff6ff" }}>
+                    <td style={{ border: "1px solid black", padding: "6px 12px" }}>Digital Collection</td>
+                    <td style={{ border: "1px solid black", padding: "6px 12px", textAlign: "right", color: "#7c3aed" }}>{inr(rec.digitalCollection)}</td>
+                  </tr>
+                  <tr style={{ background: "#dbeafe" }}>
+                    <td style={{ border: "1px solid black", padding: "6px 12px" }}>
+                      Net Digital Collection
+                      <span style={{ fontSize: 10, color: "#6b7280", marginLeft: 6 }}>(Digital − Digital Refunds)</span>
+                    </td>
+                    <td style={{ border: "1px solid black", padding: "6px 12px", textAlign: "right", color: "#1d4ed8" }}>{rec.netDigitalCollection > 0 ? `− ${inr(rec.netDigitalCollection)}` : inr(0)}</td>
+                  </tr>
+
+                  {/* ── FINAL ROW ── */}
+                  <tr style={{ background: "#1e293b", color: "white", fontWeight: 700 }}>
+                    <td colSpan={2} style={{ border: "3px solid black", padding: "10px 12px", fontWeight: 700, fontSize: 14 }}>
+                      💵 Expected Physical Cash
+                      <div style={{ fontSize: 10, fontWeight: 400, opacity: 0.7, marginTop: 2 }}>
+                        = Operational Revenue − Deductions − Expenses − Net Digital Collection
+                      </div>
+                    </td>
+                    <td style={{ border: "3px solid black", padding: "10px 12px", textAlign: "right", fontWeight: 700, fontSize: 16 }}>
+                      {inr(rec.expectedPhysicalCash)}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            {/* Disclaimer footer */}
+            <div style={{ background: "#f8fafc", borderTop: "2px solid #cbd5e1", padding: "8px 14px", fontSize: 11, color: "#64748b", lineHeight: 1.5 }}>
+              <strong style={{ color: "#334155" }}>Backdated Refund Note:</strong>{" "}
+              Backdated refunds (refunds processed today for bills created on prior dates) are shown as an explanatory row.
+              They are already included inside "Refunds Today" total and are <em>NOT subtracted a second time</em> in the Expected Physical Cash formula.
+              If you see a large backdated refund, it means an old-bill refund was processed today.
+            </div>
           </div>
         </>
       )}

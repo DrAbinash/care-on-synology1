@@ -96,11 +96,51 @@ dailySummaryRouter.get("/", async (req, res) => {
     const m = (p.method ?? "other").toLowerCase();
     return s + (["upi", "card", "online", "bank", "cheque", "neft", "rtgs"].includes(m) ? Number(p.amount) : 0);
   }, 0);
+  const cashCollection = totalReceived - digitalCollection;
   const expenses = expenseRows.rows.reduce((s, r) => s + Number(r.total), 0);
   const netCollection = totalBilling - outstanding - totalRefunded - cancelledBills.reduce((s, r) => s + Number(r.totalAmount), 0) - expenses;
   const physicalCashInHand = netCollection - digitalCollection;
   const refundsAndCancellations = totalRefunded + cancelledBills.reduce((s, r) => s + Number(r.totalAmount), 0);
   const discountsGiven = activeBills.reduce((s, r) => s + Number(r.discount ?? 0), 0);
+
+  // ── Reconciliation: classify payments as new-billing vs old-dues ──────────
+  // "Today's bills" = bills whose createdAt falls within this day's bounds.
+  const todayBillIdSet = new Set(allBillRows.map((b) => b.id));
+
+  // Old Dues Collected = payments today that belong to bills NOT created today
+  const oldDuesCollected = paymentItems
+    .filter((p) => p.billId !== null && !todayBillIdSet.has(p.billId!))
+    .reduce((s, p) => s + Number(p.amount), 0);
+
+  // New Billing Collected = payments today for bills created today
+  const newBillingCollected = paymentItems
+    .filter((p) => p.billId === null || todayBillIdSet.has(p.billId!))
+    .reduce((s, p) => s + Number(p.amount), 0);
+
+  // Backdated Refunds = refunds processed today where the linked bill is from a PRIOR day.
+  // These are already included inside totalRefunded (no double-counting needed).
+  // They are exposed for display/explanation purposes only.
+  const backdatedRefunds = refundItems
+    .filter((p) => p.billId !== null && !todayBillIdSet.has(p.billId!))
+    .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
+
+  // Same-day refunds = refunds for bills also created today
+  const sameDayRefunds = refundItems
+    .filter((p) => p.billId === null || todayBillIdSet.has(p.billId!))
+    .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
+
+  // Expenses split by payment_mode: cash vs digital
+  const cashExpenses = expenseRows.rows
+    .filter((r) => (r.payment_mode ?? "cash").toLowerCase() === "cash")
+    .reduce((s, r) => s + Number(r.total), 0);
+  const digitalExpenses = expenses - cashExpenses;
+
+  // Net Digital Collection = digital collected - digital refunds (digital refunds by method)
+  const digitalRefunded = refundItems.reduce((s, p) => {
+    const m = (p.method ?? "other").toLowerCase();
+    return s + (["upi", "card", "online", "bank", "cheque", "neft", "rtgs"].includes(m) ? Math.abs(Number(p.amount)) : 0);
+  }, 0);
+  const netDigitalCollection = digitalCollection - digitalRefunded;
 
   const byMethod: Record<string, number> = {};
   for (const p of paymentItems) {
@@ -194,11 +234,22 @@ dailySummaryRouter.get("/", async (req, res) => {
       expenses,
       netCollection,
       digitalCollection,
+      cashCollection,
       physicalCashInHand,
       discountsGiven,
       billCount: activeBills.length,
       orderCount: orderCount[0]?.count ?? 0,
       totalOutstandingDues,
+      // Reconciliation fields (new, additive)
+      newBillingCollected,
+      oldDuesCollected,
+      backdatedRefunds,
+      sameDayRefunds,
+      cashExpenses,
+      digitalExpenses,
+      netDigitalCollection,
+      cancelledBillsAmount: cancelledBills.reduce((s, r) => s + Number(r.totalAmount), 0),
+      totalRefunded,
     },
     byMethod,
     byRefundMethod,
