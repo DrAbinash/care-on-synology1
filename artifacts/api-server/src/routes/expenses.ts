@@ -8,6 +8,7 @@ import {
   UpdateExpenseParams,
 } from "@workspace/api-zod";
 import { geminiOcrBill } from "@workspace/integrations-gemini-ai";
+import { autoVoucherForExpense } from "../lib/auto-voucher";
 
 const router = Router();
 
@@ -108,6 +109,16 @@ router.post("/", async (req, res) => {
     })
     .returning();
 
+  // Auto-generate Payment Voucher for the expense (fire-and-forget, non-blocking)
+  autoVoucherForExpense({
+    expenseId: expId,
+    amount,
+    paymentMode: paymentMode || "cash",
+    category,
+    description,
+    performedBy: approvedBy ?? null,
+  }).catch(() => {/* already logged inside */});
+
   return res.status(201).json(toNum(expense as unknown as Record<string, unknown>));
 });
 
@@ -135,6 +146,25 @@ router.patch("/:id", async (req, res) => {
     .where(eq(expensesTable.id, paramsParsed.data.id))
     .returning();
   if (!expense) return res.status(404).json({ error: "Expense not found" });
+
+  // If amount or payment mode changed, generate a corrective voucher note.
+  // We fire a new PV for the updated amount (the original PV remains for audit).
+  const updatedAmount = Number((expense as unknown as Record<string, unknown>).amount ?? 0);
+  const updatedMode   = String((expense as unknown as Record<string, unknown>).paymentMode ?? "cash");
+  const updatedCat    = String((expense as unknown as Record<string, unknown>).category ?? "General");
+  const updatedDesc   = String((expense as unknown as Record<string, unknown>).description ?? "");
+  const updatedExpId  = String((expense as unknown as Record<string, unknown>).expenseId ?? "");
+  if (bodyParsed.data.amount !== undefined || bodyParsed.data.paymentMode !== undefined) {
+    autoVoucherForExpense({
+      expenseId: updatedExpId + "-edit",
+      amount: updatedAmount,
+      paymentMode: updatedMode,
+      category: updatedCat,
+      description: `[EDIT] ${updatedDesc}`,
+      performedBy: null,
+    }).catch(() => {/* already logged inside */});
+  }
+
   return res.json(toNum(expense as unknown as Record<string, unknown>));
 });
 

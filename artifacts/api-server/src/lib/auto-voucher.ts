@@ -21,42 +21,6 @@ const REVENUE_ACCOUNT = {
   tallyGroup: "Direct Income",
 };
 
-async function ensureAccount(name: string, type: string, tallyGroup: string): Promise<string> {
-  const [existing] = await db
-    .select({ id: accountsTable.id })
-    .from(accountsTable)
-    .where(eq(accountsTable.name, name))
-    .limit(1);
-  if (existing) return existing.id.toString();
-  const [created] = await db
-    .insert(accountsTable)
-    .values({ name, type, tallyGroup, openingBalance: "0", openingBalanceType: "Dr" })
-    .returning({ id: accountsTable.id });
-  return created.id.toString();
-}
-
-function voucherBucketPrefix(type: string): string {
-  const prefix = type === "receipt" ? "RV" : type === "payment" ? "PV" : "JV";
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  return `${prefix}-${y}${m}-`;
-}
-
-async function nextVoucherNumber(type: string, offset = 0): Promise<string> {
-  const bucket = voucherBucketPrefix(type);
-  const [r] = await db
-    .select({ c: sql<number>`count(*)` })
-    .from(vouchersTable)
-    .where(like(vouchersTable.voucherNumber, `${bucket}%`));
-  const next = Number(r?.c ?? 0) + 1 + offset;
-  return `${bucket}${String(next).padStart(4, "0")}`;
-}
-
-function istDateStr(): string {
-  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
-}
-
 /**
  * Auto-generate an accounting voucher for a billing payment.
  *
@@ -126,5 +90,64 @@ export async function autoVoucherForPayment(opts: {
     throw lastErr;
   } catch (err) {
     logger.warn({ err }, "[auto-voucher] Failed to generate accounting voucher (non-fatal)");
+  }
+}
+
+/**
+ * Auto-generate a Payment Voucher (PV) for an operational expense.
+ *
+ * Payment Voucher:
+ *     Debit  Expenses — <Category>   (money spent on operations)
+ *     Credit Cash in Hand / Bank     (where money came from)
+ *
+ * Never throws — non-fatal, fire-and-forget from the expenses route.
+ */
+export async function autoVoucherForExpense(opts: {
+  expenseId: string;
+  amount: number;
+  paymentMode: string;
+  category: string;
+  description: string;
+  performedBy?: string | null;
+}): Promise<void> {
+  try {
+    const { expenseId, amount, paymentMode, category, description, performedBy } = opts;
+    if (!Number.isFinite(amount) || amount <= 0) return;
+
+    // Debit: expense category account (e.g. "Expenses — Salary", "Expenses — Office")
+    const expAccName = `Expenses — ${category.trim() || "General"}`;
+    const expAccId = await ensureAccount(expAccName, "expense", "Indirect Expenses");
+
+    // Credit: the payment-mode account (cash or bank)
+    const modeKey = (paymentMode ?? "cash").toLowerCase();
+    const modeAccDef = METHOD_ACCOUNTS[modeKey] ?? METHOD_ACCOUNTS["cash"];
+    const modeAccId = await ensureAccount(modeAccDef.name, modeAccDef.type, modeAccDef.tallyGroup);
+
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const voucherNumber = await nextVoucherNumber("payment", attempt);
+      try {
+        await db.insert(vouchersTable).values({
+          voucherNumber,
+          type: "payment",
+          date: istDateStr(),
+          debitAccountId: expAccId,
+          creditAccountId: modeAccId,
+          amount: amount.toFixed(2),
+          particular: `${category} | ${description}`,
+          billId: null,
+          performedBy: performedBy ?? null,
+          narration: `Auto-generated from expense ${expenseId}`,
+          reference: expenseId,
+        });
+        return;
+      } catch (err: unknown) {
+        if ((err as { code?: string }).code === "23505") { lastErr = err; continue; }
+        throw err;
+      }
+    }
+    throw lastErr;
+  } catch (err) {
+    logger.warn({ err }, "[auto-voucher] Failed to generate expense voucher (non-fatal)");
   }
 }

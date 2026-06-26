@@ -923,14 +923,11 @@ billsRouter.post("/:id/cancel", requireStaffSubPermission("/billing", "delete"),
           notes: `REFUND on cancellation: ${reason}`,
           recordedByName: performedBy,
         });
-        const currentTotal = Number(bill.totalAmount);
-        const newTotal = Math.max(0, Math.round((currentTotal - refundedAmount) * 100) / 100);
-        const newBalance = Math.max(0, Math.round((newTotal - 0) * 100) / 100);
+        // FIX: totalAmount is NEVER mutated — cancelled bill's balance is always 0.
         await tx.update(billsTable).set({
-          totalAmount: String(newTotal),
           paidAmount: "0.00",
           refundAmount: String(newRefund),
-          balanceAmount: String(newBalance),
+          balanceAmount: "0.00",
         }).where(eq(billsTable.id, id));
         await tx.insert(billAuditsTable).values({
           billId: id,
@@ -1052,14 +1049,19 @@ billsRouter.post("/:id/refund", requireStaffSubPermission("/billing", "refund"),
 
     const newPaid = Math.max(0, Math.round((currentPaid - amount) * 100) / 100);
     const newRefund = Math.round((currentRefund + amount) * 100) / 100;
-    const newTotal = Math.max(0, Math.round((currentTotal - amount) * 100) / 100);
-    const newBalance = Math.max(0, Math.round((newTotal - newPaid) * 100) / 100);
+    // FIX: totalAmount is NEVER mutated by a refund — it preserves the original
+    // billed amount for historical revenue accuracy. Balance is recalculated
+    // against the unchanged total; trueOutstanding (balance − refundAmount) in
+    // the daily summary correctly resolves to the net money still owed.
+    const newBalance = Math.max(0, Math.round((currentTotal - newPaid) * 100) / 100);
     // Don't auto-flip away from "cancelled" — once cancelled, stays cancelled.
+    // Status partial/paid is judged against (total − refund) i.e. the net owed.
+    const netOwed = Math.max(0, Math.round((currentTotal - newRefund) * 100) / 100);
     const newStatus = bill.status === "cancelled"
       ? "cancelled"
       : newPaid <= 0
         ? "pending"
-        : newPaid < newTotal
+        : newPaid < netOwed
           ? "partial"
           : "paid";
 
@@ -1074,8 +1076,8 @@ billsRouter.post("/:id/refund", requireStaffSubPermission("/billing", "refund"),
       recordedByName: performedBy,
     });
 
+    // totalAmount intentionally excluded — must not be mutated by a refund.
     const [updated] = await tx.update(billsTable).set({
-      totalAmount: String(newTotal),
       paidAmount: String(newPaid),
       refundAmount: String(newRefund),
       balanceAmount: String(newBalance),
