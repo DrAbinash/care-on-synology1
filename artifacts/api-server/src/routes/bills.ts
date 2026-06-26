@@ -1050,12 +1050,15 @@ billsRouter.post("/:id/refund", requireStaffSubPermission("/billing", "refund"),
     const newPaid = Math.max(0, Math.round((currentPaid - amount) * 100) / 100);
     const newRefund = Math.round((currentRefund + amount) * 100) / 100;
     // FIX: totalAmount is NEVER mutated by a refund — it preserves the original
-    // billed amount for historical revenue accuracy. Balance is recalculated
-    // against the unchanged total; trueOutstanding (balance − refundAmount) in
-    // the daily summary correctly resolves to the net money still owed.
-    const newBalance = Math.max(0, Math.round((currentTotal - newPaid) * 100) / 100);
-    // Don't auto-flip away from "cancelled" — once cancelled, stays cancelled.
-    // Status partial/paid is judged against (total − refund) i.e. the net owed.
+    // billed amount for historical revenue accuracy.
+    // balance_amount = total − paid − refund  ← true net money still owed.
+    // This means balance = 0 when the patient has paid their net obligation
+    // (paid_amount + refund_amount = total_amount), so:
+    //   • Dues filter (balance > 0) correctly excludes fully-settled refund bills.
+    //   • Add-payment guard uses the correct remaining payable amount.
+    //   • Daily-summary outstanding = SUM(balance) is correct without adjustment.
+    const newBalance = Math.max(0, Math.round((currentTotal - newPaid - newRefund) * 100) / 100);
+    // Status: paid when net owed (total − refund) is fully collected.
     const netOwed = Math.max(0, Math.round((currentTotal - newRefund) * 100) / 100);
     const newStatus = bill.status === "cancelled"
       ? "cancelled"
@@ -1747,7 +1750,9 @@ paymentsRouter.post("/", async (req, res) => {
   }).returning();
 
   const newPaidAmount = Number(bill.paidAmount) + amount;
-  const balanceAmount = Number(bill.totalAmount) - newPaidAmount;
+  // balance = total − paid − existing-refund (true net still owed by patient)
+  const existingRefund = Number(bill.refundAmount ?? 0);
+  const balanceAmount = Number(bill.totalAmount) - newPaidAmount - existingRefund;
   const newStatus = balanceAmount <= 0 ? "paid" : newPaidAmount > 0 ? "partial" : bill.status;
 
   await db.update(billsTable).set({

@@ -79,6 +79,9 @@ dailySummaryRouter.get("/", async (req, res) => {
   );
 
   const allDuesResult = await db.execute<{ total: string }>(
+    // balance_amount = total − paid − refund (see bills.ts refund route).
+    // SUM(balance_amount) is the correct net outstanding — no further
+    // refund adjustment needed here.
     sql`SELECT COALESCE(SUM(balance_amount::numeric), 0)::text AS total
         FROM bills
         WHERE status IN ('pending','partial') AND balance_amount::numeric > 0`

@@ -204,7 +204,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
         createdByName: r.createdByName ?? null,
         totalAmount: Number(r.totalAmount),
         duesCollected: 0,
-        remainingDues: Math.max(0, Number(r.balanceAmount ?? 0)) - Math.max(0, Number(r.refundAmount ?? 0)),
+        remainingDues: Math.max(0, Number(r.balanceAmount ?? 0)),
         billStatus: r.billStatus ?? "pending",
       });
     }
@@ -309,14 +309,11 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
   const paymentItems = allPaymentRows.filter((p) => Number(p.amount) > 0);
   const refundItems = allPaymentRows.filter((p) => Number(p.amount) < 0);
 
-  // Refunds increase balanceAmount (paidAmount goes down), so the refunded
-  // portion shows up as "still pending" if we use balanceAmount directly.
-  // True outstanding = balance − cumulative refund (the returned money is
-  // NOT money still owed by the patient).
+  // balance_amount is now defined as: total − paid − refund
+  // It already represents the true net money still owed by the patient.
+  // No further adjustment needed — balance = trueOutstanding directly.
   const trueOutstanding = (r: typeof allBillRows[0]) => {
-    const bal = Math.max(0, Number(r.balanceAmount ?? 0));
-    const ref = Math.max(0, Number(r.refundAmount ?? 0));
-    return Math.max(0, bal - ref);
+    return Math.max(0, Number(r.balanceAmount ?? 0));
   };
 
   // ── My Billing side (bills I created in the date range) ────────────────
