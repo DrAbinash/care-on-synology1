@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
+import { readStaffSession } from "@/lib/staffSession";
+import { resolveActiveProfile, updateProfilePreference, getOhifUrl, getWeasisUrl, adaptUrlToProfile } from "@/lib/viewerService";
 import {
   Activity,
   Server,
@@ -25,7 +27,8 @@ import {
   ShieldCheck,
   Wrench,
   CheckCircle2,
-  Info
+  Info,
+  Network
 } from "lucide-react";
 
 type ServiceHealth = {
@@ -143,6 +146,56 @@ export default function NetworkControlCenter() {
   const [form, setForm] = useState<Partial<Record<string, string>>>({});
   const [isEditing, setIsEditing] = useState(false);
   const [testingModalityId, setTestingModalityId] = useState<number | null>(null);
+
+  const [activeProfile, setActiveProfile] = useState<"LAN" | "TAILSCALE" | "PUBLIC">("PUBLIC");
+  const [whySelected, setWhySelected] = useState("Resolving active profile...");
+  const [latency, setLatency] = useState(0);
+  const [profileOverride, setProfileOverride] = useState<"auto" | "LAN" | "TAILSCALE" | "PUBLIC">("auto");
+  const [stats, setStats] = useState({
+    lastSuccessProfile: "—",
+    lastSuccessViewer: "—",
+    lastSuccessTime: "—",
+    lastFailedTime: "—",
+    lastFailedStage: "—",
+    averageLaunchTime: 0,
+    lastSwitchTime: "—"
+  });
+
+  const loadViewerMetrics = async () => {
+    try {
+      const settingsRows = await api.get<{ key: string; value: string; category: string }[]>("/api/radiology/pacs-settings");
+      const settingsMap: Record<string, string> = {};
+      for (const r of settingsRows) if (r.category === "viewer") settingsMap[r.key] = r.value;
+
+      const { profile, reason, latencyMs } = await resolveActiveProfile(settingsMap);
+      setActiveProfile(profile);
+      setWhySelected(reason);
+      setLatency(latencyMs);
+
+      const session = readStaffSession();
+      const dbProfile = session?.user?.pacsNetworkProfile;
+      const localOverride = localStorage.getItem("pacs_network_profile");
+      setProfileOverride(dbProfile || localOverride || "auto");
+
+      setStats({
+        lastSuccessProfile: localStorage.getItem("pacs_last_good_profile") || "—",
+        lastSuccessViewer: localStorage.getItem("pacs_last_good_viewer") || "—",
+        lastSuccessTime: formatTime(localStorage.getItem("pacs_last_success_time")),
+        lastFailedTime: formatTime(localStorage.getItem("pacs_last_failed_time")),
+        lastFailedStage: localStorage.getItem("pacs_last_failed_stage") || "—",
+        averageLaunchTime: Number(localStorage.getItem("pacs_avg_launch_time") || "0"),
+        lastSwitchTime: formatTime(localStorage.getItem("pacs_last_switch_time"))
+      });
+    } catch (e) {
+      console.error("Failed to load viewer metrics", e);
+    }
+  };
+
+  useEffect(() => {
+    loadViewerMetrics();
+    const interval = setInterval(loadViewerMetrics, 10000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Queries
   const { data: settingsData, isLoading: settingsLoading } = useQuery<SettingsResponse>({
@@ -572,6 +625,113 @@ export default function NetworkControlCenter() {
                 );
               })
             )}
+          </div>
+        </div>
+      </div>
+
+      {/* Viewer Smart Routing & Auto-Detection Console */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-white shadow-lg space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+          <div className="flex items-center gap-2">
+            <Network className="h-5 w-5 text-indigo-400 animate-pulse" />
+            <div>
+              <h3 className="text-sm font-semibold tracking-wider uppercase text-slate-400">
+                Viewer Intelligent Routing Console
+              </h3>
+              <p className="text-xs text-slate-500 font-mono mt-0.5">Real-time profile selection &amp; latency analytics</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-400 font-medium">Selected Mode:</span>
+            {(["auto", "LAN", "TAILSCALE", "PUBLIC"] as const).map((profile) => (
+              <Button
+                key={profile}
+                variant={profileOverride === profile ? "default" : "outline"}
+                size="sm"
+                className={`h-7 capitalize text-[11px] font-semibold ${
+                  profileOverride === profile 
+                    ? "bg-indigo-600 hover:bg-indigo-500 text-white" 
+                    : "border-slate-700 hover:bg-slate-800 text-slate-300"
+                }`}
+                onClick={async () => {
+                  await updateProfilePreference(profile, toast);
+                  loadViewerMetrics();
+                }}
+              >
+                {profile}
+              </Button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-slate-950/50 border border-slate-800/80 rounded-xl p-4 flex flex-col justify-between">
+            <span className="text-[10px] text-slate-400 uppercase tracking-wider font-bold">Active Network Profile</span>
+            <span className={`text-xl font-bold mt-2 ${activeProfile === "LAN" ? "text-emerald-400" : activeProfile === "TAILSCALE" ? "text-blue-400" : "text-amber-400"}`}>
+              {activeProfile}
+            </span>
+            <span className="text-[10px] text-slate-500 mt-1 leading-relaxed font-sans">{whySelected}</span>
+          </div>
+
+          <div className="bg-slate-950/50 border border-slate-800/80 rounded-xl p-4 flex flex-col justify-between">
+            <span className="text-[10px] text-slate-400 uppercase tracking-wider font-bold">Active Host Target</span>
+            <span className="text-lg font-bold font-mono mt-2 text-indigo-300">
+              {activeProfile === "LAN" ? "192.168.1.137" : activeProfile === "TAILSCALE" ? "100.65.255.115" : "caredeoghar.com"}
+            </span>
+            <span className="text-[10px] text-slate-500 mt-1 leading-relaxed">Centralized PACS configuration</span>
+          </div>
+
+          <div className="bg-slate-950/50 border border-slate-800/80 rounded-xl p-4 flex flex-col justify-between">
+            <span className="text-[10px] text-slate-400 uppercase tracking-wider font-bold">Average Launch Time</span>
+            <span className="text-xl font-bold font-mono mt-2 text-sky-400">
+              {stats.averageLaunchTime > 0 ? `${stats.averageLaunchTime}ms` : "—"}
+            </span>
+            <span className="text-[10px] text-slate-500 mt-1 leading-relaxed">Calculated across successful starts</span>
+          </div>
+
+          <div className="bg-slate-950/50 border border-slate-800/80 rounded-xl p-4 flex flex-col justify-between">
+            <span className="text-[10px] text-slate-400 uppercase tracking-wider font-bold">Last Launch Result</span>
+            <span className="text-xs font-semibold mt-2 font-mono text-slate-200">
+              {stats.lastSuccessProfile !== "—" ? (
+                <span className="text-emerald-400">Success (${stats.lastSuccessProfile} via ${stats.lastSuccessViewer})</span>
+              ) : stats.lastFailedStage !== "—" ? (
+                <span className="text-red-400">Failed (${stats.lastFailedStage})</span>
+              ) : "—"}
+            </span>
+            <span className="text-[10px] text-slate-500 mt-1 leading-relaxed font-sans">
+              Time: {stats.lastSuccessProfile !== "—" ? stats.lastSuccessTime : stats.lastFailedTime !== "—" ? stats.lastFailedTime : "—"}
+            </span>
+          </div>
+        </div>
+
+        {/* Resolved URL Checklist */}
+        <div className="space-y-3 pt-2">
+          <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">Resolved Routing Parameters (Active)</h4>
+          <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-4 font-mono text-xs space-y-3">
+            <div className="flex flex-col sm:flex-row justify-between gap-1 border-b border-slate-800 pb-2">
+              <span className="text-[11px] text-slate-400 font-sans">OHIF Viewer URL</span>
+              <span className="text-[11px] text-slate-200 break-all select-all">
+                {settingsData?.config?.ohif?.baseUrl ? adaptUrlToProfile(settingsData.config.ohif.baseUrl, activeProfile) + "/viewer?StudyInstanceUIDs={studyUID}" : "—"}
+              </span>
+            </div>
+            <div className="flex flex-col sm:flex-row justify-between gap-1 border-b border-slate-800 pb-2">
+              <span className="text-[11px] text-slate-400 font-sans">DICOMweb Endpoint</span>
+              <span className="text-[11px] text-slate-200 break-all select-all">
+                {settingsData?.config?.orthanc?.dicomWebUrl ? adaptUrlToProfile(settingsData.config.orthanc.dicomWebUrl, activeProfile) : "—"}
+              </span>
+            </div>
+            <div className="flex flex-col sm:flex-row justify-between gap-1 border-b border-slate-800 pb-2">
+              <span className="text-[11px] text-slate-400 font-sans">WADO Service URL</span>
+              <span className="text-[11px] text-slate-200 break-all select-all">
+                {settingsData?.config?.orthanc?.wadoUrl ? adaptUrlToProfile(settingsData.config.orthanc.wadoUrl, activeProfile) : "—"}
+              </span>
+            </div>
+            <div className="flex flex-col sm:flex-row justify-between gap-1">
+              <span className="text-[11px] text-slate-400 font-sans">Weasis Protocol Target</span>
+              <span className="text-[11px] text-slate-200 break-all select-all">
+                {settingsData?.config?.weasis?.wadoUrl ? `weasis://$dicom:get -w "${adaptUrlToProfile(settingsData.config.weasis.wadoUrl, activeProfile)}" -r "studyUID={studyUID}"` : "—"}
+              </span>
+            </div>
           </div>
         </div>
       </div>

@@ -21,6 +21,7 @@ export type StaffUser = {
   // Per-user sidebar theme synced from the server. Seeded into localStorage
   // on login so the local useUserTheme hook picks it up immediately.
   sidebarTheme?: string | null;
+  pacsNetworkProfile?: string | null;
   // Per-user default start page
   defaultStartPage?: string | null;
   // Server-issued flag — when true the staff-login flow forces the user

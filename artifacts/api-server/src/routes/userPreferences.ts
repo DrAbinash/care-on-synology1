@@ -54,6 +54,18 @@ router.patch("/:id/sidebar-theme", async (req: StaffAuthRequest, res) => {
   return;
 });
 
+router.patch("/:id/pacs-network-profile", async (req: StaffAuthRequest, res) => {
+  const id = Number(req.params.id);
+  if (!req.staffSession || req.staffSession.subjectId !== id) {
+    res.status(403).json({ error: "You can only update your own preferences" });
+    return;
+  }
+  const value = typeof req.body.pacsNetworkProfile === "string" ? req.body.pacsNetworkProfile : null;
+  await db.update(usersTable).set({ pacsNetworkProfile: value }).where(eq(usersTable.id, id));
+  res.json({ ok: true });
+  return;
+});
+
 // Self-service DICOM Q/R preset sync — any authenticated staff can GET/PUT
 // their own presets. No /settings permission required so radiologists on any
 // role can access this from the PACS module.

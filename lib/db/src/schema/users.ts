@@ -20,6 +20,8 @@ export const usersTable = pgTable("users", {
   // Per-user sidebar colour preference — synced across devices via DB.
   // localStorage acts as a same-session cache; this column is the source of truth.
   sidebarTheme: text("sidebar_theme"),
+  // Synced network profile preference (auto | LAN | TAILSCALE | PUBLIC)
+  pacsNetworkProfile: text("pacs_network_profile"),
   // Per-user default start page after login
   defaultStartPage: text("default_start_page"),
   // DICOM Q/R saved search presets — synced across devices via DB.
