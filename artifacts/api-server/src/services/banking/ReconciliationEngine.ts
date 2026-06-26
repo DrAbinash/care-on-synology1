@@ -221,8 +221,9 @@ export async function reconcileSingleTransaction(
         const txnAmt = Number(bankTxn.amount);
         const newPaid = paidSoFar + txnAmt;
         const total = Number(bill.totalAmount);
-        const newStatus = newPaid >= total ? "paid" : "partial";
-        const newBalance = Math.max(0, total - newPaid);
+        const refundAmount = Number(bill.refundAmount || 0);
+        const newBalance = Math.max(0, Math.round((total - newPaid - refundAmount) * 100) / 100);
+        const newStatus = newPaid >= total - refundAmount ? "paid" : "partial";
         await db.update(billsTable)
           .set({
             paidAmount: String(newPaid),

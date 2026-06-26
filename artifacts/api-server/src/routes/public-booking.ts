@@ -1288,7 +1288,8 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
             });
 
             const newPaid = Number(bill.paidAmount) + collectAmount;
-            const newBalance = Math.max(0, Number(bill.totalAmount) - newPaid);
+            const refundAmount = Number(bill.refundAmount || 0);
+            const newBalance = Math.max(0, Number(bill.totalAmount) - newPaid - refundAmount);
             const newStatus = newBalance <= 0.01 ? "paid" : "partial";
             await tx.update(billsTable).set({
               paidAmount: newPaid.toFixed(2),

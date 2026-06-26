@@ -675,9 +675,11 @@ billsRouter.put("/:id", requireStaffSubPermission("/billing", "edit"), async (re
 
     const newTotal = subtotal - newDiscount + taxAmount;
     const paidAmount = Number(existingBill.paidAmount);
+    const refundAmount = Number(existingBill.refundAmount || 0);
+    const newBalance = Math.max(0, Math.round((newTotal - paidAmount - refundAmount) * 100) / 100);
     updateData.discount = String(newDiscount);
     updateData.totalAmount = String(newTotal);
-    updateData.balanceAmount = String(newTotal - paidAmount);
+    updateData.balanceAmount = String(newBalance);
   }
 
   const [updated] = await db.update(billsTable).set(updateData).where(eq(billsTable.id, paramsParsed.data.id)).returning();
@@ -1516,7 +1518,8 @@ billsRouter.post("/:id/cancel-test", async (req: StaffAuthRequest, res) => {
     const newDiscount = Math.min(oldDiscount, newSubtotal); // cap discount at new subtotal
     const newTotal = Math.max(0, Math.round((newSubtotal - newDiscount + Number(bill.taxAmount)) * 100) / 100);
     const newPaid = Number(bill.paidAmount);
-    const newBalance = Math.max(0, Math.round((newTotal - newPaid) * 100) / 100);
+    const refundAmount = Number(bill.refundAmount || 0);
+    const newBalance = Math.max(0, Math.round((newTotal - newPaid - refundAmount) * 100) / 100);
     const newStatus = newBalance <= 0 && newPaid > 0 ? "paid"
       : newPaid > 0 ? "partial"
       : "pending";
@@ -1622,7 +1625,7 @@ billsRouter.post("/:id/cancel-refund-tests", async (req: StaffAuthRequest, res) 
       const method = (refundMethod ?? "cash").trim().toLowerCase();
       const newRefund = Math.round((oldRefund + refundedAmount) * 100) / 100;
       const newPaid = Math.max(0, Math.round((oldPaid - refundedAmount) * 100) / 100);
-      const newBalance = Math.max(0, Math.round((newTotal - newPaid) * 100) / 100);
+      const newBalance = Math.max(0, Math.round((newTotal - newPaid - newRefund) * 100) / 100);
       const newStatus = newPaid <= 0 ? "pending" : newPaid < newTotal ? "partial" : "paid";
 
       await tx.insert(paymentsTable).values({
@@ -1647,7 +1650,7 @@ billsRouter.post("/:id/cancel-refund-tests", async (req: StaffAuthRequest, res) 
       refundRecorded = true;
     } else {
       const newPaid = oldPaid;
-      const newBalance = Math.max(0, Math.round((newTotal - newPaid) * 100) / 100);
+      const newBalance = Math.max(0, Math.round((newTotal - newPaid - oldRefund) * 100) / 100);
       const newStatus = newPaid <= 0 ? "pending" : newPaid < newTotal ? "partial" : "paid";
 
       await tx.update(billsTable).set({
@@ -1865,7 +1868,8 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
     const newSubtotal = newOrderTotal;
     const newTotal = newSubtotal - oldDiscount;
     const paidAmount = Number(bill.paidAmount);
-    const newBalance = Math.max(0, newTotal - paidAmount);
+    const refundAmount = Number(bill.refundAmount || 0);
+    const newBalance = Math.max(0, newTotal - paidAmount - refundAmount);
     const newStatus = newBalance <= 0.01 && paidAmount > 0 ? "paid" : paidAmount > 0 ? "partial" : "pending";
 
     await tx.update(billsTable).set({
@@ -1899,7 +1903,7 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
         recordedByName: performedBy,
       });
       const newPaid = Math.round((paidAmount + priceDiff) * 100) / 100;
-      const newBalAfterPay = Math.max(0, newTotal - newPaid);
+      const newBalAfterPay = Math.max(0, newTotal - newPaid - refundAmount);
       const newStatAfterPay = newBalAfterPay <= 0.01 && newPaid > 0 ? "paid" : newPaid > 0 ? "partial" : "pending";
       await tx.update(billsTable).set({
         paidAmount: newPaid.toFixed(2),
@@ -1934,7 +1938,7 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
       const currentRefund = Number(bill.refundAmount);
       const newRefund = Math.round((currentRefund + refundAmt) * 100) / 100;
       const newPaidAfterRefund = Math.max(0, Math.round((paidAmount - refundAmt) * 100) / 100);
-      const newBalAfterRefund = Math.max(0, newTotal - newPaidAfterRefund);
+      const newBalAfterRefund = Math.max(0, newTotal - newPaidAfterRefund - newRefund);
       const newStatAfterRefund = newBalAfterRefund <= 0.01 && newPaidAfterRefund > 0 ? "paid" : newPaidAfterRefund > 0 ? "partial" : "pending";
       await tx.update(billsTable).set({
         paidAmount: newPaidAfterRefund.toFixed(2),
@@ -2176,7 +2180,8 @@ billsRouter.get("/gateway-payment-status/:txnRef", async (req, res): Promise<voi
           });
 
           const newPaid = Number(bill.paidAmount) + collectAmount;
-          const newBalance = Math.max(0, Number(bill.totalAmount) - newPaid);
+          const refundAmount = Number(bill.refundAmount || 0);
+          const newBalance = Math.max(0, Number(bill.totalAmount) - newPaid - refundAmount);
           const newStatus = newBalance <= 0.01 ? "paid" : "partial";
           await tx.update(billsTable).set({
             paidAmount: newPaid.toFixed(2),
