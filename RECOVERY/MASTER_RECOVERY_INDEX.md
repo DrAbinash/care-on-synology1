@@ -35,6 +35,11 @@ Welcome to the Care Diagnostics ERP System Recovery Portal. This document acts a
 *   [PERMISSION_PENETRATION_AUDIT.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/07_SECURITY/PERMISSION_PENETRATION_AUDIT.md) — RBAC verification audit.
 
 ### 📂 06. Accounting & Finance
+*   [FINANCIAL_FREEZE_RULEBOOK.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/08_FINANCIAL/FINANCIAL_FREEZE_RULEBOOK.md) — Permanent governance policy and invariants.
+*   [FINANCIAL_CHANGE_CONTROL.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/08_FINANCIAL/FINANCIAL_CHANGE_CONTROL.md) — Change request workflow & root-cause template.
+*   [FINANCIAL_CODE_REVIEW_CHECKLIST.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/08_FINANCIAL/FINANCIAL_CODE_REVIEW_CHECKLIST.md) — Pull request verification check list.
+*   [FINANCIAL_RELEASE_CHECKLIST.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/08_FINANCIAL/FINANCIAL_RELEASE_CHECKLIST.md) — Release staging validation steps.
+*   [ACCOUNTING_PROTECTED_FILES.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/08_FINANCIAL/ACCOUNTING_PROTECTED_FILES.md) — List of protected files, tables, and APIs.
 *   [FINAL_FINANCIAL_CONSISTENCY_REPORT.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/08_FINANCIAL/FINAL_FINANCIAL_CONSISTENCY_REPORT.md) — Balance formulas and regression checks.
 *   [FINANCIAL_REGRESSION_TEST_REPORT.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/08_FINANCIAL/FINANCIAL_REGRESSION_TEST_REPORT.md) — Results of the 42 financial scenario tests.
 *   [FINANCIAL_FORMULA_CHANGE_LOG.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/08_FINANCIAL/FINANCIAL_FORMULA_CHANGE_LOG.md) — Historical accounting modifications reference.

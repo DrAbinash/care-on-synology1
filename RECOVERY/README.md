@@ -78,6 +78,22 @@ This folder is the single source of truth for disaster recovery, infrastructure 
     *   **Last Update**: June 2026
 
 ### 08_FINANCIAL & 09_ACCOUNTING
+*   **[FINANCIAL_FREEZE_RULEBOOK.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/08_FINANCIAL/FINANCIAL_FREEZE_RULEBOOK.md)**
+    *   **Purpose**: Core governance document locking financial calculations and detailing strict code modification protocols.
+    *   **Last Update**: June 2026
+    *   **When to Use**: Prior to planning or writing code for any billing, payment, or accounting modifications.
+*   **[FINANCIAL_CHANGE_CONTROL.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/08_FINANCIAL/FINANCIAL_CHANGE_CONTROL.md)**
+    *   **Purpose**: Outlines the formal root cause and impact analysis framework required for any financial code modifications.
+    *   **Last Update**: June 2026
+*   **[FINANCIAL_CODE_REVIEW_CHECKLIST.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/08_FINANCIAL/FINANCIAL_CODE_REVIEW_CHECKLIST.md)**
+    *   **Purpose**: Mandatory checklist for pull request reviewers to verify decimal rounding, duplicate voucher prevention, and database locking safety.
+    *   **Last Update**: June 2026
+*   **[FINANCIAL_RELEASE_CHECKLIST.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/08_FINANCIAL/FINANCIAL_RELEASE_CHECKLIST.md)**
+    *   **Purpose**: Verification protocols required on staging environments before deploying billing or ledger changes to production.
+    *   **Last Update**: June 2026
+*   **[ACCOUNTING_PROTECTED_FILES.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/08_FINANCIAL/ACCOUNTING_PROTECTED_FILES.md)**
+    *   **Purpose**: Registry cataloging all protected source code files, database tables, and API routes subject to the financial freeze.
+    *   **Last Update**: June 2026
 *   **[FINAL_FINANCIAL_CONSISTENCY_REPORT.md](file:///c:/Users/abina/caredeoghar--antigravity/RECOVERY/08_FINANCIAL/FINAL_FINANCIAL_CONSISTENCY_REPORT.md)**
     *   **Purpose**: Validates the correct implementation of the canonical outstanding balance invariant: `balance = max(0, total - paid - refund)`.
     *   **Last Update**: June 2026
