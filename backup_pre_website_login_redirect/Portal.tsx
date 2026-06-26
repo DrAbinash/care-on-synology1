@@ -170,12 +170,6 @@ export default function PortalRoot() {
         <Route path="/portal/patient-login" component={PatientLogin} />
         <Route path="/portal/staff-login" component={StaffLogin} />
         <Route path="/portal/patient" component={PatientDashboard} />
-        
-        <Route path="/erp/portal" component={PortalLanding} />
-        <Route path="/erp/portal/patient-login" component={PatientLogin} />
-        <Route path="/erp/portal/staff-login" component={StaffLogin} />
-        <Route path="/erp/portal/patient" component={PatientDashboard} />
-
         <Route component={PortalLanding} />
       </Switch>
     </div>
@@ -220,7 +214,7 @@ function PortalLanding() {
 
   // Auto-redirect if already logged in as patient
   useEffect(() => {
-    if (readPatientSession()) navigate(window.location.pathname.startsWith("/erp") ? "/erp/portal/patient" : "/portal/patient");
+    if (readPatientSession()) navigate("/portal/patient");
   }, [navigate]);
 
   if (isLoading) return <CenteredSpinner />;
@@ -236,10 +230,10 @@ function PortalLanding() {
           </p>
           <div className="mt-5 flex gap-2 justify-center">
             <Button asChild>
-              <Link to={window.location.pathname.startsWith("/erp") ? "/erp/portal/patient-login" : "/portal/patient-login"}>Patient Login</Link>
+              <Link to="/portal/patient-login">Patient Login</Link>
             </Button>
             <Button variant="outline" asChild>
-              <Link to={window.location.pathname.startsWith("/erp") ? "/erp/portal/staff-login" : "/portal/staff-login"}>Staff Login</Link>
+              <Link to="/portal/staff-login">Staff Login</Link>
             </Button>
           </div>
         </div>
@@ -252,7 +246,6 @@ function PortalLanding() {
   // (sticky strip at top) is reused on the inner login screens but the
   // landing page now leads with a hero block.
   const clinicName = settings.heading || settings.centerName || "Patient Portal";
-  const pathPrefix = window.location.pathname.startsWith("/erp") ? "/erp" : "";
 
   return (
     <>
@@ -284,7 +277,7 @@ function PortalLanding() {
         <div className="grid md:grid-cols-2 gap-5 max-w-3xl mx-auto">
           <button
             type="button"
-            onClick={() => navigate(`${pathPrefix}/portal/patient-login`)}
+            onClick={() => navigate("/portal/patient-login")}
             className="group bg-white dark:bg-slate-900 border-2 border-slate-200 dark:border-slate-700 hover:border-blue-500 dark:hover:border-blue-400 rounded-2xl p-6 text-left shadow-sm hover:shadow-xl transition-all"
           >
             <div className="h-11 w-11 rounded-xl bg-blue-100 dark:bg-blue-950 group-hover:bg-blue-500 flex items-center justify-center mb-3 transition-colors">
@@ -301,7 +294,7 @@ function PortalLanding() {
 
           <button
             type="button"
-            onClick={() => navigate(`${pathPrefix}/portal/staff-login`)}
+            onClick={() => navigate("/portal/staff-login")}
             className="group bg-white dark:bg-slate-900 border-2 border-slate-200 dark:border-slate-700 hover:border-indigo-500 dark:hover:border-indigo-400 rounded-2xl p-6 text-left shadow-sm hover:shadow-xl transition-all"
           >
             <div className="h-11 w-11 rounded-xl bg-indigo-100 dark:bg-indigo-950 group-hover:bg-indigo-500 flex items-center justify-center mb-3 transition-colors">
@@ -366,14 +359,12 @@ function PatientLogin() {
     queryFn: () => api.get("/api/portal/settings"),
   });
 
-  const isErp = window.location.pathname.startsWith("/erp");
-
   const login = useMutation({
     mutationFn: (body: { phone: string; dateOfBirth: string }) =>
       api.post<PatientSession>("/api/portal/patient-login", body),
     onSuccess: (s) => {
       localStorage.setItem(PATIENT_KEY, JSON.stringify(s));
-      navigate(isErp ? "/erp/portal/patient" : "/portal/patient");
+      navigate("/portal/patient");
     },
     onError: (e: Error) => setError(e.message),
   });
@@ -385,7 +376,7 @@ function PatientLogin() {
       <PortalHeader
         settings={settings}
         right={
-          <Link href={isErp ? "/erp/portal" : "/portal"} className="text-sm text-muted-foreground hover:text-foreground inline-flex items-center gap-1">
+          <Link href="/portal" className="text-sm text-muted-foreground hover:text-foreground inline-flex items-center gap-1">
             <ArrowLeft size={14} /> Back
           </Link>
         }
@@ -569,7 +560,7 @@ function StaffLogin() {
       <PortalHeader
         settings={settings}
         right={
-          <Link href={window.location.pathname.startsWith("/erp") ? "/erp/portal" : "/portal"} className="text-sm text-muted-foreground hover:text-foreground inline-flex items-center gap-1">
+          <Link href="/portal" className="text-sm text-muted-foreground hover:text-foreground inline-flex items-center gap-1">
             <ArrowLeft size={14} /> Back
           </Link>
         }

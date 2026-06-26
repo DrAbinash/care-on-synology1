@@ -257,8 +257,6 @@ function Router() {
       <Switch>
         <Route path="/portal" component={Portal} />
         <Route path="/portal/:rest*" component={Portal} />
-        <Route path="/erp/portal" component={Portal} />
-        <Route path="/erp/portal/:rest*" component={Portal} />
         <Route path="/teleradiology" component={TeleradiologyPortal} />
         <Route path="/teleradiology/:rest*" component={TeleradiologyPortal} />
         <Route path="/verify-receipt/:billId" component={VerifyReceipt} />

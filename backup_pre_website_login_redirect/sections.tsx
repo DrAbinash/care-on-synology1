@@ -126,25 +126,24 @@ export function HeaderSection({ section, settings, pages, basePath }: { section:
 
           {/* Desktop nav */}
           <div className="header-right">
-            <Link to="/" className="header-nav-link">Home</Link>
-            <a href="/portal/patient-login" className="header-nav-link">Patient Login</a>
-            <a href="/portal/staff-login" className="header-nav-link">Staff Login</a>
-            <a href="/book" className="header-nav-link">Book Test</a>
-            <a href="/book#appointment" className="header-nav-link">Book Appointment</a>
-            <a href="/portal/patient-login" className="header-nav-link">Report Download</a>
-            {navPages.map((p) => {
-              if (p.slug === "home") return null;
-              return (
-                <Link key={p.id} to={`/${p.slug}`} className="header-nav-link">
-                  {p.title}
-                </Link>
-              );
-            })}
+            {navPages.map((p) => (
+              <Link key={p.id} to={p.slug === "home" ? "/" : `/${p.slug}`} className="header-nav-link">
+                {p.title}
+              </Link>
+            ))}
             {waNum && (
-              <a href={`https://wa.me/${waNum}`} target="_blank" rel="noreferrer" className="header-wa-link" style={{ marginLeft: ".5rem" }}>
+              <a href={`https://wa.me/${waNum}`} target="_blank" rel="noreferrer" className="header-wa-link">
                 <MessageCircle size={14} /> WhatsApp
               </a>
             )}
+            {ctaLabel && (
+              <a href={ctaHref} className="header-cta-book" style={{ marginLeft: ".5rem" }}>
+                <CalendarCheck size={14} /> {ctaLabel}
+              </a>
+            )}
+            <a href="/erp/portal" className="header-staff-login" style={{ marginLeft: ".5rem" }}>
+              Staff Login
+            </a>
           </div>
 
           {/* Mobile toggle */}
@@ -163,24 +162,24 @@ export function HeaderSection({ section, settings, pages, basePath }: { section:
         {open && (
           <nav className="nav-mobile">
             <Link to="/" className="header-nav-link">Home</Link>
-            <a href="/portal/patient-login" className="header-nav-link">Patient Login</a>
-            <a href="/portal/staff-login" className="header-nav-link">Staff Login</a>
-            <a href="/book" className="header-nav-link">Book Test</a>
-            <a href="/book#appointment" className="header-nav-link">Book Appointment</a>
-            <a href="/portal/patient-login" className="header-nav-link">Report Download</a>
-            {navPages.map((p) => {
-              if (p.slug === "home") return null;
-              return (
-                <Link key={p.id} to={`/${p.slug}`} className="header-nav-link">
-                  {p.title}
-                </Link>
-              );
-            })}
+            {navPages.map((p) => (
+              <Link key={p.id} to={p.slug === "home" ? "/" : `/${p.slug}`} className="header-nav-link">
+                {p.title}
+              </Link>
+            ))}
+            {ctaLabel && (
+              <a href={ctaHref} className={buttonClass(settings, "primary")} style={{ justifyContent: "center", marginTop: ".5rem" }}>
+                <CalendarCheck size={15} /> {ctaLabel}
+              </a>
+            )}
             {waNum && (
               <a href={`https://wa.me/${waNum}`} target="_blank" rel="noreferrer" className="header-nav-link" style={{ color: "#25d366" }}>
                 <MessageCircle size={15} style={{ display: "inline", marginRight: 4 }} /> WhatsApp Us
               </a>
             )}
+            <a href="/erp/portal" className="header-nav-link" style={{ opacity: .6, marginTop: ".25rem" }}>
+              Staff Login
+            </a>
           </nav>
         )}
       </header>
@@ -292,18 +291,14 @@ export function HeroSection({ section, settings, basePath }: { section: Section;
 
             <p className="hero-subheading">{subheading}</p>
 
-            <div className="hero-ctas" style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginTop: "1.5rem" }}>
-              <a href="/portal/patient-login" className="hero-cta-primary" style={{ background: "linear-gradient(135deg, #3b82f6, #1d4ed8)", boxShadow: "0 4px 14px rgba(59, 130, 246, 0.4)" }}>
-                <UserCheck size={18} />
-                Patient Login
-              </a>
-              <a href="/portal/staff-login" className="hero-cta-primary" style={{ background: "linear-gradient(135deg, #4f46e5, #3730a3)", boxShadow: "0 4px 14px rgba(79, 70, 229, 0.4)" }}>
-                <UsersIcon size={18} />
-                Staff Login
-              </a>
-              <a href={ctaHref} className="hero-cta-secondary">
+            <div className="hero-ctas">
+              <a href={ctaHref} className="hero-cta-primary">
                 <CalendarCheck size={18} />
                 {ctaLabel}
+              </a>
+              <a href={`tel:${phone}`} className="hero-cta-secondary">
+                <Phone size={18} />
+                Call Now
               </a>
               {waNum && (
                 <a href={`https://wa.me/${waNum}?text=${encodeURIComponent("Hi, I'd like to book a diagnostic test.")}`}
@@ -1010,9 +1005,7 @@ export function FooterSection({ section, settings, basePath }: { section: Sectio
           {defaultPolicyLinks.map((l, i) => (
             <a key={`p${i}`} href={`${basePath}${l.href.replace(/^\//, "")}`.replace(/\/+/g, "/")}>{l.label}</a>
           ))}
-          <a href="/portal/patient-login">Patient Login</a>
-          <a href="/portal/staff-login">Staff Login</a>
-          <a href="/erp/portal">Emergency Access</a>
+          <a href="/erp/portal">Staff Login</a>
         </div>
       </div>
     </footer>
