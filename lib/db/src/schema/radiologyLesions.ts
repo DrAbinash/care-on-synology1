@@ -112,3 +112,37 @@ export const radiologyMeasurementsTable = pgTable(
     modalityIdx: index("radiology_measurements_modality_idx").on(t.modality),
   }),
 );
+
+// ── viewer_measurements — centralized bridge for viewer imported measurements ──
+export const viewerMeasurementsTable = pgTable(
+  "viewer_measurements",
+  {
+    id: serial("id").primaryKey(),
+    patientId: integer("patient_id").notNull(),
+    studyId: integer("study_id"),
+    orderId: integer("order_id"),
+    studyInstanceUID: text("study_instance_uid").notNull(),
+    seriesInstanceUID: text("series_instance_uid"),
+    sopInstanceUID: text("sop_instance_uid"),
+    frameNumber: integer("frame_number").default(1),
+    viewerName: text("viewer_name").notNull(), // "OHIF" | "Weasis" | "DICOM SR" | "manual" | "AI"
+    measurementType: text("measurement_type").notNull(), // "linear" | "area" | "volume" | "ellipse"
+    value: text("value").notNull(),
+    unit: text("unit").notNull(),
+    sliceNumber: integer("slice_number"),
+    imageCoordinates: text("image_coordinates"), // JSON string
+    confidence: real("confidence").default(1.0),
+    status: text("status").notNull().default("pending"), // "pending" | "imported" | "ignored"
+    importedBy: text("imported_by"),
+    importTime: timestamp("import_time"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => ({
+    studyUidIdx: index("viewer_measurements_study_uid_idx").on(t.studyInstanceUID),
+    patientIdx: index("viewer_measurements_patient_idx").on(t.patientId),
+  }),
+);
+
+export type ViewerMeasurement = typeof viewerMeasurementsTable.$inferSelect;
+

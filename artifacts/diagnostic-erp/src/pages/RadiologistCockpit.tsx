@@ -26,7 +26,8 @@ import {
   Layers, Settings, FileText, ClipboardList, BookOpen, AlertCircle, Sparkles,
   Star, Check, RotateCcw, ChevronUp, ChevronDown, Wand2, Info,
   Ruler, GitCompare, History as HistoryIcon, BrainCircuit, WandSparkles,
-  Pencil, SpellCheck, Repeat2, FileDown, Mic, Heart, Baby, Stethoscope, X, Plus
+  Pencil, SpellCheck, Repeat2, FileDown, Mic, Heart, Baby, Stethoscope, X, Plus,
+  TrendingUp, TrendingDown, Minus
 } from "lucide-react";
 import VoiceDictationButton from "@/components/VoiceDictationButton";
 import ChocolateBoxPanel, { type ChocolateFinding } from "@/components/ChocolateBoxPanel";
@@ -218,6 +219,80 @@ export default function RadiologistCockpit() {
     queryFn: () => api.get<any[]>(`/api/patient-reports/patient/${activePatientId}`),
     enabled: !!activePatientId,
   });
+
+  // Viewer Measurements central bridge query
+  const { data: viewerMeasurements = [], refetch: refetchViewerMeasurements } = useQuery<any[]>({
+    queryKey: ["viewer-measurements", study?.studyInstanceUID],
+    queryFn: () => study?.studyInstanceUID
+      ? api.get<{ measurements: any[] }>(`/api/radiology-lesions/viewer-measurements?studyInstanceUID=${study.studyInstanceUID}`).then(res => res.measurements)
+      : Promise.resolve([]),
+    enabled: !!study?.studyInstanceUID,
+  });
+
+  // Historical measurements for prior comparison
+  const { data: historicalMeasurements = [] } = useQuery<any[]>({
+    queryKey: ["historical-measurements", activePatientId],
+    queryFn: () => activePatientId
+      ? api.get<{ measurements: any[] }>(`/api/radiology-lesions/measurements?patientId=${activePatientId}`).then(res => res.measurements)
+      : Promise.resolve([]),
+    enabled: !!activePatientId,
+  });
+
+  // Mutation to update status (Import / Ignore) of a single measurement
+  const updateViewerMeasurementMutation = useMutation({
+    mutationFn: async ({ id, status, value, unit }: { id: number; status?: string; value?: string; unit?: string }) => {
+      return api.patch(`/api/radiology-lesions/viewer-measurements/${id}`, { status, value, unit });
+    },
+    onSuccess: () => {
+      refetchViewerMeasurements();
+      toast({ title: "Measurement updated successfully." });
+    }
+  });
+
+  // Mutation to bulk-import all pending measurements
+  const importAllMeasurementsMutation = useMutation({
+    mutationFn: async (ids: number[]) => {
+      return api.post(`/api/radiology-lesions/viewer-measurements/import-all`, { ids });
+    },
+    onSuccess: () => {
+      refetchViewerMeasurements();
+      toast({ title: "All measurements imported." });
+    }
+  });
+
+  // Prior Comparison Engine (Phase 7)
+  const priorComparisonMetrics = useMemo(() => {
+    const list: Array<{ label: string; current: string; previous: string; changePercent: number; diff: number; direction: "growth" | "regression" | "stable" }> = [];
+    if (!historicalMeasurements || historicalMeasurements.length === 0 || viewerMeasurements.length === 0) return list;
+
+    // Filter historical measurements that are NOT from the current study
+    const priorMeasures = historicalMeasurements.filter((m: any) => m.studyId !== study?.studyId);
+    const importedViewerMeasures = viewerMeasurements.filter((m: any) => m.status === "imported");
+
+    importedViewerMeasures.forEach((curr: any) => {
+      // Find a matching prior measurement with the same label/type
+      const prev = priorMeasures.find((p: any) => p.label.toLowerCase() === curr.measurementType.toLowerCase() || p.measurementType.toLowerCase() === curr.measurementType.toLowerCase());
+      if (prev) {
+        const currVal = parseFloat(curr.value);
+        const prevVal = parseFloat(prev.value);
+        if (!isNaN(currVal) && !isNaN(prevVal) && prevVal > 0) {
+          const diff = currVal - prevVal;
+          const pct = Math.round((diff / prevVal) * 100);
+          list.push({
+            label: curr.measurementType,
+            current: `${currVal} ${curr.unit}`,
+            previous: `${prevVal} ${prev.unit || curr.unit}`,
+            changePercent: pct,
+            diff: Math.round(diff * 10) / 10,
+            direction: pct > 0 ? "growth" : pct < 0 ? "regression" : "stable",
+          });
+        }
+      }
+    });
+
+    return list;
+  }, [historicalMeasurements, viewerMeasurements, study]);
+
 
   // 6. Global Institutional Style Settings
   const { data: styleSetting } = useQuery<any>({
@@ -829,6 +904,59 @@ export default function RadiologistCockpit() {
       }
     }
 
+    // ── 8. IMPORTED MEASUREMENTS SAFETY (Phase 9) ──
+    const importedViewerMeasures = viewerMeasurements.filter((m: any) => m.status === "imported");
+    importedViewerMeasures.forEach((m: any) => {
+      const valLower = m.value.toLowerCase();
+      // 1. Referenced check
+      if (!fullTextLower.includes(valLower)) {
+        issues.push({
+          id: `meas-ref-${m.id}`,
+          category: "measurement",
+          severity: "critical",
+          title: "Imported Measurement Not Referenced",
+          message: `Imported measurement (${m.measurementType}: ${m.value} ${m.unit}) is not mentioned anywhere in the report.`,
+          suggestion: `Add the measurement value ${m.value} to the findings or impressions, or remove/ignore the measurement.`,
+          field: "findings"
+        });
+      }
+      
+      // 2. Unit consistency check
+      if (fullTextLower.includes(valLower)) {
+        const index = fullTextLower.indexOf(valLower);
+        const surroundingText = fullTextLower.substring(Math.max(0, index - 20), Math.min(fullTextLower.length, index + valLower.length + 20));
+        if (m.unit && !surroundingText.includes(m.unit.toLowerCase())) {
+          issues.push({
+            id: `meas-unit-mismatch-${m.id}`,
+            category: "measurement",
+            severity: "important",
+            title: "Measurement Unit Discrepancy",
+            message: `Imported measurement has unit '${m.unit}' but the report nearby text might use a different or missing unit.`,
+            suggestion: `Verify unit consistency in text: ${surroundingText}`,
+            field: "findings"
+          });
+        }
+      }
+    });
+
+    // Duplicate measurements check
+    const seenValues = new Set<string>();
+    importedViewerMeasures.forEach((m: any) => {
+      const key = `${m.measurementType}-${m.value}-${m.unit}`;
+      if (seenValues.has(key)) {
+        issues.push({
+          id: `meas-dup-${m.id}`,
+          category: "measurement",
+          severity: "important",
+          title: "Duplicate Imported Measurement",
+          message: `The measurement value ${m.value} ${m.unit} for '${m.measurementType}' appears to be duplicated.`,
+          suggestion: `Verify if this is a duplicate acquisition and ignore one of them.`,
+          field: "findings"
+        });
+      }
+      seenValues.add(key);
+    });
+
     // Calculate score details
     let medicalScore = 100;
     let measurementScore = 100;
@@ -879,7 +1007,8 @@ export default function RadiologistCockpit() {
         recommendation: recommendationsScore
       }
     };
-  }, [study, clinicalHistory, technique, rawFindings, impression, recommendation, priorReports, ignoredIssueIds, reviewedIssueIds]);
+  }, [study, clinicalHistory, technique, rawFindings, impression, recommendation, priorReports, ignoredIssueIds, reviewedIssueIds, viewerMeasurements]);
+
 
   const qualityCheckIssues = useMemo(() => {
     return aiInspectorResults.issues
@@ -1902,8 +2031,184 @@ export default function RadiologistCockpit() {
 
             <TabsContent value="builders" className="flex-1 overflow-y-auto p-4 m-0 space-y-4">
               {study && (
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
+                <div className="space-y-4">
+                  {/* CENTRALIZED VIEWER MEASUREMENT BRIDGE (Phase 4) */}
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden text-slate-100 p-3 space-y-3">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                      <div className="flex items-center gap-1.5">
+                        <Tv2 className="h-4 w-4 text-indigo-400" />
+                        <span className="text-xs font-semibold uppercase tracking-wide text-slate-300">Viewer Measurements</span>
+                      </div>
+                      {viewerMeasurements.filter(m => m.status === "pending").length > 0 && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            const pendingIds = viewerMeasurements.filter(m => m.status === "pending").map(m => m.id);
+                            importAllMeasurementsMutation.mutate(pendingIds);
+                          }}
+                          className="h-6 text-[9px] border-indigo-500 hover:bg-indigo-950 text-indigo-300"
+                        >
+                          Import All
+                        </Button>
+                      )}
+                    </div>
+
+                    {viewerMeasurements.length === 0 ? (
+                      <div className="text-center py-4 text-xs text-slate-500">
+                        No measurements detected from viewer (OHIF/Weasis) or DICOM SR.
+                      </div>
+                    ) : (
+                      <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                        {viewerMeasurements.map((m) => (
+                          <div key={m.id} className={`border rounded-lg p-2 text-xs space-y-1.5 transition-colors ${
+                            m.status === "imported" ? "bg-emerald-950/20 border-emerald-800/50" :
+                            m.status === "ignored" ? "bg-slate-950/20 border-slate-850 opacity-50" :
+                            "bg-slate-950/40 border-slate-800"
+                          }`}>
+                            <div className="flex justify-between items-start">
+                              <div className="flex flex-col">
+                                <span className="font-semibold text-slate-200">{m.measurementType} ({m.viewerName})</span>
+                                <span className="text-[10px] text-slate-400">
+                                  Series {m.seriesInstanceUID?.substring(0, 8)}... &bull; Slice {m.sliceNumber ?? "—"}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <span className="font-mono text-indigo-300 font-bold bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">
+                                  {m.value} {m.unit}
+                                </span>
+                                <Badge className="text-[8px] bg-slate-900 border-slate-800 text-slate-400">
+                                  Conf: {Math.round(m.confidence * 100)}%
+                                </Badge>
+                              </div>
+                            </div>
+
+                            {/* Coordinates / Details */}
+                            {m.imageCoordinates && (
+                              <div className="text-[9px] text-slate-500 font-mono truncate">
+                                Coord: {m.imageCoordinates}
+                              </div>
+                            )}
+
+                            {/* Action buttons */}
+                            <div className="flex flex-wrap gap-1 pt-1 border-t border-slate-800/40">
+                              {m.status === "pending" && (
+                                <>
+                                  <Button
+                                    size="sm"
+                                    onClick={() => updateViewerMeasurementMutation.mutate({ id: m.id, status: "imported" })}
+                                    className="h-5 text-[9px] bg-emerald-700 hover:bg-emerald-800 text-white px-1.5"
+                                  >
+                                    Import
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => updateViewerMeasurementMutation.mutate({ id: m.id, status: "ignored" })}
+                                    className="h-5 text-[9px] border-slate-800 text-slate-400 px-1.5"
+                                  >
+                                    Ignore
+                                  </Button>
+                                </>
+                              )}
+                              {m.status === "imported" && (
+                                <Badge className="bg-emerald-950 text-emerald-400 border border-emerald-800 text-[8px] px-1 py-0 flex items-center gap-0.5">
+                                  <Check className="h-2 w-2" /> Imported
+                                </Badge>
+                              )}
+                              {m.status === "ignored" && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => updateViewerMeasurementMutation.mutate({ id: m.id, status: "pending" })}
+                                  className="h-5 text-[9px] text-slate-500 hover:text-slate-300 p-0"
+                                >
+                                  Restore
+                                </Button>
+                              )}
+
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => {
+                                  // Locate on viewer: launch OHIF or Weasis targeting series/SOPInstanceUID
+                                  if (m.viewerName === "Weasis") {
+                                    handleLaunchWeasis();
+                                  } else {
+                                    handleLaunchOhif();
+                                  }
+                                }}
+                                className="h-5 text-[9px] text-indigo-400 hover:text-indigo-300 p-0 ml-auto flex items-center gap-0.5 animate-pulse"
+                              >
+                                <MonitorPlay className="h-2.5 w-2.5" /> Locate
+                              </Button>
+
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => {
+                                  // Insert into Findings
+                                  const textToInsert = `${m.measurementType} measures ${m.value} ${m.unit} (Viewer: ${m.viewerName}, slice ${m.sliceNumber ?? "N/A"}).`;
+                                  setRawFindings(prev => prev ? prev + "\n" + textToInsert : textToInsert);
+                                  toast({ title: "Inserted into Findings" });
+                                }}
+                                className="h-5 text-[9px] text-indigo-400 hover:text-indigo-300 p-0 ml-1"
+                              >
+                                Findings
+                              </Button>
+
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => {
+                                  // Insert into Impression
+                                  const textToInsert = `${m.measurementType} measuring ${m.value} ${m.unit} on slice ${m.sliceNumber ?? "N/A"}.`;
+                                  setImpression(prev => {
+                                    const next = [...prev.filter(Boolean)];
+                                    if (!next.includes(textToInsert)) next.push(textToInsert);
+                                    return next;
+                                  });
+                                  toast({ title: "Inserted into Impression" });
+                                }}
+                                className="h-5 text-[9px] text-indigo-400 hover:text-indigo-300 p-0 ml-1"
+                              >
+                                Impression
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* PRIOR COMPARISON PANEL (Phase 7) */}
+                  {priorComparisonMetrics.length > 0 && (
+                    <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 space-y-2">
+                      <div className="flex items-center gap-1.5 border-b border-slate-800 pb-1.5">
+                        <GitCompare className="h-4 w-4 text-emerald-400" />
+                        <span className="text-xs font-semibold uppercase tracking-wide text-slate-300">Prior Comparisons</span>
+                      </div>
+                      <div className="space-y-1.5">
+                        {priorComparisonMetrics.map((c, idx) => (
+                          <div key={idx} className="flex flex-col text-[11px] bg-slate-950/40 p-2 rounded border border-slate-850">
+                            <div className="flex justify-between font-medium">
+                              <span className="text-slate-300">{c.label}</span>
+                              <span className={`font-bold ${c.direction === "growth" ? "text-red-400" : c.direction === "regression" ? "text-emerald-400" : "text-slate-400"}`}>
+                                {c.direction === "growth" ? <TrendingUp className="inline h-3.5 w-3.5 mr-0.5" /> : c.direction === "regression" ? <TrendingDown className="inline h-3.5 w-3.5 mr-0.5" /> : <Minus className="inline h-3.5 w-3.5 mr-0.5" />}
+                                {c.changePercent > 0 ? `+${c.changePercent}%` : `${c.changePercent}%`}
+                              </span>
+                            </div>
+                            <div className="flex justify-between text-[10px] text-slate-500 mt-0.5">
+                              <span>Prior: {c.previous}</span>
+                              <span>Current: {c.current}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between border-t border-slate-800 pt-3">
                     <Label className="text-xs font-bold text-slate-300">Observation Checklists</Label>
                     <Button
                       size="sm"
@@ -1915,7 +2220,7 @@ export default function RadiologistCockpit() {
                     </Button>
                   </div>
 
-                  {/* Spinal Measurements Panel component Integration */}
+                  {/* Centralized Measurement Assistant Engine */}
                   <MeasurementAssistantPanel
                     patientId={study.patientId || undefined}
                     studyId={study.studyId || undefined}
@@ -1923,10 +2228,20 @@ export default function RadiologistCockpit() {
                     bodyPart={study.studyDescription || ""}
                     onMeasurementsChange={handleMeasurementsApplied}
                     voiceTextCommand={lastVoiceCommand}
+                    initialValues={useMemo(() => {
+                      const vals: Record<string, string> = {};
+                      viewerMeasurements
+                        .filter(m => m.status === "imported")
+                        .forEach(m => {
+                          vals[m.measurementType] = m.value;
+                        });
+                      return vals;
+                    }, [viewerMeasurements])}
                   />
                 </div>
               )}
             </TabsContent>
+
 
             {/* TAB: AI Quality Inspector */}
             <TabsContent value="inspector" className="flex-1 overflow-y-auto p-4 m-0 space-y-4">

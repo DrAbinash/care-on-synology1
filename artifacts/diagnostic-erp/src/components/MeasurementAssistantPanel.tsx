@@ -37,6 +37,7 @@ interface Props {
   bodyPart?: string;
   onMeasurementsChange?: (compiledText: string, calculations: Record<string, any>) => void;
   voiceTextCommand?: string;
+  initialValues?: Record<string, string>;
 }
 
 const STUDY_TYPES: Array<{ key: string; label: string; modality: string; bodyPart: string }> = [
@@ -181,7 +182,7 @@ function wordToNum(word: string): string {
 }
 
 export default function MeasurementAssistantPanel({
-  patientId, studyId, orderId, modality, bodyPart, onMeasurementsChange, voiceTextCommand
+  patientId, studyId, orderId, modality, bodyPart, onMeasurementsChange, voiceTextCommand, initialValues
 }: Props) {
   const { toast } = useToast();
   const [selectedStudyType, setSelectedStudyType] = useState<string>("");
@@ -190,6 +191,13 @@ export default function MeasurementAssistantPanel({
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<SavedMeasurement[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // Load initialValues (imported measurements from viewer)
+  useEffect(() => {
+    if (initialValues && Object.keys(initialValues).length > 0) {
+      setValues(prev => ({ ...prev, ...initialValues }));
+    }
+  }, [initialValues]);
 
   // Auto-select study type from modality/bodyPart props
   useEffect(() => {

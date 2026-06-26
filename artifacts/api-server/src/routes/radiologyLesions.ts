@@ -9,8 +9,9 @@ import {
   radiologyLesionsTable,
   radiologyLesionTimelineTable,
   radiologyMeasurementsTable,
+  viewerMeasurementsTable,
 } from "@workspace/db/schema";
-import { eq, and, desc, asc } from "drizzle-orm";
+import { eq, and, desc, asc, inArray } from "drizzle-orm";
 import { type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { z } from "zod";
 
@@ -407,3 +408,160 @@ radiologyLesionsRouter.get("/measurement-templates", async (req, res) => {
   // Return empty
   return res.json({ key, template: [] });
 });
+
+// ── GET /radiology-lesions/viewer-measurements — fetch viewer measurements ──
+radiologyLesionsRouter.get("/viewer-measurements", async (req, res) => {
+  const studyInstanceUID = req.query.studyInstanceUID as string;
+  const patientId = req.query.patientId ? Number(req.query.patientId) : undefined;
+
+  try {
+    const conditions = [];
+    if (studyInstanceUID) {
+      conditions.push(eq(viewerMeasurementsTable.studyInstanceUID, studyInstanceUID));
+    }
+    if (patientId && !isNaN(patientId)) {
+      conditions.push(eq(viewerMeasurementsTable.patientId, patientId));
+    }
+
+    if (conditions.length === 0) {
+      return res.status(400).json({ error: "studyInstanceUID or patientId is required" });
+    }
+
+    const measurements = await db
+      .select()
+      .from(viewerMeasurementsTable)
+      .where(and(...conditions))
+      .orderBy(desc(viewerMeasurementsTable.createdAt));
+
+    return res.json({ measurements });
+  } catch (err) {
+    req.log.error({ err }, "viewer-measurements: fetch failed");
+    return res.status(500).json({ error: "Failed to fetch viewer measurements" });
+  }
+});
+
+const createViewerMeasurementSchema = z.object({
+  patientId: z.number().int(),
+  studyId: z.number().int().optional(),
+  orderId: z.number().int().optional(),
+  studyInstanceUID: z.string(),
+  seriesInstanceUID: z.string().optional(),
+  sopInstanceUID: z.string().optional(),
+  frameNumber: z.number().int().optional(),
+  viewerName: z.string(),
+  measurementType: z.string(),
+  value: z.string(),
+  unit: z.string(),
+  sliceNumber: z.number().int().optional(),
+  imageCoordinates: z.string().optional(),
+  confidence: z.number().optional(),
+  status: z.string().optional(),
+});
+
+// ── POST /radiology-lesions/viewer-measurements — record/create viewer measurements ──
+radiologyLesionsRouter.post("/viewer-measurements", async (req, res) => {
+  const body = req.body;
+  const isArray = Array.isArray(body);
+  const items = isArray ? body : [body];
+
+  try {
+    const rows = [];
+    for (const item of items) {
+      const parsed = createViewerMeasurementSchema.safeParse(item);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Invalid input data", details: parsed.error.flatten() });
+      }
+      const data = parsed.data;
+      rows.push({
+        patientId: data.patientId,
+        studyId: data.studyId || null,
+        orderId: data.orderId || null,
+        studyInstanceUID: data.studyInstanceUID,
+        seriesInstanceUID: data.seriesInstanceUID || null,
+        sopInstanceUID: data.sopInstanceUID || null,
+        frameNumber: data.frameNumber ?? 1,
+        viewerName: data.viewerName,
+        measurementType: data.measurementType,
+        value: data.value,
+        unit: data.unit,
+        sliceNumber: data.sliceNumber || null,
+        imageCoordinates: data.imageCoordinates || null,
+        confidence: data.confidence != null ? data.confidence : 1.0,
+        status: data.status || "pending",
+      });
+    }
+
+    const inserted = await db
+      .insert(viewerMeasurementsTable)
+      .values(rows)
+      .returning();
+
+    return res.status(201).json({ measurements: inserted, count: inserted.length });
+  } catch (err) {
+    req.log.error({ err }, "viewer-measurements: save failed");
+    return res.status(500).json({ error: "Failed to save viewer measurements" });
+  }
+});
+
+// ── PATCH /radiology-lesions/viewer-measurements/:id — update state ──
+radiologyLesionsRouter.patch("/viewer-measurements/:id", async (req, res) => {
+  const sReq = req as StaffAuthRequest;
+  const id = Number(req.params.id);
+  if (!id || isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+
+  const allowed = ["status", "value", "unit", "confidence"];
+  const updates: Record<string, any> = {};
+  for (const key of allowed) {
+    if (key in req.body) updates[key] = req.body[key];
+  }
+
+  if (req.body.status === "imported") {
+    updates.importedBy = sReq.staffSession?.subjectName ?? "Unknown";
+    updates.importTime = new Date();
+  }
+
+  updates.updatedAt = new Date();
+
+  try {
+    const [updated] = await db
+      .update(viewerMeasurementsTable)
+      .set(updates)
+      .where(eq(viewerMeasurementsTable.id, id))
+      .returning();
+
+    if (!updated) return res.status(404).json({ error: "Measurement not found" });
+    return res.json({ measurement: updated });
+  } catch (err) {
+    req.log.error({ err }, "viewer-measurements: update failed");
+    return res.status(500).json({ error: "Failed to update viewer measurement" });
+  }
+});
+
+// ── POST /radiology-lesions/viewer-measurements/import-all — bulk import ──
+radiologyLesionsRouter.post("/viewer-measurements/import-all", async (req, res) => {
+  const sReq = req as StaffAuthRequest;
+  const ids = req.body.ids;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: "ids array is required" });
+  }
+
+  try {
+    // Drizzle update for multiple IDs
+    const updated = await db
+      .update(viewerMeasurementsTable)
+      .set({
+        status: "imported",
+        importedBy: sReq.staffSession?.subjectName ?? "Unknown",
+        importTime: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(inArray(viewerMeasurementsTable.id, ids))
+      .returning();
+
+    return res.json({ measurements: updated, count: updated.length });
+  } catch (err) {
+    req.log.error({ err }, "viewer-measurements: bulk import failed");
+    return res.status(500).json({ error: "Failed to bulk import viewer measurements" });
+  }
+});
+
