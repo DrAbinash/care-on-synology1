@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import type { SiteSettings } from "../types";
+import { SelfRegistrationForm } from "../../../diagnostic-erp/src/components/SelfRegistrationForm";
 
 const BASE = import.meta.env.BASE_URL;
 const WORK_ADDR = "CARE DIAGNOSTICS, Subhash Chowk, Castair's Town, Near Bajla Mahila College, Deoghar–814112";
@@ -168,9 +169,53 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
   const [confirming, setConfirming] = useState(false);
   const [tokenNo, setTokenNo] = useState<number | null>(null);
 
-  const [pd, setPd] = useState({ name: "", phone: "", email: "", date: "", timeSlot: "", notes: "", isVip: false });
+  const params = useMemo(() => new URLSearchParams(window.location.search), []);
+  const mode = useMemo(() => (params.get("mode") || "online") as "online" | "kiosk" | "qr", [params]);
+
+  const [pd, setPd] = useState(() => {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const urlSource = params.get("source");
+    const urlToken = params.get("token");
+    let initialNotes = "";
+    if (urlSource || urlToken) {
+      const parts = [];
+      if (urlSource) parts.push(`Source: ${urlSource}`);
+      if (urlToken) parts.push(`Token: ${urlToken}`);
+      initialNotes = parts.join(", ");
+    }
+
+    return {
+      name: "",
+      phone: "",
+      email: "",
+      date: mode === "qr" ? todayStr : "",
+      timeSlot: mode === "qr" ? "07:00 – 10:00" : "",
+      notes: initialNotes,
+      isVip: false,
+      ageValue: "",
+      ageUnit: "years" as "years" | "months" | "days",
+      gender: "" as "male" | "female" | "other" | "",
+    };
+  });
   const [selTests, setSelTests] = useState<Set<number>>(new Set());
   const [selPkgs, setSelPkgs] = useState<Set<number>>(new Set());
+
+  // Prefill tests/packages in QR mode or if available
+  useEffect(() => {
+    const testParam = params.get("tests") || params.get("testIds") || params.get("test") || params.get("testId");
+    if (testParam) {
+      const ids = testParam.split(",").map(Number).filter(Boolean);
+      setSelTests(new Set(ids));
+    }
+    const pkgParam = params.get("packages") || params.get("packageIds") || params.get("package") || params.get("packageId");
+    if (pkgParam) {
+      const ids = pkgParam.split(",").map(Number).filter(Boolean);
+      setSelPkgs(new Set(ids));
+    }
+    if (params.get("vip") === "true" || params.get("vip") === "1") {
+      setPd(prev => ({ ...prev, isVip: true }));
+    }
+  }, [mode, params]);
 
   const loadCatalog = () => {
     if (tests.length === 0) bookingGet<{ tests: TestItem[] }>("/api/public/booking/tests").then((d) => setTests(d.tests)).catch(() => {});
@@ -514,30 +559,36 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
     justifyContent: "center",
   };
 
+  const isKioskMode = mode === "kiosk";
+
   return (
     <div style={{ minHeight: "100vh", background: "hsl(210 40% 98%)", color: "hsl(var(--site-fg))" }}>
       {/* Sticky header */}
-      <div style={{ position: "sticky", top: 0, zIndex: 50, background: "hsl(var(--site-primary))", color: "white" }}>
-        <div className="container-narrow" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: ".65rem 1rem" }}>
-          <a href={BASE} style={{ display: "flex", alignItems: "center", gap: ".4rem", color: "white", textDecoration: "none", fontWeight: 600, fontSize: ".92rem" }}>
-            <ChevronLeft size={18} /> Back to Home
-          </a>
-          <div style={{ fontWeight: 700, fontSize: ".95rem", display: "flex", alignItems: "center", gap: ".4rem" }}>
-            <CalendarCheck size={16} /> Book a Test
+      {!isKioskMode && (
+        <div style={{ position: "sticky", top: 0, zIndex: 50, background: "hsl(var(--site-primary))", color: "white" }}>
+          <div className="container-narrow" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: ".65rem 1rem" }}>
+            <a href={BASE} style={{ display: "flex", alignItems: "center", gap: ".4rem", color: "white", textDecoration: "none", fontWeight: 600, fontSize: ".92rem" }}>
+              <ChevronLeft size={18} /> Back to Home
+            </a>
+            <div style={{ fontWeight: 700, fontSize: ".95rem", display: "flex", alignItems: "center", gap: ".4rem" }}>
+              <CalendarCheck size={16} /> Book a Test
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Hero area */}
-      <div style={{ background: "linear-gradient(135deg, hsl(var(--site-primary)) 0%, hsl(200 85% 35%) 100%)", color: "white", padding: "2.5rem 1rem 2rem" }}>
-        <div className="container-narrow" style={{ textAlign: "center" }}>
-          <h1 style={{ fontSize: "clamp(1.6rem, 4vw, 2.4rem)", fontWeight: 800, marginBottom: ".5rem" }}>Book Your Diagnostic Test</h1>
-          <p style={{ fontSize: "1rem", opacity: .9, maxWidth: 520, margin: "0 auto" }}>
-            Choose from MRI, CT Scan, Ultrasound, Digital X-Ray, Pathology &amp; Health Packages at Care Diagnostics, Deoghar.
-          </p>
-          <TrustBadges />
+      {!isKioskMode && (
+        <div style={{ background: "linear-gradient(135deg, hsl(var(--site-primary)) 0%, hsl(200 85% 35%) 100%)", color: "white", padding: "2.5rem 1rem 2rem" }}>
+          <div className="container-narrow" style={{ textAlign: "center" }}>
+            <h1 style={{ fontSize: "clamp(1.6rem, 4vw, 2.4rem)", fontWeight: 800, marginBottom: ".5rem" }}>Book Your Diagnostic Test</h1>
+            <p style={{ fontSize: "1rem", opacity: .9, maxWidth: 520, margin: "0 auto" }}>
+              Choose from MRI, CT Scan, Ultrasound, Digital X-Ray, Pathology &amp; Health Packages at Care Diagnostics, Deoghar.
+            </p>
+            <TrustBadges />
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Main content */}
       <div className="container-narrow" style={{ padding: "2rem 1rem 4rem", maxWidth: 920 }}>
@@ -580,89 +631,74 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
               <h2 style={{ fontWeight: 700, fontSize: "1.1rem", marginBottom: "1.25rem", display: "flex", alignItems: "center", gap: ".5rem" }}>
                 <User size={20} style={{ color: "hsl(var(--site-primary))" }} /> Patient Details
               </h2>
-              <form onSubmit={(e) => { e.preventDefault(); loadCatalog(); setStep(1); }} className="grid gap-3">
-                <div>
-                  <label style={{ fontSize: ".82rem", fontWeight: 600, marginBottom: ".35rem", display: "block" }}>Full Name *</label>
-                  <input style={inputStyle} placeholder="Enter your full name" required value={pd.name} onChange={(e) => setPd({ ...pd, name: e.target.value.toUpperCase() })} />
-                </div>
-                <div>
-                  <label style={{ fontSize: ".82rem", fontWeight: 600, marginBottom: ".35rem", display: "block" }}>Phone Number *</label>
-                  <input style={inputStyle} placeholder="Enter your mobile number" required value={pd.phone} onChange={(e) => setPd({ ...pd, phone: e.target.value })} />
-                </div>
-                <div>
-                  <label style={{ fontSize: ".82rem", fontWeight: 600, marginBottom: ".35rem", display: "block" }}>Email (optional)</label>
-                  <input style={inputStyle} type="email" placeholder="For booking confirmation" value={pd.email} onChange={(e) => setPd({ ...pd, email: e.target.value })} />
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: ".75rem" }}>
-                  <div>
-                    <label style={{ fontSize: ".82rem", fontWeight: 600, marginBottom: ".35rem", display: "block" }}>Preferred Date *</label>
-                    <input style={{ ...inputStyle, padding: ".6rem .9rem" }} type="date" required value={pd.date} onChange={(e) => setPd({ ...pd, date: e.target.value })} min={new Date().toISOString().slice(0, 10)} />
-                  </div>
-                  <div>
-                    <label style={{ fontSize: ".82rem", fontWeight: 600, marginBottom: ".35rem", display: "block" }}>Time Slot *</label>
-                    <select style={{ ...inputStyle, padding: ".6rem .9rem" }} required value={pd.timeSlot} onChange={(e) => setPd({ ...pd, timeSlot: e.target.value })}>
-                      <option value="">Select slot</option>
-                      <option value="07:00 – 10:00">Morning (7–10 AM)</option>
-                      <option value="10:00 – 13:00">Late Morning (10 AM–1 PM)</option>
-                      <option value="13:00 – 16:00">Afternoon (1–4 PM)</option>
-                      <option value="16:00 – 19:00">Evening (4–7 PM)</option>
-                      <option value="19:00 – 21:00">Night (7–9 PM)</option>
-                    </select>
-                  </div>
-                </div>
-                <div>
-                  <label style={{ fontSize: ".82rem", fontWeight: 600, marginBottom: ".35rem", display: "block" }}>Special Instructions (optional)</label>
-                  <textarea style={{ ...inputStyle, minHeight: 80 }} placeholder="Any specific requirements or health conditions we should know about?" rows={2} value={pd.notes} onChange={(e) => setPd({ ...pd, notes: e.target.value })} />
-                </div>
-                {config?.vipEnabled && config?.enableVipBooking !== false && (
-                  <label style={{ display: "flex", alignItems: "center", gap: ".5rem", cursor: "pointer", fontSize: ".92rem", padding: ".5rem", background: "hsl(45 93% 95%)", borderRadius: "var(--site-radius)", border: "1px solid hsl(45 93% 85%)" }}>
-                    <input type="checkbox" checked={pd.isVip} onChange={(e) => setPd({ ...pd, isVip: e.target.checked })} style={{ width: 18, height: 18 }} />
-                    <Star size={16} style={{ color: "hsl(45 93% 45%)" }} />
-                    <span style={{ fontWeight: 600 }}>VIP Queue</span>
-                    <span style={{ fontSize: ".8rem", color: "hsl(var(--site-muted-fg))" }}>\u2014 priority service with minimal wait time</span>
-                  </label>
-                )}
-                <button type="submit" style={{ ...btnPrimary, marginTop: ".5rem", fontSize: "1rem" }}>
-                  Next: Choose Tests <ChevronRight size={18} />
-                </button>
-                {!isOnline && settings.whatsappNumber && (
-                  <button type="button" onClick={handleWhatsApp} style={{ ...btnOutline, marginTop: ".5rem", borderColor: "#25d366", color: "#25d366" }}>
-                    <MessageCircle size={16} /> Book via WhatsApp instead
-                  </button>
-                )}
-              </form>
+              <SelfRegistrationForm
+                mode={mode}
+                initialValues={{
+                  firstName: pd.name,
+                  lastName: "",
+                  phone: pd.phone,
+                  gender: pd.gender,
+                  ageValue: pd.ageValue,
+                  ageUnit: pd.ageUnit,
+                  email: pd.email,
+                  date: pd.date,
+                  timeSlot: pd.timeSlot,
+                  notes: pd.notes,
+                  isVip: pd.isVip,
+                }}
+                vipEnabled={config?.enableVipBooking !== false}
+                submitButtonClass="btn-primary"
+                onSubmit={(data) => {
+                  setPd({
+                    name: (data.firstName + " " + data.lastName).trim(),
+                    phone: data.phone,
+                    email: data.email || "",
+                    date: data.date || "",
+                    timeSlot: data.timeSlot || "",
+                    notes: data.notes || "",
+                    isVip: !!data.isVip,
+                    ageValue: String(data.ageValue),
+                    ageUnit: data.ageUnit,
+                    gender: data.gender,
+                  });
+                  loadCatalog();
+                  setStep(1);
+                }}
+              />
             </div>
 
             {/* Quick contact */}
-            <div style={{ marginTop: "1.5rem", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "1rem" }}>
-              <div style={{ ...cardStyle, padding: "1rem", display: "flex", alignItems: "center", gap: ".75rem" }}>
-                <div style={{ width: 40, height: 40, borderRadius: 9999, background: "hsl(var(--site-primary) / .1)", color: "hsl(var(--site-primary))", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <Phone size={18} />
+            {!isKioskMode && (
+              <div style={{ marginTop: "1.5rem", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "1rem" }}>
+                <div style={{ ...cardStyle, padding: "1rem", display: "flex", alignItems: "center", gap: ".75rem" }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 9999, background: "hsl(var(--site-primary) / .1)", color: "hsl(var(--site-primary))", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <Phone size={18} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: ".75rem", color: "hsl(var(--site-muted-fg))" }}>Call us</div>
+                    <div style={{ fontWeight: 700, fontSize: ".95rem" }}>{phone}</div>
+                  </div>
                 </div>
-                <div>
-                  <div style={{ fontSize: ".75rem", color: "hsl(var(--site-muted-fg))" }}>Call us</div>
-                  <div style={{ fontWeight: 700, fontSize: ".95rem" }}>{phone}</div>
+                <div style={{ ...cardStyle, padding: "1rem", display: "flex", alignItems: "center", gap: ".75rem" }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 9999, background: "hsl(var(--site-primary) / .1)", color: "hsl(var(--site-primary))", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <MapPin size={18} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: ".75rem", color: "hsl(var(--site-muted-fg))" }}>Visit us</div>
+                    <div style={{ fontWeight: 600, fontSize: ".85rem" }}>{workAddr}</div>
+                  </div>
+                </div>
+                <div style={{ ...cardStyle, padding: "1rem", display: "flex", alignItems: "center", gap: ".75rem" }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 9999, background: "hsl(var(--site-primary) / .1)", color: "hsl(var(--site-primary))", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <CalendarDays size={18} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: ".75rem", color: "hsl(var(--site-muted-fg))" }}>Working hours</div>
+                    <div style={{ fontWeight: 600, fontSize: ".85rem" }}>Mon–Sat  7 AM – 9 PM</div>
+                  </div>
                 </div>
               </div>
-              <div style={{ ...cardStyle, padding: "1rem", display: "flex", alignItems: "center", gap: ".75rem" }}>
-                <div style={{ width: 40, height: 40, borderRadius: 9999, background: "hsl(var(--site-primary) / .1)", color: "hsl(var(--site-primary))", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <MapPin size={18} />
-                </div>
-                <div>
-                  <div style={{ fontSize: ".75rem", color: "hsl(var(--site-muted-fg))" }}>Visit us</div>
-                  <div style={{ fontWeight: 600, fontSize: ".85rem" }}>{workAddr}</div>
-                </div>
-              </div>
-              <div style={{ ...cardStyle, padding: "1rem", display: "flex", alignItems: "center", gap: ".75rem" }}>
-                <div style={{ width: 40, height: 40, borderRadius: 9999, background: "hsl(var(--site-primary) / .1)", color: "hsl(var(--site-primary))", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <CalendarDays size={18} />
-                </div>
-                <div>
-                  <div style={{ fontSize: ".75rem", color: "hsl(var(--site-muted-fg))" }}>Working hours</div>
-                  <div style={{ fontWeight: 600, fontSize: ".85rem" }}>Mon–Sat  7 AM – 9 PM</div>
-                </div>
-              </div>
-            </div>
+            )}
           </div>
         ) : step === 1 ? (
           <div>

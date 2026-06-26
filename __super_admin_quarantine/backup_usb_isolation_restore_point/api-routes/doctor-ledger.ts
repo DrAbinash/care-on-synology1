@@ -8,6 +8,8 @@ import {
   orderTestsTable,
   testsTable,
   billsTable,
+  clinicSettingsTable,
+  testTokensTable,
 } from "@workspace/db/schema";
 import { eq, desc, and, gte, lte, inArray, sql } from "drizzle-orm";
 import {
@@ -38,12 +40,17 @@ function safeParseArray<T = unknown>(s: string | null | undefined): T[] {
 }
 
 function calcTestCommission(
-  ot: { testId: number; price: string },
+  ot: { id?: number; testId: number; price: string },
   test: TestInfo | undefined,
   rules: RuleInfo[],
   doctor: DoctorInfo,
+  vipOrderTestIds?: Set<number>,
+  vipPct?: number,
 ): { commission: number; ruleName: string } {
-  const price = Number(ot.price);
+  let price = Number(ot.price);
+  if (ot.id && vipOrderTestIds?.has(ot.id) && vipPct) {
+    price = price / (1 + vipPct / 100);
+  }
   let matched = rules.find(r => {
     if (!r.isExclusive || !r.isActive) return false;
     if (r.scope === "test" && r.testIds) return safeParseArray<number>(r.testIds).includes(ot.testId);
@@ -72,6 +79,11 @@ function calcTestCommission(
 
 // Compute commission earned per doctor over a date range (or lifetime when from/to omitted).
 async function computeEarned(opts: { from?: string; to?: string; doctorId?: number }) {
+  const [clinicRow] = await db.select({
+    vipPercentage: clinicSettingsTable.vipPercentage,
+  }).from(clinicSettingsTable).limit(1);
+  const vipPct = clinicRow?.vipPercentage ? Number(clinicRow.vipPercentage) : 50.00;
+
   const doctors = await db.select().from(doctorsTable);
   const allRules = await db.select().from(commissionRulesTable);
   const allTests = await db.select().from(testsTable);
@@ -86,6 +98,13 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
   const orderIds = orders.map(o => o.id);
   const orderTests = orderIds.length ? await db.select().from(orderTestsTable).where(inArray(orderTestsTable.orderId, orderIds)) : [];
 
+  const tokens = orderIds.length
+    ? await db.select({ orderTestId: testTokensTable.orderTestId })
+        .from(testTokensTable)
+        .where(and(inArray(testTokensTable.orderId, orderIds), sql`${testTokensTable.priority} > 0`))
+    : [];
+  const vipOrderTestIds = new Set(tokens.map(t => t.orderTestId).filter(Boolean) as number[]);
+
   const filteredDoctors = opts.doctorId ? doctors.filter(d => d.id === opts.doctorId) : doctors;
 
   return filteredDoctors.map(doctor => {
@@ -98,7 +117,7 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
       let r = 0, c = 0;
       for (const ot of tests) {
         const test = testMap.get(ot.testId);
-        const { commission } = calcTestCommission(ot, test, rules, doctor);
+        const { commission } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct);
         r += Number(ot.price);
         c += commission;
       }

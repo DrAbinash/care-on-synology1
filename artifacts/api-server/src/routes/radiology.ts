@@ -104,6 +104,7 @@ export async function generateStudiesForOrder(opts: {
   billId: number;
   orderId: number;
   patientId: number;
+  priority?: "stat" | "emergency" | "urgent" | "vip" | "routine";
   dicomFields?: {
     studyDescription?: string;
     bodyPart?: string;
@@ -145,6 +146,7 @@ export async function generateStudiesForOrder(opts: {
           roomNumber: ot.roomNumber || "",
           status: "scheduled",
           studyDate: todayISO(),
+          priority: opts.priority || "routine",
           ...(opts.dicomFields?.studyDescription ? { studyDescription: opts.dicomFields.studyDescription } : {}),
           ...(opts.dicomFields?.bodyPart ? { bodyPart: opts.dicomFields.bodyPart } : {}),
           ...(opts.dicomFields?.scheduledStationAETitle ? { scheduledStationAETitle: opts.dicomFields.scheduledStationAETitle } : {}),
@@ -153,13 +155,17 @@ export async function generateStudiesForOrder(opts: {
 
         // ── Auto-priority + auto-assignment (Phase 1 enterprise upgrade) ──
         try {
-          const priorityResult = await computeStudyPriority({
-            modality,
-            bodyPart: opts.dicomFields?.bodyPart ?? null,
-            studyDescription: opts.dicomFields?.studyDescription ?? null,
-            referringDoctor: opts.dicomFields?.referringDoctor ?? null,
-          });
-          await applyPriorityToStudy(row.id, priorityResult.priority, priorityResult.reason);
+          if (opts.priority) {
+            await applyPriorityToStudy(row.id, opts.priority, "VIP Patient Flag");
+          } else {
+            const priorityResult = await computeStudyPriority({
+              modality,
+              bodyPart: opts.dicomFields?.bodyPart ?? null,
+              studyDescription: opts.dicomFields?.studyDescription ?? null,
+              referringDoctor: opts.dicomFields?.referringDoctor ?? null,
+            });
+            await applyPriorityToStudy(row.id, priorityResult.priority, priorityResult.reason);
+          }
 
           await assignRadiologistToStudy(row.id, {
             modality,

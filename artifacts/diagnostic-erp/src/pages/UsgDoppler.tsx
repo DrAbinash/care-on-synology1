@@ -3,7 +3,7 @@ import { useLocation } from "wouter";
 import { fetchApi } from "@/lib/fetchApi";
 import PageHeader from "@/components/PageHeader";
 import { Badge } from "@/components/ui/badge";
-import { readStaffSession, FULL_ACCESS_ROLES } from "@/lib/staffSession";
+import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 import {
   Stethoscope,
   ScanSearch,
@@ -158,7 +158,7 @@ interface ProductivityStats {
 export default function UsgDoppler() {
   const [, navigate] = useLocation();
   const session = readStaffSession();
-  const isOwner = FULL_ACCESS_ROLES.has(session?.user.role ?? "");
+  const isOwner = FULL_ACCESS_ROLES.has(normalizeRole(session?.user.role ?? ""));
 
   const { data: stats } = useQuery<UsgStats>({
     queryKey: ["usg-stats"],

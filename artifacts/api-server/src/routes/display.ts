@@ -1,11 +1,10 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { testTokensTable, patientsTable, testsTable } from "@workspace/db/schema";
+import { testTokensTable, patientsTable, testsTable, clinicSettingsTable } from "@workspace/db/schema";
 import { and, asc, desc, eq, isNull, or, sql, inArray } from "drizzle-orm";
 import { requireStaffAuth } from "../middleware/requireStaffAuth";
 
 // Staff-authenticated display feed for waiting-room LCDs.
-// Returns minimal patient info (first name + last initial) for privacy.
 export const displayRouter: IRouter = Router();
 
 function todayISO(): string {
@@ -27,6 +26,9 @@ displayRouter.get("/queue", requireStaffAuth, async (req, res): Promise<void> =>
   const departmentsRaw = (req.query.departments as string) || "";
   const departments = departmentsRaw.split(",").map((s) => s.trim()).filter(Boolean);
 
+  const [settings] = await db.select().from(clinicSettingsTable).limit(1);
+  const privacyMode = settings?.queuePrivacyMode || "masked";
+
   const conds = [
     eq(testTokensTable.tokenDate, date),
     inArray(testTokensTable.status, ["waiting", "serving"]),
@@ -44,8 +46,8 @@ displayRouter.get("/queue", requireStaffAuth, async (req, res): Promise<void> =>
       priority: testTokensTable.priority,
       department: testTokensTable.department,
       roomNumber: testTokensTable.roomNumber,
-      // Privacy: trim to first name + last-name initial only.
-      patientLabel: sql<string>`COALESCE(${patientsTable.firstName}, '') || ' ' || COALESCE(LEFT(${patientsTable.lastName}, 1), '')`,
+      firstName: patientsTable.firstName,
+      lastName: patientsTable.lastName,
       testName: testsTable.name,
       calledAt: testTokensTable.calledAt,
     })
@@ -56,9 +58,37 @@ displayRouter.get("/queue", requireStaffAuth, async (req, res): Promise<void> =>
     .orderBy(desc(testTokensTable.priority), asc(testTokensTable.tokenNo))
     .limit(200);
 
+  const mappedRows = rows.map((r) => {
+    let patientLabel = "";
+    if (privacyMode === "none") {
+      patientLabel = `${r.firstName || ""} ${r.lastName || ""}`.trim();
+    } else if (privacyMode === "masked") {
+      const maskWord = (w: string) => {
+        if (!w) return "";
+        if (w.length <= 2) return w[0] + "*".repeat(w.length - 1);
+        return w[0] + "*".repeat(w.length - 2) + w[w.length - 1];
+      };
+      patientLabel = `${maskWord(r.firstName || "")} ${maskWord(r.lastName || "")}`.trim();
+    } else { // "token_only"
+      patientLabel = `Patient #${r.tokenNo}`;
+    }
+
+    return {
+      id: r.id,
+      tokenNo: r.tokenNo,
+      status: r.status,
+      priority: r.priority,
+      department: r.department,
+      roomNumber: r.roomNumber,
+      patientLabel,
+      testName: r.testName,
+      calledAt: r.calledAt,
+    };
+  });
+
   // Group by department for the display UI.
-  const byDept: Record<string, typeof rows> = {};
-  for (const r of rows) {
+  const byDept: Record<string, typeof mappedRows> = {};
+  for (const r of mappedRows) {
     (byDept[r.department] ??= []).push(r);
   }
   res.json({

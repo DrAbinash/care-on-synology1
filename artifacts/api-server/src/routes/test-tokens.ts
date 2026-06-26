@@ -148,7 +148,8 @@ testTokensRouter.get("/today", async (req, res): Promise<void> => {
       (r.patientCode ?? "").toLowerCase().includes(s) ||
       (r.patientPhone ?? "").toLowerCase().includes(s) ||
       (r.testName ?? "").toLowerCase().includes(s) ||
-      (r.testCode ?? "").toLowerCase().includes(s)
+      (r.testCode ?? "").toLowerCase().includes(s) ||
+      (r.billNumber ?? "").toLowerCase().includes(s)
     );
   }
   res.json(filtered);

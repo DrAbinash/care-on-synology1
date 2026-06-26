@@ -212,6 +212,11 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   customPayuBannerUrl: text("custom_payu_banner_url").notNull().default(""),
   autoPopulateFormFFromObMeasurements: boolean("auto_populate_form_f_from_ob_measurements").notNull().default(false),
 
+  // Queue & VIP Settings
+  queueVipMode: text("queue_vip_mode").notNull().default("highlighted"),
+  queuePrivacyMode: text("queue_privacy_mode").notNull().default("masked"),
+  queueEstimatedWaitPerPatient: integer("queue_estimated_wait_per_patient").notNull().default(15),
+
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

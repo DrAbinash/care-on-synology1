@@ -9,9 +9,12 @@ import {
 import { eq, sql, and, inArray } from "drizzle-orm";
 import { generateTokenForBill } from "./tokens";
 import { generateTestTokensForOrder } from "./test-tokens";
-import { z } from "zod/v4";
+import { z } from "zod";
 import { logger } from "../lib/logger";
 import { PaymentEngine } from "../lib/payments/PaymentEngine";
+import { calculateDobFromAge } from "./public-booking";
+import { SelfRegistrationSchema } from "@workspace/api-zod";
+import { registerPatientSelfFlow } from "../services/self-registration";
 
 export const kioskRouter = Router();
 
@@ -110,8 +113,10 @@ async function createPatientBillAndTokens(params: {
   paymentMethod: string;
   paymentReference: string;
   paymentAmount: number;
+  ageValue?: number;
+  ageUnit?: string;
 }) {
-  const { firstName, lastName, phone, gender, dateOfBirth, testIds, paymentMethod, paymentReference, paymentAmount } = params;
+  const { firstName, lastName, phone, gender, dateOfBirth, testIds, paymentMethod, paymentReference, paymentAmount, ageValue, ageUnit } = params;
 
   const tests = await db
     .select({ id: testsTable.id, name: testsTable.name, price: testsTable.price })
@@ -146,6 +151,8 @@ async function createPatientBillAndTokens(params: {
       phone,
       gender,
       dateOfBirth: dateOfBirth || "",
+      ageValue: ageValue ?? null,
+      ageUnit: ageUnit ?? null,
     }).returning();
     patientDbId = newPat.id;
     patientCode = newPat.patientId;
@@ -239,7 +246,7 @@ function getKioskBase(req: { headers: Record<string, string | string[] | undefin
 kioskRouter.get("/config", async (_req, res): Promise<void> => {
   const s = await getKioskSettings();
   if (!s) {
-    res.json({ enabled: false, clinicName: "Care Diagnostics", tagline: "", logoDataUrl: null, upiVpa: "", upiName: "", welcomeMessage: "", razorpayEnabled: false });
+    res.json({ enabled: false, clinicName: "Care Diagnostics", tagline: "", logoDataUrl: null, upiVpa: "", upiName: "", welcomeMessage: "", razorpayEnabled: false, vipQueueEnabled: false });
     return;
   }
   const settings = s as Record<string, unknown>;
@@ -269,6 +276,7 @@ kioskRouter.get("/config", async (_req, res): Promise<void> => {
     payuEnabled: Boolean(s.payuEnabled && payuKey && payuSalt),
     iciciEnabled: cardEnabled,
     activeGateway,
+    vipQueueEnabled: s.vipQueueEnabled ?? false,
   });
 });
 
@@ -443,13 +451,7 @@ kioskRouter.get("/payment-status/:paymentLinkId", async (req, res): Promise<void
 //   - razorpay: paymentLinkId provided → verify payment via Razorpay → create records
 //   - upi (fallback): testIds + utrReference + clientTotal → create records with UTR note
 
-const RegisterBody = z.object({
-  firstName: z.string().min(1).max(100),
-  lastName: z.string().max(100).default(""),
-  phone: z.string().min(7).max(15),
-  gender: z.enum(["male", "female", "other"]),
-  age: z.number().int().min(0).max(130),
-  dateOfBirth: z.string().max(20).default(""),
+const RegisterBody = SelfRegistrationSchema.extend({
   // Razorpay mode (mutually exclusive with testIds/utrReference)
   paymentLinkId: z.string().max(80).optional(),
   razorpayPaymentId: z.string().max(80).optional(),
@@ -462,14 +464,12 @@ const RegisterBody = z.object({
 kioskRouter.post("/register", registerLimiter, async (req, res): Promise<void> => {
   const parsed = RegisterBody.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: "Invalid input", details: parsed.error.issues });
+    const firstMsg = parsed.error.issues[0]?.message || "Invalid input";
+    res.status(400).json({ error: firstMsg, details: parsed.error.issues });
     return;
   }
 
-  const { firstName, lastName, phone, gender, age, dateOfBirth, paymentLinkId, razorpayPaymentId, testIds, utrReference, clientTotal } = parsed.data;
-
-  // Derive date of birth from age if DOB not provided
-  const resolvedDob = dateOfBirth || `${new Date().getFullYear() - age}-01-01`;
+  const { firstName, lastName, phone, gender, ageValue, ageUnit, paymentLinkId, razorpayPaymentId, testIds, utrReference, clientTotal, isVip } = parsed.data;
 
   if (paymentLinkId) {
     // ── GATEWAY-AWARE MODE (Razorpay or ICICI) ──────────────────────────────────
@@ -545,13 +545,19 @@ kioskRouter.post("/register", registerLimiter, async (req, res): Promise<void> =
           );
         } finally { c2.release(); }
       }
-      const result = await createPatientBillAndTokens({
-        firstName, lastName, phone, gender,
-        dateOfBirth: resolvedDob,
+      const result = await registerPatientSelfFlow({
+        firstName,
+        lastName,
+        phone,
+        gender,
+        ageValue,
+        ageUnit,
         testIds: sessionTestIds,
         paymentMethod: sessionGateway,
         paymentReference: paymentLinkId,
         paymentAmount: sessionAmountPaise / 100,
+        source: "kiosk",
+        isVip,
       });
       res.status(201).json(result);
       return;
@@ -597,13 +603,19 @@ kioskRouter.post("/register", registerLimiter, async (req, res): Promise<void> =
         );
       } finally { c2.release(); }
     }
-    const result = await createPatientBillAndTokens({
-      firstName, lastName, phone, gender,
-      dateOfBirth: resolvedDob,
+    const result = await registerPatientSelfFlow({
+      firstName,
+      lastName,
+      phone,
+      gender,
+      ageValue,
+      ageUnit,
       testIds: sessionTestIds,
       paymentMethod: "razorpay",
       paymentReference: razorpayPaymentId ?? paymentLinkId,
       paymentAmount: amountPaisePaid / 100,
+      source: "kiosk",
+      isVip,
     });
     res.status(201).json(result);
     return;
@@ -632,13 +644,19 @@ kioskRouter.post("/register", registerLimiter, async (req, res): Promise<void> =
     return;
   }
 
-  const result = await createPatientBillAndTokens({
-    firstName, lastName, phone, gender,
-    dateOfBirth: resolvedDob,
+  const result = await registerPatientSelfFlow({
+    firstName,
+    lastName,
+    phone,
+    gender,
+    ageValue,
+    ageUnit,
+    isVip,
     testIds,
     paymentMethod: "upi",
     paymentReference: utrReference,
     paymentAmount: subtotal,
+    source: "kiosk",
   });
   res.status(201).json(result);
 });

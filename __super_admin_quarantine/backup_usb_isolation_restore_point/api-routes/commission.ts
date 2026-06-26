@@ -9,8 +9,9 @@ import {
   testsTable,
   billsTable,
   patientsTable,
+  testTokensTable,
 } from "@workspace/db/schema";
-import { eq, desc, and, gte, lte, inArray, ne } from "drizzle-orm";
+import { eq, desc, and, gte, lte, inArray, ne, sql } from "drizzle-orm";
 import {
   CreateCommissionRuleBody,
   UpdateCommissionRuleBody,
@@ -122,12 +123,17 @@ type RuleInfo = typeof import("@workspace/db/schema").commissionRulesTable.$infe
 type DoctorInfo = typeof import("@workspace/db/schema").doctorsTable.$inferSelect;
 
 function calcTestCommission(
-  ot: { testId: number; price: string },
+  ot: { id?: number; testId: number; price: string },
   test: TestInfo | undefined,
   rules: RuleInfo[],
   doctor: DoctorInfo,
+  vipOrderTestIds?: Set<number>,
+  vipPct?: number,
 ): { commission: number; ruleName: string } {
-  const price = Number(ot.price);
+  let price = Number(ot.price);
+  if (ot.id && vipOrderTestIds?.has(ot.id) && vipPct) {
+    price = price / (1 + vipPct / 100);
+  }
 
   // 1) Exclusive rules first (test-scoped then category-scoped)
   let matched = rules.find(r => {
@@ -197,8 +203,12 @@ router.get("/report", async (req, res) => {
   const { from, to, doctorId } = req.query as Record<string, string>;
 
   // Fetch clinic settings to determine commission discount mode.
-  const [clinicRow] = await db.select({ commissionDiscountMode: clinicSettingsTable.commissionDiscountMode }).from(clinicSettingsTable).limit(1);
+  const [clinicRow] = await db.select({
+    commissionDiscountMode: clinicSettingsTable.commissionDiscountMode,
+    vipPercentage: clinicSettingsTable.vipPercentage,
+  }).from(clinicSettingsTable).limit(1);
   const commissionDiscountMode = clinicRow?.commissionDiscountMode ?? "none";
+  const vipPct = clinicRow?.vipPercentage ? Number(clinicRow.vipPercentage) : 50.00;
 
   const doctors = await db.select().from(doctorsTable);
   const allRules = await db.select().from(commissionRulesTable);
@@ -221,6 +231,13 @@ router.get("/report", async (req, res) => {
     if (b.orderId != null) billDiscountByOrderId.set(b.orderId, Number(b.discount ?? 0));
   }
 
+  const tokens = orderIds.length
+    ? await db.select({ orderTestId: testTokensTable.orderTestId })
+        .from(testTokensTable)
+        .where(and(inArray(testTokensTable.orderId, orderIds), sql`${testTokensTable.priority} > 0`))
+    : [];
+  const vipOrderTestIds = new Set(tokens.map(t => t.orderTestId).filter(Boolean) as number[]);
+
   const report = doctors
     .filter(d => !doctorId || d.id === Number(doctorId))
     .map(doctor => {
@@ -239,7 +256,7 @@ router.get("/report", async (req, res) => {
         let orderRevenue = 0, rawOrderCommission = 0, lastRule = "Default";
         for (const ot of tests) {
           const test = testMap.get(ot.testId);
-          const { commission, ruleName } = calcTestCommission(ot, test, rules, doctor);
+          const { commission, ruleName } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct);
           orderRevenue += Number(ot.price);
           rawOrderCommission += commission;
           lastRule = ruleName;
@@ -288,8 +305,12 @@ router.get("/report-detailed", async (req, res) => {
   const { from, to, doctorId, groupBy = "order" } = req.query as Record<string, string>;
 
   // Fetch clinic settings for commission discount mode.
-  const [clinicRow] = await db.select({ commissionDiscountMode: clinicSettingsTable.commissionDiscountMode }).from(clinicSettingsTable).limit(1);
+  const [clinicRow] = await db.select({
+    commissionDiscountMode: clinicSettingsTable.commissionDiscountMode,
+    vipPercentage: clinicSettingsTable.vipPercentage,
+  }).from(clinicSettingsTable).limit(1);
   const commissionDiscountMode = clinicRow?.commissionDiscountMode ?? "none";
+  const vipPct = clinicRow?.vipPercentage ? Number(clinicRow.vipPercentage) : 50.00;
 
   const doctors = await db.select().from(doctorsTable);
   const allRules = await db.select().from(commissionRulesTable);
@@ -311,6 +332,13 @@ router.get("/report-detailed", async (req, res) => {
     if (b.orderId != null) billDiscountByOrderId.set(b.orderId, Number(b.discount ?? 0));
   }
 
+  const tokens = orderIds.length
+    ? await db.select({ orderTestId: testTokensTable.orderTestId })
+        .from(testTokensTable)
+        .where(and(inArray(testTokensTable.orderId, orderIds), sql`${testTokensTable.priority} > 0`))
+    : [];
+  const vipOrderTestIds = new Set(tokens.map(t => t.orderTestId).filter(Boolean) as number[]);
+
   const filteredDoctors = doctors.filter(d => !doctorId || d.id === Number(doctorId));
 
   const result = filteredDoctors.map(doctor => {
@@ -329,7 +357,7 @@ router.get("/report-detailed", async (req, res) => {
       const ots = orderTests.filter(ot => ot.orderId === order.id);
       for (const ot of ots) {
         const test = testMap.get(ot.testId);
-        const { commission, ruleName } = calcTestCommission(ot, test, rules, doctor);
+        const { commission, ruleName } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct);
         testRows.push({
           testId: ot.testId,
           testName: test?.name ?? "Unknown",
@@ -452,9 +480,13 @@ router.get("/report-by-patient", async (req, res) => {
   const { from, to, doctorId } = req.query as Record<string, string>;
 
   const [clinicRow] = await db
-    .select({ commissionDiscountMode: clinicSettingsTable.commissionDiscountMode })
+    .select({
+      commissionDiscountMode: clinicSettingsTable.commissionDiscountMode,
+      vipPercentage: clinicSettingsTable.vipPercentage,
+    })
     .from(clinicSettingsTable).limit(1);
   const commissionDiscountMode = clinicRow?.commissionDiscountMode ?? "none";
+  const vipPct = clinicRow?.vipPercentage ? Number(clinicRow.vipPercentage) : 50.00;
 
   const doctors = await db.select().from(doctorsTable);
   const allRules = await db.select().from(commissionRulesTable);
@@ -498,6 +530,13 @@ router.get("/report-by-patient", async (req, res) => {
     if (b.orderId != null) billByOrderId.set(b.orderId, { billNumber: b.billNumber, discount: Number(b.discount ?? 0) });
   }
 
+  const tokens = orderIds.length
+    ? await db.select({ orderTestId: testTokensTable.orderTestId })
+        .from(testTokensTable)
+        .where(and(inArray(testTokensTable.orderId, orderIds), sql`${testTokensTable.priority} > 0`))
+    : [];
+  const vipOrderTestIds = new Set(tokens.map(t => t.orderTestId).filter(Boolean) as number[]);
+
   const filteredDoctors = doctors.filter(d => !doctorId || d.id === Number(doctorId));
 
   type PatientRow = {
@@ -525,7 +564,7 @@ router.get("/report-by-patient", async (req, res) => {
     const orderAdjustRatio = new Map<number, number>();
     for (const order of doctorOrders) {
       const ots = orderTests.filter(ot => ot.orderId === order.orderId);
-      const rawOrderComm = ots.reduce((s, ot) => s + calcTestCommission(ot, testMap.get(ot.testId), rules, doctor).commission, 0);
+      const rawOrderComm = ots.reduce((s, ot) => s + calcTestCommission(ot, testMap.get(ot.testId), rules, doctor, vipOrderTestIds, vipPct).commission, 0);
       const billDiscount = billByOrderId.get(order.orderId)?.discount ?? 0;
       const { net } = applyDiscountDeduction(rawOrderComm, billDiscount, commissionDiscountMode);
       orderAdjustRatio.set(order.orderId, rawOrderComm > 0 ? net / rawOrderComm : 1);
@@ -539,7 +578,7 @@ router.get("/report-by-patient", async (req, res) => {
 
       for (const ot of ots) {
         const test = testMap.get(ot.testId);
-        const { commission: rawComm, ruleName } = calcTestCommission(ot, test, rules, doctor);
+        const { commission: rawComm, ruleName } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct);
         const matchedRule = rules.find(r => {
           if (!r.isActive) return false;
           if (r.isExclusive && r.scope === "test" && r.testIds) return (JSON.parse(r.testIds) as number[]).includes(ot.testId);

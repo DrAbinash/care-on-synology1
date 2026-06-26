@@ -11,7 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
-import { readStaffSession, FULL_ACCESS_ROLES } from "@/lib/staffSession";
+import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 import {
   Settings2, Cpu, Wifi, Eye, FlaskConical, Info, ShieldAlert,
   ArrowLeft, Waves, Sliders, Brain, CheckCircle2, ListChecks,
@@ -76,7 +76,7 @@ export default function UsgAdminSettings() {
   const { toast } = useToast();
   const qc = useQueryClient();
   const session = readStaffSession();
-  const isAdmin = FULL_ACCESS_ROLES.has(session?.user.role ?? "");
+  const isAdmin = FULL_ACCESS_ROLES.has(normalizeRole(session?.user.role ?? ""));
 
   const [activeTab, setActiveTab] = useState<"monitor" | "settings">("monitor");
   const [showAutoPull, setShowAutoPull] = useState(false);

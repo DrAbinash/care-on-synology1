@@ -20,7 +20,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, and, desc, gt, sql, count, or } from "drizzle-orm";
 import { sanitizePatient } from "./patients";
-import { requireStaffAuth, requireStaffPermission } from "../middleware/requireStaffAuth";
+import { requireStaffAuth, requireStaffPermission, normalizeRole } from "../middleware/requireStaffAuth";
 
 export const portalRouter = Router();
 
@@ -344,7 +344,7 @@ portalRouter.post("/staff-login", staffLoginLimiter, async (req, res) => {
   // ── Account lockout check ────────────────────────────────────────────────
   // Super-admins are exempt.  If lockedUntil is in the future, reject login
   // with a clear message so the UI can show lockout status.
-  if (user.role !== "super_admin") {
+  if (normalizeRole(user.role) !== "super_admin") {
     if (user.lockedUntil && new Date(user.lockedUntil) > new Date()) {
       const remaining = Math.ceil((new Date(user.lockedUntil).getTime() - Date.now()) / 60000);
       res.status(403).json({ error: `Account locked. Try again in ${remaining} minute(s).` });
@@ -355,7 +355,7 @@ portalRouter.post("/staff-login", staffLoginLimiter, async (req, res) => {
   const pinMatches = await verifyPin(pin, user.pin);
   if (!pinMatches) {
     // ── Failed-login bookkeeping (non-super-admin only) ───────────────────
-    if (user.role !== "super_admin") {
+    if (normalizeRole(user.role) !== "super_admin") {
       const [cfg] = await db
         .select({ maxFailed: clinicSettingsTable.maxFailedLoginAttempts, lockoutMinutes: clinicSettingsTable.accountLockoutDurationMinutes })
         .from(clinicSettingsTable)
@@ -406,7 +406,7 @@ portalRouter.post("/staff-login", staffLoginLimiter, async (req, res) => {
   // Admin and super_admin roles are always exempt. For all other roles, if the
   // clinic has enabled LAN-only login, reject requests coming from outside
   // the hospital network.
-  if (user.role !== "admin" && user.role !== "super_admin") {
+  if (normalizeRole(user.role) !== "admin" && normalizeRole(user.role) !== "super_admin") {
     const [cfg] = await db
       .select({ lanOnlyLogin: clinicSettingsTable.lanOnlyLogin, lanAllowedIps: clinicSettingsTable.lanAllowedIps })
       .from(clinicSettingsTable)
@@ -460,7 +460,7 @@ portalRouter.post("/staff-login", staffLoginLimiter, async (req, res) => {
   };
 
   let derivedPermissions: string[] = [];
-  if (user.role !== "admin" && user.role !== "super_admin") {
+  if (normalizeRole(user.role) !== "admin" && normalizeRole(user.role) !== "super_admin") {
     const rolePerms = await db
       .select()
       .from(rolePermissionsTable)
@@ -492,13 +492,13 @@ portalRouter.post("/staff-login", staffLoginLimiter, async (req, res) => {
     }
   } catch { /* ignore — empty permissions */ }
 
-  const permissions = user.role === "admin" || user.role === "super_admin"
+  const permissions = normalizeRole(user.role) === "admin" || normalizeRole(user.role) === "super_admin"
     ? legacyPermissions // admins keep all legacy paths (they bypass checks anyway)
     : Array.from(new Set([...derivedPermissions, ...legacyPermissions]));
 
   // Persist derived permissions back to users.permissions so every
   // request uses fresh permissions without re-querying role_permissions.
-  if (user.role !== "admin" && user.role !== "super_admin") {
+  if (normalizeRole(user.role) !== "admin" && normalizeRole(user.role) !== "super_admin") {
     await db
       .update(usersTable)
       .set({ permissions: JSON.stringify(permissions) })
@@ -508,7 +508,7 @@ portalRouter.post("/staff-login", staffLoginLimiter, async (req, res) => {
   // ── Concurrent session limit enforcement ────────────────────────────────
   // If the user has maxConcurrentSessions > 0, use that. Otherwise fall
   // back to the clinic-wide default. Super-admins are exempt.
-  if (user.role !== "admin" && user.role !== "super_admin") {
+  if (normalizeRole(user.role) !== "admin" && normalizeRole(user.role) !== "super_admin") {
     const limit = user.maxConcurrentSessions > 0
       ? user.maxConcurrentSessions
       : ((await db.select({ v: clinicSettingsTable.defaultMaxConcurrentSessions }).from(clinicSettingsTable).limit(1))[0]?.v ?? 3);
@@ -552,7 +552,7 @@ portalRouter.post("/staff-login", staffLoginLimiter, async (req, res) => {
       name: user.name,
       email: user.email,
       username: user.username,
-      role: user.role,
+      role: normalizeRole(user.role),
       permissions,
       maxDiscount: user.maxDiscount ?? null,
       photoDataUrl: user.photoDataUrl ?? null,

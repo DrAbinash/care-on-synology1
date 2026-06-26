@@ -14,6 +14,14 @@ export interface StaffAuthRequest extends Request {
   };
 }
 
+export function normalizeRole(role: string): string {
+  if (!role) return "";
+  const r = role.toLowerCase().replace(/[^a-z0-9]/g, "_").trim();
+  if (r === "superadmin" || r === "super" || r === "owner" || r === "super_admin") return "super_admin";
+  if (r === "admin") return "admin";
+  return r;
+}
+
 export const FULL_ACCESS_ROLES = new Set(["admin", "super_admin"]);
 
 /**
@@ -112,7 +120,7 @@ export async function requireStaffAuth(
     id: session.id,
     subjectId: session.subjectId,
     subjectName: session.subjectName,
-    role: user.role,
+    role: normalizeRole(user.role),
     permissions,
     maxDiscount: user.maxDiscount != null ? Number(user.maxDiscount) : null,
   };

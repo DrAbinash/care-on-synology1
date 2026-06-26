@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import PageHeader from "@/components/PageHeader";
@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/select";
 import {
   Hourglass, PlayCircle, CheckCircle2, SkipForward, RefreshCw, Search,
-  Star, ExternalLink, PhoneCall, Tv, MapPin, Globe, Crown,
+  Star, ExternalLink, PhoneCall, Tv, MapPin, Globe, Crown, ShieldAlert, Clock, CheckCircle,
 } from "lucide-react";
 
 type TestToken = {
@@ -38,11 +38,11 @@ type TestToken = {
 type Ledger = { id: number; name: string };
 type Department = { department: string; roomNumber: string };
 
-const STATUS_META: Record<TestToken["status"], { label: string; bg: string; pillBg: string; icon: React.ComponentType<{ size?: number; className?: string }> }> = {
-  waiting:  { label: "Waiting",  bg: "bg-amber-50 dark:bg-amber-900/20",   pillBg: "bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-900/40 dark:text-amber-200 dark:border-amber-700", icon: Hourglass },
-  serving:  { label: "Serving",  bg: "bg-blue-50 dark:bg-blue-900/20",     pillBg: "bg-blue-100 text-blue-800 border-blue-300 dark:bg-blue-900/40 dark:text-blue-200 dark:border-blue-700",       icon: PlayCircle },
-  done:     { label: "Done",     bg: "bg-emerald-50 dark:bg-emerald-900/20", pillBg: "bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-900/40 dark:text-emerald-200 dark:border-emerald-700", icon: CheckCircle2 },
-  skipped:  { label: "Skipped",  bg: "bg-zinc-50 dark:bg-zinc-900/20",     pillBg: "bg-zinc-100 text-zinc-700 border-zinc-300 dark:bg-zinc-800/60 dark:text-zinc-300 dark:border-zinc-700",      icon: SkipForward },
+const STATUS_META: Record<TestToken["status"], { label: string; bg: string; border: string; pillBg: string; icon: React.ComponentType<{ size?: number; className?: string }> }> = {
+  waiting:  { label: "Waiting",  bg: "bg-amber-500/5 dark:bg-amber-500/10", border: "border-amber-200 dark:border-amber-900/50", pillBg: "bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800", icon: Hourglass },
+  serving:  { label: "Serving",  bg: "bg-blue-500/5 dark:bg-blue-500/10",   border: "border-blue-200 dark:border-blue-900/50",   pillBg: "bg-blue-100 text-blue-800 border-blue-300 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800",       icon: PlayCircle },
+  done:     { label: "Done",     bg: "bg-emerald-500/5 dark:bg-emerald-500/10", border: "border-emerald-200 dark:border-emerald-900/50", pillBg: "bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800", icon: CheckCircle2 },
+  skipped:  { label: "Skipped",  bg: "bg-zinc-500/5 dark:bg-zinc-500/10",     border: "border-zinc-200 dark:border-zinc-900/50",   pillBg: "bg-zinc-100 text-zinc-700 border-zinc-300 dark:bg-zinc-800/60 dark:text-zinc-300 dark:border-zinc-700",      icon: SkipForward },
 };
 
 export default function QueuePage() {
@@ -50,6 +50,7 @@ export default function QueuePage() {
   const [ledgerId, setLedgerId] = useState<number>(1);
   const [department, setDepartment] = useState<string>("all");
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
   const [defaultDepartment, setDefaultDepartment] = useState<string>("");
   const [voiceEnabled, setVoiceEnabled] = useState<boolean>(() => {
     try {
@@ -57,6 +58,11 @@ export default function QueuePage() {
     } catch {
       return true;
     }
+  });
+
+  const { data: settings } = useQuery<any>({
+    queryKey: ["clinic-settings"],
+    queryFn: () => api.get("/api/clinic-settings"),
   });
 
   const { data: ledgersData } = useQuery<{ ledgers: Ledger[] }>({
@@ -99,22 +105,60 @@ export default function QueuePage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["test-tokens-today"] }),
   });
 
-  const counts = useMemo(() => {
-    const c: Record<TestToken["status"], number> = { waiting: 0, serving: 0, done: 0, skipped: 0 };
-    for (const t of tokens) c[t.status]++;
-    return c;
+  // Calculate statistics across today's tokens
+  const stats = useMemo(() => {
+    let active = 0;
+    let waiting = 0;
+    let serving = 0;
+    let done = 0;
+    let vip = 0;
+    let delayed = 0;
+
+    for (const t of tokens) {
+      if (t.status === "waiting" || t.status === "serving") {
+        active++;
+      }
+      if (t.status === "waiting") {
+        waiting++;
+        const waitMinutes = (Date.now() - new Date(t.createdAt).getTime()) / 60000;
+        if (waitMinutes > 30) {
+          delayed++;
+        }
+      }
+      if (t.status === "serving") serving++;
+      if (t.status === "done") done++;
+      if (t.priority > 0 || t.source === "vip") vip++;
+    }
+
+    return { active, waiting, serving, done, vip, delayed };
   }, [tokens]);
 
-  // When "all" departments, group by department; otherwise show flat columns by status.
+  // Client-side quick filtering
+  const filteredTokens = useMemo(() => {
+    return tokens.filter((t) => {
+      if (statusFilter === "waiting") return t.status === "waiting";
+      if (statusFilter === "serving") return t.status === "serving";
+      if (statusFilter === "done") return t.status === "done";
+      if (statusFilter === "skipped") return t.status === "skipped";
+      if (statusFilter === "vip") return t.priority > 0 || t.source === "vip";
+      if (statusFilter === "delayed") {
+        const waitMinutes = (Date.now() - new Date(t.createdAt).getTime()) / 60000;
+        return t.status === "waiting" && waitMinutes > 30;
+      }
+      return true;
+    });
+  }, [tokens, statusFilter]);
+
+  // Group by department if showing all
   const byDept = useMemo(() => {
     if (department !== "all") return null;
     const map = new Map<string, TestToken[]>();
-    for (const t of tokens) {
+    for (const t of filteredTokens) {
       if (!map.has(t.department)) map.set(t.department, []);
       map.get(t.department)!.push(t);
     }
     return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [tokens, department]);
+  }, [filteredTokens, department]);
 
   const openDisplay = () => {
     const params = new URLSearchParams();
@@ -128,104 +172,169 @@ export default function QueuePage() {
   };
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
+    <div className="p-4 md:p-6 space-y-6">
       <PageHeader
-        title="Queue Tokens"
-        subtitle={`Per-test, per-department · ${tokens.length} active`}
+        title="Queue Control Center"
+        subtitle={`Live monitoring and smart patient flows · ${tokens.length} total today`}
         actions={
-          <Button variant="outline" size="sm" onClick={openDisplay}>
-            <Tv size={14} className="mr-1.5" /> Open Display
-            <ExternalLink size={11} className="ml-1.5 opacity-60" />
+          <Button variant="default" className="bg-primary hover:bg-primary/90 text-white shadow-md shadow-primary/10 transition-all hover:scale-[1.02]" size="sm" onClick={openDisplay}>
+            <Tv size={14} className="mr-1.5" /> Open TV Display Screen
+            <ExternalLink size={11} className="ml-1.5 opacity-80" />
           </Button>
         }
       />
 
-      {/* Filter bar */}
-      <div className="bg-card border border-card-border rounded-xl p-4 flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-muted-foreground">Book</span>
-          <Select value={String(ledgerId)} onValueChange={(v) => setLedgerId(Number(v))}>
-            <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {ledgers.map((l) => <SelectItem key={l.id} value={String(l.id)}>{l.name}</SelectItem>)}
-            </SelectContent>
-          </Select>
+      {/* STATISTICS CARDS GRID */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <div className="bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-900 dark:to-slate-900/60 border border-indigo-200/50 dark:border-slate-800 rounded-xl p-4 shadow-sm hover:shadow-md transition-all">
+          <div className="text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">Active Queue</div>
+          <div className="text-2xl md:text-3xl font-black mt-2 text-slate-800 dark:text-slate-100">{stats.active}</div>
+          <div className="text-[10px] text-muted-foreground mt-1">Waiting + Serving</div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-muted-foreground">Department</span>
-          <Select value={department} onValueChange={setDepartment}>
-            <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Departments</SelectItem>
-              {departments.map((d) => (
-                <SelectItem key={d.department} value={d.department}>
-                  {d.department}{d.roomNumber ? ` · ${d.roomNumber}` : ""}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <div className="bg-gradient-to-br from-amber-50 to-yellow-50 dark:from-slate-900 dark:to-slate-900/60 border border-amber-200/50 dark:border-slate-800 rounded-xl p-4 shadow-sm hover:shadow-md transition-all">
+          <div className="text-xs font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider flex items-center gap-1">
+            <Hourglass size={12} /> Waiting
+          </div>
+          <div className="text-2xl md:text-3xl font-black mt-2 text-slate-800 dark:text-slate-100">{stats.waiting}</div>
+          <div className="text-[10px] text-muted-foreground mt-1">{stats.delayed} patients delayed &gt; 30m</div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-muted-foreground">Default</span>
-          <Select value={defaultDepartment || "__all__"} onValueChange={(v) => setDefaultDepartment(v === "__all__" ? "" : v)}>
-            <SelectTrigger className="w-48"><SelectValue placeholder="All / current room" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__all__">All / current room</SelectItem>
-              {departments.map((d) => (
-                <SelectItem key={d.department} value={d.department}>
-                  {d.department}{d.roomNumber ? ` · ${d.roomNumber}` : ""}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <div className="bg-gradient-to-br from-blue-50 to-sky-50 dark:from-slate-900 dark:to-slate-900/60 border border-blue-200/50 dark:border-slate-800 rounded-xl p-4 shadow-sm hover:shadow-md transition-all">
+          <div className="text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider flex items-center gap-1">
+            <PlayCircle size={12} /> Serving
+          </div>
+          <div className="text-2xl md:text-3xl font-black mt-2 text-slate-800 dark:text-slate-100">{stats.serving}</div>
+          <div className="text-[10px] text-muted-foreground mt-1">Currently in rooms</div>
         </div>
-        <button
-          className={`px-3 py-2 rounded-md border text-sm font-medium ${voiceEnabled ? "bg-emerald-50 border-emerald-300 text-emerald-700" : "bg-muted border-card-border text-muted-foreground"}`}
-          onClick={() => {
-            const next = !voiceEnabled;
-            setVoiceEnabled(next);
-            try { localStorage.setItem("queueDisplay:voiceEnabled", next ? "1" : "0"); } catch {}
-          }}
-          type="button"
-        >
-          Voice {voiceEnabled ? "On" : "Off"}
-        </button>
-        <div className="relative flex-1 min-w-[220px] max-w-md">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Search token #, patient, phone, test…"
-            className="pl-9"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+        <div className="bg-gradient-to-br from-amber-50 to-amber-100/50 dark:from-slate-900 dark:to-slate-900/60 border border-amber-300/40 dark:border-slate-800 rounded-xl p-4 shadow-sm hover:shadow-md transition-all ring-1 ring-amber-400/20">
+          <div className="text-xs font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wider flex items-center gap-1">
+            <Crown size={12} className="text-amber-600 fill-amber-500" /> VIP Patients
+          </div>
+          <div className="text-2xl md:text-3xl font-black mt-2 text-slate-800 dark:text-slate-100">{stats.vip}</div>
+          <div className="text-[10px] text-muted-foreground mt-1">Preserved end-to-end</div>
         </div>
-        <div className="flex flex-wrap gap-2 ml-auto">
-          {(Object.keys(STATUS_META) as TestToken["status"][]).map((s) => (
-            <span key={s} className={`px-2.5 py-1 rounded-md text-xs font-semibold border ${STATUS_META[s].pillBg}`}>
-              {STATUS_META[s].label}: {counts[s]}
-            </span>
-          ))}
-          <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
-            <RefreshCw size={13} className={`mr-1 ${isFetching ? "animate-spin" : ""}`} />
-            Refresh
-          </Button>
+        <div className="bg-gradient-to-br from-emerald-50 to-teal-50 dark:from-slate-900 dark:to-slate-900/60 border border-emerald-200/50 dark:border-slate-800 rounded-xl p-4 shadow-sm hover:shadow-md transition-all col-span-2 md:col-span-1">
+          <div className="text-xs font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider flex items-center gap-1">
+            <CheckCircle size={12} /> Completed
+          </div>
+          <div className="text-2xl md:text-3xl font-black mt-2 text-slate-800 dark:text-slate-100">{stats.done}</div>
+          <div className="text-[10px] text-muted-foreground mt-1">Examinations finished</div>
         </div>
       </div>
 
-      {/* Body */}
-      {tokens.length === 0 ? (
-        <div className="bg-card border border-card-border rounded-xl py-16 text-center">
-          <Hourglass size={28} className="mx-auto mb-3 text-muted-foreground/50" />
-          <p className="text-base font-medium">No tokens for the selected filters</p>
-          <p className="text-sm text-muted-foreground mt-1">Tokens are auto-issued for each test when a bill is created.</p>
+      {/* FILTER & CONFIGURATION CONTROL BAR */}
+      <div className="bg-card border border-card-border rounded-xl p-4 space-y-4 shadow-sm">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-muted-foreground uppercase">Ledger</span>
+            <Select value={String(ledgerId)} onValueChange={(v) => setLedgerId(Number(v))}>
+              <SelectTrigger className="w-40 h-9 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {ledgers.map((l) => <SelectItem key={l.id} value={String(l.id)}>{l.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-muted-foreground uppercase">Dept Filter</span>
+            <Select value={department} onValueChange={setDepartment}>
+              <SelectTrigger className="w-48 h-9 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Departments</SelectItem>
+                {departments.map((d) => (
+                  <SelectItem key={d.department} value={d.department}>
+                    {d.department}{d.roomNumber ? ` · ${d.roomNumber}` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-muted-foreground uppercase">TV Default</span>
+            <Select value={defaultDepartment || "__all__"} onValueChange={(v) => setDefaultDepartment(v === "__all__" ? "" : v)}>
+              <SelectTrigger className="w-48 h-9 text-xs"><SelectValue placeholder="All / current room" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">All / current room</SelectItem>
+                {departments.map((d) => (
+                  <SelectItem key={d.department} value={d.department}>
+                    {d.department}{d.roomNumber ? ` · ${d.roomNumber}` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          
+          <button
+            className={`px-3 py-1.5 h-9 rounded-md border text-xs font-semibold flex items-center gap-1.5 transition-colors ${voiceEnabled ? "bg-emerald-50 border-emerald-300 text-emerald-700 dark:bg-emerald-950/20 dark:border-emerald-800 dark:text-emerald-300" : "bg-muted border-card-border text-muted-foreground"}`}
+            onClick={() => {
+              const next = !voiceEnabled;
+              setVoiceEnabled(next);
+              try { localStorage.setItem("queueDisplay:voiceEnabled", next ? "1" : "0"); } catch {}
+            }}
+            type="button"
+          >
+            Voice Calls: {voiceEnabled ? "ENABLED" : "MUTED"}
+          </button>
+
+          <div className="relative flex-1 min-w-[200px] max-w-sm">
+            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Search by name, UHID, phone, bill..."
+              className="pl-9 h-9 text-xs"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+
+          <Button variant="outline" size="sm" className="h-9 px-3 text-xs" onClick={() => refetch()} disabled={isFetching}>
+            <RefreshCw size={12} className={`mr-1.5 ${isFetching ? "animate-spin" : ""}`} />
+            Refresh
+          </Button>
+        </div>
+
+        {/* CAPSULAR QUICK FILTERS */}
+        <div className="pt-3 border-t border-card-border/60 flex flex-wrap gap-1.5 items-center">
+          <span className="text-[10px] font-bold text-muted-foreground uppercase mr-2 tracking-wider">Quick Filters:</span>
+          {[
+            { id: "all", label: "All Statuses" },
+            { id: "waiting", label: "Waiting" },
+            { id: "serving", label: "Serving / Called" },
+            { id: "vip", label: "VIP Priority" },
+            { id: "delayed", label: "Delayed (>30m)", alert: stats.delayed > 0 },
+            { id: "done", label: "Completed" },
+            { id: "skipped", label: "Skipped" },
+          ].map((f) => (
+            <button
+              key={f.id}
+              onClick={() => setStatusFilter(f.id)}
+              className={`px-3 py-1 text-xs font-semibold rounded-full border transition-all flex items-center gap-1.5 ${
+                statusFilter === f.id
+                  ? "bg-primary text-white border-primary shadow-sm"
+                  : "bg-background hover:bg-muted text-slate-600 dark:text-slate-300 border-card-border"
+              }`}
+            >
+              {f.label}
+              {f.alert && (
+                <span className="h-2 w-2 rounded-full bg-red-500 animate-ping shrink-0" />
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* QUEUE CARDS CONTAINER */}
+      {filteredTokens.length === 0 ? (
+        <div className="bg-card border border-card-border rounded-xl py-20 text-center shadow-sm">
+          <Hourglass size={32} className="mx-auto mb-3 text-muted-foreground/40 animate-pulse" />
+          <p className="text-base font-semibold text-slate-800 dark:text-slate-200">No matching queue tokens</p>
+          <p className="text-xs text-muted-foreground mt-1 max-w-xs mx-auto">Try adjusting your filters, clearing your search query, or checking a different book ledger.</p>
         </div>
       ) : department === "all" && byDept ? (
-        <div className="space-y-4">
+        <div className="space-y-6">
           {byDept.map(([deptName, items]) => (
             <DepartmentSection
               key={deptName}
               deptName={deptName}
               items={items}
+              settings={settings}
               onSetStatus={(id, status) => setStatus.mutate({ id, status })}
               onCall={(id) => callServing.mutate(id)}
               onTogglePriority={(t) => togglePriority.mutate({ id: t.id, priority: t.priority > 0 ? 0 : 5 })}
@@ -234,8 +343,9 @@ export default function QueuePage() {
         </div>
       ) : (
         <DepartmentSection
-          deptName={department}
-          items={tokens}
+          deptName={department === "all" ? "Queue Details" : department}
+          items={filteredTokens}
+          settings={settings}
           onSetStatus={(id, status) => setStatus.mutate({ id, status })}
           onCall={(id) => callServing.mutate(id)}
           onTogglePriority={(t) => togglePriority.mutate({ id: t.id, priority: t.priority > 0 ? 0 : 5 })}
@@ -246,52 +356,153 @@ export default function QueuePage() {
 }
 
 function DepartmentSection({
-  deptName, items, onSetStatus, onCall, onTogglePriority,
+  deptName, items, settings, onSetStatus, onCall, onTogglePriority,
 }: {
   deptName: string;
   items: TestToken[];
+  settings: any;
   onSetStatus: (id: number, status: TestToken["status"]) => void;
   onCall: (id: number) => void;
   onTogglePriority: (t: TestToken) => void;
 }) {
-  const groups = (Object.keys(STATUS_META) as TestToken["status"][]).map((s) => ({
-    status: s,
-    items: items.filter((t) => t.status === s),
-  }));
   const room = items[0]?.roomNumber || "";
+  const avgWait = settings?.queueEstimatedWaitPerPatient ?? 15;
+  const vipMode = settings?.queueVipMode || "highlighted";
+
+  // Pre-calculate positions of waiting patients for estimated wait times
+  const waitingSorted = useMemo(() => {
+    return items
+      .filter((t) => t.status === "waiting")
+      .sort((a, b) => {
+        // VIP always sorted at the top if highlighted mode, otherwise normal sorting
+        if (vipMode === "highlighted") {
+          const aV = a.priority > 0 || a.source === "vip" ? 1 : 0;
+          const bV = b.priority > 0 || b.source === "vip" ? 1 : 0;
+          if (aV !== bV) return bV - aV;
+        }
+        return a.tokenNo - b.tokenNo;
+      });
+  }, [items, vipMode]);
+
+  // Map of tokenId -> position index in waiting queue
+  const waitingPositions = useMemo(() => {
+    const map = new Map<number, number>();
+    waitingSorted.forEach((t, idx) => {
+      map.set(t.id, idx);
+    });
+    return map;
+  }, [waitingSorted]);
+
+  // Construct status groups.
+  // If queueVipMode === "separate", we show VIPs in a separate sub-group in the Waiting column.
+  const groups = (Object.keys(STATUS_META) as TestToken["status"][]).map((s) => {
+    const groupItems = items.filter((t) => t.status === s);
+    return {
+      status: s,
+      items: groupItems,
+    };
+  });
 
   return (
-    <div className="bg-card border border-card-border rounded-xl overflow-hidden">
-      <div className="px-4 py-3 border-b border-card-border flex items-center justify-between bg-gradient-to-r from-primary/5 via-transparent to-transparent">
+    <div className="bg-card border border-card-border rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-all">
+      {/* Header bar */}
+      <div className="px-4 py-3.5 border-b border-card-border flex items-center justify-between bg-gradient-to-r from-primary/5 via-muted/30 to-transparent">
         <div className="flex items-center gap-3">
-          <h3 className="font-bold text-lg">{deptName}</h3>
+          <h3 className="font-bold text-slate-800 dark:text-slate-100 text-base">{deptName}</h3>
           {room && (
-            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-              <MapPin size={12} /> {room}
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-muted text-muted-foreground border border-card-border">
+              <MapPin size={11} className="text-primary" /> {room}
             </span>
           )}
         </div>
-        <div className="text-xs text-muted-foreground">{items.length} token{items.length === 1 ? "" : "s"}</div>
+        <div className="text-xs font-bold text-muted-foreground bg-muted/50 px-2 py-1 rounded border border-card-border/60">
+          {items.length} active token{items.length === 1 ? "" : "s"}
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-4">
+      {/* Grid columns */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 divide-y lg:divide-y-0 lg:divide-x divide-card-border">
         {groups.map((g) => {
           const Meta = STATUS_META[g.status];
           const Icon = Meta.icon;
+
+          // If separate VIP mode is active and we are looking at the waiting group:
+          const isWaitingGroup = g.status === "waiting";
+          const showVipSeparation = isWaitingGroup && vipMode === "separate";
+
+          const vips = showVipSeparation ? g.items.filter(t => t.priority > 0 || t.source === "vip") : [];
+          const generals = showVipSeparation ? g.items.filter(t => t.priority === 0 && t.source !== "vip") : g.items;
+
           return (
-            <div key={g.status} className="border-r border-card-border last:border-r-0 min-h-[200px]">
-              <div className={`px-3 py-2 text-xs font-semibold ${Meta.bg} flex items-center justify-between`}>
-                <span className="flex items-center gap-1.5"><Icon size={13} /> {Meta.label}</span>
-                <span className="text-[11px] opacity-70">{g.items.length}</span>
+            <div key={g.status} className="min-h-[220px] flex flex-col bg-muted/10">
+              {/* Column title header */}
+              <div className={`px-3 py-2 text-xs font-bold ${Meta.bg} flex items-center justify-between border-b border-card-border`}>
+                <span className="flex items-center gap-1.5 text-slate-700 dark:text-slate-200">
+                  <Icon size={13} className="text-slate-500" /> {Meta.label}
+                </span>
+                <span className="text-[10px] font-black bg-background border border-card-border/60 px-1.5 py-0.5 rounded-full opacity-90">
+                  {g.items.length}
+                </span>
               </div>
-              <div className="p-2 space-y-2">
+
+              {/* Column card list */}
+              <div className="p-2.5 space-y-2.5 flex-1 overflow-y-auto max-h-[480px]">
                 {g.items.length === 0 ? (
-                  <div className="text-xs text-muted-foreground/50 px-2 py-3 text-center">—</div>
+                  <div className="text-xs text-muted-foreground/40 px-2 py-6 text-center italic">— Empty column —</div>
+                ) : showVipSeparation ? (
+                  <div className="space-y-4">
+                    {/* VIP Separate Section */}
+                    {vips.length > 0 && (
+                      <div className="space-y-1.5">
+                        <div className="text-[10px] font-black text-amber-700 uppercase tracking-wider flex items-center gap-1 px-1">
+                          <Crown size={11} className="text-amber-500 fill-amber-500" /> VIP Queue ({vips.length})
+                        </div>
+                        <div className="space-y-2 border-l-2 border-amber-400 pl-1.5 py-0.5">
+                          {vips.map((t) => (
+                            <TokenCard
+                              key={t.id}
+                              t={t}
+                              avgWait={avgWait}
+                              position={waitingPositions.get(t.id)}
+                              onSetStatus={onSetStatus}
+                              onCall={onCall}
+                              onTogglePriority={onTogglePriority}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* General Section */}
+                    {generals.length > 0 && (
+                      <div className="space-y-1.5">
+                        <div className="text-[10px] font-black text-muted-foreground uppercase tracking-wider px-1">
+                          General Queue ({generals.length})
+                        </div>
+                        <div className="space-y-2 pl-0.5">
+                          {generals.map((t) => (
+                            <TokenCard
+                              key={t.id}
+                              t={t}
+                              avgWait={avgWait}
+                              position={waitingPositions.get(t.id)}
+                              onSetStatus={onSetStatus}
+                              onCall={onCall}
+                              onTogglePriority={onTogglePriority}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 ) : (
-                  g.items.map((t) => (
+                  // Regular/Highlighted List
+                  generals.map((t) => (
                     <TokenCard
                       key={t.id}
                       t={t}
+                      avgWait={avgWait}
+                      position={waitingPositions.get(t.id)}
                       onSetStatus={onSetStatus}
                       onCall={onCall}
                       onTogglePriority={onTogglePriority}
@@ -308,76 +519,136 @@ function DepartmentSection({
 }
 
 function TokenCard({
-  t, onSetStatus, onCall, onTogglePriority,
+  t, position, avgWait, onSetStatus, onCall, onTogglePriority,
 }: {
   t: TestToken;
+  position?: number;
+  avgWait: number;
   onSetStatus: (id: number, status: TestToken["status"]) => void;
   onCall: (id: number) => void;
   onTogglePriority: (t: TestToken) => void;
 }) {
+  const isVip = t.priority > 0 || t.source === "vip";
+  const minutesWaiting = Math.round((Date.now() - new Date(t.createdAt).getTime()) / 60000);
+  const isDelayed = t.status === "waiting" && minutesWaiting > 30;
+
+  // Calculate estimated wait time
+  const estWait = useMemo(() => {
+    if (t.status !== "waiting" || position === undefined) return null;
+    return position * avgWait;
+  }, [t.status, position, avgWait]);
+
   return (
-    <div className={`border rounded-lg p-2.5 bg-background ${t.priority > 0 ? "border-amber-300 dark:border-amber-700 ring-1 ring-amber-200 dark:ring-amber-900/50" : "border-card-border"}`}>
+    <div
+      className={`border rounded-xl p-3 bg-background shadow-sm hover:shadow transition-all relative overflow-hidden group ${
+        isVip
+          ? "border-amber-300 dark:border-amber-700 bg-amber-50/20 dark:bg-amber-950/10 ring-1 ring-amber-300/30"
+          : "border-card-border"
+      } ${isDelayed ? "border-red-300 dark:border-red-900/50 bg-red-50/10" : ""}`}
+    >
+      {/* Side bar accents */}
+      {isVip && (
+        <div className="absolute top-0 left-0 bottom-0 w-1 bg-amber-400" />
+      )}
+      {isDelayed && !isVip && (
+        <div className="absolute top-0 left-0 bottom-0 w-1 bg-red-400" />
+      )}
+
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-baseline gap-1.5 min-w-0">
-          <span className="text-2xl font-extrabold tabular-nums text-primary leading-none">#{t.tokenNo}</span>
-          {t.source === "vip" && <span title="VIP booking"><Crown size={13} className="text-amber-500 fill-amber-500" /></span>}
-          {t.source === "online" && <span title="Online booking"><Globe size={13} className="text-blue-500" /></span>}
-          {t.priority > 0 && t.source !== "vip" && t.source !== "online" && <Star size={13} className="text-amber-500 fill-amber-500" />}
+          <span className="text-2xl font-black tabular-nums text-slate-800 dark:text-slate-100 leading-none">#{t.tokenNo}</span>
+          {isVip && <span title="VIP Priority"><Crown size={12} className="text-amber-500 fill-amber-500 animate-bounce" /></span>}
+          {t.source === "online" && <span title="Online website booking"><Globe size={11} className="text-blue-500" /></span>}
         </div>
-        <button
-          onClick={() => onTogglePriority(t)}
-          className={`shrink-0 p-1 rounded hover:bg-muted transition-colors ${t.priority > 0 ? "text-amber-500" : "text-muted-foreground/50 hover:text-amber-500"}`}
-          title={t.priority > 0 ? "Remove VIP priority" : "Mark as VIP / priority"}
-        >
-          <Star size={14} className={t.priority > 0 ? "fill-amber-500" : ""} />
-        </button>
+        <div className="flex items-center gap-1">
+          {/* Priority Star toggle button */}
+          <button
+            onClick={() => onTogglePriority(t)}
+            className={`p-1 rounded hover:bg-muted transition-colors ${isVip ? "text-amber-500" : "text-muted-foreground/40 hover:text-amber-500"}`}
+            title={isVip ? "Demote VIP priority" : "Promote to VIP / priority"}
+          >
+            <Star size={13} className={isVip ? "fill-amber-500" : ""} />
+          </button>
+        </div>
       </div>
 
-      <div className="mt-1.5 space-y-0.5">
-        <div className="flex items-center gap-1.5">
-          <div className="text-sm font-medium truncate">{t.patientName || "—"}</div>
-          {t.source === "vip" && (
-            <span className="inline-flex items-center gap-0.5 px-1.5 py-0 rounded text-[9px] font-bold bg-amber-100 text-amber-700 border border-amber-300 shrink-0">
-              <Crown size={8} className="fill-amber-600" />VIP
+      <div className="mt-2 space-y-1">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <div className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate max-w-[150px]">
+            {t.patientName || "Walk-in Patient"}
+          </div>
+          {isVip && (
+            <span className="inline-flex items-center gap-0.5 px-1 py-0 rounded text-[9px] font-black bg-amber-100 text-amber-700 border border-amber-300/60 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900 shrink-0">
+              VIP
             </span>
           )}
           {t.source === "online" && (
-            <span className="inline-flex items-center gap-0.5 px-1.5 py-0 rounded text-[9px] font-bold bg-blue-100 text-blue-700 border border-blue-300 shrink-0">
-              <Globe size={8} />WEB
+            <span className="inline-flex items-center gap-0.5 px-1 py-0 rounded text-[9px] font-black bg-blue-100 text-blue-700 border border-blue-300/60 dark:bg-blue-950 dark:text-blue-300 dark:border-blue-900 shrink-0">
+              WEB
             </span>
           )}
         </div>
-        <div className="text-[11px] text-muted-foreground truncate">{t.testCode} · {t.testName}</div>
+        
+        <div className="text-[10px] text-muted-foreground font-medium truncate">
+          {t.testCode && `${t.testCode} · `}{t.testName}
+        </div>
+
+        {/* Dynamic Estimated Wait Time Display */}
+        {estWait !== null && (
+          <div className="text-[10px] font-semibold text-slate-600 dark:text-slate-300 flex items-center gap-1 mt-1 bg-muted/40 px-1.5 py-0.5 rounded w-fit">
+            <Clock size={10} className="text-primary/70" />
+            <span>Est. Wait: <strong>{estWait === 0 ? "Next in line" : `~${estWait} mins`}</strong></span>
+          </div>
+        )}
+
+        {/* Delay Alert */}
+        {isDelayed && (
+          <div className="text-[9px] text-red-600 dark:text-red-400 font-bold flex items-center gap-1 mt-0.5">
+            <ShieldAlert size={9} />
+            <span>Waiting for {minutesWaiting} mins!</span>
+          </div>
+        )}
+
         {t.patientPhone && (
-          <a href={`tel:${t.patientPhone}`} className="text-[11px] text-muted-foreground inline-flex items-center gap-1 hover:text-primary">
-            <PhoneCall size={10} /> {t.patientPhone}
-          </a>
+          <div className="pt-0.5">
+            <a href={`tel:${t.patientPhone}`} className="text-[10px] text-muted-foreground inline-flex items-center gap-1 hover:text-primary transition-colors">
+              <PhoneCall size={9} /> {t.patientPhone}
+            </a>
+          </div>
         )}
       </div>
 
-      <div className="mt-2 flex flex-wrap gap-1">
+      {/* Actions line */}
+      <div className="mt-2.5 pt-2 border-t border-muted-foreground/10 flex flex-wrap gap-1">
         {t.status === "waiting" && (
           <>
-            <Button size="sm" variant="default" className="h-6 px-2 text-[11px]" onClick={() => onCall(t.id)}>
-              <PlayCircle size={11} className="mr-1" /> Call
+            <Button size="sm" variant="default" className="h-6.5 px-2.5 text-[10px] font-bold bg-primary hover:bg-primary/95 text-white flex items-center gap-1 shadow-sm rounded-lg" onClick={() => onCall(t.id)}>
+              <PlayCircle size={11} /> Call Patient
             </Button>
-            <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px] text-muted-foreground" onClick={() => onSetStatus(t.id, "skipped")}>
+            <Button size="sm" variant="outline" className="h-6.5 px-1.5 text-[10px] text-muted-foreground rounded-lg" onClick={() => onSetStatus(t.id, "skipped")} title="Skip patient">
               <SkipForward size={11} />
             </Button>
           </>
         )}
         {t.status === "serving" && (
-          <Button size="sm" variant="default" className="h-6 px-2 text-[11px] bg-emerald-600 hover:bg-emerald-700" onClick={() => onSetStatus(t.id, "done")}>
-            <CheckCircle2 size={11} className="mr-1" /> Done
-          </Button>
+          <div className="flex gap-1 w-full">
+            <Button size="sm" variant="default" className="h-6.5 px-2.5 text-[10px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white flex items-center gap-1 rounded-lg w-full justify-center" onClick={() => onSetStatus(t.id, "done")}>
+              <CheckCircle size={11} /> Finish Examination
+            </Button>
+            <Button size="sm" variant="outline" className="h-6.5 px-2.5 text-[10px] font-semibold text-muted-foreground rounded-lg" onClick={() => onCall(t.id)} title="Recall patient">
+              Recall
+            </Button>
+          </div>
         )}
         {t.status === "skipped" && (
-          <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => onSetStatus(t.id, "waiting")}>
-            Re-queue
+          <Button size="sm" variant="outline" className="h-6.5 px-2 text-[10px] font-bold rounded-lg border-card-border" onClick={() => onSetStatus(t.id, "waiting")}>
+            Re-queue Patient
           </Button>
         )}
         {t.status === "done" && (
-          <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">✓ Completed</span>
+          <div className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold flex items-center gap-1">
+            <CheckCircle2 size={10} className="fill-emerald-100 dark:fill-emerald-950" /> Examination Completed
+          </div>
         )}
       </div>
     </div>

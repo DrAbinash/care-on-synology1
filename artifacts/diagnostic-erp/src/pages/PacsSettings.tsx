@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { Plus, Save, RefreshCw, Trash2, Server, Settings2, Radio, Search, ScanLine, MonitorPlay, Network, ToggleLeft, ToggleRight, CheckCircle2, XCircle, Wifi, WifiOff, Copy, ExternalLink, Lock, Tv2, Info } from "lucide-react";
-import { readStaffSession, FULL_ACCESS_ROLES } from "@/lib/staffSession";
+import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 import { getOhifUrl, getWeasisUrl } from "@/lib/viewerService";
 
 type Setting = { id: number; key: string; value: string | null; category: string; isSecret: boolean };
@@ -517,7 +517,7 @@ export default function PacsSettings() {
   const viewerMap: Record<string, string> = {};
   for (const s of settings) if (s.category === "viewer") viewerMap[s.key] = s.value ?? "";
 
-  const isAdmin = FULL_ACCESS_ROLES.has(readStaffSession()?.user.role ?? "");
+  const isAdmin = FULL_ACCESS_ROLES.has(normalizeRole(readStaffSession()?.user.role ?? ""));
 
   return (
     <div className="p-4 md:p-6 space-y-6">

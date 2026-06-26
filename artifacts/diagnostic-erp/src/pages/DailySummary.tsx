@@ -35,7 +35,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { FULL_ACCESS_ROLES } from "@/lib/staffSession";
+import { FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 
 type DailySummaryData = {
   date: string;
@@ -192,7 +192,7 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 
 export default function DailySummary() {
   const session = readStaffSession();
-  const isAdmin = session ? FULL_ACCESS_ROLES.has(session.user.role) : false;
+  const isAdmin = session ? FULL_ACCESS_ROLES.has(normalizeRole(session.user.role)) : false;
   const myName = session?.user.name ?? "";
 
   const [date, setDate] = useState(todayIST());

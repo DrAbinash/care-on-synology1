@@ -3,6 +3,7 @@ import { db } from "@workspace/db";
 import { superAdminSessionsTable, usersTable } from "@workspace/db/schema";
 import { and, eq } from "drizzle-orm";
 import { isValidUsbKey, isUsbGateEnforced, getUsbKeyHeader } from "./requireSuperAdminUsb";
+import { normalizeRole } from "./requireStaffAuth";
 import { logger } from "../lib/logger";
 
 /**
@@ -38,7 +39,7 @@ export async function requireSuperAdmin(
             .from(usersTable)
             .where(eq(usersTable.id, session.userId))
             .limit(1);
-          if (user?.isActive && user?.role === "super_admin" && user?.remoteLoginEnabled) {
+          if (user?.isActive && normalizeRole(user?.role ?? "") === "super_admin" && user?.remoteLoginEnabled) {
             logger.warn({ userId: session.userId, userName: session.userName, path: req.path },
               "USB gate bypassed — remoteLoginEnabled user accessed super-admin route without pen drive");
             // Fall through to normal token validation below
@@ -82,7 +83,7 @@ export async function requireSuperAdmin(
     .from(usersTable)
     .where(eq(usersTable.id, session.userId))
     .limit(1);
-  if (!user || !user.isActive || user.role !== "super_admin") {
+  if (!user || !user.isActive || normalizeRole(user.role) !== "super_admin") {
     res.status(401).json({ error: "Super admin session is no longer valid" });
     return;
   }

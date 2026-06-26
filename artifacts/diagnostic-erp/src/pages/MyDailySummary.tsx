@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
-import { readStaffSession, FULL_ACCESS_ROLES } from "@/lib/staffSession";
+import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 import PageHeader from "@/components/PageHeader";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -75,6 +75,7 @@ type MyDailySummaryData = {
     amount: number;
     method: string;
     createdAt: string;
+    billCreatedAt: string;
   }[];
   billEdits: {
     id: number;
@@ -137,6 +138,7 @@ type MyDailySummaryData = {
     method: string;
     recordedBy: string | null;
     createdAt: string;
+    billCreatedAt: string;
   }[];
   cancelledByMe: {
     id: number;
@@ -680,6 +682,157 @@ function DailyFinancialReconciliation({ summary: s }: { summary: MyDailySummaryS
 }
 
 
+// ─── Daily Reconciliation & Cash Flow Table ───────────────────────────────
+
+function DailyReconciliationAndCashFlow({
+  summary: s,
+  refunds,
+  from,
+}: {
+  summary: MyDailySummarySummary;
+  refunds: any[];
+  from: string;
+}) {
+  const fromDateStart = new Date(`${from}T00:00:00`);
+
+  // Backdated refund logic: processed today, but bill predates from
+  const backdatedAdjustmentsList = refunds ? refunds.filter(tx => {
+    return new Date(tx.billCreatedAt) < fromDateStart;
+  }) : [];
+  const backdatedRefundAdjustments = backdatedAdjustmentsList.reduce((sum, tx) => sum + Math.abs(tx.amount), 0);
+
+  // Operational Revenue
+  const newBilling = s.grossBilledIncludingCancelled + s.discountsGiven;
+  const oldDuesCollected = s.duesCollectedTotal;
+  const totalOperationalRevenue = newBilling + oldDuesCollected;
+
+  // Operational Deductions
+  const cancelledBills = s.cancelledAmount;
+  const discountsGiven = s.discountsGiven;
+  const totalRefundAmount = s.refundAmount;
+  const refundsToday = Math.max(0, totalRefundAmount - backdatedRefundAdjustments);
+  const totalOperationalDeductions = cancelledBills + discountsGiven + refundsToday;
+
+  // Expenses
+  const cashExpenses = s.cashExpenses;
+  const digitalExpenses = s.digitalExpenses;
+  const totalExpenses = s.totalExpenses;
+
+  // Collections
+  const cashCollection = s.cashCollection;
+  const digitalCollection = s.digitalCollection;
+  const netDigitalCollection = s.netDigital;
+
+  // Final expected cash using the formula
+  const expectedPhysicalCash = totalOperationalRevenue - totalOperationalDeductions - backdatedRefundAdjustments - totalExpenses - netDigitalCollection;
+
+  const inrFmt = (n: number) =>
+    "₹" + n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  return (
+    <div className="bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl shadow-sm overflow-hidden p-5 mt-4">
+      <h3 className="text-base font-extrabold text-gray-900 dark:text-foreground mb-4">
+        Daily Reconciliation & Cash Flow
+      </h3>
+      <div className="overflow-x-auto border-[3px] border-black dark:border-gray-700">
+        <table className="w-full text-left text-sm border-collapse">
+          <thead className="bg-gray-100 dark:bg-muted/50 border-b-[3px] border-black dark:border-gray-700 font-bold text-gray-900 dark:text-foreground">
+            <tr>
+              <th className="p-3 border-r border-gray-300 dark:border-gray-600">Category / Line Item</th>
+              <th className="p-3 text-right">Amount (INR)</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y border-b-[3px] border-black dark:border-gray-700 divide-gray-200 dark:divide-gray-600">
+            {/* Operational Revenue */}
+            <tr className="bg-gray-50/50 dark:bg-muted/10 font-semibold text-gray-900 dark:text-foreground">
+              <td className="p-3 border-r border-gray-300 dark:border-gray-600" colSpan={2}>Operational Revenue</td>
+            </tr>
+            <tr>
+              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">New Billing</td>
+              <td className="p-3 text-right tabular-nums text-gray-800 dark:text-gray-200">{inrFmt(newBilling)}</td>
+            </tr>
+            <tr>
+              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">Old Dues Collected</td>
+              <td className="p-3 text-right tabular-nums text-gray-800 dark:text-gray-200">{inrFmt(oldDuesCollected)}</td>
+            </tr>
+            <tr className="font-semibold bg-gray-50/30 text-gray-900 dark:text-foreground">
+              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600">Total Operational Revenue</td>
+              <td className="p-3 text-right tabular-nums">{inrFmt(totalOperationalRevenue)}</td>
+            </tr>
+
+            {/* Operational Deductions */}
+            <tr className="bg-gray-50/50 dark:bg-muted/10 font-semibold text-gray-900 dark:text-foreground">
+              <td className="p-3 border-r border-gray-300 dark:border-gray-600" colSpan={2}>Operational Deductions</td>
+            </tr>
+            <tr>
+              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">Cancelled Bills</td>
+              <td className="p-3 text-right tabular-nums text-red-600 dark:text-red-400">− {inrFmt(cancelledBills)}</td>
+            </tr>
+            <tr>
+              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">Discounts Given</td>
+              <td className="p-3 text-right tabular-nums text-amber-600 font-semibold">− {inrFmt(discountsGiven)}</td>
+            </tr>
+            <tr>
+              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">Refunds Today</td>
+              <td className="p-3 text-right tabular-nums text-red-600 dark:text-red-400">− {inrFmt(refundsToday)}</td>
+            </tr>
+            <tr>
+              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 font-bold">
+                Backdated Refund Adjustments
+                <span className="block text-[11px] text-gray-400 dark:text-gray-500 font-normal mt-0.5">
+                  (Refunds processed today on bills created prior to {from})
+                </span>
+              </td>
+              <td className="p-3 text-right tabular-nums text-red-600 dark:text-red-400 font-bold">− {inrFmt(backdatedRefundAdjustments)}</td>
+            </tr>
+
+            {/* Expenses */}
+            <tr className="bg-gray-50/50 dark:bg-muted/10 font-semibold text-gray-900 dark:text-foreground">
+              <td className="p-3 border-r border-gray-300 dark:border-gray-600" colSpan={2}>Expenses</td>
+            </tr>
+            <tr>
+              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">Cash Expenses</td>
+              <td className="p-3 text-right tabular-nums text-gray-800 dark:text-gray-200">{inrFmt(cashExpenses)}</td>
+            </tr>
+            <tr>
+              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">Digital Expenses</td>
+              <td className="p-3 text-right tabular-nums text-gray-800 dark:text-gray-200">{inrFmt(digitalExpenses)}</td>
+            </tr>
+            <tr className="font-semibold bg-gray-50/30 text-gray-900 dark:text-foreground">
+              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600">Total Expenses</td>
+              <td className="p-3 text-right tabular-nums">{inrFmt(totalExpenses)}</td>
+            </tr>
+
+            {/* Collections */}
+            <tr className="bg-gray-50/50 dark:bg-muted/10 font-semibold text-gray-900 dark:text-foreground">
+              <td className="p-3 border-r border-gray-300 dark:border-gray-600" colSpan={2}>Collections</td>
+            </tr>
+            <tr>
+              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">Cash Collection</td>
+              <td className="p-3 text-right tabular-nums text-gray-800 dark:text-gray-200">{inrFmt(cashCollection)}</td>
+            </tr>
+            <tr>
+              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">Digital Collection</td>
+              <td className="p-3 text-right tabular-nums text-gray-800 dark:text-gray-200">{inrFmt(digitalCollection)}</td>
+            </tr>
+            <tr className="font-semibold bg-gray-50/30 text-gray-900 dark:text-foreground">
+              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600">Net Digital Collection</td>
+              <td className="p-3 text-right tabular-nums">{inrFmt(netDigitalCollection)}</td>
+            </tr>
+          </tbody>
+          <tfoot className="font-bold bg-slate-900 text-white dark:bg-slate-800 border-t-[3px] border-black">
+            <tr className="font-bold">
+              <td className="p-4 border-r border-slate-700 dark:border-gray-600 text-base">Expected Physical Cash</td>
+              <td className="p-4 text-right text-base tabular-nums">{inrFmt(expectedPhysicalCash)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+
 // ─── Warning Chips ────────────────────────────────────────────────────────────
 
 function DrawerChips({ status }: { status: DrawerStatus | undefined }) {
@@ -1096,8 +1249,8 @@ const LS_STAFF_FILTER_KEY = "my_daily_summary_staff_filter";
 export default function MyDailySummary() {
   const session = readStaffSession();
   const myName = session?.user.name ?? "";
-  const isOwner = FULL_ACCESS_ROLES.has(session?.user.role ?? "");
-  const isSuperAdmin = session?.user.role === "super_admin";
+  const isOwner = FULL_ACCESS_ROLES.has(normalizeRole(session?.user.role ?? ""));
+  const isSuperAdmin = normalizeRole(session?.user.role ?? "") === "super_admin";
 
   const today = todayISO();
   const [from, setFrom] = useState(today);
@@ -1532,6 +1685,9 @@ export default function MyDailySummary() {
               </div>
             </div>
           </div>
+
+          {/* ── Daily Reconciliation & Cash Flow Module ── */}
+          <DailyReconciliationAndCashFlow summary={s} refunds={data.refunds} from={from} />
 
           {/* ── Per-Staff Breakdown (All Staff / Total only) ── */}
           {data?.byStaff && data.byStaff.length > 0 && (

@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { readStaffSession, FULL_ACCESS_ROLES } from "@/lib/staffSession";
+import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 import VoiceDictationButton from "@/components/VoiceDictationButton";
 import ReportPrintSettingsDialog from "@/components/ReportPrintSettingsDialog";
 import {
@@ -75,7 +75,7 @@ export default function UsgReporting() {
   const { toast } = useToast();
   const qc = useQueryClient();
   const session = readStaffSession();
-  const isAdmin = FULL_ACCESS_ROLES.has(session?.user.role ?? "");
+  const isAdmin = FULL_ACCESS_ROLES.has(normalizeRole(session?.user.role ?? ""));
 
   // Read studyUID from query string (e.g. /usg/reporting?studyUID=xxx)
   const searchParams = typeof window !== "undefined"

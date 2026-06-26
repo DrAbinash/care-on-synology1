@@ -20,6 +20,8 @@ import { generateBillNumber } from "./bills";
 import { generateTokenForBill } from "./tokens";
 import { generateTestTokensForOrder } from "./test-tokens";
 import crypto from "node:crypto";
+import { calculateDobFromAge } from "./public-booking";
+import { registerPatientSelfFlow } from "../services/self-registration";
 
 export const onlineBookingsRouter = Router();
 
@@ -113,199 +115,80 @@ export async function confirmBookingInternal(bookingId: number, staffName: strin
     packageIds = JSON.parse(booking.packageIds) as number[];
   } catch { /* already empty arrays */ }
 
-  // Resolve package → test IDs
-  const extraTestIds: number[] = [];
-  if (packageIds.length > 0) {
-    const pkgTests = await db
-      .select({ testId: packageTestsTable.testId })
-      .from(packageTestsTable)
-      .where(inArray(packageTestsTable.packageId, packageIds));
-    for (const pt of pkgTests) extraTestIds.push(pt.testId);
-  }
+  // Resolve name
+  const nameParts = booking.name.trim().split(/\s+/);
+  const firstName = nameParts[0] || booking.name;
+  const lastName = nameParts.slice(1).join(" ") || "";
 
-  const allTestIds = [...new Set([...testIds, ...extraTestIds])];
-  if (allTestIds.length === 0) {
-    throw new Error("No tests could be resolved for this booking.");
-  }
+  // Determine gateway and payment reference from booking record
+  let paymentMethod = "Online";
+  let paymentRef = booking.bookingRef;
+  let paymentNotes = `Paid online. Booking ref: ${booking.bookingRef}`;
 
-  // Get settings for ledger
-  const [settings] = await db.select().from(clinicSettingsTable).limit(1);
-  const ledgerId = settings?.onlineBookingLedgerId || 1;
-
-  // Create or find patient by phone
-  let patientId: number;
-  const [existingPatient] = await db
-    .select()
-    .from(patientsTable)
-    .where(eq(patientsTable.phone, booking.phone))
-    .limit(1);
-
-  if (existingPatient) {
-    patientId = existingPatient.id;
+  if (booking.razorpayPaymentId || booking.razorpayOrderId) {
+    paymentMethod = "Online (Razorpay)";
+    paymentRef = booking.razorpayPaymentId || booking.razorpayOrderId || booking.bookingRef;
+    paymentNotes = `Paid online via Razorpay. Booking ref: ${booking.bookingRef}`;
+  } else if (booking.payuTxnId || booking.payuPaymentId) {
+    paymentMethod = "Online (PayU)";
+    paymentRef = booking.payuPaymentId || booking.payuTxnId || booking.bookingRef;
+    paymentNotes = `Paid online via PayU. Booking ref: ${booking.bookingRef}`;
+  } else if (booking.phonepeTransactionId || booking.phonepeProviderRefId) {
+    paymentMethod = "Online (PhonePe)";
+    paymentRef = booking.phonepeProviderRefId || booking.phonepeTransactionId || booking.bookingRef;
+    paymentNotes = `Paid online via PhonePe. Booking ref: ${booking.bookingRef}`;
+  } else if (booking.bharatpeTransactionId || booking.bharatpeProviderRefId) {
+    paymentMethod = "Online (BharatPe)";
+    paymentRef = booking.bharatpeProviderRefId || booking.bharatpeTransactionId || booking.bookingRef;
+    paymentNotes = `Paid online via BharatPe. Booking ref: ${booking.bookingRef}`;
+  } else if (booking.iciciTransactionId || booking.iciciProviderRefId) {
+    paymentMethod = "Online (ICICI Orange Pay)";
+    paymentRef = booking.iciciProviderRefId || booking.iciciTransactionId || booking.bookingRef;
+    paymentNotes = `Paid online via ICICI Orange Pay. Booking ref: ${booking.bookingRef}`;
   } else {
-    // Create new patient from booking info
-    const nameParts = booking.name.trim().split(/\s+/);
-    const firstName = nameParts[0] || booking.name;
-    const lastName = nameParts.slice(1).join(" ") || "";
-    const newPatientId = await generatePatientId();
-    const [newPatient] = await db
-      .insert(patientsTable)
-      .values({
-        patientId: newPatientId,
-        firstName,
-        lastName,
-        phone: booking.phone,
-        email: booking.email || null,
-        dateOfBirth: "",
-        gender: "Unknown",
-        ledgerId,
-      })
-      .returning();
-    patientId = newPatient.id;
+    // Self-declared QR / BharatPe booking
+    if (staffName === "Super Admin") {
+      paymentMethod = "Online (BharatPe - Unconfirmed)";
+      paymentNotes = `Self-declared QR payment. Pending staff verification. Booking ref: ${booking.bookingRef}`;
+    } else {
+      paymentMethod = "Online (BharatPe)";
+      paymentNotes = `UPI/QR Payment confirmed by staff ${staffName}. Booking ref: ${booking.bookingRef}`;
+    }
   }
 
-  // Fetch test prices
-  const tests = await db
-    .select({ id: testsTable.id, price: testsTable.price, department: testsTable.department })
-    .from(testsTable)
-    .where(inArray(testsTable.id, allTestIds));
-
-  // Determine VIP price multiplier if applicable
-  const vipPct = settings?.vipPercentage ? Number(settings.vipPercentage) : 50.00;
-  const vipMultiplier = 1 + (vipPct / 100);
-
-  const testPrices = tests.map(t => {
-    let priceNum = Number(t.price);
-    if (booking.isVip) {
-      priceNum = priceNum * vipMultiplier;
-    }
-    return { id: t.id, price: priceNum.toFixed(2) };
+  const result = await registerPatientSelfFlow({
+    firstName,
+    lastName,
+    phone: booking.phone,
+    gender: booking.gender || "male",
+    ageValue: booking.ageValue || 0,
+    ageUnit: booking.ageUnit || "years",
+    testIds,
+    packageIds,
+    paymentMethod,
+    paymentReference: paymentRef,
+    paymentAmount: Number(booking.totalAmount),
+    isVip: !!booking.isVip,
+    notes: booking.notes || "",
+    email: booking.email || "",
+    source: "online",
+    createdByName: `Online Booking (${staffName})`,
   });
-
-  const calculatedTotal = testPrices.reduce((sum, t) => sum + Number(t.price), 0);
-
-  // Generate order number
-  const orderNumber = `ORD-OB-${Date.now()}`;
-
-  // Create order + order_tests + bill in a transaction
-  const { bill, order } = await db.transaction(async (tx) => {
-    const [ord] = await tx
-      .insert(ordersTable)
-      .values({
-        orderNumber,
-        patientId,
-        status: "pending",
-        totalAmount: calculatedTotal.toFixed(2),
-        notes: `Online booking ${booking.bookingRef}. ${booking.notes}`.trim(),
-        ledgerId,
-      })
-      .returning();
-
-    for (const tp of testPrices) {
-      await tx.insert(orderTestsTable).values({
-        orderId: ord.id,
-        testId: tp.id,
-        price: tp.price,
-      });
-    }
-
-    const billNumber = await generateBillNumber(ledgerId);
-    const [bill] = await tx
-      .insert(billsTable)
-      .values({
-        billNumber,
-        orderId: ord.id,
-        patientId,
-        subtotal: calculatedTotal.toFixed(2),
-        discount: "0.00",
-        taxAmount: "0.00",
-        totalAmount: calculatedTotal.toFixed(2),
-        paidAmount: calculatedTotal.toFixed(2),
-        balanceAmount: "0.00",
-        status: "paid",
-        ledgerId,
-        createdByName: `Online Booking (${staffName})`,
-      })
-      .returning();
-
-    // Determine gateway and payment reference from booking record
-    let paymentMethod = "Online";
-    let paymentRef = booking.bookingRef;
-    let paymentNotes = `Paid online. Booking ref: ${booking.bookingRef}`;
-
-    if (booking.razorpayPaymentId || booking.razorpayOrderId) {
-      paymentMethod = "Online (Razorpay)";
-      paymentRef = booking.razorpayPaymentId || booking.razorpayOrderId || booking.bookingRef;
-      paymentNotes = `Paid online via Razorpay. Booking ref: ${booking.bookingRef}`;
-    } else if (booking.payuTxnId || booking.payuPaymentId) {
-      paymentMethod = "Online (PayU)";
-      paymentRef = booking.payuPaymentId || booking.payuTxnId || booking.bookingRef;
-      paymentNotes = `Paid online via PayU. Booking ref: ${booking.bookingRef}`;
-    } else if (booking.phonepeTransactionId || booking.phonepeProviderRefId) {
-      paymentMethod = "Online (PhonePe)";
-      paymentRef = booking.phonepeProviderRefId || booking.phonepeTransactionId || booking.bookingRef;
-      paymentNotes = `Paid online via PhonePe. Booking ref: ${booking.bookingRef}`;
-    } else if (booking.bharatpeTransactionId || booking.bharatpeProviderRefId) {
-      paymentMethod = "Online (BharatPe)";
-      paymentRef = booking.bharatpeProviderRefId || booking.bharatpeTransactionId || booking.bookingRef;
-      paymentNotes = `Paid online via BharatPe. Booking ref: ${booking.bookingRef}`;
-    } else if (booking.iciciTransactionId || booking.iciciProviderRefId) {
-      paymentMethod = "Online (ICICI Orange Pay)";
-      paymentRef = booking.iciciProviderRefId || booking.iciciTransactionId || booking.bookingRef;
-      paymentNotes = `Paid online via ICICI Orange Pay. Booking ref: ${booking.bookingRef}`;
-    } else {
-      // Self-declared QR / BharatPe booking
-      if (staffName === "Super Admin") {
-        paymentMethod = "Online (BharatPe - Unconfirmed)";
-        paymentNotes = `Self-declared QR payment. Pending staff verification. Booking ref: ${booking.bookingRef}`;
-      } else {
-        paymentMethod = "Online (BharatPe)";
-        paymentNotes = `UPI/QR Payment confirmed by staff ${staffName}. Booking ref: ${booking.bookingRef}`;
-      }
-    }
-
-    await tx.insert(paymentsTable).values({
-      billId: bill.id,
-      amount: calculatedTotal.toFixed(2),
-      method: paymentMethod,
-      referenceNumber: paymentRef,
-      notes: paymentNotes,
-      recordedByName: "Online Booking",
-    });
-
-    return { bill, order: ord };
-  });
-
-  // Generate tokens (VIP if flagged)
-  const priority = booking.isVip ? 8 : 2;
-  const source = booking.isVip ? "vip" : "online";
-
-  try {
-    await generateTokenForBill({
-      ledgerId, billId: bill.id, patientId, priority, source,
-    });
-  } catch { /* non-blocking */ }
-
-  try {
-    await generateTestTokensForOrder({
-      ledgerId, billId: bill.id, orderId: order.id, patientId, priority, source,
-    });
-  } catch { /* non-blocking */ }
 
   // Mark booking confirmed
   const [updated] = await db
     .update(onlineBookingsTable)
     .set({
       status: "confirmed",
-      patientId,
-      billId: bill.id,
+      patientId: result.patientDbId,
+      billId: result.billId,
       confirmedByName: staffName,
       confirmedAt: new Date(),
     })
     .where(eq(onlineBookingsTable.id, booking.id))
     .returning();
 
-  return { booking: updated, billId: bill.id, patientId };
+  return { booking: updated, billId: result.billId, patientId: result.patientDbId };
 }
 
 // POST /api/online-bookings/:id/confirm

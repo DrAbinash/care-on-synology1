@@ -151,6 +151,9 @@ async function getOrCreate() {
       customBharatpeBannerUrl: "",
       customPayuBannerUrl: "",
       autoPopulateFormFFromObMeasurements: false,
+      queueVipMode: "highlighted",
+      queuePrivacyMode: "masked",
+      queueEstimatedWaitPerPatient: 15,
       updatedAt: new Date(),
     } as any;
   }
@@ -281,7 +284,8 @@ clinicSettingsRouter.put("/", async (req, res) => {
     "customFooterMessage", "ollamaBaseUrl", "ollamaModel", "onlineBookingServices", "serviceImages", "vipPercentage",
     "disclaimerText", "disclaimerDisplayPosition", "disclaimerFontSize", "preferredScanner",
     // Refactored fields
-    "activePaymentGateway", "customIciciBannerUrl", "customPhonepeBannerUrl", "customBharatpeBannerUrl", "customPayuBannerUrl"
+    "activePaymentGateway", "customIciciBannerUrl", "customPhonepeBannerUrl", "customBharatpeBannerUrl", "customPayuBannerUrl",
+    "queueVipMode", "queuePrivacyMode"
   ] as const;
   
   if (body.preferredScanner !== undefined) {
@@ -484,7 +488,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
     update.commissionDiscountMode = body.commissionDiscountMode;
   }
   // Form F scanner integer settings
-  const intFields = ["cropPadding", "jpegQuality", "maxScanWidth", "disclaimerRefundPercentage", "disclaimerCancellationWindowHours", "scanStationResultDisplaySeconds"] as const;
+  const intFields = ["cropPadding", "jpegQuality", "maxScanWidth", "disclaimerRefundPercentage", "disclaimerCancellationWindowHours", "scanStationResultDisplaySeconds", "queueEstimatedWaitPerPatient"] as const;
   for (const f of intFields) {
     if (body[f] !== undefined) {
       const n = Number(body[f]);

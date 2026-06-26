@@ -13,7 +13,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { fetchApi, api } from "@/lib/fetchApi";
-import { writeStaffSession, firstPermissionedPath, firstAllowedPath, canAccess, type StaffSession as ErpStaffSession } from "@/lib/staffSession";
+import { writeStaffSession, firstPermissionedPath, firstAllowedPath, canAccess, normalizeRole, type StaffSession as ErpStaffSession } from "@/lib/staffSession";
 
 // =====================================================================
 // Types
@@ -462,8 +462,9 @@ function StaffLogin() {
   const webauthnSupported = typeof window !== "undefined" && "PublicKeyCredential" in window && !!navigator.credentials;
 
   const finalizeSession = (s: StaffSession) => {
-    localStorage.setItem(STAFF_KEY, JSON.stringify(s));
-    const erp: ErpStaffSession = { token: s.token, user: s.user };
+    const normalizedUser = { ...s.user, role: normalizeRole(s.user.role) };
+    localStorage.setItem(STAFF_KEY, JSON.stringify({ ...s, user: normalizedUser }));
+    const erp: ErpStaffSession = { token: s.token, user: normalizedUser };
     writeStaffSession(erp);
     let target = s.user.email.toLowerCase() === "abinashsingh@gmail.com" ? "/my-daily-summary" : "";
     if (!target) {

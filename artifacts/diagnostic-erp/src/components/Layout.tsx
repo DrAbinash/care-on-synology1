@@ -98,7 +98,7 @@ import { api } from "@/lib/fetchApi";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { SyncPanel, SyncBadge } from "@/components/SyncPanel";
-import { readStaffSession, clearStaffSession, canAccess, FULL_ACCESS_ROLES, isFeatureEnabled } from "@/lib/staffSession";
+import { readStaffSession, clearStaffSession, canAccess, FULL_ACCESS_ROLES, isFeatureEnabled, normalizeRole } from "@/lib/staffSession";
 import { useUserTheme, clearUserTheme } from "@/lib/userTheme";
 import {
   getStoredUsbKey,
@@ -130,6 +130,12 @@ const isGroup = (n: NavEntry): n is NavGroup => "children" in n;
 const navItems: NavEntry[] = [
   { path: "/", icon: Zap, label: "Billing Desk" },
   { path: "/my-daily-summary", icon: BarChart2, label: "My Daily Summary" },
+  { path: "/patients", icon: Users, label: "Patients" },
+  { path: "/appointments", icon: CalendarDays, label: "Appointments" },
+  { path: "/online-bookings", icon: ShoppingCart, label: "Online Bookings" },
+  { path: "/queue", icon: Ticket, label: "Queue Tokens" },
+  { path: "/scan-station", icon: ScanLine, label: "Scan Station" },
+  { path: "/form-f", icon: FileText, label: "Form F (PCPNDT)" },
   {
     id: "billing-grp",
     icon: Receipt,
@@ -141,13 +147,6 @@ const navItems: NavEntry[] = [
       { path: "/orders", icon: ClipboardList, label: "Orders" },
     ],
   },
-  { path: "/day-close", icon: Lock, label: "Day Close", ownerOnly: true },
-  { path: "/my-day-close", icon: Clock, label: "My Day Close" },
-  { path: "/dashboard", icon: LayoutDashboard, label: "Owner Dashboard", ownerOnly: true },
-  { path: "/patients", icon: Users, label: "Patients" },
-  { path: "/appointments", icon: CalendarDays, label: "Appointments" },
-  { path: "/online-bookings", icon: ShoppingCart, label: "Online Bookings" },
-  { path: "/queue", icon: Ticket, label: "Queue Tokens" },
   {
     id: "radiology-grp",
     icon: Radio,
@@ -160,8 +159,6 @@ const navItems: NavEntry[] = [
       { path: "/pacs",                        icon: Monitor,        label: "PACS Viewer" },
       { path: "/radiology/normal-templates",   icon: ClipboardCheck, label: "Normal Templates" },
       { path: "/radiology/critical-findings",   icon: AlertCircle,    label: "Critical Findings" },
-      { path: "/radiology/dicom-qr",            icon: Search,         label: "DICOM Query/Retrieve" },
-      { path: "/radiology/mwl-dashboard",       icon: ListChecks,     label: "MWL Dashboard" },
       { path: "/teleradiology",               icon: Globe,          label: "Teleradiology" },
       { path: "/echo",                        icon: Heart,          label: "Echo Cardiology" },
       { path: "/fetal-usg",                   icon: Baby,           label: "Fetal USG" },
@@ -183,7 +180,6 @@ const navItems: NavEntry[] = [
       { path: "/radiology/watchdog",              icon: ShieldAlert,  label: "Watchdog",              ownerOnly: true, featureFlag: "hideDeprecatedNav" },
     ],
   },
-  { path: "/samples", icon: TestTube, label: "Samples" },
   {
     id: "outsource-labs-grp",
     icon: Building2,
@@ -197,28 +193,38 @@ const navItems: NavEntry[] = [
       { path: "/outsource/settings", icon: Settings2, label: "Outsource Settings" },
     ],
   },
-  { path: "/scan-station", icon: ScanLine, label: "Scan Station" },
-  { path: "/report-delivery", icon: Send, label: "Report Delivery" },
-  { path: "/reports", icon: BarChart3, label: "Reports" },
-  { path: "/report-generator", icon: FilePen, label: "Report Generator" },
-  { path: "/report-hub", icon: FileText, label: "Report Hub" },
-  { path: "/expenses", icon: TrendingDown, label: "Expenses" },
   {
-    id: "staff-grp",
-    icon: Fingerprint,
-    label: "Staff",
+    id: "lab-pathology-grp",
+    icon: TestTube,
+    label: "Lab & Pathology",
     children: [
-      { path: "/staff", icon: Fingerprint, label: "Staff Directory" },
-      { path: "/hr-forms", icon: FilePen, label: "HR Forms" },
+      { path: "/samples", icon: TestTube, label: "Samples" },
+      { path: "/scan-station", icon: ScanLine, label: "Scan Station" },
+      { path: "/report-hub", icon: FileText, label: "Report Hub" },
+      { path: "/report-delivery", icon: Send, label: "Report Delivery" },
+      { path: "/report-generator", icon: FilePen, label: "Report Generator" },
     ],
   },
-  { path: "/accounting", icon: BookOpen, label: "Accounting" },
-  { path: "/banking", icon: Landmark, label: "Banking" },
-  { path: "/books-sanity", icon: ShieldCheck, label: "Books Sanity (CA)", ownerOnly: true },
-  { path: "/form-f", icon: FileText, label: "Form F (PCPNDT)" },
-  { path: "/website", icon: Globe, label: "Website Builder" },
-  { path: "/whatsapp-chatbot", icon: MessageSquare, label: "WhatsApp Chatbot" },
-  { path: "/machines", icon: Wrench, label: "Machines" },
+  {
+    id: "admin-grp",
+    icon: Building2,
+    label: "Administration",
+    children: [
+      { path: "/dashboard", icon: LayoutDashboard, label: "Owner Dashboard", ownerOnly: true },
+      { path: "/reports", icon: BarChart3, label: "Reports" },
+      { path: "/expenses", icon: TrendingDown, label: "Expenses" },
+      { path: "/staff", icon: Fingerprint, label: "Staff Directory" },
+      { path: "/hr-forms", icon: FilePen, label: "HR Forms" },
+      { path: "/day-close", icon: Lock, label: "Day Close", ownerOnly: true },
+      { path: "/my-day-close", icon: Clock, label: "My Day Close" },
+      { path: "/accounting", icon: BookOpen, label: "Accounting" },
+      { path: "/banking", icon: Landmark, label: "Banking" },
+      { path: "/books-sanity", icon: ShieldCheck, label: "Books Sanity (CA)", ownerOnly: true },
+      { path: "/website", icon: Globe, label: "Website Builder" },
+      { path: "/whatsapp-chatbot", icon: MessageSquare, label: "WhatsApp Chatbot" },
+      { path: "/machines", icon: Wrench, label: "Machines" },
+    ],
+  },
   {
     id: "settings-grp",
     icon: Settings2,
@@ -388,7 +394,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   // Filter nav by permissions when a staff session exists. For groups, drop
   // children the user can't access; hide the group entirely if nothing left.
-  const isOwner = FULL_ACCESS_ROLES.has(session?.user.role ?? "");
+  const isOwner = FULL_ACCESS_ROLES.has(normalizeRole(session?.user.role ?? ""));
   const visibleNav: NavEntry[] = navItems.flatMap<NavEntry>((n) => {
     if (isGroup(n)) {
       const kids = n.children.filter((c) => {
@@ -399,7 +405,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       return kids.length ? [{ ...n, children: kids }] : [];
     }
     // Owner-only items are only visible to admin / super_admin.
-    if (n.ownerOnly && !FULL_ACCESS_ROLES.has(session?.user.role ?? "")) return [];
+    if (n.ownerOnly && !FULL_ACCESS_ROLES.has(normalizeRole(session?.user.role ?? ""))) return [];
     if (n.featureFlag && !isFeatureEnabled(n.featureFlag)) return [];
     return canAccess(session, n.path) ? [n] : [];
   });

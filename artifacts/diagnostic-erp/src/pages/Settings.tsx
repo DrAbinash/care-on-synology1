@@ -157,6 +157,7 @@ const TABS = [
   { id: "portal", label: "Patient Portal", icon: Globe },
   { id: "online-booking", label: "Online Booking", icon: CreditCard },
   { id: "kiosk", label: "Self-Reg Kiosk", icon: QrCode },
+  { id: "queue-settings", label: "Queue Settings", icon: ClipboardList },
   { id: "form-f", label: "Form F Tests", icon: FileText },
   { id: "scanner", label: "Scanner", icon: ScanLine },
   { id: "email", label: "Email Notifications", icon: Mail },
@@ -260,7 +261,7 @@ export default function Settings() {
       else if (t.id === "billing-print" || t.id === "discount-reasons" || t.id === "receipt-messages" || t.id === "footer-services" || t.id === "promotional-footer") action = "billing";
       else if (t.id === "printers" || t.id === "scanner") action = "devices";
       else if (t.id === "departments" || t.id === "locations" || t.id === "branches" || t.id === "report-templates") action = "infrastructure";
-      else if (t.id === "portal" || t.id === "online-booking" || t.id === "kiosk") action = "portals";
+      else if (t.id === "portal" || t.id === "online-booking" || t.id === "kiosk" || t.id === "queue-settings") action = "portals";
       
       return hasSubPermission(initialSession, "/settings", action);
     });
@@ -287,6 +288,7 @@ export default function Settings() {
         {tab === "portal" && <PatientPortalTab />}
         {tab === "online-booking" && <OnlineBookingTab />}
         {tab === "kiosk" && <KioskSettingsTab />}
+        {tab === "queue-settings" && <QueueSettingsTab />}
         {tab === "form-f" && <FormFTestsTab />}
         {tab === "scanner" && <ScannerSettingsTab />}
         {tab === "email" && <EmailTab />}
@@ -1718,6 +1720,9 @@ type OnlineBookingSettings = {
   disclaimerDisplayPosition?: string;
   disclaimerFontSize?: string;
   disclaimerEnabled?: boolean;
+  queueVipMode?: string;
+  queuePrivacyMode?: string;
+  queueEstimatedWaitPerPatient?: number;
 };
 
 type OBTest = { id: number; name: string; code: string; category: string; isActive: boolean };
@@ -6207,6 +6212,102 @@ function BackupTab() {
 }
 
 // ============================================================
+function QueueSettingsTab() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { data, isLoading } = useQuery<OnlineBookingSettings>({
+    queryKey: ["clinic-settings"],
+    queryFn: () => api.get("/api/clinic-settings"),
+  });
+  const [form, setForm] = useState<OnlineBookingSettings | null>(null);
+
+  useEffect(() => {
+    if (data) setForm({
+      ...data,
+      queueVipMode: data.queueVipMode || "highlighted",
+      queuePrivacyMode: data.queuePrivacyMode || "masked",
+      queueEstimatedWaitPerPatient: data.queueEstimatedWaitPerPatient ?? 15,
+    });
+  }, [data]);
+
+  const save = useMutation({
+    mutationFn: (body: OnlineBookingSettings) => api.put("/api/clinic-settings", body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["clinic-settings"] });
+      toast({ title: "Queue settings saved successfully" });
+    },
+    onError: (err: any) => toast({ title: "Save failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
+  });
+
+  if (isLoading || !form) return <div className="bg-card border border-card-border rounded-xl p-8 text-center text-muted-foreground">Loading…</div>;
+
+  return (
+    <div className="space-y-4 max-w-3xl">
+      <div className="bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-indigo-950/30 dark:to-blue-950/30 border border-indigo-200 dark:border-indigo-900 rounded-xl p-5">
+        <div className="flex items-start gap-3">
+          <div className="h-10 w-10 rounded-lg bg-indigo-600 flex items-center justify-center shrink-0">
+            <ClipboardList size={20} className="text-white" />
+          </div>
+          <div>
+            <h2 className="font-bold text-lg">Queue & VIP Display Settings</h2>
+            <p className="text-sm text-muted-foreground mt-1">Configure VIP handling, name privacy masking, and waiting time estimates for the public screens and queue dashboard.</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
+        <h3 className="font-bold">VIP Queue Mode</h3>
+        <p className="text-xs text-muted-foreground">Choose how VIP patients are highlighted or sorted on the queue management dashboard and TV screens.</p>
+        <div className="max-w-xs">
+          <Select
+            value={form.queueVipMode || "highlighted"}
+            onValueChange={(v) => setForm({ ...form, queueVipMode: v })}
+          >
+            <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="highlighted">Highlight (Clearly distinguish VIPs in main queue)</SelectItem>
+              <SelectItem value="separate">Separate List (Show VIPs in a separate dedicated list)</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <h3 className="font-bold pt-4 border-t border-card-border">Public Queue Name Privacy</h3>
+        <p className="text-xs text-muted-foreground">Determine how patient names are displayed on public TV monitors outside rooms to preserve patient privacy.</p>
+        <div className="max-w-xs">
+          <Select
+            value={form.queuePrivacyMode || "masked"}
+            onValueChange={(v) => setForm({ ...form, queuePrivacyMode: v })}
+          >
+            <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">Show Full Name (e.g. John Doe)</SelectItem>
+              <SelectItem value="masked">Mask Name (e.g. J**n D*e)</SelectItem>
+              <SelectItem value="token_only">Token Only (e.g. Token #102)</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <h3 className="font-bold pt-4 border-t border-card-border">Estimated Wait Time (Per Patient)</h3>
+        <p className="text-xs text-muted-foreground">Average examination time in minutes per patient. Used to calculate estimated queue wait times dynamically.</p>
+        <div className="flex items-center gap-3 max-w-xs">
+          <Input
+            type="number"
+            min="1"
+            max="180"
+            value={form.queueEstimatedWaitPerPatient ?? 15}
+            onChange={(e) => setForm({ ...form, queueEstimatedWaitPerPatient: Number(e.target.value) })}
+          />
+          <span className="text-sm font-medium">mins</span>
+        </div>
+
+        <div className="flex justify-end gap-2 pt-4 border-t border-card-border">
+          <Button onClick={() => save.mutate(form)} disabled={save.isPending}>{save.isPending ? "Saving…" : "Save Settings"}</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // KIOSK SETTINGS TAB
 // ============================================================
 type KioskSettings = {

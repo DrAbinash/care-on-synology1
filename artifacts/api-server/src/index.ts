@@ -204,6 +204,9 @@ async function runStartupMigrations(): Promise<void> {
       -- ICICI online bookings
       ALTER TABLE online_bookings ADD COLUMN IF NOT EXISTS icici_transaction_id TEXT;
       ALTER TABLE online_bookings ADD COLUMN IF NOT EXISTS icici_provider_ref_id TEXT;
+      ALTER TABLE online_bookings ADD COLUMN IF NOT EXISTS age_value INTEGER;
+      ALTER TABLE online_bookings ADD COLUMN IF NOT EXISTS age_unit TEXT;
+      ALTER TABLE online_bookings ADD COLUMN IF NOT EXISTS gender TEXT;
 
       -- Refactored Payment Gateway Settings
       ALTER TABLE clinic_settings ADD COLUMN IF NOT EXISTS active_payment_gateway TEXT NOT NULL DEFAULT 'icici';

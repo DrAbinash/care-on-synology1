@@ -4,7 +4,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Layout from "@/components/Layout";
-import { readStaffSession, canAccess, firstPermissionedPath, firstAllowedPath, longestMatchingNavPath, FULL_ACCESS_ROLES } from "@/lib/staffSession";
+import { readStaffSession, canAccess, firstPermissionedPath, firstAllowedPath, longestMatchingNavPath, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
+
 
 const BillingDesk     = lazy(() => import("@/pages/BillingDesk"));
 const Dashboard       = lazy(() => import("@/pages/Dashboard"));
@@ -48,7 +49,6 @@ const RadiologyReportUnified = lazy(() => import("@/pages/RadiologyReportUnified
 const RadiologyReportGen = lazy(() => import("@/pages/RadiologyReportGenerator"));
 const RadiologyReportingWorkspace = lazy(() => import("@/pages/RadiologyReportingWorkspace"));
 const PacsDashboard         = lazy(() => import("@/pages/PacsDashboard"));
-const MwlDashboard          = lazy(() => import("@/pages/MwlDashboard"));
 const RadiologySettings     = lazy(() => import("@/pages/RadiologySettings"));
 const RadiologySettingsCenter = lazy(() => import("@/pages/RadiologySettingsCenter"));
 const AiPromptTemplates     = lazy(() => import("@/pages/AiPromptTemplates"));
@@ -96,7 +96,6 @@ const PacsSettings          = lazy(() => import("@/pages/PacsSettings"));
 const PacsLogs              = lazy(() => import("@/pages/PacsLogs"));
 const DicomAgentDashboard   = lazy(() => import("@/pages/DicomAgentDashboard"));
 const ModalityManagement    = lazy(() => import("@/pages/ModalityManagement"));
-const DicomQueryRetrieve    = lazy(() => import("@/pages/DicomQueryRetrieve"));
 const AiReportingSettings   = lazy(() => import("@/pages/AiReportingSettings"));
 const MyCollection          = lazy(() => import("@/pages/MyCollection"));
 const PacsArchiveLifecycle  = lazy(() => import("@/pages/PacsArchiveLifecycle"));
@@ -181,9 +180,9 @@ const queryClient = new QueryClient({
 
 const ERP_NAV_ORDER = [
   "/", "/dashboard", "/my-daily-summary", "/daily-summary", "/patients", "/appointments", "/queue", "/online-bookings",
-  "/radiology", "/radiology/cockpit", "/radiology/legacy", "/radiology/worklist", "/radiology/dicom-qr", "/radiology/report-generator", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/pacs-settings", "/radiology/network-control-center", "/radiology/pacs-logs",
+  "/radiology", "/radiology/cockpit", "/radiology/legacy", "/radiology/worklist", "/radiology/report-generator", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/pacs-settings", "/radiology/network-control-center", "/radiology/pacs-logs",
   "/radiology/dicom-agent-dashboard", "/radiology/modality-management",
-  "/radiology/mwl-dashboard", "/radiology/agent-setup", "/radiology/ai-reporting-settings", "/radiology/ai-prompt-templates", "/radiology/ai-model-routing", "/radiology/structured-report-templates", "/radiology/ai-audit-log",
+  "/radiology/agent-setup", "/radiology/ai-reporting-settings", "/radiology/ai-prompt-templates", "/radiology/ai-model-routing", "/radiology/structured-report-templates", "/radiology/ai-audit-log",
   "/radiology/viewer", "/radiology/archive-lifecycle", "/radiology/watchdog", "/radiology/ai-inference-settings", "/radiology/hl7-settings", "/teleradiology",
   "/radiology/usg-measurements", "/radiology/usg-admin-settings",
   "/usg", "/usg/worklist", "/usg/measurements", "/usg/reporting", "/usg/doppler", "/usg/key-images", "/usg/settings", "/usg/critical", "/usg/analytics",
@@ -207,12 +206,13 @@ function PermissionGuard() {
       return;
     }
     // Owner Dashboard is admin/super_admin only — redirect others to My Daily Summary.
-    if (location === "/dashboard" && !FULL_ACCESS_ROLES.has(session.user.role)) {
+    const normalizedRole = normalizeRole(session.user.role);
+    if (location === "/dashboard" && !FULL_ACCESS_ROLES.has(normalizedRole)) {
       navigate("/my-daily-summary", { replace: true });
       return;
     }
     // Super Admin Portal is super_admin only
-    if (location.startsWith("/super-admin-portal") && session.user.role !== "super_admin") {
+    if (location.startsWith("/super-admin-portal") && normalizedRole !== "super_admin") {
       navigate("/", { replace: true });
       return;
     }
@@ -328,8 +328,6 @@ function Router() {
               <Route path="/radiology/pacs-logs" component={PacsLogs} />
               <Route path="/radiology/dicom-agent-dashboard" component={DicomAgentDashboard} />
               <Route path="/radiology/modality-management" component={ModalityManagement} />
-              <Route path="/radiology/dicom-qr" component={DicomQueryRetrieve} />
-              <Route path="/radiology/mwl-dashboard" component={MwlDashboard} />
               <Route path="/radiology/viewer/:studyInstanceUID" component={DicomViewer} />
               <Route path="/radiology/agent-setup" component={AgentSetup} />
               <Route path="/radiology/ai-reporting-settings" component={AiReportingSettings} />

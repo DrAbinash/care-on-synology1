@@ -7,11 +7,11 @@ import fs from "node:fs/promises";
 
 const execPromise = promisify(exec);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const API_DIR = path.resolve(__dirname, "..");
-const REPO_ROOT = path.resolve(API_DIR, "../..");
+const REPO_ROOT = path.resolve(__dirname, "..");
+const API_DIR = path.resolve(REPO_ROOT, "artifacts/api-server");
 
 async function buildPlugin() {
-  const backupDir = path.resolve(REPO_ROOT, "backup_usb_isolation_restore_point/api-routes");
+  const backupDir = path.resolve(__dirname, "backup_usb_isolation_restore_point/api-routes");
   const routesDir = path.resolve(API_DIR, "src/routes");
 
   const routeFiles = [
@@ -32,6 +32,9 @@ async function buildPlugin() {
     await fs.copyFile(src, dest);
   }
 
+  console.log("[build-plugin] Copying superadmin-plugin.ts to src...");
+  await fs.copyFile(path.resolve(__dirname, "superadmin-plugin.ts"), path.resolve(API_DIR, "src/superadmin-plugin.ts"));
+
   try {
     console.log("[build-plugin] Building backend plugin (esbuild)...");
     await esbuild({
@@ -39,7 +42,7 @@ async function buildPlugin() {
       platform: "node",
       bundle: true,
       format: "esm",
-      outfile: path.resolve(API_DIR, "dist/superadmin-api.js"),
+      outfile: path.resolve(__dirname, "dist/superadmin-api.js"),
       sourcemap: false,
       minify: true,
       external: [
@@ -68,30 +71,32 @@ async function buildPlugin() {
         "express-rate-limit"
       ]
     });
-    console.log("[build-plugin] Backend plugin built at dist/superadmin-api.js");
+    console.log("[build-plugin] Backend plugin built at __super_admin_quarantine/dist/superadmin-api.js");
   } finally {
     console.log("[build-plugin] Cleaning up (restoring trace-free routes)...");
     for (const file of routeFiles) {
       const dest = path.join(routesDir, file);
       await fs.writeFile(dest, "// Trace-free: moved to USB plugin\n", "utf8");
     }
+    try {
+      await fs.unlink(path.resolve(API_DIR, "src/superadmin-plugin.ts"));
+    } catch {}
   }
   
   // Build frontend plugin
   console.log("[build-plugin] Building frontend plugin (Vite)...");
-  const portalDir = path.resolve(REPO_ROOT, "artifacts/super-admin-portal");
+  const portalDir = path.resolve(__dirname, "super-admin-portal");
   const { stdout, stderr } = await execPromise("pnpm run build", { cwd: portalDir });
   console.log(stdout);
   if (stderr) console.error(stderr);
   
   // Copy vite output superadmin-ui.js to dist/
   const srcUi = path.resolve(portalDir, "dist/public/superadmin-ui.js");
-  const destUi = path.resolve(API_DIR, "dist/superadmin-api-server-ui-copy.js");
-  const destUiFinal = path.resolve(API_DIR, "dist/superadmin-ui.js");
+  const destUiFinal = path.resolve(__dirname, "dist/superadmin-ui.js");
   
   await fs.copyFile(srcUi, destUiFinal);
   
-  console.log("[build-plugin] Frontend plugin built at dist/superadmin-ui.js");
+  console.log("[build-plugin] Frontend plugin built at __super_admin_quarantine/dist/superadmin-ui.js");
   console.log("[build-plugin] ✓ All plugins compiled successfully! Copy dist/superadmin-api.js and dist/superadmin-ui.js to your USB.");
 }
 

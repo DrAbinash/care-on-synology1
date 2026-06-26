@@ -15,7 +15,7 @@ import {
   XCircle, AlertTriangle, RefreshCw, Plus, Save, Trash2,
   Tv2, Zap, ShieldCheck, PlayCircle, Info, Palette
 } from "lucide-react";
-import { readStaffSession, FULL_ACCESS_ROLES } from "@/lib/staffSession";
+import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 
 // Sub-panels imported or reconstructed for unified look
 import { ModalityPanel } from "@/pages/ModalityManagement";
@@ -48,7 +48,7 @@ type HealthResponse = {
 export default function RadiologySettingsCenter() {
   const { toast } = useToast();
   const qc = useQueryClient();
-  const isAdmin = FULL_ACCESS_ROLES.has(readStaffSession()?.user.role ?? "");
+  const isAdmin = FULL_ACCESS_ROLES.has(normalizeRole(readStaffSession()?.user.role ?? ""));
 
   const [activeTab, setActiveTab] = useState("network");
   const [detectedProfile, setDetectedProfile] = useState<"LAN" | "TAILSCALE" | "PUBLIC">("PUBLIC");

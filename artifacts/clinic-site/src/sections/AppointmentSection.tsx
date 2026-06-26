@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo, useRef } from "react";
+import { SelfRegistrationForm } from "../../../diagnostic-erp/src/components/SelfRegistrationForm";
 import type { Section, SiteSettings } from "../types";
 import { buttonClass } from "../theme";
 import { Loader2 } from "lucide-react";
@@ -73,7 +74,8 @@ export default function AppointmentSection({ section, settings }: { section: Sec
   const [catFilter, setCatFilter] = useState("all");
   const urlChecked = useRef(false);
 
-  const [pd, setPd] = useState({ name: "", phone: "", email: "", date: "", timeSlot: "", notes: "", isVip: false });
+  const [pd, setPd] = useState({ name: "", phone: "", email: "", date: "", timeSlot: "", notes: "", isVip: false, ageValue: "", ageUnit: "years", gender: "" });
+  const [errFields, setErrFields] = useState<string[]>([]);
   const [selTests, setSelTests] = useState<Set<number>>(new Set());
   const [selPkgs, setSelPkgs] = useState<Set<number>>(new Set());
   const [qrBookingRef, setQrBookingRef] = useState("");
@@ -155,6 +157,7 @@ export default function AppointmentSection({ section, settings }: { section: Sec
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
+        ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
       });
       // Redirect to PayU — page will come back via surl/furl
       submitPayuForm(res.payuUrl, res.fields);
@@ -172,6 +175,7 @@ export default function AppointmentSection({ section, settings }: { section: Sec
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
+        ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
       });
       // Redirect to PhonePe checkout — page will come back via redirectUrl
       window.location.href = res.redirectUrl;
@@ -189,6 +193,7 @@ export default function AppointmentSection({ section, settings }: { section: Sec
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
+        ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
       });
       // Redirect to BharatPe checkout — page will come back via redirectUrl
       window.location.href = res.redirectUrl;
@@ -206,6 +211,7 @@ export default function AppointmentSection({ section, settings }: { section: Sec
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
+        ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
       });
       setSuccessRef(res.bookingRef);
       window.location.href = res.redirectUrl;
@@ -222,6 +228,7 @@ export default function AppointmentSection({ section, settings }: { section: Sec
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
+        ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
       });
       setQrBookingRef(res.bookingRef);
       setQrAmount(res.amount);
@@ -265,6 +272,7 @@ export default function AppointmentSection({ section, settings }: { section: Sec
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
+        ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
       });
 
       const RZP = (window as unknown as { Razorpay: new (opts: Record<string, unknown>) => { open(): void } }).Razorpay;
@@ -309,6 +317,57 @@ export default function AppointmentSection({ section, settings }: { section: Sec
     if (config?.gateway === "razorpay") return handleRazorpay();
     // No gateway configured — fall back to QR/UPI payment
     return handleQrPay();
+  }
+
+  function validateForm(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    setErrFields([]);
+
+    if (!pd.name.trim()) {
+      setError("Please enter your name.");
+      setErrFields(["name"]);
+      const el = document.getElementById("pd-name");
+      if (el) {
+        el.focus();
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      return;
+    }
+    const cleanPhone = pd.phone.replace(/\D/g, "");
+    if (!pd.phone.trim() || cleanPhone.length !== 10) {
+      setError("Please enter a valid mobile number.");
+      setErrFields(["phone"]);
+      const el = document.getElementById("pd-phone");
+      if (el) {
+        el.focus();
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      return;
+    }
+    if (!pd.gender) {
+      setError("Please select gender.");
+      setErrFields(["gender"]);
+      const el = document.getElementById("pd-gender");
+      if (el) {
+        el.focus();
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      return;
+    }
+    if (!pd.ageValue || Number(pd.ageValue) < 0) {
+      setError("Please enter age.");
+      setErrFields(["ageValue"]);
+      const el = document.getElementById("pd-ageValue");
+      if (el) {
+        el.focus();
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      return;
+    }
+
+    loadCatalog();
+    setStep("select");
   }
 
   const gatewayLabel =
@@ -387,29 +446,40 @@ export default function AppointmentSection({ section, settings }: { section: Sec
             <p className="subtle" style={{ fontSize: ".9rem" }}>Please save this reference. Our staff will confirm your appointment shortly. You may receive a call or WhatsApp message.</p>
           </div>
         ) : step === "form" ? (
-          <form onSubmit={(e) => { e.preventDefault(); loadCatalog(); setStep("select"); }} className="card-soft grid gap-3" style={{ maxWidth: 520, margin: "0 auto" }}>
-            <h3 style={{ fontWeight: 700, marginBottom: ".25rem" }}>Your Details</h3>
-            <input className="input-soft" placeholder="Full name *" required value={pd.name} onChange={(e) => setPd({ ...pd, name: e.target.value.toUpperCase() })} />
-            <input className="input-soft" placeholder="Phone number *" required value={pd.phone} onChange={(e) => setPd({ ...pd, phone: e.target.value })} />
-            <input className="input-soft" type="email" placeholder="Email (optional)" value={pd.email} onChange={(e) => setPd({ ...pd, email: e.target.value })} />
-            <input className="input-soft" type="date" required value={pd.date} onChange={(e) => setPd({ ...pd, date: e.target.value })} min={new Date().toISOString().slice(0, 10)} />
-            <select className="input-soft" required value={pd.timeSlot} onChange={(e) => setPd({ ...pd, timeSlot: e.target.value })}>
-              <option value="">Select time slot</option>
-              <option value="07:00 – 10:00">Morning (7:00 – 10:00 AM)</option>
-              <option value="10:00 – 13:00">Late Morning (10:00 AM – 1:00 PM)</option>
-              <option value="13:00 – 16:00">Afternoon (1:00 – 4:00 PM)</option>
-              <option value="16:00 – 19:00">Evening (4:00 – 7:00 PM)</option>
-              <option value="19:00 – 21:00">Night (7:00 – 9:00 PM)</option>
-            </select>
-            <textarea className="input-soft" placeholder="Special instructions (optional)" rows={2} value={pd.notes} onChange={(e) => setPd({ ...pd, notes: e.target.value })} />
-            {config?.vipEnabled && (
-              <label style={{ display: "flex", alignItems: "center", gap: ".5rem", cursor: "pointer", fontSize: ".92rem" }}>
-                <input type="checkbox" checked={pd.isVip} onChange={(e) => setPd({ ...pd, isVip: e.target.checked })} style={{ width: 16, height: 16 }} />
-                <span>⭐ VIP Queue — priority service</span>
-              </label>
-            )}
-            <button type="submit" className={buttonClass(settings, "primary")} style={{ justifyContent: "center" }}>Next: Choose Tests →</button>
-          </form>
+          <SelfRegistrationForm
+            mode="online"
+            initialValues={{
+              firstName: pd.name,
+              lastName: "",
+              phone: pd.phone,
+              gender: pd.gender as any,
+              ageValue: pd.ageValue,
+              ageUnit: pd.ageUnit as any,
+              email: pd.email,
+              date: pd.date,
+              timeSlot: pd.timeSlot,
+              notes: pd.notes,
+              isVip: pd.isVip,
+            }}
+            vipEnabled={!!config?.vipEnabled}
+            submitButtonClass={buttonClass(settings, "primary")}
+            onSubmit={(data: any) => {
+              setPd({
+                name: (data.firstName + " " + data.lastName).trim(),
+                phone: data.phone,
+                email: data.email || "",
+                date: data.date || "",
+                timeSlot: data.timeSlot || "",
+                notes: data.notes || "",
+                isVip: !!data.isVip,
+                ageValue: String(data.ageValue),
+                ageUnit: data.ageUnit,
+                gender: data.gender,
+              });
+              loadCatalog();
+              setStep("select");
+            }}
+          />
         ) : step === "select" ? (
           <div className="grid gap-4">
             {categories.length > 2 && (

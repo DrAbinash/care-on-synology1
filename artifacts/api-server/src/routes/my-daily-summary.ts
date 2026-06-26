@@ -137,8 +137,10 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       method: paymentsTable.method,
       recordedByName: paymentsTable.recordedByName,
       createdAt: paymentsTable.createdAt,
+      billCreatedAt: billsTable.createdAt,
     })
     .from(paymentsTable)
+    .innerJoin(billsTable, eq(paymentsTable.billId, billsTable.id))
     .where(and(
       gte(paymentsTable.createdAt, start),
       lt(paymentsTable.createdAt, end),
@@ -571,6 +573,8 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       method: formatMethod(p.method),
       createdAt:
         p.createdAt instanceof Date ? p.createdAt.toISOString() : String(p.createdAt),
+      billCreatedAt:
+        p.billCreatedAt instanceof Date ? p.billCreatedAt.toISOString() : String(p.billCreatedAt),
     })),
     billEdits: billEditsRaw.map((r) => ({
       id: r.id,
@@ -662,6 +666,8 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       recordedBy: p.recordedByName ?? null,
       createdAt:
         p.createdAt instanceof Date ? p.createdAt.toISOString() : String(p.createdAt),
+      billCreatedAt:
+        p.billCreatedAt instanceof Date ? p.billCreatedAt.toISOString() : String(p.billCreatedAt),
     })),
   });
 });

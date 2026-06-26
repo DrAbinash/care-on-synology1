@@ -126,7 +126,6 @@ const PERMISSION_ALIASES: Readonly<Record<string, string>> = {
   "/radiology/pacs-logs": "/radiology",
   "/radiology/dicom-agent-dashboard": "/radiology",
   "/radiology/modality-management": "/radiology",
-  "/radiology/mwl-dashboard": "/radiology",
   "/radiology/viewer": "/radiology",
   "/radiology/report-generator": "/radiology",
   "/radiology/reporting-workspace": "/radiology",
@@ -157,6 +156,14 @@ const PERMISSION_ALIASES: Readonly<Record<string, string>> = {
   "/radiology/peer-review-assignments": "/radiology",
 };
 
+export function normalizeRole(role: string): string {
+  if (!role) return "";
+  const r = role.toLowerCase().replace(/[^a-z0-9]/g, "_").trim();
+  if (r === "superadmin" || r === "super" || r === "owner" || r === "super_admin") return "super_admin";
+  if (r === "admin") return "admin";
+  return r;
+}
+
 // Roles that always get full access regardless of stored permissions.
 export const FULL_ACCESS_ROLES = new Set(["admin", "super_admin"]);
 
@@ -164,7 +171,7 @@ export const FULL_ACCESS_ROLES = new Set(["admin", "super_admin"]);
 // Used to gate Owner Dashboard access and the sidebar nav item.
 export function isOwnerRole(session: StaffSession | null): boolean {
   if (!session) return false;
-  return FULL_ACCESS_ROLES.has(session.user.role);
+  return FULL_ACCESS_ROLES.has(normalizeRole(session.user.role));
 }
 
 export function canAccess(session: StaffSession | null, path: string): boolean {
@@ -173,7 +180,7 @@ export function canAccess(session: StaffSession | null, path: string): boolean {
   if (!session) return !PERMISSIONED_PATHS.has(required);
   // Path isn't part of the permission system → always allowed.
   if (!PERMISSIONED_PATHS.has(required)) return true;
-  if (FULL_ACCESS_ROLES.has(session.user.role)) return true;
+  if (FULL_ACCESS_ROLES.has(normalizeRole(session.user.role))) return true;
   // Also check if they have any of the sub-permissions for this path, which grants view access
   const hasSub = session.user.permissions.some(p => p === required || p.startsWith(required + ":"));
   if (hasSub) return true;
@@ -182,7 +189,7 @@ export function canAccess(session: StaffSession | null, path: string): boolean {
 
 export function hasSubPermission(session: StaffSession | null, modulePath: string, action: string): boolean {
   if (!session) return false;
-  if (FULL_ACCESS_ROLES.has(session.user.role)) return true;
+  if (FULL_ACCESS_ROLES.has(normalizeRole(session.user.role))) return true;
   const required = PERMISSION_ALIASES[modulePath] ?? modulePath;
   if (session.user.permissions.includes(required)) return true;
   return session.user.permissions.includes(`${required}:${action}`);
@@ -204,7 +211,7 @@ export function firstAllowedPath(session: StaffSession | null, candidates: reado
 // happens to be earlier in the nav order.
 export function firstPermissionedPath(session: StaffSession | null, candidates: readonly string[]): string | null {
   if (!session) return null;
-  const isFull = FULL_ACCESS_ROLES.has(session.user.role);
+  const isFull = FULL_ACCESS_ROLES.has(normalizeRole(session.user.role));
   for (const p of candidates) {
     if (!PERMISSIONED_PATHS.has(p)) continue;
     if (isFull || session.user.permissions.includes(p)) return p;
@@ -332,7 +339,7 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   ollamaSupport: false,
   caseOfMonth: false,
   annotationLayer: false,
-  hideDeprecatedNav: false,
+  hideDeprecatedNav: true,
   billingDeskStepped: false,
 };
 

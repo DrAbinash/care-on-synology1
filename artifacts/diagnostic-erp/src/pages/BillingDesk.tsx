@@ -462,6 +462,7 @@ export default function BillingDesk() {
   const [discountReason, setDiscountReason] = useState<string>("");
   const [discountNote, setDiscountNote]     = useState<string>("");
   const [payNow, setPayNow]               = useState(true);
+  const [isVipActive, setIsVipActive]     = useState(false);
   const [paymentSplits, setPaymentSplits] = useState<PaySplit[]>([{ mode: "cash", amount: "" }]);
   const [lastBill, setLastBill]           = useState<LastBill | null>(null);
   // Real scannable QR (PNG data URL) generated via the qrcode library
@@ -924,6 +925,7 @@ export default function BillingDesk() {
         discountReason: discountAmt > 0 ? discountReason || null : null,
         discountReasonNote: discountAmt > 0 ? discountNote || null : null,
         payments: paymentRows,
+        isVip: isVipActive,
         ...(needsDicom && dicomFieldsComplete ? {
           dicomFields: {
             studyDescription: dicomStudyDesc.trim(),
@@ -1369,6 +1371,7 @@ export default function BillingDesk() {
     setSuggestion(null);
     setHusbandName("");
     setPatientAddress("");
+    setIsVipActive(false);
   }
 
   function assignQuickDoctor(slotIdx: number, doctorId: number | null) {
@@ -2262,6 +2265,20 @@ export default function BillingDesk() {
                       <Input placeholder="Custom note (optional)…" value={discountNote} onChange={(e) => setDiscountNote(e.target.value)} className="h-7 text-xs" maxLength={200} />
                     </div>
                   )}
+
+                  {/* VIP Checkbox */}
+                  <div className="flex items-center justify-between py-2 border-t border-card-border">
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={isVipActive}
+                        onChange={(e) => setIsVipActive(e.target.checked)}
+                        className="h-4 w-4 rounded border-slate-300 text-primary focus:ring-primary"
+                      />
+                      <span className="text-sm font-extrabold text-slate-700 dark:text-slate-900">⭐ VIP Priority Booking</span>
+                    </label>
+                  </div>
+
                   <div className="flex items-center justify-between pt-2 border-t border-card-border"><span className="font-bold text-sm text-slate-700 dark:text-slate-900 uppercase tracking-wide">Total</span><span className="text-2xl font-extrabold text-primary tabular-nums">{inr(total)}</span></div>
 
                   {/* ── Payment Collection — amount input first, toggle + modes below ── */}

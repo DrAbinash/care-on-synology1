@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import QRCode from "qrcode";
+import { SelfRegistrationForm } from "../components/SelfRegistrationForm";
 import "./Kiosk.css";
 
 type KioskConfig = {
@@ -17,6 +18,7 @@ type KioskConfig = {
   payuEnabled: boolean;
   iciciEnabled: boolean;
   activeGateway?: string;
+  vipQueueEnabled?: boolean;
 };
 
 type PaymentMode = "upi" | "icici";
@@ -77,8 +79,11 @@ export default function Kiosk() {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [phone, setPhone] = useState("");
-  const [gender, setGender] = useState<"male" | "female" | "other">("male");
-  const [dob, setDob] = useState("");
+  const [gender, setGender] = useState<"male" | "female" | "other" | "">("");
+  const [ageValue, setAgeValue] = useState("");
+  const [ageUnit, setAgeUnit] = useState<"years" | "months" | "days">("years");
+  const [errFields, setErrFields] = useState<string[]>([]);
+  const [isVip, setIsVip] = useState(false);
 
   // Step 2 — test selection
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -161,16 +166,60 @@ export default function Kiosk() {
 
   const resetAll = useCallback(() => {
     setStep(0);
-    setFirstName(""); setLastName(""); setPhone(""); setGender("male"); setDob("");
+    setFirstName(""); setLastName(""); setPhone(""); setGender(""); setAgeValue(""); setAgeUnit("years");
     setSelectedIds(new Set()); setUtr(""); setUtrError(""); setResult(null); setQrDataUrl("");
-    setIciciSessionRef(""); setIciciPaying(false); setError("");
+    setIciciSessionRef(""); setIciciPaying(false); setError(""); setErrFields([]);
+    setIsVip(false);
   }, []);
 
   // ── Validation ────────────────────────────────────────────────────────────
   function validateStep1() {
-    if (!firstName.trim()) { setError("Please enter your first name."); return false; }
-    if (!phone.trim() || phone.replace(/\D/g, "").length < 7) { setError("Please enter a valid phone number."); return false; }
-    setError(""); return true;
+    setError("");
+    setErrFields([]);
+
+    if (!firstName.trim()) {
+      setError("Please enter first name.");
+      setErrFields(["firstName"]);
+      const el = document.getElementById("kiosk-firstName");
+      if (el) {
+        el.focus();
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      return false;
+    }
+    const cleanPhone = phone.replace(/\D/g, "");
+    if (!phone.trim() || cleanPhone.length !== 10) {
+      setError("Please enter a valid mobile number.");
+      setErrFields(["phone"]);
+      const el = document.getElementById("kiosk-phone");
+      if (el) {
+        el.focus();
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      return false;
+    }
+    if (!gender) {
+      setError("Please select gender.");
+      setErrFields(["gender"]);
+      const el = document.getElementById("kiosk-gender");
+      if (el) {
+        el.focus();
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      return false;
+    }
+    if (!ageValue || Number(ageValue) < 0) {
+      setError("Please enter age.");
+      setErrFields(["ageValue"]);
+      const el = document.getElementById("kiosk-ageValue");
+      if (el) {
+        el.focus();
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      return false;
+    }
+    setError("");
+    return true;
   }
   function validateStep2() {
     if (selectedIds.size === 0) { setError("Please select at least one test."); return false; }
@@ -227,9 +276,11 @@ export default function Kiosk() {
           lastName: lastName.trim(),
           phone: phone.trim(),
           gender,
-          dateOfBirth: dob,
+          ageValue: Number(ageValue),
+          ageUnit,
           paymentLinkId: ref,
           gateway: "icici",
+          isVip,
         }),
       });
       if (!res.ok) {
@@ -264,10 +315,12 @@ export default function Kiosk() {
           lastName: lastName.trim(),
           phone: phone.trim(),
           gender,
-          dateOfBirth: dob,
+          ageValue: Number(ageValue),
+          ageUnit,
           testIds: [...selectedIds],
           utrReference: utr.trim(),
           clientTotal: subtotal,
+          isVip,
         }),
       });
       if (!res.ok) {
@@ -406,55 +459,33 @@ export default function Kiosk() {
         {printReceipt}
         <div className="kiosk-page">
           <div className="kiosk-header">
-            <button className="kiosk-back-btn" onClick={() => { setError(""); setStep(0); }}>← Back</button>
+            <button className="kiosk-back-btn" onClick={() => { setError(""); setErrFields([]); setStep(0); }}>← Back</button>
             <h2 className="kiosk-page-title">Your Details</h2>
             <div className="kiosk-step-badge">Step 1 of 4</div>
           </div>
-          <div className="kiosk-form">
-            <div className="kiosk-form-row">
-              <div className="kiosk-field">
-                <label className="kiosk-label">First Name *</label>
-                <input className="kiosk-input" placeholder="e.g. Ravi" value={firstName}
-                  onChange={e => setFirstName(e.target.value)} maxLength={60} />
-              </div>
-              <div className="kiosk-field">
-                <label className="kiosk-label">Last Name</label>
-                <input className="kiosk-input" placeholder="e.g. Kumar" value={lastName}
-                  onChange={e => setLastName(e.target.value)} maxLength={60} />
-              </div>
-            </div>
-            <div className="kiosk-form-row">
-              <div className="kiosk-field">
-                <label className="kiosk-label">Mobile Number *</label>
-                <input className="kiosk-input" placeholder="10-digit mobile" value={phone}
-                  onChange={e => setPhone(e.target.value)} maxLength={15} inputMode="tel" />
-              </div>
-              <div className="kiosk-field">
-                <label className="kiosk-label">Gender *</label>
-                <div className="kiosk-gender-row">
-                  {GENDERS.map(g => (
-                    <button key={g.value} onClick={() => setGender(g.value as "male" | "female" | "other")}
-                      className={`kiosk-gender-btn${gender === g.value ? " kiosk-gender-active" : ""}`}>
-                      {g.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-            <div className="kiosk-form-row">
-              <div className="kiosk-field">
-                <label className="kiosk-label">Date of Birth (optional)</label>
-                <input className="kiosk-input" type="date" value={dob}
-                  onChange={e => setDob(e.target.value)} max={new Date().toISOString().slice(0, 10)} />
-              </div>
-            </div>
-            {error && <p className="kiosk-error-msg">{error}</p>}
-            <div className="kiosk-action-row">
-              <button className="kiosk-btn-primary kiosk-btn-lg" onClick={() => { if (validateStep1()) { setStep(2); } }}>
-                Next: Select Tests →
-              </button>
-            </div>
-          </div>
+          <SelfRegistrationForm
+            mode="kiosk"
+            vipEnabled={config?.vipQueueEnabled}
+            initialValues={{
+              firstName,
+              lastName,
+              phone,
+              gender,
+              ageValue,
+              ageUnit,
+              isVip,
+            }}
+            onSubmit={(data) => {
+              setFirstName(data.firstName);
+              setLastName(data.lastName);
+              setPhone(data.phone);
+              setGender(data.gender);
+              setAgeValue(String(data.ageValue));
+              setAgeUnit(data.ageUnit);
+              setIsVip(!!data.isVip);
+              setStep(2);
+            }}
+          />
         </div>
       </div>
     );

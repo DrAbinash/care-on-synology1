@@ -39,7 +39,15 @@ export async function fetchApi<T = unknown>(path: string, init?: RequestInit): P
   });
   if (!res.ok) {
     if (res.status === 401) {
-      const isSuperAdminRoute = path.includes("/api/super-admin") || path.includes("/api/backup");
+      const isSuperAdminRoute = 
+        path.includes("/api/super-admin") || 
+        path.includes("/api/backup") || 
+        path.includes("/api/system") || 
+        path.includes("/api/admin/audit-logs") || 
+        path.includes("/api/admin/role-permissions") || 
+        path.includes("/api/admin/system-health") || 
+        path.includes("/api/commission") || 
+        path.includes("/api/doctor-ledger");
       if (!isSuperAdminRoute) {
         handleSessionExpiry();
       }

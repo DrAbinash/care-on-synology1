@@ -361,6 +361,7 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
   const inlinePayments = Array.isArray(payload.payments) ? payload.payments : [];
   const discountReason = typeof payload?.discountReason === "string" ? payload.discountReason.trim() || null : null;
   const discountReasonNote = typeof payload?.discountReasonNote === "string" ? payload.discountReasonNote.trim() || null : null;
+  const isVip = !!payload?.isVip;
 
   if (discount > 0 && !discountReason) {
     res.status(400).json({ error: "Discount reason is required when a discount is given" });
@@ -529,7 +530,12 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
   // Auto-generate queue token (per book, resets daily) — never blocks bill creation
   let tokenInfo: { tokenNo: number; tokenDate: string } | null = null;
   try {
-    tokenInfo = await generateTokenForBill({ ledgerId, billId: bill.id, patientId: order.patientId });
+    tokenInfo = await generateTokenForBill({
+      ledgerId,
+      billId: bill.id,
+      patientId: order.patientId,
+      priority: isVip ? 5 : 0,
+    });
   } catch (err) {
     console.warn("Token generation failed:", err);
   }
@@ -540,7 +546,11 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
   let testTokens: Array<{ orderTestId: number; testName: string; department: string; roomNumber: string; tokenNo: number }> = [];
   try {
     testTokens = await generateTestTokensForOrder({
-      ledgerId, billId: bill.id, orderId: order.id, patientId: order.patientId,
+      ledgerId,
+      billId: bill.id,
+      orderId: order.id,
+      patientId: order.patientId,
+      priority: isVip ? 5 : 0,
     });
   } catch (err) {
     console.warn("Per-test token generation failed:", err);
@@ -552,7 +562,10 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
   let studies: Array<{ orderTestId: number; testName: string; modality: string; accessionNumber: string }> = [];
   try {
     studies = await generateStudiesForOrder({
-      billId: bill.id, orderId: order.id, patientId: order.patientId,
+      billId: bill.id,
+      orderId: order.id,
+      patientId: order.patientId,
+      priority: isVip ? "vip" : "routine",
       dicomFields,
     });
   } catch (err) {

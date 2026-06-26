@@ -7,7 +7,7 @@ import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
 import { api } from "@/lib/fetchApi";
-import { readStaffSession, FULL_ACCESS_ROLES } from "@/lib/staffSession";
+import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 import { useToast } from "@/hooks/use-toast";
 import { launchViewer, getOhifUrl, getWeasisUrl } from "@/lib/viewerService";
 import PageHeader from "@/components/PageHeader";
@@ -2285,7 +2285,7 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                 Request Lock Release
               </Button>
 
-              {(session?.user?.role === "admin" || session?.user?.role === "super_admin") && (
+              {(normalizeRole(session?.user?.role ?? "") === "admin" || normalizeRole(session?.user?.role ?? "") === "super_admin") && (
                 <Button
                   className="w-full text-xs h-9 bg-red-600 hover:bg-red-700 text-white font-semibold flex items-center justify-center gap-1.5"
                   onClick={async () => {

@@ -21,6 +21,45 @@ import { autoVoucherForPayment } from "../lib/auto-voucher";
 
 const otpStore = new Map<string, { code: string; name: string; expiresAt: number }>();
 
+export function validateSelfRegistration(params: {
+  name: string;
+  phone: string;
+  gender: string;
+  ageValue: number | null | undefined;
+  ageUnit: string;
+}): string | null {
+  if (!params.name?.trim()) {
+    return "Please enter your name.";
+  }
+  const cleanPhone = params.phone?.trim().replace(/\D/g, "");
+  if (!params.phone?.trim() || cleanPhone.length !== 10) {
+    return "Please enter a valid mobile number.";
+  }
+  if (!params.gender || !["male", "female", "other"].includes(params.gender.toLowerCase())) {
+    return "Please select gender.";
+  }
+  if (params.ageValue === undefined || params.ageValue === null || Number.isNaN(Number(params.ageValue)) || Number(params.ageValue) < 0) {
+    return "Please enter age.";
+  }
+  if (!params.ageUnit || !["years", "months", "days"].includes(params.ageUnit.toLowerCase())) {
+    return "Please select a valid age unit.";
+  }
+  return null;
+}
+
+export function calculateDobFromAge(ageValue: number, ageUnit: string): string {
+  const now = new Date();
+  if (ageUnit.toLowerCase() === "months") {
+    now.setMonth(now.getMonth() - ageValue);
+  } else if (ageUnit.toLowerCase() === "days") {
+    now.setDate(now.getDate() - ageValue);
+  } else {
+    // years
+    now.setFullYear(now.getFullYear() - ageValue);
+  }
+  return now.toISOString().slice(0, 10);
+}
+
 export let lastIciciTransaction: {
   txnRef?: string;
   responseCode?: string;
@@ -460,17 +499,31 @@ publicBookingRouter.post("/payu-initiate", createOrderLimiter, async (req, res):
     name: rawName, phone, email = "", selectedDate, timeSlot = "",
     testIds = [], packageIds = [], totalAmount,
     notes = "", isVip = false,
+    ageValue, ageUnit = "years", gender,
   } = req.body as {
     name: string; phone: string; email?: string; selectedDate: string; timeSlot?: string;
     testIds?: number[]; packageIds?: number[]; totalAmount: number;
     notes?: string; isVip?: boolean;
+    ageValue: number; ageUnit?: string; gender: string;
   };
 
-  if (!rawName?.trim() || !phone?.trim() || !selectedDate) {
-    res.status(400).json({ error: "Name, phone, and selected date are required." });
+  const validationError = validateSelfRegistration({
+    name: rawName,
+    phone,
+    gender,
+    ageValue,
+    ageUnit,
+  });
+  if (validationError) {
+    res.status(400).json({ error: validationError });
     return;
   }
+
   const name = rawName.trim().toUpperCase();
+  if (!selectedDate) {
+    res.status(400).json({ error: "Selected date is required." });
+    return;
+  }
   if (!Array.isArray(testIds) || !Array.isArray(packageIds) || (testIds.length + packageIds.length) === 0) {
     res.status(400).json({ error: "Please select at least one test or package." });
     return;
@@ -512,6 +565,9 @@ publicBookingRouter.post("/payu-initiate", createOrderLimiter, async (req, res):
       totalAmount: String(amount),
       notes: notes.trim(),
       isVip: Boolean(isVip) && Boolean(settings.vipQueueEnabled),
+      ageValue: Number(ageValue),
+      ageUnit: ageUnit.toLowerCase(),
+      gender: gender.toLowerCase(),
       payuTxnId: bookingRef,
       status: "pending_payment",
     });
@@ -621,17 +677,31 @@ publicBookingRouter.post("/phonepe-initiate", createOrderLimiter, async (req, re
     name: rawName, phone, email = "", selectedDate, timeSlot = "",
     testIds = [], packageIds = [], totalAmount,
     notes = "", isVip = false,
+    ageValue, ageUnit = "years", gender,
   } = req.body as {
     name: string; phone: string; email?: string; selectedDate: string; timeSlot?: string;
     testIds?: number[]; packageIds?: number[]; totalAmount: number;
     notes?: string; isVip?: boolean;
+    ageValue: number; ageUnit?: string; gender: string;
   };
 
-  if (!rawName?.trim() || !phone?.trim() || !selectedDate) {
-    res.status(400).json({ error: "Name, phone, and selected date are required." });
+  const validationError = validateSelfRegistration({
+    name: rawName,
+    phone,
+    gender,
+    ageValue,
+    ageUnit,
+  });
+  if (validationError) {
+    res.status(400).json({ error: validationError });
     return;
   }
+
   const name = rawName.trim().toUpperCase();
+  if (!selectedDate) {
+    res.status(400).json({ error: "Selected date is required." });
+    return;
+  }
   if (!Array.isArray(testIds) || !Array.isArray(packageIds) || (testIds.length + packageIds.length) === 0) {
     res.status(400).json({ error: "Please select at least one test or package." });
     return;
@@ -673,6 +743,9 @@ publicBookingRouter.post("/phonepe-initiate", createOrderLimiter, async (req, re
       totalAmount: String(amount),
       notes: notes.trim(),
       isVip: Boolean(isVip) && Boolean(settings.vipQueueEnabled),
+      ageValue: Number(ageValue),
+      ageUnit: ageUnit.toLowerCase(),
+      gender: gender.toLowerCase(),
       phonepeTransactionId: bookingRef,
       phonepeProviderRefId: result.gatewayTxnId || "",
       status: "pending_payment",
@@ -767,17 +840,31 @@ publicBookingRouter.post("/bharatpe-initiate", createOrderLimiter, async (req, r
     name: rawName, phone, email = "", selectedDate, timeSlot = "",
     testIds = [], packageIds = [], totalAmount,
     notes = "", isVip = false,
+    ageValue, ageUnit = "years", gender,
   } = req.body as {
     name: string; phone: string; email?: string; selectedDate: string; timeSlot?: string;
     testIds?: number[]; packageIds?: number[]; totalAmount: number;
     notes?: string; isVip?: boolean;
+    ageValue: number; ageUnit?: string; gender: string;
   };
 
-  if (!rawName?.trim() || !phone?.trim() || !selectedDate) {
-    res.status(400).json({ error: "Name, phone, and selected date are required." });
+  const validationError = validateSelfRegistration({
+    name: rawName,
+    phone,
+    gender,
+    ageValue,
+    ageUnit,
+  });
+  if (validationError) {
+    res.status(400).json({ error: validationError });
     return;
   }
+
   const name = rawName.trim().toUpperCase();
+  if (!selectedDate) {
+    res.status(400).json({ error: "Selected date is required." });
+    return;
+  }
   if (!Array.isArray(testIds) || !Array.isArray(packageIds) || (testIds.length + packageIds.length) === 0) {
     res.status(400).json({ error: "Please select at least one test or package." });
     return;
@@ -819,6 +906,9 @@ publicBookingRouter.post("/bharatpe-initiate", createOrderLimiter, async (req, r
       totalAmount: String(amount),
       notes: notes.trim(),
       isVip: Boolean(isVip) && Boolean(settings.vipQueueEnabled),
+      ageValue: Number(ageValue),
+      ageUnit: ageUnit.toLowerCase(),
+      gender: gender.toLowerCase(),
       bharatpeTransactionId: bookingRef,
       bharatpeProviderRefId: result.gatewayTxnId || null,
       status: "pending_payment",
@@ -984,17 +1074,31 @@ publicBookingRouter.post("/icici-initiate", createOrderLimiter, async (req, res)
     name: rawName, phone, email = "", selectedDate, timeSlot = "",
     testIds = [], packageIds = [], totalAmount,
     notes = "", isVip = false,
+    ageValue, ageUnit = "years", gender,
   } = req.body as {
     name: string; phone: string; email?: string; selectedDate: string; timeSlot?: string;
     testIds?: number[]; packageIds?: number[]; totalAmount: number;
     notes?: string; isVip?: boolean;
+    ageValue: number; ageUnit?: string; gender: string;
   };
 
-  if (!rawName?.trim() || !phone?.trim() || !selectedDate) {
-    res.status(400).json({ error: "Name, phone, and selected date are required." });
+  const validationError = validateSelfRegistration({
+    name: rawName,
+    phone,
+    gender,
+    ageValue,
+    ageUnit,
+  });
+  if (validationError) {
+    res.status(400).json({ error: validationError });
     return;
   }
+
   const name = rawName.trim().toUpperCase();
+  if (!selectedDate) {
+    res.status(400).json({ error: "Selected date is required." });
+    return;
+  }
   if (!Array.isArray(testIds) || !Array.isArray(packageIds) || (testIds.length + packageIds.length) === 0) {
     res.status(400).json({ error: "Please select at least one test or package." });
     return;
@@ -1071,6 +1175,9 @@ publicBookingRouter.post("/icici-initiate", createOrderLimiter, async (req, res)
       totalAmount: String(amount),
       notes: notes.trim(),
       isVip: Boolean(isVip) && Boolean(settings.vipQueueEnabled),
+      ageValue: Number(ageValue),
+      ageUnit: ageUnit.toLowerCase(),
+      gender: gender.toLowerCase(),
       iciciTransactionId: bookingRef,
       iciciProviderRefId: result.rawResponse?.tranCtx || null,
       status: "pending_payment",
@@ -1300,17 +1407,31 @@ publicBookingRouter.post("/create-order", createOrderLimiter, async (req, res): 
     name: rawName, phone, email = "", selectedDate, timeSlot = "",
     testIds = [], packageIds = [], totalAmount,
     notes = "", isVip = false,
+    ageValue, ageUnit = "years", gender,
   } = req.body as {
     name: string; phone: string; email?: string; selectedDate: string; timeSlot?: string;
     testIds?: number[]; packageIds?: number[]; totalAmount: number;
     notes?: string; isVip?: boolean;
+    ageValue: number; ageUnit?: string; gender: string;
   };
 
-  if (!rawName?.trim() || !phone?.trim() || !selectedDate) {
-    res.status(400).json({ error: "Name, phone, and selected date are required." });
+  const validationError = validateSelfRegistration({
+    name: rawName,
+    phone,
+    gender,
+    ageValue,
+    ageUnit,
+  });
+  if (validationError) {
+    res.status(400).json({ error: validationError });
     return;
   }
+
   const name = rawName.trim().toUpperCase();
+  if (!selectedDate) {
+    res.status(400).json({ error: "Selected date is required." });
+    return;
+  }
   if (!Array.isArray(testIds) || !Array.isArray(packageIds) || (testIds.length + packageIds.length) === 0) {
     res.status(400).json({ error: "Please select at least one test or package." });
     return;
@@ -1352,6 +1473,9 @@ publicBookingRouter.post("/create-order", createOrderLimiter, async (req, res): 
     selectedDate, timeSlot: timeSlot.trim(), testIds: JSON.stringify(testIds), packageIds: JSON.stringify(packageIds),
     totalAmount: String(amount), notes: notes.trim(),
     isVip: Boolean(isVip) && Boolean(settings.vipQueueEnabled),
+    ageValue: Number(ageValue),
+    ageUnit: ageUnit.toLowerCase(),
+    gender: gender.toLowerCase(),
     razorpayOrderId, status: "pending_payment",
   });
 
@@ -1447,10 +1571,23 @@ publicBookingRouter.post("/qr-initiate", createOrderLimiter, async (req, res): P
   const {
     name: rawName, phone, email = "", selectedDate, timeSlot = "",
     testIds = [], packageIds = [], totalAmount, notes = "", isVip = false,
+    ageValue, ageUnit = "years", gender,
   } = req.body || {};
-  const amount = Number(totalAmount);
 
-  if (!rawName || !phone || !selectedDate || !amount || amount <= 0) {
+  const validationError = validateSelfRegistration({
+    name: rawName,
+    phone,
+    gender,
+    ageValue,
+    ageUnit,
+  });
+  if (validationError) {
+    res.status(400).json({ error: validationError });
+    return;
+  }
+
+  const amount = Number(totalAmount);
+  if (!selectedDate || !amount || amount <= 0) {
     res.status(400).json({ error: "Please fill all required fields and select at least one test." });
     return;
   }
@@ -1470,6 +1607,9 @@ publicBookingRouter.post("/qr-initiate", createOrderLimiter, async (req, res): P
     totalAmount: String(amount),
     notes: notes.trim(),
     isVip: Boolean(isVip) && Boolean(settings.vipQueueEnabled),
+    ageValue: Number(ageValue),
+    ageUnit: ageUnit.toLowerCase(),
+    gender: gender.toLowerCase(),
     status: "pending_payment",
   });
 

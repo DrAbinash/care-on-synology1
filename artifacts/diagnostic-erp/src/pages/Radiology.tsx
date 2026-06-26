@@ -161,13 +161,6 @@ export default function Radiology() {
           badge: "Advanced"
         },
         {
-          name: "DICOM Query / Retrieve Console",
-          path: "/radiology/dicom-qr",
-          description: "Query remote hospital PACS nodes and command retrieve operations.",
-          icon: Search,
-          badge: "Advanced"
-        },
-        {
           name: "Experimental AI Diagnostics",
           path: "/radiology/advanced-tools",
           description: "Inference pipelines logs, prompt effectiveness graphs, and missed findings detector.",
