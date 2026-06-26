@@ -1242,9 +1242,16 @@ billsRouter.patch("/:id/super-edit", async (req, res) => {
   const newTaxAmount = taxAmount !== undefined ? Number(taxAmount) : Number(bill.taxAmount);
   const newTotal     = newSubtotal - newDiscount + newTaxAmount;
   const paidAmount   = Number(bill.paidAmount);
-  const newBalance   = newTotal - paidAmount;
+  // FIX: include refundAmount in balance calculation — balance = total − paid − refund
+  // (same invariant enforced by the refund route; without this, super-editing a
+  // refunded bill overstates the outstanding balance by the refund amount).
+  const refundAmount = Number(bill.refundAmount ?? 0);
+  const newBalance   = newTotal - paidAmount - refundAmount;
+  // Status: paid when net owed (total − refund) is fully collected.
+  const netOwed    = Math.max(0, newTotal - refundAmount);
   const newStatus    = newBalance <= 0 && paidAmount > 0 ? "paid"
-                     : paidAmount > 0 ? "partial"
+                     : paidAmount > 0 && paidAmount < netOwed ? "partial"
+                     : paidAmount > 0 ? "paid"
                      : "pending";
 
   const [updated] = await db.update(billsTable).set({

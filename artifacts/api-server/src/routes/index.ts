@@ -66,7 +66,7 @@ import { requireSuperAdminUsb, isValidUsbKey, isUsbGateEnforced } from "../middl
 import { requireStaffAuth, requireStaffPermission, requireStaffSubPermission } from "../middleware/requireStaffAuth";
 import { db, clinicSettingsTable, ledgersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import { backupLimiter, exportLimiter, adminMutationLimiter, standardUploadLimiter, loginLimiter } from "../middleware/rateLimits";
+import { backupLimiter, exportLimiter, adminMutationLimiter, standardUploadLimiter, loginLimiter, generalLimiter } from "../middleware/rateLimits";
 import { activePluginRouter } from "../plugin-loader";
 import userPreferencesRouter from "./userPreferences";
 import barcodeResolverRouter from "./barcode-resolver";
@@ -155,6 +155,12 @@ router.use((req, res, next) => {
     next();
   }
 });
+
+// ─── Global rate limiter — protects all routes from flooding / abuse ──────────
+// Applied after USB/super-admin prefix check but before ALL other routes so
+// every endpoint (public and private) is covered. Generous enough for normal
+// multi-tab ERP usage; tight enough to prevent scripted abuse.
+router.use(generalLimiter);
 
 // ─── Public / unauthenticated routes ─────────────────────────────────────────
 router.use(healthRouter);
@@ -602,7 +608,9 @@ router.use("/sync", requireStaffAuth, syncRouter);
 // Standard uploads — JSON base64, validated, size-limited, metadata tracked
 router.use("/uploads", requireStaffAuth, standardUploadLimiter, uploadsRouter);
 
-// Wireless scan sessions & phone pairing
-router.use("/scan-sessions", scanSessionsRouter);
+// Wireless scan sessions & phone pairing — staff auth required (phone pairs with
+// a logged-in session; unauthenticated access would allow rogue devices to inject
+// scan data into any active session).
+router.use("/scan-sessions", requireStaffAuth, scanSessionsRouter);
 
 export default router;

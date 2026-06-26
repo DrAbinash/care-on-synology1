@@ -1,5 +1,7 @@
 import { Router, type IRouter } from "express";
 import { HealthCheckResponse } from "@workspace/api-zod";
+import { db } from "@workspace/db";
+import { sql } from "drizzle-orm";
 
 const router: IRouter = Router();
 
@@ -8,9 +10,16 @@ const router: IRouter = Router();
 // clients can detect that a new version is available.
 const SERVER_STARTED_AT = Date.now();
 
-router.get("/healthz", (_req, res) => {
-  const data = HealthCheckResponse.parse({ status: "ok" });
-  res.json(data);
+router.get("/healthz", async (_req, res) => {
+  // FIX: probe the DB so Docker / Cloudflare healthchecks can detect a
+  // degraded container when the database is unreachable, not just the process.
+  try {
+    await db.execute(sql`SELECT 1`);
+    const data = HealthCheckResponse.parse({ status: "ok" });
+    res.json(data);
+  } catch {
+    res.status(503).json({ status: "degraded", db: "unreachable" });
+  }
 });
 
 // Lightweight version endpoint — clients poll this to detect new deployments.

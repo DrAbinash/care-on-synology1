@@ -95,7 +95,10 @@ async function settleBill(opts: {
     });
 
     const newPaid = Number(bill.paidAmount) + amount;
-    const newBalance = Math.max(0, Number(bill.totalAmount) - newPaid);
+    // FIX: subtract existing refund_amount so balance = total − paid − refund
+    // (same invariant enforced by the manual refund route in bills.ts).
+    const existingRefund = Number(bill.refundAmount ?? 0);
+    const newBalance = Math.max(0, Number(bill.totalAmount) - newPaid - existingRefund);
     const newStatus = newBalance <= 0.01 ? "paid" : "partial";
 
     await tx

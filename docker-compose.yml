@@ -224,8 +224,8 @@ services:
       PORT: "8080"
       LOG_LEVEL: ${LOG_LEVEL:-info}
 
-      JWT_SECRET: ${JWT_SECRET:-care-diagnostics-jwt-secret-2026-change-later}
-      SESSION_SECRET: ${SESSION_SECRET:-care-diagnostics-session-secret-2026-change-later}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env — use a 64-char random string}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set in .env — use a 64-char random string}
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:-}
 
       OBJECT_STORAGE_DIR: ${OBJECT_STORAGE_DIR:-/app/data/object-storage}
@@ -235,7 +235,7 @@ services:
       ICICI_URL_PREFIX: ${ICICI_URL_PREFIX:-/pg/api/v2}
       ICICI_MERCHANT_ID: ${ICICI_MERCHANT_ID:-100000000455452}
       ICICI_AGGREGATOR_ID: ${ICICI_AGGREGATOR_ID:-100000000455451}
-      ICICI_SECRET_KEY: ${ICICI_SECRET_KEY:-d350487e-e1ec-452e-994e-bddb9fb96605}
+      ICICI_SECRET_KEY: ${ICICI_SECRET_KEY:?ICICI_SECRET_KEY must be set in .env}
 
       FINGERPRINT_BRIDGE_SECRET: ${FINGERPRINT_BRIDGE_SECRET:-}
       ORTHANC_URL: ${ORTHANC_URL:-}
