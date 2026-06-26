@@ -30,8 +30,10 @@ import {
   radiologyScheduledProceduresTable,
   testsTable,
   billsTable,
+  portalSessionsTable,
+  usersTable,
 } from "@workspace/db/schema";
-import { and, eq, or, sql, inArray, gte, lte, desc } from "drizzle-orm";
+import { and, eq, or, sql, inArray, gte, lte, desc, gt } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { todayIST } from "../lib/istDate";
 import { createOrLinkPatientFromDicom, type DicomDemographics } from "../lib/dicomPatientCreator";
@@ -179,6 +181,11 @@ const router = Router();
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Enforces INTERNAL_API_KEY authentication.
+ * Used for all PACS automation endpoints (Conquest scripts, pull-agents, etc.).
+ * These endpoints must never be callable from a browser staff session.
+ */
 function requireInternalApiKey(req: Request, res: Response, next: NextFunction): void {
   const expected = process.env["INTERNAL_API_KEY"];
   if (!expected) {
@@ -205,7 +212,86 @@ function requireInternalApiKey(req: Request, res: Response, next: NextFunction):
   next();
 }
 
-router.use(requireInternalApiKey);
+/**
+ * Accepts EITHER a valid INTERNAL_API_KEY bearer token OR a valid staff JWT.
+ *
+ * This middleware is ONLY applied to the three endpoints the Radiologist
+ * Cockpit calls directly from the browser (worklist detail, report-status,
+ * ai-draft). All other PACS automation endpoints remain protected by
+ * requireInternalApiKey exclusively.
+ *
+ * Security notes:
+ * - INTERNAL_API_KEY path: same as before (server-to-server automation)
+ * - Staff JWT path: validates token against portal_sessions table, checks
+ *   user is active. Rejects inactive/expired sessions with 401.
+ * - No permissions are weakened — staff members still need requireStaffPermission
+ *   on any radiology module to have received a session in the first place.
+ */
+async function requireStaffOrInternalAuth(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  const header = req.header("authorization") ?? "";
+  const provided = header.startsWith("Bearer ") ? header.slice(7) : "";
+
+  if (!provided) {
+    res.status(401).json({ error: "Authentication required" });
+    return;
+  }
+
+  // 1. Try INTERNAL_API_KEY first (fast — no DB query needed)
+  const expectedKey = process.env["INTERNAL_API_KEY"];
+  if (expectedKey && provided === expectedKey) {
+    next();
+    return;
+  }
+
+  // 2. Try staff JWT session validation
+  try {
+    const [session] = await db
+      .select()
+      .from(portalSessionsTable)
+      .where(
+        and(
+          eq(portalSessionsTable.token, provided),
+          eq(portalSessionsTable.scope, "staff"),
+          gt(portalSessionsTable.expiresAt, new Date()),
+        ),
+      )
+      .limit(1);
+
+    if (!session) {
+      res.status(401).json({ error: "Invalid or expired session. Please log in again." });
+      return;
+    }
+
+    const [user] = await db
+      .select({ id: usersTable.id, isActive: usersTable.isActive })
+      .from(usersTable)
+      .where(eq(usersTable.id, session.subjectId))
+      .limit(1);
+
+    if (!user || !user.isActive) {
+      res.status(401).json({ error: "Staff account is inactive." });
+      return;
+    }
+
+    // Touch last activity to keep the session alive
+    await db
+      .update(portalSessionsTable)
+      .set({ lastActivityAt: new Date() })
+      .where(eq(portalSessionsTable.id, session.id));
+
+    next();
+  } catch (err) {
+    logger.error({ err }, "requireStaffOrInternalAuth: DB error during staff JWT validation");
+    res.status(500).json({ error: "Authentication service error" });
+  }
+}
+
+router.use(requireStaffOrInternalAuth);
+
 
 // ── Audit helper ─────────────────────────────────────────────────────────────
 

@@ -104,17 +104,53 @@ interface InspectorIssue {
   reviewed?: boolean;
 }
 
-class ErrorBoundary extends React.Component<{ fallback: React.ReactNode; children: React.ReactNode }, { hasError: boolean }> {
-  constructor(props: { fallback: React.ReactNode; children: React.ReactNode }) {
+class ErrorBoundary extends React.Component<
+  { fallback?: React.ReactNode; children: React.ReactNode },
+  { hasError: boolean; error: string }
+> {
+  constructor(props: { fallback?: React.ReactNode; children: React.ReactNode }) {
     super(props);
-    this.state = { hasError: false };
+    this.state = { hasError: false, error: "" };
   }
-  static getDerivedStateFromError() { return { hasError: true }; }
-  componentDidCatch(error: any, info: any) { console.error("Cockpit Panel Crash:", error, info); }
-  render() { return this.state.hasError ? this.props.fallback : this.props.children; }
+  static getDerivedStateFromError(err: any) { return { hasError: true, error: err?.message || "Unknown error" }; }
+  componentDidCatch(error: any, info: any) { console.error("Cockpit Error:", error, info?.componentStack); }
+  render() {
+    if (this.state.hasError) {
+      if (this.props.fallback) return this.props.fallback;
+      return (
+        <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4 p-8 bg-slate-900 text-slate-100">
+          <AlertCircle size={40} className="text-amber-500" />
+          <h2 className="text-xl font-bold text-slate-100">Cockpit Panel Error</h2>
+          <p className="text-sm text-slate-400 max-w-md text-center">
+            A panel error occurred. Your session is still active. Click below to reload the cockpit.
+          </p>
+          <p className="text-xs text-slate-500 font-mono bg-slate-800 px-3 py-1 rounded">{this.state.error}</p>
+          <button
+            onClick={() => this.setState({ hasError: false, error: "" })}
+            className="mt-2 px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg"
+          >
+            Reload Cockpit
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
-export default function RadiologistCockpit() {
+// Top-level cockpit wrapper — renders the cockpit inside a fault-tolerant boundary.
+// If the cockpit itself crashes (React error), this shows a recovery screen
+// instead of a blank page or portal redirect.
+export default function RadiologistCockpitPage() {
+  return (
+    <ErrorBoundary>
+      <RadiologistCockpit />
+    </ErrorBoundary>
+  );
+}
+
+function RadiologistCockpit() {
+
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -243,12 +279,16 @@ export default function RadiologistCockpit() {
     staleTime: 15000,
   });
 
-  // 2. Active Study Details
-  const { data: study, isLoading: studyLoading } = useQuery<WorklistEntry>({
+  // 2. Active Study Details — uses internal endpoint, accepts staff auth
+  // throwOnError: false — do NOT throw unhandled rejection; show graceful UI instead
+  // retry: false — do NOT retry on 401 (would just spam failures)
+  const { data: study, isLoading: studyLoading, isError: studyError } = useQuery<WorklistEntry>({
     queryKey: ["workspace-entry", activeStudyId],
     queryFn: () => api.get<WorklistEntry>(`/api/internal/radiology/worklist/${activeStudyId}`),
     enabled: activeStudyId !== null,
     staleTime: 60000,
+    retry: false,
+    throwOnError: false,
   });
 
   // 3. Structured Templates Library
@@ -1722,11 +1762,27 @@ export default function RadiologistCockpit() {
             <div className="flex-1 flex items-center justify-center text-slate-400 text-xs">
               <RefreshCw className="h-6 w-6 animate-spin text-indigo-500" />
             </div>
+          ) : studyError ? (
+            <div className="flex-1 flex flex-col items-center justify-center text-slate-500 text-xs gap-3 p-8">
+              <AlertTriangle className="h-10 w-10 text-amber-500" />
+              <span className="text-sm font-semibold text-slate-300">Study details unavailable</span>
+              <span className="text-xs text-slate-500 text-center max-w-xs">
+                Could not load study data. This may be a temporary server issue.
+                Your session is still active. Please click the study again to retry.
+              </span>
+              <button
+                onClick={() => qc.invalidateQueries({ queryKey: ["workspace-entry", activeStudyId] })}
+                className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded-lg border border-slate-700"
+              >
+                Retry
+              </button>
+            </div>
           ) : !study ? (
             <div className="flex-1 flex flex-col items-center justify-center text-slate-500 text-xs gap-2">
               <Info className="h-8 w-8 text-slate-600" />
               <span>Select a study from the worklist to start reporting</span>
             </div>
+
           ) : (
             <div className="p-4 space-y-4">
               {/* SMART CONTEXT ENGINE BANNER */}

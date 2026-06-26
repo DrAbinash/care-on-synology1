@@ -1,4 +1,4 @@
-import { ERP_SESSION_KEY, type StaffSession, clearStaffSession, readStaffSession } from "./staffSession";
+import { ERP_SESSION_KEY, type StaffSession, clearStaffSession } from "./staffSession";
 
 function getStaffToken(): string | null {
   try {
@@ -18,9 +18,13 @@ function buildHeaders(init?: RequestInit): Record<string, string> {
   return { ...base, ...(init?.headers as Record<string, string> | undefined) };
 }
 
-// When the server returns 401 the staff session has expired. Clear it and
-// redirect back to the portal login page so the user sees a clear message
-// rather than mysterious "No data" / silent failures across the app.
+// When the server returns 401 on a GENUINE session endpoint, clear the session
+// and redirect back to the portal login page so the user sees a clear message.
+//
+// IMPORTANT: Only portal/session management endpoints should trigger this.
+// A 401 from ANY other endpoint (internal APIs, permission-gated routes,
+// feature endpoints) must NOT clear the session or redirect. Those errors
+// must surface as toasts/error states only, without destroying the user session.
 function handleSessionExpiry(): void {
   clearStaffSession();
   try { window.localStorage.removeItem("portal_staff_session"); } catch { /* ignore */ }
@@ -32,6 +36,20 @@ function handleSessionExpiry(): void {
   }
 }
 
+// Only these paths legitimately expire a staff session on 401.
+// All other paths (including /api/internal/*, /api/radiology/*, etc.)
+// returning 401 are auth-layer mismatches that must NOT log the user out.
+const SESSION_AUTH_PATHS = [
+  "/api/portal/staff-login",
+  "/api/portal/staff-session",
+  "/api/portal/refresh",
+  "/api/staff/me",
+];
+
+function isSessionAuthPath(path: string): boolean {
+  return SESSION_AUTH_PATHS.some(p => path.includes(p));
+}
+
 export async function fetchApi<T = unknown>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: buildHeaders(init),
@@ -39,23 +57,16 @@ export async function fetchApi<T = unknown>(path: string, init?: RequestInit): P
   });
   if (!res.ok) {
     if (res.status === 401) {
-      const isSuperAdminRoute = 
-        path.includes("/api/super-admin") || 
-        path.includes("/api/backup") || 
-        path.includes("/api/system") || 
-        path.includes("/api/admin/audit-logs") || 
-        path.includes("/api/admin/role-permissions") || 
-        path.includes("/api/admin/system-health") || 
-        path.includes("/api/commission") || 
-        path.includes("/api/doctor-ledger");
-      if (!isSuperAdminRoute) {
-        const session = readStaffSession();
-        const role = session?.user?.role ? session.user.role.toLowerCase().replace(/[^a-z0-9]/g, "_").trim() : "";
-        const isSuperAdmin = role === "superadmin" || role === "super" || role === "owner" || role === "super_admin";
-        if (!isSuperAdmin) {
-          handleSessionExpiry();
-        }
+      // ONLY clear session when a session-management endpoint returns 401.
+      // This covers: staff-login, session validation, session refresh.
+      // Internal API endpoints (/api/internal/*), feature APIs returning 401
+      // due to INTERNAL_API_KEY mismatch, and permission-gated module APIs
+      // must NOT trigger logout — they are surfaced as error messages.
+      if (isSessionAuthPath(path)) {
+        handleSessionExpiry();
       }
+      // For all other 401s: fall through and throw the error.
+      // The calling React Query query/mutation will handle it (toast, etc.).
     }
     const text = await res.text();
     let parsed: { error?: string; message?: string } = {};
