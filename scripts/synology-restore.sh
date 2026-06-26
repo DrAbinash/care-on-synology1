@@ -12,10 +12,11 @@ set -euo pipefail
 
 BACKUP_FILE="${1:-}"
 LOCAL_DB_URL="${LOCAL_DB_URL:-postgresql://postgres:password@localhost:5432/caredeoghar}"
+BACKUP_PASSPHRASE="${BACKUP_PASSPHRASE:-}"
 
 if [[ -z "${BACKUP_FILE}" ]]; then
-  echo "Usage: $0 <backup-file.sql.gz>"
-  echo "Example: $0 /volume1/backups/caredeoghar/caredeoghar_20260531_030000.sql.gz"
+  echo "Usage: $0 <backup-file.sql.gz or backup-file.sql.gz.enc>"
+  echo "Example: $0 /volume1/backups/caredeoghar/caredeoghar_20260531_030000.sql.gz.enc"
   exit 1
 fi
 
@@ -24,9 +25,19 @@ if [[ ! -f "${BACKUP_FILE}" ]]; then
   exit 1
 fi
 
-echo "Restoring from ${BACKUP_FILE}..."
-
-# Extract and pipe directly to psql
-gunzip -c "${BACKUP_FILE}" | psql "${LOCAL_DB_URL}"
+# Decrypt if the file ends with .enc
+if [[ "${BACKUP_FILE}" == *.enc ]]; then
+  if [[ -z "${BACKUP_PASSPHRASE}" ]]; then
+    read -sp "Enter backup passphrase: " BACKUP_PASSPHRASE
+    echo ""
+  fi
+  
+  echo "Decrypting and restoring from ${BACKUP_FILE}..."
+  openssl enc -d -aes-256-cbc -pbkdf2 -pass "pass:${BACKUP_PASSPHRASE}" -in "${BACKUP_FILE}" | gunzip -c | psql "${LOCAL_DB_URL}"
+else
+  echo "Restoring from plaintext ${BACKUP_FILE}..."
+  gunzip -c "${BACKUP_FILE}" | psql "${LOCAL_DB_URL}"
+fi
 
 echo "Restore complete."
+

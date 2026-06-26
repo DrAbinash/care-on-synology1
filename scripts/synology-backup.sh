@@ -25,6 +25,7 @@ BACKUP_DIR="/volume1/backups/caredeoghar"
 API_KEY="${CAREDEOGHAR_API_KEY:-}"  # Set in DSM environment or hardcode here
 API_BASE="https://caredeoghar.replit.app"
 RETENTION_DAYS=7
+BACKUP_PASSPHRASE="${BACKUP_PASSPHRASE:-}" # Optional AES-256-CBC passphrase
 
 # You can also hardcode the key (not recommended for production):
 # API_KEY="your-internal-api-key-here"
@@ -60,10 +61,25 @@ fi
 SIZE=$(du -h "${DEST}" | cut -f1)
 echo "[${TIMESTAMP}] Backup saved: ${DEST} (${SIZE})" | tee -a "${LOG}"
 
+# ─── ENCRYPTION (OPTIONAL) ──────────────────────────────────────────
+if [[ -n "${BACKUP_PASSPHRASE}" ]]; then
+  echo "[${TIMESTAMP}] Encrypting backup with AES-256-CBC..." | tee -a "${LOG}"
+  if openssl enc -aes-256-cbc -salt -pbkdf2 -pass "pass:${BACKUP_PASSPHRASE}" -in "${DEST}" -out "${DEST}.enc"; then
+    rm -f "${DEST}"
+    DEST="${DEST}.enc"
+    SIZE=$(du -h "${DEST}" | cut -f1)
+    echo "[${TIMESTAMP}] Encrypted backup saved: ${DEST} (${SIZE})" | tee -a "${LOG}"
+  else
+    echo "[${TIMESTAMP}] ERROR: Encryption failed." | tee -a "${LOG}"
+    exit 1
+  fi
+fi
+
 # ─── RETENTION CLEANUP ─────────────────────────────────────────────────────
-REMOVED=$(find "${BACKUP_DIR}" -name "caredeoghar_*.sql.gz" -mtime +${RETENTION_DAYS} -delete -print | wc -l)
+REMOVED=$(find "${BACKUP_DIR}" \( -name "caredeoghar_*.sql.gz" -o -name "caredeoghar_*.sql.gz.enc" \) -mtime +${RETENTION_DAYS} -delete -print | wc -l)
 if [[ "${REMOVED}" -gt 0 ]]; then
   echo "[${TIMESTAMP}] Purged ${REMOVED} old backup(s) older than ${RETENTION_DAYS} days" | tee -a "${LOG}"
 fi
 
 echo "[${TIMESTAMP}] Backup complete." | tee -a "${LOG}"
+

@@ -51,11 +51,16 @@ You can automate database backups via the DSM UI:
 
 ---
 
-## 3. Remote Replit Sync Backup (API-Based)
+## 3. Remote Replit Sync Backup & Optional Encryption (API-Based)
 
 If syncing from Replit, you can use the configured helper script:
 ```bash
 bash scripts/synology-backup.sh
 ```
-* **Required env vars**: `CAREDEOGHAR_API_KEY` (containing your Replit API key).
+* **Required env vars**:
+  * `CAREDEOGHAR_API_KEY` (containing your Replit API key).
+  * `BACKUP_PASSPHRASE` (passphrase to encrypt the backup file using AES-256-CBC, optional).
 * **Backup Destination**: `/volume1/backups/caredeoghar`
+
+When `BACKUP_PASSPHRASE` is set, the backup will be saved as `caredeoghar_YYYYMMDD_HHMMSS.sql.gz.enc` (encrypted via OpenSSL PBKDF2).
+

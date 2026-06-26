@@ -15,6 +15,7 @@ Locate your `.sql.gz` file (e.g. `care_db_daily_20260609.sql.gz`).
 Run the following commands on your host system:
 
 #### Linux / Synology NAS (via SSH)
+To restore a plaintext backup:
 ```bash
 # 1. Unzip the backup file
 gunzip -k care_db_daily_20260609.sql.gz
@@ -26,6 +27,14 @@ docker exec -it care-db psql -U erp -d postgres -c "CREATE DATABASE diagnostic_e
 # 3. Restore the schema and data
 docker exec -i care-db psql -U erp -d diagnostic_erp < care_db_daily_20260609.sql
 ```
+
+To restore an encrypted backup (`.enc` extension) using the helper restore script:
+```bash
+# Run the restore script (will prompt for passphrase if BACKUP_PASSPHRASE is not exported)
+export BACKUP_PASSPHRASE="your_secure_passphrase"
+bash scripts/synology-restore.sh /volume1/backups/caredeoghar/caredeoghar_20260625_030000.sql.gz.enc
+```
+
 
 #### Windows (via PowerShell)
 ```powershell
