@@ -21,6 +21,42 @@ const REVENUE_ACCOUNT = {
   tallyGroup: "Direct Income",
 };
 
+async function ensureAccount(name: string, type: string, tallyGroup: string): Promise<string> {
+  const [existing] = await db
+    .select({ id: accountsTable.id })
+    .from(accountsTable)
+    .where(eq(accountsTable.name, name))
+    .limit(1);
+  if (existing) return existing.id.toString();
+  const [created] = await db
+    .insert(accountsTable)
+    .values({ name, type, tallyGroup, openingBalance: "0", openingBalanceType: "Dr" })
+    .returning({ id: accountsTable.id });
+  return created.id.toString();
+}
+
+function voucherBucketPrefix(type: string): string {
+  const prefix = type === "receipt" ? "RV" : type === "payment" ? "PV" : "JV";
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  return `${prefix}-${y}${m}-`;
+}
+
+async function nextVoucherNumber(type: string, offset = 0): Promise<string> {
+  const bucket = voucherBucketPrefix(type);
+  const [r] = await db
+    .select({ c: sql<number>`count(*)` })
+    .from(vouchersTable)
+    .where(like(vouchersTable.voucherNumber, `${bucket}%`));
+  const next = Number(r?.c ?? 0) + 1 + offset;
+  return `${bucket}${String(next).padStart(4, "0")}`;
+}
+
+function istDateStr(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+}
+
 /**
  * Auto-generate an accounting voucher for a billing payment.
  *

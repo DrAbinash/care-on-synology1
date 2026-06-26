@@ -108,6 +108,7 @@ import smartRadiologyRouter from "./smartRadiology";
 import risMonitoringRouter from "./risMonitoring";
 import radiologyWorkflowRouter from "./radiologyWorkflow";
 import { scanSessionsRouter } from "./scan-sessions";
+import { gatewayWebhookRouter } from "./gateway-webhooks";
 
 const router: IRouter = Router();
 
@@ -183,6 +184,11 @@ router.use("/verify", verifyRouter);
 // payment flow run on the public clinic site. Payment is verified server-side
 // via HMAC before any record is persisted.
 router.use("/public/booking", publicBookingRouter);
+
+// Payment gateway server-to-server webhooks (ICICI, HDFC).
+// MUST be public — the gateways POST here without a staff session.
+// Individual admin endpoints inside the router apply requireStaffAuth themselves.
+router.use("/gateway", gatewayWebhookRouter);
 
 // Self-registration kiosk — public, rate-limited. Patients register and pay
 // via UPI at an unattended kiosk without a staff login. Rate-limited at the
