@@ -234,6 +234,15 @@ export default function DailySummary() {
     discountsGiven: 0,
     billCount: 0,
     orderCount: 0,
+    newBillingCollected: undefined,
+    oldDuesCollected: undefined,
+    backdatedRefunds: undefined,
+    sameDayRefunds: undefined,
+    cashExpenses: undefined,
+    digitalExpenses: undefined,
+    netDigitalCollection: undefined,
+    cancelledBillsAmount: undefined,
+    totalRefunded: undefined,
   };
   const incomeMethods = Object.entries(data?.byMethod ?? {}).sort((a, b) => b[1] - a[1]);
   const refundMethods = Object.entries(data?.byRefundMethod ?? {}).sort((a, b) => b[1] - a[1]);
