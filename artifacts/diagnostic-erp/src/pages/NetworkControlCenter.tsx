@@ -175,7 +175,7 @@ export default function NetworkControlCenter() {
       const session = readStaffSession();
       const dbProfile = session?.user?.pacsNetworkProfile;
       const localOverride = localStorage.getItem("pacs_network_profile");
-      setProfileOverride(dbProfile || localOverride || "auto");
+      setProfileOverride((dbProfile || localOverride || "auto") as "auto" | "LAN" | "TAILSCALE" | "PUBLIC");
 
       setStats({
         lastSuccessProfile: localStorage.getItem("pacs_last_good_profile") || "—",
