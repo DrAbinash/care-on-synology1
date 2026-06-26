@@ -82,7 +82,7 @@ import { aiPromptLibraryRouter } from "./aiPromptLibrary";
 import { aiModelRoutesRouter } from "./aiModelRoutes";
 import { aiComparisonRouter } from "./aiComparison";
 import { teachingCasesRouter } from "./teachingCases";
-import { radiologyCopilotRouter } from "./radiologyCopilot";
+import { radiologyCoPilotRouter as radiologyCopilotRouter } from "./radiologyCopilot";
 import { radiologyMemoryRouter } from "./radiologyMemory";
 import { radiologyLesionsRouter } from "./radiologyLesions";
 import { radiologySpineIntelligenceRouter } from "./radiologySpineIntelligence";

@@ -13,6 +13,7 @@ interface Props {
   patientId?: number;
   targetField?: string;
   className?: string;
+  onVoiceIntent?: (intent: string) => void;
 }
 
 /**
@@ -33,6 +34,7 @@ export default function VoiceDictationButton({
   patientId,
   targetField,
   className,
+  onVoiceIntent,
 }: Props) {
   const {
     status,
@@ -45,6 +47,28 @@ export default function VoiceDictationButton({
     resume,
     clearTranscript,
   } = useVoiceDictation();
+
+  // ── Intercept Voice Intents ────────────────────────────────────────────────
+  useEffect(() => {
+    if (!onVoiceIntent) return;
+    const combined = (transcript + " " + interimTranscript).toLowerCase();
+    
+    const intents = [
+      { phrase: "compare with previous", intent: "compare-previous" },
+      { phrase: "show measurements", intent: "show-measurements" },
+      { phrase: "insert tumor volume", intent: "insert-tumor-volume" },
+      { phrase: "open previous mri", intent: "open-previous-mri" },
+      { phrase: "show spectroscopy recommendation", intent: "show-spectroscopy" },
+    ];
+
+    for (const item of intents) {
+      if (combined.includes(item.phrase)) {
+        onVoiceIntent(item.intent);
+        clearTranscript();
+        break;
+      }
+    }
+  }, [transcript, interimTranscript, onVoiceIntent, clearTranscript]);
 
   const [cleaning, setCleaning] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);

@@ -146,3 +146,30 @@ export const viewerMeasurementsTable = pgTable(
 
 export type ViewerMeasurement = typeof viewerMeasurementsTable.$inferSelect;
 
+// ── radiology_copilot_logs — audit log of dismissals/acceptances ──
+export const radiologyCopilotLogsTable = pgTable(
+  "radiology_copilot_logs",
+  {
+    id: serial("id").primaryKey(),
+    staffName: text("staff_name").notNull(),
+    studyInstanceUID: text("study_instance_uid"),
+    suggestionType: text("suggestion_type").notNull(), // "clinical" | "checklist" | "contradiction" | "comparison"
+    suggestionContent: text("suggestion_content").notNull(),
+    action: text("action").notNull(), // "dismissed" | "accepted"
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  }
+);
+
+// ── radiology_user_copilot_profiles — radiologist private preferences/learning profiles ──
+export const radiologyUserCopilotProfilesTable = pgTable(
+  "radiology_user_copilot_profiles",
+  {
+    id: serial("id").primaryKey(),
+    staffName: text("staff_name").notNull().unique(),
+    ignoredWarnings: text("ignored_warnings").array(),
+    favoriteTemplates: text("favorite_templates").array(),
+    favoriteChocolateBox: text("favorite_chocolate_box").array(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  }
+);
+

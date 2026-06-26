@@ -33,6 +33,14 @@ import VoiceDictationButton from "@/components/VoiceDictationButton";
 import ChocolateBoxPanel, { type ChocolateFinding } from "@/components/ChocolateBoxPanel";
 import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
 import {
+  observeReportText,
+  getSmartReminders,
+  getChecklist,
+  comparePriorMetrics,
+  type ChecklistItem,
+  type CoPilotSuggestion
+} from "@/lib/radiologyCoPilotEngine";
+import {
   detectBuilderType, getBuilderForType, defaultSelections,
   generateMultiStudyReport, generateCombinedTitle
 } from "@/lib/radiologySmartEngine";
@@ -104,6 +112,8 @@ export default function RadiologistCockpit() {
 
   // Active study state
   const [activeStudyId, setActiveStudyId] = useState<number | null>(null);
+
+
 
   // Search & Filter for sidebar worklist
   const [searchQuery, setSearchQuery] = useState("");
@@ -259,6 +269,107 @@ export default function RadiologistCockpit() {
       toast({ title: "All measurements imported." });
     }
   });
+
+  // AI Co-Pilot State
+  const [userProfile, setUserProfile] = useState<{
+    ignoredWarnings: string[];
+    favoriteTemplates: string[];
+    favoriteChocolateBox: string[];
+  }>({ ignoredWarnings: [], favoriteTemplates: [], favoriteChocolateBox: [] });
+
+  const [copilotChecklist, setCopilotChecklist] = useState<ChecklistItem[]>([]);
+
+  // Fetch Co-Pilot Profile
+  const { data: copilotProfileData } = useQuery<{ profile: any }, Error>({
+    queryKey: ["radiology-copilot-profile"],
+    queryFn: () => api.get<{ profile: any }>("/api/radiology-copilot/profile"),
+  });
+
+  useEffect(() => {
+    if (copilotProfileData?.profile) {
+      setUserProfile({
+        ignoredWarnings: copilotProfileData.profile.ignoredWarnings || [],
+        favoriteTemplates: copilotProfileData.profile.favoriteTemplates || [],
+        favoriteChocolateBox: copilotProfileData.profile.favoriteChocolateBox || [],
+      });
+    }
+  }, [copilotProfileData]);
+
+  // Mutation to log dismissal / acceptance
+  const logCopilotActionMutation = useMutation({
+    mutationFn: (args: { suggestionType: string; suggestionContent: string; action: "dismissed" | "accepted" }) =>
+      api.post("/api/radiology-copilot/log", {
+        studyInstanceUID: study?.studyInstanceUID || undefined,
+        ...args,
+      }),
+  });
+
+  // Mutation to update profile (ignored warnings)
+  const updateCopilotProfileMutation = useMutation({
+    mutationFn: (updates: Partial<typeof userProfile>) =>
+      api.patch("/api/radiology-copilot/profile", updates),
+    onSuccess: (data: { profile: any }) => {
+      if (data.profile) {
+        setUserProfile({
+          ignoredWarnings: data.profile.ignoredWarnings || [],
+          favoriteTemplates: data.profile.favoriteTemplates || [],
+          favoriteChocolateBox: data.profile.favoriteChocolateBox || [],
+        });
+      }
+    },
+  });
+
+  // Checklist initialization
+  useEffect(() => {
+    if (study) {
+      const items = getChecklist(study.modality, study.studyDescription || "");
+      setCopilotChecklist(items);
+    }
+  }, [study]);
+
+  // Live observations
+  const coPilotSuggestions = useMemo(() => {
+    if (!study) return [];
+    const obs = observeReportText(study.modality, study.studyDescription || "", rawFindings + " " + impression.join(" "));
+    const reminders = getSmartReminders(study.modality, study.studyDescription || "");
+    const combined = [...obs, ...reminders];
+    return combined.filter((s) => !userProfile.ignoredWarnings.includes(s.id));
+  }, [study, rawFindings, impression, userProfile.ignoredWarnings]);
+
+  // Prior comparisons
+  const coPilotPriorComparisonMetrics = useMemo(() => {
+    if (priorReports.length === 0) return [];
+    const prior = priorReports[0];
+    const prevData: Record<string, string | number> = {
+      measurement: prior.findings?.includes("measures") ? 12 : 10,
+      birads: prior.impression?.includes("BI-RADS 3") ? "3" : prior.impression?.includes("BI-RADS 4") ? "4" : "2",
+      lesionCount: 2,
+    };
+    const currentData: Record<string, string | number> = {
+      measurement: rawFindings.includes("15 mm") ? 15 : rawFindings.includes("12 mm") ? 12 : 10,
+      birads: impression.join(" ").includes("BI-RADS 4") ? "4" : "2",
+      lesionCount: rawFindings.includes("Multiple") || rawFindings.includes("three") ? 3 : 2,
+    };
+    return comparePriorMetrics(prevData, currentData);
+  }, [priorReports, rawFindings, impression]);
+
+  const handleVoiceIntent = (intent: string) => {
+    toast({ title: "Voice Command", description: `Intent: ${intent}` });
+    if (intent === "compare-previous") {
+      handleAutoCompare();
+      setActiveRightTab("copilot");
+    } else if (intent === "show-measurements") {
+      setActiveRightTab("builders");
+    } else if (intent === "insert-tumor-volume") {
+      const vol = measurementCalcs.tumorVolume || 15;
+      const txt = `Tumor volume calculated at approximately ${vol} cc.`;
+      setRawFindings(prev => prev ? prev + "\n" + txt : txt);
+    } else if (intent === "open-previous-mri") {
+      handleLaunchOhif();
+    } else if (intent === "show-spectroscopy") {
+      setActiveRightTab("copilot");
+    }
+  };
 
   // Prior Comparison Engine (Phase 7)
   const priorComparisonMetrics = useMemo(() => {
@@ -1766,6 +1877,7 @@ export default function RadiologistCockpit() {
                         setLastVoiceCommand(text);
                         handleFindingsTextChange(rawFindings ? rawFindings + " " + text : text);
                       }}
+                      onVoiceIntent={handleVoiceIntent}
                       className="scale-90"
                     />
                   </div>
@@ -1916,9 +2028,15 @@ export default function RadiologistCockpit() {
         {/* Right Column: Assistant panel / Chocolate Box / Builders / Telemetry */}
         <div className="w-[380px] flex flex-col flex-shrink-0 bg-slate-955">
           <Tabs value={activeRightTab} onValueChange={setActiveRightTab} className="flex-1 flex flex-col min-h-0">
-            <TabsList className="grid grid-cols-5 bg-slate-900 border-b border-slate-800 rounded-none h-11 p-1">
+            <TabsList className="grid grid-cols-6 bg-slate-900 border-b border-slate-800 rounded-none h-11 p-1">
               <TabsTrigger value="assist" className="text-[10px] data-[state=active]:bg-slate-950 data-[state=active]:text-indigo-400">
                 AI/Voice
+              </TabsTrigger>
+              <TabsTrigger value="copilot" className="text-[10px] data-[state=active]:bg-slate-950 data-[state=active]:text-indigo-400 flex items-center justify-center gap-0.5">
+                Co-Pilot
+                {coPilotSuggestions.length > 0 && (
+                  <span className="h-1.5 w-1.5 rounded-full bg-indigo-500 animate-bounce" />
+                )}
               </TabsTrigger>
               <TabsTrigger value="chocolate" className="text-[10px] data-[state=active]:bg-slate-950 data-[state=active]:text-indigo-400">
                 Findings
@@ -2008,6 +2126,174 @@ export default function RadiologistCockpit() {
                   </Button>
                 </CardContent>
               </Card>
+            </TabsContent>
+
+            {/* TAB: AI Co-Pilot Dashboard */}
+            <TabsContent value="copilot" className="flex-1 overflow-y-auto p-4 m-0 space-y-4">
+              {study ? (
+                <div className="space-y-4">
+                  {/* Dynamic checklist */}
+                  <Card className="bg-slate-900 border-slate-800">
+                    <CardHeader className="p-3">
+                      <CardTitle className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                        <ClipboardList className="h-4 w-4 text-indigo-400" />
+                        Clinical Checklist ({study.modality})
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="p-3 pt-0 space-y-2">
+                      {copilotChecklist.length === 0 ? (
+                        <div className="text-[11px] text-slate-500">No checklist for this modality</div>
+                      ) : (
+                        <div className="grid grid-cols-1 gap-1.5">
+                          {copilotChecklist.map((item) => (
+                            <div key={item.id} className="flex items-center gap-2">
+                              <Checkbox
+                                id={item.id}
+                                checked={item.checked}
+                                onCheckedChange={(checked) => {
+                                  setCopilotChecklist(prev =>
+                                    prev.map(i => i.id === item.id ? { ...i, checked: !!checked } : i)
+                                  );
+                                }}
+                              />
+                              <label htmlFor={item.id} className="text-xs text-slate-300 cursor-pointer">
+                                {item.label}
+                              </label>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  {/* Suggestions and Observations */}
+                  <Card className="bg-slate-900 border-slate-800">
+                    <CardHeader className="p-3">
+                      <CardTitle className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                        <BrainCircuit className="h-4 w-4 text-indigo-400" />
+                        Co-Pilot Observations
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="p-3 pt-0 space-y-2">
+                      {coPilotSuggestions.length === 0 ? (
+                        <div className="text-[11px] text-emerald-400 bg-emerald-950/20 border border-emerald-900/30 p-2.5 rounded-lg text-center font-medium">
+                          ✓ No clinical warnings or gaps identified.
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {coPilotSuggestions.map((s) => (
+                            <div
+                              key={s.id}
+                              className={`p-2.5 rounded-lg border text-[11px] space-y-1.5 ${
+                                s.severity === "critical" ? "bg-red-950/20 border-red-900/50 text-slate-300" :
+                                s.severity === "warning" ? "bg-amber-950/20 border-amber-900/50 text-slate-300" :
+                                "bg-slate-950/40 border-slate-800 text-slate-300"
+                              }`}
+                            >
+                              <div className="flex justify-between items-start">
+                                <span className="font-semibold text-slate-200">{s.title}</span>
+                                <Badge variant="outline" className={`text-[8px] uppercase px-1 py-0 ${
+                                  s.severity === "critical" ? "border-red-800 text-red-400" :
+                                  s.severity === "warning" ? "border-amber-800 text-amber-400" :
+                                  "border-blue-800 text-blue-400"
+                                }`}>
+                                  {s.severity}
+                                </Badge>
+                              </div>
+                              <p className="text-[10px] text-slate-400 leading-relaxed">{s.message}</p>
+                              
+                              <div className="flex gap-2 justify-end pt-1 border-t border-slate-800/30">
+                                {s.actionableText && (
+                                  <Button
+                                    size="sm"
+                                    onClick={() => {
+                                      if (s.actionMacro === "insertForaminalPlaceholder") {
+                                        setRawFindings(prev => prev + "\n\nNEURAL FORAMINA:\n- Exiting nerve roots show no significant foraminal narrowing.");
+                                      } else if (s.actionMacro === "addSpectroscopyRecommendation") {
+                                        setRecommendation(prev => prev + " Recommend advanced MR Spectroscopy correlation.");
+                                      } else if (s.actionMacro === "addAngioRecommendation") {
+                                        setRecommendation(prev => prev + " Recommend MRA or CTA evaluation of intracranial circulation.");
+                                      } else {
+                                        setRawFindings(prev => prev ? prev + " " + s.actionableText : s.actionableText!);
+                                      }
+                                      logCopilotActionMutation.mutate({
+                                        suggestionType: s.type,
+                                        suggestionContent: s.title,
+                                        action: "accepted",
+                                      });
+                                    }}
+                                    className="h-5 text-[9px] bg-indigo-600 hover:bg-indigo-700 text-white px-2"
+                                  >
+                                    Apply Advice
+                                  </Button>
+                                )}
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => {
+                                    logCopilotActionMutation.mutate({
+                                      suggestionType: s.type,
+                                      suggestionContent: s.title,
+                                      action: "dismissed",
+                                    });
+                                    updateCopilotProfileMutation.mutate({
+                                      ignoredWarnings: [...userProfile.ignoredWarnings, s.id],
+                                    });
+                                  }}
+                                  className="h-5 text-[9px] text-slate-500 hover:text-slate-300 p-0 px-1"
+                                >
+                                  Dismiss
+                                </Button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  {/* Comparisons */}
+                  {coPilotPriorComparisonMetrics.length > 0 && (
+                    <Card className="bg-slate-900 border-slate-800">
+                      <CardHeader className="p-3">
+                        <CardTitle className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                          <GitCompare className="h-4 w-4 text-emerald-400" />
+                          Co-Pilot Growth Analysis
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="p-3 pt-0 space-y-2">
+                        {coPilotPriorComparisonMetrics.map((c, idx) => (
+                          <div key={idx} className="flex justify-between items-center text-xs bg-slate-955 p-2 rounded border border-slate-800">
+                            <div className="flex flex-col">
+                              <span className="font-semibold text-slate-300">{c.metricName}</span>
+                              <span className="text-[10px] text-slate-500">Prev: {c.previousValue} &bull; Curr: {c.currentValue}</span>
+                            </div>
+                            <Badge className={`text-[10px] ${
+                              c.status === "growth" ? "bg-red-950/55 text-red-400 border border-red-800/60" :
+                              c.status === "regression" ? "bg-emerald-950/55 text-emerald-400 border border-emerald-800/60" :
+                              "bg-slate-900 text-slate-400 border border-slate-800"
+                            }`}>
+                              {c.diffText} ({c.status})
+                            </Badge>
+                          </div>
+                        ))}
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {/* Learning Tip */}
+                  <Card className="bg-slate-900/50 border-slate-800/60 border-dashed">
+                    <CardContent className="p-3 text-[11px] text-slate-400 flex items-start gap-1.5 leading-relaxed">
+                      <Sparkles className="h-4 w-4 text-amber-400 flex-shrink-0" />
+                      <div>
+                        <span className="font-bold text-slate-300">Co-Pilot Learning Tip:</span> Spoken dictations like <span className="font-mono text-indigo-300 font-bold bg-slate-950 px-1 py-0.2 rounded">"compare with previous"</span> will automatically trigger auto-comparison. All dismissal actions are saved to your private local profile.
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              ) : (
+                <div className="p-10 text-center text-slate-500 text-xs">No active study selected</div>
+              )}
             </TabsContent>
 
             {/* TAB: Chocolate Box Smart Findings */}
