@@ -391,9 +391,63 @@ export default function BillingDesk() {
   }, []);
   const isStepped = layoutMode === "stepped";
   const isCompact = layoutMode === "compact";
-  const autoAdvance = isStepped && isFeatureEnabled("billingDeskAutoAdvance");
-  const showQuickTestsSetting = isFeatureEnabled("billingDeskQuickTests") !== false;
-  const showPackagesSetting = isFeatureEnabled("billingDeskShowPackages") !== false;
+
+  // ── Reactive feature flags ────────────────────────────────────────────────
+  // These were previously plain derived values (isFeatureEnabled() called once
+  // at render). The bug: when Settings wrote to localStorage via setFeatureFlag(),
+  // nothing triggered a re-render — so BillingDesk never picked up the change
+  // until a full page refresh.
+  //
+  // Fix: each flag lives in its own useState, seeded from localStorage on mount.
+  // A single "featureFlagsChanged" event listener (dispatched by setFeatureFlag)
+  // re-reads all flags at once when any setting changes. The "storage" event is
+  // also handled for cross-tab propagation (e.g. if the user has Settings open
+  // in one tab and BillingDesk open in another).
+  const readFlags = () => ({
+    autoAdvance:          isStepped && isFeatureEnabled("billingDeskAutoAdvance"),
+    showQuickTests:       isFeatureEnabled("billingDeskQuickTests") !== false,
+    showPackages:         isFeatureEnabled("billingDeskShowPackages") !== false,
+    stickyBillSummary:    isFeatureEnabled("billingDeskStickyBillSummary") !== false,
+    stickyPayment:        isFeatureEnabled("billingDeskStickyPayment") !== false,
+    denseTestList:        isFeatureEnabled("billingDeskDenseTestList"),
+    largeFont:            isFeatureEnabled("billingDeskLargeFont"),
+    showOptionalFields:   isFeatureEnabled("billingDeskShowOptionalFields"),
+    keyboardNav:          isFeatureEnabled("billingDeskKeyboardNav") !== false,
+    autoFocusNext:        isFeatureEnabled("billingDeskAutoFocus") !== false,
+  });
+
+  const [billingFlags, setBillingFlags] = useState(readFlags);
+
+  useEffect(() => {
+    function syncFlags() { setBillingFlags(readFlags()); }
+    // featureFlagsChanged: fires in the same tab when setFeatureFlag() is called
+    window.addEventListener("featureFlagsChanged", syncFlags);
+    // storage: fires when another tab writes to localStorage
+    window.addEventListener("storage", syncFlags);
+    return () => {
+      window.removeEventListener("featureFlagsChanged", syncFlags);
+      window.removeEventListener("storage", syncFlags);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStepped]);
+
+  // Destructure for easy use throughout the component
+  const {
+    autoAdvance,
+    showQuickTestsSetting,
+    showPackagesSetting,
+    stickyBillSummary,
+    stickyPayment: _stickyPayment,
+    denseTestList,
+    largeFont,
+    showOptionalFields,
+    keyboardNav: _keyboardNav,
+    autoFocusNext: _autoFocusNext,
+  } = {
+    ...billingFlags,
+    showQuickTestsSetting: billingFlags.showQuickTests,
+    showPackagesSetting:   billingFlags.showPackages,
+  };
   const [currentStep, setCurrentStep] = useState(1);
   const [stepCompleted, setStepCompleted] = useState<Set<number>>(new Set());
   const stepContentRef = useRef<HTMLDivElement>(null);
@@ -1399,8 +1453,17 @@ export default function BillingDesk() {
   // ──────────────────────────────────────────────────────
   // RENDER
   // ──────────────────────────────────────────────────────
+  // Build a CSS class string from the reactive billing flags so the entire
+  // desk picks up display preferences immediately when Settings changes them.
+  const deskClass = [
+    "h-full flex flex-col overflow-hidden bg-slate-50 dark:bg-slate-900/20",
+    denseTestList   ? "billing-dense"    : "",
+    largeFont       ? "billing-large-font" : "",
+    isCompact       ? "billing-compact"  : "",
+  ].filter(Boolean).join(" ");
+
   return (
-    <div className="h-full flex flex-col overflow-hidden bg-slate-50 dark:bg-slate-900/20">
+    <div className={deskClass}>
 
       {/* ── TOP BAR — single ultra-compact row ── */}
       <div className="flex-shrink-0 bg-card border-b border-card-border px-2 sm:px-3 py-1 flex items-center gap-2 shadow-sm">

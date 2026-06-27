@@ -342,6 +342,17 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   annotationLayer: false,
   hideDeprecatedNav: true,
   billingDeskStepped: false,
+  // Billing Desk display preferences (all apply immediately without page refresh)
+  billingDeskQuickTests: true,       // Show quick test slots
+  billingDeskShowPackages: true,     // Show packages section
+  billingDeskAutoAdvance: false,     // Auto-advance stepped wizard
+  billingDeskStickyBillSummary: true,  // Keep bill summary always visible
+  billingDeskStickyPayment: true,    // Keep payment section always visible
+  billingDeskDenseTestList: false,   // Reduce row height in test catalog
+  billingDeskLargeFont: false,       // Increase font size for accessibility
+  billingDeskShowOptionalFields: false, // Show DOB, blood group, address always
+  billingDeskKeyboardNav: true,      // Enable keyboard shortcuts
+  billingDeskAutoFocus: true,        // Auto-focus next field after selection
 };
 
 export function getFeatureFlags(): Record<string, boolean> {
@@ -363,6 +374,11 @@ export function setFeatureFlag(flag: string, value: boolean): void {
     const current = getFeatureFlags();
     current[flag] = value;
     window.localStorage.setItem("featureFlags", JSON.stringify(current));
+    // Notify all same-tab components that a feature flag changed.
+    // The "storage" event only fires in OTHER tabs, not the current one.
+    // This custom event fills that gap so components re-render immediately
+    // without a page refresh (fixes billing desk settings live-update bug).
+    window.dispatchEvent(new CustomEvent("featureFlagsChanged", { detail: { flag, value } }));
   } catch { /* ignore */ }
 }
 

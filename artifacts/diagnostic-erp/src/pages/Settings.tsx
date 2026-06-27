@@ -815,31 +815,35 @@ function BillingDeskLayoutCard() {
   const [autoAdvance, setAutoAdvance] = useState(() => isFeatureEnabled("billingDeskAutoAdvance"));
   const [showQuickTests, setShowQuickTests] = useState(() => isFeatureEnabled("billingDeskQuickTests") !== false);
   const [showPackages, setShowPackages] = useState(() => isFeatureEnabled("billingDeskShowPackages") !== false);
+  const [stickyBillSummary, setStickyBillSummary] = useState(() => isFeatureEnabled("billingDeskStickyBillSummary") !== false);
+  const [stickyPayment, setStickyPayment] = useState(() => isFeatureEnabled("billingDeskStickyPayment") !== false);
+  const [denseTestList, setDenseTestList] = useState(() => isFeatureEnabled("billingDeskDenseTestList"));
+  const [largeFont, setLargeFont] = useState(() => isFeatureEnabled("billingDeskLargeFont"));
+  const [showOptionalFields, setShowOptionalFields] = useState(() => isFeatureEnabled("billingDeskShowOptionalFields"));
+  const [keyboardNav, setKeyboardNav] = useState(() => isFeatureEnabled("billingDeskKeyboardNav") !== false);
+  const [autoFocusNext, setAutoFocusNext] = useState(() => isFeatureEnabled("billingDeskAutoFocus") !== false);
+
+  // All toggle helpers follow the same pattern: update local state + write to
+  // localStorage via setFeatureFlag (which now dispatches featureFlagsChanged,
+  // making BillingDesk re-read all flags immediately without a page refresh).
+  const toggle = (flag: string, cur: boolean, setter: (v: boolean) => void) => {
+    const next = !cur;
+    setter(next);
+    setFeatureFlag(flag, next);
+  };
 
   const saveLayout = (next: BillingLayout) => {
     setLayout(next);
     localStorage.setItem("billingDeskLayout", next);
     setFeatureFlag("billingDeskStepped", next === "stepped");
+    // billingDeskLayoutChanged: wakes up BillingDesk's layoutMode state
+    // featureFlagsChanged: dispatched automatically by setFeatureFlag above
     window.dispatchEvent(new Event("billingDeskLayoutChanged"));
   };
 
-  const toggleAutoAdvance = () => {
-    const next = !autoAdvance;
-    setAutoAdvance(next);
-    setFeatureFlag("billingDeskAutoAdvance", next);
-  };
-
-  const toggleQuickTests = () => {
-    const next = !showQuickTests;
-    setShowQuickTests(next);
-    setFeatureFlag("billingDeskQuickTests", next);
-  };
-
-  const toggleShowPackages = () => {
-    const next = !showPackages;
-    setShowPackages(next);
-    setFeatureFlag("billingDeskShowPackages", next);
-  };
+  const toggleAutoAdvance   = () => toggle("billingDeskAutoAdvance",      autoAdvance,       setAutoAdvance);
+  const toggleQuickTests    = () => toggle("billingDeskQuickTests",        showQuickTests,    setShowQuickTests);
+  const toggleShowPackages  = () => toggle("billingDeskShowPackages",      showPackages,      setShowPackages);
 
   const layouts: { id: BillingLayout; label: string; desc: string }[] = [
     { id: "unified", label: "Unified Single Page", desc: "Everything on one screen — patient, tests, doctor, payment, and print. Best for fast billing." },
@@ -897,7 +901,7 @@ function BillingDeskLayoutCard() {
         </div>
       )}
 
-      {/* Universal options */}
+      {/* Universal options — Sections */}
       <div className="space-y-2 pt-2 border-t border-card-border">
         <p className="text-sm font-medium">Show / Hide Sections</p>
         <label className="flex items-center justify-between px-3 py-2 rounded-lg border border-card-border bg-muted/20 cursor-pointer">
@@ -914,7 +918,96 @@ function BillingDeskLayoutCard() {
           </span>
           <input type="checkbox" className="sr-only" checked={showPackages} onChange={toggleShowPackages} />
         </label>
+        <label className="flex items-center justify-between px-3 py-2 rounded-lg border border-card-border bg-muted/20 cursor-pointer">
+          <div>
+            <span className="text-sm">Always Show Optional Fields</span>
+            <div className="text-[11px] text-muted-foreground">DOB, blood group, address always visible without expanding</div>
+          </div>
+          <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${showOptionalFields ? "bg-primary" : "bg-muted-foreground/40"}`}>
+            <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${showOptionalFields ? "translate-x-5" : "translate-x-1"}`} />
+          </span>
+          <input type="checkbox" className="sr-only" checked={showOptionalFields} onChange={() => toggle("billingDeskShowOptionalFields", showOptionalFields, setShowOptionalFields)} />
+        </label>
       </div>
+
+      {/* Density & Font */}
+      <div className="space-y-2 pt-2 border-t border-card-border">
+        <p className="text-sm font-medium">Density &amp; Typography</p>
+        <label className="flex items-center justify-between px-3 py-2 rounded-lg border border-card-border bg-muted/20 cursor-pointer">
+          <div>
+            <span className="text-sm">Dense Test List</span>
+            <div className="text-[11px] text-muted-foreground">Reduce row height in test catalog — show more tests without scrolling</div>
+          </div>
+          <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${denseTestList ? "bg-primary" : "bg-muted-foreground/40"}`}>
+            <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${denseTestList ? "translate-x-5" : "translate-x-1"}`} />
+          </span>
+          <input type="checkbox" className="sr-only" checked={denseTestList} onChange={() => toggle("billingDeskDenseTestList", denseTestList, setDenseTestList)} />
+        </label>
+        <label className="flex items-center justify-between px-3 py-2 rounded-lg border border-card-border bg-muted/20 cursor-pointer">
+          <div>
+            <span className="text-sm">Large Font Mode</span>
+            <div className="text-[11px] text-muted-foreground">Increase font size — useful for large monitors or accessibility</div>
+          </div>
+          <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${largeFont ? "bg-primary" : "bg-muted-foreground/40"}`}>
+            <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${largeFont ? "translate-x-5" : "translate-x-1"}`} />
+          </span>
+          <input type="checkbox" className="sr-only" checked={largeFont} onChange={() => toggle("billingDeskLargeFont", largeFont, setLargeFont)} />
+        </label>
+      </div>
+
+      {/* Layout stickiness */}
+      <div className="space-y-2 pt-2 border-t border-card-border">
+        <p className="text-sm font-medium">Sticky Panels</p>
+        <label className="flex items-center justify-between px-3 py-2 rounded-lg border border-card-border bg-muted/20 cursor-pointer">
+          <div>
+            <span className="text-sm">Sticky Bill Summary</span>
+            <div className="text-[11px] text-muted-foreground">Bill total, discount, and due always visible — never hidden by scrolling</div>
+          </div>
+          <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${stickyBillSummary ? "bg-primary" : "bg-muted-foreground/40"}`}>
+            <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${stickyBillSummary ? "translate-x-5" : "translate-x-1"}`} />
+          </span>
+          <input type="checkbox" className="sr-only" checked={stickyBillSummary} onChange={() => toggle("billingDeskStickyBillSummary", stickyBillSummary, setStickyBillSummary)} />
+        </label>
+        <label className="flex items-center justify-between px-3 py-2 rounded-lg border border-card-border bg-muted/20 cursor-pointer">
+          <div>
+            <span className="text-sm">Sticky Payment Panel</span>
+            <div className="text-[11px] text-muted-foreground">Payment method options always in view</div>
+          </div>
+          <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${stickyPayment ? "bg-primary" : "bg-muted-foreground/40"}`}>
+            <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${stickyPayment ? "translate-x-5" : "translate-x-1"}`} />
+          </span>
+          <input type="checkbox" className="sr-only" checked={stickyPayment} onChange={() => toggle("billingDeskStickyPayment", stickyPayment, setStickyPayment)} />
+        </label>
+      </div>
+
+      {/* Keyboard & workflow */}
+      <div className="space-y-2 pt-2 border-t border-card-border">
+        <p className="text-sm font-medium">Keyboard &amp; Workflow</p>
+        <label className="flex items-center justify-between px-3 py-2 rounded-lg border border-card-border bg-muted/20 cursor-pointer">
+          <div>
+            <span className="text-sm">Keyboard Shortcuts</span>
+            <div className="text-[11px] text-muted-foreground">Ctrl+P Print, Ctrl+S Save, F2 Patient, F4 Payment</div>
+          </div>
+          <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${keyboardNav ? "bg-primary" : "bg-muted-foreground/40"}`}>
+            <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${keyboardNav ? "translate-x-5" : "translate-x-1"}`} />
+          </span>
+          <input type="checkbox" className="sr-only" checked={keyboardNav} onChange={() => toggle("billingDeskKeyboardNav", keyboardNav, setKeyboardNav)} />
+        </label>
+        <label className="flex items-center justify-between px-3 py-2 rounded-lg border border-card-border bg-muted/20 cursor-pointer">
+          <div>
+            <span className="text-sm">Auto-focus Next Field</span>
+            <div className="text-[11px] text-muted-foreground">After selecting a patient, focus jumps to test search automatically</div>
+          </div>
+          <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${autoFocusNext ? "bg-primary" : "bg-muted-foreground/40"}`}>
+            <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${autoFocusNext ? "translate-x-5" : "translate-x-1"}`} />
+          </span>
+          <input type="checkbox" className="sr-only" checked={autoFocusNext} onChange={() => toggle("billingDeskAutoFocus", autoFocusNext, setAutoFocusNext)} />
+        </label>
+      </div>
+
+      <p className="text-[11px] text-muted-foreground pt-1">
+        ✦ All settings apply immediately — no page refresh needed. Stored locally on this device only.
+      </p>
     </div>
   );
 }

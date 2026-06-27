@@ -254,3 +254,50 @@
 /* Hide scrollbar while keeping scroll functionality (used on horizontal pill rows) */
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* ── Billing Desk display preference CSS classes ──────────────────────────────
+   Applied to the root billing desk container when feature flags are enabled.
+   All changes are immediate — no page refresh required.
+   No business logic is affected. Layout and spacing only.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* Dense mode: reduces row padding in the test catalog and selected test list */
+.billing-dense [data-billing-test-row] {
+  padding-top: 2px !important;
+  padding-bottom: 2px !important;
+}
+.billing-dense [data-billing-catalog-row] {
+  padding-top: 3px !important;
+  padding-bottom: 3px !important;
+  min-height: 28px !important;
+}
+.billing-dense [data-billing-section] {
+  margin-bottom: 6px !important;
+}
+
+/* Large font mode: increases base font size for accessibility/large monitors */
+.billing-large-font {
+  font-size: 13px !important;
+}
+.billing-large-font [data-billing-test-name] {
+  font-size: 13px !important;
+}
+.billing-large-font [data-billing-amount] {
+  font-size: 14px !important;
+}
+.billing-large-font [data-billing-total] {
+  font-size: 22px !important;
+}
+
+/* Compact layout mode: tighter overall spacing for smaller screens */
+.billing-compact [data-billing-section] {
+  padding: 6px 8px !important;
+  margin-bottom: 4px !important;
+}
+.billing-compact [data-billing-section-header] {
+  padding: 4px 8px !important;
+  font-size: 10px !important;
+}
+.billing-compact [data-billing-patient-field] {
+  padding: 2px 0 !important;
+}
