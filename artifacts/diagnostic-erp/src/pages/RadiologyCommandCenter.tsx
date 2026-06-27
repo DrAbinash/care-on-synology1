@@ -34,6 +34,7 @@ import ChocolateBoxPanel, { type ChocolateFinding } from "@/components/Chocolate
 import PreferencesPanel from "@/components/PreferencesPanel";
 import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
 import ProtocolQAChecklist from "@/components/ProtocolQAChecklist";
+import LesionComparisonPanel from "@/components/LesionComparisonPanel";
 import LocalAiPanel from "@/components/LocalAiPanel";
 import NeuroPromptPanel from "@/components/NeuroPromptPanel";
 import { Grid } from "lucide-react";
@@ -1994,6 +1995,26 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                               ))}
                             </div>
                           </div>
+                        )}
+
+                        {/* Measurement Comparison — Phase 4 */}
+                        {study.patientId && (
+                          <LesionComparisonPanel
+                            patientId={study.patientId}
+                            currentStudyId={study.studyId}
+                            currentModality={study.modality}
+                            onInsertFindings={(text) => {
+                              setRawFindings((prev) => {
+                                const MARKER = "COMPARISON WITH PRIOR";
+                                const idx = prev.indexOf(MARKER);
+                                if (idx !== -1) {
+                                  return prev.slice(0, idx).trimEnd() + (prev.slice(0, idx).trimEnd() ? "\n\n" : "") + text;
+                                }
+                                return prev ? prev.trimEnd() + "\n\n" + text : text;
+                              });
+                              toast({ title: "Comparison inserted into findings" });
+                            }}
+                          />
                         )}
 
                         {/* Prior Reports List */}
