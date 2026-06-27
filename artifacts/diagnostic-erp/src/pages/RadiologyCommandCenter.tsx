@@ -203,6 +203,8 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
   // Rescue draft — offered as a restore banner when a session expiry
   // caused a redirect before the radiologist could save manually
   const [rescueDraft, setRescueDraft] = useState<import("@/lib/draftRescue").RescueDraft | null>(null);
+  // AI contribution tracking (A8) — total characters inserted by AI tools
+  const [aiCharsInserted, setAiCharsInserted] = useState(0);
   const [recommendation, setRecommendation] = useState("Please correlate with clinical findings.");
   const [isCritical, setIsCritical] = useState(false);
   const [criticalNote, setCriticalNote] = useState("");
@@ -663,6 +665,7 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
     setIsCritical(false);
     setCriticalNote("");
     setAiOutput("");
+    setAiCharsInserted(0);
     // Auto-select study-aware findings builder
     const detected = detectBuilderType(study.modality, study.studyDescription);
     if (detected) {
@@ -769,6 +772,9 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
   const saveDraftMutation = useMutation({
     mutationFn: async () => {
       if (!study) return;
+      // Compute AI contribution % — chars inserted by AI / total chars in findings+impression
+      const totalChars = (rawFindings.length + impression.filter(Boolean).join("").length) || 1;
+      const aiPct = Math.min(100, Math.round((aiCharsInserted / totalChars) * 100));
       return api.post("/api/radiology/report-generator/save-draft", {
         studyId: study.studyId,
         worklistId: study.id,
@@ -780,6 +786,7 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
         rawFindings,
         findingsSections: useStructured ? findingsMap : null,
         impression: impression.filter(Boolean),
+        aiContributionPct: aiPct,
         recommendation,
       });
     },
@@ -2109,6 +2116,7 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                         }}
                         onInsertFindings={(text) => {
                           setRawFindings((prev) => prev ? prev + "\n\n" + text : text);
+                          setAiCharsInserted((n) => n + text.length);
                           toast({ title: "AI output inserted into findings draft" });
                         }}
                       />
@@ -2119,6 +2127,7 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                         study={study}
                         onInsertFindings={(text) => {
                           setRawFindings((prev) => prev ? prev + "\n\n" + text : text);
+                          setAiCharsInserted((n) => n + text.length);
                           toast({ title: "AI output inserted into findings draft" });
                         }}
                         onInsertImpression={(text) => {
@@ -2126,12 +2135,9 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                             const items = text.split("\n").map((l) => l.replace(/^[-•*\d.]+\s*/, "").trim()).filter(Boolean);
                             return [...prev.filter(Boolean), ...items];
                           });
+                          setAiCharsInserted((n) => n + text.length);
                           toast({ title: "AI impression inserted into draft" });
                         }}
-                        currentFindings={rawFindings}
-                      />
-                    </div>
-                  </TabsContent>
 
                 </Tabs>
               </div>

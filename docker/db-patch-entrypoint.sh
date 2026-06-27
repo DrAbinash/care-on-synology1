@@ -252,6 +252,7 @@ run_feature_migration "Performance indexes — bills/payments/vouchers" "add_per
 run_feature_migration "Voice dictation tables"                         "voice_tables_migration.sql"
 run_feature_migration "Payment idempotency unique index (Fix C2)"      "add_payment_idempotency_index.sql"
 run_feature_migration "Referral doctor indexes (Fix H2)"               "add_referral_indexes.sql"
+run_feature_migration "AI contribution pct column (A8)"                "add_ai_contribution_pct.sql"
 
 echo "      Feature migrations complete."
 echo ""

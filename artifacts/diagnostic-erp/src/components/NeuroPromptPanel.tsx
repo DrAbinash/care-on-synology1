@@ -25,6 +25,7 @@ import {
   ChevronRight, Sparkles, Brain, Zap, RefreshCw,
   FileText, Search, ArrowRight,
 } from "lucide-react";
+import FazekasGuide from "@/components/FazekasGuide";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -279,6 +280,15 @@ export default function NeuroPromptPanel({
             ))}
           </div>
         </div>
+      )}
+
+      {/* Fazekas guide — shown when White Matter category selected */}
+      {selectedEntry && selectedEntry.name.toLowerCase().includes("white") && (
+        <FazekasGuide
+          onSelectGrade={(text) => {
+            onInsertImpression(text);
+          }}
+        />
       )}
 
       {/* Prompt type selector */}

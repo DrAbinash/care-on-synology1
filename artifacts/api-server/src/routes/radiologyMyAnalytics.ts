@@ -115,8 +115,8 @@ radiologyMyAnalyticsRouter.get("/", async (req: Request, res: Response): Promise
       // Table may not exist in all environments — return empty
     }
 
-    // ── 6. AI prompt library usage ───────────────────────────────────────────
-    // Counts how many prompt library entries this radiologist has edited/created
+    // ── 6. AI contribution stats ──────────────────────────────────────────────
+    // Combines prompt library edits + avg AI contribution % from saved drafts
     let aiRaw: { rows: any[] } = { rows: [] };
     try {
       aiRaw = await db.execute(sql`
@@ -129,6 +129,22 @@ radiologyMyAnalyticsRouter.get("/", async (req: Request, res: Response): Promise
       `);
     } catch {
       // Table may not exist — return empty
+    }
+
+    let aiDraftRaw: { rows: any[] } = { rows: [] };
+    try {
+      aiDraftRaw = await db.execute(sql`
+        SELECT
+          COUNT(*)::int                                              AS drafts_with_ai,
+          ROUND(AVG(ai_contribution_pct)::numeric, 1)               AS avg_ai_pct,
+          ROUND(MAX(ai_contribution_pct)::numeric, 1)               AS max_ai_pct
+        FROM radiology_report_drafts
+        WHERE created_by = ${radiologist}
+          AND ai_contribution_pct IS NOT NULL
+          AND created_at >= NOW() - (${days} || ' days')::interval
+      `);
+    } catch {
+      // Column may not exist yet — return empty
     }
 
     // ── 7. Priority breakdown ────────────────────────────────────────────────
@@ -180,6 +196,9 @@ radiologyMyAnalyticsRouter.get("/", async (req: Request, res: Response): Promise
       aiPromptStats: {
         promptEdits:       Number(ai.prompt_edits       ?? 0),
         categoriesEdited:  Number(ai.categories_edited  ?? 0),
+        draftsWithAi:      Number((aiDraftRaw.rows[0] as any)?.drafts_with_ai  ?? 0),
+        avgAiPct:          Number((aiDraftRaw.rows[0] as any)?.avg_ai_pct     ?? 0),
+        maxAiPct:          Number((aiDraftRaw.rows[0] as any)?.max_ai_pct     ?? 0),
       },
       priorityBreakdown: (priorityRaw.rows as any[]).map((r) => ({
         priority: r.priority as string,

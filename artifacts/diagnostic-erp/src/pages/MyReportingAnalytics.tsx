@@ -422,7 +422,17 @@ export default function MyReportingAnalytics() {
                   <span className="text-slate-500">Categories customised</span>
                   <span className="font-mono text-slate-300">{ai?.categoriesEdited ?? 0}</span>
                 </div>
-                {(ai?.promptEdits ?? 0) === 0 && (
+                <div className="flex items-center justify-between text-[10px]">
+                  <span className="text-slate-500">Reports using AI</span>
+                  <span className="font-mono text-slate-300">{ai?.draftsWithAi ?? 0}</span>
+                </div>
+                {(ai?.avgAiPct ?? 0) > 0 && (
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="text-slate-500">Avg AI contribution</span>
+                    <span className="font-mono font-bold text-purple-300">{ai?.avgAiPct}%</span>
+                  </div>
+                )}
+                {(ai?.promptEdits ?? 0) === 0 && (ai?.draftsWithAi ?? 0) === 0 && (
                   <p className="text-[9px] text-slate-600 pt-1">
                     Prompt usage is tracked when you edit prompts in{" "}
                     <span className="text-slate-500">Radiology → AI Prompt Manager</span>.

@@ -325,6 +325,33 @@ ledgersRouter.post("/:id/reset", async (req, res) => {
   );
   const patientIds = patientRows.map(r => r.id);
 
+  // ── Orphan guard — refuse to wipe patients who have accounting vouchers ──────
+  // Deleting a patient with linked vouchers breaks the Trial Balance because
+  // the voucher rows (patient_id FK) point to a non-existent patient.
+  // We check bills (which cascade into vouchers via auto-voucher) and block
+  // only if paid or finalised bills exist. Empty/cancelled-only bills are safe.
+  if (patientIds.length > 0) {
+    const [financiallyActive] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(billsTable)
+      .where(
+        and(
+          inArray(billsTable.patientId, patientIds),
+          sql`${billsTable.status} IN ('paid','partial')`,
+        ),
+      );
+
+    if ((financiallyActive?.count ?? 0) > 0) {
+      res.status(409).json({
+        error: "Cannot wipe ledger: patients have settled bills and accounting vouchers. " +
+          "Deleting them would break the Trial Balance. " +
+          "Archive the ledger instead, or contact the finance team.",
+        patientsWithBills: financiallyActive.count,
+      });
+      return;
+    }
+  }
+
   // Wipe in dependency-safe order
   if (billIds.length) {
     await db.delete(paymentsTable).where(inArray(paymentsTable.billId, billIds));

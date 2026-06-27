@@ -1234,6 +1234,7 @@ const SaveDraftBody = z.object({
   recommendation: z.string().optional(),
   formattedReportHtml: z.string().optional(),
   formattedReportText: z.string().optional(),
+  aiContributionPct: z.number().min(0).max(100).optional(),
 });
 
 radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest, res: Response) => {
@@ -1262,6 +1263,7 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     recommendation: rest.recommendation ?? null,
     formattedReportHtml: rest.formattedReportHtml ?? null,
     formattedReportText: rest.formattedReportText ?? null,
+    aiContributionPct: rest.aiContributionPct ?? null,
   };
 
   if (id) {
