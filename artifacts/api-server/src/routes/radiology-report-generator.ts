@@ -44,6 +44,8 @@ import {
   spinalMeasurementsTable,
   radiologySmartMacrosTable,
   radiologyInstitutionalStylesTable,
+  mriProtocolSpecsTable,
+  mriProtocolQualityResultsTable,
 } from "@workspace/db/schema";
 import { eq, and, desc, isNull, asc, ilike, or } from "drizzle-orm";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
@@ -90,6 +92,10 @@ export interface ReportTemplate {
   studyName: string;
   technique: string;
   sections: string[];
+  /** Links to mri_protocol_specs.protocol_key — undefined for non-MRI templates */
+  protocolId?: string;
+  /** Ordered QA checklist item IDs the radiologist should tick before signing */
+  qualityChecklist?: string[];
 }
 
 export const RADIOLOGY_TEMPLATES: Record<string, ReportTemplate> = {
@@ -97,9 +103,17 @@ export const RADIOLOGY_TEMPLATES: Record<string, ReportTemplate> = {
     templateId: "MRI_BRAIN_PLAIN",
     modality: "MRI",
     studyName: "MRI BRAIN PLAIN",
+    protocolId: "MRI_BRAIN_PLAIN",
     technique:
-      "MRI of brain has been performed on 3 Tesla MRI scanner with multi-sequence, multi-planar acquisition using standard T1, T2, FLAIR, DWI, ADC and SWI sequences studied in axial, sagittal and coronal planes.",
+      "MRI of brain has been performed on a 1.5T / 3T scanner without intravenous contrast. " +
+      "Sequences acquired: T1-weighted sagittal (localiser, TR ~500 ms / TE ~20 ms, 5 mm), " +
+      "T2-weighted axial FSE (TR 4000–5000 ms / TE 100–120 ms, 5 mm / 1 mm gap, foramen magnum to vertex), " +
+      "FLAIR axial (TR ~8500 ms / TE ~120 ms / TI ~2300 ms, 5 mm — CSF-suppressed), " +
+      "DWI axial echo-planar (b = 0 & 1000 s/mm²) with corresponding ADC map, " +
+      "GRE / SWI axial (susceptibility-weighted for haemorrhage, calcification, iron deposition), " +
+      "and MR angiography TOF (non-contrast, Circle of Willis and major intracranial branches).",
     sections: [
+      "QUALITY ASSESSMENT",
       "BRAIN PARENCHYMA",
       "WHITE MATTER",
       "VENTRICULAR SYSTEM / CSF SPACES",
@@ -107,88 +121,181 @@ export const RADIOLOGY_TEMPLATES: Record<string, ReportTemplate> = {
       "MIDLINE STRUCTURES",
       "SELLAR / PARASELLAR REGION",
       "ORBITS / PNS / MASTOIDS",
-      "VASCULAR FLOW VOIDS",
+      "VASCULAR FLOW VOIDS / MRA",
+      "MENINGES & EXTRAAXIAL SPACES",
+    ],
+    qualityChecklist: [
+      "motion_artifact",
+      "snr_adequate",
+      "coverage_complete",
+      "all_sequences_present",
+      "flair_csf_suppression",
+      "dwi_adc_pair",
+      "swi_blurring",
     ],
   },
   MRI_BRAIN_CONTRAST: {
     templateId: "MRI_BRAIN_CONTRAST",
     modality: "MRI",
     studyName: "MRI BRAIN WITH CONTRAST",
+    protocolId: "MRI_BRAIN_CONTRAST",
     technique:
-      "MRI of brain has been performed on 3 Tesla MRI scanner with multi-sequence, multi-planar acquisition using standard T1, T2, FLAIR, DWI, ADC and SWI sequences followed by post-gadolinium T1W sequences in axial, sagittal and coronal planes.",
+      "MRI of brain has been performed on a 1.5T / 3T scanner with gadolinium-based contrast (0.1 mmol/kg IV). " +
+      "Pre-contrast sequences: T1-weighted sagittal (localiser), T2-weighted axial FSE (TR 4000–5000 ms / TE 100–120 ms, 5 mm), " +
+      "FLAIR axial (TR ~8500 ms / TE ~120 ms / TI ~2300 ms), " +
+      "DWI axial echo-planar (b = 0 & 1000 s/mm²) with ADC map, " +
+      "GRE / SWI axial. " +
+      "Post-contrast sequences (5–10 min post-injection): T1-weighted axial, sagittal and coronal with fat saturation where appropriate. " +
+      "Enhancement pattern, BBB integrity and leptomeningeal involvement assessed on delayed T1W series.",
     sections: [
+      "QUALITY ASSESSMENT",
       "BRAIN PARENCHYMA",
       "WHITE MATTER",
       "VENTRICULAR SYSTEM / CSF SPACES",
-      "POST-CONTRAST ENHANCEMENT",
+      "POST-CONTRAST ENHANCEMENT PATTERN",
+      "MENINGES & LEPTOMENINGEAL SPACES",
       "POSTERIOR FOSSA",
       "MIDLINE STRUCTURES",
       "SELLAR / PARASELLAR REGION",
       "ORBITS / PNS / MASTOIDS",
+      "VASCULAR FLOW VOIDS / MRA",
+    ],
+    qualityChecklist: [
+      "motion_artifact",
+      "snr_adequate",
+      "coverage_complete",
+      "all_sequences_present",
+      "contrast_timing",
+      "flair_csf_suppression",
+      "dwi_adc_pair",
+      "post_gd_fat_sat",
     ],
   },
   MRI_STROKE_PROTOCOL: {
     templateId: "MRI_STROKE_PROTOCOL",
     modality: "MRI",
     studyName: "MRI BRAIN STROKE PROTOCOL",
+    protocolId: "MRI_STROKE_PROTOCOL",
     technique:
-      "MRI brain stroke protocol performed on 3 Tesla MRI scanner using DWI, ADC, FLAIR, T2, T1, MRA (TOF) and SWI sequences in multiple planes.",
+      "MRI brain stroke protocol performed on a 1.5T / 3T scanner. " +
+      "Rapid acquisition order: DWI axial (b = 0 & 1000 s/mm²) with ADC map — performed first to detect acute restriction; " +
+      "FLAIR axial (TR ~8500 ms / TE ~120 ms / TI ~2300 ms) — FLAIR-DWI mismatch assessed for tissue at risk; " +
+      "T2-weighted axial FSE; " +
+      "GRE / SWI axial — haemorrhagic transformation, microbleeds, vessel susceptibility sign; " +
+      "MRA TOF (Circle of Willis + posterior circulation) — vessel occlusion / stenosis; " +
+      "T1-weighted axial (baseline, post-contrast if indicated). " +
+      "Total target door-to-image time: ≤ 20 minutes.",
     sections: [
-      "DWI / ADC",
-      "FLAIR / T2",
-      "SWI / SUSCEPTIBILITY",
-      "MRA FINDINGS",
-      "POSTERIOR FOSSA",
-      "EXTRA-AXIAL SPACES",
-      "MIDLINE STRUCTURES",
+      "QUALITY ASSESSMENT",
+      "DWI / ADC — RESTRICTED DIFFUSION",
+      "FLAIR / T2 — ESTABLISHED INFARCT vs DWI MISMATCH",
+      "GRE / SWI — HAEMORRHAGE & VESSEL SIGN",
+      "MRA — VESSEL OCCLUSION / STENOSIS",
+      "POSTERIOR FOSSA & BRAINSTEM",
+      "EXTRA-AXIAL SPACES & MIDLINE",
+      "THROMBOLYSIS / THROMBECTOMY ELIGIBILITY",
+    ],
+    qualityChecklist: [
+      "motion_artifact",
+      "dwi_adc_pair",
+      "flair_csf_suppression",
+      "swi_blurring",
+      "mra_coverage",
+      "acquisition_time_target",
     ],
   },
   MRI_LS_SPINE: {
     templateId: "MRI_LS_SPINE",
     modality: "MRI",
     studyName: "MRI LUMBOSACRAL SPINE",
+    protocolId: "MRI_LS_SPINE",
     technique:
-      "MRI of lumbosacral spine has been performed on 3 Tesla MRI scanner with multi-sequence, multi-planar acquisition using standard T1, T2 and STIR sequences in sagittal and axial planes.",
+      "MRI of lumbosacral spine performed on a 1.5T / 3T scanner without intravenous contrast. " +
+      "Sequences: T1-weighted sagittal FSE (TR ~500–700 ms / TE ~10–20 ms, 4 mm, L1 to S2), " +
+      "T2-weighted sagittal FSE (TR 3000–4000 ms / TE 100–120 ms, 4 mm — disc hydration and cord signal), " +
+      "STIR sagittal (TR ~3000 ms / TI ~150 ms — bone marrow oedema, infective/malignant change), " +
+      "T2-weighted axial FSE (3–4 mm, individual disc levels L2–3 through L5–S1). " +
+      "Axial sequences angled parallel to each disc endplate. " +
+      "Canal diameter, cord conus, foraminal dimensions and disc morphology assessed on all sequences.",
     sections: [
+      "QUALITY ASSESSMENT",
       "ALIGNMENT & CURVATURE",
-      "VERTEBRAL BODIES",
-      "INTERVERTEBRAL DISCS",
-      "SPINAL CANAL & CORD",
+      "VERTEBRAL BODIES & BONE MARROW",
+      "INTERVERTEBRAL DISCS (L1–2 through L5–S1)",
+      "SPINAL CANAL DIMENSIONS",
+      "CONUS MEDULLARIS & CAUDA EQUINA",
       "NEURAL FORAMINA",
-      "CONUS / CAUDA EQUINA",
+      "FACET JOINTS & POSTERIOR ELEMENTS",
       "PARASPINAL SOFT TISSUES",
       "SACROILIAC JOINTS",
+    ],
+    qualityChecklist: [
+      "motion_artifact",
+      "coverage_complete",
+      "all_sequences_present",
+      "axial_disc_angulation",
+      "stir_fat_suppression",
+      "conus_visualised",
     ],
   },
   MRI_CERVICAL_SPINE: {
     templateId: "MRI_CERVICAL_SPINE",
     modality: "MRI",
     studyName: "MRI CERVICAL SPINE",
+    protocolId: "MRI_CERVICAL_SPINE",
     technique:
-      "MRI of cervical spine has been performed on 3 Tesla MRI scanner with multi-sequence, multi-planar acquisition using standard T1, T2 and STIR sequences in sagittal and axial planes.",
+      "MRI of cervical spine performed on a 1.5T / 3T scanner without contrast. " +
+      "Sequences: T1-weighted sagittal FSE (4 mm, C0 to T1 coverage), " +
+      "T2-weighted sagittal FSE (TR 3000–4500 ms / TE 100–120 ms, 3–4 mm — cord signal, disc), " +
+      "STIR sagittal (bone marrow oedema, cord contusion in trauma), " +
+      "T2-weighted axial FSE (3 mm, C2–3 through C7–T1, angled to disc endplates), " +
+      "GRE axial (optional — cord haemorrhage in trauma, myelopathy). " +
+      "Craniocervical junction (foramen magnum, C1–C2) included on sagittal series.",
     sections: [
+      "QUALITY ASSESSMENT",
       "ALIGNMENT & CURVATURE",
-      "VERTEBRAL BODIES",
-      "INTERVERTEBRAL DISCS",
-      "SPINAL CANAL & CORD",
-      "NEURAL FORAMINA",
-      "PARASPINAL SOFT TISSUES",
+      "VERTEBRAL BODIES & BONE MARROW",
+      "INTERVERTEBRAL DISCS (C2–3 through C7–T1)",
+      "SPINAL CANAL & CORD SIGNAL",
+      "NEURAL FORAMINA (bilateral)",
       "CRANIOCERVICAL JUNCTION",
+      "PARASPINAL SOFT TISSUES",
+    ],
+    qualityChecklist: [
+      "motion_artifact",
+      "coverage_complete",
+      "all_sequences_present",
+      "craniocervical_junction_included",
+      "axial_disc_angulation",
+      "stir_fat_suppression",
     ],
   },
   MRI_DORSAL_SPINE: {
     templateId: "MRI_DORSAL_SPINE",
     modality: "MRI",
     studyName: "MRI DORSAL SPINE",
+    protocolId: "MRI_DORSAL_SPINE",
     technique:
-      "MRI of dorsal spine has been performed on 3 Tesla MRI scanner with multi-sequence, multi-planar acquisition using standard T1, T2 and STIR sequences in sagittal and axial planes.",
+      "MRI of dorsal (thoracic) spine performed on a 1.5T / 3T scanner without contrast. " +
+      "Sequences: T1-weighted sagittal FSE (4 mm, T1 to T12–L1 junction), " +
+      "T2-weighted sagittal FSE (TR 3000–4000 ms / TE 100–120 ms, 4 mm — cord signal, disc), " +
+      "STIR sagittal (bone marrow oedema, vertebral collapse signal), " +
+      "T2-weighted axial FSE (4 mm, selected levels with pathology or all levels for cord pathology). " +
+      "Cord calibre, signal intensity and conus level documented.",
     sections: [
-      "ALIGNMENT & CURVATURE",
-      "VERTEBRAL BODIES",
+      "QUALITY ASSESSMENT",
+      "ALIGNMENT & CURVATURE (Scoliosis / Kyphosis)",
+      "VERTEBRAL BODIES & BONE MARROW",
       "INTERVERTEBRAL DISCS",
-      "SPINAL CANAL & CORD",
+      "SPINAL CANAL & CORD SIGNAL",
       "NEURAL FORAMINA",
       "PARASPINAL SOFT TISSUES",
+    ],
+    qualityChecklist: [
+      "motion_artifact",
+      "coverage_complete",
+      "all_sequences_present",
+      "stir_fat_suppression",
     ],
   },
   MRI_WHOLE_SPINE: {
@@ -209,8 +316,14 @@ export const RADIOLOGY_TEMPLATES: Record<string, ReportTemplate> = {
     templateId: "MRI_KNEE",
     modality: "MRI",
     studyName: "MRI KNEE",
+    protocolId: "MRI_KNEE",
     technique:
-      "MRI of knee has been performed on 3 Tesla MRI scanner with multi-sequence, multi-planar acquisition using standard T1, T2, PD, PD-FAT-SAT sequences in axial, sagittal and coronal planes.",
+      "MRI of knee performed on a 1.5T / 3T scanner without contrast using a dedicated knee coil. " +
+      "Sequences: PD-weighted sagittal FSE with fat saturation (3 mm, lateral to medial, for cartilage and menisci), " +
+      "PD-weighted coronal FSE with fat saturation (3 mm, ligaments and meniscal horns), " +
+      "T2-weighted axial FSE with fat saturation (4 mm, cartilage, bursae, Hoffa's fat), " +
+      "T1-weighted sagittal FSE (3 mm, bone marrow, anatomic reference). " +
+      "ACL, PCL, menisci and articular cartilage graded on standard scoring (0–3 for menisci; ICRS 0–4 for cartilage).",
     sections: [
       "MEDIAL MENISCUS",
       "LATERAL MENISCUS",
@@ -895,6 +1008,83 @@ export const radiologyReportGeneratorRouter = Router();
 radiologyReportGeneratorRouter.get("/templates", (_req: Request, res: Response) => {
   res.json({ success: true, templates: Object.values(RADIOLOGY_TEMPLATES) });
 });
+
+// GET /protocols — list all MRI protocol specs from DB (active only)
+// Falls back to an empty array if table not yet migrated, so the UI degrades gracefully.
+radiologyReportGeneratorRouter.get("/protocols", async (_req: Request, res: Response) => {
+  try {
+    const protocols = await db
+      .select()
+      .from(mriProtocolSpecsTable)
+      .where(eq(mriProtocolSpecsTable.isActive, true))
+      .orderBy(mriProtocolSpecsTable.modality, mriProtocolSpecsTable.name);
+    res.json({ success: true, protocols });
+  } catch (err) {
+    // Table may not exist yet on older deployments — return empty gracefully
+    console.warn("[mri-protocols] Table not migrated yet, returning empty:", (err as Error).message);
+    res.json({ success: true, protocols: [] });
+  }
+});
+
+// GET /protocols/:key — get one protocol by protocol_key (e.g. "MRI_BRAIN_PLAIN")
+radiologyReportGeneratorRouter.get("/protocols/:key", async (req: Request, res: Response) => {
+  const { key } = req.params;
+  try {
+    const [protocol] = await db
+      .select()
+      .from(mriProtocolSpecsTable)
+      .where(eq(mriProtocolSpecsTable.protocolKey, key))
+      .limit(1);
+    if (!protocol) {
+      res.status(404).json({ success: false, error: "Protocol not found" });
+      return;
+    }
+    res.json({ success: true, protocol });
+  } catch (err) {
+    console.warn("[mri-protocols] Fetch error:", (err as Error).message);
+    res.status(500).json({ success: false, error: "Protocol lookup failed" });
+  }
+});
+
+// POST /protocols/quality-result — save radiologist QA assessment for a study
+const QualityResultBody = z.object({
+  studyId: z.number().int().positive(),
+  draftId: z.number().int().positive().optional(),
+  protocolId: z.number().int().positive(),
+  results: z.record(z.enum(["pass", "fail", "na"])),
+  overallGrade: z.enum(["acceptable", "suboptimal", "non-diagnostic"]).default("acceptable"),
+  qualityNotes: z.string().max(2000).optional(),
+});
+
+radiologyReportGeneratorRouter.post(
+  "/protocols/quality-result",
+  async (req: StaffAuthRequest, res: Response) => {
+    const parsed = QualityResultBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ success: false, error: parsed.error.flatten() });
+      return;
+    }
+    const { studyId, draftId, protocolId, results, overallGrade, qualityNotes } = parsed.data;
+    try {
+      const [inserted] = await db
+        .insert(mriProtocolQualityResultsTable)
+        .values({
+          studyId,
+          draftId: draftId ?? null,
+          protocolId,
+          results,
+          overallGrade,
+          qualityNotes: qualityNotes ?? null,
+          completedBy: req.staffSession?.subjectName ?? "unknown",
+        })
+        .returning();
+      res.json({ success: true, result: inserted });
+    } catch (err) {
+      console.error("[mri-quality-result] Save error:", err);
+      res.status(500).json({ success: false, error: "Failed to save quality result" });
+    }
+  },
+);
 
 // POST /voice-cleanup
 const VoiceCleanupBody = z.object({
