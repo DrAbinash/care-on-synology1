@@ -10,6 +10,7 @@
 #   2. Bootstrap the Drizzle migration tracking schema (idempotent)
 #   3. Apply Drizzle .sql migration files in journal order (skips applied ones)
 #   4. Apply the imperative column-patch SQL (ADD COLUMN IF NOT EXISTS — all idempotent)
+#   5. Apply feature migrations: mri_protocol_specs (Phase 1), neuro prompts (Phase 2)
 #
 # Safety guarantees:
 #   - Every statement is idempotent (CREATE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS)
@@ -224,6 +225,31 @@ CREATE TABLE IF NOT EXISTS payment_logs (
 SQL
 
 echo "      Column patch complete."
+
+# ── Step 5: Phase migrations (mri_protocol_specs, neuro prompt library) ───────
+echo ""
+echo "[5/5] Applying feature migrations (idempotent)..."
+
+FEATURE_MIGRATIONS_DIR="/migrations/feature"
+
+run_feature_migration() {
+  label="$1"
+  file="${FEATURE_MIGRATIONS_DIR}/$2"
+
+  if [ ! -f "${file}" ]; then
+    echo "      WARN: ${file} not found — skipping"
+    return
+  fi
+
+  echo "      [apply] ${label}..."
+  psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 -f "${file}"
+  echo "      [done]  ${label}"
+}
+
+run_feature_migration "Phase 1 — MRI protocol specs + seed"   "seed_mri_protocols.sql"
+run_feature_migration "Phase 2 — Neuro AI prompt library seed" "seed_neuro_prompt_library.sql"
+
+echo "      Feature migrations complete."
 echo ""
 echo "=========================================="
 echo "DB PATCH — ALL STEPS COMPLETE ✓"

@@ -9,6 +9,7 @@
 #   2. Bootstraps Drizzle migration tracking (idempotent)
 #   3. Applies Drizzle .sql migration files in order (skips already-applied)
 #   4. Applies imperative ADD COLUMN IF NOT EXISTS patches
+#   5. Applies feature migrations from migrations/ (Phase 1: MRI protocols, Phase 2: neuro prompts)
 #   All steps are idempotent. Safe to run on every deployment.
 #
 # care-migrate is RETAINED for manual use only:
@@ -49,8 +50,16 @@ services:
   #   Step 2 — bootstraps drizzle.__drizzle_migrations tracking table
   #   Step 3 — applies Drizzle SQL migration files in journal order
   #   Step 4 — applies imperative ADD COLUMN IF NOT EXISTS column patch
+  #   Step 5 — applies feature migrations (migrations/ directory):
+  #             seed_mri_protocols.sql      (Phase 1: mri_protocol_specs + seed data)
+  #             seed_neuro_prompt_library.sql (Phase 2: neuro AI prompt library)
+  #             Add new .sql files to migrations/ for future phases.
   #
-  # Drizzle migration files are bind-mounted read-only from lib/db/drizzle/.
+  # Bind mounts (all read-only):
+  #   docker/db-patch-entrypoint.sh → /db-patch-entrypoint.sh
+  #   lib/db/drizzle/               → /migrations/drizzle/
+  #   migrations/                   → /migrations/feature/
+  #
   # restart: "no" — runs once per deployment, exits 0 on success.
   # ---------------------------------------------------------------------------
   db-patch-v2:
@@ -67,6 +76,8 @@ services:
       - ./docker/db-patch-entrypoint.sh:/db-patch-entrypoint.sh:ro
       # Drizzle migration SQL files (read-only)
       - ./lib/db/drizzle:/migrations/drizzle:ro
+      # Feature migration SQL files — Phase 1 (MRI protocols), Phase 2 (neuro prompts), future phases
+      - ./migrations:/migrations/feature:ro
     entrypoint: ["sh", "/db-patch-entrypoint.sh"]
     depends_on:
       db:
