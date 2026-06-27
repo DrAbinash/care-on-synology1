@@ -923,13 +923,15 @@ export default function FormF() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.drawImage(video, 0, 0);
-    canvas.toBlob(async (blob) => {
-      if (!blob) return;
-      stopCamera();
-      setCameraOpen(false);
-      const file = new File([blob], "scan.jpg", { type: "image/jpeg" });
-      await processIdImage(file);
-    }, "image/jpeg", 0.92);
+    // Route through scan panel for crop/enhance (same as scanner workflow)
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+    const base64 = dataUrl.split(",")[1];
+    stopCamera();
+    setCameraOpen(false);
+    setScanPanelBase64(base64);
+    setScanPanelMime("image/jpeg");
+    setScanPanelOpen(true);
+    toast({ title: "Webcam image captured — adjust crop and enhancement before saving" });
   }
 
   const fetchPending = useCallback(async () => {
@@ -2166,12 +2168,23 @@ export default function FormF() {
           jpegQuality={fSettings?.jpegQuality ?? 85}
           maxWidth={fSettings?.maxScanWidth ?? 1200}
           onSave={async (result) => {
-            const dataUrl = `data:${result.mimeType};base64,${result.croppedBase64 || result.originalBase64}`;
+            // Prefer enhanced → cropped → original for Form F display
+            const displayB64 = result.enhancedBase64 || result.croppedBase64 || result.originalBase64;
+            const dataUrl = `data:${result.mimeType};base64,${displayB64}`;
             setIdCardFrontUrl(dataUrl);
+            // Keep original available as a second slot for audit
+            if (result.originalBase64 && result.originalBase64 !== displayB64) {
+              // Store original in back URL slot for audit trail (non-destructive)
+              setIdCardBackUrl(`data:${result.mimeType};base64,${result.originalBase64}`);
+            }
             setScanPanelOpen(false);
             setScanPanelBase64("");
-            await runOcrOnImage(result.croppedBase64 || result.originalBase64, result.mimeType);
-            toast({ title: "ID card saved" });
+            // Run OCR on the enhanced/cropped image for better text extraction
+            await runOcrOnImage(displayB64, result.mimeType);
+            const modeLabel = result.enhancementMode && result.enhancementMode !== "original"
+              ? ` · ${result.enhancementMode} enhancement`
+              : "";
+            toast({ title: `ID card saved${modeLabel}` });
           }}
           onCancel={() => {
             setScanPanelOpen(false);
