@@ -33,6 +33,7 @@ import VoiceDictationButton from "@/components/VoiceDictationButton";
 import ChocolateBoxPanel, { type ChocolateFinding } from "@/components/ChocolateBoxPanel";
 import PreferencesPanel from "@/components/PreferencesPanel";
 import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
+import ProtocolQAChecklist from "@/components/ProtocolQAChecklist";
 import LocalAiPanel from "@/components/LocalAiPanel";
 import NeuroPromptPanel from "@/components/NeuroPromptPanel";
 import { Grid } from "lucide-react";
@@ -1885,7 +1886,7 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
 
                   {/* TAB 5: MEASUREMENTS */}
                   <TabsContent value="measurements" className="flex-1 flex flex-col gap-3 overflow-y-auto min-h-0">
-                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2 shrink-0">
                       <span className="text-[11px] font-bold text-sky-400 font-mono flex items-center gap-1">
                         <Ruler size={12} />
                         Measurements
@@ -1895,12 +1896,51 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                       </Badge>
                     </div>
                     {study ? (
-                      <MeasurementAssistantPanel
-                        patientId={study.patientId ?? undefined}
-                        studyId={study.studyId ?? undefined}
-                        modality={study.modality}
-                        bodyPart={study.bodyPart ?? undefined}
-                      />
+                      <>
+                        {/* Protocol QA Checklist — Phase 3, driven by Phase 1 protocol specs */}
+                        {study.modality?.toUpperCase() === "MRI" && (
+                          <ProtocolQAChecklist
+                            studyId={study.studyId ?? study.id}
+                            draftId={undefined}
+                            protocolKey={(() => {
+                              const bp = (study.bodyPart || study.studyDescription || "").toUpperCase();
+                              if (bp.includes("BRAIN") || bp.includes("HEAD")) {
+                                return "MRI_BRAIN_PLAIN";
+                              }
+                              if (bp.includes("STROKE") || bp.includes("CVA") || bp.includes("TIA")) {
+                                return "MRI_STROKE_PROTOCOL";
+                              }
+                              if (bp.includes("CERV")) return "MRI_CERVICAL_SPINE";
+                              if (bp.includes("LS") || bp.includes("LUMBAR") || bp.includes("LUMBOSACRAL")) {
+                                return "MRI_LS_SPINE";
+                              }
+                              if (bp.includes("DORSAL") || bp.includes("THORAC")) return "MRI_DORSAL_SPINE";
+                              if (bp.includes("SPINE") || bp.includes("SPINAL")) return "MRI_LS_SPINE";
+                              if (bp.includes("KNEE")) return "MRI_KNEE";
+                              return "MRI_BRAIN_PLAIN"; // default for unclassified MRI
+                            })()}
+                            completedBy={readStaffSession()?.subjectName ?? "unknown"}
+                          />
+                        )}
+                        {/* Measurement form — wired to auto-insert into findings */}
+                        <MeasurementAssistantPanel
+                          patientId={study.patientId ?? undefined}
+                          studyId={study.studyId ?? undefined}
+                          modality={study.modality}
+                          bodyPart={study.bodyPart ?? undefined}
+                          onMeasurementsChange={(compiledText) => {
+                            setRawFindings((prev) => {
+                              // Replace existing MEASUREMENTS LOG block or append
+                              const MARKER = "MEASUREMENTS LOG:";
+                              const idx = prev.indexOf(MARKER);
+                              if (idx !== -1) {
+                                return prev.slice(0, idx).trimEnd() + (prev.slice(0, idx).trimEnd() ? "\n\n" : "") + compiledText;
+                              }
+                              return prev ? prev.trimEnd() + "\n\n" + compiledText : compiledText;
+                            });
+                          }}
+                        />
+                      </>
                     ) : (
                       <div className="flex flex-col items-center justify-center gap-2 mt-6 text-slate-500">
                         <Ruler size={28} className="opacity-30" />
