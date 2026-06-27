@@ -1738,38 +1738,62 @@ paymentsRouter.post("/", async (req, res) => {
     return;
   }
 
-  const [bill] = await db.select().from(billsTable).where(eq(billsTable.id, billId));
-  if (!bill) {
-    res.status(404).json({ error: "Bill not found" });
+  // ── Serialize concurrent payment attempts on this bill via row-level lock ──
+  // Wrapping in a transaction with FOR UPDATE prevents two simultaneous payment
+  // requests from both passing the balance check before either commits.
+  // This closes the double-click race condition (Bug #1).
+  let payment: typeof paymentsTable.$inferSelect;
+  let newPaidAmount: number;
+
+  try {
+    const txResult = await db.transaction(async (tx) => {
+      const [bill] = await tx
+        .select()
+        .from(billsTable)
+        .where(eq(billsTable.id, billId))
+        .for("update")
+        .limit(1);
+
+      if (!bill) throw Object.assign(new Error("Bill not found"), { httpStatus: 404 });
+
+      const currentBalance = Number(bill.balanceAmount);
+      if (amount > currentBalance + 0.01) {
+        throw Object.assign(
+          new Error(`Payment amount (₹${amount.toFixed(2)}) exceeds outstanding balance (₹${currentBalance.toFixed(2)})`),
+          { httpStatus: 400 },
+        );
+      }
+
+      const [inserted] = await tx.insert(paymentsTable).values({
+        billId,
+        amount: String(amount),
+        method,
+        referenceNumber: referenceNumber ?? null,
+        notes: notes ?? null,
+        recordedByName: actorName || null,
+      }).returning();
+
+      const paid = Number(bill.paidAmount) + amount;
+      const existingRefund = Number(bill.refundAmount ?? 0);
+      const balance = Number(bill.totalAmount) - paid - existingRefund;
+      const newStatus = balance <= 0 ? "paid" : paid > 0 ? "partial" : bill.status;
+
+      await tx.update(billsTable).set({
+        paidAmount: String(paid),
+        balanceAmount: String(Math.max(0, balance)),
+        status: newStatus,
+      }).where(eq(billsTable.id, billId));
+
+      return { inserted, paid };
+    });
+
+    payment = txResult.inserted;
+    newPaidAmount = txResult.paid;
+  } catch (err: any) {
+    const status = err.httpStatus ?? 500;
+    res.status(status).json({ error: err.message });
     return;
   }
-
-  const currentBalance = Number(bill.balanceAmount);
-  if (amount > currentBalance + 0.01) {
-    res.status(400).json({ error: `Payment amount (₹${amount.toFixed(2)}) exceeds outstanding balance (₹${currentBalance.toFixed(2)})` });
-    return;
-  }
-
-  const [payment] = await db.insert(paymentsTable).values({
-    billId,
-    amount: String(amount),
-    method,
-    referenceNumber: referenceNumber ?? null,
-    notes: notes ?? null,
-    recordedByName: actorName || null,
-  }).returning();
-
-  const newPaidAmount = Number(bill.paidAmount) + amount;
-  // balance = total − paid − existing-refund (true net still owed by patient)
-  const existingRefund = Number(bill.refundAmount ?? 0);
-  const balanceAmount = Number(bill.totalAmount) - newPaidAmount - existingRefund;
-  const newStatus = balanceAmount <= 0 ? "paid" : newPaidAmount > 0 ? "partial" : bill.status;
-
-  await db.update(billsTable).set({
-    paidAmount: String(newPaidAmount),
-    balanceAmount: String(Math.max(0, balanceAmount)),
-    status: newStatus,
-  }).where(eq(billsTable.id, billId));
 
   // Auto-generate accounting voucher — async, never blocks payment response
   const [billForVoucher] = await db
