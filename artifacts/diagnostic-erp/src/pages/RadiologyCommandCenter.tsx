@@ -34,6 +34,7 @@ import ChocolateBoxPanel, { type ChocolateFinding } from "@/components/Chocolate
 import PreferencesPanel from "@/components/PreferencesPanel";
 import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
 import LocalAiPanel from "@/components/LocalAiPanel";
+import NeuroPromptPanel from "@/components/NeuroPromptPanel";
 import { Grid } from "lucide-react";
 import {
   ALL_BUILDERS, detectBuilderType, getBuilderForType, defaultSelections,
@@ -2002,23 +2003,44 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                     )}
                   </TabsContent>
 
-                  {/* TAB 7: LOCAL AI ASSISTANT */}
-                  <TabsContent value="local-ai" className="flex-1 flex flex-col gap-2 overflow-y-auto min-h-0">
-                    <LocalAiPanel
-                      study={study}
-                      onInsertFindings={(text) => {
-                        setRawFindings((prev) => prev ? prev + "\n\n" + text : text);
-                        toast({ title: "AI output inserted into findings draft" });
-                      }}
-                      onInsertImpression={(text) => {
-                        setImpression((prev) => {
-                          const items = text.split("\n").map((l) => l.replace(/^[-•*\d.]+\s*/, "").trim()).filter(Boolean);
-                          return [...prev.filter(Boolean), ...items];
-                        });
-                        toast({ title: "AI impression inserted into draft" });
-                      }}
-                      currentFindings={rawFindings}
-                    />
+                  {/* TAB 7: LOCAL AI ASSISTANT — Neuro Prompts + Ollama */}
+                  <TabsContent value="local-ai" className="flex-1 flex flex-col gap-0 overflow-hidden min-h-0">
+                    {/* Upper section: Neuro Prompt Library (Phase 2) */}
+                    <div className="flex-1 min-h-0 overflow-y-auto border-b border-slate-800 pb-3 mb-3 pr-0.5">
+                      <NeuroPromptPanel
+                        study={study}
+                        currentFindings={rawFindings}
+                        onInsertImpression={(text) => {
+                          setImpression((prev) => {
+                            const items = text.split("\n").map((l) => l.replace(/^[-•*\d.]+\s*/, "").trim()).filter(Boolean);
+                            return [...prev.filter(Boolean), ...items];
+                          });
+                          toast({ title: "AI impression inserted into draft" });
+                        }}
+                        onInsertFindings={(text) => {
+                          setRawFindings((prev) => prev ? prev + "\n\n" + text : text);
+                          toast({ title: "AI output inserted into findings draft" });
+                        }}
+                      />
+                    </div>
+                    {/* Lower section: Ollama Local AI */}
+                    <div className="shrink-0">
+                      <LocalAiPanel
+                        study={study}
+                        onInsertFindings={(text) => {
+                          setRawFindings((prev) => prev ? prev + "\n\n" + text : text);
+                          toast({ title: "AI output inserted into findings draft" });
+                        }}
+                        onInsertImpression={(text) => {
+                          setImpression((prev) => {
+                            const items = text.split("\n").map((l) => l.replace(/^[-•*\d.]+\s*/, "").trim()).filter(Boolean);
+                            return [...prev.filter(Boolean), ...items];
+                          });
+                          toast({ title: "AI impression inserted into draft" });
+                        }}
+                        currentFindings={rawFindings}
+                      />
+                    </div>
                   </TabsContent>
 
                 </Tabs>
