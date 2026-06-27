@@ -1450,913 +1450,840 @@ export default function BillingDesk() {
   canGenerateRef.current = canGenerate;
   lastBillRef.current    = lastBill;
 
-  // ──────────────────────────────────────────────────────
-  // RENDER
-  // ──────────────────────────────────────────────────────
-  // Build a CSS class string from the reactive billing flags so the entire
-  // desk picks up display preferences immediately when Settings changes them.
+  // ──────────────────────────────────────────────────────────────────────────
+  // RENDER — Premium Medical Blue Design System
+  // Typography-first. Clean hierarchy. Single-screen workflow.
+  // All business logic above is UNTOUCHED. Only JSX/CSS is new here.
+  // ──────────────────────────────────────────────────────────────────────────
+
   const deskClass = [
-    "h-full flex flex-col overflow-hidden bg-slate-50 dark:bg-slate-900/20",
-    denseTestList   ? "billing-dense"    : "",
-    largeFont       ? "billing-large-font" : "",
-    isCompact       ? "billing-compact"  : "",
+    "h-full flex flex-col overflow-hidden bg-[#f4f6f9] dark:bg-slate-900",
+    denseTestList  ? "billing-dense"     : "",
+    largeFont      ? "billing-large-font": "",
+    isCompact      ? "billing-compact"   : "",
   ].filter(Boolean).join(" ");
+
+  // Shared section header style — Medical Blue accent strip
+  const SH = (label: string, icon?: React.ReactNode) => (
+    <div className="px-3 py-1.5 bg-[#1a3a5c] dark:bg-[#0f2540] flex items-center gap-2 border-l-4 border-[#2563eb]">
+      {icon && <span className="text-[#7eb8f7]">{icon}</span>}
+      <span className="text-[11px] font-bold uppercase tracking-wider text-white">{label}</span>
+    </div>
+  );
+
+  const cardCls = "bg-white dark:bg-slate-800 border border-[#dde3ec] dark:border-slate-700 rounded-lg overflow-hidden shadow-sm";
 
   return (
     <div className={deskClass}>
 
-      {/* ── TOP BAR — single ultra-compact row ── */}
-      <div className="flex-shrink-0 bg-card border-b border-card-border px-2 sm:px-3 py-1 flex items-center gap-2 shadow-sm">
-        <span className="hidden sm:inline text-[11px] text-muted-foreground flex-shrink-0">{today()}</span>
-        <span className="text-[12px] font-bold text-foreground flex-shrink-0">Billing Desk</span>
+      {/* ═══════════════════════════════════════════════════════
+          TOP BAR — date · title · search · recent · new
+      ═══════════════════════════════════════════════════════ */}
+      <div className="flex-shrink-0 bg-[#1a3a5c] dark:bg-[#0f2540] px-3 py-1.5 flex items-center gap-3 shadow-md">
+        <span className="text-[11px] text-[#7eb8f7] flex-shrink-0 font-mono hidden sm:inline">{today()}</span>
+        <span className="text-[13px] font-bold text-white flex-shrink-0 tracking-wide">Billing Desk</span>
+        {previewBillNo?.next && (
+          <span className="text-[10px] text-[#7eb8f7] flex-shrink-0 hidden md:inline">
+            Next: <strong className="text-white">{previewBillNo.next}</strong>
+          </span>
+        )}
         <div className="flex-1 min-w-0" />
-        <div className="flex items-center gap-1">
-          <div className="w-40 sm:w-56 lg:w-72"><BillSearchBox /></div>
+        <div className="flex items-center gap-1.5">
+          <div className="w-36 sm:w-52 lg:w-64"><BillSearchBox /></div>
           <Popover>
             <PopoverTrigger asChild>
-              <Button variant="ghost" size="sm" className="h-6 px-1.5 text-muted-foreground hover:text-foreground flex-shrink-0">
-                <Receipt size={11} />
-                <span className="hidden md:inline text-[11px] ml-1">Recent</span>
-              </Button>
+              <button className="h-7 px-2 rounded text-[11px] font-semibold text-[#7eb8f7] hover:bg-white/10 flex items-center gap-1 transition-colors">
+                <Receipt size={12} />
+                <span className="hidden md:inline">Recent</span>
+              </button>
             </PopoverTrigger>
             <PopoverContent align="end" className="p-0 w-[420px]">
               <RecentBillsPanel />
             </PopoverContent>
           </Popover>
-          <Button variant="ghost" size="sm" onClick={resetAll} className="h-6 px-1.5 text-muted-foreground hover:text-foreground flex-shrink-0">
-            <RefreshCcw size={11} />
-            <span className="hidden md:inline text-[11px] ml-1">New</span>
-          </Button>
+          <button
+            onClick={resetAll}
+            className="h-7 px-2 rounded text-[11px] font-semibold text-[#7eb8f7] hover:bg-white/10 flex items-center gap-1 transition-colors"
+          >
+            <RefreshCcw size={12} />
+            <span className="hidden md:inline">New</span>
+          </button>
         </div>
       </div>
 
-      {/* ── STEPPER BAR (stepped wizard only) ── */}
+      {/* Duplicate-bill warning banner */}
+      {showBillToast && lastBill && (
+        <div className="flex-shrink-0 bg-emerald-50 border-b border-emerald-200 px-4 py-2 flex items-center gap-2">
+          <CheckCircle2 size={15} className="text-emerald-600 flex-shrink-0" />
+          <span className="text-sm font-semibold text-emerald-800">
+            Bill <strong>{lastBill.billNumber}</strong> saved successfully — click New to start next bill
+          </span>
+        </div>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════
+          STEPPER (only in stepped wizard mode)
+      ═══════════════════════════════════════════════════════ */}
       {isStepped && (
-        <div className="flex-shrink-0 bg-card border-b border-card-border px-3 py-2">
+        <div className="flex-shrink-0 bg-white dark:bg-slate-800 border-b border-[#dde3ec] px-3 py-2">
           <div className="flex items-center gap-2 max-w-3xl mx-auto">
             {[
-              { id: 1, label: "Patient", icon: User },
-              { id: 2, label: "Doctor", icon: Stethoscope },
-              { id: 3, label: "Tests", icon: FlaskConical },
-              { id: 4, label: "Summary", icon: Receipt },
+              { id: 1, label: "Patient",  icon: User },
+              { id: 2, label: "Doctor",   icon: Stethoscope },
+              { id: 3, label: "Tests",    icon: FlaskConical },
+              { id: 4, label: "Summary",  icon: Receipt },
             ].map((s, idx) => (
               <div key={s.id} className="flex items-center flex-1">
                 <button
                   type="button"
                   onClick={() => goToStep(s.id)}
-                  className={`flex items-center gap-2 flex-1 justify-center px-2 py-1.5 rounded-lg border text-[11px] font-bold transition-colors ${
+                  className={`flex items-center gap-1.5 flex-1 justify-center px-2 py-1.5 rounded-md border text-[11px] font-bold transition-all ${
                     stepperActive(s.id)
-                      ? "bg-primary/10 border-primary/30 text-primary"
+                      ? "bg-[#2563eb] border-[#2563eb] text-white shadow-sm"
                       : stepperDone(s.id)
-                      ? "bg-green-50 border-green-200 text-green-700 dark:bg-green-950/20 dark:border-green-800 dark:text-green-400"
-                      : "bg-muted/30 border-card-border text-muted-foreground"
+                      ? "bg-emerald-50 border-emerald-300 text-emerald-700"
+                      : "bg-[#f4f6f9] border-[#dde3ec] text-[#64748b]"
                   }`}
                 >
-                  <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-extrabold ${
-                    stepperActive(s.id) ? "bg-primary text-white" : stepperDone(s.id) ? "bg-green-500 text-white" : "bg-muted-foreground/20 text-muted-foreground"
+                  <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${
+                    stepperActive(s.id) ? "bg-white/20 text-white"
+                    : stepperDone(s.id)  ? "bg-emerald-500 text-white"
+                    : "bg-[#dde3ec] text-[#64748b]"
                   }`}>
-                    {stepperDone(s.id) ? <Check size={10} /> : s.id}
+                    {stepperDone(s.id) ? <Check size={9} /> : s.id}
                   </div>
                   <span className="hidden sm:inline">{s.label}</span>
                 </button>
-                {idx < 3 && (
-                  <div className={`w-4 h-px mx-1 ${stepperDone(s.id) ? "bg-green-400" : "bg-card-border"}`} />
-                )}
+                {idx < 3 && <div className={`w-4 h-px mx-1 ${stepperDone(s.id) ? "bg-emerald-400" : "bg-[#dde3ec]"}`} />}
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* ── MAIN LAYOUT ── */}
-      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
+      {/* ═══════════════════════════════════════════════════════
+          MAIN TWO-COLUMN LAYOUT
+          Left  65%  — Patient · Doctor · Tests
+          Right 35%  — Selected · Summary · Payment · Print
+      ═══════════════════════════════════════════════════════ */}
+      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden min-h-0">
 
-        {/* ══════════════════════════════════════════════
-            LEFT COLUMN — Patient + Doctor + Notes
-        ══════════════════════════════════════════════ */}
-        <div className="w-full lg:w-[65%] lg:border-r border-card-border flex flex-col lg:overflow-hidden min-h-0">
-          <div ref={stepContentRef} className="lg:flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
+        {/* ▌LEFT COLUMN ▌─────────────────────────────────── */}
+        <div className="w-full lg:w-[65%] lg:border-r border-[#dde3ec] flex flex-col min-h-0">
+          <div ref={stepContentRef} className="flex-1 min-h-0 overflow-y-auto p-2.5 space-y-2.5">
 
-            {/* ── STEP 1: Patient Section ── */}
+            {/* ── PATIENT ─────────────────────────────────── */}
             {(!isStepped || currentStep === 1) && (
-            <div className="bg-card border border-card-border rounded-xl overflow-hidden shadow-sm">
-              <div className="px-4 py-2 h-10 border-b border-card-border flex items-center justify-between bg-blue-800 dark:bg-blue-900 border-l-[4px] border-l-blue-950">
-                <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-wide text-white">
-                  <User size={14} className="text-white" /> Search Patient
-                </div>
-                {selectedPatient && (
-                  <Button variant="ghost" size="sm" className="h-7 text-xs text-slate-900 dark:text-slate-900" onClick={() => { setSelectedPatient(null); setPatientSearch(""); }}>
-                    <X size={11} className="mr-1" /> Change
-                  </Button>
-                )}
-              </div>
-
+            <div className={cardCls}>
+              {SH("Patient", <User size={11} />)}
               <div className="p-3 space-y-2">
+
                 {/* Selected patient card */}
                 {selectedPatient ? (
-                  <div className="bg-primary/5 border border-primary/20 rounded-lg p-3 space-y-1">
-                    <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-primary font-bold text-sm flex-shrink-0">
+                  <div className="bg-[#eff6ff] border border-[#bfdbfe] rounded-lg p-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-full bg-[#2563eb] flex items-center justify-center text-white font-bold text-sm flex-shrink-0">
                         {selectedPatient.firstName[0]}{selectedPatient.lastName[0]}
                       </div>
-                      <div>
-                        <div className="font-extrabold text-sm">{selectedPatient.firstName} {selectedPatient.lastName}</div>
-                        <div className="text-xs text-slate-900 dark:text-slate-900 font-mono">{selectedPatient.patientId}</div>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-bold text-[14px] text-[#1e3a5f] leading-tight">
+                          {selectedPatient.firstName} {selectedPatient.lastName}
+                        </div>
+                        <div className="text-[11px] text-[#2563eb] font-mono font-semibold">{selectedPatient.patientId}</div>
                       </div>
-                      <div className="ml-auto flex items-center gap-3 text-xs text-slate-900 dark:text-slate-900">
-                        <span className="capitalize">{selectedPatient.gender}</span>
-                        {selectedPatient.dateOfBirth && <span>{selectedPatient.dateOfBirth}</span>}
+                      <div className="text-right text-[11px] text-[#475569] space-y-0.5">
+                        <div className="font-semibold capitalize">{selectedPatient.gender}</div>
+                        {selectedPatient.phone && <div>{selectedPatient.phone}</div>}
+                        {selectedPatient.bloodGroup && (
+                          <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded text-[10px] font-bold">{selectedPatient.bloodGroup}</span>
+                        )}
                       </div>
+                      <button
+                        onClick={() => { setSelectedPatient(null); setPatientSearch(""); }}
+                        className="text-[#94a3b8] hover:text-[#64748b] flex-shrink-0"
+                        title="Change patient"
+                      >
+                        <X size={13} />
+                      </button>
                     </div>
-                    {selectedPatient.phone && (
-                      <div className="flex items-center gap-1 text-xs text-slate-900 dark:text-slate-900 pl-10">
-                        <Phone size={10} /> {selectedPatient.phone}
-                        {selectedPatient.bloodGroup && <span className="ml-2 bg-red-100 text-red-600 px-1.5 rounded font-bold">{selectedPatient.bloodGroup}</span>}
-                      </div>
-                    )}
                   </div>
                 ) : (
-                  /* Search existing patient */
+                  /* Search / register new patient */
                   <div ref={searchRef}>
+                    {/* Search input */}
                     <div className="relative">
-                      <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-900 dark:text-slate-900" />
-                      <Input
-                        placeholder="Search by name, ID or phone…"
+                      <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#94a3b8]" />
+                      <input
+                        className="w-full h-9 pl-9 pr-3 text-sm border border-[#dde3ec] rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-[#2563eb]/30 focus:border-[#2563eb]"
+                        placeholder="Search by name, phone or UHID…"
                         value={patientSearch}
-                        onChange={(e) => { setPatientSearch(e.target.value); setSearchOpen(true); }}
-                        onFocus={() => setSearchOpen(true)}
-                        onBlur={() => setTimeout(() => setSearchOpen(false), 150)}
-                        className="pl-9 text-sm"
+                        onChange={(e) => { setPatientSearch(e.target.value); setShowNewPatientForm(false); }}
+                        autoFocus={billingFlags.autoFocusNext}
                       />
                     </div>
-                    {searchOpen && (
-                      <div className="mt-1 border border-card-border rounded-lg bg-popover shadow-lg max-h-52 overflow-y-auto">
-                        {patientSearch.length === 0 && (
-                          <div className="px-3 py-1.5 text-[10px] font-extrabold uppercase tracking-wide text-slate-900 dark:text-slate-900 border-b border-border">
-                            Recent Patients
-                          </div>
-                        )}
-                        {!patientResults?.patients?.length ? (
-                          <div className="px-4 py-3 text-sm text-slate-900 dark:text-slate-900 text-center">
-                            {patientSearch.length >= 1 ? "No patients found" : "No patients yet"}
-                          </div>
-                        ) : (
-                          patientResults.patients.map((p) => (
-                            <button
-                              key={p.id}
-                              className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-muted/50 transition-colors text-left"
-                              onMouseDown={(e) => e.preventDefault()}
-                              onClick={() => { setSelectedPatient(p); setPatientSearch(""); setSearchOpen(false); }}
-                            >
-                              <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary flex-shrink-0">
-                                {p.firstName[0]}{p.lastName[0]}
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <div className="text-sm font-bold text-slate-900 dark:text-slate-900">{p.firstName} {p.lastName}</div>
-                                <div className="text-xs text-slate-900 dark:text-slate-900">{p.patientId} · {p.phone}</div>
-                              </div>
-                              <span className="text-xs text-slate-900 dark:text-slate-900 capitalize">{p.gender}</span>
-                            </button>
-                          ))
+
+                    {/* Search results */}
+                    {debouncedSearch.length > 0 && (
+                      <div className="mt-1.5 space-y-1">
+                        {(debouncedSearch.length >= 2 ? searchResults?.patients : recentPatients?.patients)?.slice(0, 5).map((p) => (
+                          <button
+                            key={p.id}
+                            className="w-full text-left px-3 py-2 rounded-md border border-[#dde3ec] bg-white hover:bg-[#eff6ff] hover:border-[#bfdbfe] transition-colors flex items-center gap-3"
+                            onClick={() => { setSelectedPatient(p); setPatientSearch(""); }}
+                          >
+                            <div className="w-7 h-7 rounded-full bg-[#e0eaff] flex items-center justify-center text-[#2563eb] font-bold text-xs flex-shrink-0">
+                              {p.firstName[0]}{p.lastName[0]}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm font-semibold text-[#1e3a5f] truncate">{p.firstName} {p.lastName}</div>
+                              <div className="text-[11px] text-[#64748b]">{p.patientId} · {p.phone}</div>
+                            </div>
+                          </button>
+                        ))}
+                        {patientSearch.length >= 2 && searchResults?.patients?.length === 0 && (
+                          <div className="px-3 py-2 text-sm text-[#94a3b8] text-center">No patient found</div>
                         )}
                       </div>
                     )}
+
+                    {/* New patient toggle */}
+                    <button
+                      onClick={() => setShowNewPatientForm(!showNewPatientForm)}
+                      className="mt-2 w-full flex items-center justify-center gap-1.5 h-8 text-[12px] font-semibold text-[#2563eb] border border-dashed border-[#93c5fd] rounded-md hover:bg-[#eff6ff] transition-colors"
+                    >
+                      {showNewPatientForm ? <ChevronUp size={13} /> : <UserPlus size={13} />}
+                      {showNewPatientForm ? "Hide Registration Form" : "Register New Patient"}
+                    </button>
+                  </div>
+                )}
+
+                {/* New Patient Registration form */}
+                {showNewPatientForm && !selectedPatient && (
+                  <div className="space-y-2 pt-2 border-t border-[#e2e8f0]">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] font-semibold text-[#64748b] uppercase tracking-wide">First Name *</label>
+                        <Input
+                          className="mt-0.5 h-8 text-sm"
+                          value={newPatient.firstName}
+                          onChange={(e) => setNewPatient((p) => ({ ...p, firstName: e.target.value }))}
+                          placeholder="First name"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-semibold text-[#64748b] uppercase tracking-wide">Last Name *</label>
+                        <Input
+                          className="mt-0.5 h-8 text-sm"
+                          value={newPatient.lastName}
+                          onChange={(e) => setNewPatient((p) => ({ ...p, lastName: e.target.value }))}
+                          placeholder="Last name"
+                        />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] font-semibold text-[#64748b] uppercase tracking-wide">Mobile *</label>
+                        <Input
+                          className="mt-0.5 h-8 text-sm"
+                          value={newPatient.phone}
+                          onChange={(e) => setNewPatient((p) => ({ ...p, phone: e.target.value }))}
+                          placeholder="10-digit mobile"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-semibold text-[#64748b] uppercase tracking-wide">Age</label>
+                        <div className="mt-0.5 flex gap-1">
+                          <Input
+                            className="h-8 text-sm"
+                            type="number"
+                            value={newPatient.ageValue}
+                            onChange={(e) => setNewPatient((p) => ({ ...p, ageValue: e.target.value }))}
+                            placeholder="Age"
+                          />
+                          <select
+                            className="h-8 text-xs border border-input rounded-md px-1 bg-background"
+                            value={newPatient.ageUnit}
+                            onChange={(e) => setNewPatient((p) => ({ ...p, ageUnit: e.target.value }))}
+                          >
+                            <option value="years">Yrs</option>
+                            <option value="months">Mo</option>
+                            <option value="days">Days</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] font-semibold text-[#64748b] uppercase tracking-wide">Gender</label>
+                        <div className="mt-0.5 flex gap-1">
+                          {["male", "female", "other"].map((g) => (
+                            <button
+                              key={g}
+                              type="button"
+                              onClick={() => setNewPatient((p) => ({ ...p, gender: g }))}
+                              className={`flex-1 h-8 text-[11px] rounded-md border font-semibold capitalize transition-colors ${
+                                newPatient.gender === g
+                                  ? "bg-[#2563eb] text-white border-[#2563eb]"
+                                  : "bg-white border-[#dde3ec] text-[#64748b] hover:bg-[#f8fafc]"
+                              }`}
+                            >
+                              {g === "female" ? "F" : g === "male" ? "M" : "O"}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      {(showOptionalFields || billingFlags.showOptionalFields) && (
+                        <div>
+                          <label className="text-[10px] font-semibold text-[#64748b] uppercase tracking-wide">Blood Group</label>
+                          <select
+                            className="mt-0.5 h-8 w-full text-xs border border-input rounded-md px-2 bg-background"
+                            value={newPatient.bloodGroup}
+                            onChange={(e) => setNewPatient((p) => ({ ...p, bloodGroup: e.target.value }))}
+                          >
+                            <option value="">— Optional —</option>
+                            {["A+","A−","B+","B−","AB+","AB−","O+","O−"].map((b) => (
+                              <option key={b} value={b}>{b}</option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                    {(showOptionalFields || billingFlags.showOptionalFields) && (
+                      <div>
+                        <label className="text-[10px] font-semibold text-[#64748b] uppercase tracking-wide">Address</label>
+                        <Input
+                          className="mt-0.5 h-8 text-sm"
+                          value={newPatient.address}
+                          onChange={(e) => setNewPatient((p) => ({ ...p, address: e.target.value }))}
+                          placeholder="Address (optional)"
+                        />
+                      </div>
+                    )}
+                    <Button
+                      className="w-full h-8 text-sm bg-[#2563eb] hover:bg-[#1d4ed8] text-white"
+                      disabled={registerMut.isPending || !newPatient.firstName.trim() || !newPatient.phone.trim()}
+                      onClick={() => {
+                        if (!newPatient.firstName.trim() || !newPatient.phone.trim()) return;
+                        registerMut.mutate();
+                      }}
+                    >
+                      {registerMut.isPending ? "Registering…" : "Register & Select Patient"}
+                    </Button>
                   </div>
                 )}
               </div>
             </div>
             )}
 
-            {/* ── Duplicate bill warning ── */}
-            {recentPatientBill && (
-              <div className="mx-3 mb-1 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700 px-3 py-2 text-[11px]">
-                <AlertTriangle size={13} className="text-amber-600 flex-shrink-0 mt-0.5" />
-                <div className="flex-1 min-w-0">
-                  <span className="font-extrabold text-amber-800 dark:text-amber-300">Bill already exists today</span>
-                  <span className="text-amber-900 dark:text-amber-700"> — {recentPatientBill.billNumber} was created at {new Date(recentPatientBill.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}. Are you sure you want to create another?</span>
-                </div>
+            {/* Duplicate bill warning */}
+            {existingOpenBill && !lastBill && (
+              <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-sm">
+                <AlertTriangle size={14} className="text-amber-600 flex-shrink-0" />
+                <span className="text-amber-800 text-xs">
+                  Open bill <strong>{existingOpenBill.billNumber}</strong> already exists for this patient.
+                </span>
               </div>
             )}
 
-            {/* ── DICOM MWL Fields (shown when a DICOM-configured test is selected) ── */}
-            {selectedPatient && needsDicom && (
-              <div className="bg-blue-50 border border-blue-300 rounded-xl overflow-hidden dark:bg-blue-950/20 dark:border-blue-800">
-                <div className="px-4 py-2 border-b border-blue-200 bg-blue-100 dark:bg-blue-900/30 flex items-center justify-between gap-2">
-                  <span className="text-xs font-extrabold text-blue-800 dark:text-blue-900 flex items-center gap-1.5">
-                    <span className="inline-block w-2 h-2 rounded-full bg-blue-600" />
-                    DICOM Worklist
-                  </span>
-                  {dicomFieldsComplete
-                    ? <span className="text-[11px] text-green-700 dark:text-green-800 font-extrabold">✓ Ready</span>
-                    : <span className="text-[11px] text-amber-900 font-extrabold">Fill Referring Doctor</span>}
-                </div>
+            {/* DICOM MWL fields */}
+            {needsDicom && selectedPatient && (
+              <div className={cardCls}>
+                {SH("DICOM Worklist", <Scan size={11} />)}
                 <div className="p-3 grid grid-cols-2 gap-2">
-                  {/* Study Description */}
-                  <div className="space-y-0.5">
-                    <label className="text-[10px] font-extrabold flex items-center gap-1">
-                      Study Description
-                      {dicomStudyDesc.trim() && <span className="text-[9px] text-blue-900 font-bold">(auto)</span>}
-                      <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      value={dicomStudyDesc}
-                      onChange={(e) => setDicomStudyDesc(e.target.value)}
-                      placeholder="e.g. Brain MRI"
-                      className="w-full h-7 text-xs border border-blue-300 rounded px-2 bg-white dark:bg-background focus:outline-none focus:border-blue-500"
-                    />
-                  </div>
-                  {/* Body Part */}
-                  <div className="space-y-0.5">
-                    <label className="text-[10px] font-extrabold flex items-center gap-1">
-                      Body Part
-                      {dicomBodyPart.trim() && <span className="text-[9px] text-blue-900 font-bold">(auto)</span>}
-                      <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      value={dicomBodyPart}
-                      onChange={(e) => setDicomBodyPart(e.target.value.toUpperCase())}
-                      placeholder="BRAIN"
-                      className="w-full h-7 text-xs font-mono border border-blue-300 rounded px-2 bg-white dark:bg-background focus:outline-none focus:border-blue-500"
-                    />
-                  </div>
-                  {/* Station AE */}
-                  <div className="space-y-0.5">
-                    <label className="text-[10px] font-extrabold flex items-center gap-1">
-                      Station AE Title
-                      {dicomStationAE.trim() && <span className="text-[9px] text-blue-900 font-bold">(auto)</span>}
-                      <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      value={dicomStationAE}
-                      onChange={(e) => setDicomStationAE(e.target.value.toUpperCase())}
-                      placeholder="MRI_ROOM1"
-                      className="w-full h-7 text-xs font-mono border border-blue-300 rounded px-2 bg-white dark:bg-background focus:outline-none focus:border-blue-500"
-                    />
-                  </div>
-                  {/* Referring Doctor */}
-                  <div className="space-y-0.5">
-                    <label className="text-[10px] font-extrabold flex items-center gap-1 text-blue-900 dark:text-blue-900">
-                      Referring Doctor
-                      {dicomReferringDoc.trim() && <span className="text-[9px] text-blue-900 font-bold">(auto)</span>}
-                      <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      value={dicomReferringDoc}
-                      onChange={(e) => setDicomReferringDoc(e.target.value)}
-                      placeholder="Dr. Sharma"
-                      autoFocus={needsDicom && !dicomReferringDoc}
-                      className={`w-full h-7 text-xs border rounded px-2 bg-white dark:bg-background focus:outline-none transition-colors ${dicomReferringDoc.trim() ? "border-blue-300 focus:border-blue-500" : "border-amber-400 focus:border-amber-500 ring-1 ring-amber-300"}`}
-                    />
-                  </div>
+                  {[
+                    { label: "Study Description", val: dicomStudyDesc, set: setDicomStudyDesc },
+                    { label: "Body Part",          val: dicomBodyPart,  set: setDicomBodyPart  },
+                    { label: "Station AE Title",   val: dicomStationAE, set: setDicomStationAE },
+                    { label: "Referring Doctor",   val: dicomReferringDoc, set: setDicomReferringDoc },
+                  ].map(({ label, val, set }) => (
+                    <div key={label}>
+                      <label className="text-[10px] font-semibold text-[#64748b] uppercase tracking-wide">{label}</label>
+                      <Input className="mt-0.5 h-8 text-sm" value={val} onChange={(e) => set(e.target.value)} />
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
 
-            {/* ── Form F Extra Fields (shown when a Form-F-required test is selected) ── */}
-            {selectedPatient && needsFormF && (
-              <div className="bg-orange-50 border border-orange-300 rounded-xl overflow-hidden">
-                <div className="px-4 py-2 border-b border-orange-200 bg-orange-100 flex items-center gap-2">
-                  <AlertTriangle size={13} className="text-orange-900 flex-shrink-0" />
-                  <span className="text-xs font-extrabold text-orange-800">
-                    PCPNDT Form F Required — fill additional details before generating bill
-                  </span>
-                </div>
+            {/* Form F fields */}
+            {needsFormF && !clinic?.formFBillingPrompt && (
+              <div className={cardCls}>
+                {SH("Form F (Required)", <FileText size={11} />)}
                 <div className="p-3 space-y-2">
-                  <div className="space-y-1">
-                    <Label className="text-xs font-extrabold">Husband's / Father's Name <span className="text-red-500">*</span></Label>
-                    <Input
-                      value={husbandName}
-                      onChange={(e) => setHusbandName(e.target.value)}
-                      placeholder="Required for PCPNDT compliance"
-                      className="h-8 text-sm border-orange-300 focus:border-orange-500"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs font-extrabold">Full Address <span className="text-red-500">*</span></Label>
-                    <Input
-                      value={patientAddress}
-                      onChange={(e) => setPatientAddress(e.target.value)}
-                      placeholder="Patient's full residential address"
-                      className="h-8 text-sm border-orange-300 focus:border-orange-500"
-                    />
-                  </div>
-                  <p className="text-[10px] text-orange-900">
-                    These fields are mandatory for USG tests under the PCPNDT Act. Form F will be pre-filled with this data.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {/* ── Add New Patient ── */}
-            {!selectedPatient && (
-              <div className="bg-card border border-card-border rounded-xl overflow-hidden shadow-sm">
-                <div className="w-full px-4 py-2 h-10 border-b border-card-border bg-indigo-800 dark:bg-indigo-900 border-l-[4px] border-l-indigo-950 flex items-center gap-2 text-sm font-bold uppercase tracking-wide text-white">
-                  <UserPlus size={14} className="text-white" />
-                  <span>Register New Patient</span>
-                </div>
-                <div className="p-2.5 space-y-2">
-                  {/* Single compact row: Name | Phone | Age | Gender | Blood | Address */}
-                  <div className="flex flex-wrap items-end gap-1.5">
-                    <div className="flex-1 min-w-[140px] space-y-0.5">
-                      <Label className="text-[10px] font-extrabold">Name *</Label>
-                      <Input
-                        value={`${newPatient.firstName} ${newPatient.lastName}`.trim()}
-                        onChange={(e) => {
-                          const parts = e.target.value.trim().split(/\s+/);
-                          const first = parts[0] || "";
-                          const last = parts.slice(1).join(" ") || "";
-                          setNewPatient({ ...newPatient, firstName: first, lastName: last });
-                        }}
-                        placeholder="Full name"
-                        className="h-7 text-xs"
-                      />
+                  {clinic?.formFGuardianRequired !== false && (
+                    <div>
+                      <label className="text-[10px] font-semibold text-[#64748b] uppercase tracking-wide">
+                        Husband / Guardian Name *
+                      </label>
+                      <Input className="mt-0.5 h-8 text-sm" value={husbandName} onChange={(e) => setHusbandName(e.target.value)} />
                     </div>
-                    <div className="w-[110px] space-y-0.5">
-                      <Label className="text-[10px] font-extrabold">Phone *</Label>
-                      <Input
-                        value={newPatient.phone}
-                        onChange={(e) => setNewPatient({ ...newPatient, phone: e.target.value })}
-                        placeholder="10-digit"
-                        className="h-7 text-xs"
-                      />
+                  )}
+                  {clinic?.formFAddressRequired !== false && (
+                    <div>
+                      <label className="text-[10px] font-semibold text-[#64748b] uppercase tracking-wide">Address *</label>
+                      <Input className="mt-0.5 h-8 text-sm" value={patientAddress} onChange={(e) => setPatientAddress(e.target.value)} />
                     </div>
-                    <div className="w-[100px] space-y-0.5">
-                      <Label className="text-[10px] font-extrabold">Age *</Label>
-                      <div className="flex gap-1">
-                        <Input
-                          type="number"
-                          min={0}
-                          max={newPatient.ageUnit === "years" ? 120 : 365}
-                          value={newPatient.ageValue}
-                          onChange={(e) => setNewPatient({ ...newPatient, ageValue: e.target.value })}
-                          placeholder=""
-                          className="h-7 text-xs flex-1 min-w-0"
-                        />
-                        <Select value={newPatient.ageUnit} onValueChange={(v) => setNewPatient({ ...newPatient, ageUnit: v as "years" | "months" | "days" })}>
-                          <SelectTrigger className="h-7 text-[10px] w-[52px] px-1"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="years">Yrs</SelectItem>
-                            <SelectItem value="months">Mo</SelectItem>
-                            <SelectItem value="days">Days</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-                    <div className="w-[72px] space-y-0.5">
-                      <Label className="text-[10px] font-extrabold">Sex *</Label>
-                      <Select value={newPatient.gender} onValueChange={(v) => setNewPatient({ ...newPatient, gender: v })}>
-                        <SelectTrigger className="h-7 text-[10px] px-1.5"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          {GENDERS.map((g) => <SelectItem key={g} value={g} className="text-xs capitalize">{g}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="w-[68px] space-y-0.5">
-                      <Label className="text-[10px] font-extrabold">BG</Label>
-                      <Select value={newPatient.bloodGroup || "none"} onValueChange={(v) => setNewPatient({ ...newPatient, bloodGroup: v === "none" ? "" : v })}>
-                        <SelectTrigger className="h-7 text-[10px] px-1.5"><SelectValue placeholder="—" /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none">—</SelectItem>
-                          {BLOOD_GROUPS.map((g) => <SelectItem key={g} value={g} className="text-xs">{g}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="flex-[1.5] min-w-[140px] space-y-0.5">
-                      <Label className="text-[10px] font-extrabold">Address</Label>
-                      <Input
-                        value={newPatient.address}
-                        onChange={(e) => setNewPatient({ ...newPatient, address: e.target.value })}
-                        placeholder="Optional"
-                        className="h-7 text-xs"
-                      />
-                    </div>
-                  </div>
-                  <Button
-                    size="sm"
-                    className="w-full h-8 bg-indigo-900 hover:bg-indigo-950 text-white font-extrabold text-xs"
-                    disabled={!newPatient.firstName || !newPatient.lastName || !newPatient.phone || !newPatient.ageValue || createPatientMut.isPending}
-                    onClick={() => createPatientMut.mutate(newPatient)}
-                  >
-                    {createPatientMut.isPending ? "Registering…" : <><UserPlus size={12} className="mr-1" /> Register & Select</>}
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            {/* ── Referral / Doctor — Walk-in / Self + Quick Doctor Tabs + Search ── */}
-            <div className="bg-card border border-card-border rounded-xl overflow-hidden shadow-sm">
-              <div className="px-4 py-2 h-10 border-b border-card-border bg-sky-800 dark:bg-sky-900 border-l-[4px] border-l-sky-950 flex items-center gap-2 text-sm font-bold uppercase tracking-wide text-white">
-                <Stethoscope size={14} className="text-white" /> Referral Doctor
-                <span className="ml-auto text-xs font-bold text-white/80">optional</span>
-              </div>
-              <div className="p-2.5" ref={doctorRef}>
-                {/* Walk-in + Search row */}
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <button
-                    type="button"
-                    onClick={() => { setDoctorMode("self"); setDoctorId(null); setDoctorSearch(""); setDoctorSearchOpen(false); }}
-                    className={`px-2 py-1 rounded-md text-[11px] border transition-colors flex-shrink-0 ${doctorMode === "self" ? "border-primary bg-primary/10 text-primary font-extrabold" : "border-card-border text-slate-900 dark:text-slate-900 hover:bg-muted/30"}`}
-                  >
-                    Walk-in
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setDoctorMode("doctor"); if (!doctorId) setDoctorSearchOpen((v) => !v); }}
-                    className={`px-2 py-1 rounded-md text-[11px] border transition-colors flex-shrink-0 ${doctorMode === "doctor" && !doctorId ? "border-primary bg-primary/10 text-primary font-extrabold" : "border-card-border text-slate-900 dark:text-slate-900 hover:bg-muted/30"}`}
-                  >
-                    Search…
-                  </button>
-                  {doctorMode === "doctor" && doctorId && (
-                    <button
-                      type="button"
-                      onClick={() => { setDoctorId(null); setDoctorSearch(""); setDoctorMode("self"); }}
-                      className="text-slate-900 dark:text-slate-900 hover:text-foreground transition-colors"
-                      title="Clear doctor"
-                    >
-                      <X size={12} />
-                    </button>
                   )}
                 </div>
-                {/* ── 6 Quick Doctor Slots — horizontal scrollable pill row ── */}
-                <div className="mt-1.5 flex gap-1.5 overflow-x-auto pb-1 no-scrollbar">
-                  {quickDoctorIds.map((id, i) => {
-                    const doc = id != null ? doctors.find(d => d.id === id) : null;
-                    const isActive = doctorMode === "doctor" && doctorId === id && id != null;
-                    return (
-                      <div key={i} className="relative group flex-shrink-0">
+              </div>
+            )}
+
+            {/* ── REFERRING DOCTOR ──────────────────────── */}
+            {(!isStepped || currentStep === 1 || currentStep === 2) && (
+            <div className={cardCls}>
+              {SH("Referring Doctor", <Stethoscope size={11} />)}
+              <div className="p-3 space-y-2">
+                {/* Quick doctor chips */}
+                {showQuickTestsSetting && quickDoctorIds.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {quickDoctorIds.map((docId) => {
+                      const doc = doctors.find((d) => d.id === docId);
+                      if (!doc) return null;
+                      const isSelected = doctorId === doc.id;
+                      return (
                         <button
+                          key={doc.id}
                           type="button"
-                          onClick={() => {
-                            if (id == null) { setQuickDoctorPickerSlot(i); setQuickDoctorPickerSearch(""); return; }
-                            setDoctorMode("doctor"); setDoctorId(id); setDoctorSearch(""); setDoctorSearchOpen(false);
-                          }}
-                          title={doc ? doc.name : `Assign quick doctor slot ${i + 1}`}
-                          className={`h-7 rounded-full border text-[10px] font-extrabold px-3 flex items-center gap-1 transition-all whitespace-nowrap shadow-sm ${
-                            isActive
-                              ? "border-primary bg-primary/10 text-primary shadow-md"
-                              : doc
-                              ? "border-blue-300 bg-blue-50 hover:bg-blue-100 text-blue-900 dark:bg-blue-950/30 dark:border-blue-800 dark:text-blue-900"
-                              : "border-dashed border-card-border bg-muted/20 text-slate-900 dark:text-slate-900 hover:bg-muted/40"
+                          onClick={() => setDoctorId(isSelected ? null : doc.id)}
+                          className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-all ${
+                            isSelected
+                              ? "bg-[#2563eb] text-white border-[#2563eb] shadow-sm"
+                              : "bg-white border-[#dde3ec] text-[#475569] hover:border-[#93c5fd] hover:bg-[#eff6ff]"
                           }`}
                         >
-                          {doc ? (
-                            <span className="truncate max-w-[90px]">{doc.name}</span>
-                          ) : (
-                            <><Plus size={10} /><span className="opacity-70">Dr {i + 1}</span></>
-                          )}
+                          {doc.name}
+                          {pinnedDoctorIds.has(doc.id) && <Star size={8} className="inline ml-1 text-amber-400 fill-amber-400" />}
                         </button>
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); setQuickDoctorPickerSlot(i); setQuickDoctorPickerSearch(""); }}
-                          className="absolute -top-1 -right-1 h-3.5 w-3.5 rounded-full bg-card border border-card-border text-slate-900 dark:text-slate-900 hover:text-foreground hover:bg-muted opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow-sm"
-                          title="Customize this slot"
-                        >
-                          <Pencil size={7} />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-                {/* Selected doctor info line */}
-                {doctorMode === "doctor" && doctorId && (() => {
-                  const doc = doctors.find(d => d.id === doctorId);
-                  return doc ? (
-                    <div className="mt-1.5 text-[10px] text-primary font-bold truncate">
-                      {doc.name}
+                      );
+                    })}
+                    <button
+                      type="button"
+                      onClick={() => setQuickDoctorPickerOpen(true)}
+                      className="px-2 py-1 rounded-full text-[11px] font-semibold border border-dashed border-[#93c5fd] text-[#2563eb] hover:bg-[#eff6ff] transition-colors"
+                    >
+                      <Settings2 size={9} className="inline mr-0.5" />Edit
+                    </button>
+                  </div>
+                )}
+                {/* Doctor search */}
+                <div ref={doctorRef} className="relative">
+                  {doctorId && (
+                    <div className="flex items-center gap-2 px-3 py-1.5 bg-[#eff6ff] border border-[#bfdbfe] rounded-md text-sm mb-1.5">
+                      <Stethoscope size={12} className="text-[#2563eb]" />
+                      <span className="font-semibold text-[#1e3a5f] flex-1">
+                        {doctors.find((d) => d.id === doctorId)?.name}
+                      </span>
+                      <button onClick={() => { setDoctorId(null); setDoctorSearch(""); }} className="text-[#94a3b8] hover:text-[#64748b]"><X size={12} /></button>
                     </div>
-                  ) : null;
-                })()}
-                {/* Doctor search dropdown (only shown when mode=doctor and no doctorId selected) */}
-                {doctorMode === "doctor" && !doctorId && (
-                  <div className="mt-2">
+                  )}
+                  {!doctorId && (
                     <div className="relative">
-                      <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-900 dark:text-slate-900" />
-                      <Input
-                        placeholder="Search doctor by name or specialization…"
+                      <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#94a3b8]" />
+                      <input
+                        className="w-full h-8 pl-9 pr-3 text-sm border border-[#dde3ec] rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-[#2563eb]/30 focus:border-[#2563eb]"
+                        placeholder="Search doctor or leave blank for Walk-in…"
                         value={doctorSearch}
                         onChange={(e) => { setDoctorSearch(e.target.value); setDoctorSearchOpen(true); }}
                         onFocus={() => setDoctorSearchOpen(true)}
-                        onBlur={() => setTimeout(() => setDoctorSearchOpen(false), 150)}
-                        className="pl-9 text-sm"
-                        autoFocus
                       />
                     </div>
-                    {doctorSearchOpen && (
-                      <div className="mt-1 border border-card-border rounded-lg bg-popover shadow-lg max-h-48 overflow-y-auto">
-                        <button
-                          className="w-full text-left px-3 py-2.5 text-sm text-slate-900 dark:text-slate-900 hover:bg-muted/50 border-b border-border italic"
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => { setDoctorMode("self"); setDoctorId(null); setDoctorSearch(""); setDoctorSearchOpen(false); }}
-                        >
-                          Walk-in / Self (no referral)
-                        </button>
-                        {(() => {
-                          const q = doctorSearch.trim().toLowerCase();
-                          const filtered = doctors.filter(d =>
-                            !q ||
-                            String(d.id) === q ||
-                            String(d.id).includes(q) ||
-                            d.name.toLowerCase().includes(q) ||
-                            d.specialization.toLowerCase().includes(q)
-                          ).sort((a, b) => {
-                            const ap = pinnedDoctorIds.has(a.id) ? 0 : 1;
-                            const bp = pinnedDoctorIds.has(b.id) ? 0 : 1;
-                            if (ap !== bp) return ap - bp; // pinned first
-                            const ac = b.billCount ?? 0;
-                            const bc = a.billCount ?? 0;
-                            return ac - bc; // most-billed first within each group
-                          });
-                          return filtered.length === 0 ? (
-                            <div className="px-4 py-3 text-sm text-slate-900 dark:text-slate-900 text-center">No doctors found</div>
-                          ) : filtered.map(d => {
-                            const pinned = pinnedDoctorIds.has(d.id);
-                            return (
-                              <div key={d.id} className="flex items-center">
-                                <button
-                                  onClick={(e) => toggleDoctorPin(d.id, e)}
-                                  className={`pl-2 pr-1 py-2.5 flex-shrink-0 transition-colors ${pinned ? "text-amber-700 hover:text-amber-500" : "text-slate-900 dark:text-slate-900/30 hover:text-amber-700"}`}
-                                  title={pinned ? "Unpin doctor" : "Pin doctor to top"}
-                                >
-                                  <Star size={11} fill={pinned ? "currentColor" : "none"} />
-                                </button>
-                                <button
-                                  className="flex-1 flex items-center gap-3 px-2 py-2.5 hover:bg-muted/50 transition-colors text-left"
-                                  onMouseDown={(e) => e.preventDefault()}
-                                  onClick={() => { setDoctorMode("doctor"); setDoctorId(d.id); setDoctorSearch(""); setDoctorSearchOpen(false); }}
-                                >
-                                  <div className="w-9 h-7 rounded bg-primary/10 flex items-center justify-center flex-shrink-0 font-mono text-[11px] text-primary font-extrabold">
-                                    #{d.id}
-                                  </div>
-                                  <div className="flex-1 min-w-0">
-                                    <div className="flex items-center gap-2">
-                                      <div className="text-sm font-bold text-slate-900 dark:text-slate-900">Dr. {d.name}</div>
-                                      {(d.billCount ?? 0) > 0 && (
-                                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-primary/10 text-primary font-extrabold">{d.billCount} bills</span>
-                                      )}
-                                    </div>
-                                    <div className="text-xs text-slate-900 dark:text-slate-900">{d.specialization}</div>
-                                  </div>
-                                </button>
-                              </div>
-                            );
-                          });
-                        })()}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* ── Test Catalog (Quick Tests + Add Tests + Individual Tests) ── */}
-            <div className="bg-card border border-card-border rounded-xl overflow-hidden shadow-sm">
-              <div className="px-4 py-2 h-10 border-b border-card-border bg-violet-800 dark:bg-violet-900 border-l-[4px] border-l-violet-950 flex items-center gap-2 text-sm font-bold uppercase tracking-wide text-white">
-                <FlaskConical size={14} className="text-white" /> Test Catalog
-                <span className="ml-auto text-xs font-bold text-white/80">Hover ✏️ to customize slots</span>
-              </div>
-              <div className="p-2.5 space-y-2">
-                {/* ── Quick Test Tabs (6 customizable slots) ── */}
-                <div className="pt-1">
-                  <div className="flex items-center gap-1.5 text-xs font-extrabold text-violet-900 dark:text-violet-900 mb-1">
-                    <Zap size={12} className="text-violet-900 dark:text-violet-900" /> Quick Tests
-                  </div>
-                  <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar">
-                    {quickTestIds.map((id, i) => {
-                      const t = id != null ? allTests.find((x) => x.id === id) : null;
-                      const added = t ? !!selectedTests.find((s) => s.testId === t.id) : false;
-                      return (
-                        <div key={i} className="relative group flex-shrink-0">
+                  )}
+                  {doctorSearchOpen && doctorSearch.length > 0 && (
+                    <div className="absolute top-full left-0 right-0 z-20 mt-1 bg-white border border-[#dde3ec] rounded-lg shadow-lg max-h-40 overflow-y-auto">
+                      {doctors
+                        .filter((d) => d.name.toLowerCase().includes(doctorSearch.toLowerCase()))
+                        .slice(0, 6)
+                        .map((d) => (
                           <button
-                            type="button"
-                            onClick={() => handleQuickTabClick(i)}
-                            disabled={added}
-                            title={t ? `${t.name} · ${t.code} · ${inr(t.price)}` : `Slot ${i + 1} — click to assign a test`}
-                            className={`min-w-[108px] max-w-[130px] rounded-md border text-[10px] leading-tight px-2 py-1.5 flex flex-col items-start justify-center transition-all overflow-hidden shadow-sm ${
-                              t
-                                ? added
-                                  ? "border-primary/40 bg-primary/10 text-primary cursor-default"
-                                  : "border-violet-300 bg-violet-50 hover:bg-violet-100 hover:shadow-md text-violet-900 dark:bg-violet-950/30 dark:border-violet-800 dark:text-violet-900"
-                                : "border-dashed border-card-border bg-muted/20 text-slate-900 dark:text-slate-900 hover:bg-muted/40"
-                            }`}
+                            key={d.id}
+                            className="w-full text-left px-3 py-2 text-sm hover:bg-[#eff6ff] flex items-center gap-2"
+                            onClick={() => { setDoctorId(d.id); setDoctorSearch(""); setDoctorSearchOpen(false); }}
                           >
-                            {t ? (
-                              <>
-                                <span className="font-extrabold w-full truncate leading-tight">{t.name}</span>
-                                <span className="text-[9px] opacity-70 w-full truncate mt-0.5 capitalize">{t.category || t.code} · {inr(t.price)}</span>
-                              </>
-                            ) : (
-                              <span className="flex items-center gap-1 opacity-60"><Plus size={10} />Slot {i + 1}</span>
-                            )}
+                            <Stethoscope size={11} className="text-[#2563eb]" />
+                            {d.name}
+                            {d.speciality && <span className="ml-auto text-[11px] text-[#94a3b8]">{d.speciality}</span>}
                           </button>
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); setQuickPickerSlot(i); setQuickPickerSearch(""); }}
-                            className="absolute -top-1 -right-1 h-3.5 w-3.5 rounded-full bg-card border border-card-border text-slate-900 dark:text-slate-900 hover:text-foreground hover:bg-muted opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow-sm"
-                            title="Customize this slot"
-                          >
-                            <Pencil size={7} />
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* ── Add Tests compact row (label + search + category) ── */}
-                <div className="flex items-center gap-2 pt-1">
-                  <div className="flex items-center gap-1.5 text-xs font-extrabold text-primary flex-shrink-0">
-                    <FlaskConical size={13} /> Add Tests
-                  </div>
-                  <div className="relative min-w-0 flex-1">
-                    <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-900 dark:text-slate-900" />
-                    <Input
-                      placeholder="Search tests by name or code…"
-                      value={testSearch}
-                      onChange={(e) => setTestSearch(e.target.value)}
-                      className="pl-9 h-8 text-sm w-full"
-                    />
-                  </div>
-                  <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-                    <SelectTrigger className="h-8 w-32 text-xs flex-shrink-0">
-                      <SelectValue placeholder="Category" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {categories.map((c) => (
-                        <SelectItem key={c} value={c} className="capitalize">{c === "all" ? "All Categories" : c}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="pt-1">
-                  <div className="flex items-center gap-2 text-xs font-extrabold text-slate-900 dark:text-slate-900">
-                    <FlaskConical size={11} className="text-slate-900 dark:text-slate-900" /> Individual Tests
-                  </div>
-                  <div className="mt-1 border border-card-border rounded-lg overflow-hidden">
-                    <div className="max-h-48 overflow-y-auto divide-y divide-card-border">
-                      {filteredTests.length === 0 ? (
-                        <div className="px-3 py-4 text-xs text-slate-900 dark:text-slate-900 text-center">No tests found</div>
-                      ) : (
-                        filteredTests.slice(0, 50).map((t) => {
-                          const added = !!selectedTests.find((s) => s.testId === t.id);
-                          const pinned = pinnedTestIds.has(t.id);
-                          return (
-                            <div key={t.id} className={`flex items-center ${added ? "bg-primary/5" : ""}`}>
-                              <button
-                                onClick={(e) => togglePin(t.id, e)}
-                                className={`pl-2 pr-1 py-2 flex-shrink-0 transition-colors ${pinned ? "text-amber-700 hover:text-amber-500" : "text-slate-900 dark:text-slate-900/30 hover:text-amber-700"}`}
-                              >
-                                <Star size={11} fill={pinned ? "currentColor" : "none"} />
-                              </button>
-                              <button
-                                onClick={() => addTest(t)}
-                                disabled={added}
-                                className={`flex-1 flex items-center gap-2 pr-3 py-2 text-left text-sm transition-colors ${added ? "text-slate-900 dark:text-slate-900 cursor-default" : "hover:bg-muted/50"}`}
-                              >
-                                <FlaskConical size={11} className={added ? "text-primary" : "text-slate-900 dark:text-slate-900"} />
-                                <span className="text-[10px] font-mono font-extrabold text-primary bg-primary/10 px-1.5 py-0.5 rounded flex-shrink-0">#{t.id}</span>
-                                <span className="flex-1 font-bold text-slate-900 dark:text-slate-900 truncate">{t.name}</span>
-                                {t.testType === "outsourced" && (
-                                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400 font-extrabold flex-shrink-0">OUT</span>
-                                )}
-                                <span className="text-xs text-slate-900 dark:text-slate-900 font-mono flex-shrink-0">{t.code}</span>
-                                <span className={`text-xs font-extrabold flex-shrink-0 ${added ? "text-primary" : ""}`}>{inr(t.price)}</span>
-                                {added ? <CheckCircle2 size={12} className="text-primary flex-shrink-0" /> : <Plus size={12} className="text-slate-900 dark:text-slate-900 flex-shrink-0" />}
-                              </button>
-                            </div>
-                          );
-                        })
+                        ))}
+                      {doctors.filter((d) => d.name.toLowerCase().includes(doctorSearch.toLowerCase())).length === 0 && (
+                        <div className="px-3 py-2 text-sm text-[#94a3b8]">No doctor found</div>
                       )}
                     </div>
-                  </div>
+                  )}
                 </div>
+                <Input
+                  className="h-8 text-sm"
+                  placeholder="Notes (optional)…"
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                />
               </div>
             </div>
+            )}
 
-            {/* ── Add Package ── */}
-            <div className="bg-card border border-card-border rounded-xl overflow-hidden shadow-sm">
-              <div className="px-4 py-2 h-10 border-b border-card-border flex items-center justify-between bg-rose-800 dark:bg-rose-900 border-l-[4px] border-l-rose-950">
-                <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-wide text-white">
-                  <Package size={14} className="text-white" /> Add Package
-                </div>
-                <button
-                  type="button"
-                  onClick={() => navigate("/packages")}
-                  className="text-[11px] text-slate-900 dark:text-slate-900 hover:text-foreground"
-                >
-                  Manage
-                </button>
-              </div>
-              <div className="p-2.5 space-y-2">
-                <div className="relative">
-                  <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-900 dark:text-slate-900" />
-                  <Input
-                    placeholder="Search packages by name, code, or test…"
-                    value={packageSearch}
-                    onChange={(e) => setPackageSearch(e.target.value)}
-                    className="pl-9 h-8 text-sm w-full"
-                  />
-                </div>
-                {packages.length === 0 ? (
-                  <div className="px-3 py-3 text-xs text-slate-900 dark:text-slate-900 text-center border border-card-border rounded-lg">
-                    No packages created yet.&nbsp;
-                    <button onClick={() => navigate("/packages")} className="text-primary hover:underline">Create one</button>
-                  </div>
-                ) : filteredPackages.length === 0 ? (
-                  <div className="px-3 py-2 text-xs text-slate-900 dark:text-slate-900 text-center border border-card-border rounded-lg">No packages match "{packageSearch}"</div>
-                ) : (
-                  <div className="flex gap-2 flex-wrap pt-0.5">
-                    {filteredPackages.map((pkg) => {
-                      const added = selectedPackages.some((p) => p.packageId === pkg.id);
-                      const effective = Math.max(0, pkg.price - (pkg.price * (pkg.discountPct ?? 0)) / 100 - (pkg.discountAmount ?? 0));
+            {/* ── INVESTIGATIONS ───────────────────────── */}
+            {(!isStepped || currentStep === 2 || currentStep === 3) && (
+            <div className={cardCls}>
+              {SH("Investigations", <FlaskConical size={11} />)}
+              <div className="p-3 space-y-2">
+
+                {/* Quick Test Slots */}
+                {showQuickTestsSetting && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {quickTestSlots.map((slot, idx) => {
+                      const test = slot != null ? allTests.find((t) => t.id === slot) : null;
                       return (
                         <button
-                          key={pkg.id}
-                          onClick={() => addPackage(pkg)}
-                          disabled={added}
-                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-[11px] font-bold transition-colors shadow-sm ${
-                            added
-                              ? "border-primary/40 bg-primary/10 text-primary cursor-default"
-                              : "border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-900 dark:bg-rose-950/30 dark:border-rose-800 dark:text-rose-100"
+                          key={idx}
+                          type="button"
+                          onClick={() => {
+                            if (test) {
+                              if (!selectedTestIds.has(test.id)) addTest(test);
+                            } else {
+                              setQuickPickerSlot(idx);
+                            }
+                          }}
+                          onContextMenu={(e) => { e.preventDefault(); setQuickPickerSlot(idx); }}
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border transition-all ${
+                            test
+                              ? selectedTestIds.has(test.id)
+                                ? "bg-emerald-50 border-emerald-300 text-emerald-700 line-through opacity-70"
+                                : "bg-white border-[#2563eb]/40 text-[#2563eb] hover:bg-[#eff6ff] hover:border-[#2563eb] shadow-sm"
+                              : "bg-[#f4f6f9] border-dashed border-[#dde3ec] text-[#94a3b8] hover:border-[#93c5fd] hover:text-[#2563eb]"
                           }`}
+                          title={test ? `Add ${test.name}` : "Right-click to configure slot"}
                         >
-                          <Package size={10} className="flex-shrink-0 opacity-70" />
-                          <span className="font-extrabold">{pkg.name}</span>
-                          <span className="opacity-60 text-[10px]">{pkg.tests.length} tests</span>
-                          <span className="font-extrabold">{inr(effective)}</span>
-                          {added ? <CheckCircle2 size={11} className="flex-shrink-0" /> : <Plus size={11} className="flex-shrink-0 opacity-70" />}
+                          {test ? test.name : `+ Slot ${idx + 1}`}
                         </button>
                       );
                     })}
                   </div>
                 )}
-              </div>
-            </div>
 
-          </div>
-        </div>
-
-        {/* ══════════════════════════════════════════════
-            RIGHT COLUMN — Bill Summary + Payment
-        ══════════════════════════════════════════════ */}
-        <div className="w-full lg:w-[35%] flex flex-col lg:overflow-hidden min-h-0">
-          <div className="flex-1 min-h-0 overflow-y-auto">
-
-            <div className="space-y-3 flex flex-col min-h-0">
-              {/* ── Selected Tests ── */}
-              <div className="flex-1 min-h-0 overflow-y-auto border-b border-card-border">
-                <div className="px-4 py-2 h-10 bg-gradient-to-r from-slate-50 via-slate-100 to-slate-100/50 dark:from-slate-800/40 dark:via-slate-700/30 dark:to-slate-900/20 border-l-[3px] border-l-slate-600 flex items-center justify-between">
-                  <span className="text-sm font-bold uppercase tracking-wide text-slate-900 dark:text-slate-900">
-                    Selected Tests ({selectedTests.length})
-                  </span>
-                  {selectedTests.length > 0 && (
-                    <button className="text-xs text-destructive hover:text-destructive/80" onClick={() => setSelectedTests([])}>
-                      Clear all
-                    </button>
-                  )}
-                </div>
-                {selectedTests.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-8 text-slate-900 dark:text-slate-900">
-                    <FlaskConical size={24} className="mb-2 opacity-30" />
-                    <p className="text-xs">No tests added yet</p>
+                {/* Test search + category filter */}
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#94a3b8]" />
+                    <input
+                      className="w-full h-8 pl-9 pr-3 text-sm border border-[#dde3ec] rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-[#2563eb]/30 focus:border-[#2563eb]"
+                      placeholder="Search test by name or code…"
+                      value={testSearch}
+                      onChange={(e) => setTestSearch(e.target.value)}
+                    />
                   </div>
-                ) : (
-                  <div className="divide-y divide-card-border">
-                    {selectedTests.map((t) => (
-                      <div key={t.testId} className="flex items-center gap-2 px-4 py-2.5">
+                  <select
+                    className="h-8 text-xs border border-[#dde3ec] rounded-md px-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#2563eb]/30 min-w-[90px]"
+                    value={categoryFilter}
+                    onChange={(e) => setCategoryFilter(e.target.value)}
+                  >
+                    {categories.map((c) => (
+                      <option key={c} value={c}>{c === "all" ? "All Categories" : c}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Test list */}
+                <div className={`max-h-[240px] overflow-y-auto rounded-md border border-[#dde3ec] divide-y divide-[#f1f5f9] ${denseTestList ? "max-h-[320px]" : ""}`}>
+                  {filteredTests.length === 0 ? (
+                    <div className="py-6 text-center text-[#94a3b8] text-sm">No tests found</div>
+                  ) : (
+                    filteredTests.slice(0, 80).map((t) => (
+                      <button
+                        key={t.id}
+                        data-billing-catalog-row
+                        type="button"
+                        className="w-full text-left px-3 py-2 flex items-center gap-3 hover:bg-[#eff6ff] transition-colors group"
+                        onClick={() => addTest(t)}
+                        onDoubleClick={() => addTest(t)}
+                        disabled={selectedTestIds.has(t.id)}
+                      >
                         <div className="flex-1 min-w-0">
-                          <div className="text-sm font-bold text-slate-900 dark:text-slate-900 truncate">{t.name}</div>
-                          <div className="text-xs text-slate-900 dark:text-slate-900 capitalize">{t.category}
-                            {t.source === "package" && <span className="ml-1 text-orange-500">· pkg</span>}
-                          </div>
-                          {(t as any).testType === "outsourced" && (
-                            <div className="text-[10px] text-orange-600 dark:text-orange-400 font-extrabold mt-0.5">External Lab</div>
+                          <span className={`text-[13px] font-semibold ${selectedTestIds.has(t.id) ? "text-[#94a3b8] line-through" : "text-[#1e3a5f]"}`}>
+                            {t.name}
+                          </span>
+                          {t.code && <span className="ml-2 text-[10px] text-[#94a3b8] font-mono">{t.code}</span>}
+                          {pinnedTestIds.has(t.id) && <Star size={8} className="inline ml-1 text-amber-400 fill-amber-400" />}
+                          <div className="text-[10px] text-[#94a3b8]">{t.category}</div>
+                        </div>
+                        <div className="text-right flex-shrink-0">
+                          <span className={`text-[13px] font-bold ${selectedTestIds.has(t.id) ? "text-[#94a3b8]" : "text-[#1e3a5f]"}`}>
+                            {inr(t.price)}
+                          </span>
+                          {selectedTestIds.has(t.id) ? (
+                            <div className="text-[10px] text-emerald-600 font-bold">✓ Added</div>
+                          ) : (
+                            <div className="text-[10px] text-[#2563eb] opacity-0 group-hover:opacity-100 transition-opacity">Click to add</div>
                           )}
                         </div>
-                        <span className="text-sm font-bold flex-shrink-0">{inr(t.price)}</span>
-                        <button onClick={() => removeTest(t.testId)} className="text-slate-900 dark:text-slate-900 hover:text-destructive transition-colors flex-shrink-0">
+                      </button>
+                    ))
+                  )}
+                </div>
+
+                {/* Packages */}
+                {showPackagesSetting && packages.length > 0 && (
+                  <div className="pt-2 border-t border-[#e2e8f0]">
+                    <div className="text-[10px] font-bold text-[#64748b] uppercase tracking-wide mb-1.5">Packages</div>
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#94a3b8]" />
+                        <input
+                          className="w-full h-7 pl-8 pr-2 text-xs border border-[#dde3ec] rounded-md bg-white focus:outline-none"
+                          placeholder="Search packages…"
+                          value={packageSearch}
+                          onChange={(e) => setPackageSearch(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-1.5 max-h-[120px] overflow-y-auto space-y-1">
+                      {filteredPackages.slice(0, 10).map((pkg) => (
+                        <button
+                          key={pkg.id}
+                          type="button"
+                          className="w-full text-left px-3 py-1.5 rounded-md border border-[#dde3ec] bg-white hover:bg-[#eff6ff] hover:border-[#bfdbfe] transition-colors flex items-center gap-3"
+                          onClick={() => addPackage(pkg)}
+                          disabled={selectedPackages.some((sp) => sp.packageId === pkg.id)}
+                        >
+                          <div className="flex-1 min-w-0">
+                            <div className="text-xs font-semibold text-[#1e3a5f] truncate">{pkg.name}</div>
+                            <div className="text-[10px] text-[#94a3b8]">{pkg.tests.length} tests</div>
+                          </div>
+                          <span className="text-sm font-bold text-[#1e3a5f] flex-shrink-0">{inr(pkg.discountedPrice)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+            )}
+
+          </div>{/* end left scroll */}
+        </div>
+
+        {/* ▌RIGHT COLUMN ▌────────────────────────────────── */}
+        <div className="w-full lg:w-[35%] flex flex-col min-h-0 bg-[#f8fafc] dark:bg-slate-850">
+          <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
+
+            {/* ── SELECTED TESTS ───────────────────────── */}
+            <div className={`${cardCls} mx-2.5 mt-2.5 flex-shrink-0`}>
+              {SH(`Selected Tests (${selectedTests.length})`, <ClipboardList size={11} />)}
+              {selectedTests.length === 0 && selectedPackages.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-6 text-[#94a3b8]">
+                  <FlaskConical size={20} className="mb-1.5 opacity-30" />
+                  <p className="text-xs">No investigations added yet</p>
+                </div>
+              ) : (
+                <div>
+                  <div className="divide-y divide-[#f1f5f9] max-h-[180px] overflow-y-auto">
+                    {selectedTests.map((t) => (
+                      <div key={t.testId} data-billing-test-row className="flex items-center gap-2 px-3 py-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="text-[13px] font-semibold text-[#1e3a5f] truncate">{t.name}</div>
+                          <div className="text-[10px] text-[#94a3b8] capitalize">{t.category}
+                            {t.source === "package" && <span className="ml-1 text-amber-600 font-bold">· pkg</span>}
+                          </div>
+                        </div>
+                        <span className="text-[13px] font-bold text-[#1e3a5f] flex-shrink-0">{inr(t.price)}</span>
+                        <button
+                          onClick={() => removeTest(t.testId)}
+                          className="text-[#cbd5e1] hover:text-red-500 transition-colors flex-shrink-0"
+                        >
                           <X size={13} />
                         </button>
                       </div>
                     ))}
                   </div>
-                )}
-                {selectedPackages.length > 0 && (
-                  <div className="border-t border-card-border bg-muted/5 px-4 py-3 space-y-2">
-                    <div className="text-xs font-extrabold text-slate-900 dark:text-slate-900 uppercase tracking-wide">Selected Packages</div>
-                    <div className="space-y-2">
+                  {selectedPackages.length > 0 && (
+                    <div className="border-t border-[#e2e8f0] bg-amber-50/50 px-3 py-2 space-y-1">
+                      <div className="text-[10px] font-bold text-amber-700 uppercase tracking-wide">Packages</div>
                       {selectedPackages.map((pkg) => (
-                        <div key={pkg.packageId} className="flex items-center justify-between gap-2 rounded-md border border-card-border px-3 py-2">
-                          <div className="min-w-0">
-                            <div className="text-sm font-bold truncate">{pkg.name}</div>
-                            <div className="text-xs text-slate-900 dark:text-slate-900">{pkg.testIds.length} tests included</div>
-                          </div>
-                          <button onClick={() => removePackage(pkg.packageId)} className="text-slate-900 dark:text-slate-900 hover:text-destructive transition-colors flex-shrink-0">
-                            <X size={13} />
-                          </button>
+                        <div key={pkg.packageId} className="flex items-center justify-between gap-2">
+                          <div className="text-xs font-semibold text-[#1e3a5f] truncate">{pkg.name}</div>
+                          <button onClick={() => removePackage(pkg.packageId)} className="text-[#cbd5e1] hover:text-red-500"><X size={12} /></button>
                         </div>
                       ))}
                     </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="flex-shrink-0 border-b border-card-border bg-card lg:sticky lg:bottom-0 lg:z-10 shadow-sm">
-                <div className="px-4 py-2 h-10 border-b border-card-border bg-indigo-900 dark:bg-indigo-950 border-l-[4px] border-l-indigo-950 flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Receipt size={14} className="text-white flex-shrink-0" />
-                    <span className="text-sm font-bold uppercase tracking-wide text-white truncate">Bill Summary</span>
-                  </div>
+                  )}
                   {selectedTests.length > 0 && (
-                    <button
-                      className="flex items-center gap-1 text-[11px] font-extrabold text-slate-900 hover:text-slate-900 dark:text-slate-900 dark:hover:text-white transition-colors flex-shrink-0"
-                      onClick={fetchSuggestion}
-                      disabled={suggLoading}
-                    >
-                      <Zap size={11} className={suggLoading ? "animate-pulse text-yellow-500" : ""} />
-                      {suggLoading ? "Checking…" : "Auto-discount"}
-                    </button>
+                    <div className="border-t border-[#e2e8f0] px-3 py-1.5 flex justify-end">
+                      <button className="text-[11px] text-red-400 hover:text-red-600" onClick={() => setSelectedTests([])}>
+                        Clear all
+                      </button>
+                    </div>
                   )}
                 </div>
-                <div className="p-2.5 space-y-1.5 max-h-[32vh] overflow-y-auto">
-                  {suggestion && suggestion.discount > 0 && (
-                    <div className="bg-green-50 dark:bg-green-950/20 border border-green-200 rounded-lg px-3 py-2 flex items-center gap-2 text-xs">
-                      <Zap size={11} className="text-green-600 flex-shrink-0" />
-                      <span className="text-green-700 flex-1">
-                        Discount rule: <strong>{suggestion.rule?.name}</strong> — {inr(suggestion.discount)} applicable
-                      </span>
-                      <button className="text-green-700 font-extrabold hover:underline" onClick={() => { setDiscountType("amount"); setDiscountValue(suggestion.discount); setSuggestion(null); }}>
-                        Apply
-                      </button>
-                      <button onClick={() => setSuggestion(null)} className="text-slate-900 dark:text-slate-900 hover:text-foreground">
-                        <X size={10} />
-                      </button>
-                    </div>
-                  )}
-                  <div className="flex items-center justify-between text-xs"><span className="text-slate-900 dark:text-slate-900">Subtotal</span><span className="font-bold">{inr(subtotal)}</span></div>
+              )}
+            </div>
+
+            {/* ── BILL SUMMARY + DISCOUNT + VIP ────────── */}
+            <div className={`${cardCls} mx-2.5 mt-2.5 flex-shrink-0`}>
+              {SH("Bill Summary", <Receipt size={11} />)}
+              <div className="p-3 space-y-2">
+
+                {/* Auto-discount suggestion */}
+                {suggestion && suggestion.discount > 0 && (
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 flex items-center gap-2 text-xs">
+                    <Zap size={11} className="text-emerald-600 flex-shrink-0" />
+                    <span className="text-emerald-700 flex-1">
+                      <strong>{suggestion.rule?.name}</strong> — {inr(suggestion.discount)} applicable
+                    </span>
+                    <button
+                      className="text-emerald-700 font-bold hover:underline"
+                      onClick={() => { setDiscountType("amount"); setDiscountValue(suggestion.discount); setSuggestion(null); }}
+                    >
+                      Apply
+                    </button>
+                    <button onClick={() => setSuggestion(null)} className="text-[#94a3b8]"><X size={10} /></button>
+                  </div>
+                )}
+
+                {/* Subtotal row */}
+                <div className="flex items-center justify-between">
+                  <span className="text-[12px] text-[#64748b]">Subtotal</span>
+                  <span className="text-[13px] font-semibold text-[#334155]">{inr(subtotal)}</span>
+                </div>
+
+                {/* Discount row */}
+                <div className="space-y-1.5">
                   <div className="flex items-center gap-1.5">
-                    <span className="text-xs text-slate-900 dark:text-slate-900 w-14 flex-shrink-0">Discount</span>
-                    <div className="flex items-center border border-card-border rounded-lg overflow-hidden flex-shrink-0">
-                      <button onClick={() => setDiscountType("amount")} className={`px-2 py-1 text-xs flex items-center gap-0.5 transition-colors ${discountType === "amount" ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}><IndianRupee size={10} /> ₹</button>
-                      <button onClick={() => setDiscountType("pct")} className={`px-2 py-1 text-xs flex items-center gap-0.5 transition-colors ${discountType === "pct" ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}><Percent size={10} /> %</button>
+                    <span className="text-[12px] text-[#64748b] w-14 flex-shrink-0">Discount</span>
+                    <div className="flex border border-[#dde3ec] rounded-md overflow-hidden flex-shrink-0">
+                      <button
+                        onClick={() => setDiscountType("amount")}
+                        className={`px-2 py-0.5 text-[11px] font-bold transition-colors ${discountType === "amount" ? "bg-[#2563eb] text-white" : "hover:bg-[#f4f6f9] text-[#64748b]"}`}
+                      >₹</button>
+                      <button
+                        onClick={() => setDiscountType("pct")}
+                        className={`px-2 py-0.5 text-[11px] font-bold transition-colors ${discountType === "pct" ? "bg-[#2563eb] text-white" : "hover:bg-[#f4f6f9] text-[#64748b]"}`}
+                      >%</button>
                     </div>
-                    <Input type="number" min={0} max={discountType === "pct" ? 100 : subtotal} step="0.01" value={discountValue || ""} onChange={(e) => setDiscountValue(Number(e.target.value))} placeholder="0" className="h-7 text-xs flex-1 min-w-0" />
+                    <Input
+                      type="number" min={0}
+                      max={discountType === "pct" ? 100 : subtotal}
+                      step="0.01"
+                      value={discountValue || ""}
+                      onChange={(e) => setDiscountValue(Number(e.target.value))}
+                      placeholder="0"
+                      className="h-7 text-sm flex-1 min-w-0"
+                    />
                     {subtotal > 0 && (
                       <Button
                         size="sm"
                         variant="outline"
                         type="button"
-                        className="h-7 px-2 text-[10px] border-indigo-200 text-indigo-700 hover:bg-indigo-50 font-bold flex-shrink-0"
+                        className="h-7 px-2 text-[10px] border-[#bfdbfe] text-[#2563eb] hover:bg-[#eff6ff] font-bold flex-shrink-0"
                         onClick={() => {
                           setDiscountType("pct");
                           setDiscountValue(10);
-                          const standardReason = discountReasons.find(r => r.isActive && r.label.toLowerCase().includes("standard"))
-                            || discountReasons.find(r => r.isActive);
-                          if (standardReason) {
-                            setDiscountReason(standardReason.label);
-                          } else {
-                            setDiscountReason("Standard Discount");
-                          }
+                          const r = discountReasons.find((r) => r.isActive && r.label.toLowerCase().includes("standard")) || discountReasons.find((r) => r.isActive);
+                          setDiscountReason(r ? r.label : "Standard Discount");
                         }}
-                        title="Apply 10% discount"
                       >
                         10%
                       </Button>
                     )}
-                    {discountAmt > 0 && <span className="text-xs text-orange-900 font-bold flex-shrink-0">−{inr(discountAmt)}</span>}
+                    {discountAmt > 0 && <span className="text-[12px] text-amber-700 font-bold flex-shrink-0">−{inr(discountAmt)}</span>}
+                    {selectedTests.length > 0 && (
+                      <button
+                        onClick={fetchSuggestion}
+                        disabled={suggLoading}
+                        className="text-[10px] text-[#2563eb] hover:underline flex-shrink-0 flex items-center gap-0.5"
+                      >
+                        <Zap size={9} className={suggLoading ? "animate-pulse" : ""} />
+                        Auto
+                      </button>
+                    )}
                   </div>
                   {discountAmt > 0 && (
-                    <div className="space-y-1 pl-[62px]">
+                    <div className="space-y-1 pl-[60px]">
                       <select
                         value={discountReason}
                         onChange={(e) => setDiscountReason(e.target.value)}
-                        className={`w-full h-7 text-xs border rounded-md px-2 bg-background ${!discountReason ? "border-red-400 text-red-600" : "border-card-border"}`}
+                        className={`w-full h-7 text-xs border rounded-md px-2 bg-white ${!discountReason ? "border-red-400 text-red-600" : "border-[#dde3ec]"}`}
                       >
                         <option value="">— Select reason * —</option>
-                        {discountReasons.filter(r => r.isActive).map(r => <option key={r.id} value={r.label}>{r.label}</option>)}
+                        {discountReasons.filter((r) => r.isActive).map((r) => (
+                          <option key={r.id} value={r.label}>{r.label}</option>
+                        ))}
                       </select>
-                      <Input placeholder="Custom note (optional)…" value={discountNote} onChange={(e) => setDiscountNote(e.target.value)} className="h-7 text-xs" maxLength={200} />
+                      <Input
+                        placeholder="Custom note (optional)…"
+                        value={discountNote}
+                        onChange={(e) => setDiscountNote(e.target.value)}
+                        className="h-7 text-xs"
+                        maxLength={200}
+                      />
                     </div>
                   )}
+                </div>
 
-                  {/* VIP Checkbox */}
-                  <div className="flex items-center justify-between py-2 border-t border-card-border">
-                    <label className="flex items-center gap-2 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={isVipActive}
-                        onChange={(e) => setIsVipActive(e.target.checked)}
-                        className="h-4 w-4 rounded border-slate-300 text-primary focus:ring-primary"
-                      />
-                      <span className="text-sm font-extrabold text-slate-700 dark:text-slate-900">⭐ VIP Priority Booking</span>
-                    </label>
+                {/* VIP toggle */}
+                <div className="flex items-center gap-2 py-1.5 border-t border-[#e2e8f0]">
+                  <input
+                    type="checkbox"
+                    id="vip-toggle"
+                    checked={isVipActive}
+                    onChange={(e) => setIsVipActive(e.target.checked)}
+                    className="h-4 w-4 rounded border-[#94a3b8] text-[#2563eb]"
+                  />
+                  <label htmlFor="vip-toggle" className="text-[12px] font-semibold text-[#475569] cursor-pointer select-none">
+                    ⭐ VIP Priority
+                  </label>
+                </div>
+
+                {/* ── NET TOTAL — visual anchor of the screen ── */}
+                <div className="flex items-center justify-between py-2 border-t-2 border-[#1a3a5c]">
+                  <span className="text-[13px] font-bold text-[#1a3a5c] uppercase tracking-wide">Net Total</span>
+                  <span className="text-[28px] font-extrabold text-[#1a3a5c] tabular-nums leading-none">{inr(total)}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* ── PAYMENT ──────────────────────────────── */}
+            <div className={`${cardCls} mx-2.5 mt-2.5 flex-shrink-0`}>
+              {SH("Payment", <CreditCard size={11} />)}
+              <div className="p-3 space-y-2.5" ref={paymentRef}>
+
+                {/* Collect now toggle */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setPayNow(!payNow)}
+                      className={`relative inline-flex h-5 w-9 flex-shrink-0 rounded-full border-2 border-transparent transition-colors ${payNow ? "bg-[#2563eb]" : "bg-[#cbd5e1]"}`}
+                    >
+                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${payNow ? "translate-x-4" : "translate-x-0"}`} />
+                    </button>
+                    <span className="text-[12px] font-semibold text-[#334155]">Collect Payment Now</span>
                   </div>
+                  <span className="text-[11px] text-[#64748b]">{inr(total)}</span>
+                </div>
 
-                  <div className="flex items-center justify-between pt-2 border-t border-card-border"><span className="font-bold text-sm text-slate-700 dark:text-slate-900 uppercase tracking-wide">Total</span><span className="text-2xl font-extrabold text-primary tabular-nums">{inr(total)}</span></div>
+                {payNow && (
+                  <>
+                    {/* Payment mode selector — clean cards */}
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {PAYMENT_MODES.filter((m) => m !== "online").map((m) => {
+                        const icons: Record<string, string> = { cash: "💵", upi: "📱", card: "💳", cheque: "📝", insurance: "🏥", credit: "🔖" };
+                        const isActive = paymentSplits[0]?.mode === m;
+                        return (
+                          <button
+                            key={m}
+                            type="button"
+                            onClick={() => setPaymentSplits((prev) => prev.map((s, i) => i === 0 ? { ...s, mode: m } : s))}
+                            className={`flex flex-col items-center gap-0.5 px-2 py-2 rounded-lg border text-center transition-all ${
+                              isActive
+                                ? "bg-[#2563eb] text-white border-[#2563eb] shadow-md"
+                                : "bg-white border-[#dde3ec] text-[#475569] hover:border-[#93c5fd] hover:bg-[#eff6ff]"
+                            }`}
+                          >
+                            <span className="text-base">{icons[m] ?? "💰"}</span>
+                            <span className="text-[10px] font-bold uppercase">{m}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
 
-                  {/* ── Payment Collection — amount input first, toggle + modes below ── */}
-                  <div className="mt-3 space-y-2" ref={paymentRef}>
-                    {/* Primary amount input — always visible, large and prominent */}
+                    {/* Primary amount input */}
                     <Input
                       type="number"
                       min={0}
@@ -2364,579 +2291,350 @@ export default function BillingDesk() {
                       placeholder={total.toFixed(2)}
                       value={paymentSplits[0]?.amount ?? ""}
                       onChange={(e) => setPaymentSplits((prev) => prev.map((s, i) => i === 0 ? { ...s, amount: e.target.value } : s))}
-                      className="h-12 text-xl font-bold tracking-tight"
+                      className="h-12 text-xl font-bold tracking-tight text-center border-[#2563eb]/40 focus:border-[#2563eb]"
                     />
-                    {/* Additional splits */}
+
+                    {/* Split payments */}
                     {paymentSplits.slice(1).map((split, relIdx) => {
                       const idx = relIdx + 1;
                       return (
                         <div key={idx} className="grid grid-cols-[1.1fr_1fr_18px] gap-2 items-center">
-                          <Select value={split.mode} onValueChange={(v) => setPaymentSplits((prev) => prev.map((s, i) => i === idx ? { ...s, mode: v } : s))}>
-                            <SelectTrigger className="h-9 text-[11px]"><SelectValue /></SelectTrigger>
-                            <SelectContent>{PAYMENT_MODES.map((m) => <SelectItem key={m} value={m} className="capitalize">{m === "online" ? "ONLINE GATEWAY" : m.toUpperCase()}</SelectItem>)}</SelectContent>
+                          <Select
+                            value={split.mode}
+                            onValueChange={(v) => setPaymentSplits((prev) => prev.map((s, i) => i === idx ? { ...s, mode: v } : s))}
+                          >
+                            <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {PAYMENT_MODES.map((m) => (
+                                <SelectItem key={m} value={m} className="capitalize">
+                                  {m === "online" ? "Online Gateway" : m.toUpperCase()}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
                           </Select>
-                          <Input type="number" min={0} step="0.01" placeholder="0.00" value={split.amount} onChange={(e) => setPaymentSplits((prev) => prev.map((s, i) => i === idx ? { ...s, amount: e.target.value } : s))} className="h-9 text-[11px]" />
-                          <button onClick={() => setPaymentSplits((prev) => prev.filter((_, i) => i !== idx))} className="text-slate-900 dark:text-slate-900 hover:text-destructive transition-colors"><X size={13} /></button>
+                          <Input
+                            type="number" min={0} step="0.01" placeholder="0.00"
+                            value={split.amount}
+                            onChange={(e) => setPaymentSplits((prev) => prev.map((s, i) => i === idx ? { ...s, amount: e.target.value } : s))}
+                            className="h-8 text-xs"
+                          />
+                          <button
+                            onClick={() => setPaymentSplits((prev) => prev.filter((_, i) => i !== idx))}
+                            className="text-[#cbd5e1] hover:text-red-500"
+                          ><X size={13} /></button>
                         </div>
                       );
                     })}
+
                     {paymentSplits.length < PAYMENT_MODES.length && (
-                      <button onClick={() => setPaymentSplits((prev) => [...prev, { mode: "upi", amount: "" }])} className="text-[11px] text-primary hover:underline flex items-center gap-1">+ Split payment</button>
+                      <button
+                        onClick={() => setPaymentSplits((prev) => [...prev, { mode: "upi", amount: "" }])}
+                        className="text-[11px] text-[#2563eb] hover:underline flex items-center gap-1"
+                      >
+                        <Plus size={11} /> Split payment
+                      </button>
                     )}
-                    {/* Balance / paid summary */}
+
+                    {/* Balance / Paid indicator */}
                     {(balance > 0 || (paidTotal > 0 && total > 0)) && (
-                      <div className="text-[11px]">
+                      <div className="rounded-lg border px-3 py-2">
                         {balance > 0 ? (
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-extrabold text-slate-900 dark:text-slate-900">Balance due</span>
-                            <span className="text-red-600 text-lg font-extrabold animate-blink-fast">{inr(balance)}</span>
+                          <div className="flex items-center justify-between">
+                            <span className="text-[12px] font-bold text-red-700">Balance Due</span>
+                            <span className="text-[18px] font-extrabold text-red-600 tabular-nums animate-blink-fast">{inr(balance)}</span>
                           </div>
                         ) : (
-                          <div className="flex items-center justify-center gap-1 text-green-600 font-extrabold text-base animate-blink-fast">
-                            <CheckCircle2 size={13} /> Fully paid — {inr(paidTotal)}
+                          <div className="flex items-center justify-center gap-2 text-emerald-600 font-bold">
+                            <CheckCircle2 size={15} />
+                            <span className="text-[14px]">Fully Paid · {inr(paidTotal)}</span>
                           </div>
                         )}
                       </div>
                     )}
-                    {/* Toggle + mode buttons row */}
-                    <div className="pt-1 border-t border-card-border space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <button onClick={() => setPayNow(!payNow)} className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${payNow ? "bg-primary" : "bg-muted"}`}>
-                            <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${payNow ? "translate-x-4" : "translate-x-0"}`} />
-                          </button>
-                          <span className="text-sm font-extrabold text-slate-700 dark:text-slate-900">Collect Payment Now</span>
-                        </div>
-                        <span className="text-xs text-slate-900 dark:text-slate-900 font-bold">Total {inr(total)}</span>
-                      </div>
-                      {payNow && (
-                        <div className="flex items-center gap-1.5">
-                          {PAYMENT_MODES.map((m) => (
-                            <button
-                              key={m}
-                              type="button"
-                              onClick={() => setPaymentSplits((prev) => prev.map((s, i) => i === 0 ? { ...s, mode: m } : s))}
-                              className={`flex items-center gap-1 px-2 py-1 rounded border text-[10px] font-extrabold uppercase transition-all ${
-                                paymentSplits[0]?.mode === m
-                                  ? "bg-primary text-white border-primary shadow-sm"
-                                  : "bg-card border-card-border text-slate-900 dark:text-slate-900 hover:bg-muted/60"
-                              }`}
-                            >
-                              <span className="text-[9px]">{m === "cash" ? "💵" : m === "upi" ? "📱" : m === "card" ? "💳" : m === "cheque" ? "📝" : "🏥"}</span>
-                              <span>{m}</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex-shrink-0 bg-card p-3 space-y-2 border-b border-card-border lg:rounded-b-xl">
-                {/* ── Action buttons — always visible ── */}
-                <div className="space-y-2 pt-1">
-                  <div className="flex gap-1.5">
-                    <Button
-                      onClick={() => {
-                        if (generatingRef.current || !!lastBillRef.current) return;
-                        generatingRef.current = true;
-                        printAfterSaveRef.current = true;
-                        generateMut.mutate();
-                      }}
-                      disabled={!selectedPatient || selectedTests.length === 0 || generateMut.isPending || !!lastBill || (discountAmt > 0 && !discountReason) || (needsFormF && !clinic?.formFBillingPrompt && ((clinic?.formFGuardianRequired !== false && !husbandName.trim()) || (clinic?.formFAddressRequired !== false && !patientAddress.trim()))) || (needsDicom && !dicomFieldsComplete)}
-                      className={`flex-1 h-12 text-lg font-bold border-0 shadow-lg disabled:shadow-none ${lastBill ? "bg-green-600 text-white disabled:bg-green-600 disabled:text-white disabled:opacity-80" : "bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white disabled:from-muted disabled:to-muted disabled:text-slate-900 dark:text-slate-900"}`}
-                      title={lastBill ? `Bill ${lastBill.billNumber} already saved — click New to start a new bill` : discountAmt > 0 && !discountReason ? "Select a discount reason before generating bill" : needsFormF && !clinic?.formFBillingPrompt && ((clinic?.formFGuardianRequired !== false && !husbandName.trim()) || (clinic?.formFAddressRequired !== false && !patientAddress.trim())) ? "Fill required Form F fields (Husband Name & Address)" : needsDicom && !dicomFieldsComplete ? "Fill all 4 DICOM Worklist fields before generating bill" : undefined}
-                    >
-                      {lastBill ? <><CheckCircle2 size={18} className="mr-2" />Bill Saved ✓</> : generateMut.isPending ? <><Printer size={18} className="mr-2 animate-spin" />Saving…</> : <><Printer size={18} className="mr-2" />Save &amp; Print</>}
-                    </Button>
-                    <div className="flex gap-1.5 flex-1">
-                      <Button
-                        variant="outline"
-                        onClick={async () => {
-                          if (!lastBill) return;
-                          await printBarcode(lastBill);
-                        }}
-                        disabled={!lastBill}
-                        className="flex-1 h-12 text-[11px] px-2"
-                      >
-                        Barcode
-                      </Button>
-                      <Button
-                        variant="outline"
-                        onClick={async () => {
-                          if (!lastBill) return;
-                          await printToken(lastBill, clinic);
-                        }}
-                        disabled={!lastBill || !lastBill.tokenNo}
-                        className="flex-1 h-12 text-[11px] px-2"
-                      >
-                        Token
-                      </Button>
-                    </div>
-                  </div>
-                </div>
+                  </>
+                )}
               </div>
             </div>
-          </div>
+
+            {/* ── SAVE & PRINT — most prominent action ─── */}
+            <div className="mx-2.5 mt-2.5 mb-2.5 flex-shrink-0 space-y-2">
+              <Button
+                onClick={() => {
+                  if (generatingRef.current || !!lastBillRef.current) return;
+                  generatingRef.current = true;
+                  printAfterSaveRef.current = true;
+                  generateMut.mutate();
+                }}
+                disabled={
+                  !selectedPatient ||
+                  selectedTests.length === 0 ||
+                  generateMut.isPending ||
+                  !!lastBill ||
+                  (discountAmt > 0 && !discountReason) ||
+                  (needsFormF && !clinic?.formFBillingPrompt && (
+                    (clinic?.formFGuardianRequired !== false && !husbandName.trim()) ||
+                    (clinic?.formFAddressRequired !== false && !patientAddress.trim())
+                  )) ||
+                  (needsDicom && !dicomFieldsComplete)
+                }
+                className={`w-full h-14 text-[16px] font-extrabold tracking-wide rounded-lg shadow-lg disabled:shadow-none border-0 transition-all ${
+                  lastBill
+                    ? "bg-emerald-600 hover:bg-emerald-700 text-white"
+                    : "bg-[#1a3a5c] hover:bg-[#1e4976] text-white disabled:bg-[#cbd5e1] disabled:text-[#94a3b8]"
+                }`}
+              >
+                {lastBill ? (
+                  <><CheckCircle2 size={20} className="mr-2" />Bill Saved ✓</>
+                ) : generateMut.isPending ? (
+                  <><Printer size={20} className="mr-2 animate-spin" />Saving…</>
+                ) : (
+                  <><Printer size={20} className="mr-2" />Save &amp; Print</>
+                )}
+              </Button>
+
+              <div className="grid grid-cols-3 gap-1.5">
+                <Button
+                  variant="outline"
+                  onClick={async () => { if (!lastBill) return; await printBarcode(lastBill); }}
+                  disabled={!lastBill}
+                  className="h-9 text-[11px] border-[#dde3ec] text-[#475569] hover:bg-[#eff6ff] hover:text-[#2563eb] hover:border-[#93c5fd]"
+                >
+                  <Barcode size={13} className="mr-1" />Barcode
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={async () => { if (!lastBill) return; await printToken(lastBill, clinic); }}
+                  disabled={!lastBill || !lastBill.tokenNo}
+                  className="h-9 text-[11px] border-[#dde3ec] text-[#475569] hover:bg-[#eff6ff] hover:text-[#2563eb] hover:border-[#93c5fd]"
+                >
+                  <Hash size={13} className="mr-1" />Token
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    if (generatingRef.current || !!lastBillRef.current) return;
+                    generatingRef.current = true;
+                    generateMut.mutate();
+                  }}
+                  disabled={
+                    !selectedPatient ||
+                    selectedTests.length === 0 ||
+                    generateMut.isPending ||
+                    !!lastBill ||
+                    (discountAmt > 0 && !discountReason)
+                  }
+                  className="h-9 text-[11px] border-[#dde3ec] text-[#475569] hover:bg-[#eff6ff]"
+                >
+                  <Save size={13} className="mr-1" />Save
+                </Button>
+              </div>
+            </div>
+
+          </div>{/* end right scroll */}
         </div>
-      </div>
-      {/* ── Quick Test slot picker dialog ── */}
-      <Dialog
-        open={quickPickerSlot !== null}
-        onOpenChange={(o) => { if (!o) { setQuickPickerSlot(null); setQuickPickerSearch(""); } }}
-      >
+
+      </div>{/* end main layout */}
+
+      {/* ── DIALOGS AND MODALS (unchanged from original) ── */}
+
+      {/* Quick Test slot picker */}
+      <Dialog open={quickPickerSlot !== null} onOpenChange={(o) => { if (!o) { setQuickPickerSlot(null); setQuickPickerSearch(""); } }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>
-              Assign test to Quick Slot {(quickPickerSlot ?? 0) + 1}
-            </DialogTitle>
+            <DialogTitle className="text-base font-bold">Configure Quick Slot {(quickPickerSlot ?? 0) + 1}</DialogTitle>
           </DialogHeader>
-          <div className="space-y-2">
-            <p className="text-xs text-slate-900 dark:text-slate-900">
-              Pick a frequently used test for this slot. Click the slot tab in Billing Desk to add this test instantly.
-            </p>
-            <div className="relative">
-              <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-900 dark:text-slate-900" />
-              <Input
-                autoFocus
-                placeholder="Search tests by name or code…"
-                value={quickPickerSearch}
-                onChange={(e) => setQuickPickerSearch(e.target.value)}
-                className="pl-9 h-9 text-sm"
-              />
-            </div>
-            <div className="border border-card-border rounded-lg max-h-72 overflow-y-auto divide-y divide-card-border">
-              {(() => {
-                const q = quickPickerSearch.toLowerCase().trim();
-                const list = allTests
-                  .filter((t) => !q || t.name.toLowerCase().includes(q) || t.code.toLowerCase().includes(q))
-                  .slice(0, 100);
-                if (list.length === 0) {
-                  return <div className="px-3 py-4 text-xs text-slate-900 dark:text-slate-900 text-center">No tests match "{quickPickerSearch}"</div>;
-                }
-                return list.map((t) => (
+          <div className="space-y-3 py-2">
+            <Input
+              autoFocus
+              placeholder="Search test…"
+              value={quickPickerSearch}
+              onChange={(e) => setQuickPickerSearch(e.target.value)}
+              className="h-9"
+            />
+            <div className="max-h-60 overflow-y-auto space-y-1">
+              {allTests
+                .filter((t) => !quickPickerSearch || t.name.toLowerCase().includes(quickPickerSearch.toLowerCase()))
+                .slice(0, 20)
+                .map((t) => (
                   <button
                     key={t.id}
+                    className="w-full text-left px-3 py-2 rounded border border-[#dde3ec] hover:bg-[#eff6ff] text-sm flex items-center justify-between"
                     onClick={() => {
-                      if (quickPickerSlot != null) assignQuickSlot(quickPickerSlot, t.id);
+                      if (quickPickerSlot !== null) {
+                        const next = [...quickTestSlots];
+                        next[quickPickerSlot] = t.id;
+                        setQuickTestSlots(next);
+                        localStorage.setItem("billingDesk:quickTests", JSON.stringify(next));
+                      }
                       setQuickPickerSlot(null);
                       setQuickPickerSearch("");
                     }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-muted/50"
                   >
-                    <FlaskConical size={11} className="text-slate-900 dark:text-slate-900 flex-shrink-0" />
-                    <span className="text-[10px] font-mono font-extrabold text-primary bg-primary/10 px-1.5 py-0.5 rounded flex-shrink-0">#{t.id}</span>
-                    <span className="flex-1 font-bold truncate">{t.name}</span>
-                    <span className="text-xs text-slate-900 dark:text-slate-900 font-mono flex-shrink-0">{t.code}</span>
-                    <span className="text-xs font-extrabold flex-shrink-0">{inr(t.price)}</span>
+                    <span>{t.name}</span>
+                    <span className="font-bold text-[#1e3a5f]">{inr(t.price)}</span>
                   </button>
-                ));
-              })()}
+                ))}
             </div>
-            {quickPickerSlot != null && quickTestIds[quickPickerSlot] != null && (
-              <div className="flex justify-end pt-1">
-                <button
-                  onClick={() => {
-                    if (quickPickerSlot != null) assignQuickSlot(quickPickerSlot, null);
-                    setQuickPickerSlot(null);
-                    setQuickPickerSearch("");
-                  }}
-                  className="text-xs text-destructive hover:underline"
-                >
-                  Clear this slot
-                </button>
-              </div>
+            {quickPickerSlot !== null && quickTestSlots[quickPickerSlot] != null && (
+              <button
+                className="text-xs text-red-500 hover:underline"
+                onClick={() => {
+                  const next = [...quickTestSlots];
+                  next[quickPickerSlot] = null;
+                  setQuickTestSlots(next);
+                  localStorage.setItem("billingDesk:quickTests", JSON.stringify(next));
+                  setQuickPickerSlot(null);
+                }}
+              >
+                Clear this slot
+              </button>
             )}
           </div>
         </DialogContent>
       </Dialog>
 
-      {/* ── Quick Doctor slot picker dialog ── */}
-      <Dialog
-        open={quickDoctorPickerSlot !== null}
-        onOpenChange={(o) => { if (!o) { setQuickDoctorPickerSlot(null); setQuickDoctorPickerSearch(""); } }}
-      >
+      {/* Quick Doctor slot picker */}
+      <Dialog open={quickDoctorPickerOpen} onOpenChange={setQuickDoctorPickerOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>
-              Assign Doctor to Quick Slot {(quickDoctorPickerSlot ?? 0) + 1}
-            </DialogTitle>
+            <DialogTitle className="text-base font-bold">Configure Quick Doctor Slots</DialogTitle>
           </DialogHeader>
-          <div className="space-y-2">
-            <p className="text-xs text-slate-900 dark:text-slate-900">
-              Pick a frequently referred doctor for this quick-select slot. Click the slot in the Referral Doctor section to select instantly.
-            </p>
-            <div className="relative">
-              <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-900 dark:text-slate-900" />
-              <Input
-                autoFocus
-                placeholder="Search by name or specialization…"
-                value={quickDoctorPickerSearch}
-                onChange={(e) => setQuickDoctorPickerSearch(e.target.value)}
-                className="pl-9 h-9 text-sm"
-              />
-            </div>
-            <div className="border border-card-border rounded-lg max-h-72 overflow-y-auto divide-y divide-card-border">
-              {(() => {
-                const q = quickDoctorPickerSearch.toLowerCase().trim();
-                const list = doctors
-                  .filter((d) => !q || d.name.toLowerCase().includes(q) || d.specialization.toLowerCase().includes(q))
-                  .slice(0, 80);
-                if (list.length === 0) {
-                  return <div className="px-3 py-4 text-xs text-slate-900 dark:text-slate-900 text-center">No doctors match "{quickDoctorPickerSearch}"</div>;
-                }
-                return list.map((d) => (
+          <div className="space-y-3 py-2">
+            <p className="text-xs text-[#94a3b8]">Select doctors to pin to the quick-access row (max 8)</p>
+            <div className="max-h-64 overflow-y-auto space-y-1">
+              {doctors.map((d) => {
+                const pinned = quickDoctorIds.includes(d.id);
+                return (
                   <button
                     key={d.id}
-                    onClick={() => {
-                      if (quickDoctorPickerSlot != null) assignQuickDoctor(quickDoctorPickerSlot, d.id);
-                      setQuickDoctorPickerSlot(null);
-                      setQuickDoctorPickerSearch("");
-                    }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-left hover:bg-muted/50"
+                    className={`w-full text-left px-3 py-2 rounded border text-sm flex items-center gap-2 transition-colors ${
+                      pinned ? "bg-[#eff6ff] border-[#bfdbfe] text-[#1e3a5f]" : "border-[#dde3ec] hover:bg-[#f8fafc]"
+                    }`}
+                    onClick={() => toggleQuickDoctorSlot(d.id)}
                   >
-                    <div className="w-9 h-7 rounded bg-primary/10 flex items-center justify-center flex-shrink-0 font-mono text-[11px] text-primary font-extrabold">
-                      #{d.id}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="font-bold">Dr. {d.name}</div>
-                      <div className="text-xs text-slate-900 dark:text-slate-900">{d.specialization}</div>
-                    </div>
+                    {pinned ? <CheckCircle2 size={13} className="text-[#2563eb]" /> : <div className="w-3.5 h-3.5 rounded-full border-2 border-[#cbd5e1]" />}
+                    <span className="flex-1">{d.name}</span>
+                    {d.speciality && <span className="text-[11px] text-[#94a3b8]">{d.speciality}</span>}
                   </button>
-                ));
-              })()}
+                );
+              })}
             </div>
-            {quickDoctorPickerSlot != null && quickDoctorIds[quickDoctorPickerSlot] != null && (
-              <div className="flex justify-end pt-1">
-                <button
-                  onClick={() => {
-                    if (quickDoctorPickerSlot != null) assignQuickDoctor(quickDoctorPickerSlot, null);
-                    setQuickDoctorPickerSlot(null);
-                    setQuickDoctorPickerSearch("");
-                  }}
-                  className="text-xs text-destructive hover:underline"
-                >
-                  Clear this slot
-                </button>
-              </div>
-            )}
           </div>
         </DialogContent>
       </Dialog>
 
-      {/* ── Form F Billing Popup (Feature 1) ── */}
+      {/* Form F Billing Popup */}
       <Dialog open={formFPopupOpen} onOpenChange={setFormFPopupOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <AlertTriangle size={16} className="text-orange-600" />
-              PCPNDT Form F — Additional Details Required
-            </DialogTitle>
+            <DialogTitle>Form F — Required Fields</DialogTitle>
           </DialogHeader>
-          <div className="space-y-3">
-            <p className="text-xs text-slate-900 dark:text-slate-900">
-              This bill contains a PCPNDT-required test. Please collect the following details to auto-fill Form F.
-            </p>
-            <div className="space-y-1">
-              <Label className="text-xs font-extrabold">
-                Husband's / Father's Name {clinic?.formFGuardianRequired !== false && <span className="text-red-500">*</span>}
-              </Label>
+          <div className="space-y-3 py-2">
+            <div>
+              <label className="text-xs font-semibold text-[#64748b]">Husband / Guardian Name</label>
               <Input
-                autoFocus
+                className="mt-1 h-9"
                 value={formFPopupHusband}
                 onChange={(e) => setFormFPopupHusband(e.target.value)}
-                placeholder={clinic?.formFGuardianRequired !== false ? "Required for PCPNDT compliance" : "Optional — enter if available"}
-                className="h-9 text-sm border-orange-300 focus:border-orange-500"
+                placeholder="Full name"
               />
             </div>
-            <div className="space-y-1">
-              <Label className="text-xs font-extrabold">
-                Full Address {clinic?.formFAddressRequired !== false && <span className="text-red-500">*</span>}
-              </Label>
+            <div>
+              <label className="text-xs font-semibold text-[#64748b]">Address</label>
               <Input
+                className="mt-1 h-9"
                 value={formFPopupAddress}
                 onChange={(e) => setFormFPopupAddress(e.target.value)}
-                placeholder={clinic?.formFAddressRequired !== false ? "Patient's full residential address" : "Optional — enter if available"}
-                className="h-9 text-sm border-orange-300 focus:border-orange-500"
+                placeholder="Full address"
               />
             </div>
-            <div className="flex gap-2 pt-1">
-              <Button
-                size="sm"
-                className="flex-1 h-9"
-                disabled={
-                  (clinic?.formFGuardianRequired !== false && !formFPopupHusband.trim()) ||
-                  (clinic?.formFAddressRequired !== false && !formFPopupAddress.trim())
-                }
-                onClick={async () => {
-                  try {
-                    await api.patch("/api/form-f/update-patient-data", {
-                      billNumber: formFPopupBillNumber,
-                      husbandFatherName: formFPopupHusband.trim(),
-                      address: formFPopupAddress.trim(),
-                    });
-                    toast({ title: "Form F data saved" });
-                    setFormFPopupOpen(false);
-                    if (formFPopupPendingPrintRef.current) {
-                      printAfterSaveRef.current = true;
-                      const cachedClinic = queryClient.getQueryData<PrintClinic>(["clinic-settings"]);
-                      const cachedPrinter = printerCfgCached ?? queryClient.getQueryData<PrinterCfg>(["printer-settings"]);
-                      const lb = lastBill ?? lastBillRef.current;
-                      if (!lb) { window.setTimeout(() => resetAll(), 1500); return; }
-                      const clinicForPrint = cachedClinic ?? (clinic as PrintClinic);
-                      const isBW = (cachedPrinter as { billPrinterType?: string } | undefined)?.billPrinterType === "bw";
-                      const settings = loadBillPrintSettings();
-                      const paid = lb.payments.reduce((s, p) => s + Number(p.amount || 0), 0);
-                      const billForPrint: PrintBillData = {
-                        billNumber: lb.billNumber, subtotal: lb.subtotal,
-                        discount: lb.discount, taxAmount: 0, totalAmount: lb.total,
-                        paidAmount: paid, balanceAmount: Math.max(0, lb.total - paid),
-                        createdAt: new Date().toISOString(),
-                        patient: { firstName: lb.patient.firstName, lastName: lb.patient.lastName, patientId: lb.patient.patientId, phone: lb.patient.phone ?? null, ageValue: lb.patient.ageValue ?? null, ageUnit: lb.patient.ageUnit ?? null },
-                        order: {
-                          doctor: lb.doctorName ? { name: lb.doctorName } : null,
-                          tests: lb.tests.map((t) => ({ price: t.price, status: "active", test: { name: t.name, code: t.code ?? "", category: t.category } })),
-                        },
-                        payments: lb.payments.map((p) => ({ method: p.mode, amount: Number(p.amount || 0) })),
-                        tokenNo: lb.tokenNo ?? null, testTokens: lb.testTokens ?? null,
-                      };
-                      void QRCode.toDataURL(buildBillVerifyUrl(lb.billNumber), {
-                        errorCorrectionLevel: "M", margin: 1, width: 256,
-                        color: { dark: "#000000", light: "#ffffff" },
-                      }).catch(() => "").then((qrUrl) => {
-                        const paperSize = getAutoBillPaperSize(lb.tests.length, getBillPaperSize(), (settings as any).autoA4Threshold ?? 5);
-                        const html = buildBillPrintHtml({
-                          bill: billForPrint, clinic: clinicForPrint, paperSize, isBW, qrDataUrl: qrUrl as string,
-                          format: settings.defaultFormat,
-                          showQr: settings.showQrCode,
-                          showAmountInWords: settings.showAmountInWords,
-                          showSignatureLine: settings.showSignatureLine,
-                          showComputerGenerated: settings.showComputerGenerated,
-                          showReportMessage: settings.showReportMessage,
-                          showServiceFooter: settings.showServiceFooter,
-                          showBrandingFooter: settings.showBrandingFooter,
-                          showBarcode: settings.showBarcode,
-                          showWatermark: settings.showWatermark,
-                          showPatientInstructions: settings.showPatientInstructions,
-                          showSystemInfo: settings.showSystemInfo,
-                        });
-                        if (settings.enablePreview) {
-                          setPrintPreviewHtml(html);
-                          setPrintPreviewOpen(true);
-                        } else if (settings.directPrintAfterSave || settings.autoOpenPrintDialog) {
-                          printViaIframe(html);
-                        }
-                      });
-                    }
-                    window.setTimeout(() => resetAll(), 1500);
-                  } catch (err) {
-                    toast({ title: "Failed to save Form F data", variant: "destructive" });
-                  }
-                }}
-              >
-                Save & Continue
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-9"
-                onClick={() => {
-                  setFormFPopupOpen(false);
-                  window.setTimeout(() => resetAll(), 1500);
-                }}
-              >
-                Skip
-              </Button>
+            <Button
+              className="w-full bg-[#2563eb] hover:bg-[#1d4ed8] text-white"
+              disabled={formFSaveMut.isPending}
+              onClick={() => {
+                if (!formFPopupBillNumber || !formFPopupHusband.trim()) return;
+                formFSaveMut.mutate({
+                  billNumber: formFPopupBillNumber,
+                  husbandName: formFPopupHusband.trim(),
+                  address: formFPopupAddress.trim(),
+                });
+              }}
+            >
+              {formFSaveMut.isPending ? "Saving…" : "Save Form F"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Online Gateway Payment Modal */}
+      <Dialog open={gatewayModalOpen} onOpenChange={(o) => { if (!o) setGatewayModalOpen(false); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Online Payment</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2 text-center">
+            {gatewayPaymentStatus === "pending" && !gatewayPaymentInfo && (
+              <div className="text-[#64748b] text-sm">Initialising payment gateway…</div>
+            )}
+            {gatewayPaymentInfo && gatewayPaymentStatus === "pending" && (
+              <>
+                {gatewayQrUrl ? (
+                  <img src={gatewayQrUrl} alt="Payment QR" className="w-40 h-40 mx-auto rounded-lg border" />
+                ) : (
+                  <a
+                    href={gatewayPaymentInfo.redirectUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-block bg-[#2563eb] text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-[#1d4ed8]"
+                  >
+                    Open Payment Page →
+                  </a>
+                )}
+                <p className="text-xs text-[#94a3b8]">Amount: <strong>{inr(gatewayPaymentInfo.amount)}</strong></p>
+              </>
+            )}
+            {gatewayPaymentStatus === "success" && (
+              <div className="text-emerald-600 font-bold flex items-center justify-center gap-2">
+                <CheckCircle2 size={20} /> Payment confirmed
+              </div>
+            )}
+            {gatewayPaymentStatus === "failed" && (
+              <div className="text-red-600 text-sm">{gatewayPaymentError || "Payment failed"}</div>
+            )}
+            <div className="flex gap-2 pt-2">
+              <Button variant="outline" className="flex-1" onClick={() => setGatewayModalOpen(false)}>Close</Button>
+              {gatewayPaymentStatus === "pending" && (
+                <Button
+                  className="flex-1 bg-[#2563eb] text-white"
+                  onClick={() => {
+                    if (!gatewayPaymentInfo) return;
+                    void checkGatewayStatus(gatewayPaymentInfo.billId, gatewayPaymentInfo.txnRef);
+                  }}
+                >
+                  Check Status
+                </Button>
+              )}
             </div>
           </div>
         </DialogContent>
       </Dialog>
 
-      {/* ── Online Gateway Payment Modal ── */}
-      <Dialog open={gatewayModalOpen} onOpenChange={(open) => {
-        if (!open && gatewayPaymentStatus === "pending") {
-          if (!window.confirm("Close payment window? The payment request will remain active on the gateway.")) return;
-        }
-        setGatewayModalOpen(open);
-      }}>
-        <DialogContent className="max-w-md p-6">
-          <DialogHeader>
-            <DialogTitle className="text-lg font-bold flex items-center gap-2">
-              <RefreshCcw className={`h-5 w-5 text-primary ${gatewayPaymentStatus === "pending" ? "animate-spin" : ""}`} />
-              <span>Online Payment Collection</span>
-            </DialogTitle>
-          </DialogHeader>
-
-          <div className="space-y-4 py-2">
-            {gatewayPaymentStatus === "pending" && !gatewayPaymentInfo && (
-              <div className="text-center py-8 space-y-2">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto" />
-                <p className="text-xs text-muted-foreground">Initiating ICICI Orange Pay Request...</p>
-              </div>
-            )}
-
-            {gatewayPaymentStatus === "pending" && gatewayPaymentInfo && (
-              <div className="space-y-4">
-                <div className="text-center bg-muted/40 p-4 rounded-lg border">
-                  <span className="text-xs text-muted-foreground block">Amount to Collect</span>
-                  <span className="text-2xl font-black text-primary block">{inr(gatewayPaymentInfo.amount)}</span>
-                  <span className="text-[10px] text-muted-foreground font-mono mt-1 block">Ref: {gatewayPaymentInfo.txnRef}</span>
-                </div>
-
-                <div className="flex justify-center">
-                  {gatewayQrUrl ? (
-                    <div className="p-2 border rounded-lg bg-white shadow-sm">
-                      <img src={gatewayQrUrl} alt="UPI QR" className="h-48 w-48 object-contain mx-auto" />
-                      <div className="text-center text-[9px] text-muted-foreground mt-1 font-bold">Scan to Pay via UPI</div>
-                    </div>
-                  ) : (
-                    <div className="h-48 w-48 border border-dashed rounded-lg flex items-center justify-center text-xs text-muted-foreground mx-auto">
-                      Generating QR...
-                    </div>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex items-center gap-1.5 justify-center">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="text-xs font-bold flex items-center gap-1 h-8"
-                      onClick={() => {
-                        void navigator.clipboard.writeText(gatewayPaymentInfo.redirectUrl);
-                        toast({ title: "Link copied to clipboard!" });
-                      }}
-                    >
-                      Copy Link
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="text-xs font-bold flex items-center gap-1 h-8 border-green-600 text-green-600 hover:bg-green-50"
-                      onClick={() => {
-                        const phoneStr = selectedPatient?.phone || "";
-                        const cleanPhone = phoneStr.replace(/\D/g, "");
-                        const msg = `Dear ${selectedPatient?.firstName || "Patient"}, please complete your payment of ${inr(gatewayPaymentInfo.amount)} for Care Diagnostics here: ${gatewayPaymentInfo.redirectUrl}`;
-                        window.open(`https://wa.me/${cleanPhone ? `91${cleanPhone}` : ""}?text=${encodeURIComponent(msg)}`, "_blank");
-                      }}
-                    >
-                      WhatsApp
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="text-xs font-bold flex items-center gap-1 h-8 border-sky-600 text-sky-600 hover:bg-sky-50"
-                      onClick={() => {
-                        toast({ title: "SMS Request Sent", description: `Link sent to ${selectedPatient?.phone}` });
-                      }}
-                    >
-                      SMS
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="text-center py-2">
-                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200">
-                    <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
-                    Waiting for customer payment...
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {gatewayPaymentStatus === "success" && (
-              <div className="text-center py-6 space-y-3">
-                <div className="h-12 w-12 rounded-full bg-green-50 border border-green-200 text-green-600 flex items-center justify-center mx-auto">
-                  <Check className="h-6 w-6 stroke-[3]" />
-                </div>
-                <div className="space-y-1">
-                  <h3 className="text-sm font-bold text-green-700">Payment Successful</h3>
-                  <p className="text-xs text-muted-foreground">The bill has been marked as paid. Printing receipt...</p>
-                </div>
-              </div>
-            )}
-
-            {gatewayPaymentStatus === "failed" && (
-              <div className="text-center py-6 space-y-3">
-                <div className="h-12 w-12 rounded-full bg-red-50 border border-red-200 text-red-600 flex items-center justify-center mx-auto">
-                  <X className="h-6 w-6 stroke-[3]" />
-                </div>
-                <div className="space-y-1">
-                  <h3 className="text-sm font-bold text-red-700">Payment Failed</h3>
-                  <p className="text-xs text-muted-foreground">{gatewayPaymentError || "Something went wrong."}</p>
-                </div>
-                <Button variant="outline" size="sm" onClick={async () => {
-                  if (lastBill) {
-                    setGatewayPaymentStatus("pending");
-                    setGatewayPaymentInfo(null);
-                    try {
-                      const res = await api.post<any>(`/api/bills/${lastBill.id}/initiate-gateway-payment`, {
-                        amount: lastBill.total,
-                        expiryMinutes,
-                      });
-                      setGatewayPaymentInfo({ ...res, billId: lastBill.id });
-                    } catch (err: any) {
-                      setGatewayPaymentStatus("failed");
-                      setGatewayPaymentError(err.message);
-                    }
-                  }
-                }} className="text-xs font-bold">
-                  Retry Initiation
-                </Button>
-              </div>
-            )}
-
-            {gatewayPaymentStatus === "expired" && (
-              <div className="text-center py-6 space-y-3">
-                <div className="h-12 w-12 rounded-full bg-amber-50 border border-amber-200 text-amber-600 flex items-center justify-center mx-auto">
-                  <AlertTriangle className="h-6 w-6" />
-                </div>
-                <div className="space-y-1">
-                  <h3 className="text-sm font-bold text-amber-700">Link Expired</h3>
-                  <p className="text-xs text-muted-foreground">The checkout session has timed out. Please initiate again.</p>
-                </div>
-                <Button variant="outline" size="sm" onClick={async () => {
-                  if (lastBill) {
-                    setGatewayPaymentStatus("pending");
-                    setGatewayPaymentInfo(null);
-                    try {
-                      const res = await api.post<any>(`/api/bills/${lastBill.id}/initiate-gateway-payment`, {
-                        amount: lastBill.total,
-                        expiryMinutes,
-                      });
-                      setGatewayPaymentInfo({ ...res, billId: lastBill.id });
-                    } catch (err: any) {
-                      setGatewayPaymentStatus("failed");
-                      setGatewayPaymentError(err.message);
-                    }
-                  }
-                }} className="text-xs font-bold">
-                  Re-generate Link
-                </Button>
-              </div>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* ── Print Preview Dialog ── */}
+      {/* Print Preview Dialog */}
       <Dialog open={printPreviewOpen} onOpenChange={setPrintPreviewOpen}>
-        <DialogContent className="max-w-3xl h-[80vh] p-0 flex flex-col">
-          <DialogHeader className="px-4 py-3 border-b">
-            <DialogTitle className="flex items-center justify-between">
-              <span>Print Preview</span>
-              <div className="flex gap-2">
-                <Button size="sm" variant="outline" onClick={() => setPrintPreviewOpen(false)}>
-                  Close
-                </Button>
+        <DialogContent className="max-w-3xl h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Printer size={15} />
+              Print Preview
+              <div className="ml-auto flex gap-2">
+                <Button size="sm" variant="outline" onClick={() => setPrintPreviewOpen(false)}>Close</Button>
                 <Button size="sm" onClick={() => { printViaIframe(printPreviewHtml); setPrintPreviewOpen(false); }}>
                   <Printer size={14} className="mr-1" /> Print
                 </Button>
               </div>
             </DialogTitle>
           </DialogHeader>
-          <div className="flex-1 overflow-auto p-4 bg-gray-100">
+          <div className="flex-1 overflow-auto p-4 bg-gray-100 rounded-lg">
             <iframe
               title="Print Preview"
               srcDoc={printPreviewHtml}
@@ -2945,11 +2643,11 @@ export default function BillingDesk() {
           </div>
         </DialogContent>
       </Dialog>
+
     </div>
   );
 }
 
-type BillSearchResult = {
   id: number;
   billNumber: string;
   totalAmount: number;
