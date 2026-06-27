@@ -36,6 +36,13 @@
       "when": 1780000002000,
       "tag": "0004_seed_pacs_viewer_defaults",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1780100000000,
+      "tag": "0005_mri_protocol_specs",
+      "breakpoints": true
     }
   ]
 }

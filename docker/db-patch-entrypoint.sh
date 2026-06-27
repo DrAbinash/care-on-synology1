@@ -248,6 +248,8 @@ run_feature_migration() {
 
 run_feature_migration "Phase 1 — MRI protocol specs + seed"   "seed_mri_protocols.sql"
 run_feature_migration "Phase 2 — Neuro AI prompt library seed" "seed_neuro_prompt_library.sql"
+run_feature_migration "Performance indexes — bills/payments/vouchers" "add_performance_indexes.sql"
+run_feature_migration "Voice dictation tables"                         "voice_tables_migration.sql"
 
 echo "      Feature migrations complete."
 echo ""

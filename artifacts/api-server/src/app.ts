@@ -74,7 +74,26 @@ try {
   // compression optional — no crash if package is missing
 }
 
-app.use(cors());
+// CORS — restrict to known origins. In production set ALLOWED_ORIGINS in .env
+// as a comma-separated list (e.g. "https://caredeoghar.com,http://localhost:5173").
+// On the Synology all traffic goes through nginx on the same origin, so the
+// default empty list means same-origin only, which is correct.
+const _rawOrigins = (process.env.ALLOWED_ORIGINS ?? "").split(",").map((o) => o.trim()).filter(Boolean);
+app.use(
+  cors({
+    origin: _rawOrigins.length > 0
+      ? (origin, cb) => {
+          // Allow requests with no origin (e.g. curl, mobile native, server-to-server)
+          if (!origin) return cb(null, true);
+          if (_rawOrigins.includes(origin)) return cb(null, true);
+          cb(new Error(`CORS: origin '${origin}' not allowed`));
+        }
+      : false,                    // false = same-origin only (nginx handles it)
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  }),
+);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DICOM / imaging upload route — mounted BEFORE any JSON body parser.
