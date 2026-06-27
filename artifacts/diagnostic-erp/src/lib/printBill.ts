@@ -122,6 +122,7 @@ function fmt(n: number | string): string {
 
 import { type BillFormat, type BillPaperSize } from "./billPrintSettings";
 import { buildPremiumBillPrintHtml } from "./premiumBillPrint";
+import { buildDesignerBillPrintHtml } from "./designerBillPrint";
 
 export type BuildPrintHtmlOpts = {
   bill: PrintBillData;
@@ -412,6 +413,11 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 // Backward compatible: if format is not specified, uses classic (existing behavior).
 export function buildBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const { format = "classic" } = opts;
+
+  // ── Designer layouts A / B / C ──
+  if (format === "designer-a" || format === "designer-b" || format === "designer-c") {
+    return buildDesignerBillPrintHtml({ ...opts, layout: format });
+  }
   if (format === "premium-a5") {
     // Map old paperSize to new BillPaperSize
     const paperSize: BillPaperSize = opts.paperSize === "A5" ? "A5-portrait" : "A4";

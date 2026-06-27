@@ -3187,8 +3187,11 @@ function BillingPrintTab() {
   );
 
   const billFormats: { id: string; label: string }[] = [
-    { id: "classic", label: "Classic Current Format" },
-    { id: "premium-a5", label: "Premium A5 Format" },
+    { id: "classic",     label: "Classic Format (Existing)" },
+    { id: "premium-a5", label: "Premium Format V1 (Existing)" },
+    { id: "designer-a", label: "Designer Layout A — Minimal Premium" },
+    { id: "designer-b", label: "Designer Layout B — Modern Diagnostic" },
+    { id: "designer-c", label: "Designer Layout C — Corporate Healthcare" },
   ];
   const billPaperSizes: { id: string; label: string }[] = [
     { id: "A5-portrait", label: "A5 Portrait" },
@@ -3219,6 +3222,21 @@ function BillingPrintTab() {
         <div className="grid grid-cols-2 gap-3">
           <ToggleRow label="Enable Classic Format" value={settings.classicEnabled} onChange={(v) => update({ classicEnabled: v })} />
           <ToggleRow label="Enable Premium A5 Format" value={settings.premiumA5Enabled} onChange={(v) => update({ premiumA5Enabled: v })} />
+          <ToggleRow label="Enable Designer Layout A" value={(settings as any).designerAEnabled !== false} onChange={(v) => update({ designerAEnabled: v } as any)} />
+          <ToggleRow label="Enable Designer Layout B" value={(settings as any).designerBEnabled !== false} onChange={(v) => update({ designerBEnabled: v } as any)} />
+          <ToggleRow label="Enable Designer Layout C" value={(settings as any).designerCEnabled !== false} onChange={(v) => update({ designerCEnabled: v } as any)} />
+        </div>
+        <div className="mt-3">
+          <label className="text-xs font-medium text-slate-600 block mb-1">Auto switch to A4 when tests exceed</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="number" min={1} max={20}
+              value={(settings as any).autoA4Threshold ?? 5}
+              onChange={(e) => update({ autoA4Threshold: Math.max(1, Math.min(20, Number(e.target.value))) } as any)}
+              className="w-16 h-7 text-xs border border-gray-300 rounded px-2"
+            />
+            <span className="text-xs text-slate-500">investigations (default: 5)</span>
+          </div>
         </div>
       </SectionCard>
 

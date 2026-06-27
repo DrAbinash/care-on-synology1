@@ -4,10 +4,13 @@
 // User-wise overrides are stored in localStorage per user ID.
 // When adminLock is ON, user overrides are ignored.
 
-export type BillFormat = "classic" | "premium-a5";
+export type BillFormat = "classic" | "premium-a5" | "designer-a" | "designer-b" | "designer-c";
 export const BILL_FORMATS: { id: BillFormat; label: string }[] = [
-  { id: "classic", label: "Classic Current Format" },
-  { id: "premium-a5", label: "Premium A5 Format" },
+  { id: "classic",     label: "Classic Format (Existing)" },
+  { id: "premium-a5", label: "Premium Format V1 (Existing)" },
+  { id: "designer-a", label: "Designer Layout A — Minimal Premium" },
+  { id: "designer-b", label: "Designer Layout B — Modern Diagnostic" },
+  { id: "designer-c", label: "Designer Layout C — Corporate Healthcare" },
 ];
 
 export type BillPaperSize = "A5-landscape" | "A5-portrait" | "half-a4" | "A4";
@@ -39,6 +42,11 @@ export type BillPrintSettings = {
   defaultFormat: BillFormat;
   classicEnabled: boolean;
   premiumA5Enabled: boolean;
+  designerAEnabled: boolean;
+  designerBEnabled: boolean;
+  designerCEnabled: boolean;
+  // Auto paper size threshold: switch from A5 → A4 when tests >= this value
+  autoA4Threshold: number;
 
   // Paper
   defaultPaperSize: BillPaperSize;
@@ -78,6 +86,10 @@ export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
   defaultFormat: "classic",
   classicEnabled: true,
   premiumA5Enabled: true,
+  designerAEnabled: true,
+  designerBEnabled: true,
+  designerCEnabled: true,
+  autoA4Threshold: 5,
   defaultPaperSize: "A5-portrait",
   defaultCopyType: "patient",
   showQrCode: true,
@@ -222,9 +234,13 @@ export function getEffectiveFormat(global: Partial<BillPrintSettings>, userOverr
 }
 
 // ── Paper size helpers ──
-export function getAutoBillPaperSize(testCount: number, manualSize?: BillPaperSize): BillPaperSize {
+export function getAutoBillPaperSize(
+  testCount: number,
+  manualSize?: BillPaperSize,
+  threshold = 5,
+): BillPaperSize {
   if (manualSize === "A4" || manualSize === "half-a4" || manualSize === "A5-landscape" || manualSize === "A5-portrait") return manualSize;
-  return testCount >= 6 ? "A4" : "A5-portrait";
+  return testCount > threshold ? "A4" : "A5-portrait";
 }
 
 export function getPaperSizeCss(size: BillPaperSize): { pageSize: string; width: string; minHeight: string; maxHeight: string } {

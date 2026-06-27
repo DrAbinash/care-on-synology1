@@ -666,7 +666,7 @@ export default function BillingDesk() {
               })
                 .catch(() => "")
                 .then((qrUrl) => {
-                  const paperSize = getAutoBillPaperSize(updatedBill.order?.tests?.length || 1, getBillPaperSize());
+                  const paperSize = getAutoBillPaperSize(updatedBill.order?.tests?.length || 1, getBillPaperSize(), (settings as any).autoA4Threshold ?? 5);
                   const html = buildBillPrintHtml({
                     bill: billForPrint,
                     clinic: cachedClinic,
@@ -1049,7 +1049,7 @@ export default function BillingDesk() {
               tokenNo: lastBillLocal.tokenNo ?? null,
               testTokens: lastBillLocal.testTokens ?? null,
             };
-            const paperSize = getAutoBillPaperSize(lastBillLocal.tests.length, getBillPaperSize());
+            const paperSize = getAutoBillPaperSize(lastBillLocal.tests.length, getBillPaperSize(), (settings as any).autoA4Threshold ?? 5);
             const html = buildBillPrintHtml({
               bill: billForPrint,
               clinic: clinicForPrint,
@@ -2632,7 +2632,7 @@ export default function BillingDesk() {
                         errorCorrectionLevel: "M", margin: 1, width: 256,
                         color: { dark: "#000000", light: "#ffffff" },
                       }).catch(() => "").then((qrUrl) => {
-                        const paperSize = getAutoBillPaperSize(lb.tests.length, getBillPaperSize());
+                        const paperSize = getAutoBillPaperSize(lb.tests.length, getBillPaperSize(), (settings as any).autoA4Threshold ?? 5);
                         const html = buildBillPrintHtml({
                           bill: billForPrint, clinic: clinicForPrint, paperSize, isBW, qrDataUrl: qrUrl as string,
                           format: settings.defaultFormat,
