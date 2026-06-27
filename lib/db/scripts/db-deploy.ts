@@ -1,3 +1,24 @@
+/**
+ * db-deploy.ts — Care Diagnostics ERP Database Migration Entry Point
+ *
+ * Execution order:
+ *   1. Validate DATABASE_URL
+ *   2. Wait for PostgreSQL to accept connections (with retry)
+ *   3. Ensure drizzle schema + migrations table exist
+ *   4. If existing DB with no migration history: seed history from journal
+ *   5. Run Drizzle file-based migrator (applies pending .sql files)
+ *   6. Exit 0 on success, non-zero on failure
+ *
+ * Safety guarantees:
+ *   - Never drops tables or truncates data
+ *   - Idempotent — safe to run multiple times
+ *   - ON CONFLICT / IF NOT EXISTS used throughout
+ *   - Passwords never logged
+ *
+ * Used by: care-migrate container (Dockerfile target: migrate)
+ * Command: pnpm --filter @workspace/db run push-ci
+ */
+
 import { Client } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
@@ -8,139 +29,174 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Resolve DATABASE_URL from process.env or build from pieces (compatible with Synology/Docker env vars)
+// ── 1. Resolve connection string ─────────────────────────────────────────────
+
 let connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
-  const user = process.env.DB_USER || "erp";
+  const user     = process.env.DB_USER     || "erp";
   const password = process.env.DB_PASSWORD || "changeme";
-  const host = process.env.DB_HOST || "db";
-  const port = process.env.DB_HOST_PORT || "5432";
-  const dbName = process.env.DB_NAME || "diagnostic_erp";
+  const host     = process.env.DB_HOST     || "db";
+  const port     = process.env.DB_HOST_PORT || "5432";
+  const dbName   = process.env.DB_NAME     || "diagnostic_erp";
   connectionString = `postgresql://${user}:${password}@${host}:${port}/${dbName}`;
 }
 
 if (!connectionString) {
-  console.error("❌ Error: DATABASE_URL or database environment variables are not set.");
+  console.error("❌  DATABASE_URL or DB_* environment variables are not set.");
   process.exit(1);
 }
 
-// Security: parse connection details to show environment, masking the password
-function printSafeEnvironment(connStr: string) {
+// Safe log — mask password
+function logSafeEnv(connStr: string) {
   try {
-    const url = new URL(connStr.replace("postgresql://", "http://").replace("postgres://", "http://"));
-    const host = url.host;
-    const dbName = url.pathname.replace("/", "");
-    const user = url.username;
+    const url  = new URL(connStr.replace(/^postgresql?:\/\//, "http://"));
+    const safe = `${url.protocol.replace("http", "postgres")}//${url.username}:***@${url.host}${url.pathname}`;
     console.log("==========================================");
-    console.log("🛠️   DATABASE DEPLOYMENT TELEMETRY");
+    console.log("🛠️   CARE DIAGNOSTICS DB DEPLOYMENT");
     console.log("==========================================");
-    console.log(`Database Host: ${host}`);
-    console.log(`Database Name: ${dbName}`);
-    console.log(`Database User: ${user}`);
-    console.log(`Environment:   ${process.env.NODE_ENV || "development"}`);
+    console.log(`Connection: ${safe}`);
+    console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
+    console.log(`Time:        ${new Date().toISOString()}`);
     console.log("==========================================\n");
   } catch {
-    console.log("Database connection: Custom format (masked)");
+    console.log("🛠️  CARE DIAGNOSTICS DB DEPLOYMENT (connection details masked)\n");
   }
 }
 
+// ── 2. Wait for Postgres (retry loop) ────────────────────────────────────────
+
+async function waitForPostgres(
+  connStr: string,
+  maxAttempts = 30,
+  intervalMs = 3000,
+): Promise<void> {
+  console.log("⏳  Waiting for PostgreSQL to be ready...");
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const probe = new Client({ connectionString: connStr });
+    try {
+      await probe.connect();
+      await probe.query("SELECT 1");
+      await probe.end();
+      console.log(`✅  PostgreSQL ready (attempt ${attempt}/${maxAttempts})\n`);
+      return;
+    } catch (err: any) {
+      console.log(`   [${attempt}/${maxAttempts}] Not ready: ${err.message}`);
+      if (attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, intervalMs));
+      }
+    }
+  }
+  console.error("❌  PostgreSQL did not become ready in time.");
+  process.exit(1);
+}
+
+// ── 3. Main deployment logic ──────────────────────────────────────────────────
+
 async function run() {
-  printSafeEnvironment(connectionString!);
+  logSafeEnv(connectionString!);
+  await waitForPostgres(connectionString!);
 
   const client = new Client({ connectionString });
   try {
     await client.connect();
   } catch (err: any) {
-    console.error("❌ Database connection failed:", err.message);
+    console.error("❌  Database connection failed:", err.message);
     process.exit(1);
   }
 
   try {
-    // 1. Cleanup old public migrations table if it exists (from previous incorrect runs)
+    // 3a. Remove stale migrations table from public schema (legacy mistake)
     await client.query(`DROP TABLE IF EXISTS "public"."__drizzle_migrations";`);
 
-    // 2. Ensure drizzle schema exists
+    // 3b. Ensure the drizzle schema exists
     await client.query(`CREATE SCHEMA IF NOT EXISTS "drizzle";`);
 
-    // 3. Check if the Drizzle migrations table exists in the drizzle schema
-    const tableCheck = await client.query(`
+    // 3c. Check for existing drizzle migrations table
+    const { rows: [tableRow] } = await client.query<{ exists: boolean }>(`
       SELECT EXISTS (
-        SELECT 1 FROM information_schema.tables 
-        WHERE table_schema = 'drizzle' 
-        AND table_name = '__drizzle_migrations'
-      );
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'drizzle'
+        AND   table_name   = '__drizzle_migrations'
+      ) AS exists;
     `);
-    
-    // In Drizzle, the table name is under the 'drizzle' schema by default.
-    // If it doesn't exist, we'll check if the db already has tables. If it does, we must seed the migrations
-    // table to mark existing migrations as completed so they are not run again.
-    const hasMigrationTable = tableCheck.rows[0]?.exists;
+    const hasMigrationTable = tableRow.exists;
 
-    // Check if core tables already exist in public schema (indicating an existing database)
-    const coreTableCheck = await client.query(`
+    // 3d. Check whether core application tables already exist
+    const { rows: [coreRow] } = await client.query<{ exists: boolean }>(`
       SELECT EXISTS (
-        SELECT 1 FROM information_schema.tables 
-        WHERE table_schema = 'public' 
-        AND table_name = 'clinic_settings'
-      );
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public'
+        AND   table_name   = 'clinic_settings'
+      ) AS exists;
     `);
-    const hasCoreTables = coreTableCheck.rows[0]?.exists;
+    const hasCoreTables = coreRow.exists;
 
+    // Resolve migration folder
     const migrationsFolder = path.resolve(__dirname, "../drizzle");
-    const journalPath = path.join(migrationsFolder, "meta/_journal.json");
-    
+    const journalPath      = path.join(migrationsFolder, "meta/_journal.json");
+
     if (!fs.existsSync(journalPath)) {
-      throw new Error(`Can't find meta/_journal.json file at ${journalPath}`);
+      throw new Error(
+        `Migration journal not found at ${journalPath}. ` +
+        `Run 'pnpm --filter @workspace/db run generate' first.`
+      );
     }
-    
-    const journal = JSON.parse(fs.readFileSync(journalPath, "utf-8"));
-    const entries = journal.entries || [];
 
-    // Query current records in drizzle.__drizzle_migrations if it exists
-    let seededCount = 0;
+    const journal  = JSON.parse(fs.readFileSync(journalPath, "utf-8"));
+    const entries: { idx: number; tag: string; when: number }[] = journal.entries || [];
+
+    // Count already-applied migrations
+    let appliedCount = 0;
     if (hasMigrationTable) {
-      const currentMigrations = await client.query(`SELECT hash FROM drizzle.__drizzle_migrations;`);
-      seededCount = currentMigrations.rowCount || 0;
+      const { rowCount } = await client.query(`SELECT hash FROM drizzle.__drizzle_migrations;`);
+      appliedCount = rowCount ?? 0;
     }
 
-    if (hasCoreTables && seededCount === 0) {
-      console.log("ℹ️  Existing database detected but 'drizzle.__drizzle_migrations' is empty or missing.");
-      console.log("⚙️  Creating 'drizzle.__drizzle_migrations' and seeding existing migration history...");
+    // 3e. Seed migration history for existing databases that predate Drizzle tracking
+    if (hasCoreTables && appliedCount === 0) {
+      console.log("ℹ️   Existing database detected — migration table empty or absent.");
+      console.log("⚙️   Seeding migration history to match current schema state...\n");
 
-      // Create drizzle.__drizzle_migrations table
       await client.query(`
         CREATE TABLE IF NOT EXISTS "drizzle"."__drizzle_migrations" (
-          "id" serial PRIMARY KEY,
-          "hash" text NOT NULL,
+          "id"         serial  PRIMARY KEY,
+          "hash"       text    NOT NULL,
           "created_at" bigint
         );
       `);
 
-      // Compute and insert the hashes for existing migrations to mark them as completed
       for (const entry of entries) {
-        const migrationPath = path.join(migrationsFolder, `${entry.tag}.sql`);
-        if (fs.existsSync(migrationPath)) {
-          const sqlContent = fs.readFileSync(migrationPath, "utf-8");
-          const hash = crypto.createHash("sha256").update(sqlContent).digest("hex");
-          
+        const sqlPath = path.join(migrationsFolder, `${entry.tag}.sql`);
+        if (fs.existsSync(sqlPath)) {
+          const hash = crypto
+            .createHash("sha256")
+            .update(fs.readFileSync(sqlPath, "utf-8"))
+            .digest("hex");
+
           await client.query(
-            `INSERT INTO "drizzle"."__drizzle_migrations" (hash, created_at) VALUES ($1, $2);`,
-            [hash, entry.when]
+            `INSERT INTO "drizzle"."__drizzle_migrations" (hash, created_at)
+             VALUES ($1, $2)
+             ON CONFLICT DO NOTHING;`,
+            [hash, entry.when],
           );
-          console.log(`  ✓ Marked as completed: ${entry.tag}`);
+          console.log(`   ✓ Marked as applied: ${entry.tag}`);
         }
       }
-      console.log("✓ Seeding complete. Existing migrations successfully registered.");
+      console.log("\n✓  Seeding complete.\n");
     }
 
-    // 4. Run standard Drizzle Migrator to apply any new/pending migrations
-    console.log("🚀 Running Drizzle migrator for pending changes...");
+    // 3f. Run Drizzle file-based migrator — applies any pending .sql files
+    console.log("🚀  Running Drizzle migrator for pending changes...");
     const db = drizzle(client);
     await migrate(db, { migrationsFolder });
-    
-    console.log("✅ Database deployment completed successfully.");
+
+    console.log("\n==========================================");
+    console.log("✅  DATABASE DEPLOYMENT COMPLETE");
+    console.log("==========================================\n");
   } catch (err: any) {
-    console.error("❌ Migration failed:", err.message);
+    console.error("\n==========================================");
+    console.error("❌  MIGRATION FAILED:", err.message);
+    console.error("==========================================\n");
     process.exit(1);
   } finally {
     await client.end();

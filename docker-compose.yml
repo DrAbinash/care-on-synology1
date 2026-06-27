@@ -1,15 +1,18 @@
 # =============================================================================
-# Care Diagnostics ERP - Preserve existing user + DB patch V2
+# Care Diagnostics ERP
+# Migration flow:
+#   care-db (healthy) → care-migrate (run once) → care-api → care-web
 #
-# Fixes clinic_settings save error:
-#   PostgreSQL error 42703 missing column near "ollama_known_models"
-#
-# Keeps old DB volume:
-#   db_data:/var/lib/postgresql/data
-# So existing login/data remains.
+# care-db-patch-v2 is RETAINED as a safety fallback but care-migrate
+# (db-deploy.ts → Drizzle migrator) is now the primary migration path.
+# See SYNOLOGY_DB_MIGRATION_DEPLOYMENT.md for full deployment instructions.
 # =============================================================================
 
 services:
+
+  # ---------------------------------------------------------------------------
+  # Database
+  # ---------------------------------------------------------------------------
   db:
     image: postgres:16-alpine
     container_name: care-db
@@ -28,6 +31,34 @@ services:
       timeout: 5s
       retries: 30
 
+  # ---------------------------------------------------------------------------
+  # Primary migration container
+  # Runs db-deploy.ts (Drizzle file-based migrator).
+  # restart: "no"  — runs once and exits; Docker does NOT restart it.
+  # Synology note: service_completed_successfully is supported in Compose v2.
+  # ---------------------------------------------------------------------------
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: migrate
+    container_name: care-migrate
+    restart: "no"
+    environment:
+      DATABASE_URL: postgres://${DB_USER:-erp}:${DB_PASSWORD:-changeme}@db:5432/${DB_NAME:-diagnostic_erp}
+      NODE_ENV: production
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Legacy patch container — RETAINED, runs AFTER migrate
+  # Contains imperative ALTER TABLE IF EXISTS statements that are safe to re-run.
+  # These columns are now in the Drizzle schema, so on fresh deploys care-migrate
+  # covers them. On existing DBs that already have these columns the ALTER TABLE
+  # IF NOT EXISTS statements are no-ops, so re-running is always safe.
+  # See SYNOLOGY_DB_MIGRATION_DEPLOYMENT.md — "care-db-patch-v2 Assessment"
+  # ---------------------------------------------------------------------------
   db-patch-v2:
     image: postgres:16-alpine
     container_name: care-db-patch-v2
@@ -38,160 +69,83 @@ services:
       - sh
       - -c
       - |
-        echo "Waiting for PostgreSQL..."
+        echo "=========================================="
+        echo "DB PATCH V2 — safety column backfill"
+        echo "=========================================="
+        echo "Waiting for PostgreSQL to be ready..."
         until pg_isready -h db -U ${DB_USER:-erp} -d ${DB_NAME:-diagnostic_erp}; do
           sleep 2
         done
+        echo "PostgreSQL is ready. Applying idempotent column additions..."
 
-        echo "Applying DB patch V2 for clinic_settings/payment/scan/Ollama columns..."
         psql -h db -U ${DB_USER:-erp} -d ${DB_NAME:-diagnostic_erp} <<'SQL'
 
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS active_payment_gateway text DEFAULT 'icici';
+        -- clinic_settings: payment gateway columns
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS active_payment_gateway text DEFAULT 'icici';
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS enable_card_payment boolean DEFAULT true;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS enable_qr_payment boolean DEFAULT true;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS enable_vip_booking boolean DEFAULT false;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS enable_payment_logos boolean DEFAULT true;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS enable_payment_timer boolean DEFAULT true;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS custom_icici_banner_url text;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS custom_phonepe_banner_url text;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS custom_bharatpe_banner_url text;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS custom_payu_banner_url text;
 
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS enable_card_payment boolean DEFAULT true;
+        -- clinic_settings: ollama columns
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS ollama_base_url text;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS ollama_model text;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS ollama_local_only boolean DEFAULT true;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS ollama_known_models jsonb DEFAULT '[]'::jsonb;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS ollama_fallback_url text;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS ollama_enabled boolean DEFAULT false;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS ollama_timeout_seconds integer DEFAULT 30;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS ollama_audit_enabled boolean DEFAULT true;
 
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS enable_qr_payment boolean DEFAULT true;
+        -- clinic_settings: scanner / scan station
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS mobile_scan_enabled boolean DEFAULT false;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS phone_pairing_enabled boolean DEFAULT false;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS preferred_scanner text;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS require_desktop_confirmation boolean DEFAULT true;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS auto_delete_temp_scans boolean DEFAULT true;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS ocr_enabled boolean DEFAULT false;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS aadhaar_qr_enabled boolean DEFAULT false;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS scanner_global_enabled boolean DEFAULT false;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS scan_station_kiosk_mode_enabled boolean DEFAULT true;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS scan_station_auto_clear_enabled boolean DEFAULT true;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS scan_station_result_display_seconds integer DEFAULT 10;
 
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS enable_vip_booking boolean DEFAULT false;
+        -- clinic_settings: session / security
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS session_idle_timeout_minutes integer DEFAULT 30;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS default_max_concurrent_sessions integer DEFAULT 3;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS max_failed_login_attempts integer DEFAULT 5;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS account_lockout_duration_minutes integer DEFAULT 30;
 
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS enable_payment_logos boolean DEFAULT true;
+        -- clinic_settings: form-f
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS form_f_billing_prompt boolean DEFAULT false;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS form_f_address_required boolean DEFAULT true;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS form_f_guardian_required boolean DEFAULT true;
 
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS enable_payment_timer boolean DEFAULT true;
+        -- clinic_settings: online booking
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS online_booking_services text DEFAULT '{"opd":true,"emergency":true,"usg":true,"xray":true,"ct":true,"mri":true,"pathology":true,"packages":true,"home_collection":true,"doctor":true}';
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS service_images text DEFAULT '{}';
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS service_images_enabled boolean DEFAULT false;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS vip_percentage numeric(5,2) DEFAULT '50.00';
 
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS custom_icici_banner_url text;
+        -- clinic_settings: disclaimer
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS disclaimer_text text DEFAULT 'Online booking charges are subject to the centre''s cancellation policy. In case of cancellation after confirmation, administrative charges may be deducted from the refundable amount.';
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS disclaimer_refund_percentage integer DEFAULT 90;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS disclaimer_cancellation_window_hours integer DEFAULT 24;
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS disclaimer_display_position text DEFAULT 'bottom';
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS disclaimer_font_size text DEFAULT 'sm';
+        ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS disclaimer_enabled boolean DEFAULT true;
 
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS custom_phonepe_banner_url text;
+        -- online_bookings: payment tracking columns
+        ALTER TABLE IF EXISTS online_bookings ADD COLUMN IF NOT EXISTS failure_reason text;
+        ALTER TABLE IF EXISTS online_bookings ADD COLUMN IF NOT EXISTS icici_transaction_id text;
+        ALTER TABLE IF EXISTS online_bookings ADD COLUMN IF NOT EXISTS icici_provider_ref_id text;
 
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS custom_bharatpe_banner_url text;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS custom_payu_banner_url text;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS ollama_base_url text;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS ollama_model text;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS ollama_local_only boolean DEFAULT true;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS ollama_known_models jsonb DEFAULT '[]'::jsonb;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS ollama_fallback_url text;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS ollama_enabled boolean DEFAULT false;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS ollama_timeout_seconds integer DEFAULT 30;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS ollama_audit_enabled boolean DEFAULT true;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS mobile_scan_enabled boolean DEFAULT false;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS phone_pairing_enabled boolean DEFAULT false;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS preferred_scanner text;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS require_desktop_confirmation boolean DEFAULT true;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS auto_delete_temp_scans boolean DEFAULT true;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS ocr_enabled boolean DEFAULT false;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS aadhaar_qr_enabled boolean DEFAULT false;
-
-        ALTER TABLE IF EXISTS online_bookings
-        ADD COLUMN IF NOT EXISTS failure_reason text;
-
-        ALTER TABLE IF EXISTS online_bookings
-        ADD COLUMN IF NOT EXISTS icici_transaction_id text;
-
-        ALTER TABLE IF EXISTS online_bookings
-        ADD COLUMN IF NOT EXISTS icici_provider_ref_id text;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS session_idle_timeout_minutes integer DEFAULT 30;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS default_max_concurrent_sessions integer DEFAULT 3;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS max_failed_login_attempts integer DEFAULT 5;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS account_lockout_duration_minutes integer DEFAULT 30;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS form_f_billing_prompt boolean DEFAULT false;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS form_f_address_required boolean DEFAULT true;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS form_f_guardian_required boolean DEFAULT true;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS online_booking_services text DEFAULT '{"opd":true,"emergency":true,"usg":true,"xray":true,"ct":true,"mri":true,"pathology":true,"packages":true,"home_collection":true,"doctor":true}';
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS service_images text DEFAULT '{}';
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS service_images_enabled boolean DEFAULT false;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS vip_percentage numeric(5,2) DEFAULT '50.00';
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS disclaimer_text text DEFAULT 'Online booking charges are subject to the centre''s cancellation policy. In case of cancellation after confirmation, administrative charges may be deducted from the refundable amount.';
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS disclaimer_refund_percentage integer DEFAULT 90;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS disclaimer_cancellation_window_hours integer DEFAULT 24;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS disclaimer_display_position text DEFAULT 'bottom';
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS disclaimer_font_size text DEFAULT 'sm';
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS disclaimer_enabled boolean DEFAULT true;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS scanner_global_enabled boolean DEFAULT false;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS scan_station_kiosk_mode_enabled boolean DEFAULT true;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS scan_station_auto_clear_enabled boolean DEFAULT true;
-
-        ALTER TABLE IF EXISTS clinic_settings
-        ADD COLUMN IF NOT EXISTS scan_station_result_display_seconds integer DEFAULT 10;
-
+        -- payment_logs table (safe to re-create with IF NOT EXISTS)
         CREATE TABLE IF NOT EXISTS payment_logs (
           id serial PRIMARY KEY,
           booking_id integer,
@@ -206,11 +160,18 @@ services:
 
         SQL
 
-        echo "DB patch V2 finished."
+        echo "=========================================="
+        echo "DB PATCH V2 — complete."
+        echo "=========================================="
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
+  # ---------------------------------------------------------------------------
+  # API server
+  # Waits for both care-migrate AND care-db-patch-v2 to complete successfully.
+  # This is the safe startup order on both standard Docker and Synology.
+  # ---------------------------------------------------------------------------
   api:
     build:
       context: .
@@ -250,9 +211,14 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       db-patch-v2:
         condition: service_completed_successfully
 
+  # ---------------------------------------------------------------------------
+  # Web / nginx
+  # ---------------------------------------------------------------------------
   web:
     build:
       context: .
@@ -264,18 +230,6 @@ services:
       - "${HOST_PORT:-8888}:80"
     depends_on:
       - api
-
-  migrate:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: migrate
-    container_name: care-migrate
-    environment:
-      DATABASE_URL: postgres://${DB_USER:-erp}:${DB_PASSWORD:-changeme}@db:5432/${DB_NAME:-diagnostic_erp}
-    depends_on:
-      db:
-        condition: service_healthy
 
 volumes:
   db_data:
