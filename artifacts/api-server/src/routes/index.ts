@@ -91,6 +91,7 @@ import { radiologyTumorFollowupRouter } from "./radiologyTumorFollowup";
 import { radiologyAnnotationsRouter } from "./radiologyAnnotations";
 import { radiologyOllamaRouter } from "./radiologyOllama";
 import { radiologySnippetsRouter } from "./radiologySnippets";
+import { radiologyMyAnalyticsRouter } from "./radiologyMyAnalytics";
 import { bankingRouter, bankingWebhookRouter } from "./banking";
 import { syncRouter } from "./sync";
 import { usgExtractionRouter } from "./usgExtraction";
@@ -530,6 +531,9 @@ router.use("/radiology-copilot", requireStaffAuth, radiologyCopilotRouter);
 
 // Phase 9: Radiology Memory + Context Engine
 router.use("/radiology-memory", requireStaffAuth, radiologyMemoryRouter);
+
+// Phase 5: Personal Reporting Analytics
+router.use("/radiology/my-analytics", requireStaffAuth, requireStaffPermission("/radiology"), radiologyMyAnalyticsRouter);
 
 // Phase 10A: Lesion Tracker + Measurement Assistant
 router.use("/radiology-lesions", requireStaffAuth, radiologyLesionsRouter);

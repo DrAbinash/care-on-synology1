@@ -52,6 +52,7 @@ const PacsDashboard         = lazy(() => import("@/pages/PacsDashboard"));
 const RadiologySettings     = lazy(() => import("@/pages/RadiologySettings"));
 const RadiologySettingsCenter = lazy(() => import("@/pages/RadiologySettingsCenter"));
 const RadiologyOperationsDashboard = lazy(() => import("@/pages/RadiologyOperationsDashboard"));
+const MyReportingAnalytics         = lazy(() => import("@/pages/MyReportingAnalytics"));
 const AiPromptTemplates     = lazy(() => import("@/pages/AiPromptTemplates"));
 const AiPromptManager       = lazy(() => import("@/pages/AiPromptManager"));
 const AiComparisonWorkspace = lazy(() => import("@/pages/AiComparisonWorkspace"));
@@ -326,7 +327,8 @@ function Router() {
                 {(params) => <RadiologyReportingWorkspace studyId={Number(params.worklistId)} />}
               </Route>
               <Route path="/radiology/pacs-dashboard" component={PacsDashboard} />
-              <Route path="/radiology/operations-dashboard" component={RadiologyOperationsDashboard} />
+              <Route path="/radiology/operations-dashboard", "/radiology/my-analytics" component={RadiologyOperationsDashboard} />
+              <Route path="/radiology/my-analytics" component={MyReportingAnalytics} />
               <Route path="/radiology/pacs-settings" component={PacsSettings} />
               <Route path="/radiology/network-control-center" component={NetworkControlCenter} />
               <Route path="/radiology/pacs-logs" component={PacsLogs} />

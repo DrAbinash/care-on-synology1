@@ -154,6 +154,7 @@ const navItems: NavEntry[] = [
     label: "Radiology & Imaging",
     children: [
       { path: "/radiology/operations-dashboard", icon: Gauge,          label: "Operations Dashboard" },
+      { path: "/radiology/my-analytics",         icon: BarChart3,      label: "My Analytics" },
       { path: "/radiology/cockpit",            icon: Stethoscope,    label: "Radiologist Cockpit" },
       { path: "/radiology/my-collection",       icon: ShieldAlert,    label: "DICOM Match Center" },
       { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist Hub" },
