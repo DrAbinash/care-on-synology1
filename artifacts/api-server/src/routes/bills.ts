@@ -357,11 +357,37 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
     res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
     return;
   }
-  const { orderId, discount = 0, dueDate } = parsed.data;
+  const { orderId, discount = 0, dueDate, clientRef } = parsed.data;
   const inlinePayments = Array.isArray(payload.payments) ? payload.payments : [];
   const discountReason = typeof payload?.discountReason === "string" ? payload.discountReason.trim() || null : null;
   const discountReasonNote = typeof payload?.discountReasonNote === "string" ? payload.discountReasonNote.trim() || null : null;
   const isVip = !!payload?.isVip;
+
+  // ── Idempotency check — clientRef deduplication ───────────────────────────
+  // If this request carries a clientRef UUID, check whether a bill was already
+  // created for it. If yes, return the existing bill immediately (HTTP 200).
+  // This makes POST /api/bills safe to retry after a network timeout — the
+  // browser gets the real bill response instead of a duplicate or a 409.
+  if (clientRef) {
+    const existingByRef = await db.execute<{ id: number }>(
+      sql`SELECT id FROM bills WHERE client_ref = ${clientRef} AND status != 'cancelled' LIMIT 1`
+    );
+    const refRows = Array.isArray(existingByRef) ? existingByRef : (existingByRef as any).rows ?? [];
+    const refId: number | undefined = refRows[0]?.id;
+    if (refId) {
+      const [existingBillRow] = await db.select().from(billsTable)
+        .where(eq(billsTable.id, refId));
+      if (existingBillRow) {
+        // Return the same shape the original creation would have returned
+        res.status(200).json({
+          id: existingBillRow.id,
+          billNumber: existingBillRow.billNumber,
+          _idempotent: true, // signals the frontend this is a replayed response
+        });
+        return;
+      }
+    }
+  }
 
   if (discount > 0 && !discountReason) {
     res.status(400).json({ error: "Discount reason is required when a discount is given" });
@@ -406,7 +432,7 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
     return;
   }
 
-  const tenSecondsAgo = new Date(Date.now() - 10_000);
+  const tenSecondsAgo = new Date(Date.now() - 60_000); // 60s window (was 10s) — covers slow connections and timeout retries
   const [existingRecent] = await db
     .select({ id: billsTable.id, billNumber: billsTable.billNumber })
     .from(billsTable)
@@ -510,7 +536,9 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
       ledgerId,
       dueDate: dueDate ?? null,
       createdByName: actorName || null,
-    }).returning();
+      // Store idempotency key so retries return this bill, not a duplicate
+      ...(clientRef ? { clientRef } as Record<string, unknown> : {}),
+    } as any).returning();
 
     // Record each payment split atomically with the bill
     for (const p of validPayments) {

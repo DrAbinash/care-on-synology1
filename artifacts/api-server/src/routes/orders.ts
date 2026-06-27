@@ -78,7 +78,29 @@ ordersRouter.post("/", async (req, res) => {
     res.status(400).json({ error: "Invalid request", details: parsed.error.issues });
     return;
   }
-  const { patientId, doctorId, testIds, tests: customTests, notes } = parsed.data;
+  const { patientId, doctorId, testIds, tests: customTests, notes, clientRef } = parsed.data;
+
+  // ── Idempotency check (duplicate bill / connectivity retry fix) ───────────
+  // If the client sends a clientRef UUID and an order already exists with that
+  // key, return the existing order immediately. This makes POST /api/orders
+  // safe to retry after a network timeout — the browser gets the same order
+  // back instead of creating a duplicate, which would then produce a duplicate
+  // bill on the next POST /api/bills.
+  if (clientRef) {
+    const existing = await db.execute<{ id: number }>(
+      sql\`SELECT id FROM orders WHERE client_ref = \${clientRef} LIMIT 1\`
+    );
+    const rows = Array.isArray(existing) ? existing : (existing as any).rows ?? [];
+    const existingId: number | undefined = rows[0]?.id;
+    if (existingId) {
+      const [orderRow] = await db.select().from(ordersTable)
+        .where(eq(ordersTable.id, existingId));
+      if (orderRow) {
+        res.status(200).json(await buildOrder(orderRow));
+        return;
+      }
+    }
+  }
 
   const [patientRow] = await db.select({ id: patientsTable.id }).from(patientsTable).where(eq(patientsTable.id, patientId));
   if (!patientRow) {
@@ -202,7 +224,9 @@ ordersRouter.post("/", async (req, res) => {
     notes: notes ?? null,
     status: "pending",
     ledgerId,
-  }).returning();
+    // Store clientRef so subsequent retries return this same order
+    ...(clientRef ? { clientRef } as Record<string, unknown> : {}),
+  } as any).returning();
 
   if (lineItems.length > 0) {
     // Resolve outsource cost for each test to store in order_tests.

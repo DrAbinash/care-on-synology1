@@ -509,44 +509,62 @@ router.get("/trial-balance", async (req, res) => {
 router.get("/profit-loss", async (req, res) => {
   const { from, to } = req.query as Record<string, string>;
 
+  // SQL aggregation — same approach as trial-balance (fixed M4).
+  // Eliminates the full-table O(N) JS loop and JS float accumulation.
   const allAccounts = await db.select().from(accountsTable);
-  const allVouchers = await db.select().from(vouchersTable).orderBy(vouchersTable.date);
 
-  const compute = (account: typeof allAccounts[0]) => {
-    const accIdStr = account.id.toString();
-    let dr = 0, cr = 0;
-    for (const v of allVouchers) {
-      if (from && v.date < from) continue;
-      if (to && v.date > to) continue;
-      const amt = Number(v.amount);
-      if (v.debitAccountId === accIdStr) dr += amt;
-      if (v.creditAccountId === accIdStr) cr += amt;
-    }
-    return { dr, cr, balance: dr - cr };
-  };
+  const aggRows = await db.execute<{
+    debit_account_id:  string;
+    credit_account_id: string;
+    total_dr:          string;
+    total_cr:          string;
+  }>(sql`
+    SELECT
+      debit_account_id,
+      credit_account_id,
+      COALESCE(SUM(CASE WHEN debit_account_id  IS NOT NULL THEN amount::numeric ELSE 0 END), 0)::text AS total_dr,
+      COALESCE(SUM(CASE WHEN credit_account_id IS NOT NULL THEN amount::numeric ELSE 0 END), 0)::text AS total_cr
+    FROM vouchers
+    WHERE 1=1
+      ${from ? sql`AND date >= ${from}` : sql``}
+      ${to   ? sql`AND date <= ${to}`   : sql``}
+    GROUP BY debit_account_id, credit_account_id
+  `);
 
-  const income: { name: string; group: string; amount: number }[] = [];
+  const drMap = new Map<string, number>();
+  const crMap = new Map<string, number>();
+  for (const row of aggRows.rows ?? []) {
+    const drAmt = Number(row.total_dr ?? 0);
+    const crAmt = Number(row.total_cr ?? 0);
+    if (row.debit_account_id)  drMap.set(row.debit_account_id,  (drMap.get(row.debit_account_id)  ?? 0) + drAmt);
+    if (row.credit_account_id) crMap.set(row.credit_account_id, (crMap.get(row.credit_account_id) ?? 0) + crAmt);
+  }
+
+  const income:   { name: string; group: string; amount: number }[] = [];
   const expenses: { name: string; group: string; amount: number }[] = [];
 
   for (const account of allAccounts) {
-    const grp = account.tallyGroup || "";
-    const isIncome = grp.includes("Income") || account.type === "income";
+    const grp      = account.tallyGroup || "";
+    const isIncome  = grp.includes("Income")  || account.type === "income";
     const isExpense = grp.includes("Expense") || account.type === "expense";
     if (!isIncome && !isExpense) continue;
 
-    const { dr, cr } = compute(account);
+    const accId = account.id.toString();
+    const dr = Math.round((drMap.get(accId) ?? 0) * 100) / 100;
+    const cr = Math.round((crMap.get(accId) ?? 0) * 100) / 100;
+
     if (isIncome) {
-      const amount = cr - dr;
+      const amount = Math.round((cr - dr) * 100) / 100;
       if (amount !== 0) income.push({ name: account.name, group: grp || "Income", amount });
     } else {
-      const amount = dr - cr;
+      const amount = Math.round((dr - cr) * 100) / 100;
       if (amount !== 0) expenses.push({ name: account.name, group: grp || "Expenses", amount });
     }
   }
 
-  const totalIncome = income.reduce((s, r) => s + r.amount, 0);
-  const totalExpenses = expenses.reduce((s, r) => s + r.amount, 0);
-  const netProfit = totalIncome - totalExpenses;
+  const totalIncome   = Math.round(income.reduce((s, r)   => s + r.amount, 0) * 100) / 100;
+  const totalExpenses = Math.round(expenses.reduce((s, r) => s + r.amount, 0) * 100) / 100;
+  const netProfit     = Math.round((totalIncome - totalExpenses) * 100) / 100;
 
   res.json({ income, expenses, totalIncome, totalExpenses, netProfit });
   return;
@@ -557,35 +575,53 @@ router.get("/profit-loss", async (req, res) => {
 router.get("/balance-sheet", async (req, res) => {
   const { asOf } = req.query as Record<string, string>;
 
+  // SQL aggregation — eliminates O(N) JS loop and float drift.
   const allAccounts = await db.select().from(accountsTable);
-  const allVouchers = await db.select().from(vouchersTable).orderBy(vouchersTable.date);
 
-  const compute = (account: typeof allAccounts[0]) => {
-    const accIdStr = account.id.toString();
-    const openBal = Number(account.openingBalance || 0);
-    const openType = account.openingBalanceType || "Dr";
-    let dr = openType === "Dr" ? openBal : 0;
-    let cr = openType === "Cr" ? openBal : 0;
+  const aggRowsBS = await db.execute<{
+    debit_account_id:  string;
+    credit_account_id: string;
+    total_dr:          string;
+    total_cr:          string;
+  }>(sql`
+    SELECT
+      debit_account_id,
+      credit_account_id,
+      COALESCE(SUM(CASE WHEN debit_account_id  IS NOT NULL THEN amount::numeric ELSE 0 END), 0)::text AS total_dr,
+      COALESCE(SUM(CASE WHEN credit_account_id IS NOT NULL THEN amount::numeric ELSE 0 END), 0)::text AS total_cr
+    FROM vouchers
+    WHERE 1=1
+      ${asOf ? sql`AND date <= ${asOf}` : sql``}
+    GROUP BY debit_account_id, credit_account_id
+  `);
 
-    for (const v of allVouchers) {
-      if (asOf && v.date > asOf) continue;
-      const amt = Number(v.amount);
-      if (v.debitAccountId === accIdStr) dr += amt;
-      if (v.creditAccountId === accIdStr) cr += amt;
-    }
-    return { dr, cr, balance: dr - cr };
-  };
+  const drMapBS = new Map<string, number>();
+  const crMapBS = new Map<string, number>();
+  for (const row of aggRowsBS.rows ?? []) {
+    const drAmt = Number(row.total_dr ?? 0);
+    const crAmt = Number(row.total_cr ?? 0);
+    if (row.debit_account_id)  drMapBS.set(row.debit_account_id,  (drMapBS.get(row.debit_account_id)  ?? 0) + drAmt);
+    if (row.credit_account_id) crMapBS.set(row.credit_account_id, (crMapBS.get(row.credit_account_id) ?? 0) + crAmt);
+  }
 
-  const assets: { name: string; group: string; amount: number }[] = [];
+
+
+  const assets:      { name: string; group: string; amount: number }[] = [];
   const liabilities: { name: string; group: string; amount: number }[] = [];
 
-  let netIncomeTotal = 0;
+  let netIncomeTotal  = 0;
   let netExpenseTotal = 0;
 
   for (const account of allAccounts) {
-    const grp = account.tallyGroup || "";
-    const { dr, cr } = compute(account);
-    const balance = dr - cr;
+    const grp    = account.tallyGroup || "";
+    const accId  = account.id.toString();
+    const openBal  = Number(account.openingBalance || 0);
+    const openType = account.openingBalanceType || "Dr";
+    const openDr   = openType === "Dr" ? openBal : 0;
+    const openCr   = openType === "Cr" ? openBal : 0;
+    const dr      = Math.round((openDr + (drMapBS.get(accId) ?? 0)) * 100) / 100;
+    const cr      = Math.round((openCr + (crMapBS.get(accId) ?? 0)) * 100) / 100;
+    const balance = Math.round((dr - cr) * 100) / 100;
 
     const isIncome = grp.includes("Income") || account.type === "income";
     const isExpense = grp.includes("Expense") || account.type === "expense";
@@ -593,9 +629,9 @@ router.get("/balance-sheet", async (req, res) => {
     const isLiability = !isIncome && !isExpense && (grp.includes("Liabilities") || grp.includes("Creditors") || grp.includes("Capital") || grp.includes("Reserves") || account.type === "liability");
 
     if (isIncome) {
-      netIncomeTotal += cr - dr;
+      netIncomeTotal  = Math.round((netIncomeTotal  + (cr - dr)) * 100) / 100;
     } else if (isExpense) {
-      netExpenseTotal += dr - cr;
+      netExpenseTotal = Math.round((netExpenseTotal + (dr - cr)) * 100) / 100;
     } else if (balance === 0) {
       continue;
     } else if (isAsset && balance > 0) {
@@ -605,15 +641,15 @@ router.get("/balance-sheet", async (req, res) => {
     }
   }
 
-  const netProfit = netIncomeTotal - netExpenseTotal;
+  const netProfit = Math.round((netIncomeTotal - netExpenseTotal) * 100) / 100;
   if (netProfit > 0) {
     liabilities.push({ name: "Net Profit for the Period", group: "Capital Account", amount: netProfit });
   } else if (netProfit < 0) {
     assets.push({ name: "Net Loss for the Period", group: "Capital Account", amount: Math.abs(netProfit) });
   }
 
-  const totalAssets = assets.reduce((s, r) => s + r.amount, 0);
-  const totalLiabilities = liabilities.reduce((s, r) => s + r.amount, 0);
+  const totalAssets      = Math.round(assets.reduce((s, r)      => s + r.amount, 0) * 100) / 100;
+  const totalLiabilities = Math.round(liabilities.reduce((s, r) => s + r.amount, 0) * 100) / 100;
 
   res.json({ assets, liabilities, totalAssets, totalLiabilities, netProfit, balanced: Math.abs(totalAssets - totalLiabilities) < 0.01 });
   return;

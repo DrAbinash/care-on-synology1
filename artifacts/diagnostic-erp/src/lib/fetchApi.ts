@@ -54,38 +54,106 @@ function isSessionAuthPath(path: string): boolean {
   return SESSION_AUTH_PATHS.some(p => path.includes(p));
 }
 
+// ── Network retry helpers ────────────────────────────────────────────────────
+//
+// fetchApi retries automatically on transient network failures (fetch throws,
+// no response received, or 502/503/504 from the server). This covers:
+//   - LAN drop: fetch() rejects with TypeError "Failed to fetch"
+//   - Server restart: 502/503 while the container comes back up
+//   - Slow internet: request takes longer than the browser's default timeout
+//
+// Retries are NOT performed on 4xx errors (bad request, auth, validation) —
+// those are deterministic and retrying would not help.
+//
+// Each retry uses exponential backoff with jitter so concurrent requests don't
+// all slam the server at the same time when it comes back online.
+//
+// With clientRef idempotency on /api/orders and /api/bills, retrying a
+// timed-out bill creation is safe — the server returns the already-created
+// bill rather than producing a duplicate.
+
+const MAX_RETRIES   = 3;
+const BASE_DELAY_MS = 400;  // first retry after ~400ms
+const MAX_DELAY_MS  = 8000; // cap at 8s
+
+function isTransientError(err: unknown, status?: number): boolean {
+  // Network-level failure (no response): TypeError from fetch()
+  if (err instanceof TypeError) return true;
+  // Server-side transient: gateway errors and service unavailable
+  if (status === 502 || status === 503 || status === 504) return true;
+  return false;
+}
+
+function retryDelay(attempt: number): number {
+  // Exponential backoff: 400ms, 800ms, 1600ms … capped at 8s, with ±20% jitter
+  const base = Math.min(BASE_DELAY_MS * Math.pow(2, attempt), MAX_DELAY_MS);
+  return base * (0.8 + Math.random() * 0.4);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function doFetch(path: string, init?: RequestInit): Promise<Response> {
+  return fetch(path, { headers: buildHeaders(init), ...init });
+}
+
 export async function fetchApi<T = unknown>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    headers: buildHeaders(init),
-    ...init,
-  });
-  if (!res.ok) {
-    if (res.status === 401) {
-      // ONLY clear session when a session-management endpoint returns 401.
-      // This covers: staff-login, session validation, session refresh.
-      // Internal API endpoints (/api/internal/*), feature APIs returning 401
-      // due to INTERNAL_API_KEY mismatch, and permission-gated module APIs
-      // must NOT trigger logout — they are surfaced as error messages.
-      if (isSessionAuthPath(path)) {
-        handleSessionExpiry();
-      }
-      // For all other 401s: fall through and throw the error.
-      // The calling React Query query/mutation will handle it (toast, etc.).
+  let lastErr: unknown;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    // Bail immediately if the browser reports no connectivity — no point
+    // hammering the server when the LAN cable is literally unplugged.
+    if (!navigator.onLine) {
+      // Wait up to 10s for connectivity to return before giving up
+      await new Promise<void>((resolve) => {
+        const handler = () => { window.removeEventListener("online", handler); resolve(); };
+        window.addEventListener("online", handler);
+        setTimeout(() => { window.removeEventListener("online", handler); resolve(); }, 10_000);
+      });
     }
+
+    let res: Response | undefined;
+    try {
+      res = await doFetch(path, init);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < MAX_RETRIES && isTransientError(err)) {
+        await sleep(retryDelay(attempt));
+        continue;
+      }
+      // Last attempt or non-transient: surface the original network error
+      throw new Error(
+        navigator.onLine
+          ? "Server not responding — please check your connection and try again."
+          : "No internet connection — waiting for network to return."
+      );
+    }
+
+    if (!res.ok) {
+      // Retry on gateway errors only
+      if (attempt < MAX_RETRIES && isTransientError(null, res.status)) {
+        await sleep(retryDelay(attempt));
+        continue;
+      }
+
+      if (res.status === 401) {
+        if (isSessionAuthPath(path)) handleSessionExpiry();
+      }
+      const text = await res.text();
+      let parsed: { error?: string; message?: string } = {};
+      try { parsed = JSON.parse(text); } catch { /* empty body or non-JSON error */ }
+      throw new Error(parsed.error || parsed.message || text || res.statusText);
+    }
+
+    // Success
     const text = await res.text();
-    let parsed: { error?: string; message?: string } = {};
-    try { parsed = JSON.parse(text); } catch { /* empty body or non-JSON error */ }
-    throw new Error(parsed.error || parsed.message || text || res.statusText);
+    if (!text.trim()) return {} as T;
+    try { return JSON.parse(text) as T; } catch { return text as unknown as T; }
   }
-  // Some successful responses (e.g. legacy empty JSON bodies) may not contain
-  // valid JSON. Gracefully fall back so the UI doesn't crash.
-  const text = await res.text();
-  if (!text.trim()) return {} as T;
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    return text as unknown as T;
-  }
+
+  // Should never reach here, but TypeScript needs a return path
+  throw lastErr ?? new Error("Request failed after retries");
 }
 
 export const api = {

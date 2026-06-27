@@ -899,12 +899,20 @@ export default function BillingDesk() {
       if (!selectedPatient) throw new Error("No patient selected");
       if (selectedTests.length === 0) throw new Error("No tests selected");
 
+      // Generate a single UUID for this billing attempt. Both the order and bill
+      // POST carry this key. If either request times out and the browser retries,
+      // the server will return the already-created record instead of a duplicate.
+      // The key is NOT persisted across page reloads — each new billing attempt
+      // (after resetAll) generates a fresh UUID, which is the correct behaviour.
+      const clientRef = crypto.randomUUID();
+
       // 1. Create order (with custom per-test prices to preserve package discounts)
       const order = await api.post<{ id: number; orderNumber: string }>("/api/orders", {
         patientId: selectedPatient.id,
         doctorId: doctorId ?? undefined,
         notes: notes || undefined,
         tests: selectedTests.map((t) => ({ testId: t.testId, price: t.price })),
+        clientRef,
       });
 
       // 2. Create bill (inline payments are processed server-side within /billing permission)
@@ -919,8 +927,10 @@ export default function BillingDesk() {
         needsFormFData?: boolean;
         needsOnlinePayment?: boolean;
         onlineAmount?: number;
+        _idempotent?: boolean;
       }>("/api/bills", {
         orderId: order.id,
+        clientRef,
         discount: discountAmt,
         discountReason: discountAmt > 0 ? discountReason || null : null,
         discountReasonNote: discountAmt > 0 ? discountNote || null : null,
