@@ -334,69 +334,155 @@ export default function IdCardScanPanel({
   }
 
   // ── Edge detection crop ────────────────────────────────────────────────────
+  //
+  // Strategy: row & column projection histogram.
+  //   1. Convert each pixel to grayscale.
+  //   2. Mark pixel as "content" if it differs from the image's dominant corner
+  //      colour (background estimation) by more than a threshold.
+  //   3. Count content pixels per row and per column.
+  //   4. Find first/last row and column where content density exceeds 5%.
+  //   5. This always produces a crop — no bail-out for high coverage.
+  //
+  // Why this works for all input types:
+  //   - Scanner (card on white): background = white, card content found easily
+  //   - Phone photo (card fills frame): background = corners, card fills rest
+  //   - Tilted/coloured card on table: background estimated from corners
+  //   - High coverage (card IS the image): corners = card edge, crop ≈ full image
+  //     which is correct — no background to remove.
 
   function detectCardCrop(canvas: HTMLCanvasElement, padding: number): {
     x: number; y: number; w: number; h: number; confidence: "high" | "medium" | "low";
   } {
     const ctx = canvas.getContext("2d");
-    if (!ctx) return { x: 0, y: 0, w: canvas.width, h: canvas.height, confidence: "low" };
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const data = imageData.data;
     const w = canvas.width;
     const h = canvas.height;
-
-    // Non-white/non-light-gray threshold — works for any background colour
-    // We detect pixels that are either:
-    //  (a) not all-bright (typical white background scanner)
-    //  (b) have significant colour saturation (coloured card on table)
-    function isContent(i: number): boolean {
-      const r = data[i]; const g = data[i + 1]; const b = data[i + 2];
-      const bright = r > 230 && g > 230 && b > 230; // near-white
-      const maxC = Math.max(r, g, b); const minC = Math.min(r, g, b);
-      const saturated = maxC - minC > 30; // has colour
-      const dark = r < 100 && g < 100 && b < 100;
-      return !bright || saturated || dark;
-    }
-
-    let minX = w, minY = h, maxX = 0, maxY = 0;
-    let contentCount = 0;
-
-    for (let y = 2; y < h; y += 3) {
-      for (let x = 2; x < w; x += 3) {
-        if (isContent((y * w + x) * 4)) {
-          contentCount++;
-          if (x < minX) minX = x;
-          if (x > maxX) maxX = x;
-          if (y < minY) minY = y;
-          if (y > maxY) maxY = y;
-        }
-      }
-    }
-
-    const totalSampled = (w / 3) * (h / 3);
-    const coverageRatio = contentCount / totalSampled;
-
-    if (coverageRatio < 0.04 || coverageRatio > 0.97 || maxX <= minX || maxY <= minY) {
+    if (!ctx || w < 10 || h < 10) {
       return { x: 0, y: 0, w, h, confidence: "low" };
     }
 
-    const pad = Math.max(padding, 6);
-    minX = Math.max(0, minX - pad);
-    minY = Math.max(0, minY - pad);
-    maxX = Math.min(w, maxX + pad);
-    maxY = Math.min(h, maxY + pad);
+    const imageData = ctx.getImageData(0, 0, w, h);
+    const data = imageData.data;
 
-    const cropW = maxX - minX;
-    const cropH = maxY - minY;
+    // ── Step 1: Estimate background colour from the four corners (5×5 px each) ──
+    let bgR = 0, bgG = 0, bgB = 0, bgN = 0;
+    const cornerSize = Math.min(8, Math.floor(Math.min(w, h) * 0.05));
+    const sampleCorners = [
+      [0, 0], [w - cornerSize, 0],
+      [0, h - cornerSize], [w - cornerSize, h - cornerSize],
+    ];
+    for (const [cx, cy] of sampleCorners) {
+      for (let py = cy; py < cy + cornerSize && py < h; py++) {
+        for (let px = cx; px < cx + cornerSize && px < w; px++) {
+          const i = (py * w + px) * 4;
+          bgR += data[i]; bgG += data[i + 1]; bgB += data[i + 2]; bgN++;
+        }
+      }
+    }
+    if (bgN > 0) { bgR /= bgN; bgG /= bgN; bgB /= bgN; }
+
+    // ── Step 2: Mark each pixel as content vs background ──
+    // Threshold: pixel differs from background by more than 20 in any channel
+    // OR has significant colour saturation (catches coloured cards on grey tables)
+    const DIFF_THRESH = 22;
+    const SAT_THRESH  = 25;
+
+    function isContent(i: number): boolean {
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      if (
+        Math.abs(r - bgR) > DIFF_THRESH ||
+        Math.abs(g - bgG) > DIFF_THRESH ||
+        Math.abs(b - bgB) > DIFF_THRESH
+      ) return true;
+      // Also catch saturated pixels (colour card on neutral background)
+      const maxC = Math.max(r, g, b);
+      const minC = Math.min(r, g, b);
+      return (maxC - minC) > SAT_THRESH;
+    }
+
+    // ── Step 3: Build row and column histograms ──
+    // Sample every 2nd pixel for speed (still accurate enough)
+    const rowHist    = new Float32Array(h);   // fraction of row pixels that are content
+    const colHist    = new Float32Array(w);   // fraction of col pixels that are content
+
+    for (let y = 0; y < h; y += 2) {
+      let cnt = 0;
+      for (let x = 0; x < w; x += 2) {
+        if (isContent((y * w + x) * 4)) cnt++;
+      }
+      rowHist[y] = cnt / (w / 2);
+      if (y + 1 < h) rowHist[y + 1] = rowHist[y]; // duplicate for skipped row
+    }
+    for (let x = 0; x < w; x += 2) {
+      let cnt = 0;
+      for (let y = 0; y < h; y += 2) {
+        if (isContent((y * w + x) * 4)) cnt++;
+      }
+      colHist[x] = cnt / (h / 2);
+      if (x + 1 < w) colHist[x + 1] = colHist[x];
+    }
+
+    // ── Step 4: Find content boundary — first/last row/col above threshold ──
+    // Use a low threshold (5%) so even sparse card edges are detected.
+    // Smooth over a 5px window to ignore single-pixel noise.
+    const ROW_THRESH = 0.05;
+    const COL_THRESH = 0.05;
+
+    function smoothed(hist: Float32Array, i: number, half = 3): number {
+      let s = 0, n = 0;
+      for (let k = Math.max(0, i - half); k <= Math.min(hist.length - 1, i + half); k++) {
+        s += hist[k]; n++;
+      }
+      return s / (n || 1);
+    }
+
+    let top = 0, bottom = h - 1, left = 0, right = w - 1;
+
+    for (let y = 0; y < h; y++) {
+      if (smoothed(rowHist, y) > ROW_THRESH) { top = y; break; }
+    }
+    for (let y = h - 1; y >= 0; y--) {
+      if (smoothed(rowHist, y) > ROW_THRESH) { bottom = y; break; }
+    }
+    for (let x = 0; x < w; x++) {
+      if (smoothed(colHist, x) > COL_THRESH) { left = x; break; }
+    }
+    for (let x = w - 1; x >= 0; x--) {
+      if (smoothed(colHist, x) > COL_THRESH) { right = x; break; }
+    }
+
+    // ── Step 5: Add padding, clamp to canvas ──
+    const pad = Math.max(padding, 4);
+    left   = Math.max(0, left   - pad);
+    top    = Math.max(0, top    - pad);
+    right  = Math.min(w - 1, right  + pad);
+    bottom = Math.min(h - 1, bottom + pad);
+
+    const cropW = right - left;
+    const cropH = bottom - top;
+
+    // Minimum crop size sanity check
+    if (cropW < 40 || cropH < 20) {
+      return { x: 0, y: 0, w, h, confidence: "medium" };
+    }
+
+    // ── Step 6: Confidence based on how much we cropped ──
+    // If crop is < 90% of original in both dimensions → we found real margins → high
+    // If crop ≈ full image → card fills frame or detection uncertain → medium
+    const wRatio = cropW / w;
+    const hRatio = cropH / h;
     const aspect = cropW / (cropH || 1);
+    const goodAspect = aspect >= 1.0 && aspect <= 2.5; // ID cards are landscape usually
 
-    // ID cards: aspect ratio 1.2–2.2 (portrait or landscape)
-    const goodAspect = aspect >= 1.1 && aspect <= 2.3;
-    let confidence: "high" | "medium" | "low" = "medium";
-    if (coverageRatio > 0.08 && coverageRatio < 0.85 && goodAspect) confidence = "high";
-    else if (coverageRatio < 0.04 || coverageRatio > 0.95) confidence = "low";
+    let confidence: "high" | "medium" | "low";
+    if (wRatio < 0.92 && hRatio < 0.92 && goodAspect) {
+      confidence = "high";   // cropped meaningful margins on all sides
+    } else if (wRatio < 0.98 || hRatio < 0.98) {
+      confidence = "medium"; // cropped some margins
+    } else {
+      confidence = "medium"; // card fills frame — crop = full image, still valid
+    }
 
-    return { x: minX, y: minY, w: cropW, h: cropH, confidence };
+    return { x: left, y: top, w: cropW, h: cropH, confidence };
   }
 
   // ── Apply crop to produce a cropped canvas ─────────────────────────────────
@@ -520,7 +606,7 @@ export default function IdCardScanPanel({
           }
         }
 
-        // Step 2: Auto-crop
+        // Step 2: Auto-crop — always apply, confidence is a UI indicator only
         let rect: typeof cropRect;
         let confidence: "high" | "medium" | "low" = "high";
 
@@ -533,10 +619,9 @@ export default function IdCardScanPanel({
 
           if (confidence === "high") {
             setStatus("Auto crop successful", "ok");
-          } else if (confidence === "medium") {
-            setStatus("Auto crop applied — verify boundaries", "warn");
           } else {
-            setStatus("Could not detect card edges — please adjust manually", "warn");
+            // confidence "medium" still means we found boundaries — apply it
+            setStatus("Auto crop applied — adjust manually if needed", "warn");
           }
         } else {
           rect = { x: 0, y: 0, w: workingCanvas.width, h: workingCanvas.height };
@@ -695,9 +780,11 @@ export default function IdCardScanPanel({
     const rect = detectCardCrop(source, cropPadding);
     setCropRect({ x: rect.x, y: rect.y, w: rect.w, h: rect.h });
     setCropConfidence(rect.confidence);
-    if (rect.confidence === "high") setStatus("Auto crop successful", "ok");
-    else if (rect.confidence === "medium") setStatus("Auto crop applied — verify boundaries", "warn");
-    else setStatus("Could not detect card edges — please adjust manually", "warn");
+    if (rect.confidence === "high") {
+      setStatus("Auto crop successful", "ok");
+    } else {
+      setStatus("Auto crop applied — adjust manually if needed", "warn");
+    }
   }
 
   // ── Manual crop drag ──────────────────────────────────────────────────────
@@ -817,9 +904,9 @@ export default function IdCardScanPanel({
           <div className="flex items-center gap-2">
             <ScanLine size={17} className="text-blue-600" />
             <h3 className="text-sm font-bold text-gray-900">ID Card Editor</h3>
-            {cropConfidence === "low" && (
+            {cropConfidence === "medium" && (
               <Badge variant="outline" className="text-amber-600 border-amber-200 bg-amber-50 text-[10px] h-5 px-1.5">
-                <AlertTriangle size={9} className="mr-1" /> Low confidence
+                <AlertTriangle size={9} className="mr-1" /> Adjust if needed
               </Badge>
             )}
             {cropConfidence === "high" && (
