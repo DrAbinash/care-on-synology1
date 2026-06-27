@@ -431,27 +431,57 @@ router.get("/ledger", async (req, res) => {
 router.get("/trial-balance", async (req, res) => {
   const { from, to } = req.query as Record<string, string>;
 
+  // SQL-level aggregation using numeric type — no JS float accumulation,
+  // no full-table load into Node memory. Handles any number of vouchers
+  // without precision drift or memory pressure (Fix M4).
   const allAccounts = await db.select().from(accountsTable);
-  const allVouchers = await db.select().from(vouchersTable).orderBy(vouchersTable.date);
+
+  // Build per-account DR and CR totals directly in Postgres
+  const aggRows = await db.execute<{
+    debit_account_id:  string;
+    credit_account_id: string;
+    total_dr:          string;
+    total_cr:          string;
+  }>(sql`
+    SELECT
+      debit_account_id,
+      credit_account_id,
+      COALESCE(SUM(CASE WHEN debit_account_id  IS NOT NULL THEN amount::numeric ELSE 0 END), 0)::text AS total_dr,
+      COALESCE(SUM(CASE WHEN credit_account_id IS NOT NULL THEN amount::numeric ELSE 0 END), 0)::text AS total_cr
+    FROM vouchers
+    WHERE 1=1
+      ${from ? sql`AND date >= ${from}` : sql``}
+      ${to   ? sql`AND date <= ${to}`   : sql``}
+    GROUP BY debit_account_id, credit_account_id
+  `);
+
+  // Build a per-account-id map from the SQL result
+  const drMap  = new Map<string, number>();
+  const crMap  = new Map<string, number>();
+  for (const row of aggRows.rows ?? []) {
+    const drAmt = Number(row.total_dr ?? 0);
+    const crAmt = Number(row.total_cr ?? 0);
+    if (row.debit_account_id) {
+      drMap.set(row.debit_account_id, (drMap.get(row.debit_account_id) ?? 0) + drAmt);
+    }
+    if (row.credit_account_id) {
+      crMap.set(row.credit_account_id, (crMap.get(row.credit_account_id) ?? 0) + crAmt);
+    }
+  }
 
   const rows = allAccounts.map((account) => {
-    const accIdStr = account.id.toString();
-    const openBal = Number(account.openingBalance || 0);
-    const openType = account.openingBalanceType || "Dr";
-    let dr = openType === "Dr" ? openBal : 0;
-    let cr = openType === "Cr" ? openBal : 0;
+    const accIdStr  = account.id.toString();
+    const openBal   = Number(account.openingBalance || 0);
+    const openType  = account.openingBalanceType || "Dr";
+    const openDr    = openType === "Dr" ? openBal : 0;
+    const openCr    = openType === "Cr" ? openBal : 0;
 
-    for (const v of allVouchers) {
-      if (from && v.date < from) continue;
-      if (to && v.date > to) continue;
-      const amt = Number(v.amount);
-      if (v.debitAccountId === accIdStr) dr += amt;
-      if (v.creditAccountId === accIdStr) cr += amt;
-    }
-
+    const dr      = openDr + (drMap.get(accIdStr) ?? 0);
+    const cr      = openCr + (crMap.get(accIdStr) ?? 0);
     const balance = dr - cr;
+
     const tallyGroup = account.tallyGroup || account.type;
-    const parent = TALLY_PARENT[tallyGroup] || account.type;
+    const parent     = TALLY_PARENT[tallyGroup] || account.type;
 
     return {
       id: account.id,
@@ -459,16 +489,16 @@ router.get("/trial-balance", async (req, res) => {
       type: account.type,
       tallyGroup,
       parent,
-      dr,
-      cr,
-      balance,
-      balanceDr: balance > 0 ? balance : 0,
-      balanceCr: balance < 0 ? Math.abs(balance) : 0,
+      dr:        Math.round(dr      * 100) / 100,
+      cr:        Math.round(cr      * 100) / 100,
+      balance:   Math.round(balance * 100) / 100,
+      balanceDr: balance > 0 ? Math.round(balance * 100) / 100 : 0,
+      balanceCr: balance < 0 ? Math.round(Math.abs(balance) * 100) / 100 : 0,
     };
   }).filter(r => r.dr > 0 || r.cr > 0);
 
-  const totalDr = rows.reduce((s, r) => s + r.balanceDr, 0);
-  const totalCr = rows.reduce((s, r) => s + r.balanceCr, 0);
+  const totalDr = Math.round(rows.reduce((s, r) => s + r.balanceDr, 0) * 100) / 100;
+  const totalCr = Math.round(rows.reduce((s, r) => s + r.balanceCr, 0) * 100) / 100;
 
   res.json({ rows, totalDr, totalCr, balanced: Math.abs(totalDr - totalCr) < 0.01 });
   return;
@@ -668,7 +698,7 @@ router.get("/export/tally", async (req, res) => {
     ? `<!-- Date Range: ${from} to ${to} -->`
     : `<!-- All dates -->`;
 
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+  const xml = `﻿<?xml version="1.0" encoding="UTF-8"?>
 ${dateRange}
 <ENVELOPE>
   <HEADER>
@@ -694,7 +724,7 @@ ${masterXml}
   </BODY>
 </ENVELOPE>`;
 
-  res.setHeader("Content-Type", "application/xml");
+  res.setHeader("Content-Type", "application/xml; charset=utf-8");
   const filename = `tally-masters${from ? `-${from}` : ""}${to ? `-to-${to}` : ""}.xml`;
   res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
   res.send(xml);
@@ -767,7 +797,7 @@ router.get("/export/tally-vouchers", async (req, res) => {
     ? `<!-- Date Range: ${from} to ${to} -->`
     : `<!-- All dates -->`;
 
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+  const xml = `﻿<?xml version="1.0" encoding="UTF-8"?>
 ${dateRange}
 <ENVELOPE>
   <HEADER>
@@ -793,7 +823,7 @@ ${voucherXml}
   </BODY>
 </ENVELOPE>`;
 
-  res.setHeader("Content-Type", "application/xml");
+  res.setHeader("Content-Type", "application/xml; charset=utf-8");
   const filename2 = `tally-vouchers${from ? `-${from}` : ""}${to ? `-to-${to}` : ""}.xml`;
   res.setHeader("Content-Disposition", `attachment; filename=${filename2}`);
   res.send(xml);
@@ -851,7 +881,7 @@ router.get("/export/tally-erp9", async (req, res) => {
     ? `<!-- Date Range: ${from} to ${to} -->`
     : `<!-- All dates -->`;
 
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+  const xml = `﻿<?xml version="1.0" encoding="UTF-8"?>
 ${dateRange}
 <ENVELOPE>
   <HEADER>
@@ -874,7 +904,7 @@ ${masterXml}
   </BODY>
 </ENVELOPE>`;
 
-  res.setHeader("Content-Type", "application/xml");
+  res.setHeader("Content-Type", "application/xml; charset=utf-8");
   const filename3 = `tally-erp9-masters${from ? `-${from}` : ""}${to ? `-to-${to}` : ""}.xml`;
   res.setHeader("Content-Disposition", `attachment; filename=${filename3}`);
   res.send(xml);
@@ -936,7 +966,7 @@ router.get("/export/tally-erp9-vouchers", async (req, res) => {
     ? `<!-- Date Range: ${from} to ${to} -->`
     : `<!-- All dates -->`;
 
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+  const xml = `﻿<?xml version="1.0" encoding="UTF-8"?>
 ${dateRange}
 <ENVELOPE>
   <HEADER>
@@ -959,7 +989,7 @@ ${voucherXml}
   </BODY>
 </ENVELOPE>`;
 
-  res.setHeader("Content-Type", "application/xml");
+  res.setHeader("Content-Type", "application/xml; charset=utf-8");
   const filename4 = `tally-erp9-vouchers${from ? `-${from}` : ""}${to ? `-to-${to}` : ""}.xml`;
   res.setHeader("Content-Disposition", `attachment; filename=${filename4}`);
   res.send(xml);

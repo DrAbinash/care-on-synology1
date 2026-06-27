@@ -5389,7 +5389,7 @@ function OllamaSettingsCard() {
     api.get<{ ollamaBaseUrl?: string | null; ollamaModel?: string | null; ollamaLocalOnly?: boolean; ollamaKnownModels?: string }>("/api/clinic-settings")
       .then((d) => {
         setBaseUrl(d.ollamaBaseUrl ?? "");
-        setModel(d.ollamaModel ?? "llama3");
+        setModel(d.ollamaModel ?? "qwen3:8b");
         setLocalOnly(d.ollamaLocalOnly ?? false);
         // Seed availableModels from DB so every workstation gets the dropdown
         // without needing to run "Test Connection" individually.
@@ -5411,7 +5411,7 @@ function OllamaSettingsCard() {
     try {
       await api.put("/api/clinic-settings", {
         ollamaBaseUrl: baseUrl.trim() || null,
-        ollamaModel: model.trim() || "llama3",
+        ollamaModel: model.trim() || "qwen3:8b",
         ollamaLocalOnly: localOnly,
       });
       toast({ title: "Ollama settings saved" });
@@ -5500,7 +5500,7 @@ function OllamaSettingsCard() {
               <Input
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
-                placeholder="llama3"
+                placeholder="qwen3:8b"
                 className="text-xs h-7"
               />
             </div>
@@ -5512,7 +5512,7 @@ function OllamaSettingsCard() {
                 placeholder="llama3"
                 className="mt-1"
               />
-              <p className="text-[11px] text-muted-foreground mt-1">Must be pulled on the Ollama instance (e.g. <code className="font-mono">ollama pull llama3</code>). Click "Test Connection" to see available models.</p>
+              <p className="text-[11px] text-muted-foreground mt-1">Recommended for radiology: <code className="font-mono">qwen3:14b</code> (best quality) or <code className="font-mono">qwen3:8b</code> (faster). Pull on Windows PC: <code className="font-mono">ollama pull qwen3:8b</code>. Click "Test Connection" to see available models.</p>
             </>
           )}
         </div>
