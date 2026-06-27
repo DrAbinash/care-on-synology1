@@ -191,6 +191,10 @@ export default function MeasurementAssistantPanel({
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<SavedMeasurement[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  // ADC calculator inputs — separate from the main measurement template
+  const [adcB0, setAdcB0] = useState("");
+  const [adcB1000, setAdcB1000] = useState("");
+  const [adcBValue, setAdcBValue] = useState("1000");
 
   // Load initialValues (imported measurements from viewer)
   useEffect(() => {
@@ -355,8 +359,26 @@ export default function MeasurementAssistantPanel({
       }
     }
 
+    // 7. ADC value from DWI signal intensities
+    // Formula: ADC = -ln(S_b / S_0) / b_value  (units: ×10⁻³ mm²/s)
+    // Normal ranges: Grey matter ~0.8, White matter ~0.7, Restricted <0.6
+    const b0 = parseFloat(adcB0);
+    const b1000 = parseFloat(adcB1000);
+    const bVal = parseFloat(adcBValue) || 1000;
+    if (!isNaN(b0) && !isNaN(b1000) && b0 > 0 && b1000 > 0 && bVal > 0) {
+      const adc = (-Math.log(b1000 / b0) / bVal) * 1000; // ×10⁻³ mm²/s
+      calcs.adcValue = Math.round(adc * 1000) / 1000;
+      calcs.adcRestricted = adc < 0.6;
+      calcs.adcBorderline = adc >= 0.6 && adc < 0.8;
+      calcs.adcInterpretation = adc < 0.6
+        ? "Restricted diffusion — acute infarct / hypercellular tumour / abscess"
+        : adc < 0.8
+        ? "Borderline — correlate with DWI morphology and clinical context"
+        : "No significant restriction";
+    }
+
     return calcs;
-  }, [values]);
+  }, [values, adcB0, adcB1000, adcBValue]);
 
   // Live Auto Report Sync triggers on change of values or calculations
   useEffect(() => {
@@ -376,6 +398,9 @@ export default function MeasurementAssistantPanel({
       if (smartCalculations.slipPct) text += `- Spondylolisthesis: ${smartCalculations.slipPct}% (${smartCalculations.slipGrade})\n`;
       if (smartCalculations.ri) {
         text += `- Doppler Resistive Index (RI): ${smartCalculations.ri} (S/D Ratio: ${smartCalculations.sd})\n`;
+      }
+      if (smartCalculations.adcValue !== undefined) {
+        text += `- ADC Value: ${smartCalculations.adcValue} ×10⁻³ mm²/s — ${smartCalculations.adcInterpretation}\n`;
       }
 
       if (onMeasurementsChange) {
@@ -521,6 +546,72 @@ export default function MeasurementAssistantPanel({
                 {smartCalculations.gestAgeStr && <div>Gestational Age: {smartCalculations.gestAgeStr}</div>}
                 {smartCalculations.slipPct && <div>Vertebral Slip: {smartCalculations.slipPct}% ({smartCalculations.slipGrade})</div>}
                 {smartCalculations.ri && <div>RI: {smartCalculations.ri} | PI: {smartCalculations.pi} | S/D: {smartCalculations.sd}</div>}
+                {smartCalculations.adcValue !== undefined && (
+                  <div className={smartCalculations.adcRestricted ? "text-red-400 font-bold" : smartCalculations.adcBorderline ? "text-amber-400" : "text-emerald-400"}>
+                    ADC: {smartCalculations.adcValue} ×10⁻³ mm²/s — {smartCalculations.adcInterpretation}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* DWI/ADC Calculator — MRI Brain only */}
+            {selectedStudyType === "MRI_BRAIN" && (
+              <div className="bg-purple-950/20 border border-purple-800/40 rounded-lg p-2.5 space-y-2">
+                <div className="text-[10px] font-bold text-purple-300 uppercase tracking-wider flex items-center gap-1">
+                  <Sparkles size={10} className="text-purple-400" />
+                  DWI / ADC Calculator
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <div className="text-[9px] text-slate-500 mb-1">S₀ (b=0 signal)</div>
+                    <Input
+                      value={adcB0}
+                      onChange={(e) => setAdcB0(e.target.value)}
+                      className="h-6 text-xs font-mono bg-slate-950 border-slate-700 text-slate-200"
+                      placeholder="e.g. 800"
+                    />
+                  </div>
+                  <div>
+                    <div className="text-[9px] text-slate-500 mb-1">S_b (high b signal)</div>
+                    <Input
+                      value={adcB1000}
+                      onChange={(e) => setAdcB1000(e.target.value)}
+                      className="h-6 text-xs font-mono bg-slate-950 border-slate-700 text-slate-200"
+                      placeholder="e.g. 200"
+                    />
+                  </div>
+                  <div>
+                    <div className="text-[9px] text-slate-500 mb-1">b-value (s/mm²)</div>
+                    <Input
+                      value={adcBValue}
+                      onChange={(e) => setAdcBValue(e.target.value)}
+                      className="h-6 text-xs font-mono bg-slate-950 border-slate-700 text-slate-200"
+                      placeholder="1000"
+                    />
+                  </div>
+                </div>
+                {smartCalculations.adcValue !== undefined ? (
+                  <div className={`text-xs font-mono font-bold px-2 py-1 rounded border ${
+                    smartCalculations.adcRestricted
+                      ? "text-red-300 bg-red-950/40 border-red-800/40"
+                      : smartCalculations.adcBorderline
+                      ? "text-amber-300 bg-amber-950/30 border-amber-800/40"
+                      : "text-emerald-300 bg-emerald-950/30 border-emerald-800/40"
+                  }`}>
+                    ADC = {smartCalculations.adcValue} ×10⁻³ mm²/s
+                    <div className="text-[9px] font-normal mt-0.5 opacity-80">
+                      {smartCalculations.adcInterpretation}
+                    </div>
+                    <div className="text-[8px] font-normal text-slate-500 mt-0.5">
+                      Normal: GM ~0.8 · WM ~0.7 · Restricted &lt;0.6 · CSF ~3.0
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-[9px] text-slate-500">
+                    Enter S₀ and S_b signal intensities from your DWI sequence to calculate ADC.
+                    Formula: ADC = −ln(S_b / S₀) / b-value
+                  </div>
+                )}
               </div>
             )}
 

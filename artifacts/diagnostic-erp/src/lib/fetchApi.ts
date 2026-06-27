@@ -1,4 +1,5 @@
 import { ERP_SESSION_KEY, type StaffSession, clearStaffSession } from "./staffSession";
+import { executeDraftRescue } from "./draftRescue";
 
 function getStaffToken(): string | null {
   try {
@@ -26,6 +27,9 @@ function buildHeaders(init?: RequestInit): Record<string, string> {
 // feature endpoints) must NOT clear the session or redirect. Those errors
 // must surface as toasts/error states only, without destroying the user session.
 function handleSessionExpiry(): void {
+  // Save any in-progress report draft before destroying the session.
+  // This prevents losing dictation text when the JWT expires mid-read.
+  executeDraftRescue();
   clearStaffSession();
   try { window.localStorage.removeItem("portal_staff_session"); } catch { /* ignore */ }
   const base = (import.meta as { env: { BASE_URL: string } }).env.BASE_URL || "/";

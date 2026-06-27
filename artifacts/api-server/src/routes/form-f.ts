@@ -242,18 +242,102 @@ formFRouter.get("/fetch-billing/:search", async (req, res) => {
   }
 });
 
+// Zod schema for PCPNDT-required fields on Form F save
+// Per PCPNDT Act: patient name, age, referring doctor, procedure, and date
+// are mandatory for every record. Address and guardian name are required when
+// enabled in clinic_settings (formFAddressRequired / formFGuardianRequired).
+import { z as _z } from "zod";
+const FormFSaveBody = _z.object({
+  billId:              _z.number().optional(),
+  billNumber:          _z.string().optional(),
+  patientId:           _z.number().optional(),
+  centreName:          _z.string().min(1, "Centre name is required"),
+  registrationNo:      _z.string().min(1, "Registration number is required"),
+  patientName:         _z.string().min(2, "Patient name is required"),
+  age:                 _z.string().min(1, "Patient age is required"),
+  husbandFatherName:   _z.string().optional().default(""),
+  address:             _z.string().optional().default(""),
+  mobile:              _z.string().optional().default(""),
+  referredBy:          _z.string().optional().default("Self"),
+  doctorName:          _z.string().min(1, "Doctor name is required"),
+  procedure:           _z.string().min(1, "Procedure is required"),
+  procedureDate:       _z.string().min(1, "Procedure date is required"),
+  lmpWeeks:            _z.string().optional().default(""),
+  gestationalAgeWeeks: _z.string().optional().default(""),
+  gestationalAgeDays:  _z.string().optional().default(""),
+  ultrasoundResult:    _z.string().optional().default(""),
+  abnormality:         _z.string().optional().default(""),
+  basisDiagnosis:      _z.string().optional().default(""),
+  indicationOther:     _z.string().optional().default(""),
+  prenatalResult:      _z.string().optional().default(""),
+  resultConveyed:      _z.string().optional().default(""),
+  mtpAdvised:          _z.string().optional().default(""),
+  mtpDate:             _z.string().optional().default(""),
+  geneticHistory:      _z.string().optional().default(""),
+  childrenDetails:     _z.string().optional().default(""),
+  previousChildIssue:  _z.string().optional().default(""),
+  invasiveProcedure:   _z.string().optional().default(""),
+  complication:        _z.string().optional().default(""),
+  labTests:            _z.string().optional().default(""),
+  procedurePurpose:    _z.string().optional().default(""),
+  consentDate:         _z.string().optional().default(""),
+  date:                _z.string().optional().default(""),
+  place:               _z.string().optional().default(""),
+  idCardFrontUrl:      _z.string().nullable().optional(),
+  idCardBackUrl:       _z.string().nullable().optional(),
+  idCardImageUrl:      _z.string().nullable().optional(),
+  idCardExtractedName:    _z.string().nullable().optional(),
+  idCardExtractedAddress: _z.string().nullable().optional(),
+  idCardVerified:      _z.boolean().optional().default(false),
+  fetalUsgStudyId:     _z.number().nullable().optional(),
+});
+
 formFRouter.post("/save", async (req, res) => {
   try {
     const body = req.body ?? {};
 
-    let billId = body.billId ? Number(body.billId) : undefined;
-    let patientId = body.patientId ? Number(body.patientId) : undefined;
+    // Server-side PCPNDT validation (Bug #15 — null bypass fix)
+    const parsed = FormFSaveBody.safeParse({
+      ...body,
+      billId:   body.billId   ? Number(body.billId)   : undefined,
+      patientId: body.patientId ? Number(body.patientId) : undefined,
+      fetalUsgStudyId: body.fetalUsgStudyId ? Number(body.fetalUsgStudyId) : undefined,
+    });
+    if (!parsed.success) {
+      const firstIssue = parsed.error.issues[0];
+      res.status(400).json({
+        error: firstIssue?.message ?? "Form F validation failed",
+        field: firstIssue?.path?.[0] ?? "unknown",
+        issues: parsed.error.issues.map((i) => ({ field: i.path[0], message: i.message })),
+      });
+      return;
+    }
 
-    if (!billId && body.billNumber) {
+    // Check clinic settings for optional required fields
+    const [settings] = await db.select({
+      addressRequired:  clinicSettingsTable.formFAddressRequired,
+      guardianRequired: clinicSettingsTable.formFGuardianRequired,
+    }).from(clinicSettingsTable).limit(1);
+
+    if (settings?.addressRequired && !parsed.data.address?.trim()) {
+      res.status(400).json({ error: "Patient address is required (PCPNDT compliance)", field: "address" });
+      return;
+    }
+    if (settings?.guardianRequired && !parsed.data.husbandFatherName?.trim()) {
+      res.status(400).json({ error: "Husband / Father name is required (PCPNDT compliance)", field: "husbandFatherName" });
+      return;
+    }
+
+    // Use validated data
+    const d = parsed.data;
+    let billId = d.billId;
+    let patientId = d.patientId;
+
+    if (!billId && d.billNumber) {
       const [bill] = await db
         .select()
         .from(billsTable)
-        .where(ilike(billsTable.billNumber, body.billNumber.trim()))
+        .where(ilike(billsTable.billNumber, d.billNumber.trim()))
         .limit(1);
       if (bill) {
         billId = bill.id;
@@ -264,46 +348,46 @@ formFRouter.post("/save", async (req, res) => {
     const record: typeof formFRecordsTable.$inferInsert = {
       billId: billId ?? null,
       patientId: patientId ?? null,
-      billNumber: body.billNumber ?? null,
-      centreName: body.centreName ?? "",
-      registrationNo: body.registrationNo ?? "",
-      patientName: body.patientName ?? "",
-      age: body.age ?? "",
-      childrenDetails: body.childrenDetails ?? "",
-      husbandFatherName: body.husbandFatherName ?? "",
-      address: body.address ?? "",
-      mobile: body.mobile ?? "",
-      referredBy: body.referredBy ?? "Self",
-      lmpWeeks: body.lmpWeeks ?? "",
-      geneticHistory: body.geneticHistory ?? "",
-      basisDiagnosis: body.basisDiagnosis ?? "",
-      previousChildIssue: body.previousChildIssue ?? "",
-      indicationOther: body.indicationOther ?? "",
-      doctorName: body.doctorName ?? "",
-      procedure: body.procedure ?? "",
-      procedurePurpose: body.procedurePurpose ?? "",
-      invasiveProcedure: body.invasiveProcedure ?? "",
-      complication: body.complication ?? "",
-      labTests: body.labTests ?? "",
-      prenatalResult: body.prenatalResult ?? "",
-      gestationalAgeWeeks: body.gestationalAgeWeeks ?? "",
-      gestationalAgeDays: body.gestationalAgeDays ?? "",
-      ultrasoundResult: body.ultrasoundResult ?? "",
-      abnormality: body.abnormality ?? "",
-      procedureDate: body.procedureDate ?? "",
-      consentDate: body.consentDate ?? "",
-      resultConveyed: body.resultConveyed ?? "",
-      mtpAdvised: body.mtpAdvised ?? "",
-      mtpDate: body.mtpDate ?? "",
-      date: body.date ?? "",
-      place: body.place ?? "",
-      idCardImageUrl: body.idCardFrontUrl ?? body.idCardImageUrl ?? null,
-      idCardFrontUrl: body.idCardFrontUrl ?? null,
-      idCardBackUrl: body.idCardBackUrl ?? null,
-      idCardExtractedName: body.idCardExtractedName ?? null,
-      idCardExtractedAddress: body.idCardExtractedAddress ?? null,
-      idCardVerified: body.idCardVerified ?? false,
-      fetalUsgStudyId: body.fetalUsgStudyId ? Number(body.fetalUsgStudyId) : null,
+      billNumber: d.billNumber ?? null,
+      centreName: d.centreName,
+      registrationNo: d.registrationNo,
+      patientName: d.patientName,
+      age: d.age,
+      childrenDetails: d.childrenDetails,
+      husbandFatherName: d.husbandFatherName,
+      address: d.address,
+      mobile: d.mobile,
+      referredBy: d.referredBy,
+      lmpWeeks: d.lmpWeeks,
+      geneticHistory: d.geneticHistory,
+      basisDiagnosis: d.basisDiagnosis,
+      previousChildIssue: d.previousChildIssue,
+      indicationOther: d.indicationOther,
+      doctorName: d.doctorName,
+      procedure: d.procedure,
+      procedurePurpose: d.procedurePurpose,
+      invasiveProcedure: d.invasiveProcedure,
+      complication: d.complication,
+      labTests: d.labTests,
+      prenatalResult: d.prenatalResult,
+      gestationalAgeWeeks: d.gestationalAgeWeeks,
+      gestationalAgeDays: d.gestationalAgeDays,
+      ultrasoundResult: d.ultrasoundResult,
+      abnormality: d.abnormality,
+      procedureDate: d.procedureDate,
+      consentDate: d.consentDate,
+      resultConveyed: d.resultConveyed,
+      mtpAdvised: d.mtpAdvised,
+      mtpDate: d.mtpDate,
+      date: d.date,
+      place: d.place,
+      idCardImageUrl: d.idCardFrontUrl ?? d.idCardImageUrl ?? null,
+      idCardFrontUrl: d.idCardFrontUrl ?? null,
+      idCardBackUrl: d.idCardBackUrl ?? null,
+      idCardExtractedName: d.idCardExtractedName ?? null,
+      idCardExtractedAddress: d.idCardExtractedAddress ?? null,
+      idCardVerified: d.idCardVerified,
+      fetalUsgStudyId: d.fetalUsgStudyId ?? null,
     };
 
     const [saved] = await db.insert(formFRecordsTable).values(record).returning();

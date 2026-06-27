@@ -8,6 +8,10 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
 import { api } from "@/lib/fetchApi";
 import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
+import {
+  registerDraftRescueSaver, deregisterDraftRescueSaver,
+  writeRescueDraft, readRescueDraft, clearRescueDraft,
+} from "@/lib/draftRescue";
 import { useToast } from "@/hooks/use-toast";
 import { launchViewer, getOhifUrl, getWeasisUrl } from "@/lib/viewerService";
 import PageHeader from "@/components/PageHeader";
@@ -196,6 +200,9 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
   const [technique, setTechnique] = useState("");
   const [rawFindings, setRawFindings] = useState("");
   const [impression, setImpression] = useState<string[]>([""]);
+  // Rescue draft — offered as a restore banner when a session expiry
+  // caused a redirect before the radiologist could save manually
+  const [rescueDraft, setRescueDraft] = useState<import("@/lib/draftRescue").RescueDraft | null>(null);
   const [recommendation, setRecommendation] = useState("Please correlate with clinical findings.");
   const [isCritical, setIsCritical] = useState(false);
   const [criticalNote, setCriticalNote] = useState("");
@@ -737,6 +744,28 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
   // ══════════════════════════════════════════════════════════════════════════
 
   // Save Draft
+  // Register rescue saver so fetchApi can save the current draft before
+  // redirecting on session expiry. Deregistered on unmount.
+  useEffect(() => {
+    registerDraftRescueSaver(() => {
+      if (!study?.accessionNumber) return;
+      if (!rawFindings.trim() && impression.filter(Boolean).length === 0) return;
+      writeRescueDraft({
+        accessionNumber: study.accessionNumber,
+        rawFindings,
+        impression: impression.filter(Boolean),
+        savedAt: new Date().toISOString(),
+      });
+    });
+    return () => deregisterDraftRescueSaver();
+  }, [study?.accessionNumber, rawFindings, impression]);
+
+  // On mount: check for a rescue draft from a previous session expiry
+  useEffect(() => {
+    const rescued = readRescueDraft();
+    if (rescued) setRescueDraft(rescued);
+  }, []);
+
   const saveDraftMutation = useMutation({
     mutationFn: async () => {
       if (!study) return;
@@ -2111,6 +2140,48 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
 
             {/* 5. BOTTOM REPORTING PANEL: Reuse existing report workflow */}
             <div className="border-t border-slate-800 bg-slate-900/40 p-4 shrink-0 flex flex-col gap-4">
+
+              {/* Rescue draft banner — shown when a session expiry interrupted previous work */}
+              {rescueDraft && study?.accessionNumber === rescueDraft.accessionNumber && (
+                <div className="flex items-start gap-3 bg-amber-950/30 border border-amber-700/50 rounded-lg px-3 py-2.5">
+                  <RotateCcw size={14} className="text-amber-400 shrink-0 mt-0.5" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold text-amber-300">Unsaved draft recovered</p>
+                    <p className="text-[10px] text-amber-500 mt-0.5">
+                      Your session expired at {new Date(rescueDraft.savedAt).toLocaleTimeString("en-IN")} before you could save.
+                      {rescueDraft.rawFindings.length > 0 && ` Findings: ${rescueDraft.rawFindings.slice(0, 60)}…`}
+                    </p>
+                  </div>
+                  <div className="flex gap-2 shrink-0">
+                    <Button
+                      size="sm"
+                      className="h-6 text-[10px] bg-amber-700 hover:bg-amber-600 text-white"
+                      onClick={() => {
+                        if (rescueDraft.rawFindings) setRawFindings(rescueDraft.rawFindings);
+                        if (rescueDraft.impression?.length) {
+                          setImpression(rescueDraft.impression.filter(Boolean));
+                        }
+                        clearRescueDraft();
+                        setRescueDraft(null);
+                        toast({ title: "Draft restored", description: "Your recovered findings have been loaded." });
+                      }}
+                    >
+                      Restore
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 text-[10px] text-slate-400 hover:text-slate-200"
+                      onClick={() => {
+                        clearRescueDraft();
+                        setRescueDraft(null);
+                      }}
+                    >
+                      Dismiss
+                    </Button>
+                  </div>
+                </div>
+              )}
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-4">
                   <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Report Workspace</span>
