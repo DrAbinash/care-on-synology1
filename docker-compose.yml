@@ -100,6 +100,9 @@ services:
     environment:
       DATABASE_URL: postgres://${DB_USER:-erp}:${DB_PASSWORD:-changeme}@db:5432/${DB_NAME:-diagnostic_erp}
       NODE_ENV: production
+      # Pass git metadata so startup report includes commit/branch info
+      GIT_COMMIT: ${GIT_COMMIT:-unknown}
+      GIT_BRANCH: ${GIT_BRANCH:-unknown}
     volumes:
       # Mount scripts read-only so the verifier can find them
       - ./scripts:/repo/scripts:ro
@@ -107,7 +110,12 @@ services:
       - ./lib/db/drizzle:/repo/lib/db/drizzle:ro
       - ./migrations:/repo/migrations:ro
       - ./lib/db/drizzle/meta:/repo/lib/db/drizzle/meta:ro
-    command: ["node", "/repo/scripts/db-schema-verify.cjs", "--verbose"]
+      # Mount .git read-only so verifier can read commit hash if env vars not set
+      - ./.git:/repo/.git:ro
+      # Mount output directory (writable) so startup MD is written to repo root
+      - ./:/repo/output:rw
+    working_dir: /repo/output
+    command: ["node", "/repo/scripts/db-schema-verify.cjs", "--verify", "--verbose"]
     depends_on:
       db:
         condition: service_healthy

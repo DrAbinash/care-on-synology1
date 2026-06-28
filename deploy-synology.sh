@@ -63,6 +63,11 @@ ok "Code is up to date: $(git log -1 --format='%h %s' 2>/dev/null || echo 'unkno
 info "Building and starting containers…"
 info "(This rebuilds the API and web images — takes 2-5 minutes)"
 
+# Export git metadata for schema verifier startup report
+export GIT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+export GIT_BRANCH=$(git branch --show-current 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+info "Git commit: ${GIT_COMMIT:0:12}  branch: ${GIT_BRANCH}"
+
 # Use docker compose (V2) or docker-compose (V1)
 if docker compose version &>/dev/null 2>&1; then
   COMPOSE="docker compose"
