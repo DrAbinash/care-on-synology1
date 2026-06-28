@@ -88,7 +88,7 @@ ordersRouter.post("/", async (req, res) => {
   // bill on the next POST /api/bills.
   if (clientRef) {
     const existing = await db.execute<{ id: number }>(
-      sql\`SELECT id FROM orders WHERE client_ref = \${clientRef} LIMIT 1\`
+      sql`SELECT id FROM orders WHERE client_ref = ${clientRef} LIMIT 1`
     );
     const rows = Array.isArray(existing) ? existing : (existing as any).rows ?? [];
     const existingId: number | undefined = rows[0]?.id;
