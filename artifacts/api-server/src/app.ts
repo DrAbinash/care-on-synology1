@@ -102,9 +102,12 @@ app.use(
 // ─────────────────────────────────────────────────────────────────────────────
 // ── Health endpoints (no auth, no rate-limit — used by Docker + monitoring) ─
 // /health          → liveness probe (is the process alive?)
-// /api/health/schema → readiness probe (is the schema current?)
-//   Returns 503 if db-patch-v2 did not complete or critical columns are missing.
-//   Used by deployment pipelines to gate traffic after `docker compose up`.
+// /api/health/schema → full schema readiness probe
+//   Gates 1-4:
+//   1. db_patch_ok=true (db-patch-v2 completed)
+//   2. schema_verify_status=sql_pass|full_pass (SQL verification passed)
+//   3. Critical columns verified inline
+//   4. Migration count sanity check (≥6 Drizzle + some feature migrations)
 app.get("/health", (_req, res) => {
   res.status(200).json({ ok: true, ts: new Date().toISOString() });
 });
@@ -114,30 +117,59 @@ app.get("/api/health/schema", async (_req, res) => {
     const { pool } = await import("./db");
     const client = await pool.connect();
     try {
-      // Check that db-patch-v2 set db_patch_ok = 'true'
+      // ── Gate 1: Read full deploy state ──────────────────────────────────────
       const stateRes = await client.query<{ key: string; value: string }>(
-        `SELECT key, value FROM public.schema_deploy_state WHERE key IN ('db_patch_ok','total_migrations','patch_version') LIMIT 10`
+        `SELECT key, value FROM public.schema_deploy_state ORDER BY key LIMIT 30`
       );
       const state: Record<string, string> = {};
       for (const row of stateRes.rows) { state[row.key] = row.value; }
 
       if (state["db_patch_ok"] !== "true") {
-        res.status(503).json({ ok: false, error: "db-patch-v2 did not complete — schema unverified", state });
+        res.status(503).json({
+          ok: false,
+          error: "db-patch-v2 did not complete — run: docker compose up -d --build",
+          state,
+        });
         return;
       }
 
-      // Check critical columns that caused past production failures
+      // ── Gate 2: SQL schema verification status ───────────────────────────────
+      const svStatus = state["schema_verify_status"];
+      if (svStatus !== "sql_pass" && svStatus !== "full_pass") {
+        res.status(503).json({
+          ok: false,
+          error: `Schema verification not passed (status: ${svStatus ?? "missing"})`,
+          hint: "Run: docker compose up -d --build",
+          state,
+        });
+        return;
+      }
+
+      // ── Gate 3: Critical column check (belt-and-suspenders) ─────────────────
       const missRes = await client.query<{ tbl: string; col: string }>(`
         SELECT t.tbl, t.col FROM (VALUES
           ('radiology_worklist', 'ai_feedback'),
           ('radiology_worklist', 'source_pacs'),
           ('radiology_worklist', 'ai_draft_status'),
+          ('radiology_worklist', 'patient_match_status'),
           ('clinic_settings',    'ollama_enabled'),
           ('clinic_settings',    'active_payment_gateway'),
           ('clinic_settings',    'icici_enabled'),
           ('clinic_settings',    'kiosk_enabled'),
+          ('clinic_settings',    'sidebar_theme'),
+          ('clinic_settings',    'lan_only_login'),
+          ('clinic_settings',    'session_idle_timeout_minutes'),
+          ('clinic_settings',    'form_f_billing_prompt'),
           ('bills',              'client_ref'),
-          ('orders',             'client_ref')
+          ('bills',              'cancelled_at'),
+          ('bills',              'refund_amount'),
+          ('orders',             'client_ref'),
+          ('orders',             'collected_at'),
+          ('order_tests',        'status'),
+          ('diagnostic_tests',   'department'),
+          ('diagnostic_tests',   'test_type'),
+          ('patients',           'age_value'),
+          ('users',              'sidebar_theme')
         ) AS t(tbl, col)
         WHERE NOT EXISTS (
           SELECT 1 FROM information_schema.columns c
@@ -146,12 +178,43 @@ app.get("/api/health/schema", async (_req, res) => {
       `);
 
       if (missRes.rows.length > 0) {
-        const missing = missRes.rows.map((r) => `${r.tbl}.${r.col}`);
-        res.status(503).json({ ok: false, error: "Missing critical schema columns", missing, state });
+        const missing = missRes.rows.map((r: any) => `${r.tbl}.${r.col}`);
+        res.status(503).json({
+          ok: false,
+          error: "Missing critical schema columns",
+          missing,
+          hint: "Run: docker compose up -d --build  OR  docker compose run --rm care-migrate",
+          state,
+        });
         return;
       }
 
-      res.status(200).json({ ok: true, state, ts: new Date().toISOString() });
+      // ── Gate 4: Migration count sanity ───────────────────────────────────────
+      let migrationCounts = { drizzle: 0, feature: 0 };
+      try {
+        const dc = await client.query<{ cnt: string }>(`SELECT COUNT(*)::text AS cnt FROM drizzle.__drizzle_migrations`);
+        const fc = await client.query<{ cnt: string }>(`SELECT COUNT(*)::text AS cnt FROM public.schema_migrations_log WHERE kind = 'feature'`);
+        migrationCounts = { drizzle: parseInt(dc.rows[0].cnt), feature: parseInt(fc.rows[0].cnt) };
+      } catch { /* ignore — tables may not exist in very old schema */ }
+
+      if (migrationCounts.drizzle < 6) {
+        res.status(503).json({
+          ok: false,
+          error: `Only ${migrationCounts.drizzle} Drizzle migrations applied (expected ≥6)`,
+          migrationCounts,
+          hint: "Run: docker compose run --rm care-migrate",
+          state,
+        });
+        return;
+      }
+
+      // ── All gates passed ─────────────────────────────────────────────────────
+      res.status(200).json({
+        ok: true,
+        state,
+        migrationCounts,
+        ts: new Date().toISOString(),
+      });
     } finally {
       client.release();
     }

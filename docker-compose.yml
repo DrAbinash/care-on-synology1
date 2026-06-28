@@ -84,7 +84,40 @@ services:
         condition: service_healthy
 
   # ---------------------------------------------------------------------------
-  # API server — starts only after db-patch-v2 completes successfully
+  # Full schema verifier — runs after db-patch-v2, before care-api
+  # Uses the migrate image (Node.js + full workspace) to run
+  # scripts/db-schema-verify.cjs which parses all migration SQL files
+  # and compares against the live DB. Exits 0 on pass, 1 on fail.
+  # care-api will NOT start if this fails.
+  # ---------------------------------------------------------------------------
+  schema-verify:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: migrate
+    container_name: care-schema-verify
+    restart: "no"
+    environment:
+      DATABASE_URL: postgres://${DB_USER:-erp}:${DB_PASSWORD:-changeme}@db:5432/${DB_NAME:-diagnostic_erp}
+      NODE_ENV: production
+    volumes:
+      # Mount scripts read-only so the verifier can find them
+      - ./scripts:/repo/scripts:ro
+      # Mount migration SQL files read-only
+      - ./lib/db/drizzle:/repo/lib/db/drizzle:ro
+      - ./migrations:/repo/migrations:ro
+      - ./lib/db/drizzle/meta:/repo/lib/db/drizzle/meta:ro
+    command: ["node", "/repo/scripts/db-schema-verify.cjs", "--verbose"]
+    depends_on:
+      db:
+        condition: service_healthy
+      db-patch-v2:
+        condition: service_completed_successfully
+      schema-verify:
+        condition: service_completed_successfully
+
+  # ---------------------------------------------------------------------------
+  # API server — starts only after both db-patch-v2 and schema-verify complete
   # ---------------------------------------------------------------------------
   api:
     build:

@@ -279,35 +279,123 @@ psql_q -c "
 
 ok "Schema fingerprint recorded (${total_applied} migrations total)"
 
-# ── Step 6: Final verification — check critical columns exist ─────────────────
+# ── Step 6: SQL-based schema verification ─────────────────────────────────────
+# This runs inside the postgres:alpine container using psql.
+# It checks tables and columns that are known to have caused production failures.
+# The full deep verification (all 150+ tables) runs in the separate
+# care-schema-verify Node.js service which has access to the migration SQL files.
 echo ""
-info "Verifying critical schema columns…"
+info "Running SQL schema verification…"
 
-check_column() {
-  table="$1"; col="$2"
+# ── 6a: Check core tables exist ─────────────────────────────────────────────
+check_table() {
+  tbl="$1"
   exists=$(psql_val "
-    SELECT COUNT(*) FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = '${table}' AND column_name = '${col}';
+    SELECT COUNT(*) FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = '${tbl}' AND table_type = 'BASE TABLE';
   ")
   if [ "${exists}" != "1" ]; then
-    fail "SCHEMA VERIFICATION FAILED: column '${col}' missing from table '${table}' — API will NOT start"
+    fail "SCHEMA FAIL: table '${tbl}' is missing — API will NOT start"
   fi
 }
 
-# Critical columns that have caused production failures
-# (from the error log: ai_feedback, clinic_settings columns, pacs_network_profile)
-check_column "radiology_worklist"  "ai_feedback"
-check_column "radiology_worklist"  "ai_draft_status"
-check_column "radiology_worklist"  "source_pacs"
-check_column "clinic_settings"     "ollama_enabled"
-check_column "clinic_settings"     "active_payment_gateway"
-check_column "clinic_settings"     "kiosk_enabled"
-check_column "clinic_settings"     "sidebar_theme"
-check_column "clinic_settings"     "icici_enabled"
-check_column "bills"               "client_ref"
-check_column "orders"              "client_ref"
+# Core tables that MUST exist for the API to function at all
+check_table "users"
+check_table "clinic_settings"
+check_table "patients"
+check_table "bills"
+check_table "payments"
+check_table "orders"
+check_table "order_tests"
+check_table "diagnostic_tests"
+check_table "doctors"
+check_table "ledgers"
+check_table "radiology_worklist"
+ok "Core tables: all present"
 
-ok "Schema verification passed — all critical columns present"
+# ── 6b: Check critical columns ─────────────────────────────────────────────
+# Build a VALUES list and do a single SQL query for all critical columns.
+# This is both faster and catches ALL failures in one pass.
+missing_cols=$(psql_val "
+  SELECT string_agg(t.tbl || '.' || t.col, ', ')
+  FROM (VALUES
+    ('radiology_worklist',  'ai_feedback'),
+    ('radiology_worklist',  'ai_draft_status'),
+    ('radiology_worklist',  'source_pacs'),
+    ('radiology_worklist',  'source_ae_title'),
+    ('radiology_worklist',  'match_score'),
+    ('radiology_worklist',  'assigned_radiologist'),
+    ('radiology_worklist',  'patient_match_status'),
+    ('clinic_settings',     'ollama_enabled'),
+    ('clinic_settings',     'ollama_base_url'),
+    ('clinic_settings',     'ollama_model'),
+    ('clinic_settings',     'active_payment_gateway'),
+    ('clinic_settings',     'kiosk_enabled'),
+    ('clinic_settings',     'sidebar_theme'),
+    ('clinic_settings',     'icici_enabled'),
+    ('clinic_settings',     'icici_merchant_id'),
+    ('clinic_settings',     'lan_only_login'),
+    ('clinic_settings',     'fido2_enabled'),
+    ('clinic_settings',     'session_idle_timeout_minutes'),
+    ('clinic_settings',     'form_f_billing_prompt'),
+    ('clinic_settings',     'online_booking_enabled'),
+    ('clinic_settings',     'bill_default_paper_size'),
+    ('bills',               'client_ref'),
+    ('bills',               'cancelled_at'),
+    ('bills',               'refund_amount'),
+    ('bills',               'original_total'),
+    ('orders',              'client_ref'),
+    ('orders',              'collected_at'),
+    ('order_tests',         'status'),
+    ('order_tests',         'cancelled_at'),
+    ('diagnostic_tests',    'department'),
+    ('diagnostic_tests',    'test_type'),
+    ('diagnostic_tests',    'room_id'),
+    ('patients',            'age_value'),
+    ('patients',            'age_unit'),
+    ('patients',            'ledger_id'),
+    ('users',               'sidebar_theme'),
+    ('users',               'default_start_page'),
+    ('patient_reports',     'style_preset_used'),
+    ('printer_settings',    'barcode_enabled'),
+    ('printer_settings',    'token_enabled')
+  ) AS t(tbl, col)
+  WHERE NOT EXISTS (
+    SELECT 1 FROM information_schema.columns c
+    WHERE c.table_schema = 'public'
+      AND c.table_name   = t.tbl
+      AND c.column_name  = t.col
+  );
+")
+
+if [ -n "${missing_cols}" ] && [ "${missing_cols}" != "" ]; then
+  fail "SCHEMA FAIL: Missing columns — API will NOT start"
+  echo ""
+  echo "  Missing columns: ${missing_cols}"
+  echo ""
+  echo "  Fix: git pull && docker compose up -d --build"
+  echo "  Or:  docker compose run --rm care-migrate"
+  exit 1
+fi
+ok "Critical columns: all present (${#missing_cols} missing = 0)"
+
+# ── 6c: Record detailed schema state ────────────────────────────────────────
+table_count=$(psql_val "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE';")
+col_count=$(psql_val "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public';")
+idx_count=$(psql_val "SELECT COUNT(*) FROM pg_indexes WHERE schemaname='public';")
+
+psql_q -c "
+  INSERT INTO public.schema_deploy_state (key, value)
+  VALUES
+    ('live_table_count', '${table_count}'),
+    ('live_column_count', '${col_count}'),
+    ('live_index_count', '${idx_count}'),
+    ('schema_verify_at', '$(date -u +%Y-%m-%dT%H:%M:%SZ)'),
+    ('schema_verify_status', 'sql_pass')
+  ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();
+"
+
+ok "Schema state recorded: ${table_count} tables, ${col_count} columns, ${idx_count} indexes"
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 echo ""
