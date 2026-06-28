@@ -233,6 +233,12 @@ async function runStartupMigrations(): Promise<void> {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
 
+      CREATE INDEX IF NOT EXISTS idx_payment_logs_booking_ref
+        ON payment_logs (booking_ref);
+
+      CREATE INDEX IF NOT EXISTS idx_payment_logs_booking_ref
+        ON payment_logs (booking_ref);
+
       -- ── Ensure clinic_settings always has exactly one default row ────
       -- The settings UI relies on this row existing so PUT updates succeed.
       INSERT INTO clinic_settings (
