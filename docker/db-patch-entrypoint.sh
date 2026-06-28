@@ -222,14 +222,28 @@ else
       continue
     fi
 
-    # Check if it was previously applied with a different hash (file changed)
+    # Check if it was previously applied with a different hash (file changed).
+    # IMPORTANT: we do NOT re-apply on hash change.
+    # Feature migrations run exactly once. Re-applying risks running a migration
+    # against tables that may not exist (e.g. payment_logs created post-API-start).
+    # If a file genuinely needs to be re-applied, do so manually.
+    # We just update the hash in the log and warn the operator.
     changed=$(psql_val "
       SELECT COUNT(*) FROM public.schema_migrations_log
       WHERE name = '${name}' AND kind = 'feature' AND sha256 != '${hash}';
     ")
 
     if [ "${changed}" = "1" ]; then
-      warn "  ${name}: content changed since last apply — re-applying"
+      warn "  ${name}: file content has changed since last apply."
+      warn "    Old hash recorded in log — updating to current hash."
+      warn "    NOT re-applying. If re-apply needed, do it manually."
+      psql_q -c "
+        UPDATE public.schema_migrations_log
+        SET sha256 = '${hash}', applied_at = NOW()
+        WHERE name = '${name}' AND kind = 'feature';
+      "
+      skipped_feature=$((skipped_feature + 1))
+      continue
     fi
 
     echo ""
@@ -238,11 +252,11 @@ else
     psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" \
          -v ON_ERROR_STOP=1 -q -f "${file}" || fail "Feature migration FAILED: ${name}"
 
-    # Record in schema log (upsert — handles re-apply after content change)
+    # Record in schema log
     psql_q -c "
       INSERT INTO public.schema_migrations_log (name, kind, sha256)
       VALUES ('${name}', 'feature', '${hash}')
-      ON CONFLICT (name, kind) DO UPDATE SET sha256 = EXCLUDED.sha256, applied_at = NOW();
+      ON CONFLICT (name, kind) DO NOTHING;
     "
 
     ok "  Feature migration applied: ${name}"
