@@ -2648,6 +2648,7 @@ export default function BillingDesk() {
   );
 }
 
+type BillSearchResult = {
   id: number;
   billNumber: string;
   totalAmount: number;

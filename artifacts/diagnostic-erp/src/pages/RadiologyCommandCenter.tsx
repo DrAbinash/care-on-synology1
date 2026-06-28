@@ -2139,6 +2139,9 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                           toast({ title: "AI impression inserted into draft" });
                         }}
 
+                      />
+                    </div>
+                  </TabsContent>
                 </Tabs>
               </div>
 
