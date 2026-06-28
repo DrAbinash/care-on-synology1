@@ -121,8 +121,6 @@ services:
         condition: service_healthy
       db-patch-v2:
         condition: service_completed_successfully
-      schema-verify:
-        condition: service_completed_successfully
 
   # ---------------------------------------------------------------------------
   # API server — starts only after both db-patch-v2 and schema-verify complete
