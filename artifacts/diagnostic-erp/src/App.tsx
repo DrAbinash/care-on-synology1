@@ -327,7 +327,7 @@ function Router() {
                 {(params) => <RadiologyReportingWorkspace studyId={Number(params.worklistId)} />}
               </Route>
               <Route path="/radiology/pacs-dashboard" component={PacsDashboard} />
-              <Route path="/radiology/operations-dashboard", "/radiology/my-analytics" component={RadiologyOperationsDashboard} />
+              <Route path="/radiology/operations-dashboard" component={RadiologyOperationsDashboard} />
               <Route path="/radiology/my-analytics" component={MyReportingAnalytics} />
               <Route path="/radiology/pacs-settings" component={PacsSettings} />
               <Route path="/radiology/network-control-center" component={NetworkControlCenter} />
