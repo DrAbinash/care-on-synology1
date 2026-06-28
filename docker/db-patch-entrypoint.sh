@@ -354,11 +354,14 @@ check_table "ledgers"
 check_table "radiology_worklist"
 ok "Core tables: all present"
 
-# ── 6b: Check critical columns ─────────────────────────────────────────────
-# Build a VALUES list and do a single SQL query for all critical columns.
-# This is both faster and catches ALL failures in one pass.
-missing_cols=$(psql_val "
-  SELECT string_agg(t.tbl || '.' || t.col, ', ')
+# ── 6b: Check critical columns — full diagnostic output ─────────────────────
+# Queries every expected column and prints a detailed per-table report
+# if anything is missing. No column failure remains hidden.
+info "Checking critical schema columns…"
+
+# Get a per-row result: one row per missing column (table, column)
+missing_detail=$(psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" -tAq -c "
+  SELECT t.tbl || '|' || t.col
   FROM (VALUES
     ('radiology_worklist',  'ai_feedback'),
     ('radiology_worklist',  'ai_draft_status'),
@@ -406,19 +409,36 @@ missing_cols=$(psql_val "
     WHERE c.table_schema = 'public'
       AND c.table_name   = t.tbl
       AND c.column_name  = t.col
-  );
-")
+  )
+  ORDER BY t.tbl, t.col;
+" 2>&1)
 
-if [ -n "${missing_cols}" ] && [ "${missing_cols}" != "" ]; then
-  fail "SCHEMA FAIL: Missing columns — API will NOT start"
+if [ -n "${missing_detail}" ] && [ "${missing_detail}" != "" ]; then
   echo ""
-  echo "  Missing columns: ${missing_cols}"
+  echo "${RED}  ✗ SCHEMA FAIL: Missing columns — API will NOT start${NC}"
   echo ""
-  echo "  Fix: git pull && docker compose up -d --build"
-  echo "  Or:  docker compose run --rm care-migrate"
+  echo "  The following columns are expected by the ERP but not present in PostgreSQL:"
+  echo ""
+
+  # Print grouped by table for readability
+  current_table=""
+  echo "${missing_detail}" | while IFS='|' read -r tbl col; do
+    if [ "${tbl}" != "${current_table}" ]; then
+      echo "    Table: ${tbl}"
+      current_table="${tbl}"
+    fi
+    echo "      ✗ ${col}"
+  done
+
+  echo ""
+  echo "  Root cause: column defined in Drizzle TS schema but missing from SQL migrations."
+  echo "  Fix:        git pull && docker compose up -d --build"
+  echo "  Manual:     docker compose run --rm care-migrate"
+  echo "  Report:     docker compose run --rm care-migrate node /repo/scripts/db-schema-report.cjs"
+  echo ""
   exit 1
 fi
-ok "Critical columns: all present (${#missing_cols} missing = 0)"
+ok "Critical columns: all present (40/40)"
 
 # ── 6c: Record detailed schema state ────────────────────────────────────────
 table_count=$(psql_val "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE';")
