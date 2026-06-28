@@ -148,6 +148,7 @@ const MODULE_SUB_PERMISSIONS: Record<string, { id: string; label: string }[]> = 
 
 const TABS = [
   { id: "clinic", label: "Clinic Info", icon: Building2 },
+  { id: "about", label: "About / Version", icon: Tag },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "users", label: "Users", icon: Users },
   { id: "departments", label: "Departments", icon: Network },
@@ -302,6 +303,7 @@ export default function Settings() {
         {tab === "backup" && <BackupTab />}
         {tab === "radiology" && <RadiologySettingsTab />}
         {tab === "manual" && <ManualTab />}
+        {tab === "about" && <AboutTab />}
         {tab === "security" && <SecurityTab />}
         {tab === "password" && <ChangePasswordTab />}
       </div>
@@ -7360,3 +7362,117 @@ function ScannerSettingsTab() {
   );
 }
 
+
+
+// ══ About / Version Tab ══════════════════════════════════════════════════════
+
+function AboutTab() {
+  const [info, setInfo] = React.useState<any>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    fetch("/api/system/version")
+      .then((r) => r.json())
+      .then((d) => { setInfo(d); setLoading(false); })
+      .catch((e) => { setError(e.message); setLoading(false); });
+  }, []);
+
+  if (loading) return (
+    <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
+      Loading version information…
+    </div>
+  );
+  if (error) return (
+    <div className="text-red-500 text-sm p-4">Failed to load version info: {error}</div>
+  );
+
+  const Row = ({ label, value }: { label: string; value?: string | number }) =>
+    value ? (
+      <div className="flex items-baseline justify-between py-1.5 border-b border-card-border/50 last:border-0">
+        <span className="text-xs text-muted-foreground w-44 flex-shrink-0">{label}</span>
+        <span className="text-xs font-mono font-semibold text-foreground text-right break-all">{String(value)}</span>
+      </div>
+    ) : null;
+
+  const Section = ({ title }: { title: string }) => (
+    <h3 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mt-6 mb-2 first:mt-0">{title}</h3>
+  );
+
+  return (
+    <div className="max-w-2xl space-y-4">
+      {/* Version banner */}
+      <div className="bg-card border border-card-border rounded-xl p-5">
+        <div className="flex items-center gap-3 mb-3">
+          <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
+            <Tag size={18} className="text-primary" />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold text-foreground">Care Diagnostics ERP</h2>
+            {info?.releaseName && (
+              <p className="text-xs text-muted-foreground italic">{info.releaseName}</p>
+            )}
+          </div>
+          <div className="ml-auto text-right">
+            <div className="text-2xl font-extrabold text-primary tabular-nums">v{info?.version}</div>
+            <div className="text-xs text-muted-foreground">Build {info?.build}</div>
+          </div>
+        </div>
+        {/* Schema status badge */}
+        <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold ${
+          info?.schemaVerifyStatus === "full_pass" || info?.schemaVerifyStatus === "sql_pass"
+            ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+            : info?.schemaVerifyStatus === "full_fail"
+            ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+            : "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+        }`}>
+          {info?.schemaVerifyStatus === "full_pass" ? "✓ Schema Verified" :
+           info?.schemaVerifyStatus === "sql_pass"  ? "✓ Schema OK (SQL pass)" :
+           info?.schemaVerifyStatus === "full_fail" ? "✗ Schema Mismatch" :
+           "⚠ Schema Unknown"}
+        </div>
+      </div>
+
+      {/* Detail rows */}
+      <div className="bg-card border border-card-border rounded-xl p-5">
+        <Section title="Release" />
+        <Row label="ERP Version"   value={info?.version} />
+        <Row label="Build Number"  value={info?.build} />
+        <Row label="Release Name"  value={info?.releaseName} />
+        <Row label="Build Date"    value={info?.buildDate} />
+        <Row label="Deployed At"   value={info?.deployedAt} />
+
+        <Section title="Git Provenance" />
+        <Row label="Git Commit"   value={info?.gitCommit} />
+        <Row label="Git Branch"   value={info?.gitBranch} />
+        <Row label="Git Tag"      value={info?.gitTag} />
+
+        <Section title="Database & Schema" />
+        <Row label="PostgreSQL"            value={info?.pgVersion} />
+        <Row label="Drizzle Migrations"    value={info?.drizzleMigrations} />
+        <Row label="Feature Migrations"    value={info?.featureMigrations} />
+        <Row label="Schema Verify Status"  value={info?.schemaVerifyStatus} />
+        <Row label="Schema Verified At"    value={info?.schemaVerifyAt} />
+        <Row label="Live Tables"           value={info?.liveTableCount} />
+        <Row label="Live Columns"          value={info?.liveColumnCount} />
+        <Row label="DB Patch OK"           value={info?.dbPatchOk} />
+
+        <Section title="Runtime" />
+        <Row label="Node.js"      value={info?.nodeVersion} />
+        <Row label="Environment"  value={info?.environment} />
+        <Row label="Uptime"       value={info?.uptime != null ? `${Math.floor(Number(info.uptime) / 60)}m ${Number(info.uptime) % 60}s` : undefined} />
+
+        {info?.releaseNotes && (
+          <>
+            <Section title="Release Notes" />
+            <p className="text-xs text-muted-foreground leading-relaxed">{info.releaseNotes}</p>
+          </>
+        )}
+      </div>
+
+      <p className="text-[10px] text-muted-foreground text-center">
+        © {new Date().getFullYear()} Care Diagnostics · Deoghar, Jharkhand · Hospital ERP / RIS / PACS
+      </p>
+    </div>
+  );
+}

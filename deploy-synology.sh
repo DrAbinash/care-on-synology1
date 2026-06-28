@@ -63,10 +63,29 @@ ok "Code is up to date: $(git log -1 --format='%h %s' 2>/dev/null || echo 'unkno
 info "Building and starting containers…"
 info "(This rebuilds the API and web images — takes 2-5 minutes)"
 
-# Export git metadata for schema verifier startup report
+# Export git metadata
 export GIT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
 export GIT_BRANCH=$(git branch --show-current 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
-info "Git commit: ${GIT_COMMIT:0:12}  branch: ${GIT_BRANCH}"
+export GIT_TAG=$(git describe --tags --always 2>/dev/null || echo "untagged")
+export BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# Auto-increment build number in version.json and export version vars
+if [ -f "scripts/bump-build.cjs" ] && command -v node >/dev/null 2>&1; then
+  info "Bumping build number…"
+  BUMP_OUTPUT=$(node scripts/bump-build.cjs 2>/dev/null || echo "")
+  export ERP_VERSION=$(echo "${BUMP_OUTPUT}" | grep "^ERP_VERSION=" | cut -d= -f2 ||     python3 -c "import json; d=json.load(open('version.json')); print(d.get('version','2.0.0'))" 2>/dev/null || echo "2.0.0")
+  export BUILD_NUMBER=$(echo "${BUMP_OUTPUT}" | grep "^BUILD_NUMBER=" | cut -d= -f2 ||     python3 -c "import json; d=json.load(open('version.json')); print(d.get('buildNumber',0))" 2>/dev/null || echo "0")
+  export RELEASE_NAME=$(echo "${BUMP_OUTPUT}" | grep "^RELEASE_NAME=" | cut -d= -f2 ||     python3 -c "import json; d=json.load(open('version.json')); print(d.get('releaseName',''))" 2>/dev/null || echo "")
+else
+  # Fallback: read version.json with python3
+  export ERP_VERSION=$(python3 -c "import json; d=json.load(open('version.json')); print(d.get('version','2.0.0'))" 2>/dev/null || echo "2.0.0")
+  export BUILD_NUMBER=$(python3 -c "import json; d=json.load(open('version.json')); print(d.get('buildNumber',0))" 2>/dev/null || echo "0")
+  export RELEASE_NAME=$(python3 -c "import json; d=json.load(open('version.json')); print(d.get('releaseName',''))" 2>/dev/null || echo "")
+fi
+
+ok "Version: Care ERP v${ERP_VERSION} build ${BUILD_NUMBER} (${RELEASE_NAME:-unnamed})"
+info "Git: ${GIT_COMMIT:0:12}  branch: ${GIT_BRANCH}  tag: ${GIT_TAG}"
+info "Build date: ${BUILD_DATE}"
 
 # Use docker compose (V2) or docker-compose (V1)
 if docker compose version &>/dev/null 2>&1; then

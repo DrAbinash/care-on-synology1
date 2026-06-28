@@ -109,7 +109,13 @@ app.use(
 //   3. Critical columns verified inline
 //   4. Migration count sanity check (≥6 Drizzle + some feature migrations)
 app.get("/health", (_req, res) => {
-  res.status(200).json({ ok: true, ts: new Date().toISOString() });
+  res.status(200).json({
+    ok:      true,
+    version: process.env.ERP_VERSION  || "0.0.0",
+    build:   process.env.BUILD_NUMBER || "0",
+    commit:  (process.env.GIT_COMMIT  || "unknown").slice(0, 8),
+    ts:      new Date().toISOString(),
+  });
 });
 
 app.get("/api/health/schema", async (_req, res) => {
@@ -211,6 +217,10 @@ app.get("/api/health/schema", async (_req, res) => {
       // ── All gates passed ─────────────────────────────────────────────────────
       res.status(200).json({
         ok: true,
+        version: process.env.ERP_VERSION  || state["erp_version"]  || "0.0.0",
+        build:   process.env.BUILD_NUMBER || state["build_number"] || "0",
+        release: process.env.RELEASE_NAME || state["release_name"] || "",
+        commit:  (process.env.GIT_COMMIT  || state["git_commit"]   || "unknown").slice(0, 8),
         state,
         migrationCounts,
         ts: new Date().toISOString(),

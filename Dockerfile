@@ -1,9 +1,19 @@
 # syntax=docker/dockerfile:1.7
 
 # =============================================================================
-# Care Diagnostics Billing ERP — multi-stage Dockerfile
+# Care Diagnostics ERP — multi-stage Dockerfile
+# Version metadata is injected at build time via --build-arg
+# and baked into the API image as environment variables.
 # =============================================================================
 
+# Build-time version metadata (set by docker-compose build args)
+ARG ERP_VERSION=0.0.0
+ARG BUILD_NUMBER=0
+ARG RELEASE_NAME=dev
+ARG GIT_COMMIT=unknown
+ARG GIT_BRANCH=unknown
+ARG GIT_TAG=unknown
+ARG BUILD_DATE=unknown
 
 # -----------------------------------------------------------------------------
 # Stage: base
@@ -45,9 +55,27 @@ ENV NODE_ENV=production
 ENV PORT=8080
 ENV LOG_LEVEL=info
 
+# Version metadata — baked in at build time, readable at runtime
+ARG ERP_VERSION=0.0.0
+ARG BUILD_NUMBER=0
+ARG RELEASE_NAME=dev
+ARG GIT_COMMIT=unknown
+ARG GIT_BRANCH=unknown
+ARG GIT_TAG=unknown
+ARG BUILD_DATE=unknown
+ENV ERP_VERSION=${ERP_VERSION}
+ENV BUILD_NUMBER=${BUILD_NUMBER}
+ENV RELEASE_NAME=${RELEASE_NAME}
+ENV GIT_COMMIT=${GIT_COMMIT}
+ENV GIT_BRANCH=${GIT_BRANCH}
+ENV GIT_TAG=${GIT_TAG}
+ENV BUILD_DATE=${BUILD_DATE}
+
 COPY --from=api-build /repo/artifacts/api-server/dist             ./dist
 COPY --from=api-build /repo/artifacts/api-server/package.json     ./package.json
 COPY --from=api-build /api-deploy/node_modules                    ./node_modules
+# Bake version.json into the image so /api/system/version can read it
+COPY --from=api-build /repo/version.json                          ./version.json
 
 EXPOSE 8080
 ENTRYPOINT ["/usr/bin/tini", "--"]

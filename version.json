@@ -1,0 +1,6 @@
+{
+  "version": "2.0.0",
+  "releaseName": "Radiology Stability",
+  "buildNumber": 1,
+  "notes": "Initial release of the versioning system. All features from session June 2026 included: MRI protocol specs, neuro AI prompts, measurement tools, lesion comparison, reporting analytics, premium billing UI, designer bill layouts, duplicate-bill prevention, P&L SQL aggregation, zero-touch deployment, multi-source schema verification."
+}

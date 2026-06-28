@@ -654,6 +654,8 @@ function StaffLogin() {
           </p>
         </div>
       </div>
+      {/* Version footer */}
+      <VersionFooter />
     </>
   );
 }
@@ -1244,4 +1246,23 @@ function bufferToBase64UrlWA(b: ArrayBuffer): string {
   let binary = "";
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+
+// ── Version footer — shown on login page ─────────────────────────────────────
+function VersionFooter() {
+  const [ver, setVer] = React.useState<{ version?: string; build?: number; release?: string; commit?: string } | null>(null);
+  React.useEffect(() => {
+    fetch("/api/system/version/short")
+      .then((r) => r.json())
+      .then(setVer)
+      .catch(() => {});
+  }, []);
+  return (
+    <div className="fixed bottom-3 left-0 right-0 flex justify-center pointer-events-none z-50">
+      <div className="bg-black/40 backdrop-blur-sm text-white/60 text-[10px] font-mono px-3 py-1 rounded-full">
+        Care ERP {ver?.version ? `v${ver.version}` : ""} {ver?.build ? `· build ${ver.build}` : ""} {ver?.commit ? `· ${ver.commit}` : ""}
+      </div>
+    </div>
+  );
 }

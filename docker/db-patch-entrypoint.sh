@@ -279,6 +279,33 @@ psql_q -c "
 
 ok "Schema fingerprint recorded (${total_applied} migrations total)"
 
+# ── Step 5b: Record ERP version metadata ─────────────────────────────────────
+# These env vars are set by docker-compose build args → Dockerfile ENV
+# and passed through to the db-patch container's environment.
+# We store them in schema_deploy_state so /api/system/version and
+# /api/health/schema can read them without needing the API to be running.
+ERP_VER="${ERP_VERSION:-unknown}"
+BUILD_NO="${BUILD_NUMBER:-0}"
+RELEASE="${RELEASE_NAME:-}"
+GIT_SHA="${GIT_COMMIT:-unknown}"
+GIT_BR="${GIT_BRANCH:-unknown}"
+GIT_TG="${GIT_TAG:-unknown}"
+BUILD_DT="${BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+
+psql_q -c "
+  INSERT INTO public.schema_deploy_state (key, value)
+  VALUES
+    ('erp_version',      '${ERP_VER}'),
+    ('build_number',     '${BUILD_NO}'),
+    ('release_name',     '${RELEASE}'),
+    ('git_commit',       '${GIT_SHA}'),
+    ('git_branch',       '${GIT_BR}'),
+    ('git_tag',          '${GIT_TG}'),
+    ('build_date',       '${BUILD_DT}')
+  ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();
+"
+ok "ERP version recorded: v${ERP_VER} build ${BUILD_NO} (${RELEASE})"
+
 # ── Step 6: SQL-based schema verification ─────────────────────────────────────
 # This runs inside the postgres:alpine container using psql.
 # It checks tables and columns that are known to have caused production failures.

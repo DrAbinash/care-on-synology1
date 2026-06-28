@@ -1,5 +1,6 @@
 import { Router, type IRouter } from "express";
 import healthRouter from "./health";
+import systemRouter from "./system";
 import { patientsRouter } from "./patients";
 import { doctorsRouter } from "./doctors";
 import { testsRouter } from "./tests";
@@ -165,6 +166,7 @@ router.use(generalLimiter);
 
 // ─── Public / unauthenticated routes ─────────────────────────────────────────
 router.use(healthRouter);
+router.use(systemRouter);
 // Internal cron trigger endpoints — auth via CRON_SECRET bearer token, not staff session.
 // Hit by a Replit Scheduled deployment (see scripts/src/trigger-cron.ts) so cron emails
 // keep firing on autoscale where in-process schedulers are disabled.
