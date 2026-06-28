@@ -100,6 +100,66 @@ app.use(
 // Multer handles multipart/form-data streaming directly to disk.
 // This prevents large DICOM files from being buffered into RAM by express.json().
 // ─────────────────────────────────────────────────────────────────────────────
+// ── Health endpoints (no auth, no rate-limit — used by Docker + monitoring) ─
+// /health          → liveness probe (is the process alive?)
+// /api/health/schema → readiness probe (is the schema current?)
+//   Returns 503 if db-patch-v2 did not complete or critical columns are missing.
+//   Used by deployment pipelines to gate traffic after `docker compose up`.
+app.get("/health", (_req, res) => {
+  res.status(200).json({ ok: true, ts: new Date().toISOString() });
+});
+
+app.get("/api/health/schema", async (_req, res) => {
+  try {
+    const { pool } = await import("./db");
+    const client = await pool.connect();
+    try {
+      // Check that db-patch-v2 set db_patch_ok = 'true'
+      const stateRes = await client.query<{ key: string; value: string }>(
+        `SELECT key, value FROM public.schema_deploy_state WHERE key IN ('db_patch_ok','total_migrations','patch_version') LIMIT 10`
+      );
+      const state: Record<string, string> = {};
+      for (const row of stateRes.rows) { state[row.key] = row.value; }
+
+      if (state["db_patch_ok"] !== "true") {
+        res.status(503).json({ ok: false, error: "db-patch-v2 did not complete — schema unverified", state });
+        return;
+      }
+
+      // Check critical columns that caused past production failures
+      const missRes = await client.query<{ tbl: string; col: string }>(`
+        SELECT t.tbl, t.col FROM (VALUES
+          ('radiology_worklist', 'ai_feedback'),
+          ('radiology_worklist', 'source_pacs'),
+          ('radiology_worklist', 'ai_draft_status'),
+          ('clinic_settings',    'ollama_enabled'),
+          ('clinic_settings',    'active_payment_gateway'),
+          ('clinic_settings',    'icici_enabled'),
+          ('clinic_settings',    'kiosk_enabled'),
+          ('bills',              'client_ref'),
+          ('orders',             'client_ref')
+        ) AS t(tbl, col)
+        WHERE NOT EXISTS (
+          SELECT 1 FROM information_schema.columns c
+          WHERE c.table_schema = 'public' AND c.table_name = t.tbl AND c.column_name = t.col
+        )
+      `);
+
+      if (missRes.rows.length > 0) {
+        const missing = missRes.rows.map((r) => `${r.tbl}.${r.col}`);
+        res.status(503).json({ ok: false, error: "Missing critical schema columns", missing, state });
+        return;
+      }
+
+      res.status(200).json({ ok: true, state, ts: new Date().toISOString() });
+    } finally {
+      client.release();
+    }
+  } catch (err: any) {
+    res.status(503).json({ ok: false, error: err?.message ?? "Schema check failed" });
+  }
+});
+
 app.use("/api/dicom-uploads", dicomUploadLimiter, dicomUploadsRouter);
 
 // Standard JSON body parser — 5 MB for all API routes except uploads.

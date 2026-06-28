@@ -122,6 +122,14 @@ services:
       WADO_URL: ${WADO_URL:-}
     volumes:
       - object_storage:/app/data/object-storage
+    healthcheck:
+      # Schema readiness probe — confirms db-patch-v2 ran AND critical columns exist.
+      # care-web will NOT start until this returns HTTP 200.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/api/health/schema | grep -q '"ok":true' || exit 1"]
+      interval: 10s
+      timeout: 8s
+      retries: 15
+      start_period: 30s
     depends_on:
       db:
         condition: service_healthy
@@ -141,7 +149,8 @@ services:
     ports:
       - "${HOST_PORT:-8888}:80"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
   # ---------------------------------------------------------------------------
   # Manual migration container — NOT in the automatic startup chain

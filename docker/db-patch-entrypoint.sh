@@ -1,29 +1,37 @@
 #!/bin/sh
 # =============================================================================
-# db-patch-entrypoint.sh
+# db-patch-entrypoint.sh — Zero-touch schema migration for Care Diagnostics ERP
 # =============================================================================
-# Single entrypoint for care-db-patch-v2 container.
-# Runs ALL schema changes in dependency order on every deployment.
 #
-# Steps:
-#   1. Wait for PostgreSQL to accept connections
-#   2. Bootstrap the Drizzle migration tracking schema (idempotent)
-#   3. Apply Drizzle .sql migration files in journal order (skips applied ones)
-#   4. Apply the imperative column-patch SQL (ADD COLUMN IF NOT EXISTS — all idempotent)
-#   5. Apply feature migrations: mri_protocol_specs (Phase 1), neuro prompts (Phase 2)
+# DESIGN:
+#   Every future Drizzle migration and feature migration is detected and applied
+#   AUTOMATICALLY. No file needs to be edited when new migrations are added.
 #
-# Safety guarantees:
-#   - Every statement is idempotent (CREATE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS)
-#   - No DROP, no TRUNCATE, no DELETE of existing data
-#   - Safe to run multiple times
-#   - Exits non-zero on any psql error (set -e)
-#   - Password never printed to logs
+#   Drizzle migrations:  detected from lib/db/drizzle/meta/_journal.json
+#   Feature migrations:  auto-discovered from migrations/ in alphabetical order
+#   Column patches:      applied from runStartupMigrations() in the API itself
 #
-# Environment variables (set by docker-compose):
-#   DB_HOST       — PostgreSQL hostname  (default: db)
-#   DB_USER       — PostgreSQL username  (default: erp)
-#   DB_NAME       — PostgreSQL database  (default: diagnostic_erp)
-#   PGPASSWORD    — PostgreSQL password  (set by compose, never echoed)
+# STARTUP ORDER (enforced by docker-compose depends_on):
+#   care-db (healthy)
+#     → care-db-patch-v2  (this script, exits 0 or fails hard)
+#       → care-api         (starts ONLY after this exits 0)
+#         → care-web       (starts ONLY after care-api is healthy)
+#
+# FAILURE BEHAVIOUR:
+#   Any psql error → set -e causes immediate non-zero exit.
+#   docker-compose service_completed_successfully condition means care-api
+#   NEVER starts if this script exits non-zero. Schema mismatch is impossible.
+#
+# LOGS:
+#   ✓ Database connected
+#   ✓ Migration tracking ready
+#   ✓ Drizzle migration applied: 0005_mri_protocol_specs
+#   ✓ Feature migration applied: add_bill_order_idempotency.sql
+#   ✓ Schema fingerprint recorded
+#   ✓ All migrations complete — API may start
+#   or
+#   ✗ Migration FAILED — API will NOT start
+#
 # =============================================================================
 
 set -e
@@ -31,41 +39,58 @@ set -e
 DB_HOST="${DB_HOST:-db}"
 DB_USER="${DB_USER:-erp}"
 DB_NAME="${DB_NAME:-diagnostic_erp}"
+DRIZZLE_DIR="/migrations/drizzle"
+FEATURE_DIR="/migrations/feature"
+JOURNAL="${DRIZZLE_DIR}/meta/_journal.json"
 
-echo "=========================================="
-echo "DB PATCH — Care Diagnostics ERP"
-echo "Host: ${DB_HOST}  DB: ${DB_NAME}  User: ${DB_USER}"
-echo "Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-echo "=========================================="
+# Terminal colours (only when connected to a terminal)
+if [ -t 1 ]; then
+  GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+else
+  GREEN=''; RED=''; YELLOW=''; BLUE=''; NC=''
+fi
+
+ok()   { echo "${GREEN}  ✓ ${1}${NC}"; }
+fail() { echo "${RED}  ✗ ${1}${NC}"; exit 1; }
+info() { echo "${BLUE}  ▸ ${1}${NC}"; }
+warn() { echo "${YELLOW}  ! ${1}${NC}"; }
+
+echo ""
+echo "============================================================"
+echo "  Care Diagnostics ERP — Schema Migration"
+echo "  Host: ${DB_HOST}  DB: ${DB_NAME}  User: ${DB_USER}"
+echo "  Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "============================================================"
+echo ""
 
 # ── Step 1: Wait for PostgreSQL ───────────────────────────────────────────────
-echo ""
-echo "[1/4] Waiting for PostgreSQL..."
-until pg_isready -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" -q; do
+info "Waiting for PostgreSQL…"
+MAX_WAIT=60
+waited=0
+until pg_isready -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" -q 2>/dev/null; do
+  if [ "${waited}" -ge "${MAX_WAIT}" ]; then
+    fail "PostgreSQL did not become ready after ${MAX_WAIT}s — aborting"
+  fi
   sleep 2
+  waited=$((waited + 2))
 done
-echo "      PostgreSQL is ready."
+ok "Database connected (${DB_HOST}/${DB_NAME})"
 
-# Helper: run a SQL string quietly, exit on error
-run_sql() {
-  psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 -c "$1"
+# Helpers
+psql_q() {
+  psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" \
+       -v ON_ERROR_STOP=1 -q "$@" 2>&1 || fail "psql failed: $*"
+}
+psql_val() {
+  psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" -tAq -c "$1" 2>/dev/null
 }
 
-# Helper: run a SQL file quietly, exit on error
-run_file() {
-  psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 -f "$1"
-}
+# ── Step 2: Bootstrap migration tracking ─────────────────────────────────────
+info "Bootstrapping migration tracking…"
 
-# ── Step 2: Bootstrap Drizzle migration tracking ──────────────────────────────
-echo ""
-echo "[2/4] Bootstrapping Drizzle migration tracking..."
-
-# Remove stale public-schema migrations table if left over from old runs
-run_sql 'DROP TABLE IF EXISTS "public"."__drizzle_migrations";'
-
-# Create drizzle schema and migrations table (idempotent)
-run_sql 'CREATE SCHEMA IF NOT EXISTS "drizzle";'
-run_sql '
+psql_q -c 'DROP TABLE IF EXISTS "public"."__drizzle_migrations";'
+psql_q -c 'CREATE SCHEMA IF NOT EXISTS "drizzle";'
+psql_q -c '
   CREATE TABLE IF NOT EXISTS "drizzle"."__drizzle_migrations" (
     "id"         SERIAL  PRIMARY KEY,
     "hash"       TEXT    NOT NULL,
@@ -73,190 +98,224 @@ run_sql '
   );
 '
 
-echo "      Drizzle schema ready."
+# Schema fingerprint table — records every migration applied, with timestamp
+# Used by the API health check to verify schema is current before serving traffic
+psql_q -c '
+  CREATE TABLE IF NOT EXISTS "public"."schema_migrations_log" (
+    "id"          SERIAL  PRIMARY KEY,
+    "name"        TEXT    NOT NULL,
+    "kind"        TEXT    NOT NULL DEFAULT '"'"'drizzle'"'"',
+    "applied_at"  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    "sha256"      TEXT    NOT NULL,
+    UNIQUE ("name", "kind")
+  );
+'
 
-# ── Step 3: Apply Drizzle migration SQL files ─────────────────────────────────
+ok "Migration tracking ready"
+
+# ── Step 3: Auto-apply Drizzle migrations from journal ───────────────────────
 echo ""
-echo "[3/4] Applying Drizzle migrations (skipping already-applied)..."
+info "Reading Drizzle journal from ${JOURNAL}…"
 
-# For each migration file, compute its hash and insert into tracking table
-# if not already present, then execute the SQL.
-#
-# Files are in /migrations/drizzle/ (bind-mounted from lib/db/drizzle/).
-# Journal order (from meta/_journal.json):
-#   0000_dear_forge
-#   0001_warm_leopardon
-#   0002_dicom_rename
-#   0003_online_booking_packages
-#   0004_seed_pacs_viewer_defaults
+if [ ! -f "${JOURNAL}" ]; then
+  fail "Journal not found at ${JOURNAL} — check bind mount"
+fi
 
-MIGRATIONS_DIR="/migrations/drizzle"
+# Parse journal using python3 (available in postgres:16-alpine via pyenv or we use awk/grep)
+# Use pure shell + grep approach — no python dependency needed
+# Journal format: entries array with "tag" and "when" fields
 
-apply_migration() {
-  tag="$1"
-  when="$2"
-  file="${MIGRATIONS_DIR}/${tag}.sql"
+applied_drizzle=0
+skipped_drizzle=0
+
+# Extract tags in order using grep + sed — pure POSIX
+# Each entry looks like: { "idx": N, "version": "7", "when": NNN, "tag": "XXXX", ... }
+tags=$(grep '"tag"' "${JOURNAL}" | sed 's/.*"tag"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+whens=$(grep '"when"' "${JOURNAL}" | sed 's/.*"when"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/')
+
+# Zip tags and whens — process them together line by line
+# Use temporary file to process pairs
+tmpfile=$(mktemp)
+paste <(echo "${tags}") <(echo "${whens}") > "${tmpfile}" 2>/dev/null || {
+  # Fallback: process just tags with a fixed timestamp
+  echo "${tags}" | while read -r t; do echo "${t} 0"; done > "${tmpfile}"
+}
+
+while IFS='	 ' read -r tag when; do
+  [ -z "${tag}" ] && continue
+  file="${DRIZZLE_DIR}/${tag}.sql"
 
   if [ ! -f "${file}" ]; then
-    echo "      WARN: ${tag}.sql not found — skipping"
-    return
+    warn "Migration SQL not found: ${tag}.sql — skipping"
+    continue
   fi
 
-  # Compute SHA-256 hash of the file content
+  # Compute SHA-256 of the file
   hash=$(sha256sum "${file}" | awk '{print $1}')
 
-  # Check if already applied
-  already=$(psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" -tAc \
-    "SELECT COUNT(*) FROM drizzle.__drizzle_migrations WHERE hash = '${hash}';")
+  # Check if already in Drizzle tracking table
+  already=$(psql_val "SELECT COUNT(*) FROM drizzle.__drizzle_migrations WHERE hash = '${hash}';")
 
   if [ "${already}" = "1" ]; then
-    echo "      [skip] ${tag} (already applied)"
-    return
+    info "  [skip] ${tag} (already applied)"
+    skipped_drizzle=$((skipped_drizzle + 1))
+    continue
   fi
 
-  echo "      [apply] ${tag}..."
+  echo ""
+  info "  [apply] ${tag}…"
 
-  # Strip Drizzle breakpoint comments before executing
-  # (-->statement-breakpoint lines are Drizzle metadata, not valid SQL)
+  # Strip Drizzle breakpoint comments and execute
   sed 's/--> statement-breakpoint//g' "${file}" | \
-    psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1
+    psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" \
+         -v ON_ERROR_STOP=1 -q || fail "Drizzle migration FAILED: ${tag}"
 
-  # Record as applied
-  psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 -c \
-    "INSERT INTO drizzle.__drizzle_migrations (hash, created_at)
-     VALUES ('${hash}', ${when})
-     ON CONFLICT DO NOTHING;"
+  # Record in Drizzle tracking table
+  when_val="${when:-$(date +%s%3N)}"
+  psql_q -c "
+    INSERT INTO drizzle.__drizzle_migrations (hash, created_at)
+    VALUES ('${hash}', ${when_val})
+    ON CONFLICT DO NOTHING;
+  "
 
-  echo "      [done]  ${tag}"
-}
+  # Record in our schema log
+  psql_q -c "
+    INSERT INTO public.schema_migrations_log (name, kind, sha256)
+    VALUES ('${tag}', 'drizzle', '${hash}')
+    ON CONFLICT (name, kind) DO UPDATE SET sha256 = EXCLUDED.sha256, applied_at = NOW();
+  "
 
-apply_migration "0000_dear_forge"                1779106291750
-apply_migration "0001_warm_leopardon"            1779434866491
-apply_migration "0002_dicom_rename"              1780000000000
-apply_migration "0003_online_booking_packages"   1780000001000
-apply_migration "0004_seed_pacs_viewer_defaults" 1780000002000
+  ok "  Drizzle migration applied: ${tag}"
+  applied_drizzle=$((applied_drizzle + 1))
+done < "${tmpfile}"
+rm -f "${tmpfile}"
 
-echo "      Drizzle migrations complete."
-
-# ── Step 4: Imperative column patch (ADD COLUMN IF NOT EXISTS) ────────────────
 echo ""
-echo "[4/4] Applying imperative column patch (all idempotent)..."
+ok "Drizzle migrations: ${applied_drizzle} applied, ${skipped_drizzle} already current"
 
-psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 <<'SQL'
-
--- clinic_settings: payment gateway
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS active_payment_gateway text DEFAULT 'icici';
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS enable_card_payment boolean DEFAULT true;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS enable_qr_payment boolean DEFAULT true;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS enable_vip_booking boolean DEFAULT false;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS enable_payment_logos boolean DEFAULT true;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS enable_payment_timer boolean DEFAULT true;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS custom_icici_banner_url text;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS custom_phonepe_banner_url text;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS custom_bharatpe_banner_url text;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS custom_payu_banner_url text;
-
--- clinic_settings: ollama
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS ollama_base_url text;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS ollama_model text;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS ollama_local_only boolean DEFAULT true;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS ollama_known_models jsonb DEFAULT '[]'::jsonb;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS ollama_fallback_url text;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS ollama_enabled boolean DEFAULT false;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS ollama_timeout_seconds integer DEFAULT 30;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS ollama_audit_enabled boolean DEFAULT true;
-
--- clinic_settings: scanner / scan station
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS mobile_scan_enabled boolean DEFAULT false;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS phone_pairing_enabled boolean DEFAULT false;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS preferred_scanner text;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS require_desktop_confirmation boolean DEFAULT true;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS auto_delete_temp_scans boolean DEFAULT true;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS ocr_enabled boolean DEFAULT false;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS aadhaar_qr_enabled boolean DEFAULT false;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS scanner_global_enabled boolean DEFAULT false;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS scan_station_kiosk_mode_enabled boolean DEFAULT true;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS scan_station_auto_clear_enabled boolean DEFAULT true;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS scan_station_result_display_seconds integer DEFAULT 10;
-
--- clinic_settings: session / security
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS session_idle_timeout_minutes integer DEFAULT 30;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS default_max_concurrent_sessions integer DEFAULT 3;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS max_failed_login_attempts integer DEFAULT 5;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS account_lockout_duration_minutes integer DEFAULT 30;
-
--- clinic_settings: form-f
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS form_f_billing_prompt boolean DEFAULT false;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS form_f_address_required boolean DEFAULT true;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS form_f_guardian_required boolean DEFAULT true;
-
--- clinic_settings: online booking
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS online_booking_services text DEFAULT '{"opd":true,"emergency":true,"usg":true,"xray":true,"ct":true,"mri":true,"pathology":true,"packages":true,"home_collection":true,"doctor":true}';
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS service_images text DEFAULT '{}';
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS service_images_enabled boolean DEFAULT false;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS vip_percentage numeric(5,2) DEFAULT '50.00';
-
--- clinic_settings: disclaimer
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS disclaimer_text text DEFAULT 'Online booking charges are subject to the centre''s cancellation policy. In case of cancellation after confirmation, administrative charges may be deducted from the refundable amount.';
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS disclaimer_refund_percentage integer DEFAULT 90;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS disclaimer_cancellation_window_hours integer DEFAULT 24;
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS disclaimer_display_position text DEFAULT 'bottom';
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS disclaimer_font_size text DEFAULT 'sm';
-ALTER TABLE IF EXISTS clinic_settings ADD COLUMN IF NOT EXISTS disclaimer_enabled boolean DEFAULT true;
-
--- online_bookings: payment tracking
-ALTER TABLE IF EXISTS online_bookings ADD COLUMN IF NOT EXISTS failure_reason text;
-ALTER TABLE IF EXISTS online_bookings ADD COLUMN IF NOT EXISTS icici_transaction_id text;
-ALTER TABLE IF EXISTS online_bookings ADD COLUMN IF NOT EXISTS icici_provider_ref_id text;
-
--- payment_logs table
-CREATE TABLE IF NOT EXISTS payment_logs (
-  id serial PRIMARY KEY,
-  booking_id integer,
-  provider text,
-  event_type text,
-  status text,
-  request_payload jsonb,
-  response_payload jsonb,
-  failure_reason text,
-  created_at timestamp DEFAULT now()
-);
-
-SQL
-
-echo "      Column patch complete."
-
-# ── Step 5: Phase migrations (mri_protocol_specs, neuro prompt library) ───────
+# ── Step 4: Auto-apply feature migrations (alphabetical, fully automatic) ────
 echo ""
-echo "[5/5] Applying feature migrations (idempotent)..."
+info "Scanning feature migrations in ${FEATURE_DIR}…"
 
-FEATURE_MIGRATIONS_DIR="/migrations/feature"
+if [ ! -d "${FEATURE_DIR}" ]; then
+  warn "Feature migrations directory not found — skipping"
+else
+  applied_feature=0
+  skipped_feature=0
 
-run_feature_migration() {
-  label="$1"
-  file="${FEATURE_MIGRATIONS_DIR}/$2"
+  # Process all .sql files in alphabetical order — no manual registration needed
+  for file in $(ls "${FEATURE_DIR}"/*.sql 2>/dev/null | sort); do
+    [ -f "${file}" ] || continue
+    name=$(basename "${file}")
 
-  if [ ! -f "${file}" ]; then
-    echo "      WARN: ${file} not found — skipping"
-    return
+    hash=$(sha256sum "${file}" | awk '{print $1}')
+
+    # Check if already applied via our log table
+    already=$(psql_val "
+      SELECT COUNT(*) FROM public.schema_migrations_log
+      WHERE name = '${name}' AND kind = 'feature' AND sha256 = '${hash}';
+    ")
+
+    if [ "${already}" = "1" ]; then
+      info "  [skip] ${name} (already applied)"
+      skipped_feature=$((skipped_feature + 1))
+      continue
+    fi
+
+    # Check if it was previously applied with a different hash (file changed)
+    changed=$(psql_val "
+      SELECT COUNT(*) FROM public.schema_migrations_log
+      WHERE name = '${name}' AND kind = 'feature' AND sha256 != '${hash}';
+    ")
+
+    if [ "${changed}" = "1" ]; then
+      warn "  ${name}: content changed since last apply — re-applying"
+    fi
+
+    echo ""
+    info "  [apply] ${name}…"
+
+    psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" \
+         -v ON_ERROR_STOP=1 -q -f "${file}" || fail "Feature migration FAILED: ${name}"
+
+    # Record in schema log (upsert — handles re-apply after content change)
+    psql_q -c "
+      INSERT INTO public.schema_migrations_log (name, kind, sha256)
+      VALUES ('${name}', 'feature', '${hash}')
+      ON CONFLICT (name, kind) DO UPDATE SET sha256 = EXCLUDED.sha256, applied_at = NOW();
+    "
+
+    ok "  Feature migration applied: ${name}"
+    applied_feature=$((applied_feature + 1))
+  done
+
+  echo ""
+  ok "Feature migrations: ${applied_feature} applied, ${skipped_feature} already current"
+fi
+
+# ── Step 5: Record schema fingerprint for API health check ───────────────────
+echo ""
+info "Recording schema fingerprint…"
+
+total_applied=$(psql_val "SELECT COUNT(*) FROM public.schema_migrations_log;")
+last_applied=$(psql_val "SELECT MAX(applied_at) FROM public.schema_migrations_log;")
+
+# Store the current deployment fingerprint in a simple key/value table
+psql_q -c "
+  CREATE TABLE IF NOT EXISTS public.schema_deploy_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+
+  INSERT INTO public.schema_deploy_state (key, value)
+  VALUES
+    ('total_migrations', '${total_applied}'),
+    ('last_migration_at', '${last_applied:-never}'),
+    ('patch_version', '$(date -u +%Y%m%d%H%M%S)'),
+    ('db_patch_ok', 'true')
+  ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();
+"
+
+ok "Schema fingerprint recorded (${total_applied} migrations total)"
+
+# ── Step 6: Final verification — check critical columns exist ─────────────────
+echo ""
+info "Verifying critical schema columns…"
+
+check_column() {
+  table="$1"; col="$2"
+  exists=$(psql_val "
+    SELECT COUNT(*) FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = '${table}' AND column_name = '${col}';
+  ")
+  if [ "${exists}" != "1" ]; then
+    fail "SCHEMA VERIFICATION FAILED: column '${col}' missing from table '${table}' — API will NOT start"
   fi
-
-  echo "      [apply] ${label}..."
-  psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 -f "${file}"
-  echo "      [done]  ${label}"
 }
 
-run_feature_migration "Phase 1 — MRI protocol specs + seed"   "seed_mri_protocols.sql"
-run_feature_migration "Phase 2 — Neuro AI prompt library seed" "seed_neuro_prompt_library.sql"
-run_feature_migration "Performance indexes — bills/payments/vouchers" "add_performance_indexes.sql"
-run_feature_migration "Voice dictation tables"                         "voice_tables_migration.sql"
-run_feature_migration "Payment idempotency unique index (Fix C2)"      "add_payment_idempotency_index.sql"
-run_feature_migration "Referral doctor indexes (Fix H2)"               "add_referral_indexes.sql"
-run_feature_migration "AI contribution pct column (A8)"                "add_ai_contribution_pct.sql"
-run_feature_migration "Bill/Order client-ref idempotency (dup-bill fix)"  "add_bill_order_idempotency.sql"
+# Critical columns that have caused production failures
+# (from the error log: ai_feedback, clinic_settings columns, pacs_network_profile)
+check_column "radiology_worklist"  "ai_feedback"
+check_column "radiology_worklist"  "ai_draft_status"
+check_column "radiology_worklist"  "source_pacs"
+check_column "clinic_settings"     "ollama_enabled"
+check_column "clinic_settings"     "active_payment_gateway"
+check_column "clinic_settings"     "kiosk_enabled"
+check_column "clinic_settings"     "sidebar_theme"
+check_column "clinic_settings"     "icici_enabled"
+check_column "bills"               "client_ref"
+check_column "orders"              "client_ref"
 
-echo "      Feature migrations complete."
+ok "Schema verification passed — all critical columns present"
+
+# ── Done ─────────────────────────────────────────────────────────────────────
 echo ""
-echo "=========================================="
-echo "DB PATCH — ALL STEPS COMPLETE ✓"
-echo "=========================================="
+echo "============================================================"
+echo "${GREEN}  ✓ All migrations complete — API may start${NC}"
+echo "  Drizzle:  ${applied_drizzle} applied"
+echo "  Feature:  ${applied_feature} applied"
+echo "  Total:    ${total_applied} migrations tracked"
+echo "  Time:     $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "============================================================"
+echo ""

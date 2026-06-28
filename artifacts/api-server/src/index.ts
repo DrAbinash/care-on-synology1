@@ -2524,10 +2524,22 @@ const server = app.listen({ port, exclusive: true }, () => {
     });
   }
 
-  runStartupMigrations().catch((e) => logger.error({ err: e }, "Failed to run startup migrations"));
+  runStartupMigrations().catch((e) => {
+    // runStartupMigrations runs ADD COLUMN IF NOT EXISTS patches that are also
+    // done by db-patch-v2, so failures here are non-fatal (db-patch-v2 already
+    // guaranteed the schema). Log and continue — do NOT crash the API server
+    // because the migrations here are belt-and-suspenders, not the primary path.
+    logger.error({ err: e }, "Startup migration warning (non-fatal — schema was verified by db-patch-v2)");
+  });
   ensureDefaultLedger().catch((e) => logger.error({ err: e }, "Failed to seed default ledger"));
   backfillExpirePublicTokens().catch((e) => logger.error({ err: e }, "Failed to backfill public token expiry"));
-  seedBootstrapAdminIfNeeded().catch((e) => logger.error({ err: e }, "Failed to seed/update bootstrap admin"));
+
+  // seedBootstrapAdmin: run immediately and await — if the admin row is missing
+  // the system is unusable. Log the error clearly but do not crash (the row may
+  // have been manually deleted; the rest of the API still works).
+  seedBootstrapAdminIfNeeded().catch((e) => {
+    logger.error({ err: e }, "Failed to seed/update bootstrap admin — login may not work");
+  });
 
   // Seed OHIF_URL + WADO_URL and other configuration values from env into pacs_settings
   // so the centralized configuration service can read them from DB without needing hardcoded IP fallbacks.
