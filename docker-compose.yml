@@ -166,7 +166,11 @@ services:
     healthcheck:
       # Schema readiness probe — confirms db-patch-v2 ran AND critical columns exist.
       # care-web will NOT start until this returns HTTP 200.
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/api/health/schema | grep -q '"ok":true' || exit 1"]
+      # Written as YAML block list to avoid nested quote conflicts.
+      # The shell command checks that the JSON response contains "ok":true
+      test:
+        - CMD-SHELL
+        - wget -qO- http://localhost:8080/api/health/schema | grep -q '"ok":true' || exit 1
       interval: 10s
       timeout: 8s
       retries: 15
