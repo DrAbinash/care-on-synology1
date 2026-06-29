@@ -61,8 +61,8 @@ ok "Version: Care ERP v${ERP_VERSION} build ${BUILD_NUMBER}"
 info "Building and starting containers (this takes 3-5 minutes)..."
 echo ""
 
-docker compose down --remove-orphans 2>/dev/null || true
-docker compose up -d --build
+sudo docker compose down --remove-orphans 2>/dev/null || true
+sudo docker compose up -d --build
 
 echo ""
 ok "Containers started"
@@ -71,7 +71,7 @@ ok "Containers started"
 info "Waiting for database migrations..."
 waited=0
 while [ $waited -lt 120 ]; do
-  state=$(docker inspect --format='{{.State.Status}} {{.State.ExitCode}}' care-db-patch-v2 2>/dev/null || echo "missing 0")
+  state=$(sudo docker inspect --format='{{.State.Status}} {{.State.ExitCode}}' care-db-patch-v2 2>/dev/null || echo "missing 0")
   status=$(echo $state | awk '{print $1}')
   code=$(echo $state | awk '{print $2}')
   
@@ -82,7 +82,7 @@ while [ $waited -lt 120 ]; do
     echo ""
     echo -e "${RED}  ✗ Migration failed! Showing logs:${NC}"
     echo ""
-    docker logs care-db-patch-v2 --tail 30 2>/dev/null
+    sudo docker logs care-db-patch-v2 --tail 30 2>/dev/null
     echo ""
     fail "Migrations failed. Please share the error above with your developer."
   fi
