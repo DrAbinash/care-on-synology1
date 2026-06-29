@@ -123,7 +123,7 @@ services:
       # Mount output directory (writable) so startup MD is written to repo root
       - ./:/repo/output:rw
     working_dir: /repo/output
-    command: ["node", "/repo/scripts/db-schema-verify.cjs", "--verify", "--verbose"]
+    command: ["node", "/repo/scripts/db-schema-verify.cjs", "--repair", "--verbose"]
     depends_on:
       db:
         condition: service_healthy
