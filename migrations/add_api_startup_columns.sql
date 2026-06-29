@@ -52,3 +52,32 @@ ALTER TABLE patient_reports
 
 ALTER TABLE users
   ADD COLUMN IF NOT EXISTS default_start_page            TEXT;
+
+-- ── Additional columns found missing at API startup ──────────────────────────
+-- These are referenced by seedBootstrapAdminIfNeeded() and runStartupMigrations()
+-- before they have a chance to CREATE them, causing the API to crash.
+
+-- clinic_settings: UPI QR columns (referenced in INSERT INTO clinic_settings)
+ALTER TABLE clinic_settings
+  ADD COLUMN IF NOT EXISTS upi_qr_image_url    TEXT    NOT NULL DEFAULT 'NA';
+
+ALTER TABLE clinic_settings
+  ADD COLUMN IF NOT EXISTS upi_vpa             TEXT    NOT NULL DEFAULT 'NA';
+
+ALTER TABLE clinic_settings
+  ADD COLUMN IF NOT EXISTS upi_qr_enabled      BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- clinic_settings: security/session columns (referenced in INSERT INTO clinic_settings)
+ALTER TABLE clinic_settings
+  ADD COLUMN IF NOT EXISTS default_max_concurrent_sessions   INTEGER NOT NULL DEFAULT 3;
+
+ALTER TABLE clinic_settings
+  ADD COLUMN IF NOT EXISTS max_failed_login_attempts         INTEGER NOT NULL DEFAULT 5;
+
+ALTER TABLE clinic_settings
+  ADD COLUMN IF NOT EXISTS account_lockout_duration_minutes  INTEGER NOT NULL DEFAULT 30;
+
+-- users: pacs_network_profile (Drizzle ORM INSERT includes all schema columns)
+-- Defined in lib/db/src/schema/users.ts but never added to SQL migrations
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS pacs_network_profile  TEXT;
