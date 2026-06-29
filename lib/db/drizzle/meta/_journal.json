@@ -43,6 +43,13 @@
       "when": 1780100000000,
       "tag": "0005_mri_protocol_specs",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1782705414045,
+      "tag": "0006_jazzy_mojo",
+      "breakpoints": true
     }
   ]
 }
