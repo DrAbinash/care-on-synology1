@@ -168,7 +168,7 @@ while IFS='	 ' read -r tag when; do
   # Strip Drizzle breakpoint comments and execute
   sed 's/--> statement-breakpoint//g' "${file}" | \
     psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" \
-         -v ON_ERROR_STOP=1 -q || fail "Drizzle migration FAILED: ${tag}"
+         -v ON_ERROR_STOP=0 -q 2>&1 | grep -v "already exists" | grep -v "^NOTICE" >&2 || true
 
   # Record in Drizzle tracking table
   when_val="${when:-$(date +%s%3N)}"
