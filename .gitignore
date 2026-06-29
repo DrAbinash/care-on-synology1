@@ -88,3 +88,10 @@ test-results/
 
 # Attached assets (uploaded text files, large)
 attached_assets/
+
+# Synology NAS system folders (thumbnail cache, metadata)
+@eaDir/
+@SynoResource/
+@tmp/
+.DS_Store
+Thumbs.db
