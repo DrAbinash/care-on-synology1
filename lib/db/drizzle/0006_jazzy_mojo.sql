@@ -1,7 +1,6 @@
 DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'outsource_status') THEN
-    CREATE TYPE "public"."outsource_status" AS ENUM('ordered', 'sample_collected', 'sample_packed', 'sent_to_lab', 'received_by_lab', 'report_received', 'report_uploaded', 'report_delivered', 'cancelled');
-  END IF;
+  CREATE TYPE "public"."outsource_status" AS ENUM('ordered', 'sample_collected', 'sample_packed', 'sent_to_lab', 'received_by_lab', 'report_received', 'report_uploaded', 'report_delivered', 'cancelled');
+EXCEPTION WHEN duplicate_object THEN null;
 END $$;--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "radiology_smart_macros" (
 	"id" serial PRIMARY KEY NOT NULL,
