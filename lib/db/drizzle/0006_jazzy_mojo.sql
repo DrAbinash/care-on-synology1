@@ -1,5 +1,5 @@
-CREATE TYPE "public"."outsource_status" AS ENUM('ordered', 'sample_collected', 'sample_packed', 'sent_to_lab', 'received_by_lab', 'report_received', 'report_uploaded', 'report_delivered', 'cancelled');--> statement-breakpoint
-CREATE TABLE "radiology_smart_macros" (
+CREATE TYPE IF NOT EXISTS "public"."outsource_status" AS ENUM('ordered', 'sample_collected', 'sample_packed', 'sent_to_lab', 'received_by_lab', 'report_received', 'report_uploaded', 'report_delivered', 'cancelled');--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS "radiology_smart_macros" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"created_by" text NOT NULL,
 	"shortcut" text NOT NULL,
@@ -15,7 +15,7 @@ CREATE TABLE "radiology_smart_macros" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "spinal_measurements" (
+CREATE TABLE IF NOT EXISTS "spinal_measurements" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_id" integer NOT NULL,
 	"draft_id" integer,
@@ -41,7 +41,7 @@ CREATE TABLE "spinal_measurements" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "super_admin_sessions" (
+CREATE TABLE IF NOT EXISTS "super_admin_sessions" (
 	"token" varchar(128) PRIMARY KEY NOT NULL,
 	"user_id" integer NOT NULL,
 	"user_name" text NOT NULL,
@@ -50,7 +50,7 @@ CREATE TABLE "super_admin_sessions" (
 	"is_active" boolean DEFAULT true NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "whatsapp_numbers" (
+CREATE TABLE IF NOT EXISTS "whatsapp_numbers" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"name" text DEFAULT '' NOT NULL,
 	"phone_number_id" text DEFAULT '' NOT NULL,
@@ -63,7 +63,7 @@ CREATE TABLE "whatsapp_numbers" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_chocolate_findings" (
+CREATE TABLE IF NOT EXISTS "radiology_chocolate_findings" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"modality" text NOT NULL,
 	"body_part" text NOT NULL,
@@ -77,7 +77,7 @@ CREATE TABLE "radiology_chocolate_findings" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_study_locks" (
+CREATE TABLE IF NOT EXISTS "radiology_study_locks" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_id" integer NOT NULL,
 	"study_instance_uid" text NOT NULL,
@@ -88,7 +88,7 @@ CREATE TABLE "radiology_study_locks" (
 	"workstation" text
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_user_findings_preferences" (
+CREATE TABLE IF NOT EXISTS "radiology_user_findings_preferences" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"user_id" integer NOT NULL,
 	"favorite_finding_ids" text DEFAULT '[]' NOT NULL,
@@ -97,7 +97,7 @@ CREATE TABLE "radiology_user_findings_preferences" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_user_item_usage_logs" (
+CREATE TABLE IF NOT EXISTS "radiology_user_item_usage_logs" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"user_id" integer NOT NULL,
 	"item_type" text NOT NULL,
@@ -106,7 +106,7 @@ CREATE TABLE "radiology_user_item_usage_logs" (
 	"used_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_user_report_preferences" (
+CREATE TABLE IF NOT EXISTS "radiology_user_report_preferences" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"user_id" integer NOT NULL,
 	"favorite_findings" text DEFAULT '[]' NOT NULL,
@@ -117,7 +117,7 @@ CREATE TABLE "radiology_user_report_preferences" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "doctor_commission_rules" (
+CREATE TABLE IF NOT EXISTS "doctor_commission_rules" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"doctor_id" integer NOT NULL,
 	"rate_card_id" integer,
@@ -128,7 +128,7 @@ CREATE TABLE "doctor_commission_rules" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "outsource_audit_logs" (
+CREATE TABLE IF NOT EXISTS "outsource_audit_logs" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"action" text NOT NULL,
 	"performed_by" integer,
@@ -140,7 +140,7 @@ CREATE TABLE "outsource_audit_logs" (
 	"timestamp" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "outsource_dispatch_batches" (
+CREATE TABLE IF NOT EXISTS "outsource_dispatch_batches" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"batch_number" text NOT NULL,
 	"lab_id" integer NOT NULL,
@@ -153,7 +153,7 @@ CREATE TABLE "outsource_dispatch_batches" (
 	CONSTRAINT "outsource_dispatch_batches_batch_number_unique" UNIQUE("batch_number")
 );
 --> statement-breakpoint
-CREATE TABLE "outsource_orders" (
+CREATE TABLE IF NOT EXISTS "outsource_orders" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"bill_id" integer NOT NULL,
 	"patient_id" integer NOT NULL,
@@ -173,7 +173,7 @@ CREATE TABLE "outsource_orders" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "outsource_payments" (
+CREATE TABLE IF NOT EXISTS "outsource_payments" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"lab_id" integer NOT NULL,
 	"payment_date" timestamp with time zone DEFAULT now() NOT NULL,
@@ -187,7 +187,7 @@ CREATE TABLE "outsource_payments" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "outsource_price_groups" (
+CREATE TABLE IF NOT EXISTS "outsource_price_groups" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"rate_card_id" integer NOT NULL,
 	"price_group" text DEFAULT 'general' NOT NULL,
@@ -197,7 +197,7 @@ CREATE TABLE "outsource_price_groups" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "outsource_rate_cards" (
+CREATE TABLE IF NOT EXISTS "outsource_rate_cards" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"lab_id" integer NOT NULL,
 	"lab_test_code" text NOT NULL,
@@ -213,7 +213,7 @@ CREATE TABLE "outsource_rate_cards" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "outsource_reports" (
+CREATE TABLE IF NOT EXISTS "outsource_reports" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"order_id" integer NOT NULL,
 	"file_path" text NOT NULL,
@@ -221,7 +221,7 @@ CREATE TABLE "outsource_reports" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "outsource_vendor_invoice_items" (
+CREATE TABLE IF NOT EXISTS "outsource_vendor_invoice_items" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"vendor_invoice_id" integer NOT NULL,
 	"lab_no" text,
@@ -238,7 +238,7 @@ CREATE TABLE "outsource_vendor_invoice_items" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "outsource_vendor_invoices" (
+CREATE TABLE IF NOT EXISTS "outsource_vendor_invoices" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"lab_id" integer NOT NULL,
 	"invoice_number" text NOT NULL,
@@ -250,7 +250,7 @@ CREATE TABLE "outsource_vendor_invoices" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "outsource_vendor_ledger" (
+CREATE TABLE IF NOT EXISTS "outsource_vendor_ledger" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"lab_id" integer NOT NULL,
 	"transaction_type" text NOT NULL,
@@ -264,7 +264,7 @@ CREATE TABLE "outsource_vendor_ledger" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_institutional_styles" (
+CREATE TABLE IF NOT EXISTS "radiology_institutional_styles" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"preset_name" text DEFAULT 'Care Diagnostics Default' NOT NULL,
 	"section_order" text DEFAULT 'Technique,Findings,Impression' NOT NULL,
@@ -289,7 +289,7 @@ CREATE TABLE "radiology_institutional_styles" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_config_changes" (
+CREATE TABLE IF NOT EXISTS "radiology_config_changes" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"key" text NOT NULL,
 	"category" text NOT NULL,
@@ -301,7 +301,7 @@ CREATE TABLE "radiology_config_changes" (
 	"changed_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "ai_prompt_templates" (
+CREATE TABLE IF NOT EXISTS "ai_prompt_templates" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
 	"modality" text NOT NULL,
@@ -314,7 +314,7 @@ CREATE TABLE "ai_prompt_templates" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "ai_prompt_library" (
+CREATE TABLE IF NOT EXISTS "ai_prompt_library" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
 	"modality" text NOT NULL,
@@ -329,7 +329,7 @@ CREATE TABLE "ai_prompt_library" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "ai_prompt_library_versions" (
+CREATE TABLE IF NOT EXISTS "ai_prompt_library_versions" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"library_id" integer NOT NULL,
 	"version" integer NOT NULL,
@@ -339,7 +339,7 @@ CREATE TABLE "ai_prompt_library_versions" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "measurement_history" (
+CREATE TABLE IF NOT EXISTS "measurement_history" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"patient_id" integer NOT NULL,
 	"measurement_type" text NOT NULL,
@@ -361,7 +361,7 @@ CREATE TABLE "measurement_history" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "teaching_case_collections" (
+CREATE TABLE IF NOT EXISTS "teaching_case_collections" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
 	"description" text,
@@ -373,7 +373,7 @@ CREATE TABLE "teaching_case_collections" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "teaching_case_favorites" (
+CREATE TABLE IF NOT EXISTS "teaching_case_favorites" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"teaching_case_id" integer NOT NULL,
 	"user_id" integer NOT NULL,
@@ -381,7 +381,7 @@ CREATE TABLE "teaching_case_favorites" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "teaching_case_images" (
+CREATE TABLE IF NOT EXISTS "teaching_case_images" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"teaching_case_id" integer NOT NULL,
 	"image_url" text,
@@ -398,7 +398,7 @@ CREATE TABLE "teaching_case_images" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "teaching_case_notes" (
+CREATE TABLE IF NOT EXISTS "teaching_case_notes" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"teaching_case_id" integer NOT NULL,
 	"user_id" integer NOT NULL,
@@ -407,7 +407,7 @@ CREATE TABLE "teaching_case_notes" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "teaching_case_views" (
+CREATE TABLE IF NOT EXISTS "teaching_case_views" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"teaching_case_id" integer NOT NULL,
 	"user_id" integer,
@@ -415,7 +415,7 @@ CREATE TABLE "teaching_case_views" (
 	"viewed_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "teaching_cases" (
+CREATE TABLE IF NOT EXISTS "teaching_cases" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"title" text NOT NULL,
 	"diagnosis" text,
@@ -455,7 +455,7 @@ CREATE TABLE "teaching_cases" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "ai_model_routes" (
+CREATE TABLE IF NOT EXISTS "ai_model_routes" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"task_key" text NOT NULL,
 	"provider" text NOT NULL,
@@ -466,7 +466,7 @@ CREATE TABLE "ai_model_routes" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "ai_quality_scores" (
+CREATE TABLE IF NOT EXISTS "ai_quality_scores" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"scope" text NOT NULL,
 	"scope_key" text,
@@ -483,7 +483,7 @@ CREATE TABLE "ai_quality_scores" (
 	"computed_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "ai_dicom_findings" (
+CREATE TABLE IF NOT EXISTS "ai_dicom_findings" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"worklist_id" integer NOT NULL,
 	"study_instance_uid" text,
@@ -504,7 +504,7 @@ CREATE TABLE "ai_dicom_findings" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "rag_document_embeddings" (
+CREATE TABLE IF NOT EXISTS "rag_document_embeddings" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"document_id" text NOT NULL,
 	"document_type" text NOT NULL,
@@ -523,7 +523,7 @@ CREATE TABLE "rag_document_embeddings" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "rag_search_queries" (
+CREATE TABLE IF NOT EXISTS "rag_search_queries" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"query_text" text NOT NULL,
 	"embedding" text,
@@ -535,7 +535,7 @@ CREATE TABLE "rag_search_queries" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "anomaly_alerts" (
+CREATE TABLE IF NOT EXISTS "anomaly_alerts" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"alert_type" text NOT NULL,
 	"severity" text DEFAULT 'medium' NOT NULL,
@@ -552,7 +552,7 @@ CREATE TABLE "anomaly_alerts" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "report_template_versions" (
+CREATE TABLE IF NOT EXISTS "report_template_versions" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"template_id" text NOT NULL,
 	"version" integer NOT NULL,
@@ -564,7 +564,7 @@ CREATE TABLE "report_template_versions" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "ai_billing_suggestions" (
+CREATE TABLE IF NOT EXISTS "ai_billing_suggestions" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"worklist_id" integer NOT NULL,
 	"report_id" integer,
@@ -581,7 +581,7 @@ CREATE TABLE "ai_billing_suggestions" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "peer_review_assignments" (
+CREATE TABLE IF NOT EXISTS "peer_review_assignments" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"report_id" integer NOT NULL,
 	"worklist_id" integer,
@@ -599,7 +599,7 @@ CREATE TABLE "peer_review_assignments" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "turnaround_times" (
+CREATE TABLE IF NOT EXISTS "turnaround_times" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"worklist_id" integer NOT NULL,
 	"study_id" integer,
@@ -613,7 +613,7 @@ CREATE TABLE "turnaround_times" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "ai_training_data_exports" (
+CREATE TABLE IF NOT EXISTS "ai_training_data_exports" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"export_name" text NOT NULL,
 	"modality" text,
@@ -629,7 +629,7 @@ CREATE TABLE "ai_training_data_exports" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "report_quality_gates" (
+CREATE TABLE IF NOT EXISTS "report_quality_gates" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"report_id" integer NOT NULL,
 	"findings_present" boolean DEFAULT false NOT NULL,
@@ -646,7 +646,7 @@ CREATE TABLE "report_quality_gates" (
 	CONSTRAINT "report_quality_gates_report_id_unique" UNIQUE("report_id")
 );
 --> statement-breakpoint
-CREATE TABLE "critical_findings" (
+CREATE TABLE IF NOT EXISTS "critical_findings" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"report_id" integer NOT NULL,
 	"worklist_id" integer,
@@ -663,7 +663,7 @@ CREATE TABLE "critical_findings" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "ai_provider_health_logs" (
+CREATE TABLE IF NOT EXISTS "ai_provider_health_logs" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"provider" text NOT NULL,
 	"endpoint_url" text,
@@ -676,7 +676,7 @@ CREATE TABLE "ai_provider_health_logs" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "ai_voice_transcriptions" (
+CREATE TABLE IF NOT EXISTS "ai_voice_transcriptions" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"worklist_id" integer,
 	"report_id" integer,
@@ -697,7 +697,7 @@ CREATE TABLE "ai_voice_transcriptions" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "ai_patient_communications" (
+CREATE TABLE IF NOT EXISTS "ai_patient_communications" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"worklist_id" integer,
 	"report_id" integer,
@@ -718,7 +718,7 @@ CREATE TABLE "ai_patient_communications" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "ai_normal_report_templates" (
+CREATE TABLE IF NOT EXISTS "ai_normal_report_templates" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
 	"modality" text NOT NULL,
@@ -734,7 +734,7 @@ CREATE TABLE "ai_normal_report_templates" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "echo_audit_logs" (
+CREATE TABLE IF NOT EXISTS "echo_audit_logs" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_id" integer NOT NULL,
 	"action" text NOT NULL,
@@ -743,7 +743,7 @@ CREATE TABLE "echo_audit_logs" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "echo_measurements" (
+CREATE TABLE IF NOT EXISTS "echo_measurements" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_id" integer NOT NULL,
 	"patient_id" integer,
@@ -799,7 +799,7 @@ CREATE TABLE "echo_measurements" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "echo_regional_walls" (
+CREATE TABLE IF NOT EXISTS "echo_regional_walls" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_id" integer NOT NULL,
 	"segment" text NOT NULL,
@@ -808,7 +808,7 @@ CREATE TABLE "echo_regional_walls" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "echo_reports" (
+CREATE TABLE IF NOT EXISTS "echo_reports" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_id" integer NOT NULL,
 	"patient_id" integer,
@@ -840,7 +840,7 @@ CREATE TABLE "echo_reports" (
 	CONSTRAINT "echo_reports_study_id_unique" UNIQUE("study_id")
 );
 --> statement-breakpoint
-CREATE TABLE "echo_valve_assessment" (
+CREATE TABLE IF NOT EXISTS "echo_valve_assessment" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_id" integer NOT NULL,
 	"valve_name" text NOT NULL,
@@ -854,7 +854,7 @@ CREATE TABLE "echo_valve_assessment" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "fetal_echo_audit_logs" (
+CREATE TABLE IF NOT EXISTS "fetal_echo_audit_logs" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_id" integer NOT NULL,
 	"action" text NOT NULL,
@@ -863,7 +863,7 @@ CREATE TABLE "fetal_echo_audit_logs" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "fetal_echo_studies" (
+CREATE TABLE IF NOT EXISTS "fetal_echo_studies" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_id" integer NOT NULL,
 	"patient_id" integer,
@@ -917,7 +917,7 @@ CREATE TABLE "fetal_echo_studies" (
 	CONSTRAINT "fetal_echo_studies_study_id_unique" UNIQUE("study_id")
 );
 --> statement-breakpoint
-CREATE TABLE "fetal_usg_audit_logs" (
+CREATE TABLE IF NOT EXISTS "fetal_usg_audit_logs" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_id" integer NOT NULL,
 	"action" varchar(40) NOT NULL,
@@ -926,7 +926,7 @@ CREATE TABLE "fetal_usg_audit_logs" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "fetal_usg_checklists" (
+CREATE TABLE IF NOT EXISTS "fetal_usg_checklists" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_id" integer NOT NULL,
 	"skull_brain" varchar(20) DEFAULT 'not_assessed',
@@ -948,7 +948,7 @@ CREATE TABLE "fetal_usg_checklists" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "fetal_usg_critical_alerts" (
+CREATE TABLE IF NOT EXISTS "fetal_usg_critical_alerts" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_id" integer NOT NULL,
 	"alert_type" varchar(40) NOT NULL,
@@ -959,7 +959,7 @@ CREATE TABLE "fetal_usg_critical_alerts" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "fetal_usg_measurements" (
+CREATE TABLE IF NOT EXISTS "fetal_usg_measurements" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_id" integer NOT NULL,
 	"crl" numeric(6, 2),
@@ -1023,7 +1023,7 @@ CREATE TABLE "fetal_usg_measurements" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "fetal_usg_reports" (
+CREATE TABLE IF NOT EXISTS "fetal_usg_reports" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_id" integer NOT NULL,
 	"findings" text,
@@ -1039,7 +1039,7 @@ CREATE TABLE "fetal_usg_reports" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "fetal_usg_studies" (
+CREATE TABLE IF NOT EXISTS "fetal_usg_studies" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_id" integer NOT NULL,
 	"patient_id" integer NOT NULL,
@@ -1068,7 +1068,7 @@ CREATE TABLE "fetal_usg_studies" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "fetal_usg_template_preferences" (
+CREATE TABLE IF NOT EXISTS "fetal_usg_template_preferences" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"doctor_id" integer NOT NULL,
 	"study_type" varchar(40) NOT NULL,
@@ -1078,7 +1078,7 @@ CREATE TABLE "fetal_usg_template_preferences" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "backup_verification" (
+CREATE TABLE IF NOT EXISTS "backup_verification" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"backup_type" text NOT NULL,
 	"status" text DEFAULT 'pending' NOT NULL,
@@ -1094,7 +1094,7 @@ CREATE TABLE "backup_verification" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "critical_escalation_log" (
+CREATE TABLE IF NOT EXISTS "critical_escalation_log" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"critical_finding_id" integer NOT NULL,
 	"escalation_level" integer DEFAULT 1 NOT NULL,
@@ -1110,7 +1110,7 @@ CREATE TABLE "critical_escalation_log" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "dicom_retry_queue" (
+CREATE TABLE IF NOT EXISTS "dicom_retry_queue" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"operation_type" text NOT NULL,
 	"entity_id" integer,
@@ -1127,7 +1127,7 @@ CREATE TABLE "dicom_retry_queue" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "report_delivery_tracking" (
+CREATE TABLE IF NOT EXISTS "report_delivery_tracking" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"report_draft_id" integer NOT NULL,
 	"study_id" integer,
@@ -1142,7 +1142,7 @@ CREATE TABLE "report_delivery_tracking" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "storage_metrics" (
+CREATE TABLE IF NOT EXISTS "storage_metrics" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"snapshot_date" timestamp with time zone DEFAULT now() NOT NULL,
 	"total_bytes_used" integer,
@@ -1156,7 +1156,7 @@ CREATE TABLE "storage_metrics" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "system_health_snapshot" (
+CREATE TABLE IF NOT EXISTS "system_health_snapshot" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"snapshot_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"api_health" text DEFAULT 'ok' NOT NULL,
@@ -1171,7 +1171,7 @@ CREATE TABLE "system_health_snapshot" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "ai_job_queue" (
+CREATE TABLE IF NOT EXISTS "ai_job_queue" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_id" integer NOT NULL,
 	"job_type" text NOT NULL,
@@ -1194,7 +1194,7 @@ CREATE TABLE "ai_job_queue" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "dicom_incoming_studies" (
+CREATE TABLE IF NOT EXISTS "dicom_incoming_studies" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_instance_uid" text NOT NULL,
 	"series_instance_uid" text,
@@ -1223,7 +1223,7 @@ CREATE TABLE "dicom_incoming_studies" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "mwl_entries" (
+CREATE TABLE IF NOT EXISTS "mwl_entries" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"patient_id" integer NOT NULL,
 	"accession_number" text NOT NULL,
@@ -1252,7 +1252,7 @@ CREATE TABLE "mwl_entries" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "pacs_storage_tier" (
+CREATE TABLE IF NOT EXISTS "pacs_storage_tier" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_id" integer NOT NULL,
 	"modality" text DEFAULT 'OT' NOT NULL,
@@ -1271,7 +1271,7 @@ CREATE TABLE "pacs_storage_tier" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiologist_macros" (
+CREATE TABLE IF NOT EXISTS "radiologist_macros" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"radiologist_id" integer NOT NULL,
 	"trigger" text NOT NULL,
@@ -1283,7 +1283,7 @@ CREATE TABLE "radiologist_macros" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiologist_shortcuts" (
+CREATE TABLE IF NOT EXISTS "radiologist_shortcuts" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"radiologist_id" integer NOT NULL,
 	"key_combo" text NOT NULL,
@@ -1295,7 +1295,7 @@ CREATE TABLE "radiologist_shortcuts" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "study_access_log" (
+CREATE TABLE IF NOT EXISTS "study_access_log" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_id" integer NOT NULL,
 	"user_id" integer NOT NULL,
@@ -1309,7 +1309,7 @@ CREATE TABLE "study_access_log" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "viewer_presets" (
+CREATE TABLE IF NOT EXISTS "viewer_presets" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
 	"modality" text DEFAULT 'CT' NOT NULL,
@@ -1322,7 +1322,7 @@ CREATE TABLE "viewer_presets" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "audit_logs" (
+CREATE TABLE IF NOT EXISTS "audit_logs" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"user_id" integer,
 	"user_name" text DEFAULT 'system' NOT NULL,
@@ -1341,7 +1341,7 @@ CREATE TABLE "audit_logs" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "role_permissions" (
+CREATE TABLE IF NOT EXISTS "role_permissions" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"role" text NOT NULL,
 	"module" text NOT NULL,
@@ -1359,7 +1359,7 @@ CREATE TABLE "role_permissions" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "upload_files" (
+CREATE TABLE IF NOT EXISTS "upload_files" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"patient_id" integer,
 	"module" text NOT NULL,
@@ -1375,7 +1375,7 @@ CREATE TABLE "upload_files" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_snippets" (
+CREATE TABLE IF NOT EXISTS "radiology_snippets" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"type" text NOT NULL,
 	"label" text NOT NULL,
@@ -1404,7 +1404,7 @@ CREATE TABLE "radiology_snippets" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiologist_profiles" (
+CREATE TABLE IF NOT EXISTS "radiologist_profiles" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"staff_id" integer NOT NULL,
 	"profile_name" text DEFAULT 'Default' NOT NULL,
@@ -1425,7 +1425,7 @@ CREATE TABLE "radiologist_profiles" (
 	CONSTRAINT "radiologist_profiles_staff_id_unique" UNIQUE("staff_id")
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_knowledge_base" (
+CREATE TABLE IF NOT EXISTS "radiology_knowledge_base" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"category" text NOT NULL,
 	"title" text NOT NULL,
@@ -1440,7 +1440,7 @@ CREATE TABLE "radiology_knowledge_base" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_master_templates" (
+CREATE TABLE IF NOT EXISTS "radiology_master_templates" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"group_name" text NOT NULL,
 	"template_name" text NOT NULL,
@@ -1460,7 +1460,7 @@ CREATE TABLE "radiology_master_templates" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_personal_templates" (
+CREATE TABLE IF NOT EXISTS "radiology_personal_templates" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"staff_id" integer NOT NULL,
 	"folder" text DEFAULT 'General' NOT NULL,
@@ -1480,7 +1480,7 @@ CREATE TABLE "radiology_personal_templates" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_template_comparison" (
+CREATE TABLE IF NOT EXISTS "radiology_template_comparison" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"staff_id" integer NOT NULL,
 	"personal_template_id" integer NOT NULL,
@@ -1491,7 +1491,7 @@ CREATE TABLE "radiology_template_comparison" (
 	"compared_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_template_favorites" (
+CREATE TABLE IF NOT EXISTS "radiology_template_favorites" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"staff_id" integer NOT NULL,
 	"template_id" integer NOT NULL,
@@ -1500,7 +1500,7 @@ CREATE TABLE "radiology_template_favorites" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_template_packs" (
+CREATE TABLE IF NOT EXISTS "radiology_template_packs" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"staff_id" integer NOT NULL,
 	"pack_name" text NOT NULL,
@@ -1513,7 +1513,7 @@ CREATE TABLE "radiology_template_packs" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_template_usage" (
+CREATE TABLE IF NOT EXISTS "radiology_template_usage" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"staff_id" integer NOT NULL,
 	"template_id" integer NOT NULL,
@@ -1526,7 +1526,7 @@ CREATE TABLE "radiology_template_usage" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_template_versions" (
+CREATE TABLE IF NOT EXISTS "radiology_template_versions" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"master_template_id" integer NOT NULL,
 	"version" integer NOT NULL,
@@ -1539,7 +1539,7 @@ CREATE TABLE "radiology_template_versions" (
 	"changed_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_favorite_finding_sets" (
+CREATE TABLE IF NOT EXISTS "radiology_favorite_finding_sets" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"staff_id" integer NOT NULL,
 	"set_name" text NOT NULL,
@@ -1550,7 +1550,7 @@ CREATE TABLE "radiology_favorite_finding_sets" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_impression_rules" (
+CREATE TABLE IF NOT EXISTS "radiology_impression_rules" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"rule_name" text NOT NULL,
 	"builder_type" text NOT NULL,
@@ -1566,7 +1566,7 @@ CREATE TABLE "radiology_impression_rules" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_smart_findings_audit" (
+CREATE TABLE IF NOT EXISTS "radiology_smart_findings_audit" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"smart_finding_id" integer NOT NULL,
 	"staff_id" integer NOT NULL,
@@ -1577,7 +1577,7 @@ CREATE TABLE "radiology_smart_findings_audit" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_smart_findings" (
+CREATE TABLE IF NOT EXISTS "radiology_smart_findings" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"worklist_id" integer NOT NULL,
 	"staff_id" integer NOT NULL,
@@ -1593,7 +1593,7 @@ CREATE TABLE "radiology_smart_findings" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_smart_usage" (
+CREATE TABLE IF NOT EXISTS "radiology_smart_usage" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"staff_id" integer NOT NULL,
 	"worklist_id" integer,
@@ -1604,7 +1604,7 @@ CREATE TABLE "radiology_smart_usage" (
 	"generated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_memory_classifications" (
+CREATE TABLE IF NOT EXISTS "radiology_memory_classifications" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"staff_id" integer NOT NULL,
 	"classification" text NOT NULL,
@@ -1616,7 +1616,7 @@ CREATE TABLE "radiology_memory_classifications" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_memory_decisions" (
+CREATE TABLE IF NOT EXISTS "radiology_memory_decisions" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"staff_id" integer NOT NULL,
 	"suggestion_type" text NOT NULL,
@@ -1632,7 +1632,7 @@ CREATE TABLE "radiology_memory_decisions" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_memory_feedback" (
+CREATE TABLE IF NOT EXISTS "radiology_memory_feedback" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"staff_id" integer NOT NULL,
 	"suggestion_type" text NOT NULL,
@@ -1646,7 +1646,7 @@ CREATE TABLE "radiology_memory_feedback" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_memory_impressions" (
+CREATE TABLE IF NOT EXISTS "radiology_memory_impressions" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"staff_id" integer NOT NULL,
 	"finding_signature" text NOT NULL,
@@ -1661,7 +1661,7 @@ CREATE TABLE "radiology_memory_impressions" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_memory_measurements" (
+CREATE TABLE IF NOT EXISTS "radiology_memory_measurements" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"staff_id" integer NOT NULL,
 	"patient_id" integer NOT NULL,
@@ -1680,7 +1680,7 @@ CREATE TABLE "radiology_memory_measurements" (
 	"last_used_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_memory_patterns" (
+CREATE TABLE IF NOT EXISTS "radiology_memory_patterns" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"staff_id" integer NOT NULL,
 	"pattern_type" text NOT NULL,
@@ -1692,7 +1692,7 @@ CREATE TABLE "radiology_memory_patterns" (
 	"last_used_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_memory_phrases" (
+CREATE TABLE IF NOT EXISTS "radiology_memory_phrases" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"staff_id" integer NOT NULL,
 	"modality" text NOT NULL,
@@ -1706,7 +1706,7 @@ CREATE TABLE "radiology_memory_phrases" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_memory" (
+CREATE TABLE IF NOT EXISTS "radiology_memory" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"staff_id" integer NOT NULL,
 	"staff_name" text NOT NULL,
@@ -1734,7 +1734,7 @@ CREATE TABLE "radiology_memory" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_memory_usage" (
+CREATE TABLE IF NOT EXISTS "radiology_memory_usage" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"staff_id" integer NOT NULL,
 	"session_date" text NOT NULL,
@@ -1749,7 +1749,7 @@ CREATE TABLE "radiology_memory_usage" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_copilot_logs" (
+CREATE TABLE IF NOT EXISTS "radiology_copilot_logs" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"staff_name" text NOT NULL,
 	"study_instance_uid" text,
@@ -1759,7 +1759,7 @@ CREATE TABLE "radiology_copilot_logs" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_lesion_timeline" (
+CREATE TABLE IF NOT EXISTS "radiology_lesion_timeline" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"lesion_id" integer NOT NULL,
 	"patient_id" integer NOT NULL,
@@ -1782,7 +1782,7 @@ CREATE TABLE "radiology_lesion_timeline" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_lesions" (
+CREATE TABLE IF NOT EXISTS "radiology_lesions" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"patient_id" integer NOT NULL,
 	"lesion_label" text NOT NULL,
@@ -1808,7 +1808,7 @@ CREATE TABLE "radiology_lesions" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_measurements" (
+CREATE TABLE IF NOT EXISTS "radiology_measurements" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"patient_id" integer NOT NULL,
 	"study_id" integer,
@@ -1828,7 +1828,7 @@ CREATE TABLE "radiology_measurements" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_user_copilot_profiles" (
+CREATE TABLE IF NOT EXISTS "radiology_user_copilot_profiles" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"staff_name" text NOT NULL,
 	"ignored_warnings" text[],
@@ -1838,7 +1838,7 @@ CREATE TABLE "radiology_user_copilot_profiles" (
 	CONSTRAINT "radiology_user_copilot_profiles_staff_name_unique" UNIQUE("staff_name")
 );
 --> statement-breakpoint
-CREATE TABLE "viewer_measurements" (
+CREATE TABLE IF NOT EXISTS "viewer_measurements" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"patient_id" integer NOT NULL,
 	"study_id" integer,
@@ -1861,7 +1861,7 @@ CREATE TABLE "viewer_measurements" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_brain_sessions" (
+CREATE TABLE IF NOT EXISTS "radiology_brain_sessions" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"patient_id" integer NOT NULL,
 	"order_id" integer,
@@ -1904,7 +1904,7 @@ CREATE TABLE "radiology_brain_sessions" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_spine_levels" (
+CREATE TABLE IF NOT EXISTS "radiology_spine_levels" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"session_id" integer NOT NULL,
 	"patient_id" integer NOT NULL,
@@ -1928,7 +1928,7 @@ CREATE TABLE "radiology_spine_levels" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_spine_sessions" (
+CREATE TABLE IF NOT EXISTS "radiology_spine_sessions" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"patient_id" integer NOT NULL,
 	"order_id" integer,
@@ -1947,7 +1947,7 @@ CREATE TABLE "radiology_spine_sessions" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_tumor_followups" (
+CREATE TABLE IF NOT EXISTS "radiology_tumor_followups" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"patient_id" integer NOT NULL,
 	"lesion_id" integer,
@@ -1977,7 +1977,7 @@ CREATE TABLE "radiology_tumor_followups" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_annotations" (
+CREATE TABLE IF NOT EXISTS "radiology_annotations" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_instance_uid" text NOT NULL,
 	"series_instance_uid" text,
@@ -1999,7 +1999,7 @@ CREATE TABLE "radiology_annotations" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiology_ai_review_audits" (
+CREATE TABLE IF NOT EXISTS "radiology_ai_review_audits" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"modality" text,
 	"body_part" text,
@@ -2012,7 +2012,7 @@ CREATE TABLE "radiology_ai_review_audits" (
 	"created_at" timestamp DEFAULT now()
 );
 --> statement-breakpoint
-CREATE TABLE "scan_sessions" (
+CREATE TABLE IF NOT EXISTS "scan_sessions" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"session_token" text NOT NULL,
 	"status" text DEFAULT 'pending' NOT NULL,
@@ -2027,7 +2027,7 @@ CREATE TABLE "scan_sessions" (
 	CONSTRAINT "scan_sessions_session_token_unique" UNIQUE("session_token")
 );
 --> statement-breakpoint
-CREATE TABLE "paired_devices" (
+CREATE TABLE IF NOT EXISTS "paired_devices" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"device_id" text NOT NULL,
 	"device_name" text NOT NULL,
@@ -2037,7 +2037,7 @@ CREATE TABLE "paired_devices" (
 	CONSTRAINT "paired_devices_device_id_unique" UNIQUE("device_id")
 );
 --> statement-breakpoint
-CREATE TABLE "scan_audit_logs" (
+CREATE TABLE IF NOT EXISTS "scan_audit_logs" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"user_id" integer,
 	"username" text,
@@ -2050,7 +2050,7 @@ CREATE TABLE "scan_audit_logs" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "payment_logs" (
+CREATE TABLE IF NOT EXISTS "payment_logs" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"booking_ref" text NOT NULL,
 	"patient_name" text NOT NULL,
@@ -2063,7 +2063,7 @@ CREATE TABLE "payment_logs" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "voice_dictation_logs" (
+CREATE TABLE IF NOT EXISTS "voice_dictation_logs" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"user_id" integer,
 	"user_name" text,
@@ -2077,7 +2077,7 @@ CREATE TABLE "voice_dictation_logs" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "pregnancy_episodes" (
+CREATE TABLE IF NOT EXISTS "pregnancy_episodes" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"patient_id" integer NOT NULL,
 	"start_date" timestamp with time zone DEFAULT now() NOT NULL,
@@ -2088,7 +2088,7 @@ CREATE TABLE "pregnancy_episodes" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "radiologist_learning_settings" (
+CREATE TABLE IF NOT EXISTS "radiologist_learning_settings" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"staff_id" integer NOT NULL,
 	"learning_enabled" boolean DEFAULT true NOT NULL,
@@ -2096,7 +2096,7 @@ CREATE TABLE "radiologist_learning_settings" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "mri_protocol_quality_results" (
+CREATE TABLE IF NOT EXISTS "mri_protocol_quality_results" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"study_id" integer NOT NULL,
 	"draft_id" integer,
@@ -2110,7 +2110,7 @@ CREATE TABLE "mri_protocol_quality_results" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "mri_protocol_specs" (
+CREATE TABLE IF NOT EXISTS "mri_protocol_specs" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"protocol_key" text NOT NULL,
 	"name" text NOT NULL,
@@ -2369,245 +2369,245 @@ ALTER TABLE "radiology_smart_findings" ADD CONSTRAINT "radiology_smart_findings_
 ALTER TABLE "radiology_smart_usage" ADD CONSTRAINT "radiology_smart_usage_staff_id_users_id_fk" FOREIGN KEY ("staff_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pregnancy_episodes" ADD CONSTRAINT "pregnancy_episodes_patient_id_patients_id_fk" FOREIGN KEY ("patient_id") REFERENCES "public"."patients"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "radiologist_learning_settings" ADD CONSTRAINT "radiologist_learning_settings_staff_id_staff_id_fk" FOREIGN KEY ("staff_id") REFERENCES "public"."staff"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "smart_macros_creator_idx" ON "radiology_smart_macros" USING btree ("created_by");--> statement-breakpoint
-CREATE INDEX "smart_macros_shortcut_idx" ON "radiology_smart_macros" USING btree ("shortcut");--> statement-breakpoint
-CREATE INDEX "smart_macros_modality_idx" ON "radiology_smart_macros" USING btree ("modality");--> statement-breakpoint
-CREATE INDEX "smart_macros_body_part_idx" ON "radiology_smart_macros" USING btree ("body_part");--> statement-breakpoint
-CREATE INDEX "spinal_measurements_study_idx" ON "spinal_measurements" USING btree ("study_id");--> statement-breakpoint
-CREATE INDEX "spinal_measurements_draft_idx" ON "spinal_measurements" USING btree ("draft_id");--> statement-breakpoint
-CREATE INDEX "spinal_measurements_level_idx" ON "spinal_measurements" USING btree ("vertebra_level");--> statement-breakpoint
-CREATE INDEX "spinal_measurements_stenosis_idx" ON "spinal_measurements" USING btree ("stenosis_grade");--> statement-breakpoint
-CREATE UNIQUE INDEX "radiology_study_locks_study_id_uq" ON "radiology_study_locks" USING btree ("study_id");--> statement-breakpoint
-CREATE INDEX "radiology_study_locks_study_id_idx" ON "radiology_study_locks" USING btree ("study_id");--> statement-breakpoint
-CREATE INDEX "radiology_study_locks_user_id_idx" ON "radiology_study_locks" USING btree ("user_id");--> statement-breakpoint
-CREATE INDEX "ai_prompt_tpl_modality_idx" ON "ai_prompt_templates" USING btree ("modality");--> statement-breakpoint
-CREATE INDEX "ai_prompt_tpl_active_idx" ON "ai_prompt_templates" USING btree ("is_active");--> statement-breakpoint
-CREATE UNIQUE INDEX "ai_prompt_tpl_name_uq" ON "ai_prompt_templates" USING btree ("name");--> statement-breakpoint
-CREATE INDEX "ai_prompt_lib_modality_idx" ON "ai_prompt_library" USING btree ("modality");--> statement-breakpoint
-CREATE INDEX "ai_prompt_lib_owner_idx" ON "ai_prompt_library" USING btree ("library_owner");--> statement-breakpoint
-CREATE INDEX "ai_prompt_lib_active_idx" ON "ai_prompt_library" USING btree ("is_active");--> statement-breakpoint
-CREATE UNIQUE INDEX "ai_prompt_lib_name_owner_uq" ON "ai_prompt_library" USING btree ("name","library_owner");--> statement-breakpoint
-CREATE INDEX "ai_prompt_lib_ver_lib_id_idx" ON "ai_prompt_library_versions" USING btree ("library_id");--> statement-breakpoint
-CREATE INDEX "ai_prompt_lib_ver_ver_idx" ON "ai_prompt_library_versions" USING btree ("library_id","version");--> statement-breakpoint
-CREATE INDEX "measurement_history_patient_idx" ON "measurement_history" USING btree ("patient_id");--> statement-breakpoint
-CREATE INDEX "measurement_history_type_idx" ON "measurement_history" USING btree ("measurement_type");--> statement-breakpoint
-CREATE INDEX "measurement_history_study_idx" ON "measurement_history" USING btree ("study_id");--> statement-breakpoint
-CREATE INDEX "teaching_case_collections_owner_idx" ON "teaching_case_collections" USING btree ("owner_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "teaching_case_favorites_uq" ON "teaching_case_favorites" USING btree ("teaching_case_id","user_id");--> statement-breakpoint
-CREATE INDEX "teaching_case_images_case_idx" ON "teaching_case_images" USING btree ("teaching_case_id");--> statement-breakpoint
-CREATE INDEX "teaching_case_images_key_idx" ON "teaching_case_images" USING btree ("is_key_image");--> statement-breakpoint
-CREATE INDEX "teaching_case_notes_case_idx" ON "teaching_case_notes" USING btree ("teaching_case_id");--> statement-breakpoint
-CREATE INDEX "teaching_case_views_case_idx" ON "teaching_case_views" USING btree ("teaching_case_id");--> statement-breakpoint
-CREATE INDEX "teaching_cases_category_idx" ON "teaching_cases" USING btree ("category");--> statement-breakpoint
-CREATE INDEX "teaching_cases_difficulty_idx" ON "teaching_cases" USING btree ("difficulty");--> statement-breakpoint
-CREATE INDEX "teaching_cases_status_idx" ON "teaching_cases" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "teaching_cases_modality_idx" ON "teaching_cases" USING btree ("modality");--> statement-breakpoint
-CREATE INDEX "teaching_cases_body_part_idx" ON "teaching_cases" USING btree ("body_part");--> statement-breakpoint
-CREATE INDEX "teaching_cases_diagnosis_idx" ON "teaching_cases" USING btree ("diagnosis");--> statement-breakpoint
-CREATE INDEX "teaching_cases_created_by_idx" ON "teaching_cases" USING btree ("created_by_id");--> statement-breakpoint
-CREATE INDEX "teaching_cases_research_idx" ON "teaching_cases" USING btree ("is_research_candidate");--> statement-breakpoint
-CREATE UNIQUE INDEX "ai_model_routes_task_uq" ON "ai_model_routes" USING btree ("task_key");--> statement-breakpoint
-CREATE INDEX "ai_qs_scope_key_idx" ON "ai_quality_scores" USING btree ("scope","scope_key");--> statement-breakpoint
-CREATE INDEX "ai_qs_date_idx" ON "ai_quality_scores" USING btree ("date_from","date_to");--> statement-breakpoint
-CREATE INDEX "ai_qs_computed_idx" ON "ai_quality_scores" USING btree ("computed_at");--> statement-breakpoint
-CREATE INDEX "ai_dicom_findings_wl_idx" ON "ai_dicom_findings" USING btree ("worklist_id");--> statement-breakpoint
-CREATE INDEX "ai_dicom_findings_uid_idx" ON "ai_dicom_findings" USING btree ("study_instance_uid");--> statement-breakpoint
-CREATE INDEX "ai_dicom_findings_status_idx" ON "ai_dicom_findings" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "rag_doc_doc_id_idx" ON "rag_document_embeddings" USING btree ("document_id");--> statement-breakpoint
-CREATE INDEX "rag_doc_type_idx" ON "rag_document_embeddings" USING btree ("document_type");--> statement-breakpoint
-CREATE INDEX "rag_doc_modality_idx" ON "rag_document_embeddings" USING btree ("modality");--> statement-breakpoint
-CREATE INDEX "rag_doc_patient_idx" ON "rag_document_embeddings" USING btree ("patient_id");--> statement-breakpoint
-CREATE INDEX "rag_search_query_idx" ON "rag_search_queries" USING btree ("query_text");--> statement-breakpoint
-CREATE INDEX "rag_search_user_idx" ON "rag_search_queries" USING btree ("user_id");--> statement-breakpoint
-CREATE INDEX "anomaly_alert_type_idx" ON "anomaly_alerts" USING btree ("alert_type");--> statement-breakpoint
-CREATE INDEX "anomaly_alert_severity_idx" ON "anomaly_alerts" USING btree ("severity");--> statement-breakpoint
-CREATE INDEX "anomaly_alert_status_idx" ON "anomaly_alerts" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "anomaly_alert_scope_idx" ON "anomaly_alerts" USING btree ("scope","related_id");--> statement-breakpoint
-CREATE INDEX "rtv_template_idx" ON "report_template_versions" USING btree ("template_id");--> statement-breakpoint
-CREATE INDEX "rtv_version_idx" ON "report_template_versions" USING btree ("template_id","version");--> statement-breakpoint
-CREATE INDEX "ai_billing_wl_idx" ON "ai_billing_suggestions" USING btree ("worklist_id");--> statement-breakpoint
-CREATE INDEX "ai_billing_status_idx" ON "ai_billing_suggestions" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "pra_report_idx" ON "peer_review_assignments" USING btree ("report_id");--> statement-breakpoint
-CREATE INDEX "pra_assignee_idx" ON "peer_review_assignments" USING btree ("assigned_to_id","status");--> statement-breakpoint
-CREATE INDEX "pra_status_idx" ON "peer_review_assignments" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "tat_wl_idx" ON "turnaround_times" USING btree ("worklist_id");--> statement-breakpoint
-CREATE INDEX "tat_date_idx" ON "turnaround_times" USING btree ("date_bucket");--> statement-breakpoint
-CREATE INDEX "tat_modality_idx" ON "turnaround_times" USING btree ("modality","date_bucket");--> statement-breakpoint
-CREATE INDEX "tat_rad_idx" ON "turnaround_times" USING btree ("radiologist_id","date_bucket");--> statement-breakpoint
-CREATE INDEX "tde_status_idx" ON "ai_training_data_exports" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "tde_name_idx" ON "ai_training_data_exports" USING btree ("export_name");--> statement-breakpoint
-CREATE INDEX "rqg_report_idx" ON "report_quality_gates" USING btree ("report_id");--> statement-breakpoint
-CREATE INDEX "rqg_passed_idx" ON "report_quality_gates" USING btree ("all_passed");--> statement-breakpoint
-CREATE INDEX "cf_report_idx" ON "critical_findings" USING btree ("report_id");--> statement-breakpoint
-CREATE INDEX "cf_status_idx" ON "critical_findings" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "cf_patient_idx" ON "critical_findings" USING btree ("patient_id");--> statement-breakpoint
-CREATE INDEX "aphl_provider_idx" ON "ai_provider_health_logs" USING btree ("provider");--> statement-breakpoint
-CREATE INDEX "aphl_status_idx" ON "ai_provider_health_logs" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "aphl_created_idx" ON "ai_provider_health_logs" USING btree ("created_at");--> statement-breakpoint
-CREATE INDEX "echo_audit_study_idx" ON "echo_audit_logs" USING btree ("study_id");--> statement-breakpoint
-CREATE INDEX "echo_measurements_study_idx" ON "echo_measurements" USING btree ("study_id");--> statement-breakpoint
-CREATE INDEX "echo_measurements_patient_idx" ON "echo_measurements" USING btree ("patient_id");--> statement-breakpoint
-CREATE INDEX "echo_wall_study_idx" ON "echo_regional_walls" USING btree ("study_id");--> statement-breakpoint
-CREATE INDEX "echo_reports_study_idx" ON "echo_reports" USING btree ("study_id");--> statement-breakpoint
-CREATE INDEX "echo_reports_status_idx" ON "echo_reports" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "echo_valve_study_idx" ON "echo_valve_assessment" USING btree ("study_id");--> statement-breakpoint
-CREATE INDEX "fetal_echo_audit_study_idx" ON "fetal_echo_audit_logs" USING btree ("study_id");--> statement-breakpoint
-CREATE INDEX "fetal_echo_study_idx" ON "fetal_echo_studies" USING btree ("study_id");--> statement-breakpoint
-CREATE INDEX "fetal_echo_status_idx" ON "fetal_echo_studies" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "backup_type_idx" ON "backup_verification" USING btree ("backup_type");--> statement-breakpoint
-CREATE INDEX "backup_status_idx" ON "backup_verification" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "esc_finding_idx" ON "critical_escalation_log" USING btree ("critical_finding_id");--> statement-breakpoint
-CREATE INDEX "esc_status_idx" ON "critical_escalation_log" USING btree ("resolution_status");--> statement-breakpoint
-CREATE INDEX "retry_op_type_idx" ON "dicom_retry_queue" USING btree ("operation_type");--> statement-breakpoint
-CREATE INDEX "retry_status_idx" ON "dicom_retry_queue" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "retry_entity_idx" ON "dicom_retry_queue" USING btree ("entity_type","entity_id");--> statement-breakpoint
-CREATE INDEX "delivery_draft_idx" ON "report_delivery_tracking" USING btree ("report_draft_id");--> statement-breakpoint
-CREATE INDEX "delivery_study_idx" ON "report_delivery_tracking" USING btree ("study_id");--> statement-breakpoint
-CREATE INDEX "storage_date_idx" ON "storage_metrics" USING btree ("snapshot_date");--> statement-breakpoint
-CREATE INDEX "storage_alert_idx" ON "storage_metrics" USING btree ("alert_triggered");--> statement-breakpoint
-CREATE INDEX "health_snap_idx" ON "system_health_snapshot" USING btree ("snapshot_at");--> statement-breakpoint
-CREATE INDEX "health_api_idx" ON "system_health_snapshot" USING btree ("api_health");--> statement-breakpoint
-CREATE INDEX "ai_job_study_idx" ON "ai_job_queue" USING btree ("study_id");--> statement-breakpoint
-CREATE INDEX "ai_job_status_idx" ON "ai_job_queue" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "ai_job_type_idx" ON "ai_job_queue" USING btree ("job_type");--> statement-breakpoint
-CREATE INDEX "incoming_uid_idx" ON "dicom_incoming_studies" USING btree ("study_instance_uid");--> statement-breakpoint
-CREATE INDEX "incoming_status_idx" ON "dicom_incoming_studies" USING btree ("transfer_status");--> statement-breakpoint
-CREATE INDEX "incoming_modality_idx" ON "dicom_incoming_studies" USING btree ("modality");--> statement-breakpoint
-CREATE INDEX "incoming_accession_idx" ON "dicom_incoming_studies" USING btree ("accession_number");--> statement-breakpoint
-CREATE INDEX "mwl_accession_idx" ON "mwl_entries" USING btree ("accession_number");--> statement-breakpoint
-CREATE INDEX "mwl_status_idx" ON "mwl_entries" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "mwl_patient_idx" ON "mwl_entries" USING btree ("patient_id");--> statement-breakpoint
-CREATE INDEX "mwl_mod_date_idx" ON "mwl_entries" USING btree ("modality","scheduled_start_date");--> statement-breakpoint
-CREATE INDEX "tier_study_idx" ON "pacs_storage_tier" USING btree ("study_id");--> statement-breakpoint
-CREATE INDEX "tier_current_idx" ON "pacs_storage_tier" USING btree ("current_tier");--> statement-breakpoint
-CREATE INDEX "macro_rad_idx" ON "radiologist_macros" USING btree ("radiologist_id");--> statement-breakpoint
-CREATE INDEX "macro_trigger_idx" ON "radiologist_macros" USING btree ("trigger");--> statement-breakpoint
-CREATE INDEX "shortcut_rad_idx" ON "radiologist_shortcuts" USING btree ("radiologist_id");--> statement-breakpoint
-CREATE INDEX "access_study_idx" ON "study_access_log" USING btree ("study_id");--> statement-breakpoint
-CREATE INDEX "access_user_idx" ON "study_access_log" USING btree ("user_id");--> statement-breakpoint
-CREATE INDEX "access_action_idx" ON "study_access_log" USING btree ("action");--> statement-breakpoint
-CREATE INDEX "preset_modality_idx" ON "viewer_presets" USING btree ("modality");--> statement-breakpoint
-CREATE INDEX "audit_user_idx" ON "audit_logs" USING btree ("user_id");--> statement-breakpoint
-CREATE INDEX "audit_action_idx" ON "audit_logs" USING btree ("action");--> statement-breakpoint
-CREATE INDEX "audit_module_idx" ON "audit_logs" USING btree ("module");--> statement-breakpoint
-CREATE INDEX "audit_entity_idx" ON "audit_logs" USING btree ("entity_type","entity_id");--> statement-breakpoint
-CREATE INDEX "audit_created_idx" ON "audit_logs" USING btree ("created_at");--> statement-breakpoint
-CREATE INDEX "audit_chain_hash_idx" ON "audit_logs" USING btree ("chain_hash");--> statement-breakpoint
-CREATE UNIQUE INDEX "role_module_unique_idx" ON "role_permissions" USING btree ("role","module");--> statement-breakpoint
-CREATE INDEX "upload_patient_idx" ON "upload_files" USING btree ("patient_id");--> statement-breakpoint
-CREATE INDEX "upload_module_idx" ON "upload_files" USING btree ("module");--> statement-breakpoint
-CREATE INDEX "upload_created_idx" ON "upload_files" USING btree ("created_at");--> statement-breakpoint
-CREATE INDEX "rad_snippets_type_idx" ON "radiology_snippets" USING btree ("type");--> statement-breakpoint
-CREATE INDEX "rad_snippets_new_modality_idx" ON "radiology_snippets" USING btree ("modality");--> statement-breakpoint
-CREATE INDEX "rad_snippets_new_body_part_idx" ON "radiology_snippets" USING btree ("body_part");--> statement-breakpoint
-CREATE INDEX "rad_snippets_new_active_idx" ON "radiology_snippets" USING btree ("is_active");--> statement-breakpoint
-CREATE INDEX "rad_snippets_new_creator_idx" ON "radiology_snippets" USING btree ("created_by_id");--> statement-breakpoint
-CREATE INDEX "rad_snippets_new_sort_idx" ON "radiology_snippets" USING btree ("sort_order");--> statement-breakpoint
-CREATE INDEX "radiologist_profiles_staff_idx" ON "radiologist_profiles" USING btree ("staff_id");--> statement-breakpoint
-CREATE INDEX "radiology_kb_category_idx" ON "radiology_knowledge_base" USING btree ("category");--> statement-breakpoint
-CREATE INDEX "radiology_kb_classification_idx" ON "radiology_knowledge_base" USING btree ("classification_system");--> statement-breakpoint
-CREATE INDEX "radiology_kb_active_idx" ON "radiology_knowledge_base" USING btree ("is_active");--> statement-breakpoint
-CREATE UNIQUE INDEX "radiology_master_group_name_uq" ON "radiology_master_templates" USING btree ("group_name","template_name");--> statement-breakpoint
-CREATE INDEX "radiology_master_group_idx" ON "radiology_master_templates" USING btree ("group_name");--> statement-breakpoint
-CREATE INDEX "radiology_master_modality_idx" ON "radiology_master_templates" USING btree ("modality");--> statement-breakpoint
-CREATE INDEX "radiology_master_bodypart_idx" ON "radiology_master_templates" USING btree ("body_part");--> statement-breakpoint
-CREATE INDEX "radiology_master_studytype_idx" ON "radiology_master_templates" USING btree ("study_type");--> statement-breakpoint
-CREATE INDEX "radiology_master_active_idx" ON "radiology_master_templates" USING btree ("is_active");--> statement-breakpoint
-CREATE UNIQUE INDEX "radiology_personal_staff_folder_uq" ON "radiology_personal_templates" USING btree ("staff_id","folder","template_name");--> statement-breakpoint
-CREATE INDEX "radiology_personal_staff_idx" ON "radiology_personal_templates" USING btree ("staff_id");--> statement-breakpoint
-CREATE INDEX "radiology_personal_folder_idx" ON "radiology_personal_templates" USING btree ("folder");--> statement-breakpoint
-CREATE INDEX "radiology_personal_modality_idx" ON "radiology_personal_templates" USING btree ("modality");--> statement-breakpoint
-CREATE INDEX "radiology_personal_bodypart_idx" ON "radiology_personal_templates" USING btree ("body_part");--> statement-breakpoint
-CREATE INDEX "radiology_template_comparison_staff_idx" ON "radiology_template_comparison" USING btree ("staff_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "radiology_template_favorites_uq" ON "radiology_template_favorites" USING btree ("staff_id","template_id","template_source");--> statement-breakpoint
-CREATE INDEX "radiology_template_favorites_staff_idx" ON "radiology_template_favorites" USING btree ("staff_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "radiology_template_packs_staff_uq" ON "radiology_template_packs" USING btree ("staff_id","pack_name");--> statement-breakpoint
-CREATE INDEX "radiology_template_packs_staff_idx" ON "radiology_template_packs" USING btree ("staff_id");--> statement-breakpoint
-CREATE INDEX "radiology_template_usage_staff_idx" ON "radiology_template_usage" USING btree ("staff_id");--> statement-breakpoint
-CREATE INDEX "radiology_template_usage_template_idx" ON "radiology_template_usage" USING btree ("template_id","template_source");--> statement-breakpoint
-CREATE INDEX "radiology_template_usage_action_idx" ON "radiology_template_usage" USING btree ("action");--> statement-breakpoint
-CREATE INDEX "radiology_template_usage_date_idx" ON "radiology_template_usage" USING btree ("created_at");--> statement-breakpoint
-CREATE UNIQUE INDEX "radiology_template_versions_uq" ON "radiology_template_versions" USING btree ("master_template_id","version");--> statement-breakpoint
-CREATE INDEX "radiology_template_versions_master_idx" ON "radiology_template_versions" USING btree ("master_template_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "radiology_favorite_sets_staff_uq" ON "radiology_favorite_finding_sets" USING btree ("staff_id","set_name","builder_type");--> statement-breakpoint
-CREATE INDEX "radiology_favorite_sets_staff_idx" ON "radiology_favorite_finding_sets" USING btree ("staff_id");--> statement-breakpoint
-CREATE INDEX "radiology_favorite_sets_builder_idx" ON "radiology_favorite_finding_sets" USING btree ("builder_type");--> statement-breakpoint
-CREATE INDEX "radiology_impression_rules_builder_idx" ON "radiology_impression_rules" USING btree ("builder_type");--> statement-breakpoint
-CREATE INDEX "radiology_impression_rules_active_idx" ON "radiology_impression_rules" USING btree ("is_active");--> statement-breakpoint
-CREATE INDEX "radiology_smart_audit_finding_idx" ON "radiology_smart_findings_audit" USING btree ("smart_finding_id");--> statement-breakpoint
-CREATE INDEX "radiology_smart_audit_staff_idx" ON "radiology_smart_findings_audit" USING btree ("staff_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "radiology_smart_findings_worklist_uq" ON "radiology_smart_findings" USING btree ("worklist_id","builder_type");--> statement-breakpoint
-CREATE INDEX "radiology_smart_findings_worklist_idx" ON "radiology_smart_findings" USING btree ("worklist_id");--> statement-breakpoint
-CREATE INDEX "radiology_smart_findings_staff_idx" ON "radiology_smart_findings" USING btree ("staff_id");--> statement-breakpoint
-CREATE INDEX "radiology_smart_findings_studytype_idx" ON "radiology_smart_findings" USING btree ("study_type");--> statement-breakpoint
-CREATE INDEX "radiology_smart_findings_active_idx" ON "radiology_smart_findings" USING btree ("is_active");--> statement-breakpoint
-CREATE INDEX "radiology_smart_usage_staff_idx" ON "radiology_smart_usage" USING btree ("staff_id");--> statement-breakpoint
-CREATE INDEX "radiology_smart_usage_feature_idx" ON "radiology_smart_usage" USING btree ("feature_type");--> statement-breakpoint
-CREATE INDEX "radiology_smart_usage_builder_idx" ON "radiology_smart_usage" USING btree ("builder_type");--> statement-breakpoint
-CREATE INDEX "radiology_smart_usage_generated_idx" ON "radiology_smart_usage" USING btree ("generated_at");--> statement-breakpoint
-CREATE INDEX "classification_staff_idx" ON "radiology_memory_classifications" USING btree ("staff_id","classification");--> statement-breakpoint
-CREATE INDEX "classification_value_idx" ON "radiology_memory_classifications" USING btree ("value");--> statement-breakpoint
-CREATE INDEX "decision_staff_type_idx" ON "radiology_memory_decisions" USING btree ("staff_id","suggestion_type");--> statement-breakpoint
-CREATE INDEX "decision_action_idx" ON "radiology_memory_decisions" USING btree ("action");--> statement-breakpoint
-CREATE INDEX "decision_created_idx" ON "radiology_memory_decisions" USING btree ("created_at");--> statement-breakpoint
-CREATE INDEX "feedback_staff_rating_idx" ON "radiology_memory_feedback" USING btree ("staff_id","rating");--> statement-breakpoint
-CREATE INDEX "feedback_suggestion_idx" ON "radiology_memory_feedback" USING btree ("suggestion_type");--> statement-breakpoint
-CREATE INDEX "impression_staff_signature_idx" ON "radiology_memory_impressions" USING btree ("staff_id","finding_signature");--> statement-breakpoint
-CREATE INDEX "impression_body_part_idx" ON "radiology_memory_impressions" USING btree ("body_part");--> statement-breakpoint
-CREATE INDEX "measurement_staff_patient_idx" ON "radiology_memory_measurements" USING btree ("staff_id","patient_id");--> statement-breakpoint
-CREATE INDEX "measurement_type_idx" ON "radiology_memory_measurements" USING btree ("measurement_type");--> statement-breakpoint
-CREATE INDEX "measurement_study_idx" ON "radiology_memory_measurements" USING btree ("study_id");--> statement-breakpoint
-CREATE INDEX "pattern_staff_type_idx" ON "radiology_memory_patterns" USING btree ("staff_id","pattern_type");--> statement-breakpoint
-CREATE INDEX "pattern_key_idx" ON "radiology_memory_patterns" USING btree ("key");--> statement-breakpoint
-CREATE INDEX "phrase_staff_trigger_idx" ON "radiology_memory_phrases" USING btree ("staff_id","trigger");--> statement-breakpoint
-CREATE INDEX "phrase_type_idx" ON "radiology_memory_phrases" USING btree ("phrase_type");--> statement-breakpoint
-CREATE INDEX "memory_staff_modality_idx" ON "radiology_memory" USING btree ("staff_id","modality");--> statement-breakpoint
-CREATE INDEX "memory_body_part_idx" ON "radiology_memory" USING btree ("body_part");--> statement-breakpoint
-CREATE INDEX "memory_finding_key_idx" ON "radiology_memory" USING btree ("finding_key");--> statement-breakpoint
-CREATE INDEX "memory_usage_count_idx" ON "radiology_memory" USING btree ("usage_count");--> statement-breakpoint
-CREATE INDEX "memory_last_used_idx" ON "radiology_memory" USING btree ("last_used_at");--> statement-breakpoint
-CREATE INDEX "usage_staff_date_idx" ON "radiology_memory_usage" USING btree ("staff_id","session_date");--> statement-breakpoint
-CREATE INDEX "usage_date_idx" ON "radiology_memory_usage" USING btree ("session_date");--> statement-breakpoint
-CREATE INDEX "radiology_lesion_timeline_lesion_idx" ON "radiology_lesion_timeline" USING btree ("lesion_id");--> statement-breakpoint
-CREATE INDEX "radiology_lesion_timeline_patient_idx" ON "radiology_lesion_timeline" USING btree ("patient_id");--> statement-breakpoint
-CREATE INDEX "radiology_lesion_timeline_study_idx" ON "radiology_lesion_timeline" USING btree ("study_id");--> statement-breakpoint
-CREATE INDEX "radiology_lesions_patient_idx" ON "radiology_lesions" USING btree ("patient_id");--> statement-breakpoint
-CREATE INDEX "radiology_lesions_status_idx" ON "radiology_lesions" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "radiology_measurements_patient_idx" ON "radiology_measurements" USING btree ("patient_id");--> statement-breakpoint
-CREATE INDEX "radiology_measurements_study_idx" ON "radiology_measurements" USING btree ("study_id");--> statement-breakpoint
-CREATE INDEX "radiology_measurements_modality_idx" ON "radiology_measurements" USING btree ("modality");--> statement-breakpoint
-CREATE INDEX "viewer_measurements_study_uid_idx" ON "viewer_measurements" USING btree ("study_instance_uid");--> statement-breakpoint
-CREATE INDEX "viewer_measurements_patient_idx" ON "viewer_measurements" USING btree ("patient_id");--> statement-breakpoint
-CREATE INDEX "radiology_brain_sessions_patient_idx" ON "radiology_brain_sessions" USING btree ("patient_id");--> statement-breakpoint
-CREATE INDEX "radiology_brain_sessions_order_idx" ON "radiology_brain_sessions" USING btree ("order_id");--> statement-breakpoint
-CREATE INDEX "radiology_spine_levels_session_idx" ON "radiology_spine_levels" USING btree ("session_id");--> statement-breakpoint
-CREATE INDEX "radiology_spine_levels_patient_idx" ON "radiology_spine_levels" USING btree ("patient_id");--> statement-breakpoint
-CREATE INDEX "radiology_spine_levels_level_idx" ON "radiology_spine_levels" USING btree ("level");--> statement-breakpoint
-CREATE INDEX "radiology_spine_sessions_patient_idx" ON "radiology_spine_sessions" USING btree ("patient_id");--> statement-breakpoint
-CREATE INDEX "radiology_spine_sessions_order_idx" ON "radiology_spine_sessions" USING btree ("order_id");--> statement-breakpoint
-CREATE INDEX "radiology_tumor_followups_patient_idx" ON "radiology_tumor_followups" USING btree ("patient_id");--> statement-breakpoint
-CREATE INDEX "radiology_tumor_followups_lesion_idx" ON "radiology_tumor_followups" USING btree ("lesion_id");--> statement-breakpoint
-CREATE INDEX "radiology_tumor_followups_order_idx" ON "radiology_tumor_followups" USING btree ("order_id");--> statement-breakpoint
-CREATE INDEX "radiology_annotations_study_idx" ON "radiology_annotations" USING btree ("study_instance_uid");--> statement-breakpoint
-CREATE INDEX "radiology_annotations_series_idx" ON "radiology_annotations" USING btree ("series_instance_uid");--> statement-breakpoint
-CREATE INDEX "radiology_annotations_teaching_case_idx" ON "radiology_annotations" USING btree ("linked_teaching_case_id");--> statement-breakpoint
-CREATE INDEX "radiology_annotations_order_idx" ON "radiology_annotations" USING btree ("order_id");--> statement-breakpoint
-CREATE INDEX "radiology_annotations_patient_idx" ON "radiology_annotations" USING btree ("patient_id");--> statement-breakpoint
-CREATE INDEX "mri_pq_results_study_idx" ON "mri_protocol_quality_results" USING btree ("study_id");--> statement-breakpoint
-CREATE INDEX "mri_pq_results_draft_idx" ON "mri_protocol_quality_results" USING btree ("draft_id");--> statement-breakpoint
-CREATE INDEX "mri_pq_results_protocol_idx" ON "mri_protocol_quality_results" USING btree ("protocol_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "mri_protocol_specs_key_uq" ON "mri_protocol_specs" USING btree ("protocol_key");--> statement-breakpoint
-CREATE INDEX "mri_protocol_specs_modality_idx" ON "mri_protocol_specs" USING btree ("modality");--> statement-breakpoint
-CREATE INDEX "mri_protocol_specs_body_part_idx" ON "mri_protocol_specs" USING btree ("body_part");--> statement-breakpoint
-CREATE INDEX "mri_protocol_specs_active_idx" ON "mri_protocol_specs" USING btree ("is_active");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "smart_macros_creator_idx" ON "radiology_smart_macros" USING btree ("created_by");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "smart_macros_shortcut_idx" ON "radiology_smart_macros" USING btree ("shortcut");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "smart_macros_modality_idx" ON "radiology_smart_macros" USING btree ("modality");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "smart_macros_body_part_idx" ON "radiology_smart_macros" USING btree ("body_part");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "spinal_measurements_study_idx" ON "spinal_measurements" USING btree ("study_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "spinal_measurements_draft_idx" ON "spinal_measurements" USING btree ("draft_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "spinal_measurements_level_idx" ON "spinal_measurements" USING btree ("vertebra_level");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "spinal_measurements_stenosis_idx" ON "spinal_measurements" USING btree ("stenosis_grade");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "radiology_study_locks_study_id_uq" ON "radiology_study_locks" USING btree ("study_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_study_locks_study_id_idx" ON "radiology_study_locks" USING btree ("study_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_study_locks_user_id_idx" ON "radiology_study_locks" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_prompt_tpl_modality_idx" ON "ai_prompt_templates" USING btree ("modality");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_prompt_tpl_active_idx" ON "ai_prompt_templates" USING btree ("is_active");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "ai_prompt_tpl_name_uq" ON "ai_prompt_templates" USING btree ("name");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_prompt_lib_modality_idx" ON "ai_prompt_library" USING btree ("modality");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_prompt_lib_owner_idx" ON "ai_prompt_library" USING btree ("library_owner");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_prompt_lib_active_idx" ON "ai_prompt_library" USING btree ("is_active");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "ai_prompt_lib_name_owner_uq" ON "ai_prompt_library" USING btree ("name","library_owner");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_prompt_lib_ver_lib_id_idx" ON "ai_prompt_library_versions" USING btree ("library_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_prompt_lib_ver_ver_idx" ON "ai_prompt_library_versions" USING btree ("library_id","version");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "measurement_history_patient_idx" ON "measurement_history" USING btree ("patient_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "measurement_history_type_idx" ON "measurement_history" USING btree ("measurement_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "measurement_history_study_idx" ON "measurement_history" USING btree ("study_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "teaching_case_collections_owner_idx" ON "teaching_case_collections" USING btree ("owner_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "teaching_case_favorites_uq" ON "teaching_case_favorites" USING btree ("teaching_case_id","user_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "teaching_case_images_case_idx" ON "teaching_case_images" USING btree ("teaching_case_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "teaching_case_images_key_idx" ON "teaching_case_images" USING btree ("is_key_image");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "teaching_case_notes_case_idx" ON "teaching_case_notes" USING btree ("teaching_case_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "teaching_case_views_case_idx" ON "teaching_case_views" USING btree ("teaching_case_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "teaching_cases_category_idx" ON "teaching_cases" USING btree ("category");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "teaching_cases_difficulty_idx" ON "teaching_cases" USING btree ("difficulty");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "teaching_cases_status_idx" ON "teaching_cases" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "teaching_cases_modality_idx" ON "teaching_cases" USING btree ("modality");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "teaching_cases_body_part_idx" ON "teaching_cases" USING btree ("body_part");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "teaching_cases_diagnosis_idx" ON "teaching_cases" USING btree ("diagnosis");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "teaching_cases_created_by_idx" ON "teaching_cases" USING btree ("created_by_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "teaching_cases_research_idx" ON "teaching_cases" USING btree ("is_research_candidate");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "ai_model_routes_task_uq" ON "ai_model_routes" USING btree ("task_key");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_qs_scope_key_idx" ON "ai_quality_scores" USING btree ("scope","scope_key");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_qs_date_idx" ON "ai_quality_scores" USING btree ("date_from","date_to");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_qs_computed_idx" ON "ai_quality_scores" USING btree ("computed_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_dicom_findings_wl_idx" ON "ai_dicom_findings" USING btree ("worklist_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_dicom_findings_uid_idx" ON "ai_dicom_findings" USING btree ("study_instance_uid");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_dicom_findings_status_idx" ON "ai_dicom_findings" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "rag_doc_doc_id_idx" ON "rag_document_embeddings" USING btree ("document_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "rag_doc_type_idx" ON "rag_document_embeddings" USING btree ("document_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "rag_doc_modality_idx" ON "rag_document_embeddings" USING btree ("modality");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "rag_doc_patient_idx" ON "rag_document_embeddings" USING btree ("patient_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "rag_search_query_idx" ON "rag_search_queries" USING btree ("query_text");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "rag_search_user_idx" ON "rag_search_queries" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "anomaly_alert_type_idx" ON "anomaly_alerts" USING btree ("alert_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "anomaly_alert_severity_idx" ON "anomaly_alerts" USING btree ("severity");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "anomaly_alert_status_idx" ON "anomaly_alerts" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "anomaly_alert_scope_idx" ON "anomaly_alerts" USING btree ("scope","related_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "rtv_template_idx" ON "report_template_versions" USING btree ("template_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "rtv_version_idx" ON "report_template_versions" USING btree ("template_id","version");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_billing_wl_idx" ON "ai_billing_suggestions" USING btree ("worklist_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_billing_status_idx" ON "ai_billing_suggestions" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "pra_report_idx" ON "peer_review_assignments" USING btree ("report_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "pra_assignee_idx" ON "peer_review_assignments" USING btree ("assigned_to_id","status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "pra_status_idx" ON "peer_review_assignments" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "tat_wl_idx" ON "turnaround_times" USING btree ("worklist_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "tat_date_idx" ON "turnaround_times" USING btree ("date_bucket");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "tat_modality_idx" ON "turnaround_times" USING btree ("modality","date_bucket");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "tat_rad_idx" ON "turnaround_times" USING btree ("radiologist_id","date_bucket");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "tde_status_idx" ON "ai_training_data_exports" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "tde_name_idx" ON "ai_training_data_exports" USING btree ("export_name");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "rqg_report_idx" ON "report_quality_gates" USING btree ("report_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "rqg_passed_idx" ON "report_quality_gates" USING btree ("all_passed");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cf_report_idx" ON "critical_findings" USING btree ("report_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cf_status_idx" ON "critical_findings" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cf_patient_idx" ON "critical_findings" USING btree ("patient_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "aphl_provider_idx" ON "ai_provider_health_logs" USING btree ("provider");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "aphl_status_idx" ON "ai_provider_health_logs" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "aphl_created_idx" ON "ai_provider_health_logs" USING btree ("created_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "echo_audit_study_idx" ON "echo_audit_logs" USING btree ("study_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "echo_measurements_study_idx" ON "echo_measurements" USING btree ("study_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "echo_measurements_patient_idx" ON "echo_measurements" USING btree ("patient_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "echo_wall_study_idx" ON "echo_regional_walls" USING btree ("study_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "echo_reports_study_idx" ON "echo_reports" USING btree ("study_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "echo_reports_status_idx" ON "echo_reports" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "echo_valve_study_idx" ON "echo_valve_assessment" USING btree ("study_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "fetal_echo_audit_study_idx" ON "fetal_echo_audit_logs" USING btree ("study_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "fetal_echo_study_idx" ON "fetal_echo_studies" USING btree ("study_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "fetal_echo_status_idx" ON "fetal_echo_studies" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "backup_type_idx" ON "backup_verification" USING btree ("backup_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "backup_status_idx" ON "backup_verification" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "esc_finding_idx" ON "critical_escalation_log" USING btree ("critical_finding_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "esc_status_idx" ON "critical_escalation_log" USING btree ("resolution_status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "retry_op_type_idx" ON "dicom_retry_queue" USING btree ("operation_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "retry_status_idx" ON "dicom_retry_queue" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "retry_entity_idx" ON "dicom_retry_queue" USING btree ("entity_type","entity_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "delivery_draft_idx" ON "report_delivery_tracking" USING btree ("report_draft_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "delivery_study_idx" ON "report_delivery_tracking" USING btree ("study_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "storage_date_idx" ON "storage_metrics" USING btree ("snapshot_date");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "storage_alert_idx" ON "storage_metrics" USING btree ("alert_triggered");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "health_snap_idx" ON "system_health_snapshot" USING btree ("snapshot_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "health_api_idx" ON "system_health_snapshot" USING btree ("api_health");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_job_study_idx" ON "ai_job_queue" USING btree ("study_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_job_status_idx" ON "ai_job_queue" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ai_job_type_idx" ON "ai_job_queue" USING btree ("job_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "incoming_uid_idx" ON "dicom_incoming_studies" USING btree ("study_instance_uid");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "incoming_status_idx" ON "dicom_incoming_studies" USING btree ("transfer_status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "incoming_modality_idx" ON "dicom_incoming_studies" USING btree ("modality");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "incoming_accession_idx" ON "dicom_incoming_studies" USING btree ("accession_number");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "mwl_accession_idx" ON "mwl_entries" USING btree ("accession_number");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "mwl_status_idx" ON "mwl_entries" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "mwl_patient_idx" ON "mwl_entries" USING btree ("patient_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "mwl_mod_date_idx" ON "mwl_entries" USING btree ("modality","scheduled_start_date");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "tier_study_idx" ON "pacs_storage_tier" USING btree ("study_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "tier_current_idx" ON "pacs_storage_tier" USING btree ("current_tier");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "macro_rad_idx" ON "radiologist_macros" USING btree ("radiologist_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "macro_trigger_idx" ON "radiologist_macros" USING btree ("trigger");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "shortcut_rad_idx" ON "radiologist_shortcuts" USING btree ("radiologist_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "access_study_idx" ON "study_access_log" USING btree ("study_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "access_user_idx" ON "study_access_log" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "access_action_idx" ON "study_access_log" USING btree ("action");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "preset_modality_idx" ON "viewer_presets" USING btree ("modality");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "audit_user_idx" ON "audit_logs" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "audit_action_idx" ON "audit_logs" USING btree ("action");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "audit_module_idx" ON "audit_logs" USING btree ("module");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "audit_entity_idx" ON "audit_logs" USING btree ("entity_type","entity_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "audit_created_idx" ON "audit_logs" USING btree ("created_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "audit_chain_hash_idx" ON "audit_logs" USING btree ("chain_hash");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "role_module_unique_idx" ON "role_permissions" USING btree ("role","module");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "upload_patient_idx" ON "upload_files" USING btree ("patient_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "upload_module_idx" ON "upload_files" USING btree ("module");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "upload_created_idx" ON "upload_files" USING btree ("created_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "rad_snippets_type_idx" ON "radiology_snippets" USING btree ("type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "rad_snippets_new_modality_idx" ON "radiology_snippets" USING btree ("modality");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "rad_snippets_new_body_part_idx" ON "radiology_snippets" USING btree ("body_part");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "rad_snippets_new_active_idx" ON "radiology_snippets" USING btree ("is_active");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "rad_snippets_new_creator_idx" ON "radiology_snippets" USING btree ("created_by_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "rad_snippets_new_sort_idx" ON "radiology_snippets" USING btree ("sort_order");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiologist_profiles_staff_idx" ON "radiologist_profiles" USING btree ("staff_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_kb_category_idx" ON "radiology_knowledge_base" USING btree ("category");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_kb_classification_idx" ON "radiology_knowledge_base" USING btree ("classification_system");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_kb_active_idx" ON "radiology_knowledge_base" USING btree ("is_active");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "radiology_master_group_name_uq" ON "radiology_master_templates" USING btree ("group_name","template_name");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_master_group_idx" ON "radiology_master_templates" USING btree ("group_name");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_master_modality_idx" ON "radiology_master_templates" USING btree ("modality");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_master_bodypart_idx" ON "radiology_master_templates" USING btree ("body_part");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_master_studytype_idx" ON "radiology_master_templates" USING btree ("study_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_master_active_idx" ON "radiology_master_templates" USING btree ("is_active");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "radiology_personal_staff_folder_uq" ON "radiology_personal_templates" USING btree ("staff_id","folder","template_name");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_personal_staff_idx" ON "radiology_personal_templates" USING btree ("staff_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_personal_folder_idx" ON "radiology_personal_templates" USING btree ("folder");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_personal_modality_idx" ON "radiology_personal_templates" USING btree ("modality");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_personal_bodypart_idx" ON "radiology_personal_templates" USING btree ("body_part");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_template_comparison_staff_idx" ON "radiology_template_comparison" USING btree ("staff_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "radiology_template_favorites_uq" ON "radiology_template_favorites" USING btree ("staff_id","template_id","template_source");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_template_favorites_staff_idx" ON "radiology_template_favorites" USING btree ("staff_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "radiology_template_packs_staff_uq" ON "radiology_template_packs" USING btree ("staff_id","pack_name");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_template_packs_staff_idx" ON "radiology_template_packs" USING btree ("staff_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_template_usage_staff_idx" ON "radiology_template_usage" USING btree ("staff_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_template_usage_template_idx" ON "radiology_template_usage" USING btree ("template_id","template_source");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_template_usage_action_idx" ON "radiology_template_usage" USING btree ("action");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_template_usage_date_idx" ON "radiology_template_usage" USING btree ("created_at");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "radiology_template_versions_uq" ON "radiology_template_versions" USING btree ("master_template_id","version");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_template_versions_master_idx" ON "radiology_template_versions" USING btree ("master_template_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "radiology_favorite_sets_staff_uq" ON "radiology_favorite_finding_sets" USING btree ("staff_id","set_name","builder_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_favorite_sets_staff_idx" ON "radiology_favorite_finding_sets" USING btree ("staff_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_favorite_sets_builder_idx" ON "radiology_favorite_finding_sets" USING btree ("builder_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_impression_rules_builder_idx" ON "radiology_impression_rules" USING btree ("builder_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_impression_rules_active_idx" ON "radiology_impression_rules" USING btree ("is_active");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_smart_audit_finding_idx" ON "radiology_smart_findings_audit" USING btree ("smart_finding_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_smart_audit_staff_idx" ON "radiology_smart_findings_audit" USING btree ("staff_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "radiology_smart_findings_worklist_uq" ON "radiology_smart_findings" USING btree ("worklist_id","builder_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_smart_findings_worklist_idx" ON "radiology_smart_findings" USING btree ("worklist_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_smart_findings_staff_idx" ON "radiology_smart_findings" USING btree ("staff_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_smart_findings_studytype_idx" ON "radiology_smart_findings" USING btree ("study_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_smart_findings_active_idx" ON "radiology_smart_findings" USING btree ("is_active");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_smart_usage_staff_idx" ON "radiology_smart_usage" USING btree ("staff_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_smart_usage_feature_idx" ON "radiology_smart_usage" USING btree ("feature_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_smart_usage_builder_idx" ON "radiology_smart_usage" USING btree ("builder_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_smart_usage_generated_idx" ON "radiology_smart_usage" USING btree ("generated_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "classification_staff_idx" ON "radiology_memory_classifications" USING btree ("staff_id","classification");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "classification_value_idx" ON "radiology_memory_classifications" USING btree ("value");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "decision_staff_type_idx" ON "radiology_memory_decisions" USING btree ("staff_id","suggestion_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "decision_action_idx" ON "radiology_memory_decisions" USING btree ("action");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "decision_created_idx" ON "radiology_memory_decisions" USING btree ("created_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "feedback_staff_rating_idx" ON "radiology_memory_feedback" USING btree ("staff_id","rating");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "feedback_suggestion_idx" ON "radiology_memory_feedback" USING btree ("suggestion_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "impression_staff_signature_idx" ON "radiology_memory_impressions" USING btree ("staff_id","finding_signature");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "impression_body_part_idx" ON "radiology_memory_impressions" USING btree ("body_part");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "measurement_staff_patient_idx" ON "radiology_memory_measurements" USING btree ("staff_id","patient_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "measurement_type_idx" ON "radiology_memory_measurements" USING btree ("measurement_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "measurement_study_idx" ON "radiology_memory_measurements" USING btree ("study_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "pattern_staff_type_idx" ON "radiology_memory_patterns" USING btree ("staff_id","pattern_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "pattern_key_idx" ON "radiology_memory_patterns" USING btree ("key");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "phrase_staff_trigger_idx" ON "radiology_memory_phrases" USING btree ("staff_id","trigger");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "phrase_type_idx" ON "radiology_memory_phrases" USING btree ("phrase_type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "memory_staff_modality_idx" ON "radiology_memory" USING btree ("staff_id","modality");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "memory_body_part_idx" ON "radiology_memory" USING btree ("body_part");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "memory_finding_key_idx" ON "radiology_memory" USING btree ("finding_key");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "memory_usage_count_idx" ON "radiology_memory" USING btree ("usage_count");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "memory_last_used_idx" ON "radiology_memory" USING btree ("last_used_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "usage_staff_date_idx" ON "radiology_memory_usage" USING btree ("staff_id","session_date");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "usage_date_idx" ON "radiology_memory_usage" USING btree ("session_date");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_lesion_timeline_lesion_idx" ON "radiology_lesion_timeline" USING btree ("lesion_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_lesion_timeline_patient_idx" ON "radiology_lesion_timeline" USING btree ("patient_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_lesion_timeline_study_idx" ON "radiology_lesion_timeline" USING btree ("study_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_lesions_patient_idx" ON "radiology_lesions" USING btree ("patient_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_lesions_status_idx" ON "radiology_lesions" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_measurements_patient_idx" ON "radiology_measurements" USING btree ("patient_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_measurements_study_idx" ON "radiology_measurements" USING btree ("study_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_measurements_modality_idx" ON "radiology_measurements" USING btree ("modality");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "viewer_measurements_study_uid_idx" ON "viewer_measurements" USING btree ("study_instance_uid");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "viewer_measurements_patient_idx" ON "viewer_measurements" USING btree ("patient_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_brain_sessions_patient_idx" ON "radiology_brain_sessions" USING btree ("patient_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_brain_sessions_order_idx" ON "radiology_brain_sessions" USING btree ("order_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_spine_levels_session_idx" ON "radiology_spine_levels" USING btree ("session_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_spine_levels_patient_idx" ON "radiology_spine_levels" USING btree ("patient_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_spine_levels_level_idx" ON "radiology_spine_levels" USING btree ("level");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_spine_sessions_patient_idx" ON "radiology_spine_sessions" USING btree ("patient_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_spine_sessions_order_idx" ON "radiology_spine_sessions" USING btree ("order_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_tumor_followups_patient_idx" ON "radiology_tumor_followups" USING btree ("patient_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_tumor_followups_lesion_idx" ON "radiology_tumor_followups" USING btree ("lesion_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_tumor_followups_order_idx" ON "radiology_tumor_followups" USING btree ("order_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_annotations_study_idx" ON "radiology_annotations" USING btree ("study_instance_uid");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_annotations_series_idx" ON "radiology_annotations" USING btree ("series_instance_uid");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_annotations_teaching_case_idx" ON "radiology_annotations" USING btree ("linked_teaching_case_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_annotations_order_idx" ON "radiology_annotations" USING btree ("order_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "radiology_annotations_patient_idx" ON "radiology_annotations" USING btree ("patient_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "mri_pq_results_study_idx" ON "mri_protocol_quality_results" USING btree ("study_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "mri_pq_results_draft_idx" ON "mri_protocol_quality_results" USING btree ("draft_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "mri_pq_results_protocol_idx" ON "mri_protocol_quality_results" USING btree ("protocol_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "mri_protocol_specs_key_uq" ON "mri_protocol_specs" USING btree ("protocol_key");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "mri_protocol_specs_modality_idx" ON "mri_protocol_specs" USING btree ("modality");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "mri_protocol_specs_body_part_idx" ON "mri_protocol_specs" USING btree ("body_part");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "mri_protocol_specs_active_idx" ON "mri_protocol_specs" USING btree ("is_active");--> statement-breakpoint
 ALTER TABLE "form_f_records" ADD CONSTRAINT "form_f_records_fetal_usg_study_id_fetal_usg_studies_id_fk" FOREIGN KEY ("fetal_usg_study_id") REFERENCES "public"."fetal_usg_studies"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "portal_sessions_subject_idx" ON "portal_sessions" USING btree ("scope","subject_id");--> statement-breakpoint
-CREATE INDEX "portal_sessions_created_idx" ON "portal_sessions" USING btree ("created_at");--> statement-breakpoint
-CREATE INDEX "patient_reports_delivered_idx" ON "patient_reports" USING btree ("delivered_at");--> statement-breakpoint
-CREATE INDEX "study_tat_metrics_study_idx" ON "study_tat_metrics" USING btree ("study_id");--> statement-breakpoint
-CREATE INDEX "study_tat_metrics_modality_idx" ON "study_tat_metrics" USING btree ("modality");--> statement-breakpoint
-CREATE INDEX "study_tat_metrics_delayed_idx" ON "study_tat_metrics" USING btree ("is_delayed");--> statement-breakpoint
-CREATE INDEX "study_tat_metrics_radiologist_idx" ON "study_tat_metrics" USING btree ("radiologist_id");--> statement-breakpoint
-CREATE INDEX "study_tat_metrics_sla_idx" ON "study_tat_metrics" USING btree ("sla_breached");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "portal_sessions_subject_idx" ON "portal_sessions" USING btree ("scope","subject_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "portal_sessions_created_idx" ON "portal_sessions" USING btree ("created_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "patient_reports_delivered_idx" ON "patient_reports" USING btree ("delivered_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "study_tat_metrics_study_idx" ON "study_tat_metrics" USING btree ("study_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "study_tat_metrics_modality_idx" ON "study_tat_metrics" USING btree ("modality");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "study_tat_metrics_delayed_idx" ON "study_tat_metrics" USING btree ("is_delayed");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "study_tat_metrics_radiologist_idx" ON "study_tat_metrics" USING btree ("radiologist_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "study_tat_metrics_sla_idx" ON "study_tat_metrics" USING btree ("sla_breached");--> statement-breakpoint
 ALTER TABLE "dicom_nodes" DROP COLUMN "pull_interval_minutes";--> statement-breakpoint
 ALTER TABLE "dicom_nodes" DROP COLUMN "pull_query_days";
