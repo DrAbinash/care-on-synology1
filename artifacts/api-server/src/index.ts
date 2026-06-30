@@ -111,14 +111,38 @@ async function seedBootstrapAdminIfNeeded(): Promise<void> {
   }
 }
 
+// Helper: Execute multi-statement SQL with auto-commit between statements.
+// CRITICAL: PostgreSQL wraps multi-statement query() calls in implicit transactions.
+// This helper splits SQL and executes each statement via pool.query() for autocommit.
+async function executeStartupSQL(sql: string): Promise<void> {
+  // Split on semicolon, filter empty statements, trim whitespace
+  const statements = sql
+    .split(';')
+    .map(stmt => stmt.trim())
+    .filter(stmt => stmt.length > 0 && !stmt.startsWith('--'));
+
+  for (const stmt of statements) {
+    // Drizzle breakpoint comments are safe to strip
+    const cleanStmt = stmt.replace(/--> statement-breakpoint/g, '').trim();
+    if (cleanStmt) {
+      await pool.query(cleanStmt);
+    }
+  }
+}
+
 // ── Startup schema migrations ──────────────────────────────────────────────────
 // Idempotent ALTER TABLE / CREATE TABLE IF NOT EXISTS statements that extend
 // the schema without requiring a full Drizzle migration pipeline. Safe to run
 // on every startup because every clause uses IF NOT EXISTS / ADD COLUMN IF.
+//
+// CRITICAL FIX (2026-06-30): Changed from single client.query() in transaction
+// to executeStartupSQL() which runs each statement via pool.query() with autocommit.
+// Root cause: client.query() with multi-statement SQL wraps all statements in ONE
+// implicit transaction, causing lock timeouts. pool.query() auto-commits after each
+// statement, avoiding the transaction wrapper entirely.
 async function runStartupMigrations(): Promise<void> {
-  const client = await pool.connect();
   try {
-    await client.query(`
+    await executeStartupSQL(`
       ALTER TABLE order_tests ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
       ALTER TABLE order_tests ADD COLUMN IF NOT EXISTS cancelled_by_name TEXT;
       ALTER TABLE order_tests ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
@@ -2475,8 +2499,6 @@ async function runStartupMigrations(): Promise<void> {
     logger.info("Startup migrations applied");
   } catch (err) {
     logger.error({ err }, "Startup migration failed — partial-cancel / outsourced-labs features may not work");
-  } finally {
-    client.release();
   }
 }
 
