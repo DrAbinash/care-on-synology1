@@ -32,6 +32,38 @@ export class WhatsAppBotEngine {
     this.service = service;
   }
 
+  // Forgiving DD-MM-YYYY parser, used by both the appointment-booking date
+  // entry and the DOB identity-verification step. Real patients texting
+  // from a phone keypad rarely type a strict, zero-padded "05-01-2026" —
+  // they type "5-1-2026", "5/1/2026", or "5.1.26", and a bot that rejects
+  // all of those with no explanation is a real, common source of patient
+  // frustration on WhatsApp bots specifically. Accepts "-", "/", and "."
+  // as separators, tolerates missing leading zeros, and accepts a 2-digit
+  // year (assumed current century — fine for this use case, since every
+  // date here is either a near-future appointment or someone's birth year,
+  // and a 2-digit birth year like "85" unambiguously means 1985 in
+  // practice for an adult patient; this is a deliberate simplification,
+  // not a general-purpose date library, and is intentionally narrow).
+  // Returns a normalized "YYYY-MM-DD" string, or null if nothing
+  // resembling a date could be parsed.
+  private parseFlexibleDate(input: string): string | null {
+    const cleaned = input.trim().replace(/[/.]/g, "-");
+    const m = cleaned.match(/^(\d{1,2})-(\d{1,2})-(\d{2}|\d{4})$/);
+    if (!m) return null;
+    const dd = Number(m[1]);
+    const mm = Number(m[2]);
+    let yyyy = Number(m[3]);
+    if (m[3].length === 2) {
+      // 2-digit year: birth years assume 1900s if >= current 2-digit year
+      // + a small buffer, otherwise 2000s — the standard heuristic most
+      // systems use (e.g. "26" -> 2026, "85" -> 1985 for a year like 2026).
+      const currentYY = new Date().getFullYear() % 100;
+      yyyy += yyyy > currentYY + 10 ? 1900 : 2000;
+    }
+    if (dd < 1 || dd > 31 || mm < 1 || mm > 12 || yyyy < 1900 || yyyy > 2100) return null;
+    return `${String(yyyy).padStart(4, "0")}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+  }
+
   async processMessage(contact: { id: number; phone: string; name: string; contactType: string; patientId?: number | null; doctorId?: number | null; staffUserId?: number | null; consentStatus: string }, msg: ParsedIncomingMessage): Promise<BotReply> {
     const text = (msg.body || "").trim().toLowerCase();
 
@@ -232,10 +264,9 @@ Reply in a helpful, friendly manner. Be concise.`;
     }
 
     if (step === "book_date") {
-      const dateMatch = text.match(/^(\d{2})-(\d{2})-(\d{4})$/);
-      if (!dateMatch) return { text: "Please enter a valid date in DD-MM-YYYY format." };
-      const [, dd, mm, yyyy] = dateMatch;
-      const dateStr = `${yyyy}-${mm}-${dd}`;
+      const dateStr = this.parseFlexibleDate(text);
+      if (!dateStr) return { text: "Please enter a valid date, e.g. 5-1-2026 or 05/01/2026." };
+      const [yyyy, mm, dd] = dateStr.split("-");
       await this.service.updateSession(contact.id, "book_confirm", { ...context, preferredDate: dateStr });
       const dept = String(context.department || "");
       return {
@@ -332,10 +363,8 @@ Reply in a helpful, friendly manner. Be concise.`;
   // both the report-status and payment/dues "search by phone number"
   // flows, so this lives once rather than being duplicated.
   private async verifyPatientDob(patientId: number, typedDob: string): Promise<boolean> {
-    const dateMatch = typedDob.trim().match(/^(\d{2})-(\d{2})-(\d{4})$/);
-    if (!dateMatch) return false;
-    const [, dd, mm, yyyy] = dateMatch;
-    const typed = `${yyyy}-${mm}-${dd}`;
+    const typed = this.parseFlexibleDate(typedDob);
+    if (!typed) return false;
     const [patient] = await db.select({ dateOfBirth: patientsTable.dateOfBirth }).from(patientsTable).where(eq(patientsTable.id, patientId)).limit(1);
     if (!patient) return false;
     // dateOfBirth is stored as text; compare the YYYY-MM-DD portion only,
