@@ -19,36 +19,30 @@ export default function PoliciesPage({ settings }: { settings: SiteSettings }) {
   }, []);
 
   return (
-    <div style={{ minHeight: "100vh", background: "hsl(var(--site-bg))", color: "hsl(var(--site-fg))" }}>
-      {/* Sticky header bar */}
-      <div style={{
-        position: "sticky", top: 0, zIndex: 50,
-        background: "hsl(var(--site-primary))",
-        color: "white",
-      }}>
-        <div className="container-narrow" style={{ display: "flex", alignItems: "center", gap: ".75rem", padding: ".65rem 1rem" }}>
-          <a href="/" style={{ display: "flex", alignItems: "center", gap: ".4rem", color: "white", textDecoration: "none", fontWeight: 600, fontSize: ".92rem" }}>
+    <div style={{ minHeight: "100vh", background: "hsl(var(--cd-scan-white))", color: "hsl(var(--cd-slate))" }}>
+      <div className="cd-book-topbar">
+        <div className="container-narrow" style={{ display: "flex", alignItems: "center", gap: ".75rem", padding: ".75rem 1rem" }}>
+          <a href="/" className="cd-book-back-link">
             <ChevronLeft size={18} /> Back to Home
           </a>
         </div>
       </div>
 
-      <div className="container-narrow" style={{ padding: "2rem 1rem 4rem", maxWidth: 840 }}>
-        {/* Establishment header */}
-        <div style={{ textAlign: "center", marginBottom: "2rem", paddingBottom: "1.5rem", borderBottom: "2px solid hsl(var(--site-primary) / .15)" }}>
-          <h1 style={{ fontSize: "1.5rem", fontWeight: 700, marginBottom: ".4rem" }}>CARE DIAGNOSTICS</h1>
-          <p style={{ fontSize: ".9rem", color: "hsl(var(--site-muted-fg))", marginBottom: "1rem" }}>
+      <div className="container-narrow" style={{ padding: "2.5rem 1rem 4rem", maxWidth: 840 }}>
+        <div className="cd-policies-header">
+          <h1 className="cd-display" style={{ fontSize: "1.625rem", fontWeight: 600, marginBottom: ".5rem" }}>CARE DIAGNOSTICS</h1>
+          <p className="cd-section-sub" style={{ fontSize: ".9375rem", margin: "0 0 1rem" }}>
             Privacy Policy, Terms &amp; Conditions, Refund Policy and Cancellation Policy
           </p>
-          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "1rem", fontSize: ".82rem", color: "hsl(var(--site-muted-fg))" }}>
-            <span><MapPin size={12} style={{ display: "inline", verticalAlign: "middle" }} /> {workAddr}</span>
-            <span><Phone size={12} style={{ display: "inline", verticalAlign: "middle" }} /> {phone}</span>
-            <span><Mail size={12} style={{ display: "inline", verticalAlign: "middle" }} /> {email}</span>
+          <div className="cd-policies-contact-row">
+            <span><MapPin size={12} /> {workAddr}</span>
+            <span><Phone size={12} /> {phone}</span>
+            <span><Mail size={12} /> {email}</span>
           </div>
-          <p style={{ fontSize: ".78rem", color: "hsl(var(--site-muted-fg))", marginTop: ".5rem" }}>
+          <p style={{ fontSize: ".78rem", color: "hsl(var(--cd-slate) / .5)", marginTop: ".5rem" }}>
             Owned By: Dr. Sugandha Priyadarshini &nbsp;|&nbsp; Effective Date: 26/05/2026
           </p>
-          <p style={{ fontSize: ".72rem", color: "hsl(var(--site-muted-fg) / .7)", marginTop: ".25rem" }}>
+          <p style={{ fontSize: ".72rem", color: "hsl(var(--cd-slate) / .4)", marginTop: ".25rem" }}>
             <strong>Registered Address:</strong> {regAddr}
           </p>
         </div>
@@ -240,17 +234,13 @@ export default function PoliciesPage({ settings }: { settings: SiteSettings }) {
         </PolicyBlock>
 
         {/* Footer contact */}
-        <div style={{
-          marginTop: "2rem", padding: "1.5rem",
-          background: "linear-gradient(135deg, hsl(var(--site-primary) / .08), hsl(var(--site-primary) / .03))",
-          borderRadius: 12, textAlign: "center",
-        }}>
-          <p style={{ fontWeight: 600, marginBottom: ".5rem" }}>CARE DIAGNOSTICS</p>
-          <p style={{ fontSize: ".85rem", color: "hsl(var(--site-muted-fg))", marginBottom: ".3rem" }}>{workAddr}</p>
-          <p style={{ fontSize: ".75rem", color: "hsl(var(--site-muted-fg) / .7)" }}>
+        <div className="cd-policies-footer">
+          <p style={{ fontWeight: 600, marginBottom: ".5rem", color: "hsl(var(--cd-slate))" }}>CARE DIAGNOSTICS</p>
+          <p style={{ fontSize: ".875rem", color: "hsl(var(--cd-slate) / .65)", marginBottom: ".3rem" }}>{workAddr}</p>
+          <p style={{ fontSize: ".75rem", color: "hsl(var(--cd-slate) / .45)" }}>
             <strong>Registered Address:</strong> {regAddr}
           </p>
-          <p style={{ fontSize: ".85rem", color: "hsl(var(--site-muted-fg))" }}>
+          <p style={{ fontSize: ".875rem", color: "hsl(var(--cd-slate) / .65)" }}>
             Phone: {phone} &nbsp;|&nbsp; Email: {email} &nbsp;|&nbsp; Owned By: Dr. Sugandha Priyadarshini
           </p>
         </div>
@@ -261,23 +251,11 @@ export default function PoliciesPage({ settings }: { settings: SiteSettings }) {
 
 function PolicyBlock({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
   return (
-    <div style={{
-      marginBottom: "2rem",
-      padding: "1.5rem",
-      background: "hsl(var(--site-card-bg))",
-      borderRadius: 12,
-      border: "1px solid hsl(var(--site-border))",
-    }}>
-      <h2 style={{
-        fontSize: "1.15rem", fontWeight: 700,
-        marginBottom: "1rem", paddingBottom: ".6rem",
-        borderBottom: "2px solid hsl(var(--site-primary) / .15)",
-        display: "flex", alignItems: "center", gap: ".5rem",
-        color: "hsl(var(--site-primary))",
-      }}>
+    <div className="cd-card cd-policy-block">
+      <h2 className="cd-policy-block-title">
         {icon} {title}
       </h2>
-      <div style={{ fontSize: ".88rem", lineHeight: 1.7, color: "hsl(var(--site-fg))" }}>
+      <div className="cd-policy-block-body">
         {children}
       </div>
     </div>
