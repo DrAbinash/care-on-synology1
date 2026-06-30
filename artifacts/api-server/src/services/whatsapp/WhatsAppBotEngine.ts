@@ -13,8 +13,10 @@ import {
   waContactsTable, waConversationsTable, waAuditLogsTable,
   billsTable, ordersTable, patientReportsTable, appointmentsTable,
   clinicSettingsTable, staffTable, patientsTable,
+  knowledgeBaseEntriesTable, knowledgeBaseSearchLogTable,
 } from "@workspace/db/schema";
-import { eq, and, desc, gte, sql } from "drizzle-orm";
+import { eq, and, desc, gte, sql, or, ilike } from "drizzle-orm";
+import { generateAiForTask } from "@workspace/ai-providers";
 
 export interface BotReply {
   text?: string;
@@ -108,6 +110,19 @@ export class WhatsAppBotEngine {
     if (text === "4" || text === "bill" || text === "dues") return this.startPaymentFlow(contact);
     if (text === "5" || text === "location" || text === "address") return this.showLocation();
     if (text === "6" || text === "talk to staff") return this.handoverToHuman(contact.id);
+    if (text === "7" || text === "ask" || text === "question") return this.handleKnowledgeBaseQuestion(contact, text);
+
+    // Anything else typed at the main menu, free text that doesn't match a
+    // menu number/keyword, is treated as a question rather than silently
+    // re-showing the menu (the prior behavior here ignored what the user
+    // actually typed). Grounded in the Knowledge Base, same retrieval
+    // approach and same escalate-on-no-match contract as the AI path in
+    // routes/whatsapp.ts's handleAiReply — see that file for the fuller
+    // rationale. Kept deliberately separate from the structured booking/
+    // report/payment flows above: those stay fully deterministic and
+    // never touch the AI/Knowledge Base layer, by design, so a wrong or
+    // unavailable AI provider can never affect a booking or a bill amount.
+    if (text.length > 0) return this.handleKnowledgeBaseQuestion(contact, text);
 
     return this.showMainMenu(contact);
   }
@@ -115,7 +130,7 @@ export class WhatsAppBotEngine {
   // ── Main Menu ───────────────────────────────────────────────────────────────────────
   private showMainMenu(contact: { name?: string | null }): BotReply {
     return {
-      text: `Hello${contact.name ? ` ${contact.name}` : ""}! Welcome to Care Diagnostics.\n\nPlease reply with a number:\n1. Book Appointment\n2. Check Report Status\n3. Download Report\n4. Check Bill / Dues\n5. Location\n6. Talk to Staff`,
+      text: `Hello${contact.name ? ` ${contact.name}` : ""}! Welcome to Care Diagnostics.\n\nPlease reply with a number, or just type your question:\n1. Book Appointment\n2. Check Report Status\n3. Download Report\n4. Check Bill / Dues\n5. Location\n6. Talk to Staff\n7. Ask a Question`,
       buttons: [
         { id: "1", title: "Book" },
         { id: "2", title: "Report Status" },
@@ -125,6 +140,71 @@ export class WhatsAppBotEngine {
         { id: "6", title: "Talk to Staff" },
       ],
     };
+  }
+
+  // ── Knowledge-Base-grounded free-text question ────────────────────────────────
+  // Mirrors routes/whatsapp.ts's handleAiReply: search published Knowledge
+  // Base entries first; if matched, ground the AI's answer in that content
+  // only; if not matched, hand off to staff rather than let the AI
+  // improvise. Logs to the same knowledge_base_search_log table the admin
+  // UI's "Knowledge Gaps" panel reads from, so a question asked through
+  // this menu-bot path shows up in the same place as one asked through the
+  // other webhook — one gap-detection feed, not two.
+  private async handleKnowledgeBaseQuestion(contact: { id: number; name: string }, text: string): Promise<BotReply> {
+    const likeQ = `%${text.trim()}%`;
+    const kbMatches = await db
+      .select()
+      .from(knowledgeBaseEntriesTable)
+      .where(and(
+        eq(knowledgeBaseEntriesTable.status, "published"),
+        or(
+          ilike(knowledgeBaseEntriesTable.title, likeQ),
+          ilike(knowledgeBaseEntriesTable.content, likeQ),
+          ilike(knowledgeBaseEntriesTable.keywords, likeQ),
+        ),
+      ))
+      .limit(3);
+    const matched = kbMatches.length > 0;
+
+    await db.insert(knowledgeBaseSearchLogTable).values({
+      query: text.trim(),
+      matchedEntryId: matched ? kbMatches[0].id : null,
+      matched,
+      channel: "wa_chatbot",
+    });
+
+    if (!matched) {
+      return {
+        text: "I'm not sure about that one — let me connect you with our team. For urgent matters, please call us directly.\n\nReply MENU for the main menu.",
+        action: "handover_human",
+      };
+    }
+
+    const kbContext = kbMatches.map((m) => `[${m.category}] ${m.title}: ${m.content}`).join("\n\n");
+    const prompt = `You are the AI assistant for Care Diagnostics diagnostic center.
+
+The following approved information from our knowledge base is relevant to this patient's question. Base your answer ONLY on this information — do not add facts, prices, or details that are not stated here. If it doesn't fully answer the question, say so and offer to connect them with staff, rather than guessing.
+
+Keep replies concise (under 100 words), warm, and professional. Do not make up specific prices, results, or medical diagnoses.
+
+Approved knowledge base content:
+${kbContext}
+
+Patient name: ${contact.name || "Patient"}
+Patient message: ${text}
+
+Reply in a helpful, friendly manner. Be concise.`;
+
+    try {
+      const result = await generateAiForTask("whatsapp_ai_receptionist", prompt, [], { maxTokens: 300 });
+      const reply = result.success && result.text ? result.text : "";
+      if (!reply) {
+        return { text: "Let me connect you with our team for this one.\n\nReply MENU for the main menu.", action: "handover_human" };
+      }
+      return { text: `${reply}\n\nReply MENU for the main menu.` };
+    } catch {
+      return { text: "Let me connect you with our team for this one.\n\nReply MENU for the main menu.", action: "handover_human" };
+    }
   }
 
   // ── Appointment Booking Flow ──────────────────────────────────────────────────
