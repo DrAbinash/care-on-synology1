@@ -78,7 +78,7 @@ This session's WhatsApp-to-Knowledge-Base integration originally called Gemini d
 ## 8. Still Open — Not Done in This Pass
 
 - The menu-driven bot path (`WhatsAppBotEngine`, separate from the Gemini/provider-routed webhook covered above) still has no Knowledge Base connection and still calls no LLM at all — it is purely button/menu-driven by design, so this may be intentional rather than a gap, but it was not evaluated for whether it should also gain AI-grounded free-text fallback.
-- WhatsApp access-token plaintext storage, the security re-audit's Finding 3 — not fixed in this pass, since it touches the same provider-credential files this audit just reviewed and deserves its own focused pass rather than being bundled in.
+- WhatsApp access-token plaintext storage — RESOLVED in a later pass of this session. See SECURITY_FINDINGS_REAUDIT.md Finding 3 for the full fix (encryption at all write sites, decryption at all real send-credential read sites, a tolerant migration helper for already-stored plaintext values).
 - The `ai_caller` permission-matrix scaffolding — not built yet; now correctly scoped as smaller than the roadmap originally estimated, given how much of the underlying API-wrapper and provider-routing work already exists.
 - No `ai_model_routes` row exists yet for `whatsapp_ai_receptionist` specifically — not added in this pass, deliberately, since choosing which provider WhatsApp AI should default to (Ollama vs. a hosted vendor) is a real operational/cost/quality decision for whoever runs this deployment, not something this session should silently decide. The system already falls back gracefully (global default, then `gemini`) with no route configured.
 

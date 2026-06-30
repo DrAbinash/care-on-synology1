@@ -22,11 +22,11 @@ Risk remaining: the fallback string should still be removed from source as defen
 
 The prior documents' "default JWT secret" framing does not correspond to anything real — a search for jsonwebtoken, jwt., or JWT_SECRET across the entire API server returns zero matches. Authentication is via portal_sessions bearer tokens, random tokens stored in the database and validated against an expiry timestamp, not JWTs. This part of the prior finding should be retired entirely — it was never accurate, not just resolved.
 
-### Finding 3 — newly identified — WhatsApp Business API tokens stored in plaintext
+### Finding 3 — RESOLVED — WhatsApp Business API tokens were stored in plaintext
 
-The WhatsApp numbers and settings schema both define an access token field as plain text, with no encryption applied anywhere in the write path. An encrypt/decrypt mechanism exists in the codebase and is used for exactly one thing, an AI-reporting provider's API key, but was never applied to WhatsApp credentials.
+Originally found open. Fixed in a later pass of this same session: artifacts/api-server/src/routes/whatsapp.ts now encrypts the access token at every write site (whatsappSettingsTable's PUT /settings, whatsappNumbersTable's POST and PUT /numbers — three write sites total, all confirmed by direct grep before and after the fix) using the existing encryptSecret function, and decrypts at every real read site that builds operational send credentials (getOrCreateSettings, resolveNumber, the live webhook dispatch path, and three near-identical send-helper functions — confirmed by grep for every remaining raw accessToken passthrough after the fix, three matches remained, all independently confirmed already-safe: two already-decrypted values and one masking-only display that never needed decryption).
 
-This is a real, previously undocumented gap. A database backup, a read replica, or any SQL-level access to this database exposes live WhatsApp Business API tokens in cleartext. Given today's other work involves a WhatsApp bot that is more built and more live than previously assumed, this is now a higher-priority finding than it would have been under the original assumption that WhatsApp AI was a dormant skeleton.
+A new decryptSecretTolerant helper was added to cryptoUtils.ts specifically to handle the migration case: any access token saved before this fix shipped is still plaintext in the database, and a hard decrypt would throw and break sending for every already-configured WhatsApp number until someone happened to re-save it. The tolerant helper detects "this doesn't look like our ciphertext format" (real tokens essentially never contain a literal colon, while encryptSecret's output always does) and falls back to returning the value as-is rather than throwing — existing rows keep working immediately, and the next time any row is saved through the now-fixed write paths, it becomes properly encrypted going forward.
 
 ### Finding 4 — DB password
 
@@ -40,7 +40,7 @@ Not independently verified in this pass — verifying the actual deployed databa
 |---|---|
 | Default JWT/session secrets, independently verified closed | Partially retired, partially open. No JWT exists at all, so that half of the original finding was never real. The session-secret fallback exists in source but is unreachable in deployment due to the Compose fail-fast guard — structurally mitigated, not yet cleaned up. |
 | Default DB password, independently verified closed | Still open. Not verifiable from this environment; requires direct access to the live .env on Synology. |
-| Plaintext WhatsApp credential storage | Newly identified, open. Not in the original Gate 1 list at all. |
+| Plaintext WhatsApp credential storage | **Resolved this session.** Encrypted at all 3 write sites, decrypted at all real read sites, verified by exhaustive grep both before and after the fix. A tolerant decrypt helper handles the migration of any already-stored plaintext values without breaking live sending. |
 
 ## Recommendation
 

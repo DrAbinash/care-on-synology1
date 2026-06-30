@@ -4,15 +4,16 @@ import { whatsappSettingsTable, whatsappNumbersTable, whatsappConversationsTable
 import { eq, desc, sql, ilike, and, or } from "drizzle-orm";
 import { requireStaffPermission } from "../middleware/requireStaffAuth";
 import { generateAiForTask } from "@workspace/ai-providers";
+import { encryptSecret, decryptSecretTolerant } from "../lib/cryptoUtils";
 
 export const whatsappRouter: IRouter = Router();
 export const whatsappWebhookRouter: IRouter = Router();
 
 async function getOrCreateSettings() {
   const [row] = await db.select().from(whatsappSettingsTable).limit(1);
-  if (row) return row;
+  if (row) return { ...row, accessToken: decryptSecretTolerant(row.accessToken) };
   const [created] = await db.insert(whatsappSettingsTable).values({}).returning();
-  return created;
+  return { ...created, accessToken: decryptSecretTolerant(created.accessToken) };
 }
 
 // ── Number config helper ──
@@ -28,7 +29,7 @@ export async function resolveNumber(role: string): Promise<NumberConfig | null> 
   const numbers = await db.select().from(whatsappNumbersTable).where(eq(whatsappNumbersTable.enabled, true));
   const match = numbers.find((n) => n.role === role) ?? numbers.find((n) => n.isDefault);
   if (match && match.phoneNumberId && match.accessToken) {
-    return { phoneNumberId: match.phoneNumberId, accessToken: match.accessToken };
+    return { phoneNumberId: match.phoneNumberId, accessToken: decryptSecretTolerant(match.accessToken) };
   }
   // Legacy fallback
   const s = await getOrCreateSettings();
@@ -59,7 +60,7 @@ whatsappRouter.put("/settings", requireStaffPermission("/settings"), async (req,
   if (typeof body.templateLang === "string") updates.templateLang = body.templateLang.trim() || "en";
   if (typeof body.defaultCountryCode === "string") updates.defaultCountryCode = body.defaultCountryCode.replace(/\D/g, "") || "91";
   if (typeof body.accessToken === "string" && body.accessToken && body.accessToken !== "••••••••") {
-    updates.accessToken = body.accessToken.trim();
+    updates.accessToken = encryptSecret(body.accessToken.trim());
   }
   if (body.autoSendOnVerify !== undefined) updates.autoSendOnVerify = !!body.autoSendOnVerify;
   if (body.includeViewerLink !== undefined) updates.includeViewerLink = !!body.includeViewerLink;
@@ -98,11 +99,12 @@ whatsappRouter.post("/numbers", requireStaffPermission("/settings"), async (req,
     return;
   }
   const role = (body.role === "form_f" || body.role === "reports") ? body.role : "general";
+  const rawToken = String(body.accessToken ?? "").trim();
   const values = {
     name: String(body.name).trim(),
     phoneNumberId: String(body.phoneNumberId).trim(),
     displayNumber: String(body.displayNumber ?? "").trim(),
-    accessToken: String(body.accessToken ?? "").trim(),
+    accessToken: rawToken ? encryptSecret(rawToken) : "",
     role,
     enabled: !!body.enabled,
     isDefault: !!body.isDefault,
@@ -123,7 +125,7 @@ whatsappRouter.put("/numbers/:id", requireStaffPermission("/settings"), async (r
   if (typeof body.phoneNumberId === "string") updates.phoneNumberId = body.phoneNumberId.trim();
   if (typeof body.displayNumber === "string") updates.displayNumber = body.displayNumber.trim();
   if (typeof body.accessToken === "string" && body.accessToken && body.accessToken !== "••••••••") {
-    updates.accessToken = body.accessToken.trim();
+    updates.accessToken = encryptSecret(body.accessToken.trim());
   }
   if (body.role === "general" || body.role === "form_f" || body.role === "reports") updates.role = body.role;
   if (body.enabled !== undefined) updates.enabled = !!body.enabled;
@@ -157,7 +159,7 @@ whatsappRouter.post("/numbers/:id/test", requireStaffPermission("/settings"), as
 
   const [num] = await db.select().from(whatsappNumbersTable).where(eq(whatsappNumbersTable.id, id)).limit(1);
   if (!num) { res.status(404).json({ error: "Number not found" }); return; }
-  const cfg: NumberConfig = { phoneNumberId: num.phoneNumberId, accessToken: num.accessToken };
+  const cfg: NumberConfig = { phoneNumberId: num.phoneNumberId, accessToken: decryptSecretTolerant(num.accessToken) };
   if (!cfg.phoneNumberId || !cfg.accessToken) { res.status(400).json({ error: "Number missing credentials" }); return; }
 
   const s = await getOrCreateSettings();
@@ -269,7 +271,7 @@ whatsappWebhookRouter.post("/", async (req: Request, res: Response): Promise<voi
           const numbers = await db.select().from(whatsappNumbersTable).where(eq(whatsappNumbersTable.enabled, true));
           const matched = numbers.find((n) => n.phoneNumberId === receivingPhoneNumberId);
           if (matched) {
-            numCfg = { phoneNumberId: matched.phoneNumberId, accessToken: matched.accessToken };
+            numCfg = { phoneNumberId: matched.phoneNumberId, accessToken: decryptSecretTolerant(matched.accessToken) };
             numRole = matched.role;
           }
         }
@@ -636,11 +638,11 @@ async function sendTextMessage(
   if (numberId) {
     const [num] = await db.select().from(whatsappNumbersTable).where(eq(whatsappNumbersTable.id, numberId)).limit(1);
     if (num && num.phoneNumberId && num.accessToken) {
-      return sendTextMessageRaw(to, body, { phoneNumberId: num.phoneNumberId, accessToken: num.accessToken });
+      return sendTextMessageRaw(to, body, { phoneNumberId: num.phoneNumberId, accessToken: decryptSecretTolerant(num.accessToken) });
     }
   }
   if (s.accessToken && s.phoneNumberId) {
-    return sendTextMessageRaw(to, body, { phoneNumberId: s.phoneNumberId, accessToken: s.accessToken });
+    return sendTextMessageRaw(to, body, { phoneNumberId: s.phoneNumberId, accessToken: decryptSecretTolerant(s.accessToken) });
   }
   // Try default number
   const def = await resolveDefaultNumber();
@@ -669,7 +671,7 @@ export async function sendBillWhatsapp(params: {
   let cfg: NumberConfig | null = null;
   if (params.numberId) {
     const [num] = await db.select().from(whatsappNumbersTable).where(eq(whatsappNumbersTable.id, params.numberId)).limit(1);
-    if (num && num.phoneNumberId && num.accessToken) cfg = { phoneNumberId: num.phoneNumberId, accessToken: num.accessToken };
+    if (num && num.phoneNumberId && num.accessToken) cfg = { phoneNumberId: num.phoneNumberId, accessToken: decryptSecretTolerant(num.accessToken) };
   }
   if (!cfg) cfg = await resolveDefaultNumber();
   if (!cfg) {
@@ -733,7 +735,7 @@ export async function sendReportWhatsapp(params: {
   let cfg: NumberConfig | null = null;
   if (params.numberId) {
     const [num] = await db.select().from(whatsappNumbersTable).where(eq(whatsappNumbersTable.id, params.numberId)).limit(1);
-    if (num && num.phoneNumberId && num.accessToken) cfg = { phoneNumberId: num.phoneNumberId, accessToken: num.accessToken };
+    if (num && num.phoneNumberId && num.accessToken) cfg = { phoneNumberId: num.phoneNumberId, accessToken: decryptSecretTolerant(num.accessToken) };
   }
   if (!cfg) cfg = await resolveDefaultNumber();
   if (!cfg) {
@@ -811,7 +813,7 @@ export async function sendReportDelivery(params: {
   let cfg: NumberConfig | null = null;
   if (params.numberId) {
     const [num] = await db.select().from(whatsappNumbersTable).where(eq(whatsappNumbersTable.id, params.numberId)).limit(1);
-    if (num && num.phoneNumberId && num.accessToken) cfg = { phoneNumberId: num.phoneNumberId, accessToken: num.accessToken };
+    if (num && num.phoneNumberId && num.accessToken) cfg = { phoneNumberId: num.phoneNumberId, accessToken: decryptSecretTolerant(num.accessToken) };
   }
   if (!cfg) cfg = await resolveDefaultNumber();
   if (!cfg) return { ok: false, error: "WhatsApp settings incomplete" };
