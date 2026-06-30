@@ -111,6 +111,7 @@ export * from "./uploadFiles";
 export * from "./radiologySnippets";
 export * from "./radiologyKnowledge";
 export * from "./knowledgeBase";
+export * from "./aiCallerCredentials";
 export * from "./radiologySmartFindings";
 export * from "./radiologyMemory";
 export * from "./radiologyLesions";

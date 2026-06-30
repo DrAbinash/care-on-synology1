@@ -75,7 +75,7 @@ const UpdateBody = z.object({
   status: z.enum(KB_STATUSES).optional(),
 });
 
-const SearchQuery = z.object({
+export const SearchQuery = z.object({
   q: z.string().trim().min(1, "q is required"),
   category: z.string().optional(),
   channel: z.string().optional(), // 'whatsapp' | 'staff_assistant' | etc, for the search log
@@ -126,14 +126,12 @@ knowledgeBaseRouter.get("/categories", (_req, res): void => {
 //
 // Only status='published' entries are searchable — draft/suggested content
 // must never reach a patient or staff query, since it hasn't been approved.
-knowledgeBaseRouter.get("/search", async (req, res): Promise<void> => {
-  const parsed = SearchQuery.safeParse(req.query);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid request", details: parsed.error.issues });
-    return;
-  }
-  const { q, category, channel } = parsed.data;
-
+// Shared search implementation — called by both the staff-facing route
+// below (unchanged behavior) and the external-ai-caller route mounted
+// separately in routes/index.ts (see requireAiCallerAuth.ts), so there
+// is exactly one search implementation, never two copies that could
+// silently drift apart.
+export async function runKnowledgeBaseSearch(q: string, category: string | undefined, channel: string | undefined) {
   const conds = [eq(knowledgeBaseEntriesTable.status, "published")];
   if (category) conds.push(eq(knowledgeBaseEntriesTable.category, category));
 
@@ -166,14 +164,17 @@ knowledgeBaseRouter.get("/search", async (req, res): Promise<void> => {
     channel: channel ?? "",
   });
 
-  if (matched) {
-    res.json({ matched: true, entries: rows });
+  return matched ? { matched: true as const, entries: rows } : { matched: false as const, entries: [] };
+}
+
+knowledgeBaseRouter.get("/search", async (req, res): Promise<void> => {
+  const parsed = SearchQuery.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request", details: parsed.error.issues });
     return;
   }
-
-  // Explicit, honest no-match — this shape is the contract every AI face
-  // must treat as "escalate, do not improvise" per 03_ §5.2.
-  res.json({ matched: false, entries: [] });
+  const { q, category, channel } = parsed.data;
+  res.json(await runKnowledgeBaseSearch(q, category, channel));
 });
 
 // ── GET /api/knowledge-base/admin/gaps — knowledge-gap detection,

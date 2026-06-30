@@ -37,6 +37,8 @@ import storageRouter from "./storage";
 import { bridgeRouter } from "./bridge";
 import { reportTemplatesRouter } from "./report-templates";
 import { knowledgeBaseRouter } from "./knowledgeBase";
+import { aiCallerKnowledgeBaseRouter } from "./aiCallerKnowledgeBase";
+import { aiCallerCredentialsRouter } from "./aiCallerCredentials";
 import { abnormalFindingsRouter } from "./abnormal-findings";
 import formFRouter from "./form-f";
 import { portalRouter } from "./portal";
@@ -405,6 +407,12 @@ router.use(
 );
 router.use("/report-templates", requireStaffAuth, requireStaffSubPermission("/settings", "infrastructure"), reportTemplatesRouter);
 router.use("/knowledge-base", requireStaffAuth, requireStaffSubPermission("/settings", "infrastructure"), knowledgeBaseRouter);
+router.use("/ai-caller-credentials", aiCallerCredentialsRouter);
+// External AI-caller-authenticated path — deliberately NOT behind
+// requireStaffAuth, since its entire purpose is to be reachable by a
+// future external service that has no staff session. Its own auth
+// (requireAiCallerAuth) is applied per-route inside this router.
+router.use("/ai-gw/v1/knowledge-base", aiCallerKnowledgeBaseRouter);
 router.use("/abnormal-findings", requireStaffAuth, requireStaffSubPermission("/settings", "infrastructure"), abnormalFindingsRouter);
 router.use("/machines", requireStaffAuth, requireStaffSubPermission("/settings", "infrastructure"), machinesRouter);
 router.use("/departments", requireStaffAuth, requireStaffSubPermission("/settings", "infrastructure"), departmentsRouter);

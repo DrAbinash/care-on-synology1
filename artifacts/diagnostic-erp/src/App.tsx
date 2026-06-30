@@ -100,6 +100,7 @@ const DicomAgentDashboard   = lazy(() => import("@/pages/DicomAgentDashboard"));
 const ModalityManagement    = lazy(() => import("@/pages/ModalityManagement"));
 const AiReportingSettings   = lazy(() => import("@/pages/AiReportingSettings"));
 const KnowledgeBaseManager  = lazy(() => import("@/pages/KnowledgeBaseManager"));
+const AiCallerCredentials   = lazy(() => import("@/pages/AiCallerCredentials"));
 const MyCollection          = lazy(() => import("@/pages/MyCollection"));
 const PacsArchiveLifecycle  = lazy(() => import("@/pages/PacsArchiveLifecycle"));
 const PacsWatchdogDashboard = lazy(() => import("@/pages/PacsWatchdogDashboard"));
@@ -194,7 +195,7 @@ const ERP_NAV_ORDER = [
   "/settings/radiology", "/backup-replication",
   "/orders", "/tests", "/packages", "/billing", "/payments", "/reports",
   "/report-generator", "/report-hub", "/inventory", "/expenses", "/staff", "/referrals",
-  "/accounting", "/discounts", "/form-f", "/machines", "/hr-forms", "/website", "/whatsapp-chatbot", "/settings", "/knowledge-base",
+  "/accounting", "/discounts", "/form-f", "/machines", "/hr-forms", "/website", "/whatsapp-chatbot", "/settings", "/knowledge-base", "/ai-caller-credentials",
   "/samples",
   "/pacs", "/dicom-nodes",
   "/outsource/settings", "/outsource/rate-cards", "/outsource/worklist", "/outsource/reconciliation", "/outsource/ledger", "/outsource/dashboard",
@@ -339,6 +340,7 @@ function Router() {
               <Route path="/radiology/agent-setup" component={AgentSetup} />
               <Route path="/radiology/ai-reporting-settings" component={AiReportingSettings} />
               <Route path="/knowledge-base" component={KnowledgeBaseManager} />
+              <Route path="/ai-caller-credentials" component={AiCallerCredentials} />
               <Route path="/radiology/ai-prompt-templates" component={AiPromptTemplates} />
               <Route path="/radiology/ai-prompt-manager" component={AiPromptManager} />
               <Route path="/radiology/ai-comparison" component={AiComparisonWorkspace} />

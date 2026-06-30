@@ -12,8 +12,8 @@
 ## Gate 1 — Before Milestone 1 (Foundation & Security Closure) Is Considered Complete
 
 - [ ] Every designed API category implemented and passing its idempotency test.
-- [ ] AI-caller permission-matrix automated test exists, runs in CI, and confirms zero refund, delete, or radiologist-share-link permissions.
-- [ ] The two unresolved CRITICAL findings from the prior full ERP security audit (default JWT/session secrets, default DB password) independently verified closed, not self-attested by whoever made the change.
+- [x] AI-caller permission-matrix automated test exists, runs in CI, and confirms zero refund, delete, or radiologist-share-link permissions. **Built and passing (11/11 tests) — see artifacts/api-server/src/middleware/requireAiCallerAuth.test.ts.** Caveat: no external AI caller exists yet to actually authenticate with this mechanism (the WhatsApp bot is in-process, not an HTTP caller — see WHATSAPP_SYSTEM_AUDIT.md). The credential system, audit log, and admin UI (AiCallerCredentials.tsx) are real and ready; this item is the test the gate names, not a claim that an external caller is live.
+- [ ] The two unresolved CRITICAL findings from the prior full ERP security audit (default JWT/session secrets, default DB password) independently verified closed, not self-attested by whoever made the change. **Partially resolved** — see SECURITY_FINDINGS_REAUDIT.md: the JWT half was never real, the session-secret fallback is fixed, the DB password remains genuinely unverifiable without Synology shell access.
 - [ ] Super Admin redundancy confirmed: at least two staff members hold Super Admin-capable access.
 
 ## Gate 2 — Before Milestone 2 (Knowledge Engine) Is Considered Complete
