@@ -2883,6 +2883,7 @@ type WhatsappCfg = {
   aiAssistantEnabled?: boolean;
   aiAssistantName?: string;
   aiSystemPrompt?: string;
+  aiEscalationMessage?: string;
 };
 type WhatsappNumber = {
   id: number;
@@ -3916,6 +3917,20 @@ function WhatsappTab() {
               <p className="text-[11px] text-muted-foreground mt-1">
                 If you fill this in, it completely replaces the default prompt. Include all relevant clinic info here.
                 Clinic name and address are automatically included when left blank.
+              </p>
+            </div>
+
+            <div>
+              <Label>Escalation / Hand-off Message</Label>
+              <Textarea
+                value={cur.aiEscalationMessage ?? ""}
+                onChange={(e) => update("aiEscalationMessage", e.target.value)}
+                rows={3}
+                className="mt-1 text-xs"
+                placeholder="I'm not sure about that one — let me connect you with our team. For urgent matters, please call us directly."
+              />
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Shown to a patient when the AI can't answer from your Knowledge Base, or chooses "Talk to Staff" from the menu — instead of guessing, it hands off and shows this message. Leave empty to use the default shown above. "Reply MENU for the main menu" is added automatically.
               </p>
             </div>
 

@@ -78,6 +78,7 @@ whatsappRouter.put("/settings", requireStaffPermission("/settings"), async (req,
   if (body.aiAssistantEnabled !== undefined) updates.aiAssistantEnabled = !!body.aiAssistantEnabled;
   if (typeof body.aiAssistantName === "string") updates.aiAssistantName = body.aiAssistantName.trim();
   if (typeof body.aiSystemPrompt === "string") updates.aiSystemPrompt = body.aiSystemPrompt;
+  if (typeof body.aiEscalationMessage === "string") updates.aiEscalationMessage = body.aiEscalationMessage.trim();
   const [row] = await db.update(whatsappSettingsTable).set(updates).where(eq(whatsappSettingsTable.id, current.id)).returning();
   res.json({ ...row, accessToken: row.accessToken ? "••••••••" : "" });
 });

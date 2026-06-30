@@ -469,6 +469,17 @@ export const AI_TASK_CATALOG: AiTaskDef[] = [
   { key: "missed_finding_detector", label: "Missed Finding Detector", description: "Knowledge-base check for potentially missed critical findings in a report.", vision: false },
   { key: "ai_comparison", label: "AI Comparison", description: "Run the same prompt against multiple AI providers for comparison.", vision: true },
   { key: "prompt_test", label: "Prompt Test", description: "Test any AI prompt against a selected provider for validation.", vision: false },
+  // AI Receptionist (see WHATSAPP_SYSTEM_AUDIT.md) — added after discovering
+  // generateAiForTask("whatsapp_ai_receptionist", ...) was already being
+  // called from routes/whatsapp.ts and WhatsAppBotEngine.ts without this
+  // task ever being registered here. The fallback chain in
+  // generateAiForTask works correctly regardless (any string key is
+  // queryable against ai_model_routes), but without a catalog entry the
+  // admin UI (AiModelRouting.tsx) had no way to ever SHOW this task to
+  // configure — an admin could not point WhatsApp AI at a different
+  // provider (e.g. Ollama) through any screen, only by writing to the
+  // database directly. This entry closes that gap.
+  { key: "whatsapp_ai_receptionist", label: "WhatsApp AI Receptionist", description: "Knowledge-Base-grounded patient replies on WhatsApp (both the menu bot's free-text fallback and the Meta webhook's AI path).", vision: false },
 ];
 
 export const AI_TASK_KEYS = AI_TASK_CATALOG.map((t) => t.key);

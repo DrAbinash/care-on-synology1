@@ -14,6 +14,7 @@ import {
   billsTable, ordersTable, patientReportsTable, appointmentsTable,
   clinicSettingsTable, staffTable, patientsTable,
   knowledgeBaseEntriesTable, knowledgeBaseSearchLogTable,
+  whatsappSettingsTable,
 } from "@workspace/db/schema";
 import { eq, and, desc, gte, sql, or, ilike } from "drizzle-orm";
 import { generateAiForTask } from "@workspace/ai-providers";
@@ -205,11 +206,17 @@ export class WhatsAppBotEngine {
       channel: "wa_chatbot",
     });
 
+    // Per 04_AI_RECEPTIONIST_OPERATIONAL_DESIGN.md Section 2.4: admin-
+    // configurable escalation message, falling back to a sensible
+    // default when unset, rather than a string hardcoded three times in
+    // this function (the version this replaces). See the
+    // aiEscalationMessage column's own comment in whatsappSettings.ts
+    // for why this is a single setting, not a full Escalation Rules
+    // engine — there's only one real trigger to configure today.
+    const escalationMsg = await this.getEscalationMessage();
+
     if (!matched) {
-      return {
-        text: "I'm not sure about that one — let me connect you with our team. For urgent matters, please call us directly.\n\nReply MENU for the main menu.",
-        action: "handover_human",
-      };
+      return { text: escalationMsg, action: "handover_human" };
     }
 
     const kbContext = kbMatches.map((m) => `[${m.category}] ${m.title}: ${m.content}`).join("\n\n");
@@ -231,12 +238,27 @@ Reply in a helpful, friendly manner. Be concise.`;
       const result = await generateAiForTask("whatsapp_ai_receptionist", prompt, [], { maxTokens: 300 });
       const reply = result.success && result.text ? result.text : "";
       if (!reply) {
-        return { text: "Let me connect you with our team for this one.\n\nReply MENU for the main menu.", action: "handover_human" };
+        return { text: escalationMsg, action: "handover_human" };
       }
       return { text: `${reply}\n\nReply MENU for the main menu.` };
     } catch {
-      return { text: "Let me connect you with our team for this one.\n\nReply MENU for the main menu.", action: "handover_human" };
+      return { text: escalationMsg, action: "handover_human" };
     }
+  }
+
+  // Cached for the lifetime of a single processMessage() call would be
+  // ideal, but this engine is constructed once and reused across many
+  // messages (see WhatsAppService.getWhatsAppService()'s singleton
+  // pattern) — querying fresh each time means an admin's edit takes
+  // effect on the very next message, with no cache-invalidation logic
+  // needed. The query is a single-row lookup against a tiny table, not
+  // a meaningful performance concern at this volume.
+  private async getEscalationMessage(): Promise<string> {
+    const [row] = await db.select({ msg: whatsappSettingsTable.aiEscalationMessage }).from(whatsappSettingsTable).limit(1);
+    const configured = row?.msg?.trim();
+    return configured
+      ? `${configured}\n\nReply MENU for the main menu.`
+      : "I'm not sure about that one — let me connect you with our team. For urgent matters, please call us directly.\n\nReply MENU for the main menu.";
   }
 
   // ── Appointment Booking Flow ──────────────────────────────────────────────────
