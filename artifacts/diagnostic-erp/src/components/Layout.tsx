@@ -234,6 +234,7 @@ const navItems: NavEntry[] = [
     label: "Settings",
     children: [
       { path: "/settings",                  icon: Settings2,      label: "General Settings" },
+      { path: "/knowledge-base",            icon: BookOpen,       label: "Knowledge Base" },
       { path: "/radiology/settings-center", icon: Radio,          label: "Radiology Settings" },
       { path: "/tests",                     icon: FlaskConical,   label: "Test Catalog" },
       { path: "/outsourced-labs",           icon: Building2,      label: "Outsourced Labs" },
