@@ -20,6 +20,7 @@ import {
   UserPlus,
   Settings2,
   KeyRound,
+  Inbox,
   Tag,
   Ticket,
   Monitor,
@@ -132,6 +133,7 @@ const isGroup = (n: NavEntry): n is NavGroup => "children" in n;
 const navItems: NavEntry[] = [
   { path: "/", icon: Zap, label: "Billing Desk" },
   { path: "/my-daily-summary", icon: BarChart2, label: "My Daily Summary" },
+  { path: "/reception-command-center", icon: Inbox, label: "Reception Command Center" },
   { path: "/patients", icon: Users, label: "Patients" },
   { path: "/appointments", icon: CalendarDays, label: "Appointments" },
   { path: "/online-bookings", icon: ShoppingCart, label: "Online Bookings" },

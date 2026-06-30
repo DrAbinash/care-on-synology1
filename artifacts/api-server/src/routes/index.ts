@@ -38,6 +38,7 @@ import { bridgeRouter } from "./bridge";
 import { reportTemplatesRouter } from "./report-templates";
 import { knowledgeBaseRouter } from "./knowledgeBase";
 import { aiCallerKnowledgeBaseRouter } from "./aiCallerKnowledgeBase";
+import { receptionCommandCenterRouter } from "./receptionCommandCenter";
 import { aiCallerCredentialsRouter } from "./aiCallerCredentials";
 import { abnormalFindingsRouter } from "./abnormal-findings";
 import formFRouter from "./form-f";
@@ -413,6 +414,7 @@ router.use("/ai-caller-credentials", aiCallerCredentialsRouter);
 // future external service that has no staff session. Its own auth
 // (requireAiCallerAuth) is applied per-route inside this router.
 router.use("/ai-gw/v1/knowledge-base", aiCallerKnowledgeBaseRouter);
+router.use("/reception-command-center", receptionCommandCenterRouter);
 router.use("/abnormal-findings", requireStaffAuth, requireStaffSubPermission("/settings", "infrastructure"), abnormalFindingsRouter);
 router.use("/machines", requireStaffAuth, requireStaffSubPermission("/settings", "infrastructure"), machinesRouter);
 router.use("/departments", requireStaffAuth, requireStaffSubPermission("/settings", "infrastructure"), departmentsRouter);

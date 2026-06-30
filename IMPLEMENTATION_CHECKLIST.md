@@ -37,7 +37,7 @@ This is the highest-stakes gate in this checklist — every item below must be c
 - [ ] Gate 1 fully complete.
 - [ ] Gate 2 fully complete.
 - [ ] Gate 3 fully complete.
-- [ ] Reception Command Center live and staff trained on it.
+- [ ] Reception Command Center live and staff trained on it. **Partially built** — a real three-pane Command Center now exists (live feed from WhatsApp conversations + unanswered-question events, machine status, today's appointments), but per AI_RECEPTIONIST_OPERATIONAL_DESIGN.md's own §1.6, several originally-designed widgets are honestly not connected (Voice, Web Chat, QR, live doctor availability, live modality status) since those channels don't exist in this codebase yet — the UI labels these as "Not Yet Connected" rather than faking them. Staff training has not happened (no live deployment to train against).
 - [ ] Adversarial identity-gate testing passed, confirming no PII-bearing response possible from phone number alone.
 - [ ] Every red-flag phrase in the Knowledge Base's clinical-escalation-trigger list tested individually for correct, fast escalation.
 - [ ] Webhook-redelivery idempotency confirmed under load.

@@ -101,6 +101,7 @@ const ModalityManagement    = lazy(() => import("@/pages/ModalityManagement"));
 const AiReportingSettings   = lazy(() => import("@/pages/AiReportingSettings"));
 const KnowledgeBaseManager  = lazy(() => import("@/pages/KnowledgeBaseManager"));
 const AiCallerCredentials   = lazy(() => import("@/pages/AiCallerCredentials"));
+const ReceptionCommandCenter = lazy(() => import("@/pages/ReceptionCommandCenter"));
 const MyCollection          = lazy(() => import("@/pages/MyCollection"));
 const PacsArchiveLifecycle  = lazy(() => import("@/pages/PacsArchiveLifecycle"));
 const PacsWatchdogDashboard = lazy(() => import("@/pages/PacsWatchdogDashboard"));
@@ -183,7 +184,7 @@ const queryClient = new QueryClient({
 });
 
 const ERP_NAV_ORDER = [
-  "/", "/dashboard", "/my-daily-summary", "/daily-summary", "/patients", "/appointments", "/queue", "/online-bookings",
+  "/", "/dashboard", "/my-daily-summary", "/reception-command-center", "/daily-summary", "/patients", "/appointments", "/queue", "/online-bookings",
   "/radiology", "/radiology/cockpit", "/radiology/legacy", "/radiology/worklist", "/radiology/report-generator", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/pacs-settings", "/radiology/network-control-center", "/radiology/pacs-logs",
   "/radiology/dicom-agent-dashboard", "/radiology/modality-management",
   "/radiology/agent-setup", "/radiology/ai-reporting-settings", "/radiology/ai-prompt-templates", "/radiology/ai-model-routing", "/radiology/structured-report-templates", "/radiology/ai-audit-log",
@@ -341,6 +342,7 @@ function Router() {
               <Route path="/radiology/ai-reporting-settings" component={AiReportingSettings} />
               <Route path="/knowledge-base" component={KnowledgeBaseManager} />
               <Route path="/ai-caller-credentials" component={AiCallerCredentials} />
+              <Route path="/reception-command-center" component={ReceptionCommandCenter} />
               <Route path="/radiology/ai-prompt-templates" component={AiPromptTemplates} />
               <Route path="/radiology/ai-prompt-manager" component={AiPromptManager} />
               <Route path="/radiology/ai-comparison" component={AiComparisonWorkspace} />
