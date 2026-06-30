@@ -8,7 +8,7 @@ export function WhatsAppFab({ settings }: { settings: SiteSettings }) {
   const num = settings.whatsappNumber.replace(/[^0-9]/g, "");
   const msg = encodeURIComponent(settings.whatsappGreeting || "Hi, I'd like to know more.");
   return (
-    <a className="wa-fab" href={`https://wa.me/${num}?text=${msg}`} target="_blank" rel="noreferrer" aria-label="WhatsApp">
+    <a className="cd-wa-fab" href={`https://wa.me/${num}?text=${msg}`} target="_blank" rel="noreferrer" aria-label="WhatsApp">
       <MessageCircle size={26} />
     </a>
   );
@@ -68,13 +68,13 @@ export function PopupHost({ popups, currentSlug, basePath }: { popups: Popup[]; 
   const safeCtaUrl = SAFE_URL_RE.test(rawCtaUrl.trim()) ? rawCtaUrl.trim() : "";
   const ctaUrl = safeCtaUrl.startsWith("/") ? `${basePath}${safeCtaUrl.replace(/^\//, "")}` : safeCtaUrl;
   return (
-    <div className="popup-backdrop" onClick={close}>
-      <div className="popup-card" onClick={(e) => e.stopPropagation()}>
-        <button className="popup-close" onClick={close} aria-label="Close"><X size={16} /></button>
-        {active.title && <h3 style={{ fontWeight: 700, fontSize: "1.2rem", marginBottom: ".5rem", paddingRight: 32 }}>{active.title}</h3>}
-        {active.body && <p className="subtle" style={{ marginBottom: "1rem" }}>{active.body}</p>}
+    <div className="cd-popup-backdrop" onClick={close}>
+      <div className="cd-popup-card" onClick={(e) => e.stopPropagation()}>
+        <button className="cd-popup-close" onClick={close} aria-label="Close"><X size={16} /></button>
+        {active.title && <h3 className="cd-display" style={{ fontWeight: 600, fontSize: "1.25rem", marginBottom: ".5rem", paddingRight: 32, color: "hsl(var(--cd-slate))" }}>{active.title}</h3>}
+        {active.body && <p className="cd-section-sub" style={{ margin: "0 0 1.25rem" }}>{active.body}</p>}
         {active.ctaLabel && safeCtaUrl && (
-          <a href={ctaUrl} className="btn-primary" onClick={() => sessionStorage.setItem(dismissedKey(active.id), "1")}>
+          <a href={ctaUrl} className="cd-btn-primary" onClick={() => sessionStorage.setItem(dismissedKey(active.id), "1")}>
             {active.ctaLabel}
           </a>
         )}

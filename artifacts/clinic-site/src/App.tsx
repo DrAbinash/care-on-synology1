@@ -3,7 +3,7 @@ import { Router as WouterRouter, useLocation } from "wouter";
 import { Phone, MessageCircle, CalendarCheck } from "lucide-react";
 import { api, setPreviewToken } from "./api";
 import type { SiteSettings, Page, Popup } from "./types";
-import { parseSections } from "./types";
+import { parseSections, parseSocial } from "./types";
 import { applyTheme } from "./theme";
 import { HeadManager } from "./head";
 import { SectionRenderer } from "./sections";
@@ -31,6 +31,9 @@ function StructuredData({ settings }: { settings: SiteSettings }) {
     const addr  = settings.address   || "CARE DIAGNOSTICS, Subhash Chowk, Castair's Town, Near Bajla Mahila College, Deoghar\u2013814112";
     const email = settings.contactEmail || "CARE.DEOGHAR@GMAIL.COM";
 
+    const social = parseSocial(settings.socialLinks);
+    const sameAs = Object.values(social).filter((u) => typeof u === "string" && /^https?:\/\//i.test(u));
+
     const schema = {
       "@context": "https://schema.org",
       "@graph": [
@@ -42,6 +45,8 @@ function StructuredData({ settings }: { settings: SiteSettings }) {
           "url": window.location.origin,
           "telephone": "+" + phone.replace(/[^0-9]/g, ""),
           "email": email,
+          "priceRange": "₹₹",
+          ...(sameAs.length > 0 ? { "sameAs": sameAs } : {}),
           "address": {
             "@type": "PostalAddress",
             "streetAddress": "Subhash Chowk, Castair's Town, Near Bajla Mahila College",
@@ -128,11 +133,11 @@ function PageView({ slug, settings, pages, popups, isPreview }: { slug: string; 
 
   if (!page) {
     return (
-      <div style={{ minHeight: "60vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "2rem", textAlign: "center" }}>
+      <div className="cd-state-screen">
         <div>
-          <h1 className="h-section">Page not found</h1>
-          <p className="subtle" style={{ marginTop: ".5rem" }}>The page "/{slug}" doesn't exist or isn't published.</p>
-          <a href={BASE} className="btn-primary" style={{ marginTop: "1rem" }}>← Home</a>
+          <h1 className="cd-display cd-h2">Page not found</h1>
+          <p className="cd-section-sub" style={{ marginTop: ".5rem" }}>The page "/{slug}" doesn't exist or isn't published.</p>
+          <a href={BASE} className="cd-btn-primary" style={{ marginTop: "1.25rem" }}>&larr; Home</a>
         </div>
       </div>
     );
@@ -278,18 +283,18 @@ function App() {
 
   if (previewToken && previewState === "verifying") {
     return (
-      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <div className="subtle">Verifying preview access…</div>
+      <div className="cd-state-screen-full">
+        <div className="cd-section-sub" style={{ margin: 0 }}>Verifying preview access&hellip;</div>
       </div>
     );
   }
 
   if (previewToken && previewState === "invalid") {
     return (
-      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "2rem", textAlign: "center" }}>
+      <div className="cd-state-screen-full">
         <div>
-          <h1 className="h-section">Preview link expired</h1>
-          <p className="subtle" style={{ marginTop: ".5rem", maxWidth: 420, margin: ".5rem auto 0" }}>
+          <h1 className="cd-display cd-h2">Preview link expired</h1>
+          <p className="cd-section-sub" style={{ maxWidth: 420 }}>
             This preview link is invalid or has expired. Please generate a new one from the Website Builder.
           </p>
         </div>
@@ -299,19 +304,19 @@ function App() {
 
   if (error) {
     return (
-      <div style={{ padding: "3rem", textAlign: "center" }}>
-        <h1 className="h-section">Site unavailable</h1>
-        <p className="subtle">{error}</p>
+      <div className="cd-state-screen">
+        <h1 className="cd-display cd-h2">Site unavailable</h1>
+        <p className="cd-section-sub">{error}</p>
       </div>
     );
   }
 
   if (!data) {
     return (
-      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div className="cd-state-screen-full">
         <div style={{ textAlign: "center" }}>
-          <div style={{ width: 44, height: 44, borderRadius: 9999, border: "3px solid hsl(var(--site-primary) / .2)", borderTopColor: "hsl(var(--site-primary))", animation: "spin 1s linear infinite", margin: "0 auto .85rem" }} />
-          <div className="subtle" style={{ fontSize: ".9rem" }}>Loading Care Diagnostics…</div>
+          <div className="cd-loading-sweep" style={{ width: 160, margin: "0 auto .85rem" }} />
+          <div className="cd-section-sub" style={{ fontSize: ".9rem", margin: 0 }}>Loading Care Diagnostics&hellip;</div>
         </div>
       </div>
     );

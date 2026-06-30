@@ -532,7 +532,7 @@ export default function AppointmentSection({ section, settings }: { section: Sec
             )}
           </div>
         ) : (
-          <div className="card-soft" style={{ maxWidth: 520, margin: "0 auto" }}>
+          <div className="cd-card" style={{ padding: "1.75rem", maxWidth: 520, margin: "0 auto" }}>
             <h3 className="cd-appt-subheading" style={{ marginBottom: "1rem" }}>Order Summary</h3>
             <div style={{ marginBottom: "1rem" }}>
               <div className="cd-contact-label">Patient Details</div>

@@ -1968,3 +1968,37 @@ a.nav-link.active { color: hsl(var(--site-primary)); }
   font-weight: 600; font-size: .8125rem; color: hsl(32 70% 38%);
   background: hsl(var(--cd-amber) / .15); padding: .2rem .6rem; border-radius: 999px;
 }
+
+/* ── App-level states (404, error, loading, preview) ── */
+.cd-state-screen { min-height: 60vh; display: flex; align-items: center; justify-content: center; padding: 2rem; text-align: center; }
+.cd-state-screen-full { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 2rem; text-align: center; }
+
+/* ── WhatsApp FAB ── */
+.cd-wa-fab {
+  position: fixed; bottom: 5.5rem; right: 1.25rem; z-index: 30;
+  width: 56px; height: 56px; border-radius: 999px;
+  background: #25D366; color: white;
+  display: inline-flex; align-items: center; justify-content: center;
+  box-shadow: 0 6px 18px rgba(37,211,102,.4);
+  transition: transform .18s ease;
+}
+.cd-wa-fab:hover { transform: scale(1.08); }
+@media (min-width: 768px) { .cd-wa-fab { bottom: 1.75rem; } }
+
+/* ── Popup engine ── */
+.cd-popup-backdrop {
+  position: fixed; inset: 0; z-index: 90;
+  background: hsl(var(--cd-navy) / .55);
+  display: flex; align-items: center; justify-content: center; padding: 1.5rem;
+  animation: fadeInUp .2s ease both;
+}
+.cd-popup-card {
+  background: white; border-radius: var(--site-radius); padding: 2rem;
+  max-width: 420px; width: 100%; position: relative; box-shadow: var(--site-shadow-hover);
+}
+.cd-popup-close {
+  position: absolute; top: 1rem; right: 1rem;
+  width: 32px; height: 32px; border-radius: 999px;
+  background: hsl(var(--cd-scan-white)); border: none; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; color: hsl(var(--cd-slate) / .6);
+}

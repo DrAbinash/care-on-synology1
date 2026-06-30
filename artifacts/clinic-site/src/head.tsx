@@ -64,6 +64,27 @@ export function HeadManager({ settings, page }: { settings: SiteSettings; page: 
     setMeta("og:description", desc, "property");
     if (settings.seoOgImage) setMeta("og:image", resolveAssetUrl(settings.seoOgImage), "property");
     setMeta("og:type", "website", "property");
+    setMeta("og:locale", "en_IN", "property");
+
+    // Twitter Card — reuses the same OG title/description/image so editors
+    // only need to manage one set of fields in the Website Builder.
+    setMeta("twitter:card", settings.seoOgImage ? "summary_large_image" : "summary");
+    setMeta("twitter:title", pageTitle || settings.seoMetaTitle || settings.siteTitle);
+    setMeta("twitter:description", desc);
+    if (settings.seoOgImage) setMeta("twitter:image", resolveAssetUrl(settings.seoOgImage));
+
+    // Canonical URL — helps search engines treat the published page (not a
+    // preview-token or query-string variant) as the authoritative version.
+    {
+      const canonicalHref = window.location.origin + window.location.pathname;
+      let link = document.head.querySelector<HTMLLinkElement>("link[rel='canonical']");
+      if (!link) {
+        link = document.createElement("link");
+        link.rel = "canonical";
+        document.head.appendChild(link);
+      }
+      link.href = canonicalHref;
+    }
 
     // Verification meta tags — use safeMeta to reject values with characters
     // that could inject extra attributes or break out of the attribute context.
