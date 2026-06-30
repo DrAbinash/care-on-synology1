@@ -9,7 +9,6 @@ import {
 } from "lucide-react";
 import type { Section, SiteSettings, Page } from "./types";
 import { parseSocial } from "./types";
-import { buttonClass } from "./theme";
 import { resolveAssetUrl } from "./config";
 
 const SAFE_URL_RE = /^(https?:|mailto:|tel:|\/(?!\/)|#)/i;
@@ -67,117 +66,110 @@ export function HeaderSection({ section, settings, pages, basePath }: { section:
   const ctaHref = absoluteUrl(safeCta, basePath);
   const phone   = settings.contactPhone || "9973497200";
   const waNum   = (settings.whatsappNumber || phone).replace(/[^0-9]/g, "");
-  const addr    = settings.address || "CARE DIAGNOSTICS, Subhash Chowk, Castair's Town, Deoghar";
+  const addr    = settings.address || "Subhash Chowk, Castair's Town, Deoghar";
 
   const TICKER_ITEMS = [
-    "🏥 Mon–Sun 7 AM – 9 PM",
-    `📍 ${addr}`,
-    "✅ NABL Accredited Lab",
-    "📊 Same-Day Reports Available",
-    "🔬 200+ Diagnostic Tests",
-    "🚗 Free Home Sample Collection",
+    "Open Mon\u2013Sun \u00b7 7 AM \u2013 9 PM",
+    addr,
+    "NABL-accredited laboratory",
+    "Same-day report delivery available",
+    "200+ diagnostic tests & packages",
+    "Free home sample collection",
+  ];
+
+  const navLinks = [
+    { label: "Home", href: absoluteUrl("", basePath) },
+    { label: "Book a Test", href: absoluteUrl("book", basePath) },
+    { label: "Patient Login", href: "/portal/patient-login" },
+    { label: "Staff Login", href: "/portal/staff-login" },
   ];
 
   return (
     <>
-      {/* Scrolling announcement ticker */}
-      <div className="site-topbar" style={{ overflow: "hidden" }}>
-        <div className="topbar-ticker-wrap">
-          <div className="topbar-ticker-inner">
+      {/* Info strip — scrolling ticker, replaces emoji-heavy version with a calmer, mono-set data line */}
+      <div className="cd-topbar">
+        <div className="cd-topbar-ticker-wrap">
+          <div className="cd-topbar-ticker-inner">
             {[...TICKER_ITEMS, ...TICKER_ITEMS].map((item, i) => (
-              <span key={i} className="topbar-ticker-item">{item}</span>
+              <span key={i} className="cd-topbar-item cd-mono">{item}</span>
             ))}
           </div>
         </div>
-        <div className="topbar-actions">
-          <a href={`tel:${phone}`} className="topbar-action-link"><Phone size={11} /> {phone}</a>
+        <div className="cd-topbar-actions">
+          <a href={`tel:${phone}`} className="cd-topbar-action"><Phone size={11} /> {phone}</a>
           {waNum && (
-            <a href={`https://wa.me/${waNum}`} target="_blank" rel="noreferrer" className="topbar-action-link" style={{ color: "#25d366" }}>
+            <a href={`https://wa.me/${waNum}`} target="_blank" rel="noreferrer" className="cd-topbar-action" style={{ color: "#25d366" }}>
               <MessageCircle size={11} /> WhatsApp
             </a>
           )}
         </div>
       </div>
 
-      {/* Main header */}
-      <header className={`site-header ${scrolled ? "scrolled" : ""}`}>
-        <div className="container-narrow site-header-row">
-          {/* Logo / brand */}
-          <Link to="/" className="header-logo" style={{ textDecoration: "none", display: "flex", alignItems: "center", gap: "0.6rem" }}>
+      <header className={`cd-header ${scrolled ? "cd-header-scrolled" : ""}`}>
+        <div className="container-narrow cd-header-row">
+          <Link to="/" className="cd-header-logo">
             {settings.logoUrl
               ? <img src={resolveAssetUrl(settings.logoUrl)} alt={settings.siteTitle} style={{ height: 36, maxWidth: 160, objectFit: "contain" }} />
               : <>
-                  <span style={{
-                    width: 38, height: 38,
-                    background: "linear-gradient(135deg, hsl(var(--site-primary)), #4f46e5)",
-                    borderRadius: "12px",
-                    display: "inline-flex", alignItems: "center", justifyContent: "center",
-                    color: "white", flexShrink: 0,
-                    boxShadow: "0 4px 14px hsl(var(--site-primary) / 0.3)",
-                  }}>
-                    <Microscope size={20} />
+                  <span className="cd-header-logo-mark">
+                    <Microscope size={19} />
                   </span>
-                  <span style={{ fontWeight: 800, letterSpacing: "-0.03em", fontSize: "1.3rem", color: "hsl(var(--site-fg))" }}>
-                    Care<span style={{ color: "hsl(var(--site-primary))" }}>Diagnostics</span>
+                  <span className="cd-header-logo-text cd-display">
+                    Care<span style={{ color: "hsl(var(--cd-teal))" }}>Diagnostics</span>
                   </span>
                 </>
             }
           </Link>
 
-          {/* Desktop nav */}
-          <div className="header-right">
-            <Link to="/" className="header-nav-link">Home</Link>
-            <a href="/portal/patient-login" className="header-nav-link">Patient Login</a>
-            <a href="/portal/staff-login" className="header-nav-link">Staff Login</a>
-            <a href="/book" className="header-nav-link">Book Test</a>
-            <a href="/book#appointment" className="header-nav-link">Book Appointment</a>
-            <a href="/portal/patient-login" className="header-nav-link">Report Download</a>
+          <nav className="cd-header-nav" aria-label="Main navigation">
+            {navLinks.map((l) => (
+              <a key={l.label} href={l.href} className="cd-header-link">{l.label}</a>
+            ))}
             {navPages.map((p) => {
               if (p.slug === "home") return null;
               return (
-                <Link key={p.id} to={`/${p.slug}`} className="header-nav-link">
+                <Link key={p.id} to={`/${p.slug}`} className="cd-header-link">
                   {p.title}
                 </Link>
               );
             })}
-            {waNum && (
-              <a href={`https://wa.me/${waNum}`} target="_blank" rel="noreferrer" className="header-wa-link" style={{ marginLeft: ".5rem" }}>
-                <MessageCircle size={14} /> WhatsApp
-              </a>
-            )}
-          </div>
+          </nav>
 
-          {/* Mobile toggle */}
-          <button
-            className="nav-toggle"
-            style={{ marginLeft: "auto" }}
-            aria-label={open ? "Close menu" : "Open menu"}
-            aria-expanded={open}
-            onClick={() => setOpen((v) => !v)}
-          >
-            {open ? <XIcon size={20} /> : <Menu size={20} />}
-          </button>
+          <div className="cd-header-end">
+            <a href={ctaHref} className="cd-btn-primary cd-header-cta">
+              <CalendarCheck size={16} />
+              {ctaLabel}
+            </a>
+            <button
+              className="cd-nav-toggle"
+              aria-label={open ? "Close menu" : "Open menu"}
+              aria-expanded={open}
+              onClick={() => setOpen((v) => !v)}
+            >
+              {open ? <XIcon size={20} /> : <Menu size={20} />}
+            </button>
+          </div>
         </div>
 
-        {/* Mobile dropdown */}
         {open && (
-          <nav className="nav-mobile">
-            <Link to="/" className="header-nav-link">Home</Link>
-            <a href="/portal/patient-login" className="header-nav-link">Patient Login</a>
-            <a href="/portal/staff-login" className="header-nav-link">Staff Login</a>
-            <a href="/book" className="header-nav-link">Book Test</a>
-            <a href="/book#appointment" className="header-nav-link">Book Appointment</a>
-            <a href="/portal/patient-login" className="header-nav-link">Report Download</a>
+          <nav className="cd-nav-mobile" aria-label="Mobile navigation">
+            {navLinks.map((l) => (
+              <a key={l.label} href={l.href} className="cd-header-link">{l.label}</a>
+            ))}
             {navPages.map((p) => {
               if (p.slug === "home") return null;
               return (
-                <Link key={p.id} to={`/${p.slug}`} className="header-nav-link">
+                <Link key={p.id} to={`/${p.slug}`} className="cd-header-link">
                   {p.title}
                 </Link>
               );
             })}
+            <a href={ctaHref} className="cd-btn-primary" style={{ marginTop: ".5rem" }}>
+              <CalendarCheck size={16} />
+              {ctaLabel}
+            </a>
             {waNum && (
-              <a href={`https://wa.me/${waNum}`} target="_blank" rel="noreferrer" className="header-nav-link" style={{ color: "#25d366" }}>
+              <a href={`https://wa.me/${waNum}`} target="_blank" rel="noreferrer" className="cd-header-link" style={{ color: "#25d366" }}>
                 <MessageCircle size={15} style={{ display: "inline", marginRight: 4 }} /> WhatsApp Us
               </a>
             )}
@@ -191,43 +183,22 @@ export function HeaderSection({ section, settings, pages, basePath }: { section:
 // ───── HERO ─────
 export function HeroSection({ section, settings, basePath }: { section: Section; settings: SiteSettings; basePath: string }) {
   const c = section.config;
-  const heading    = get(c, "heading", "Advanced Diagnostics.\nAccurate Reports.\nTrusted Care.");
-  const subheading = get(c, "subheading", "MRI, CT, Ultrasound, Digital X-Ray, Pathology and Health Packages — delivered with precision, compassion and fast reporting at Care Diagnostics, Deoghar.");
-  const ctaLabel   = get(c, "ctaLabel", "Book Test Online");
+  const heading    = get(c, "heading", "Precision diagnostics.\nReports you can trust.");
+  const subheading = get(c, "subheading", "3T MRI, CT, Ultrasound, Digital X-Ray, Mammography and Pathology — read by specialists, delivered fast, at Care Diagnostics, Deoghar.");
+  const ctaLabel   = get(c, "ctaLabel", "Book a Test");
   const ctaUrl     = get(c, "ctaUrl",   "book");
-  const imageUrl   = get(c, "imageUrl");
   const phone      = settings.contactPhone || "9973497200";
   const waNum      = (settings.whatsappNumber || phone).replace(/[^0-9]/g, "");
 
   const safeCta = safeUrl(ctaUrl, "book");
   const ctaHref = absoluteUrl(safeCta, basePath);
 
-  // Premium high-quality Unsplash healthcare images as hero backgrounds
-  const HERO_IMAGES = [
-    "https://images.unsplash.com/photo-1576091160550-2173dba999ef?w=1800&q=85&auto=format",
-    "https://images.unsplash.com/photo-1551190822-a9333d879b1f?w=1800&q=85&auto=format",
-    "https://images.unsplash.com/photo-1538108149393-fbbd81895907?w=1800&q=85&auto=format",
-  ];
-  const [imgIdx, setImgIdx] = useState(0);
-  const [imgFading, setImgFading] = useState(false);
-  useEffect(() => {
-    const t = setInterval(() => {
-      setImgFading(true);
-      setTimeout(() => { setImgIdx(i => (i + 1) % HERO_IMAGES.length); setImgFading(false); }, 600);
-    }, 6000);
-    return () => clearInterval(t);
-  }, []);
-
-  const heroImg = imageUrl
-    ? resolveAssetUrl(imageUrl)
-    : HERO_IMAGES[imgIdx];
-
-  // Animated stat counters
+  // Animated stat counters — same logic as before, kept (it worked well)
   const STATS = [
-    { target: 10000, suffix: "+", label: "Patients Served" },
-    { target: 200, suffix: "+", label: "Tests & Services" },
-    { target: 15, suffix: "+ yrs", label: "Of Excellence" },
-    { target: 24, suffix: "h", label: "Report Delivery" },
+    { target: 10000, suffix: "+", label: "Patients served" },
+    { target: 200, suffix: "+", label: "Tests & packages" },
+    { target: 15, suffix: " yrs", label: "Of excellence" },
+    { target: 24, suffix: "h", label: "Report delivery" },
   ];
   const [counts, setCounts] = useState(STATS.map(() => 0));
   const countRef = useRef(false);
@@ -241,148 +212,117 @@ export function HeroSection({ section, settings, basePath }: { section: Section;
       const t = setInterval(() => {
         step++;
         const v = Math.round(s.target * (step / steps));
-        setCounts(prev => { const n = [...prev]; n[i] = v; return n; });
+        setCounts((prev) => { const n = [...prev]; n[i] = v; return n; });
         if (step >= steps) clearInterval(t);
       }, stepMs);
     });
   }, []);
 
-  const badges = [
-    { icon: <Brain size={13} />, label: "3 Tesla MRI" },
-    { icon: <Activity size={13} />, label: "CT Imaging" },
-    { icon: <TestTube size={13} />, label: "Pathology Lab" },
-    { icon: <BadgeCheck size={13} />, label: "Same-Day Reports" },
-    { icon: <HomeIcon size={13} />, label: "Home Collection" },
-  ];
+  // Quick test search — new, per brief's "Quick test search" requirement
+  const [searchQ, setSearchQ] = useState("");
+  const [, navigate] = useLocation();
+  function onQuickSearch(e: { preventDefault: () => void }) {
+    e.preventDefault();
+    const q = searchQ.trim();
+    navigate(`${basePath}book${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+  }
 
   const headingLines = heading.split("\n");
 
+  const modalities = [
+    { icon: <Brain size={20} />, label: "MRI" },
+    { icon: <Scan size={20} />, label: "CT Scan" },
+    { icon: <Waves size={20} />, label: "Ultrasound" },
+    { icon: <Zap size={20} />, label: "X-Ray" },
+    { icon: <Activity size={20} />, label: "Mammography" },
+    { icon: <TestTube size={20} />, label: "Laboratory" },
+  ];
+
   return (
-    <section className="hero-section">
-      {/* BG image with crossfade */}
-      <div
-        className="hero-gradient-bg"
-        style={{
-          background: `linear-gradient(160deg, rgba(7,21,60,.82) 0%, rgba(15,52,96,.75) 50%, rgba(0,0,0,.65) 100%), url(${heroImg}) center/cover`,
-          transition: "opacity .6s",
-          opacity: imgFading ? 0.4 : 1,
-        }}
-      />
-      {/* Subtle animated mesh overlay */}
-      <div className="hero-mesh-overlay" />
-      <div className="hero-grid-overlay" />
+    <section className="cd-hero">
+      <div className="cd-hero-panel cd-scan-panel">
+        <div className="cd-hero-mesh" aria-hidden="true" />
+        <div className="cd-hero-inner">
+          <div className="cd-hero-text anim-left">
+            <span className="cd-eyebrow" style={{ color: "hsl(var(--cd-amber))" }}>
+              <Microscope size={14} />
+              Care Diagnostics &middot; Deoghar, Jharkhand
+            </span>
 
-      <div className="hero-content">
-        <div className="hero-inner">
-          {/* Left text */}
-          <div className="hero-text-col anim-left">
-            <div className="hero-eyebrow">
-              <span className="hero-eyebrow-dot" />
-              <Microscope size={13} />
-              Care Diagnostics · Deoghar, Jharkhand
-            </div>
-
-            <h1 className="hero-heading">
+            <h1 className="cd-hero-heading cd-display">
               {headingLines.map((line, i) => (
                 <span key={i} style={{ display: "block", animationDelay: `${i * 0.12}s` }} className="hero-heading-line">
-                  {i === 0 ? line : <span className="hero-heading-accent">{line}</span>}
+                  {line}
                 </span>
               ))}
             </h1>
 
-            <p className="hero-subheading">{subheading}</p>
+            <p className="cd-hero-sub">{subheading}</p>
 
-            <div className="hero-ctas" style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginTop: "1.5rem" }}>
-              <a href="/portal/patient-login" className="hero-cta-primary" style={{ background: "linear-gradient(135deg, #3b82f6, #1d4ed8)", boxShadow: "0 4px 14px rgba(59, 130, 246, 0.4)" }}>
-                <UserCheck size={18} />
-                Patient Login
-              </a>
-              <a href="/portal/staff-login" className="hero-cta-primary" style={{ background: "linear-gradient(135deg, #4f46e5, #3730a3)", boxShadow: "0 4px 14px rgba(79, 70, 229, 0.4)" }}>
-                <UsersIcon size={18} />
-                Staff Login
-              </a>
-              <a href={ctaHref} className="hero-cta-secondary">
+            {/* Quick test search */}
+            <form onSubmit={onQuickSearch} className="cd-hero-search" role="search" aria-label="Search for a test or package">
+              <FileText size={17} style={{ flexShrink: 0, opacity: .6 }} aria-hidden="true" />
+              <input
+                type="text"
+                value={searchQ}
+                onChange={(e) => setSearchQ(e.target.value)}
+                placeholder="Search a test or package — e.g. MRI Brain, CBC, Full Body Checkup"
+                aria-label="Search a test or package"
+              />
+              <button type="submit" className="cd-btn-primary" style={{ padding: ".65rem 1.25rem" }}>
+                Search
+              </button>
+            </form>
+
+            <div className="cd-hero-ctas">
+              <a href={ctaHref} className="cd-btn-primary">
                 <CalendarCheck size={18} />
                 {ctaLabel}
               </a>
+              <a href={`${basePath}book#reports`} className="cd-btn-ghost">
+                <FileText size={18} />
+                Download Report
+              </a>
+              <a href={`tel:${phone}`} className="cd-btn-ghost">
+                <Phone size={18} />
+                Call Now
+              </a>
               {waNum && (
-                <a href={`https://wa.me/${waNum}?text=${encodeURIComponent("Hi, I'd like to book a diagnostic test.")}`}
-                   target="_blank" rel="noreferrer" className="hero-cta-wa">
-                  <MessageCircle size={18} />
+                <a
+                  href={`https://wa.me/${waNum}?text=${encodeURIComponent("Hi, I'd like to book a diagnostic test.")}`}
+                  target="_blank" rel="noreferrer"
+                  className="cd-hero-wa"
+                  aria-label="Chat on WhatsApp"
+                >
+                  <MessageCircle size={20} />
                 </a>
               )}
             </div>
 
-            <div className="hero-badges">
-              {badges.map((b, i) => (
-                <span key={i} className="hero-badge" style={{ animationDelay: `${0.3 + i * 0.07}s` }}>
-                  {b.icon} {b.label}
-                </span>
-              ))}
-            </div>
-
-            {/* Stat counters */}
-            <div className="hero-stats-row">
-              {STATS.map((s, i) => (
-                <div key={i} className="hero-stat">
-                  <span className="hero-stat-num">{counts[i].toLocaleString()}{s.suffix}</span>
-                  <span className="hero-stat-label">{s.label}</span>
-                </div>
+            {/* Modality quick-access chips */}
+            <div className="cd-hero-modalities" role="list" aria-label="Our diagnostic services">
+              {modalities.map((m, i) => (
+                <a key={i} href={`${basePath}book`} className="cd-hero-modality-chip" role="listitem">
+                  {m.icon}
+                  <span>{m.label}</span>
+                </a>
               ))}
             </div>
           </div>
 
-          {/* Right image (desktop) */}
-          <div className="hero-image-col anim-right">
-            <div className="hero-img-frame">
-              <img
-                src={heroImg}
-                alt="Care Diagnostics — modern diagnostic center"
-                className="hero-main-img"
-                loading="eager"
-                style={{ transition: "opacity .6s", opacity: imgFading ? 0.5 : 1 }}
-              />
-              {/* Image slide indicators */}
-              <div className="hero-img-dots">
-                {HERO_IMAGES.map((_, i) => (
-                  <button key={i} onClick={() => setImgIdx(i)}
-                    style={{ width: i === imgIdx ? 24 : 8, height: 8, borderRadius: 9999, background: i === imgIdx ? "white" : "rgba(255,255,255,.4)", border: "none", cursor: "pointer", transition: "all .3s", padding: 0 }}
-                  />
-                ))}
+          {/* Stat strip */}
+          <div className="cd-hero-stats anim-right" aria-hidden="false">
+            {STATS.map((s, i) => (
+              <div key={i} className="cd-hero-stat">
+                <span className="cd-hero-stat-num cd-mono">{counts[i].toLocaleString()}{s.suffix}</span>
+                <span className="cd-hero-stat-label">{s.label}</span>
               </div>
-            </div>
-            <div className="hero-float-card pos-tl">
-              <div className="hero-float-dot" />
-              MRI · CT · USG
-            </div>
-            <div className="hero-float-card pos-tr">
-              <BadgeCheck size={14} style={{ color: "#22c55e" }} />
-              Same-Day Reports
-            </div>
-            <div className="hero-float-card pos-bl">
-              <HomeIcon size={14} style={{ color: "hsl(var(--site-primary))" }} />
-              Home Collection
-            </div>
-            <div className="hero-float-card pos-br">
-              <CalendarCheck size={14} style={{ color: "#7c3aed" }} />
-              Online Booking
-            </div>
+            ))}
           </div>
-        </div>
-
-        {/* Mobile hero image */}
-        <div style={{ maxWidth: 1120, margin: "2rem auto 0" }}>
-          <img
-            src={heroImg}
-            alt="Care Diagnostics"
-            className="hero-mobile-img"
-            loading="eager"
-          />
         </div>
       </div>
 
-      {/* Scroll indicator */}
-      <a href="#services" className="hero-scroll-indicator" aria-label="Scroll down">
+      <a href="#services" className="hero-scroll-indicator" aria-label="Scroll to services">
         <ChevronDown size={22} />
       </a>
     </section>
@@ -402,12 +342,12 @@ export function StatsSection({ section }: { section: Section }) {
     ? (c.items as Array<{ num: string; label: string }>)
     : defaultStats;
   return (
-    <div className="stats-strip">
-      <div className="stats-grid">
+    <div className="cd-stats-strip cd-section-navy">
+      <div className="container-narrow cd-stats-grid cd-stagger">
         {items.map((it, i) => (
-          <div key={i} className="stat-item">
-            <div className="stat-num">{it.num}</div>
-            <div className="stat-label">{it.label}</div>
+          <div key={i} className="cd-stats-item">
+            <div className="cd-stats-num cd-mono">{it.num}</div>
+            <div className="cd-stats-label">{it.label}</div>
           </div>
         ))}
       </div>
@@ -462,83 +402,61 @@ function getServiceImage(title: string, basePath: string): string {
 
 export function ServicesSection({ section, basePath = "/" }: { section: Section; basePath?: string }) {
   const c       = section.config;
-  const heading = get(c, "heading", "Complete Diagnostic Services Under One Roof");
-  const sub     = get(c, "subheading", "From advanced imaging to routine pathology, Care Diagnostics provides reliable testing with modern equipment and patient-friendly workflow.");
+  const heading = get(c, "heading", "Complete diagnostic services, one roof");
+  const sub     = get(c, "subheading", "From advanced imaging to routine pathology — modern equipment, specialist reporting, and a patient-friendly workflow.");
   const items   = Array.isArray(c.items) && c.items.length > 0
     ? (c.items as Array<{ title: string; desc: string; category?: string; price?: string }>)
     : DEFAULT_SERVICES;
 
   const [activeTab, setActiveTab] = useState("All");
-
   const categories = ["All", "Radiology", "Pathology", "Cardiology & Neuro", "Preventive Health Packages"];
-
-  const filteredItems = activeTab === "All"
-    ? items
-    : items.filter(it => (it.category || "Radiology") === activeTab);
+  const filteredItems = activeTab === "All" ? items : items.filter((it) => (it.category || "Radiology") === activeTab);
 
   return (
-    <section className="section" id="services">
+    <section className="cd-section cd-section-light" id="services">
       <div className="container-narrow">
-        <div className="text-center" style={{ marginBottom: "2.5rem" }}>
-          <div className="section-eyebrow"><Activity size={13} /> Our Services</div>
-          <h2 className="h-section" style={{ marginBottom: ".6rem" }}>{heading}</h2>
-          {sub && <p className="subtle" style={{ maxWidth: 620, margin: "0 auto", lineHeight: 1.7 }}>{sub}</p>}
+        <div className="text-center" style={{ marginBottom: "2.75rem" }}>
+          <span className="cd-eyebrow"><Activity size={13} /> Our Services</span>
+          <h2 className="cd-display cd-h2" style={{ marginTop: ".6rem" }}>{heading}</h2>
+          {sub && <p className="cd-section-sub">{sub}</p>}
         </div>
 
-        {/* Dynamic Category Tabs */}
-        <div style={{ display: "flex", gap: ".6rem", flexWrap: "wrap", justifyContent: "center", marginBottom: "2.5rem" }}>
+        <div className="cd-tab-row" role="tablist" aria-label="Filter services by category">
           {categories.map((cat) => (
             <button
               key={cat}
+              role="tab"
+              aria-selected={activeTab === cat}
               onClick={() => setActiveTab(cat)}
-              style={{
-                padding: ".55rem 1.35rem",
-                borderRadius: 9999,
-                fontSize: ".85rem",
-                fontWeight: 600,
-                border: "none",
-                cursor: "pointer",
-                background: activeTab === cat ? "linear-gradient(135deg, hsl(var(--site-primary)), hsl(var(--site-primary) / 0.85))" : "hsl(var(--site-muted))",
-                color: activeTab === cat ? "white" : "hsl(var(--site-fg))",
-                boxShadow: activeTab === cat ? "0 4px 14px hsl(var(--site-primary) / 0.25)" : "none",
-                transition: "all 0.25s cubic-bezier(0.4, 0, 0.2, 1)",
-                transform: activeTab === cat ? "scale(1.03)" : "scale(1)",
-              }}
-              className="service-tab-btn"
+              className={`cd-tab-btn ${activeTab === cat ? "active" : ""}`}
             >
               {cat}
             </button>
           ))}
         </div>
 
-        <div className="services-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "1.5rem" }}>
+        <div className="cd-services-grid cd-stagger">
           {filteredItems.map((it, i) => {
             const serviceImg = getServiceImage(it.title, basePath);
             const fallbackUnsplash = "https://images.unsplash.com/photo-1629909613654-28e377c37b09?w=600&q=80";
             return (
-              <div key={i} className="service-card" style={{ display: "flex", flexDirection: "column", height: "100%", padding: 0, overflow: "hidden" }}>
-                <div style={{ position: "relative", height: "180px", overflow: "hidden" }}>
+              <div key={i} className="cd-card cd-service-card">
+                <div className="cd-service-img-wrap">
                   <img
                     src={serviceImg}
                     alt={it.title}
-                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).src = fallbackUnsplash;
-                    }}
+                    loading="lazy"
+                    onError={(e) => { (e.target as HTMLImageElement).src = fallbackUnsplash; }}
                   />
-                  <div style={{ position: "absolute", top: "10px", right: "10px", background: "hsl(var(--site-primary))", color: "white", padding: "0.25rem 0.65rem", borderRadius: "9999px", fontSize: "0.75rem", fontWeight: 700 }}>
-                    {it.category || "Radiology"}
-                  </div>
+                  <span className="cd-service-cat-badge">{it.category || "Radiology"}</span>
                 </div>
-                <div style={{ padding: "1.5rem", display: "flex", flexDirection: "column", flex: 1 }}>
-                  <h3 style={{ fontSize: "1.1rem", fontWeight: 700, marginBottom: "0.5rem" }}>{it.title}</h3>
-                  <p style={{ fontSize: "0.85rem", color: "hsl(var(--site-muted-fg))", lineHeight: "1.6", flex: 1, marginBottom: "1rem" }}>{it.desc}</p>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid hsl(var(--site-border))", paddingTop: "0.85rem", marginTop: "auto" }}>
-                    <span style={{ fontWeight: 800, color: "hsl(var(--site-primary))", fontSize: "0.95rem" }}>
-                      {it.price || "Contact Us"}
-                    </span>
-                    <a href={`${basePath}book`} className="btn-primary" style={{ padding: "0.45rem 1rem", fontSize: "0.8rem", borderRadius: "9999px" }}>
-                      Book Now
+                <div className="cd-service-body">
+                  <h3 className="cd-service-title">{it.title}</h3>
+                  <p className="cd-service-desc">{it.desc}</p>
+                  <div className="cd-service-footer">
+                    <span className="cd-mono cd-service-price">{it.price || "Contact us"}</span>
+                    <a href={`${basePath}book`} className="cd-btn-primary" style={{ padding: ".5rem 1.1rem", fontSize: ".8125rem" }}>
+                      Book now
                     </a>
                   </div>
                 </div>
@@ -571,20 +489,20 @@ export function WhyChooseUsSection({ section }: { section: Section }) {
     ? (c.items as Array<{ title: string; desc: string }>).map((it, i) => ({ ...it, icon: DEFAULT_WHY[i]?.icon ?? <Shield size={18} /> }))
     : DEFAULT_WHY;
   return (
-    <section className="section muted-bg">
+    <section className="cd-section cd-section-light">
       <div className="container-narrow">
-        <div className="text-center" style={{ marginBottom: "2.5rem" }}>
-          <div className="section-eyebrow"><Award size={13} /> Why Choose Us</div>
-          <h2 className="h-section" style={{ marginBottom: ".6rem" }}>{heading}</h2>
-          {sub && <p className="subtle" style={{ maxWidth: 520, margin: "0 auto" }}>{sub}</p>}
+        <div className="text-center" style={{ marginBottom: "2.75rem" }}>
+          <span className="cd-eyebrow"><Award size={13} /> Why Choose Us</span>
+          <h2 className="cd-display cd-h2" style={{ marginTop: ".6rem" }}>{heading}</h2>
+          {sub && <p className="cd-section-sub" style={{ maxWidth: 520 }}>{sub}</p>}
         </div>
-        <div className="why-grid">
+        <div className="cd-why-grid cd-stagger">
           {items.map((it, i) => (
-            <div key={i} className="why-card">
-              <div className="why-icon" aria-hidden="true">{it.icon}</div>
+            <div key={i} className="cd-card cd-why-card">
+              <span className="cd-why-icon" aria-hidden="true">{it.icon}</span>
               <div>
-                <h3>{it.title}</h3>
-                <p>{it.desc}</p>
+                <h3 className="cd-why-title">{it.title}</h3>
+                <p className="cd-why-desc">{it.desc}</p>
               </div>
             </div>
           ))}
@@ -642,35 +560,30 @@ const TECH_ITEMS = [
 
 export function TechnologySection({ section }: { section: Section }) {
   const c = section.config;
-  const heading = get(c, "heading", "Advanced Technology for Accurate Diagnosis");
-  const sub     = get(c, "subheading", "High-quality imaging and lab workflow designed to support confident clinical decisions.");
+  const heading = get(c, "heading", "Technology built for confident diagnosis");
+  const sub     = get(c, "subheading", "High-quality imaging and laboratory workflow, designed to support clear clinical decisions.");
   return (
-    <section className="section" style={{ background: "linear-gradient(180deg, hsl(var(--site-muted)) 0%, hsl(var(--site-bg)) 100%)" }}>
+    <section className="cd-section cd-section-light">
       <div className="container-narrow">
-        <div className="text-center" style={{ marginBottom: "2.5rem" }}>
-          <div className="section-eyebrow"><Cpu size={13} /> Our Technology</div>
-          <h2 className="h-section" style={{ marginBottom: ".6rem" }}>{heading}</h2>
-          {sub && <p className="subtle" style={{ maxWidth: 560, margin: "0 auto", lineHeight: 1.7 }}>{sub}</p>}
+        <div className="text-center" style={{ marginBottom: "2.75rem" }}>
+          <span className="cd-eyebrow"><Cpu size={13} /> Our Technology</span>
+          <h2 className="cd-display cd-h2" style={{ marginTop: ".6rem" }}>{heading}</h2>
+          {sub && <p className="cd-section-sub" style={{ maxWidth: 560 }}>{sub}</p>}
         </div>
-        <div className="tech-grid">
+        <div className="cd-tech-grid cd-stagger">
           {TECH_ITEMS.map((it, i) => (
-            <div key={i} className="tech-card">
+            <div key={i} className="cd-tech-card">
               <img
                 src={it.img}
                 alt={it.title}
-                className="tech-img"
+                className="cd-tech-img"
                 loading="lazy"
                 onError={(e) => { (e.target as HTMLImageElement).src = "https://images.unsplash.com/photo-1576091160550-2173dba999ef?w=700&q=80"; }}
               />
-              <div className="tech-icon-badge" aria-hidden="true" style={{ background: it.color }}>{it.icon}</div>
-              <div className="tech-overlay">
+              <div className="cd-tech-overlay">
+                <span className="cd-tech-icon-badge" aria-hidden="true">{it.icon}</span>
                 <h3>{it.title}</h3>
                 <p>{it.desc}</p>
-                <div style={{ marginTop: ".65rem" }}>
-                  <span style={{ fontSize: ".75rem", background: "rgba(255,255,255,.18)", padding: ".2rem .7rem", borderRadius: 9999, fontWeight: 600 }}>
-                    Learn More →
-                  </span>
-                </div>
               </div>
             </div>
           ))}
@@ -722,35 +635,35 @@ const DEFAULT_PKGS = [
 
 export function HealthPackagesSection({ section, basePath }: { section: Section; basePath: string }) {
   const c = section.config;
-  const heading  = get(c, "heading", "Popular Health Packages");
-  const sub      = get(c, "subheading", "Preventive packages designed for families, senior citizens and chronic disease monitoring.");
+  const heading  = get(c, "heading", "Popular health packages");
+  const sub      = get(c, "subheading", "Preventive packages designed for families, senior citizens and chronic-disease monitoring.");
   const bookHref = `${basePath}book`;
 
   return (
-    <section className="section muted-bg">
+    <section className="cd-section cd-section-light">
       <div className="container-narrow">
-        <div className="text-center" style={{ marginBottom: "2.5rem" }}>
-          <div className="section-eyebrow"><Package size={13} /> Health Packages</div>
-          <h2 className="h-section" style={{ marginBottom: ".6rem" }}>{heading}</h2>
-          {sub && <p className="subtle" style={{ maxWidth: 560, margin: "0 auto" }}>{sub}</p>}
+        <div className="text-center" style={{ marginBottom: "2.75rem" }}>
+          <span className="cd-eyebrow"><Package size={13} /> Health Packages</span>
+          <h2 className="cd-display cd-h2" style={{ marginTop: ".6rem" }}>{heading}</h2>
+          {sub && <p className="cd-section-sub" style={{ maxWidth: 560 }}>{sub}</p>}
         </div>
-        <div className="pkg-grid">
+        <div className="cd-pkg-grid cd-stagger">
           {DEFAULT_PKGS.map((pkg, i) => (
-            <div key={i} className={`pkg-card${pkg.featured ? " featured" : ""}`}>
-              {pkg.badge && <span className="pkg-badge">{pkg.badge}</span>}
-              <div className="pkg-icon" aria-hidden="true"><Package size={22} /></div>
-              <h3>{pkg.name}</h3>
-              <ul className="pkg-includes">
+            <div key={i} className={`cd-card cd-pkg-card${pkg.featured ? " featured" : ""}`}>
+              {pkg.badge && <span className="cd-pkg-badge">{pkg.badge}</span>}
+              <span className="cd-pkg-icon" aria-hidden="true"><Package size={20} /></span>
+              <h3 className="cd-pkg-name">{pkg.name}</h3>
+              <ul className="cd-pkg-includes">
                 {pkg.includes.map((item, j) => <li key={j}>{item}</li>)}
               </ul>
-              <a href={bookHref} className="btn-primary" style={{ justifyContent: "center", width: "100%", borderRadius: 9999 }}>
-                Book Now <ArrowRight size={15} />
+              <a href={bookHref} className="cd-btn-primary" style={{ justifyContent: "center", width: "100%" }}>
+                Book now <ArrowRight size={15} />
               </a>
             </div>
           ))}
         </div>
-        <p className="subtle text-center" style={{ fontSize: ".85rem", marginTop: "1.5rem" }}>
-          Prices available at the center. Call <a href="tel:9973497200" style={{ color: "hsl(var(--site-primary))", fontWeight: 600 }}>9973497200</a> or WhatsApp for current offers.
+        <p className="cd-section-sub" style={{ fontSize: ".875rem", marginTop: "1.75rem" }}>
+          Prices available at the centre. Call <a href="tel:9973497200" style={{ color: "hsl(var(--cd-teal))", fontWeight: 600 }}>9973497200</a> or WhatsApp for current offers.
         </p>
       </div>
     </section>
@@ -768,33 +681,32 @@ const DEFAULT_REVIEWS = [
 
 export function ReviewsSection({ section }: { section: Section }) {
   const c       = section.config;
-  const heading = get(c, "heading", "What Our Patients Say");
+  const heading = get(c, "heading", "What our patients say");
   const sub     = get(c, "subheading", "Trusted by thousands of patients across Deoghar and Jharkhand.");
   const items   = Array.isArray(c.items) && c.items.length > 0
     ? (c.items as Array<{ name: string; rating: number; text: string; location?: string }>)
     : DEFAULT_REVIEWS;
   return (
-    <section className="section muted-bg">
+    <section className="cd-section cd-section-light">
       <div className="container-narrow">
-        <div className="text-center" style={{ marginBottom: "2.5rem" }}>
-          <div className="section-eyebrow"><Star size={13} /> Patient Reviews</div>
-          <h2 className="h-section" style={{ marginBottom: ".6rem" }}>{heading}</h2>
-          {sub && <p className="subtle" style={{ maxWidth: 480, margin: "0 auto" }}>{sub}</p>}
+        <div className="text-center" style={{ marginBottom: "2.75rem" }}>
+          <span className="cd-eyebrow"><Star size={13} /> Patient Reviews</span>
+          <h2 className="cd-display cd-h2" style={{ marginTop: ".6rem" }}>{heading}</h2>
+          {sub && <p className="cd-section-sub" style={{ maxWidth: 480 }}>{sub}</p>}
         </div>
-        <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}>
+        <div className="cd-review-grid cd-stagger">
           {items.map((it, i) => (
-            <div key={i} className="review-card">
-              <div className="review-quote-mark" aria-hidden="true">"</div>
-              <div className="review-stars" aria-label={`${it.rating} out of 5 stars`}>
+            <div key={i} className="cd-card cd-review-card">
+              <div className="cd-review-stars" aria-label={`${it.rating} out of 5 stars`}>
                 {Array.from({ length: Math.max(0, Math.min(5, Number(it.rating) || 5)) }).map((_, j) => (
-                  <Star key={j} size={16} fill="currentColor" />
+                  <Star key={j} size={15} fill="currentColor" />
                 ))}
               </div>
-              <p className="review-text">"{it.text}"</p>
-              <div className="review-author">— {it.name}</div>
+              <p className="cd-review-text">&ldquo;{it.text}&rdquo;</p>
+              <div className="cd-review-author">{it.name}</div>
               {(it.location || DEFAULT_REVIEWS[i]?.location) && (
-                <div className="review-location">
-                  <MapPin size={12} style={{ display: "inline", verticalAlign: "middle", marginRight: 3 }} />
+                <div className="cd-review-location">
+                  <MapPin size={12} />
                   {it.location || DEFAULT_REVIEWS[i]?.location}
                 </div>
               )}
@@ -808,31 +720,31 @@ export function ReviewsSection({ section }: { section: Section }) {
 
 // ───── CONNECT ─────
 export function ConnectSection({ section, settings }: { section: Section; settings: SiteSettings }) {
-  const heading = get(section.config, "heading", "Connect With Care Diagnostics");
+  const heading = get(section.config, "heading", "Connect with Care Diagnostics");
   const sub     = get(section.config, "subheading", "Follow us for health tips, diagnostic awareness and service announcements.");
   const social  = parseSocial(settings.socialLinks);
   const items: Array<[string, React.ReactNode, string]> = [
-    ["facebook",  <Facebook  size={22} key="f" />, "#3b5998"],
-    ["instagram", <Instagram size={22} key="i" />, "#e1306c"],
-    ["twitter",   <Twitter   size={22} key="t" />, "#1da1f2"],
-    ["youtube",   <Youtube   size={22} key="y" />, "#ff0000"],
-    ["linkedin",  <Linkedin  size={22} key="l" />, "#0077b5"],
+    ["facebook",  <Facebook  size={20} key="f" />, "#3b5998"],
+    ["instagram", <Instagram size={20} key="i" />, "#e1306c"],
+    ["twitter",   <Twitter   size={20} key="t" />, "#1da1f2"],
+    ["youtube",   <Youtube   size={20} key="y" />, "#ff0000"],
+    ["linkedin",  <Linkedin  size={20} key="l" />, "#0077b5"],
   ];
   const active = items.filter(([k]) => social[k] && safeUrl(social[k]));
   return (
-    <section className="section">
+    <section className="cd-section cd-section-light">
       <div className="container-narrow text-center">
-        <div className="section-eyebrow" style={{ display: "inline-flex", marginBottom: ".85rem" }}><MessageCircle size={13} /> Social Media</div>
-        <h2 className="h-section" style={{ marginBottom: ".6rem" }}>{heading}</h2>
-        {sub && <p className="subtle" style={{ marginBottom: "1.75rem", maxWidth: 420, margin: "0 auto 1.75rem" }}>{sub}</p>}
-        <div className="connect-social">
+        <span className="cd-eyebrow" style={{ marginBottom: ".85rem" }}><MessageCircle size={13} /> Social Media</span>
+        <h2 className="cd-display cd-h2" style={{ marginTop: ".6rem" }}>{heading}</h2>
+        {sub && <p className="cd-section-sub" style={{ maxWidth: 420 }}>{sub}</p>}
+        <div className="cd-connect-row">
           {active.length > 0
             ? active.map(([k, icon]) => (
-                <a key={k} href={safeUrl(social[k])} target="_blank" rel="noreferrer" className="connect-btn" aria-label={k}>
+                <a key={k} href={safeUrl(social[k])} target="_blank" rel="noreferrer" className="cd-connect-btn" aria-label={k}>
                   {icon}
                 </a>
               ))
-            : <span className="subtle" style={{ fontSize: ".9rem" }}>Follow us on social media — links coming soon.</span>}
+            : <span className="cd-section-sub" style={{ fontSize: ".9rem" }}>Follow us on social media — links coming soon.</span>}
         </div>
       </div>
     </section>
@@ -842,26 +754,25 @@ export function ConnectSection({ section, settings }: { section: Section; settin
 // ───── SUBSCRIBE ─────
 export function SubscribeSection({ section, settings }: { section: Section; settings: SiteSettings }) {
   const c = section.config;
-  const heading     = get(c, "heading", "Get Health Tips & Updates");
-  const subheading  = get(c, "subheading", "Subscribe to our newsletter for diagnostic health tips, package offers and appointment reminders.");
+  const heading     = get(c, "heading", "Health tips & updates");
+  const subheading  = get(c, "subheading", "Subscribe for diagnostic health tips, package offers and appointment reminders.");
   const placeholder = get(c, "placeholder", "your@email.com");
   const submitLabel = get(c, "submitLabel", "Subscribe");
   const [done, setDone] = useState(false);
   return (
-    <section className="section" style={{ background: "linear-gradient(135deg, hsl(var(--site-primary) / .06), hsl(var(--site-primary) / .02))" }}>
+    <section className="cd-section cd-section-navy">
       <div className="container-narrow text-center" style={{ maxWidth: 560 }}>
-        <div className="section-eyebrow" style={{ display: "inline-flex", marginBottom: ".85rem" }}><Award size={13} /> Newsletter</div>
-        <h2 className="h-section">{heading}</h2>
-        {subheading && <p className="subtle" style={{ marginTop: ".5rem", marginBottom: "1.5rem", lineHeight: 1.7 }}>{subheading}</p>}
+        <span className="cd-eyebrow" style={{ color: "hsl(var(--cd-amber))", marginBottom: ".85rem" }}><Award size={13} /> Newsletter</span>
+        <h2 className="cd-display cd-h2" style={{ marginTop: ".6rem", color: "white" }}>{heading}</h2>
+        {subheading && <p className="cd-section-sub" style={{ color: "rgba(255,255,255,.72)" }}>{subheading}</p>}
         {done ? (
-          <div className="card-soft" style={{ marginTop: "1rem", display: "inline-flex", alignItems: "center", gap: ".5rem", color: "#22c55e", fontWeight: 600 }}>
+          <div className="cd-subscribe-success">
             <BadgeCheck size={20} /> Thanks for subscribing!
           </div>
         ) : (
-          <form onSubmit={(e) => { e.preventDefault(); setDone(true); }}
-                style={{ display: "flex", gap: ".5rem", marginTop: "1rem", flexWrap: "wrap", justifyContent: "center" }}>
-            <input className="input-soft" type="email" required placeholder={placeholder} style={{ flex: "1 1 240px", minWidth: 0 }} />
-            <button type="submit" className={buttonClass(settings, "primary")}>{submitLabel}</button>
+          <form onSubmit={(e) => { e.preventDefault(); setDone(true); }} className="cd-subscribe-form">
+            <input type="email" required placeholder={placeholder} />
+            <button type="submit" className="cd-btn-primary">{submitLabel}</button>
           </form>
         )}
       </div>
@@ -913,90 +824,83 @@ export function FooterSection({ section, settings, basePath }: { section: Sectio
   ];
 
   return (
-    <footer className="premium-footer">
-      <div className="footer-grid">
-        {/* About */}
-        <div className="footer-col">
-          <div className="footer-brand">
-            <Microscope size={18} style={{ display: "inline", marginRight: 6, verticalAlign: "middle" }} />
-            {siteName.split(" ").map((w, i) => i === 0 ? <span key={i}>{w} </span> : <span key={i} style={{ color: "hsl(var(--site-primary) / .8)", filter: "brightness(2)" }}>{w} </span>)}
+    <footer className="cd-footer">
+      <div className="cd-footer-grid">
+        <div className="cd-footer-col">
+          <div className="cd-footer-brand cd-display">
+            <Microscope size={18} />
+            {siteName.split(" ").map((w, i) => (
+              <span key={i} style={i === 0 ? undefined : { color: "hsl(var(--cd-teal))" }}>{w}&nbsp;</span>
+            ))}
           </div>
-          <p className="footer-about">
-            {settings.about || `${siteName} is a premier diagnostic center in Deoghar, Jharkhand, offering MRI, CT, Ultrasound, Pathology and comprehensive health packages with same-day reporting.`}
+          <p className="cd-footer-about">
+            {settings.about || `${siteName} is a precision diagnostic centre in Deoghar, Jharkhand, offering MRI, CT, ultrasound, pathology and comprehensive health packages with same-day reporting.`}
           </p>
-          <div className="footer-social">
+          <div className="cd-footer-social">
             {socialIcons.filter(([k]) => social[k] && safeUrl(social[k])).map(([k, icon]) => (
-              <a key={k} href={safeUrl(social[k])} target="_blank" rel="noreferrer" className="footer-social-btn" aria-label={k}>
+              <a key={k} href={safeUrl(social[k])} target="_blank" rel="noreferrer" className="cd-footer-social-btn" aria-label={k}>
                 {icon}
               </a>
             ))}
           </div>
         </div>
 
-        {/* Services */}
-        <div className="footer-col">
-          <div className="footer-col-title">Services</div>
-          <ul className="footer-links">
+        <div className="cd-footer-col">
+          <div className="cd-footer-col-title">Services</div>
+          <ul className="cd-footer-links">
             {(svcLinks.length > 0 ? svcLinks.map((s) => s.label) : defaultServices).map((svc, i) => (
-              <li key={i}><a href="#services"><ChevronRight size={13} style={{ display: "inline", verticalAlign: "middle", opacity: .5 }} /> {svc}</a></li>
+              <li key={i}><a href="#services"><ChevronRight size={13} /> {svc}</a></li>
             ))}
           </ul>
         </div>
 
-        {/* Quick Links */}
-        <div className="footer-col">
-          <div className="footer-col-title">Quick Links</div>
-          <ul className="footer-links">
-            {defaultQuickLinks.map((l, i) => {
-              const href = l.href.startsWith("/") ? l.href : `${basePath}${l.href.replace(/^#/, "")}`.replace(/\/+/, "/");
-              return (
-                <li key={i}>
-                  <a href={l.href.startsWith("http") || l.href.startsWith("/erp") ? l.href : l.href}>
-                    <ChevronRight size={13} style={{ display: "inline", verticalAlign: "middle", opacity: .5 }} /> {l.label}
-                  </a>
-                </li>
-              );
-            })}
+        <div className="cd-footer-col">
+          <div className="cd-footer-col-title">Quick Links</div>
+          <ul className="cd-footer-links">
+            {defaultQuickLinks.map((l, i) => (
+              <li key={i}>
+                <a href={l.href}>
+                  <ChevronRight size={13} /> {l.label}
+                </a>
+              </li>
+            ))}
             {extraLinks.map((l, i) => {
               const s = safeUrl(l.url, "#");
               const href = s.startsWith("/") ? `${basePath}${s.replace(/^\//, "")}` : s;
-              return <li key={`e${i}`}><a href={href}><ChevronRight size={13} style={{ display: "inline", verticalAlign: "middle", opacity: .5 }} /> {l.label}</a></li>;
+              return <li key={`e${i}`}><a href={href}><ChevronRight size={13} /> {l.label}</a></li>;
             })}
           </ul>
         </div>
 
-        {/* Contact */}
-        <div className="footer-col">
-          <div className="footer-col-title">Contact Us</div>
-          <div className="footer-contact-row">
+        <div className="cd-footer-col">
+          <div className="cd-footer-col-title">Contact Us</div>
+          <div className="cd-footer-contact-row">
             <MapPin size={14} />
             <span>{addr}</span>
           </div>
-          <div className="footer-contact-row" style={{ fontSize: ".75rem", opacity: .75 }}>
-            <span style={{ marginLeft: 20 }}>Reg: {regAddr}</span>
+          <div className="cd-footer-contact-row cd-footer-reg">
+            <span>Reg: {regAddr}</span>
           </div>
-          <div className="footer-contact-row">
+          <div className="cd-footer-contact-row">
             <Phone size={14} />
             <a href={`tel:${phone}`}>{phone}</a>
           </div>
           {email && (
-            <div className="footer-contact-row">
+            <div className="cd-footer-contact-row">
               <MessageCircle size={14} />
               <a href={`mailto:${email}`}>{email}</a>
             </div>
           )}
-          <div className="footer-contact-row">
+          <div className="cd-footer-contact-row">
             <Clock size={14} />
-            <span>Mon–Sat: 7:00 AM – 9:00 PM</span>
+            <span>Mon&ndash;Sat: 7:00 AM &ndash; 9:00 PM</span>
           </div>
-          <div style={{ marginTop: "1rem", display: "flex", gap: ".6rem", flexWrap: "wrap" }}>
-            <a href={`tel:${phone}`}
-               style={{ background: "hsl(var(--site-primary) / .9)", color: "white", padding: ".5rem 1rem", borderRadius: 9999, fontSize: ".82rem", fontWeight: 700, display: "inline-flex", alignItems: "center", gap: ".35rem" }}>
+          <div className="cd-footer-cta-row">
+            <a href={`tel:${phone}`} className="cd-footer-cta-btn">
               <Phone size={13} /> Call Now
             </a>
             {waNum && (
-              <a href={`https://wa.me/${waNum}`} target="_blank" rel="noreferrer"
-                 style={{ background: "#25d366", color: "white", padding: ".5rem 1rem", borderRadius: 9999, fontSize: ".82rem", fontWeight: 700, display: "inline-flex", alignItems: "center", gap: ".35rem" }}>
+              <a href={`https://wa.me/${waNum}`} target="_blank" rel="noreferrer" className="cd-footer-cta-btn cd-footer-cta-wa">
                 <MessageCircle size={13} /> WhatsApp
               </a>
             )}
@@ -1004,15 +908,14 @@ export function FooterSection({ section, settings, basePath }: { section: Sectio
         </div>
       </div>
 
-      <div className="footer-bottom">
-        <span>{customText || `© ${year} ${siteName}. All rights reserved.`}</span>
-        <div className="footer-bottom-links">
+      <div className="cd-footer-bottom">
+        <span>{customText || `\u00a9 ${year} ${siteName}. All rights reserved.`}</span>
+        <div className="cd-footer-bottom-links">
           {defaultPolicyLinks.map((l, i) => (
             <a key={`p${i}`} href={`${basePath}${l.href.replace(/^\//, "")}`.replace(/\/+/g, "/")}>{l.label}</a>
           ))}
           <a href="/portal/patient-login">Patient Login</a>
           <a href="/portal/staff-login">Staff Login</a>
-          <a href="/erp/portal">Emergency Access</a>
         </div>
       </div>
     </footer>
