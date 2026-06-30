@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Phone, Mail, MapPin, Clock, MessageCircle } from "lucide-react";
 import type { Section, SiteSettings } from "../types";
-import { buttonClass } from "../theme";
 
 function get(c: Record<string, unknown>, k: string, fb = ""): string {
   return typeof c[k] === "string" ? (c[k] as string) : fb;
@@ -25,75 +24,69 @@ export default function ContactSection({ section, settings }: { section: Section
   const waNum  = (settings.whatsappNumber || phone).replace(/[^0-9]/g, "");
 
   return (
-    <section className="section" id="contact">
+    <section className="cd-section cd-section-light" id="contact">
       <div className="container-narrow">
-        <div className="text-center" style={{ marginBottom: "2.5rem" }}>
-          <div className="section-eyebrow" style={{ display: "inline-flex" }}><MapPin size={13} /> Find Us</div>
-          <h2 className="h-section" style={{ marginBottom: ".5rem" }}>{heading}</h2>
-          {sub && <p className="subtle" style={{ maxWidth: 560, margin: "0 auto" }}>{sub}</p>}
+        <div className="text-center" style={{ marginBottom: "2.75rem" }}>
+          <span className="cd-eyebrow"><MapPin size={13} /> Find Us</span>
+          <h2 className="cd-display cd-h2" style={{ marginTop: ".6rem" }}>{heading}</h2>
+          {sub && <p className="cd-section-sub" style={{ maxWidth: 560 }}>{sub}</p>}
         </div>
 
-        <div className="contact-grid">
-          {/* Info card */}
-          <div className="contact-info-card">
-            <div className="contact-info-row">
-              <div className="contact-icon" aria-hidden="true"><MapPin size={18} /></div>
+        <div className="cd-contact-grid">
+          <div className="cd-card cd-contact-info-card">
+            <div className="cd-contact-row">
+              <span className="cd-contact-icon" aria-hidden="true"><MapPin size={18} /></span>
               <div>
-                <div className="contact-info-label">Address</div>
-                <div className="contact-info-value">{addr}</div>
+                <div className="cd-contact-label">Address</div>
+                <div className="cd-contact-value">{addr}</div>
               </div>
             </div>
 
-            <div className="contact-info-row">
-              <div className="contact-icon" aria-hidden="true"><Phone size={18} /></div>
+            <div className="cd-contact-row">
+              <span className="cd-contact-icon" aria-hidden="true"><Phone size={18} /></span>
               <div>
-                <div className="contact-info-label">Phone</div>
-                <div className="contact-info-value">
-                  <a href={`tel:${phone}`}>{phone}</a>
-                </div>
+                <div className="cd-contact-label">Phone</div>
+                <div className="cd-contact-value"><a href={`tel:${phone}`}>{phone}</a></div>
               </div>
             </div>
 
             {email && (
-              <div className="contact-info-row">
-                <div className="contact-icon" aria-hidden="true"><Mail size={18} /></div>
+              <div className="cd-contact-row">
+                <span className="cd-contact-icon" aria-hidden="true"><Mail size={18} /></span>
                 <div>
-                  <div className="contact-info-label">Email</div>
-                  <div className="contact-info-value">
-                    <a href={`mailto:${email}`}>{email}</a>
-                  </div>
+                  <div className="cd-contact-label">Email</div>
+                  <div className="cd-contact-value"><a href={`mailto:${email}`}>{email}</a></div>
                 </div>
               </div>
             )}
 
-            <div className="contact-info-row">
-              <div className="contact-icon" aria-hidden="true"><Clock size={18} /></div>
+            <div className="cd-contact-row">
+              <span className="cd-contact-icon" aria-hidden="true"><Clock size={18} /></span>
               <div>
-                <div className="contact-info-label">Opening Hours</div>
-                <div className="contact-info-value" style={{ fontSize: ".9rem" }}>
-                  Mon – Sat: 7:00 AM – 9:00 PM<br />
-                  <span style={{ color: "hsl(var(--site-muted-fg))", fontSize: ".82rem" }}>Sundays: by appointment only</span>
+                <div className="cd-contact-label">Opening Hours</div>
+                <div className="cd-contact-value" style={{ fontSize: ".9rem" }}>
+                  Mon&ndash;Sat: 7:00 AM&ndash;9:00 PM<br />
+                  <span style={{ color: "hsl(var(--cd-slate) / .55)", fontSize: ".8125rem" }}>Sundays: by appointment only</span>
                 </div>
               </div>
             </div>
 
-            <div className="contact-action-btns">
-              <a href={`tel:${phone}`} className="contact-action-btn call" aria-label="Call now">
+            <div className="cd-contact-actions">
+              <a href={`tel:${phone}`} className="cd-btn-primary" aria-label="Call now">
                 <Phone size={16} /> Call Now
               </a>
               {waNum && (
                 <a href={`https://wa.me/${waNum}?text=${encodeURIComponent("Hi, I'd like to enquire about diagnostic services.")}`}
                    target="_blank" rel="noreferrer"
-                   className="contact-action-btn whatsapp" aria-label="Chat on WhatsApp">
+                   className="cd-contact-wa-btn" aria-label="Chat on WhatsApp">
                   <MessageCircle size={16} /> WhatsApp
                 </a>
               )}
             </div>
           </div>
 
-          {/* Map or contact form */}
           {mapEmbed ? (
-            <div className="contact-map-wrap">
+            <div className="cd-contact-map-wrap cd-card">
               <iframe
                 src={mapEmbed}
                 allowFullScreen
@@ -111,64 +104,57 @@ export default function ContactSection({ section, settings }: { section: Section
   );
 }
 
-function ContactForm({ settings }: { settings: SiteSettings }) {
+function ContactForm({ settings: _settings }: { settings: SiteSettings }) {
   const [submitted, setSubmitted] = useState(false);
   const [form, setForm] = useState({ name: "", contact: "", message: "" });
 
   if (submitted) {
     return (
-      <div className="contact-info-card" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", gap: ".75rem" }}>
-        <div style={{ width: 56, height: 56, background: "hsl(var(--site-primary) / .1)", borderRadius: 9999, display: "flex", alignItems: "center", justifyContent: "center", color: "hsl(var(--site-primary))" }}>
-          <MessageCircle size={26} />
-        </div>
-        <strong style={{ fontSize: "1.05rem" }}>Message sent!</strong>
-        <p className="subtle" style={{ fontSize: ".9rem" }}>We'll get back to you shortly via phone or WhatsApp.</p>
+      <div className="cd-card cd-contact-info-card cd-contact-success">
+        <span className="cd-contact-success-icon"><MessageCircle size={26} /></span>
+        <strong style={{ fontSize: "1.0625rem" }}>Message sent!</strong>
+        <p className="cd-section-sub" style={{ fontSize: ".9rem", margin: 0 }}>We'll get back to you shortly via phone or WhatsApp.</p>
       </div>
     );
   }
 
   return (
     <form
-      className="contact-info-card"
-      style={{ display: "flex", flexDirection: "column", gap: "1rem" }}
+      className="cd-card cd-contact-info-card cd-contact-form"
       onSubmit={(e) => { e.preventDefault(); setSubmitted(true); }}
     >
-      <h3 style={{ fontWeight: 700, fontSize: "1.05rem", marginBottom: ".25rem" }}>Send a Message</h3>
+      <h3 className="cd-display" style={{ fontWeight: 600, fontSize: "1.125rem", marginBottom: ".25rem" }}>Send a message</h3>
       <div>
-        <label style={{ fontSize: ".8rem", fontWeight: 600, color: "hsl(var(--site-muted-fg))", display: "block", marginBottom: ".35rem" }}>Your Name</label>
+        <label htmlFor="cd-contact-name">Your Name</label>
         <input
-          className="input-soft"
+          id="cd-contact-name"
           required
           placeholder="Full name"
           value={form.name}
           onChange={(e) => setForm({ ...form, name: e.target.value })}
-          aria-label="Your name"
         />
       </div>
       <div>
-        <label style={{ fontSize: ".8rem", fontWeight: 600, color: "hsl(var(--site-muted-fg))", display: "block", marginBottom: ".35rem" }}>Phone or Email</label>
+        <label htmlFor="cd-contact-contact">Phone or Email</label>
         <input
-          className="input-soft"
+          id="cd-contact-contact"
           required
           placeholder="Phone number or email"
           value={form.contact}
           onChange={(e) => setForm({ ...form, contact: e.target.value })}
-          aria-label="Phone or email"
         />
       </div>
       <div>
-        <label style={{ fontSize: ".8rem", fontWeight: 600, color: "hsl(var(--site-muted-fg))", display: "block", marginBottom: ".35rem" }}>How Can We Help?</label>
+        <label htmlFor="cd-contact-message">How can we help?</label>
         <textarea
-          className="input-soft"
-          placeholder="Ask about tests, reports, packages, booking…"
+          id="cd-contact-message"
+          placeholder="Ask about tests, reports, packages, booking..."
           rows={4}
           value={form.message}
           onChange={(e) => setForm({ ...form, message: e.target.value })}
-          aria-label="Message"
-          style={{ resize: "vertical" }}
         />
       </div>
-      <button type="submit" className={buttonClass(settings, "primary")} style={{ justifyContent: "center" }}>
+      <button type="submit" className="cd-btn-primary" style={{ justifyContent: "center" }}>
         Send Message
       </button>
     </form>

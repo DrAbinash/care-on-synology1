@@ -17,5 +17,5 @@ export default function CustomHtmlSection({ section }: { section: Section }) {
   const c = section.config;
   const html = get(c, "html");
   const sanitized = sanitizeCustomHtml(html);
-  return <section className="section"><div className="container-narrow" dangerouslySetInnerHTML={{ __html: sanitized }} /></section>;
+  return <section className="cd-section cd-section-light"><div className="container-narrow" dangerouslySetInnerHTML={{ __html: sanitized }} /></section>;
 }

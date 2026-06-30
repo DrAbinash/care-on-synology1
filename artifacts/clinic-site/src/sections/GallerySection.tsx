@@ -56,33 +56,21 @@ export default function GallerySection({ section, basePath = "/" }: { section: S
 
   return (
     <>
-      <section className="section muted-bg">
+      <section className="cd-section cd-section-light">
         <div className="container-narrow">
-          <div className="text-center" style={{ marginBottom: "2.5rem" }}>
-            <div className="section-eyebrow" style={{ display: "inline-flex" }}><Image size={13} /> Gallery</div>
-            <h2 className="h-section" style={{ marginBottom: ".5rem" }}>{heading}</h2>
-            {sub && <p className="subtle">{sub}</p>}
+          <div className="text-center" style={{ marginBottom: "2.75rem" }}>
+            <span className="cd-eyebrow"><Image size={13} /> Gallery</span>
+            <h2 className="cd-display cd-h2" style={{ marginTop: ".6rem" }}>{heading}</h2>
+            {sub && <p className="cd-section-sub">{sub}</p>}
           </div>
 
-          {/* Category filter tabs */}
           {categories.length > 2 && (
-            <div style={{ display: "flex", gap: ".5rem", flexWrap: "wrap", justifyContent: "center", marginBottom: "1.5rem" }}>
+            <div className="cd-tab-row" style={{ marginBottom: "1.75rem" }}>
               {categories.map((cat) => (
                 <button
                   key={cat}
                   onClick={() => setActiveCategory(cat)}
-                  style={{
-                    padding: ".3rem .9rem",
-                    borderRadius: 9999,
-                    fontSize: ".82rem",
-                    fontWeight: 600,
-                    border: "none",
-                    cursor: "pointer",
-                    background: activeCategory === cat ? "hsl(var(--site-primary))" : "hsl(var(--site-bg))",
-                    color: activeCategory === cat ? "white" : "hsl(var(--site-muted-fg))",
-                    boxShadow: activeCategory === cat ? "0 2px 8px hsl(var(--site-primary) / .3)" : "none",
-                    transition: "all .15s",
-                  }}
+                  className={`cd-tab-btn ${activeCategory === cat ? "active" : ""}`}
                 >
                   {cat === "all" ? "All" : cat}
                 </button>
@@ -90,65 +78,57 @@ export default function GallerySection({ section, basePath = "/" }: { section: S
             </div>
           )}
 
-          {/* Gallery grid */}
           {!loaded ? (
-            <div className="gallery-grid">
+            <div className="cd-gallery-grid">
               {Array.from({ length: 8 }).map((_, i) => (
-                <div key={i} style={{ aspectRatio: "1", borderRadius: "var(--site-radius)", background: "hsl(var(--site-muted))", animation: "shimmer 1.5s infinite", backgroundImage: "linear-gradient(90deg, hsl(var(--site-muted)) 0%, hsl(var(--site-bg)) 50%, hsl(var(--site-muted)) 100%)", backgroundSize: "200% 100%" }} />
+                <div key={i} className="cd-loading-sweep" style={{ aspectRatio: "1", borderRadius: "var(--site-radius)", height: "auto" }} />
               ))}
             </div>
           ) : displayed && displayed.length > 0 ? (
-            <div className="gallery-grid">
+            <div className="cd-gallery-grid">
               {displayed.map((p) => (
-                <div key={p.id} className="gallery-item" onClick={() => openLightbox(resolveAssetUrl(p.url), p.alt)}>
+                <button key={p.id} className="cd-gallery-item" onClick={() => openLightbox(resolveAssetUrl(p.url), p.alt)} aria-label={`View ${p.alt}`}>
                   <img src={resolveAssetUrl(p.url)} alt={p.alt} loading="lazy" />
-                  <div className="gallery-overlay">
-                    <ZoomIn size={28} />
-                  </div>
-                </div>
+                  <span className="cd-gallery-overlay"><ZoomIn size={26} /></span>
+                </button>
               ))}
             </div>
           ) : (
-            <div className="gallery-grid">
+            <div className="cd-gallery-grid">
               {PLACEHOLDER_ITEMS.map((it, i) => {
                 const imgPath = `${basePath}${it.img}`.replace(/\/+/g, "/");
                 return (
-                  <div key={i} className="gallery-item" onClick={() => openLightbox(imgPath, it.label)}>
+                  <button key={i} className="cd-gallery-item" onClick={() => openLightbox(imgPath, it.label)} aria-label={`View ${it.label}`}>
                     <img
                       src={imgPath}
                       alt={it.label}
                       loading="lazy"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).src = it.fallback;
-                      }}
+                      onError={(e) => { (e.target as HTMLImageElement).src = it.fallback; }}
                     />
-                    <div className="gallery-overlay">
-                      <ZoomIn size={28} />
-                    </div>
-                  </div>
+                    <span className="cd-gallery-overlay"><ZoomIn size={26} /></span>
+                  </button>
                 );
               })}
             </div>
           )}
 
           {photos.length === 0 && loaded && (
-            <p className="subtle text-center" style={{ fontSize: ".82rem", marginTop: "1.25rem" }}>
+            <p className="cd-section-sub" style={{ fontSize: ".8125rem", marginTop: "1.5rem" }}>
               Actual facility photos will appear here once uploaded via the Photo Library.
             </p>
           )}
         </div>
       </section>
 
-      {/* Lightbox */}
       {lightbox && (
-        <div className="lightbox-backdrop" onClick={closeLightbox}>
-          <button className="lightbox-close" onClick={closeLightbox} aria-label="Close lightbox">
+        <div className="cd-lightbox-backdrop" onClick={closeLightbox} role="dialog" aria-modal="true" aria-label={lightbox.alt}>
+          <button className="cd-lightbox-close" onClick={closeLightbox} aria-label="Close">
             <X size={18} />
           </button>
           <img
             src={lightbox.src}
             alt={lightbox.alt}
-            className="lightbox-img"
+            className="cd-lightbox-img"
             onClick={(e) => e.stopPropagation()}
           />
         </div>

@@ -39,34 +39,34 @@ export default function FaqSection({ section }: { section: Section }) {
   const toggle = (id: number) => setOpen((prev) => (prev === id ? null : id));
 
   return (
-    <section className="section">
+    <section className="cd-section cd-section-light" id="faq">
       <div className="container-narrow" style={{ maxWidth: 780 }}>
-        <div className="text-center" style={{ marginBottom: "2.5rem" }}>
-          <div className="section-eyebrow" style={{ display: "inline-flex" }}>FAQ</div>
-          <h2 className="h-section" style={{ marginBottom: ".5rem" }}>{heading}</h2>
-          {sub && <p className="subtle">{sub}</p>}
+        <div className="text-center" style={{ marginBottom: "2.75rem" }}>
+          <span className="cd-eyebrow">FAQ</span>
+          <h2 className="cd-display cd-h2" style={{ marginTop: ".6rem" }}>{heading}</h2>
+          {sub && <p className="cd-section-sub">{sub}</p>}
         </div>
 
         {!loaded ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: ".75rem" }}>
+          <div className="cd-faq-loading">
             {Array.from({ length: 5 }).map((_, i) => (
-              <div key={i} style={{ height: 56, background: "hsl(var(--site-muted))", borderRadius: "var(--site-radius)", animation: "shimmer 1.5s infinite", backgroundSize: "200% 100%", backgroundImage: "linear-gradient(90deg, hsl(var(--site-muted)) 0%, hsl(var(--site-bg)) 50%, hsl(var(--site-muted)) 100%)" }} />
+              <div key={i} className="cd-loading-sweep" style={{ height: 56, borderRadius: "var(--site-radius)" }} />
             ))}
           </div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: ".65rem" }}>
+          <div className="cd-faq-list">
             {faqs.map((f) => (
-              <div key={f.id} className={`faq-item${open === f.id ? " open" : ""}`}>
+              <div key={f.id} className={`cd-faq-item${open === f.id ? " open" : ""}`}>
                 <button
-                  className="faq-trigger"
+                  className="cd-faq-trigger"
                   onClick={() => toggle(f.id)}
                   aria-expanded={open === f.id}
                 >
                   <span>{f.question}</span>
-                  <ChevronDown size={18} className="faq-chevron" aria-hidden="true" />
+                  <ChevronDown size={18} className="cd-faq-chevron" aria-hidden="true" />
                 </button>
                 {open === f.id && (
-                  <div className="faq-body">{f.answer}</div>
+                  <div className="cd-faq-body">{f.answer}</div>
                 )}
               </div>
             ))}
