@@ -136,6 +136,25 @@ async function seedBootstrapAdminIfNeeded(): Promise<void> {
   }
 }
 
+// Helper: Execute multi-statement SQL with auto-commit between statements.
+// CRITICAL: PostgreSQL wraps multi-statement query() calls in implicit transactions.
+// This helper splits SQL and executes each statement via pool.query() for autocommit.
+async function executeStartupSQL(sql: string): Promise<void> {
+  // Split on semicolon, filter empty statements, trim whitespace
+  const statements = sql
+    .split(';')
+    .map(stmt => stmt.trim())
+    .filter(stmt => stmt.length > 0 && !stmt.startsWith('--'));
+
+  for (const stmt of statements) {
+    // Drizzle breakpoint comments are safe to strip
+    const cleanStmt = stmt.replace(/--> statement-breakpoint/g, '').trim();
+    if (cleanStmt) {
+      await pool.query(cleanStmt);
+    }
+  }
+}
+
 // ── Startup schema migrations ──────────────────────────────────────────────────
 // Idempotent ALTER TABLE / CREATE TABLE IF NOT EXISTS statements that extend
 // the schema without requiring a full Drizzle migration pipeline. Safe to run
@@ -163,6 +182,15 @@ async function seedBootstrapAdminIfNeeded(): Promise<void> {
 // check that only performs DDL when it detects actual drift, not an
 // unconditional mutation on every boot. No new blocks like it should be
 // added; see docs/DEPLOYMENT.md.)
+//
+// CRITICAL FIX (2026-06-30): the DDL block below runs via executeStartupSQL()
+// (each statement through pool.query(), autocommit) instead of a single
+// client.query() call. client.query() with multi-statement SQL wraps all
+// statements in ONE implicit transaction, which caused lock timeouts in
+// production. This is independent of the identity-check + advisory-lock
+// section immediately below, which still uses the single dedicated `client`
+// connection — the lock only needs to serialize concurrent calls to this
+// function, not the individual statements inside it.
 async function runStartupMigrations(): Promise<void> {
   const client = await pool.connect();
   try {
@@ -207,7 +235,7 @@ async function runStartupMigrations(): Promise<void> {
     // or another care-api replica's startup migrations.
     await client.query("SELECT pg_advisory_lock(hashtext('care_erp_schema_migration'));");
 
-    await client.query(`
+    await executeStartupSQL(`
       ALTER TABLE order_tests ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
       ALTER TABLE order_tests ADD COLUMN IF NOT EXISTS cancelled_by_name TEXT;
       ALTER TABLE order_tests ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
