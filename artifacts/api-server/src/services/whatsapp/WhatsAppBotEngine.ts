@@ -266,11 +266,18 @@ Reply in a helpful, friendly manner. Be concise.`;
     if (step === "book_date") {
       const dateStr = this.parseFlexibleDate(text);
       if (!dateStr) return { text: "Please enter a valid date, e.g. 5-1-2026 or 05/01/2026." };
-      const [yyyy, mm, dd] = dateStr.split("-");
-      await this.service.updateSession(contact.id, "book_confirm", { ...context, preferredDate: dateStr });
-      const dept = String(context.department || "");
+      await this.service.updateSession(contact.id, "book_time", { ...context, preferredDate: dateStr });
+      return { text: "What time works for you? (e.g. \"morning\", \"10 AM\", \"after 4 PM\") — our team will confirm the exact slot." };
+    }
+
+    if (step === "book_time") {
+      const preferredTime = text.trim();
+      if (!preferredTime) return { text: "Please let us know a preferred time, even roughly — e.g. \"morning\" or \"2 PM\"." };
+      await this.service.updateSession(contact.id, "book_confirm", { ...context, preferredTime });
+      const { preferredDate, department } = context as { preferredDate: string; department: string };
+      const [yyyy, mm, dd] = preferredDate.split("-");
       return {
-        text: `Booking summary:\nDepartment: ${dept}\nDate: ${dd}-${mm}-${yyyy}\nName: ${contact.name || "Patient"}\nMobile: ${contact.phone}\n\nReply CONFIRM to book, or CANCEL to abort.`,
+        text: `Booking summary:\nDepartment: ${department}\nDate: ${dd}-${mm}-${yyyy}\nPreferred time: ${preferredTime}\nName: ${contact.name || "Patient"}\nMobile: ${contact.phone}\n\nReply CONFIRM to book, or CANCEL to abort.`,
         buttons: [
           { id: "confirm", title: "Confirm" },
           { id: "cancel", title: "Cancel" },
@@ -280,7 +287,7 @@ Reply in a helpful, friendly manner. Be concise.`;
 
     if (step === "book_confirm") {
       if (text === "confirm" || text === "yes") {
-        const { preferredDate, department } = context as { preferredDate: string; department: string };
+        const { preferredDate, department, preferredTime } = context as { preferredDate: string; department: string; preferredTime?: string };
         if (!contact.patientId) {
           return { text: "Patient profile not linked. Please visit the clinic to complete registration before booking.\n\nReply MENU for main menu." };
         }
@@ -289,14 +296,22 @@ Reply in a helpful, friendly manner. Be concise.`;
           appointmentId: aptId,
           patientId: contact.patientId,
           appointmentDate: preferredDate,
-          timeSlot: "09:00 AM",
+          // Patient's stated preference, not a hardcoded slot — this
+          // system has no slot-capacity/availability concept anywhere
+          // (confirmed: the website booking flow also treats timeSlot as
+          // free text, not a fixed list), so storing what the patient
+          // actually asked for and letting staff confirm the exact time
+          // is more honest than silently assigning everyone the same
+          // slot regardless of what they said, which is what this used
+          // to do (hardcoded "09:00 AM" for every WhatsApp booking).
+          timeSlot: preferredTime || "To be confirmed",
           status: "scheduled",
           type: "walk-in",
           notes: `WhatsApp booking - Dept: ${department || "General"}`,
         }).returning();
         await this.service.updateSession(contact.id, "main_menu", {});
         return {
-          text: `Appointment booked successfully!\n\nReference: ${created.appointmentId}\nDepartment: ${department || "General"}\nDate: ${preferredDate}\n\nPlease arrive 15 minutes early. You will receive a confirmation call if needed.\n\nReply MENU for main menu.`,
+          text: `Appointment request received!\n\nReference: ${created.appointmentId}\nDepartment: ${department || "General"}\nDate: ${preferredDate}\nPreferred time: ${preferredTime || "Not specified"}\n\nOur team will confirm your exact time slot shortly. Please arrive 15 minutes before your confirmed time.\n\nReply MENU for main menu.`,
         };
       }
       if (text === "cancel" || text === "no") {
