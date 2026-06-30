@@ -36,6 +36,7 @@ import hrFormsRouter, { staffScopedHrFormsHandler } from "./hr-forms";
 import storageRouter from "./storage";
 import { bridgeRouter } from "./bridge";
 import { reportTemplatesRouter } from "./report-templates";
+import { knowledgeBaseRouter } from "./knowledgeBase";
 import { abnormalFindingsRouter } from "./abnormal-findings";
 import formFRouter from "./form-f";
 import { portalRouter } from "./portal";
@@ -403,6 +404,7 @@ router.use(
   testCategoriesRouter,
 );
 router.use("/report-templates", requireStaffAuth, requireStaffSubPermission("/settings", "infrastructure"), reportTemplatesRouter);
+router.use("/knowledge-base", requireStaffAuth, requireStaffSubPermission("/settings", "infrastructure"), knowledgeBaseRouter);
 router.use("/abnormal-findings", requireStaffAuth, requireStaffSubPermission("/settings", "infrastructure"), abnormalFindingsRouter);
 router.use("/machines", requireStaffAuth, requireStaffSubPermission("/settings", "infrastructure"), machinesRouter);
 router.use("/departments", requireStaffAuth, requireStaffSubPermission("/settings", "infrastructure"), departmentsRouter);

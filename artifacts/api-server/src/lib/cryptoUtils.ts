@@ -1,7 +1,14 @@
 import { createCipheriv, createDecipheriv, randomBytes, createHash } from "crypto";
 
 function getEncryptionKey(): Buffer {
-  const secret = process.env.SESSION_SECRET ?? "default-fallback-ai-key-change-in-production";
+  // No fallback — docker-compose.yml's SESSION_SECRET:? guard already
+  // refuses to start the API container if this is unset, so a fallback
+  // here only adds risk (a hardcoded key visible in source) with no
+  // benefit. Fail loudly instead of silently using a known key.
+  const secret = process.env.SESSION_SECRET;
+  if (!secret) {
+    throw new Error("SESSION_SECRET is not set. Refusing to derive an encryption key.");
+  }
   return createHash("sha256").update(secret).digest();
 }
 

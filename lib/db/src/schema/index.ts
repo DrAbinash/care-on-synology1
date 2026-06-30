@@ -110,6 +110,7 @@ export * from "./rolePermissions";
 export * from "./uploadFiles";
 export * from "./radiologySnippets";
 export * from "./radiologyKnowledge";
+export * from "./knowledgeBase";
 export * from "./radiologySmartFindings";
 export * from "./radiologyMemory";
 export * from "./radiologyLesions";
