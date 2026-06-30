@@ -1829,3 +1829,100 @@ a.nav-link.active { color: hsl(var(--site-primary)); }
   background: rgba(255,255,255,.12); color: white; border: none; cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center;
 }
+
+/* ── Appointment / Booking widget (homepage AppointmentSection) ──
+   ICICI Orange Pay logic in this file is protected (see
+   WEBSITE_MODERNIZATION_AUDIT.md). These styles only affect visual
+   presentation — the handleICICI()/handlePay() functions and gateway
+   dispatch logic are unchanged. */
+.cd-appt-notice { padding: 1.5rem; }
+.cd-appt-quickform { display: flex; flex-direction: column; gap: .85rem; }
+.cd-appt-input {
+  width: 100%; padding: .8rem 1rem; border-radius: calc(var(--site-radius) * 0.5);
+  border: 1px solid hsl(var(--cd-hairline)); font-size: .9375rem; font-family: var(--site-font);
+  background: white;
+}
+.cd-appt-input:focus { outline: 2px solid hsl(var(--cd-teal)); outline-offset: 1px; }
+
+.cd-appt-status-card { padding: 2rem; }
+.cd-appt-status-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 56px; height: 56px; border-radius: 999px; font-size: 1.5rem; font-weight: 700;
+  margin-bottom: .85rem;
+}
+.cd-appt-status-fail { background: hsl(0 70% 95%); color: hsl(0 65% 48%); }
+.cd-appt-status-success { background: hsl(var(--cd-teal) / .12); color: hsl(var(--cd-teal)); }
+.cd-appt-status-title { font-size: 1.125rem; font-weight: 600; margin-bottom: .5rem; color: hsl(var(--cd-slate)); }
+.cd-appt-ref { font-size: 1.375rem; font-weight: 600; letter-spacing: .04em; color: hsl(var(--cd-teal)); margin-bottom: .5rem; }
+.cd-appt-qr-img { width: 220px; height: 220px; margin: 0 auto; display: block; background: white; padding: 8px; border-radius: 12px; border: 1px solid hsl(var(--cd-hairline)); }
+.cd-appt-qr-placeholder { width: 220px; height: 220px; margin: 0 auto; background: hsl(var(--cd-scan-white)); border-radius: 12px; display: flex; align-items: center; justify-content: center; color: hsl(var(--cd-teal)); }
+
+.cd-appt-select { display: flex; flex-direction: column; gap: 1.5rem; }
+.cd-appt-subheading { font-weight: 600; font-size: 1rem; color: hsl(var(--cd-slate)); margin-bottom: .85rem; }
+.cd-appt-pkg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .75rem; }
+.cd-appt-pick-card {
+  text-align: left; padding: 1rem 1.1rem; border-radius: var(--site-radius);
+  border: 1.5px solid hsl(var(--cd-hairline)); background: white; cursor: pointer;
+  transition: border-color .15s ease, background .15s ease;
+}
+.cd-appt-pick-card.selected { border-color: hsl(var(--cd-teal)); background: hsl(var(--cd-teal) / .06); }
+.cd-appt-pick-name { font-weight: 600; font-size: .9375rem; color: hsl(var(--cd-slate)); }
+.cd-appt-pick-desc { font-size: .8125rem; color: hsl(var(--cd-slate) / .6); margin-top: .25rem; }
+.cd-appt-pick-price { font-weight: 600; color: hsl(var(--cd-teal)); margin-top: .4rem; }
+
+.cd-appt-test-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: .6rem; }
+.cd-appt-test-row {
+  text-align: left; display: flex; justify-content: space-between; align-items: center;
+  padding: .65rem .9rem; border-radius: var(--site-radius);
+  border: 1.5px solid hsl(var(--cd-hairline)); background: hsl(var(--cd-scan-white));
+  cursor: pointer; transition: border-color .15s ease, background .15s ease;
+}
+.cd-appt-test-row.selected { border-color: hsl(var(--cd-teal)); background: hsl(var(--cd-teal) / .06); }
+.cd-appt-test-name { font-weight: 600; font-size: .9rem; color: hsl(var(--cd-slate)); }
+.cd-appt-test-code { font-size: .75rem; color: hsl(var(--cd-slate) / .5); margin-left: .5rem; }
+.cd-appt-test-price { font-weight: 600; font-size: .9rem; color: hsl(var(--cd-teal)); white-space: nowrap; }
+
+.cd-appt-sticky-bar {
+  position: sticky; bottom: 1rem; display: flex; justify-content: space-between; align-items: center;
+  gap: 1rem; flex-wrap: wrap; padding: 1.1rem 1.35rem;
+}
+.cd-appt-sticky-total { font-weight: 600; font-size: 1.1875rem; margin-left: 1rem; color: hsl(var(--cd-teal)); }
+
+.cd-appt-summary-list { border-top: 1px solid hsl(var(--cd-hairline)); padding-top: .75rem; margin-bottom: .75rem; }
+.cd-appt-summary-row { display: flex; justify-content: space-between; padding: .3rem 0; font-size: .9rem; color: hsl(var(--cd-slate) / .85); }
+.cd-appt-summary-total {
+  display: flex; justify-content: space-between; font-weight: 600; font-size: 1.125rem;
+  border-top: 2px solid hsl(var(--cd-hairline)); padding-top: .75rem; margin-bottom: 1.25rem;
+  color: hsl(var(--cd-slate));
+}
+.cd-appt-error {
+  color: hsl(0 65% 42%); font-size: .875rem; margin-bottom: .75rem;
+  padding: .65rem .9rem; background: hsl(0 70% 96%); border-radius: var(--site-radius);
+}
+.cd-appt-back-btn {
+  background: hsl(var(--cd-scan-white)); color: hsl(var(--cd-slate));
+  border: 1px solid hsl(var(--cd-hairline)); border-radius: calc(var(--site-radius) * 0.6);
+  padding: .65rem 1.1rem; cursor: pointer; font-weight: 600;
+}
+/* Gateway-branded button — colors are set inline per gateway (protected logic
+   decides which color); this class only sets layout/typography, never the
+   gateway-determining background. */
+.cd-appt-gateway-btn {
+  display: flex; align-items: center; justify-content: center; gap: .5rem;
+  flex: 1; color: #fff; border: none; border-radius: calc(var(--site-radius) * 0.6);
+  padding: .7rem 1.1rem; cursor: pointer; font-weight: 600; font-size: 1rem;
+}
+.cd-appt-gateway-logo {
+  height: 34px; object-fit: contain; background: white; border-radius: 6px;
+  padding: 2px; border: 2px solid #002F6C;
+}
+.cd-appt-wa-btn {
+  margin-top: .75rem; width: 100%; background: #25D366; color: white;
+  border: none; border-radius: calc(var(--site-radius) * 0.6);
+  padding: .75rem 1rem; font-weight: 600; cursor: pointer;
+}
+.cd-appt-qr-prompt {
+  margin-top: 1rem; padding: 1rem; border-radius: var(--site-radius);
+  border: 1px dashed hsl(var(--cd-hairline)); background: hsl(var(--cd-scan-white)); text-align: center;
+}
+.cd-appt-qr-small { width: 180px; height: 180px; margin: 0 auto; display: block; background: white; padding: 8px; border-radius: 12px; }

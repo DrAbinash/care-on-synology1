@@ -380,19 +380,19 @@ export default function AppointmentSection({ section, settings }: { section: Sec
 
   if (!config || !config.enabled) {
     return (
-      <section id="appointment" className="section">
+      <section id="appointment" className="cd-section cd-section-light">
         <div className="container-narrow" style={{ maxWidth: 640 }}>
-          <h2 className="h-section text-center" style={{ marginBottom: ".5rem" }}>{heading}</h2>
-          {subheading && <p className="subtle text-center" style={{ marginBottom: "2rem" }}>{subheading}</p>}
+          <h2 className="cd-display cd-h2 text-center">{heading}</h2>
+          {subheading && <p className="cd-section-sub text-center">{subheading}</p>}
           {step === "done" ? (
-            <div className="card-soft text-center"><strong>Thanks!</strong> Your request has been sent. We'll confirm shortly.</div>
+            <div className="cd-card cd-appt-notice text-center"><strong>Thanks!</strong> Your request has been sent. We'll confirm shortly.</div>
           ) : (
-            <form onSubmit={handleWhatsApp} className="grid gap-3">
-              <input className="input-soft" placeholder="Your name" required value={pd.name} onChange={(e) => setPd({ ...pd, name: e.target.value.toUpperCase() })} />
-              <input className="input-soft" placeholder="Phone number" required value={pd.phone} onChange={(e) => setPd({ ...pd, phone: e.target.value })} />
-              <input className="input-soft" type="date" value={pd.date} onChange={(e) => setPd({ ...pd, date: e.target.value })} />
-              <textarea className="input-soft" placeholder="What test or service?" rows={3} value={pd.notes} onChange={(e) => setPd({ ...pd, notes: e.target.value })} />
-              <button type="submit" className={buttonClass(settings, "primary")} style={{ justifyContent: "center" }}>Request Appointment</button>
+            <form onSubmit={handleWhatsApp} className="cd-appt-quickform">
+              <input className="cd-appt-input" placeholder="Your name" required value={pd.name} onChange={(e) => setPd({ ...pd, name: e.target.value.toUpperCase() })} />
+              <input className="cd-appt-input" placeholder="Phone number" required value={pd.phone} onChange={(e) => setPd({ ...pd, phone: e.target.value })} />
+              <input className="cd-appt-input" type="date" value={pd.date} onChange={(e) => setPd({ ...pd, date: e.target.value })} />
+              <textarea className="cd-appt-input" placeholder="What test or service?" rows={3} value={pd.notes} onChange={(e) => setPd({ ...pd, notes: e.target.value })} />
+              <button type="submit" className="cd-btn-primary" style={{ justifyContent: "center" }}>Request Appointment</button>
             </form>
           )}
         </div>
@@ -401,49 +401,49 @@ export default function AppointmentSection({ section, settings }: { section: Sec
   }
 
   return (
-    <section id="appointment" className="section">
+    <section id="appointment" className="cd-section cd-section-light">
       <div className="container-narrow" style={{ maxWidth: 720 }}>
-        <h2 className="h-section text-center" style={{ marginBottom: ".5rem" }}>{heading}</h2>
-        {subheading && <p className="subtle text-center" style={{ marginBottom: "2rem" }}>{subheading}</p>}
+        <h2 className="cd-display cd-h2 text-center">{heading}</h2>
+        {subheading && <p className="cd-section-sub text-center">{subheading}</p>}
 
         {step === "failed" ? (
-          <div className="card-soft text-center" style={{ maxWidth: 480, margin: "0 auto" }}>
-            <div style={{ fontSize: "3rem", marginBottom: ".5rem" }}>❌</div>
-            <h3 style={{ fontWeight: 700, fontSize: "1.15rem", marginBottom: ".5rem" }}>Payment Not Completed</h3>
-            <p className="subtle" style={{ marginBottom: "1rem" }}>{failReason || "Your payment was not completed."}</p>
-            <button type="button" className={buttonClass(settings, "primary")} onClick={() => { setStep("pay"); setFailReason(""); }} style={{ justifyContent: "center" }}>Try Again</button>
+          <div className="cd-card cd-appt-status-card text-center" style={{ maxWidth: 480, margin: "0 auto" }}>
+            <span className="cd-appt-status-icon cd-appt-status-fail" aria-hidden="true">&times;</span>
+            <h3 className="cd-appt-status-title">Payment Not Completed</h3>
+            <p className="cd-section-sub" style={{ fontSize: ".9375rem" }}>{failReason || "Your payment was not completed."}</p>
+            <button type="button" className="cd-btn-primary" onClick={() => { setStep("pay"); setFailReason(""); }} style={{ justifyContent: "center", marginTop: ".5rem" }}>Try Again</button>
           </div>
         ) : step === "qr" ? (
-          <div className="card-soft" style={{ maxWidth: 480, margin: "0 auto" }}>
-            <h3 style={{ fontWeight: 700, marginBottom: "1rem" }}>Pay with UPI QR</h3>
+          <div className="cd-card cd-appt-status-card" style={{ maxWidth: 480, margin: "0 auto" }}>
+            <h3 className="cd-appt-status-title" style={{ textAlign: "left" }}>Pay with UPI QR</h3>
             <div style={{ textAlign: "center", marginBottom: "1rem" }}>
-              <div style={{ fontSize: "1.1rem", fontWeight: 700, marginBottom: ".5rem" }}>₹{qrAmount.toLocaleString("en-IN")}</div>
-              <div className="subtle" style={{ fontSize: ".85rem", marginBottom: ".75rem" }}>Scan with any UPI app (GPay, PhonePe, Paytm) to complete payment</div>
+              <div className="cd-mono" style={{ fontSize: "1.1875rem", fontWeight: 600, marginBottom: ".5rem" }}>&#8377;{qrAmount.toLocaleString("en-IN")}</div>
+              <div className="cd-section-sub" style={{ fontSize: ".875rem", margin: "0 0 .75rem" }}>Scan with any UPI app (GPay, PhonePe, Paytm) to complete payment</div>
               {qrUpiUrl ? (
-                <img src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(qrUpiUrl)}`} alt="UPI QR" style={{ width: 220, height: 220, margin: "0 auto", display: "block", background: "#fff", padding: 8, borderRadius: 12 }} />
+                <img src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(qrUpiUrl)}`} alt="UPI QR" className="cd-appt-qr-img" />
               ) : (
-                <div style={{ width: 220, height: 220, margin: "0 auto", background: "hsl(var(--site-muted))", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center" }}><Loader2 size={32} style={{ animation: "spin 1s linear infinite" }} /></div>
+                <div className="cd-appt-qr-placeholder"><Loader2 size={32} style={{ animation: "spin 1s linear infinite" }} /></div>
               )}
-              <div style={{ marginTop: ".75rem", fontSize: ".85rem", fontWeight: 600 }}>{qrUpiVpa || qrUpiName}</div>
+              <div style={{ marginTop: ".75rem", fontSize: ".875rem", fontWeight: 600 }}>{qrUpiVpa || qrUpiName}</div>
             </div>
             <div style={{ display: "flex", gap: ".75rem", marginBottom: ".75rem" }}>
-              <button type="button" className={buttonClass(settings, "outline")} onClick={() => setStep("pay")} style={{ flex: 1 }}>← Back</button>
-              <button type="button" className={buttonClass(settings, "primary")} onClick={checkQrPayment} disabled={qrChecking} style={{ flex: 1 }}>
+              <button type="button" className="cd-btn-ghost" style={{ color: "hsl(var(--cd-slate))", borderColor: "hsl(var(--cd-hairline))", flex: 1 }} onClick={() => setStep("pay")}>&larr; Back</button>
+              <button type="button" className="cd-btn-primary" onClick={checkQrPayment} disabled={qrChecking} style={{ flex: 1 }}>
                 {qrChecking ? "Checking..." : "I've Paid"}
               </button>
             </div>
-            <p className="subtle" style={{ fontSize: ".75rem", textAlign: "center" }}>
-              Booking ref: <span style={{ fontFamily: "monospace" }}>{qrBookingRef}</span>
+            <p className="cd-section-sub" style={{ fontSize: ".75rem", textAlign: "center", margin: 0 }}>
+              Booking ref: <span className="cd-mono">{qrBookingRef}</span>
             </p>
           </div>
         ) : step === "done" ? (
-          <div className="card-soft text-center" style={{ maxWidth: 480, margin: "0 auto" }}>
-            <div style={{ fontSize: "3rem", marginBottom: ".5rem" }}>✅</div>
-            <h3 style={{ fontWeight: 700, fontSize: "1.15rem", marginBottom: ".5rem" }}>Payment Successful!</h3>
-            <p className="subtle" style={{ marginBottom: "1rem" }}>Your booking reference is</p>
-            <div style={{ fontFamily: "monospace", fontSize: "1.3rem", fontWeight: 800, letterSpacing: 2, color: "hsl(var(--site-primary))", marginBottom: ".5rem" }}>{successRef}</div>
-            <div className="subtle" style={{ fontSize: ".9rem", marginBottom: "1rem" }}>Date: {pd.date}{pd.timeSlot && <> · Slot: {pd.timeSlot}</>}</div>
-            <p className="subtle" style={{ fontSize: ".9rem" }}>Please save this reference. Our staff will confirm your appointment shortly. You may receive a call or WhatsApp message.</p>
+          <div className="cd-card cd-appt-status-card text-center" style={{ maxWidth: 480, margin: "0 auto" }}>
+            <span className="cd-appt-status-icon cd-appt-status-success" aria-hidden="true">&#10003;</span>
+            <h3 className="cd-appt-status-title">Payment Successful!</h3>
+            <p className="cd-section-sub" style={{ fontSize: ".9375rem", marginBottom: ".25rem" }}>Your booking reference is</p>
+            <div className="cd-mono cd-appt-ref">{successRef}</div>
+            <div className="cd-section-sub" style={{ fontSize: ".9rem", margin: "0 0 1rem" }}>Date: {pd.date}{pd.timeSlot && <> &middot; Slot: {pd.timeSlot}</>}</div>
+            <p className="cd-section-sub" style={{ fontSize: ".9rem", margin: 0 }}>Please save this reference. Our staff will confirm your appointment shortly. You may receive a call or WhatsApp message.</p>
           </div>
         ) : step === "form" ? (
           <SelfRegistrationForm
@@ -481,12 +481,11 @@ export default function AppointmentSection({ section, settings }: { section: Sec
             }}
           />
         ) : step === "select" ? (
-          <div className="grid gap-4">
+          <div className="cd-appt-select">
             {categories.length > 2 && (
-              <div style={{ display: "flex", gap: ".5rem", flexWrap: "wrap" }}>
+              <div className="cd-tab-row" style={{ justifyContent: "flex-start", marginBottom: 0 }}>
                 {categories.map((cat) => (
-                  <button key={cat} onClick={() => setCatFilter(cat)}
-                    style={{ padding: ".3rem .8rem", borderRadius: 9999, fontSize: ".85rem", fontWeight: 600, background: catFilter === cat ? "hsl(var(--site-primary))" : "hsl(var(--site-muted))", color: catFilter === cat ? "hsl(var(--site-primary-fg))" : "inherit", border: "none", cursor: "pointer" }}>
+                  <button key={cat} onClick={() => setCatFilter(cat)} className={`cd-tab-btn ${catFilter === cat ? "active" : ""}`}>
                     {cat === "all" ? "All" : cat}
                   </button>
                 ))}
@@ -494,14 +493,13 @@ export default function AppointmentSection({ section, settings }: { section: Sec
             )}
             {pkgs.length > 0 && (
               <div>
-                <h3 style={{ fontWeight: 700, marginBottom: ".75rem" }}>Health Packages</h3>
-                <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
+                <h3 className="cd-appt-subheading">Health Packages</h3>
+                <div className="cd-appt-pkg-grid">
                   {pkgs.map((p) => (
-                    <button key={p.id} type="button" onClick={() => togglePkg(p.id)}
-                      style={{ textAlign: "left", padding: ".75rem 1rem", borderRadius: "var(--site-radius)", border: `2px solid ${selPkgs.has(p.id) ? "hsl(var(--site-primary))" : "hsl(var(--site-muted))"}`, background: selPkgs.has(p.id) ? "hsl(var(--site-primary) / .07)" : "hsl(var(--site-muted) / .4)", cursor: "pointer", transition: "border-color .15s" }}>
-                      <div style={{ fontWeight: 700, fontSize: ".95rem" }}>{p.name}</div>
-                      {p.description && <div style={{ fontSize: ".8rem", opacity: .7, marginTop: ".25rem" }}>{p.description}</div>}
-                      <div style={{ fontWeight: 700, color: "hsl(var(--site-primary))", marginTop: ".4rem" }}>₹{Number(p.price).toLocaleString("en-IN")}</div>
+                    <button key={p.id} type="button" onClick={() => togglePkg(p.id)} className={`cd-appt-pick-card ${selPkgs.has(p.id) ? "selected" : ""}`}>
+                      <div className="cd-appt-pick-name">{p.name}</div>
+                      {p.description && <div className="cd-appt-pick-desc">{p.description}</div>}
+                      <div className="cd-mono cd-appt-pick-price">&#8377;{Number(p.price).toLocaleString("en-IN")}</div>
                     </button>
                   ))}
                 </div>
@@ -509,107 +507,86 @@ export default function AppointmentSection({ section, settings }: { section: Sec
             )}
             {filteredTests.length > 0 && (
               <div>
-                <h3 style={{ fontWeight: 700, marginBottom: ".75rem" }}>Individual Tests</h3>
-                <div className="grid gap-1.5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))" }}>
+                <h3 className="cd-appt-subheading">Individual Tests</h3>
+                <div className="cd-appt-test-grid">
                   {filteredTests.map((t) => (
-                    <button key={t.id} type="button" onClick={() => toggleTest(t.id)}
-                      style={{ textAlign: "left", display: "flex", justifyContent: "space-between", alignItems: "center", padding: ".6rem .9rem", borderRadius: "var(--site-radius)", border: `1.5px solid ${selTests.has(t.id) ? "hsl(var(--site-primary))" : "hsl(var(--site-muted))"}`, background: selTests.has(t.id) ? "hsl(var(--site-primary) / .07)" : "hsl(var(--site-muted) / .3)", cursor: "pointer" }}>
+                    <button key={t.id} type="button" onClick={() => toggleTest(t.id)} className={`cd-appt-test-row ${selTests.has(t.id) ? "selected" : ""}`}>
                       <div>
-                        <span style={{ fontWeight: 600, fontSize: ".9rem" }}>{t.name}</span>
-                        <span style={{ fontSize: ".75rem", opacity: .6, marginLeft: ".5rem" }}>{t.code}</span>
+                        <span className="cd-appt-test-name">{t.name}</span>
+                        <span className="cd-appt-test-code">{t.code}</span>
                       </div>
-                      <span style={{ fontWeight: 700, fontSize: ".9rem", color: "hsl(var(--site-primary))", whiteSpace: "nowrap" }}>₹{Number(t.price).toLocaleString("en-IN")}</span>
+                      <span className="cd-mono cd-appt-test-price">&#8377;{Number(t.price).toLocaleString("en-IN")}</span>
                     </button>
                   ))}
                 </div>
               </div>
             )}
             {(selTests.size > 0 || selPkgs.size > 0) && (
-              <div className="card-soft" style={{ position: "sticky", bottom: "1rem", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "1rem", flexWrap: "wrap", background: "hsl(var(--site-bg))" }}>
+              <div className="cd-card cd-appt-sticky-bar">
                 <div>
-                  <span className="subtle">{selTests.size + selPkgs.size} item(s) selected</span>
-                  <span style={{ fontWeight: 800, fontSize: "1.15rem", marginLeft: "1rem", color: "hsl(var(--site-primary))" }}>₹{total.toLocaleString("en-IN")}</span>
+                  <span className="cd-section-sub" style={{ margin: 0, fontSize: ".875rem" }}>{selTests.size + selPkgs.size} item(s) selected</span>
+                  <span className="cd-mono cd-appt-sticky-total">&#8377;{total.toLocaleString("en-IN")}</span>
                 </div>
-                <button type="button" className={buttonClass(settings, "primary")} onClick={() => setStep("pay")} style={{ justifyContent: "center" }}>Review &amp; Pay →</button>
+                <button type="button" className="cd-btn-primary" onClick={() => setStep("pay")} style={{ justifyContent: "center" }}>Review &amp; Pay &rarr;</button>
               </div>
             )}
           </div>
         ) : (
           <div className="card-soft" style={{ maxWidth: 520, margin: "0 auto" }}>
-            <h3 style={{ fontWeight: 700, marginBottom: "1rem" }}>Order Summary</h3>
+            <h3 className="cd-appt-subheading" style={{ marginBottom: "1rem" }}>Order Summary</h3>
             <div style={{ marginBottom: "1rem" }}>
-              <div className="subtle" style={{ marginBottom: ".4rem", fontSize: ".85rem" }}>Patient Details</div>
-              <div style={{ fontWeight: 600 }}>{pd.name} · {pd.phone}</div>
-              <div className="subtle" style={{ fontSize: ".9rem" }}>Appointment: {pd.date}{pd.isVip ? " · ⭐ VIP" : ""}</div>
+              <div className="cd-contact-label">Patient Details</div>
+              <div style={{ fontWeight: 600, color: "hsl(var(--cd-slate))" }}>{pd.name} &middot; {pd.phone}</div>
+              <div className="cd-section-sub" style={{ fontSize: ".9rem", margin: 0 }}>Appointment: {pd.date}{pd.isVip ? " \u00b7 VIP" : ""}</div>
             </div>
-            <div style={{ borderTop: "1px solid hsl(var(--site-muted))", paddingTop: ".75rem", marginBottom: ".75rem" }}>
+            <div className="cd-appt-summary-list">
               {tests.filter((t) => selTests.has(t.id)).map((t) => (
-                <div key={t.id} style={{ display: "flex", justifyContent: "space-between", padding: ".3rem 0", fontSize: ".9rem" }}>
-                  <span>{t.name}</span><span style={{ fontWeight: 600 }}>₹{Number(t.price).toLocaleString("en-IN")}</span>
+                <div key={t.id} className="cd-appt-summary-row">
+                  <span>{t.name}</span><span className="cd-mono" style={{ fontWeight: 600 }}>&#8377;{Number(t.price).toLocaleString("en-IN")}</span>
                 </div>
               ))}
               {pkgs.filter((p) => selPkgs.has(p.id)).map((p) => (
-                <div key={p.id} style={{ display: "flex", justifyContent: "space-between", padding: ".3rem 0", fontSize: ".9rem" }}>
-                  <span>{p.name} (Package)</span><span style={{ fontWeight: 600 }}>₹{Number(p.price).toLocaleString("en-IN")}</span>
+                <div key={p.id} className="cd-appt-summary-row">
+                  <span>{p.name} (Package)</span><span className="cd-mono" style={{ fontWeight: 600 }}>&#8377;{Number(p.price).toLocaleString("en-IN")}</span>
                 </div>
               ))}
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 800, fontSize: "1.1rem", borderTop: "2px solid hsl(var(--site-primary) / .3)", paddingTop: ".75rem", marginBottom: "1.25rem" }}>
-              <span>Total</span><span style={{ color: "hsl(var(--site-primary))" }}>₹{total.toLocaleString("en-IN")}</span>
+            <div className="cd-appt-summary-total">
+              <span>Total</span><span className="cd-mono" style={{ color: "hsl(var(--cd-teal))" }}>&#8377;{total.toLocaleString("en-IN")}</span>
             </div>
-            {error && <div style={{ color: "red", fontSize: ".85rem", marginBottom: ".75rem", padding: ".5rem .75rem", background: "hsl(0 85% 95%)", borderRadius: "var(--site-radius)" }}>{error}</div>}
+            {error && <div className="cd-appt-error">{error}</div>}
             <div style={{ display: "flex", gap: ".75rem", flexWrap: "wrap" }}>
-              <button type="button" onClick={() => setStep("select")} style={{ background: "hsl(var(--site-muted))", color: "inherit", border: "none", borderRadius: "var(--site-radius)", padding: ".6rem 1.1rem", cursor: "pointer", fontWeight: 600 }}>← Back</button>
+              <button type="button" onClick={() => setStep("select")} className="cd-appt-back-btn">&larr; Back</button>
               {config?.gateway === "icici" || config?.gateway === "hdfc" ? (
                 <button
                   type="button"
                   onClick={handlePay}
                   disabled={paying}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: ".5rem",
-                    flex: 1,
-                    background: config?.gateway === "icici" ? "#FF6600" : "#002F6C",
-                    color: "#fff",
-                    border: "none",
-                    borderRadius: "var(--site-radius)",
-                    padding: ".6rem 1.1rem",
-                    cursor: "pointer",
-                    fontWeight: 700,
-                    fontSize: "1rem"
-                  }}
+                  className="cd-appt-gateway-btn"
+                  style={{ background: config?.gateway === "icici" ? "#FF6600" : "#002F6C" }}
                 >
                   {paying ? (
                     <>
-                      <Loader2 size={18} style={{ animation: "spin 1s linear infinite" }} /> Redirecting to Payment Gateway…
+                      <Loader2 size={18} style={{ animation: "spin 1s linear infinite" }} /> Redirecting to Payment Gateway&hellip;
                     </>
                   ) : (
                     <>
                       <img
                         src={config?.gateway === "icici" ? "/icici-bank-logo.jpeg" : "/hdfc-bank-logo.jpeg"}
                         alt={config?.gateway === "icici" ? "ICICI Bank" : "HDFC Bank"}
-                        style={{
-                          height: "36px",
-                          objectFit: "contain",
-                          background: "white",
-                          borderRadius: "6px",
-                          padding: "2px",
-                          border: "2px solid #002F6C"
-                        }}
+                        className="cd-appt-gateway-logo"
                       />
-                      <span>Pay ₹{total.toLocaleString("en-IN")} by {config?.gateway === "icici" ? "ICICI Bank" : "HDFC Bank"}</span>
+                      <span>Pay &#8377;{total.toLocaleString("en-IN")} by {config?.gateway === "icici" ? "ICICI Bank" : "HDFC Bank"}</span>
                     </>
                   )}
                 </button>
               ) : (
-                <button type="button" className={buttonClass(settings, "primary")} onClick={handlePay} disabled={paying} style={{ flex: 1, justifyContent: "center" }}>
+                <button type="button" className="cd-btn-primary" onClick={handlePay} disabled={paying} style={{ flex: 1, justifyContent: "center" }}>
                   {paying
-                    ? (config?.gateway === "payu" ? "Redirecting to PayU…" :
-                       config?.gateway === "bharatpe" ? "Redirecting to BharatPe…" :
-                       config?.gateway === "phonepe" ? "Redirecting to PhonePe…" : "Processing…")
-                    : `Pay ₹${total.toLocaleString("en-IN")} via ${gatewayLabel}`}
+                    ? (config?.gateway === "payu" ? "Redirecting to PayU\u2026" :
+                       config?.gateway === "bharatpe" ? "Redirecting to BharatPe\u2026" :
+                       config?.gateway === "phonepe" ? "Redirecting to PhonePe\u2026" : "Processing\u2026")
+                    : `Pay \u20b9${total.toLocaleString("en-IN")} via ${gatewayLabel}`}
                 </button>
               )}
             </div>
@@ -617,23 +594,23 @@ export default function AppointmentSection({ section, settings }: { section: Sec
               <button
                 type="button"
                 onClick={openWhatsAppBooking}
-                style={{ marginTop: ".75rem", width: "100%", background: "#25d366", color: "#fff", border: "none", borderRadius: "var(--site-radius)", padding: ".65rem 1rem", fontWeight: 700, cursor: "pointer" }}
+                className="cd-appt-wa-btn"
               >
                 Book on WhatsApp instead
               </button>
             )}
             {qrBookingUrl && (
-              <div style={{ marginTop: "1rem", padding: "1rem", borderRadius: "var(--site-radius)", border: "1px dashed hsl(var(--site-muted))", background: "hsl(var(--site-muted) / .25)", textAlign: "center" }}>
-                <div style={{ fontWeight: 700, marginBottom: ".35rem" }}>WhatsApp booking QR</div>
-                <p className="subtle" style={{ fontSize: ".85rem", marginBottom: ".75rem" }}>Scan to book via WhatsApp.</p>
+              <div className="cd-appt-qr-prompt">
+                <div style={{ fontWeight: 600, marginBottom: ".35rem", color: "hsl(var(--cd-slate))" }}>WhatsApp booking QR</div>
+                <p className="cd-section-sub" style={{ fontSize: ".875rem", margin: "0 0 .75rem" }}>Scan to book via WhatsApp.</p>
                 <img
                   alt="WhatsApp booking QR"
                   src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(qrBookingUrl)}`}
-                  style={{ width: 180, height: 180, margin: "0 auto", display: "block", background: "#fff", padding: 8, borderRadius: 12 }}
+                  className="cd-appt-qr-small"
                 />
               </div>
             )}
-            <p className="subtle" style={{ fontSize: ".78rem", marginTop: "1rem", textAlign: "center" }}>
+            <p className="cd-section-sub" style={{ fontSize: ".78rem", marginTop: "1rem", textAlign: "center" }}>
               Payments are processed securely via {gatewayLabel}
             </p>
           </div>
