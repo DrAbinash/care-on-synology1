@@ -1,10 +1,17 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { db } from "@workspace/db";
-import { whatsappSettingsTable, whatsappNumbersTable, whatsappConversationsTable, clinicSettingsTable, knowledgeBaseEntriesTable, knowledgeBaseSearchLogTable } from "@workspace/db/schema";
-import { eq, desc, sql, ilike, and, or } from "drizzle-orm";
+import { whatsappSettingsTable, whatsappNumbersTable, whatsappConversationsTable, clinicSettingsTable } from "@workspace/db/schema";
+import { eq, desc, sql, ilike } from "drizzle-orm";
 import { requireStaffPermission } from "../middleware/requireStaffAuth";
-import { generateAiForTask } from "@workspace/ai-providers";
 import { encryptSecret, decryptSecretTolerant } from "../lib/cryptoUtils";
+import { getWhatsAppService } from "../services/whatsapp/WhatsAppService";
+import { WhatsAppBotEngine } from "../services/whatsapp/WhatsAppBotEngine";
+
+// Shared with routes/waChatbot.ts's webhook — see the note above
+// handleAiReply below for why this webhook now delegates to the same
+// engine instead of running its own separate, divergent logic.
+const sharedWaService = getWhatsAppService();
+const sharedBotEngine = new WhatsAppBotEngine(sharedWaService);
 
 export const whatsappRouter: IRouter = Router();
 export const whatsappWebhookRouter: IRouter = Router();
@@ -302,7 +309,9 @@ whatsappWebhookRouter.post("/", async (req: Request, res: Response): Promise<voi
 
           const text = msg.text.body;
 
-          // Save incoming message
+          // Save incoming message (this webhook's own conversation log —
+          // see the note above sharedBotEngine for why this table is kept
+          // separate from waConversationsTable rather than merged today)
           await db.insert(whatsappConversationsTable).values({
             phone,
             customerName: name,
@@ -313,9 +322,57 @@ whatsappWebhookRouter.post("/", async (req: Request, res: Response): Promise<voi
             status: "received",
           });
 
-          // AI assistant auto-reply (only on general/form_f numbers)
+          // Delegate to the SAME bot engine the /api/wa-chatbot/webhook
+          // path uses, rather than this webhook's own separate logic.
+          // This is the actual fix for "two never-connected WhatsApp AI
+          // systems" — a message arriving here now gets the identical
+          // menu-bot-with-Knowledge-Base-grounded-fallback experience as
+          // one arriving at the other webhook URL, instead of two
+          // different bots with two different behaviors depending on
+          // which webhook happened to receive it.
+          //
+          // Deliberately NOT unified: the underlying contact/conversation
+          // tables (waContactsTable vs whatsappConversationsTable) — those
+          // are two separate, real data stores with their own staff-facing
+          // UIs built on top of them elsewhere in this codebase, and
+          // merging them is a genuine data-migration task, not a "connect
+          // the logic" task. This delegation calls
+          // service.getOrCreateContact() to resolve the waContactsTable
+          // side fresh on every message, so both systems' records stay
+          // populated and queryable independently, without either webhook
+          // losing its own audit trail.
           if (numRole !== "reports" && s.aiAssistantEnabled && numCfg) {
-            void handleAiReply({ phone, text, name, numCfg, s }).catch(() => {});
+            void (async () => {
+              try {
+                const contact = await sharedWaService.getOrCreateContact(phone, name);
+                const reply = await sharedBotEngine.processMessage(contact, {
+                  provider: "meta",
+                  from: phone,
+                  timestamp: String(Date.now()),
+                  messageId: waId,
+                  type: "text",
+                  body: text,
+                  rawPayload: msg,
+                });
+                if (reply.text) {
+                  await sendTextMessageRaw(phone, reply.text, numCfg);
+                  await db.insert(whatsappConversationsTable).values({
+                    phone,
+                    customerName: name,
+                    direction: "outgoing",
+                    messageBody: reply.text,
+                    waMessageId: "",
+                    aiHandled: reply.action !== "handover_human",
+                    status: "sent",
+                  });
+                }
+              } catch {
+                // Swallowed deliberately, matching this webhook's existing
+                // error-tolerance policy — Meta already received its 200
+                // response before this async work began, so a failure
+                // here must never surface as a webhook-level error.
+              }
+            })();
           }
         }
       }
@@ -442,167 +499,6 @@ async function handleIncomingImage(params: {
       ? "Thank you for your ID card image. We couldn't extract the required details automatically. Our staff will assist you at the center."
       : "Thank you for your ID card image. We couldn't find a matching patient record. Please visit the center so our staff can verify and update your records.";
     void sendTextMessageRaw(phone, replyBody, numCfg).catch(() => {});
-  }
-}
-
-// ─── AI Reply Handler ──────────────────────────────────────────────────────────
-//
-// Knowledge Base integration: per 03_AI_RECEPTIONIST_IMPLEMENTATION_BLUEPRINT.md
-// §5.2/§5.3, an AI Receptionist must answer from approved, staff-editable
-// content, not improvise from a single baked-in prompt string. Before this
-// change, this handler sent clinic info + a system prompt straight to
-// Gemini with no retrieval step at all — exactly the anti-pattern that
-// document warns against. This now:
-//   1. Searches knowledge_base_entries (published only) for content
-//      matching the patient's message, same keyword/ILIKE approach as
-//      the Knowledge Base API (see routes/knowledgeBase.ts) — kept
-//      identical deliberately, so there is one retrieval behavior, not two.
-//   2. If matched: injects the matched content into the prompt as
-//      grounding context, and instructs Gemini to answer ONLY from it.
-//   3. If not matched: per the "no KB hit → escalate, don't improvise"
-//      rule, does NOT call Gemini freely — instead sends a polite
-//      hand-off message and marks the conversation for staff follow-up.
-//      This is a real behavior change from before, where an unmatched
-//      query would previously get a Gemini-improvised answer with no
-//      grounding at all.
-//   4. Every query (matched or not) is logged to knowledge_base_search_log,
-//      the same table the Knowledge Base API populates — feeding the same
-//      "Top FAQs" / knowledge-gap-detection analytics from one source,
-//      not a second, parallel log.
-async function handleAiReply(params: {
-  phone: string;
-  text: string;
-  name: string;
-  numCfg: NumberConfig;
-  s: typeof whatsappSettingsTable.$inferSelect;
-}): Promise<void> {
-  const { phone, text, name, numCfg, s } = params;
-
-  // Load clinic info for AI context
-  const [clinic] = await db.select({
-    name: clinicSettingsTable.name,
-    tagline: clinicSettingsTable.tagline,
-    address: clinicSettingsTable.address,
-    phone: clinicSettingsTable.phone,
-    email: clinicSettingsTable.email,
-    website: clinicSettingsTable.website,
-  }).from(clinicSettingsTable).limit(1);
-
-  const clinicName    = clinic?.name    ?? "Care Diagnostics";
-  const clinicAddress = clinic?.address ?? "";
-  const clinicPhone   = clinic?.phone   ?? "";
-  const clinicEmail   = clinic?.email   ?? "";
-  const clinicWeb     = clinic?.website ?? "";
-  const assistantName = s.aiAssistantName || "Care Diagnostics Assistant";
-
-  // ── Knowledge Base retrieval (new) ────────────────────────────────────────
-  const likeQ = `%${text.trim()}%`;
-  const kbMatches = text.trim().length > 0
-    ? await db
-        .select()
-        .from(knowledgeBaseEntriesTable)
-        .where(and(
-          eq(knowledgeBaseEntriesTable.status, "published"),
-          or(
-            ilike(knowledgeBaseEntriesTable.title, likeQ),
-            ilike(knowledgeBaseEntriesTable.content, likeQ),
-            ilike(knowledgeBaseEntriesTable.keywords, likeQ),
-          ),
-        ))
-        .limit(3)
-    : [];
-  const kbMatched = kbMatches.length > 0;
-
-  await db.insert(knowledgeBaseSearchLogTable).values({
-    query: text.trim(),
-    matchedEntryId: kbMatched ? kbMatches[0].id : null,
-    matched: kbMatched,
-    channel: "whatsapp_ai",
-  });
-
-  if (!kbMatched) {
-    // No grounded content to answer from — escalate rather than let
-    // the AI improvise. This intentionally does NOT call
-    // generateAiForTask at all in the no-match case.
-    const handoffMsg = "Thanks for reaching out! For this question, let me connect you with our team — they'll get back to you shortly. For urgent matters, please call us directly.";
-    const result = await sendTextMessageRaw(phone, handoffMsg, numCfg);
-    if (result.ok) {
-      await db.insert(whatsappConversationsTable).values({
-        phone,
-        customerName: name,
-        direction: "outgoing",
-        messageBody: handoffMsg,
-        waMessageId: result.messageId ?? "",
-        aiHandled: false, // explicitly false — this was an escalation, not an AI-handled answer
-        status: "sent",
-      });
-    }
-    return;
-  }
-
-  const kbContext = kbMatches
-    .map((m) => `[${m.category}] ${m.title}: ${m.content}`)
-    .join("\n\n");
-
-  const defaultSystemPrompt = `You are ${assistantName}, the AI assistant for ${clinicName} diagnostic center.
-${clinic?.tagline ? `Tagline: ${clinic.tagline}` : ""}
-${clinicAddress ? `Address: ${clinicAddress}` : ""}
-${clinicPhone ? `Phone: ${clinicPhone}` : ""}
-${clinicEmail ? `Email: ${clinicEmail}` : ""}
-${clinicWeb ? `Website: ${clinicWeb}` : ""}
-
-You help patients with:
-- Information about available diagnostic tests and packages
-- Appointment booking guidance (ask them to call or visit)
-- Report collection and turnaround times
-- General FAQs about the diagnostic center
-- Directing urgent or complex queries to staff
-
-Keep replies concise (under 100 words), warm, and professional. Do not make up specific prices, results, or medical diagnoses. Always recommend consulting a doctor for medical concerns.`;
-
-  const systemPrompt = (s.aiSystemPrompt?.trim() || defaultSystemPrompt);
-
-  const prompt = `${systemPrompt}
-
-The following approved information from our knowledge base is relevant to this patient's question. Base your answer ONLY on this information — do not add facts, prices, or details that are not stated here. If the approved information doesn't fully answer the question, say so and offer to connect them with staff, rather than guessing.
-
-Approved knowledge base content:
-${kbContext}
-
-Patient name: ${name || "Patient"}
-Patient message: ${text}
-
-Reply in a helpful, friendly manner. Be concise.`;
-
-  try {
-    // Routed through the real multi-provider system (OpenAI / Gemini /
-    // Anthropic / Ollama, per lib/ai-providers) rather than calling
-    // Gemini directly. Uses its own task key so an admin can route
-    // WhatsApp AI replies to a different provider (e.g. a local Ollama
-    // instance) independently of other AI features (radiology reporting,
-    // etc.) without any code change — exactly the "switching providers
-    // requires configuration changes only" goal the implementation
-    // blueprint set for vendor abstraction, already built and just not
-    // previously used by this call site.
-    const aiResult = await generateAiForTask("whatsapp_ai_receptionist", prompt, [], { maxTokens: 300 });
-    const reply = aiResult.success ? aiResult.text : "";
-    if (!reply) return;
-
-    const sendResult = await sendTextMessageRaw(phone, reply, numCfg);
-    if (!sendResult.ok) return;
-
-    // Log outgoing AI reply
-    await db.insert(whatsappConversationsTable).values({
-      phone,
-      customerName: name,
-      direction: "outgoing",
-      messageBody: reply,
-      waMessageId: sendResult.messageId ?? "",
-      aiHandled: true,
-      status: "sent",
-    });
-  } catch (_err) {
-    // AI errors are swallowed to prevent webhook retry storms
   }
 }
 
