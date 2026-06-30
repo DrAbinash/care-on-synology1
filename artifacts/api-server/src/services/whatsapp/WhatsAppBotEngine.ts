@@ -212,21 +212,55 @@ export class WhatsAppBotEngine {
     return { text: "To check your report status, please enter your registered mobile number or bill number." };
   }
 
-  private async handleReportFlow(contact: { id: number }, step: string, text: string, _context: Record<string, unknown>): Promise<BotReply> {
+  private async handleReportFlow(contact: { id: number }, step: string, text: string, context: Record<string, unknown>): Promise<BotReply> {
     if (step === "report_search") {
       const patient = await this.service.findPatientByPhone(text);
       if (!patient) {
         return { text: "No patient found with that number. Please try again or visit the clinic.\n\nReply MENU for main menu." };
       }
-      const reports = await this.service.findPendingReportsByPatientId(patient.id);
+      // Identity gate: the phone number that sent THIS message is not
+      // necessarily the patient's own — anyone holding the patient's
+      // phone number (often not secret: written on prescriptions, given
+      // to family) could otherwise extract report status for someone
+      // else. Require a second factor (date of birth) before revealing
+      // anything, per the platform's "phone number alone is not enough"
+      // requirement. This mirrors the same gate the payment/dues flow
+      // below also needs and now has.
+      await this.service.updateSession(contact.id, "report_verify_dob", { ...context, candidatePatientId: patient.id });
+      return { text: "For your privacy, please confirm the patient's date of birth (DD-MM-YYYY) to continue." };
+    }
+    if (step === "report_verify_dob") {
+      const candidatePatientId = Number(context.candidatePatientId);
+      const verified = await this.verifyPatientDob(candidatePatientId, text);
+      if (!verified) {
+        await this.service.updateSession(contact.id, "main_menu", {});
+        return { text: "That date of birth does not match our records. For your privacy, we cannot show this information here.\n\nPlease visit the clinic or reply MENU for main menu." };
+      }
+      const reports = await this.service.findPendingReportsByPatientId(candidatePatientId);
+      await this.service.updateSession(contact.id, "main_menu", {});
       if (reports.length === 0) {
         return { text: "No reports found for that profile.\n\nReply MENU to return to main menu." };
       }
       const lines = reports.map((r) => `• ${r.title}: ${r.status.toUpperCase()}`).join("\n");
-      await this.service.updateSession(contact.id, "main_menu", {});
       return { text: `Report status:\n${lines}\n\nWhen a report is ready, you will receive a secure link.\n\nReply MENU to return to main menu.` };
     }
     return this.showMainMenu(contact as { id: number; name?: string | null });
+  }
+
+  // Second-factor identity check — date of birth, compared against the
+  // patient record located by the phone number the user typed. Used by
+  // both the report-status and payment/dues "search by phone number"
+  // flows, so this lives once rather than being duplicated.
+  private async verifyPatientDob(patientId: number, typedDob: string): Promise<boolean> {
+    const dateMatch = typedDob.trim().match(/^(\d{2})-(\d{2})-(\d{4})$/);
+    if (!dateMatch) return false;
+    const [, dd, mm, yyyy] = dateMatch;
+    const typed = `${yyyy}-${mm}-${dd}`;
+    const [patient] = await db.select({ dateOfBirth: patientsTable.dateOfBirth }).from(patientsTable).where(eq(patientsTable.id, patientId)).limit(1);
+    if (!patient) return false;
+    // dateOfBirth is stored as text; compare the YYYY-MM-DD portion only,
+    // tolerant of a stored value that includes a time component.
+    return (patient.dateOfBirth || "").slice(0, 10) === typed;
   }
 
   private async startDownloadReportFlow(contact: { id: number }): Promise<BotReply> {
@@ -240,14 +274,27 @@ export class WhatsAppBotEngine {
     return { text: "To check your bill or dues, please enter your registered mobile number or bill number." };
   }
 
-  private async handlePaymentFlow(contact: { id: number }, step: string, text: string, _context: Record<string, unknown>): Promise<BotReply> {
+  private async handlePaymentFlow(contact: { id: number }, step: string, text: string, context: Record<string, unknown>): Promise<BotReply> {
     if (step === "payment_search") {
       const patient = await this.service.findPatientByPhone(text);
       if (!patient) {
         return { text: "No patient found with that number. Please try again or visit the clinic.\n\nReply MENU for main menu." };
       }
-      const bills = await this.service.findBillsByPatientId(patient.id);
+      // Same identity gate as the report-status flow above — see the
+      // comment there for why this is required, not optional.
+      await this.service.updateSession(contact.id, "payment_verify_dob", { ...context, candidatePatientId: patient.id });
+      return { text: "For your privacy, please confirm the patient's date of birth (DD-MM-YYYY) to continue." };
+    }
+    if (step === "payment_verify_dob") {
+      const candidatePatientId = Number(context.candidatePatientId);
+      const verified = await this.verifyPatientDob(candidatePatientId, text);
+      if (!verified) {
+        await this.service.updateSession(contact.id, "main_menu", {});
+        return { text: "That date of birth does not match our records. For your privacy, we cannot show this information here.\n\nPlease visit the clinic or reply MENU for main menu." };
+      }
+      const bills = await this.service.findBillsByPatientId(candidatePatientId);
       if (bills.length === 0) {
+        await this.service.updateSession(contact.id, "main_menu", {});
         return { text: "No bills found for that profile.\n\nReply MENU to return to main menu." };
       }
       const pending = bills.filter((b) => Number(b.balanceAmount || 0) > 0);

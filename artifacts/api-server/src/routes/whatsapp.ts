@@ -1,7 +1,7 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { db } from "@workspace/db";
-import { whatsappSettingsTable, whatsappNumbersTable, whatsappConversationsTable, clinicSettingsTable } from "@workspace/db/schema";
-import { eq, desc, sql, ilike } from "drizzle-orm";
+import { whatsappSettingsTable, whatsappNumbersTable, whatsappConversationsTable, clinicSettingsTable, knowledgeBaseEntriesTable, knowledgeBaseSearchLogTable } from "@workspace/db/schema";
+import { eq, desc, sql, ilike, and, or } from "drizzle-orm";
 import { requireStaffPermission } from "../middleware/requireStaffAuth";
 import { geminiGenerate } from "@workspace/integrations-gemini-ai";
 
@@ -444,7 +444,29 @@ async function handleIncomingImage(params: {
 }
 
 // ─── AI Reply Handler ──────────────────────────────────────────────────────────
-
+//
+// Knowledge Base integration: per 03_AI_RECEPTIONIST_IMPLEMENTATION_BLUEPRINT.md
+// §5.2/§5.3, an AI Receptionist must answer from approved, staff-editable
+// content, not improvise from a single baked-in prompt string. Before this
+// change, this handler sent clinic info + a system prompt straight to
+// Gemini with no retrieval step at all — exactly the anti-pattern that
+// document warns against. This now:
+//   1. Searches knowledge_base_entries (published only) for content
+//      matching the patient's message, same keyword/ILIKE approach as
+//      the Knowledge Base API (see routes/knowledgeBase.ts) — kept
+//      identical deliberately, so there is one retrieval behavior, not two.
+//   2. If matched: injects the matched content into the prompt as
+//      grounding context, and instructs Gemini to answer ONLY from it.
+//   3. If not matched: per the "no KB hit → escalate, don't improvise"
+//      rule, does NOT call Gemini freely — instead sends a polite
+//      hand-off message and marks the conversation for staff follow-up.
+//      This is a real behavior change from before, where an unmatched
+//      query would previously get a Gemini-improvised answer with no
+//      grounding at all.
+//   4. Every query (matched or not) is logged to knowledge_base_search_log,
+//      the same table the Knowledge Base API populates — feeding the same
+//      "Top FAQs" / knowledge-gap-detection analytics from one source,
+//      not a second, parallel log.
 async function handleAiReply(params: {
   phone: string;
   text: string;
@@ -471,6 +493,55 @@ async function handleAiReply(params: {
   const clinicWeb     = clinic?.website ?? "";
   const assistantName = s.aiAssistantName || "Care Diagnostics Assistant";
 
+  // ── Knowledge Base retrieval (new) ────────────────────────────────────────
+  const likeQ = `%${text.trim()}%`;
+  const kbMatches = text.trim().length > 0
+    ? await db
+        .select()
+        .from(knowledgeBaseEntriesTable)
+        .where(and(
+          eq(knowledgeBaseEntriesTable.status, "published"),
+          or(
+            ilike(knowledgeBaseEntriesTable.title, likeQ),
+            ilike(knowledgeBaseEntriesTable.content, likeQ),
+            ilike(knowledgeBaseEntriesTable.keywords, likeQ),
+          ),
+        ))
+        .limit(3)
+    : [];
+  const kbMatched = kbMatches.length > 0;
+
+  await db.insert(knowledgeBaseSearchLogTable).values({
+    query: text.trim(),
+    matchedEntryId: kbMatched ? kbMatches[0].id : null,
+    matched: kbMatched,
+    channel: "whatsapp_ai",
+  });
+
+  if (!kbMatched) {
+    // No grounded content to answer from — escalate rather than let
+    // Gemini improvise. This intentionally does NOT call geminiGenerate
+    // at all in the no-match case.
+    const handoffMsg = "Thanks for reaching out! For this question, let me connect you with our team — they'll get back to you shortly. For urgent matters, please call us directly.";
+    const result = await sendTextMessageRaw(phone, handoffMsg, numCfg);
+    if (result.ok) {
+      await db.insert(whatsappConversationsTable).values({
+        phone,
+        customerName: name,
+        direction: "outgoing",
+        messageBody: handoffMsg,
+        waMessageId: result.messageId ?? "",
+        aiHandled: false, // explicitly false — this was an escalation, not an AI-handled answer
+        status: "sent",
+      });
+    }
+    return;
+  }
+
+  const kbContext = kbMatches
+    .map((m) => `[${m.category}] ${m.title}: ${m.content}`)
+    .join("\n\n");
+
   const defaultSystemPrompt = `You are ${assistantName}, the AI assistant for ${clinicName} diagnostic center.
 ${clinic?.tagline ? `Tagline: ${clinic.tagline}` : ""}
 ${clinicAddress ? `Address: ${clinicAddress}` : ""}
@@ -490,6 +561,11 @@ Keep replies concise (under 100 words), warm, and professional. Do not make up s
   const systemPrompt = (s.aiSystemPrompt?.trim() || defaultSystemPrompt);
 
   const prompt = `${systemPrompt}
+
+The following approved information from our knowledge base is relevant to this patient's question. Base your answer ONLY on this information — do not add facts, prices, or details that are not stated here. If the approved information doesn't fully answer the question, say so and offer to connect them with staff, rather than guessing.
+
+Approved knowledge base content:
+${kbContext}
 
 Patient name: ${name || "Patient"}
 Patient message: ${text}
