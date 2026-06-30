@@ -3,7 +3,7 @@ import { db } from "@workspace/db";
 import { whatsappSettingsTable, whatsappNumbersTable, whatsappConversationsTable, clinicSettingsTable, knowledgeBaseEntriesTable, knowledgeBaseSearchLogTable } from "@workspace/db/schema";
 import { eq, desc, sql, ilike, and, or } from "drizzle-orm";
 import { requireStaffPermission } from "../middleware/requireStaffAuth";
-import { geminiGenerate } from "@workspace/integrations-gemini-ai";
+import { generateAiForTask } from "@workspace/ai-providers";
 
 export const whatsappRouter: IRouter = Router();
 export const whatsappWebhookRouter: IRouter = Router();
@@ -520,8 +520,8 @@ async function handleAiReply(params: {
 
   if (!kbMatched) {
     // No grounded content to answer from — escalate rather than let
-    // Gemini improvise. This intentionally does NOT call geminiGenerate
-    // at all in the no-match case.
+    // the AI improvise. This intentionally does NOT call
+    // generateAiForTask at all in the no-match case.
     const handoffMsg = "Thanks for reaching out! For this question, let me connect you with our team — they'll get back to you shortly. For urgent matters, please call us directly.";
     const result = await sendTextMessageRaw(phone, handoffMsg, numCfg);
     if (result.ok) {
@@ -573,11 +573,21 @@ Patient message: ${text}
 Reply in a helpful, friendly manner. Be concise.`;
 
   try {
-    const reply = await geminiGenerate(prompt, { maxTokens: 300 });
+    // Routed through the real multi-provider system (OpenAI / Gemini /
+    // Anthropic / Ollama, per lib/ai-providers) rather than calling
+    // Gemini directly. Uses its own task key so an admin can route
+    // WhatsApp AI replies to a different provider (e.g. a local Ollama
+    // instance) independently of other AI features (radiology reporting,
+    // etc.) without any code change — exactly the "switching providers
+    // requires configuration changes only" goal the implementation
+    // blueprint set for vendor abstraction, already built and just not
+    // previously used by this call site.
+    const aiResult = await generateAiForTask("whatsapp_ai_receptionist", prompt, [], { maxTokens: 300 });
+    const reply = aiResult.success ? aiResult.text : "";
     if (!reply) return;
 
-    const result = await sendTextMessageRaw(phone, reply, numCfg);
-    if (!result.ok) return;
+    const sendResult = await sendTextMessageRaw(phone, reply, numCfg);
+    if (!sendResult.ok) return;
 
     // Log outgoing AI reply
     await db.insert(whatsappConversationsTable).values({
@@ -585,7 +595,7 @@ Reply in a helpful, friendly manner. Be concise.`;
       customerName: name,
       direction: "outgoing",
       messageBody: reply,
-      waMessageId: result.messageId ?? "",
+      waMessageId: sendResult.messageId ?? "",
       aiHandled: true,
       status: "sent",
     });

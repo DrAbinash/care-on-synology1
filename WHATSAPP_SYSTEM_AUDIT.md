@@ -65,9 +65,20 @@ The master roadmap's Epic 2, AI Receptionist Foundation and Internal APIs, rated
 
 Recommendation, revised after resolving section 2.1: connect the Knowledge Base to the Gemini path (routes/whatsapp.ts's webhook) specifically, since that is the one already doing free-text natural-language AI and is the closest existing thing to the conversational AI receptionist the implementation blueprint and operational design envisioned. Building a third, separate Conversation Manager — which is what naively following the roadmap's original Epic 3 design would produce — would create a third unintegrated WhatsApp AI system in a codebase that already has two. Extending the Gemini path is lower-risk, faster, and is the one already closest to done.
 
-## 6. Still Open — Not Done in This Pass
+## 7. Critical Correction — A Real, Multi-Provider AI System Already Exists
 
-- The Gemini path's exact dispatch relationship to the menu bot, which messages go where — needs a read of the webhook entry point in waChatbot.ts.
+This was discovered after the first version of this audit was written, and changes a major assumption made earlier in this session (that "no LLM vendor has been selected" was a blocking gap). It is not a gap.
+
+`lib/ai-providers/src/index.ts` (542 lines) is a complete, already-built Provider Manager: four real providers (OpenAI, Gemini, Anthropic, Ollama — including a working OpenAI-compatible Ollama client with multimodal/image support and a `/api/tags` connection test), API keys encrypted via `@workspace/crypto` (a separate, real encryption library — not the plaintext gap found in WhatsApp tokens), and a task-keyed routing system (`ai_model_routes` table) with a sensible fallback chain: explicit override, then a configured task-specific route, then a global default provider, then a hardcoded `gemini` floor if nothing else is configured. Full admin CRUD for both provider settings and task routes already exists and is mounted at `/api/ai-model-routing` behind staff auth.
+
+This session's WhatsApp-to-Knowledge-Base integration originally called Gemini directly, bypassing this entire system — exactly the kind of build-against-assumed-simplicity mistake this project keeps catching. **Fixed in the same pass**: `routes/whatsapp.ts`'s AI reply handler now calls `generateAiForTask("whatsapp_ai_receptionist", ...)` instead of `geminiGenerate` directly. WhatsApp AI replies are now routed through the same provider-selection system as every other AI feature in this ERP (radiology reporting, etc.), and can be pointed at Ollama, or any other configured provider, purely by an admin setting a task route — no further code change required.
+
+**This means Ollama is not "added, maybe" — it is a fully-implemented, selectable provider today**, on equal footing with OpenAI/Gemini/Anthropic in this system's architecture. Whether it is *currently active* for any given task depends on deployment-time configuration (`ai_provider_settings`/`ai_model_routes` table contents), which this environment cannot inspect without a live database connection — that is the one piece that remains a genuine "ask the person running the deployment" question, not a code gap.
+
+## 8. Still Open — Not Done in This Pass
+
+- The menu-driven bot path (`WhatsAppBotEngine`, separate from the Gemini/provider-routed webhook covered above) still has no Knowledge Base connection and still calls no LLM at all — it is purely button/menu-driven by design, so this may be intentional rather than a gap, but it was not evaluated for whether it should also gain AI-grounded free-text fallback.
 - WhatsApp access-token plaintext storage, the security re-audit's Finding 3 — not fixed in this pass, since it touches the same provider-credential files this audit just reviewed and deserves its own focused pass rather than being bundled in.
-- Knowledge Base connection to either conversational path — not built yet.
-- The ai_caller permission-matrix scaffolding — not built yet; now correctly scoped as smaller than the roadmap originally estimated, given how much of the underlying API-wrapper work already exists.
+- The `ai_caller` permission-matrix scaffolding — not built yet; now correctly scoped as smaller than the roadmap originally estimated, given how much of the underlying API-wrapper and provider-routing work already exists.
+- No `ai_model_routes` row exists yet for `whatsapp_ai_receptionist` specifically — not added in this pass, deliberately, since choosing which provider WhatsApp AI should default to (Ollama vs. a hosted vendor) is a real operational/cost/quality decision for whoever runs this deployment, not something this session should silently decide. The system already falls back gracefully (global default, then `gemini`) with no route configured.
+
