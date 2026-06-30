@@ -24,18 +24,18 @@ Beyond the two files 01_ named, a full services/whatsapp/ directory exists, 2,60
 | routes/waChatbot.ts | 287 | Routes wiring the bot engine to inbound webhooks. |
 | routes/whatsapp.ts | 778 | Settings CRUD, conversation inbox, and a separate free-text Gemini AI path, see section 2.1, layered alongside the menu bot. |
 
-## 2.1 The Gemini AI Path — A Separate Webhook System, Not a Fallback Inside the Menu Bot
+## 2.1 The Gemini AI Path — Was a Separate Webhook System, Now Connected
 
-This was an open question in the first draft of this audit; resolved by reading routes/index.ts directly.
+This was an open question in the first draft of this audit; resolved by reading routes/index.ts directly, then actually connected in a later session of this same work.
 
-These are two entirely independent webhook endpoints, mounted at two different URLs, not one dispatching to the other:
+These remain two separately-mounted webhook endpoints at two different URLs:
 
-- `POST /api/whatsapp/webhook` → whatsappWebhookRouter (routes/whatsapp.ts) → calls geminiGenerate directly with a constructed system prompt including clinic name, hours, address, the configured aiSystemPrompt, and an explicit don't-invent-prices-or-diagnose instruction.
-- `POST /api/wa-chatbot/webhook` → waChatbotWebhookRouter (routes/waChatbot.ts) → calls WhatsAppBotEngine.processMessage, the menu/button-driven flow this audit's section 3 fix applies to.
+- `POST /api/whatsapp/webhook` — whatsappWebhookRouter (routes/whatsapp.ts), Meta-specific payload parsing, retains its own ID-card-OCR-on-image capability (handleIncomingImage, not ported elsewhere — see the connection commit's notes on why).
+- `POST /api/wa-chatbot/webhook` — waChatbotWebhookRouter (routes/waChatbot.ts), provider-agnostic across five real providers plus mock, the more architecturally complete side.
 
-There is no code path connecting the two — a message arriving at one webhook never reaches the other's logic. In a real deployment, only one of these two webhook URLs would actually be registered with Meta/the chosen provider for a given WhatsApp Business number; which one is "live" is a deployment/configuration decision (which webhook URL is registered with the provider), not something visible from source code alone. Both are fully wired and functional independently.
+**As of the connection commit, the Meta webhook's text-message handling now delegates to the exact same WhatsAppBotEngine instance the provider-agnostic webhook uses**, via service.getOrCreateContact() + botEngine.processMessage(). A message arriving at either URL now produces identical bot behavior — the same menu flows, the same Knowledge Base grounding, the same consent enforcement (a real, previously-unnoticed gap closed as a side effect: the old Meta-only path had no consent check at all). The two underlying contact/conversation data stores (waContactsTable vs whatsappConversationsTable) remain deliberately separate — unifying those is a genuine data-migration task with real implications for two existing staff-facing UIs built on top of them, not something to fold into a behavior-connection change.
 
-**This materially changes the picture from the first draft of this audit.** There are not two integrated layers of one system — there are two separate, complete, independently-built WhatsApp AI implementations, built at different times, never unified. The Gemini path is genuinely closer to a free-text "AI receptionist" in spirit; the bot-engine path is a reliable, structured menu system with the (now-fixed) identity gate. Neither currently queries the new Knowledge Base.
+What remains genuinely separate and not yet ported: ID-card OCR on image upload only works via the Meta webhook today. The provider-agnostic ParsedIncomingMessage interface already has the mediaId/caption fields ready for this (confirmed by reading WhatsAppProvider.ts), so generalizing OCR is architecturally clean to do later — it just wasn't done in the connection pass, since it's new capability-building, not connecting what already exists.
 
 ## 3. Vulnerability Found and Fixed in This Pass
 
@@ -77,8 +77,9 @@ This session's WhatsApp-to-Knowledge-Base integration originally called Gemini d
 
 ## 8. Still Open — Not Done in This Pass
 
-- The menu-driven bot path (`WhatsAppBotEngine`, separate from the Gemini/provider-routed webhook covered above) still has no Knowledge Base connection and still calls no LLM at all — it is purely button/menu-driven by design, so this may be intentional rather than a gap, but it was not evaluated for whether it should also gain AI-grounded free-text fallback.
+- RESOLVED, was previously listed here: the menu-driven bot path lacking Knowledge Base connection (closed in a prior pass) and the two webhooks running fully separate logic (closed in this pass, see section 2.1).
 - WhatsApp access-token plaintext storage — RESOLVED in a later pass of this session. See SECURITY_FINDINGS_REAUDIT.md Finding 3 for the full fix (encryption at all write sites, decryption at all real send-credential read sites, a tolerant migration helper for already-stored plaintext values).
 - The `ai_caller` permission-matrix scaffolding — not built yet; now correctly scoped as smaller than the roadmap originally estimated, given how much of the underlying API-wrapper and provider-routing work already exists.
 - No `ai_model_routes` row exists yet for `whatsapp_ai_receptionist` specifically — not added in this pass, deliberately, since choosing which provider WhatsApp AI should default to (Ollama vs. a hosted vendor) is a real operational/cost/quality decision for whoever runs this deployment, not something this session should silently decide. The system already falls back gracefully (global default, then `gemini`) with no route configured.
+- ID-card OCR auto-fill for Form F records (`handleIncomingImage` in routes/whatsapp.ts) is still only reachable via the Meta-specific webhook, not the now-primary provider-agnostic one — confirmed buildable later without architectural conflict (the provider interface already exposes mediaId/caption), but porting it is new work, not a connection task, and was correctly left out of the webhook-unification pass.
 
