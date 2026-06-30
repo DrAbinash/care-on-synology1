@@ -1926,3 +1926,45 @@ a.nav-link.active { color: hsl(var(--site-primary)); }
   border: 1px dashed hsl(var(--cd-hairline)); background: hsl(var(--cd-scan-white)); text-align: center;
 }
 .cd-appt-qr-small { width: 180px; height: 180px; margin: 0 auto; display: block; background: white; padding: 8px; border-radius: 12px; }
+
+/* ── Book page (book.tsx) — VIP/queue-priority and gateway logic is
+   protected, see WEBSITE_MODERNIZATION_AUDIT.md. These are purely
+   presentational. ── */
+.cd-book-topbar { position: sticky; top: 0; z-index: 50; background: hsl(var(--cd-navy)); color: white; }
+.cd-book-topbar-row { display: flex; align-items: center; justify-content: space-between; padding: .75rem 1rem; }
+.cd-book-back-link { display: flex; align-items: center; gap: .4rem; color: white; font-weight: 600; font-size: .9rem; }
+.cd-book-topbar-title { font-weight: 600; font-size: .9375rem; display: flex; align-items: center; gap: .4rem; }
+
+.cd-book-hero { color: white; padding: 3rem 1rem 2.25rem; }
+.cd-book-hero-title { font-size: clamp(1.75rem, 4vw, 2.5rem); font-weight: 600; margin-bottom: .6rem; }
+.cd-book-hero-sub { font-size: 1rem; opacity: .85; max-width: 520px; margin: 0 auto; }
+
+.cd-stepper { display: flex; align-items: center; justify-content: center; gap: .5rem; margin-bottom: 2rem; flex-wrap: wrap; }
+.cd-stepper-item { display: flex; align-items: center; gap: .5rem; }
+.cd-stepper-dot {
+  width: 32px; height: 32px; border-radius: 999px; background: hsl(var(--cd-hairline));
+  color: hsl(var(--cd-slate) / .5); display: flex; align-items: center; justify-content: center;
+  font-weight: 600; font-size: .85rem; transition: all .25s ease;
+}
+.cd-stepper-dot.active, .cd-stepper-dot.done { background: hsl(var(--cd-teal)); color: white; }
+.cd-stepper-label { font-size: .8125rem; font-weight: 600; color: hsl(var(--cd-slate) / .4); }
+.cd-stepper-label.active { color: hsl(var(--cd-slate)); }
+.cd-stepper-chevron { color: hsl(var(--cd-slate) / .3); margin-left: .25rem; }
+
+.cd-trust-badges { display: flex; flex-wrap: wrap; gap: 1.25rem; justify-content: center; margin-top: 1.5rem; }
+.cd-trust-badge { display: flex; align-items: center; gap: .4rem; font-size: .78rem; color: rgba(255,255,255,.78); }
+
+.cd-book-status-card { padding: 2.5rem; }
+.cd-book-status-title { font-size: 1.5rem; font-weight: 600; margin-bottom: .5rem; color: hsl(var(--cd-slate)); }
+
+.cd-book-vip-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: .65rem .9rem; margin: .35rem 0; border-radius: calc(var(--site-radius) * 0.5);
+  background: hsl(var(--cd-amber) / .12); border: 1px solid hsl(var(--cd-amber) / .35);
+  font-size: .9375rem; color: hsl(32 70% 32%);
+}
+.cd-book-vip-badge {
+  display: inline-flex; align-items: center; gap: .3rem;
+  font-weight: 600; font-size: .8125rem; color: hsl(32 70% 38%);
+  background: hsl(var(--cd-amber) / .15); padding: .2rem .6rem; border-radius: 999px;
+}

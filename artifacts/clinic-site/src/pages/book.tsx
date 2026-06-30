@@ -94,20 +94,14 @@ const fmt = (n: number) => "\u20b9" + n.toLocaleString("en-IN");
 function Stepper({ step }: { step: number }) {
   const steps = ["Your Details", "Select Tests", "Review & Pay"];
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: ".5rem", marginBottom: "1.5rem" }}>
+    <div className="cd-stepper">
       {steps.map((label, i) => (
-        <div key={label} style={{ display: "flex", alignItems: "center", gap: ".5rem" }}>
-          <div style={{
-            width: 32, height: 32, borderRadius: 9999,
-            background: i < step ? "hsl(var(--site-primary))" : i === step ? "hsl(var(--site-primary))" : "hsl(var(--site-muted))",
-            color: i <= step ? "white" : "hsl(var(--site-muted-fg))",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontWeight: 700, fontSize: ".85rem", transition: "all .3s",
-          }}>
+        <div key={label} className="cd-stepper-item">
+          <div className={`cd-stepper-dot ${i < step ? "done" : i === step ? "active" : ""}`}>
             {i < step ? <Check size={16} /> : i + 1}
           </div>
-          <span style={{ fontSize: ".82rem", fontWeight: 600, color: i <= step ? "hsl(var(--site-fg))" : "hsl(var(--site-muted-fg))" }}>{label}</span>
-          {i < 2 && <ChevronRight size={14} style={{ color: "hsl(var(--site-muted-fg))", marginLeft: ".25rem" }} />}
+          <span className={`cd-stepper-label ${i <= step ? "active" : ""}`}>{label}</span>
+          {i < 2 && <ChevronRight size={14} className="cd-stepper-chevron" />}
         </div>
       ))}
     </div>
@@ -117,14 +111,14 @@ function Stepper({ step }: { step: number }) {
 /* ── Trust badges ── */
 function TrustBadges() {
   return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: "1.25rem", justifyContent: "center", marginTop: "1.5rem" }}>
+    <div className="cd-trust-badges">
       {[
         { icon: Shield, label: "NABL Accredited" },
         { icon: Zap, label: "Same-day Reports" },
-        { icon: Clock, label: "Mon–Sat  7AM–9PM" },
-        { icon: Star, label: "4.8/5  Patient Rating" },
+        { icon: Clock, label: "Mon\u2013Sat 7AM\u20139PM" },
+        { icon: Star, label: "4.8/5 Patient Rating" },
       ].map(({ icon: Icon, label }) => (
-        <div key={label} style={{ display: "flex", alignItems: "center", gap: ".4rem", fontSize: ".78rem", color: "hsl(var(--site-muted-fg))" }}>
+        <div key={label} className="cd-trust-badge">
           <Icon size={14} /> {label}
         </div>
       ))}
@@ -514,76 +508,76 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
   /* ── Layout helpers ── */
   const cardStyle: React.CSSProperties = {
     background: "#fff",
-    border: "1px solid hsl(var(--site-border))",
+    border: "1px solid hsl(var(--cd-hairline))",
     borderRadius: "var(--site-radius)",
     padding: "1.5rem",
+    boxShadow: "var(--site-shadow-sm)",
   };
 
   const inputStyle: React.CSSProperties = {
     width: "100%",
-    border: "1.5px solid hsl(var(--site-border))",
-    borderRadius: "var(--site-radius)",
+    border: "1.5px solid hsl(var(--cd-hairline))",
+    borderRadius: "calc(var(--site-radius) * 0.5)",
     padding: ".75rem 1rem",
-    fontSize: "0.95rem",
-    background: "#fff",
-    color: "hsl(var(--site-fg))",
+    fontSize: "0.9375rem",
+    fontFamily: "var(--site-font)",
+    background: "hsl(var(--cd-scan-white))",
+    color: "hsl(var(--cd-slate))",
     transition: "border-color .15s, box-shadow .15s",
   };
 
   const btnPrimary: React.CSSProperties = {
-    background: "hsl(var(--site-primary))",
-    color: "#fff",
-    padding: ".75rem 1.5rem",
-    borderRadius: "var(--site-radius)",
-    fontWeight: 700,
+    background: "hsl(var(--cd-amber))",
+    color: "hsl(var(--cd-navy))",
+    padding: ".8rem 1.6rem",
+    borderRadius: "calc(var(--site-radius) * 0.6)",
+    fontWeight: 600,
     border: "none",
     cursor: "pointer",
     display: "inline-flex",
     alignItems: "center",
-    gap: ".4rem",
+    gap: ".5rem",
     justifyContent: "center",
     transition: "filter .18s, transform .18s",
   };
 
   const btnOutline: React.CSSProperties = {
     background: "transparent",
-    color: "hsl(var(--site-fg))",
-    padding: ".75rem 1.5rem",
-    borderRadius: "var(--site-radius)",
+    color: "hsl(var(--cd-slate))",
+    padding: ".8rem 1.6rem",
+    borderRadius: "calc(var(--site-radius) * 0.6)",
     fontWeight: 600,
-    border: "1.5px solid hsl(var(--site-border))",
+    border: "1.5px solid hsl(var(--cd-hairline))",
     cursor: "pointer",
     display: "inline-flex",
     alignItems: "center",
-    gap: ".4rem",
+    gap: ".5rem",
     justifyContent: "center",
   };
 
   const isKioskMode = mode === "kiosk";
 
   return (
-    <div style={{ minHeight: "100vh", background: "hsl(210 40% 98%)", color: "hsl(var(--site-fg))" }}>
-      {/* Sticky header */}
+    <div style={{ minHeight: "100vh", background: "hsl(var(--cd-scan-white))", color: "hsl(var(--cd-slate))" }}>
       {!isKioskMode && (
-        <div style={{ position: "sticky", top: 0, zIndex: 50, background: "hsl(var(--site-primary))", color: "white" }}>
-          <div className="container-narrow" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: ".65rem 1rem" }}>
-            <a href={BASE} style={{ display: "flex", alignItems: "center", gap: ".4rem", color: "white", textDecoration: "none", fontWeight: 600, fontSize: ".92rem" }}>
+        <div className="cd-book-topbar">
+          <div className="container-narrow cd-book-topbar-row">
+            <a href={BASE} className="cd-book-back-link">
               <ChevronLeft size={18} /> Back to Home
             </a>
-            <div style={{ fontWeight: 700, fontSize: ".95rem", display: "flex", alignItems: "center", gap: ".4rem" }}>
+            <div className="cd-book-topbar-title">
               <CalendarCheck size={16} /> Book a Test
             </div>
           </div>
         </div>
       )}
 
-      {/* Hero area */}
       {!isKioskMode && (
-        <div style={{ background: "linear-gradient(135deg, hsl(var(--site-primary)) 0%, hsl(200 85% 35%) 100%)", color: "white", padding: "2.5rem 1rem 2rem" }}>
-          <div className="container-narrow" style={{ textAlign: "center" }}>
-            <h1 style={{ fontSize: "clamp(1.6rem, 4vw, 2.4rem)", fontWeight: 800, marginBottom: ".5rem" }}>Book Your Diagnostic Test</h1>
-            <p style={{ fontSize: "1rem", opacity: .9, maxWidth: 520, margin: "0 auto" }}>
-              Choose from MRI, CT Scan, Ultrasound, Digital X-Ray, Pathology &amp; Health Packages at Care Diagnostics, Deoghar.
+        <div className="cd-book-hero cd-scan-panel">
+          <div className="container-narrow" style={{ textAlign: "center", position: "relative", zIndex: 2 }}>
+            <h1 className="cd-display cd-book-hero-title">Book your diagnostic test</h1>
+            <p className="cd-book-hero-sub">
+              MRI, CT Scan, Ultrasound, Digital X-Ray, Pathology &amp; Health Packages at Care Diagnostics, Deoghar.
             </p>
             <TrustBadges />
           </div>
@@ -591,24 +585,22 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
       )}
 
       {/* Main content */}
-      <div className="container-narrow" style={{ padding: "2rem 1rem 4rem", maxWidth: 920 }}>
+      <div className="container-narrow" style={{ padding: "2.5rem 1rem 4.5rem", maxWidth: 920 }}>
         <Stepper step={step} />
 
         {step === 3 ? (
-          <div style={{ ...cardStyle, textAlign: "center", maxWidth: 480, margin: "0 auto" }}>
-            <div style={{ width: 72, height: 72, borderRadius: 9999, background: "hsl(142 76% 92%)", color: "hsl(142 71% 35%)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 1rem" }}>
-              <Check size={36} />
-            </div>
-            <h2 style={{ fontWeight: 800, fontSize: "1.3rem", marginBottom: ".5rem" }}>
+          <div style={{ ...cardStyle, textAlign: "center", maxWidth: 480, margin: "0 auto" }} className="cd-book-status-card">
+            <span className="cd-appt-status-icon cd-appt-status-success" style={{ width: 72, height: 72 }} aria-hidden="true"><Check size={36} /></span>
+            <h2 className="cd-display cd-book-status-title">
               {isOnline ? "Booking Confirmed!" : "Request Submitted!"}
             </h2>
             {isOnline && successRef && (
               <>
-                <p style={{ color: "hsl(var(--site-muted-fg))", marginBottom: ".5rem" }}>Your booking reference</p>
-                <div style={{ fontFamily: "monospace", fontSize: "1.4rem", fontWeight: 800, letterSpacing: 2, color: "hsl(var(--site-primary))", marginBottom: "1rem" }}>{successRef}</div>
+                <p className="cd-section-sub" style={{ margin: "0 0 .5rem" }}>Your booking reference</p>
+                <div className="cd-mono cd-appt-ref" style={{ fontSize: "1.5rem" }}>{successRef}</div>
               </>
             )}
-            <p style={{ color: "hsl(var(--site-muted-fg))", fontSize: ".92rem", marginBottom: "1.5rem" }}>
+            <p className="cd-section-sub" style={{ fontSize: ".9375rem", margin: "0 0 1.5rem" }}>
               Our staff will confirm your appointment shortly. You may receive a call or WhatsApp message.
             </p>
             <div style={{ display: "flex", gap: ".75rem", justifyContent: "center", flexWrap: "wrap" }}>
@@ -619,17 +611,17 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
             </div>
           </div>
         ) : step === 4 ? (
-          <div style={{ ...cardStyle, textAlign: "center", maxWidth: 480, margin: "0 auto" }}>
-            <div style={{ fontSize: "3rem", marginBottom: ".5rem" }}>\u274c</div>
-            <h2 style={{ fontWeight: 700, fontSize: "1.15rem", marginBottom: ".5rem" }}>Payment Not Completed</h2>
-            <p style={{ color: "hsl(var(--site-muted-fg))", marginBottom: "1rem" }}>{failReason || "Your payment was not completed."}</p>
+          <div style={{ ...cardStyle, textAlign: "center", maxWidth: 480, margin: "0 auto" }} className="cd-book-status-card">
+            <span className="cd-appt-status-icon cd-appt-status-fail" style={{ width: 72, height: 72 }} aria-hidden="true">&times;</span>
+            <h2 className="cd-display cd-book-status-title" style={{ fontSize: "1.375rem" }}>Payment Not Completed</h2>
+            <p className="cd-section-sub" style={{ fontSize: ".9375rem" }}>{failReason || "Your payment was not completed."}</p>
             <button style={btnPrimary} onClick={() => { setStep(2); setFailReason(""); }}>Try Again</button>
           </div>
         ) : step === 0 ? (
           <div style={{ maxWidth: 560, margin: "0 auto" }}>
             <div style={cardStyle}>
-              <h2 style={{ fontWeight: 700, fontSize: "1.1rem", marginBottom: "1.25rem", display: "flex", alignItems: "center", gap: ".5rem" }}>
-                <User size={20} style={{ color: "hsl(var(--site-primary))" }} /> Patient Details
+              <h2 className="cd-appt-subheading" style={{ display: "flex", alignItems: "center", gap: ".5rem", fontSize: "1.0625rem" }}>
+                <User size={20} style={{ color: "hsl(var(--cd-teal))" }} /> Patient Details
               </h2>
               <SelfRegistrationForm
                 mode={mode}
@@ -647,7 +639,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                   isVip: pd.isVip,
                 }}
                 vipEnabled={config?.enableVipBooking !== false}
-                submitButtonClass="btn-primary"
+                submitButtonClass="cd-btn-primary"
                 onSubmit={(data) => {
                   setPd({
                     name: (data.firstName + " " + data.lastName).trim(),
@@ -671,29 +663,29 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
             {!isKioskMode && (
               <div style={{ marginTop: "1.5rem", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "1rem" }}>
                 <div style={{ ...cardStyle, padding: "1rem", display: "flex", alignItems: "center", gap: ".75rem" }}>
-                  <div style={{ width: 40, height: 40, borderRadius: 9999, background: "hsl(var(--site-primary) / .1)", color: "hsl(var(--site-primary))", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 9999, background: "hsl(var(--cd-teal) / .1)", color: "hsl(var(--cd-teal))", display: "flex", alignItems: "center", justifyContent: "center" }}>
                     <Phone size={18} />
                   </div>
                   <div>
-                    <div style={{ fontSize: ".75rem", color: "hsl(var(--site-muted-fg))" }}>Call us</div>
+                    <div style={{ fontSize: ".75rem", color: "hsl(var(--cd-slate) / .55)" }}>Call us</div>
                     <div style={{ fontWeight: 700, fontSize: ".95rem" }}>{phone}</div>
                   </div>
                 </div>
                 <div style={{ ...cardStyle, padding: "1rem", display: "flex", alignItems: "center", gap: ".75rem" }}>
-                  <div style={{ width: 40, height: 40, borderRadius: 9999, background: "hsl(var(--site-primary) / .1)", color: "hsl(var(--site-primary))", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 9999, background: "hsl(var(--cd-teal) / .1)", color: "hsl(var(--cd-teal))", display: "flex", alignItems: "center", justifyContent: "center" }}>
                     <MapPin size={18} />
                   </div>
                   <div>
-                    <div style={{ fontSize: ".75rem", color: "hsl(var(--site-muted-fg))" }}>Visit us</div>
+                    <div style={{ fontSize: ".75rem", color: "hsl(var(--cd-slate) / .55)" }}>Visit us</div>
                     <div style={{ fontWeight: 600, fontSize: ".85rem" }}>{workAddr}</div>
                   </div>
                 </div>
                 <div style={{ ...cardStyle, padding: "1rem", display: "flex", alignItems: "center", gap: ".75rem" }}>
-                  <div style={{ width: 40, height: 40, borderRadius: 9999, background: "hsl(var(--site-primary) / .1)", color: "hsl(var(--site-primary))", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 9999, background: "hsl(var(--cd-teal) / .1)", color: "hsl(var(--cd-teal))", display: "flex", alignItems: "center", justifyContent: "center" }}>
                     <CalendarDays size={18} />
                   </div>
                   <div>
-                    <div style={{ fontSize: ".75rem", color: "hsl(var(--site-muted-fg))" }}>Working hours</div>
+                    <div style={{ fontSize: ".75rem", color: "hsl(var(--cd-slate) / .55)" }}>Working hours</div>
                     <div style={{ fontWeight: 600, fontSize: ".85rem" }}>Mon–Sat  7 AM – 9 PM</div>
                   </div>
                 </div>
@@ -716,8 +708,8 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                     style={{
                       padding: ".35rem .9rem", borderRadius: 9999, fontSize: ".82rem", fontWeight: 600,
                       border: "none", cursor: "pointer",
-                      background: catFilter === cat ? "hsl(var(--site-primary))" : "hsl(var(--site-muted))",
-                      color: catFilter === cat ? "#fff" : "hsl(var(--site-fg))",
+                      background: catFilter === cat ? "hsl(var(--cd-teal))" : "hsl(var(--cd-scan-white))",
+                      color: catFilter === cat ? "#fff" : "hsl(var(--cd-slate))",
                       transition: "all .15s",
                     }}>
                     {cat === "all" ? "All Tests" : cat}
@@ -730,7 +722,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
             {pkgs.length > 0 && (
               <div style={{ marginBottom: "1.5rem" }}>
                 <h3 style={{ fontWeight: 700, fontSize: "1.05rem", marginBottom: ".75rem", display: "flex", alignItems: "center", gap: ".4rem" }}>
-                  <Package size={18} style={{ color: "hsl(var(--site-primary))" }} /> Health Packages
+                  <Package size={18} style={{ color: "hsl(var(--cd-teal))" }} /> Health Packages
                 </h3>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: ".75rem" }}>
                   {pkgs.map((p) => (
@@ -738,16 +730,16 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                       style={{
                         textAlign: "left", padding: "1rem",
                         borderRadius: "var(--site-radius)",
-                        border: `2px solid ${selPkgs.has(p.id) ? "hsl(var(--site-primary))" : "hsl(var(--site-border))"}`,
-                        background: selPkgs.has(p.id) ? "hsl(var(--site-primary) / .06)" : "#fff",
+                        border: `2px solid ${selPkgs.has(p.id) ? "hsl(var(--cd-teal))" : "hsl(var(--cd-hairline))"}`,
+                        background: selPkgs.has(p.id) ? "hsl(var(--cd-teal) / .06)" : "#fff",
                         cursor: "pointer", transition: "all .15s",
                       }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: ".25rem" }}>
                         <span style={{ fontWeight: 700, fontSize: ".95rem" }}>{p.name}</span>
-                        {selPkgs.has(p.id) && <Check size={18} style={{ color: "hsl(var(--site-primary))", flexShrink: 0 }} />}
+                        {selPkgs.has(p.id) && <Check size={18} style={{ color: "hsl(var(--cd-teal))", flexShrink: 0 }} />}
                       </div>
-                      {p.description && <div style={{ fontSize: ".8rem", color: "hsl(var(--site-muted-fg))", marginBottom: ".5rem" }}>{p.description}</div>}
-                      <div style={{ fontWeight: 800, color: "hsl(var(--site-primary))", fontSize: "1.05rem" }}>{fmt(Number(p.price))}</div>
+                      {p.description && <div style={{ fontSize: ".8rem", color: "hsl(var(--cd-slate) / .55)", marginBottom: ".5rem" }}>{p.description}</div>}
+                      <div style={{ fontWeight: 800, color: "hsl(var(--cd-teal))", fontSize: "1.05rem" }}>{fmt(Number(p.price))}</div>
                     </button>
                   ))}
                 </div>
@@ -758,7 +750,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
             {filteredTests.length > 0 && (
               <div>
                 <h3 style={{ fontWeight: 700, fontSize: "1.05rem", marginBottom: ".75rem", display: "flex", alignItems: "center", gap: ".4rem" }}>
-                  <FlaskConical size={18} style={{ color: "hsl(var(--site-primary))" }} /> Individual Tests
+                  <FlaskConical size={18} style={{ color: "hsl(var(--cd-teal))" }} /> Individual Tests
                 </h3>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: ".5rem" }}>
                   {filteredTests.map((t) => (
@@ -766,17 +758,17 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                       style={{
                         textAlign: "left", display: "flex", justifyContent: "space-between", alignItems: "center",
                         padding: ".7rem 1rem", borderRadius: "var(--site-radius)",
-                        border: `1.5px solid ${selTests.has(t.id) ? "hsl(var(--site-primary))" : "hsl(var(--site-border))"}`,
-                        background: selTests.has(t.id) ? "hsl(var(--site-primary) / .06)" : "#fff",
+                        border: `1.5px solid ${selTests.has(t.id) ? "hsl(var(--cd-teal))" : "hsl(var(--cd-hairline))"}`,
+                        background: selTests.has(t.id) ? "hsl(var(--cd-teal) / .06)" : "#fff",
                         cursor: "pointer", transition: "all .15s",
                       }}>
                       <div>
                         <div style={{ fontWeight: 600, fontSize: ".92rem" }}>{t.name}</div>
-                        <div style={{ fontSize: ".75rem", color: "hsl(var(--site-muted-fg))" }}>{t.code} \u00b7 {t.category}</div>
+                        <div style={{ fontSize: ".75rem", color: "hsl(var(--cd-slate) / .55)" }}>{t.code} \u00b7 {t.category}</div>
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: ".5rem" }}>
-                        <span style={{ fontWeight: 700, fontSize: ".95rem", color: "hsl(var(--site-primary))", whiteSpace: "nowrap" }}>{fmt(Number(t.price))}</span>
-                        {selTests.has(t.id) && <Check size={16} style={{ color: "hsl(var(--site-primary))" }} />}
+                        <span style={{ fontWeight: 700, fontSize: ".95rem", color: "hsl(var(--cd-teal))", whiteSpace: "nowrap" }}>{fmt(Number(t.price))}</span>
+                        {selTests.has(t.id) && <Check size={16} style={{ color: "hsl(var(--cd-teal))" }} />}
                       </div>
                     </button>
                   ))}
@@ -785,7 +777,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
             )}
 
             {filteredTests.length === 0 && search.trim() && (
-              <div style={{ textAlign: "center", padding: "2rem", color: "hsl(var(--site-muted-fg))" }}>
+              <div style={{ textAlign: "center", padding: "2rem", color: "hsl(var(--cd-slate) / .55)" }}>
                 No tests match "{search}"
               </div>
             )}
@@ -794,14 +786,14 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
             {(selTests.size > 0 || selPkgs.size > 0) && (
               <div style={{
                 position: "sticky", bottom: "1rem",
-                background: "#fff", border: "1px solid hsl(var(--site-border))",
+                background: "#fff", border: "1px solid hsl(var(--cd-hairline))",
                 borderRadius: "var(--site-radius)", padding: "1rem 1.25rem",
                 boxShadow: "0 8px 32px rgba(0,0,0,.1)",
                 display: "flex", justifyContent: "space-between", alignItems: "center", gap: "1rem", flexWrap: "wrap",
               }}>
                 <div>
-                  <div style={{ fontSize: ".85rem", color: "hsl(var(--site-muted-fg))" }}>{selTests.size + selPkgs.size} item(s) selected</div>
-                  <div style={{ fontWeight: 800, fontSize: "1.25rem", color: "hsl(var(--site-primary))" }}>{fmt(total)}</div>
+                  <div style={{ fontSize: ".85rem", color: "hsl(var(--cd-slate) / .55)" }}>{selTests.size + selPkgs.size} item(s) selected</div>
+                  <div style={{ fontWeight: 800, fontSize: "1.25rem", color: "hsl(var(--cd-teal))" }}>{fmt(total)}</div>
                 </div>
                 <div style={{ display: "flex", gap: ".5rem" }}>
                   <button style={btnOutline} onClick={() => setStep(0)}><ArrowLeft size={16} /> Back</button>
@@ -816,21 +808,21 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
             <div style={cardStyle}>
               <div style={{ textAlign: "center", marginBottom: "1.25rem" }}>
                 {qrUpiUrl ? (
-                  <div style={{ display: "inline-block", padding: "1rem", background: "white", borderRadius: "var(--site-radius)", border: "1px solid hsl(var(--site-border))" }}>
+                  <div style={{ display: "inline-block", padding: "1rem", background: "white", borderRadius: "var(--site-radius)", border: "1px solid hsl(var(--cd-hairline))" }}>
                     <QRCodeSVG value={qrUpiUrl} size={240} level="H" />
                   </div>
                 ) : config?.upiQrImageUrl ? (
-                  <img src={config.upiQrImageUrl} alt="UPI QR Code" style={{ width: "100%", maxWidth: 320, borderRadius: "var(--site-radius)", border: "1px solid hsl(var(--site-border))" }} />
+                  <img src={config.upiQrImageUrl} alt="UPI QR Code" style={{ width: "100%", maxWidth: 320, borderRadius: "var(--site-radius)", border: "1px solid hsl(var(--cd-hairline))" }} />
                 ) : (
-                  <div style={{ width: 240, height: 240, background: "hsl(var(--site-muted))", borderRadius: "var(--site-radius)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto" }}>
-                    <QrCode size={64} style={{ color: "hsl(var(--site-muted-fg))" }} />
+                  <div style={{ width: 240, height: 240, background: "hsl(var(--cd-scan-white))", borderRadius: "var(--site-radius)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto" }}>
+                    <QrCode size={64} style={{ color: "hsl(var(--cd-slate) / .55)" }} />
                   </div>
                 )}
-                <div style={{ fontSize: ".85rem", color: "hsl(var(--site-muted-fg))", marginTop: ".75rem" }}>
+                <div style={{ fontSize: ".85rem", color: "hsl(var(--cd-slate) / .55)", marginTop: ".75rem" }}>
                   Scan with any UPI app (PhonePe, Google Pay, Paytm, etc.) — amount is pre-filled
                 </div>
                 {qrUpiUrl && (
-                  <div style={{ fontSize: ".75rem", color: "hsl(var(--site-muted-fg))", marginTop: ".25rem" }}>
+                  <div style={{ fontSize: ".75rem", color: "hsl(var(--cd-slate) / .55)", marginTop: ".25rem" }}>
                     Dynamic QR for <strong>{fmt(qrAmount)}</strong>
                   </div>
                 )}
@@ -874,7 +866,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                 </button>
               </div>
 
-              <p style={{ fontSize: ".75rem", color: "hsl(var(--site-muted-fg))", marginTop: ".75rem", textAlign: "center" }}>
+              <p style={{ fontSize: ".75rem", color: "hsl(var(--cd-slate) / .55)", marginTop: ".75rem", textAlign: "center" }}>
                 After making the payment, click "I have paid". Staff will verify and confirm your booking.
               </p>
             </div>
@@ -889,54 +881,54 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
               <h2 style={{ fontWeight: 800, fontSize: "1.3rem", marginBottom: ".5rem" }}>
                 {confirmedBooking?.isUnconfirmedQr ? "Booking Received" : "Payment Successful"}
               </h2>
-              <p style={{ color: "hsl(var(--site-muted-fg))", marginBottom: "1rem", fontSize: ".92rem" }}>
+              <p style={{ color: "hsl(var(--cd-slate) / .55)", marginBottom: "1rem", fontSize: ".92rem" }}>
                 {confirmedBooking?.isUnconfirmedQr ? "Booking is pending payment confirmation from staff." : "Your booking is confirmed and payment received."}
               </p>
 
               {confirming ? (
-                <div style={{ marginBottom: "1rem", color: "hsl(var(--site-muted-fg))" }}>
+                <div style={{ marginBottom: "1rem", color: "hsl(var(--cd-slate) / .55)" }}>
                   <Loader2 size={20} style={{ animation: "spin 1s linear infinite", margin: "0 auto .5rem" }} /> Loading booking details…
                 </div>
               ) : (
                 <div style={{ marginBottom: "1.5rem", textAlign: "left" }}>
-                  <div style={{ fontFamily: "monospace", fontSize: "1.3rem", fontWeight: 800, letterSpacing: 2, color: "hsl(var(--site-primary))", textAlign: "center", marginBottom: "1rem" }}>
+                  <div style={{ fontFamily: "monospace", fontSize: "1.3rem", fontWeight: 800, letterSpacing: 2, color: "hsl(var(--cd-teal))", textAlign: "center", marginBottom: "1rem" }}>
                     {successRef}
                   </div>
 
                   {confirmedBooking && (
                     <div style={{ background: "hsl(var(--site-muted) / .4)", borderRadius: "var(--site-radius)", padding: "1rem", fontSize: ".92rem", lineHeight: 1.5 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: ".35rem" }}>
-                        <span style={{ color: "hsl(var(--site-muted-fg))" }}>Patient</span>
+                        <span style={{ color: "hsl(var(--cd-slate) / .55)" }}>Patient</span>
                         <span style={{ fontWeight: 600 }}>{confirmedBooking.name}</span>
                       </div>
                       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: ".35rem" }}>
-                        <span style={{ color: "hsl(var(--site-muted-fg))" }}>Phone</span>
+                        <span style={{ color: "hsl(var(--cd-slate) / .55)" }}>Phone</span>
                         <span style={{ fontWeight: 600 }}>{confirmedBooking.phone}</span>
                       </div>
                       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: ".35rem" }}>
-                        <span style={{ color: "hsl(var(--site-muted-fg))" }}>Date</span>
+                        <span style={{ color: "hsl(var(--cd-slate) / .55)" }}>Date</span>
                         <span style={{ fontWeight: 600 }}>{confirmedBooking.selectedDate}</span>
                       </div>
                       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: ".35rem" }}>
-                        <span style={{ color: "hsl(var(--site-muted-fg))" }}>Time</span>
+                        <span style={{ color: "hsl(var(--cd-slate) / .55)" }}>Time</span>
                         <span style={{ fontWeight: 600 }}>{confirmedBooking.timeSlot}</span>
                       </div>
                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: ".35rem" }}>
-                        <span style={{ color: "hsl(var(--site-muted-fg))" }}>Amount Paid</span>
-                        <span style={{ fontWeight: 800, color: confirmedBooking?.isUnconfirmedQr ? "orange" : "hsl(var(--site-primary))" }}>
+                        <span style={{ color: "hsl(var(--cd-slate) / .55)" }}>Amount Paid</span>
+                        <span style={{ fontWeight: 800, color: confirmedBooking?.isUnconfirmedQr ? "orange" : "hsl(var(--cd-teal))" }}>
                           {confirmedBooking?.isUnconfirmedQr ? `Amount ${fmt(Number(confirmedBooking.totalAmount))} (To Be Confirmed)` : fmt(Number(confirmedBooking.totalAmount))}
                         </span>
                       </div>
                       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: ".35rem" }}>
-                        <span style={{ color: "hsl(var(--site-muted-fg))" }}>Status</span>
+                        <span style={{ color: "hsl(var(--cd-slate) / .55)" }}>Status</span>
                         <span style={{ fontWeight: 600, textTransform: "none", color: confirmedBooking?.isUnconfirmedQr ? "orange" : "inherit" }}>
                           {confirmedBooking?.isUnconfirmedQr ? "Confirmed on confirmation of Payment" : confirmedBooking.status}
                         </span>
                       </div>
                       {confirmedBooking.isVip && (
                         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: ".35rem" }}>
-                          <span style={{ color: "hsl(var(--site-muted-fg))" }}>Queue</span>
-                          <span style={{ fontWeight: 600, color: "hsl(45 93% 45%)" }}>⭐ VIP</span>
+                          <span style={{ color: "hsl(var(--cd-slate) / .55)" }}>Queue</span>
+                          <span className="cd-book-vip-badge"><Sparkles size={12} /> VIP Priority</span>
                         </div>
                       )}
 
@@ -944,7 +936,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                         <div style={{ background: "hsl(210 100% 96%)", border: "1.5px dashed hsl(210 100% 80%)", borderRadius: "var(--site-radius)", padding: "0.75rem", marginTop: "1rem", textAlign: "center", maxWidth: "320px", margin: "1rem auto 0" }}>
                           <span style={{ fontSize: ".75rem", color: "hsl(210 100% 30%)", fontWeight: 600, display: "block" }}>YOUR DAILY QUEUE TOKEN</span>
                           <span style={{ fontSize: "1.2rem", fontWeight: 900, color: "hsl(210 100% 25%)", display: "block", margin: ".15rem 0" }}>#{tokenNo}</span>
-                          <span style={{ fontSize: ".7rem", color: "hsl(var(--site-muted-fg))" }}>Please show this token at the reception desk.</span>
+                          <span style={{ fontSize: ".7rem", color: "hsl(var(--cd-slate) / .55)" }}>Please show this token at the reception desk.</span>
                         </div>
                       )}
                     </div>
@@ -1037,7 +1029,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                 </a>
               </div>
 
-              <p style={{ fontSize: ".78rem", color: "hsl(var(--site-muted-fg))", marginTop: "1rem" }}>
+              <p style={{ fontSize: ".78rem", color: "hsl(var(--cd-slate) / .55)", marginTop: "1rem" }}>
                 Please save this booking reference. You may receive a confirmation call or WhatsApp message.
               </p>
             </div>
@@ -1051,7 +1043,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                 (config?.gateway === "phonepe" && config?.customPhonepeBannerUrl) ||
                 (config?.gateway === "bharatpe" && config?.customBharatpeBannerUrl) ||
                 (config?.gateway === "payu" && config?.customPayuBannerUrl)) ? (
-                <div style={{ margin: "-1.5rem -1.5rem 1.25rem -1.5rem", borderBottom: "1px solid hsl(var(--site-border) / .6)" }}>
+                <div style={{ margin: "-1.5rem -1.5rem 1.25rem -1.5rem", borderBottom: "1px solid hsl(var(--cd-hairline))" }}>
                   <img
                     src={
                       config?.gateway === "icici" ? config.customIciciBannerUrl :
@@ -1064,7 +1056,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                   />
                 </div>
               ) : config?.enablePaymentLogos !== false ? (
-                <div style={{ margin: "-1.5rem -1.5rem 1.25rem -1.5rem", borderBottom: "1px solid hsl(var(--site-border) / .6)" }}>
+                <div style={{ margin: "-1.5rem -1.5rem 1.25rem -1.5rem", borderBottom: "1px solid hsl(var(--cd-hairline))" }}>
                   <img
                     src="/payment-methods-logo.png"
                     alt="Supported Payment Methods"
@@ -1073,8 +1065,8 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                 </div>
               ) : null}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
-                <h2 style={{ fontWeight: 700, fontSize: "1.1rem", display: "flex", alignItems: "center", gap: ".5rem", margin: 0 }}>
-                  <CreditCard size={20} style={{ color: "hsl(var(--site-primary))" }} /> Order Summary
+                <h2 className="cd-appt-subheading" style={{ display: "flex", alignItems: "center", gap: ".5rem", margin: 0, fontSize: "1.0625rem" }}>
+                  <CreditCard size={20} style={{ color: "hsl(var(--cd-teal))" }} /> Order Summary
                 </h2>
                 {config?.gateway === "icici" && (
                   <img src="/icici-orange-pay.jpeg" alt="ICICI Orange Pay" style={{ maxHeight: "32px", objectFit: "contain" }} />
@@ -1088,16 +1080,16 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
               <div style={{ background: "hsl(var(--site-muted) / .5)", borderRadius: "var(--site-radius)", padding: "1rem", marginBottom: "1rem" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: ".5rem" }}>
                   <div>
-                    <div style={{ fontSize: ".75rem", color: "hsl(var(--site-muted-fg))" }}>Patient</div>
+                    <div style={{ fontSize: ".75rem", color: "hsl(var(--cd-slate) / .55)" }}>Patient</div>
                     <div style={{ fontWeight: 700 }}>{pd.name}</div>
                   </div>
                   <div>
-                    <div style={{ fontSize: ".75rem", color: "hsl(var(--site-muted-fg))" }}>Phone</div>
+                    <div style={{ fontSize: ".75rem", color: "hsl(var(--cd-slate) / .55)" }}>Phone</div>
                     <div style={{ fontWeight: 600 }}>{pd.phone}</div>
                   </div>
                   <div>
-                    <div style={{ fontSize: ".75rem", color: "hsl(var(--site-muted-fg))" }}>Date &amp; Time</div>
-                    <div style={{ fontWeight: 600 }}>{pd.date}{pd.timeSlot ? ` \u00b7 ${pd.timeSlot}` : ""}{pd.isVip ? " \u00b7 ⭐ VIP" : ""}</div>
+                    <div style={{ fontSize: ".75rem", color: "hsl(var(--cd-slate) / .55)" }}>Date &amp; Time</div>
+                    <div style={{ fontWeight: 600 }}>{pd.date}{pd.timeSlot ? ` \u00b7 ${pd.timeSlot}` : ""}{pd.isVip && <span className="cd-book-vip-badge" style={{ marginLeft: ".4rem" }}><Sparkles size={12} /> VIP</span>}</div>
                   </div>
                 </div>
               </div>
@@ -1107,7 +1099,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                 {tests.filter((t) => selTests.has(t.id)).map((t) => (
                   <div key={t.id} style={{ display: "flex", justifyContent: "space-between", padding: ".5rem 0", borderBottom: "1px solid hsl(var(--site-border) / .5)", fontSize: ".95rem" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: ".4rem" }}>
-                      <FlaskConical size={14} style={{ color: "hsl(var(--site-muted-fg))" }} />
+                      <FlaskConical size={14} style={{ color: "hsl(var(--cd-slate) / .55)" }} />
                       {t.name}
                     </div>
                     <span style={{ fontWeight: 600 }}>{fmt(Number(t.price))}</span>
@@ -1116,31 +1108,31 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                 {pkgs.filter((p) => selPkgs.has(p.id)).map((p) => (
                   <div key={p.id} style={{ display: "flex", justifyContent: "space-between", padding: ".5rem 0", borderBottom: "1px solid hsl(var(--site-border) / .5)", fontSize: ".95rem" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: ".4rem" }}>
-                      <Package size={14} style={{ color: "hsl(var(--site-muted-fg))" }} />
-                      {p.name} <span style={{ fontSize: ".78rem", color: "hsl(var(--site-muted-fg))" }}>(Package)</span>
+                      <Package size={14} style={{ color: "hsl(var(--cd-slate) / .55)" }} />
+                      {p.name} <span style={{ fontSize: ".78rem", color: "hsl(var(--cd-slate) / .55)" }}>(Package)</span>
                     </div>
                     <span style={{ fontWeight: 600 }}>{fmt(Number(p.price))}</span>
                   </div>
                 ))}
                 {pd.isVip && (
-                  <div style={{ display: "flex", justifyContent: "space-between", padding: ".5rem 0", borderBottom: "1px solid hsl(var(--site-border) / .5)", fontSize: ".95rem", color: "hsl(45 93% 40%)" }}>
+                  <div className="cd-book-vip-row">
                     <div style={{ display: "flex", alignItems: "center", gap: ".4rem" }}>
                       <Sparkles size={14} />
                       VIP Queue Priority Surcharge ({config?.vipPercentage || 50}%)
                     </div>
-                    <span style={{ fontWeight: 600 }}>{fmt(vipCharge)}</span>
+                    <span className="cd-mono" style={{ fontWeight: 600 }}>{fmt(vipCharge)}</span>
                   </div>
                 )}
               </div>
 
               <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 800, fontSize: "1.2rem", borderTop: "2px solid hsl(var(--site-primary) / .3)", paddingTop: ".75rem", marginBottom: "1.25rem" }}>
                 <span>Total Amount</span>
-                <span style={{ color: "hsl(var(--site-primary))" }}>{fmt(total)}</span>
+                <span style={{ color: "hsl(var(--cd-teal))" }}>{fmt(total)}</span>
               </div>
 
               {/* Disclaimer */}
-              <div style={{ fontSize: ".78rem", color: "hsl(var(--site-muted-fg))", background: "hsl(var(--site-muted) / .3)", border: "1px solid hsl(var(--site-border) / .5)", borderRadius: "var(--site-radius)", padding: ".75rem", marginBottom: "1.25rem", lineHeight: "1.4" }}>
-                <div style={{ fontWeight: 600, marginBottom: ".25rem", color: "hsl(var(--site-fg))" }}>Important Disclaimers:</div>
+              <div style={{ fontSize: ".78rem", color: "hsl(var(--cd-slate) / .55)", background: "hsl(var(--site-muted) / .3)", border: "1px solid hsl(var(--site-border) / .5)", borderRadius: "var(--site-radius)", padding: ".75rem", marginBottom: "1.25rem", lineHeight: "1.4" }}>
+                <div style={{ fontWeight: 600, marginBottom: ".25rem", color: "hsl(var(--cd-slate))" }}>Important Disclaimers:</div>
                 <ul style={{ paddingLeft: "1.1rem", margin: 0, listStyleType: "disc" }}>
                   {pd.isVip && (
                     <li>VIP Queue priority charges are higher than normal rates.</li>
@@ -1160,16 +1152,11 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                 {hasRealGateway ? (
                   config?.gateway === "icici" || config?.gateway === "hdfc" ? (
                     <button
+                      className="cd-appt-gateway-btn"
                       style={{
-                        ...btnPrimary,
                         flex: 1,
                         fontSize: "1rem",
                         background: config?.gateway === "icici" ? "#FF6600" : "#002F6C",
-                        color: "#fff",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: ".5rem",
                       }}
                       onClick={handlePay}
                       disabled={paying}
@@ -1180,10 +1167,10 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                         </>
                       ) : (
                         <>
-                          <img 
-                            src={config?.gateway === "icici" ? "/icici-bank-logo.jpeg" : "/hdfc-bank-logo.jpeg"} 
-                            alt={config?.gateway === "icici" ? "ICICI Bank" : "HDFC Bank"} 
-                            style={{ height: "36px", objectFit: "contain", background: "white", borderRadius: "6px", padding: "2px", border: "2px solid #002F6C" }} 
+                          <img
+                            src={config?.gateway === "icici" ? "/icici-bank-logo.jpeg" : "/hdfc-bank-logo.jpeg"}
+                            alt={config?.gateway === "icici" ? "ICICI Bank" : "HDFC Bank"}
+                            className="cd-appt-gateway-logo"
                           />
                           <span>Pay {fmt(total)} by {config?.gateway === "icici" ? "ICICI Bank" : "HDFC Bank"}</span>
                         </>
@@ -1219,9 +1206,10 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                   type="button"
                   onClick={handleQrPay}
                   disabled={paying}
-                  style={{ marginTop: ".5rem", width: "100%", background: "transparent", color: "hsl(var(--site-fg))", border: "1.5px solid hsl(var(--site-border))", borderRadius: "var(--site-radius)", padding: ".65rem 1rem", fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: ".4rem" }}
+                  className="cd-appt-back-btn"
+                  style={{ marginTop: ".5rem", width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: ".4rem" }}
                 >
-                  <QrCode size={18} style={{ color: "hsl(var(--site-muted-fg))" }} /> Pay via UPI QR
+                  <QrCode size={18} style={{ color: "hsl(var(--cd-slate) / .55)" }} /> Pay via UPI QR
                 </button>
               )}
 
@@ -1233,16 +1221,17 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                     const msg = `Hi, I want to book a test.\nName: ${pd.name}\nPhone: ${pd.phone}\nTests: ${Array.from(selTests).map(id => tests.find(t => t.id === id)?.name).filter(Boolean).join(", ")}\nPackages: ${Array.from(selPkgs).map(id => pkgs.find(p => p.id === id)?.name).filter(Boolean).join(", ")}`;
                     window.open(`https://wa.me/${num}?text=${encodeURIComponent(msg)}`, "_blank");
                   }}
-                  style={{ marginTop: ".75rem", width: "100%", background: "#25d366", color: "#fff", border: "none", borderRadius: "var(--site-radius)", padding: ".65rem 1rem", fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: ".4rem" }}
+                  className="cd-appt-wa-btn"
+                  style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: ".4rem" }}
                 >
                   <MessageCircle size={16} /> Confirm via WhatsApp instead
                 </button>
               )}
 
 
-              <p style={{ fontSize: ".78rem", color: "hsl(var(--site-muted-fg))", marginTop: "0.5rem", textAlign: "center" }}>
+              <p style={{ fontSize: ".78rem", color: "hsl(var(--cd-slate) / .55)", marginTop: "0.5rem", textAlign: "center" }}>
                 {hasRealGateway ? (
-                  <>Payments are processed securely via {gatewayLabel}. By proceeding, you agree to our <a href={`${BASE}policies`} style={{ color: "hsl(var(--site-primary))", textDecoration: "underline" }}>Terms &amp; Conditions</a>.</>
+                  <>Payments are processed securely via {gatewayLabel}. By proceeding, you agree to our <a href={`${BASE}policies`} style={{ color: "hsl(var(--cd-teal))", textDecoration: "underline" }}>Terms &amp; Conditions</a>.</>
                 ) : (
                   <>Please scan the QR code to pay. Staff will confirm your booking after payment verification.</>
                 )}
@@ -1253,7 +1242,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
       </div>
 
       {/* Footer */}
-      <footer style={{ background: "hsl(var(--site-fg))", color: "hsl(var(--site-bg) / .7)", padding: "2rem 1rem", fontSize: ".85rem" }}>
+      <footer style={{ background: "hsl(var(--cd-slate))", color: "hsl(var(--site-bg) / .7)", padding: "2rem 1rem", fontSize: ".85rem" }}>
         <div className="container-narrow" style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: "1.5rem", alignItems: "center" }}>
           <div>
             <div style={{ fontWeight: 700, color: "#fff", marginBottom: ".25rem" }}>Care Diagnostics</div>
