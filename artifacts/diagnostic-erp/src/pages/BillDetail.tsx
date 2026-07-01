@@ -130,6 +130,7 @@ const BILL_STATUSES = ["pending", "partial", "paid", "cancelled"];
 
 export default function BillDetail({ id }: { id: number }) {
   const [, navigate] = useLocation();
+  const { toast } = useToast();
   const { data: bill, isLoading } = useGetBill(id, {
     query: {
       // Re-fetch the bill every 15 s so payments/refunds/cancellations made by
@@ -377,24 +378,52 @@ export default function BillDetail({ id }: { id: number }) {
   });
 
   const cancelBill = useMutation({
-    mutationFn: (body: CancelForm) => api.post(`/api/bills/${id}/cancel`, body),
-    onSuccess: () => {
+    mutationFn: (body: CancelForm) =>
+      api.post<{ closedPeriodWarning?: { billCreatedBeforeClose: boolean; lastClosureAt: string | null } | null }>(
+        `/api/bills/${id}/cancel`,
+        body,
+      ),
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: getGetBillQueryKey(id) });
       queryClient.invalidateQueries({ queryKey: getListBillsQueryKey() });
       refetchAudits();
       setRefundOpen(false);
       resetCancel();
+      // Same informational notice as refundBill above — only fires when
+      // this cancellation triggered an auto-refund on a bill from an
+      // already-closed period. Never blocks, no approval required.
+      if (data?.closedPeriodWarning?.billCreatedBeforeClose) {
+        toast({
+          title: "Cancellation recorded — original bill was from a closed period",
+          description: "This bill was created before the most recent day-close. The auto-refund is not blocked and needs no approval — it's automatically included in the current open reconciliation.",
+        });
+      }
     },
   });
 
   const refundBill = useMutation({
-    mutationFn: (body: RefundForm) => api.post(`/api/bills/${id}/refund`, body),
-    onSuccess: () => {
+    mutationFn: (body: RefundForm) =>
+      api.post<{ closedPeriodWarning?: { billCreatedBeforeClose: boolean; lastClosureAt: string | null } | null }>(
+        `/api/bills/${id}/refund`,
+        body,
+      ),
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: getGetBillQueryKey(id) });
       queryClient.invalidateQueries({ queryKey: getListBillsQueryKey() });
       refetchAudits();
       setRefundOpen(false);
       resetRefund();
+      // Informational only — the refund already succeeded and correctly
+      // belongs to the current open reconciliation window regardless of
+      // this flag. No approval is required and nothing is blocked; this
+      // just lets staff know the original bill was from an already-closed,
+      // signed-off period. See DAILY_FINANCIAL_RECONCILIATION_SPECIFICATION.md §22.5.
+      if (data?.closedPeriodWarning?.billCreatedBeforeClose) {
+        toast({
+          title: "Refund recorded — original bill was from a closed period",
+          description: "This bill was created before the most recent day-close. The refund is not blocked and needs no approval — it's automatically included in the current open reconciliation.",
+        });
+      }
     },
   });
 
