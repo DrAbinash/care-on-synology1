@@ -594,6 +594,7 @@ export interface ExpenseSummaryRow {
 export interface CreateExpenseBody {
   category: string;
   description: string;
+  /** @exclusiveMinimum 0 */
   amount: number;
   expenseDate: string;
   paymentMode?: string;
@@ -608,6 +609,7 @@ export interface CreateExpenseBody {
 export interface UpdateExpenseBody {
   category?: string;
   description?: string;
+  /** @exclusiveMinimum 0 */
   amount?: number;
   expenseDate?: string;
   paymentMode?: string;

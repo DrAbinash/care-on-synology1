@@ -5,6 +5,7 @@ import { eq, and, gt, lte, desc, sql, inArray } from "drizzle-orm";
 import { z } from "zod";
 import type { Response, NextFunction } from "express";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { classifyPaymentMethod } from "../lib/paymentMethodClassifier";
 
 // Inline super-admin gate that works on the regular ERP staff session
 // (req.staffSession.role === "super_admin"). The site-wide
@@ -56,16 +57,133 @@ function emptyTotals(): MethodTotals {
   return { cash: 0, upi: 0, card: 0, cheque: 0, other: 0, total: 0, count: 0 };
 }
 
+// Delegates to the shared classifier (../lib/paymentMethodClassifier.ts) —
+// the single source of truth also used by daily-summary.ts and
+// my-daily-summary.ts (Approved Fix #3: no more independently-drifted
+// classifiers). Categories not represented by a dedicated day-close column
+// ("online", "insurance") fold into "other", same as before — they were
+// never counted as cash here. Genuinely UNKNOWN methods are intentionally
+// excluded from every bucket (including "other") and are surfaced
+// separately via the suspense total — see summarizeWindow().
 function bucketMethod(method: string): keyof Omit<MethodTotals, "total" | "count"> {
-  const m = (method || "").toLowerCase();
-  if (m === "cash") return "cash";
-  if (m === "upi") return "upi";
-  if (m === "card") return "card";
-  if (m === "cheque") return "cheque";
+  const c = classifyPaymentMethod(method);
+  if (c.category === "cash") return "cash";
+  if (c.category === "upi") return "upi";
+  if (c.category === "card") return "card";
+  if (c.category === "cheque") return "cheque";
+  // online, insurance, and known-but-uncategorized methods → "other" (never cash).
+  // "unknown" is handled by the caller before bucketMethod is invoked.
   return "other";
 }
 
 type TestSummary = { testId: number; testName: string; category: string; count: number; total: number };
+
+// ── Pure, exported, unit-testable core logic ────────────────────────────────
+// Extracted so the critical business rules (cash-only physical drawer, no
+// silent unknown→cash/other fallback, cash-expense subtraction) can be
+// verified without a database connection. summarizeWindow() below is a thin
+// DB-fetching wrapper around these two functions — the arithmetic lives
+// here exactly once.
+
+export type PaymentLike = { id: number; amount: string | number; method: string | null; recordedByName?: string | null };
+export type ExpenseLike = { amount: string | number; paymentMode: string | null; approvedBy?: string | null };
+
+export type SuspenseItem = { id: number; amount: number; rawMethod: string; recordedByName: string | null };
+
+export interface ClassifiedPayments {
+  overall: MethodTotals;
+  byStaff: Map<string, MethodTotals & { userId: number | null; userName: string }>;
+  suspenseItems: SuspenseItem[];
+  totalSuspense: number;
+}
+
+/**
+ * Classify a window's payment rows into cash/upi/card/cheque/other buckets
+ * (overall + per-staff), isolating unrecognized methods into a suspense list
+ * instead of ever letting them join a bucket (LOCKED BUSINESS RULE #6).
+ * Pure — no DB access, no expense subtraction (see applyCashExpenses below).
+ */
+export function classifyAndBucketPayments(payRows: PaymentLike[]): ClassifiedPayments {
+  const overall = emptyTotals();
+  const byStaff = new Map<string, MethodTotals & { userId: number | null; userName: string }>();
+  const suspenseItems: SuspenseItem[] = [];
+
+  for (const r of payRows) {
+    const amt = n(r.amount);
+    const classified = classifyPaymentMethod(r.method);
+    if (!classified.isKnown) {
+      suspenseItems.push({ id: r.id, amount: amt, rawMethod: r.method ?? "", recordedByName: r.recordedByName ?? null });
+      continue;
+    }
+    const bucket = bucketMethod(r.method ?? "");
+    overall[bucket] += amt;
+    overall.total += amt;
+    overall.count += 1;
+
+    const name = (r.recordedByName ?? "").trim() || "Unassigned";
+    if (!byStaff.has(name)) {
+      byStaff.set(name, { ...emptyTotals(), userId: null, userName: name });
+    }
+    const s = byStaff.get(name)!;
+    s[bucket] += amt;
+    s.total += amt;
+    s.count += 1;
+  }
+  const totalSuspense = suspenseItems.reduce((s, x) => s + x.amount, 0);
+
+  return { overall, byStaff, suspenseItems, totalSuspense };
+}
+
+/**
+ * Split a window's expense rows into cash vs non-cash, overall and by
+ * approver. LOCKED BUSINESS RULE #5: only expenses recorded with
+ * payment_mode = "cash" ever reduce physical drawer cash; everything else
+ * is informational only. Pure — no DB access.
+ */
+export function splitCashExpenses(expRows: ExpenseLike[]): {
+  cashExpenses: number;
+  digitalExpenses: number;
+  cashExpensesByApprover: Map<string, number>;
+} {
+  const isCashExpense = (mode: string | null | undefined) => (mode ?? "cash").trim().toLowerCase() === "cash";
+  const totalExpenses = expRows.reduce((s, e) => s + n(e.amount), 0);
+  const cashExpenses = expRows.filter((e) => isCashExpense(e.paymentMode)).reduce((s, e) => s + n(e.amount), 0);
+  const digitalExpenses = totalExpenses - cashExpenses;
+
+  const cashExpensesByApprover = new Map<string, number>();
+  for (const e of expRows) {
+    if (!isCashExpense(e.paymentMode)) continue;
+    const approver = (e.approvedBy ?? "").trim();
+    if (!approver) continue;
+    cashExpensesByApprover.set(approver, (cashExpensesByApprover.get(approver) ?? 0) + n(e.amount));
+  }
+  return { cashExpenses, digitalExpenses, cashExpensesByApprover };
+}
+
+/**
+ * CRITICAL FIX (Expected Physical Cash = Cash In − Cash Refunded − Cash
+ * Expenses, LOCKED BUSINESS RULE #4): mutates `classified` in place,
+ * subtracting cash expenses from the overall cash bucket and from each
+ * approving staff member's own cash bucket (Cash Attribution Rule — an
+ * expense reduces the physical cash of whoever approved it, not the whole
+ * clinic indiscriminately). A staff who approved cash expenses but recorded
+ * no payments in this window still gets a byStaff row created, so their
+ * liability isn't silently absorbed into the overall total only.
+ */
+export function applyCashExpenses(classified: ClassifiedPayments, cashExpensesByApprover: Map<string, number>): void {
+  const totalCashExpenses = Array.from(cashExpensesByApprover.values()).reduce((s, x) => s + x, 0);
+  classified.overall.cash -= totalCashExpenses;
+  classified.overall.total -= totalCashExpenses;
+
+  for (const [approver, amt] of cashExpensesByApprover) {
+    if (!classified.byStaff.has(approver)) {
+      classified.byStaff.set(approver, { ...emptyTotals(), userId: null, userName: approver });
+    }
+    const s = classified.byStaff.get(approver)!;
+    s.cash -= amt;
+    s.total -= amt;
+  }
+}
 
 // Aggregate payments, bills, expenses, and tests in the window (from, to].
 async function summarizeWindow(from: Date | null, to: Date) {
@@ -120,32 +238,15 @@ async function summarizeWindow(from: Date | null, to: Date) {
       category: expensesTable.category,
       description: expensesTable.description,
       createdAt: expensesTable.createdAt,
+      paymentMode: expensesTable.paymentMode,
+      approvedBy: expensesTable.approvedBy,
     })
     .from(expensesTable)
     .where(expenseWhere);
 
-  // Aggregate payments
-  const overall = emptyTotals();
-  const byStaff = new Map<string, MethodTotals & { userId: number | null; userName: string }>();
-  const paymentBillIds = new Set<number>();
-
-  for (const r of payRows) {
-    const amt = n(r.amount);
-    const bucket = bucketMethod(r.method);
-    overall[bucket] += amt;
-    overall.total += amt;
-    overall.count += 1;
-    if (r.billId != null) paymentBillIds.add(r.billId);
-
-    const name = (r.recordedByName ?? "").trim() || "Unassigned";
-    if (!byStaff.has(name)) {
-      byStaff.set(name, { ...emptyTotals(), userId: null, userName: name });
-    }
-    const s = byStaff.get(name)!;
-    s[bucket] += amt;
-    s.total += amt;
-    s.count += 1;
-  }
+  // Aggregate payments — delegates to the pure, unit-tested classifier above.
+  const classified = classifyAndBucketPayments(payRows);
+  const { overall, byStaff, suspenseItems, totalSuspense } = classified;
 
   // Aggregate bills
   const totalBilled = billRows.reduce((s, b) => s + n(b.totalAmount), 0);
@@ -167,6 +268,16 @@ async function summarizeWindow(from: Date | null, to: Date) {
     const cat = e.category ?? "General";
     expensesByCategory.set(cat, (expensesByCategory.get(cat) ?? 0) + n(e.amount));
   }
+
+  // ── CRITICAL FIX: Expected Physical Cash = Cash In − Cash Refunded − Cash
+  // Expenses (LOCKED BUSINESS RULE #4). `overall.cash` above was previously
+  // only Cash In minus Cash Refunded — it never subtracted cash expenses, so
+  // a staff physically counting their drawer would be compared against an
+  // inflated "expected" figure. Only expenses recorded with payment_mode =
+  // "cash" reduce the drawer; digital/bank expenses must not (LOCKED RULE
+  // #5) — they stay informational only via totalExpenses/expensesByCategory.
+  const { cashExpenses, digitalExpenses, cashExpensesByApprover } = splitCashExpenses(expRows);
+  applyCashExpenses(classified, cashExpensesByApprover);
 
   // Aggregate test-wise collections
   const testMap = new Map<number, TestSummary>();
@@ -213,9 +324,16 @@ async function summarizeWindow(from: Date | null, to: Date) {
     totalDue,
     cancelledBills,
     totalExpenses,
+    cashExpenses,
+    digitalExpenses,
     expensesByCategory: Array.from(expensesByCategory.entries()).map(([category, total]) => ({ category, total })),
     expenseDetails,
     testSummary: Array.from(testMap.values()).sort((a, b) => b.total - a.total),
+    // Suspense/exception bucket — see LOCKED BUSINESS RULE #6. Already
+    // excluded from `overall`/`byStaff` above; exposed here for admin
+    // visibility and correction.
+    totalSuspense,
+    suspenseItems,
   };
 }
 
@@ -233,6 +351,13 @@ dayCloseRouter.get("/preview", requireOwnerOrAdmin, async (_req, res) => {
     byStaff: summary.byStaff,
     billsCount: summary.billsCount,
     paymentsCount: summary.overall.count,
+    cashExpenses: summary.cashExpenses,
+    digitalExpenses: summary.digitalExpenses,
+    // Suspense/exception bucket — unrecognized payment methods, excluded
+    // from `expected` above. See LOCKED BUSINESS RULE #6.
+    suspenseTotal: summary.totalSuspense,
+    suspenseCount: summary.suspenseItems.length,
+    suspenseItems: summary.suspenseItems,
   });
 });
 
@@ -319,11 +444,33 @@ dayCloseRouter.post("/", requireOwnerOrAdmin, async (req, res) => {
         status: "closed",
       })
       .returning();
-    return row;
+    return {
+      row,
+      cashExpenses: summary.cashExpenses,
+      digitalExpenses: summary.digitalExpenses,
+      suspenseTotal: summary.totalSuspense,
+      suspenseItems: summary.suspenseItems,
+    };
   });
 
-  req.log?.info({ closureId: inserted.id, totalExpected: inserted.totalExpected, totalActual: inserted.totalActual, variance: inserted.variance }, "Day closed");
-  res.status(201).json(inserted);
+  req.log?.info({ closureId: inserted.row.id, totalExpected: inserted.row.totalExpected, totalActual: inserted.row.totalActual, variance: inserted.row.variance }, "Day closed");
+  if (inserted.suspenseItems.length > 0) {
+    req.log?.warn(
+      { closureId: inserted.row.id, suspenseCount: inserted.suspenseItems.length, suspenseTotal: inserted.suspenseTotal },
+      "Day closed with unrecognized-method payments excluded from totals — needs admin correction",
+    );
+  }
+  res.status(201).json({
+    ...inserted.row,
+    // Additive, not persisted as separate columns — see LOCKED BUSINESS
+    // RULE #4/#5 (cash-expense split of the already-persisted totalExpenses)
+    // and RULE #6 (suspense/exception bucket, never folded into any total).
+    cashExpenses: inserted.cashExpenses,
+    digitalExpenses: inserted.digitalExpenses,
+    suspenseTotal: inserted.suspenseTotal,
+    suspenseCount: inserted.suspenseItems.length,
+    suspenseItems: inserted.suspenseItems,
+  });
 });
 
 // List all closures, newest first.
@@ -423,6 +570,21 @@ const OWNER_ROLES = new Set(["admin", "super_admin", "owner"]);
 
 // Find the open-window start for a specific user:
 // MAX(last overall day close, last user's own close).
+/**
+ * CARRY-FORWARD RULE (LOCKED BUSINESS RULE #10/#11): the open window for a
+ * staff member's next close starts at MAX(last overall day close, last
+ * user's own close) — never before either boundary, so a closed day's
+ * totals can never silently change, and nothing later requires owner
+ * approval to "reopen" — new entries simply belong to the next window by
+ * construction. Pure — exported for unit testing without a DB.
+ */
+export function maxBoundary(t1: Date | null, t2: Date | null): Date | null {
+  if (!t1 && !t2) return null;
+  if (!t1) return t2;
+  if (!t2) return t1;
+  return t1 > t2 ? t1 : t2;
+}
+
 async function userWindowBoundary(userName: string): Promise<Date | null> {
   const [lastOverall] = await db
     .select({ ts: dayClosuresTable.coveredToTs })
@@ -440,10 +602,7 @@ async function userWindowBoundary(userName: string): Promise<Date | null> {
 
   const t1 = lastOverall?.ts ? new Date(lastOverall.ts) : null;
   const t2 = lastUser?.ts    ? new Date(lastUser.ts)    : null;
-  if (!t1 && !t2) return null;
-  if (!t1) return t2;
-  if (!t2) return t1;
-  return t1 > t2 ? t1 : t2;
+  return maxBoundary(t1, t2);
 }
 
 type UserSummary = {
@@ -451,6 +610,9 @@ type UserSummary = {
   billsCount: number;
   totalBilled: number;
   totalDue: number;
+  cashExpenses: number;
+  suspenseTotal: number;
+  suspenseItems: Array<{ amount: number; rawMethod: string }>;
   bills: Array<{
     id: number;
     billNumber: string;
@@ -476,18 +638,32 @@ async function summarizeUserWindow(
     : and(eq(paymentsTable.recordedByName, userName), lte(paymentsTable.createdAt, to));
 
   const payments = await db
-    .select({ amount: paymentsTable.amount, method: paymentsTable.method })
+    .select({ id: paymentsTable.id, amount: paymentsTable.amount, method: paymentsTable.method, recordedByName: paymentsTable.recordedByName })
     .from(paymentsTable)
     .where(pWhere);
 
-  const totals = emptyTotals();
-  for (const p of payments) {
-    const amt    = n(p.amount);
-    const bucket = bucketMethod(p.method);
-    totals[bucket] += amt;
-    totals.total   += amt;
-    totals.count++;
-  }
+  // Same pure classifier used by the overall day-close path — single
+  // source of truth for bucketing + suspense isolation.
+  const classified = classifyAndBucketPayments(payments);
+  const totals = classified.overall;
+  const suspenseItems = classified.suspenseItems.map((s) => ({ amount: s.amount, rawMethod: s.rawMethod }));
+  const suspenseTotal = classified.totalSuspense;
+
+  // Subtract THIS staff's own cash expenses (Cash Attribution Rule: an
+  // expense reduces the physical cash of the staff who approved it, same
+  // posting-date rule as summarizeWindow — created_at, not expense_date).
+  const expWhere = from
+    ? and(eq(expensesTable.approvedBy, userName), gt(expensesTable.createdAt, from), lte(expensesTable.createdAt, to))
+    : and(eq(expensesTable.approvedBy, userName), lte(expensesTable.createdAt, to));
+  const expRows = await db
+    .select({ amount: expensesTable.amount, paymentMode: expensesTable.paymentMode })
+    .from(expensesTable)
+    .where(expWhere);
+  const { cashExpenses } = splitCashExpenses(expRows);
+  totals.cash -= cashExpenses;
+  totals.total -= cashExpenses;
+  totals.cash -= cashExpenses;
+  totals.total -= cashExpenses;
 
   const bWhere = from
     ? and(
@@ -542,6 +718,9 @@ async function summarizeUserWindow(
     billsCount:  bills.length,
     totalBilled: bills.reduce((s, b) => s + b.totalAmount, 0),
     totalDue:    bills.reduce((s, b) => s + b.balanceAmount, 0),
+    cashExpenses,
+    suspenseTotal,
+    suspenseItems,
     bills,
   };
 }
@@ -567,6 +746,12 @@ dayCloseRouter.get("/my-preview", async (req, res) => {
     paymentsCount: s.totals.count,
     totalBilled:   s.totalBilled,
     totalDue:      s.totalDue,
+    cashExpenses:  s.cashExpenses,
+    // Suspense/exception bucket — unrecognized payment methods, excluded
+    // from `expected` above. See LOCKED BUSINESS RULE #6.
+    suspenseTotal: s.suspenseTotal,
+    suspenseCount: s.suspenseItems.length,
+    suspenseItems: s.suspenseItems,
     bills:         s.bills,
   });
 });
@@ -617,6 +802,10 @@ dayCloseRouter.get("/my-drawer-status", async (req, res) => {
       handoverNote: null,
       approvedByName: null,
       approvalNote: null,
+      // Suspense/exception bucket — unrecognized payment methods, already
+      // excluded from expectedCash/expectedDigital above. LOCKED RULE #6.
+      suspenseTotal: s.suspenseTotal,
+      suspenseCount: s.suspenseItems.length,
     });
     return;
   }
@@ -780,11 +969,22 @@ dayCloseRouter.post("/my-close", async (req, res) => {
       reason:        varianceNote || "",
     });
 
-    return row;
+    return { row, suspenseTotal: s.suspenseTotal, suspenseItems: s.suspenseItems };
   });
 
-  req.log?.info({ closureId: inserted.id, userName, variance: inserted.variance, drawerStatus: inserted.drawerStatus }, "User day closed");
-  res.status(201).json(inserted);
+  req.log?.info({ closureId: inserted.row.id, userName, variance: inserted.row.variance, drawerStatus: inserted.row.drawerStatus }, "User day closed");
+  if (inserted.suspenseItems.length > 0) {
+    req.log?.warn(
+      { closureId: inserted.row.id, userName, suspenseCount: inserted.suspenseItems.length, suspenseTotal: inserted.suspenseTotal },
+      "User day closed with unrecognized-method payments excluded from totals — needs admin correction",
+    );
+  }
+  res.status(201).json({
+    ...inserted.row,
+    suspenseTotal: inserted.suspenseTotal,
+    suspenseCount: inserted.suspenseItems.length,
+    suspenseItems: inserted.suspenseItems,
+  });
 });
 
 // ── Admin actions on individual staff drawers ────────────────────────────────

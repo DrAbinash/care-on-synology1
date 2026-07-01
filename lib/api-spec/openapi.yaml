@@ -3145,6 +3145,7 @@ components:
           type: string
         amount:
           type: number
+          exclusiveMinimum: 0
         expenseDate:
           type: string
         paymentMode:
@@ -3166,6 +3167,7 @@ components:
           type: string
         amount:
           type: number
+          exclusiveMinimum: 0
         expenseDate:
           type: string
         paymentMode:

@@ -32,6 +32,7 @@
 19. [Future Development Guidelines](#19-future-development-guidelines)
 20. [Non-Negotiable Business Rules](#20-non-negotiable-business-rules)
 21. [Version History](#21-version-history)
+22. [Post-Audit Corrections (v1.1)](#22-post-audit-corrections-v11)
 
 ---
 
@@ -713,20 +714,25 @@ For each bill:
 
 ### 9.1 Digital Payment Methods
 
-**Defined as:**
+> **⚠ CORRECTED IN v1.1 — see §22.1 for full detail.** The exact-match definition originally documented here was a bug: it treated any unrecognized method — including real gateway payments like `"Online (ICICI Orange Pay)"` — as physical cash. The corrected definition below is enforced by a single shared classifier (`lib/paymentMethodClassifier.ts`), not reimplemented per-module.
+
+**Defined as (current, correct):**
 ```
-isDigital(method) = method IN [
-  "upi",
-  "card",
-  "online",
-  "bank",
-  "cheque",
-  "neft",
-  "rtgs"
-] OR method.startsWith("web booking")
+classifyPaymentMethod(method).isCash   → true ONLY for literal "cash"
+classifyPaymentMethod(method).isKnown  → false for unrecognized strings
+isDigitalSettlement(method)            → isKnown AND NOT isCash
+                                          (upi, card, cheque, insurance, online/gateway)
 ```
 
-**All other methods** (including "cash", "walk-in", etc.) are treated as **physical cash**.
+**Superseded (v1.0, buggy) definition — kept for audit trail only:**
+```
+isDigital(method) = method IN [
+  "upi", "card", "online", "bank", "cheque", "neft", "rtgs"
+] OR method.startsWith("web booking")
+```
+This exact-match check failed on provider-qualified gateway strings (`"Online (ICICI Orange Pay)"`, `"Online (Razorpay)"`, `"Online (PhonePe)"`, `"Online (BharatPe)"`) and on `"insurance"` — all of which fell through to physical cash. See §22.1 for the corrected classification table.
+
+**All other UNRECOGNIZED methods** are now routed to the suspense/exception bucket (§22.3) — they are **not** treated as physical cash, and are **not** treated as digital either.
 
 ---
 
@@ -1092,6 +1098,8 @@ cancelledBillsAmount = Σ(totalAmount) for bills where:
 ---
 
 ## 14. EXPECTED PHYSICAL CASH FORMULA
+
+> **Implementation note (v1.1):** this formula was correctly documented from v1.0 onward. `day-close.ts`'s implementation, however, previously computed expected cash as `cashIn − cashRefunded` only, omitting the `− cashExpenses` term entirely. This has been corrected — see §22.2. This section's formula did not change; only a broken implementation of it was fixed.
 
 ### 14.1 Core Formula
 
@@ -1688,6 +1696,110 @@ Example:
 | Version | Date | Author | Change Summary |
 |---------|------|--------|---|
 | 1.0 | 1 July 2026 | Engineering Team | Initial specification frozen after comprehensive audit. Freezes: totalAmount immutability, cash attribution rules, refund date logic, discount embedding, expected cash formula. Documents all formulas, ownership rules, edge cases, and audit principles. |
+| 1.1 | 1 July 2026 | Engineering Team | Post-review audit fixes. Corrects two production-blocking defects (gateway payments misclassified as cash; day-close expected cash not subtracting cash expenses) and five major defects (classifier drift, expense posting-date inconsistency, missing suspense/exception bucket, missing refund-after-close warning, unvalidated expense amounts). See Section 22 for full detail. No business formula was redefined — only broken implementations of the already-locked formulas were corrected. |
+
+---
+
+## 22. POST-AUDIT CORRECTIONS (v1.1)
+
+This section documents the corrections made during the post-freeze audit review of 1 July 2026. **No locked formula in Sections 1–21 was redefined.** Every correction below fixes an implementation that violated a rule this document already specified — it does not change the rule itself.
+
+### 22.1 Shared Payment-Method Classification Table
+
+**Problem found:** `my-daily-summary.ts`, `daily-summary.ts`, and `day-close.ts` each independently reimplemented "is this method digital?" and had drifted apart. All three used an exact-match check against the literal string `"online"`. Real gateway payments are stored with a provider-qualified string — `"Online (ICICI Orange Pay)"`, `"Online (Razorpay)"`, `"Online (PhonePe)"`, `"Online (BharatPe)"`, `"Online (HDFC SmartGateway)"` — which failed the exact match and fell into the cash bucket. `"insurance"` had the same problem in all three modules.
+
+**Fix:** A single shared classifier, `artifacts/api-server/src/lib/paymentMethodClassifier.ts`, is now the only place this decision is made. All three modules import and delegate to it.
+
+| Raw method string | Category | Is physical cash? | Is known? |
+|---|---|---|---|
+| `cash` (any case/whitespace) | cash | ✅ Yes | ✅ Yes |
+| `upi` | upi | ❌ No | ✅ Yes |
+| `card` | card | ❌ No | ✅ Yes |
+| `cheque` | cheque | ❌ No | ✅ Yes |
+| `insurance` | insurance | ❌ No | ✅ Yes |
+| `bank` / `neft` / `rtgs` | online | ❌ No | ✅ Yes |
+| `online` (bare) | online | ❌ No | ✅ Yes |
+| `Online (ICICI Orange Pay)` | online | ❌ No | ✅ Yes |
+| `Online (Razorpay)` | online | ❌ No | ✅ Yes |
+| `Online (PhonePe)` | online | ❌ No | ✅ Yes |
+| `Online (BharatPe)` | online | ❌ No | ✅ Yes |
+| `Online (HDFC SmartGateway)` | online | ❌ No | ✅ Yes |
+| `Web booking (<provider>)` | online | ❌ No | ✅ Yes |
+| empty / blank / typo / unmapped | unknown | ❌ No | ❌ **No — routed to suspense** |
+
+**Rule:** Only the literal string `"cash"` is ever physical cash. A method the classifier does not recognize is **never** assumed to be cash or digital — see §22.3.
+
+---
+
+### 22.2 Physical Cash vs Digital Settlement Separation
+
+**Locked formula (unchanged):**
+```
+Expected Physical Cash = Cash In − Cash Refunded − Cash Expenses
+```
+
+**Problem found:** `day-close.ts`'s `expectedCash` value was computed as `Cash In − Cash Refunded` only — cash expenses were tracked and displayed (`totalExpenses`) but never subtracted from the figure a staff member's physical drawer count was compared against. A staff who spent cash on a legitimate expense would always show a "shortfall" equal to that expense.
+
+**Fix:** `expectedCash` (overall and per-staff) now subtracts that window's cash-mode expenses before comparison. Digital/bank-mode expenses never reduce physical cash (Locked Rule #5) — they remain informational only (`digitalExpenses`).
+
+**Cash Attribution for expenses (unchanged rule, now correctly implemented):** an expense reduces the *approving staff's own* expected cash, not the whole clinic's, matching the same attribution rule already documented in §6.5 and §7.5 for the overall day.
+
+---
+
+### 22.3 Suspense / Exception Bucket
+
+**Problem found:** A payment or refund whose method string the system didn't recognize had no dedicated handling — it either fell through to the cash bucket (the critical bug above) or was silently absorbed into a generic "other" bucket alongside legitimately-classified digital methods, making it invisible.
+
+**Fix:** Every reconciliation surface (`my-daily-summary.ts`, `daily-summary.ts`, `day-close.ts` `/preview`, `/my-preview`, `/my-drawer-status`, and the `POST /` and `POST /my-close` close responses) now exposes a `suspense*` set of fields:
+
+- `suspensePaymentCount` / `suspenseRefundCount` (or `suspenseCount` on day-close endpoints)
+- `suspensePaymentAmount` / `suspenseRefundAmount` (or `suspenseTotal`)
+- `suspensePayments` / `suspenseItems` — the individual rows, each with `id`, `amount`, `rawMethod`, `recordedByName`, `createdAt`, for admin correction.
+
+Suspense amounts are **always excluded** from cash and digital totals. They are additive JSON response fields only — no new database columns were added for the day-close historical record (see §22.7 for why).
+
+---
+
+### 22.4 Expense Posting-Date Rule
+
+**Problem found:** `day-close.ts` windowed expenses by `created_at` (the immutable insertion timestamp). `daily-summary.ts` and `my-daily-summary.ts` windowed the *same* expenses table by `expense_date` — a free-text, backdatable display field. A backdated expense entry could land in a different reconciliation "day" depending on which report was viewed, and could retroactively change an already-closed day's totals.
+
+**Canonical rule (now enforced everywhere):**
+> Reconciliation posting date = `expenses.created_at` (immutable). `expenses.expense_date` remains available for accounting/display purposes (e.g. "which month's P&L does this belong to") but **never** drives cash-drawer reconciliation.
+
+**Fix:** `my-daily-summary.ts` and `daily-summary.ts` now window expenses by `created_at`, matching `day-close.ts`, which was already correct.
+
+---
+
+### 22.5 Refund Against a Closed Period
+
+Per the existing Closed-Day Carry-Forward Rule (§7, Locked Rule #10/#11): a refund processed after a day is closed is **not blocked** and requires **no owner approval** — it simply belongs to the next open reconciliation window, exactly like any other post-close entry. This was already correct. The only gap was that staff received no indication they were refunding against a bill from an already-closed period. This is a UI-layer notice, not a logic change, and does not alter which window the refund belongs to.
+
+---
+
+### 22.6 Closed-Day Carry-Forward — Re-Verified
+
+The window boundary for every close (overall or per-staff) is `MAX(last overall close, last personal close)`, computed by `maxBoundary()` in `day-close.ts` (extracted as a pure, unit-tested function during this fix). This was **not modified** — it was already correct — and remains the sole mechanism guaranteeing:
+
+- Bills, payments, old-dues collections, refunds, and expenses entered after a close automatically belong to the next window.
+- A closed day's persisted totals cannot be silently changed by later activity.
+- No "reopen" step or owner approval is required for this carry-forward to happen — it is a structural property of how the next window's start boundary is computed, not a workflow step.
+
+---
+
+### 22.7 Known Limitation — No New Database Columns for Suspense/Expense-Split Persistence
+
+An earlier draft of this fix attempted to persist `cashExpenses`, `digitalExpenses`, `totalSuspense`, and `suspenseDetails` as new columns on `day_closures`. This was reverted: generating a clean migration for those four columns via `drizzle-kit generate` also pulled in unrelated, already-pending schema drift from prior work sessions (new tables and columns that were never migrated), which would have bundled unrelated changes into this fix. Since this environment has no connection to the production database, that drift could not be safely resolved here.
+
+**Current state:** these values are computed correctly and returned in every live API response (`/preview`, `/my-preview`, `POST /`, `POST /my-close`, etc.) but are **not persisted** as separate columns on a closed `day_closures` / `user_day_closures` row. `expectedCash` and `totalExpected` (existing columns) **are** already fully correct — this limitation only affects the *supplementary* breakdown fields.
+
+**Recommendation:** before persisting these as first-class columns, run `pnpm db:generate` against a real, up-to-date database connection (not this sandbox) so the generated migration reflects only actual pending changes, and review it for unrelated content before applying.
+
+---
+
+### 22.8 Known Limitation — Cash Handover, Opening Balance, Bank Deposits
+
+Unchanged from the original audit finding (§16, §17 context): this system has no rolling opening-cash-balance concept, no structured staff-to-staff cash handover transaction, and no bank-deposit / cash-removed tracking. This was explicitly out of scope for this fix per instruction ("do not implement a large new module unless simple and safe"). Recommendation, if pursued later: a dedicated `cash_movements` table (types: `opening_balance`, `handover`, `bank_deposit`, `cash_removed`) that day-close windowing can include alongside payments/expenses, rather than overloading the existing tables.
 
 ---
 

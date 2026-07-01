@@ -8,6 +8,7 @@ import { sql, and, eq, gte, lt, ne, isNull, or, isNotNull } from "drizzle-orm";
 import { patientsTable } from "@workspace/db/schema";
 
 import { todayIST } from "../lib/istDate";
+import { classifyPaymentMethod, isDigitalSettlement } from "../lib/paymentMethodClassifier";
 
 export const dailySummaryRouter: IRouter = Router();
 
@@ -74,10 +75,17 @@ dailySummaryRouter.get("/", async (req, res) => {
     .from(ordersTable)
     .where(and(gte(ordersTable.createdAt, dayStart), lt(ordersTable.createdAt, dayEnd)));
 
+  // RECONCILIATION POSTING-DATE RULE (see DAILY_FINANCIAL_RECONCILIATION_
+  // SPECIFICATION.md §16.5): expense_date is a free-text, backdatable
+  // display/accounting field. Reconciliation must key off `created_at`,
+  // the immutable timestamp of when the expense was actually posted — the
+  // same instant the cash physically left the drawer — so a backdated
+  // entry cannot retroactively change an already-closed day's totals.
+  // This matches day-close.ts, which already windows expenses this way.
   const expenseRows = await db.execute<{ payment_mode: string; total: string }>(
     sql`SELECT payment_mode, COALESCE(SUM(amount::numeric), 0)::text AS total
         FROM expenses
-        WHERE expense_date = ${date}
+        WHERE created_at >= ${dayStart.toISOString()} AND created_at < ${dayEnd.toISOString()}
         GROUP BY payment_mode`
   );
 
@@ -98,11 +106,32 @@ dailySummaryRouter.get("/", async (req, res) => {
   const outstanding = activeBills.reduce((s, r) => s + Math.max(0, Number(r.balanceAmount ?? 0)), 0);
   const totalRefunded = refundItems.reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
   const totalReceived = paymentItems.reduce((s, p) => s + Number(p.amount), 0);
-  const digitalCollection = paymentItems.reduce((s, p) => {
-    const m = (p.method ?? "other").toLowerCase();
-    return s + (["upi", "card", "online", "bank", "cheque", "neft", "rtgs"].includes(m) ? Number(p.amount) : 0);
-  }, 0);
-  const cashCollection = totalReceived - digitalCollection;
+
+  // ── Suspense / exception bucket (LOCKED BUSINESS RULE #6) ──────────────
+  // A payment/refund whose method string is not recognized by the shared
+  // classifier (../lib/paymentMethodClassifier.ts) must NEVER be silently
+  // folded into cash or digital totals. It is isolated here and reported
+  // separately so an admin can correct the row.
+  const suspensePaymentItems = paymentItems.filter((p) => !classifyPaymentMethod(p.method).isKnown);
+  const suspenseRefundItems = refundItems.filter((p) => !classifyPaymentMethod(p.method).isKnown);
+  const suspensePaymentAmount = suspensePaymentItems.reduce((s, p) => s + Number(p.amount), 0);
+  const suspenseRefundAmount = suspenseRefundItems.reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
+
+  // digitalCollection uses the shared classifier so gateway-qualified method
+  // strings such as "Online (ICICI Orange Pay)" / "Online (Razorpay)" /
+  // "Online (PhonePe)" / "Online (BharatPe)" and "insurance" are correctly
+  // recognized as digital — the critical defect being fixed here previously
+  // let these fall through an exact "online"-only match and get silently
+  // counted as cash below (cashCollection = totalReceived − digitalCollection).
+  const digitalCollection = paymentItems.reduce(
+    (s, p) => s + (isDigitalSettlement(p.method) ? Number(p.amount) : 0),
+    0,
+  );
+  // "Known received" excludes suspense amounts from the cash/digital split so
+  // an unrecognized method can never default into the cash bucket via this
+  // subtraction — it is carved out explicitly instead.
+  const knownReceived = totalReceived - suspensePaymentAmount;
+  const cashCollection = knownReceived - digitalCollection;
   const expenses = expenseRows.rows.reduce((s, r) => s + Number(r.total), 0);
   const netCollection = totalBilling - outstanding - totalRefunded - cancelledBills.reduce((s, r) => s + Number(r.totalAmount), 0) - expenses;
   const physicalCashInHand = netCollection - digitalCollection;
@@ -141,11 +170,13 @@ dailySummaryRouter.get("/", async (req, res) => {
     .reduce((s, r) => s + Number(r.total), 0);
   const digitalExpenses = expenses - cashExpenses;
 
-  // Net Digital Collection = digital collected - digital refunds (digital refunds by method)
-  const digitalRefunded = refundItems.reduce((s, p) => {
-    const m = (p.method ?? "other").toLowerCase();
-    return s + (["upi", "card", "online", "bank", "cheque", "neft", "rtgs"].includes(m) ? Math.abs(Number(p.amount)) : 0);
-  }, 0);
+  // Net Digital Collection = digital collected - digital refunds (digital refunds by method).
+  // Same shared classifier used above — fixes the identical exact-match bug
+  // for gateway-qualified refund method strings and "insurance".
+  const digitalRefunded = refundItems.reduce(
+    (s, p) => s + (isDigitalSettlement(p.method) ? Math.abs(Number(p.amount)) : 0),
+    0,
+  );
   const netDigitalCollection = digitalCollection - digitalRefunded;
 
   const byMethod: Record<string, number> = {};
@@ -256,6 +287,13 @@ dailySummaryRouter.get("/", async (req, res) => {
       netDigitalCollection,
       cancelledBillsAmount: cancelledBills.reduce((s, r) => s + Number(r.totalAmount), 0),
       totalRefunded,
+      // ── Suspense / exception bucket (LOCKED BUSINESS RULE #6) ──────────
+      // Excluded from cashCollection/digitalCollection above. Surfaced here
+      // for admin correction — see suspensePayments below for row detail.
+      suspensePaymentCount: suspensePaymentItems.length,
+      suspensePaymentAmount,
+      suspenseRefundCount: suspenseRefundItems.length,
+      suspenseRefundAmount,
     },
     byMethod,
     byRefundMethod,
@@ -263,6 +301,14 @@ dailySummaryRouter.get("/", async (req, res) => {
     byUser,
     totalExpense: expenses,
     grandTotal: physicalCashInHand,
+    suspensePayments: [...suspensePaymentItems, ...suspenseRefundItems].map((p) => ({
+      id: p.id,
+      billId: p.billId,
+      amount: Number(p.amount),
+      rawMethod: p.method,
+      recordedByName: p.recordedByName,
+      createdAt: p.createdAt instanceof Date ? p.createdAt.toISOString() : String(p.createdAt),
+    })),
     bills: allBillRows.map((r) => ({
       id: r.id,
       billNumber: r.billNumber,

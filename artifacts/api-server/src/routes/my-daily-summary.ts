@@ -5,6 +5,7 @@ import { sql, and, eq, gte, lt } from "drizzle-orm";
 import { FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { getTransporter, getEmailSettings } from "../email";
+import { classifyPaymentMethod, isPhysicalCash, isDigitalSettlement } from "../lib/paymentMethodClassifier";
 
 export const myDailySummaryRouter = Router();
 
@@ -275,6 +276,14 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
 
   // ── Refunds recorded by this staff ─────────────────────────────────────
   // ── Expenses approved_by this staff (cash + digital) ─────────────────
+  // RECONCILIATION POSTING-DATE RULE (see DAILY_FINANCIAL_RECONCILIATION_
+  // SPECIFICATION.md §16.5): expense_date is a free-text, backdatable
+  // display/accounting field — it must NOT drive cash-drawer reconciliation,
+  // because a backdated entry would retroactively change an already-closed
+  // day's expected cash. Reconciliation always uses `created_at`, the
+  // immutable timestamp of when the expense was actually posted — the same
+  // instant the cash physically left the drawer. This matches day-close.ts,
+  // which already windows expenses by created_at.
   const expRaw = await db.execute<{
     cash_expenses: string;
     digital_expenses: string;
@@ -283,7 +292,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       COALESCE(SUM(amount::numeric) FILTER (WHERE LOWER(payment_mode) = 'cash'), 0)::text AS cash_expenses,
       COALESCE(SUM(amount::numeric) FILTER (WHERE LOWER(payment_mode) <> 'cash'), 0)::text AS digital_expenses
     FROM expenses
-    WHERE expense_date >= ${from} AND expense_date <= ${to}
+    WHERE created_at >= ${start.toISOString()} AND created_at < ${end.toISOString()}
     ${staffName !== null ? sql`AND approved_by = ${staffName}` : sql``}
   `);
 
@@ -345,11 +354,19 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
   // Equation that balances:
   //   Cash In − Cash Refunded − Cash Expenses = Physical Cash in Hand
   //   Digital In − Digital Refunded         = Net Digital Collection
-  // Shared helper
-  const isDigital = (m: string | null | undefined) => {
-    const ml = (m ?? "").toLowerCase();
-    return ["upi", "card", "online", "bank", "cheque", "neft", "rtgs"].includes(ml) || ml.startsWith("web booking");
-  };
+  // Classification is delegated entirely to the shared classifier
+  // (../lib/paymentMethodClassifier.ts) — the single source of truth used
+  // identically by daily-summary.ts and day-close.ts. This fixes the
+  // critical defect where gateway-qualified strings like
+  // "Online (ICICI Orange Pay)" / "Online (Razorpay)" / "Online (PhonePe)" /
+  // "Online (BharatPe)" failed an exact "online" match and were silently
+  // counted as physical cash, and where "insurance" fell into the same trap.
+  //
+  // Any payment method the classifier does NOT recognize is routed to the
+  // suspense/exception bucket below — it is EXCLUDED from cashIn, digitalIn,
+  // cashRefunded, and digitalRefunded. An unrecognized method must never be
+  // silently assumed to be cash (or digital); it must be visible for admin
+  // correction instead (see `suspensePayments` in the response).
   const formatMethod = (m: string | null | undefined): string => {
     const methodStr = m ?? "cash";
     if (methodStr.toLowerCase().startsWith("online")) {
@@ -357,22 +374,29 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     }
     return methodStr;
   };
-  const cashIn = paymentItems.reduce(
-    (s, p) => s + (isDigital(p.method) ? 0 : Number(p.amount)),
+  const unknownPaymentItems = paymentItems.filter((p) => !classifyPaymentMethod(p.method).isKnown);
+  const unknownRefundItems = refundItems.filter((p) => !classifyPaymentMethod(p.method).isKnown);
+  const knownPaymentItems = paymentItems.filter((p) => classifyPaymentMethod(p.method).isKnown);
+  const knownRefundItems = refundItems.filter((p) => classifyPaymentMethod(p.method).isKnown);
+
+  const cashIn = knownPaymentItems.reduce(
+    (s, p) => s + (isPhysicalCash(p.method) ? Number(p.amount) : 0),
     0,
   );
-  const digitalIn = paymentItems.reduce(
-    (s, p) => s + (isDigital(p.method) ? Number(p.amount) : 0),
+  const digitalIn = knownPaymentItems.reduce(
+    (s, p) => s + (isDigitalSettlement(p.method) ? Number(p.amount) : 0),
     0,
   );
-  const cashRefunded = refundItems.reduce(
-    (s, p) => s + (isDigital(p.method) ? 0 : Math.abs(Number(p.amount))),
+  const cashRefunded = knownRefundItems.reduce(
+    (s, p) => s + (isPhysicalCash(p.method) ? Math.abs(Number(p.amount)) : 0),
     0,
   );
-  const digitalRefunded = refundItems.reduce(
-    (s, p) => s + (isDigital(p.method) ? Math.abs(Number(p.amount)) : 0),
+  const digitalRefunded = knownRefundItems.reduce(
+    (s, p) => s + (isDigitalSettlement(p.method) ? Math.abs(Number(p.amount)) : 0),
     0,
   );
+  const suspensePaymentAmount = unknownPaymentItems.reduce((s, p) => s + Number(p.amount), 0);
+  const suspenseRefundAmount = unknownRefundItems.reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
   const cashExpenses = Number(expRaw.rows[0]?.cash_expenses ?? 0);
   const digitalExpenses = Number(expRaw.rows[0]?.digital_expenses ?? 0);
   const totalExpenses = cashExpenses + digitalExpenses;
@@ -437,6 +461,8 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     const names = Array.from(staffSet).sort();
 
     // Expenses per person (cash + digital, only needed for all-staff mode)
+    // Same posting-date rule as the aggregate query above — created_at, not
+    // the backdatable expense_date.
     type ExpRow = { approved_by: string; cash: string; digital: string };
     const cashExpPerPerson: Record<string, number> = {};
     const digitalExpPerPerson: Record<string, number> = {};
@@ -446,7 +472,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
         COALESCE(SUM(amount::numeric) FILTER (WHERE LOWER(payment_mode) = 'cash'), 0)::text AS cash,
         COALESCE(SUM(amount::numeric) FILTER (WHERE LOWER(payment_mode) <> 'cash'), 0)::text AS digital
       FROM expenses
-      WHERE expense_date >= ${from} AND expense_date <= ${to}
+      WHERE created_at >= ${start.toISOString()} AND created_at < ${end.toISOString()}
         AND approved_by IS NOT NULL
       GROUP BY approved_by
     `);
@@ -468,10 +494,12 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       const sCancelled = scancelled.reduce((s, r) => s + Number(r.totalAmount), 0);
       const sOutstanding = sactive.reduce((s, r) => s + trueOutstanding(r), 0);
       const sNetCollected = sActiveBilling - sOutstanding;
-      const sCashIn = spayPos.reduce((s, p) => s + (isDigital(p.method) ? 0 : Number(p.amount)), 0);
-      const sDigitalIn = spayPos.reduce((s, p) => s + (isDigital(p.method) ? Number(p.amount) : 0), 0);
-      const sCashRef = spayNeg.reduce((s, p) => s + (isDigital(p.method) ? 0 : Math.abs(Number(p.amount))), 0);
-      const sDigitalRef = spayNeg.reduce((s, p) => s + (isDigital(p.method) ? Math.abs(Number(p.amount)) : 0), 0);
+      const sPayPosKnown = spayPos.filter((p) => classifyPaymentMethod(p.method).isKnown);
+      const sPayNegKnown = spayNeg.filter((p) => classifyPaymentMethod(p.method).isKnown);
+      const sCashIn = sPayPosKnown.reduce((s, p) => s + (isPhysicalCash(p.method) ? Number(p.amount) : 0), 0);
+      const sDigitalIn = sPayPosKnown.reduce((s, p) => s + (isDigitalSettlement(p.method) ? Number(p.amount) : 0), 0);
+      const sCashRef = sPayNegKnown.reduce((s, p) => s + (isPhysicalCash(p.method) ? Math.abs(Number(p.amount)) : 0), 0);
+      const sDigitalRef = sPayNegKnown.reduce((s, p) => s + (isDigitalSettlement(p.method) ? Math.abs(Number(p.amount)) : 0), 0);
       const sNetCash = sCashIn - sCashRef;
       const sNetDigital = sDigitalIn - sDigitalRef;
       const sTotalRec = spayPos.reduce((s, p) => s + Number(p.amount), 0);
@@ -546,6 +574,16 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       cancelledByOthersCount: cancelledByOthers.length,
       cancelledBySelfCount: cancelledBySelf.length,
       closingCashBalance: physicalCashInHand,
+      // ── Suspense / exception bucket (see LOCKED BUSINESS RULE #6) ──────
+      // Payments/refunds whose method string was not recognized by the
+      // shared classifier. Deliberately EXCLUDED from cashIn/digitalIn/
+      // cashRefunded/digitalRefunded above — an unknown method must never
+      // silently become cash or digital. Surfaced here so an admin can
+      // correct the underlying payment row.
+      suspensePaymentCount: unknownPaymentItems.length,
+      suspensePaymentAmount,
+      suspenseRefundCount: unknownRefundItems.length,
+      suspenseRefundAmount,
     },
     byMethod,
     bills: allBillRows.map((r) => ({
@@ -572,6 +610,18 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
         p.createdAt instanceof Date ? p.createdAt.toISOString() : String(p.createdAt),
       billCreatedAt:
         p.billCreatedAt instanceof Date ? p.billCreatedAt.toISOString() : String(p.billCreatedAt),
+    })),
+    // Unrecognized-method payments/refunds — NOT included in any cash/digital
+    // total above. Shown separately so an admin can correct the payment row
+    // (fix the method string) rather than have it silently misclassified.
+    suspensePayments: [...unknownPaymentItems, ...unknownRefundItems].map((p) => ({
+      id: p.id,
+      billId: p.billId,
+      amount: Number(p.amount),
+      rawMethod: p.method,
+      recordedByName: p.recordedByName,
+      createdAt:
+        p.createdAt instanceof Date ? p.createdAt.toISOString() : String(p.createdAt),
     })),
     billEdits: billEditsRaw.map((r) => ({
       id: r.id,

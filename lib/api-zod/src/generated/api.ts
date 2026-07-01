@@ -3004,10 +3004,12 @@ export const ListExpensesResponse = zod.array(ListExpensesResponseItem);
 /**
  * @summary Record a new expense
  */
+export const createExpenseBodyAmountExclusiveMin = 0;
+
 export const CreateExpenseBody = zod.object({
   category: zod.string(),
   description: zod.string(),
-  amount: zod.number(),
+  amount: zod.number().gt(createExpenseBodyAmountExclusiveMin),
   expenseDate: zod.string(),
   paymentMode: zod.string().optional(),
   paidTo: zod.string().nullish(),
@@ -3061,10 +3063,12 @@ export const UpdateExpenseParams = zod.object({
   id: zod.coerce.number(),
 });
 
+export const updateExpenseBodyAmountExclusiveMin = 0;
+
 export const UpdateExpenseBody = zod.object({
   category: zod.string().optional(),
   description: zod.string().optional(),
-  amount: zod.number().optional(),
+  amount: zod.number().gt(updateExpenseBodyAmountExclusiveMin).optional(),
   expenseDate: zod.string().optional(),
   paymentMode: zod.string().optional(),
   paidTo: zod.string().nullish(),

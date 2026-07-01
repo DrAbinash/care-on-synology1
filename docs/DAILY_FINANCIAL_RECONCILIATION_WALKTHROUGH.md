@@ -326,6 +326,29 @@ Ref: feature/website-login-redirection
 
 ---
 
+## ADDENDUM (v1.1) — POST-FREEZE AUDIT FIXES
+
+A follow-up review audit (1 July 2026, same day) found two production-blocking defects and five major defects in the *implementation* of the frozen specification — the business rules themselves were correct and remain unchanged; the code did not fully honor them. All were fixed, tested, and documented. Full detail: Specification §22.
+
+**Critical (production-blocking) fixes:**
+1. Gateway/online payments (`"Online (ICICI Orange Pay)"`, `"Online (Razorpay)"`, `"Online (PhonePe)"`, `"Online (BharatPe)"`, and `"insurance"`) were being silently counted as physical cash in `my-daily-summary.ts` and `daily-summary.ts` due to an exact-string-match bug. Fixed via a new shared classifier.
+2. `day-close.ts`'s expected cash never subtracted cash expenses, so staff physically counting their drawer were compared against an inflated figure. Fixed: `Expected Cash = Cash In − Cash Refunded − Cash Expenses`, per staff (Cash Attribution Rule).
+
+**Major fixes:**
+3. Three independently-drifted method classifiers unified into one shared module (`artifacts/api-server/src/lib/paymentMethodClassifier.ts`), used identically by all three reconciliation surfaces.
+4. Expense reconciliation windowing unified on `created_at` (immutable posting timestamp) everywhere — previously `daily-summary.ts`/`my-daily-summary.ts` used the backdatable `expense_date`, while `day-close.ts` already used `created_at`.
+5. Closed-day carry-forward (`MAX(last overall close, last personal close)`) re-verified and unit-tested — no code defect found; this rule was already correctly implemented.
+6. Refund-after-close now clearly documented as carrying forward automatically with no owner approval required (matches existing ERP rule; no logic change).
+7. Suspense/exception bucket added: payments/refunds with an unrecognized method are now excluded from every cash and digital total and surfaced separately for admin correction, on every reconciliation endpoint.
+8. Cash-handover/opening-balance/bank-deposit gap re-confirmed as a documented limitation, not implemented (explicitly out of scope per fix instructions — no large new module without a live-DB migration path).
+9. `CreateExpenseBody`/`UpdateExpenseBody` previously accepted zero/negative amounts with no validation; now rejected via `exclusiveMinimum: 0` in the OpenAPI spec (matching the pattern already used by payment/refund bodies).
+
+**Testing:** 48 new tests added (38 classifier + 35 day-close pure-logic + 13 validation, minus overlap), all passing. Full suite: 250/250 passing, 0 typecheck errors across the monorepo.
+
+**Deliberately NOT done:** no new `day_closures` database columns were added — see Specification §22.7 for why (a live-DB migration is required to do this safely, and this environment has no DB connection). The suspense/expense-split data is fully computed and returned in every live API response; only the *supplementary* breakdown fields are unpersisted on the historical closed-day record. The core `expectedCash`/`totalExpected` columns (already existing) are fully correct.
+
+---
+
 ## CONCLUSION
 
 The **Daily Financial Reconciliation Specification** is now a permanent, frozen reference for the Care Diagnostics ERP platform. It documents the complete business logic, mathematical formulas, ownership rules, and audit principles that govern the end-of-day cash reconciliation process.
