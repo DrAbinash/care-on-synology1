@@ -5,7 +5,7 @@ import { eq, and, gt, lte, desc, sql, inArray } from "drizzle-orm";
 import { z } from "zod";
 import type { Response, NextFunction } from "express";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
-import { classifyPaymentMethod } from "../lib/paymentMethodClassifier";
+import { classifyPaymentMethod, isPhysicalCash } from "../lib/paymentMethodClassifier";
 import { lastOverallClosureBoundary } from "../lib/closureBoundary";
 
 // Inline super-admin gate that works on the regular ERP staff session
@@ -140,7 +140,21 @@ export function splitCashExpenses(expRows: ExpenseLike[]): {
   digitalExpenses: number;
   cashExpensesByApprover: Map<string, number>;
 } {
-  const isCashExpense = (mode: string | null | undefined) => (mode ?? "cash").trim().toLowerCase() === "cash";
+  // Delegates to the shared payment-method classifier's cash check for
+  // consistency with payments.method classification (Approved Fix #5),
+  // with one explicit difference preserved: expenses.payment_mode is a
+  // NOT NULL column with a DEFAULT of 'cash' in the schema, so a missing/
+  // blank value here means "cash" (matching the DB default), NOT "unknown"
+  // (which is what the classifier would say for an empty payments.method —
+  // that field has no such default). Swapping this to the classifier's
+  // blanket unknown-handling would silently exclude such an expense from
+  // both cash and digital totals, which is not what "expenses.payment_mode
+  // defaults to cash" means.
+  const isCashExpense = (mode: string | null | undefined) => {
+    const trimmed = (mode ?? "").trim();
+    if (!trimmed) return true;
+    return isPhysicalCash(trimmed);
+  };
   const totalExpenses = expRows.reduce((s, e) => s + n(e.amount), 0);
   const cashExpenses = expRows.filter((e) => isCashExpense(e.paymentMode)).reduce((s, e) => s + n(e.amount), 0);
   const digitalExpenses = totalExpenses - cashExpenses;

@@ -121,6 +121,23 @@ describe("splitCashExpenses", () => {
     expect(result.cashExpenses).toBe(150);
   });
 
+  test("blank-string payment_mode also defaults to cash, same as missing/null", () => {
+    const result = splitCashExpenses([{ amount: "75", paymentMode: "   ", approvedBy: "Alice" }]);
+    expect(result.cashExpenses).toBe(75);
+  });
+
+  test("delegates to the shared classifier — an unrecognized payment_mode is NOT cash (regression for Approved Fix #5)", () => {
+    const result = splitCashExpenses([{ amount: "300", paymentMode: "wallet-xyz", approvedBy: "Alice" }]);
+    expect(result.cashExpenses).toBe(0);
+    expect(result.digitalExpenses).toBe(300);
+  });
+
+  test("gateway-qualified payment_mode is correctly excluded from cash, same as payments.method", () => {
+    const result = splitCashExpenses([{ amount: "400", paymentMode: "Online (ICICI Orange Pay)", approvedBy: "Alice" }]);
+    expect(result.cashExpenses).toBe(0);
+    expect(result.digitalExpenses).toBe(400);
+  });
+
   test("per-approver cash expense totals are tracked separately", () => {
     const result = splitCashExpenses([
       { amount: "100", paymentMode: "cash", approvedBy: "Alice" },

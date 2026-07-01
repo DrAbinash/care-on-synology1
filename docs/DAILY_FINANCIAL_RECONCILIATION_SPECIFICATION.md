@@ -1729,6 +1729,8 @@ This section documents the corrections made during the post-freeze audit review 
 
 **Rule:** Only the literal string `"cash"` is ever physical cash. A method the classifier does not recognize is **never** assumed to be cash or digital — see §22.3.
 
+**Follow-up (same day): `expenses.payment_mode` now also delegates to this classifier.** This is a *separate* field from `payments.method` (it records how an expense was paid out, not how a patient paid), and it was never affected by the critical gateway-string bug — it always did an exact match on `"cash"`, which is already safe. It has been wired to call `isPhysicalCash()` for consistency, with one deliberate difference preserved: `expenses.payment_mode` is a `NOT NULL DEFAULT 'cash'` column, so a missing/blank value here still means cash (matching the DB default) rather than "unknown" — see `day-close.ts`'s `splitCashExpenses()` for the exact logic. The two SQL-aggregation queries in `my-daily-summary.ts` (`SUM ... FILTER (WHERE LOWER(payment_mode) = 'cash')`) were left as raw SQL rather than restructured into JS-level classifier calls — the classification rule is already identical, so converting them would add real structural risk for no behavioral change; they carry a comment linking them to this rule so they're updated together if it ever changes.
+
 ---
 
 ### 22.2 Physical Cash vs Digital Settlement Separation

@@ -8,7 +8,7 @@ import { sql, and, eq, gte, lt, ne, isNull, or, isNotNull } from "drizzle-orm";
 import { patientsTable } from "@workspace/db/schema";
 
 import { todayIST } from "../lib/istDate";
-import { classifyPaymentMethod, isDigitalSettlement } from "../lib/paymentMethodClassifier";
+import { classifyPaymentMethod, isDigitalSettlement, isPhysicalCash } from "../lib/paymentMethodClassifier";
 
 export const dailySummaryRouter: IRouter = Router();
 
@@ -164,9 +164,19 @@ dailySummaryRouter.get("/", async (req, res) => {
     .filter((p) => p.billId === null || todayBillIdSet.has(p.billId!))
     .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
 
-  // Expenses split by payment_mode: cash vs digital
+  // Expenses split by payment_mode: cash vs digital. Delegates to the
+  // shared classifier's cash check (Approved Fix #5), with the same
+  // explicit missing-value exception as day-close.ts's splitCashExpenses:
+  // expenses.payment_mode is NOT NULL DEFAULT 'cash' in the schema, so a
+  // missing/blank value here means cash, not "unknown" — see day-close.ts
+  // for the full rationale.
+  const isCashExpenseMode = (mode: string | null | undefined) => {
+    const trimmed = (mode ?? "").trim();
+    if (!trimmed) return true;
+    return isPhysicalCash(trimmed);
+  };
   const cashExpenses = expenseRows.rows
-    .filter((r) => (r.payment_mode ?? "cash").toLowerCase() === "cash")
+    .filter((r) => isCashExpenseMode(r.payment_mode))
     .reduce((s, r) => s + Number(r.total), 0);
   const digitalExpenses = expenses - cashExpenses;
 

@@ -284,6 +284,16 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
   // immutable timestamp of when the expense was actually posted — the same
   // instant the cash physically left the drawer. This matches day-close.ts,
   // which already windows expenses by created_at.
+  //
+  // CASH CLASSIFICATION (kept in raw SQL, deliberately not routed through
+  // the shared classifier — see ../lib/paymentMethodClassifier.ts): this is
+  // a single-row SQL aggregation (SUM ... FILTER), not a JS array filter,
+  // so swapping it to call the classifier would require restructuring this
+  // into a per-row fetch + JS reduce. The classification RULE is already
+  // identical to isPhysicalCash() — exact match on the literal string
+  // "cash" (case-insensitive) — so there is no behavioral gap today. If
+  // this rule ever changes, update it here, in the twin query below, and
+  // in day-close.ts's/daily-summary.ts's isCashExpense helpers together.
   const expRaw = await db.execute<{
     cash_expenses: string;
     digital_expenses: string;
@@ -462,7 +472,8 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
 
     // Expenses per person (cash + digital, only needed for all-staff mode)
     // Same posting-date rule as the aggregate query above — created_at, not
-    // the backdatable expense_date.
+    // the backdatable expense_date. Same SQL-level cash classification note
+    // as the aggregate query above — kept in sync with isPhysicalCash().
     type ExpRow = { approved_by: string; cash: string; digital: string };
     const cashExpPerPerson: Record<string, number> = {};
     const digitalExpPerPerson: Record<string, number> = {};
