@@ -4,7 +4,8 @@ import QRCode from "qrcode";
 import { api } from "@/lib/fetchApi";
 import { incrementPendingSyncCount } from "@/hooks/useSyncStatus";
 import { readStaffSession, isFeatureEnabled } from "@/lib/staffSession";
-import { getAutoBillPaperSize, getBillPaperSize } from "@/lib/billPrintLayout";
+import { getBillPaperSize } from "@/lib/billPrintLayout";
+import { getAutoBillPaperSize } from "@/lib/billPrintSettings";
 import {
   buildBillPrintHtml,
   printViaIframe,
@@ -65,6 +66,14 @@ import {
   Check,
   ChevronRight,
   ChevronLeft,
+  ChevronUp,
+  Scan,
+  FileText,
+  Settings2,
+  ClipboardList,
+  CreditCard,
+  Barcode,
+  Save,
 } from "lucide-react";
 
 // ──────────────────────────────────────────────────────
@@ -720,7 +729,7 @@ export default function BillingDesk() {
               })
                 .catch(() => "")
                 .then((qrUrl) => {
-                  const paperSize = getAutoBillPaperSize(updatedBill.order?.tests?.length || 1, getBillPaperSize(), (settings as any).autoA4Threshold ?? 5);
+                  const paperSize = (getAutoBillPaperSize(updatedBill.order?.tests?.length || 1, undefined, (settings as any).autoA4Threshold ?? 5) === "A4" ? "A4" : "A5") as "A4" | "A5";
                   const html = buildBillPrintHtml({
                     bill: billForPrint,
                     clinic: cachedClinic,
@@ -844,6 +853,22 @@ export default function BillingDesk() {
   });
   const [quickDoctorPickerSlot, setQuickDoctorPickerSlot] = useState<number | null>(null);
   const [quickDoctorPickerSearch, setQuickDoctorPickerSearch] = useState("");
+  const [showNewPatientForm, setShowNewPatientForm] = useState(false);
+  // Mutable copy of quick test slots — initialized from clinic settings, saved to localStorage
+  const [quickTestSlots, setQuickTestSlots] = useState<(number | null)[]>(() => {
+    try {
+      const saved = localStorage.getItem("billingDesk:quickTests");
+      if (saved) {
+        const arr = JSON.parse(saved) as (number | null)[];
+        if (Array.isArray(arr)) {
+          const out = arr.slice(0, 6).map((v) => (typeof v === "number" ? v : null));
+          while (out.length < 6) out.push(null);
+          return out;
+        }
+      }
+    } catch { /* fall through */ }
+    return [null, null, null, null, null, null];
+  });
 
   const { data: doctors = [] } = useQuery<Doctor[]>({
     queryKey: ["doctors-list"],
@@ -937,6 +962,49 @@ export default function BillingDesk() {
       }
     },
   });
+
+  // Form F save mutation — used by the Form F dialog popup
+  const formFSaveMut = useMutation({
+    mutationFn: (body: { billNumber: string; husbandName: string; address: string }) =>
+      api.post("/api/form-f/save", body),
+    onSuccess: () => {
+      setFormFPopupOpen(false);
+      toast({ title: "Form F saved" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Form F save failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  // Manual gateway status check — called by the "Check Status" button in the
+  // gateway payment modal. The polling useEffect runs automatically but a manual
+  // check lets the staff trigger it immediately.
+  const checkGatewayStatus = async (billId: number, txnRef: string) => {
+    try {
+      const res = await api.get<{ status: "pending" | "success" | "failed" | "expired"; error?: string }>(
+        `/api/bills/gateway-payment-status/${encodeURIComponent(txnRef)}`
+      );
+      if (res.status === "success") {
+        setGatewayPaymentStatus("success");
+        toast({ title: "Payment confirmed!" });
+      } else if (res.status === "failed" || res.status === "expired") {
+        setGatewayPaymentStatus(res.status);
+        setGatewayPaymentError(res.error ?? "Payment not completed");
+      }
+    } catch (err) {
+      console.error("[gateway] manual status check failed:", err);
+    }
+  };
+
+  // Toggle a doctor id in the quick-doctor slot at the given position
+  const toggleQuickDoctorSlot = (doctorId: number) => {
+    if (quickDoctorPickerSlot === null) return;
+    const next = [...quickDoctorIds];
+    next[quickDoctorPickerSlot] = next[quickDoctorPickerSlot] === doctorId ? null : doctorId;
+    setQuickDoctorIds(next);
+    api.put("/api/clinic-settings", { quickDoctorIds: JSON.stringify(next) }).catch(() => {});
+    setQuickDoctorPickerSlot(null);
+  };
 
   const queryClient = useQueryClient();
   const printAfterSaveRef = useRef(false);
@@ -1113,7 +1181,7 @@ export default function BillingDesk() {
               tokenNo: lastBillLocal.tokenNo ?? null,
               testTokens: lastBillLocal.testTokens ?? null,
             };
-            const paperSize = getAutoBillPaperSize(lastBillLocal.tests.length, getBillPaperSize(), (settings as any).autoA4Threshold ?? 5);
+            const paperSize = (getAutoBillPaperSize(lastBillLocal.tests.length, undefined, (settings as any).autoA4Threshold ?? 5) === "A4" ? "A4" : "A5") as "A4" | "A5";
             const html = buildBillPrintHtml({
               bill: billForPrint,
               clinic: clinicForPrint,
@@ -1703,7 +1771,7 @@ export default function BillingDesk() {
                           <select
                             className="h-8 text-xs border border-input rounded-md px-1 bg-background"
                             value={newPatient.ageUnit}
-                            onChange={(e) => setNewPatient((p) => ({ ...p, ageUnit: e.target.value }))}
+                            onChange={(e) => setNewPatient((p) => ({ ...p, ageUnit: e.target.value as "years" | "months" | "days" }))}
                           >
                             <option value="years">Yrs</option>
                             <option value="months">Mo</option>
@@ -1761,13 +1829,13 @@ export default function BillingDesk() {
                     )}
                     <Button
                       className="w-full h-8 text-sm bg-[#2563eb] hover:bg-[#1d4ed8] text-white"
-                      disabled={registerMut.isPending || !newPatient.firstName.trim() || !newPatient.phone.trim()}
+                      disabled={createPatientMut.isPending || !newPatient.firstName.trim() || !newPatient.phone.trim()}
                       onClick={() => {
                         if (!newPatient.firstName.trim() || !newPatient.phone.trim()) return;
-                        registerMut.mutate();
+                        createPatientMut.mutate(newPatient);
                       }}
                     >
-                      {registerMut.isPending ? "Registering…" : "Register & Select Patient"}
+                      {createPatientMut.isPending ? "Registering…" : "Register & Select Patient"}
                     </Button>
                   </div>
                 )}
@@ -1776,11 +1844,11 @@ export default function BillingDesk() {
             )}
 
             {/* Duplicate bill warning */}
-            {existingOpenBill && !lastBill && (
+            {recentPatientBill && !lastBill && (
               <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-sm">
                 <AlertTriangle size={14} className="text-amber-600 flex-shrink-0" />
                 <span className="text-amber-800 text-xs">
-                  Open bill <strong>{existingOpenBill.billNumber}</strong> already exists for this patient.
+                  Open bill <strong>{recentPatientBill.billNumber}</strong> already exists for this patient.
                 </span>
               </div>
             )}
@@ -1858,7 +1926,7 @@ export default function BillingDesk() {
                     })}
                     <button
                       type="button"
-                      onClick={() => setQuickDoctorPickerOpen(true)}
+                      onClick={() => setQuickDoctorPickerSlot(quickDoctorPickerSlot ?? 0)}
                       className="px-2 py-1 rounded-full text-[11px] font-semibold border border-dashed border-[#93c5fd] text-[#2563eb] hover:bg-[#eff6ff] transition-colors"
                     >
                       <Settings2 size={9} className="inline mr-0.5" />Edit
@@ -1901,7 +1969,7 @@ export default function BillingDesk() {
                           >
                             <Stethoscope size={11} className="text-[#2563eb]" />
                             {d.name}
-                            {d.speciality && <span className="ml-auto text-[11px] text-[#94a3b8]">{d.speciality}</span>}
+                            {d.specialization && <span className="ml-auto text-[11px] text-[#94a3b8]">{d.specialization}</span>}
                           </button>
                         ))}
                       {doctors.filter((d) => d.name.toLowerCase().includes(doctorSearch.toLowerCase())).length === 0 && (
@@ -2047,7 +2115,7 @@ export default function BillingDesk() {
                             <div className="text-xs font-semibold text-[#1e3a5f] truncate">{pkg.name}</div>
                             <div className="text-[10px] text-[#94a3b8]">{pkg.tests.length} tests</div>
                           </div>
-                          <span className="text-sm font-bold text-[#1e3a5f] flex-shrink-0">{inr(pkg.discountedPrice)}</span>
+                          <span className="text-sm font-bold text-[#1e3a5f] flex-shrink-0">{inr(pkg.discountPct)}</span>
                         </button>
                       ))}
                     </div>
@@ -2494,7 +2562,7 @@ export default function BillingDesk() {
       </Dialog>
 
       {/* Quick Doctor slot picker */}
-      <Dialog open={quickDoctorPickerOpen} onOpenChange={setQuickDoctorPickerOpen}>
+      <Dialog open={quickDoctorPickerSlot !== null} onOpenChange={(o) => { if (!o) setQuickDoctorPickerSlot(null); }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle className="text-base font-bold">Configure Quick Doctor Slots</DialogTitle>
@@ -2514,7 +2582,7 @@ export default function BillingDesk() {
                   >
                     {pinned ? <CheckCircle2 size={13} className="text-[#2563eb]" /> : <div className="w-3.5 h-3.5 rounded-full border-2 border-[#cbd5e1]" />}
                     <span className="flex-1">{d.name}</span>
-                    {d.speciality && <span className="text-[11px] text-[#94a3b8]">{d.speciality}</span>}
+                    {d.specialization && <span className="text-[11px] text-[#94a3b8]">{d.specialization}</span>}
                   </button>
                 );
               })}

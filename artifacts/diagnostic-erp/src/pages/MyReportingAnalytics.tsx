@@ -49,7 +49,7 @@ interface AnalyticsResponse {
     uniqueLabelsUsed: number;
   };
   qaStats: { grade: string; count: number }[];
-  aiPromptStats: { promptEdits: number; categoriesEdited: number };
+  aiPromptStats: { promptEdits: number; categoriesEdited: number; draftsWithAi: number; avgAiPct: number; maxAiPct: number };
   priorityBreakdown: { priority: string; count: number }[];
 }
 
@@ -120,7 +120,7 @@ export default function MyReportingAnalytics() {
   const [, navigate] = useLocation();
   const [days, setDays] = useState(30);
   const session = readStaffSession();
-  const radiologist = session?.subjectName ?? "";
+  const radiologist = session?.user.name ?? "";
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery<AnalyticsResponse>({
     queryKey: ["my-analytics", radiologist, days],

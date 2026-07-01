@@ -1028,7 +1028,7 @@ radiologyReportGeneratorRouter.get("/protocols", async (_req: Request, res: Resp
 
 // GET /protocols/:key — get one protocol by protocol_key (e.g. "MRI_BRAIN_PLAIN")
 radiologyReportGeneratorRouter.get("/protocols/:key", async (req: Request, res: Response) => {
-  const { key } = req.params;
+  const key = String(req.params.key);
   try {
     const [protocol] = await db
       .select()

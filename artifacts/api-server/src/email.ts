@@ -353,6 +353,32 @@ export async function sendMonthlyAuditEmail(params: {
   }
 }
 
+// General-purpose alert email — used by automated watchdogs (e.g. the PACS
+// pull-agent stall detector in cron.ts). Accepts an arbitrary subject and
+// HTML body so individual watchdogs can compose their own alert content
+// without needing a new dedicated email function for each one.
+export async function sendAlertEmail(params: {
+  subject: string;
+  html: string;
+}) {
+  const s = await getEmailSettings();
+  if (!s || !s.adminEmail) return;
+
+  const transport = await getTransporter();
+  if (!transport) return;
+
+  try {
+    await transport.sendMail({
+      from: `"${s.fromName}" <${s.fromAddress}>`,
+      to: s.adminEmail,
+      subject: params.subject,
+      html: params.html,
+    });
+  } catch (err) {
+    console.error("[email] alert email failed:", err instanceof Error ? err.message : err);
+  }
+}
+
 export async function sendBackupFailureEmail(params: {
   jobName: string;
   errorMessage: string;

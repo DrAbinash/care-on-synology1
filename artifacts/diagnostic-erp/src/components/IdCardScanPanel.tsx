@@ -643,12 +643,7 @@ export default function IdCardScanPanel({
         if (enhCanvas && mode !== "original") {
           const enhB64 = applyEnhancementToCanvas(cropped, mode, enhCanvas);
           setEnhancedBase64(enhB64);
-          if (mode !== "original") {
-            setStatus((prev) =>
-              prev.includes("crop") ? prev + ` · ${MODE_LABELS[mode]} applied` : `${MODE_LABELS[mode]} applied`,
-              "ok"
-            );
-          }
+          setStatus(`${MODE_LABELS[mode]} applied`, "ok");
         } else if (enhCanvas) {
           // Original mode — just show cropped
           enhCanvas.width = cropped.width;

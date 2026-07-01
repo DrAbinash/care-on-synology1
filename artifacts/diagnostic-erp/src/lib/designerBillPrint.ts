@@ -131,7 +131,7 @@ function buildPageData(
   const chqAmt = payments.filter((p) => ["cheque","check"].includes((p.method ?? "").toLowerCase())).reduce((s, p) => s + Number(p.amount ?? 0), 0);
   const onlineAmt = payments.filter((p) => ["online","gateway","upi","card"].includes((p.method ?? "").toLowerCase())).reduce((s, p) => s + Number(p.amount ?? 0), 0);
 
-  const isUnconfirmedQr = bill.status === "pending" && bill.payments?.some((p) => (p.method ?? "").toLowerCase().includes("online"));
+  const isUnconfirmedQr = bill.status === "pending" && (bill.payments?.some((p) => (p.method ?? "").toLowerCase().includes("online")) ?? false);
 
   const patientName = [bill.patient?.firstName, bill.patient?.lastName].filter(Boolean).join(" ") || "—";
   const patientAge = calcAge(bill.patient?.dateOfBirth, bill.patient?.ageValue, bill.patient?.ageUnit);

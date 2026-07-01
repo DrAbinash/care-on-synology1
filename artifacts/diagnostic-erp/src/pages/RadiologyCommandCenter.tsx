@@ -1956,7 +1956,7 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                               if (bp.includes("KNEE")) return "MRI_KNEE";
                               return "MRI_BRAIN_PLAIN"; // default for unclassified MRI
                             })()}
-                            completedBy={readStaffSession()?.subjectName ?? "unknown"}
+                            completedBy={readStaffSession()?.user.name ?? "unknown"}
                           />
                         )}
                         {/* Measurement form — wired to auto-insert into findings */}
@@ -2125,6 +2125,7 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                     <div className="shrink-0">
                       <LocalAiPanel
                         study={study}
+                        currentFindings={rawFindings}
                         onInsertFindings={(text) => {
                           setRawFindings((prev) => prev ? prev + "\n\n" + text : text);
                           setAiCharsInserted((n) => n + text.length);

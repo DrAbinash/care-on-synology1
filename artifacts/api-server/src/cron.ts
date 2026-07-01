@@ -7,7 +7,7 @@ import {
 } from "@workspace/db/schema";
 import { sendDailySummaryEmail, sendCommissionMonthEndEmail, sendMonthlyAuditEmail } from "./email";
 import { runBooksSanity } from "./routes/books-sanity";
-import { auditRunsTable } from "@workspace/db/schema";
+import { auditRunsTable, watchdogStatusTable } from "@workspace/db/schema";
 import { gte, and, lte, eq, inArray, isNull, or, lt } from "drizzle-orm";
 import { encryptBackup } from "@workspace/crypto";
 import {

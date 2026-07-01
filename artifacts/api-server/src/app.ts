@@ -118,9 +118,10 @@ app.get("/health", (_req, res) => {
   });
 });
 
+import { pool } from "@workspace/db";
+
 app.get("/api/health/schema", async (_req, res) => {
   try {
-    const { pool } = await import("./db");
     const client = await pool.connect();
     try {
       // ── Gate 1: Read full deploy state ──────────────────────────────────────
