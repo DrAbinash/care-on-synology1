@@ -44,6 +44,40 @@ import { requireStaffAuth } from "../middleware/requireStaffAuth";
 
 export const gatewayWebhookRouter = Router();
 
+// ─── Signature verification (extracted for unit testing) ─────────────────────
+//
+// SECURITY: both of these previously verified the signature only when one
+// happened to be present in the payload (`if (hash && secret) { verify }`),
+// which meant a forged request that simply omitted the signature field skipped
+// verification entirely and fell through to being trusted. Both now return
+// `false` (reject) whenever the signature or secret is missing, not just when
+// a present signature fails to match. See gatewayWebhookRouter.post handlers
+// below for where these are used — this is the exact logic, only extracted so
+// it can be tested without spinning up the full route + DB.
+
+/** ICICI Orange Pay HMAC-SHA256 webhook signature check. */
+export function verifyIciciWebhookSignature(body: Record<string, string>, secretKey: string | undefined | null): boolean {
+  const secureHash = body.secureHash || "";
+  if (!secureHash || !secretKey) return false;
+  const hashParams = { ...body };
+  delete hashParams.secureHash;
+  const keys = Object.keys(hashParams).sort();
+  const hashText = keys.map((k) => hashParams[k]).join("");
+  const expected = crypto.createHmac("sha256", secretKey).update(hashText).digest("hex");
+  return expected === secureHash;
+}
+
+/** HDFC SmartGateway SHA256 webhook signature check. */
+export function verifyHdfcWebhookSignature(
+  params: { orderId: string; status: string; receivedSignature: string | undefined | null; merchantId: string | undefined | null; secretKey: string | undefined | null },
+): boolean {
+  const { orderId, status, receivedSignature, merchantId, secretKey } = params;
+  if (!receivedSignature || !merchantId || !secretKey) return false;
+  const signatureInput = `${merchantId}|${orderId}|${status}|${secretKey}`;
+  const expected = crypto.createHash("sha256").update(signatureInput).digest("hex");
+  return expected === receivedSignature;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
@@ -161,24 +195,32 @@ gatewayWebhookRouter.post("/icici-webhook", async (req, res): Promise<void> => {
 
   logger.info({ merchantTxnNo, txnStatus, txnID }, "[icici-webhook] Received S2S notification");
 
-  // ── 1. Verify ICICI HMAC-SHA256 signature ─────────────────────────────────
+  // ── 1. Verify ICICI HMAC-SHA256 signature (MANDATORY — see security fix
+  // below; this used to be conditional and silently skippable) ─────────────
   const secretKey =
     process.env.ICICI_SECRET_KEY ||
     (await db.select({ v: clinicSettingsTable.iciciSecretKey })
       .from(clinicSettingsTable).limit(1)
       .then((r) => r[0]?.v || ""));
 
-  if (secureHash && secretKey) {
-    const hashParams = { ...body };
-    delete hashParams.secureHash;
-    const keys = Object.keys(hashParams).sort();
-    const hashText = keys.map((k) => hashParams[k]).join("");
-    const expected = crypto.createHmac("sha256", secretKey).update(hashText).digest("hex");
-    if (expected !== secureHash) {
-      logger.warn({ merchantTxnNo, expected, received: secureHash }, "[icici-webhook] HMAC mismatch — rejecting");
-      await logWebhookPayload({ bookingRef: merchantTxnNo, gateway: "icici", amount: rawAmount, payload: body, status: "signature_mismatch" });
-      return;
-    }
+  // SECURITY FIX: previously `if (secureHash && secretKey) { ...verify... }`
+  // — if an attacker's forged POST simply omitted secureHash, this whole
+  // block was skipped and the code fell straight through to trusting the
+  // attacker-supplied txnStatus/amount. Since this endpoint has no other
+  // authentication (S2S webhooks must be publicly reachable) and bookingRef/
+  // billId values are obtainable or guessable by anyone, this allowed
+  // forging a "payment successful" notification for any booking or bill
+  // without paying. Verification is now mandatory: missing secureHash,
+  // missing secretKey, or a hash mismatch are ALL rejected the same way.
+  // See verifyIciciWebhookSignature() above (unit-tested in
+  // gateway-webhooks.test.ts) for the exact check.
+  if (!verifyIciciWebhookSignature(body, secretKey)) {
+    logger.warn(
+      { merchantTxnNo, hasSecureHash: Boolean(secureHash), hasSecretKey: Boolean(secretKey) },
+      "[icici-webhook] Signature missing or invalid — rejecting (cannot verify authenticity)",
+    );
+    await logWebhookPayload({ bookingRef: merchantTxnNo, gateway: "icici", amount: rawAmount, payload: body, status: secureHash ? "signature_mismatch" : "signature_missing" });
+    return;
   }
 
   // ── 2. Check transaction is successful ───────────────────────────────────
@@ -298,20 +340,22 @@ gatewayWebhookRouter.post("/hdfc-webhook", async (req, res): Promise<void> => {
 
   logger.info({ orderId, status, txnId }, "[hdfc-webhook] Received S2S notification");
 
-  // ── 1. Verify HDFC signature ───────────────────────────────────────────────
+  // ── 1. Verify HDFC signature (MANDATORY — see ICICI webhook fix above for
+  // the full rationale; same "silently skippable" defect existed here).
+  // See verifyHdfcWebhookSignature() above (unit-tested in
+  // gateway-webhooks.test.ts) for the exact check. ─────────────────────────
   const merchantId =
     process.env.HDFC_MERCHANT_ID || "";
 
   const secretKey = process.env.HDFC_SECRET_KEY || "";
 
-  if (receivedSignature && merchantId && secretKey) {
-    const signatureInput = `${merchantId}|${orderId}|${status}|${secretKey}`;
-    const expected = crypto.createHash("sha256").update(signatureInput).digest("hex");
-    if (expected !== receivedSignature) {
-      logger.warn({ orderId, expected, received: receivedSignature }, "[hdfc-webhook] Signature mismatch — rejecting");
-      await logWebhookPayload({ bookingRef: orderId, gateway: "hdfc", amount: rawAmount, payload: body, status: "signature_mismatch" });
-      return;
-    }
+  if (!verifyHdfcWebhookSignature({ orderId, status, receivedSignature, merchantId, secretKey })) {
+    logger.warn(
+      { orderId, hasSignature: Boolean(receivedSignature), hasMerchantId: Boolean(merchantId), hasSecretKey: Boolean(secretKey) },
+      "[hdfc-webhook] Signature missing or invalid — rejecting (cannot verify authenticity)",
+    );
+    await logWebhookPayload({ bookingRef: orderId, gateway: "hdfc", amount: rawAmount, payload: body, status: receivedSignature ? "signature_mismatch" : "signature_missing" });
+    return;
   }
 
   // ── 2. Check transaction is successful ───────────────────────────────────
