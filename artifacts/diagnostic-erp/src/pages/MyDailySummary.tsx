@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
 import { SummaryExportToolbar } from "@/components/SummaryExport";
-import type { ExportConfig } from "@/components/SummaryExport";
+import type { ExportConfig, ExportSection, ExportTable } from "@/components/SummaryExport";
 import {
   IndianRupee, Wallet, Banknote, Smartphone, TrendingDown, RotateCcw,
   XCircle, FileEdit, Clock, Calendar, RefreshCw, Tag, CheckCircle2,
@@ -670,11 +670,13 @@ function UnifiedReconciliationPanel({
   byMethod,
   discountBills,
   isOwner,
+  exportConfig,
 }: {
   summary: MyDailySummarySummary;
   byMethod: Record<string, number>;
   discountBills: MyDailySummaryData["discountBills"];
   isOwner: boolean;
+  exportConfig: ExportConfig | null;
 }) {
   const [digitalExpanded, setDigitalExpanded] = useState(false);
   const [discountExpanded, setDiscountExpanded] = useState(false);
@@ -730,23 +732,32 @@ function UnifiedReconciliationPanel({
     <div className="bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl shadow-sm overflow-hidden">
 
       {/* ── Header ── */}
-      <div className="px-4 py-2.5 bg-gradient-to-r from-slate-800 to-slate-900 flex items-center justify-between">
+      <div className="px-4 py-2.5 bg-gradient-to-r from-slate-800 to-slate-900 flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-2">
           <Calculator size={14} className="text-amber-400 shrink-0" />
           <span className="text-[13px] font-bold text-white tracking-wide uppercase">
             Daily Financial Reconciliation
           </span>
         </div>
-        {balanced ? (
-          <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/25 text-emerald-300 text-[11px] font-bold">
-            <CheckCircle2 size={10} /> Balanced · ₹0 variance
-          </span>
-        ) : (
-          <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-red-500/25 text-red-300 text-[11px] font-bold">
-            <AlertTriangle size={10} />
-            {mismatch > 0 ? "Surplus" : "Short"} ₹{Math.abs(mismatch).toFixed(0)}
-          </span>
-        )}
+        <div className="flex items-center gap-3">
+          {/* Export toolbar — compact variant for panel header */}
+          <SummaryExportToolbar
+            config={exportConfig}
+            emailEndpoint="/api/dashboard/my-daily-summary/send-email"
+            compact
+          />
+          {/* Balance status badge */}
+          {balanced ? (
+            <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/25 text-emerald-300 text-[11px] font-bold shrink-0">
+              <CheckCircle2 size={10} /> Balanced · ₹0
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-red-500/25 text-red-300 text-[11px] font-bold shrink-0">
+              <AlertTriangle size={10} />
+              {mismatch > 0 ? "Surplus" : "Short"} ₹{Math.abs(mismatch).toFixed(0)}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* ── Mismatch alert strip ── */}
@@ -1496,50 +1507,147 @@ export default function MyDailySummary() {
 
   const exportConfig = useMemo<ExportConfig | null>(() => {
     if (!s || !data) return null;
-    const effectiveBilling = s.grossBilledIncludingCancelled + s.duesCollectedTotal - s.cancelledAmount;
-    const expectedCollection = effectiveBilling - s.outstanding - s.totalExpenses;
-    const netDigitalCollection = s.digitalCollection - s.digitalRefunded;
-    const expectedPhysicalCash = expectedCollection - netDigitalCollection;
-    const mismatch = expectedPhysicalCash - s.physicalCashInHand;
+
+    // Use the SAME formula as UnifiedReconciliationPanel — must match exactly
+    const totalRefunds     = s.cashRefunded + s.digitalRefunded;
+    const collectible      = s.grossBilledIncludingCancelled
+                           + s.duesCollectedTotal
+                           - s.cancelledAmount
+                           - totalRefunds
+                           - s.outstanding;
+    const netDigital       = s.digitalIn - s.digitalRefunded;
+    const expectedCash     = collectible - netDigital - s.cashExpenses;
+    const mismatch         = expectedCash - s.physicalCashInHand;
+    const balanced         = Math.abs(mismatch) <= 0.01;
+    const discountPct      = (s.grossBilledIncludingCancelled + s.discountsGiven) > 0
+      ? ((s.discountsGiven / (s.grossBilledIncludingCancelled + s.discountsGiven)) * 100).toFixed(1) + "%"
+      : "0.0%";
+
+    const sections: ExportSection[] = [
+      {
+        title: "Reconciliation Summary",
+        metrics: [
+          ["Staff",                    data.staffName],
+          ["Period",                   from === to ? from : `${from} to ${to}`],
+          ["", ""],
+          ["── BILLING ──────────────────────", ""],
+          ["Gross Bills Generated",    inr(s.grossBilledIncludingCancelled)],
+          ["Discounts Given (info)",   `${inr(s.discountsGiven)} (${discountPct} of gross) — already in bill totals`],
+          ["Old Dues Collected",       inr(s.duesCollectedTotal)],
+          ["Total Revenue Activity",   inr(s.grossBilledIncludingCancelled + s.duesCollectedTotal)],
+          ["", ""],
+          ["── DEDUCTIONS ───────────────────", ""],
+          ["Cancelled Bills",          inr(s.cancelledAmount)],
+          ["Refunds (Cash)",           inr(s.cashRefunded)],
+          ["Refunds (Digital)",        inr(s.digitalRefunded)],
+          ["Total Refunds",            inr(totalRefunds)],
+          ["Outstanding Dues",         inr(s.outstanding)],
+          ["", ""],
+          ["── COLLECTION ───────────────────", ""],
+          ["Collectible Amount",       inr(collectible)],
+          ["Digital Collection (net)", inr(netDigital)],
+          ["Cash Expenses",            inr(s.cashExpenses)],
+          ["", ""],
+          ["── CASH RECONCILIATION ──────────", ""],
+          ["Expected Physical Cash",   inr(expectedCash)],
+          ["Actual Cash (payment records)", inr(s.physicalCashInHand)],
+          ["Variance",                 balanced ? "₹0 — Balanced ✓" : `${mismatch > 0 ? "+" : "−"}₹${Math.abs(mismatch).toFixed(0)} ${mismatch > 0 ? "(Surplus)" : "(Short)"}`],
+          ["", ""],
+          ["── ATTRIBUTION NOTE ─────────────", ""],
+          ["Cash accountability",      "Refunds & expenses attributed to the staff who performed them, not the bill creator"],
+        ],
+      },
+      {
+        title: "Digital Payment Breakdown",
+        metrics: [
+          ...Object.entries(data.byMethod)
+            .filter(([, v]) => Math.abs(v) > 0)
+            .sort(([, a], [, b]) => b - a)
+            .map(([method, value]) => [
+              method.charAt(0).toUpperCase() + method.slice(1),
+              inr(value),
+            ] as [string, string]),
+          ["Digital Refunds",      `−${inr(s.digitalRefunded)}`],
+          ["Net Digital",          inr(netDigital)],
+        ],
+      },
+    ];
+
+    // Discount drill-down — owner only
+    if (isOwner && data.discountBills.length > 0) {
+      // Per-staff
+      const byStaffMap = new Map<string, number>();
+      const byDoctorMap = new Map<string, number>();
+      for (const b of data.discountBills) {
+        const staff = b.createdByName ?? "Unknown";
+        byStaffMap.set(staff, (byStaffMap.get(staff) ?? 0) + b.discountGiven);
+        const doc = b.referringDoctor ?? "No referral";
+        byDoctorMap.set(doc, (byDoctorMap.get(doc) ?? 0) + b.discountGiven);
+      }
+      sections.push({
+        title: `Discount Analysis — Total ${inr(s.discountsGiven)} (${discountPct})`,
+        metrics: [
+          ["", "BY STAFF"],
+          ...Array.from(byStaffMap.entries())
+            .sort((a, b) => b[1] - a[1])
+            .map(([name, amt]) => [name, inr(amt)] as [string, string]),
+          ["", ""],
+          ["", "BY REFERRAL DOCTOR"],
+          ...Array.from(byDoctorMap.entries())
+            .sort((a, b) => b[1] - a[1])
+            .map(([doc, amt]) => [doc, inr(amt)] as [string, string]),
+        ],
+      });
+    }
+
+    const tables: ExportTable[] = [];
+
+    // Discount bill list — owner only
+    if (isOwner && data.discountBills.length > 0) {
+      tables.push({
+        title: "Discounted Bills Detail",
+        headers: ["Bill #", "Patient", "Staff", "Referring Doctor", "Gross Amount", "Discount", "Net Amount", "Reason"],
+        rows: data.discountBills.map((b) => [
+          b.billNumber,
+          b.patientName,
+          b.createdByName ?? "—",
+          b.referringDoctor ?? "—",
+          inr(b.grossAmount),
+          inr(b.discountGiven),
+          inr(b.totalAmount),
+          b.discountReason ?? "—",
+        ]),
+      });
+    }
+
+    // Per-staff breakdown
+    if (data.byStaff && data.byStaff.length > 0) {
+      tables.push({
+        title: "Staff-wise Reconciliation",
+        headers: ["Staff", "Gross Billed", "Cancelled", "Outstanding", "Cash In", "Refunds (Cash)", "Cash Exp", "Expected Cash", "Net Digital", "Dues Collected", "Discounts"],
+        rows: data.byStaff.map((st) => [
+          st.name,
+          inr(st.grossBilled),
+          inr(st.cancelled),
+          inr(st.outstanding),
+          inr(st.cashIn),
+          inr(st.cashRefunded),
+          inr(st.cashExpenses),
+          inr(st.physicalCashInHand),
+          inr(st.netDigital),
+          inr(st.duesCollected),
+          inr(st.discountsGiven),
+        ]),
+      });
+    }
+
     return {
       title: "Daily Financial Reconciliation",
       subtitle: `${data.staffName} • ${from === to ? from : `${from} → ${to}`}`,
-      sections: [
-        {
-          title: "Reconciliation Summary",
-          metrics: [
-            ["Staff", data.staffName],
-            ["Period", from === to ? from : `${from} to ${to}`],
-            ["New Billing", inr(s.grossBilledIncludingCancelled)],
-            ["Old Dues Collected", inr(s.duesCollectedTotal)],
-            ["Effective Billing", inr(effectiveBilling)],
-            ["Pending Dues", inr(s.outstanding)],
-            ["Refunds", inr(s.refundAmount)],
-            ["Expenses", inr(s.totalExpenses)],
-            ["Expected Collection", inr(expectedCollection)],
-            ["UPI / Digital", inr(netDigitalCollection)],
-            ["Total Cash", inr(expectedPhysicalCash)],
-            ["Discount Given", inr(s.discountsGiven)],
-            ["Cash in Counter (Actual)", inr(s.physicalCashInHand)],
-            ["Variance", Math.abs(mismatch) > 0.01 ? `₹${Math.abs(mismatch).toFixed(0)} ${mismatch > 0 ? "Surplus" : "Short"}` : "Balanced"],
-          ],
-        },
-      ],
-      tables: [
-        ...(data.byStaff && data.byStaff.length > 0 ? [{
-          title: "User-wise Reconciliation",
-          headers: ["Staff", "Gross Billed", "Active Billing", "Cancelled", "Outstanding", "Net Collected", "Cash In", "Digital In", "Net Cash", "Net Digital", "Total Received", "Cash Exp", "Physical Cash", "Dues Collected", "Discounts", "Cancellations"],
-          rows: data.byStaff.map((st) => [
-            st.name, inr(st.grossBilled), inr(st.activeBilling), inr(st.cancelled),
-            inr(st.outstanding), inr(st.netCollected),
-            inr(st.cashIn), inr(st.digitalIn), inr(st.netCash), inr(st.netDigital),
-            inr(st.totalReceived), inr(st.cashExpenses), inr(st.physicalCashInHand),
-            inr(st.duesCollected), inr(st.discountsGiven), String(st.cancellationCount),
-          ]),
-        }] : []),
-      ],
+      sections,
+      tables,
     };
-  }, [s, data, from, to]);
+  }, [s, data, from, to, isOwner]);
 
   return (
     <div className="space-y-5">
@@ -1761,6 +1869,7 @@ export default function MyDailySummary() {
             byMethod={data.byMethod}
             discountBills={data.discountBills}
             isOwner={isOwner}
+            exportConfig={exportConfig}
           />
 
           {/* ── Drawer Close Status Card ── */}
