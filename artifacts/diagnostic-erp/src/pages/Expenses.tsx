@@ -167,10 +167,22 @@ export default function Expenses() {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    const amount = Number(form.amount);
+    // Matches the backend's exclusiveMinimum: 0 on CreateExpenseBody/
+    // UpdateExpenseBody — a zero or negative expense would silently
+    // inflate expected physical cash (day-close.ts subtracts cash
+    // expenses from expected cash; a negative expense would ADD to it).
+    // The HTML min="0.01" on the input already blocks most of this, but
+    // this check gives a clear message instead of a generic API error
+    // for any path that bypasses native validation.
+    if (!Number.isFinite(amount) || amount <= 0) {
+      toast({ title: "Enter a valid amount", description: "Amount must be greater than ₹0.", variant: "destructive" });
+      return;
+    }
     const body = {
       category: form.category,
       description: form.description,
-      amount: Number(form.amount),
+      amount,
       expenseDate: form.expenseDate,
       paymentMode: form.paymentMode,
       paidTo: form.paidTo || null,
@@ -475,7 +487,7 @@ export default function Expenses() {
                   <IndianRupee size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     type="number"
-                    min="0"
+                    min="0.01"
                     step="0.01"
                     value={form.amount}
                     onChange={(e) => setForm({ ...form, amount: e.target.value })}
