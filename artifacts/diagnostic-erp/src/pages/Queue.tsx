@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/select";
 import {
   Hourglass, PlayCircle, CheckCircle2, SkipForward, RefreshCw, Search,
-  Star, ExternalLink, PhoneCall, Tv, MapPin, Globe, Crown, ShieldAlert, Clock, CheckCircle,
+  Star, ExternalLink, PhoneCall, Tv, MapPin, Globe, Crown, ShieldAlert, Clock, CheckCircle, Copy, Check,
 } from "lucide-react";
 
 type TestToken = {
@@ -47,10 +47,16 @@ const STATUS_META: Record<TestToken["status"], { label: string; bg: string; bord
 
 export default function QueuePage() {
   const qc = useQueryClient();
-  const [ledgerId, setLedgerId] = useState<number>(1);
-  const [department, setDepartment] = useState<string>("all");
+  const [ledgerId, setLedgerId] = useState<number>(() => {
+    try { return Number(localStorage.getItem("queue:ledgerId") || "1") || 1; } catch { return 1; }
+  });
+  const [department, setDepartment] = useState<string>(() => {
+    try { return localStorage.getItem("queue:department") || "all"; } catch { return "all"; }
+  });
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<string>(() => {
+    try { return localStorage.getItem("queue:statusFilter") || "all"; } catch { return "all"; }
+  });
   const [defaultDepartment, setDefaultDepartment] = useState<string>("");
   const [voiceEnabled, setVoiceEnabled] = useState<boolean>(() => {
     try {
@@ -64,6 +70,20 @@ export default function QueuePage() {
     queryKey: ["clinic-settings"],
     queryFn: () => api.get("/api/clinic-settings"),
   });
+
+  // Persist filter selections so they survive page refresh
+  const handleSetLedgerId = (v: number) => {
+    setLedgerId(v);
+    try { localStorage.setItem("queue:ledgerId", String(v)); } catch {}
+  };
+  const handleSetDepartment = (v: string) => {
+    setDepartment(v);
+    try { localStorage.setItem("queue:department", v); } catch {}
+  };
+  const handleSetStatusFilter = (v: string) => {
+    setStatusFilter(v);
+    try { localStorage.setItem("queue:statusFilter", v); } catch {}
+  };
 
   const { data: ledgersData } = useQuery<{ ledgers: Ledger[] }>({
     queryKey: ["ledgers"],
@@ -160,15 +180,42 @@ export default function QueuePage() {
     return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   }, [filteredTokens, department]);
 
-  const openDisplay = () => {
-    const params = new URLSearchParams();
-    params.set("ledgerId", String(ledgerId));
-    const selectedDepartment = department !== "all" ? department : defaultDepartment;
-    if (defaultDepartment) params.set("defaultDepartment", defaultDepartment);
-    if (selectedDepartment) params.set("departments", selectedDepartment);
-    params.set("voice", voiceEnabled ? "1" : "0");
-    params.set("autoplayVoice", voiceEnabled ? "1" : "0");
-    window.open(`/display?${params.toString()}`, "_blank", "noopener,noreferrer");
+  const [tvUrl, setTvUrl] = useState<string>("");
+  const [tvUrlCopied, setTvUrlCopied] = useState(false);
+
+  const buildDisplayUrl = (token: string) => {
+    const p = new URLSearchParams();
+    p.set("ledgerId", String(ledgerId));
+    // Send currently-filtered dept or the defaultDepartment setting
+    const selectedDept = department !== "all" ? department : defaultDepartment;
+    if (selectedDept) p.set("departments", selectedDept);
+    p.set("voice", voiceEnabled ? "1" : "0");
+    p.set("autoplayVoice", voiceEnabled ? "1" : "0");
+    if (token) p.set("displayToken", token);
+    return `/display?${p.toString()}`;
+  };
+
+  const openDisplay = async () => {
+    try {
+      const res = await api.get<{ token: string }>("/api/display/token");
+      const url = buildDisplayUrl(res.token);
+      setTvUrl(`${window.location.origin}${url}`);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch {
+      // If fetching the token fails (e.g. permissions), open without it — the
+      // TV will use the staff session from the same browser tab.
+      const url = buildDisplayUrl("");
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+  };
+
+  const copyTvUrl = async () => {
+    if (!tvUrl) { await openDisplay(); return; }
+    try {
+      await navigator.clipboard.writeText(tvUrl);
+      setTvUrlCopied(true);
+      setTimeout(() => setTvUrlCopied(false), 2000);
+    } catch { /* ignore */ }
   };
 
   return (
@@ -177,10 +224,24 @@ export default function QueuePage() {
         title="Queue Control Center"
         subtitle={`Live monitoring and smart patient flows · ${tokens.length} total today`}
         actions={
-          <Button variant="default" className="bg-primary hover:bg-primary/90 text-white shadow-md shadow-primary/10 transition-all hover:scale-[1.02]" size="sm" onClick={openDisplay}>
-            <Tv size={14} className="mr-1.5" /> Open TV Display Screen
-            <ExternalLink size={11} className="ml-1.5 opacity-80" />
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 px-3 text-xs"
+              onClick={copyTvUrl}
+              title="Copy a permanent TV URL (with display token) that works without a staff login session"
+            >
+              {tvUrlCopied
+                ? <><Check size={13} className="mr-1 text-emerald-600" /> Copied!</>
+                : <><Copy size={13} className="mr-1" /> Copy TV URL</>
+              }
+            </Button>
+            <Button variant="default" className="bg-primary hover:bg-primary/90 text-white shadow-md shadow-primary/10 transition-all hover:scale-[1.02]" size="sm" onClick={openDisplay}>
+              <Tv size={14} className="mr-1.5" /> Open TV Display
+              <ExternalLink size={11} className="ml-1.5 opacity-80" />
+            </Button>
+          </div>
         }
       />
 
@@ -226,7 +287,7 @@ export default function QueuePage() {
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2">
             <span className="text-xs font-semibold text-muted-foreground uppercase">Ledger</span>
-            <Select value={String(ledgerId)} onValueChange={(v) => setLedgerId(Number(v))}>
+            <Select value={String(ledgerId)} onValueChange={(v) => handleSetLedgerId(Number(v))}>
               <SelectTrigger className="w-40 h-9 text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {ledgers.map((l) => <SelectItem key={l.id} value={String(l.id)}>{l.name}</SelectItem>)}
@@ -235,7 +296,7 @@ export default function QueuePage() {
           </div>
           <div className="flex items-center gap-2">
             <span className="text-xs font-semibold text-muted-foreground uppercase">Dept Filter</span>
-            <Select value={department} onValueChange={setDepartment}>
+            <Select value={department} onValueChange={handleSetDepartment}>
               <SelectTrigger className="w-48 h-9 text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Departments</SelectItem>
@@ -304,7 +365,7 @@ export default function QueuePage() {
           ].map((f) => (
             <button
               key={f.id}
-              onClick={() => setStatusFilter(f.id)}
+              onClick={() => handleSetStatusFilter(f.id)}
               className={`px-3 py-1 text-xs font-semibold rounded-full border transition-all flex items-center gap-1.5 ${
                 statusFilter === f.id
                   ? "bg-primary text-white border-primary shadow-sm"

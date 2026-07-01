@@ -5,6 +5,7 @@ import {
   orderTestsTable, billsTable,
 } from "@workspace/db/schema";
 import { and, asc, desc, eq, isNull, ilike, or, sql } from "drizzle-orm";
+import { queueBroadcaster } from "../lib/queueBroadcast";
 
 export const testTokensRouter: IRouter = Router();
 
@@ -197,6 +198,8 @@ testTokensRouter.patch("/:id", async (req, res) => {
 
   const [row] = await db.update(testTokensTable).set(updates).where(eq(testTokensTable.id, id)).returning();
   if (!row) { res.status(404).json({ error: "Token not found" }); return; }
+  // Notify SSE subscribers so the Display TV updates within milliseconds
+  queueBroadcaster.broadcast(row.ledgerId ?? 1);
   res.json(row);
 });
 
@@ -235,6 +238,9 @@ testTokensRouter.post("/:id/call", async (req, res) => {
     });
 
     if (!updated) { res.status(404).json({ error: "Token not found" }); return; }
+    // Notify SSE subscribers — calling a patient is the most time-critical
+    // update: the TV display should flip "Now Serving" within milliseconds
+    queueBroadcaster.broadcast(updated.ledgerId ?? 1);
     res.json(updated);
   } catch (err) {
     req.log.error({ err }, "test-token call failed");
