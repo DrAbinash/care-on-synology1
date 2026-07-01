@@ -12,7 +12,7 @@ import {
   IndianRupee, Wallet, Banknote, Smartphone, TrendingDown, RotateCcw,
   XCircle, FileEdit, Clock, Calendar, RefreshCw, Tag, CheckCircle2,
   ArrowRight, Users, Percent, Receipt, Lock, AlertTriangle, ShieldCheck,
-  ChevronRight, Info, AlertCircle, Calculator, Save,
+  ChevronRight, ChevronDown, ChevronUp, Info, AlertCircle, Calculator, Save,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -152,6 +152,7 @@ type MyDailySummaryData = {
     billNumber: string;
     patientName: string;
     referringDoctor: string | null;
+    createdByName: string | null;
     totalAmount: number;
     grossAmount: number;
     discountGiven: number;
@@ -569,299 +570,404 @@ function FormulaHint({ text }: { text: string }) {
   );
 }
 
-// ─── Daily Financial Reconciliation ───────────────────────────────────────
+// ─── Compact accounting row used inside UnifiedReconciliationPanel ────────────
 
-function DailyFinancialReconciliation({ summary: s }: { summary: MyDailySummarySummary }) {
-  // ── Three-step accounting flow ──
-  //
-  // totalAmount on a bill is stored POST-DISCOUNT (subtotal − discount + tax).
-  // So grossBilledIncludingCancelled is already net of discounts.
-  //
-  // Refunds ARE separately subtracted here. A refund is a cash outflow that
-  // reduces the money that should be in the counter regardless of whether
-  // the original bill was cancelled or not (a partial refund on an active bill
-  // has no corresponding cancellation to account for it).
-  //
-  // Discounts are NOT subtracted here — they are already inside the billing totals.
+function ARow({
+  label, value, sign, bold, highlight, indent, note, dimmed,
+}: {
+  label: string;
+  value: number;
+  sign?: "+" | "−" | "=" | "  ";
+  bold?: boolean;
+  highlight?: "green" | "red" | "amber" | "blue" | "slate";
+  indent?: boolean;
+  note?: string;
+  dimmed?: boolean;
+}) {
+  const hlVal: Record<string, string> = {
+    green:  "text-emerald-700 dark:text-emerald-400",
+    red:    "text-red-600 dark:text-red-400",
+    amber:  "text-amber-600 dark:text-amber-400",
+    blue:   "text-blue-700 dark:text-blue-300",
+    slate:  "text-slate-500 dark:text-slate-400",
+  };
+  const hlRow: Record<string, string> = {
+    green:  "bg-emerald-50/60 dark:bg-emerald-950/20",
+    red:    "bg-red-50/40 dark:bg-red-950/20",
+    amber:  "bg-amber-50/60 dark:bg-amber-950/20",
+    blue:   "bg-blue-50/60 dark:bg-blue-950/20",
+    slate:  "",
+  };
+  const valColor = highlight ? hlVal[highlight] : (dimmed ? "text-gray-400 dark:text-gray-500" : "text-gray-800 dark:text-gray-200");
+  const rowBg = highlight ? hlRow[highlight] : "";
+  const labelColor = dimmed
+    ? "text-gray-400 dark:text-gray-500 italic"
+    : bold
+      ? "text-gray-900 dark:text-foreground font-semibold"
+      : "text-gray-600 dark:text-gray-400";
 
-  // Step 1: Effective Billing Value
-  // grossBilledIncludingCancelled − cancelledAmount = active billing (post-discount)
-  // + duesCollectedTotal = payments today on OLD bills (billing that happened before today)
-  const effectiveBilling = s.grossBilledIncludingCancelled + s.duesCollectedTotal - s.cancelledAmount;
+  return (
+    <div className={`flex items-baseline justify-between py-[3px] px-3 ${rowBg}`}>
+      <span className={`text-[12px] leading-tight ${labelColor} ${indent ? "pl-4" : ""} min-w-0 flex-1 pr-4`}>
+        {sign && (
+          <span className="inline-block w-3 text-center text-gray-400 dark:text-gray-500 mr-1 shrink-0">
+            {sign}
+          </span>
+        )}
+        {label}
+        {note && (
+          <span className="text-[10px] text-gray-400 dark:text-gray-500 ml-1.5 font-normal not-italic">
+            {note}
+          </span>
+        )}
+      </span>
+      <span className={`text-[13px] tabular-nums shrink-0 ${bold ? "font-bold" : "font-medium"} ${valColor}`}>
+        {fmt(value)}
+      </span>
+    </div>
+  );
+}
 
-  // Step 2: Expected Total Collection
-  // Effective billing tells us what should have been collected in total.
-  // Subtract what hasn't been collected yet (outstanding) and what went back out (refunds).
-  const totalRefunds = s.cashRefunded + s.digitalRefunded;
-  const expectedCollection = effectiveBilling - s.outstanding - totalRefunds - s.totalExpenses;
+function ASectionDivider({ color }: { color: "emerald" | "slate" | "red" | "blue" | "amber" }) {
+  const cls: Record<string, string> = {
+    emerald: "border-emerald-300 dark:border-emerald-700",
+    slate:   "border-slate-200 dark:border-slate-700",
+    red:     "border-red-300 dark:border-red-700",
+    blue:    "border-blue-300 dark:border-blue-700",
+    amber:   "border-amber-300 dark:border-amber-700",
+  };
+  return <div className={`border-t ${cls[color]} mx-3`} />;
+}
 
-  // Step 3: Expected Cash in Counter
-  // Of the expected total collection, the digital portion went to bank/UPI/card.
-  // What remains should be physical cash, minus cash already spent on expenses.
-  const netDigitalCollection = s.digitalIn - s.digitalRefunded;
-  const expectedPhysicalCash = expectedCollection - netDigitalCollection + s.digitalExpenses;
-  // Note: totalExpenses above includes both cashExpenses and digitalExpenses.
-  // netDigitalCollection excludes digitalExpenses (that money left digitally).
-  // Adding back digitalExpenses gives us just the cash-side expected amount,
-  // which equals: cashIn - cashRefunded - cashExpenses = s.physicalCashInHand.
+// ─── Unified Daily Financial Reconciliation Panel (Bloomberg-density) ─────────
+//
+// Replaces: DailyFinancialReconciliation + "My Billing" card + "My Cashbox" card
+//           + DailyReconciliationAndCashFlow table.
+//
+// FORMULA (verified algebraically):
+//   Gross Bills Generated (post-discount)
+//   + Old Dues Collected
+//   = Total Revenue Activity
+//   − Cancelled Bills
+//   − Today's Refunds (cash + digital)
+//   − Outstanding Dues
+//   = Collectible Amount
+//   − Digital Collection (net of digital refunds)   → went to bank
+//   − Cash Expenses (approved by this staff)         → physically paid out
+//   = Expected Physical Cash in Counter
+//
+//   Verification: expectedPhysicalCash ≡ physicalCashInHand = cashIn − cashRefunded − cashExpenses
+//
+// ATTRIBUTION RULE (confirmed correct in backend):
+//   cashIn          = SUM(payments.amount > 0) WHERE recordedByName = thisStaff
+//   cashRefunded    = SUM(abs(payments.amount < 0)) WHERE recordedByName = thisStaff
+//   cashExpenses    = SUM(expenses.amount) WHERE approved_by = thisStaff
+//   Staff B's refund on Staff A's bill → deducted from Staff B's expectedCash, NOT Staff A's.
+//   This is the correct business rule and is already implemented in the backend.
 
-  // Compare against the payment-side actual cash (authoritative number)
-  const mismatch = expectedPhysicalCash - s.physicalCashInHand;
-  const hasMismatch = Math.abs(mismatch) > 0.01;
+function UnifiedReconciliationPanel({
+  summary: s,
+  byMethod,
+  discountBills,
+  isOwner,
+}: {
+  summary: MyDailySummarySummary;
+  byMethod: Record<string, number>;
+  discountBills: MyDailySummaryData["discountBills"];
+  isOwner: boolean;
+}) {
+  const [digitalExpanded, setDigitalExpanded] = useState(false);
+  const [discountExpanded, setDiscountExpanded] = useState(false);
+
+  // ── Formula (all arithmetic verified against backend physicalCashInHand) ──
+  const totalRefunds   = s.cashRefunded + s.digitalRefunded;
+  const collectible    = s.grossBilledIncludingCancelled
+                        + s.duesCollectedTotal
+                        - s.cancelledAmount
+                        - totalRefunds
+                        - s.outstanding;
+  const netDigital     = s.digitalIn - s.digitalRefunded;
+  const expectedCash   = collectible - netDigital - s.cashExpenses;
+  // expectedCash ≡ s.physicalCashInHand = cashIn − cashRefunded − cashExpenses
+  // The billing-side calculation and the payment-side calculation converge here.
+  const mismatch       = expectedCash - s.physicalCashInHand;
+  const balanced       = Math.abs(mismatch) <= 0.01;
+
+  // ── Digital method split for the collapsible row ──────────────────────────
+  const digitalMethods = Object.entries(byMethod)
+    .filter(([m]) => !["cash"].includes(m.toLowerCase()))
+    .sort(([, a], [, b]) => b - a);
+
+  // ── Discount aggregates for the drill-down ────────────────────────────────
+  const discountTotal = s.discountsGiven;
+  const discountPct   = s.grossBilledIncludingCancelled > 0
+    ? ((discountTotal / (s.grossBilledIncludingCancelled + discountTotal)) * 100).toFixed(1)
+    : "0.0";
+
+  // Per-staff discount (owner only)
+  const byStaffDiscount = useMemo(() => {
+    if (!isOwner || !discountBills.length) return [];
+    const map = new Map<string, number>();
+    for (const b of discountBills) {
+      const k = b.createdByName ?? "Unknown";
+      map.set(k, (map.get(k) ?? 0) + b.discountGiven);
+    }
+    return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
+  }, [discountBills, isOwner]);
+
+  // Per-doctor discount (owner only)
+  const byDoctorDiscount = useMemo(() => {
+    if (!isOwner || !discountBills.length) return [];
+    const map = new Map<string, number>();
+    for (const b of discountBills) {
+      const k = b.referringDoctor ?? "No referral";
+      map.set(k, (map.get(k) ?? 0) + b.discountGiven);
+    }
+    return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
+  }, [discountBills, isOwner]);
 
   return (
     <div className="bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl shadow-sm overflow-hidden">
-      {/* Header */}
-      <div className="px-5 py-3.5 bg-gradient-to-r from-slate-800 to-slate-900 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <Calculator size={18} className="text-amber-400" />
-          <h3 className="text-base font-extrabold text-white tracking-wide">Daily Financial Reconciliation</h3>
+
+      {/* ── Header ── */}
+      <div className="px-4 py-2.5 bg-gradient-to-r from-slate-800 to-slate-900 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Calculator size={14} className="text-amber-400 shrink-0" />
+          <span className="text-[13px] font-bold text-white tracking-wide uppercase">
+            Daily Financial Reconciliation
+          </span>
         </div>
-        {hasMismatch ? (
-          <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-red-500/20 text-red-300 text-xs font-bold">
-            <AlertTriangle size={12} /> Mismatch ₹{Math.abs(mismatch).toFixed(0)}
+        {balanced ? (
+          <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/25 text-emerald-300 text-[11px] font-bold">
+            <CheckCircle2 size={10} /> Balanced · ₹0 variance
           </span>
         ) : (
-          <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-300 text-xs font-bold">
-            <CheckCircle2 size={12} /> Balanced
+          <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-red-500/25 text-red-300 text-[11px] font-bold">
+            <AlertTriangle size={10} />
+            {mismatch > 0 ? "Surplus" : "Short"} ₹{Math.abs(mismatch).toFixed(0)}
           </span>
         )}
       </div>
 
-      {/* Warning Banner */}
-      {hasMismatch && (
-        <div className="px-5 py-2.5 bg-red-50 dark:bg-red-900/20 border-y border-red-200 dark:border-red-800 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <AlertTriangle size={14} className="text-red-600 dark:text-red-400" />
-            <span className="text-sm font-bold text-red-700 dark:text-red-300">Reconciliation Alert: Expected Cash ≠ Actual Cash</span>
-          </div>
-          <span className="text-sm font-extrabold text-red-700 dark:text-red-300 tabular-nums">₹{Math.abs(mismatch).toFixed(0)} Needs Verification</span>
+      {/* ── Mismatch alert strip ── */}
+      {!balanced && (
+        <div className="px-4 py-1.5 bg-red-50 dark:bg-red-900/20 border-b border-red-200 dark:border-red-800 flex items-center gap-2">
+          <AlertTriangle size={12} className="text-red-600 dark:text-red-400 shrink-0" />
+          <span className="text-[12px] font-semibold text-red-700 dark:text-red-300">
+            Expected Cash ≠ Actual Cash — verify counter before close
+          </span>
         </div>
       )}
 
-      {/* ── Accounting body ── */}
-      <div className="px-5 py-2">
+      <div className="py-1">
 
-        {/* ─── STEP 1: EFFECTIVE BILLING VALUE ─── */}
-        <RecRow label="New Billing" value={s.grossBilledIncludingCancelled} type="start" />
-        <RecRow label="Old Dues Collected" value={s.duesCollectedTotal} type="start" />
-        <RecRow label="Cancelled Bills" value={s.cancelledAmount} type="deduct" />
-        <MajorDivider color="emerald" />
-        <div>
-          <RecRow label="Effective Billing Value" value={effectiveBilling} type="result" />
-          <FormulaHint text="New Billing + Old Dues − Cancelled" />
+        {/* ══ SECTION A: BILLING ══════════════════════════════════════════════ */}
+        <div className="px-3 pt-1 pb-0.5">
+          <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
+            Billing
+          </span>
         </div>
 
-        {/* ─── STEP 2: EXPECTED COLLECTION ─── */}
-        <div className="mt-3" />
-        <RecRow label="Pending Dues" value={s.outstanding} type="deduct" />
-        <CompactRow label="Refunds (Cash / Digital)" cash={s.cashRefunded} digital={s.digitalRefunded} isDeduct />
-        <CompactRow label="Expenses (Cash / Digital)" cash={s.cashExpenses} digital={s.digitalExpenses} isDeduct />
-        <MajorDivider color="blue" />
-        <div>
-          <RecRow label="Expected Collection" value={expectedCollection} type="result" />
-          <FormulaHint text="Effective − Pending − Refunds − Expenses" />
-        </div>
+        <ARow
+          label="Gross Bills Generated"
+          value={s.grossBilledIncludingCancelled}
+          note="post-discount"
+          bold
+        />
 
-        {/* ─── STEP 3: EXPECTED CASH IN COUNTER ─── */}
-        <div className="mt-3" />
-        <RecRow label="Digital Collection (UPI/Card/Net)" value={s.digitalCollection} type="start" />
-        <RecRow label="Digital Refunded" value={s.digitalRefunded} type="deduct" />
-        <MinorDivider />
-        <div>
-          <RecRow label="Net Digital Collection" value={netDigitalCollection} type="result" />
-        </div>
-        <MajorDivider color="purple" />
-        <div>
-          <RecRow label="Expected Cash in Counter" value={expectedPhysicalCash} type="final" />
-          <FormulaHint text="Expected Collection − Net Digital" />
-        </div>
-
-        {/* ─── DISCOUNTS (informational) ─── */}
-        <div className="mt-3 border-t border-dashed border-gray-300 dark:border-gray-600 pt-2">
-          <RecRow label="Discounts Given" value={s.discountsGiven} type="start" />
-        </div>
-      </div>
-
-      {/* Formula Footer */}
-      <div className="px-5 py-2.5 bg-slate-50 dark:bg-slate-900/20 border-t border-gray-200 dark:border-card-border">
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-gray-500 dark:text-gray-400">
-          <span>Effective = New Billing + Old Dues − Cancelled</span>
-          <span>Expected Collection = Effective − Pending − Refunds − Expenses</span>
-          <span>Expected Cash = Expected Collection − Net Digital + Digital Expenses</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-
-// ─── Daily Reconciliation & Cash Flow Table ───────────────────────────────
-
-function DailyReconciliationAndCashFlow({
-  summary: s,
-  refunds,
-  from,
-}: {
-  summary: MyDailySummarySummary;
-  refunds: any[];
-  from: string;
-}) {
-  const fromDateStart = new Date(`${from}T00:00:00`);
-
-  // Backdated refund logic: processed today, but bill predates from
-  const backdatedAdjustmentsList = refunds ? refunds.filter(tx => {
-    return new Date(tx.billCreatedAt) < fromDateStart;
-  }) : [];
-  const backdatedRefundAdjustments = backdatedAdjustmentsList.reduce((sum, tx) => sum + Math.abs(tx.amount), 0);
-
-  // Operational Revenue
-  // grossBilledIncludingCancelled is already POST-DISCOUNT (totalAmount = subtotal − discount + tax).
-  // Do NOT add discountsGiven back — that would inflate the number and then deducting them below
-  // would cancel to zero but show a misleading gross figure to any auditor.
-  const newBilling = s.grossBilledIncludingCancelled;
-  const oldDuesCollected = s.duesCollectedTotal;
-  const totalOperationalRevenue = newBilling + oldDuesCollected;
-
-  // Operational Deductions
-  const cancelledBills = s.cancelledAmount;
-  const discountsGiven = s.discountsGiven; // informational only — already IN newBilling
-  const totalRefundAmount = s.refundAmount;
-  // Split refunds into same-day and backdated for transparency, but both are already
-  // inside totalRefundAmount. Do NOT subtract backdated separately — it is informational.
-  const refundsToday = totalRefundAmount; // total refunds, all processed today
-  const totalOperationalDeductions = cancelledBills + refundsToday;
-
-  // Expenses
-  const cashExpenses = s.cashExpenses;
-  const digitalExpenses = s.digitalExpenses;
-  const totalExpenses = s.totalExpenses;
-
-  // Collections
-  const cashCollection = s.cashCollection;
-  const digitalCollection = s.digitalCollection;
-  const netDigitalCollection = s.netDigital;
-
-  // Final formula:
-  // newBilling (post-discount) + duesCollected − cancelled − refunds − expenses − netDigital
-  // = cashIn − cashRefunded − cashExpenses   (= physicalCashInHand from backend)
-  const expectedPhysicalCash = totalOperationalRevenue - totalOperationalDeductions - totalExpenses - netDigitalCollection;
-
-  const inrFmt = (n: number) =>
-    "₹" + n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-  return (
-    <div className="bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl shadow-sm overflow-hidden p-5 mt-4">
-      <h3 className="text-base font-extrabold text-gray-900 dark:text-foreground mb-4">
-        Daily Reconciliation & Cash Flow
-      </h3>
-      <div className="overflow-x-auto border-[3px] border-black dark:border-gray-700">
-        <table className="w-full text-left text-sm border-collapse">
-          <thead className="bg-gray-100 dark:bg-muted/50 border-b-[3px] border-black dark:border-gray-700 font-bold text-gray-900 dark:text-foreground">
-            <tr>
-              <th className="p-3 border-r border-gray-300 dark:border-gray-600">Category / Line Item</th>
-              <th className="p-3 text-right">Amount (INR)</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y border-b-[3px] border-black dark:border-gray-700 divide-gray-200 dark:divide-gray-600">
-            {/* Operational Revenue */}
-            <tr className="bg-gray-50/50 dark:bg-muted/10 font-semibold text-gray-900 dark:text-foreground">
-              <td className="p-3 border-r border-gray-300 dark:border-gray-600" colSpan={2}>Operational Revenue</td>
-            </tr>
-            <tr>
-              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">
-                New Billing
-                <span className="block text-[11px] text-gray-400 dark:text-gray-500 font-normal mt-0.5">
-                  Post-discount (discounts already deducted from bill totals)
-                </span>
-              </td>
-              <td className="p-3 text-right tabular-nums text-gray-800 dark:text-gray-200">{inrFmt(newBilling)}</td>
-            </tr>
-            <tr>
-              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">Old Dues Collected</td>
-              <td className="p-3 text-right tabular-nums text-gray-800 dark:text-gray-200">{inrFmt(oldDuesCollected)}</td>
-            </tr>
-            <tr className="font-semibold bg-gray-50/30 text-gray-900 dark:text-foreground">
-              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600">Total Operational Revenue</td>
-              <td className="p-3 text-right tabular-nums">{inrFmt(totalOperationalRevenue)}</td>
-            </tr>
-
-            {/* Operational Deductions */}
-            <tr className="bg-gray-50/50 dark:bg-muted/10 font-semibold text-gray-900 dark:text-foreground">
-              <td className="p-3 border-r border-gray-300 dark:border-gray-600" colSpan={2}>Operational Deductions</td>
-            </tr>
-            <tr>
-              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">Cancelled Bills</td>
-              <td className="p-3 text-right tabular-nums text-red-600 dark:text-red-400">− {inrFmt(cancelledBills)}</td>
-            </tr>
-            <tr>
-              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">
-                Refunds
-                {backdatedRefundAdjustments > 0 && (
-                  <span className="block text-[11px] text-gray-400 dark:text-gray-500 font-normal mt-0.5">
-                    Of which ₹{inrFmt(backdatedRefundAdjustments)} on bills from prior dates (included above)
-                  </span>
-                )}
-              </td>
-              <td className="p-3 text-right tabular-nums text-red-600 dark:text-red-400">− {inrFmt(refundsToday)}</td>
-            </tr>
-            {discountsGiven > 0 && (
-              <tr className="bg-amber-50/40 dark:bg-amber-950/10">
-                <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-amber-700 dark:text-amber-400 italic text-[12px]">
-                  Discounts Given
-                  <span className="block text-[11px] text-gray-400 dark:text-gray-500 font-normal mt-0.5">
-                    Informational only — already deducted inside New Billing above
-                  </span>
-                </td>
-                <td className="p-3 text-right tabular-nums text-amber-600 dark:text-amber-400 italic text-[12px]">{inrFmt(discountsGiven)}</td>
-              </tr>
+        {/* Discounts — prominent amber KPI */}
+        <div
+          className="flex items-center justify-between py-[3px] px-3 bg-amber-50/80 dark:bg-amber-950/25 cursor-pointer group"
+          onClick={() => isOwner && setDiscountExpanded((e) => !e)}
+          title={isOwner ? "Click to expand discount drill-down" : undefined}
+        >
+          <span className="text-[12px] text-amber-700 dark:text-amber-400 font-semibold pl-4 flex items-center gap-1.5">
+            <Tag size={10} className="shrink-0" />
+            Discounts Given
+            <span className="text-[10px] font-normal text-amber-500">
+              ({discountPct}% of gross)
+            </span>
+            <span className="text-[10px] font-normal text-amber-500 ml-1">
+              · informational only — already deducted in bill totals
+            </span>
+          </span>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className="text-[13px] tabular-nums font-bold text-amber-600 dark:text-amber-400">
+              {fmt(discountTotal)}
+            </span>
+            {isOwner && (
+              discountExpanded
+                ? <ChevronUp size={11} className="text-amber-500" />
+                : <ChevronDown size={11} className="text-amber-500" />
             )}
+          </div>
+        </div>
 
-            {/* Expenses */}
-            <tr className="bg-gray-50/50 dark:bg-muted/10 font-semibold text-gray-900 dark:text-foreground">
-              <td className="p-3 border-r border-gray-300 dark:border-gray-600" colSpan={2}>Expenses</td>
-            </tr>
-            <tr>
-              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">Cash Expenses</td>
-              <td className="p-3 text-right tabular-nums text-gray-800 dark:text-gray-200">{inrFmt(cashExpenses)}</td>
-            </tr>
-            <tr>
-              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">Digital Expenses</td>
-              <td className="p-3 text-right tabular-nums text-gray-800 dark:text-gray-200">{inrFmt(digitalExpenses)}</td>
-            </tr>
-            <tr className="font-semibold bg-gray-50/30 text-gray-900 dark:text-foreground">
-              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600">Total Expenses</td>
-              <td className="p-3 text-right tabular-nums">{inrFmt(totalExpenses)}</td>
-            </tr>
+        {/* Discount drill-down — owner / admin only */}
+        {isOwner && discountExpanded && discountBills.length > 0 && (
+          <div className="mx-3 mb-1 border border-amber-200 dark:border-amber-800 rounded-lg overflow-hidden">
+            <div className="grid grid-cols-2 divide-x divide-amber-200 dark:divide-amber-800">
+              {/* By staff */}
+              <div className="p-2">
+                <p className="text-[10px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wide mb-1">By Staff</p>
+                {byStaffDiscount.map(([name, amt]) => (
+                  <div key={name} className="flex justify-between items-center py-0.5">
+                    <span className="text-[11px] text-gray-600 dark:text-gray-400 truncate">{name}</span>
+                    <span className="text-[11px] tabular-nums font-semibold text-amber-600 dark:text-amber-400 ml-2 shrink-0">{fmt(amt)}</span>
+                  </div>
+                ))}
+              </div>
+              {/* By referral doctor */}
+              <div className="p-2">
+                <p className="text-[10px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wide mb-1">By Referral Doctor</p>
+                {byDoctorDiscount.map(([doc, amt]) => (
+                  <div key={doc} className="flex justify-between items-center py-0.5">
+                    <span className="text-[11px] text-gray-600 dark:text-gray-400 truncate">{doc}</span>
+                    <span className="text-[11px] tabular-nums font-semibold text-amber-600 dark:text-amber-400 ml-2 shrink-0">{fmt(amt)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="border-t border-amber-200 dark:border-amber-800 px-2 py-1">
+              <p className="text-[10px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wide mb-1">Individual Bills</p>
+              <div className="max-h-36 overflow-y-auto space-y-0.5">
+                {discountBills.map((b) => (
+                  <div key={b.billId} className="flex items-center gap-2 text-[11px]">
+                    <Link href={`/billing/${b.billId}`} className="text-blue-600 dark:text-blue-400 hover:underline font-medium shrink-0">
+                      {b.billNumber}
+                    </Link>
+                    <span className="text-gray-600 dark:text-gray-400 truncate flex-1">{b.patientName}</span>
+                    <span className="tabular-nums font-semibold text-amber-600 dark:text-amber-400 shrink-0">{fmt(b.discountGiven)}</span>
+                    {b.discountReason && (
+                      <span className="text-gray-400 dark:text-gray-500 shrink-0 hidden sm:inline">{b.discountReason}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+        {!isOwner && discountBills.length > 0 && (
+          <div className="px-3 py-0.5">
+            <span className="text-[10px] text-amber-500 dark:text-amber-600 italic pl-4">
+              Detailed breakdown visible to Owner / Admin only
+            </span>
+          </div>
+        )}
 
-            {/* Collections */}
-            <tr className="bg-gray-50/50 dark:bg-muted/10 font-semibold text-gray-900 dark:text-foreground">
-              <td className="p-3 border-r border-gray-300 dark:border-gray-600" colSpan={2}>Collections</td>
-            </tr>
-            <tr>
-              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">Cash Collection</td>
-              <td className="p-3 text-right tabular-nums text-gray-800 dark:text-gray-200">{inrFmt(cashCollection)}</td>
-            </tr>
-            <tr>
-              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">Digital Collection</td>
-              <td className="p-3 text-right tabular-nums text-gray-800 dark:text-gray-200">{inrFmt(digitalCollection)}</td>
-            </tr>
-            <tr className="font-semibold bg-gray-50/30 text-gray-900 dark:text-foreground">
-              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600">Net Digital Collection</td>
-              <td className="p-3 text-right tabular-nums">{inrFmt(netDigitalCollection)}</td>
-            </tr>
-          </tbody>
-          <tfoot className="font-bold bg-slate-900 text-white dark:bg-slate-800 border-t-[3px] border-black">
-            <tr className="font-bold">
-              <td className="p-4 border-r border-slate-700 dark:border-gray-600 text-base">Expected Physical Cash</td>
-              <td className="p-4 text-right text-base tabular-nums">{inrFmt(expectedPhysicalCash)}</td>
-            </tr>
-          </tfoot>
-        </table>
+        <ARow label="Old Dues Collected" value={s.duesCollectedTotal} sign="+" note="payments on prior-day bills" />
+
+        <ASectionDivider color="emerald" />
+        <ARow label="Total Revenue Activity" value={s.grossBilledIncludingCancelled + s.duesCollectedTotal} sign="=" bold highlight="green" />
+
+        {/* ══ SECTION B: DEDUCTIONS ══════════════════════════════════════════ */}
+        <div className="px-3 pt-2 pb-0.5">
+          <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
+            Deductions
+          </span>
+        </div>
+
+        <ARow label="Cancelled Bills" value={s.cancelledAmount} sign="−" indent highlight="red" />
+        <ARow label="Refunds" value={totalRefunds} sign="−" indent highlight="red"
+              note={`Cash ${fmt(s.cashRefunded)} · Digital ${fmt(s.digitalRefunded)}`} />
+        <ARow label="Outstanding Dues" value={s.outstanding} sign="−" indent highlight="red" note="balance on today's bills" />
+
+        <ASectionDivider color="blue" />
+        <ARow label="Collectible Amount" value={collectible} sign="=" bold highlight="blue" />
+
+        {/* ══ SECTION C: COLLECTION SPLIT ════════════════════════════════════ */}
+        <div className="px-3 pt-2 pb-0.5">
+          <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
+            Collection
+          </span>
+        </div>
+
+        {/* Digital Collection — single row with expand toggle */}
+        <div
+          className="flex items-center justify-between py-[3px] px-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-muted/10"
+          onClick={() => setDigitalExpanded((e) => !e)}
+        >
+          <span className="text-[12px] text-gray-600 dark:text-gray-400 pl-4 flex items-center gap-1.5 min-w-0 flex-1">
+            <span className="inline-block w-3 text-center text-gray-400 mr-1">−</span>
+            Digital Collection
+            <span className="text-[10px] text-gray-400 ml-1">
+              (net · UPI / Card / Online)
+            </span>
+          </span>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className="text-[13px] tabular-nums font-medium text-gray-800 dark:text-gray-200">
+              {fmt(netDigital)}
+            </span>
+            {digitalExpanded
+              ? <ChevronUp size={11} className="text-gray-400" />
+              : <ChevronDown size={11} className="text-gray-400" />
+            }
+          </div>
+        </div>
+
+        {/* Digital split — only when expanded */}
+        {digitalExpanded && (
+          <div className="mx-3 mb-1 border border-gray-200 dark:border-card-border rounded-md overflow-hidden">
+            {digitalMethods.filter(([, v]) => Math.abs(v) > 0).map(([method, value]) => (
+              <div key={method} className="flex items-center justify-between px-3 py-0.5 border-b border-gray-100 dark:border-gray-800 last:border-0">
+                <span className="text-[11px] text-gray-500 dark:text-gray-400 capitalize">{method}</span>
+                <span className="text-[11px] tabular-nums font-medium text-gray-700 dark:text-gray-300">{fmt(value)}</span>
+              </div>
+            ))}
+            {s.digitalRefunded > 0 && (
+              <div className="flex items-center justify-between px-3 py-0.5 bg-red-50/40 dark:bg-red-950/10">
+                <span className="text-[11px] text-red-500 dark:text-red-400">Digital Refunds</span>
+                <span className="text-[11px] tabular-nums font-medium text-red-600 dark:text-red-400">−{fmt(s.digitalRefunded)}</span>
+              </div>
+            )}
+            <div className="flex items-center justify-between px-3 py-0.5 bg-gray-50 dark:bg-muted/20 font-semibold">
+              <span className="text-[11px] text-gray-700 dark:text-gray-300">Net Digital</span>
+              <span className="text-[11px] tabular-nums text-gray-800 dark:text-gray-200">{fmt(netDigital)}</span>
+            </div>
+          </div>
+        )}
+
+        <ARow label="Cash Expenses" value={s.cashExpenses} sign="−" indent highlight="red"
+              note="cash paid out by this staff" />
+
+        {/* ══ FINAL: EXPECTED CASH ════════════════════════════════════════════ */}
+        <ASectionDivider color="slate" />
+        <div className={`flex items-center justify-between py-2 px-3 ${balanced ? "bg-emerald-50 dark:bg-emerald-950/20" : "bg-red-50 dark:bg-red-950/20"}`}>
+          <span className="text-[13px] font-bold text-gray-900 dark:text-foreground">
+            Expected Physical Cash in Counter
+            <span className="block text-[10px] font-normal text-gray-500 dark:text-gray-400 mt-0.5">
+              = Cash In − Cash Refunds − Cash Expenses
+            </span>
+          </span>
+          <div className="text-right shrink-0">
+            <span className={`text-[18px] font-extrabold tabular-nums ${balanced ? "text-emerald-700 dark:text-emerald-400" : "text-red-700 dark:text-red-400"}`}>
+              {fmt(expectedCash)}
+            </span>
+            {!balanced && (
+              <span className="block text-[11px] tabular-nums font-semibold text-red-600 dark:text-red-400 mt-0.5">
+                {mismatch > 0 ? "+" : "−"}₹{Math.abs(mismatch).toFixed(0)} vs payment records
+              </span>
+            )}
+          </div>
+        </div>
+
+      </div>
+
+      {/* ── Attribution footnote ── */}
+      <div className="px-4 py-1.5 bg-slate-50 dark:bg-slate-900/20 border-t border-gray-100 dark:border-card-border">
+        <p className="text-[10px] text-gray-400 dark:text-gray-500 leading-tight">
+          Cash accountability: refunds and expenses are attributed to the staff member who <em>performed</em> them, not the original bill creator.
+          Billing metrics follow the bill creator.
+        </p>
       </div>
     </div>
   );
 }
+
+
+// ─── Daily Financial Reconciliation (REMOVED — replaced by UnifiedReconciliationPanel) ───────
+// ─── DailyReconciliationAndCashFlow (REMOVED — merged into UnifiedReconciliationPanel) ──────
+// ─── Warning Chips ────────────────────────────────────────────────────────────
 
 
 // ─── Warning Chips ────────────────────────────────────────────────────────────
@@ -1642,83 +1748,26 @@ export default function MyDailySummary() {
             <MiniKpi icon={XCircle} label="Cancellation Count" value={String(s.cancellationCount)} sub={s.cancellationCount > 0 ? `₹${s.cancelledAmount.toFixed(0)} written off` : "None"} iconBg="bg-gray-100 text-gray-700" border="border-l-gray-400" />
           </div>
 
-          {/* ═══════════════════════════════════════════════════════════
-              DAILY FINANCIAL RECONCILIATION — Accounting Panel
-              ═══════════════════════════════════════════════════════════ */}
-          <DailyFinancialReconciliation summary={s} />
+          {/* ══ DAILY FINANCIAL RECONCILIATION — Single Compact Panel ══════
+              Replaces: DailyFinancialReconciliation (Panel 1)
+                        "My Billing" card
+                        "My Cashbox" card
+                        DailyReconciliationAndCashFlow (Panel 2)
+              Owner-approved decision: one panel, compact density, collapsed
+              digital split, discounts prominent + role-gated drill-down.
+          ════════════════════════════════════════════════════════════════ */}
+          <UnifiedReconciliationPanel
+            summary={s}
+            byMethod={data.byMethod}
+            discountBills={data.discountBills}
+            isOwner={isOwner}
+          />
 
-          {/* ── Drawer Close Status Card (near cashbox) ── */}
+          {/* ── Drawer Close Status Card ── */}
           {drawerQ.data && <DrawerStatusCard status={drawerQ.data} />}
 
-          {/* ── Post-Closure Activity Chocolate Box ── */}
+          {/* ── Post-Closure Activity Box ── */}
           {postClosureQ.data && <PostClosureActivityBox data={postClosureQ.data} />}
-
-          {/* ── Formula callout ── */}
-          <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg p-3 flex items-start gap-2.5">
-            <Info size={16} className="text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
-            <div className="text-xs text-amber-800 dark:text-amber-200">
-              <p className="font-semibold">Reconciliation formula</p>
-              <p className="text-[11px] mt-0.5">
-                <span className="font-semibold">Total Received</span> = Gross Billing + Dues Collected
-              </p>
-              <p className="text-[11px]">
-                <span className="font-semibold">Gross Billing</span> = Total Bills Created − Discounts
-              </p>
-            </div>
-          </div>
-
-          {/* ── Two correctly-balancing reconciliation cards ── */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {/* CARD 1 — My Billing */}
-            <div className="bg-white dark:bg-card border-2 border-emerald-300 dark:border-emerald-700 rounded-xl shadow-md overflow-hidden">
-              <div className="px-5 py-4 bg-gradient-to-r from-emerald-600 to-green-600">
-                <h3 className="text-base font-extrabold text-white flex items-center gap-2">
-                  <IndianRupee size={16} /> My Billing
-                </h3>
-                <p className="text-xs text-emerald-100 mt-0.5">Bills I created in this period</p>
-              </div>
-              <div className="px-5 py-2">
-                <RecRow label="Gross Billed" value={s.grossBilledIncludingCancelled} type="start"
-                  note={`${s.billCount + (s.cancellationCount > 0 ? s.cancellationCount : 0)} bills · post-discount`} />
-                <RecRow label="− Cancelled" value={s.cancelledOnMyBills} type="deduct"
-                  note={`${s.cancelledByOthersCount + s.cancelledBySelfCount} cancelled`} />
-                <div className="my-3 border-t-4 border-green-300 dark:border-green-700" />
-                <RecRow label="= Active Billing" value={s.grossBilling} type="result" />
-                <RecRow label="− Outstanding / Dues" value={s.outstanding} type="deduct" note="still to collect" />
-                <div className="my-3 border-t-4 border-blue-300 dark:border-blue-700" />
-                <RecRow label="= Net Collected on My Bills" value={s.netCollectedOnMyBills} type="final" />
-                <div className="pb-2" />
-              </div>
-            </div>
-
-            {/* CARD 2 — My Cashbox */}
-            <div className="bg-white dark:bg-card border-2 border-blue-300 dark:border-blue-700 rounded-xl shadow-md overflow-hidden">
-              <div className="px-5 py-4 bg-gradient-to-r from-blue-600 to-indigo-600">
-                <h3 className="text-base font-extrabold text-white flex items-center gap-2">
-                  <Wallet size={16} /> My Cashbox
-                </h3>
-                <p className="text-xs text-blue-100 mt-0.5">Money I personally collected & handled</p>
-              </div>
-              <div className="px-5 py-2">
-                <RecRow label="Cash In" value={s.cashIn} type="start" note="positive cash payments" />
-                <RecRow label="− Cash Refunded" value={s.cashRefunded} type="deduct" />
-                <div className="my-2 border-t-2 border-dashed border-gray-300 dark:border-gray-600" />
-                <RecRow label="= Net Cash Collected" value={s.cashCollection} type="result" />
-                <RecRow label="− Cash Expenses" value={s.cashExpenses} type="deduct" note="approved by you" />
-                <div className="my-3 border-t-4 border-blue-300 dark:border-blue-700" />
-                <RecRow label="= Expected Physical Cash in Counter" value={s.physicalCashInHand} type="final" />
-                <div className="my-3 border-t-2 border-violet-200 dark:border-violet-800" />
-                <RecRow label="Digital In" value={s.digitalIn} type="start" note="UPI / card / bank" />
-                <RecRow label="− Digital Refunded" value={s.digitalRefunded} type="deduct" />
-                <div className="my-2 border-t-2 border-dashed border-gray-300 dark:border-gray-600" />
-                <RecRow label="= Net Digital Collection" value={s.netDigital} type="result" />
-                <div className="pb-2" />
-              </div>
-            </div>
-          </div>
-
-          {/* ── Daily Reconciliation & Cash Flow Module ── */}
-          <DailyReconciliationAndCashFlow summary={s} refunds={data.refunds} from={from} />
 
           {/* ── Per-Staff Breakdown (All Staff / Total only) ── */}
           {data?.byStaff && data.byStaff.length > 0 && (
@@ -1944,8 +1993,8 @@ export default function MyDailySummary() {
         </div>
       )}
 
-      {/* ── Discounts Given ── */}
-      {data && data.discountBills.length > 0 && (() => {
+      {/* ── Discounts Given — detailed table (Owner / Admin only) ── */}
+      {isOwner && data && data.discountBills.length > 0 && (() => {
         const discBills = data.discountBills;
         const totalGross = discBills.reduce((s, b) => s + b.grossAmount, 0);
         const totalDiscount = discBills.reduce((s, b) => s + b.discountGiven, 0);

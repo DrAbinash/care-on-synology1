@@ -617,6 +617,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
           ? `${r.patientFirstName} ${r.patientLastName ?? ""}`.trim()
           : "Unknown",
         referringDoctor: r.referringDoctor ?? null,
+        createdByName: r.createdByName ?? null,
         totalAmount: Number(r.totalAmount),      // post-discount (net)
         discountGiven: Number(r.discount ?? 0),
         grossAmount: Number(r.totalAmount) + Number(r.discount ?? 0),
