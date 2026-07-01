@@ -1,7 +1,10 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { billsTable, paymentsTable, ordersTable, billAuditsTable, voucherAuditsTable } from "@workspace/db/schema";
-import { sql, and, eq, gte, lt } from "drizzle-orm";
+import {
+  billsTable, paymentsTable, ordersTable, billAuditsTable, voucherAuditsTable,
+  orderTestsTable, testsTable,
+} from "@workspace/db/schema";
+import { sql, and, eq, gte, lt, ne, isNull, or, isNotNull } from "drizzle-orm";
 import { patientsTable } from "@workspace/db/schema";
 
 import { todayIST } from "../lib/istDate";
@@ -321,5 +324,107 @@ dailySummaryRouter.get("/", async (req, res) => {
       newValue: r.newValue,
       createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
     })),
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/daily-summary/category-test-summary
+//
+// Returns category-wise and test-wise test counts for a date range.
+//
+// Logic:
+//   - Joins bills → orders → order_tests → diagnostic_tests
+//   - Uses stable testId (NOT displayName which can be edited post-billing)
+//   - Excludes: bills with status='cancelled' OR cancelledAt IS NOT NULL
+//   - Excludes: order_tests with status='cancelled'
+//   - Category is sourced from diagnostic_tests.category (authoritative)
+//   - Test name is sourced from diagnostic_tests.name (authoritative, not
+//     order_tests.displayName which is a free-text override only for printing)
+//   - Category total = exact SUM of its test counts (never rounded or inferred)
+//
+// Params:
+//   from  — ISO date string YYYY-MM-DD (start of range, IST)
+//   to    — ISO date string YYYY-MM-DD (end of range, IST)
+//   staffName — optional, not applied to test counts (test counts are clinic-wide)
+// ─────────────────────────────────────────────────────────────────────────────
+dailySummaryRouter.get("/category-test-summary", async (req, res) => {
+  const fromStr = typeof req.query.from === "string" ? req.query.from : todayIST();
+  const toStr   = typeof req.query.to   === "string" ? req.query.to   : fromStr;
+
+  // IST midnight-to-midnight bounds for the full range
+  const rangeStart = new Date(`${fromStr}T00:00:00+05:30`);
+  const rangeEnd   = new Date(`${toStr}T23:59:59.999+05:30`);
+
+  // Core query:
+  //   bills (date-filtered, not cancelled)
+  //   → orders (via bills.orderId)
+  //   → order_tests (not cancelled)
+  //   → diagnostic_tests (stable name + category from master)
+  //
+  // COUNT(*) per (testId, testName, category) — one row per distinct test type
+  // seen in valid bills in this range.
+  //
+  // Why JOIN diagnostic_tests and not use order_tests.displayName:
+  //   displayName is an editable free-text override for printing only.
+  //   A test renamed after billing would produce different bucket names for
+  //   the same test depending on when the bill was created — violating the
+  //   requirement to "count correctly even if test name was edited later."
+  //   testsTable.name + testsTable.category are the stable master values.
+  const rows = await db
+    .select({
+      testId:       orderTestsTable.testId,
+      testName:     testsTable.name,
+      category:     testsTable.category,
+      count:        sql<number>`COUNT(*)::int`,
+    })
+    .from(billsTable)
+    .innerJoin(ordersTable,     eq(billsTable.orderId,      ordersTable.id))
+    .innerJoin(orderTestsTable, eq(orderTestsTable.orderId, ordersTable.id))
+    .innerJoin(testsTable,      eq(orderTestsTable.testId,  testsTable.id))
+    .where(
+      and(
+        // Date range on the bill (IST-aware)
+        gte(billsTable.createdAt, rangeStart),
+        lt( billsTable.createdAt, new Date(rangeEnd.getTime() + 1)),
+        // Exclude cancelled bills — two signals: status field and hard timestamp
+        ne(  billsTable.status,      "cancelled"),
+        isNull(billsTable.cancelledAt),
+        // Exclude individually-cancelled test line items
+        ne(orderTestsTable.status, "cancelled"),
+      )
+    )
+    .groupBy(orderTestsTable.testId, testsTable.name, testsTable.category)
+    .orderBy(testsTable.category, testsTable.name);
+
+  // Group into category → tests structure
+  // Category total = sum of its test counts (guaranteed by construction —
+  // we group by testId so every test count is exact, and we sum here in JS,
+  // never deriving the category total any other way).
+  const categoryMap = new Map<string, {
+    categoryName: string;
+    total: number;
+    tests: { testId: number; testName: string; count: number }[];
+  }>();
+
+  for (const row of rows) {
+    const cat = row.category || "Uncategorised";
+    let entry = categoryMap.get(cat);
+    if (!entry) {
+      entry = { categoryName: cat, total: 0, tests: [] };
+      categoryMap.set(cat, entry);
+    }
+    entry.tests.push({ testId: row.testId, testName: row.testName, count: row.count });
+    entry.total += row.count;
+  }
+
+  // Sort categories by total descending (most-used first)
+  const categories = Array.from(categoryMap.values())
+    .sort((a, b) => b.total - a.total);
+
+  res.json({
+    from:  fromStr,
+    to:    toStr,
+    total: categories.reduce((s, c) => s + c.total, 0),
+    categories,
   });
 });

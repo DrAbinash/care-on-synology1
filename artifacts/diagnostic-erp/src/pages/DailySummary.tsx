@@ -23,6 +23,8 @@ import {
   History,
   FileEdit,
   ReceiptText,
+  FlaskConical,
+  Calendar,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -139,8 +141,39 @@ type DailySummaryData = {
 
 type StaffOption = { name: string; billCount: number };
 
+// ── Category & Test-Wise Summary types ─────────────────────────────────────
+type TestCount = { testId: number; testName: string; count: number };
+type CategoryCount = { categoryName: string; total: number; tests: TestCount[] };
+type CategoryTestSummaryData = {
+  from: string;
+  to: string;
+  total: number;
+  categories: CategoryCount[];
+};
+
+// Date preset keys
+type DatePreset = "today" | "yesterday" | "dby" | "week" | "month" | "custom";
+
 function todayIST(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+}
+
+function offsetIST(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+}
+
+function presetRange(preset: DatePreset, customFrom: string, customTo: string): { from: string; to: string } {
+  const today = todayIST();
+  switch (preset) {
+    case "today":     return { from: today,             to: today };
+    case "yesterday": return { from: offsetIST(-1),     to: offsetIST(-1) };
+    case "dby":       return { from: offsetIST(-2),     to: offsetIST(-2) };
+    case "week":      return { from: offsetIST(-6),     to: today };
+    case "month":     return { from: offsetIST(-29),    to: today };
+    case "custom":    return { from: customFrom || today, to: customTo || today };
+  }
 }
 
 function inr(n: number) {
@@ -212,6 +245,30 @@ export default function DailySummary() {
   const [showPayments, setShowPayments] = useState(true);
   const [showRefunds, setShowRefunds] = useState(true);
   const [showEdits, setShowEdits] = useState(true);
+
+  // ── Category & Test-Wise Summary state ─────────────────────────────────
+  const [ctPreset, setCtPreset] = useState<DatePreset>("today");
+  const [ctCustomFrom, setCtCustomFrom] = useState(todayIST());
+  const [ctCustomTo,   setCtCustomTo]   = useState(todayIST());
+  const [expandedCats, setExpandedCats] = useState<Set<string>>(new Set());
+  const ctRange = presetRange(ctPreset, ctCustomFrom, ctCustomTo);
+
+  const toggleCat = (cat: string) =>
+    setExpandedCats((prev) => {
+      const next = new Set(prev);
+      next.has(cat) ? next.delete(cat) : next.add(cat);
+      return next;
+    });
+
+  const expandAll  = (cats: string[]) => setExpandedCats(new Set(cats));
+  const collapseAll = ()              => setExpandedCats(new Set());
+
+  const ctQ = useQuery<CategoryTestSummaryData>({
+    queryKey: ["category-test-summary", ctRange.from, ctRange.to],
+    queryFn: () =>
+      api.get(`/api/daily-summary/category-test-summary?from=${ctRange.from}&to=${ctRange.to}`),
+    staleTime: 60_000,
+  });
 
   const { data, isLoading, refetch, isFetching } = useQuery<DailySummaryData>({
     queryKey: ["daily-summary", date, staffFilter],
@@ -837,6 +894,207 @@ export default function DailySummary() {
               Backdated refunds (refunds processed today for bills created on prior dates) are shown as an explanatory row.
               They are already included inside "Refunds Today" total and are <em>NOT subtracted a second time</em> in the Expected Physical Cash formula.
               If you see a large backdated refund, it means an old-bill refund was processed today.
+            </div>
+          </div>
+
+          {/* ══════════════════════════════════════════════════════════════════
+               CATEGORY & TEST-WISE SUMMARY
+               Counts valid (non-cancelled) billed tests by category + test.
+               Uses stable testId from diagnostic_tests master — NOT the
+               editable displayName on order_tests — so counts remain correct
+               even if a test's display name was changed after billing.
+          ══════════════════════════════════════════════════════════════════ */}
+          <div className="bg-card border border-card-border rounded-xl overflow-hidden">
+            {/* Panel header */}
+            <div className="px-4 py-3 bg-gradient-to-r from-teal-600/10 to-teal-600/5 border-b border-card-border flex items-center gap-2">
+              <FlaskConical size={16} className="text-teal-600" />
+              <span className="text-sm font-bold tracking-wide uppercase text-teal-900 dark:text-teal-200">
+                Category &amp; Test Wise Summary
+              </span>
+              {ctQ.data && (
+                <Badge variant="secondary" className="ml-1 text-xs">
+                  {ctQ.data.total} tests
+                </Badge>
+              )}
+            </div>
+
+            {/* Date preset buttons */}
+            <div className="px-4 pt-3 pb-2 flex flex-wrap gap-2 items-center border-b border-card-border bg-muted/20">
+              <Calendar size={13} className="text-muted-foreground shrink-0" />
+              {(
+                [
+                  { key: "today",     label: "Today" },
+                  { key: "yesterday", label: "Yesterday" },
+                  { key: "dby",       label: "Day Before" },
+                  { key: "week",      label: "Last 7 Days" },
+                  { key: "month",     label: "Last 30 Days" },
+                  { key: "custom",    label: "Custom" },
+                ] as { key: DatePreset; label: string }[]
+              ).map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => setCtPreset(key)}
+                  className={cn(
+                    "text-xs px-2.5 py-1 rounded-md border font-medium transition-colors",
+                    ctPreset === key
+                      ? "bg-teal-600 text-white border-teal-600"
+                      : "border-card-border bg-card hover:bg-muted/40 text-foreground"
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+              {ctPreset === "custom" && (
+                <div className="flex items-center gap-2 ml-1">
+                  <Input
+                    type="date"
+                    value={ctCustomFrom}
+                    onChange={(e) => setCtCustomFrom(e.target.value)}
+                    className="h-7 w-36 text-xs"
+                  />
+                  <span className="text-xs text-muted-foreground">to</span>
+                  <Input
+                    type="date"
+                    value={ctCustomTo}
+                    onChange={(e) => setCtCustomTo(e.target.value)}
+                    className="h-7 w-36 text-xs"
+                  />
+                </div>
+              )}
+              <span className="ml-auto text-[11px] text-muted-foreground font-mono">
+                {ctRange.from === ctRange.to ? ctRange.from : `${ctRange.from} → ${ctRange.to}`}
+              </span>
+            </div>
+
+            {/* Content area */}
+            <div className="p-4">
+              {/* Loading */}
+              {ctQ.isLoading && (
+                <div className="h-24 flex items-center justify-center text-muted-foreground text-sm">
+                  <RefreshCw size={14} className="animate-spin mr-2" /> Loading…
+                </div>
+              )}
+
+              {/* Error */}
+              {ctQ.isError && (
+                <div className="rounded-lg border border-rose-200 bg-rose-50 dark:bg-rose-950/20 px-4 py-3 text-sm text-rose-700 dark:text-rose-400 flex items-center gap-2">
+                  <XCircle size={14} />
+                  Failed to load test counts.
+                  <button
+                    onClick={() => ctQ.refetch()}
+                    className="underline text-xs ml-auto"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+
+              {/* Empty */}
+              {ctQ.isSuccess && ctQ.data.categories.length === 0 && (
+                <div className="h-20 flex items-center justify-center text-muted-foreground text-sm italic">
+                  No valid billed tests recorded for this period.
+                </div>
+              )}
+
+              {/* Results */}
+              {ctQ.isSuccess && ctQ.data.categories.length > 0 && (
+                <>
+                  {/* Expand / Collapse all */}
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-xs text-muted-foreground">
+                      {ctQ.data.categories.length} categor{ctQ.data.categories.length === 1 ? "y" : "ies"} · {ctQ.data.total} tests total
+                      <span className="ml-2 italic text-[11px]">(cancelled bills excluded)</span>
+                    </p>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => expandAll(ctQ.data.categories.map((c) => c.categoryName))}
+                        className="text-[11px] text-teal-700 dark:text-teal-400 hover:underline"
+                      >
+                        Expand all
+                      </button>
+                      <span className="text-muted-foreground text-[11px]">·</span>
+                      <button
+                        onClick={collapseAll}
+                        className="text-[11px] text-teal-700 dark:text-teal-400 hover:underline"
+                      >
+                        Collapse all
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Category rows */}
+                  <div className="space-y-1.5">
+                    {ctQ.data.categories.map((cat) => {
+                      const isOpen = expandedCats.has(cat.categoryName);
+                      return (
+                        <div
+                          key={cat.categoryName}
+                          className="rounded-lg border border-card-border overflow-hidden"
+                        >
+                          {/* Category header row — clickable */}
+                          <button
+                            onClick={() => toggleCat(cat.categoryName)}
+                            className="w-full flex items-center justify-between px-3 py-2 bg-teal-50/60 dark:bg-teal-950/20 hover:bg-teal-100/60 dark:hover:bg-teal-900/20 transition-colors"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              {isOpen
+                                ? <ChevronUp size={13} className="text-teal-600 shrink-0" />
+                                : <ChevronDown size={13} className="text-teal-600 shrink-0" />}
+                              <span className="font-semibold text-sm text-teal-900 dark:text-teal-100 truncate">
+                                {cat.categoryName}
+                              </span>
+                            </div>
+                            <span className="font-bold text-sm text-teal-700 dark:text-teal-300 tabular-nums ml-4 shrink-0">
+                              {cat.total}
+                            </span>
+                          </button>
+
+                          {/* Test breakdown — visible when expanded */}
+                          {isOpen && (
+                            <div className="divide-y divide-card-border border-t border-card-border">
+                              {cat.tests
+                                .sort((a, b) => b.count - a.count)
+                                .map((test) => (
+                                  <div
+                                    key={test.testId}
+                                    className="flex items-center justify-between px-4 py-1.5 hover:bg-muted/20"
+                                  >
+                                    <span className="text-xs text-foreground">
+                                      <span className="text-muted-foreground mr-1">—</span>
+                                      {test.testName}
+                                    </span>
+                                    <span className="text-xs font-semibold tabular-nums text-foreground">
+                                      {test.count}
+                                    </span>
+                                  </div>
+                                ))}
+                              {/* Category subtotal confirmation row */}
+                              <div className="flex items-center justify-between px-4 py-1.5 bg-muted/30">
+                                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                                  {cat.categoryName} total
+                                </span>
+                                <span className="text-xs font-bold tabular-nums text-teal-700 dark:text-teal-400">
+                                  {cat.total}
+                                </span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {/* Grand total row */}
+                    <div className="flex items-center justify-between px-3 py-2 rounded-lg border-2 border-teal-600/40 bg-teal-50/40 dark:bg-teal-950/20 mt-2">
+                      <span className="text-sm font-bold text-teal-900 dark:text-teal-100">
+                        Grand Total
+                      </span>
+                      <span className="text-sm font-bold tabular-nums text-teal-700 dark:text-teal-300">
+                        {ctQ.data.total}
+                      </span>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </>
