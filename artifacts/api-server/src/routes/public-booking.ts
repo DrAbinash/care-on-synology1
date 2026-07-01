@@ -592,8 +592,18 @@ publicBookingRouter.post("/payu-success", async (req, res): Promise<void> => {
 
   const base = getPublicBase(req as Parameters<typeof getPublicBase>[0]);
 
-  // Verify hash
-  if (salt && merchantKey && txnid) {
+  // SECURITY FIX: previously `if (salt && merchantKey && txnid) { verify hash }`
+  // — same conditional-skip pattern fixed in the ICICI/HDFC webhooks (see
+  // gateway-webhooks.ts). A forged PayU POST that simply omitted `hash`
+  // (or was sent when PAYU_MERCHANT_SALT was not configured) would skip hash
+  // verification entirely and fall through to being trusted. Hash is now
+  // mandatory: missing salt, merchantKey, or a hash mismatch all redirect
+  // to the failure screen instead of silently proceeding.
+  if (!salt || !merchantKey || !txnid) {
+    res.redirect(getBookingConfirmationUrl(base, "", "payu", true, "gateway_config_missing"));
+    return;
+  }
+  {
     const expected = payuResponseHash({ key: merchantKey, txnid, amount: amount ?? "", productinfo: productinfo ?? "", firstname: firstname ?? "", email: email ?? "", status: status ?? "", salt });
     if (expected !== returnedHash) {
       res.redirect(getBookingConfirmationUrl(base, "", "payu", true, "hash_mismatch"));
@@ -961,7 +971,16 @@ publicBookingRouter.get("/bharatpe-callback", async (req, res): Promise<void> =>
       data?: { status?: string; transactionId?: string };
     };
 
-    if (statusData.data?.status === "SUCCESS" || status === "success") {
+    // SECURITY FIX: previously `if (statusData.data?.status === "SUCCESS" || status === "success")`
+    // — the `|| status === "success"` half trusted the ?status= query param from
+    // the browser redirect directly. An attacker who knew any valid
+    // merchantTransactionId could fabricate a redirect to this URL with
+    // ?status=success and bypass the server-side BharatPe status check
+    // entirely (the server-side check would still run first, but if
+    // statusData.data?.status was anything other than "SUCCESS" AND the query
+    // param said "success", the condition was still true). Only the server-side
+    // status response from BharatPe's API is authoritative.
+    if (statusData.data?.status === "SUCCESS") {
       const [booking] = await db.select().from(onlineBookingsTable)
         .where(eq(onlineBookingsTable.bharatpeTransactionId, merchantTransactionId))
         .limit(1);
@@ -1633,8 +1652,22 @@ publicBookingRouter.post("/qr-initiate", createOrderLimiter, async (req, res): P
 });
 
 // ── POST /api/public/booking/qr-confirm ─────────────────────────────────────
-// Simulated confirmation for QR bookings (used during demo/demo approvals).
-// In production, staff uses the ERP /api/online-bookings/:id/confirm endpoint.
+// Patient self-declares "I have paid" after scanning the QR code. This is
+// UNVERIFIED — nobody has checked that the money actually arrived. It must
+// NOT create a bill or mark the booking "confirmed": those require an actual
+// staff member to look at the clinic's bank/UPI app and manually confirm via
+// the staff-authenticated POST /api/online-bookings/:id/confirm (see
+// onlineBookingsRouter, requireStaffAuth-gated), which is what actually
+// calls confirmBookingInternal() and creates the bill.
+//
+// Root-cause fix: this handler previously called confirmBookingInternal()
+// directly — with no staff involvement — immediately creating a bill with
+// status "paid" and the full amount marked received, based purely on the
+// patient's own click. The ERP staff UI (OnlineBookings.tsx) already has a
+// "Paid – Awaiting Confirm" queue and a "Confirm" button specifically for
+// this — status "paid" was always meant to be an intermediate, staff-
+// actionable state, not a final one. This handler now stops there instead
+// of skipping straight through to "confirmed".
 publicBookingRouter.post("/qr-confirm", bookingLimiter, async (req, res): Promise<void> => {
   const { bookingRef } = req.body || {};
   if (!bookingRef) { res.status(400).json({ error: "Booking reference required" }); return; }
@@ -1653,12 +1686,12 @@ publicBookingRouter.post("/qr-confirm", bookingLimiter, async (req, res): Promis
     .set({ status: "paid" })
     .where(eq(onlineBookingsTable.id, booking.id));
 
-  try {
-    await confirmBookingInternal(booking.id, "Super Admin");
-  } catch (err: any) {
-    logger.error({ err, bookingId: booking.id }, "Auto-confirmation failed for paid QR booking");
-  }
-
+  // Intentionally does NOT call confirmBookingInternal — no bill is created
+  // and no queue token is issued until staff manually verifies the payment
+  // and confirms via the ERP. The patient's confirmation screen already
+  // correctly shows "Booking Received — pending payment confirmation from
+  // staff" (isUnconfirmedQr in book.tsx, based on the absence of any
+  // gateway transaction ID, which is unaffected by this change).
   res.json({ success: true, bookingRef, status: "paid" });
 });
 
