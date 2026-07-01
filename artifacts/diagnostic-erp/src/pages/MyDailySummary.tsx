@@ -573,25 +573,39 @@ function FormulaHint({ text }: { text: string }) {
 
 function DailyFinancialReconciliation({ summary: s }: { summary: MyDailySummarySummary }) {
   // ── Three-step accounting flow ──
-  // IMPORTANT: Refunds are NOT subtracted again here. When a bill is cancelled,
-  // the cancellation already removes the billing value from Effective Billing.
-  // The refund is just the cash movement that corresponds to that cancellation.
-  // Subtracting both would double-count the same ₹7,500.
+  //
+  // totalAmount on a bill is stored POST-DISCOUNT (subtotal − discount + tax).
+  // So grossBilledIncludingCancelled is already net of discounts.
+  //
+  // Refunds ARE separately subtracted here. A refund is a cash outflow that
+  // reduces the money that should be in the counter regardless of whether
+  // the original bill was cancelled or not (a partial refund on an active bill
+  // has no corresponding cancellation to account for it).
+  //
+  // Discounts are NOT subtracted here — they are already inside the billing totals.
 
   // Step 1: Effective Billing Value
+  // grossBilledIncludingCancelled − cancelledAmount = active billing (post-discount)
+  // + duesCollectedTotal = payments today on OLD bills (billing that happened before today)
   const effectiveBilling = s.grossBilledIncludingCancelled + s.duesCollectedTotal - s.cancelledAmount;
 
-  // Step 2: Expected Collection
-  // Outstanding = money billed but not yet collected (still pending)
-  // Expenses = money collected but spent on business operations
-  // Refunds are already accounted for via cancellations above.
-  const expectedCollection = effectiveBilling - s.outstanding - s.totalExpenses;
+  // Step 2: Expected Total Collection
+  // Effective billing tells us what should have been collected in total.
+  // Subtract what hasn't been collected yet (outstanding) and what went back out (refunds).
+  const totalRefunds = s.cashRefunded + s.digitalRefunded;
+  const expectedCollection = effectiveBilling - s.outstanding - totalRefunds - s.totalExpenses;
 
   // Step 3: Expected Cash in Counter
-  const netDigitalCollection = s.digitalCollection - s.digitalRefunded;
-  const expectedPhysicalCash = expectedCollection - netDigitalCollection;
+  // Of the expected total collection, the digital portion went to bank/UPI/card.
+  // What remains should be physical cash, minus cash already spent on expenses.
+  const netDigitalCollection = s.digitalIn - s.digitalRefunded;
+  const expectedPhysicalCash = expectedCollection - netDigitalCollection + s.digitalExpenses;
+  // Note: totalExpenses above includes both cashExpenses and digitalExpenses.
+  // netDigitalCollection excludes digitalExpenses (that money left digitally).
+  // Adding back digitalExpenses gives us just the cash-side expected amount,
+  // which equals: cashIn - cashRefunded - cashExpenses = s.physicalCashInHand.
 
-  // Check against backend's physicalCashInHand for mismatch
+  // Compare against the payment-side actual cash (authoritative number)
   const mismatch = expectedPhysicalCash - s.physicalCashInHand;
   const hasMismatch = Math.abs(mismatch) > 0.01;
 
@@ -641,12 +655,12 @@ function DailyFinancialReconciliation({ summary: s }: { summary: MyDailySummaryS
         {/* ─── STEP 2: EXPECTED COLLECTION ─── */}
         <div className="mt-3" />
         <RecRow label="Pending Dues" value={s.outstanding} type="deduct" />
-        <CompactRow label="Refunds (Cash / Digital)" cash={s.cashRefunded} digital={s.digitalRefunded} />
+        <CompactRow label="Refunds (Cash / Digital)" cash={s.cashRefunded} digital={s.digitalRefunded} isDeduct />
         <CompactRow label="Expenses (Cash / Digital)" cash={s.cashExpenses} digital={s.digitalExpenses} isDeduct />
         <MajorDivider color="blue" />
         <div>
           <RecRow label="Expected Collection" value={expectedCollection} type="result" />
-          <FormulaHint text="Effective − Pending − Expenses" />
+          <FormulaHint text="Effective − Pending − Refunds − Expenses" />
         </div>
 
         {/* ─── STEP 3: EXPECTED CASH IN COUNTER ─── */}
@@ -673,8 +687,8 @@ function DailyFinancialReconciliation({ summary: s }: { summary: MyDailySummaryS
       <div className="px-5 py-2.5 bg-slate-50 dark:bg-slate-900/20 border-t border-gray-200 dark:border-card-border">
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-gray-500 dark:text-gray-400">
           <span>Effective = New Billing + Old Dues − Cancelled</span>
-          <span>Expected Collection = Effective − Pending − Expenses</span>
-          <span>Expected Cash = Expected Collection − Net Digital</span>
+          <span>Expected Collection = Effective − Pending − Refunds − Expenses</span>
+          <span>Expected Cash = Expected Collection − Net Digital + Digital Expenses</span>
         </div>
       </div>
     </div>
@@ -702,16 +716,21 @@ function DailyReconciliationAndCashFlow({
   const backdatedRefundAdjustments = backdatedAdjustmentsList.reduce((sum, tx) => sum + Math.abs(tx.amount), 0);
 
   // Operational Revenue
-  const newBilling = s.grossBilledIncludingCancelled + s.discountsGiven;
+  // grossBilledIncludingCancelled is already POST-DISCOUNT (totalAmount = subtotal − discount + tax).
+  // Do NOT add discountsGiven back — that would inflate the number and then deducting them below
+  // would cancel to zero but show a misleading gross figure to any auditor.
+  const newBilling = s.grossBilledIncludingCancelled;
   const oldDuesCollected = s.duesCollectedTotal;
   const totalOperationalRevenue = newBilling + oldDuesCollected;
 
   // Operational Deductions
   const cancelledBills = s.cancelledAmount;
-  const discountsGiven = s.discountsGiven;
+  const discountsGiven = s.discountsGiven; // informational only — already IN newBilling
   const totalRefundAmount = s.refundAmount;
-  const refundsToday = Math.max(0, totalRefundAmount - backdatedRefundAdjustments);
-  const totalOperationalDeductions = cancelledBills + discountsGiven + refundsToday;
+  // Split refunds into same-day and backdated for transparency, but both are already
+  // inside totalRefundAmount. Do NOT subtract backdated separately — it is informational.
+  const refundsToday = totalRefundAmount; // total refunds, all processed today
+  const totalOperationalDeductions = cancelledBills + refundsToday;
 
   // Expenses
   const cashExpenses = s.cashExpenses;
@@ -723,8 +742,10 @@ function DailyReconciliationAndCashFlow({
   const digitalCollection = s.digitalCollection;
   const netDigitalCollection = s.netDigital;
 
-  // Final expected cash using the formula
-  const expectedPhysicalCash = totalOperationalRevenue - totalOperationalDeductions - backdatedRefundAdjustments - totalExpenses - netDigitalCollection;
+  // Final formula:
+  // newBilling (post-discount) + duesCollected − cancelled − refunds − expenses − netDigital
+  // = cashIn − cashRefunded − cashExpenses   (= physicalCashInHand from backend)
+  const expectedPhysicalCash = totalOperationalRevenue - totalOperationalDeductions - totalExpenses - netDigitalCollection;
 
   const inrFmt = (n: number) =>
     "₹" + n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -748,7 +769,12 @@ function DailyReconciliationAndCashFlow({
               <td className="p-3 border-r border-gray-300 dark:border-gray-600" colSpan={2}>Operational Revenue</td>
             </tr>
             <tr>
-              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">New Billing</td>
+              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">
+                New Billing
+                <span className="block text-[11px] text-gray-400 dark:text-gray-500 font-normal mt-0.5">
+                  Post-discount (discounts already deducted from bill totals)
+                </span>
+              </td>
               <td className="p-3 text-right tabular-nums text-gray-800 dark:text-gray-200">{inrFmt(newBilling)}</td>
             </tr>
             <tr>
@@ -769,22 +795,27 @@ function DailyReconciliationAndCashFlow({
               <td className="p-3 text-right tabular-nums text-red-600 dark:text-red-400">− {inrFmt(cancelledBills)}</td>
             </tr>
             <tr>
-              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">Discounts Given</td>
-              <td className="p-3 text-right tabular-nums text-amber-600 font-semibold">− {inrFmt(discountsGiven)}</td>
-            </tr>
-            <tr>
-              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">Refunds Today</td>
+              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">
+                Refunds
+                {backdatedRefundAdjustments > 0 && (
+                  <span className="block text-[11px] text-gray-400 dark:text-gray-500 font-normal mt-0.5">
+                    Of which ₹{inrFmt(backdatedRefundAdjustments)} on bills from prior dates (included above)
+                  </span>
+                )}
+              </td>
               <td className="p-3 text-right tabular-nums text-red-600 dark:text-red-400">− {inrFmt(refundsToday)}</td>
             </tr>
-            <tr>
-              <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 font-bold">
-                Backdated Refund Adjustments
-                <span className="block text-[11px] text-gray-400 dark:text-gray-500 font-normal mt-0.5">
-                  (Refunds processed today on bills created prior to {from})
-                </span>
-              </td>
-              <td className="p-3 text-right tabular-nums text-red-600 dark:text-red-400 font-bold">− {inrFmt(backdatedRefundAdjustments)}</td>
-            </tr>
+            {discountsGiven > 0 && (
+              <tr className="bg-amber-50/40 dark:bg-amber-950/10">
+                <td className="p-3 pl-6 border-r border-gray-300 dark:border-gray-600 text-amber-700 dark:text-amber-400 italic text-[12px]">
+                  Discounts Given
+                  <span className="block text-[11px] text-gray-400 dark:text-gray-500 font-normal mt-0.5">
+                    Informational only — already deducted inside New Billing above
+                  </span>
+                </td>
+                <td className="p-3 text-right tabular-nums text-amber-600 dark:text-amber-400 italic text-[12px]">{inrFmt(discountsGiven)}</td>
+              </tr>
+            )}
 
             {/* Expenses */}
             <tr className="bg-gray-50/50 dark:bg-muted/10 font-semibold text-gray-900 dark:text-foreground">
