@@ -11,13 +11,15 @@ import {
   ArrowLeft, Plus, Trash2, ChevronUp, ChevronDown, Save,
   LayoutGrid, ImageIcon, Briefcase, CalendarCheck, Star, Phone,
   Share2, Mail, HelpCircle, Images, Code, Minus, GripVertical,
+  BarChart3, ShieldCheck, Cpu, Package,
 } from "lucide-react";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Section model
 // ─────────────────────────────────────────────────────────────────────────────
 export type SectionType =
-  | "header" | "hero" | "services" | "appointment" | "reviews"
+  | "header" | "hero" | "stats" | "services" | "why_choose_us" | "technology"
+  | "health_packages" | "appointment" | "reviews"
   | "contact" | "connect" | "subscribe" | "faq" | "gallery"
   | "custom_html" | "footer";
 
@@ -39,7 +41,11 @@ type SectionTypeMeta = {
 const SECTION_TYPES: SectionTypeMeta[] = [
   { type: "header",      label: "Header",            desc: "Top nav with logo + menu",   Icon: LayoutGrid,    defaults: { showLogo: true, ctaLabel: "Book Appointment", ctaUrl: "/appointment" } },
   { type: "hero",        label: "Hero",              desc: "Big banner + CTA",           Icon: ImageIcon,     defaults: { heading: "Trusted Diagnostics, Caring Hands", subheading: "200+ tests, on-call ultrasound, same-day reports.", imageUrl: "", ctaLabel: "Book Now", ctaUrl: "/appointment" } },
+  { type: "stats",       label: "Stats Strip",       desc: "Counters (patients, years, tests)", Icon: BarChart3, defaults: { items: [{ num: "10,000+", label: "Patients Served" }, { num: "15+", label: "Years of Service" }, { num: "50+", label: "Diagnostic Tests" }, { num: "24h", label: "Report Turnaround" }] } },
   { type: "services",    label: "Our Services",      desc: "Grid of service cards",      Icon: Briefcase,     defaults: { heading: "Our Services", items: [{ title: "Pathology", desc: "Blood, urine, biopsy panels" }, { title: "Radiology", desc: "X-Ray, USG, ECG" }, { title: "Health Packages", desc: "Wellness checkups" }] } },
+  { type: "why_choose_us", label: "Why Choose Us",   desc: "Trust/differentiator cards", Icon: ShieldCheck,   defaults: { heading: "Why Patients Trust Care Diagnostics", subheading: "Built for accuracy, speed and compassionate patient care." } },
+  { type: "technology",  label: "Our Technology",    desc: "Equipment showcase cards",   Icon: Cpu,           defaults: { heading: "Technology built for confident diagnosis", subheading: "High-quality imaging and laboratory workflow, designed to support clear clinical decisions." } },
+  { type: "health_packages", label: "Health Packages", desc: "Preventive checkup packages", Icon: Package,     defaults: { heading: "Popular health packages", subheading: "Preventive packages designed for families, senior citizens and chronic-disease monitoring." } },
   { type: "appointment", label: "Online Appointment", desc: "Booking form",              Icon: CalendarCheck, defaults: { heading: "Book an Appointment", subheading: "We'll confirm by WhatsApp.", submitLabel: "Request Appointment" } },
   { type: "reviews",     label: "Reviews",           desc: "Patient testimonials",       Icon: Star,          defaults: { heading: "What Patients Say", items: [{ name: "Asha P.", rating: 5, text: "Reports came on time, staff was kind." }] } },
   { type: "contact",     label: "Contact Us",        desc: "Address, phone, map",        Icon: Phone,         defaults: { heading: "Reach Us", mapEmbed: "", showForm: true } },
@@ -139,6 +145,29 @@ export function SectionsEditor({ pageId, onBack }: Props) {
     setAdding(false);
   }
 
+  // Root-cause fix for "the published Home page looks empty/worse than
+  // before": creating a page via the Pages tab always started with ZERO
+  // sections (just header + footer render automatically on the public
+  // site even with none configured). This one-click action loads the
+  // same rich, pre-designed section set — hero, stats, services, why
+  // choose us, technology, health packages, appointment, gallery,
+  // reviews, FAQ, contact, subscribe, connect — that the premium
+  // redesign was built around, using each type's own sensible defaults
+  // (same content "Add Section" would give you, one at a time). Only
+  // shown for the "home" page; does not touch any other page's content.
+  const DEFAULT_HOME_SECTION_TYPES: SectionType[] = [
+    "hero", "stats", "services", "why_choose_us", "technology",
+    "health_packages", "appointment", "gallery", "reviews", "faq",
+    "contact", "subscribe", "connect",
+  ];
+  function loadDefaultHomeSections() {
+    const next = DEFAULT_HOME_SECTION_TYPES.map((t) => {
+      const m = TYPE_META.get(t)!;
+      return { id: nanoId(), type: t, enabled: true, config: structuredClone(m.defaults) };
+    });
+    setSections(next);
+  }
+
   function removeAt(i: number) {
     setSections(sections.filter((_, idx) => idx !== i));
   }
@@ -176,9 +205,24 @@ export function SectionsEditor({ pageId, onBack }: Props) {
             <div className="text-xs text-muted-foreground font-mono">/{meta.slug}</div>
           </div>
         </div>
-        <Button onClick={() => save.mutate()} disabled={!dirty || save.isPending}>
-          <Save size={14} className="mr-1" /> {save.isPending ? "Saving…" : dirty ? "Save changes" : "Saved"}
-        </Button>
+        <div className="flex items-center gap-2">
+          {meta.slug === "home" && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                if (sections.length === 0 || window.confirm("Replace all current sections with the default homepage layout? This can't be undone until you save, but you can still cancel before saving.")) {
+                  loadDefaultHomeSections();
+                }
+              }}
+            >
+              <LayoutGrid size={14} className="mr-1" /> Load default sections
+            </Button>
+          )}
+          <Button onClick={() => save.mutate()} disabled={!dirty || save.isPending}>
+            <Save size={14} className="mr-1" /> {save.isPending ? "Saving…" : dirty ? "Save changes" : "Saved"}
+          </Button>
+        </div>
       </div>
 
       {/* Page meta */}
@@ -208,6 +252,13 @@ export function SectionsEditor({ pageId, onBack }: Props) {
         {sections.length === 0 && (
           <div className="rounded-xl border-2 border-dashed border-border p-10 text-center text-sm text-muted-foreground">
             This page has no sections yet. Add one below.
+            {meta.slug === "home" && (
+              <div className="mt-3">
+                <Button size="sm" onClick={loadDefaultHomeSections}>
+                  <LayoutGrid size={14} className="mr-1" /> Load default homepage sections
+                </Button>
+              </div>
+            )}
           </div>
         )}
         {sections.map((s, i) => (
@@ -403,6 +454,53 @@ function SectionConfigEditor({ section, onConfigChange }: { section: Section; on
               { key: "url",   placeholder: "/privacy" },
             ]}
           />
+        </div>
+      );
+    case "stats":
+      return (
+        <div className="space-y-3">
+          <ItemsRepeater
+            label="Stat counters"
+            items={Array.isArray(c.items) ? (c.items as Array<{ num: string; label: string }>) : []}
+            onChange={(next) => onConfigChange("items", next)}
+            fields={[
+              { key: "num",   placeholder: "10,000+" },
+              { key: "label", placeholder: "Patients Served" },
+            ]}
+          />
+        </div>
+      );
+    case "why_choose_us":
+      return (
+        <div className="space-y-3">
+          <Field label="Heading"><Input value={get("heading")} onChange={(e) => onConfigChange("heading", e.target.value)} /></Field>
+          <Field label="Subheading"><Input value={get("subheading")} onChange={(e) => onConfigChange("subheading", e.target.value)} /></Field>
+          <ItemsRepeater
+            label="Points"
+            items={Array.isArray(c.items) ? (c.items as Array<{ title: string; desc: string }>) : []}
+            onChange={(next) => onConfigChange("items", next)}
+            fields={[
+              { key: "title", placeholder: "Accredited Labs" },
+              { key: "desc",  placeholder: "NABL-certified processes for reliable results", multiline: true },
+            ]}
+          />
+          <p className="text-xs text-muted-foreground">Leave points empty to use the built-in default set.</p>
+        </div>
+      );
+    case "technology":
+      return (
+        <div className="space-y-3">
+          <Field label="Heading"><Input value={get("heading")} onChange={(e) => onConfigChange("heading", e.target.value)} /></Field>
+          <Field label="Subheading"><Input value={get("subheading")} onChange={(e) => onConfigChange("subheading", e.target.value)} /></Field>
+          <p className="text-xs text-muted-foreground">Equipment cards (3 Tesla MRI, CT, etc.) use a fixed built-in showcase.</p>
+        </div>
+      );
+    case "health_packages":
+      return (
+        <div className="space-y-3">
+          <Field label="Heading"><Input value={get("heading")} onChange={(e) => onConfigChange("heading", e.target.value)} /></Field>
+          <Field label="Subheading"><Input value={get("subheading")} onChange={(e) => onConfigChange("subheading", e.target.value)} /></Field>
+          <p className="text-xs text-muted-foreground">Package cards use a fixed built-in set (Basic, Comprehensive, Senior Citizen, etc.).</p>
         </div>
       );
     case "services":

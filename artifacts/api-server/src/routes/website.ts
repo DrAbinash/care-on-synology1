@@ -335,6 +335,46 @@ websiteRouter.get("/pages/:id", async (req, res) => {
   res.json(draftsAllowed ? p : sanitizePageSectionsForPublic(p));
 });
 
+// Default homepage section layout — used ONLY when a brand-new page is
+// created with slug "home" and the caller did not supply its own
+// `sections` payload. Root-cause fix for: creating a page via the website
+// builder (POST /pages) always defaulted to an EMPTY sections array
+// ("[]"), so a freshly-created/published "Home" page renders as just a
+// header + footer with nothing in between — no hero, no services, no
+// stats, etc. — even though the section COMPONENTS themselves (see
+// artifacts/clinic-site/src/sections.tsx) are fully designed. Every
+// section below uses an empty config ({}) so each component's own
+// built-in fallback content (site name, default copy, etc.) renders —
+// the same pattern already used by the header/footer defaults in
+// clinic-site/src/App.tsx (defaultHeader/defaultFooter). An admin can
+// still edit, reorder, disable, or remove any of these via the builder
+// afterward; this only affects what a brand-new "home" page starts with.
+export const DEFAULT_HOME_SECTION_TYPES = [
+  "hero",
+  "stats",
+  "services",
+  "why_choose_us",
+  "technology",
+  "health_packages",
+  "appointment",
+  "gallery",
+  "reviews",
+  "faq",
+  "contact",
+  "subscribe",
+  "connect",
+] as const;
+
+export function defaultHomeSectionsJson(): string {
+  const sections = DEFAULT_HOME_SECTION_TYPES.map((type, i) => ({
+    id: `default-${type}-${i}`,
+    type,
+    enabled: true,
+    config: {},
+  }));
+  return JSON.stringify(sections);
+}
+
 websiteRouter.post("/pages", requireStaffAuth, requireStaffPermission("/website"), async (req, res) => {
   if (typeof req.body.slug !== "string" || !req.body.slug.trim()) {
     res.status(400).json({ error: "slug required" });
@@ -353,7 +393,9 @@ websiteRouter.post("/pages", requireStaffAuth, requireStaffPermission("/website"
     ? isAdminRole(req)
       ? sanitizeSectionUrls(String(req.body.sections))
       : sanitizeSectionUrls(stripCustomHtmlSections(String(req.body.sections)))
-    : "[]";
+    : req.body.slug.trim().toLowerCase() === "home"
+      ? defaultHomeSectionsJson()
+      : "[]";
   const [page] = await db.insert(sitePagesTable).values({
     slug: req.body.slug,
     title: req.body.title,
