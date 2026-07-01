@@ -549,12 +549,20 @@ if (staticDir) {
     });
 
     // Public Clinic Website (built with BASE_PATH=/) — catch-all SPA last.
-    // Excludes /api/, /erp, /uploads, and /super-admin-portal so those routes
-    // are handled by their own handlers above (and not swallowed by the SPA).
+    // Excludes /api/, /erp (bare), /erp/ (prefix), /uploads, and /super-admin-portal
+    // so those routes are handled by their own handlers above (and not swallowed
+    // by the website-builder SPA).
+    //
+    // The bare /erp exclusion (erp$) is critical: without it, a request for
+    // the path /erp (no trailing slash) is not matched by the /erp/ prefix
+    // handler and falls through to this catch-all, which serves clinic-site's
+    // index.html. The clinic-site SPA then parses "erp" as a page slug, finds
+    // no website-builder page with that slug, and shows
+    // "Page not found: /erp doesn't exist or isn't published."
     if (hasSite) {
       app.use(staticWithCache(resolvedSiteDir!));
       app.get(
-        /^\/(?!api\/|erp\/|erp$|uploads\/).*/,
+        /^\/(?!api\/|erp\/|erp$|uploads\/|super-admin-portal\/).*/,
         (_req: Request, res: Response, next: NextFunction) => {
           res.sendFile(path.join(resolvedSiteDir!, "index.html"), (err) => {
             if (err) next(err);
