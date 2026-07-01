@@ -192,7 +192,7 @@ services:
       # The shell command checks that the JSON response contains "ok":true
       test:
         - CMD-SHELL
-        - wget -qO- http://localhost:8080/api/health/schema | grep -q '"ok":true' || exit 1
+        - curl -sf http://localhost:8080/api/health/schema | grep -q '"ok":true' || exit 1
       interval: 10s
       timeout: 8s
       retries: 15

@@ -49,7 +49,7 @@ RUN pnpm --filter @workspace/api-server run build \
 # Stage: api
 # -----------------------------------------------------------------------------
 FROM node:22-bookworm-slim AS api
-RUN apt-get update && apt-get install -y tini && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends tini curl && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=8080
