@@ -1,4 +1,21 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
+
+// usgExtractor.ts imports `db` from @workspace/db at module top level.
+// @workspace/db throws unconditionally at import time when DATABASE_URL
+// is not set — before any test code runs. The four functions tested here
+// (parseDicomSr, parseGePrivateTags, extractDopplerFromSr,
+// parseGePrivateTagsWithProvenance) are pure parsers that never touch
+// the database; mocking the module prevents the load-time throw without
+// affecting what is actually under test. Same pattern as
+// requireAiCallerAuth.test.ts.
+vi.mock("@workspace/db", () => ({
+  db: {
+    select:  () => ({ from: () => ({ where: () => ({ limit: async () => [] }) }) }),
+    insert:  () => ({ values: async () => undefined }),
+    update:  () => ({ set:   () => ({ where: async () => undefined }) }),
+  },
+}));
+
 import { parseDicomSr, parseGePrivateTags, extractDopplerFromSr, parseGePrivateTagsWithProvenance } from "./usgExtractor";
 
 const mockDicomJson = {

@@ -25,6 +25,8 @@ import {
   ReceiptText,
   FlaskConical,
   Calendar,
+  Printer,
+  Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -269,6 +271,78 @@ export default function DailySummary() {
       api.get(`/api/daily-summary/category-test-summary?from=${ctRange.from}&to=${ctRange.to}`),
     staleTime: 60_000,
   });
+
+  // ── Export helpers for Category & Test Wise Summary ─────────────────────
+  function exportCategoryTestCSV() {
+    const d = ctQ.data;
+    if (!d) return;
+    const label = ctRange.from === ctRange.to ? ctRange.from : `${ctRange.from}_to_${ctRange.to}`;
+    const rows: string[][] = [
+      ["Category", "Test Name", "Count"],
+    ];
+    for (const cat of d.categories) {
+      for (const t of [...cat.tests].sort((a, b) => b.count - a.count)) {
+        rows.push([cat.categoryName, t.testName, String(t.count)]);
+      }
+      rows.push([cat.categoryName, "CATEGORY TOTAL", String(cat.total)]);
+      rows.push(["", "", ""]);
+    }
+    rows.push(["GRAND TOTAL", "", String(d.total)]);
+    const csv = rows.map((r) => r.map((c) => `"${c.replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `category_test_summary_${label}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function printCategoryTestSummary() {
+    const d = ctQ.data;
+    if (!d) return;
+    const label = ctRange.from === ctRange.to
+      ? ctRange.from
+      : `${ctRange.from} to ${ctRange.to}`;
+    const rows = d.categories.map((cat) => {
+      const tests = [...cat.tests]
+        .sort((a, b) => b.count - a.count)
+        .map((t) => `<tr><td style="padding:4px 8px 4px 24px;border:1px solid #e2e8f0;color:#64748b">— ${t.testName}</td><td style="padding:4px 12px;border:1px solid #e2e8f0;text-align:right">${t.count}</td></tr>`)
+        .join("");
+      return `<tr style="background:#f0fdfa">
+        <td style="padding:7px 10px;border:1px solid #0d9488;font-weight:700;color:#134e4a">${cat.categoryName}</td>
+        <td style="padding:7px 12px;border:1px solid #0d9488;text-align:right;font-weight:700;color:#0f766e">${cat.total}</td>
+      </tr>${tests}`;
+    }).join("");
+    const html = `<!DOCTYPE html><html><head><title>Category &amp; Test Wise Summary — ${label}</title>
+    <style>body{font-family:Arial,sans-serif;padding:20px;font-size:13px}
+    h2{margin:0 0 4px}p{margin:0 0 16px;color:#64748b}
+    table{width:100%;border-collapse:collapse}
+    @media print{button{display:none!important}}</style></head>
+    <body>
+    <h2>Category &amp; Test Wise Summary</h2>
+    <p>Period: ${label} &nbsp;|&nbsp; Total tests: ${d.total}</p>
+    <table>
+      <thead><tr style="background:#0f766e;color:white">
+        <th style="padding:8px 10px;text-align:left;border:1px solid #0f766e">Category / Test</th>
+        <th style="padding:8px 12px;text-align:right;border:1px solid #0f766e">Count</th>
+      </tr></thead>
+      <tbody>${rows}
+        <tr style="background:#134e4a;color:white">
+          <td style="padding:9px 10px;font-weight:700;border:2px solid #134e4a">GRAND TOTAL</td>
+          <td style="padding:9px 12px;text-align:right;font-weight:700;font-size:15px;border:2px solid #134e4a">${d.total}</td>
+        </tr>
+      </tbody>
+    </table>
+    <p style="margin-top:14px;font-size:11px;color:#94a3b8">Cancelled bills excluded. Generated on ${new Date().toLocaleString("en-IN")}</p>
+    </body></html>`;
+    const win = window.open("", "_blank", "width=700,height=900");
+    if (!win) return;
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    win.print();
+  }
 
   const { data, isLoading, refetch, isFetching } = useQuery<DailySummaryData>({
     queryKey: ["daily-summary", date, staffFilter],
@@ -916,6 +990,29 @@ export default function DailySummary() {
                   {ctQ.data.total} tests
                 </Badge>
               )}
+              {/* Export / Print buttons — only enabled when data is loaded */}
+              <div className="ml-auto flex items-center gap-1.5">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-xs gap-1"
+                  disabled={!ctQ.data || ctQ.data.categories.length === 0}
+                  onClick={exportCategoryTestCSV}
+                  title="Export as CSV"
+                >
+                  <Download size={12} /> CSV
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-xs gap-1"
+                  disabled={!ctQ.data || ctQ.data.categories.length === 0}
+                  onClick={printCategoryTestSummary}
+                  title="Print / Save as PDF"
+                >
+                  <Printer size={12} /> Print
+                </Button>
+              </div>
             </div>
 
             {/* Date preset buttons */}
