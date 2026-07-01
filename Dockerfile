@@ -49,7 +49,16 @@ RUN pnpm --filter @workspace/api-server run build \
 # Stage: api
 # -----------------------------------------------------------------------------
 FROM node:22-bookworm-slim AS api
-RUN apt-get update && apt-get install -y --no-install-recommends tini curl && rm -rf /var/lib/apt/lists/*
+
+# Install tini (process supervisor) and curl (health check probe).
+# curl MUST be installed in this final runtime stage, NOT only in the
+# builder. node:22-bookworm-slim is a Debian slim image — curl is NOT
+# pre-installed, which is why the healthcheck was failing with
+# "curl: not found" even though the container started successfully.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends tini curl \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=8080
@@ -78,6 +87,35 @@ COPY --from=api-build /api-deploy/node_modules                    ./node_modules
 COPY --from=api-build /repo/version.json                          ./version.json
 
 EXPOSE 8080
+
+# ── Health check baked into the image ─────────────────────────────────────────
+# Uses GET /health which is registered directly on the Express app at
+# app.ts:111 — no /api prefix, no auth, no rate-limit, no database query.
+# It returns {"ok":true,...} immediately once Node is listening.
+#
+# Why /health, not /api/health/schema:
+#   /api/health/schema checks that db-patch-v2 ran AND critical schema
+#   columns exist. If either check fails (e.g. the schema_deploy_state
+#   table doesn't exist yet on a fresh database), this endpoint returns
+#   503 forever, permanently marking the container unhealthy regardless
+#   of whether the application is actually serving traffic. This is the
+#   wrong probe for a Docker HEALTHCHECK (liveness) — it's a readiness
+#   probe that belongs in docker-compose depends_on conditions, where it
+#   already lives (see the care-web service below).
+#
+# Timing:
+#   start_period: 60s — gives the application enough time to run its
+#     in-process startup tasks (bootstrap admin seed, PACS settings seed,
+#     runtime column patches) before the first check fires. The logs show
+#     these complete before "Server listening", so 60s is conservative.
+#   interval: 15s, timeout: 10s, retries: 5 — after the start period,
+#     checks every 15 seconds. 5 consecutive failures (75s) are required
+#     before Docker marks the container unhealthy. This tolerates brief
+#     transient failures (GC pause, momentary DB hiccup) without
+#     triggering a false unhealthy state.
+HEALTHCHECK --interval=15s --timeout=10s --start-period=60s --retries=5 \
+  CMD curl -fsS http://localhost:8080/health || exit 1
+
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "--enable-source-maps", "./dist/index.mjs"]
 

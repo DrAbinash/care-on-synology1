@@ -186,17 +186,45 @@ services:
     volumes:
       - object_storage:/app/data/object-storage
     healthcheck:
-      # Schema readiness probe — confirms db-patch-v2 ran AND critical columns exist.
-      # care-web will NOT start until this returns HTTP 200.
-      # Written as YAML block list to avoid nested quote conflicts.
-      # The shell command checks that the JSON response contains "ok":true
-      test:
-        - CMD-SHELL
-        - curl -sf http://localhost:8080/api/health/schema | grep -q '"ok":true' || exit 1
-      interval: 10s
-      timeout: 8s
-      retries: 15
-      start_period: 30s
+      # ── Liveness probe (process alive + port responding) ───────────────────
+      # Hits GET /health — registered on the Express app with no auth, no
+      # rate-limit, and no database dependency. Returns {"ok":true,...} as
+      # soon as Node is listening. This is intentionally a liveness probe,
+      # not a readiness probe:
+      #
+      #   WHY NOT /api/health/schema:
+      #     That endpoint checks that db-patch-v2 ran AND critical schema
+      #     columns exist (schema_deploy_state table, db_patch_ok=true flag,
+      #     etc.). If those checks fail — which they do on any fresh database
+      #     where schema_deploy_state was not yet created — the container
+      #     returns 503 forever, permanently marking itself unhealthy. A
+      #     Docker HEALTHCHECK is a liveness probe; permanently failing it
+      #     causes Docker to restart the container in a crash-loop. The
+      #     schema check belongs in the care-web depends_on condition, which
+      #     is where it has always lived and continues to live (see below).
+      #
+      #   WHY JSON ARRAY FORMAT (not YAML block-list):
+      #     The CMD-SHELL block-list format ("- CMD-SHELL" / "- command") is
+      #     known to be parsed inconsistently by older Docker Engine versions
+      #     and Synology Container Manager. The JSON array ["CMD-SHELL", "..."]
+      #     is the canonical format in the Docker Compose spec and is
+      #     universally supported.
+      #
+      # Timing:
+      #   start_period: 60s  — allows in-process startup tasks to complete
+      #     (bootstrap admin seed, PACS settings seed, runtime column patches)
+      #     before the first check fires. The logs show these complete before
+      #     "Server listening" is printed, so 60s is deliberately conservative.
+      #   interval: 15s      — check frequency after the start period.
+      #   timeout: 10s       — maximum time for a single check to respond.
+      #   retries: 5         — 5 consecutive failures (75s after start_period)
+      #     required before Docker marks the container unhealthy. Tolerates
+      #     brief transient failures without triggering false unhealthy states.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 10s
+      start_period: 60s
+      retries: 5
     depends_on:
       db:
         condition: service_healthy
