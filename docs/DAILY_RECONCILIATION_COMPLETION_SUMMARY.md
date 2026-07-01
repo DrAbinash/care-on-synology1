@@ -112,7 +112,7 @@ Typecheck   0 errors (full monorepo)
 
 2. **Suspense/cash-expense-split data is not persisted as new `day_closures` columns.** A clean migration could not be safely generated in this environment (see Specification §22.7). All values are correctly computed and returned live; only the historical closed-day record lacks these specific supplementary fields. The core `expectedCash`/`totalExpected` values **are** persisted correctly.
 
-3. **Refund-against-closed-period staff-facing warning is not implemented as a UI change** (out of scope for this backend-focused pass; the underlying behavior was already correct, so no user harm results from the omission — only reduced staff awareness).
+3. **Refund-against-closed-period staff-facing warning is now implemented at the API level** (follow-up, same day): `POST /:id/refund` and `POST /:id/cancel` (auto-refund path) return a `closedPeriodWarning` field indicating whether the bill predates the last close. Purely informational — never blocks, never requires approval. A frontend UI badge surfacing this to staff is a small remaining follow-up (not a backend change).
 
 4. **Cash handover, opening balance, and bank-deposit tracking remain unimplemented**, as explicitly instructed ("do not implement a large new module unless simple and safe"). Documented as a known limitation in Specification §22.8 with a recommended schema approach for a future pass.
 
@@ -141,7 +141,7 @@ All changes described above are staged for commit on `feature/website-login-redi
 | Suspense/exception bucket | ✅ Fixed, tested |
 | Negative/zero expense amount guard | ✅ Fixed, tested |
 | Carry-forward boundary logic | ✅ Verified correct (unit-tested, not DB-integration-tested) |
-| Refund-after-close staff notice | ⚠️ Not implemented (documented, non-blocking) |
+| Refund-after-close staff notice | ✅ Implemented (API field; UI badge is a follow-up) |
 | Cash handover / opening balance / bank deposit | ⚠️ Not implemented (documented, explicitly out of scope) |
 | Full monorepo typecheck | ✅ 0 errors |
 | Full test suite | ✅ 250/250 passing |

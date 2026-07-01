@@ -1773,7 +1773,23 @@ Suspense amounts are **always excluded** from cash and digital totals. They are 
 
 ### 22.5 Refund Against a Closed Period
 
-Per the existing Closed-Day Carry-Forward Rule (§7, Locked Rule #10/#11): a refund processed after a day is closed is **not blocked** and requires **no owner approval** — it simply belongs to the next open reconciliation window, exactly like any other post-close entry. This was already correct. The only gap was that staff received no indication they were refunding against a bill from an already-closed period. This is a UI-layer notice, not a logic change, and does not alter which window the refund belongs to.
+Per the existing Closed-Day Carry-Forward Rule (§7, Locked Rule #10/#11): a refund processed after a day is closed is **not blocked** and requires **no owner approval** — it simply belongs to the next open reconciliation window, exactly like any other post-close entry. This was already correct.
+
+**Now implemented (follow-up, same day):** `POST /:id/refund` and `POST /:id/cancel` (when it triggers an auto-refund) now return an additional, purely informational `closedPeriodWarning` field:
+
+```json
+{
+  "...": "...(full bill object, unchanged)...",
+  "closedPeriodWarning": {
+    "billCreatedBeforeClose": true,
+    "lastClosureAt": "2026-06-30T18:00:00.000Z"
+  }
+}
+```
+
+`billCreatedBeforeClose` is `true` when the bill being refunded was originally created at-or-before the most recent overall day-close boundary — i.e. it belongs to a period that has already been signed off. This **never blocks the refund and never requires approval** — the money movement already correctly lands in the current open window regardless of this flag; it exists purely so staff seeing the response can be aware they are touching an already-reconciled period. Shared logic lives in `artifacts/api-server/src/lib/closureBoundary.ts` (`isBeforeClosureBoundary`, unit-tested), reused by `day-close.ts` for its own boundary computation so there is one source of truth for "what is the last closure boundary."
+
+**Frontend follow-up (not yet done):** the API now returns this field; a UI badge/toast surfacing it to staff is a small follow-up task, not a backend change.
 
 ---
 

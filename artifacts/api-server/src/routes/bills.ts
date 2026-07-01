@@ -4,6 +4,7 @@ import { billAuditsTable, superAdminSessionsTable, ledgersTable } from "@workspa
 import { sendBillEditEmail, sendBillReprintEmail } from "../email";
 import { isValidUsbKey, isUsbGateEnforced, getUsbKeyHeader } from "../middleware/requireSuperAdminUsb";
 import { auditFromRequest } from "../lib/audit";
+import { lastOverallClosureBoundary, isBeforeClosureBoundary } from "../lib/closureBoundary";
 import type { Request, Response } from "express";
 
 /**
@@ -1025,7 +1026,23 @@ billsRouter.post("/:id/cancel", requireStaffSubPermission("/billing", "delete"),
     req.log?.warn?.({ err }, "Cancel email send failed");
   }
 
-  res.json(await buildBill(updated));
+  // Same closed-period notice as /:id/refund — only meaningful when this
+  // cancellation actually moved money (autoRefund). See the refund route
+  // below for the full rationale; never blocks, no approval required.
+  let closedPeriodWarning: { billCreatedBeforeClose: boolean; lastClosureAt: string | null } | null = null;
+  if (refundedAmount > 0 && refundMethod) {
+    try {
+      const boundary = await lastOverallClosureBoundary();
+      closedPeriodWarning = {
+        billCreatedBeforeClose: isBeforeClosureBoundary(new Date(updated.createdAt), boundary),
+        lastClosureAt: boundary ? boundary.toISOString() : null,
+      };
+    } catch (err) {
+      req.log?.warn?.({ err }, "Closed-period check failed — cancellation still succeeded, notice omitted");
+    }
+  }
+
+  res.json({ ...(await buildBill(updated)), closedPeriodWarning });
 });
 
 // ── Refund a payment against a bill ───────────────────────────────────────────
@@ -1172,7 +1189,26 @@ billsRouter.post("/:id/refund", requireStaffSubPermission("/billing", "refund"),
     req.log?.warn?.({ err }, "Refund email send failed");
   }
 
-  res.json(await buildBill(updated));
+  // ── Closed-period notice (informational only — never blocks) ───────────
+  // Per the ERP's existing carry-forward rule (Specification §7, Locked
+  // Rule #10/#11): this refund is NOT blocked and requires NO owner
+  // approval even if the original bill predates the most recent day-close.
+  // It already correctly belongs to the current open reconciliation window
+  // (see bills.ts refund transaction above — payment.createdAt = NOW()).
+  // This flag exists purely so staff get a heads-up that the bill they are
+  // refunding was part of an already-closed, signed-off period.
+  let closedPeriodWarning: { billCreatedBeforeClose: boolean; lastClosureAt: string | null } | null = null;
+  try {
+    const boundary = await lastOverallClosureBoundary();
+    closedPeriodWarning = {
+      billCreatedBeforeClose: isBeforeClosureBoundary(new Date(updated.createdAt), boundary),
+      lastClosureAt: boundary ? boundary.toISOString() : null,
+    };
+  } catch (err) {
+    req.log?.warn?.({ err }, "Closed-period check failed — refund still succeeded, notice omitted");
+  }
+
+  res.json({ ...(await buildBill(updated)), closedPeriodWarning });
 });
 
 // ── Change Referring Doctor ──────────────────────────────────────────────────

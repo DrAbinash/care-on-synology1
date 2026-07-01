@@ -6,6 +6,7 @@ import { z } from "zod";
 import type { Response, NextFunction } from "express";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { classifyPaymentMethod } from "../lib/paymentMethodClassifier";
+import { lastOverallClosureBoundary } from "../lib/closureBoundary";
 
 // Inline super-admin gate that works on the regular ERP staff session
 // (req.staffSession.role === "super_admin"). The site-wide
@@ -41,15 +42,9 @@ function n(v: unknown): number {
 // closure's `coveredToTs` (exclusive) up to "now" (inclusive). Returns null
 // from when no prior closure exists — the SQL builder uses gt(ts, null) by
 // just omitting the lower bound.
-async function lastClosureBoundary(): Promise<Date | null> {
-  const [last] = await db
-    .select({ coveredToTs: dayClosuresTable.coveredToTs })
-    .from(dayClosuresTable)
-    .where(eq(dayClosuresTable.status, "closed"))
-    .orderBy(desc(dayClosuresTable.coveredToTs))
-    .limit(1);
-  return last?.coveredToTs ? new Date(last.coveredToTs) : null;
-}
+// Delegates to the shared helper (../lib/closureBoundary.ts) — also used by
+// bills.ts to warn staff refunding against an already-closed period.
+const lastClosureBoundary = lastOverallClosureBoundary;
 
 type MethodTotals = { cash: number; upi: number; card: number; cheque: number; other: number; total: number; count: number };
 
