@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import {
   Lock, Unlock, RefreshCw, Printer, AlertTriangle, CheckCircle2, Users,
-  Clock, ShieldCheck, Eye, ChevronDown, ChevronUp, Landmark,
+  Clock, ShieldCheck, Eye, ChevronDown, ChevronUp, Landmark, Info,
 } from "lucide-react";
 import { readStaffSession } from "@/lib/staffSession";
 import {
@@ -42,6 +42,8 @@ type StaffUserStatus = {
 };
 type StaffStatusResult = { users: StaffUserStatus[]; lastOverallClose: string | null };
 
+type SuspenseItem = { id: number; amount: number; rawMethod: string; recordedByName: string | null };
+
 type Preview = {
   coveredFromTs: string | null;
   coveredToTs: string;
@@ -49,6 +51,11 @@ type Preview = {
   byStaff: StaffRow[];
   billsCount: number;
   paymentsCount: number;
+  cashExpenses?: number;
+  digitalExpenses?: number;
+  suspenseTotal?: number;
+  suspenseCount?: number;
+  suspenseItems?: SuspenseItem[];
 };
 
 type RefundDetail = { id: number; billNumber: string; patientName: string; totalAmount: number; refundAmount: number };
@@ -679,6 +686,52 @@ export default function DayClose() {
           </div>
         </CardContent>
       </Card>
+
+      {/* ── Suspense / Exception Bucket — payments in this window whose
+            method could not be classified as cash or digital. Already
+            excluded from Expected Cash/totals above; needs admin
+            correction before closing. See
+            DAILY_FINANCIAL_RECONCILIATION_SPECIFICATION.md §22.3. Only
+            rendered when there is something to review. */}
+      {(previewQ.data?.suspenseCount ?? 0) > 0 && (
+        <Card className="border-amber-300 dark:border-amber-800">
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2 text-amber-800 dark:text-amber-400">
+              <Info className="w-4 h-4" /> Needs review before closing — unrecognized payment method
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-xs text-amber-700 dark:text-amber-500 mb-2">
+              {previewQ.data?.suspenseCount} transaction(s) totalling {inr(previewQ.data?.suspenseTotal ?? 0)} have a
+              payment method not recognized by this system. They are <strong>excluded from Expected Cash above</strong> —
+              not assumed to be cash or digital — until corrected. Closing the day now will not include them in
+              either total.
+            </p>
+            {previewQ.data?.suspenseItems && previewQ.data.suspenseItems.length > 0 && (
+              <div className="rounded-md border border-amber-200 dark:border-amber-800 overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead className="bg-amber-100/60 dark:bg-amber-900/30 text-amber-800 dark:text-amber-400">
+                    <tr>
+                      <th className="text-left px-2 py-1 font-medium">Amount</th>
+                      <th className="text-left px-2 py-1 font-medium">Raw method</th>
+                      <th className="text-left px-2 py-1 font-medium">Recorded by</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {previewQ.data.suspenseItems.map((item) => (
+                      <tr key={item.id} className="border-t border-amber-200 dark:border-amber-800/60">
+                        <td className="px-2 py-1 tabular-nums">{inr(item.amount)}</td>
+                        <td className="px-2 py-1 font-mono">{item.rawMethod || "(blank)"}</td>
+                        <td className="px-2 py-1">{item.recordedByName || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Banking summary */}
       <Card>

@@ -47,6 +47,11 @@ type MyDailySummarySummary = {
   cancelledBySelfCount: number;
   billCount: number;
   closingCashBalance: number;
+  // Suspense/exception bucket — see DAILY_FINANCIAL_RECONCILIATION_SPECIFICATION.md §22.3
+  suspensePaymentCount?: number;
+  suspensePaymentAmount?: number;
+  suspenseRefundCount?: number;
+  suspenseRefundAmount?: number;
 };
 
 type MyDailySummaryData = {
@@ -76,6 +81,14 @@ type MyDailySummaryData = {
     method: string;
     createdAt: string;
     billCreatedAt: string;
+  }[];
+  suspensePayments?: {
+    id: number;
+    billId: number;
+    amount: number;
+    rawMethod: string;
+    recordedByName: string | null;
+    createdAt: string;
   }[];
   billEdits: {
     id: number;
@@ -1855,6 +1868,52 @@ export default function MyDailySummary() {
             <MiniKpi icon={Receipt} label="Dues Collected" value={fmt(s.duesCollectedTotal)} sub={`${s.duesBillsCount} old bill${s.duesBillsCount !== 1 ? "s" : ""} settled`} iconBg="bg-teal-100 text-teal-700" border="border-l-teal-500" />
             <MiniKpi icon={XCircle} label="Cancellation Count" value={String(s.cancellationCount)} sub={s.cancellationCount > 0 ? `₹${s.cancelledAmount.toFixed(0)} written off` : "None"} iconBg="bg-gray-100 text-gray-700" border="border-l-gray-400" />
           </div>
+
+          {/* ── Suspense / Exception Bucket — payments or refunds whose method
+                could not be classified as cash or digital. Excluded from every
+                figure above; needs admin correction. See
+                DAILY_FINANCIAL_RECONCILIATION_SPECIFICATION.md §22.3. Only
+                rendered when there is something to review. */}
+          {((s.suspensePaymentCount ?? 0) > 0 || (s.suspenseRefundCount ?? 0) > 0) && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 px-4 py-3">
+              <div className="flex items-center gap-2 text-sm font-semibold text-amber-800 dark:text-amber-400">
+                <Info size={15} />
+                Needs review — unrecognized payment method
+              </div>
+              <p className="text-xs text-amber-700 dark:text-amber-500 mt-1">
+                {(s.suspensePaymentCount ?? 0) + (s.suspenseRefundCount ?? 0)} transaction(s) totalling{" "}
+                {fmt((s.suspensePaymentAmount ?? 0) + (s.suspenseRefundAmount ?? 0))} have a payment method this dashboard
+                doesn't recognize. They are <strong>excluded from Cash and Digital Collection above</strong> — not
+                assumed to be either — until corrected.
+              </p>
+              {data?.suspensePayments && data.suspensePayments.length > 0 && (
+                <div className="mt-2 rounded-md border border-amber-200 dark:border-amber-800 overflow-hidden">
+                  <table className="w-full text-xs">
+                    <thead className="bg-amber-100/60 dark:bg-amber-900/30 text-amber-800 dark:text-amber-400">
+                      <tr>
+                        <th className="text-left px-2 py-1 font-medium">Bill</th>
+                        <th className="text-left px-2 py-1 font-medium">Amount</th>
+                        <th className="text-left px-2 py-1 font-medium">Raw method</th>
+                        <th className="text-left px-2 py-1 font-medium">Recorded by</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.suspensePayments.map((p) => (
+                        <tr key={p.id} className="border-t border-amber-200 dark:border-amber-800/60">
+                          <td className="px-2 py-1">
+                            {p.billId ? <Link href={`/billing/${p.billId}`} className="underline">#{p.billId}</Link> : "—"}
+                          </td>
+                          <td className="px-2 py-1 tabular-nums">{fmt(p.amount)}</td>
+                          <td className="px-2 py-1 font-mono">{p.rawMethod || "(blank)"}</td>
+                          <td className="px-2 py-1">{p.recordedByName || "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* ══ DAILY FINANCIAL RECONCILIATION — Single Compact Panel ══════
               Replaces: DailyFinancialReconciliation (Panel 1)
