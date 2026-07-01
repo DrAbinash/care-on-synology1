@@ -170,11 +170,16 @@ export default function PortalRoot() {
         <Route path="/portal/patient-login" component={PatientLogin} />
         <Route path="/portal/staff-login" component={StaffLogin} />
         <Route path="/portal/patient" component={PatientDashboard} />
-        
+        {/* Routing fix (July 2026): /erp/login (base-stripped to /login here)
+            goes straight to the staff login form, matching the required
+            public routing contract — see App.tsx for the outer alias. */}
+        <Route path="/login" component={StaffLogin} />
+
         <Route path="/erp/portal" component={PortalLanding} />
         <Route path="/erp/portal/patient-login" component={PatientLogin} />
         <Route path="/erp/portal/staff-login" component={StaffLogin} />
         <Route path="/erp/portal/patient" component={PatientDashboard} />
+        <Route path="/erp/login" component={StaffLogin} />
 
         <Route component={PortalLanding} />
       </Switch>

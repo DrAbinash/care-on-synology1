@@ -264,6 +264,19 @@ function Router() {
         <Route path="/portal/:rest*" component={Portal} />
         <Route path="/erp/portal" component={Portal} />
         <Route path="/erp/portal/:rest*" component={Portal} />
+        {/* Routing fix (July 2026): the ERP has no historically-canonical
+            "/login" path — staff sign in via the Portal landing page at
+            /erp/portal(/staff-login). These aliases make /erp/login and
+            /erp/login/* work directly, per the required public routing
+            contract (public website "Staff Login" button → /erp/login).
+            wouter's base="/erp" already strips the prefix before matching,
+            so the reachable route in production is the plain "/login" one;
+            the "/erp/login" duplicate mirrors the existing /erp/portal
+            pattern for dev-mode (BASE_URL="/") parity. */}
+        <Route path="/login" component={Portal} />
+        <Route path="/login/:rest*" component={Portal} />
+        <Route path="/erp/login" component={Portal} />
+        <Route path="/erp/login/:rest*" component={Portal} />
         <Route path="/teleradiology" component={TeleradiologyPortal} />
         <Route path="/teleradiology/:rest*" component={TeleradiologyPortal} />
         <Route path="/verify-receipt/:billId" component={VerifyReceipt} />

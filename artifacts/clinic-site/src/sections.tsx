@@ -80,8 +80,8 @@ export function HeaderSection({ section, settings, pages, basePath }: { section:
   const navLinks = [
     { label: "Home", href: absoluteUrl("", basePath) },
     { label: "Book a Test", href: absoluteUrl("book", basePath) },
-    { label: "Patient Login", href: "/portal/patient-login" },
-    { label: "Staff Login", href: "/portal/staff-login" },
+    { label: "Patient Login", href: absoluteUrl("erp/portal/patient-login", basePath) },
+    { label: "Staff Login", href: absoluteUrl("erp/login", basePath) },
   ];
 
   return (
@@ -814,7 +814,7 @@ export function FooterSection({ section, settings, basePath }: { section: Sectio
     { label: "FAQ",              href: `${basePath}#faq` },
     { label: "Contact Us",       href: `${basePath}#contact` },
     { label: "Patient Portal",   href: `${basePath}erp/portal` },
-    { label: "Staff Login",      href: `${basePath}erp/portal` },
+    { label: "Staff Login",      href: `${basePath}erp/login` },
   ];
   const defaultPolicyLinks = [
     { label: "Privacy Policy",       href: "/policies" },
@@ -914,8 +914,8 @@ export function FooterSection({ section, settings, basePath }: { section: Sectio
           {defaultPolicyLinks.map((l, i) => (
             <a key={`p${i}`} href={`${basePath}${l.href.replace(/^\//, "")}`.replace(/\/+/g, "/")}>{l.label}</a>
           ))}
-          <a href="/portal/patient-login">Patient Login</a>
-          <a href="/portal/staff-login">Staff Login</a>
+          <a href={`${basePath}erp/portal/patient-login`}>Patient Login</a>
+          <a href={`${basePath}erp/login`}>Staff Login</a>
         </div>
       </div>
     </footer>
