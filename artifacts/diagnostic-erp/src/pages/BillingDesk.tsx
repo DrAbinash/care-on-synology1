@@ -2235,30 +2235,7 @@ export default function BillingDesk() {
 
                 {payNow && (
                   <>
-                    {/* Payment mode selector — clean cards */}
-                    <div className="grid grid-cols-3 gap-1.5">
-                      {PAYMENT_MODES.filter((m) => m !== "online").map((m) => {
-                        const icons: Record<string, string> = { cash: "💵", upi: "📱", card: "💳", cheque: "📝", insurance: "🏥", credit: "🔖" };
-                        const isActive = paymentSplits[0]?.mode === m;
-                        return (
-                          <button
-                            key={m}
-                            type="button"
-                            onClick={() => setPaymentSplits((prev) => prev.map((s, i) => i === 0 ? { ...s, mode: m } : s))}
-                            className={`flex flex-col items-center gap-0.5 px-2 py-2 rounded-lg border text-center transition-all ${
-                              isActive
-                                ? "bg-[#2563eb] text-white border-[#2563eb] shadow-md"
-                                : "bg-white border-[#dde3ec] text-[#475569] hover:border-[#93c5fd] hover:bg-[#eff6ff]"
-                            }`}
-                          >
-                            <span className="text-base">{icons[m] ?? "💰"}</span>
-                            <span className="text-[10px] font-bold uppercase">{m}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    {/* Primary amount input */}
+                    {/* Primary amount input — FIRST (most-used action) */}
                     <Input
                       type="number"
                       min={0}
@@ -2301,16 +2278,17 @@ export default function BillingDesk() {
                       );
                     })}
 
+                    {/* SECOND: Split payment link */}
                     {paymentSplits.length < PAYMENT_MODES.length && (
                       <button
                         onClick={() => setPaymentSplits((prev) => [...prev, { mode: "upi", amount: "" }])}
-                        className="text-[11px] text-[#2563eb] hover:underline flex items-center gap-1"
+                        className="text-[11px] font-semibold text-[#2563eb] hover:underline flex items-center gap-1"
                       >
                         <Plus size={11} /> Split payment
                       </button>
                     )}
 
-                    {/* Balance / Paid indicator */}
+                    {/* THIRD: Balance / Paid indicator */}
                     {(balance > 0 || (paidTotal > 0 && total > 0)) && (
                       <div className="rounded-lg border px-3 py-2">
                         {balance > 0 ? (
@@ -2326,6 +2304,55 @@ export default function BillingDesk() {
                         )}
                       </div>
                     )}
+
+                    {/* FOURTH: Payment mode selector — compact single row, split in half.
+                        Left half: CASH + UPI (larger — these cover the vast majority of
+                        collections). Right half: CARD / CHEQUE / INSURANCE (smaller —
+                        rarely used), so the whole clinic-relevant row stays one line. */}
+                    <div className="flex gap-1.5">
+                      <div className="flex-1 grid grid-cols-2 gap-1">
+                        {PAYMENT_MODES.filter((m) => m === "cash" || m === "upi").map((m) => {
+                          const icons: Record<string, string> = { cash: "💵", upi: "📱" };
+                          const isActive = paymentSplits[0]?.mode === m;
+                          return (
+                            <button
+                              key={m}
+                              type="button"
+                              onClick={() => setPaymentSplits((prev) => prev.map((s, i) => i === 0 ? { ...s, mode: m } : s))}
+                              className={`flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-lg border text-center transition-all ${
+                                isActive
+                                  ? "bg-[#2563eb] text-white border-[#2563eb] shadow-md"
+                                  : "bg-white border-[#dde3ec] text-[#475569] hover:border-[#93c5fd] hover:bg-[#eff6ff]"
+                              }`}
+                            >
+                              <span className="text-sm">{icons[m]}</span>
+                              <span className="text-[9px] font-bold uppercase">{m}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="flex-1 grid grid-cols-3 gap-1">
+                        {PAYMENT_MODES.filter((m) => m === "card" || m === "cheque" || m === "insurance").map((m) => {
+                          const icons: Record<string, string> = { card: "💳", cheque: "📝", insurance: "🏥" };
+                          const isActive = paymentSplits[0]?.mode === m;
+                          return (
+                            <button
+                              key={m}
+                              type="button"
+                              onClick={() => setPaymentSplits((prev) => prev.map((s, i) => i === 0 ? { ...s, mode: m } : s))}
+                              className={`flex flex-col items-center gap-0.5 px-1 py-1 rounded-md border text-center transition-all ${
+                                isActive
+                                  ? "bg-[#2563eb] text-white border-[#2563eb] shadow-sm"
+                                  : "bg-white border-[#dde3ec] text-[#94a3b8] hover:border-[#93c5fd] hover:bg-[#eff6ff]"
+                              }`}
+                            >
+                              <span className="text-[10px]">{icons[m]}</span>
+                              <span className="text-[6.5px] font-bold uppercase leading-tight">{m}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </>
                 )}
               </div>
