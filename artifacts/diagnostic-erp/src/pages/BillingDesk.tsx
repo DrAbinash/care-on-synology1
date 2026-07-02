@@ -40,6 +40,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { useToast } from "@/hooks/use-toast";
+import { RegisterPatientForm, type NewPatientData } from "@/components/RegisterPatientForm";
 import {
   Search,
   User,
@@ -382,7 +383,7 @@ export default function BillingDesk() {
 
   // ── New patient form visibility ──────────────────────
   // ── Layout mode (unified / stepped) ─────────────────
-  const [layoutMode, setLayoutMode] = useState<"unified" | "stepped" | "compact">(() => {
+  const [layoutMode, setLayoutMode] = useState<"unified" | "stepped" | "compact" | "classic">(() => {
     const stored = typeof window !== "undefined" ? localStorage.getItem("billingDeskLayout") : null;
     return (stored as "unified" | "stepped" | "compact") || "unified";
   });
@@ -1727,116 +1728,24 @@ export default function BillingDesk() {
 
                 {/* New Patient Registration form */}
                 {showNewPatientForm && !selectedPatient && (
-                  <div className="space-y-2 pt-2 border-t border-[#e2e8f0]">
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="text-[10px] font-semibold text-[#64748b] uppercase tracking-wide">First Name *</label>
-                        <Input
-                          className="mt-0.5 h-8 text-sm"
-                          value={newPatient.firstName}
-                          onChange={(e) => setNewPatient((p) => ({ ...p, firstName: e.target.value }))}
-                          placeholder="First name"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-semibold text-[#64748b] uppercase tracking-wide">Last Name *</label>
-                        <Input
-                          className="mt-0.5 h-8 text-sm"
-                          value={newPatient.lastName}
-                          onChange={(e) => setNewPatient((p) => ({ ...p, lastName: e.target.value }))}
-                          placeholder="Last name"
-                        />
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="text-[10px] font-semibold text-[#64748b] uppercase tracking-wide">Mobile *</label>
-                        <Input
-                          className="mt-0.5 h-8 text-sm"
-                          value={newPatient.phone}
-                          onChange={(e) => setNewPatient((p) => ({ ...p, phone: e.target.value }))}
-                          placeholder="10-digit mobile"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-semibold text-[#64748b] uppercase tracking-wide">Age</label>
-                        <div className="mt-0.5 flex gap-1">
-                          <Input
-                            className="h-8 text-sm"
-                            type="number"
-                            value={newPatient.ageValue}
-                            onChange={(e) => setNewPatient((p) => ({ ...p, ageValue: e.target.value }))}
-                            placeholder="Age"
-                          />
-                          <select
-                            className="h-8 text-xs border border-input rounded-md px-1 bg-background"
-                            value={newPatient.ageUnit}
-                            onChange={(e) => setNewPatient((p) => ({ ...p, ageUnit: e.target.value as "years" | "months" | "days" }))}
-                          >
-                            <option value="years">Yrs</option>
-                            <option value="months">Mo</option>
-                            <option value="days">Days</option>
-                          </select>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="text-[10px] font-semibold text-[#64748b] uppercase tracking-wide">Gender</label>
-                        <div className="mt-0.5 flex gap-1">
-                          {["male", "female", "other"].map((g) => (
-                            <button
-                              key={g}
-                              type="button"
-                              onClick={() => setNewPatient((p) => ({ ...p, gender: g }))}
-                              className={`flex-1 h-8 text-[11px] rounded-md border font-semibold capitalize transition-colors ${
-                                newPatient.gender === g
-                                  ? "bg-[#2563eb] text-white border-[#2563eb]"
-                                  : "bg-white border-[#dde3ec] text-[#64748b] hover:bg-[#f8fafc]"
-                              }`}
-                            >
-                              {g === "female" ? "F" : g === "male" ? "M" : "O"}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      {(showOptionalFields || billingFlags.showOptionalFields) && (
-                        <div>
-                          <label className="text-[10px] font-semibold text-[#64748b] uppercase tracking-wide">Blood Group</label>
-                          <select
-                            className="mt-0.5 h-8 w-full text-xs border border-input rounded-md px-2 bg-background"
-                            value={newPatient.bloodGroup}
-                            onChange={(e) => setNewPatient((p) => ({ ...p, bloodGroup: e.target.value }))}
-                          >
-                            <option value="">— Optional —</option>
-                            {["A+","A−","B+","B−","AB+","AB−","O+","O−"].map((b) => (
-                              <option key={b} value={b}>{b}</option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                    </div>
-                    {(showOptionalFields || billingFlags.showOptionalFields) && (
-                      <div>
-                        <label className="text-[10px] font-semibold text-[#64748b] uppercase tracking-wide">Address</label>
-                        <Input
-                          className="mt-0.5 h-8 text-sm"
-                          value={newPatient.address}
-                          onChange={(e) => setNewPatient((p) => ({ ...p, address: e.target.value }))}
-                          placeholder="Address (optional)"
-                        />
-                      </div>
-                    )}
-                    <Button
-                      className="w-full h-8 text-sm bg-[#2563eb] hover:bg-[#1d4ed8] text-white"
-                      disabled={createPatientMut.isPending || !newPatient.firstName.trim() || !newPatient.phone.trim()}
-                      onClick={() => {
-                        if (!newPatient.firstName.trim() || !newPatient.phone.trim()) return;
+                  <div className="pt-2 border-t border-[#e2e8f0]">
+                    <RegisterPatientForm
+                      newPatient={newPatient as NewPatientData}
+                      onPatientChange={(data) =>
+                        setNewPatient(data as typeof newPatient)
+                      }
+                      onSubmit={() => {
+                        if (
+                          !newPatient.firstName.trim() ||
+                          !newPatient.lastName.trim() ||
+                          !newPatient.phone.trim() ||
+                          !newPatient.ageValue
+                        )
+                          return;
                         createPatientMut.mutate(newPatient);
                       }}
-                    >
-                      {createPatientMut.isPending ? "Registering…" : "Register & Select Patient"}
-                    </Button>
+                      isLoading={createPatientMut.isPending}
+                    />
                   </div>
                 )}
               </div>
