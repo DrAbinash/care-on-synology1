@@ -377,24 +377,55 @@ export default function RadiologySettingsCenter() {
             </div>
 
             <div className="space-y-4 pt-4 border-t">
+              {/* One-click fix for clinic LAN defaults */}
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-start gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-semibold text-amber-800">Set Clinic LAN Defaults</p>
+                  <p className="text-xs text-amber-700 mt-0.5">
+                    Sets OHIF → <code className="bg-amber-100 px-1 rounded">192.168.1.137:3010</code> and
+                    Weasis WADO → <code className="bg-amber-100 px-1 rounded">192.168.1.137:8042/wado</code>
+                  </p>
+                </div>
+                <button
+                  className="flex-shrink-0 px-3 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white rounded-md"
+                  onClick={() => {
+                    upsertSetting.mutate({ key: "ohif_base_url",               value: "http://192.168.1.137:3010",                                  category: "viewer" });
+                    upsertSetting.mutate({ key: "dicom_web_base_url",           value: "http://192.168.1.137:3010/dicom-web",                         category: "viewer" });
+                    upsertSetting.mutate({ key: "ohif_study_url_template",      value: "{OHIF_BASE_URL}/viewer?StudyInstanceUIDs={studyInstanceUID}", category: "viewer" });
+                    upsertSetting.mutate({ key: "wado_uri_base_url",            value: "http://192.168.1.137:8042/wado",                             category: "viewer" });
+                    upsertSetting.mutate({ key: "weasis_wado_url",              value: "http://192.168.1.137:8042/wado",                             category: "viewer" });
+                    upsertSetting.mutate({ key: "weasis_manifest_url_template", value: 'weasis://$dicom:get -w "http://192.168.1.137:8042/wado?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"', category: "viewer" });
+                    upsertSetting.mutate({ key: "viewer_mode",                  value: "BOTH",                                                       category: "viewer" });
+                    upsertSetting.mutate({ key: "default_viewer",               value: "OHIF",                                                       category: "viewer" });
+                  }}
+                >
+                  Set Defaults
+                </button>
+              </div>
+
               <div className="space-y-1.5">
                 <Label className="text-xs font-semibold">OHIF Viewer URL</Label>
                 <Input
                   value={settings.find(s => s.key === "ohif_base_url")?.value ?? ""}
                   onChange={(e) => upsertSetting.mutate({ key: "ohif_base_url", value: e.target.value, category: "viewer" })}
                   className="h-9 text-sm"
-                  placeholder="e.g. http://192.168.1.137:3010"
+                  placeholder="http://192.168.1.137:3010"
                 />
+                <p className="text-[11px] text-muted-foreground">Your NAS IP + port 3010 (where OHIF is running)</p>
               </div>
 
               <div className="space-y-1.5">
                 <Label className="text-xs font-semibold">Weasis Manifest / WADO URL</Label>
                 <Input
                   value={settings.find(s => s.key === "weasis_wado_url")?.value ?? ""}
-                  onChange={(e) => upsertSetting.mutate({ key: "weasis_wado_url", value: e.target.value, category: "viewer" })}
+                  onChange={(e) => {
+                    upsertSetting.mutate({ key: "weasis_wado_url",   value: e.target.value, category: "viewer" });
+                    upsertSetting.mutate({ key: "wado_uri_base_url", value: e.target.value, category: "viewer" });
+                  }}
                   className="h-9 text-sm"
-                  placeholder="e.g. http://192.168.1.137:8042/wado"
+                  placeholder="http://192.168.1.137:8042/wado"
                 />
+                <p className="text-[11px] text-muted-foreground">Orthanc WADO endpoint — your NAS IP + :8042/wado</p>
               </div>
             </div>
           </div>
