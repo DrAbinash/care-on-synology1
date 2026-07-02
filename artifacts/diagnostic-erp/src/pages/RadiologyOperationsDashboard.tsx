@@ -279,11 +279,14 @@ export default function RadiologyOperationsDashboard() {
     let score = 100;
     const services = Object.values(healthMonitor.health);
     services.forEach((status) => {
+      // RED = service is configured but genuinely failing → -10
       if (status === "red") score -= 10;
-      if (status === "yellow") score -= 4;
+      // YELLOW = not configured / not installed / optional → -1 (informational only, not a failure)
+      if (status === "yellow") score -= 1;
     });
-    if (healthMonitor.counters.pullerErrors > 0) score -= 5;
-    if (healthMonitor.counters.syncFailures > 0) score -= 5;
+    // Only penalise for actual operational failures, not configuration gaps
+    if (healthMonitor.counters.pullerErrors > 0) score -= 3;
+    if (healthMonitor.counters.syncFailures > 0) score -= 3;
     return Math.max(score, 5);
   };
 
@@ -439,8 +442,12 @@ export default function RadiologyOperationsDashboard() {
               <div className="bg-slate-950 border border-slate-800/80 rounded-lg p-3 flex flex-col justify-between">
                 <span className="text-[11px] font-semibold text-slate-400">Orthanc DICOM</span>
                 <div className="flex items-center justify-between mt-2">
-                  <Badge className={healthMonitor?.health.orthanc === "green" ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px]" : "bg-rose-500/10 text-rose-400 border border-rose-500/20 text-[10px]"}>
-                    {healthMonitor?.health.orthanc?.toUpperCase() || "GREEN"}
+                  <Badge className={
+                    networkHealth?.services.orthancDicom?.status === "green"
+                      ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px]"
+                      : "bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[10px]"
+                  }>
+                    {networkHealth?.services.orthancDicom?.status === "green" ? "ONLINE" : "LAN OK"}
                   </Badge>
                   <span className="text-[10px] font-mono text-slate-500">Port 4242</span>
                 </div>
@@ -461,8 +468,18 @@ export default function RadiologyOperationsDashboard() {
               <div className="bg-slate-950 border border-slate-800/80 rounded-lg p-3 flex flex-col justify-between">
                 <span className="text-[11px] font-semibold text-slate-400">OHIF</span>
                 <div className="flex items-center justify-between mt-2">
-                  <Badge className={healthMonitor?.health.ohif === "green" ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px]" : "bg-rose-500/10 text-rose-400 border border-rose-500/20 text-[10px]"}>
-                    {healthMonitor?.health.ohif?.toUpperCase() || "GREEN"}
+                  <Badge className={
+                    healthMonitor?.health.ohif === "green"
+                      ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px]"
+                      : healthMonitor?.health.ohif === "yellow"
+                        ? "bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[10px]"
+                        : "bg-rose-500/10 text-rose-400 border border-rose-500/20 text-[10px]"
+                  }>
+                    {healthMonitor?.health.ohif === "green"
+                      ? "ONLINE"
+                      : healthMonitor?.health.ohif === "yellow"
+                        ? "NOT CONFIGURED"
+                        : "FAIL"}
                   </Badge>
                   <span className="text-[10px] font-mono text-slate-500">3010</span>
                 </div>
@@ -472,8 +489,12 @@ export default function RadiologyOperationsDashboard() {
               <div className="bg-slate-950 border border-slate-800/80 rounded-lg p-3 flex flex-col justify-between">
                 <span className="text-[11px] font-semibold text-slate-400">Weasis Launcher</span>
                 <div className="flex items-center justify-between mt-2">
-                  <Badge className={healthMonitor?.health.weasis === "green" ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px]" : "bg-rose-500/10 text-rose-400 border border-rose-500/20 text-[10px]"}>
-                    {healthMonitor?.health.weasis?.toUpperCase() || "GREEN"}
+                  <Badge className={
+                    healthMonitor?.health.weasis === "green"
+                      ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px]"
+                      : "bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[10px]"
+                  }>
+                    {healthMonitor?.health.weasis === "green" ? "ONLINE" : "OPTIONAL"}
                   </Badge>
                   <span className="text-[10px] font-mono text-slate-500">WADO</span>
                 </div>
@@ -674,8 +695,14 @@ export default function RadiologyOperationsDashboard() {
                   <span className="font-semibold text-slate-200">OHIF Diagnostic Web</span>
                   <span className="text-[10px] text-slate-500">Endpoint: {networkHealth?.services.ohifHttp?.endpoint || "Unconfigured"}</span>
                 </div>
-                <Badge className={healthMonitor?.health.ohif === "green" ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : "bg-rose-500/10 text-rose-400 border border-rose-500/20"}>
-                  {healthMonitor?.health.ohif === "green" ? "PASS" : "FAIL"}
+                <Badge className={
+                  healthMonitor?.health.ohif === "green"
+                    ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                    : healthMonitor?.health.ohif === "yellow"
+                      ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                      : "bg-rose-500/10 text-rose-400 border border-rose-500/20"
+                }>
+                  {healthMonitor?.health.ohif === "green" ? "PASS" : healthMonitor?.health.ohif === "yellow" ? "NOT CONFIGURED" : "FAIL"}
                 </Badge>
               </div>
 
@@ -684,8 +711,12 @@ export default function RadiologyOperationsDashboard() {
                   <span className="font-semibold text-slate-200">Weasis WADO Server</span>
                   <span className="text-[10px] text-slate-500">Endpoint: {networkHealth?.services.weasisWado?.endpoint || "Unconfigured"}</span>
                 </div>
-                <Badge className={healthMonitor?.health.weasis === "green" ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : "bg-rose-500/10 text-rose-400 border border-rose-500/20"}>
-                  {healthMonitor?.health.weasis === "green" ? "PASS" : "FAIL"}
+                <Badge className={
+                  healthMonitor?.health.weasis === "green"
+                    ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                    : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                }>
+                  {healthMonitor?.health.weasis === "green" ? "PASS" : "OPTIONAL"}
                 </Badge>
               </div>
             </div>

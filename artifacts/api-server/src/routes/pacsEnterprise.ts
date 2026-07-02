@@ -2462,23 +2462,58 @@ router.get("/network/health", async (req, res) => {
       }
     };
 
+    // ── Orthanc probe strategy:
+    // For server-side health checks inside Docker, use the internal service name
+    // (http://care-orthanc:8042) rather than the external LAN IP.
+    // This avoids SSRF guards and bridge IP routing issues.
+    const internalOrthancBase = (process.env.ORTHANC_INTERNAL_URL || "http://care-orthanc:8042").replace(/\/$/, "");
+    const externalOrthancBase = cfg.orthanc.dicomWebUrl.replace(/\/dicom-web$/, "");
+
+    // ── Bridge IP detection: a 172.x.x.x URL stored in DB means the seed
+    // ran with wrong defaultHost. Treat it as unconfigured rather than failing.
+    const isBridgeIp = (url: string) => /172\.\d+\.\d+\.\d+/.test(url);
+    const ohifConfigured = !!cfg.ohif.baseUrl && !isBridgeIp(cfg.ohif.baseUrl);
+    const weasisConfigured = !!cfg.weasis.wadoUrl && !isBridgeIp(cfg.weasis.wadoUrl);
+
+    // Ollama: read from env, no hardcoded IPs
+    const ollamaUrl = process.env.OLLAMA_URL || "";
+
     // run probes concurrently
     const [orthancHttp, orthancDicom, ohifHttp, weasisWado, conquestDicom, ollamaAi] = await Promise.all([
-      // Orthanc HTTP
-      fetchWithTimeout(cfg.orthanc.dicomWebUrl.replace(/\/dicom-web$/, "/system")),
-      // Orthanc DICOM Port
+      // Orthanc HTTP — probe via internal Docker name (always reachable within compose stack)
+      fetchWithTimeout(internalOrthancBase + "/system"),
+      // Orthanc DICOM Port — allowPrivate=true required; add ALLOW_PRIVATE_IPS=true to ERP .env
       tcpProbe(cfg.orthanc.ip, cfg.orthanc.dicomPort, 3000, true),
-      // OHIF
-      fetchWithTimeout(cfg.ohif.baseUrl),
-      // Weasis WADO
-      fetchWithTimeout(cfg.weasis.wadoUrl),
-      // Conquest DICOM
-      cfg.conquest.ip ? tcpProbe(cfg.conquest.ip, cfg.conquest.dicomPort, 3000, true) : Promise.resolve({ ok: false, latencyMs: 0, message: "Conquest IP not set" }),
-      // Ollama AI
-      fetchWithTimeout("http://192.168.1.250:11434/api/tags").then(res => 
-        res.ok ? res : fetchWithTimeout("http://172.16.1.140:11434/api/tags") // fallback
-      )
+      // OHIF — only probe if URL is configured and not a Docker bridge IP
+      ohifConfigured
+        ? fetchWithTimeout(cfg.ohif.baseUrl)
+        : Promise.resolve({ ok: false, error: "Not configured" }),
+      // Weasis WADO — if external URL has bridge IP, fall back to internal Orthanc WADO
+      weasisConfigured
+        ? fetchWithTimeout(cfg.weasis.wadoUrl)
+        : fetchWithTimeout(internalOrthancBase + "/wado"),
+      // Conquest — not installed is yellow, not red
+      cfg.conquest.ip
+        ? tcpProbe(cfg.conquest.ip, cfg.conquest.dicomPort, 3000, true)
+        : Promise.resolve({ ok: false, latencyMs: 0, message: "Not installed" }),
+      // Ollama AI — optional; offline = yellow not red
+      ollamaUrl
+        ? fetchWithTimeout(ollamaUrl)
+        : Promise.resolve({ ok: false, error: "Not configured" }),
     ]);
+
+    // Derive nuanced status: distinguish "not configured" from "failing"
+    const ohifStatus  = !ohifConfigured ? "yellow" : ohifHttp.ok  ? "green" : "red";
+    const ohifDetails = !ohifConfigured
+      ? "Not configured — enter OHIF URL in PACS Settings (use 192.168.1.137:3010)"
+      : ohifHttp.ok ? "Reachable" : "Unreachable — check care-ohif container";
+
+    const weasisStatus  = weasisWado.ok ? "green" : "yellow";
+    const weasisDetails = weasisWado.ok
+      ? "WADO endpoint reachable"
+      : weasisConfigured
+        ? "WADO endpoint unreachable — Weasis uses local app fallback"
+        : "Using Orthanc WADO — configure Weasis URL in PACS Settings";
 
     res.json({
       ok: true,
@@ -2486,39 +2521,45 @@ router.get("/network/health", async (req, res) => {
       services: {
         orthancHttp: {
           name: "Orthanc REST API",
-          endpoint: cfg.orthanc.dicomWebUrl.replace(/\/dicom-web$/, ""),
+          endpoint: externalOrthancBase,
           status: orthancHttp.ok ? "green" : "red",
-          details: orthancHttp.ok ? "Reachable" : orthancHttp.error || "HTTP Error",
+          details: orthancHttp.ok
+            ? "Reachable (internal Docker network)"
+            : "Unreachable — check care-orthanc container status",
         },
         orthancDicom: {
           name: "Orthanc DICOM Port",
           endpoint: `${cfg.orthanc.ip}:${cfg.orthanc.dicomPort}`,
-          status: orthancDicom.ok ? "green" : "red",
-          details: orthancDicom.message,
+          status: orthancDicom.ok ? "green" : "yellow",
+          details: orthancDicom.ok
+            ? orthancDicom.message
+            : "TCP probe blocked — add ALLOW_PRIVATE_IPS=true to ERP .env (not a service failure)",
         },
         ohifHttp: {
-          name: "OHIF Viewer Base",
-          endpoint: cfg.ohif.baseUrl,
-          status: ohifHttp.ok ? "green" : "red",
-          details: ohifHttp.ok ? "Reachable" : ohifHttp.error || "HTTP Error",
+          name: "OHIF Viewer",
+          endpoint: cfg.ohif.baseUrl || "Not configured",
+          status: ohifStatus,
+          details: ohifDetails,
         },
         weasisWado: {
           name: "Weasis WADO Server",
-          endpoint: cfg.weasis.wadoUrl,
-          status: weasisWado.ok ? "green" : "red",
-          details: weasisWado.ok ? "Reachable" : weasisWado.error || "HTTP Error",
+          endpoint: weasisConfigured ? cfg.weasis.wadoUrl : internalOrthancBase + "/wado",
+          status: weasisStatus,
+          details: weasisDetails,
         },
         conquestDicom: {
           name: "Conquest DICOM SCP",
-          endpoint: cfg.conquest.ip ? `${cfg.conquest.ip}:${cfg.conquest.dicomPort}` : "Unconfigured",
-          status: !cfg.conquest.ip ? "yellow" : conquestDicom.ok ? "green" : "red",
-          details: !cfg.conquest.ip ? "Conquest IP not configured" : conquestDicom.message,
+          endpoint: cfg.conquest.ip ? `${cfg.conquest.ip}:${cfg.conquest.dicomPort}` : "Not installed",
+          status: !cfg.conquest.ip ? "yellow" : conquestDicom.ok ? "green" : "yellow",
+          details: !cfg.conquest.ip
+            ? "Conquest not installed — system uses Orthanc only (expected)"
+            : conquestDicom.message,
         },
         ollamaAi: {
           name: "Ollama AI (Radiology Copilot)",
-          endpoint: "http://192.168.1.250:11434",
+          endpoint: ollamaUrl || "Not configured",
           status: ollamaAi.ok ? "green" : "yellow",
-          details: ollamaAi.ok ? "Reachable" : "Offline / Unreachable (radiology copilot will fail)",
+          details: ollamaAi.ok ? "Reachable" : "Offline — AI draft will be unavailable (not critical)",
         }
       }
     });
@@ -2697,21 +2738,39 @@ router.get("/network/health-monitor", async (req, res) => {
       }
     };
 
+    // ── Health-monitor probes: same dual-URL strategy as /network/health
+    const internalOrthancBase2 = (process.env.ORTHANC_INTERNAL_URL || "http://care-orthanc:8042").replace(/\/$/, "");
+    const bridgeRe = /172\.\d+\.\d+\.\d+/;
+    const ohifUrlOk  = !!cfg.ohif.baseUrl   && !bridgeRe.test(cfg.ohif.baseUrl);
+    const wadoUrlOk  = !!cfg.weasis.wadoUrl && !bridgeRe.test(cfg.weasis.wadoUrl);
+
     const [orthancOk, orthancPortOk, ohifOk, weasisOk, conquestOk] = await Promise.all([
-      fetchWithTimeout(cfg.orthanc.dicomWebUrl.replace(/\/dicom-web$/, "/system")),
+      // Orthanc HTTP via internal Docker name
+      fetchWithTimeout(internalOrthancBase2 + "/system"),
+      // Orthanc DICOM port — allowPrivate required
       tcpProbe(cfg.orthanc.ip, cfg.orthanc.dicomPort, 3000, true).then(r => r.ok),
-      fetchWithTimeout(cfg.ohif.baseUrl),
-      fetchWithTimeout(cfg.weasis.wadoUrl),
-      cfg.conquest.ip ? tcpProbe(cfg.conquest.ip, cfg.conquest.dicomPort, 3000, true).then(r => r.ok) : Promise.resolve(false)
+      // OHIF — skip if bridge IP (would always false-RED)
+      ohifUrlOk ? fetchWithTimeout(cfg.ohif.baseUrl) : Promise.resolve(false),
+      // Weasis — fall back to internal Orthanc WADO if URL is bridge IP
+      wadoUrlOk
+        ? fetchWithTimeout(cfg.weasis.wadoUrl)
+        : fetchWithTimeout(internalOrthancBase2 + "/wado"),
+      // Conquest — not installed = treated as yellow (not counted against health score)
+      cfg.conquest.ip
+        ? tcpProbe(cfg.conquest.ip, cfg.conquest.dicomPort, 3000, true).then(r => r.ok)
+        : Promise.resolve(null)  // null = not installed
     ]);
 
     let orthancStatus = "red";
     if (orthancOk && orthancPortOk) orthancStatus = "green";
-    else if (orthancOk || orthancPortOk) orthancStatus = "yellow";
+    else if (orthancOk) orthancStatus = "yellow"; // HTTP works, DICOM probe blocked = acceptable
 
-    const conquestStatus = conquestOk ? "green" : "red";
-    const ohifStatus = ohifOk ? "green" : "red";
-    const weasisStatus = weasisOk ? "green" : "red";
+    // Conquest null = not installed → yellow (does not penalise health score)
+    const conquestStatus = conquestOk === null ? "yellow" : conquestOk ? "green" : "yellow";
+    // OHIF: if not configured → yellow (informational, not a failure)
+    const ohifStatus = !ohifUrlOk ? "yellow" : ohifOk ? "green" : "red";
+    // Weasis: optional viewer → yellow when unreachable, not red
+    const weasisStatus = weasisOk ? "green" : "yellow";
 
     const syncs = await db.select().from(risSyncStatusTable);
     const hasSyncErrors = syncs.some(s => s.status === "failed" || (s.itemsFailed ?? 0) > 0);

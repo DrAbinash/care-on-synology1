@@ -177,6 +177,12 @@ services:
 
       FINGERPRINT_BRIDGE_SECRET: ${FINGERPRINT_BRIDGE_SECRET:-}
       ORTHANC_URL: ${ORTHANC_URL:-}
+      # Internal Docker service name for server-side health probes (never use LAN IP here)
+      ORTHANC_INTERNAL_URL: ${ORTHANC_INTERNAL_URL:-http://care-orthanc:8042}
+      # Required for health checks and DICOM probes to reach LAN IPs (modalities, PACS)
+      ALLOW_PRIVATE_IPS: ${ALLOW_PRIVATE_IPS:-true}
+      # Optional: Ollama AI URL (leave blank if not installed)
+      OLLAMA_URL: ${OLLAMA_URL:-}
       ORTHANC_USERNAME: ${ORTHANC_USERNAME:-}
       ORTHANC_PASSWORD: ${ORTHANC_PASSWORD:-}
       PACS_PROVIDER: ${PACS_PROVIDER:-orthanc}
