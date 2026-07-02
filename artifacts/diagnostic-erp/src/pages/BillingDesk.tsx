@@ -4,6 +4,7 @@ import QRCode from "qrcode";
 import { api } from "@/lib/fetchApi";
 import { incrementPendingSyncCount } from "@/hooks/useSyncStatus";
 import { readStaffSession, isFeatureEnabled } from "@/lib/staffSession";
+import { genUUID } from "@/lib/utils";
 import { getBillPaperSize } from "@/lib/billPrintLayout";
 import { getAutoBillPaperSize } from "@/lib/billPrintSettings";
 import {
@@ -854,7 +855,7 @@ export default function BillingDesk() {
   });
   const [quickDoctorPickerSlot, setQuickDoctorPickerSlot] = useState<number | null>(null);
   const [quickDoctorPickerSearch, setQuickDoctorPickerSearch] = useState("");
-  const [showNewPatientForm, setShowNewPatientForm] = useState(false);
+  // (Register New Patient form is now always visible — no toggle state needed)
   // Mutable copy of quick test slots — initialized from clinic settings, saved to localStorage
   const [quickTestSlots, setQuickTestSlots] = useState<(number | null)[]>(() => {
     try {
@@ -997,16 +998,6 @@ export default function BillingDesk() {
     }
   };
 
-  // Toggle a doctor id in the quick-doctor slot at the given position
-  const toggleQuickDoctorSlot = (doctorId: number) => {
-    if (quickDoctorPickerSlot === null) return;
-    const next = [...quickDoctorIds];
-    next[quickDoctorPickerSlot] = next[quickDoctorPickerSlot] === doctorId ? null : doctorId;
-    setQuickDoctorIds(next);
-    api.put("/api/clinic-settings", { quickDoctorIds: JSON.stringify(next) }).catch(() => {});
-    setQuickDoctorPickerSlot(null);
-  };
-
   const queryClient = useQueryClient();
   const printAfterSaveRef = useRef(false);
   // Pre-load printer settings on mount so the auto-print path after "Save &
@@ -1027,7 +1018,7 @@ export default function BillingDesk() {
       // the server will return the already-created record instead of a duplicate.
       // The key is NOT persisted across page reloads — each new billing attempt
       // (after resetAll) generates a fresh UUID, which is the correct behaviour.
-      const clientRef = crypto.randomUUID();
+      const clientRef = genUUID();
 
       // 1. Create order (with custom per-test prices to preserve package discounts)
       const order = await api.post<{ id: number; orderNumber: string }>("/api/orders", {
@@ -1686,7 +1677,7 @@ export default function BillingDesk() {
                         className="w-full h-9 pl-9 pr-3 text-sm border border-[#dde3ec] rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-[#2563eb]/30 focus:border-[#2563eb]"
                         placeholder="Search by name, phone or UHID…"
                         value={patientSearch}
-                        onChange={(e) => { setPatientSearch(e.target.value); setShowNewPatientForm(false); }}
+                        onChange={(e) => setPatientSearch(e.target.value)}
                         autoFocus={billingFlags.autoFocusNext}
                       />
                     </div>
@@ -1715,20 +1706,17 @@ export default function BillingDesk() {
                       </div>
                     )}
 
-                    {/* New patient toggle */}
-                    <button
-                      onClick={() => setShowNewPatientForm(!showNewPatientForm)}
-                      className="mt-2 w-full flex items-center justify-center gap-1.5 h-8 text-[12px] font-semibold text-[#2563eb] border border-dashed border-[#93c5fd] rounded-md hover:bg-[#eff6ff] transition-colors"
-                    >
-                      {showNewPatientForm ? <ChevronUp size={13} /> : <UserPlus size={13} />}
-                      {showNewPatientForm ? "Hide Registration Form" : "Register New Patient"}
-                    </button>
+                    {/* Register New Patient — always visible below search (no toggle) */}
                   </div>
                 )}
 
-                {/* New Patient Registration form */}
-                {showNewPatientForm && !selectedPatient && (
+                {/* New Patient Registration form — always shown, not collapsible */}
+                {!selectedPatient && (
                   <div className="pt-2 border-t border-[#e2e8f0]">
+                    <div className="flex items-center gap-1.5 mb-1.5 text-[12px] font-semibold text-[#2563eb]">
+                      <UserPlus size={13} />
+                      Register New Patient
+                    </div>
                     <RegisterPatientForm
                       newPatient={newPatient as NewPatientData}
                       onPatientChange={(data) =>
@@ -1810,36 +1798,46 @@ export default function BillingDesk() {
             <div className={cardCls}>
               {SH("Referring Doctor", <Stethoscope size={11} />)}
               <div className="p-3 space-y-2">
-                {/* Quick doctor chips */}
-                {showQuickTestsSetting && quickDoctorIds.length > 0 && (
+                {/* Quick doctor slots — same "chocolate box" pattern as Investigations quick slots below.
+                    Click a filled slot to select that doctor for this bill. Click an empty (dashed)
+                    slot, or right-click any slot, to assign/change which doctor lives there. */}
+                {showQuickTestsSetting && (
                   <div className="flex flex-wrap gap-1.5">
-                    {quickDoctorIds.map((docId) => {
-                      const doc = doctors.find((d) => d.id === docId);
-                      if (!doc) return null;
-                      const isSelected = doctorId === doc.id;
+                    {quickDoctorIds.map((docId, idx) => {
+                      const doc = docId != null ? doctors.find((d) => d.id === docId) : null;
+                      const isSelected = !!doc && doctorId === doc.id;
                       return (
                         <button
-                          key={doc.id}
+                          key={idx}
                           type="button"
-                          onClick={() => setDoctorId(isSelected ? null : doc.id)}
-                          className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-all ${
-                            isSelected
-                              ? "bg-[#2563eb] text-white border-[#2563eb] shadow-sm"
-                              : "bg-white border-[#dde3ec] text-[#475569] hover:border-[#93c5fd] hover:bg-[#eff6ff]"
+                          onClick={() => {
+                            if (doc) {
+                              setDoctorId(isSelected ? null : doc.id);
+                            } else {
+                              setQuickDoctorPickerSlot(idx);
+                            }
+                          }}
+                          onContextMenu={(e) => { e.preventDefault(); setQuickDoctorPickerSlot(idx); }}
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border transition-all ${
+                            doc
+                              ? isSelected
+                                ? "bg-[#2563eb] text-white border-[#2563eb] shadow-sm"
+                                : "bg-white border-[#2563eb]/40 text-[#2563eb] hover:bg-[#eff6ff] hover:border-[#2563eb] shadow-sm"
+                              : "bg-[#f4f6f9] border-dashed border-[#dde3ec] text-[#94a3b8] hover:border-[#93c5fd] hover:text-[#2563eb]"
                           }`}
+                          title={doc ? `${doc.name} — right-click to change` : "Click to assign a doctor to this slot"}
                         >
-                          {doc.name}
-                          {pinnedDoctorIds.has(doc.id) && <Star size={8} className="inline ml-1 text-amber-400 fill-amber-400" />}
+                          {doc ? (
+                            <>
+                              {doc.name}
+                              {pinnedDoctorIds.has(doc.id) && <Star size={8} className="inline ml-1 text-amber-400 fill-amber-400" />}
+                            </>
+                          ) : (
+                            `+ Slot ${idx + 1}`
+                          )}
                         </button>
                       );
                     })}
-                    <button
-                      type="button"
-                      onClick={() => setQuickDoctorPickerSlot(quickDoctorPickerSlot ?? 0)}
-                      className="px-2 py-1 rounded-full text-[11px] font-semibold border border-dashed border-[#93c5fd] text-[#2563eb] hover:bg-[#eff6ff] transition-colors"
-                    >
-                      <Settings2 size={9} className="inline mr-0.5" />Edit
-                    </button>
                   </div>
                 )}
                 {/* Doctor search */}
@@ -2470,32 +2468,64 @@ export default function BillingDesk() {
         </DialogContent>
       </Dialog>
 
-      {/* Quick Doctor slot picker */}
-      <Dialog open={quickDoctorPickerSlot !== null} onOpenChange={(o) => { if (!o) setQuickDoctorPickerSlot(null); }}>
+      {/* Quick Doctor slot picker — same pattern as the Investigations quick-slot picker */}
+      <Dialog open={quickDoctorPickerSlot !== null} onOpenChange={(o) => { if (!o) { setQuickDoctorPickerSlot(null); setQuickDoctorPickerSearch(""); } }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle className="text-base font-bold">Configure Quick Doctor Slots</DialogTitle>
+            <DialogTitle className="text-base font-bold">Configure Quick Doctor Slot {(quickDoctorPickerSlot ?? 0) + 1}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3 py-2">
-            <p className="text-xs text-[#94a3b8]">Select doctors to pin to the quick-access row (max 8)</p>
-            <div className="max-h-64 overflow-y-auto space-y-1">
-              {doctors.map((d) => {
-                const pinned = quickDoctorIds.includes(d.id);
-                return (
+            <Input
+              autoFocus
+              placeholder="Search doctor…"
+              value={quickDoctorPickerSearch}
+              onChange={(e) => setQuickDoctorPickerSearch(e.target.value)}
+              className="h-9"
+            />
+            <div className="max-h-60 overflow-y-auto space-y-1">
+              {doctors
+                .filter((d) => !quickDoctorPickerSearch || d.name.toLowerCase().includes(quickDoctorPickerSearch.toLowerCase()))
+                .slice(0, 20)
+                .map((d) => (
                   <button
                     key={d.id}
-                    className={`w-full text-left px-3 py-2 rounded border text-sm flex items-center gap-2 transition-colors ${
-                      pinned ? "bg-[#eff6ff] border-[#bfdbfe] text-[#1e3a5f]" : "border-[#dde3ec] hover:bg-[#f8fafc]"
-                    }`}
-                    onClick={() => toggleQuickDoctorSlot(d.id)}
+                    className="w-full text-left px-3 py-2 rounded border border-[#dde3ec] hover:bg-[#eff6ff] text-sm flex items-center gap-2"
+                    onClick={() => {
+                      if (quickDoctorPickerSlot !== null) {
+                        assignQuickDoctor(quickDoctorPickerSlot, d.id);
+                        api.put("/api/clinic-settings", { quickDoctorIds: JSON.stringify(
+                          quickDoctorIds.map((v, i) => (i === quickDoctorPickerSlot ? d.id : v))
+                        ) }).catch(() => {});
+                      }
+                      setQuickDoctorPickerSlot(null);
+                      setQuickDoctorPickerSearch("");
+                    }}
                   >
-                    {pinned ? <CheckCircle2 size={13} className="text-[#2563eb]" /> : <div className="w-3.5 h-3.5 rounded-full border-2 border-[#cbd5e1]" />}
+                    <Stethoscope size={12} className="text-[#2563eb]" />
                     <span className="flex-1">{d.name}</span>
                     {d.specialization && <span className="text-[11px] text-[#94a3b8]">{d.specialization}</span>}
                   </button>
-                );
-              })}
+                ))}
+              {doctors.filter((d) => !quickDoctorPickerSearch || d.name.toLowerCase().includes(quickDoctorPickerSearch.toLowerCase())).length === 0 && (
+                <div className="px-3 py-2 text-sm text-[#94a3b8]">No doctor found</div>
+              )}
             </div>
+            {quickDoctorPickerSlot !== null && quickDoctorIds[quickDoctorPickerSlot] != null && (
+              <button
+                className="text-xs text-red-500 hover:underline"
+                onClick={() => {
+                  if (quickDoctorPickerSlot !== null) {
+                    assignQuickDoctor(quickDoctorPickerSlot, null);
+                    api.put("/api/clinic-settings", { quickDoctorIds: JSON.stringify(
+                      quickDoctorIds.map((v, i) => (i === quickDoctorPickerSlot ? null : v))
+                    ) }).catch(() => {});
+                  }
+                  setQuickDoctorPickerSlot(null);
+                }}
+              >
+                Clear this slot
+              </button>
+            )}
           </div>
         </DialogContent>
       </Dialog>
