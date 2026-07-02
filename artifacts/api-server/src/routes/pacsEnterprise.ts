@@ -281,14 +281,16 @@ router.post("/test-modality", async (req, res) => {
 // ─── ROUTING RULES ────────────────────────────────────────────────────────────
 
 const DEFAULT_VIEWER_SETTINGS: Record<string, string> = {
+  // OHIF viewer — same-origin nginx proxy (port 3010 proxies /dicom-web → care-orthanc:8042)
   ohif_base_url: "http://192.168.1.137:3010",
-  dicom_web_base_url: "http://192.168.1.137:8042/dicom-web",
+  dicom_web_base_url: "http://192.168.1.137:3010/dicom-web",
   ohif_study_url_template: "{OHIF_BASE_URL}/viewer?StudyInstanceUIDs={studyInstanceUID}",
+  // Weasis — uses Orthanc's own WADO-URI endpoint directly (not via OHIF proxy)
   wado_uri_base_url: "http://192.168.1.137:8042/wado",
-  weasis_manifest_url_template: 'weasis://$dicom:get -w "http://192.168.1.137:8042/wado?studyUID={studyInstanceUID}"',
+  weasis_manifest_url_template: 'weasis://$dicom:get -w "http://192.168.1.137:8042/wado?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"',
   pacs_ip: "192.168.1.137",
-  pacs_port: "5678",
-  pacs_ae_title: "ORTHANC",
+  pacs_port: "4242",
+  pacs_ae_title: "ORTHANC2",
   viewer_mode: "BOTH",
   default_viewer: "OHIF",
   ohif_enabled: "true",

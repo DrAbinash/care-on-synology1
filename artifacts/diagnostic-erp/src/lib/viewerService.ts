@@ -450,7 +450,7 @@ function showDiagnosticOverlay(opts: {
   document.getElementById("pacs-copy-wado")?.addEventListener("click", () => {
     const isTs = opts.profile === "TAILSCALE";
     const host = isTs ? "100.65.255.115" : "192.168.1.137";
-    navigator.clipboard.writeText(`http://${host}:8042/wado?requestType=WADO&studyUID=${opts.studyInstanceUID}`);
+    navigator.clipboard.writeText(`http://${host}:8042/wado?requestType=WADO&studyUID=${opts.studyInstanceUID}&contentType=application/dicom`);
     opts.toast({ title: "Copied WADO URL to clipboard" });
   });
 }
