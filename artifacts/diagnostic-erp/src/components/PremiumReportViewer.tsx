@@ -33,8 +33,8 @@ import {
 } from "@/lib/premiumReportRenderer";
 import {
   Eye, Download, Printer, Images, Settings2, RefreshCw,
-  CheckSquare, Square, ChevronDown, ChevronUp, Palette,
-  Loader2, X, ZoomIn,
+  Check, Square, ChevronDown, ChevronUp, Palette,
+  Loader2, X,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -427,7 +427,7 @@ function SeriesBlock({
           ${hasSelected ? "bg-blue-900/40" : "bg-slate-800 hover:bg-slate-750"}`}
         onClick={() => setExpanded(v => !v)}
       >
-        {hasSelected ? <CheckSquare size={11} className="text-blue-400 flex-shrink-0" /> : <Square size={11} className="text-slate-500 flex-shrink-0" />}
+        {hasSelected ? <Check size={11} className="text-blue-400 flex-shrink-0" /> : <Square size={11} className="text-slate-500 flex-shrink-0" />}
         <span className="text-[10px] font-medium text-slate-200 flex-1 truncate">
           {series.description || `Series`}
         </span>

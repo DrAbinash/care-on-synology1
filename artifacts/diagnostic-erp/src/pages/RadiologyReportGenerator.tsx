@@ -2083,23 +2083,23 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
               <div style={{ height: "680px" }}>
                 <PremiumReportViewer
                   data={{
-                    patientName: worklist?.patientName ?? "",
-                    age: worklist?.age ?? null,
-                    sex: worklist?.sex ?? null,
-                    accessionNumber: worklist?.accessionNumber ?? draftId?.toString() ?? "",
-                    studyDate: worklist?.studyDate ?? null,
-                    referringDoctor: worklist?.referringDoctor ?? null,
+                    patientName: demog.patientName,
+                    age: demog.age ?? null,
+                    sex: demog.sex ?? null,
+                    uhid: demog.uhid ?? null,
+                    accessionNumber: demog.accessionNumber,
+                    studyDate: demog.studyDate ?? null,
+                    referringDoctor: demog.referringDoctor ?? null,
                     reportingDoctor: session?.user?.name ?? null,
-                    modality: worklist?.modality ?? selectedTemplate?.modality ?? "MRI",
-                    studyDescription: worklist?.studyDescription ?? studyName,
+                    modality: demog.modality || template?.modality || "MRI",
+                    studyDescription: demog.studyDescription ?? template?.studyName ?? null,
                     clinicalHistory: clinicalHistory,
-                    technique: technique,
-                    findings: rawFindings,
-                    impression: typeof impression === "string" ? impression : impression?.join?.("
-") ?? "",
+                    technique: template?.technique ?? null,
+                    findings: Object.values(findingsSections).filter(Boolean).join("\n\n"),
+                    impression: impressionRaw,
                     recommendation: recommendation,
                   }}
-                  studyInstanceUID={worklist?.studyInstanceUID ?? null}
+                  studyInstanceUID={null}
                 />
               </div>
             ) : (
