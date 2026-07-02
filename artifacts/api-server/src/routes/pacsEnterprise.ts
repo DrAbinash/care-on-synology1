@@ -2477,6 +2477,13 @@ router.get("/network/health", async (req, res) => {
     const ohifConfigured = !!cfg.ohif.baseUrl && !isBridgeIp(cfg.ohif.baseUrl);
     const weasisConfigured = !!cfg.weasis.wadoUrl && !isBridgeIp(cfg.weasis.wadoUrl);
 
+    // OHIF probe target: same Docker-bridge-isolation problem Orthanc had —
+    // the container often cannot reach the NAS's own external LAN IP. If an
+    // internal reachable address is provided via env, use it for the PROBE
+    // only; the URL actually opened in the doctor's browser is unaffected
+    // (that still comes from cfg.ohif.baseUrl / admin PACS Settings).
+    const ohifProbeUrl = process.env.OHIF_INTERNAL_URL || cfg.ohif.baseUrl;
+
     // Ollama: read from env, no hardcoded IPs
     const ollamaUrl = process.env.OLLAMA_URL || "";
 
@@ -2488,7 +2495,7 @@ router.get("/network/health", async (req, res) => {
       tcpProbe(cfg.orthanc.ip, cfg.orthanc.dicomPort, 3000, true),
       // OHIF — only probe if URL is configured and not a Docker bridge IP
       ohifConfigured
-        ? fetchWithTimeout(cfg.ohif.baseUrl)
+        ? fetchWithTimeout(ohifProbeUrl)
         : Promise.resolve({ ok: false, error: "Not configured" }),
       // Weasis WADO — if external URL has bridge IP, fall back to internal Orthanc WADO
       weasisConfigured
@@ -2508,7 +2515,7 @@ router.get("/network/health", async (req, res) => {
     const ohifStatus  = !ohifConfigured ? "yellow" : ohifHttp.ok  ? "green" : "red";
     const ohifDetails = !ohifConfigured
       ? "Not configured — enter OHIF URL in PACS Settings (use 192.168.1.137:3010)"
-      : ohifHttp.ok ? "Reachable" : "Unreachable — check care-ohif container";
+      : ohifHttp.ok ? "Reachable" : "Unreachable from server — check OHIF is running, or set OHIF_INTERNAL_URL if the container can't reach its own external LAN IP";
 
     const weasisStatus  = weasisWado.ok ? "green" : "yellow";
     const weasisDetails = weasisWado.ok

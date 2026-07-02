@@ -1527,6 +1527,21 @@ function RadiologistCockpit() {
     return { finalizedToday, pendingCount, avgTurnaround: "18 mins" };
   }, [worklist]);
 
+  // Initial values for the Measurement Assistant panel, built from imported viewer
+  // measurements. IMPORTANT: this must be a top-level hook (not called inline inside
+  // the conditionally-rendered "{study && (...)}" JSX block below) — a hook called
+  // only when `study` is truthy changes the hook count between renders and triggers
+  // React error #310 ("Rendered more hooks than during the previous render").
+  const measurementAssistantInitialValues = useMemo(() => {
+    const vals: Record<string, string> = {};
+    viewerMeasurements
+      .filter((m: any) => m.status === "imported")
+      .forEach((m: any) => {
+        vals[m.measurementType] = m.value;
+      });
+    return vals;
+  }, [viewerMeasurements]);
+
   // Network ping emulator
   useEffect(() => {
     const interval = setInterval(() => {
@@ -1556,28 +1571,22 @@ function RadiologistCockpit() {
     setRawFindings(replaced);
   };
 
-  // Launch OHIF Viewer
+  // Launch OHIF Viewer — uses the shared smart launcher (same one RadiologyWorklist
+  // uses) which auto-detects LAN vs Tailscale vs Public and adapts the URL host
+  // accordingly, instead of opening whatever raw host happens to be saved in
+  // settings. This fixes OHIF/Weasis failing to open when accessing the ERP over
+  // Tailscale from outside the hospital LAN.
   const handleLaunchOhif = () => {
     if (!study || !study.studyInstanceUID) return;
-    const template = pacsViewerSettings["ohif_viewer_url_template"] || "/viewer/{studyInstanceUID}";
-    const url = template.replace("{studyInstanceUID}", study.studyInstanceUID);
-    window.open(url, "_blank");
+    void launchViewer(study.studyInstanceUID, "OHIF", pacsViewerSettings, toast);
     setViewerLaunched(true);
   };
 
-  // Launch Weasis Viewer
+  // Launch Weasis Viewer — same smart launcher as OHIF above.
   const handleLaunchWeasis = () => {
-    if (!study) return;
-    const template = pacsViewerSettings["weasis_manifest_url_template"];
-    if (template && study.studyInstanceUID) {
-      window.open(template.replace("{studyInstanceUID}", study.studyInstanceUID), "_blank");
-      setViewerLaunched(true);
-    } else if (study.weasisUrl) {
-      window.open(study.weasisUrl, "_blank");
-      setViewerLaunched(true);
-    } else {
-      toast({ title: "Weasis configuration missing", description: "Set manifest URL template in PACS settings.", variant: "destructive" });
-    }
+    if (!study || !study.studyInstanceUID) return;
+    void launchViewer(study.studyInstanceUID, "WEASIS", pacsViewerSettings, toast);
+    setViewerLaunched(true);
   };
 
   // Apply Template
@@ -2645,15 +2654,7 @@ function RadiologistCockpit() {
                       bodyPart={study.studyDescription || ""}
                       onMeasurementsChange={handleMeasurementsApplied}
                       voiceTextCommand={lastVoiceCommand}
-                      initialValues={useMemo(() => {
-                        const vals: Record<string, string> = {};
-                        viewerMeasurements
-                          .filter(m => m.status === "imported")
-                          .forEach(m => {
-                            vals[m.measurementType] = m.value;
-                          });
-                        return vals;
-                      }, [viewerMeasurements])}
+                      initialValues={measurementAssistantInitialValues}
                     />
                   </ErrorBoundary>
                 </div>
