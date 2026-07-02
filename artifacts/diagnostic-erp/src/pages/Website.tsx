@@ -73,7 +73,7 @@ const BUTTON_STYLES = [
 ];
 
 export default function Website() {
-  const [tab, setTab] = useState<typeof TABS[number]["id"]>("profile");
+  const [tab, setTab] = useState<typeof TABS[number]["id"]>("sections");
   const { toast } = useToast();
   const qc = useQueryClient();
 

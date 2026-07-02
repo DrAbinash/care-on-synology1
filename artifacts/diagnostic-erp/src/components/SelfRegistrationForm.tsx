@@ -349,10 +349,14 @@ export const SelfRegistrationForm: React.FC<SelfRegistrationFormProps> = ({
         id="pd-gender"
         className="input-soft"
         required
-        value={gender}
+        value={gender || ""}
         onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
-          setGender(e.target.value as "male" | "female" | "other" | "");
-          setErrFields(f => f.filter(x => x !== "gender"));
+          const newGender = e.target.value as "male" | "female" | "other" | "";
+          setGender(newGender);
+          if (newGender && newGender !== "") {
+            setErrFields(f => f.filter(x => x !== "gender"));
+            setError("");
+          }
         }}
         style={{ borderColor: errFields.includes("gender") ? "red" : "" }}
       >
