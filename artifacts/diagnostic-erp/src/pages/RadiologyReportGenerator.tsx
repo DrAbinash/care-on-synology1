@@ -21,6 +21,7 @@ import { readStaffSession } from "@/lib/staffSession";
 import { api } from "@/lib/fetchApi";
 import SpinalMeasurementPanel from "@/components/SpinalMeasurementPanel";
 import ReportPrintSettingsDialog from "@/components/ReportPrintSettingsDialog";
+import PremiumReportViewer from "@/components/PremiumReportViewer";
 import {
   generateReportPDF, loadPrintSettings, savePrintSettings, type PrintSettings,
 } from "@/lib/reportPdfGenerator";
@@ -195,6 +196,7 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
 
   // Preview & draft
   const [previewHtml, setPreviewHtml] = useState("");
+  const [premiumMode, setPremiumMode] = useState(false);
   const [draftId, setDraftId] = useState<number | null>(null);
   const [generating, setGenerating] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -2062,35 +2064,74 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
             </div>
           </div>
 
-          {/* ── RIGHT: Preview ── */}
-          <div className="xl:sticky xl:top-4">
-            <div className="rounded-lg border bg-white dark:bg-card shadow-sm">
-              <div className="flex items-center justify-between px-4 py-3 border-b no-print">
-                <span className="text-sm font-semibold flex items-center gap-2">
-                  <FileText size={14} />
-                  Report Preview
-                  {draftId && <Badge variant="outline" className="text-[11px]">Draft #{draftId}</Badge>}
-                </span>
-                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => void generate()} disabled={generating}>
-                  {generating ? <Loader2 size={12} className="animate-spin mr-1" /> : <RefreshCw size={12} className="mr-1" />}
-                  Refresh
-                </Button>
-              </div>
-              <div className="p-4 min-h-[600px] report-preview-content">
-                {previewHtml ? (
-                  <div dangerouslySetInnerHTML={{ __html: previewHtml }} className="text-sm leading-relaxed" />
-                ) : (
-                  <div className="flex flex-col items-center justify-center h-60 text-muted-foreground gap-3">
-                    <FileText size={40} className="opacity-30" />
-                    <p className="text-sm">Fill in the form and click "Generate"</p>
-                    <Button size="sm" onClick={() => void generate()} disabled={generating}>
-                      {generating ? <Loader2 size={14} className="mr-1 animate-spin" /> : <Eye size={14} className="mr-1" />}
-                      Generate Preview
-                    </Button>
-                  </div>
-                )}
-              </div>
+          {/* ── RIGHT: Preview (Standard or Premium) ── */}
+          <div className="xl:sticky xl:top-4 space-y-2">
+            {/* Toggle bar */}
+            <div className="flex items-center gap-2 px-1">
+              <button
+                className={`flex-1 py-1.5 text-xs font-semibold rounded-l-md border transition-colors ${!premiumMode ? "bg-primary text-primary-foreground border-primary" : "bg-muted text-muted-foreground border-border hover:bg-muted/80"}`}
+                onClick={() => setPremiumMode(false)}
+              >Standard Preview</button>
+              <button
+                className={`flex-1 py-1.5 text-xs font-semibold rounded-r-md border transition-colors ${premiumMode ? "bg-slate-900 text-amber-400 border-amber-600" : "bg-muted text-muted-foreground border-border hover:bg-muted/80"}`}
+                onClick={() => setPremiumMode(true)}
+              >✦ Premium Preview</button>
             </div>
+
+            {premiumMode ? (
+              /* PREMIUM MODE */
+              <div style={{ height: "680px" }}>
+                <PremiumReportViewer
+                  data={{
+                    patientName: worklist?.patientName ?? "",
+                    age: worklist?.age ?? null,
+                    sex: worklist?.sex ?? null,
+                    accessionNumber: worklist?.accessionNumber ?? draftId?.toString() ?? "",
+                    studyDate: worklist?.studyDate ?? null,
+                    referringDoctor: worklist?.referringDoctor ?? null,
+                    reportingDoctor: session?.user?.name ?? null,
+                    modality: worklist?.modality ?? selectedTemplate?.modality ?? "MRI",
+                    studyDescription: worklist?.studyDescription ?? studyName,
+                    clinicalHistory: clinicalHistory,
+                    technique: technique,
+                    findings: rawFindings,
+                    impression: typeof impression === "string" ? impression : impression?.join?.("
+") ?? "",
+                    recommendation: recommendation,
+                  }}
+                  studyInstanceUID={worklist?.studyInstanceUID ?? null}
+                />
+              </div>
+            ) : (
+              /* STANDARD MODE */
+              <div className="rounded-lg border bg-white dark:bg-card shadow-sm">
+                <div className="flex items-center justify-between px-4 py-3 border-b no-print">
+                  <span className="text-sm font-semibold flex items-center gap-2">
+                    <FileText size={14} />
+                    Report Preview
+                    {draftId && <Badge variant="outline" className="text-[11px]">Draft #{draftId}</Badge>}
+                  </span>
+                  <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => void generate()} disabled={generating}>
+                    {generating ? <Loader2 size={12} className="animate-spin mr-1" /> : <RefreshCw size={12} className="mr-1" />}
+                    Refresh
+                  </Button>
+                </div>
+                <div className="p-4 min-h-[600px] report-preview-content">
+                  {previewHtml ? (
+                    <div dangerouslySetInnerHTML={{ __html: previewHtml }} className="text-sm leading-relaxed" />
+                  ) : (
+                    <div className="flex flex-col items-center justify-center h-60 text-muted-foreground gap-3">
+                      <FileText size={40} className="opacity-30" />
+                      <p className="text-sm">Fill in the form and click "Generate"</p>
+                      <Button size="sm" onClick={() => void generate()} disabled={generating}>
+                        {generating ? <Loader2 size={14} className="mr-1 animate-spin" /> : <Eye size={14} className="mr-1" />}
+                        Generate Preview
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
