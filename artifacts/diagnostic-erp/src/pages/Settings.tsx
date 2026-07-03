@@ -5539,6 +5539,7 @@ function OllamaSettingsCard() {
   const [model, setModel] = useState("llama3");
   const [localOnly, setLocalOnly] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [availableModels, setAvailableModels] = useState<string[]>(() => {
     try {
       const stored = localStorage.getItem(OLLAMA_MODELS_KEY);
@@ -5593,6 +5594,7 @@ function OllamaSettingsCard() {
       toast({ title: "Enter a base URL first", variant: "destructive" });
       return;
     }
+    setTesting(true);
     try {
       const resp = await api.post<{ ok: boolean; model: string; models?: string[]; modelFound?: boolean; latencyMs?: number; error?: string }>(
         "/api/radiology-ollama/test",
@@ -5618,6 +5620,8 @@ function OllamaSettingsCard() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed";
       toast({ title: "Test failed", description: msg, variant: "destructive" });
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -5693,8 +5697,8 @@ function OllamaSettingsCard() {
         <Button size="sm" onClick={handleSave} disabled={saving}>
           {saving ? "Saving..." : "Save Ollama Settings"}
         </Button>
-        <Button size="sm" variant="outline" onClick={handleTest} type="button">
-          Test Connection
+        <Button size="sm" variant="outline" onClick={handleTest} disabled={testing} type="button">
+          {testing ? "Testing..." : "Test Connection"}
         </Button>
       </div>
     </div>
