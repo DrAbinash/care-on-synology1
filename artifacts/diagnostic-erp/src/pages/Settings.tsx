@@ -6901,7 +6901,19 @@ function PromotionalFooterTab() {
   const current = form ?? settings ?? null;
 
   const save = useMutation({
-    mutationFn: (body: ClinicSettings) => api.put("/api/clinic-settings", body),
+    mutationFn: (body: ClinicSettings) => {
+      // Only send Promotional Footer specific fields to avoid validation errors on unrelated fields
+      const payload = {
+        promotionalTitle: body.promotionalTitle,
+        promotionalDescription: body.promotionalDescription,
+        showPromotionalFooter: body.showPromotionalFooter,
+        showFollowUpMessage: body.showFollowUpMessage,
+        showPatientSince: body.showPatientSince,
+        showVerifiedBadge: body.showVerifiedBadge,
+        followUpMessage: body.followUpMessage,
+      };
+      return api.put("/api/clinic-settings", payload);
+    },
     onSuccess: (saved) => {
       qc.invalidateQueries({ queryKey: ["clinic-settings"] });
       setForm(saved as ClinicSettings);
