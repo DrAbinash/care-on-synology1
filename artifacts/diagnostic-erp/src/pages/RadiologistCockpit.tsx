@@ -138,6 +138,24 @@ class ErrorBoundary extends React.Component<
   }
 }
 
+// Safe parse for study.aiDraftJson — used wherever we need to read a field
+// out of it without risking a crash if the stored value is missing,
+// malformed, or not the shape we expect. Every other place this file reads
+// aiDraftJson already wraps JSON.parse in try/catch; this fixes the one
+// spot (the "Active AI Draft findings" preview) that read it directly
+// inside JSX render with no guard, which crashed the whole Cockpit to the
+// "Cannot read properties of undefined (reading 'findings')" error screen
+// whenever a study's aiDraftJson wasn't valid JSON.
+function safeParseAiDraft(json: string | null | undefined): { findings?: string; impression?: string } {
+  if (!json) return {};
+  try {
+    const parsed = JSON.parse(json);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 // Top-level cockpit wrapper — renders the cockpit inside a fault-tolerant boundary.
 // If the cockpit itself crashes (React error), this shows a recovery screen
 // instead of a blank page or portal redirect.
@@ -2215,7 +2233,7 @@ function RadiologistCockpit() {
                     <div className="space-y-2 pt-2 border-t border-slate-800">
                       <div className="text-[10px] font-bold text-slate-400">Active AI Draft findings:</div>
                       <div className="bg-slate-950 rounded p-2 text-[10px] text-slate-300 max-h-40 overflow-y-auto font-mono whitespace-pre-line leading-normal border border-slate-800">
-                        {JSON.parse(study.aiDraftJson).findings || "No findings text"}
+                        {safeParseAiDraft(study.aiDraftJson).findings || "No findings text"}
                       </div>
                       <div className="flex gap-2">
                         <Button

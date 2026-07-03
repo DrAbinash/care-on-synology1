@@ -340,7 +340,7 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   ollamaSupport: false,
   caseOfMonth: false,
   annotationLayer: false,
-  hideDeprecatedNav: true,
+  hideDeprecatedNav: false,
   billingDeskStepped: false,
   // Billing Desk display preferences (all apply immediately without page refresh)
   billingDeskQuickTests: true,       // Show quick test slots
