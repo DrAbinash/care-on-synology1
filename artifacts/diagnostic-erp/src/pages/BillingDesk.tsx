@@ -623,6 +623,17 @@ export default function BillingDesk() {
     queryFn: () => api.get("/api/clinic-settings/branding"),
   });
 
+  // VIP surcharge % — same clinic setting Online Booking uses (Settings →
+  // Online Booking → VIP Priority Booking Premium). Kept as its own query
+  // (not merged into the public /branding endpoint above) since pricing
+  // configuration shouldn't be exposed on an unauthenticated route.
+  const { data: vipSettings } = useQuery<{ vipPercentage?: string }>({
+    queryKey: ["clinic-settings-vip"],
+    queryFn: () => api.get("/api/clinic-settings"),
+    staleTime: 5 * 60_000,
+  });
+  const vipPercentage = vipSettings?.vipPercentage ? Number(vipSettings.vipPercentage) : 50;
+
   // ── Form F ─────────────────────────────────────────
   const formFTestIdSet: Set<number> = (() => {
     try { return new Set(JSON.parse(clinic?.formFTestIds ?? "[]") as number[]); }
@@ -1027,12 +1038,17 @@ export default function BillingDesk() {
       // (after resetAll) generates a fresh UUID, which is the correct behaviour.
       const clientRef = genUUID();
 
-      // 1. Create order (with custom per-test prices to preserve package discounts)
+      // 1. Create order (with custom per-test prices to preserve package discounts
+      //    AND VIP surcharge — same approach self-registration.ts uses for Online
+      //    Booking: inflate each test's price by the VIP multiplier so the bill
+      //    total the backend computes naturally includes the surcharge without
+      //    any backend changes).
+      const vipMultiplier = isVipActive ? 1 + (vipPercentage / 100) : 1;
       const order = await api.post<{ id: number; orderNumber: string }>("/api/orders", {
         patientId: selectedPatient.id,
         doctorId: doctorId ?? undefined,
         notes: notes || undefined,
-        tests: selectedTests.map((t) => ({ testId: t.testId, price: t.price })),
+        tests: selectedTests.map((t) => ({ testId: t.testId, price: t.price * vipMultiplier })),
         clientRef,
       });
 
@@ -1271,7 +1287,11 @@ export default function BillingDesk() {
   const discountAmt = discountType === "amount"
     ? Math.min(discountValue, subtotal)
     : Math.min((subtotal * discountValue) / 100, subtotal);
-  const total       = Math.max(0, subtotal - discountAmt);
+  // VIP surcharge — identical formula to self-registration.ts (used by
+  // Online Booking): subtotal × (vipPercentage / 100). Computed on the raw
+  // subtotal (not post-discount), same base self-registration.ts uses.
+  const vipSurchargeAmt = isVipActive ? subtotal * (vipPercentage / 100) : 0;
+  const total       = Math.max(0, subtotal - discountAmt) + vipSurchargeAmt;
   const paidTotal   = payNow ? paymentSplits.reduce((s, p) => s + (Number(p.amount) || 0), 0) : 0;
   const balance     = Math.max(0, total - paidTotal);
 
@@ -1833,35 +1853,48 @@ export default function BillingDesk() {
                       const doc = docId != null ? doctors.find((d) => d.id === docId) : null;
                       const isSelected = !!doc && doctorId === doc.id;
                       return (
-                        <button
-                          key={idx}
-                          type="button"
-                          onClick={() => {
-                            if (doc) {
-                              setDoctorId(isSelected ? null : doc.id);
-                            } else {
-                              setQuickDoctorPickerSlot(idx);
-                            }
-                          }}
-                          onContextMenu={(e) => { e.preventDefault(); setQuickDoctorPickerSlot(idx); }}
-                          className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border transition-all ${
-                            doc
-                              ? isSelected
-                                ? "bg-[#2563eb] text-white border-[#2563eb] shadow-sm"
-                                : "bg-white border-[#2563eb]/40 text-[#2563eb] hover:bg-[#eff6ff] hover:border-[#2563eb] shadow-sm"
-                              : "bg-[#f4f6f9] border-dashed border-[#dde3ec] text-[#94a3b8] hover:border-[#93c5fd] hover:text-[#2563eb]"
-                          }`}
-                          title={doc ? `${doc.name} — right-click to change` : "Click to assign a doctor to this slot"}
-                        >
-                          {doc ? (
-                            <>
-                              {doc.name}
-                              {pinnedDoctorIds.has(doc.id) && <Star size={8} className="inline ml-1 text-amber-400 fill-amber-400" />}
-                            </>
-                          ) : (
-                            `+ Slot ${idx + 1}`
+                        <div key={idx} className="relative group">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (doc) {
+                                setDoctorId(isSelected ? null : doc.id);
+                              } else {
+                                setQuickDoctorPickerSlot(idx);
+                              }
+                            }}
+                            onContextMenu={(e) => { e.preventDefault(); setQuickDoctorPickerSlot(idx); }}
+                            className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border transition-all ${doc ? "pr-6" : ""} ${
+                              doc
+                                ? isSelected
+                                  ? "bg-[#2563eb] text-white border-[#2563eb] shadow-sm"
+                                  : "bg-white border-[#2563eb]/40 text-[#2563eb] hover:bg-[#eff6ff] hover:border-[#2563eb] shadow-sm"
+                                : "bg-[#f4f6f9] border-dashed border-[#dde3ec] text-[#94a3b8] hover:border-[#93c5fd] hover:text-[#2563eb]"
+                            }`}
+                            title={doc ? doc.name : "Click to assign a doctor to this slot"}
+                          >
+                            {doc ? (
+                              <>
+                                {doc.name}
+                                {pinnedDoctorIds.has(doc.id) && <Star size={8} className="inline ml-1 text-amber-400 fill-amber-400" />}
+                              </>
+                            ) : (
+                              `+ Slot ${idx + 1}`
+                            )}
+                          </button>
+                          {doc && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setQuickDoctorPickerSlot(idx); }}
+                              className={`absolute top-1/2 right-1 -translate-y-1/2 rounded p-0.5 transition-colors ${
+                                isSelected ? "text-white/70 hover:text-white hover:bg-white/20" : "text-[#93c5fd] hover:text-[#2563eb] hover:bg-[#eff6ff]"
+                              }`}
+                              title="Edit this slot — assign a different doctor"
+                            >
+                              <Pencil size={10} />
+                            </button>
                           )}
-                        </button>
+                        </div>
                       );
                     })}
                   </div>
@@ -1933,28 +1966,39 @@ export default function BillingDesk() {
                     {quickTestSlots.map((slot, idx) => {
                       const test = slot != null ? allTests.find((t) => t.id === slot) : null;
                       return (
-                        <button
-                          key={idx}
-                          type="button"
-                          onClick={() => {
-                            if (test) {
-                              if (!selectedTestIds.has(test.id)) addTest(test);
-                            } else {
-                              setQuickPickerSlot(idx);
-                            }
-                          }}
-                          onContextMenu={(e) => { e.preventDefault(); setQuickPickerSlot(idx); }}
-                          className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border transition-all ${
-                            test
-                              ? selectedTestIds.has(test.id)
-                                ? "bg-emerald-50 border-emerald-300 text-emerald-700 line-through opacity-70"
-                                : "bg-white border-[#2563eb]/40 text-[#2563eb] hover:bg-[#eff6ff] hover:border-[#2563eb] shadow-sm"
-                              : "bg-[#f4f6f9] border-dashed border-[#dde3ec] text-[#94a3b8] hover:border-[#93c5fd] hover:text-[#2563eb]"
-                          }`}
-                          title={test ? `Add ${test.name}` : "Right-click to configure slot"}
-                        >
-                          {test ? test.name : `+ Slot ${idx + 1}`}
-                        </button>
+                        <div key={idx} className="relative group">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (test) {
+                                if (!selectedTestIds.has(test.id)) addTest(test);
+                              } else {
+                                setQuickPickerSlot(idx);
+                              }
+                            }}
+                            onContextMenu={(e) => { e.preventDefault(); setQuickPickerSlot(idx); }}
+                            className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border transition-all ${test ? "pr-6" : ""} ${
+                              test
+                                ? selectedTestIds.has(test.id)
+                                  ? "bg-emerald-50 border-emerald-300 text-emerald-700 line-through opacity-70"
+                                  : "bg-white border-[#2563eb]/40 text-[#2563eb] hover:bg-[#eff6ff] hover:border-[#2563eb] shadow-sm"
+                                : "bg-[#f4f6f9] border-dashed border-[#dde3ec] text-[#94a3b8] hover:border-[#93c5fd] hover:text-[#2563eb]"
+                            }`}
+                            title={test ? `Add ${test.name}` : "Click to assign a test to this slot"}
+                          >
+                            {test ? test.name : `+ Slot ${idx + 1}`}
+                          </button>
+                          {test && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setQuickPickerSlot(idx); }}
+                              className="absolute top-1/2 right-1 -translate-y-1/2 rounded p-0.5 text-[#93c5fd] hover:text-[#2563eb] hover:bg-[#eff6ff] transition-colors"
+                              title="Edit this slot — assign a different test"
+                            >
+                              <Pencil size={10} />
+                            </button>
+                          )}
+                        </div>
                       );
                     })}
                   </div>
@@ -2249,6 +2293,11 @@ export default function BillingDesk() {
                   <label htmlFor="vip-toggle" className="text-[12px] font-semibold text-[#475569] cursor-pointer select-none">
                     ⭐ VIP Priority
                   </label>
+                  {isVipActive && (
+                    <span className="text-[12px] text-amber-700 font-bold ml-auto">
+                      +{inr(vipSurchargeAmt)} <span className="font-medium text-amber-600">({vipPercentage}%)</span>
+                    </span>
+                  )}
                 </div>
                 </>
                 )}
