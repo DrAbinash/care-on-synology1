@@ -6676,7 +6676,28 @@ function ReceiptMessagesTab() {
   const current = form ?? settings ?? null;
 
   const save = useMutation({
-    mutationFn: (body: ClinicSettings) => api.put("/api/clinic-settings", body),
+    mutationFn: (body: ClinicSettings) => {
+      // Only send receipt message fields to avoid validation errors on unrelated fields
+      const payload = {
+        receiptThankYouMessage: body.receiptThankYouMessage,
+        receiptCollectionMessage: body.receiptCollectionMessage,
+        receiptQrMessage: body.receiptQrMessage,
+        receiptPromotionalMessage: body.receiptPromotionalMessage,
+        showWorkingHours: body.showWorkingHours,
+        workingHoursMessage: body.workingHoursMessage,
+        showHomeCollection: body.showHomeCollection,
+        homeCollectionMessage: body.homeCollectionMessage,
+        showHealthPackages: body.showHealthPackages,
+        healthPackagesMessage: body.healthPackagesMessage,
+        showAccreditation: body.showAccreditation,
+        accreditationMessage: body.accreditationMessage,
+        showWhatsAppBooking: body.showWhatsAppBooking,
+        whatsAppBookingMessage: body.whatsAppBookingMessage,
+        showCustomFooterMessage: body.showCustomFooterMessage,
+        customFooterMessage: body.customFooterMessage,
+      };
+      return api.put("/api/clinic-settings", payload);
+    },
     onSuccess: (saved) => {
       qc.invalidateQueries({ queryKey: ["clinic-settings"] });
       setForm(saved as ClinicSettings);
@@ -6831,7 +6852,13 @@ function FooterServicesTab() {
   const current = form ?? settings ?? null;
 
   const save = useMutation({
-    mutationFn: (body: ClinicSettings) => api.put("/api/clinic-settings", body),
+    mutationFn: (body: ClinicSettings) => {
+      // Only send Footer Service List field to avoid validation errors on unrelated fields like quickTestIds
+      const payload = {
+        serviceFooter: body.serviceFooter,
+      };
+      return api.put("/api/clinic-settings", payload);
+    },
     onSuccess: (saved) => {
       qc.invalidateQueries({ queryKey: ["clinic-settings"] });
       setForm(saved as ClinicSettings);
