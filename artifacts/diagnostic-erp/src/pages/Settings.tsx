@@ -1881,9 +1881,26 @@ function OnlineBookingCatalogSelector({
     if (next.has(id)) next.delete(id); else next.add(id);
     setForm((prev) => prev && { ...prev, onlineBookingAllowedTestIds: JSON.stringify([...next]) });
   };
+
+  const toggleAllTests = (selectAll: boolean) => {
+    const next = new Set<number>();
+    if (selectAll) {
+      activeTests.forEach((t) => next.add(t.id));
+    }
+    setForm((prev) => prev && { ...prev, onlineBookingAllowedTestIds: JSON.stringify([...next]) });
+  };
+
   const togglePkg = (id: number) => {
     const next = new Set(allowedPkgIds);
     if (next.has(id)) next.delete(id); else next.add(id);
+    setForm((prev) => prev && { ...prev, onlineBookingAllowedPackageIds: JSON.stringify([...next]) });
+  };
+
+  const toggleAllPkgs = (selectAll: boolean) => {
+    const next = new Set<number>();
+    if (selectAll) {
+      activePkgs.forEach((p) => next.add(p.id));
+    }
     setForm((prev) => prev && { ...prev, onlineBookingAllowedPackageIds: JSON.stringify([...next]) });
   };
 
@@ -1918,10 +1935,28 @@ function OnlineBookingCatalogSelector({
 
       {/* Tests */}
       <div>
-        <div className="flex items-center gap-2 mb-2">
-          <FlaskConical size={14} className="text-muted-foreground" />
-          <span className="font-semibold text-sm">Tests</span>
-          <span className="text-xs text-muted-foreground">({activeTests.length} active)</span>
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <div className="flex items-center gap-2">
+            <FlaskConical size={14} className="text-muted-foreground" />
+            <span className="font-semibold text-sm">Tests</span>
+            <span className="text-xs text-muted-foreground">({activeTests.length} active)</span>
+          </div>
+          {activeTests.length > 0 && (() => {
+            const isIndeterminate = allowedTestIds.size > 0 && allowedTestIds.size < activeTests.length;
+            const isChecked = allowedTestIds.size === activeTests.length && activeTests.length > 0;
+            return (
+              <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-primary hover:underline">
+                <input
+                  ref={(el) => { if (el) el.indeterminate = isIndeterminate; }}
+                  type="checkbox"
+                  className="w-4 h-4 accent-primary"
+                  checked={isChecked}
+                  onChange={(e) => toggleAllTests(e.target.checked)}
+                />
+                Select All
+              </label>
+            );
+          })()}
         </div>
         <div className="relative mb-2">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -1964,10 +1999,28 @@ function OnlineBookingCatalogSelector({
       {/* Packages */}
       {activePkgs.length > 0 && (
         <div>
-          <div className="flex items-center gap-2 mb-2">
-            <Boxes size={14} className="text-muted-foreground" />
-            <span className="font-semibold text-sm">Packages</span>
-            <span className="text-xs text-muted-foreground">({activePkgs.length} active)</span>
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <div className="flex items-center gap-2">
+              <Boxes size={14} className="text-muted-foreground" />
+              <span className="font-semibold text-sm">Packages</span>
+              <span className="text-xs text-muted-foreground">({activePkgs.length} active)</span>
+            </div>
+            {activePkgs.length > 0 && (() => {
+              const isIndeterminate = allowedPkgIds.size > 0 && allowedPkgIds.size < activePkgs.length;
+              const isChecked = allowedPkgIds.size === activePkgs.length && activePkgs.length > 0;
+              return (
+                <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-primary hover:underline">
+                  <input
+                    ref={(el) => { if (el) el.indeterminate = isIndeterminate; }}
+                    type="checkbox"
+                    className="w-4 h-4 accent-primary"
+                    checked={isChecked}
+                    onChange={(e) => toggleAllPkgs(e.target.checked)}
+                  />
+                  Select All
+                </label>
+              );
+            })()}
           </div>
           <div className="relative mb-2">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
