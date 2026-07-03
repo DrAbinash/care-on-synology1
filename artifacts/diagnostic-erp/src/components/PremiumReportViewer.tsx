@@ -1,3 +1,5 @@
+// PHASE C NOTE: Premium Reporting layer — PRESERVED for Phase D / Premium Reporting Enhancement.
+// Entry point: unified worklist "Premium" button → /radiology/report-generator/:id?premium=1
 /**
  * PremiumReportViewer.tsx
  * Premium publication-quality report viewer + image selector.

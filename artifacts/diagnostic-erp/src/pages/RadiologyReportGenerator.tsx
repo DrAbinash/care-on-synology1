@@ -196,7 +196,10 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
 
   // Preview & draft
   const [previewHtml, setPreviewHtml] = useState("");
-  const [premiumMode, setPremiumMode] = useState(false);
+  const [premiumMode, setPremiumMode] = useState<boolean>(() => {
+    // Phase C: unified worklist "Premium" button deep-links with ?premium=1.
+    try { return new URLSearchParams(window.location.search).get("premium") === "1"; } catch { return false; }
+  });
   const [draftId, setDraftId] = useState<number | null>(null);
   const [generating, setGenerating] = useState(false);
   const [saving, setSaving] = useState(false);

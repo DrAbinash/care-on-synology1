@@ -6,6 +6,17 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import Layout from "@/components/Layout";
 import { readStaffSession, canAccess, firstPermissionedPath, firstAllowedPath, longestMatchingNavPath, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 
+/**
+ * Phase C (Radiology V2): the unified Radiology Worklist at /radiology/worklist
+ * is the single staff-facing worklist. Old worklist routes redirect here.
+ * The old page components are PRESERVED in the codebase (not deleted).
+ */
+function RedirectToUnifiedWorklist() {
+  const [, navigate] = useLocation();
+  useEffect(() => { navigate("/radiology/worklist", { replace: true }); }, [navigate]);
+  return null;
+}
+
 
 const BillingDesk     = lazy(() => import("@/pages/BillingDesk"));
 const Dashboard       = lazy(() => import("@/pages/Dashboard"));
@@ -419,7 +430,7 @@ function Router() {
               <Route path="/radiology/usg-admin-settings" component={UsgAdminSettings} />
               {/* USG / DOPPLER module */}
               <Route path="/usg" component={UsgDoppler} />
-              <Route path="/usg/worklist" component={UsgWorklist} />
+              <Route path="/usg/worklist" component={RedirectToUnifiedWorklist} />
               <Route path="/usg/measurements/:studyInstanceUID" component={UsgMeasurementReview} />
               <Route path="/usg/measurements" component={UsgMeasurementReview} />
               <Route path="/usg/reporting" component={UsgReporting} />
@@ -431,8 +442,8 @@ function Router() {
               <Route path="/usg/pregnancy-dashboard" component={PregnancyDashboard} />
               <Route path="/backup-replication" component={BackupReplication} />
               {/* Phase 10 RIS/PACS Foundation */}
-              <Route path="/radiology/dicom-study-worklist" component={DicomStudyWorklist} />
-              <Route path="/radiology/radiologist-queue" component={RadiologistQueue} />
+              <Route path="/radiology/dicom-study-worklist" component={RedirectToUnifiedWorklist} />
+              <Route path="/radiology/radiologist-queue" component={RedirectToUnifiedWorklist} />
               <Route path="/radiology/technician-workflow/:studyId">
                 {(params) => <TechnicianWorkflow studyId={Number(params.studyId)} />}
               </Route>

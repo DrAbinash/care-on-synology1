@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { api } from "@/lib/fetchApi";
-import { readStaffSession, ERP_SESSION_KEY } from "@/lib/staffSession";
+import { readStaffSession, ERP_SESSION_KEY, canAccess, normalizeRole } from "@/lib/staffSession";
+import { toUnifiedStatus, worklistRoleView, type WorklistRoleView } from "@/lib/radiologyStatus";
 import { launchViewer } from "@/lib/viewerService";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -17,7 +18,7 @@ import {
   Search, Filter, Clock, CheckCheck, AlertCircle, MonitorPlay, Tv2,
   ClipboardList, CalendarDays, ShieldCheck, ShieldOff, Database,
   ChevronDown, ChevronUp, Eye, MessageSquare, ThumbsUp, ThumbsDown, Trash2,
-  X, Activity, Stethoscope,
+  X, Activity, Stethoscope, Printer, Gem,
 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
@@ -50,6 +51,8 @@ type WorklistEntry = {
   aiDraftStatus: string;
   reportId: number | null;
   deliveryStatus: string | null;
+  uhid?: string | null;        // Phase C: ERP UHID via patients join
+  billNumber?: string | null;  // Phase C: bill number via study→bill join
   createdAt: string;
   updatedAt: string;
   lockUserId?: number | null;
@@ -67,12 +70,18 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; icon: React.
   DELIVERED: { label: "Delivered", color: "bg-gray-100 text-gray-700 border-gray-200", icon: <CheckCheck className="h-3 w-3" /> },
 };
 
-function StatusBadge({ status }: { status: string }) {
-  const cfg = STATUS_CONFIG[status] ?? { label: status, color: "bg-gray-100 text-gray-700 border-gray-200", icon: null };
+function StatusBadge({ status, deliveryStatus }: { status: string; deliveryStatus?: string | null }) {
+  // Phase C: staff always see the unified 7-step vocabulary. The raw
+  // internal status stays visible in the tooltip for troubleshooting.
+  const u = toUnifiedStatus(status, deliveryStatus);
+  const icon = STATUS_CONFIG[status]?.icon ?? null;
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${cfg.color}`}>
-      {cfg.icon}
-      {cfg.label}
+    <span
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${u.color}`}
+      title={`Internal status: ${status}${deliveryStatus ? ` · delivery: ${deliveryStatus}` : ""}`}
+    >
+      {icon}
+      {u.label}
     </span>
   );
 }
@@ -362,6 +371,15 @@ export default function RadiologyWorklist() {
   const session = readStaffSession();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+
+  // ── Phase C: role-based view. Page ACCESS is still governed solely by the
+  // existing permission system; this only decides which action buttons render.
+  const viewRole: WorklistRoleView = worklistRoleView(normalizeRole(session?.user?.role || ""));
+  const isOwnerView = viewRole === "owner";
+  const isRadView = viewRole === "radiologist" || isOwnerView;
+  const isTechView = viewRole === "technician";
+  const isReceptionView = viewRole === "reception";
+  const may = (path: string) => canAccess(session, path);
   const [modalityFilter, setModalityFilter] = useState("all");
   const [lockFilter, setLockFilter] = useState("all");
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
@@ -632,7 +650,7 @@ export default function RadiologyWorklist() {
                 </SelectTrigger>
                 <SelectContent>
                   {STATUS_OPTIONS.map((s) => (
-                    <SelectItem key={s} value={s}>{s === "all" ? "All Statuses" : (STATUS_CONFIG[s]?.label ?? s)}</SelectItem>
+                    <SelectItem key={s} value={s}>{s === "all" ? "All Statuses" : toUnifiedStatus(s).label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -726,9 +744,12 @@ export default function RadiologyWorklist() {
                     <tr className="bg-muted/50 text-left">
                       {showSentinel && <th className="px-3 py-2.5 font-medium whitespace-nowrap text-orange-600">⚠ Debug</th>}
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Patient Name</th>
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Patient ID</th>
+                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Age/Sex</th>
+                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">UHID</th>
+                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Bill No</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Modality</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Study Description</th>
+                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Ref. Doctor</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Accession No</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Study Date</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Source AE</th>
@@ -751,14 +772,23 @@ export default function RadiologyWorklist() {
                           </td>
                         )}
                         <td className="px-3 py-2.5 font-medium whitespace-nowrap">{entry.patientName}</td>
-                        <td className="px-3 py-2.5 font-mono text-xs text-muted-foreground whitespace-nowrap">
-                          {entry.dicomPatientId ?? entry.patientId ?? "\u2014"}
+                        <td className="px-3 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                          {[entry.age, entry.sex].filter(Boolean).join(" / ") || "\u2014"}
+                        </td>
+                        <td className="px-3 py-2.5 font-mono text-xs text-muted-foreground whitespace-nowrap" title={entry.dicomPatientId ?? undefined}>
+                          {entry.uhid ?? entry.dicomPatientId ?? "\u2014"}
+                        </td>
+                        <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap">
+                          {entry.billNumber ?? "\u2014"}
                         </td>
                         <td className="px-3 py-2.5 whitespace-nowrap">
                           <Badge variant="outline" className="font-mono text-xs">{entry.modality}</Badge>
                         </td>
                         <td className="px-3 py-2.5 max-w-[200px] truncate" title={entry.studyDescription ?? ""}>
                           {entry.studyDescription || "\u2014"}
+                        </td>
+                        <td className="px-3 py-2.5 text-xs whitespace-nowrap max-w-[140px] truncate" title={entry.referringDoctor ?? ""}>
+                          {entry.referringDoctor ?? "\u2014"}
                         </td>
                         <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap">{entry.accessionNumber}</td>
                         <td className="px-3 py-2.5 text-muted-foreground whitespace-nowrap">
@@ -771,7 +801,7 @@ export default function RadiologyWorklist() {
                           {fmtDate(entry.createdAt)}
                         </td>
                         <td className="px-3 py-2.5 whitespace-nowrap">
-                          <StatusBadge status={entry.status} />
+                          <StatusBadge status={entry.status} deliveryStatus={entry.deliveryStatus} />
                         </td>
                         <td className="px-3 py-2.5 whitespace-nowrap">
                           <LockBadge entry={entry} currentUserId={session?.user?.id} />
@@ -813,7 +843,7 @@ export default function RadiologyWorklist() {
                         </td>
                         <td className="px-3 py-2.5">
                           <div className="flex items-center justify-end gap-1 flex-wrap">
-                            {entry.id !== -1 && (
+                            {entry.id !== -1 && !isReceptionView && (
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -826,7 +856,7 @@ export default function RadiologyWorklist() {
                               </Button>
                             )}
 
-                            {entry.id !== -1 && (
+                            {entry.id !== -1 && !isReceptionView && (
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -839,7 +869,7 @@ export default function RadiologyWorklist() {
                               </Button>
                             )}
 
-                            {entry.status !== "REPORT_FINAL" && entry.status !== "DELIVERED" && entry.id !== -1 && (
+                            {entry.status !== "REPORT_FINAL" && entry.status !== "DELIVERED" && entry.id !== -1 && isRadView && (
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -853,7 +883,7 @@ export default function RadiologyWorklist() {
                               </Button>
                             )}
 
-                            {entry.id !== -1 && (
+                            {entry.id !== -1 && isOwnerView && (
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -866,7 +896,7 @@ export default function RadiologyWorklist() {
                               </Button>
                             )}
 
-                            {entry.id !== -1 && (
+                            {entry.id !== -1 && isRadView && may("/radiology/cockpit") && (
                               <Button
                                 size="sm"
                                 className="h-7 px-2 text-xs bg-indigo-600 hover:bg-indigo-700 text-white"
@@ -878,7 +908,7 @@ export default function RadiologyWorklist() {
                               </Button>
                             )}
 
-                            {entry.id !== -1 && (
+                            {entry.id !== -1 && isRadView && may("/radiology/reporting-workspace") && (
                               <Button
                                 size="sm"
                                 className="h-7 px-2 text-xs"
@@ -890,7 +920,7 @@ export default function RadiologyWorklist() {
                               </Button>
                             )}
 
-                            {(entry.status === "REPORT_IN_PROGRESS" || entry.status === "AI_DRAFT_READY") && entry.id !== -1 && (
+                            {(entry.status === "REPORT_IN_PROGRESS" || entry.status === "AI_DRAFT_READY") && entry.id !== -1 && isRadView && (
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -912,6 +942,35 @@ export default function RadiologyWorklist() {
                               <span className="text-xs text-green-700 font-medium flex items-center gap-1">
                                 <CheckCircle2 className="h-3 w-3" /> Finalized
                               </span>
+                            )}
+
+                            {/* Phase C: Premium Report entry point (preview lives in Report Generator — not expanded here) */}
+                            {entry.id !== -1 && isRadView && may("/radiology/report-generator") &&
+                              (entry.reportId != null || entry.status === "REPORT_IN_PROGRESS" || entry.status === "REPORT_FINAL") && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 px-2 text-xs border-amber-500 text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950/20"
+                                onClick={() => navigate(`/radiology/report-generator/${entry.id}?premium=1`)}
+                                title="Open Premium Report Preview"
+                              >
+                                <Gem className="h-3 w-3 mr-1" />
+                                Premium
+                              </Button>
+                            )}
+
+                            {/* Phase C: one-click print of the saved report (all roles incl. reception) */}
+                            {entry.id !== -1 && entry.reportId != null && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 px-2 text-xs"
+                                onClick={() => window.open(`/api/patient-reports/${entry.reportId}/print`, "_blank", "noopener,noreferrer")}
+                                title="Print / Share report"
+                              >
+                                <Printer className="h-3 w-3 mr-1" />
+                                Print
+                              </Button>
                             )}
                           </div>
                         </td>
