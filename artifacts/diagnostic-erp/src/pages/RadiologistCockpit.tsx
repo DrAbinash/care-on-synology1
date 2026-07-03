@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { api } from "@/lib/fetchApi";
-import { readStaffSession } from "@/lib/staffSession";
+import { readStaffSession, normalizeRole } from "@/lib/staffSession";
+import { toUnifiedStatus, priorityInfo, worklistRoleView } from "@/lib/radiologyStatus";
 import { useToast } from "@/hooks/use-toast";
 import { launchViewer } from "@/lib/viewerService";
 import PageHeader from "@/components/PageHeader";
@@ -28,7 +29,7 @@ import {
   Ruler, GitCompare, History as HistoryIcon, BrainCircuit, WandSparkles,
   Pencil, SpellCheck, Repeat2, FileDown, Mic, Heart, Baby, Stethoscope, X, Plus,
   TrendingUp, TrendingDown, Minus
-} from "lucide-react";
+, Printer, Gem } from "lucide-react";
 import VoiceDictationButton from "@/components/VoiceDictationButton";
 import ChocolateBoxPanel, { type ChocolateFinding } from "@/components/ChocolateBoxPanel";
 import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
@@ -64,6 +65,9 @@ type WorklistEntry = {
   weasisUrl: string | null;
   status: string;
   assignedRadiologist: string | null;
+  priority?: string | null;    // Phase D: reuses radiology_studies.priority
+  billNumber?: string | null;  // Phase D: via study→bill (single endpoint)
+  uhid?: string | null;        // Phase D: ERP UHID
   aiDraftStatus: string;
   aiDraftJson?: string | null;
   reportId: number | null;
@@ -158,6 +162,11 @@ function RadiologistCockpit() {
 
   // Active study state
   const [activeStudyId, setActiveStudyId] = useState<number | null>(null);
+
+  // Phase D: role-based Reading Room behavior. Page access remains governed
+  // by the existing permission system; this only gates in-page actions.
+  const cockpitRole = worklistRoleView(normalizeRole(readStaffSession()?.user?.role || ""));
+  const canSign = cockpitRole === "radiologist" || cockpitRole === "owner";
 
   // Pagination for worklist
   const [visibleWorklistCount, setVisibleWorklistCount] = useState(30);
@@ -1848,7 +1857,7 @@ function RadiologistCockpit() {
                   {currentStep === 4 && (
                     <span className="text-amber-500 text-[10px] font-bold">Suggested Action: Fill missing report fields</span>
                   )}
-                  {currentStep === 5 && (
+                  {currentStep === 5 && canSign && (
                     <Button size="sm" onClick={handleFinalizeClick} className="bg-emerald-600 hover:bg-emerald-700 h-6 text-[10px] text-white font-bold">
                       Suggested Action: Finalize & Sign
                     </Button>
@@ -1916,6 +1925,18 @@ function RadiologistCockpit() {
                   <div className="text-[11px] text-slate-400">
                     Accession: <span className="font-mono text-slate-300">{study.accessionNumber}</span> &bull; Modality: <span className="text-slate-300">{study.modality}</span> &bull; Description: <span className="text-slate-300">{study.studyDescription}</span>
                   </div>
+                  <div className="text-[11px] text-slate-400 flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <span>UHID: <span className="font-mono text-slate-300">{study.uhid ?? "\u2014"}</span></span>
+                    <span>Bill: <span className="font-mono text-slate-300">{study.billNumber ?? "\u2014"}</span></span>
+                    <span>Ref: <span className="text-slate-300">{study.referringDoctor ?? "\u2014"}</span></span>
+                    {study.assignedRadiologist && <span>Radiologist: <span className="text-slate-300">{study.assignedRadiologist}</span></span>}
+                    {(() => { const u = toUnifiedStatus(study.status, study.deliveryStatus); return (
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-semibold ${u.color}`} title={`Internal: ${study.status}`}>{u.label}</span>
+                    ); })()}
+                    {(() => { const pr = priorityInfo(study.priority); return pr.highlight ? (
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-bold ${pr.color}`}>{pr.label}</span>
+                    ) : null; })()}
+                  </div>
                 </div>
 
                 {/* Viewer Launcher buttons */}
@@ -1926,6 +1947,29 @@ function RadiologistCockpit() {
                   <Button size="sm" onClick={handleLaunchWeasis} className="bg-indigo-600 hover:bg-indigo-700 text-xs h-8 flex items-center gap-1 text-white">
                     <Tv2 className="h-3.5 w-3.5" /> Launch Weasis
                   </Button>
+                  {/* Phase D: entry point to the preserved Premium Reporting module */}
+                  {canSign && (study.reportId != null || study.status === "REPORT_IN_PROGRESS" || study.status === "REPORT_FINAL") && (
+                    <Button
+                      size="sm"
+                      onClick={() => navigate(`/radiology/report-generator/${study.id}?premium=1`)}
+                      className="bg-amber-600 hover:bg-amber-700 text-xs h-8 flex items-center gap-1 text-white"
+                      title="Open Premium Report Preview"
+                    >
+                      <Gem className="h-3.5 w-3.5" /> Premium Preview
+                    </Button>
+                  )}
+                  {/* Phase D: one-click print of the saved report */}
+                  {study.reportId != null && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => window.open(`/api/patient-reports/${study.reportId}/print`, "_blank", "noopener,noreferrer")}
+                      className="border-slate-700 text-slate-200 hover:bg-slate-900 text-xs h-8 flex items-center gap-1"
+                      title="Print / Share report"
+                    >
+                      <Printer className="h-3.5 w-3.5" /> Print
+                    </Button>
+                  )}
                 </div>
               </div>
 
@@ -2149,6 +2193,7 @@ function RadiologistCockpit() {
                     <Save className="h-4 w-4 mr-1.5" /> Save Draft
                   </Button>
 
+                  {canSign ? (
                   <Button
                     onClick={handleFinalizeClick}
                     disabled={finalizeMutation.isPending || study.status === "REPORT_FINAL"}
@@ -2156,6 +2201,11 @@ function RadiologistCockpit() {
                   >
                     <CheckCircle2 className="h-4 w-4 mr-1.5" /> Finalize & Sign
                   </Button>
+                  ) : (
+                  <span className="text-[11px] text-slate-500 self-center px-2" title="Only a radiologist can sign the final report">
+                    Final sign-off: radiologist only
+                  </span>
+                  )}
                 </div>
               </div>
             </div>

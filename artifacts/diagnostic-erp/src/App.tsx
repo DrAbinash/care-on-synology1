@@ -17,6 +17,29 @@ function RedirectToUnifiedWorklist() {
   return null;
 }
 
+/**
+ * Phase D (Radiology V2): RadiologistCockpit is the single Reading Room.
+ * Old editor routes redirect here (components PRESERVED, not deleted).
+ */
+function RedirectToCockpit({ studyId }: { studyId?: number }) {
+  const [, navigate] = useLocation();
+  useEffect(() => {
+    navigate(studyId && Number.isFinite(studyId) ? `/radiology/cockpit?studyId=${studyId}` : "/radiology/cockpit", { replace: true });
+  }, [navigate, studyId]);
+  return null;
+}
+
+/**
+ * Phase D: owner-only wrapper for preserved/deprecated pages.
+ * Normal staff are sent to the Reading Room; owners can still open the page.
+ */
+function OwnerOnlyPreserved({ children }: { children: React.ReactNode }) {
+  const session = readStaffSession();
+  const role = normalizeRole(session?.user?.role || "");
+  if (role === "admin" || role === "super_admin") return <>{children}</>;
+  return <RedirectToCockpit />;
+}
+
 
 const BillingDesk     = lazy(() => import("@/pages/BillingDesk"));
 const Dashboard       = lazy(() => import("@/pages/Dashboard"));
@@ -342,16 +365,16 @@ function Router() {
                 {(params) => <RadiologyReportGen studyId={Number(params.studyId)} />}
               </Route>
               <Route path="/radiology/report/:studyId">
-                {(params) => <RadiologyReportEditor studyId={Number(params.studyId)} />}
+                {(params) => <RedirectToCockpit studyId={Number(params.studyId)} />}
               </Route>
               <Route path="/radiology/reporting-workspace">
-                {() => <RadiologyReportingWorkspace />}
+                {() => <RedirectToCockpit />}
               </Route>
               <Route path="/radiology/reporting-workspace/:studyId">
-                {(params) => <RadiologyReportingWorkspace studyId={Number(params.studyId)} />}
+                {(params) => <RedirectToCockpit studyId={Number(params.studyId)} />}
               </Route>
               <Route path="/radiology/unified-report/:worklistId">
-                {(params) => <RadiologyReportingWorkspace studyId={Number(params.worklistId)} />}
+                {(params) => <RedirectToCockpit studyId={Number(params.worklistId)} />}
               </Route>
               <Route path="/radiology/pacs-dashboard" component={PacsDashboard} />
               <Route path="/radiology/operations-dashboard" component={RadiologyOperationsDashboard} />
@@ -412,12 +435,14 @@ function Router() {
               <Route path="/radiology/hl7-settings" component={Hl7Settings} />
               {/* Phase 12: Real Radiology Workflow & DICOM Operations */}
               <Route path="/radiology/command-center/:studyId">
-                {(params) => <RadiologyCommandCenter studyId={Number(params.studyId)} />}
+                {(params) => <OwnerOnlyPreserved><RadiologyCommandCenter studyId={Number(params.studyId)} /></OwnerOnlyPreserved>}
               </Route>
               <Route path="/radiology/command-center">
-                {() => <RadiologyCommandCenter />}
+                {() => <OwnerOnlyPreserved><RadiologyCommandCenter /></OwnerOnlyPreserved>}
               </Route>
-              <Route path="/radiology/legacy" component={RadiologyLegacy} />
+              <Route path="/radiology/legacy">
+                {() => <OwnerOnlyPreserved><RadiologyLegacy /></OwnerOnlyPreserved>}
+              </Route>
               <Route path="/radiology/advanced-tools" component={RadiologyAdvancedTools} />
               <Route path="/radiology/acquisition-gateway" component={AcquisitionGateway} />
               <Route path="/radiology/mwl-manager" component={MwlManager} />

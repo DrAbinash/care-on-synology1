@@ -154,7 +154,6 @@ const navItems: NavEntry[] = [
       { path: "/radiology/cockpit",            icon: Stethoscope,    label: "Radiologist Cockpit" },
       { path: "/radiology/my-collection",       icon: ShieldAlert,    label: "DICOM Match Center" },
       { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist Hub" },
-      { path: "/radiology/reporting-workspace", icon: FilePen,        label: "Reporting Workspace" },
       { path: "/pacs",                        icon: Monitor,        label: "PACS Viewer" },
       { path: "/radiology/normal-templates",   icon: ClipboardCheck, label: "Normal Templates" },
       { path: "/radiology/critical-findings",   icon: AlertCircle,    label: "Critical Findings" },

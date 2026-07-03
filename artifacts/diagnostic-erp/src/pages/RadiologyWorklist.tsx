@@ -917,19 +917,7 @@ export default function RadiologyWorklist() {
                                 title="Open in Radiologist Cockpit"
                               >
                                 <Stethoscope className="h-3 w-3 mr-1" />
-                                Cockpit
-                              </Button>
-                            )}
-
-                            {entry.id !== -1 && isRadView && may("/radiology/reporting-workspace") && (
-                              <Button
-                                size="sm"
-                                className="h-7 px-2 text-xs"
-                                onClick={() => navigate(`/radiology/reporting-workspace/${entry.id}`)}
-                                title="Open Reporting Workspace"
-                              >
-                                <FileEdit className="h-3 w-3 mr-1" />
-                                Workspace
+                                Report
                               </Button>
                             )}
 
