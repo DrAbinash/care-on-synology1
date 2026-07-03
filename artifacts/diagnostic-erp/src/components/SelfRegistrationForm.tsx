@@ -214,7 +214,7 @@ export const SelfRegistrationForm: React.FC<SelfRegistrationFormProps> = ({
         <div className="kiosk-form-row">
           <div className="kiosk-field">
             <label className="kiosk-label">Age *</label>
-            <div style={{ display: "flex", gap: "0.5rem" }}>
+            <div style={{ display: "flex", gap: "0.75rem", alignItems: "stretch" }}>
               <input
                 id="kiosk-ageValue"
                 className="kiosk-input"
@@ -234,13 +234,14 @@ export const SelfRegistrationForm: React.FC<SelfRegistrationFormProps> = ({
                 className="kiosk-input"
                 value={ageUnit}
                 onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setAgeUnit(e.target.value as "years" | "months" | "days")}
-                style={{ width: "120px" }}
+                style={{ width: "140px", cursor: "pointer", appearance: "auto" }}
               >
                 <option value="years">Years</option>
                 <option value="months">Months</option>
                 <option value="days">Days</option>
               </select>
             </div>
+            <p style={{ fontSize: "0.85rem", color: "#94a3b8", marginTop: "4px" }}>Enter age value and select unit. For newborns, use Months or Days.</p>
           </div>
         </div>
 
