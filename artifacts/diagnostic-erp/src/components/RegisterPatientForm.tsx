@@ -1,3 +1,4 @@
+import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -42,6 +43,27 @@ export function RegisterPatientForm({
   const hasName = !!(newPatient.firstName?.trim() || newPatient.lastName?.trim());
   const isFormValid = hasName && !isLoading;
 
+  // The Name textbox shows exactly what the user is typing — including a
+  // trailing space while they're in the middle of typing a surname. This is
+  // intentionally NOT derived from firstName/lastName on every render (that
+  // was the bug: reconstructing "firstName + lastName" and trimming it
+  // erased any space the instant it was typed, making the spacebar appear
+  // broken). It's reset from the parent only when the parent's name changes
+  // out from under us (e.g. clearing the form after registration).
+  const [nameText, setNameText] = useState(`${newPatient.firstName} ${newPatient.lastName}`.trim());
+  const lastSyncedName = useRef(nameText);
+  useEffect(() => {
+    const parentName = `${newPatient.firstName} ${newPatient.lastName}`.trim();
+    // Only overwrite local text if the parent's name changed for a reason
+    // OTHER than our own onChange below (e.g. form reset, patient search
+    // picked a different record) — otherwise this would fight the user's
+    // typing the same way the old derived-value bug did.
+    if (parentName !== lastSyncedName.current) {
+      setNameText(parentName);
+      lastSyncedName.current = parentName;
+    }
+  }, [newPatient.firstName, newPatient.lastName]);
+
   return (
     <div className="space-y-3">
       {/* LINE 1: Name / Age / Sex */}
@@ -50,18 +72,22 @@ export function RegisterPatientForm({
         <div className="flex-1 min-w-[140px] space-y-0.5">
           <Label className="text-xs font-extrabold">Name *</Label>
           <Input
-            value={`${newPatient.firstName} ${newPatient.lastName}`.trim()}
+            value={nameText}
             onChange={(e) => {
-              const parts = e.target.value.trim().split(/\s+/);
+              const raw = e.target.value;
+              setNameText(raw);
+              const trimmed = raw.trim();
+              const parts = trimmed.split(/\s+/);
               const first = parts[0] || "";
               const last = parts.slice(1).join(" ") || "";
+              lastSyncedName.current = trimmed;
               onPatientChange({
                 ...newPatient,
                 firstName: first,
                 lastName: last,
               });
             }}
-            placeholder="Full name"
+            placeholder="Full name (e.g. Rohit Kumar)"
             className="h-8 text-xs"
           />
         </div>
