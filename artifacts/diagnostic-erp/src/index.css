@@ -301,3 +301,69 @@
 .billing-compact [data-billing-patient-field] {
   padding: 2px 0 !important;
 }
+
+/* Modern Pro layout mode: bright, vibrant, contemporary design */
+.billing-modern-pro {
+  background: linear-gradient(135deg, #f8f9fa 0%, #eef2f5 100%) !important;
+}
+
+/* Modern Pro: top bar with gradient */
+.billing-modern-pro > div:first-child {
+  background: linear-gradient(90deg, #0d47a1 0%, #1565c0 50%, #2196f3 100%) !important;
+  border-bottom: 3px solid #ff6f00 !important;
+}
+
+/* Modern Pro: section headers with vibrant gradient */
+.billing-modern-pro [data-billing-section-header] {
+  background: linear-gradient(90deg, #1976d2 0%, #1e88e5 100%) !important;
+  border-left: 4px solid #ff6f00 !important;
+  color: white !important;
+}
+
+/* Modern Pro: cards with soft shadows and bright accent */
+.billing-modern-pro [data-billing-card] {
+  background: white !important;
+  border: 1px solid #e8eef7 !important;
+  border-radius: 8px !important;
+  box-shadow: 0 2px 8px rgba(25, 118, 210, 0.08) !important;
+}
+
+/* Modern Pro: active buttons with vibrant orange accent */
+.billing-modern-pro button[data-active="true"] {
+  background-color: #ff6f00 !important;
+  color: white !important;
+  border-color: #ff6f00 !important;
+}
+
+/* Modern Pro: hover state on interactive elements */
+.billing-modern-pro button:hover,
+.billing-modern-pro [role="button"]:hover {
+  background-color: #e3f2fd !important;
+  border-color: #2196f3 !important;
+}
+
+/* Modern Pro: important amounts in green (positive cash flow) */
+.billing-modern-pro [data-billing-total] {
+  color: #2e7d32 !important;
+  font-weight: 700 !important;
+}
+
+/* Modern Pro: balance due in red (needs action) */
+.billing-modern-pro [data-billing-balance-due] {
+  color: #c62828 !important;
+  font-weight: 700 !important;
+}
+
+/* Modern Pro: success confirmation with bright green */
+.billing-modern-pro [data-billing-success] {
+  background-color: #c8e6c9 !important;
+  border: 1px solid #2e7d32 !important;
+  color: #1b5e20 !important;
+}
+
+/* Modern Pro: spacing — slightly larger for modern feel */
+.billing-modern-pro [data-billing-section] {
+  padding: 12px 14px !important;
+  margin-bottom: 8px !important;
+}
+

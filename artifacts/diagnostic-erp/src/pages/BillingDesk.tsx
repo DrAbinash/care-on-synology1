@@ -384,7 +384,7 @@ export default function BillingDesk() {
 
   // ── New patient form visibility ──────────────────────
   // ── Layout mode (unified / stepped) ─────────────────
-  const [layoutMode, setLayoutMode] = useState<"unified" | "stepped" | "compact" | "classic">(() => {
+  const [layoutMode, setLayoutMode] = useState<"unified" | "stepped" | "compact" | "classic" | "modern-pro">(() => {
     const stored = typeof window !== "undefined" ? localStorage.getItem("billingDeskLayout") : null;
     return (stored as "unified" | "stepped" | "compact") || "unified";
   });
@@ -402,6 +402,7 @@ export default function BillingDesk() {
   }, []);
   const isStepped = layoutMode === "stepped";
   const isCompact = layoutMode === "compact";
+  const isModernPro = layoutMode === "modern-pro";
 
   // ── Reactive feature flags ────────────────────────────────────────────────
   // These were previously plain derived values (isFeatureEnabled() called once
@@ -1521,6 +1522,7 @@ export default function BillingDesk() {
     denseTestList  ? "billing-dense"     : "",
     largeFont      ? "billing-large-font": "",
     isCompact      ? "billing-compact"   : "",
+    isModernPro    ? "billing-modern-pro": "",
   ].filter(Boolean).join(" ");
 
   // Shared section header style — Medical Blue accent strip

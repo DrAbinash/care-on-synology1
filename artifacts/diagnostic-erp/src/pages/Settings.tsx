@@ -807,7 +807,7 @@ function SidebarBehaviourCard() {
   );
 }
 
-type BillingLayout = "unified" | "stepped" | "compact" | "classic";
+type BillingLayout = "unified" | "stepped" | "compact" | "classic" | "modern-pro";
 
 function BillingDeskLayoutCard() {
   const [layout, setLayout] = useState<BillingLayout>(() => {
@@ -852,6 +852,7 @@ function BillingDeskLayoutCard() {
     { id: "stepped", label: "Stepped Wizard", desc: "4 sequential steps (Patient → Doctor → Tests & Packages → Summary). Best for training new staff." },
     { id: "compact", label: "Compact", desc: "Dense layout with minimal spacing. Best for small screens." },
     { id: "classic", label: "Classic", desc: "Original traditional billing desk layout. Best for familiar workflow." },
+    { id: "modern-pro", label: "Modern Pro (New)", desc: "Bright, modern design with vibrant colors and streamlined workflow. Best for contemporary, fast-paced clinics." },
   ];
 
   return (
