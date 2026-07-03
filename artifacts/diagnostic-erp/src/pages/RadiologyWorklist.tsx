@@ -435,11 +435,14 @@ export default function RadiologyWorklist() {
     queryFn: async () => {
       const rows = await api.get<{ key: string; value: string; category: string }[]>("/api/radiology/pacs-settings");
       const map: Record<string, string> = {};
-      for (const r of rows) if (r.category === "viewer") map[r.key] = r.value;
+      for (const r of rows) if (r.category === "viewer" || r.category === "radiology") map[r.key] = r.value;
       return map;
     },
     staleTime: 120_000,
   });
+
+  // Phase E "Highlight Urgent / VIP studies" toggle (default ON when unset)
+  const urgentHighlightOn = (pacsViewerSettings["urgent_highlight_enabled"] ?? "true") !== "false";
 
   useEffect(() => {
     if (!isLoading && prevEntriesLen.current !== entries.length) {
@@ -767,7 +770,7 @@ export default function RadiologyWorklist() {
                     {tableRows.map((entry) => (
                       <tr
                         key={entry.id}
-                        className={`hover:bg-muted/30 transition-colors ${entry.id === -1 ? "bg-orange-50 dark:bg-orange-950/20" : priorityInfo(entry.priority).highlight ? "bg-red-50/50 dark:bg-red-950/10" : ""}`}
+                        className={`hover:bg-muted/30 transition-colors ${entry.id === -1 ? "bg-orange-50 dark:bg-orange-950/20" : (urgentHighlightOn && priorityInfo(entry.priority).highlight) ? "bg-red-50/50 dark:bg-red-950/10" : ""}`}
                       >
                         {showSentinel && (
                           <td className="px-3 py-2.5 text-xs text-orange-600 font-mono">
