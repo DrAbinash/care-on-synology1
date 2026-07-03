@@ -73,6 +73,7 @@ import {
   FileText,
   Settings2,
   ClipboardList,
+  ChevronDown,
   CreditCard,
   Barcode,
   Save,
@@ -529,6 +530,11 @@ export default function BillingDesk() {
   const [discountNote, setDiscountNote]     = useState<string>("");
   const [payNow, setPayNow]               = useState(true);
   const [isVipActive, setIsVipActive]     = useState(false);
+  // Collapse panels once the user moves on to the next step — mirrors the
+  // Register Patient form's auto-collapse-after-selection behavior. Both
+  // default open; user can always re-expand by clicking the header.
+  const [testsCollapsed, setTestsCollapsed]     = useState(false);
+  const [summaryCollapsed, setSummaryCollapsed] = useState(false);
   const [paymentSplits, setPaymentSplits] = useState<PaySplit[]>([{ mode: "cash", amount: "" }]);
   const [lastBill, setLastBill]           = useState<LastBill | null>(null);
   // Real scannable QR (PNG data URL) generated via the qrcode library
@@ -1497,6 +1503,8 @@ export default function BillingDesk() {
     setHusbandName("");
     setPatientAddress("");
     setIsVipActive(false);
+    setTestsCollapsed(false);
+    setSummaryCollapsed(false);
   }
 
   function assignQuickDoctor(slotIdx: number, doctorId: number | null) {
@@ -1531,6 +1539,27 @@ export default function BillingDesk() {
       {icon && <span className="text-[#7eb8f7]">{icon}</span>}
       <span className="text-[11px] font-bold uppercase tracking-wider text-white">{label}</span>
     </div>
+  );
+
+  // Collapsible variant — same look, but clickable with a chevron and an
+  // optional right-aligned summary (e.g. Net Total) shown while collapsed.
+  const SHCollapsible = (
+    label: string,
+    icon: React.ReactNode,
+    collapsed: boolean,
+    onToggle: () => void,
+    rightSlot?: React.ReactNode,
+  ) => (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="w-full px-3 py-1.5 bg-[#1a3a5c] dark:bg-[#0f2540] flex items-center gap-2 border-l-4 border-[#2563eb] text-left hover:bg-[#204568] transition-colors"
+    >
+      {icon && <span className="text-[#7eb8f7] flex-shrink-0">{icon}</span>}
+      <span className="text-[11px] font-bold uppercase tracking-wider text-white flex-1">{label}</span>
+      {collapsed && rightSlot}
+      <ChevronDown size={13} className={`text-[#7eb8f7] flex-shrink-0 transition-transform ${collapsed ? "-rotate-90" : ""}`} />
+    </button>
   );
 
   const cardCls = "bg-white dark:bg-slate-800 border border-[#dde3ec] dark:border-slate-700 rounded-lg overflow-hidden shadow-sm";
@@ -2038,8 +2067,14 @@ export default function BillingDesk() {
 
             {/* ── SELECTED TESTS ───────────────────────── */}
             <div className={`${cardCls} mx-2.5 mt-2.5 flex-shrink-0`}>
-              {SH(`Selected Tests (${selectedTests.length})`, <ClipboardList size={11} />)}
-              {selectedTests.length === 0 && selectedPackages.length === 0 ? (
+              {SHCollapsible(
+                `Selected Tests (${selectedTests.length})`,
+                <ClipboardList size={11} />,
+                testsCollapsed,
+                () => setTestsCollapsed((c) => !c),
+                <span className="text-[10px] text-[#7eb8f7] font-semibold mr-1">{inr(subtotal)}</span>,
+              )}
+              {!testsCollapsed && (selectedTests.length === 0 && selectedPackages.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-6 text-[#94a3b8]">
                   <FlaskConical size={20} className="mb-1.5 opacity-30" />
                   <p className="text-xs">No investigations added yet</p>
@@ -2084,14 +2119,22 @@ export default function BillingDesk() {
                     </div>
                   )}
                 </div>
-              )}
+              ))}
             </div>
 
             {/* ── BILL SUMMARY + DISCOUNT + VIP ────────── */}
             <div className={`${cardCls} mx-2.5 mt-2.5 flex-shrink-0`}>
-              {SH("Bill Summary", <Receipt size={11} />)}
+              {SHCollapsible(
+                "Bill Summary",
+                <Receipt size={11} />,
+                summaryCollapsed,
+                () => setSummaryCollapsed((c) => !c),
+                <span className="text-[10px] text-[#7eb8f7] font-semibold mr-1">Net {inr(total)}</span>,
+              )}
               <div className="p-3 space-y-2">
 
+                {!summaryCollapsed && (
+                <>
                 {/* Auto-discount suggestion */}
                 {suggestion && suggestion.discount > 0 && (
                   <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 flex items-center gap-2 text-xs">
@@ -2116,17 +2159,32 @@ export default function BillingDesk() {
                 </div>
 
                 {/* Discount row */}
-                <div className="space-y-1.5">
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold text-[#94a3b8] uppercase tracking-wider">Discount</span>
+                    <div className="flex items-center gap-2">
+                      {discountAmt > 0 && <span className="text-[12px] text-amber-700 font-bold">−{inr(discountAmt)}</span>}
+                      {selectedTests.length > 0 && (
+                        <button
+                          onClick={fetchSuggestion}
+                          disabled={suggLoading}
+                          className="text-[10px] text-[#2563eb] hover:underline flex-shrink-0 flex items-center gap-0.5"
+                        >
+                          <Zap size={9} className={suggLoading ? "animate-pulse" : ""} />
+                          Auto
+                        </button>
+                      )}
+                    </div>
+                  </div>
                   <div className="flex items-center gap-1.5">
-                    <span className="text-[12px] text-[#64748b] w-14 flex-shrink-0">Discount</span>
                     <div className="flex border border-[#dde3ec] rounded-md overflow-hidden flex-shrink-0">
                       <button
                         onClick={() => setDiscountType("amount")}
-                        className={`px-2 py-0.5 text-[11px] font-bold transition-colors ${discountType === "amount" ? "bg-[#2563eb] text-white" : "hover:bg-[#f4f6f9] text-[#64748b]"}`}
+                        className={`px-2.5 py-1 text-[12px] font-bold transition-colors ${discountType === "amount" ? "bg-[#2563eb] text-white" : "hover:bg-[#f4f6f9] text-[#64748b]"}`}
                       >₹</button>
                       <button
                         onClick={() => setDiscountType("pct")}
-                        className={`px-2 py-0.5 text-[11px] font-bold transition-colors ${discountType === "pct" ? "bg-[#2563eb] text-white" : "hover:bg-[#f4f6f9] text-[#64748b]"}`}
+                        className={`px-2.5 py-1 text-[12px] font-bold transition-colors ${discountType === "pct" ? "bg-[#2563eb] text-white" : "hover:bg-[#f4f6f9] text-[#64748b]"}`}
                       >%</button>
                     </div>
                     <Input
@@ -2135,15 +2193,16 @@ export default function BillingDesk() {
                       step="0.01"
                       value={discountValue || ""}
                       onChange={(e) => setDiscountValue(Number(e.target.value))}
+                      onFocus={() => setTestsCollapsed(true)}
                       placeholder="0"
-                      className="h-7 text-sm flex-1 min-w-0"
+                      className="h-8 text-sm flex-1 min-w-[70px]"
                     />
                     {subtotal > 0 && (
                       <Button
                         size="sm"
                         variant="outline"
                         type="button"
-                        className="h-7 px-2 text-[10px] border-[#bfdbfe] text-[#2563eb] hover:bg-[#eff6ff] font-bold flex-shrink-0"
+                        className="h-8 px-2.5 text-[11px] border-[#bfdbfe] text-[#2563eb] hover:bg-[#eff6ff] font-bold flex-shrink-0"
                         onClick={() => {
                           setDiscountType("pct");
                           setDiscountValue(10);
@@ -2154,20 +2213,9 @@ export default function BillingDesk() {
                         10%
                       </Button>
                     )}
-                    {discountAmt > 0 && <span className="text-[12px] text-amber-700 font-bold flex-shrink-0">−{inr(discountAmt)}</span>}
-                    {selectedTests.length > 0 && (
-                      <button
-                        onClick={fetchSuggestion}
-                        disabled={suggLoading}
-                        className="text-[10px] text-[#2563eb] hover:underline flex-shrink-0 flex items-center gap-0.5"
-                      >
-                        <Zap size={9} className={suggLoading ? "animate-pulse" : ""} />
-                        Auto
-                      </button>
-                    )}
                   </div>
                   {discountAmt > 0 && (
-                    <div className="space-y-1 pl-[60px]">
+                    <div className="space-y-1">
                       <select
                         value={discountReason}
                         onChange={(e) => setDiscountReason(e.target.value)}
@@ -2202,8 +2250,10 @@ export default function BillingDesk() {
                     ⭐ VIP Priority
                   </label>
                 </div>
+                </>
+                )}
 
-                {/* ── NET TOTAL — visual anchor of the screen ── */}
+                {/* ── NET TOTAL — visual anchor, always visible even when collapsed ── */}
                 <div className="flex items-center justify-between py-2 border-t-2 border-[#1a3a5c]">
                   <span className="text-[13px] font-bold text-[#1a3a5c] uppercase tracking-wide">Net Total</span>
                   <span className="text-[28px] font-extrabold text-[#1a3a5c] tabular-nums leading-none">{inr(total)}</span>
@@ -2240,6 +2290,7 @@ export default function BillingDesk() {
                       placeholder={total.toFixed(2)}
                       value={paymentSplits[0]?.amount ?? ""}
                       onChange={(e) => setPaymentSplits((prev) => prev.map((s, i) => i === 0 ? { ...s, amount: e.target.value } : s))}
+                      onFocus={() => setSummaryCollapsed(true)}
                       className="h-12 text-xl font-bold tracking-tight text-center border-[#2563eb]/40 focus:border-[#2563eb]"
                     />
 

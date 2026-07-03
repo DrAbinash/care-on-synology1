@@ -47,7 +47,7 @@ export function RegisterPatientForm({
       {/* LINE 1: Name / Age / Sex */}
       <div className="flex flex-wrap gap-2">
         {/* Name */}
-        <div className="flex-1 min-w-[200px] space-y-0.5">
+        <div className="flex-1 min-w-[140px] space-y-0.5">
           <Label className="text-xs font-extrabold">Name *</Label>
           <Input
             value={`${newPatient.firstName} ${newPatient.lastName}`.trim()}
@@ -66,8 +66,8 @@ export function RegisterPatientForm({
           />
         </div>
 
-        {/* Age with dropdown */}
-        <div className="w-[120px] space-y-0.5">
+        {/* Age with dropdown — widened per Dr. Abinash's request for easier entry/reading */}
+        <div className="w-[165px] space-y-0.5">
           <Label className="text-xs font-extrabold">Age</Label>
           <div className="flex gap-1">
             <Input
@@ -82,7 +82,7 @@ export function RegisterPatientForm({
                 })
               }
               placeholder="0"
-              className="h-8 text-xs flex-1"
+              className="h-8 text-xs flex-[1.3]"
             />
             <Select
               value={newPatient.ageUnit}
@@ -93,7 +93,7 @@ export function RegisterPatientForm({
                 })
               }
             >
-              <SelectTrigger className="h-8 text-xs w-[60px] px-2">
+              <SelectTrigger className="h-8 text-xs w-[68px] px-2">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -105,8 +105,8 @@ export function RegisterPatientForm({
           </div>
         </div>
 
-        {/* Sex */}
-        <div className="w-[90px] space-y-0.5">
+        {/* Sex — reduced width, it's just a 1-word dropdown */}
+        <div className="w-[78px] space-y-0.5">
           <Label className="text-xs font-extrabold">Sex</Label>
           <Select
             value={newPatient.gender}
