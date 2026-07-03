@@ -1723,13 +1723,8 @@ export default function BillingDesk() {
                         setNewPatient(data as typeof newPatient)
                       }
                       onSubmit={() => {
-                        if (
-                          !newPatient.firstName.trim() ||
-                          !newPatient.lastName.trim() ||
-                          !newPatient.phone.trim() ||
-                          !newPatient.ageValue
-                        )
-                          return;
+                        // Only a name is required — lastName, phone, age are optional
+                        if (!newPatient.firstName.trim() && !newPatient.lastName.trim()) return;
                         createPatientMut.mutate(newPatient);
                       }}
                       isLoading={createPatientMut.isPending}
