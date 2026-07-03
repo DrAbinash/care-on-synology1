@@ -547,10 +547,10 @@ function UsersTab({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
               </div>
               <div>
                 <Label>Default Start Page</Label>
-                <Select value={watch("defaultStartPage") || ""} onValueChange={(v) => setValue("defaultStartPage", v)}>
+                <Select value={watch("defaultStartPage") || "__none__"} onValueChange={(v) => setValue("defaultStartPage", v === "__none__" ? "" : v)}>
                   <SelectTrigger className="mt-1"><SelectValue placeholder="Default Dashboard" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">Default Dashboard</SelectItem>
+                    <SelectItem value="__none__">Default Dashboard</SelectItem>
                     {ALL_MODULES.map(m => (
                       <SelectItem key={m.path} value={m.path}>{m.label}</SelectItem>
                     ))}
