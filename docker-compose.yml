@@ -16,6 +16,13 @@
 #   docker compose run --rm care-migrate
 #   (Runs Drizzle TypeScript migrator — same migrations, alternative path)
 #
+# care-migrate is ALSO the approved way to run one-off, owner-reviewed data
+# scripts against production (e.g. Phase F template consolidation) — same
+# container, same DATABASE_URL, no separate infrastructure:
+#   docker compose run --rm care-migrate pnpm --filter @workspace/db run phase-f:assess
+#   docker compose run --rm care-migrate pnpm --filter @workspace/db run phase-f:execute
+#   docker compose run --rm care-migrate pnpm --filter @workspace/db run phase-f:rollback
+#
 # See SYNOLOGY_DB_MIGRATION_DEPLOYMENT.md for full deployment instructions.
 # =============================================================================
 
