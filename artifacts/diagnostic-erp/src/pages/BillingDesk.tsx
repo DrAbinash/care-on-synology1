@@ -139,6 +139,58 @@ const today = () => new Date().toLocaleDateString("en-IN", {
   weekday: "short", year: "numeric", month: "short", day: "numeric",
 });
 
+// ── Second-monitor auto-placement ──────────────────────────────────────────
+// Opens `url` positioned on the second monitor automatically, with no manual
+// dragging required, using the best method the browser/connection allows:
+//
+//  1. Window Management API (window.getScreenDetails) — exact placement on
+//     whichever screen isn't currently showing this window, with automatic
+//     fullscreen. Only available in a SECURE context (https://) in Chrome/Edge
+//     100+, and only after a one-time browser permission prompt. This ERP
+//     currently runs on plain http:// on the LAN, so this path is unavailable
+//     today — it activates automatically the moment the clinic moves to
+//     HTTPS (e.g. via Tailscale HTTPS or a proper certificate), no code
+//     changes needed then.
+//  2. Practical fallback (works today, over plain HTTP, no permissions):
+//     assumes the second monitor is extended to the right of the primary —
+//     the default Windows/most-common clinic PC setup — and opens the window
+//     at that offset, sized to fill a typical monitor. Not pixel-perfect on
+//     unusual monitor arrangements, but lands correctly for the common case
+//     with zero dragging. A "Fullscreen" button on the display page itself
+//     (one click, no drag) covers the rest.
+async function openOnSecondMonitor(url: string, windowName: string): Promise<void> {
+  const wm = (window as unknown as { getScreenDetails?: () => Promise<{
+    screens: Array<{ availLeft: number; availTop: number; availWidth: number; availHeight: number }>;
+    currentScreen: { availLeft: number; availTop: number };
+  }> }).getScreenDetails;
+
+  if (wm && window.isSecureContext) {
+    try {
+      const details = await wm();
+      const other = details.screens.find(
+        (s) => s.availLeft !== details.currentScreen.availLeft || s.availTop !== details.currentScreen.availTop
+      ) ?? details.screens[0];
+      const win = window.open(
+        url,
+        windowName,
+        `left=${other.availLeft},top=${other.availTop},width=${other.availWidth},height=${other.availHeight}`
+      );
+      if (win) {
+        win.addEventListener("load", () => {
+          try { win.document.documentElement.requestFullscreen?.(); } catch { /* best effort */ }
+        });
+        return;
+      }
+    } catch {
+      // Permission denied or API unavailable this call — fall through to heuristic.
+    }
+  }
+
+  // Fallback: place just past the primary screen's right edge.
+  const left = window.screen.width;
+  window.open(url, windowName, `left=${left},top=0,width=1024,height=900`);
+}
+
 // ──────────────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────────────
@@ -2723,7 +2775,7 @@ export default function BillingDesk() {
                           txnRef: gatewayPaymentInfo.txnRef,
                           patientName: selectedPatient ? `${selectedPatient.firstName} ${selectedPatient.lastName ?? ""}`.trim() : "",
                         });
-                        window.open(`/display/payment-qr?${params.toString()}`, "paymentQrDisplay", "width=900,height=900");
+                        void openOnSecondMonitor(`/display/payment-qr?${params.toString()}`, "paymentQrDisplay");
                       }}
                       className="mt-2 text-xs font-semibold text-[#2563eb] hover:underline flex items-center gap-1 mx-auto"
                     >

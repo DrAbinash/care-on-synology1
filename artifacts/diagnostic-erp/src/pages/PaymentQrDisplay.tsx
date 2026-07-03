@@ -22,11 +22,21 @@
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
 import { api } from "@/lib/fetchApi";
-import { CheckCircle2, Loader2, IndianRupee } from "lucide-react";
+import { CheckCircle2, Loader2, IndianRupee, Maximize2, Minimize2 } from "lucide-react";
 
 function useQueryParam(name: string): string {
   if (typeof window === "undefined") return "";
   return new URLSearchParams(window.location.search).get(name) ?? "";
+}
+
+function useIsFullscreen(): boolean {
+  const [isFs, setIsFs] = useState(() => typeof document !== "undefined" && !!document.fullscreenElement);
+  useEffect(() => {
+    const handler = () => setIsFs(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", handler);
+    return () => document.removeEventListener("fullscreenchange", handler);
+  }, []);
+  return isFs;
 }
 
 export default function PaymentQrDisplay() {
@@ -37,6 +47,7 @@ export default function PaymentQrDisplay() {
 
   const [qrImageUrl, setQrImageUrl] = useState("");
   const [status, setStatus] = useState<"pending" | "success" | "failed" | "expired" | "error">("pending");
+  const isFullscreen = useIsFullscreen();
 
   // Generate the scannable QR client-side (same qrcode library + settings
   // Billing Desk already uses) so the URL only needs to carry the short
@@ -90,6 +101,17 @@ export default function PaymentQrDisplay() {
 
   return (
     <div style={styles.root}>
+      <button
+        type="button"
+        onClick={() => {
+          if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+          else document.documentElement.requestFullscreen().catch(() => {});
+        }}
+        style={styles.fsButton}
+        title={isFullscreen ? "Exit fullscreen" : "Fill screen"}
+      >
+        {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+      </button>
       <div style={styles.card}>
         {status === "success" ? (
           <>
@@ -146,6 +168,7 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: "center",
     background: "linear-gradient(135deg,#0f172a,#1e293b)",
     fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif",
+    position: "relative",
   },
   card: {
     background: "#ffffff",
@@ -165,4 +188,16 @@ const styles: Record<string, React.CSSProperties> = {
   amount: { fontSize: 44, fontWeight: 900, letterSpacing: "-0.02em" },
   qrImg: { width: 320, height: 320, borderRadius: 12, border: "1px solid #e2e8f0", margin: "8px 0" },
   waitingRow: { display: "flex", alignItems: "center", gap: 8, color: "#94a3b8", fontSize: 14, marginTop: 8 },
+  fsButton: {
+    position: "absolute",
+    top: 20,
+    right: 20,
+    background: "rgba(255,255,255,0.1)",
+    border: "1px solid rgba(255,255,255,0.2)",
+    borderRadius: 8,
+    padding: 10,
+    color: "#e2e8f0",
+    cursor: "pointer",
+    display: "flex",
+  },
 };
