@@ -140,6 +140,14 @@ patientsRouter.post("/", requireStaffSubPermission("/patients", "create"), async
   const phone = parsed.data.phone?.trim();
   const firstName = parsed.data.firstName?.trim();
   const lastName = parsed.data.lastName?.trim();
+
+  // Require at least one name field to be filled
+  if (!firstName && !lastName) {
+    res.status(400).json({ error: "At least a first name or last name is required." });
+    return;
+  }
+
+  // Duplicate guard: only check when phone + both name parts are present
   if (phone && firstName && lastName) {
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60_000);
     const [dup] = await db

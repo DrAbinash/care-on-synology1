@@ -53,11 +53,11 @@ export const ListPatientsResponse = zod.object({
  * @summary Register new patient
  */
 export const CreatePatientBody = zod.object({
-  firstName: zod.string(),
+  firstName: zod.string(),          // at least one of firstName/lastName must be non-empty (checked in route)
   lastName: zod.string(),
   dateOfBirth: zod.string(),
   gender: zod.enum(["male", "female", "other"]),
-  phone: zod.string(),
+  phone: zod.string(),              // may be empty string for walk-in patients without a phone
   email: zod.string().nullish(),
   address: zod.string().nullish(),
   bloodGroup: zod.string().nullish(),
