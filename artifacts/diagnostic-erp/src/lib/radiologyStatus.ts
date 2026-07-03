@@ -112,3 +112,25 @@ export function worklistRoleView(normalizedRole: string): WorklistRoleView {
   // workflow silently loses buttons (backward compatibility).
   return "radiologist";
 }
+
+// ─── Priority display (Phase C) ──────────────────────────────────────────────
+// Reuses the EXISTING radiology_studies.priority vocabulary:
+//   stat | emergency | urgent | routine | vip
+
+export interface PriorityInfo {
+  label: string;
+  color: string;
+  /** True for stat/emergency/urgent/vip — rows staff should notice first. */
+  highlight: boolean;
+}
+
+export function priorityInfo(priority: string | null | undefined): PriorityInfo {
+  const p = (priority || "routine").toLowerCase();
+  if (p === "stat" || p === "emergency")
+    return { label: p.toUpperCase(), color: "bg-red-100 text-red-800 border-red-300", highlight: true };
+  if (p === "urgent")
+    return { label: "URGENT", color: "bg-orange-100 text-orange-800 border-orange-300", highlight: true };
+  if (p === "vip")
+    return { label: "VIP", color: "bg-purple-100 text-purple-800 border-purple-300", highlight: true };
+  return { label: "Routine", color: "bg-slate-100 text-slate-600 border-slate-200", highlight: false };
+}

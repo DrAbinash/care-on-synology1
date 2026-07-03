@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { api } from "@/lib/fetchApi";
 import { readStaffSession, ERP_SESSION_KEY, canAccess, normalizeRole } from "@/lib/staffSession";
-import { toUnifiedStatus, worklistRoleView, type WorklistRoleView } from "@/lib/radiologyStatus";
+import { toUnifiedStatus, worklistRoleView, priorityInfo, type WorklistRoleView } from "@/lib/radiologyStatus";
 import { launchViewer } from "@/lib/viewerService";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -53,6 +53,7 @@ type WorklistEntry = {
   deliveryStatus: string | null;
   uhid?: string | null;        // Phase C: ERP UHID via patients join
   billNumber?: string | null;  // Phase C: bill number via study→bill join
+  priority?: string | null;    // Phase C: reuses radiology_studies.priority
   createdAt: string;
   updatedAt: string;
   lockUserId?: number | null;
@@ -748,6 +749,7 @@ export default function RadiologyWorklist() {
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">UHID</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Bill No</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Modality</th>
+                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Priority</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Study Description</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Ref. Doctor</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Accession No</th>
@@ -755,6 +757,7 @@ export default function RadiologyWorklist() {
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Source AE</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Created At</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Status</th>
+                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Radiologist</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Lock Status</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">AI Draft</th>
                       <th className="px-3 py-2.5 font-medium text-right whitespace-nowrap">Actions</th>
@@ -764,7 +767,7 @@ export default function RadiologyWorklist() {
                     {tableRows.map((entry) => (
                       <tr
                         key={entry.id}
-                        className={`hover:bg-muted/30 transition-colors ${entry.id === -1 ? "bg-orange-50 dark:bg-orange-950/20" : ""}`}
+                        className={`hover:bg-muted/30 transition-colors ${entry.id === -1 ? "bg-orange-50 dark:bg-orange-950/20" : priorityInfo(entry.priority).highlight ? "bg-red-50/50 dark:bg-red-950/10" : ""}`}
                       >
                         {showSentinel && (
                           <td className="px-3 py-2.5 text-xs text-orange-600 font-mono">
@@ -784,6 +787,13 @@ export default function RadiologyWorklist() {
                         <td className="px-3 py-2.5 whitespace-nowrap">
                           <Badge variant="outline" className="font-mono text-xs">{entry.modality}</Badge>
                         </td>
+                        <td className="px-3 py-2.5 whitespace-nowrap">
+                          {(() => { const pr = priorityInfo(entry.priority); return (
+                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-semibold ${pr.color}`}>
+                              {pr.label}
+                            </span>
+                          ); })()}
+                        </td>
                         <td className="px-3 py-2.5 max-w-[200px] truncate" title={entry.studyDescription ?? ""}>
                           {entry.studyDescription || "\u2014"}
                         </td>
@@ -802,6 +812,9 @@ export default function RadiologyWorklist() {
                         </td>
                         <td className="px-3 py-2.5 whitespace-nowrap">
                           <StatusBadge status={entry.status} deliveryStatus={entry.deliveryStatus} />
+                        </td>
+                        <td className="px-3 py-2.5 text-xs whitespace-nowrap max-w-[120px] truncate" title={entry.assignedRadiologist ?? ""}>
+                          {entry.assignedRadiologist ?? "\u2014"}
                         </td>
                         <td className="px-3 py-2.5 whitespace-nowrap">
                           <LockBadge entry={entry} currentUserId={session?.user?.id} />
