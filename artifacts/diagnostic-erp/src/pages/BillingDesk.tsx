@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import "@/styles/billingDeskModern.css"; // Modern Pro skin (presentation only)
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
 import { api } from "@/lib/fetchApi";
@@ -384,14 +385,14 @@ export default function BillingDesk() {
 
   // ── New patient form visibility ──────────────────────
   // ── Layout mode (unified / stepped) ─────────────────
-  const [layoutMode, setLayoutMode] = useState<"unified" | "stepped" | "compact" | "classic">(() => {
+  const [layoutMode, setLayoutMode] = useState<"unified" | "stepped" | "compact" | "classic" | "modern">(() => {
     const stored = typeof window !== "undefined" ? localStorage.getItem("billingDeskLayout") : null;
-    return (stored as "unified" | "stepped" | "compact") || "unified";
+    return (stored as "unified" | "stepped" | "compact" | "classic" | "modern") || "unified";
   });
   useEffect(() => {
     const handler = () => {
       const stored = typeof window !== "undefined" ? localStorage.getItem("billingDeskLayout") : null;
-      setLayoutMode((stored as "unified" | "stepped" | "compact") || "unified");
+      setLayoutMode((stored as "unified" | "stepped" | "compact" | "classic" | "modern") || "unified");
     };
     window.addEventListener("storage", handler);
     window.addEventListener("billingDeskLayoutChanged", handler);
@@ -1534,7 +1535,7 @@ export default function BillingDesk() {
   const cardCls = "bg-white dark:bg-slate-800 border border-[#dde3ec] dark:border-slate-700 rounded-lg overflow-hidden shadow-sm";
 
   return (
-    <div className={deskClass}>
+    <div className={deskClass} data-desk={layoutMode}>
 
       {/* ═══════════════════════════════════════════════════════
           TOP BAR — date · title · search · recent · new

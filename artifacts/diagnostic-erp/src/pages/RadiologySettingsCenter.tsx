@@ -288,7 +288,7 @@ export default function RadiologySettingsCenter() {
             <div className="flex items-center justify-between border rounded-lg p-3">
               <div>
                 <Label className="text-xs font-semibold">Lock report after Final sign-off</Label>
-                <p className="text-[11px] text-muted-foreground">When ON, a finalized report cannot be edited from the Reading Room (owner can still amend via preserved tools).</p>
+                <p className="text-[11px] text-muted-foreground">Finalized reports are locked in the Reading Room (Save/Finalize disabled after sign-off). Keep ON; owner amendments go through preserved owner tools.</p>
               </div>
               <Switch checked={svOn("report_final_lock")} disabled={!isAdmin}
                 onCheckedChange={(v) => upsertSetting.mutate({ key: "report_final_lock", value: String(v), category: "radiology" })} />

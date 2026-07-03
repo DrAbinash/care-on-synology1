@@ -125,6 +125,34 @@ export default function PremiumReportViewer({
   const [reportHtml, setReportHtml] = useState<string>("");
   const [rendering, setRendering] = useState(false);
 
+  // ── Phase F: owner defaults from Radiology Settings → Premium Report tab.
+  // These set the INITIAL state of the per-report checkboxes below; the
+  // radiologist can still adjust per report (nothing removed).
+  const { data: premiumAdmin } = useQuery<Record<string, string>>({
+    queryKey: ["premium-admin-settings"],
+    queryFn: async () => {
+      const rows = await api.get<{ key: string; value: string; category: string }[]>("/api/radiology/pacs-settings");
+      const map: Record<string, string> = {};
+      for (const r of rows) if (r.category === "premium") map[r.key] = r.value;
+      return map;
+    },
+    staleTime: 300_000,
+  });
+  const premiumDefaultsApplied = useRef(false);
+  useEffect(() => {
+    if (!premiumAdmin || premiumDefaultsApplied.current) return;
+    premiumDefaultsApplied.current = true;
+    const on = (k: string) => (premiumAdmin[k] ?? "true") !== "false";
+    setShowImgPanel(on("premium_image_panel"));
+    setOpts((o) => ({
+      ...o,
+      enableDigitalSignature: on("premium_digital_signature"),
+      enableQrVerification: on("premium_qr_verification"),
+      enableStructuredFindings: on("premium_structured_reports"),
+    }));
+  }, [premiumAdmin]);
+  const themesAllowed = (premiumAdmin?.["premium_themes"] ?? "true") !== "false";
+
   // ── Load viewer settings (Orthanc URL) ──
   const { data: viewerSettings } = useQuery<Record<string, string>>({
     queryKey: ["pacs-viewer-settings"],
@@ -278,6 +306,8 @@ export default function PremiumReportViewer({
         <div className="flex items-center gap-1 bg-slate-800 rounded px-2 py-1">
           <Palette size={11} className="text-slate-400" />
           <select
+            disabled={!themesAllowed}
+            title={themesAllowed ? undefined : "Report themes disabled by owner in Radiology Settings"}
             value={theme}
             onChange={e => setTheme(e.target.value as PremiumTheme)}
             className="bg-transparent text-[10px] text-slate-300 border-none outline-none cursor-pointer"
