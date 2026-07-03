@@ -1,3 +1,5 @@
+// PHASE E (Radiology V2): PRESERVED. /settings/radiology now opens the unified
+// Radiology Settings page. Kept for rollback/reference — do not delete.
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";

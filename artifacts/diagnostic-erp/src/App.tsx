@@ -33,6 +33,17 @@ function RedirectToCockpit({ studyId }: { studyId?: number }) {
  * Phase D: owner-only wrapper for preserved/deprecated pages.
  * Normal staff are sent to the Reading Room; owners can still open the page.
  */
+/**
+ * Phase E: admin/owner-only guard for the unified Radiology Settings page.
+ * Non-admin staff are sent to the Worklist.
+ */
+function AdminOnlySettings({ children }: { children: React.ReactNode }) {
+  const session = readStaffSession();
+  const role = normalizeRole(session?.user?.role || "");
+  if (role === "admin" || role === "super_admin") return <>{children}</>;
+  return <RedirectToUnifiedWorklist />;
+}
+
 function OwnerOnlyPreserved({ children }: { children: React.ReactNode }) {
   const session = readStaffSession();
   const role = normalizeRole(session?.user?.role || "");
@@ -505,8 +516,15 @@ function Router() {
               <Route path="/samples" component={Samples} />
               <Route path="/scan-station" component={ScanStation} />
               <Route path="/report-delivery" component={ReportDelivery} />
-              <Route path="/settings/radiology" component={RadiologySettings} />
-              <Route path="/radiology/settings-center" component={RadiologySettingsCenter} />
+              <Route path="/settings/radiology">
+                {() => <AdminOnlySettings><RadiologySettingsCenter /></AdminOnlySettings>}
+              </Route>
+              <Route path="/radiology/settings">
+                {() => <AdminOnlySettings><RadiologySettingsCenter /></AdminOnlySettings>}
+              </Route>
+              <Route path="/radiology/settings-center">
+                {() => <AdminOnlySettings><RadiologySettingsCenter /></AdminOnlySettings>}
+              </Route>
               <Route path="/settings" component={Settings} />
               <Route path="/whatsapp-chatbot" component={WhatsAppChatbot} />
               <Route path="/system-update" component={SystemUpdate} />
