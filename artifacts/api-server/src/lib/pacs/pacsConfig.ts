@@ -1,6 +1,7 @@
 import { db } from "@workspace/db";
 import { pacsSettingsTable } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
+import { NETWORK_LAN_HOST, ERP_HTTP_PORT } from "../networkDefaults";
 
 export interface RadiologyConfig {
   // Orthanc Settings
@@ -54,9 +55,9 @@ export async function getRadiologyConfig(): Promise<RadiologyConfig> {
   // Detected/default LAN fallback
   const defaultHost = process.env.ORTHANC_URL 
     ? new URL(process.env.ORTHANC_URL).hostname 
-    : "192.168.1.137";
+    : NETWORK_LAN_HOST;
 
-  const erpBase = process.env.PUBLIC_BASE_URL || `http://${defaultHost}:8888`;
+  const erpBase = process.env.PUBLIC_BASE_URL || `http://${defaultHost}:${ERP_HTTP_PORT}`;
 
   return {
     orthanc: {

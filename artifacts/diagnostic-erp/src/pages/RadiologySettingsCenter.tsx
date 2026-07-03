@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { hostForProfile, orthancBaseForProfile, ohifBaseForProfile, publicBaseUrl } from "@/lib/networkProfiles";
 import PageHeader from "@/components/PageHeader";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -161,7 +162,7 @@ export default function RadiologySettingsCenter() {
       // 1. Probe LAN Orthanc first (fastest)
       try {
         const start = Date.now();
-        const res = await fetch("http://192.168.1.137:8042/", { method: "HEAD", mode: "no-cors" });
+        const res = await fetch(`${orthancBaseForProfile("LAN")}/`, { method: "HEAD", mode: "no-cors" });
         const latency = Date.now() - start;
         setDetectedProfile("LAN");
         setDetectionReason(`LAN reached successfully in ${latency}ms.`);
@@ -173,7 +174,7 @@ export default function RadiologySettingsCenter() {
       // 2. Probe Tailscale IP
       try {
         const start = Date.now();
-        await fetch("http://100.65.255.115:8042/", { method: "HEAD", mode: "no-cors" });
+        await fetch(`${orthancBaseForProfile("TAILSCALE")}/`, { method: "HEAD", mode: "no-cors" });
         const latency = Date.now() - start;
         setDetectedProfile("TAILSCALE");
         setDetectionReason(`Tailscale reached successfully in ${latency}ms. LAN unreachable.`);
@@ -259,12 +260,12 @@ export default function RadiologySettingsCenter() {
               </div>
               <h3 className="font-semibold text-base">LAN Profile (Local Network)</h3>
               <p className="text-xs text-muted-foreground">
-                Uses local IP addresses (`192.168.1.137`). High speed, secure, zero latency.
+                Uses local IP addresses ({hostForProfile("LAN")}). High speed, secure, zero latency.
                 Modality acquisition pushes (GE Voluson, CT, MRI) should strictly prefer this.
               </p>
               <div className="pt-2 text-xs font-mono text-muted-foreground space-y-1">
-                <p>OHIF Base: http://192.168.1.137:3010</p>
-                <p>Orthanc REST: http://192.168.1.137:8042</p>
+                <p>OHIF Base: {ohifBaseForProfile("LAN")}</p>
+                <p>Orthanc REST: {orthancBaseForProfile("LAN")}</p>
               </div>
             </div>
 
@@ -275,12 +276,12 @@ export default function RadiologySettingsCenter() {
               </div>
               <h3 className="font-semibold text-base">Tailscale VPN Profile</h3>
               <p className="text-xs text-muted-foreground">
-                Connects through Tailscale network (`100.65.255.115`). Allows radiologist/owner to review
+                Connects through Tailscale network ({hostForProfile("TAILSCALE")}). Allows radiologist/owner to review
                 studies and launch OHIF/Weasis outside the clinic network securely.
               </p>
               <div className="pt-2 text-xs font-mono text-muted-foreground space-y-1">
-                <p>OHIF Base: http://100.65.255.115:3010</p>
-                <p>Orthanc REST: http://100.65.255.115:8042</p>
+                <p>OHIF Base: {ohifBaseForProfile("TAILSCALE")}</p>
+                <p>Orthanc REST: {orthancBaseForProfile("TAILSCALE")}</p>
               </div>
             </div>
 
@@ -291,11 +292,11 @@ export default function RadiologySettingsCenter() {
               </div>
               <h3 className="font-semibold text-base">Public Cloud Profile</h3>
               <p className="text-xs text-muted-foreground">
-                Uses Cloudflare domain (`caredeoghar.com`) for secure patient booking, report delivery,
+                Uses Cloudflare domain ({hostForProfile("PUBLIC")}) for secure patient booking, report delivery,
                 and online billing desk tasks. Viewer access is disabled for speed &amp; transport privacy.
               </p>
               <div className="pt-2 text-xs font-mono text-muted-foreground space-y-1">
-                <p>ERP URL: https://caredeoghar.com</p>
+                <p>ERP URL: {publicBaseUrl()}</p>
                 <p>Ingestion port: Closed on WAN</p>
               </div>
             </div>
@@ -382,19 +383,19 @@ export default function RadiologySettingsCenter() {
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-semibold text-amber-800">Set Clinic LAN Defaults</p>
                   <p className="text-xs text-amber-700 mt-0.5">
-                    Sets OHIF → <code className="bg-amber-100 px-1 rounded">192.168.1.137:3010</code> and
-                    Weasis WADO → <code className="bg-amber-100 px-1 rounded">192.168.1.137:8042/wado</code>
+                    Sets OHIF → <code className="bg-amber-100 px-1 rounded">{hostForProfile("LAN")}:3010</code> and
+                    Weasis WADO → <code className="bg-amber-100 px-1 rounded">{hostForProfile("LAN")}:8042/wado</code>
                   </p>
                 </div>
                 <button
                   className="flex-shrink-0 px-3 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white rounded-md"
                   onClick={() => {
-                    upsertSetting.mutate({ key: "ohif_base_url",               value: "http://192.168.1.137:3010",                                  category: "viewer" });
-                    upsertSetting.mutate({ key: "dicom_web_base_url",           value: "http://192.168.1.137:3010/dicom-web",                         category: "viewer" });
+                    upsertSetting.mutate({ key: "ohif_base_url",               value: ohifBaseForProfile("LAN"),                                  category: "viewer" });
+                    upsertSetting.mutate({ key: "dicom_web_base_url",           value: `${ohifBaseForProfile("LAN")}/dicom-web`,                         category: "viewer" });
                     upsertSetting.mutate({ key: "ohif_study_url_template",      value: "{OHIF_BASE_URL}/viewer?StudyInstanceUIDs={studyInstanceUID}", category: "viewer" });
-                    upsertSetting.mutate({ key: "wado_uri_base_url",            value: "http://192.168.1.137:8042/wado",                             category: "viewer" });
-                    upsertSetting.mutate({ key: "weasis_wado_url",              value: "http://192.168.1.137:8042/wado",                             category: "viewer" });
-                    upsertSetting.mutate({ key: "weasis_manifest_url_template", value: 'weasis://$dicom:get -w "http://192.168.1.137:8042/wado?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"', category: "viewer" });
+                    upsertSetting.mutate({ key: "wado_uri_base_url",            value: `${orthancBaseForProfile("LAN")}/wado`,                             category: "viewer" });
+                    upsertSetting.mutate({ key: "weasis_wado_url",              value: `${orthancBaseForProfile("LAN")}/wado`,                             category: "viewer" });
+                    upsertSetting.mutate({ key: "weasis_manifest_url_template", value: `weasis://$dicom:get -w "${orthancBaseForProfile("LAN")}/wado?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"`, category: "viewer" });
                     upsertSetting.mutate({ key: "viewer_mode",                  value: "BOTH",                                                       category: "viewer" });
                     upsertSetting.mutate({ key: "default_viewer",               value: "OHIF",                                                       category: "viewer" });
                   }}
@@ -409,7 +410,7 @@ export default function RadiologySettingsCenter() {
                   value={settings.find(s => s.key === "ohif_base_url")?.value ?? ""}
                   onChange={(e) => upsertSetting.mutate({ key: "ohif_base_url", value: e.target.value, category: "viewer" })}
                   className="h-9 text-sm"
-                  placeholder="http://192.168.1.137:3010"
+                  placeholder={ohifBaseForProfile("LAN")}
                 />
                 <p className="text-[11px] text-muted-foreground">Your NAS IP + port 3010 (where OHIF is running)</p>
               </div>
@@ -423,7 +424,7 @@ export default function RadiologySettingsCenter() {
                     upsertSetting.mutate({ key: "wado_uri_base_url", value: e.target.value, category: "viewer" });
                   }}
                   className="h-9 text-sm"
-                  placeholder="http://192.168.1.137:8042/wado"
+                  placeholder={`${orthancBaseForProfile("LAN")}/wado`}
                 />
                 <p className="text-[11px] text-muted-foreground">Orthanc WADO endpoint — your NAS IP + :8042/wado</p>
               </div>

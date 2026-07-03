@@ -13,6 +13,7 @@ import { db } from "@workspace/db";
 import { tcpProbe } from "../lib/pacs/providers.js";
 import { testNodeConnection } from "../services/dicom-pull-agent/dimse-agent";
 import { getRadiologyConfig, validateRadiologyConfig } from "../lib/pacs/pacsConfig.js";
+import { NETWORK_LAN_HOST, DEFAULT_OHIF_BASE_URL, DEFAULT_WADO_URL, OHIF_HTTP_PORT } from "../lib/networkDefaults";
 import {
   dicomRoutingRulesTable,
   dicomPulledStudiesTable,
@@ -282,13 +283,13 @@ router.post("/test-modality", async (req, res) => {
 
 const DEFAULT_VIEWER_SETTINGS: Record<string, string> = {
   // OHIF viewer — same-origin nginx proxy (port 3010 proxies /dicom-web → care-orthanc:8042)
-  ohif_base_url: "http://192.168.1.137:3010",
-  dicom_web_base_url: "http://192.168.1.137:3010/dicom-web",
+  ohif_base_url: DEFAULT_OHIF_BASE_URL,
+  dicom_web_base_url: `${DEFAULT_OHIF_BASE_URL}/dicom-web`,
   ohif_study_url_template: "{OHIF_BASE_URL}/viewer?StudyInstanceUIDs={studyInstanceUID}",
   // Weasis — uses Orthanc's own WADO-URI endpoint directly (not via OHIF proxy)
-  wado_uri_base_url: "http://192.168.1.137:8042/wado",
-  weasis_manifest_url_template: 'weasis://$dicom:get -w "http://192.168.1.137:8042/wado?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"',
-  pacs_ip: "192.168.1.137",
+  wado_uri_base_url: DEFAULT_WADO_URL,
+  weasis_manifest_url_template: `weasis://$dicom:get -w "${DEFAULT_WADO_URL}?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"`,
+  pacs_ip: NETWORK_LAN_HOST,
   pacs_port: "4242",
   pacs_ae_title: "ORTHANC2",
   viewer_mode: "BOTH",
@@ -2514,7 +2515,7 @@ router.get("/network/health", async (req, res) => {
     // Derive nuanced status: distinguish "not configured" from "failing"
     const ohifStatus  = !ohifConfigured ? "yellow" : ohifHttp.ok  ? "green" : "red";
     const ohifDetails = !ohifConfigured
-      ? "Not configured — enter OHIF URL in PACS Settings (use 192.168.1.137:3010)"
+      ? `Not configured — enter OHIF URL in PACS Settings (use ${NETWORK_LAN_HOST}:${OHIF_HTTP_PORT})`
       : ohifHttp.ok ? "Reachable" : "Unreachable from server — check OHIF is running, or set OHIF_INTERNAL_URL if the container can't reach its own external LAN IP";
 
     const weasisStatus  = weasisWado.ok ? "green" : "yellow";

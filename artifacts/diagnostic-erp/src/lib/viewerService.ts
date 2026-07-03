@@ -7,6 +7,15 @@
 
 import { api } from "./fetchApi";
 import { readStaffSession, writeStaffSession } from "./staffSession";
+import {
+  applyNetworkSettings,
+  hostForProfile,
+  orthancBaseForProfile,
+  orthancBaseForHost,
+  publicBaseUrl,
+  rewriteUrlToProfile,
+  type NetworkProfile,
+} from "./networkProfiles";
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -37,11 +46,7 @@ export interface NetworkDiagnostics {
 // ─── NETWORK PROFILE HELPERS ──────────────────────────────────────────────────
 
 export function adaptUrlToProfile(url: string, profile: "LAN" | "TAILSCALE" | "PUBLIC"): string {
-  if (!url) return "";
-  const targetHost = profile === "LAN" ? "192.168.1.137" : profile === "TAILSCALE" ? "100.65.255.115" : "caredeoghar.com";
-  return url
-    .replace(/192\.168\.1\.137/g, targetHost)
-    .replace(/100\.65\.255\.115/g, targetHost);
+  return rewriteUrlToProfile(url, profile as NetworkProfile);
 }
 
 /**
@@ -71,6 +76,9 @@ export async function resolveActiveProfile(
     return { profile: "PUBLIC", reason: "Server-side render fallback", latencyMs: 0 };
   }
 
+  // Hydrate central network config from admin settings (env defaults otherwise)
+  applyNetworkSettings(settings);
+
   // 1. Check database session preference first, then localStorage fallback
   const session = readStaffSession();
   const dbProfile = session?.user?.pacsNetworkProfile;
@@ -78,7 +86,6 @@ export async function resolveActiveProfile(
   const activeOverride = dbProfile || localOverride || "auto";
 
   if (activeOverride && activeOverride !== "auto") {
-    const targetHost = activeOverride === "LAN" ? "192.168.1.137" : activeOverride === "TAILSCALE" ? "100.65.255.115" : "caredeoghar.com";
     return { 
       profile: activeOverride as "LAN" | "TAILSCALE" | "PUBLIC", 
       reason: `Manual override saved in ${dbProfile ? "User Database Profile" : "Local Browser Settings"}`, 
@@ -100,7 +107,7 @@ export async function resolveActiveProfile(
 
   // 3. Probing Order: Clinic LAN first (preferred)
   const startLan = Date.now();
-  const lanReachable = await probeEndpoint("http://192.168.1.137:8042/system", 1000);
+  const lanReachable = await probeEndpoint(`${orthancBaseForProfile("LAN")}/system`, 1000);
   if (lanReachable) {
     const lat = Date.now() - startLan;
     saveDetectedProfile("LAN", lat);
@@ -111,7 +118,7 @@ export async function resolveActiveProfile(
   const lastGood = localStorage.getItem("pacs_last_good_profile") as "LAN" | "TAILSCALE" | "PUBLIC" | null;
   if (lastGood === "TAILSCALE") {
     const startTs = Date.now();
-    const tsReachable = await probeEndpoint("http://100.65.255.115:8042/system", 1000);
+    const tsReachable = await probeEndpoint(`${orthancBaseForProfile("TAILSCALE")}/system`, 1000);
     if (tsReachable) {
       const lat = Date.now() - startTs;
       saveDetectedProfile("TAILSCALE", lat);
@@ -121,7 +128,7 @@ export async function resolveActiveProfile(
 
   // 5. Try Tailscale next (standard fallback)
   const startTs = Date.now();
-  const tsReachable = await probeEndpoint("http://100.65.255.115:8042/system", 1000);
+  const tsReachable = await probeEndpoint(`${orthancBaseForProfile("TAILSCALE")}/system`, 1000);
   if (tsReachable) {
     const lat = Date.now() - startTs;
     saveDetectedProfile("TAILSCALE", lat);
@@ -132,7 +139,7 @@ export async function resolveActiveProfile(
   const publicEnabled = settings["public_pacs_enabled"] === "true";
   if (publicEnabled) {
     const startPub = Date.now();
-    const pubReachable = await probeEndpoint("https://caredeoghar.com", 1200);
+    const pubReachable = await probeEndpoint(publicBaseUrl(), 1200);
     if (pubReachable) {
       const lat = Date.now() - startPub;
       saveDetectedProfile("PUBLIC", lat);
@@ -190,7 +197,8 @@ export async function checkViewerServices(
   host: string,
   settings: Record<string, string>
 ): Promise<Record<string, ServiceHealthState>> {
-  const erpBase = typeof window !== "undefined" ? window.location.origin : "https://caredeoghar.com";
+  applyNetworkSettings(settings);
+  const erpBase = typeof window !== "undefined" ? window.location.origin : publicBaseUrl();
   
   const check = async (name: string, url: string, method: "GET" | "HEAD" = "GET"): Promise<ServiceHealthState> => {
     const start = Date.now();
@@ -212,9 +220,9 @@ export async function checkViewerServices(
 
   return {
     erp: await check("ERP Portal Server", erpBase + "/api/health"),
-    orthancHttp: await check("Orthanc HTTP REST", `http://${host}:8042/system`),
-    dicomWeb: await check("DICOMweb Metadata Retrieve", `http://${host}:8042/dicom-web/studies/${studyInstanceUID}`),
-    wado: await check("WADO Image Retrieval", `http://${host}:8042/wado?requestType=WADO&studyUID=${studyInstanceUID}`),
+    orthancHttp: await check("Orthanc HTTP REST", `${orthancBaseForHost(host)}/system`),
+    dicomWeb: await check("DICOMweb Metadata Retrieve", `${orthancBaseForHost(host)}/dicom-web/studies/${studyInstanceUID}`),
+    wado: await check("WADO Image Retrieval", `${orthancBaseForHost(host)}/wado?requestType=WADO&studyUID=${studyInstanceUID}`),
     ohif: await check("OHIF Base Endpoint", adaptUrlToProfile(settings["ohif_base_url"] || "", profile)),
     weasis: { name: "Weasis Native Launcher", status: "green", details: "Protocol Handler ready (weasis://)", endpoint: "weasis://$dicom" },
     conquest: { name: "Conquest PACS Server", status: "green", details: "DICOM SCP active", endpoint: `http://${host}:5678` },
@@ -291,7 +299,7 @@ export async function launchViewer(
 
   const startTime = Date.now();
   const { profile, reason } = await resolveActiveProfile(settings);
-  const host = profile === "LAN" ? "192.168.1.137" : profile === "TAILSCALE" ? "100.65.255.115" : "caredeoghar.com";
+  const host = hostForProfile(profile as NetworkProfile);
 
   // Perform per-service check
   const services = await checkViewerServices(studyInstanceUID, host, settings);
@@ -449,8 +457,8 @@ function showDiagnosticOverlay(opts: {
 
   document.getElementById("pacs-copy-wado")?.addEventListener("click", () => {
     const isTs = opts.profile === "TAILSCALE";
-    const host = isTs ? "100.65.255.115" : "192.168.1.137";
-    navigator.clipboard.writeText(`http://${host}:8042/wado?requestType=WADO&studyUID=${opts.studyInstanceUID}&contentType=application/dicom`);
+    const host = hostForProfile(isTs ? "TAILSCALE" : "LAN");
+    navigator.clipboard.writeText(`${orthancBaseForHost(host)}/wado?requestType=WADO&studyUID=${opts.studyInstanceUID}&contentType=application/dicom`);
     opts.toast({ title: "Copied WADO URL to clipboard" });
   });
 }

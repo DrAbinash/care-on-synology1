@@ -21,6 +21,7 @@ import { initializePluginLoader } from "./plugin-loader";
 initializePluginLoader(app);
 
 import { logger } from "./lib/logger";
+import { NETWORK_LAN_HOST } from "./lib/networkDefaults";
 import { startCronScheduler } from "./cron";
 import { ensureDefaultLedger } from "./routes/ledgers";
 import { backfillExpirePublicTokens } from "./routes/patient-reports";
@@ -2554,7 +2555,7 @@ const server = app.listen({ port, exclusive: true }, () => {
     try {
       const defaultHost = process.env.ORTHANC_URL 
         ? new URL(process.env.ORTHANC_URL).hostname 
-        : "192.168.1.137";
+        : NETWORK_LAN_HOST;
       const erpBase = process.env["PUBLIC_BASE_URL"] || `http://${defaultHost}:8888`;
 
       const pairs: Array<{ key: string; value: string | undefined; category: string }> = [

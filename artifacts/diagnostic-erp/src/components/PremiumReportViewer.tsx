@@ -17,6 +17,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { orthancBaseForProfile } from "@/lib/networkProfiles";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
@@ -136,7 +137,7 @@ export default function PremiumReportViewer({
       .replace(/\/$/, "");
     const user = viewerSettings["orthanc_username"] || "";
     const pass = viewerSettings["orthanc_password"] || "";
-    setOrthancBase(base || "http://192.168.1.137:8042");
+    setOrthancBase(base || orthancBaseForProfile("LAN"));
     if (user && pass) setOrthancAuth("Basic " + btoa(`${user}:${pass}`));
   }, [viewerSettings]);
 
