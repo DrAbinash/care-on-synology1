@@ -353,7 +353,7 @@ export const SelfRegistrationForm: React.FC<SelfRegistrationFormProps> = ({
         onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
           const newGender = e.target.value as "male" | "female" | "other" | "";
           setGender(newGender);
-          if (newGender && newGender !== "") {
+          if (newGender) {
             setErrFields(f => f.filter(x => x !== "gender"));
             setError("");
           }
