@@ -249,8 +249,9 @@ export default function Kiosk() {
         }),
       });
       if (!res.ok) {
-        const e = await res.json().catch(() => ({ error: "Payment initiation failed." })) as { error?: string };
-        setError(e.error ?? "Payment initiation failed. Please try again.");
+        const e = await res.json().catch(() => ({ error: "Payment initiation failed." })) as { error?: string; details?: string };
+        const shown = e.details ? `${e.error ?? "Payment initiation failed."} (${e.details})` : (e.error ?? "Payment initiation failed. Please try again.");
+        setError(shown);
         return;
       }
       const data = await res.json() as { sessionRef: string; redirectUrl: string };

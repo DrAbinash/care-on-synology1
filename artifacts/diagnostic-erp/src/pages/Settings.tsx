@@ -2058,6 +2058,9 @@ function OnlineBookingTab() {
   const { toast } = useToast();
   const [logSearch, setLogSearch] = useState("");
   const [logStatusFilter, setLogStatusFilter] = useState("all");
+  const [iciciDiag, setIciciDiag] = useState<Record<string, unknown> | null>(null);
+  const [iciciDiagLoading, setIciciDiagLoading] = useState(false);
+  const [iciciDiagError, setIciciDiagError] = useState("");
   const { data: bookingsData, isLoading: isLoadingBookings } = useQuery<{ bookings: any[] }>({
     queryKey: ["online-bookings-logs"],
     queryFn: () => api.get("/api/online-bookings?limit=100"),
@@ -2551,8 +2554,48 @@ function OnlineBookingTab() {
           />
         </div>
         <div className="flex justify-end gap-2 pt-2 border-t border-card-border">
+          <Button
+            variant="outline"
+            onClick={async () => {
+              setIciciDiagLoading(true);
+              setIciciDiagError("");
+              setIciciDiag(null);
+              try {
+                const result = await api.get<Record<string, unknown>>("/api/public/booking/icici-diagnostics");
+                setIciciDiag(result);
+              } catch (err) {
+                setIciciDiagError(err instanceof Error ? err.message : "Could not load diagnostics");
+              } finally {
+                setIciciDiagLoading(false);
+              }
+            }}
+            disabled={iciciDiagLoading}
+          >
+            {iciciDiagLoading ? "Checking…" : "Test ICICI Connection"}
+          </Button>
           <Button onClick={() => save.mutate(form)} disabled={save.isPending}>{save.isPending ? "Saving…" : "Save"}</Button>
         </div>
+        {iciciDiagError && (
+          <div className="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive">{iciciDiagError}</div>
+        )}
+        {iciciDiag && (
+          <div className="rounded-lg border border-card-border bg-muted/30 p-3 space-y-1.5 text-xs font-mono">
+            <div className="flex justify-between"><span className="text-muted-foreground">Mode</span><span className={String(iciciDiag.iciciMode) === "production" ? "text-emerald-600 font-bold" : "text-amber-600 font-bold"}>{String(iciciDiag.iciciMode ?? "—")}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Merchant ID</span><span>{String(iciciDiag.merchantId || "— NOT SET —")}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Aggregator ID</span><span>{String(iciciDiag.aggregatorId || "— NOT SET —")}</span></div>
+            <div className="flex justify-between gap-2"><span className="text-muted-foreground shrink-0">Initiate URL</span><span className="break-all text-right">{String(iciciDiag.initiateSaleUrl ?? "—")}</span></div>
+            <div className="flex justify-between gap-2"><span className="text-muted-foreground shrink-0">Callback URL</span><span className="break-all text-right">{String(iciciDiag.callbackUrl ?? "—")}</span></div>
+            {!!iciciDiag.lastTransaction && (
+              <div className="pt-1.5 mt-1.5 border-t border-card-border">
+                <div className="text-muted-foreground mb-1">Last ICICI callback received:</div>
+                <pre className="whitespace-pre-wrap break-all">{JSON.stringify(iciciDiag.lastTransaction, null, 2)}</pre>
+              </div>
+            )}
+            <p className="text-[11px] text-muted-foreground pt-1.5 mt-1.5 border-t border-card-border font-sans">
+              If Merchant ID or Aggregator ID show "NOT SET", fill them in above and Save first. If Mode says "uat/test" but you expected production, check the server's NODE_ENV setting.
+            </p>
+          </div>
+        )}
       </div>
 
         <div>
