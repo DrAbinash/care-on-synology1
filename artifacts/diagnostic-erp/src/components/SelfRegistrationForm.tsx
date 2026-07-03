@@ -346,26 +346,29 @@ export const SelfRegistrationForm: React.FC<SelfRegistrationFormProps> = ({
         </select>
       </div>
 
-      <select
-        id="pd-gender"
-        className="input-soft"
-        required
-        value={gender || ""}
-        onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
-          const newGender = e.target.value as "male" | "female" | "other" | "";
-          setGender(newGender);
-          if (newGender && newGender !== "") {
-            setErrFields(f => f.filter(x => x !== "gender"));
-            setError("");
-          }
-        }}
-        style={{ borderColor: errFields.includes("gender") ? "red" : "" }}
-      >
-        <option value="">Select Gender *</option>
-        <option value="male">Male</option>
-        <option value="female">Female</option>
-        <option value="other">Other</option>
-      </select>
+      <div id="pd-gender" style={{ display: "flex", gap: "0.5rem" }}>
+        {GENDERS.map((g) => (
+          <button
+            key={g.value}
+            type="button"
+            onClick={() => handleGenderSelect(g.value as "male" | "female" | "other")}
+            style={{
+              flex: 1,
+              padding: "0.7rem 0.5rem",
+              borderRadius: "8px",
+              border: gender === g.value ? "2px solid #2563eb" : "1px solid " + (errFields.includes("gender") ? "red" : "#d1d5db"),
+              background: gender === g.value ? "#eff6ff" : "#fff",
+              color: gender === g.value ? "#1d4ed8" : "#374151",
+              fontWeight: gender === g.value ? 700 : 500,
+              fontSize: "0.9rem",
+              cursor: "pointer",
+              transition: "all 0.15s",
+            }}
+          >
+            {g.label}
+          </button>
+        ))}
+      </div>
 
       <input
         className="input-soft"
