@@ -36,12 +36,11 @@ export function RegisterPatientForm({
   onSubmit,
   isLoading = false,
 }: RegisterPatientFormProps) {
-  const isFormValid =
-    newPatient.firstName?.trim() &&
-    newPatient.lastName?.trim() &&
-    newPatient.phone?.trim() &&
-    newPatient.ageValue &&
-    !isLoading;
+  // Only a name is required. Single-word names like "Ramesh" fill firstName only
+  // and leave lastName empty — that must not block registration.
+  // Phone, age, and sex are strongly encouraged but not required to submit.
+  const hasName = !!(newPatient.firstName?.trim() || newPatient.lastName?.trim());
+  const isFormValid = hasName && !isLoading;
 
   return (
     <div className="space-y-3">
@@ -69,7 +68,7 @@ export function RegisterPatientForm({
 
         {/* Age with dropdown */}
         <div className="w-[120px] space-y-0.5">
-          <Label className="text-xs font-extrabold">Age *</Label>
+          <Label className="text-xs font-extrabold">Age</Label>
           <div className="flex gap-1">
             <Input
               type="number"
@@ -108,7 +107,7 @@ export function RegisterPatientForm({
 
         {/* Sex */}
         <div className="w-[90px] space-y-0.5">
-          <Label className="text-xs font-extrabold">Sex *</Label>
+          <Label className="text-xs font-extrabold">Sex</Label>
           <Select
             value={newPatient.gender}
             onValueChange={(v) =>
@@ -134,13 +133,13 @@ export function RegisterPatientForm({
 
       {/* LINE 2: Phone */}
       <div className="space-y-0.5">
-        <Label className="text-xs font-extrabold">Phone *</Label>
+        <Label className="text-xs font-extrabold">Phone <span className="text-[10px] font-normal text-slate-400">(optional)</span></Label>
         <Input
           value={newPatient.phone}
           onChange={(e) =>
             onPatientChange({ ...newPatient, phone: e.target.value })
           }
-          placeholder="10-digit mobile number"
+          placeholder="Mobile (optional for walk-in)"
           className="h-8 text-xs"
         />
       </div>
