@@ -130,6 +130,18 @@ const AI_DRAFT_STATUS_CONFIG: Record<string, { label: string; color: string }> =
   ERROR:   { label: "Error",   color: "bg-red-50 text-red-700 border-red-200" },
 };
 
+/**
+ * Usability: hours a non-final study has been waiting, computed purely from
+ * the existing createdAt timestamp already returned by the API. No new
+ * column, no DB change. Threshold is configurable (see Settings → General
+ * → Radiology → "Aging alert after (hours)"), default 4h.
+ */
+function agingHours(createdAt: string): number {
+  const created = new Date(createdAt).getTime();
+  if (Number.isNaN(created)) return 0;
+  return (Date.now() - created) / (1000 * 60 * 60);
+}
+
 function fmtDate(iso: string | null): string {
   if (!iso) return "\u2014";
   try {
@@ -815,6 +827,19 @@ export default function RadiologyWorklist() {
                         </td>
                         <td className="px-3 py-2.5 whitespace-nowrap">
                           <StatusBadge status={entry.status} deliveryStatus={entry.deliveryStatus} />
+                          {entry.status !== "REPORT_FINAL" && entry.status !== "DELIVERED" && (() => {
+                            const threshold = Number(pacsViewerSettings["radiology_aging_alert_hours"] ?? "4") || 4;
+                            const hrs = agingHours(entry.createdAt);
+                            if (hrs < threshold) return null;
+                            return (
+                              <span
+                                title={`Waiting ${hrs.toFixed(1)}h since received — configurable in Radiology Settings`}
+                                className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-semibold bg-red-50 text-red-700 border-red-200 dark:bg-red-950/30 dark:text-red-400 dark:border-red-900"
+                              >
+                                {hrs >= 24 ? `${Math.floor(hrs / 24)}d` : `${Math.floor(hrs)}h`} waiting
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td className="px-3 py-2.5 text-xs whitespace-nowrap max-w-[120px] truncate" title={entry.assignedRadiologist ?? ""}>
                           {entry.assignedRadiologist ?? "\u2014"}

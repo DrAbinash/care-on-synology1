@@ -1424,8 +1424,22 @@ function RadiologistCockpit() {
       });
     },
     onSuccess: () => {
-      toast({ title: "Report Finalized", description: "Report signed and finalized." });
       qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
+      // Usability: auto-advance to the next pending study so the radiologist
+      // doesn't have to return to the Worklist and click in again for every
+      // report. Never silent — always a visible toast; if there's nothing
+      // left, say so instead of leaving the toast generic.
+      const next = queueContext.next;
+      if (next) {
+        toast({
+          title: "Report Finalized",
+          description: `Moving to next patient: ${next.patientName} (${next.modality})`,
+        });
+        setActiveStudyId(next.id);
+        window.history.replaceState(null, "", `${window.location.pathname}?studyId=${next.id}`);
+      } else {
+        toast({ title: "Report Finalized", description: "Worklist is clear — no more pending studies." });
+      }
     },
     onError: (e: any) => toast({ title: "Finalization Failed", description: e.message, variant: "destructive" }),
   });
@@ -1438,6 +1452,20 @@ function RadiologistCockpit() {
       finalizeMutation.mutate();
     }
   };
+
+  // Usability: Ctrl/Cmd+Enter to Finalize & Sign — used dozens of times a
+  // day by a busy radiologist. Disabled while typing in a select/menu to
+  // avoid accidental triggers; safe no-op if no study is loaded.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && study && study.status !== "REPORT_FINAL" && !finalizeMutation.isPending) {
+        e.preventDefault();
+        handleFinalizeClick();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [study, finalizeMutation.isPending, completenessDetails.pct, qualityCheckIssues.length]);
 
   // AI Draft Generation
   const generateAiDraftMutation = useMutation({
@@ -1552,6 +1580,15 @@ function RadiologistCockpit() {
       );
     });
   }, [worklist, modalityFilter, searchQuery]);
+
+  // Usability: queue position + "next pending study" — reuses the worklist
+  // array already loaded for the sidebar, no new API calls, no DB changes.
+  const queueContext = useMemo(() => {
+    const pending = filteredWorklist.filter((w) => w.status !== "REPORT_FINAL");
+    const idx = activeStudyId ? pending.findIndex((w) => w.id === activeStudyId) : -1;
+    const next = idx >= 0 && idx < pending.length - 1 ? pending[idx + 1] : pending.find((w) => w.id !== activeStudyId) || null;
+    return { pendingTotal: pending.length, position: idx >= 0 ? idx + 1 : null, next };
+  }, [filteredWorklist, activeStudyId]);
 
   // Productivity Metrics
   const productivityStats = useMemo(() => {
@@ -1713,6 +1750,9 @@ function RadiologistCockpit() {
           <div>Today finalized: <span className="text-emerald-400 font-bold">{productivityStats.finalizedToday}</span></div>
           <div>Avg TAT: <span className="text-indigo-400 font-bold">{productivityStats.avgTurnaround}</span></div>
           <div>Pending queue: <span className="text-amber-400 font-bold">{productivityStats.pendingCount}</span></div>
+          {queueContext.position !== null && (
+            <div>Viewing: <span className="text-slate-200 font-bold">{queueContext.position} of {queueContext.pendingTotal}</span></div>
+          )}
         </div>
       </div>
 

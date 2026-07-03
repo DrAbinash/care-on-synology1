@@ -293,6 +293,17 @@ export default function RadiologySettingsCenter() {
               <Switch checked={svOn("report_final_lock")} disabled={!isAdmin}
                 onCheckedChange={(v) => upsertSetting.mutate({ key: "report_final_lock", value: String(v), category: "radiology" })} />
             </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Aging alert after (hours)</Label>
+              <Input
+                type="number" min={1} max={72} className="h-8 text-sm w-32"
+                placeholder="4"
+                defaultValue={sv("radiology_aging_alert_hours", "4")}
+                onBlur={(e) => upsertSetting.mutate({ key: "radiology_aging_alert_hours", value: e.target.value.trim() || "4", category: "radiology" })}
+                disabled={!isAdmin}
+              />
+              <p className="text-[11px] text-muted-foreground">A red "waiting" badge appears on Worklist studies that haven't been finalized within this many hours — helps reception spot studies stuck in the queue.</p>
+            </div>
           </div>
         </TabsContent>
 
