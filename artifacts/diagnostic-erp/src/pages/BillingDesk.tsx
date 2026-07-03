@@ -74,6 +74,7 @@ import {
   Settings2,
   ClipboardList,
   ChevronDown,
+  Monitor,
   CreditCard,
   Barcode,
   Save,
@@ -2710,7 +2711,25 @@ export default function BillingDesk() {
             {gatewayPaymentInfo && gatewayPaymentStatus === "pending" && (
               <>
                 {gatewayQrUrl ? (
-                  <img src={gatewayQrUrl} alt="Payment QR" className="w-40 h-40 mx-auto rounded-lg border" />
+                  <>
+                    <img src={gatewayQrUrl} alt="Payment QR" className="w-40 h-40 mx-auto rounded-lg border" />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const qrData = gatewayPaymentInfo.tranCtx || gatewayPaymentInfo.redirectUrl;
+                        const params = new URLSearchParams({
+                          qrData,
+                          amount: String(gatewayPaymentInfo.amount),
+                          txnRef: gatewayPaymentInfo.txnRef,
+                          patientName: selectedPatient ? `${selectedPatient.firstName} ${selectedPatient.lastName ?? ""}`.trim() : "",
+                        });
+                        window.open(`/display/payment-qr?${params.toString()}`, "paymentQrDisplay", "width=900,height=900");
+                      }}
+                      className="mt-2 text-xs font-semibold text-[#2563eb] hover:underline flex items-center gap-1 mx-auto"
+                    >
+                      <Monitor size={13} /> Open on Second Screen
+                    </button>
+                  </>
                 ) : (
                   <a
                     href={gatewayPaymentInfo.redirectUrl}
