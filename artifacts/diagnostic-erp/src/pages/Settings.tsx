@@ -6418,7 +6418,15 @@ function QueueSettingsTab() {
   }, [data]);
 
   const save = useMutation({
-    mutationFn: (body: OnlineBookingSettings) => api.put("/api/clinic-settings", body),
+    mutationFn: (body: OnlineBookingSettings) => {
+      // Only send queue-related fields to avoid validation errors on unrelated fields
+      const payload = {
+        queueVipMode: body.queueVipMode,
+        queuePrivacyMode: body.queuePrivacyMode,
+        queueEstimatedWaitPerPatient: body.queueEstimatedWaitPerPatient,
+      };
+      return api.put("/api/clinic-settings", payload);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["clinic-settings"] });
       toast({ title: "Queue settings saved successfully" });

@@ -523,7 +523,14 @@ clinicSettingsRouter.put("/", async (req, res) => {
       res.status(400).json({ error: "quickTestIds must be valid JSON" });
       return;
     }
+  } else if (typeof update.quickTestIds === "undefined") {
+    // If quickTestIds is undefined (which happens when tabs send only their own fields),
+    // don't validate it — let it pass through so it won't be overwritten to invalid state
+  } else {
+    // Gracefully handle any other type by ignoring it
+    delete (update as any).quickTestIds;
   }
+
   try {
     const updateResult = await db
       .update(clinicSettingsTable)
