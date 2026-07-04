@@ -267,6 +267,12 @@ async function runStartupMigrations(): Promise<void> {
       -- have the exact placeholder text, a no-op once corrected.
       UPDATE clinic_settings SET gstin = NULL WHERE gstin = 'GSTIN_NOT_SET';
       UPDATE clinic_settings SET razorpay_key_id = NULL WHERE razorpay_key_id = 'RZP_KEY_NOT_SET';
+      -- These columns were originally created NOT NULL, but the app stores
+      -- NULL to mean "not configured" (see the two UPDATEs above). Relax
+      -- the constraint so settings saves with GST/Razorpay left blank
+      -- don't crash with a not-null violation.
+      ALTER TABLE clinic_settings ALTER COLUMN gstin DROP NOT NULL;
+      ALTER TABLE clinic_settings ALTER COLUMN razorpay_key_id DROP NOT NULL;
       CREATE TABLE IF NOT EXISTS day_closures (
         id SERIAL PRIMARY KEY,
         closure_date TEXT NOT NULL,
