@@ -1409,25 +1409,22 @@ export default function BillingDesk() {
     onError: () => toast({ title: "Failed to save quick doctor", variant: "destructive" }),
   });
   function assignQuickDoctorSlot(slotIdx: number, doctorId: number | null) {
-    const latest = queryClient.getQueryData<{ quickDoctorIds?: string }>(["clinic-settings"]);
-    let current: (number | null)[];
-    try {
-      const arr = JSON.parse(latest?.quickDoctorIds ?? "[null,null,null,null,null,null,null,null]");
-      current = Array.isArray(arr)
-        ? arr.slice(0, 8).map((v: unknown) => (typeof v === "number" ? v : null))
-        : [null, null, null, null, null, null, null, null];
-      while (current.length < 8) current.push(null);
-    } catch {
-      current = [null, null, null, null, null, null, null, null];
-    }
-    const next = [...current];
-    next[slotIdx] = doctorId;
-    // Update local state immediately for a snappy UI; the server round-trip
-    // (and the useEffect that syncs clinic?.quickDoctorIds back down) keeps
-    // it correct afterwards.
-    setQuickDoctorIds(next);
-    localStorage.setItem("billingDesk:quickDoctors", JSON.stringify(next));
-    saveQuickDoctorsMut.mutate(next);
+    // BUG FIX: previously rebuilt `current` from queryClient.getQueryData
+    // (the last server-confirmed snapshot). Picking two slots quickly — before
+    // the first slot's PUT + cache-invalidation round-trip finished — meant
+    // the second call rebuilt from a snapshot that didn't have the first
+    // slot's selection yet, so the PUT for slot 2 silently overwrote slot 1
+    // on the server. Fixing by basing `next` on the current in-memory
+    // quickDoctorIds state instead, which already reflects every optimistic
+    // update made so far in this session, avoiding the stale-read race.
+    setQuickDoctorIds((current) => {
+      const next = [...current];
+      while (next.length < 8) next.push(null);
+      next[slotIdx] = doctorId;
+      localStorage.setItem("billingDesk:quickDoctors", JSON.stringify(next));
+      saveQuickDoctorsMut.mutate(next);
+      return next;
+    });
   }
 
   function addPackage(pkg: Pkg) {
