@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
 import { SummaryExportToolbar } from "@/components/SummaryExport";
 import type { ExportConfig, ExportSection, ExportTable } from "@/components/SummaryExport";
+import { SummaryDrilldownModal, type DrilldownType } from "@/components/SummaryDrilldownModal";
 import {
   IndianRupee, Wallet, Banknote, Smartphone, TrendingDown, RotateCcw,
   XCircle, FileEdit, Clock, Calendar, RefreshCw, Tag, CheckCircle2,
@@ -478,19 +479,46 @@ function DrawerStatusCard({ status }: { status: DrawerStatus }) {
 
 // ─── Small Components ─────────────────────────────────────────────────────────
 
-function MiniKpi({ icon: Icon, label, value, sub, iconBg, border, tint }: {
+// ─── Card color themes — soft, professional pastel backgrounds. Every card
+// uses the exact same padding/radius/shadow; only the theme colors differ.
+// Mapping (per spec): Cash/collected money -> green, Digital -> teal,
+// Expenses -> red, Outstanding -> orange, Collectible -> blue,
+// Discounts -> purple, Cancellations -> pink, everything else -> slate/indigo.
+const KPI_THEMES = {
+  green:  { bg: "bg-emerald-50 dark:bg-emerald-950/30",  ring: "ring-emerald-100 dark:ring-emerald-900/40",  icon: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300", value: "text-emerald-950 dark:text-emerald-100" },
+  teal:   { bg: "bg-teal-50 dark:bg-teal-950/30",        ring: "ring-teal-100 dark:ring-teal-900/40",        icon: "bg-teal-100 text-teal-700 dark:bg-teal-900/50 dark:text-teal-300",       value: "text-teal-950 dark:text-teal-100" },
+  red:    { bg: "bg-rose-50 dark:bg-rose-950/30",        ring: "ring-rose-100 dark:ring-rose-900/40",        icon: "bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300",       value: "text-rose-950 dark:text-rose-100" },
+  orange: { bg: "bg-orange-50 dark:bg-orange-950/30",    ring: "ring-orange-100 dark:ring-orange-900/40",    icon: "bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300", value: "text-orange-950 dark:text-orange-100" },
+  blue:   { bg: "bg-blue-50 dark:bg-blue-950/30",        ring: "ring-blue-100 dark:ring-blue-900/40",        icon: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",       value: "text-blue-950 dark:text-blue-100" },
+  purple: { bg: "bg-purple-50 dark:bg-purple-950/30",    ring: "ring-purple-100 dark:ring-purple-900/40",    icon: "bg-purple-100 text-purple-700 dark:bg-purple-900/50 dark:text-purple-300", value: "text-purple-950 dark:text-purple-100" },
+  pink:   { bg: "bg-pink-50 dark:bg-pink-950/30",        ring: "ring-pink-100 dark:ring-pink-900/40",        icon: "bg-pink-100 text-pink-700 dark:bg-pink-900/50 dark:text-pink-300",       value: "text-pink-950 dark:text-pink-100" },
+  slate:  { bg: "bg-slate-50 dark:bg-slate-800/40",      ring: "ring-slate-100 dark:ring-slate-700/40",      icon: "bg-slate-100 text-slate-700 dark:bg-slate-700/60 dark:text-slate-300",   value: "text-slate-950 dark:text-slate-100" },
+  indigo: { bg: "bg-indigo-50 dark:bg-indigo-950/30",    ring: "ring-indigo-100 dark:ring-indigo-900/40",    icon: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300", value: "text-indigo-950 dark:text-indigo-100" },
+} as const;
+type KpiTheme = keyof typeof KPI_THEMES;
+
+function MiniKpi({ icon: Icon, label, value, sub, theme, onClick }: {
   icon: React.ElementType; label: string; value: string | number; sub?: string;
-  iconBg: string; border: string; tint?: string;
+  theme: KpiTheme; onClick?: () => void;
 }) {
+  const t = KPI_THEMES[theme];
   return (
-    <div className={`${tint ?? "bg-white dark:bg-card"} border border-gray-200 dark:border-card-border rounded-xl p-4 shadow-sm border-l-4 ${border}`}>
+    <div
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (e) => { if (e.key === "Enter" || e.key === " ") onClick(); } : undefined}
+      className={`h-full flex flex-col justify-between ${t.bg} ring-1 ${t.ring} rounded-xl p-4 shadow-sm transition-all ${
+        onClick ? "cursor-pointer hover:shadow-md hover:-translate-y-0.5 active:translate-y-0" : ""
+      }`}
+    >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
-          <p className="text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider leading-tight">{label}</p>
-          <p className="mt-1.5 text-xl font-bold text-gray-900 dark:text-foreground leading-none">{value}</p>
-          {sub && <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">{sub}</p>}
+          <p className="text-[11px] font-medium text-gray-600 dark:text-gray-400 uppercase tracking-wider leading-tight">{label}</p>
+          <p className={`mt-1.5 text-xl font-bold leading-none tabular-nums ${t.value}`}>{value}</p>
+          {sub && <p className="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400 leading-snug">{sub}</p>}
         </div>
-        <div className={`p-2 rounded-lg flex-shrink-0 ${iconBg}`}>
+        <div className={`p-2 rounded-lg flex-shrink-0 ${t.icon}`}>
           <Icon size={15} />
         </div>
       </div>
@@ -498,24 +526,34 @@ function MiniKpi({ icon: Icon, label, value, sub, iconBg, border, tint }: {
   );
 }
 
-// ─── Solid-filled KPI — reserved for the 1-2 numbers that matter most at a
-// glance (e.g. Expected Physical Cash, Total Expenses). Deliberately louder
-// than MiniKpi so the eye lands here first. ────────────────────────────────
-function MiniKpiFilled({ icon: Icon, label, value, sub, solid }: {
+// ─── Solid-filled KPI — reserved for the numbers that matter most at a
+// glance (Expected Physical Cash, Total Expenses, Net Digital Collection).
+// Deliberately louder than MiniKpi so the eye lands here first, with the
+// exact same padding/radius/shadow discipline as every other card. ────────
+function MiniKpiFilled({ icon: Icon, label, value, sub, solid, onClick }: {
   icon: React.ElementType; label: string; value: string | number; sub?: string;
-  solid: "green" | "red";
+  solid: "green" | "red" | "teal"; onClick?: () => void;
 }) {
   const styles = {
-    green: "bg-gradient-to-br from-emerald-600 to-emerald-700 text-white",
-    red:   "bg-gradient-to-br from-rose-600 to-rose-700 text-white",
+    green: "bg-gradient-to-br from-emerald-600 to-emerald-700",
+    red:   "bg-gradient-to-br from-rose-600 to-rose-700",
+    teal:  "bg-gradient-to-br from-teal-600 to-cyan-700",
   }[solid];
   return (
-    <div className={`${styles} rounded-xl p-4 shadow-md`}>
+    <div
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (e) => { if (e.key === "Enter" || e.key === " ") onClick(); } : undefined}
+      className={`h-full flex flex-col justify-between ${styles} text-white rounded-xl p-4 shadow-md transition-all ${
+        onClick ? "cursor-pointer hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0" : ""
+      }`}
+    >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
-          <p className="text-xs font-bold uppercase tracking-wider leading-tight text-white/85">{label}</p>
+          <p className="text-[11px] font-medium uppercase tracking-wider leading-tight text-white/85">{label}</p>
           <p className="mt-1.5 text-2xl font-extrabold leading-none tabular-nums">{value}</p>
-          {sub && <p className="mt-1 text-xs text-white/80">{sub}</p>}
+          {sub && <p className="mt-1.5 text-[11px] text-white/80 leading-snug">{sub}</p>}
         </div>
         <div className="p-2 rounded-lg flex-shrink-0 bg-white/20">
           <Icon size={16} />
@@ -1463,6 +1501,7 @@ export default function MyDailySummary() {
     ? (savedFilter !== null ? savedFilter : "")
     : "";
   const [staffFilter, setStaffFilter] = useState(initialFilter);
+  const [drilldownType, setDrilldownType] = useState<DrilldownType | null>(null);
 
   function saveStaffFilter(name: string) {
     setStaffFilter(name);
@@ -1908,47 +1947,39 @@ export default function MyDailySummary() {
             const avgBillValue = totalBillsCount > 0 ? s.grossBilledIncludingCancelled / totalBillsCount : 0;
             return (
               <>
-                {/* Row 1 — the money flow, left to right, exactly as it's calculated */}
-                <div className="flex flex-wrap items-stretch gap-2">
-                  <div className="flex-1 min-w-[150px]">
-                    <MiniKpi icon={IndianRupee} label="Total Bills Generated" value={fmt(s.grossBilledIncludingCancelled)} sub={`${totalBillsCount} bills`} iconBg="bg-emerald-100 text-emerald-700" border="border-l-emerald-500" tint="bg-emerald-50/40 dark:bg-card" />
-                  </div>
+                {/* Row 1 — the money flow, left to right, exactly as it's calculated.
+                    CSS Grid with explicit 1fr columns for every card (equal width
+                    guaranteed) and auto-width columns for the operator badges
+                    between them — the row always fills 100% of the available
+                    width with no leftover gaps, on any screen size. */}
+                <div
+                  className="grid gap-1.5 items-stretch"
+                  style={{ gridTemplateColumns: "repeat(7, minmax(0, 1fr) auto) minmax(0, 1.3fr)" }}
+                >
+                  <MiniKpi icon={IndianRupee} label="Total Bills Generated" value={fmt(s.grossBilledIncludingCancelled)} sub={`${totalBillsCount} bills`} theme="indigo" onClick={() => setDrilldownType("totalBills")} />
                   <FormulaOp op="+" />
-                  <div className="flex-1 min-w-[150px]">
-                    <MiniKpi icon={Receipt} label="Dues Collected" value={fmt(s.duesCollectedTotal)} sub={`${s.duesBillsCount} old bill${s.duesBillsCount !== 1 ? "s" : ""} settled`} iconBg="bg-teal-100 text-teal-700" border="border-l-teal-500" tint="bg-teal-50/40 dark:bg-card" />
-                  </div>
+                  <MiniKpi icon={Receipt} label="Dues Collected" value={fmt(s.duesCollectedTotal)} sub={`${s.duesBillsCount} old bill${s.duesBillsCount !== 1 ? "s" : ""} settled`} theme="green" onClick={() => setDrilldownType("duesCollected")} />
                   <FormulaOp op="−" />
-                  <div className="flex-1 min-w-[150px]">
-                    <MiniKpi icon={RotateCcw} label="Cancellations" value={fmt(s.cancelledAmount)} sub={`${s.cancellationCount} bill${s.cancellationCount !== 1 ? "s" : ""} cancelled`} iconBg="bg-rose-100 text-rose-700" border="border-l-rose-500" tint="bg-rose-50/40 dark:bg-card" />
-                  </div>
+                  <MiniKpi icon={RotateCcw} label="Cancellations" value={fmt(s.cancelledAmount)} sub={`${s.cancellationCount} bill${s.cancellationCount !== 1 ? "s" : ""} cancelled`} theme="pink" onClick={() => setDrilldownType("cancellations")} />
                   <FormulaOp op="−" />
-                  <div className="flex-1 min-w-[150px]">
-                    <MiniKpi icon={Wallet} label="Outstanding / Dues" value={fmt(s.outstanding)} sub="Unpaid balance" iconBg="bg-amber-100 text-amber-700" border="border-l-amber-500" tint="bg-amber-50/40 dark:bg-card" />
-                  </div>
+                  <MiniKpi icon={Wallet} label="Outstanding / Dues" value={fmt(s.outstanding)} sub="Unpaid balance" theme="orange" onClick={() => setDrilldownType("outstandingDues")} />
                   <FormulaOp op="=" />
-                  <div className="flex-1 min-w-[150px]">
-                    <MiniKpi icon={Calculator} label="Collectible Amount" value={fmt(collectible)} sub="What should be in hand + bank" iconBg="bg-sky-100 text-sky-700" border="border-l-sky-500" tint="bg-sky-50/40 dark:bg-card" />
-                  </div>
+                  <MiniKpi icon={Calculator} label="Collectible Amount" value={fmt(collectible)} sub="What should be in hand + bank" theme="blue" onClick={() => setDrilldownType("collectibleAmount")} />
                   <FormulaOp op="−" />
-                  <div className="flex-1 min-w-[150px]">
-                    <MiniKpi icon={Smartphone} label="Net Digital Collection" value={fmt(s.netDigital)} sub={`Gross ${fmt(s.digitalCollection)} − Refunded ${fmt(s.digitalRefunded)}`} iconBg="bg-violet-100 text-violet-700" border="border-l-violet-500" tint="bg-violet-50/40 dark:bg-card" />
-                  </div>
+                  <MiniKpiFilled icon={Smartphone} label="Net Digital Collection" value={fmt(s.netDigital)} sub={`Gross ${fmt(s.digitalCollection)} − Refunded ${fmt(s.digitalRefunded)}`} solid="teal" onClick={() => setDrilldownType("netDigitalCollection")} />
                   <FormulaOp op="−" />
-                  <div className="flex-1 min-w-[150px]">
-                    <MiniKpiFilled icon={TrendingDown} label="Total Expenses" value={fmt(s.totalExpenses)} sub={`Cash ${fmt(s.cashExpenses)} / Digital ${fmt(s.digitalExpenses)}`} solid="red" />
-                  </div>
+                  <MiniKpiFilled icon={TrendingDown} label="Total Expenses" value={fmt(s.totalExpenses)} sub={`Cash ${fmt(s.cashExpenses)} / Digital ${fmt(s.digitalExpenses)}`} solid="red" onClick={() => setDrilldownType("totalExpenses")} />
                   <FormulaOp op="=" />
-                  <div className="flex-[1.3] min-w-[170px]">
-                    <MiniKpiFilled icon={Banknote} label="Expected Physical Cash" value={fmt(s.physicalCashInHand)} sub={`Cash ${fmt(s.cashCollection)} − Cash Exp ${fmt(s.cashExpenses)}`} solid="green" />
-                  </div>
+                  <MiniKpiFilled icon={Banknote} label="Expected Physical Cash" value={fmt(s.physicalCashInHand)} sub={`Cash ${fmt(s.cashCollection)} − Cash Exp ${fmt(s.cashExpenses)}`} solid="green" onClick={() => setDrilldownType("expectedPhysicalCash")} />
                 </div>
 
-                {/* Row 2 — supplementary metrics, evenly filled, no empty cells */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <MiniKpi icon={CheckCircle2} label="Total Received" value={fmt(s.totalReceived)} sub="All payments collected" iconBg="bg-green-100 text-green-700" border="border-l-green-500" />
-                  <MiniKpi icon={Tag} label="Discounts Given" value={fmt(s.discountsGiven)} sub={s.grossBilling > 0 ? `${((s.discountsGiven / s.grossBilling) * 100).toFixed(1)}% of billing` : ""} iconBg="bg-slate-100 text-slate-700" border="border-l-slate-400" />
-                  <MiniKpi icon={XCircle} label="Cancellation Count" value={String(s.cancellationCount)} sub={s.cancellationCount > 0 ? `₹${s.cancelledAmount.toFixed(0)} written off` : "None"} iconBg="bg-gray-100 text-gray-700" border="border-l-gray-400" />
-                  <MiniKpi icon={IndianRupee} label="Average Bill Value" value={fmt(avgBillValue)} sub={`Across ${totalBillsCount} bill${totalBillsCount !== 1 ? "s" : ""}`} iconBg="bg-indigo-100 text-indigo-700" border="border-l-indigo-500" />
+                {/* Row 2 — supplementary metrics, evenly filled, no empty cells.
+                    CSS Grid with equal columns — same guarantee as Row 1. */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 items-stretch">
+                  <MiniKpi icon={CheckCircle2} label="Total Received" value={fmt(s.totalReceived)} sub="All payments collected" theme="green" onClick={() => setDrilldownType("totalReceived")} />
+                  <MiniKpi icon={Tag} label="Discounts Given" value={fmt(s.discountsGiven)} sub={s.grossBilling > 0 ? `${((s.discountsGiven / s.grossBilling) * 100).toFixed(1)}% of billing` : ""} theme="purple" onClick={() => setDrilldownType("discountsGiven")} />
+                  <MiniKpi icon={XCircle} label="Cancellation Count" value={String(s.cancellationCount)} sub={s.cancellationCount > 0 ? `₹${s.cancelledAmount.toFixed(0)} written off` : "None"} theme="pink" onClick={() => setDrilldownType("cancellationCount")} />
+                  <MiniKpi icon={IndianRupee} label="Average Bill Value" value={fmt(avgBillValue)} sub={`Across ${totalBillsCount} bill${totalBillsCount !== 1 ? "s" : ""}`} theme="slate" onClick={() => setDrilldownType("averageBillValue")} />
                 </div>
               </>
             );
@@ -2431,6 +2462,15 @@ export default function MyDailySummary() {
           <p className="text-sm text-gray-500 mt-1">No bills or payments for {data.staffName} in this period.</p>
         </div>
       )}
+
+      {/* Drill-down modal — reuses this page's own date range + staff filter */}
+      <SummaryDrilldownModal
+        type={drilldownType}
+        from={from}
+        to={to}
+        staffName={isSuperAdmin && staffFilter.trim() ? staffFilter.trim() : null}
+        onClose={() => setDrilldownType(null)}
+      />
     </div>
   );
 }
