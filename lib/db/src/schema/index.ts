@@ -106,6 +106,7 @@ export * from "./smartRadiology";
 export * from "./risMonitoring";
 export * from "./radiologyWorkflow";
 export * from "./auditLogs";
+export * from "./paymentGatewayDiagnostics";
 export * from "./rolePermissions";
 export * from "./uploadFiles";
 export * from "./radiologySnippets";

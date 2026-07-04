@@ -1,7 +1,7 @@
 import { ERP_SESSION_KEY, type StaffSession, clearStaffSession } from "./staffSession";
 import { executeDraftRescue } from "./draftRescue";
 
-function getStaffToken(): string | null {
+export function getStaffToken(): string | null {
   try {
     const raw = typeof window !== "undefined" ? window.localStorage.getItem(ERP_SESSION_KEY) : null;
     if (!raw) return null;

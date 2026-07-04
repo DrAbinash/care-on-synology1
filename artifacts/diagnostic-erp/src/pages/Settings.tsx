@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, fetchApi } from "@/lib/fetchApi";
+import { api, fetchApi, getStaffToken } from "@/lib/fetchApi";
 import { useSuperAdmin, getSuperAdminToken } from "@/hooks/useSuperAdmin";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -2061,6 +2061,10 @@ function OnlineBookingTab() {
   const [iciciDiag, setIciciDiag] = useState<Record<string, unknown> | null>(null);
   const [iciciDiagLoading, setIciciDiagLoading] = useState(false);
   const [iciciDiagError, setIciciDiagError] = useState("");
+  const [iciciHistory, setIciciHistory] = useState<Array<Record<string, unknown>> | null>(null);
+  const [iciciHistoryLoading, setIciciHistoryLoading] = useState(false);
+  const [iciciSelectedAttempt, setIciciSelectedAttempt] = useState<Record<string, unknown> | null>(null);
+  const [iciciExportLoading, setIciciExportLoading] = useState(false);
   const { data: bookingsData, isLoading: isLoadingBookings } = useQuery<{ bookings: any[] }>({
     queryKey: ["online-bookings-logs"],
     queryFn: () => api.get("/api/online-bookings?limit=100"),
@@ -2553,7 +2557,7 @@ function OnlineBookingTab() {
             placeholder="e.g. A100000000007164"
           />
         </div>
-        <div className="flex justify-end gap-2 pt-2 border-t border-card-border">
+        <div className="flex flex-wrap justify-end gap-2 pt-2 border-t border-card-border">
           <Button
             variant="outline"
             onClick={async () => {
@@ -2573,6 +2577,51 @@ function OnlineBookingTab() {
           >
             {iciciDiagLoading ? "Checking…" : "Test ICICI Connection"}
           </Button>
+          <Button
+            variant="outline"
+            onClick={async () => {
+              setIciciHistoryLoading(true);
+              setIciciSelectedAttempt(null);
+              try {
+                const result = await api.get<{ attempts: Array<Record<string, unknown>> }>("/api/public/booking/icici-diagnostics/history");
+                setIciciHistory(result.attempts || []);
+              } catch (err) {
+                setIciciDiagError(err instanceof Error ? err.message : "Could not load payment history");
+              } finally {
+                setIciciHistoryLoading(false);
+              }
+            }}
+            disabled={iciciHistoryLoading}
+          >
+            {iciciHistoryLoading ? "Loading…" : iciciHistory ? "Refresh History" : "View Last 50 Attempts"}
+          </Button>
+          <Button
+            variant="outline"
+            disabled={iciciExportLoading}
+            onClick={async () => {
+              setIciciExportLoading(true);
+              try {
+                const token = getStaffToken();
+                const resp = await fetch("/api/public/booking/icici-diagnostics/export", {
+                  headers: token ? { Authorization: `Bearer ${token}` } : {},
+                });
+                if (!resp.ok) throw new Error(`Export failed (HTTP ${resp.status})`);
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `icici-diagnostics-${new Date().toISOString().slice(0, 10)}.zip`;
+                a.click();
+                URL.revokeObjectURL(url);
+              } catch (err) {
+                setIciciDiagError(err instanceof Error ? err.message : "Could not export diagnostic bundle");
+              } finally {
+                setIciciExportLoading(false);
+              }
+            }}
+          >
+            {iciciExportLoading ? "Building ZIP…" : "Export Diagnostic Bundle"}
+          </Button>
           <Button onClick={() => save.mutate(form)} disabled={save.isPending}>{save.isPending ? "Saving…" : "Save"}</Button>
         </div>
         {iciciDiagError && (
@@ -2580,11 +2629,17 @@ function OnlineBookingTab() {
         )}
         {iciciDiag && (
           <div className="rounded-lg border border-card-border bg-muted/30 p-3 space-y-1.5 text-xs font-mono">
-            <div className="flex justify-between"><span className="text-muted-foreground">Mode</span><span className={String(iciciDiag.iciciMode) === "production" ? "text-emerald-600 font-bold" : "text-amber-600 font-bold"}>{String(iciciDiag.iciciMode ?? "—")}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Environment</span><span className={String(iciciDiag.environment) === "production" ? "text-emerald-600 font-bold" : "text-amber-600 font-bold"}>{String(iciciDiag.environment ?? "—")}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">Merchant ID</span><span>{String(iciciDiag.merchantId || "— NOT SET —")}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">Aggregator ID</span><span>{String(iciciDiag.aggregatorId || "— NOT SET —")}</span></div>
+            <div className="flex justify-between gap-2"><span className="text-muted-foreground shrink-0">Base URL</span><span className="break-all text-right">{String(iciciDiag.baseUrl ?? "—")}</span></div>
             <div className="flex justify-between gap-2"><span className="text-muted-foreground shrink-0">Initiate URL</span><span className="break-all text-right">{String(iciciDiag.initiateSaleUrl ?? "—")}</span></div>
+            <div className="flex justify-between gap-2"><span className="text-muted-foreground shrink-0">Command URL</span><span className="break-all text-right">{String(iciciDiag.commandUrl ?? "—")}</span></div>
             <div className="flex justify-between gap-2"><span className="text-muted-foreground shrink-0">Callback URL</span><span className="break-all text-right">{String(iciciDiag.callbackUrl ?? "—")}</span></div>
+            <div className="flex justify-between gap-2"><span className="text-muted-foreground shrink-0">Public Base URL</span><span className="break-all text-right">{String(iciciDiag.publicBaseUrl ?? iciciDiag.resolvedPublicBaseUrl ?? "—")}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Build / Commit</span><span>{String(iciciDiag.dockerImageVersion ?? "—")} · {String(iciciDiag.gitCommit ?? "—")}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Last successful payment</span><span className="text-emerald-600">{iciciDiag.lastSuccessfulPaymentAt ? new Date(String(iciciDiag.lastSuccessfulPaymentAt)).toLocaleString() : "— none recorded —"}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Last failed payment</span><span className="text-destructive">{iciciDiag.lastFailedPaymentAt ? new Date(String(iciciDiag.lastFailedPaymentAt)).toLocaleString() : "— none recorded —"}</span></div>
             {!!iciciDiag.lastTransaction && (
               <div className="pt-1.5 mt-1.5 border-t border-card-border">
                 <div className="text-muted-foreground mb-1">Last ICICI callback received:</div>
@@ -2592,8 +2647,68 @@ function OnlineBookingTab() {
               </div>
             )}
             <p className="text-[11px] text-muted-foreground pt-1.5 mt-1.5 border-t border-card-border font-sans">
-              If Merchant ID or Aggregator ID show "NOT SET", fill them in above and Save first. If Mode says "uat/test" but you expected production, check the server's NODE_ENV setting.
+              If Merchant ID or Aggregator ID show "NOT SET", fill them in above and Save first. If Environment says "uat/test" but you expected production, check the server's NODE_ENV setting. A failure on ICICI's own payment page (e.g. "Domain Validation Fail") happens before ICICI redirects back to us — it will not show here as a callback, but it IS captured below in "Last 50 Attempts" and in the exported bundle.
             </p>
+          </div>
+        )}
+        {iciciHistory && (
+          <div className="rounded-lg border border-card-border bg-muted/30 p-3 space-y-2 text-xs">
+            <div className="font-bold font-sans">Last {iciciHistory.length} payment attempts (newest first)</div>
+            {iciciHistory.length === 0 ? (
+              <p className="text-muted-foreground font-sans">No attempts recorded yet.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full font-mono text-[11px]">
+                  <thead>
+                    <tr className="text-left text-muted-foreground border-b border-card-border">
+                      <th className="py-1 pr-2">Time</th>
+                      <th className="py-1 pr-2">Stage</th>
+                      <th className="py-1 pr-2">Status</th>
+                      <th className="py-1 pr-2">Txn Ref</th>
+                      <th className="py-1 pr-2">Amount</th>
+                      <th className="py-1 pr-2">Response</th>
+                      <th className="py-1 pr-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {iciciHistory.map((row) => (
+                      <tr key={String(row.id)} className="border-b border-card-border/50">
+                        <td className="py-1 pr-2 whitespace-nowrap">{new Date(String(row.createdAt)).toLocaleString()}</td>
+                        <td className="py-1 pr-2">{String(row.stage)}</td>
+                        <td className={`py-1 pr-2 font-bold ${row.success ? "text-emerald-600" : "text-destructive"}`}>{row.success ? "OK" : "FAILED"}</td>
+                        <td className="py-1 pr-2">{String(row.merchantTxnNo || row.bookingRef || "—")}</td>
+                        <td className="py-1 pr-2">{row.amount ? `₹${row.amount}` : "—"}</td>
+                        <td className="py-1 pr-2 max-w-[160px] truncate">{String(row.responseCode || row.responseMessage || "—")}</td>
+                        <td className="py-1 pr-2">
+                          <button
+                            className="text-primary underline font-sans"
+                            onClick={async () => {
+                              try {
+                                const detail = await api.get<Record<string, unknown>>(`/api/public/booking/icici-diagnostics/history/${row.id}`);
+                                setIciciSelectedAttempt(detail);
+                              } catch (err) {
+                                setIciciDiagError(err instanceof Error ? err.message : "Could not load attempt detail");
+                              }
+                            }}
+                          >
+                            View
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {iciciSelectedAttempt && (
+              <div className="mt-2 pt-2 border-t border-card-border">
+                <div className="flex justify-between items-center mb-1 font-sans">
+                  <span className="font-bold">Attempt #{String(iciciSelectedAttempt.id)} — raw request/response</span>
+                  <button className="text-muted-foreground underline" onClick={() => setIciciSelectedAttempt(null)}>Close</button>
+                </div>
+                <pre className="whitespace-pre-wrap break-all font-mono text-[11px] bg-background rounded p-2 max-h-96 overflow-y-auto">{JSON.stringify(iciciSelectedAttempt, null, 2)}</pre>
+              </div>
+            )}
           </div>
         )}
       </div>
