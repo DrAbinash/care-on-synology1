@@ -112,8 +112,13 @@ services:
       GIT_COMMIT: ${GIT_COMMIT:-unknown}
       GIT_BRANCH: ${GIT_BRANCH:-unknown}
     volumes:
-      # Mount scripts read-only so the verifier can find them
-      - ./scripts:/repo/scripts:ro
+      # NOTE: scripts/ is intentionally NOT bind-mounted here. scripts/ is its
+      # own pnpm workspace package with dependencies (e.g. pg) installed into
+      # scripts/node_modules at image build time. Bind-mounting the host copy
+      # over it would replace that built node_modules with the bare host
+      # folder (no node_modules on host — deps only exist inside the image),
+      # causing "Cannot find module 'pg'". The script is already baked into
+      # the image from the build context; no mount needed.
       # Mount migration SQL files read-only
       - ./lib/db/drizzle:/repo/lib/db/drizzle:ro
       - ./migrations:/repo/migrations:ro
