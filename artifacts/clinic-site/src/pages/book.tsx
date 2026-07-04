@@ -319,6 +319,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
+        ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
       });
       submitPayuForm(res.payuUrl, res.fields);
     } catch (e: unknown) {
@@ -334,6 +335,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
+        ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
       });
       window.location.href = res.redirectUrl;
     } catch (e: unknown) {
@@ -349,6 +351,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
+        ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
       });
       window.location.href = res.redirectUrl;
     } catch (e: unknown) {
@@ -367,6 +370,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
+        ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
       });
 
       const RZP = (window as unknown as { Razorpay: new (opts: Record<string, unknown>) => { open(): void } }).Razorpay;
@@ -420,6 +424,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
+        ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
       });
       setSuccessRef(res.bookingRef);
       window.location.href = res.redirectUrl;
@@ -437,6 +442,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
+        ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
       });
       setQrBookingRef(res.bookingRef);
       setQrAmount(res.amount);
