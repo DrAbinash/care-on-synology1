@@ -9,6 +9,7 @@ import { Link } from "wouter";
 import { SummaryExportToolbar } from "@/components/SummaryExport";
 import type { ExportConfig, ExportSection, ExportTable } from "@/components/SummaryExport";
 import { SummaryDrilldownModal, type DrilldownType } from "@/components/SummaryDrilldownModal";
+import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import {
   IndianRupee, Wallet, Banknote, Smartphone, TrendingDown, RotateCcw,
   XCircle, FileEdit, Clock, Calendar, RefreshCw, Tag, CheckCircle2,
@@ -1529,7 +1530,7 @@ export default function MyDailySummary() {
   const { data, isLoading, refetch } = useQuery<MyDailySummaryData>({
     queryKey: ["my-daily-summary", from, to, staffFilter],
     queryFn: () => api.get(`/api/dashboard/my-daily-summary?${queryParams}`),
-    staleTime: 2 * 60_000,
+    ...FINANCIAL_QUERY_OPTIONS,
   });
 
   // All staff names from the registered users table — always visible regardless of date range.
@@ -1539,8 +1540,7 @@ export default function MyDailySummary() {
   const drawerQ = useQuery<DrawerStatus>({
     queryKey: ["my-drawer-status"],
     queryFn: () => api.get<DrawerStatus>("/api/day-close/my-drawer-status"),
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+    ...FINANCIAL_QUERY_OPTIONS,
   });
 
   // Post-closure activity — always fetch so the admin can see yesterday's
@@ -1550,8 +1550,7 @@ export default function MyDailySummary() {
     queryKey: ["my-post-closure-activity"],
     queryFn: () => api.get<PostClosureActivity>("/api/day-close/my-post-closure-activity"),
     enabled: true,
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+    ...FINANCIAL_QUERY_OPTIONS,
   });
 
   // Day Close open window preview — shows current open window count for the user

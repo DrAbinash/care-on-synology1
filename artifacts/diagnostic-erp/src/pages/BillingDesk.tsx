@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
 import { api } from "@/lib/fetchApi";
+import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import { incrementPendingSyncCount } from "@/hooks/useSyncStatus";
 import { readStaffSession, isFeatureEnabled } from "@/lib/staffSession";
 import { genUUID } from "@/lib/utils";
@@ -3073,8 +3074,7 @@ function RecentBillsPanel() {
   const { data, isLoading, isError } = useQuery<{ bills: RecentBill[] }>({
     queryKey: ["recent-bills-today"],
     queryFn: () => api.get<{ bills: RecentBill[] }>("/api/bills?limit=20&page=1"),
-    staleTime: 15_000,
-    refetchOnWindowFocus: true,
+    ...FINANCIAL_QUERY_OPTIONS,
   });
 
   const today = new Date().toDateString();
