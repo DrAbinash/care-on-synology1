@@ -83,6 +83,9 @@ type BookingConfig = {
   customPhonepeBannerUrl?: string;
   customBharatpeBannerUrl?: string;
   customPayuBannerUrl?: string;
+  quickTestIds?: (number | null)[];
+  allowedTestIds?: number[];
+  allowedPackageIds?: number[];
 };
 type TestItem = { id: number; code: string; name: string; category: string; price: string };
 type PkgItem  = { id: number; code: string; name: string; price: string; description: string };
@@ -700,6 +703,67 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
           </div>
         ) : step === 1 ? (
           <div>
+            {/* Quick Test Slots — 8 fixed-width boxes in 2 rows for fast selection (McDonald's-style kiosk) */}
+            {config?.quickTestIds && config.quickTestIds.length > 0 && config.quickTestIds.some((id) => id !== null) && (
+              <div style={{
+                marginBottom: "1.5rem",
+                padding: "1.25rem",
+                background: "linear-gradient(135deg, hsl(var(--cd-teal) / .03) 0%, hsl(var(--cd-teal) / .06) 100%)",
+                border: "2px solid hsl(var(--cd-teal) / .25)",
+                borderRadius: "var(--site-radius)",
+              }}>
+                <h3 style={{ fontWeight: 800, fontSize: "1.1rem", marginBottom: "1rem", color: "hsl(var(--cd-teal))", textTransform: "uppercase", letterSpacing: "1px", display: "flex", alignItems: "center", gap: ".5rem" }}>
+                  ⚡ <span>Quick Select Tests</span>
+                </h3>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: ".8rem" }}>
+                  {config.quickTestIds.map((testId, idx) => {
+                    const test = testId ? tests.find((t) => t.id === testId) : null;
+                    return (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => {
+                          if (test) toggleTest(test.id);
+                        }}
+                        title={test ? test.name : ""}
+                        style={{
+                          position: "relative",
+                          padding: "1.25rem 0.75rem",
+                          borderRadius: "var(--site-radius)",
+                          border: test && selTests.has(test.id) ? "3px solid hsl(var(--cd-teal))" : "2px solid hsl(var(--cd-teal) / .3)",
+                          background: test && selTests.has(test.id) 
+                            ? "linear-gradient(135deg, hsl(var(--cd-teal) / .2), hsl(var(--cd-teal) / .1))" 
+                            : "#fff",
+                          cursor: test ? "pointer" : "default",
+                          transition: "all .2s ease",
+                          textAlign: "center",
+                          fontWeight: 800,
+                          fontSize: ".95rem",
+                          color: test && selTests.has(test.id) ? "hsl(var(--cd-teal))" : test ? "hsl(var(--cd-slate))" : "hsl(var(--cd-slate) / .4)",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "normal",
+                          wordWrap: "break-word",
+                          lineHeight: "1.2",
+                          minHeight: "6.5rem",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          boxShadow: test && selTests.has(test.id) ? "0 4px 12px hsl(var(--cd-teal) / .15)" : "0 1px 3px rgba(0,0,0,.08)",
+                          transform: test && selTests.has(test.id) ? "scale(1.02)" : "scale(1)",
+                        }}
+                      >
+                        {test ? test.name : ""}
+                        {test && selTests.has(test.id) && (
+                          <Check size={14} style={{ position: "absolute", top: "0.5rem", right: "0.5rem", color: "hsl(var(--cd-teal))", fontWeight: "bold" }} />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Search & filter bar */}
             <div style={{ ...cardStyle, marginBottom: "1rem", padding: "1rem", display: "flex", gap: ".75rem", flexWrap: "wrap", alignItems: "center" }}>
               <input
