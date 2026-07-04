@@ -165,6 +165,7 @@ async function runStartupMigrations(): Promise<void> {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       ALTER TABLE clinic_settings ADD COLUMN IF NOT EXISTS kiosk_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE clinic_settings ADD COLUMN IF NOT EXISTS quick_doctor_ids TEXT NOT NULL DEFAULT '[null,null,null,null,null,null,null,null]';
       ALTER TABLE clinic_settings ADD COLUMN IF NOT EXISTS kiosk_payment_gateway TEXT NOT NULL DEFAULT 'upi';
       ALTER TABLE clinic_settings ADD COLUMN IF NOT EXISTS kiosk_upi_vpa TEXT NOT NULL DEFAULT '';
       ALTER TABLE clinic_settings ADD COLUMN IF NOT EXISTS kiosk_upi_name TEXT NOT NULL DEFAULT '';
@@ -254,8 +255,18 @@ async function runStartupMigrations(): Promise<void> {
         form_f_address_required, form_f_guardian_required, registered_address, online_booking_allowed_package_ids,
         upi_qr_image_url, upi_vpa, upi_qr_enabled, icici_enabled, icici_merchant_id, icici_aggregator_id
       )
-      SELECT 1, 'Care Diagnostics', 'Diagnostic & Pathology Services', 'CARE DIAGNOSTICS Subhash Chowk Castair Town Near Bajla Mahila College Deoghar 814112', 'CARE.DEOGHAR@GMAIL.COM', '9973497200', 'www.carediagnostics.in', 'GSTIN_NOT_SET', null, 'Thank you for choosing our diagnostic services.', NOW(), '[]', '[null null null null null null]', false, false, 'Welcome', 'Welcome to our portal', true, true, false, 1, true, false, 'RZP_KEY_NOT_SET', 1, false, false, 'NA', 'NA', 'Welcome to Kiosk', '[]', 'navy', 'A5', true, true, false, 'NA', true, 'none', false, '[]', false, false, 'NA', false, 'NA', false, 'NA', '[]', 30, 3, 5, 30, false, true, true, 'Jayshankar Bhawan Bilasi Town Deoghar Ward No 27 Hiralal Pal Road Deoghar Jharkhand 814112', '[]', 'NA', 'NA', false, false, 'NA', 'NA'
+      SELECT 1, 'Care Diagnostics', 'Diagnostic & Pathology Services', 'CARE DIAGNOSTICS Subhash Chowk Castair Town Near Bajla Mahila College Deoghar 814112', 'CARE.DEOGHAR@GMAIL.COM', '9973497200', 'www.carediagnostics.in', null, null, 'Thank you for choosing our diagnostic services.', NOW(), '[]', '[null null null null null null]', false, false, 'Welcome', 'Welcome to our portal', true, true, false, 1, true, false, null, 1, false, false, 'NA', 'NA', 'Welcome to Kiosk', '[]', 'navy', 'A5', true, true, false, 'NA', true, 'none', false, '[]', false, false, 'NA', false, 'NA', false, 'NA', '[]', 30, 3, 5, 30, false, true, true, 'Jayshankar Bhawan Bilasi Town Deoghar Ward No 27 Hiralal Pal Road Deoghar Jharkhand 814112', '[]', 'NA', 'NA', false, false, 'NA', 'NA'
       WHERE NOT EXISTS (SELECT 1 FROM clinic_settings LIMIT 1);
+
+      -- ── One-time correction: earlier seeds above stored the literal
+      -- placeholder text 'GSTIN_NOT_SET' / 'RZP_KEY_NOT_SET' instead of NULL
+      -- for "not configured" fields. Since these are non-empty strings, bill
+      -- print templates (which check "if gstin is set, print it") treated
+      -- them as real values and printed "GSTIN: GSTIN_NOT_SET" on every
+      -- invoice. Safe to run every startup — only touches rows that still
+      -- have the exact placeholder text, a no-op once corrected.
+      UPDATE clinic_settings SET gstin = NULL WHERE gstin = 'GSTIN_NOT_SET';
+      UPDATE clinic_settings SET razorpay_key_id = NULL WHERE razorpay_key_id = 'RZP_KEY_NOT_SET';
       CREATE TABLE IF NOT EXISTS day_closures (
         id SERIAL PRIMARY KEY,
         closure_date TEXT NOT NULL,

@@ -183,7 +183,8 @@ clinicSettingsRouter.get("/branding", async (_req, res) => {
     qrOnBillEnabled: row.qrOnBillEnabled ?? true,
     showTatOnBill: row.showTatOnBill ?? false,
     dayCloseAutoPrint: row.dayCloseAutoPrint ?? true,
-    quickTestIds: row.quickTestIds ?? "[null,null,null,null,null,null]",
+    quickTestIds: row.quickTestIds ?? "[null,null,null,null,null,null,null,null]",
+    quickDoctorIds: row.quickDoctorIds ?? "[null,null,null,null,null,null,null,null]",
     formFTestIds: row.formFTestIds ?? "[]",
     formFBillingPrompt: row.formFBillingPrompt ?? false,
     formFAddressRequired: row.formFAddressRequired ?? true,
@@ -275,7 +276,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
     "kioskPaymentGateway", "kioskUpiVpa", "kioskUpiName", "kioskWelcomeMessage", "kioskAllowedTestIds",
     "onlineBookingAllowedTestIds", "onlineBookingAllowedPackageIds", "razorpayKeyId", "payuMerchantKey",
     "phonepeMerchantId", "bharatpeMerchantId", "cashfreeAppId", "iciciMerchantId", "iciciAggregatorId",
-    "iciciSecretKey", "formFTestIds", "quickTestIds", "footerNote", "commissionDiscountMode", "lanAllowedIps",
+    "iciciSecretKey", "formFTestIds", "quickTestIds", "quickDoctorIds", "footerNote", "commissionDiscountMode", "lanAllowedIps",
     "billDefaultPaperSize", "name", "tagline", "address", "registeredAddress", "email", "phone", "website",
     "gstin", "logoDataUrl", "portalHeading", "portalWelcomeMessage", "sidebarTheme", "receiptThankYouMessage",
     "receiptCollectionMessage", "receiptQrMessage", "receiptPromotionalMessage", "serviceFooter", "followUpMessage",
@@ -505,7 +506,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
     return;
   }
   if (typeof update.quickTestIds === "string") {
-    if (update.quickTestIds.length > 200) {
+    if (update.quickTestIds.length > 260) {
       res.status(400).json({ error: "quickTestIds payload too large" });
       return;
     }
@@ -513,10 +514,10 @@ clinicSettingsRouter.put("/", async (req, res) => {
       const parsed = JSON.parse(update.quickTestIds);
       if (
         !Array.isArray(parsed) ||
-        parsed.length !== 6 ||
+        parsed.length !== 8 ||
         !parsed.every((v) => v === null || (typeof v === "number" && Number.isInteger(v) && v > 0))
       ) {
-        res.status(400).json({ error: "quickTestIds must be an array of exactly 6 entries (positive integer test id or null)" });
+        res.status(400).json({ error: "quickTestIds must be an array of exactly 8 entries (positive integer test id or null)" });
         return;
       }
     } catch {
@@ -529,6 +530,32 @@ clinicSettingsRouter.put("/", async (req, res) => {
   } else {
     // Gracefully handle any other type by ignoring it
     delete (update as any).quickTestIds;
+  }
+
+  if (typeof update.quickDoctorIds === "string") {
+    if (update.quickDoctorIds.length > 260) {
+      res.status(400).json({ error: "quickDoctorIds payload too large" });
+      return;
+    }
+    try {
+      const parsed = JSON.parse(update.quickDoctorIds);
+      if (
+        !Array.isArray(parsed) ||
+        parsed.length !== 8 ||
+        !parsed.every((v) => v === null || (typeof v === "number" && Number.isInteger(v) && v > 0))
+      ) {
+        res.status(400).json({ error: "quickDoctorIds must be an array of exactly 8 entries (positive integer doctor id or null)" });
+        return;
+      }
+    } catch {
+      res.status(400).json({ error: "quickDoctorIds must be valid JSON" });
+      return;
+    }
+  } else if (typeof update.quickDoctorIds === "undefined") {
+    // Same grace handling as quickTestIds above — Settings tabs and the
+    // Billing Desk quick-slot picker each send only their own fields.
+  } else {
+    delete (update as any).quickDoctorIds;
   }
 
   try {
