@@ -781,12 +781,15 @@ export default function PacsSettings() {
               )}
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <ViewerField label="OHIF Base URL" description="e.g. http://192.168.1.137:3010" type="text"
+              <ViewerField label="OHIF Base URL (LAN)" description="e.g. http://172.16.1.139:3000" type="text"
                 value={viewerMap["ohif_base_url"] ?? ""} onSave={(v) => saveViewerKey("ohif_base_url", v)}
-                placeholder="http://192.168.1.137:3010" disabled={!isAdmin} />
-              <ViewerField label="DICOMweb Base URL" description="e.g. http://192.168.1.137:3010/dicom-web" type="text"
+                placeholder="http://172.16.1.139:3000" disabled={!isAdmin} />
+              <ViewerField label="OHIF Base URL (Tailscale)" description="Used automatically when Tailscale network mode is active. e.g. http://100.65.255.115:3000" type="text"
+                value={viewerMap["ohif_base_url_tailscale"] ?? ""} onSave={(v) => saveViewerKey("ohif_base_url_tailscale", v)}
+                placeholder="http://100.65.255.115:3000" disabled={!isAdmin} />
+              <ViewerField label="DICOMweb Base URL" description="e.g. http://172.16.1.139:3000/dicom-web" type="text"
                 value={viewerMap["dicom_web_base_url"] ?? ""} onSave={(v) => saveViewerKey("dicom_web_base_url", v)}
-                placeholder="http://192.168.1.137:3010/dicom-web" disabled={!isAdmin} />
+                placeholder="http://172.16.1.139:3000/dicom-web" disabled={!isAdmin} />
             </div>
             <ViewerTemplateField
               label="OHIF Study URL Template"
