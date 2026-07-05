@@ -813,16 +813,20 @@ export default function PacsSettings() {
               <h3 className="font-semibold text-sm flex items-center gap-2"><Tv2 size={14} />Weasis / WADO</h3>
               {isAdmin && (
                 <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => {
-                  saveViewerKey("wado_uri_base_url", "http://192.168.1.137:8042/wado");
+                  saveViewerKey("wado_uri_base_url", "http://172.16.1.139:8042/wado");
                   saveViewerKey("conquest_base_url", "");
-                  saveViewerKey("weasis_manifest_url_template", 'weasis://$dicom:get -w "http://192.168.1.137:8042/wado?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"');
+                  saveViewerKey("weasis_manifest_url_template", 'weasis://$dicom:get -w "http://172.16.1.139:8042/wado?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"');
                 }}>Load Defaults</Button>
               )}
             </div>
+            <p className="text-xs text-muted-foreground -mt-2">
+              Uses the same LAN/Tailscale host swap as OHIF (configured above). Whichever IP appears in the
+              template below is automatically replaced with the Tailscale IP when Tailscale mode is active.
+            </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <ViewerField label="WADO-URI Base URL" description="Primary WADO endpoint for Weasis" type="text"
                 value={viewerMap["wado_uri_base_url"] ?? ""} onSave={(v) => saveViewerKey("wado_uri_base_url", v)}
-                placeholder="http://192.168.1.137:8042/wado" disabled={!isAdmin} />
+                placeholder="http://172.16.1.139:8042/wado" disabled={!isAdmin} />
               <ViewerField label="Conquest Base URL" description="Not used — leave blank (system uses Orthanc)" type="text"
                 value={viewerMap["conquest_base_url"] ?? ""} onSave={(v) => saveViewerKey("conquest_base_url", v)}
                 placeholder="Not used" disabled={!isAdmin} />
@@ -831,7 +835,7 @@ export default function PacsSettings() {
               label="Weasis Manifest URL Template"
               description="Use {studyInstanceUID} as placeholder. This is a weasis:// URI — clicking Test attempts to launch Weasis."
               value={viewerMap["weasis_manifest_url_template"] ?? ""}
-              defaultValue={'weasis://$dicom:get -w "http://192.168.1.137:8042/wado?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"'}
+              defaultValue={'weasis://$dicom:get -w "http://172.16.1.139:8042/wado?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"'}
               previewFn={(tpl) => tpl.replace(/\{studyInstanceUID\}/g, "1.2.3.4.5.TEST")}
               onSave={(v) => saveViewerKey("weasis_manifest_url_template", v)}
               disabled={!isAdmin}
