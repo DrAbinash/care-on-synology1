@@ -180,7 +180,7 @@ router.use("/internal/cron", internalCronRouter);
 // Called by Conquest PACS scripts and other server-to-server automations.
 // Internal backup download — streams pg_dump output for off-site replication.
 router.use("/internal/backup", internalBackupRouter);
-router.use("/internal", internalRadiologyRouter);
+router.use("/internal", internalRadiologyRouter); // [ZONE: radiology] name is generic, content is 100% radiology (DICOM agent callbacks)
 router.use("/portal", portalRouter);
 router.use("/display", displayRouter);
 router.use("/settings/queue-display", queueDisplaySettingsRouter);
@@ -227,6 +227,9 @@ router.use("/website", websiteRouter);
 // immediately after requireStaffAuth so that low-privilege staff cannot access
 // modules they have not been granted, even by calling the API directly.
 
+// [ZONE: shared] patients, doctors, tests catalogue — used by both Billing
+// and Radiology. See /PROTECTED_FILES.md before modifying.
+
 // Patient data — /patients permission
 router.use("/patients", requireStaffAuth, requireStaffPermission("/patients"), patientsRouter);
 
@@ -245,6 +248,11 @@ router.use(
   },
   testsRouter,
 );
+
+// [ZONE: billing] PROTECTED — orders, bills, payments, reports, inventory,
+// accounting, discounts, expenses, ledgers, day-close, books-sanity.
+// Any change here requires Dr. Abinash's explicit sign-off.
+// See /PROTECTED_FILES.md.
 
 // Order management — /orders permission
 router.use("/orders", requireStaffAuth, requireStaffPermission("/orders"), ordersRouter);
@@ -296,6 +304,8 @@ router.use("/ledgers", requireStaffAuth, requireStaffPermission("/accounting"), 
 router.use("/day-close", requireStaffAuth, dayCloseRouter);
 // Books Sanity / CA review — admin + super-admin only (same auth shape as day-close)
 router.use("/books-sanity", requireStaffAuth, requireStaffPermission("/day-close"), booksSanityRouter);
+
+// [ZONE: shared] staff, settings, infrastructure config — used by both zones.
 
 router.use("/staff", requireStaffAuth, requireStaffSubPermission("/settings", "users"), staffRouter);
 
@@ -437,6 +447,10 @@ router.use(
   },
   outsourcedLabsRouter,
 );
+
+// [ZONE: radiology] Radiology / PACS / DICOM / USG / AI reporting.
+// No direct billing impact — can be developed and debugged more freely
+// than the billing zone above. See /PROTECTED_FILES.md.
 
 // DICOM / PACS — /dicom-nodes permission
 router.use("/pacs", requireStaffAuth, requireStaffPermission("/dicom-nodes"), pacsRouter);
@@ -616,12 +630,15 @@ router.use("/wa-chatbot", requireStaffAuth, requireStaffSubPermission("/settings
 // ─── Banking module ────────────────────────────────────────────────────────────
 // Provider-agnostic banking: balance, transactions, payments, webhooks,
 // reconciliation. Requires /banking permission for all endpoints.
+// [ZONE: billing] PROTECTED — see /PROTECTED_FILES.md.
 // Banking webhooks are mounted PUBLICLY before auth so bank providers can
 // POST without a staff bearer token. Signature verification happens inside
 // the handler.
 router.use("/banking/webhooks", bankingWebhookRouter);
 router.use("/banking", requireStaffAuth, requireStaffPermission("/banking"), bankingRouter);
 
+// [ZONE: shared, billing-adjacent] touches patients/orders/bills/payments
+// together — do not modify from radiology-focused work. See /PROTECTED_FILES.md.
 // Offline sync — push/pull changes between local desktop instance and cloud.
 router.use("/sync", requireStaffAuth, syncRouter);
 
