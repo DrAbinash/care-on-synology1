@@ -6828,7 +6828,7 @@ function QueueDisplaySettingsTab() {
     return <div className="bg-card border border-card-border rounded-xl p-8 text-center text-muted-foreground">Loading…</div>;
   }
 
-  const previewUrl = `/display/${roomKey}`;
+  const previewUrl = `/queue/${roomKey}`;
 
   return (
     <div className="space-y-4 max-w-6xl">
@@ -6840,7 +6840,7 @@ function QueueDisplaySettingsTab() {
             <div className="text-xs text-muted-foreground mt-1">
               Configure a portrait TV display for a specific room (USG, X-Ray, Reception, etc).
               Everything shown on the TV — branding, room title, QR code, instructions, footer —
-              is controlled here. Open the display at <code className="px-1 py-0.5 bg-black/5 dark:bg-white/10 rounded">/display/{roomKey}</code> on the TV browser.
+              is controlled here. Open the display at <code className="px-1 py-0.5 bg-black/5 dark:bg-white/10 rounded">/queue/{roomKey}</code> on the TV browser.
             </div>
           </div>
         </div>
@@ -6907,7 +6907,7 @@ function QueueDisplaySettingsTab() {
         )}
 
         <span className="text-xs text-muted-foreground w-full">
-          Each room (MRI, CT, X-Ray, USG, Reception…) has its own independent branding, QR code, and TV URL at <code className="px-1 py-0.5 bg-black/5 dark:bg-white/10 rounded">/display/{roomKey}</code>.
+          Each room (MRI, CT, X-Ray, USG, Reception…) has its own independent branding, QR code, and TV URL at <code className="px-1 py-0.5 bg-black/5 dark:bg-white/10 rounded">/queue/{roomKey}</code>.
         </span>
       </div>
 

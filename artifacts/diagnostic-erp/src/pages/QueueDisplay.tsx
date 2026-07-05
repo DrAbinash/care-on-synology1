@@ -1,7 +1,9 @@
 /**
  * QueueDisplay.tsx — Configurable TV/kiosk queue display (portrait, 9:16)
  *
- * Route: /display/:roomKey  (e.g. /display/usg-room, ?roomKey resolves via URL)
+ * Route: /queue/:roomKey  (e.g. caredeoghar.com/queue/usg, /queue/mri, /queue/ct)
+ * Also reachable at /display/:roomKey for backward compatibility with any
+ * TV already configured with the older URL.
  *
  * This is an ENHANCEMENT alongside the existing Display.tsx (landscape,
  * multi-department grid board), not a replacement. Display.tsx remains

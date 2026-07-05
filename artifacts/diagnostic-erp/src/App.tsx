@@ -284,6 +284,9 @@ function Router() {
         <Route path="/verify-receipt/:billId" component={VerifyReceipt} />
         <Route path="/display" component={Display} />
         <Route path="/display/payment-qr" component={PaymentQrDisplay} />
+        {/* Primary URL per spec: caredeoghar.com/queue/usg, /queue/mri, etc. */}
+        <Route path="/queue/:roomKey" component={QueueDisplay} />
+        {/* Kept for backward compatibility with any already-configured TVs */}
         <Route path="/display/:roomKey" component={QueueDisplay} />
         <Route path="/kiosk" component={Kiosk} />
         <Route>
