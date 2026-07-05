@@ -450,9 +450,10 @@ function RadiologistCockpit() {
   const coPilotPriorComparisonMetrics = useMemo(() => {
     if (priorReports.length === 0) return [];
     const prior = priorReports[0];
+    if (!prior) return [];
     const prevData: Record<string, string | number> = {
-      measurement: prior.findings?.includes("measures") ? 12 : 10,
-      birads: prior.impression?.includes("BI-RADS 3") ? "3" : prior.impression?.includes("BI-RADS 4") ? "4" : "2",
+      measurement: (prior.findings || "")?.includes?.("measures") ? 12 : 10,
+      birads: (prior.impression || "")?.includes?.("BI-RADS 3") ? "3" : (prior.impression || "")?.includes?.("BI-RADS 4") ? "4" : "2",
       lesionCount: 2,
     };
     const currentData: Record<string, string | number> = {
