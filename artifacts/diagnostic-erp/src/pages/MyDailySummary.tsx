@@ -480,21 +480,22 @@ function DrawerStatusCard({ status }: { status: DrawerStatus }) {
 
 // ─── Small Components ─────────────────────────────────────────────────────────
 
-// ─── Card color themes — soft, professional pastel backgrounds. Every card
-// uses the exact same padding/radius/shadow; only the theme colors differ.
-// Mapping (per spec): Cash/collected money -> green, Digital -> teal,
+// ─── Card color themes — solid, dark gradient fills so every KPI card reads
+// with the same visual weight (previously only 3 "filled" cards were bold;
+// the rest were washed-out pastel, so this raises them all to match).
+// Mapping (per spec, unchanged): Cash/collected money -> green, Digital -> teal,
 // Expenses -> red, Outstanding -> orange, Collectible -> blue,
 // Discounts -> purple, Cancellations -> pink, everything else -> slate/indigo.
 const KPI_THEMES = {
-  green:  { bg: "bg-emerald-50 dark:bg-emerald-950/30",  ring: "ring-emerald-100 dark:ring-emerald-900/40",  icon: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300", value: "text-emerald-950 dark:text-emerald-100" },
-  teal:   { bg: "bg-teal-50 dark:bg-teal-950/30",        ring: "ring-teal-100 dark:ring-teal-900/40",        icon: "bg-teal-100 text-teal-700 dark:bg-teal-900/50 dark:text-teal-300",       value: "text-teal-950 dark:text-teal-100" },
-  red:    { bg: "bg-rose-50 dark:bg-rose-950/30",        ring: "ring-rose-100 dark:ring-rose-900/40",        icon: "bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300",       value: "text-rose-950 dark:text-rose-100" },
-  orange: { bg: "bg-orange-50 dark:bg-orange-950/30",    ring: "ring-orange-100 dark:ring-orange-900/40",    icon: "bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300", value: "text-orange-950 dark:text-orange-100" },
-  blue:   { bg: "bg-blue-50 dark:bg-blue-950/30",        ring: "ring-blue-100 dark:ring-blue-900/40",        icon: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",       value: "text-blue-950 dark:text-blue-100" },
-  purple: { bg: "bg-purple-50 dark:bg-purple-950/30",    ring: "ring-purple-100 dark:ring-purple-900/40",    icon: "bg-purple-100 text-purple-700 dark:bg-purple-900/50 dark:text-purple-300", value: "text-purple-950 dark:text-purple-100" },
-  pink:   { bg: "bg-pink-50 dark:bg-pink-950/30",        ring: "ring-pink-100 dark:ring-pink-900/40",        icon: "bg-pink-100 text-pink-700 dark:bg-pink-900/50 dark:text-pink-300",       value: "text-pink-950 dark:text-pink-100" },
-  slate:  { bg: "bg-slate-50 dark:bg-slate-800/40",      ring: "ring-slate-100 dark:ring-slate-700/40",      icon: "bg-slate-100 text-slate-700 dark:bg-slate-700/60 dark:text-slate-300",   value: "text-slate-950 dark:text-slate-100" },
-  indigo: { bg: "bg-indigo-50 dark:bg-indigo-950/30",    ring: "ring-indigo-100 dark:ring-indigo-900/40",    icon: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300", value: "text-indigo-950 dark:text-indigo-100" },
+  green:  { bg: "bg-gradient-to-br from-emerald-600 to-emerald-700",  icon: "bg-white/20 text-white", label: "text-white/85", value: "text-white", sub: "text-white/75" },
+  teal:   { bg: "bg-gradient-to-br from-teal-600 to-cyan-700",        icon: "bg-white/20 text-white", label: "text-white/85", value: "text-white", sub: "text-white/75" },
+  red:    { bg: "bg-gradient-to-br from-rose-600 to-rose-700",        icon: "bg-white/20 text-white", label: "text-white/85", value: "text-white", sub: "text-white/75" },
+  orange: { bg: "bg-gradient-to-br from-orange-600 to-amber-700",     icon: "bg-white/20 text-white", label: "text-white/85", value: "text-white", sub: "text-white/75" },
+  blue:   { bg: "bg-gradient-to-br from-blue-600 to-blue-700",        icon: "bg-white/20 text-white", label: "text-white/85", value: "text-white", sub: "text-white/75" },
+  purple: { bg: "bg-gradient-to-br from-purple-600 to-purple-700",    icon: "bg-white/20 text-white", label: "text-white/85", value: "text-white", sub: "text-white/75" },
+  pink:   { bg: "bg-gradient-to-br from-pink-600 to-rose-700",        icon: "bg-white/20 text-white", label: "text-white/85", value: "text-white", sub: "text-white/75" },
+  slate:  { bg: "bg-gradient-to-br from-slate-600 to-slate-700",      icon: "bg-white/20 text-white", label: "text-white/85", value: "text-white", sub: "text-white/75" },
+  indigo: { bg: "bg-gradient-to-br from-indigo-600 to-indigo-700",    icon: "bg-white/20 text-white", label: "text-white/85", value: "text-white", sub: "text-white/75" },
 } as const;
 type KpiTheme = keyof typeof KPI_THEMES;
 
@@ -509,17 +510,17 @@ function MiniKpi({ icon: Icon, label, value, sub, theme, onClick }: {
       role={onClick ? "button" : undefined}
       tabIndex={onClick ? 0 : undefined}
       onKeyDown={onClick ? (e) => { if (e.key === "Enter" || e.key === " ") onClick(); } : undefined}
-      className={`h-full flex flex-col justify-between ${t.bg} ring-1 ${t.ring} rounded-xl p-4 shadow-sm transition-all ${
-        onClick ? "cursor-pointer hover:shadow-md hover:-translate-y-0.5 active:translate-y-0" : ""
+      className={`h-full flex flex-col justify-between ${t.bg} text-white rounded-xl p-4 shadow-md transition-all ${
+        onClick ? "cursor-pointer hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0" : ""
       }`}
     >
-      <div className="flex items-start justify-between gap-2">
+      <div className="flex items-start justify-between gap-2.5">
         <div className="min-w-0 flex-1">
-          <p className="text-[11px] font-medium text-gray-600 dark:text-gray-400 uppercase tracking-wider leading-tight">{label}</p>
+          <p className={`text-[11px] font-medium uppercase tracking-wider leading-tight line-clamp-2 ${t.label}`}>{label}</p>
           <p className={`mt-1.5 text-xl font-bold leading-none tabular-nums ${t.value}`}>{value}</p>
-          {sub && <p className="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400 leading-snug">{sub}</p>}
+          {sub && <p className={`mt-1.5 text-[11px] leading-snug ${t.sub}`}>{sub}</p>}
         </div>
-        <div className={`p-2 rounded-lg flex-shrink-0 ${t.icon}`}>
+        <div className={`p-2 rounded-lg shrink-0 basis-8 flex items-center justify-center ${t.icon}`}>
           <Icon size={15} />
         </div>
       </div>
@@ -550,13 +551,13 @@ function MiniKpiFilled({ icon: Icon, label, value, sub, solid, onClick }: {
         onClick ? "cursor-pointer hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0" : ""
       }`}
     >
-      <div className="flex items-start justify-between gap-2">
+      <div className="flex items-start justify-between gap-2.5">
         <div className="min-w-0 flex-1">
-          <p className="text-[11px] font-medium uppercase tracking-wider leading-tight text-white/85">{label}</p>
+          <p className="text-[11px] font-medium uppercase tracking-wider leading-tight line-clamp-2 text-white/85">{label}</p>
           <p className="mt-1.5 text-2xl font-extrabold leading-none tabular-nums">{value}</p>
           {sub && <p className="mt-1.5 text-[11px] text-white/80 leading-snug">{sub}</p>}
         </div>
-        <div className="p-2 rounded-lg flex-shrink-0 bg-white/20">
+        <div className="p-2 rounded-lg shrink-0 basis-8 flex items-center justify-center bg-white/20">
           <Icon size={16} />
         </div>
       </div>
@@ -566,12 +567,14 @@ function MiniKpiFilled({ icon: Icon, label, value, sub, solid, onClick }: {
 
 // ─── Operator badge — bridges two KPI boxes that have a mathematical
 // relationship (e.g. A − B = C), so the reconciliation flow reads left to
-// right the same way the underlying formula works. ─────────────────────────
+// right the same way the underlying formula works. Sits directly between
+// the two cards, overlapping half its width onto each side, so the row
+// reads as one continuous connected strip rather than separate boxes. ─────
 function FormulaOp({ op }: { op: "+" | "−" | "=" }) {
-  const styles = op === "=" ? "bg-[#1a3a5c] text-white" : "bg-white text-[#1a3a5c] border-2 border-[#1a3a5c]";
+  const styles = op === "=" ? "bg-[#1a3a5c] text-white" : "bg-white dark:bg-slate-900 text-[#1a3a5c] dark:text-white border-2 border-[#1a3a5c]";
   return (
-    <div className="hidden sm:flex items-center justify-center flex-shrink-0 w-7">
-      <span className={`flex items-center justify-center w-7 h-7 rounded-full text-sm font-extrabold shadow-sm ${styles}`}>
+    <div className="hidden sm:flex items-center justify-center flex-shrink-0 w-0 relative z-10">
+      <span className={`flex items-center justify-center w-8 h-8 rounded-full text-sm font-extrabold shadow-md -mx-4 ${styles}`}>
         {op}
       </span>
     </div>
@@ -1952,7 +1955,7 @@ export default function MyDailySummary() {
                     between them — the row always fills 100% of the available
                     width with no leftover gaps, on any screen size. */}
                 <div
-                  className="grid gap-1.5 items-stretch"
+                  className="grid gap-0.5 items-stretch"
                   style={{ gridTemplateColumns: "repeat(7, minmax(0, 1fr) auto) minmax(0, 1.3fr)" }}
                 >
                   <MiniKpi icon={IndianRupee} label="Total Bills Generated" value={fmt(s.grossBilledIncludingCancelled)} sub={`${totalBillsCount} bills`} theme="indigo" onClick={() => setDrilldownType("totalBills")} />
