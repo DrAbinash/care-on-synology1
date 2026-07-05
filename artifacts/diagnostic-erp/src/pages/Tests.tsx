@@ -421,11 +421,12 @@ export default function Tests() {
       </div>
 
       <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setEditTest(null); reset({ isActive: true }); } }}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-lg max-h-[85vh] flex flex-col">
           <DialogHeader>
             <DialogTitle>{editTest ? "Edit Test" : "Add Diagnostic Test"}</DialogTitle>
           </DialogHeader>
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col min-h-0 flex-1">
+          <div className="space-y-4 overflow-y-auto flex-1 pr-1 -mr-1">
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label>Test Code *</Label>
@@ -566,7 +567,8 @@ export default function Tests() {
                 {submitErr}
               </div>
             )}
-            <div className="flex justify-end gap-2 pt-2">
+          </div>
+            <div className="flex justify-end gap-2 pt-3 mt-1 border-t border-card-border shrink-0">
               <Button type="button" variant="outline" onClick={() => { setOpen(false); setSubmitErr(""); }}>Cancel</Button>
               <Button type="submit" disabled={createTest.isPending || updateTest.isPending}>
                 {createTest.isPending || updateTest.isPending ? "Saving…" : (editTest ? "Save Changes" : "Add Test")}
