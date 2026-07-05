@@ -22,7 +22,7 @@ import {
   Search, Globe, Copy, ExternalLink, Check, Network, MapPin, Database,
   RefreshCcw, FileCode, Send, QrCode, Palette, Bot, Inbox, ChevronRight,
   ArrowLeft, Phone, Layers, AlertTriangle, ScanLine, Receipt, Keyboard, Brain,
-  Sparkles, Construction, GraduationCap,
+  Sparkles, Construction, GraduationCap, Tv, GripVertical,
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
@@ -159,6 +159,7 @@ const TABS = [
   { id: "online-booking", label: "Online Booking", icon: CreditCard },
   { id: "kiosk", label: "Self-Reg Kiosk", icon: QrCode },
   { id: "queue-settings", label: "Queue Settings", icon: ClipboardList },
+  { id: "queue-display", label: "Queue Display (TV)", icon: Tv },
   { id: "form-f", label: "Form F Tests", icon: FileText },
   { id: "scanner", label: "Scanner", icon: ScanLine },
   { id: "email", label: "Email Notifications", icon: Mail },
@@ -290,6 +291,7 @@ export default function Settings() {
         {tab === "online-booking" && <OnlineBookingTab />}
         {tab === "kiosk" && <KioskSettingsTab />}
         {tab === "queue-settings" && <QueueSettingsTab />}
+        {tab === "queue-display" && <QueueDisplaySettingsTab />}
         {tab === "form-f" && <FormFTestsTab />}
         {tab === "scanner" && <ScannerSettingsTab />}
         {tab === "email" && <EmailTab />}
@@ -6671,6 +6673,364 @@ function QueueSettingsTab() {
         <div className="flex justify-end gap-2 pt-4 border-t border-card-border">
           <Button onClick={() => save.mutate(form)} disabled={save.isPending}>{save.isPending ? "Saving…" : "Save Settings"}</Button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// QUEUE DISPLAY (TV) SETTINGS TAB
+// ============================================================
+// Manages queue_display_settings rows — one per physical TV/kiosk display
+// (USG room, X-Ray room, Reception, etc). Nothing here touches the existing
+// waiting-room Display.tsx board or its /api/display/queue feed; this only
+// controls branding/presentation for the new portrait QueueDisplay.tsx page.
+
+type InstructionItemForm = { id: string; icon: string; text: string; color: string; enabled: boolean };
+
+type QueueDisplaySettingsForm = {
+  roomKey: string;
+  displayName: string;
+  location: string;
+  logoUrl: string;
+  showLogo: boolean;
+  showDisplayName: boolean;
+  showLocation: boolean;
+  roomTitle: string;
+  showRoomTitle: boolean;
+  showNowServing: boolean;
+  showNextPatients: boolean;
+  nextPatientCount: number;
+  showQrBooking: boolean;
+  qrImageUrl: string;
+  qrHeading: string;
+  qrSubheading: string;
+  qrDescription: string;
+  qrButtonText: string;
+  instructionItems: InstructionItemForm[];
+  showAnnouncement: boolean;
+  announcementText: string;
+  phone: string;
+  showPhone: boolean;
+  website: string;
+  showWebsite: boolean;
+  slogan: string;
+  showSlogan: boolean;
+  themeMode: string;
+  primaryColor: string;
+  secondaryColor: string;
+  accentColor: string;
+  ledgerId: number;
+  departments: string;
+};
+
+function QueueDisplaySettingsTab() {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const [roomKey, setRoomKey] = useState("usg");
+  const [previewKey, setPreviewKey] = useState(0); // bump to force iframe reload
+
+  const { data, isLoading } = useQuery<QueueDisplaySettingsForm>({
+    queryKey: ["queue-display-settings-admin", roomKey],
+    queryFn: () => api.get(`/api/settings/queue-display/${roomKey}`),
+  });
+
+  const [form, setForm] = useState<QueueDisplaySettingsForm | null>(null);
+
+  useEffect(() => {
+    if (data) setForm(data);
+  }, [data]);
+
+  const save = useMutation({
+    mutationFn: (body: QueueDisplaySettingsForm) => api.patch(`/api/settings/queue-display/${roomKey}`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["queue-display-settings-admin", roomKey] });
+      toast({ title: "Queue display settings saved" });
+      setPreviewKey((k) => k + 1);
+    },
+    onError: (err: any) => toast({ title: "Save failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
+  });
+
+  const onLogoChange = (file: File | null) => {
+    if (!file || !form) return;
+    if (!file.type.startsWith("image/")) { toast({ title: "Please pick an image file", variant: "destructive" }); return; }
+    if (file.size > 800_000) { toast({ title: "Logo too large — pick an image under 800 KB", variant: "destructive" }); return; }
+    const reader = new FileReader();
+    reader.onload = () => setForm({ ...form, logoUrl: String(reader.result) });
+    reader.readAsDataURL(file);
+  };
+
+  const onQrChange = (file: File | null) => {
+    if (!file || !form) return;
+    if (!file.type.startsWith("image/")) { toast({ title: "Please pick an image file", variant: "destructive" }); return; }
+    if (file.size > 1_200_000) { toast({ title: "QR image too large — pick an image under 1.2 MB", variant: "destructive" }); return; }
+    const reader = new FileReader();
+    reader.onload = () => setForm({ ...form, qrImageUrl: String(reader.result) });
+    reader.readAsDataURL(file);
+  };
+
+  const updateInstruction = (id: string, patch: Partial<InstructionItemForm>) => {
+    if (!form) return;
+    setForm({
+      ...form,
+      instructionItems: form.instructionItems.map((it) => (it.id === id ? { ...it, ...patch } : it)),
+    });
+  };
+
+  const addInstruction = () => {
+    if (!form || form.instructionItems.length >= 12) return;
+    setForm({
+      ...form,
+      instructionItems: [
+        ...form.instructionItems,
+        { id: String(Date.now()), icon: "ℹ️", text: "New instruction", color: "#94a3b8", enabled: true },
+      ],
+    });
+  };
+
+  const removeInstruction = (id: string) => {
+    if (!form) return;
+    setForm({ ...form, instructionItems: form.instructionItems.filter((it) => it.id !== id) });
+  };
+
+  if (isLoading || !form) {
+    return <div className="bg-card border border-card-border rounded-xl p-8 text-center text-muted-foreground">Loading…</div>;
+  }
+
+  const previewUrl = `/display/${roomKey}`;
+
+  return (
+    <div className="space-y-4 max-w-6xl">
+      <div className="bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-indigo-950/30 dark:to-blue-950/30 border border-indigo-200 dark:border-indigo-900 rounded-xl p-5">
+        <div className="flex items-start gap-3">
+          <Tv size={20} className="text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
+          <div>
+            <div className="font-semibold text-sm">TV / Kiosk Queue Display</div>
+            <div className="text-xs text-muted-foreground mt-1">
+              Configure a portrait TV display for a specific room (USG, X-Ray, Reception, etc).
+              Everything shown on the TV — branding, room title, QR code, instructions, footer —
+              is controlled here. Open the display at <code className="px-1 py-0.5 bg-black/5 dark:bg-white/10 rounded">/display/{roomKey}</code> on the TV browser.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-card border border-card-border rounded-xl p-4 flex items-center gap-3">
+        <Label className="text-sm shrink-0">Room</Label>
+        <Select value={roomKey} onValueChange={setRoomKey}>
+          <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="usg">USG Room</SelectItem>
+            <SelectItem value="xray">X-Ray Room</SelectItem>
+            <SelectItem value="reception">Reception</SelectItem>
+          </SelectContent>
+        </Select>
+        <span className="text-xs text-muted-foreground">Each room has its own independent settings.</span>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[1fr_420px] gap-4">
+        {/* ── Settings form ─────────────────────────────────────────── */}
+        <div className="space-y-4">
+          {/* Header / branding */}
+          <SettingsCard title="Header & Branding">
+            <ToggleRow label="Show logo" checked={form.showLogo} onChange={(v) => setForm({ ...form, showLogo: v })} />
+            {form.showLogo && (
+              <div className="flex items-center gap-3 mb-3">
+                {form.logoUrl && <img src={form.logoUrl} className="h-12 w-12 rounded-lg object-contain bg-muted p-1" alt="" />}
+                <label className="text-xs px-3 py-1.5 border border-card-border rounded-lg cursor-pointer hover:bg-muted flex items-center gap-1.5">
+                  <Upload size={12} /> Upload logo
+                  <input type="file" accept="image/*" className="hidden" onChange={(e) => onLogoChange(e.target.files?.[0] ?? null)} />
+                </label>
+              </div>
+            )}
+            <ToggleRow label="Show center name" checked={form.showDisplayName} onChange={(v) => setForm({ ...form, showDisplayName: v })} />
+            {form.showDisplayName && (
+              <Input value={form.displayName} onChange={(e) => setForm({ ...form, displayName: e.target.value })} placeholder="CARE DIAGNOSTICS" className="mb-3" />
+            )}
+            <ToggleRow label="Show location" checked={form.showLocation} onChange={(v) => setForm({ ...form, showLocation: v })} />
+            {form.showLocation && (
+              <Input value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} placeholder="Deoghar" />
+            )}
+          </SettingsCard>
+
+          {/* Room title */}
+          <SettingsCard title="Room Title">
+            <ToggleRow label="Show room title" checked={form.showRoomTitle} onChange={(v) => setForm({ ...form, showRoomTitle: v })} />
+            {form.showRoomTitle && (
+              <Input value={form.roomTitle} onChange={(e) => setForm({ ...form, roomTitle: e.target.value })} placeholder="USG ROOM" />
+            )}
+          </SettingsCard>
+
+          {/* Now serving / next patients / queue source */}
+          <SettingsCard title="Queue Cards">
+            <ToggleRow label="Show 'Now Serving' card" checked={form.showNowServing} onChange={(v) => setForm({ ...form, showNowServing: v })} />
+            <ToggleRow label="Show 'Next Patients' card" checked={form.showNextPatients} onChange={(v) => setForm({ ...form, showNextPatients: v })} />
+            {form.showNextPatients && (
+              <div className="flex items-center gap-2 mb-3">
+                <Label className="text-xs w-40 shrink-0">Next patients to show</Label>
+                <Input type="number" min={1} max={20} value={form.nextPatientCount} onChange={(e) => setForm({ ...form, nextPatientCount: Number(e.target.value) || 5 })} className="w-24" />
+              </div>
+            )}
+            <div className="flex items-center gap-2 mb-3">
+              <Label className="text-xs w-40 shrink-0">Ledger / Book ID</Label>
+              <Input type="number" min={1} value={form.ledgerId} onChange={(e) => setForm({ ...form, ledgerId: Number(e.target.value) || 1 })} className="w-24" />
+              <span className="text-xs text-muted-foreground">Which existing queue book this TV shows (see Queue page)</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Label className="text-xs w-40 shrink-0">Departments filter</Label>
+              <Input value={form.departments} onChange={(e) => setForm({ ...form, departments: e.target.value })} placeholder="e.g. USG (blank = all)" />
+            </div>
+          </SettingsCard>
+
+          {/* QR booking */}
+          <SettingsCard title="QR Booking Card">
+            <ToggleRow label="Show QR booking card" checked={form.showQrBooking} onChange={(v) => setForm({ ...form, showQrBooking: v })} />
+            {form.showQrBooking && (
+              <>
+                <div className="flex items-center gap-3 mb-3">
+                  {form.qrImageUrl && <img src={form.qrImageUrl} className="h-16 w-16 rounded-lg object-contain bg-white p-1" alt="" />}
+                  <label className="text-xs px-3 py-1.5 border border-card-border rounded-lg cursor-pointer hover:bg-muted flex items-center gap-1.5">
+                    <Upload size={12} /> Upload QR image
+                    <input type="file" accept="image/*" className="hidden" onChange={(e) => onQrChange(e.target.files?.[0] ?? null)} />
+                  </label>
+                </div>
+                <Input value={form.qrHeading} onChange={(e) => setForm({ ...form, qrHeading: e.target.value })} placeholder="AVOID THE QUEUE" className="mb-2" />
+                <Input value={form.qrSubheading} onChange={(e) => setForm({ ...form, qrSubheading: e.target.value })} placeholder="BOOK ONLINE" className="mb-2" />
+                <Input value={form.qrDescription} onChange={(e) => setForm({ ...form, qrDescription: e.target.value })} placeholder="Scan the QR code to book your appointment online" className="mb-2" />
+                <Input value={form.qrButtonText} onChange={(e) => setForm({ ...form, qrButtonText: e.target.value })} placeholder="SCAN TO BOOK" />
+              </>
+            )}
+          </SettingsCard>
+
+          {/* Instruction rows */}
+          <SettingsCard title="Instruction Rows">
+            <div className="space-y-2 mb-3">
+              {form.instructionItems.map((it) => (
+                <div key={it.id} className="flex items-center gap-2 border border-card-border rounded-lg p-2">
+                  <GripVertical size={14} className="text-muted-foreground shrink-0" />
+                  <input
+                    value={it.icon}
+                    onChange={(e) => updateInstruction(it.id, { icon: e.target.value })}
+                    className="w-12 text-center border border-card-border rounded-md py-1 text-lg"
+                    maxLength={4}
+                  />
+                  <Input value={it.text} onChange={(e) => updateInstruction(it.id, { text: e.target.value })} className="flex-1" />
+                  <input
+                    type="color"
+                    value={/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(it.color) ? it.color : "#94a3b8"}
+                    onChange={(e) => updateInstruction(it.id, { color: e.target.value })}
+                    className="w-9 h-9 rounded-md border border-card-border shrink-0"
+                    title="Color"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => updateInstruction(it.id, { enabled: !it.enabled })}
+                    className="shrink-0"
+                    title={it.enabled ? "Visible — click to hide" : "Hidden — click to show"}
+                  >
+                    {it.enabled ? <CheckSquare size={18} className="text-emerald-500" /> : <Square size={18} className="text-muted-foreground" />}
+                  </button>
+                  <button type="button" onClick={() => removeInstruction(it.id)} className="shrink-0 text-red-500 hover:text-red-600">
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <Button type="button" variant="outline" size="sm" onClick={addInstruction} disabled={form.instructionItems.length >= 12}>
+              <Plus size={14} className="mr-1" /> Add instruction row
+            </Button>
+          </SettingsCard>
+
+          {/* Announcement */}
+          <SettingsCard title="Announcement Strip">
+            <ToggleRow label="Show announcement strip" checked={form.showAnnouncement} onChange={(v) => setForm({ ...form, showAnnouncement: v })} />
+            {form.showAnnouncement && (
+              <Input value={form.announcementText} onChange={(e) => setForm({ ...form, announcementText: e.target.value })} placeholder="Token numbers may change. Please listen for your number." />
+            )}
+          </SettingsCard>
+
+          {/* Footer */}
+          <SettingsCard title="Footer">
+            <ToggleRow label="Show phone" checked={form.showPhone} onChange={(v) => setForm({ ...form, showPhone: v })} />
+            {form.showPhone && <Input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="06562 123456" className="mb-3" />}
+            <ToggleRow label="Show website" checked={form.showWebsite} onChange={(v) => setForm({ ...form, showWebsite: v })} />
+            {form.showWebsite && <Input value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} placeholder="www.carediagnostics.com" className="mb-3" />}
+            <ToggleRow label="Show slogan" checked={form.showSlogan} onChange={(v) => setForm({ ...form, showSlogan: v })} />
+            {form.showSlogan && <Input value={form.slogan} onChange={(e) => setForm({ ...form, slogan: e.target.value })} placeholder="We care for you" />}
+          </SettingsCard>
+
+          {/* Theme */}
+          <SettingsCard title="Theme Colors">
+            <div className="grid grid-cols-3 gap-3">
+              <ColorField label="Primary (green)" value={form.primaryColor} onChange={(v) => setForm({ ...form, primaryColor: v })} />
+              <ColorField label="Secondary (blue)" value={form.secondaryColor} onChange={(v) => setForm({ ...form, secondaryColor: v })} />
+              <ColorField label="Accent (announce)" value={form.accentColor} onChange={(v) => setForm({ ...form, accentColor: v })} />
+            </div>
+          </SettingsCard>
+
+          <div className="flex items-center gap-3 sticky bottom-0 bg-background/95 backdrop-blur py-3 border-t border-card-border">
+            <Button onClick={() => save.mutate(form)} disabled={save.isPending}>
+              {save.isPending ? "Saving…" : "Save Queue Display Settings"}
+            </Button>
+            <Button variant="outline" onClick={() => window.open(previewUrl, "_blank")}>
+              <ExternalLink size={14} className="mr-1.5" /> Open TV Display
+            </Button>
+          </div>
+        </div>
+
+        {/* ── Live preview ──────────────────────────────────────────── */}
+        <div className="xl:sticky xl:top-4 h-fit">
+          <div className="text-xs font-semibold text-muted-foreground mb-2 flex items-center justify-between">
+            <span>LIVE PREVIEW</span>
+            <button type="button" onClick={() => setPreviewKey((k) => k + 1)} className="text-indigo-600 hover:underline flex items-center gap-1">
+              <RefreshCcw size={11} /> Refresh
+            </button>
+          </div>
+          <div className="border-4 border-black rounded-[24px] overflow-hidden shadow-xl mx-auto" style={{ width: 270, height: 480 }}>
+            <iframe
+              key={previewKey}
+              src={previewUrl}
+              title="Queue display preview"
+              style={{ width: 1080, height: 1920, transform: "scale(0.25)", transformOrigin: "top left", border: "none" }}
+            />
+          </div>
+          <p className="text-[11px] text-muted-foreground mt-2 text-center">
+            Preview reflects the last <b>saved</b> settings. Save to update it.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SettingsCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="bg-card border border-card-border rounded-xl p-4">
+      <div className="text-sm font-semibold mb-3">{title}</div>
+      {children}
+    </div>
+  );
+}
+
+function ToggleRow({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      className="flex items-center gap-2 mb-2 text-sm text-left w-full"
+    >
+      {checked ? <CheckSquare size={16} className="text-emerald-500 shrink-0" /> : <Square size={16} className="text-muted-foreground shrink-0" />}
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <div>
+      <Label className="text-xs block mb-1">{label}</Label>
+      <div className="flex items-center gap-2">
+        <input type="color" value={/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value) ? value : "#000000"} onChange={(e) => onChange(e.target.value)} className="w-9 h-9 rounded-md border border-card-border shrink-0" />
+        <Input value={value} onChange={(e) => onChange(e.target.value)} className="text-xs" />
       </div>
     </div>
   );

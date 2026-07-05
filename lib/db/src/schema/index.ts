@@ -16,6 +16,7 @@ export * from "./packages";
 export * from "./expenses";
 export * from "./discountReasons";
 export * from "./clinicSettings";
+export * from "./queueDisplaySettings";
 export * from "./ledgers";
 export * from "./tokens";
 export * from "./whatsappSettings";

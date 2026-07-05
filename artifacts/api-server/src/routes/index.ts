@@ -28,6 +28,7 @@ import { testTokensRouter } from "./test-tokens";
 import { radiologyRouter } from "./radiology";
 import { pacsEnterpriseRouter } from "./pacsEnterprise";
 import displayRouter from "./display";
+import queueDisplaySettingsRouter from "./queueDisplaySettings";
 import { whatsappRouter, whatsappWebhookRouter } from "./whatsapp";
 import { waChatbotRouter, waChatbotWebhookRouter } from "./waChatbot";
 import { printersRouter } from "./printers";
@@ -182,6 +183,7 @@ router.use("/internal/backup", internalBackupRouter);
 router.use("/internal", internalRadiologyRouter);
 router.use("/portal", portalRouter);
 router.use("/display", displayRouter);
+router.use("/settings/queue-display", queueDisplaySettingsRouter);
 router.use("/bridge", bridgeRouter);
 // Public tokenized PDF download for patient WhatsApp links — no staff auth.
 router.use("/p/r", publicReportsRouter);
