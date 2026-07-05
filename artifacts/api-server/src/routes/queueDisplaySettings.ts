@@ -114,6 +114,22 @@ async function getOrCreate(roomKey: string) {
   return created;
 }
 
+// ─── GET /api/settings/queue-display — list all configured displays ──────
+//
+// Powers the admin UI's room picker so doctors can see/add MRI, CT, X-Ray,
+// USG, Reception, etc. without any code change. Staff auth only (admin list,
+// not needed by the unattended TV — the TV only ever knows its own roomKey).
+
+queueDisplaySettingsRouter.get("/", requireStaffAuth, async (req, res): Promise<void> => {
+  try {
+    const rows = await db.select().from(queueDisplaySettingsTable).orderBy(queueDisplaySettingsTable.roomKey);
+    res.json(rows.map((r: typeof queueDisplaySettingsTable.$inferSelect) => ({ roomKey: r.roomKey, roomTitle: r.roomTitle, displayName: r.displayName })));
+  } catch (err) {
+    req.log?.error?.({ err }, "queue-display-settings LIST error");
+    res.status(500).json({ error: "Failed to list queue displays" });
+  }
+});
+
 // ─── GET /api/settings/queue-display/:roomKey ─────────────────────────────
 
 queueDisplaySettingsRouter.get("/:roomKey", readAuth as any, async (req, res): Promise<void> => {
@@ -240,6 +256,25 @@ queueDisplaySettingsRouter.patch("/:roomKey", requireStaffAuth, async (req, res)
   } catch (err) {
     req.log?.error?.({ err }, "queue-display-settings PATCH error");
     res.status(500).json({ error: "Failed to save queue display settings" });
+  }
+});
+
+// ─── DELETE /api/settings/queue-display/:roomKey (staff auth required) ────
+// Removes a display's settings row. Does not touch test_tokens or any queue
+// data — purely deletes presentation config for that TV.
+
+queueDisplaySettingsRouter.delete("/:roomKey", requireStaffAuth, async (req, res): Promise<void> => {
+  const roomKey = String(req.params.roomKey || "").trim().toLowerCase();
+  if (!roomKey) {
+    res.status(400).json({ error: "roomKey is required" });
+    return;
+  }
+  try {
+    await db.delete(queueDisplaySettingsTable).where(eq(queueDisplaySettingsTable.roomKey, roomKey));
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error?.({ err }, "queue-display-settings DELETE error");
+    res.status(500).json({ error: "Failed to delete queue display settings" });
   }
 });
 

@@ -6728,6 +6728,16 @@ function QueueDisplaySettingsTab() {
   const qc = useQueryClient();
   const [roomKey, setRoomKey] = useState("usg");
   const [previewKey, setPreviewKey] = useState(0); // bump to force iframe reload
+  const [addingRoom, setAddingRoom] = useState(false);
+  const [newRoomName, setNewRoomName] = useState("");
+
+  // List of all configured displays (MRI, CT, X-Ray, USG, Reception, etc.)
+  // — fully dynamic, no fixed list. Doctors add rooms from here; each gets
+  // its own independent settings row and its own /display/:roomKey URL.
+  const { data: rooms } = useQuery<{ roomKey: string; roomTitle: string; displayName: string }[]>({
+    queryKey: ["queue-display-rooms"],
+    queryFn: () => api.get("/api/settings/queue-display"),
+  });
 
   const { data, isLoading } = useQuery<QueueDisplaySettingsForm>({
     queryKey: ["queue-display-settings-admin", roomKey],
@@ -6739,6 +6749,28 @@ function QueueDisplaySettingsTab() {
   useEffect(() => {
     if (data) setForm(data);
   }, [data]);
+
+  const createRoom = useMutation({
+    mutationFn: (key: string) => api.patch(`/api/settings/queue-display/${key}`, { roomTitle: key.toUpperCase().replace(/-/g, " ") + " ROOM" }),
+    onSuccess: (_res, key) => {
+      qc.invalidateQueries({ queryKey: ["queue-display-rooms"] });
+      setRoomKey(key);
+      setAddingRoom(false);
+      setNewRoomName("");
+      toast({ title: `${key.toUpperCase()} room display created` });
+    },
+    onError: (err: any) => toast({ title: "Could not create room", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
+  });
+
+  const deleteRoom = useMutation({
+    mutationFn: (key: string) => api.delete(`/api/settings/queue-display/${key}`),
+    onSuccess: (_res, key) => {
+      qc.invalidateQueries({ queryKey: ["queue-display-rooms"] });
+      toast({ title: `${key.toUpperCase()} display removed` });
+      setRoomKey((prev) => (prev === key ? "usg" : prev));
+    },
+    onError: (err: any) => toast({ title: "Delete failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
+  });
 
   const save = useMutation({
     mutationFn: (body: QueueDisplaySettingsForm) => api.patch(`/api/settings/queue-display/${roomKey}`, body),
@@ -6814,17 +6846,69 @@ function QueueDisplaySettingsTab() {
         </div>
       </div>
 
-      <div className="bg-card border border-card-border rounded-xl p-4 flex items-center gap-3">
+      <div className="bg-card border border-card-border rounded-xl p-4 flex items-center gap-3 flex-wrap">
         <Label className="text-sm shrink-0">Room</Label>
         <Select value={roomKey} onValueChange={setRoomKey}>
           <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="usg">USG Room</SelectItem>
-            <SelectItem value="xray">X-Ray Room</SelectItem>
-            <SelectItem value="reception">Reception</SelectItem>
+            {(rooms && rooms.length > 0 ? rooms : [{ roomKey: "usg", roomTitle: "USG ROOM", displayName: "" }]).map((r) => (
+              <SelectItem key={r.roomKey} value={r.roomKey}>{r.roomTitle || r.roomKey.toUpperCase()}</SelectItem>
+            ))}
           </SelectContent>
         </Select>
-        <span className="text-xs text-muted-foreground">Each room has its own independent settings.</span>
+
+        {roomKey !== "usg" && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-red-600 hover:text-red-700"
+            onClick={() => {
+              if (confirm(`Remove the "${roomKey.toUpperCase()}" display? This only deletes its TV settings, not any patient/queue data.`)) {
+                deleteRoom.mutate(roomKey);
+              }
+            }}
+          >
+            <Trash2 size={13} className="mr-1" /> Remove room
+          </Button>
+        )}
+
+        {addingRoom ? (
+          <div className="flex items-center gap-2">
+            <Input
+              autoFocus
+              value={newRoomName}
+              onChange={(e) => setNewRoomName(e.target.value)}
+              placeholder="e.g. mri, ct, xray-2"
+              className="w-40 h-8 text-sm"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  const key = newRoomName.trim().toLowerCase().replace(/[^a-z0-9-]/g, "-");
+                  if (key) createRoom.mutate(key);
+                }
+                if (e.key === "Escape") setAddingRoom(false);
+              }}
+            />
+            <Button
+              size="sm"
+              onClick={() => {
+                const key = newRoomName.trim().toLowerCase().replace(/[^a-z0-9-]/g, "-");
+                if (key) createRoom.mutate(key);
+              }}
+              disabled={!newRoomName.trim() || createRoom.isPending}
+            >
+              Create
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => { setAddingRoom(false); setNewRoomName(""); }}>Cancel</Button>
+          </div>
+        ) : (
+          <Button variant="outline" size="sm" onClick={() => setAddingRoom(true)}>
+            <Plus size={13} className="mr-1" /> Add room (MRI, CT, X-Ray…)
+          </Button>
+        )}
+
+        <span className="text-xs text-muted-foreground w-full">
+          Each room (MRI, CT, X-Ray, USG, Reception…) has its own independent branding, QR code, and TV URL at <code className="px-1 py-0.5 bg-black/5 dark:bg-white/10 rounded">/display/{roomKey}</code>.
+        </span>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[1fr_420px] gap-4">
