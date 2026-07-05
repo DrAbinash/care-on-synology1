@@ -1,11 +1,11 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import {
   Phone, Mail, MapPin, ChevronLeft, CalendarCheck, Clock,
   Star, Shield, Zap, Check, ChevronRight, Loader2, ArrowLeft, Sparkles,
   Stethoscope, FlaskConical, Package, User, CreditCard,
   CalendarDays, MessageCircle, QrCode, Printer, Receipt,
 } from "lucide-react";
-import { QRCodeSVG } from "qrcode.react";
+import { QRCodeSVG, QRCodeCanvas } from "qrcode.react";
 import type { SiteSettings } from "../types";
 import { SelfRegistrationForm } from "../../../diagnostic-erp/src/components/SelfRegistrationForm";
 
@@ -167,6 +167,10 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
   } | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [tokenNo, setTokenNo] = useState<number | null>(null);
+  // Hidden canvas used only to generate a real, scannable QR image for the
+  // printable receipt popup (document.write() can't render React components,
+  // so we render this once, then read its data-URL when printing).
+  const receiptQrRef = useRef<HTMLCanvasElement>(null);
 
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
   const mode = useMemo(() => (params.get("mode") || "online") as "online" | "kiosk" | "qr", [params]);
@@ -1172,6 +1176,15 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                 </div>
               )}
 
+              {/* Hidden — renders a real, scannable QR for the printable receipt.
+                  Never shown to the patient; only its canvas data-URL is read
+                  when "Print Receipt" is clicked. */}
+              {successRef && (
+                <div style={{ position: "absolute", left: -9999, top: -9999 }} aria-hidden="true">
+                  <QRCodeCanvas ref={receiptQrRef} value={successRef} size={160} level="M" includeMargin={false} />
+                </div>
+              )}
+
               <div style={{ display: "flex", gap: ".75rem", justifyContent: "center", flexWrap: "wrap" }}>
                 <button
                   style={{ ...btnPrimary, textDecoration: "none" }}
@@ -1196,13 +1209,23 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
 
                     const win = window.open("", "_blank", "width=600,height=850");
                     if (win) {
+                      // Real QR — read the hidden canvas's data-URL (falls back to no QR if not ready)
+                      const qrDataUrl = receiptQrRef.current?.toDataURL("image/png") || "";
+                      const clinicName = settings.siteTitle || "Care Diagnostics";
+                      const clinicAddress = settings.address || workAddr;
+                      const logoHtml = settings.logoUrl
+                        ? `<img src="${settings.logoUrl}" alt="${clinicName}" style="max-height:48px;max-width:160px;object-fit:contain;display:block;margin:0 auto 6px" />`
+                        : "";
+
                       win.document.write(`
-                        <html><head><title>Booking Receipt – Care Diagnostics</title>
+                        <html><head><title>Booking Receipt – ${clinicName}</title>
                         <style>
                           @page { size: A4; margin: 0.4in; }
                           * { box-sizing: border-box; }
                           body { font-family: 'Segoe UI', system-ui, sans-serif; padding: 20px; color: #1f2937; line-height: 1.5; }
-                          h1 { font-size: 24px; font-weight: 800; margin: 0 0 8px 0; text-align: center; letter-spacing: -0.5px; }
+                          .clinic-header { text-align: center; margin-bottom: 10px; }
+                          h1 { font-size: 20px; font-weight: 900; margin: 0 0 4px 0; text-align: center; letter-spacing: -0.3px; text-transform: uppercase; }
+                          .clinic-address { font-size: 11px; color: #6b7280; text-align: center; margin: 0 0 12px; }
                           .ref { font-family: 'Courier New', monospace; font-size: 18px; font-weight: 900; color: #0369a1; text-align: center; margin: 12px 0 16px; letter-spacing: 1px; }
                           .row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-size: 13px; }
                           .label { color: #6b7280; font-weight: 500; }
@@ -1216,7 +1239,12 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                           .qr-img { border: 1px solid #d1d5db; padding: 4px; border-radius: 4px; background: white; }
                           strong { font-weight: 700; color: #1f2937; }
                         </style></head><body>
-                        <h1>Care Diagnostics – Booking Receipt</h1>
+                        <div class="clinic-header">
+                          ${logoHtml}
+                          <h1>${clinicName}</h1>
+                          ${clinicAddress ? `<div class="clinic-address">${clinicAddress}</div>` : ""}
+                        </div>
+                        <div style="font-size:12px;font-weight:700;text-align:center;color:#374151;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px">Booking Receipt</div>
                         <div class="ref">${successRef}</div>
                         
                         ${tokenNo ? `
@@ -1240,30 +1268,14 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                         <div class="row"><span class="label">Amount Paid</span><strong class="${confirmedBooking?.isUnconfirmedQr ? '' : 'paid'}" style="${confirmedBooking?.isUnconfirmedQr ? 'color:orange;' : ''}">${confirmedBooking?.isUnconfirmedQr ? `Amount ${fmt(Number(confirmedBooking?.totalAmount || 0))} (To Be Confirmed)` : fmt(Number(confirmedBooking?.totalAmount || 0))}</strong></div>
                         <div class="row"><span class="label">Status</span><strong class="${confirmedBooking?.isUnconfirmedQr ? '' : 'paid'}" style="${confirmedBooking?.isUnconfirmedQr ? 'color:orange;' : ''}">${confirmedBooking?.isUnconfirmedQr ? "Confirmed on confirmation of Payment" : (confirmedBooking?.status || "Paid")}</strong></div>
                         
+                        ${qrDataUrl ? `
                         <div class="qr-box">
-                          <canvas id="qrCanvas" style="border: 1px solid #ccc; padding: 4px; border-radius: 4px;"></canvas>
+                          <img class="qr-img" src="${qrDataUrl}" width="100" height="100" alt="Booking reference QR code" />
                           <div style="font-size: .7rem; color: #666; margin-top: .25rem;">Scan to verify booking reference</div>
-                          <script>
-                            const canvas = document.getElementById('qrCanvas');
-                            if (canvas) {
-                              const ctx = canvas.getContext('2d');
-                              canvas.width = 100;
-                              canvas.height = 100;
-                              ctx.fillStyle = '#ffffff';
-                              ctx.fillRect(0, 0, 100, 100);
-                              ctx.fillStyle = '#000000';
-                              const ref = '${successRef}';
-                              for (let i = 0; i < 25; i++) {
-                                for (let j = 0; j < 25; j++) {
-                                  const hash = (ref.charCodeAt((i + j) % ref.length) ^ (i * j)) % 2;
-                                  if (hash === 0) ctx.fillRect(j * 4, i * 4, 4, 4);
-                                }
-                              }
-                            }
-                          </script>
                         </div>
+                        ` : ''}
 
-                        <div class="footer">Thank you for choosing Care Diagnostics, Deoghar.<br/>${phone} | ${email}</div>
+                        <div class="footer">Thank you for choosing ${clinicName}.<br/>${phone} | ${email}</div>
                         </body></html>
                       `);
                       win.document.close();
