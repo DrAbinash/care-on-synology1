@@ -2120,7 +2120,22 @@ function OnlineBookingTab() {
   }, [data]);
 
   const save = useMutation({
-    mutationFn: (body: OnlineBookingSettings) => api.put("/api/clinic-settings", body),
+    mutationFn: async (body: OnlineBookingSettings) => {
+      // Save to clinic settings
+      await api.put("/api/clinic-settings", body);
+      // Also sync service images to website settings
+      if (body.serviceImagesEnabled || body.serviceImages) {
+        try {
+          await api.patch("/api/website/settings", {
+            serviceImagesEnabled: body.serviceImagesEnabled,
+            serviceImages: body.serviceImages,
+          });
+        } catch (err) {
+          // Log but don't fail if website sync fails (clinic settings saved successfully)
+          console.warn("Warning: Website settings sync failed, but clinic settings saved", err);
+        }
+      }
+    },
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["clinic-settings"] }); toast({ title: "Online booking settings saved" }); },
     onError: (err: any) => toast({ title: "Save failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
   });

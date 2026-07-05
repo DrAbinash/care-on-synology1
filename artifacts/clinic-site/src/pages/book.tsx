@@ -725,6 +725,97 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
           </div>
         ) : step === 1 ? (
           <div>
+            {/* Service Photo Tiles — Background images for service categories */}
+            {settings.serviceImagesEnabled && settings.serviceImages && (() => {
+              let serviceImgs: Record<string, string> = {};
+              try {
+                serviceImgs = JSON.parse(settings.serviceImages);
+              } catch {
+                // fallback
+              }
+              const serviceLabels: Record<string, string> = {
+                opd: "OPD Consultation",
+                emergency: "Emergency",
+                usg: "Ultrasound",
+                xray: "X-Ray",
+                ct: "CT Scan",
+                mri: "MRI Scan",
+                pathology: "Pathology",
+                packages: "Health Packages",
+                home_collection: "Home Collection",
+                doctor: "Doctor Consultation",
+              };
+              const hasImages = Object.values(serviceImgs).some((url) => url && url.trim() !== "");
+              if (!hasImages) return null;
+
+              return (
+                <div style={{ marginBottom: "1.5rem" }}>
+                  <h3 style={{ fontWeight: 700, fontSize: "1rem", marginBottom: "0.75rem", color: "hsl(var(--cd-slate))" }}>
+                    Our Services
+                  </h3>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "0.75rem" }}>
+                    {Object.entries(serviceLabels).map(([key, label]) => {
+                      const imgUrl = serviceImgs[key];
+                      if (!imgUrl || imgUrl.trim() === "") return null;
+
+                      return (
+                        <div
+                          key={key}
+                          style={{
+                            position: "relative",
+                            height: "180px",
+                            borderRadius: "var(--site-radius)",
+                            overflow: "hidden",
+                            backgroundImage: `url("${imgUrl}")`,
+                            backgroundSize: "cover",
+                            backgroundPosition: "center",
+                            border: "2px solid hsl(var(--site-border) / .2)",
+                            transition: "transform .2s, box-shadow .2s",
+                            cursor: "pointer",
+                          }}
+                          onMouseEnter={(e) => {
+                            const el = e.currentTarget as HTMLDivElement;
+                            el.style.transform = "translateY(-4px)";
+                            el.style.boxShadow = "0 10px 25px -5px rgba(0, 0, 0, 0.15)";
+                          }}
+                          onMouseLeave={(e) => {
+                            const el = e.currentTarget as HTMLDivElement;
+                            el.style.transform = "translateY(0)";
+                            el.style.boxShadow = "none";
+                          }}
+                        >
+                          {/* Dark overlay to ensure text readability */}
+                          <div
+                            style={{
+                              position: "absolute",
+                              inset: 0,
+                              background: "linear-gradient(180deg, rgba(0,0,0,0.2) 0%, rgba(0,0,0,0.5) 100%)",
+                            }}
+                          />
+                          {/* Service label */}
+                          <div
+                            style={{
+                              position: "absolute",
+                              bottom: 0,
+                              left: 0,
+                              right: 0,
+                              padding: "0.75rem",
+                              color: "#fff",
+                              fontWeight: 700,
+                              fontSize: "0.95rem",
+                              textAlign: "center",
+                            }}
+                          >
+                            {label}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Quick Test Slots — 8 fixed-width boxes in 2 rows for fast selection (McDonald's-style kiosk) */}
             {config?.quickTestIds && config.quickTestIds.length > 0 && config.quickTestIds.some((id) => id !== null) && (
               <div style={{

@@ -239,6 +239,7 @@ websiteRouter.patch("/settings", requireStaffAuth, requireStaffPermission("/webs
     "googleAnalyticsId", "googleTagManagerId", "googleAdsenseId",
     "metaPixelId", "facebookMetaTag", "pinterestMetaTag",
     "socialLinks",
+    "serviceImagesEnabled", "serviceImages",
   ];
 
   if (isAdminRole(req)) {
