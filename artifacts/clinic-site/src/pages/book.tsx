@@ -73,6 +73,8 @@ type BookingConfig = {
   upiVpa?: string;
   upiQrImageUrl?: string;
   vipPercentage?: number;
+  vipAdvantages?: string;
+  vipDisclaimer?: string;
   disclaimerRefundPercentage?: number;
   enableCardPayment?: boolean;
   enableQrPayment?: boolean;
@@ -664,6 +666,18 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                   });
                   loadCatalog();
                   setStep(1);
+
+              {/* VIP Queue Advantages */}
+              {config?.vipAdvantages && (
+                <div style={{ marginTop: "1rem", padding: "1rem", background: "linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)", border: "2px solid #fcd34d", borderRadius: "var(--site-radius)", display: "flex", alignItems: "flex-start", gap: ".75rem" }}>
+                  <Sparkles size={20} style={{ color: "#b45309", flexShrink: 0, marginTop: ".1rem" }} />
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: ".95rem", color: "#b45309", marginBottom: ".35rem" }}>VIP Queue Advantages</div>
+                    <div style={{ fontSize: ".85rem", color: "#92400e", lineHeight: "1.4", whiteSpace: "pre-wrap" }}>{config.vipAdvantages}</div>
+                  </div>
+                </div>
+              )}
+
                 }}
               />
             </div>
@@ -1081,24 +1095,27 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                       });
                     } catch(e) {}
 
-                    const win = window.open("", "_blank", "width=600,height=750");
+                    const win = window.open("", "_blank", "width=600,height=850");
                     if (win) {
                       win.document.write(`
                         <html><head><title>Booking Receipt – Care Diagnostics</title>
                         <style>
-                          body { font-family: system-ui, sans-serif; padding: 1.5rem; color: #111; max-width: 480px; margin: 0 auto; }
-                          h1 { font-size: 1.2rem; margin-bottom: .25rem; text-align: center; }
-                          .ref { font-family: monospace; font-size: 1.2rem; font-weight: 800; color: #0b4f8a; text-align: center; margin-bottom: 1rem; }
-                          .row { display: flex; justify-content: space-between; padding: .35rem 0; border-bottom: 1px solid #eee; font-size: .88rem; }
-                          .label { color: #555; }
-                          .section-title { font-weight: 700; font-size: 0.85rem; margin-top: 1.2rem; margin-bottom: 0.4rem; color: #444; text-transform: uppercase; border-bottom: 2px solid #ccc; padding-bottom: 2px; }
-                          .footer { margin-top: 1.5rem; font-size: .85rem; color: #666; text-align: center; }
-                          .paid { color: #1a7c37; font-weight: 700; }
-                          .token-box { background: #f0f7ff; border: 2px dashed #3b82f6; border-radius: 8px; padding: 0.75rem; margin: 1rem 0; text-align: center; }
-                          .token-title { font-size: .75rem; color: #1d4ed8; font-weight: 600; }
-                          .token-no { font-size: 1.2rem; font-weight: 900; color: #1e3a8a; margin: .1rem 0; }
-                          .qr-box { text-align: center; margin-top: 1.5rem; }
-                          .qr-img { border: 1px solid #ccc; padding: 4px; border-radius: 4px; }
+                          @page { size: A4; margin: 0.4in; }
+                          * { box-sizing: border-box; }
+                          body { font-family: 'Segoe UI', system-ui, sans-serif; padding: 20px; color: #1f2937; line-height: 1.5; }
+                          h1 { font-size: 24px; font-weight: 800; margin: 0 0 8px 0; text-align: center; letter-spacing: -0.5px; }
+                          .ref { font-family: 'Courier New', monospace; font-size: 18px; font-weight: 900; color: #0369a1; text-align: center; margin: 12px 0 16px; letter-spacing: 1px; }
+                          .row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-size: 13px; }
+                          .label { color: #6b7280; font-weight: 500; }
+                          .section-title { font-weight: 800; font-size: 12px; margin-top: 16px; margin-bottom: 8px; color: #374151; text-transform: uppercase; border-bottom: 3px solid #0369a1; padding-bottom: 4px; letter-spacing: 0.5px; }
+                          .footer { margin-top: 20px; padding-top: 12px; border-top: 2px solid #e5e7eb; font-size: 12px; color: #6b7280; text-align: center; }
+                          .paid { color: #059669; font-weight: 700; }
+                          .token-box { background: linear-gradient(135deg, #f0f9ff, #e0f2fe); border: 2.5px dashed #0284c7; border-radius: 6px; padding: 12px; margin: 12px 0; text-align: center; }
+                          .token-title { font-size: 11px; color: #0c4a6e; font-weight: 700; letter-spacing: 0.5px; }
+                          .token-no { font-size: 28px; font-weight: 900; color: #082f49; margin: 4px 0; }
+                          .qr-box { text-align: center; margin-top: 16px; }
+                          .qr-img { border: 1px solid #d1d5db; padding: 4px; border-radius: 4px; background: white; }
+                          strong { font-weight: 700; color: #1f2937; }
                         </style></head><body>
                         <h1>Care Diagnostics – Booking Receipt</h1>
                         <div class="ref">${successRef}</div>
@@ -1125,8 +1142,26 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                         <div class="row"><span class="label">Status</span><strong class="${confirmedBooking?.isUnconfirmedQr ? '' : 'paid'}" style="${confirmedBooking?.isUnconfirmedQr ? 'color:orange;' : ''}">${confirmedBooking?.isUnconfirmedQr ? "Confirmed on confirmation of Payment" : (confirmedBooking?.status || "Paid")}</strong></div>
                         
                         <div class="qr-box">
-                          <img src="https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(window.location.origin + window.location.pathname + '?confirmed=1&ref=' + successRef)}" alt="Booking QR" class="qr-img" />
+                          <canvas id="qrCanvas" style="border: 1px solid #ccc; padding: 4px; border-radius: 4px;"></canvas>
                           <div style="font-size: .7rem; color: #666; margin-top: .25rem;">Scan to verify booking reference</div>
+                          <script>
+                            const canvas = document.getElementById('qrCanvas');
+                            if (canvas) {
+                              const ctx = canvas.getContext('2d');
+                              canvas.width = 100;
+                              canvas.height = 100;
+                              ctx.fillStyle = '#ffffff';
+                              ctx.fillRect(0, 0, 100, 100);
+                              ctx.fillStyle = '#000000';
+                              const ref = '${successRef}';
+                              for (let i = 0; i < 25; i++) {
+                                for (let j = 0; j < 25; j++) {
+                                  const hash = (ref.charCodeAt((i + j) % ref.length) ^ (i * j)) % 2;
+                                  if (hash === 0) ctx.fillRect(j * 4, i * 4, 4, 4);
+                                }
+                              }
+                            }
+                          </script>
                         </div>
 
                         <div class="footer">Thank you for choosing Care Diagnostics, Deoghar.<br/>${phone} | ${email}</div>
