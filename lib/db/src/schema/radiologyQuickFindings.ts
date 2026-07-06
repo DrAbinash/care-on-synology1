@@ -16,6 +16,9 @@ export const radiologyStudyTabsTable = pgTable(
     name: text("name").notNull(),
     sortOrder: integer("sort_order").notNull().default(0),
     isActive: boolean("is_active").notNull().default(true),
+    // Phase 4 engine: auto-filled Technique + one-click baseline normals
+    techniqueText: text("technique_text").notNull().default(""),
+    normalText: text("normal_text").notNull().default(""),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },
@@ -40,6 +43,9 @@ export const radiologyQuickFindingsTable = pgTable(
     icdCode: text("icd_code"),
     tags: text("tags").notNull().default(""),           // comma-separated
     suggests: text("suggests").notNull().default(""),   // comma-separated labels
+    // Phase 4 engine: which property chips this button shows when selected
+    // (comma list of: side, severity, chronicity, level, measurement)
+    properties: text("properties").notNull().default(""),
     category: text("category"),
     sortOrder: integer("sort_order").notNull().default(0),
     isActive: boolean("is_active").notNull().default(true),

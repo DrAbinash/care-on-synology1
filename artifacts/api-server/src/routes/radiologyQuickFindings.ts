@@ -120,6 +120,8 @@ router.patch("/tabs/:id", requireAdminRole, async (req, res) => {
   if (typeof req.body?.name === "string" && req.body.name.trim()) updates.name = req.body.name.trim();
   if (req.body?.sortOrder !== undefined) updates.sortOrder = Number(req.body.sortOrder) || 0;
   if (typeof req.body?.isActive === "boolean") updates.isActive = req.body.isActive;
+  if (typeof req.body?.techniqueText === "string") updates.techniqueText = req.body.techniqueText;
+  if (typeof req.body?.normalText === "string") updates.normalText = req.body.normalText;
   try {
     const [row] = await db.update(radiologyStudyTabsTable).set(updates).where(eq(radiologyStudyTabsTable.id, id)).returning();
     if (!row) {
@@ -163,6 +165,7 @@ router.post("/findings", requireAdminRole, async (req, res) => {
       icdCode: typeof req.body?.icdCode === "string" && req.body.icdCode.trim() ? req.body.icdCode.trim() : null,
       tags: typeof req.body?.tags === "string" ? req.body.tags : "",
       suggests: typeof req.body?.suggests === "string" ? req.body.suggests : "",
+      properties: typeof req.body?.properties === "string" ? req.body.properties : "",
       category: typeof req.body?.category === "string" && req.body.category.trim() ? req.body.category.trim() : null,
       sortOrder: Number.isFinite(Number(req.body?.sortOrder)) ? Number(req.body.sortOrder) : 0,
       isActive: req.body?.isActive !== false,
@@ -190,6 +193,7 @@ router.patch("/findings/:id", requireAdminRole, async (req, res) => {
   if (req.body?.icdCode !== undefined) updates.icdCode = typeof req.body.icdCode === "string" && req.body.icdCode.trim() ? req.body.icdCode.trim() : null;
   if (typeof req.body?.tags === "string") updates.tags = req.body.tags;
   if (typeof req.body?.suggests === "string") updates.suggests = req.body.suggests;
+  if (typeof req.body?.properties === "string") updates.properties = req.body.properties;
   if (req.body?.category !== undefined) updates.category = typeof req.body.category === "string" && req.body.category.trim() ? req.body.category.trim() : null;
   if (req.body?.sortOrder !== undefined) updates.sortOrder = Number(req.body.sortOrder) || 0;
   if (typeof req.body?.isActive === "boolean") updates.isActive = req.body.isActive;

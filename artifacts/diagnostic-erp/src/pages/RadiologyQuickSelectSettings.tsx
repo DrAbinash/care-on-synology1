@@ -23,7 +23,7 @@ type QuickSelectData = { tabs: QuickStudyTab[]; findings: QuickFinding[]; measur
 
 const EMPTY_FINDING = {
   studyType: "", label: "", findingText: "", impressionText: "",
-  techniqueText: "", recommendationText: "", icdCode: "", tags: "", suggests: "",
+  techniqueText: "", recommendationText: "", icdCode: "", tags: "", suggests: "", properties: "",
   category: "", sortOrder: 0, isActive: true,
 };
 
@@ -37,6 +37,7 @@ export default function RadiologyQuickSelectSettings() {
   const [newTabName, setNewTabName] = useState("");
   const [editingFinding, setEditingFinding] = useState<(typeof EMPTY_FINDING & { id?: number }) | null>(null);
   const [editingMeasurement, setEditingMeasurement] = useState<(typeof EMPTY_MEASUREMENT & { id?: number }) | null>(null);
+  const [editingTab, setEditingTab] = useState<{ id: number; name: string; techniqueText: string; normalText: string } | null>(null);
   const [filterTab, setFilterTab] = useState<string>("");
 
   const { data, isLoading } = useQuery<QuickSelectData>({
@@ -55,8 +56,9 @@ export default function RadiologyQuickSelectSettings() {
     onError: onErr,
   });
   const updateTab = useMutation({
-    mutationFn: ({ id, ...body }: { id: number; isActive?: boolean; sortOrder?: number }) =>
+    mutationFn: ({ id, ...body }: { id: number; isActive?: boolean; sortOrder?: number; techniqueText?: string; normalText?: string }) =>
       api.patch(`/api/radiology/quick-select/tabs/${id}`, body),
+    onSettled: () => setEditingTab(null),
     onSuccess: invalidate,
     onError: onErr,
   });
@@ -125,6 +127,13 @@ export default function RadiologyQuickSelectSettings() {
                 className="scale-75"
               />
               <button
+                onClick={() => setEditingTab({ id: t.id, name: t.name, techniqueText: (t as QuickStudyTab).techniqueText ?? "", normalText: (t as QuickStudyTab).normalText ?? "" })}
+                className="text-muted-foreground hover:text-primary"
+                title="Edit auto-technique and baseline normals"
+              >
+                <Pencil size={12} />
+              </button>
+              <button
                 onClick={() => { if (window.confirm(`Delete study tab "${t.name}"? Its buttons stay in the list below but won't show until reassigned.`)) deleteTab.mutate(t.id); }}
                 className="text-muted-foreground hover:text-destructive"
               >
@@ -134,6 +143,28 @@ export default function RadiologyQuickSelectSettings() {
           ))}
           {tabs.length === 0 && !isLoading && <p className="text-xs text-muted-foreground">No study tabs yet.</p>}
         </div>
+        {editingTab && (
+          <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
+            <p className="text-xs font-semibold">Edit "{editingTab.name}" — Abnormality Engine texts</p>
+            <div>
+              <Label className="text-[11px]">Auto technique (fills Technique when this tab is selected and Technique is empty)</Label>
+              <Textarea value={editingTab.techniqueText} onChange={(e) => setEditingTab({ ...editingTab, techniqueText: e.target.value })} className="text-sm min-h-[40px]" />
+            </div>
+            <div>
+              <Label className="text-[11px]">Baseline normals (one-click "+ baseline normals" button text)</Label>
+              <Textarea value={editingTab.normalText} onChange={(e) => setEditingTab({ ...editingTab, normalText: e.target.value })} className="text-sm min-h-[52px]" />
+            </div>
+            <div className="flex gap-2 justify-end">
+              <Button size="sm" variant="outline" className="h-7" onClick={() => setEditingTab(null)}>
+                <X size={12} /> Cancel
+              </Button>
+              <Button size="sm" className="h-7" disabled={updateTab.isPending}
+                onClick={() => updateTab.mutate({ id: editingTab.id, techniqueText: editingTab.techniqueText, normalText: editingTab.normalText })}>
+                <Save size={12} /> Save
+              </Button>
+            </div>
+          </div>
+        )}
         <div className="flex gap-2 max-w-sm">
           <Input
             placeholder="New study tab (e.g. Shoulder)"
@@ -227,6 +258,10 @@ export default function RadiologyQuickSelectSettings() {
                 <Input value={editingFinding.suggests} onChange={(e) => setEditingFinding({ ...editingFinding, suggests: e.target.value })} className="h-8 text-sm" placeholder="DWI restriction, MRA advised" />
               </div>
             </div>
+            <div>
+              <Label className="text-[11px]">Property chips (comma list of: side, severity, chronicity, level, measurement)</Label>
+              <Input value={editingFinding.properties} onChange={(e) => setEditingFinding({ ...editingFinding, properties: e.target.value })} className="h-8 text-sm" placeholder="severity, level" />
+            </div>
             <div className="flex gap-2 justify-end">
               <Button size="sm" variant="outline" className="h-7" onClick={() => setEditingFinding(null)}>
                 <X size={12} /> Cancel
@@ -252,7 +287,7 @@ export default function RadiologyQuickSelectSettings() {
               <span className="font-medium shrink-0">{f.label}</span>
               <span className="text-xs text-muted-foreground truncate flex-1">{f.findingText || f.impressionText}</span>
               <Switch checked={f.isActive} onCheckedChange={(v) => toggleFinding.mutate({ id: f.id, isActive: v })} className="scale-75" />
-              <button onClick={() => setEditingFinding({ ...f, category: f.category ?? "", icdCode: f.icdCode ?? "", techniqueText: f.techniqueText ?? "", recommendationText: f.recommendationText ?? "", tags: f.tags ?? "", suggests: f.suggests ?? "" })} className="text-muted-foreground hover:text-primary">
+              <button onClick={() => setEditingFinding({ ...f, category: f.category ?? "", icdCode: f.icdCode ?? "", techniqueText: f.techniqueText ?? "", recommendationText: f.recommendationText ?? "", tags: f.tags ?? "", suggests: f.suggests ?? "", properties: f.properties ?? "" })} className="text-muted-foreground hover:text-primary">
                 <Pencil size={13} />
               </button>
               <button onClick={() => { if (window.confirm(`Delete "${f.label}"?`)) deleteFinding.mutate(f.id); }} className="text-muted-foreground hover:text-destructive">

@@ -26,7 +26,8 @@ import QuickFindingsPanel, {
   mergeBlock, removeBlock, mergeImpression, removeImpression,
   type QuickFinding,
 } from "@/components/radiology/QuickFindingsPanel";
-import { applySide, type Side } from "@/lib/sideSwap";
+import { type Side } from "@/lib/sideSwap";
+import { renderAbnormality, EMPTY_INSTANCE, type AbnormalityInstance } from "@/lib/abnormalityEngine";
 import { validateReport, computeQualityScore } from "@/lib/reportValidator";
 import { upsertMeasurement } from "@/lib/measurementVars";
 import CollapsibleSection from "@/components/radiology/CollapsibleSection";
@@ -304,7 +305,32 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // edited text is never touched (exact-match removal only).
   const [selectedQuickIds, setSelectedQuickIds] = useState<Set<number>>(new Set());
   const [quickSide, setQuickSide] = useState<Side>("left");
+  // Phase 4: one structured instance per selected abnormality.
+  const [quickInstances, setQuickInstances] = useState<Map<number, AbnormalityInstance>>(new Map());
   const insertedTextRef = useRef<Map<number, { finding: string; impression: string; technique: string; recommendation: string }>>(new Map());
+
+  /** Applies rendered abnormality sections to the report: exact-remove of
+   *  what was previously generated for this instance, then dedupe-merge of
+   *  the new render. Edited sentences no longer match exactly → removal
+   *  no-ops → manual edits always win. */
+  function applyRendered(id: number, next: { finding: string; impression: string; technique: string; recommendation: string } | null) {
+    const prev = insertedTextRef.current.get(id);
+    if (prev) {
+      if (prev.finding) setRawFindings((p) => removeBlock(p, prev.finding));
+      if (prev.impression) setImpression((p) => removeImpression(p, prev.impression));
+      if (prev.technique) setTechnique((p) => removeBlock(p, prev.technique));
+      if (prev.recommendation) setRecommendation((p) => removeBlock(p, prev.recommendation));
+    }
+    if (next) {
+      insertedTextRef.current.set(id, next);
+      if (next.finding) setRawFindings((p) => mergeBlock(p, next.finding));
+      if (next.impression) setImpression((p) => mergeImpression(p, next.impression));
+      if (next.technique) setTechnique((p) => mergeBlock(p, next.technique));
+      if (next.recommendation) setRecommendation((p) => mergeBlock(p, next.recommendation));
+    } else {
+      insertedTextRef.current.delete(id);
+    }
+  }
 
   function handleQuickToggle(f: QuickFinding, nowSelected: boolean) {
     setSelectedQuickIds((prev) => {
@@ -314,30 +340,38 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       return next;
     });
     if (nowSelected) {
-      const inserted = {
-        finding: f.findingText ? applySide(f.findingText, quickSide) : "",
-        impression: f.impressionText ? applySide(f.impressionText, quickSide) : "",
-        technique: f.techniqueText ? applySide(f.techniqueText, quickSide) : "",
-        recommendation: f.recommendationText ? applySide(f.recommendationText, quickSide) : "",
-      };
-      insertedTextRef.current.set(f.id, inserted);
-      if (inserted.finding) setRawFindings((prev) => mergeBlock(prev, inserted.finding));
-      if (inserted.impression) setImpression((prev) => mergeImpression(prev, inserted.impression));
-      if (inserted.technique) setTechnique((prev) => mergeBlock(prev, inserted.technique));
-      if (inserted.recommendation) setRecommendation((prev) => mergeBlock(prev, inserted.recommendation));
+      // New instance seeded from the global side selector.
+      const inst: AbnormalityInstance = { ...EMPTY_INSTANCE, side: quickSide };
+      setQuickInstances((prev) => new Map(prev).set(f.id, inst));
+      applyRendered(f.id, renderAbnormality(f, inst));
     } else {
-      // Remove exactly what this button inserted (fall back to the raw
-      // template if the map has no record, e.g. after a page reload).
-      const inserted = insertedTextRef.current.get(f.id) ?? {
-        finding: f.findingText, impression: f.impressionText,
-        technique: f.techniqueText, recommendation: f.recommendationText,
-      };
-      insertedTextRef.current.delete(f.id);
-      if (inserted.finding) setRawFindings((prev) => removeBlock(prev, inserted.finding));
-      if (inserted.impression) setImpression((prev) => removeImpression(prev, inserted.impression));
-      if (inserted.technique) setTechnique((prev) => removeBlock(prev, inserted.technique));
-      if (inserted.recommendation) setRecommendation((prev) => removeBlock(prev, inserted.recommendation));
+      setQuickInstances((prev) => {
+        const next = new Map(prev);
+        next.delete(f.id);
+        return next;
+      });
+      applyRendered(f.id, null);
     }
+  }
+
+  /** Phase 4: property chip changed → re-render this abnormality and
+   *  update the entire report instantly (all four sections). */
+  function handleInstanceUpdate(f: QuickFinding, patch: Partial<AbnormalityInstance>) {
+    const current = quickInstances.get(f.id) ?? { ...EMPTY_INSTANCE, side: quickSide };
+    const inst = { ...current, ...patch };
+    setQuickInstances((prev) => new Map(prev).set(f.id, inst));
+    applyRendered(f.id, renderAbnormality(f, inst));
+  }
+
+  /** Auto-fill Technique from the study tab — only when Technique is empty,
+   *  so an already-written technique is never overwritten. */
+  function handleAutoTechnique(text: string) {
+    setTechnique((prev) => (prev.trim() ? prev : text));
+  }
+
+  /** One-click baseline normals — dedupe-merged, never duplicated. */
+  function handleInsertNormals(text: string) {
+    setRawFindings((prev) => mergeBlock(prev, text));
   }
 
   // Smart Measurements (Phase 3): re-entering a measurement updates the
@@ -1630,6 +1664,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 onMeasurement={handleSmartMeasurement}
                 side={quickSide}
                 onSideChange={setQuickSide}
+                instances={quickInstances}
+                onUpdateInstance={handleInstanceUpdate}
+                onAutoTechnique={handleAutoTechnique}
+                onInsertNormals={handleInsertNormals}
                 disabled={isLocked}
                 initialStudyHint={`${entry?.modality ?? ""} ${entry?.studyDescription ?? ""}`}
                 isAdmin={isOwnerRole(session)}

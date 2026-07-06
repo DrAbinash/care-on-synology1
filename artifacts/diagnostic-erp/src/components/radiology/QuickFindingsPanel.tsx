@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Zap, Settings2, Star, Ruler, Lightbulb, Search } from "lucide-react";
 import { Link } from "wouter";
 import type { Side } from "@/lib/sideSwap";
+import { parseProperties, type AbnormalityInstance } from "@/lib/abnormalityEngine";
 
 /**
  * QuickFindingsPanel — Smart Reporting side panel (Phase 2).
@@ -36,6 +37,7 @@ export type QuickFinding = {
   icdCode: string | null;
   tags: string;
   suggests: string;
+  properties: string;
   category: string | null;
   sortOrder: number;
   isActive: boolean;
@@ -46,6 +48,8 @@ export type QuickStudyTab = {
   name: string;
   sortOrder: number;
   isActive: boolean;
+  techniqueText: string;
+  normalText: string;
 };
 
 export type QuickMeasurement = {
@@ -72,6 +76,13 @@ interface Props {
   disabled?: boolean;
   initialStudyHint?: string | null;
   isAdmin?: boolean;
+  /** Phase 4 engine: per-selected-button structured properties. */
+  instances?: Map<number, AbnormalityInstance>;
+  onUpdateInstance?: (finding: QuickFinding, patch: Partial<AbnormalityInstance>) => void;
+  /** Fired when a selected tab has an auto-technique text configured. */
+  onAutoTechnique?: (text: string) => void;
+  /** One-click baseline normals for a tab. */
+  onInsertNormals?: (text: string) => void;
 }
 
 const SIDES: Array<{ value: Side; label: string }> = [
@@ -82,6 +93,7 @@ const SIDES: Array<{ value: Side; label: string }> = [
 
 export default function QuickFindingsPanel({
   selectedIds, onToggle, onMeasurement, side, onSideChange, disabled, initialStudyHint, isAdmin,
+  instances, onUpdateInstance, onAutoTechnique, onInsertNormals,
 }: Props) {
   const qc = useQueryClient();
   const searchRef = useRef<HTMLInputElement>(null);
@@ -136,7 +148,11 @@ export default function QuickFindingsPanel({
   function toggleTab(name: string) {
     const next = new Set(effectiveTabs);
     if (next.has(name)) next.delete(name);
-    else next.add(name);
+    else {
+      next.add(name);
+      const tab = activeTabs.find((t) => t.name === name);
+      if (tab?.techniqueText) onAutoTechnique?.(tab.techniqueText);
+    }
     setSelectedTabs(next);
   }
 
@@ -276,10 +292,61 @@ export default function QuickFindingsPanel({
     );
   }
 
+  function PropertyChips({ f }: { f: QuickFinding }) {
+    const props = parseProperties(f.properties);
+    if (props.length === 0 || !onUpdateInstance) return null;
+    const inst = instances?.get(f.id) ?? { side: "", severity: "", chronicity: "", level: "", value: "" };
+    const chip = (active: boolean) =>
+      `text-[9px] px-1.5 py-0.5 rounded border transition-colors ${
+        active ? "bg-primary text-primary-foreground border-primary" : "bg-background text-muted-foreground hover:bg-muted/50"
+      }`;
+    return (
+      <div className="flex flex-wrap items-center gap-1 pl-4 pb-1">
+        {props.includes("side") && (["left", "right", "bilateral"] as const).map((s) => (
+          <button key={s} className={chip(inst.side === s)} disabled={disabled}
+            onClick={() => onUpdateInstance(f, { side: inst.side === s ? "" : s })}>
+            {s === "bilateral" ? "B/L" : s[0].toUpperCase() + s.slice(1)}
+          </button>
+        ))}
+        {props.includes("severity") && (["mild", "moderate", "severe"] as const).map((s) => (
+          <button key={s} className={chip(inst.severity === s)} disabled={disabled}
+            onClick={() => onUpdateInstance(f, { severity: inst.severity === s ? "" : s })}>
+            {s[0].toUpperCase() + s.slice(1)}
+          </button>
+        ))}
+        {props.includes("chronicity") && (["acute", "chronic"] as const).map((s) => (
+          <button key={s} className={chip(inst.chronicity === s)} disabled={disabled}
+            onClick={() => onUpdateInstance(f, { chronicity: inst.chronicity === s ? "" : s })}>
+            {s[0].toUpperCase() + s.slice(1)}
+          </button>
+        ))}
+        {props.includes("level") && (
+          <input
+            value={inst.level}
+            disabled={disabled}
+            placeholder="Level (L4-L5)"
+            onChange={(e) => onUpdateInstance(f, { level: e.target.value })}
+            className="h-5 w-20 text-[9px] border rounded px-1 bg-background"
+          />
+        )}
+        {props.includes("measurement") && (
+          <input
+            value={inst.value}
+            disabled={disabled}
+            placeholder="mm"
+            onChange={(e) => onUpdateInstance(f, { value: e.target.value })}
+            className="h-5 w-12 text-[9px] border rounded px-1 bg-background"
+          />
+        )}
+      </div>
+    );
+  }
+
   function FindingButton({ f, index }: { f: QuickFinding; index?: number }) {
     const selected = selectedIds.has(f.id);
     const isFav = favoriteIds.has(f.id);
     return (
+      <div className="flex flex-col">
       <div className="flex items-center gap-0.5">
         <Button
           size="sm"
@@ -302,6 +369,8 @@ export default function QuickFindingsPanel({
         >
           <Star size={11} fill={isFav ? "currentColor" : "none"} />
         </button>
+      </div>
+      {selected && <PropertyChips f={f} />}
       </div>
     );
   }
@@ -360,6 +429,27 @@ export default function QuickFindingsPanel({
           );
         })}
       </div>
+
+      {/* One-click baseline normals for the selected tab(s) */}
+      {onInsertNormals && [...effectiveTabs].some((n) => activeTabs.find((t) => t.name === n)?.normalText) && (
+        <div className="flex flex-wrap gap-1 shrink-0">
+          {[...effectiveTabs].map((name) => {
+            const tab = activeTabs.find((t) => t.name === name);
+            if (!tab?.normalText) return null;
+            return (
+              <button
+                key={name}
+                disabled={disabled}
+                onClick={() => onInsertNormals(tab.normalText)}
+                className="text-[9px] px-2 py-0.5 rounded-md border bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-300 border-emerald-200 hover:bg-emerald-100"
+                title={tab.normalText}
+              >
+                + {name} baseline normals
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto flex flex-col gap-2 min-h-0">
         {/* Favorites strip */}
