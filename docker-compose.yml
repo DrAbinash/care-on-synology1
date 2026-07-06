@@ -193,6 +193,11 @@ services:
       PACS_PROVIDER: ${PACS_PROVIDER:-orthanc}
       PACS_VIEWER_TYPE: ${PACS_VIEWER_TYPE:-ohif}
       OHIF_URL: ${OHIF_URL:-}
+      # Browser/Weasis-reachable WADO URL (distinct from ORTHANC_INTERNAL_URL,
+      # which is container-to-container only) — never a Docker bridge IP.
+      WEASIS_WADO_PUBLIC_URL: ${WEASIS_WADO_PUBLIC_URL:-}
+      # Optional: dashboard health-check probe override (see .env.example)
+      OHIF_INTERNAL_URL: ${OHIF_INTERNAL_URL:-}
       WADO_URL: ${WADO_URL:-}
     volumes:
       - object_storage:/app/data/object-storage

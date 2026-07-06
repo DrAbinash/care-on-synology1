@@ -1,6 +1,35 @@
 import { db } from "@workspace/db";
 import { pacsSettingsTable } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
+import { logger } from "../logger";
+
+// ── Docker bridge IP detection ──────────────────────────────────────────────
+// Docker's default bridge network hands containers addresses in 172.16.0.0/12
+// (e.g. 172.17.0.x, 172.18.0.x...). Those addresses only resolve *inside* the
+// Docker host — a doctor's browser or a Weasis install on another machine can
+// never reach them. If one of these leaks into a URL meant for browser/client
+// launch (OHIF, Weasis WADO), the viewer silently fails to load.
+//
+// This differs from care ERP's actual clinic LAN, which happens to also sit
+// in a private range (e.g. 172.16.1.139) — see isBridgeIp below, which is
+// deliberately narrower than a private-IP check to avoid false-flagging a
+// real clinic LAN address that happens to start with 172.16 or 172.31.
+export function isDockerBridgeIp(value: string | undefined | null): boolean {
+  if (!value) return false;
+  // Docker's default bridge and user-defined bridge networks both live in
+  // 172.17.x.x–172.31.x.x by convention; care-compose networks in this repo
+  // use 172.2x.x.x. We match the whole 172.16.0.0/12 block EXCEPT the
+  // clinic's own known LAN octet (172.16.1.x), which is a real, browser
+  // reachable address, not a bridge address, if that's genuinely the LAN.
+  const m = value.match(/172\.(1[6-9]|2[0-9]|3[01])\.(\d+)\./);
+  if (!m) return false;
+  const secondOctet = Number(m[1]);
+  const thirdOctet = Number(m[2]);
+  // 172.16.1.x is treated as a real LAN address (matches this clinic's
+  // documented LAN subnet), everything else in 172.16.0.0/12 is bridge-only.
+  if (secondOctet === 16 && thirdOctet === 1) return false;
+  return true;
+}
 
 export interface RadiologyConfig {
   // Orthanc Settings
@@ -51,12 +80,74 @@ export async function getRadiologyConfig(): Promise<RadiologyConfig> {
     return val ? parseInt(val, 10) : undefined;
   };
 
-  // Detected/default LAN fallback
-  const defaultHost = process.env.ORTHANC_URL 
-    ? new URL(process.env.ORTHANC_URL).hostname 
-    : "192.168.1.137";
+  // ── Public/browser-facing default host ────────────────────────────────────
+  // This host is used to build fallback URLs for OHIF, Orthanc WADO/DICOMweb,
+  // and Weasis — all things a doctor's BROWSER or a Weasis install on another
+  // machine must reach directly. It must NEVER resolve to a Docker bridge IP
+  // (172.17.x.x etc.) — only to the clinic's real LAN IP, Tailscale IP, or
+  // public domain. ORTHANC_INTERNAL_URL (container-to-container only, e.g.
+  // http://care-orthanc:8042) is deliberately never used here — see that var
+  // used correctly for internal probes in routes/pacsEnterprise.ts instead.
+  const orthancUrlCandidate = process.env.ORTHANC_URL;
+  let defaultHost = "192.168.1.137"; // last-resort placeholder — update via .env
+  if (orthancUrlCandidate) {
+    try {
+      const candidateHost = new URL(orthancUrlCandidate).hostname;
+      if (isDockerBridgeIp(candidateHost)) {
+        logger.warn(
+          { orthancUrlCandidate },
+          "ORTHANC_URL is set to a Docker bridge IP, which browsers and Weasis cannot reach. " +
+          "Ignoring it for browser/client launch URLs — set ORTHANC_URL to your clinic's real " +
+          "LAN IP (e.g. http://192.168.1.137:8042), Tailscale IP, or public domain instead. " +
+          "(Container-to-container Orthanc access should use ORTHANC_INTERNAL_URL, which is unaffected.)",
+        );
+      } else {
+        defaultHost = candidateHost;
+      }
+    } catch {
+      logger.warn({ orthancUrlCandidate }, "ORTHANC_URL is not a valid URL — falling back to default LAN host 192.168.1.137");
+    }
+  }
 
   const erpBase = process.env.PUBLIC_BASE_URL || `http://${defaultHost}:8888`;
+
+  // ── OHIF public/browser launch URL ────────────────────────────────────────
+  // OHIF_URL is the existing env var for this (see .env.example / docker-
+  // compose.yml) — reused as-is per "use existing env names, don't invent
+  // duplicates." If it's itself a bridge IP, treat it as unset and fall
+  // through to the guarded defaultHost above, with a clear warning.
+  let ohifPublicUrlEnv = process.env.OHIF_URL;
+  if (ohifPublicUrlEnv && isDockerBridgeIp(ohifPublicUrlEnv)) {
+    logger.warn(
+      { ohifPublicUrlEnv },
+      "OHIF_URL is set to a Docker bridge IP — browsers cannot reach it. " +
+      "Set OHIF_URL to your LAN IP (e.g. http://192.168.1.137:3010), Tailscale IP " +
+      "(e.g. http://100.65.255.115:3010), or your Cloudflare/public domain instead.",
+    );
+    ohifPublicUrlEnv = undefined;
+  }
+
+  // ── Weasis public/browser launch URL ──────────────────────────────────────
+  // WEASIS_WADO_PUBLIC_URL is a new, explicitly-documented env var (see
+  // .env.example) for the WADO endpoint Weasis itself connects to — distinct
+  // from ORTHANC_INTERNAL_URL, which is container-to-container only.
+  let weasisWadoPublicUrlEnv = process.env.WEASIS_WADO_PUBLIC_URL;
+  if (weasisWadoPublicUrlEnv && isDockerBridgeIp(weasisWadoPublicUrlEnv)) {
+    logger.warn(
+      { weasisWadoPublicUrlEnv },
+      "WEASIS_WADO_PUBLIC_URL is set to a Docker bridge IP — local Weasis installs cannot reach it. " +
+      "Set WEASIS_WADO_PUBLIC_URL to your LAN IP (e.g. http://192.168.1.137:8042/wado), Tailscale IP, " +
+      "or public domain instead.",
+    );
+    weasisWadoPublicUrlEnv = undefined;
+  }
+
+  // ── Guarded Orthanc URL for browser-facing WADO/DICOMweb fallback defaults —
+  // same bridge-IP protection as defaultHost, since this uses the raw
+  // ORTHANC_URL string (with path/port), not just its hostname.
+  const orthancBrowserBase = orthancUrlCandidate && !isDockerBridgeIp(orthancUrlCandidate)
+    ? orthancUrlCandidate
+    : `http://${defaultHost}:8042`;
 
   return {
     orthanc: {
@@ -64,8 +155,8 @@ export async function getRadiologyConfig(): Promise<RadiologyConfig> {
       ip: getVal("orthanc_ip", "orthanc") || getVal("pacs_ip", "viewer") || process.env.ORTHANC_IP || defaultHost,
       dicomPort: getNum("orthanc_dicom_port", "orthanc") || 4242,
       httpPort: getNum("orthanc_http_port", "orthanc") || 8042,
-      dicomWebUrl: getVal("orthanc_dicomweb_url", "orthanc") || getVal("dicom_web_base_url", "viewer") || `${process.env.ORTHANC_URL || `http://${defaultHost}:8042`}/dicom-web`,
-      wadoUrl: getVal("orthanc_wado_url", "orthanc") || getVal("wado_uri_base_url", "viewer") || `${process.env.ORTHANC_URL || `http://${defaultHost}:8042`}/wado`,
+      dicomWebUrl: getVal("orthanc_dicomweb_url", "orthanc") || getVal("dicom_web_base_url", "viewer") || `${orthancBrowserBase}/dicom-web`,
+      wadoUrl: getVal("orthanc_wado_url", "orthanc") || getVal("wado_uri_base_url", "viewer") || `${orthancBrowserBase}/wado`,
     },
     conquest: {
       aeTitle: getVal("conquest_ae_title", "conquest") || process.env.CONQUEST_AE_TITLE || "CONQUESTPACS",
@@ -79,11 +170,11 @@ export async function getRadiologyConfig(): Promise<RadiologyConfig> {
       hasApiKey: !!(process.env.INTERNAL_API_KEY || getVal("erp_internal_api_key", "erp")),
     },
     ohif: {
-      baseUrl: getVal("ohif_base_url", "viewer") || process.env.OHIF_URL || `http://${defaultHost}:3010`,
+      baseUrl: getVal("ohif_base_url", "viewer") || ohifPublicUrlEnv || `http://${defaultHost}:3010`,
       studyLaunchTemplate: getVal("ohif_study_url_template", "viewer") || "{OHIF_BASE_URL}/viewer?StudyInstanceUIDs={studyInstanceUID}",
     },
     weasis: {
-      wadoUrl: getVal("weasis_wado_url", "viewer") || getVal("wado_uri_base_url", "viewer") || `${process.env.ORTHANC_URL || `http://${defaultHost}:8042`}/wado`,
+      wadoUrl: getVal("weasis_wado_url", "viewer") || getVal("wado_uri_base_url", "viewer") || weasisWadoPublicUrlEnv || `${orthancBrowserBase}/wado`,
       launchTemplate: getVal("weasis_manifest_url_template", "viewer") || 'weasis://$dicom:get -w "{WADO_URL}" -r "studyUID={studyInstanceUID}"',
     },
     default_viewer: getVal("default_viewer", "viewer") || "OHIF",
@@ -95,20 +186,20 @@ export async function validateRadiologyConfig(): Promise<string[]> {
   const cfg = await getRadiologyConfig();
   const warnings: string[] = [];
 
-  // Check for Docker Bridge IP leaks
-  const isBridgeIp = (ip: string) => ip.startsWith("172.16.1.") || ip.startsWith("172.");
-  
-  if (isBridgeIp(cfg.orthanc.ip)) {
-    warnings.push("Orthanc IP uses Docker bridge network (172.x.x.x) which is unreachable by LAN workstations.");
+  // Check for Docker Bridge IP leaks (uses the same guard as getRadiologyConfig
+  // itself — see isDockerBridgeIp above — so this never false-flags the real
+  // clinic LAN address 172.16.1.x as a bridge IP, unlike the previous check).
+  if (isDockerBridgeIp(cfg.orthanc.ip)) {
+    warnings.push("Orthanc IP uses a Docker bridge network address, unreachable by LAN workstations. Set ORTHANC_IP or ORTHANC_URL to the clinic's real LAN IP (e.g. 192.168.1.137) in .env.");
   }
-  if (isBridgeIp(cfg.conquest.ip)) {
-    warnings.push("Conquest IP uses Docker bridge network (172.x.x.x) which is unreachable by LAN workstations.");
+  if (isDockerBridgeIp(cfg.conquest.ip)) {
+    warnings.push("Conquest IP uses a Docker bridge network address, unreachable by LAN workstations. Set CONQUEST_HOST to the clinic's real LAN IP in .env.");
   }
-  if (cfg.ohif.baseUrl.includes("172.16.1.")) {
-    warnings.push("OHIF Base URL uses Docker bridge IP (172.x.x.x) - browser clients will fail to launch OHIF.");
+  if (isDockerBridgeIp(cfg.ohif.baseUrl)) {
+    warnings.push("OHIF Base URL uses a Docker bridge IP — browser clients will fail to launch OHIF. Set OHIF_URL in .env (or the OHIF Base URL field in PACS Settings) to a LAN IP (http://192.168.1.137:3010), Tailscale IP (http://100.65.255.115:3010), or your public domain.");
   }
-  if (cfg.weasis.wadoUrl.includes("172.16.1.")) {
-    warnings.push("Weasis WADO endpoint uses Docker bridge IP (172.x.x.x) - local Weasis installations cannot read scans.");
+  if (isDockerBridgeIp(cfg.weasis.wadoUrl)) {
+    warnings.push("Weasis WADO endpoint uses a Docker bridge IP — local Weasis installations cannot read scans. Set WEASIS_WADO_PUBLIC_URL in .env (or the Weasis WADO field in PACS Settings) to a LAN IP, Tailscale IP, or public domain.");
   }
 
   // Check missing settings
