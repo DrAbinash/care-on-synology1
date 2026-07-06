@@ -8,6 +8,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { buildCsv, downloadCsv, parseCsv } from "@/lib/csv";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useToast } from "@/hooks/use-toast";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -66,7 +67,12 @@ export default function Patients() {
   });
   const photoEnabled = !!clinicSettings?.patientPhotoEnabled;
 
-  const { data, isLoading } = useListPatients({ search: search || undefined, page, limit: 20 });
+  // Debounce the search term before it reaches the server query — typing
+  // still feels instant (this.search updates every keystroke for the input
+  // value), but the API is only hit ~350ms after the user pauses instead of
+  // once per keystroke.
+  const debouncedSearch = useDebouncedValue(search, 350);
+  const { data, isLoading } = useListPatients({ search: debouncedSearch || undefined, page, limit: 20 });
   const createPatient = useCreatePatient({
     mutation: {
       onSuccess: () => {

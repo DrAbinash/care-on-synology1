@@ -1,6 +1,9 @@
 import { Router } from "express";
 import { db, clinicSettingsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
+import { getCached, setCached, invalidateCached, TTL } from "../lib/ttlCache";
+
+const CLINIC_SETTINGS_CACHE_KEY = "clinic-settings:v1";
 
 const clinicSettingsRouter = Router();
 
@@ -234,7 +237,18 @@ clinicSettingsRouter.get("/branding", async (_req, res) => {
 });
 
 clinicSettingsRouter.get("/", async (_req, res) => {
+  // Clinic/hospital settings are read on nearly every page load (branding,
+  // feature toggles, payment-provider enabled flags) but change rarely —
+  // a 5-minute cache removes a DB round-trip from the hottest path in the
+  // whole ERP. PUT / and POST /ollama invalidate this key immediately after
+  // a successful write, so edits still show up within the same request.
+  const cached = getCached<Awaited<ReturnType<typeof getOrCreate>>>(CLINIC_SETTINGS_CACHE_KEY);
+  if (cached) {
+    res.json(cached);
+    return;
+  }
   const row = await getOrCreate();
+  setCached(CLINIC_SETTINGS_CACHE_KEY, row, TTL.SHORT);
   res.json(row);
 });
 
@@ -565,6 +579,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
       .where(eq(clinicSettingsTable.id, current.id))
       .returning();
     if (updateResult.length > 0) {
+      invalidateCached(CLINIC_SETTINGS_CACHE_KEY);
       res.json(updateResult[0]);
       return;
     }
@@ -586,6 +601,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
       .values(insertValues)
       .returning();
     res.json(inserted);
+    invalidateCached(CLINIC_SETTINGS_CACHE_KEY);
   } catch (insertErr) {
     const msg = insertErr instanceof Error ? insertErr.message : String(insertErr);
     res.status(500).json({ error: "Settings save failed: " + msg });
@@ -663,6 +679,7 @@ clinicSettingsRouter.post("/ollama", async (req, res) => {
 
   try {
     const rows = await db.update(clinicSettingsTable).set(update).where(eq(clinicSettingsTable.id, current.id)).returning();
+    invalidateCached(CLINIC_SETTINGS_CACHE_KEY);
     res.json({ ok: true, settings: rows[0] ?? null });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

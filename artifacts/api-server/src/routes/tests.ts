@@ -10,6 +10,9 @@ import {
   UpdateTestBody,
   DeleteTestParams,
 } from "@workspace/api-zod";
+import { getCached, setCached, invalidateCachedPrefix, TTL } from "../lib/ttlCache";
+
+const TESTS_LIST_CACHE_KEY = "tests:list:all";
 
 export const testsRouter = Router();
 
@@ -32,6 +35,18 @@ testsRouter.get("/", async (req, res) => {
     conditions.push(eq(testsTable.category, category));
   }
   const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+  // The plain "give me every test" call (no search/category/sort) is the
+  // tariff master list used by nearly every test-picker in the ERP — cache
+  // it for 5 min. Any filtered/sorted variant always hits the DB live.
+  const cacheable = !search && !category && !sort;
+  if (cacheable) {
+    const cached = getCached<{ tests: unknown[]; total: number }>(TESTS_LIST_CACHE_KEY);
+    if (cached) {
+      res.json(cached);
+      return;
+    }
+  }
 
   if (sort === "popular") {
     const tests = await db
@@ -62,7 +77,9 @@ testsRouter.get("/", async (req, res) => {
     .where(where)
     .orderBy(desc(testsTable.createdAt));
 
-  return res.json({ tests: tests.map(t => ({ ...t, price: Number(t.price) })), total: tests.length });
+  const payload = { tests: tests.map(t => ({ ...t, price: Number(t.price) })), total: tests.length };
+  if (cacheable) setCached(TESTS_LIST_CACHE_KEY, payload, TTL.SHORT);
+  return res.json(payload);
 });
 
 // Sourced from req.body separately because the codegen'd CreateTestBody zod
@@ -135,6 +152,7 @@ testsRouter.post("/", async (req, res) => {
       ...(resolved.roomNumber !== undefined ? { roomNumber: resolved.roomNumber } : extra.roomNumber !== undefined ? { roomNumber: extra.roomNumber } : {}),
       ...(resolved.floorLabel !== undefined ? { floorLabel: resolved.floorLabel } : extra.floorLabel !== undefined ? { floorLabel: extra.floorLabel } : {}),
     }).returning();
+    invalidateCachedPrefix(TESTS_LIST_CACHE_KEY);
     res.status(201).json({ ...test, price: Number(test.price) });
   } catch (e) {
     if (isUniqueViolation(e)) {
@@ -226,6 +244,7 @@ testsRouter.post("/import", async (req, res) => {
     }
   }
 
+  invalidateCachedPrefix(TESTS_LIST_CACHE_KEY);
   res.json({ inserted, updated, skipped, errors: errors.slice(0, 50) });
 });
 
@@ -265,6 +284,7 @@ testsRouter.put("/:id", async (req, res) => {
     res.status(404).json({ error: "Test not found" });
     return;
   }
+  invalidateCachedPrefix(TESTS_LIST_CACHE_KEY);
   res.json({ ...updated, price: Number(updated.price) });
 });
 
@@ -301,5 +321,6 @@ testsRouter.delete("/:id", async (req, res) => {
   }
 
   await db.delete(testsTable).where(eq(testsTable.id, parsed.data.id));
+  invalidateCachedPrefix(TESTS_LIST_CACHE_KEY);
   res.status(204).send();
 });
