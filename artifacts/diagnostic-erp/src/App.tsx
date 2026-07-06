@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Layout from "@/components/Layout";
+import { ModuleErrorBoundary } from "@/components/ModuleErrorBoundary";
 import { readStaffSession, canAccess, firstPermissionedPath, firstAllowedPath, longestMatchingNavPath, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 
 
@@ -244,6 +245,7 @@ function PermissionGuard() {
 }
 
 function Router() {
+  const [location] = useLocation();
   const [portalLoaded, setPortalLoaded] = useState(() => typeof window !== "undefined" && !!(window as any).SuperAdminPortal);
 
   useEffect(() => {
@@ -292,6 +294,7 @@ function Router() {
         <Route>
           <PermissionGuard />
           <Layout>
+            <ModuleErrorBoundary resetKey={location}>
             <Switch>
               <Route path="/" component={BillingDesk} />
               <Route path="/dashboard" component={Dashboard} />
@@ -497,6 +500,7 @@ function Router() {
               )}
               <Route component={NotFound} />
             </Switch>
+            </ModuleErrorBoundary>
           </Layout>
         </Route>
       </Switch>
