@@ -53,6 +53,7 @@ const RadiologyReportingWorkspace = lazy(() => import("@/pages/RadiologyReportin
 const PacsDashboard         = lazy(() => import("@/pages/PacsDashboard"));
 const RadiologySettings     = lazy(() => import("@/pages/RadiologySettings"));
 const RadiologySettingsCenter = lazy(() => import("@/pages/RadiologySettingsCenter"));
+const RadiologyQuickSelectSettings = lazy(() => import("@/pages/RadiologyQuickSelectSettings"));
 const RadiologyOperationsDashboard = lazy(() => import("@/pages/RadiologyOperationsDashboard"));
 const MyReportingAnalytics         = lazy(() => import("@/pages/MyReportingAnalytics"));
 const AiPromptTemplates     = lazy(() => import("@/pages/AiPromptTemplates"));
@@ -342,7 +343,18 @@ function Router() {
               <Route path="/radiology/report-generator/:studyId">
                 {(params) => <RadiologyReportGen studyId={Number(params.studyId)} />}
               </Route>
+              {/* Cockpit unification (July 2026): /radiology/report/:studyId is
+                  now the single radiologist working page, served by the full
+                  Reporting Workspace (viewer buttons, dictation, templates,
+                  quick-select, prior reports, finalize, print). Both pages
+                  fetch the same /api/internal/radiology/worklist/:id entry,
+                  so the swap is data-compatible. The older simple editor
+                  stays reachable at /radiology/report-legacy/:studyId for
+                  one release in case of muscle-memory bookmarks. */}
               <Route path="/radiology/report/:studyId">
+                {(params) => <RadiologyReportingWorkspace studyId={Number(params.studyId)} />}
+              </Route>
+              <Route path="/radiology/report-legacy/:studyId">
                 {(params) => <RadiologyReportEditor studyId={Number(params.studyId)} />}
               </Route>
               <Route path="/radiology/reporting-workspace">
@@ -488,6 +500,7 @@ function Router() {
                   NetworkControlCenter.tsx, DicomNodes.tsx, PacsSettings.tsx,
                   ModalityManagement.tsx) continue to work without edits. */}
               <Route path="/settings/radiology" component={RadiologySettingsCenter} />
+              <Route path="/settings/radiology-quick-select" component={RadiologyQuickSelectSettings} />
               <Route path="/radiology/settings-center" component={RadiologySettings} />
               <Route path="/settings" component={Settings} />
               <Route path="/whatsapp-chatbot" component={WhatsAppChatbot} />

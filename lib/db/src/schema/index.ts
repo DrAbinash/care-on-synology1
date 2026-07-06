@@ -128,3 +128,4 @@ export * from "./voiceDictationLogs";
 export * from "./pregnancyEpisodes";
 export * from "./radiologistLearningSettings";
 export * from "./mriProtocolSpecs";
+export * from "./radiologyQuickFindings";

@@ -71,6 +71,7 @@ import { requireSuperAdmin } from "../middleware/requireSuperAdmin";
 import { requireSuperAdminUsb, isValidUsbKey, isUsbGateEnforced } from "../middleware/requireSuperAdminUsb";
 import { requireStaffAuth, requireStaffPermission, requireStaffSubPermission, requireAdminRole } from "../middleware/requireStaffAuth";
 import diagnosticsRouter from "./diagnostics";
+import radiologyQuickFindingsRouter from "./radiologyQuickFindings";
 import { db, clinicSettingsTable, ledgersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { backupLimiter, exportLimiter, adminMutationLimiter, standardUploadLimiter, loginLimiter, generalLimiter } from "../middleware/rateLimits";
@@ -513,6 +514,16 @@ router.use(
   requireStaffAuth,
   requireStaffPermission("/radiology"),
   structuredReportTemplatesRouter,
+);
+
+// Radiology Quick Select — configurable study tabs + one-click finding
+// buttons for the Reporting Workspace side panel. Reads: any radiology
+// staff. Mutations: admin-only (enforced inside the router).
+router.use(
+  "/radiology/quick-select",
+  requireStaffAuth,
+  requireStaffPermission("/radiology"),
+  radiologyQuickFindingsRouter,
 );
 
 // Radiology Snippets — Quick Add, Smart Format, Favorites, Macros

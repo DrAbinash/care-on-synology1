@@ -882,11 +882,11 @@ export default function RadiologyWorklist() {
                               <Button
                                 size="sm"
                                 className="h-7 px-2 text-xs"
-                                onClick={() => navigate(`/radiology/reporting-workspace/${entry.id}`)}
-                                title="Open Reporting Workspace"
+                                onClick={() => navigate(`/radiology/report/${entry.id}`)}
+                                title="Open the unified Reporting Workspace (primary reporting page)"
                               >
                                 <FileEdit className="h-3 w-3 mr-1" />
-                                Workspace
+                                Open Report
                               </Button>
                             )}
 

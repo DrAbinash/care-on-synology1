@@ -22,6 +22,12 @@ import EmbeddedWadoViewer from "@/components/EmbeddedWadoViewer";
 import RadiologyCopilotPanel from "@/components/RadiologyCopilotPanel";
 import RadiologyMemoryPanel from "@/components/RadiologyMemoryPanel";
 import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
+import QuickFindingsPanel, {
+  mergeBlock, removeBlock, mergeImpression, removeImpression,
+  type QuickFinding,
+} from "@/components/radiology/QuickFindingsPanel";
+import { useLocalDraftBackup } from "@/hooks/useLocalDraftBackup";
+import { isOwnerRole } from "@/lib/staffSession";
 
 // ════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -101,7 +107,7 @@ type StylePreferences = {
   includeMeasurements: boolean;
 };
 
-type RightTab = "templates" | "prior" | "ai" | "measurements" | "teaching";
+type RightTab = "quickselect" | "templates" | "prior" | "ai" | "measurements" | "teaching";
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; locked: boolean }> = {
   DRAFT: { label: "Draft", color: "bg-yellow-100 text-yellow-800 border-yellow-300", locked: false },
@@ -283,6 +289,54 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const [finalizing, setFinalizing] = useState(false);
   const [teachingNotes, setTeachingNotes] = useState("");
   const [savingTeaching, setSavingTeaching] = useState(false);
+
+  // ── Quick Select (configurable study tabs + finding buttons) ─────────────
+  // Toggling a button ON merges its finding/impression text (deduped);
+  // toggling OFF removes exactly the inserted text — see the merge helpers
+  // in QuickFindingsPanel.tsx for the safety model. Manually edited text is
+  // never touched.
+  const [selectedQuickIds, setSelectedQuickIds] = useState<Set<number>>(new Set());
+
+  function handleQuickToggle(f: QuickFinding, nowSelected: boolean) {
+    setSelectedQuickIds((prev) => {
+      const next = new Set(prev);
+      if (nowSelected) next.add(f.id);
+      else next.delete(f.id);
+      return next;
+    });
+    if (nowSelected) {
+      if (f.findingText) setRawFindings((prev) => mergeBlock(prev, f.findingText));
+      if (f.impressionText) setImpression((prev) => mergeImpression(prev, f.impressionText));
+    } else {
+      if (f.findingText) setRawFindings((prev) => removeBlock(prev, f.findingText));
+      if (f.impressionText) setImpression((prev) => removeImpression(prev, f.impressionText));
+    }
+  }
+
+  // ── Local unsaved-draft protection ────────────────────────────────────────
+  // Backs up the typed report to this browser's localStorage every ~2s so a
+  // crash, accidental tab close, or temporary API failure never loses work.
+  // Cleared on successful finalize.
+  const draftSnapshot = useMemo(
+    () => ({ clinicalHistory, technique, rawFindings, impression, recommendation }),
+    [clinicalHistory, technique, rawFindings, impression, recommendation],
+  );
+  const draftBackup = useLocalDraftBackup({
+    storageKey: `radiology_report_backup_${studyId ?? "new"}`,
+    snapshot: draftSnapshot,
+    enabled: reportStatus !== "FINAL",
+  });
+
+  function restoreLocalBackup() {
+    const b = draftBackup.restore();
+    if (!b) return;
+    if (b.clinicalHistory) setClinicalHistory(b.clinicalHistory);
+    if (b.technique) setTechnique(b.technique);
+    if (b.rawFindings) setRawFindings(b.rawFindings);
+    if (Array.isArray(b.impression) && b.impression.length) setImpression(b.impression);
+    if (b.recommendation) setRecommendation(b.recommendation);
+    toast({ title: "Unsaved work restored", description: "Your locally backed-up report text has been restored." });
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   // DATA FETCHING
@@ -552,6 +606,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
   async function finalizeReport() {
     if (!entry) return;
+    // Guard against double-finalize: both re-clicks while in flight
+    // (finalizing flag) and re-finalizing an already-final report.
+    if (finalizing || reportStatus === "FINAL") return;
+    if (!window.confirm("Finalize this report? After finalizing, editing is disabled.")) return;
     setFinalizing(true);
     try {
       const html = buildPreviewHtml({
@@ -619,6 +677,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       });
 
       setReportStatus("FINAL");
+      // Finalized text is now safely on the server — remove the local
+      // backup so patient report text never lingers on a shared machine.
+      draftBackup.clear();
       toast({
         title: "Report Finalized",
         description: reportId ? `Report ID: ${reportId}` : "Worklist updated.",
@@ -824,6 +885,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // ══════════════════════════════════════════════════════════════════════════
 
   const RIGHT_TABS = [
+    { id: "quickselect", label: "Quick", icon: <Zap size={11} /> },
     { id: "templates", label: "Templates", icon: <LayoutTemplate size={11} /> },
     { id: "prior", label: "Prior", icon: <ClipboardList size={11} /> },
     { id: "ai", label: "AI", icon: <Sparkles size={11} /> },
@@ -987,6 +1049,20 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               </div>
             )}
 
+            {/* Unsaved local backup found — offer restore */}
+            {!isLocked && draftBackup.restoreAvailable && (
+              <div className="flex items-center gap-2 p-2 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-xs font-medium shrink-0">
+                <AlertTriangle size={14} className="shrink-0" />
+                <span className="flex-1">Unsaved report text from a previous session was found on this computer.</span>
+                <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={restoreLocalBackup}>
+                  Restore
+                </Button>
+                <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={draftBackup.discard}>
+                  Discard
+                </Button>
+              </div>
+            )}
+
             {/* Clinical History */}
             <div className="flex flex-col gap-1.5">
               <div className="flex items-center justify-between">
@@ -1008,7 +1084,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
             {/* Technique */}
             <div className="flex flex-col gap-1.5">
-              <Label className="text-xs font-semibold">Technique</Label>
+              <div className="flex items-center justify-between">
+                <Label className="text-xs font-semibold">Technique</Label>
+                <VoiceDictationButton
+                  onInsert={(t) => setTechnique((p) => p + t)}
+                  targetField="technique"
+                  className="h-5 text-[10px]"
+                />
+              </div>
               <Textarea
                 value={technique}
                 onChange={(e) => setTechnique(e.target.value)}
@@ -1405,6 +1488,15 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           <div className="flex-1 overflow-y-auto">
 
             {/* Tab 1: Templates */}
+            {rightTab === "quickselect" && (
+              <QuickFindingsPanel
+                selectedIds={selectedQuickIds}
+                onToggle={handleQuickToggle}
+                disabled={isLocked}
+                initialStudyHint={`${entry?.modality ?? ""} ${entry?.studyDescription ?? ""}`}
+                isAdmin={isOwnerRole(session)}
+              />
+            )}
             {rightTab === "templates" && <TemplatesTab />}
 
             {/* Tab 2: Prior Reports */}
