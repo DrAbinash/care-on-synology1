@@ -96,6 +96,7 @@ Feature: Add DICOM download to reception command center
 pnpm test       # Must pass (164+ tests)
 pnpm typecheck  # Review any new errors
 ```
+Run `pnpm typecheck` from the repo root, not a filtered package command (e.g. `pnpm --filter @workspace/api-server run typecheck`) — the root script builds shared `lib/*` packages first, and skipping that step produces hundreds of misleading false-positive errors.
 
 ### Writing Tests
 - Test new features
