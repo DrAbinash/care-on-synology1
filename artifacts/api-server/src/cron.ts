@@ -412,7 +412,7 @@ export async function fireMonthlyAudit(now: Date): Promise<void> {
 
 // ── DICOM Auto-Pull scheduler ────────────────────────────────────────────────
 // Every 5 minutes: find all active nodes with autoPull=true whose last pull
-// is older than their configured pullIntervalMinutes (or never pulled), and
+// is older than their configured pullIntervalSeconds (or never pulled), and
 // create a new dicom_pull_job for each. The local DICOM Pull Agent picks these
 // jobs up and executes the actual findscu + movescu commands.
 
