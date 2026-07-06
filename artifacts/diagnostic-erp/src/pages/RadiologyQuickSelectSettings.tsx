@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { Plus, Trash2, Pencil, X, Save } from "lucide-react";
-import type { QuickFinding, QuickStudyTab } from "@/components/radiology/QuickFindingsPanel";
+import type { QuickFinding, QuickStudyTab, QuickMeasurement } from "@/components/radiology/QuickFindingsPanel";
 
 /**
  * Radiology Quick Select — admin configuration page.
@@ -19,11 +19,16 @@ import type { QuickFinding, QuickStudyTab } from "@/components/radiology/QuickFi
  * 403 toast rather than a blank page).
  */
 
-type QuickSelectData = { tabs: QuickStudyTab[]; findings: QuickFinding[] };
+type QuickSelectData = { tabs: QuickStudyTab[]; findings: QuickFinding[]; measurements: QuickMeasurement[] };
 
 const EMPTY_FINDING = {
   studyType: "", label: "", findingText: "", impressionText: "",
+  techniqueText: "", recommendationText: "", icdCode: "", tags: "", suggests: "",
   category: "", sortOrder: 0, isActive: true,
+};
+
+const EMPTY_MEASUREMENT = {
+  studyType: "", label: "", templateText: "", unit: "mm", sortOrder: 0, isActive: true,
 };
 
 export default function RadiologyQuickSelectSettings() {
@@ -31,6 +36,7 @@ export default function RadiologyQuickSelectSettings() {
   const qc = useQueryClient();
   const [newTabName, setNewTabName] = useState("");
   const [editingFinding, setEditingFinding] = useState<(typeof EMPTY_FINDING & { id?: number }) | null>(null);
+  const [editingMeasurement, setEditingMeasurement] = useState<(typeof EMPTY_MEASUREMENT & { id?: number }) | null>(null);
   const [filterTab, setFilterTab] = useState<string>("");
 
   const { data, isLoading } = useQuery<QuickSelectData>({
@@ -78,6 +84,21 @@ export default function RadiologyQuickSelectSettings() {
     mutationFn: ({ id, isActive }: { id: number; isActive: boolean }) =>
       api.patch(`/api/radiology/quick-select/findings/${id}`, { isActive }),
     onSuccess: invalidate,
+    onError: onErr,
+  });
+
+  // ── Measurement mutations ─────────────────────────────────────────────────
+  const saveMeasurement = useMutation({
+    mutationFn: (m: typeof EMPTY_MEASUREMENT & { id?: number }) =>
+      m.id
+        ? api.patch(`/api/radiology/quick-select/measurements/${m.id}`, m)
+        : api.post("/api/radiology/quick-select/measurements", m),
+    onSuccess: () => { invalidate(); setEditingMeasurement(null); toast({ title: "Measurement saved" }); },
+    onError: onErr,
+  });
+  const deleteMeasurement = useMutation({
+    mutationFn: (id: number) => api.delete(`/api/radiology/quick-select/measurements/${id}`),
+    onSuccess: () => { invalidate(); toast({ title: "Measurement deleted" }); },
     onError: onErr,
   });
 
@@ -182,6 +203,30 @@ export default function RadiologyQuickSelectSettings() {
               <Label className="text-[11px]">Impression text (inserted into Impression)</Label>
               <Textarea value={editingFinding.impressionText} onChange={(e) => setEditingFinding({ ...editingFinding, impressionText: e.target.value })} className="text-sm min-h-[44px]" />
             </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              <div>
+                <Label className="text-[11px]">Technique text (optional — inserted into Technique)</Label>
+                <Textarea value={editingFinding.techniqueText} onChange={(e) => setEditingFinding({ ...editingFinding, techniqueText: e.target.value })} className="text-sm min-h-[40px]" />
+              </div>
+              <div>
+                <Label className="text-[11px]">Recommendation text (optional)</Label>
+                <Textarea value={editingFinding.recommendationText} onChange={(e) => setEditingFinding({ ...editingFinding, recommendationText: e.target.value })} className="text-sm min-h-[40px]" />
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              <div>
+                <Label className="text-[11px]">ICD / diagnosis code (optional)</Label>
+                <Input value={editingFinding.icdCode} onChange={(e) => setEditingFinding({ ...editingFinding, icdCode: e.target.value })} className="h-8 text-sm" />
+              </div>
+              <div>
+                <Label className="text-[11px]">Tags (comma-separated, for search)</Label>
+                <Input value={editingFinding.tags} onChange={(e) => setEditingFinding({ ...editingFinding, tags: e.target.value })} className="h-8 text-sm" placeholder="ischemia, white matter" />
+              </div>
+              <div>
+                <Label className="text-[11px]">Suggests (comma-separated button labels)</Label>
+                <Input value={editingFinding.suggests} onChange={(e) => setEditingFinding({ ...editingFinding, suggests: e.target.value })} className="h-8 text-sm" placeholder="DWI restriction, MRA advised" />
+              </div>
+            </div>
             <div className="flex gap-2 justify-end">
               <Button size="sm" variant="outline" className="h-7" onClick={() => setEditingFinding(null)}>
                 <X size={12} /> Cancel
@@ -207,7 +252,7 @@ export default function RadiologyQuickSelectSettings() {
               <span className="font-medium shrink-0">{f.label}</span>
               <span className="text-xs text-muted-foreground truncate flex-1">{f.findingText || f.impressionText}</span>
               <Switch checked={f.isActive} onCheckedChange={(v) => toggleFinding.mutate({ id: f.id, isActive: v })} className="scale-75" />
-              <button onClick={() => setEditingFinding({ ...f, category: f.category ?? "" })} className="text-muted-foreground hover:text-primary">
+              <button onClick={() => setEditingFinding({ ...f, category: f.category ?? "", icdCode: f.icdCode ?? "", techniqueText: f.techniqueText ?? "", recommendationText: f.recommendationText ?? "", tags: f.tags ?? "", suggests: f.suggests ?? "" })} className="text-muted-foreground hover:text-primary">
                 <Pencil size={13} />
               </button>
               <button onClick={() => { if (window.confirm(`Delete "${f.label}"?`)) deleteFinding.mutate(f.id); }} className="text-muted-foreground hover:text-destructive">
@@ -215,6 +260,83 @@ export default function RadiologyQuickSelectSettings() {
               </button>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* ── Measurement library ─────────────────────────────────────────── */}
+      <div className="rounded-xl border bg-card shadow-sm p-4 space-y-3">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <h3 className="text-sm font-semibold">Measurement Library</h3>
+          <Button size="sm" className="h-8" onClick={() => setEditingMeasurement({ ...EMPTY_MEASUREMENT, studyType: filterTab || tabs[0]?.name || "" })}>
+            <Plus size={13} /> New Measurement
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Use <code className="bg-muted px-1 rounded">{"{value}"}</code> in the template — the radiologist types the number at insert time.
+        </p>
+
+        {editingMeasurement && (
+          <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+              <div>
+                <Label className="text-[11px]">Study type</Label>
+                <select
+                  value={editingMeasurement.studyType}
+                  onChange={(e) => setEditingMeasurement({ ...editingMeasurement, studyType: e.target.value })}
+                  className="h-8 w-full text-sm border rounded-md px-2 bg-background"
+                >
+                  <option value="">Select…</option>
+                  {tabs.map((t) => <option key={t.id} value={t.name}>{t.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <Label className="text-[11px]">Label</Label>
+                <Input value={editingMeasurement.label} onChange={(e) => setEditingMeasurement({ ...editingMeasurement, label: e.target.value })} className="h-8 text-sm" />
+              </div>
+              <div>
+                <Label className="text-[11px]">Unit</Label>
+                <Input value={editingMeasurement.unit} onChange={(e) => setEditingMeasurement({ ...editingMeasurement, unit: e.target.value })} className="h-8 text-sm" />
+              </div>
+              <div>
+                <Label className="text-[11px]">Sort order</Label>
+                <Input type="number" value={editingMeasurement.sortOrder} onChange={(e) => setEditingMeasurement({ ...editingMeasurement, sortOrder: Number(e.target.value) || 0 })} className="h-8 text-sm" />
+              </div>
+            </div>
+            <div>
+              <Label className="text-[11px]">Template text (use {"{value}"})</Label>
+              <Textarea value={editingMeasurement.templateText} onChange={(e) => setEditingMeasurement({ ...editingMeasurement, templateText: e.target.value })} className="text-sm min-h-[40px]" placeholder="Common bile duct measures {value} mm." />
+            </div>
+            <div className="flex gap-2 justify-end">
+              <Button size="sm" variant="outline" className="h-7" onClick={() => setEditingMeasurement(null)}>
+                <X size={12} /> Cancel
+              </Button>
+              <Button size="sm" className="h-7"
+                disabled={!editingMeasurement.studyType || !editingMeasurement.label.trim() || !editingMeasurement.templateText.trim() || saveMeasurement.isPending}
+                onClick={() => saveMeasurement.mutate(editingMeasurement)}>
+                <Save size={12} /> Save
+              </Button>
+            </div>
+          </div>
+        )}
+
+        <div className="divide-y rounded-lg border overflow-hidden">
+          {(data?.measurements ?? []).filter((m) => !filterTab || m.studyType === filterTab).map((m) => (
+            <div key={m.id} className={`flex items-center gap-3 px-3 py-2 text-sm ${m.isActive ? "" : "opacity-50"}`}>
+              <span className="text-[10px] font-mono bg-muted rounded px-1.5 py-0.5 shrink-0">{m.studyType}</span>
+              <span className="font-medium shrink-0">{m.label}</span>
+              <span className="text-xs text-muted-foreground truncate flex-1">{m.templateText}</span>
+              <span className="text-[10px] text-muted-foreground shrink-0">{m.unit}</span>
+              <button onClick={() => setEditingMeasurement({ ...m })} className="text-muted-foreground hover:text-primary">
+                <Pencil size={13} />
+              </button>
+              <button onClick={() => { if (window.confirm(`Delete "${m.label}"?`)) deleteMeasurement.mutate(m.id); }} className="text-muted-foreground hover:text-destructive">
+                <Trash2 size={13} />
+              </button>
+            </div>
+          ))}
+          {(data?.measurements ?? []).length === 0 && (
+            <p className="text-sm text-muted-foreground p-4">No measurements configured yet.</p>
+          )}
         </div>
       </div>
     </div>

@@ -26,6 +26,8 @@ import QuickFindingsPanel, {
   mergeBlock, removeBlock, mergeImpression, removeImpression,
   type QuickFinding,
 } from "@/components/radiology/QuickFindingsPanel";
+import { applySide, type Side } from "@/lib/sideSwap";
+import { validateReport } from "@/lib/reportValidator";
 import { useLocalDraftBackup } from "@/hooks/useLocalDraftBackup";
 import { isOwnerRole } from "@/lib/staffSession";
 
@@ -290,12 +292,16 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const [teachingNotes, setTeachingNotes] = useState("");
   const [savingTeaching, setSavingTeaching] = useState(false);
 
-  // ── Quick Select (configurable study tabs + finding buttons) ─────────────
-  // Toggling a button ON merges its finding/impression text (deduped);
-  // toggling OFF removes exactly the inserted text — see the merge helpers
-  // in QuickFindingsPanel.tsx for the safety model. Manually edited text is
-  // never touched.
+  // ── Quick Select — Smart Report Engine (Phase 2) ──────────────────────────
+  // Each button is a smart object (technique / findings / impression /
+  // recommendation). At insert time the side selector transforms the text
+  // (left↔right↔bilateral, whole words only); insertedTextRef remembers the
+  // EXACT strings inserted per button so that deselect removes precisely
+  // what went in — even if the side selector changed afterwards. Manually
+  // edited text is never touched (exact-match removal only).
   const [selectedQuickIds, setSelectedQuickIds] = useState<Set<number>>(new Set());
+  const [quickSide, setQuickSide] = useState<Side>("left");
+  const insertedTextRef = useRef<Map<number, { finding: string; impression: string; technique: string; recommendation: string }>>(new Map());
 
   function handleQuickToggle(f: QuickFinding, nowSelected: boolean) {
     setSelectedQuickIds((prev) => {
@@ -305,12 +311,34 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       return next;
     });
     if (nowSelected) {
-      if (f.findingText) setRawFindings((prev) => mergeBlock(prev, f.findingText));
-      if (f.impressionText) setImpression((prev) => mergeImpression(prev, f.impressionText));
+      const inserted = {
+        finding: f.findingText ? applySide(f.findingText, quickSide) : "",
+        impression: f.impressionText ? applySide(f.impressionText, quickSide) : "",
+        technique: f.techniqueText ? applySide(f.techniqueText, quickSide) : "",
+        recommendation: f.recommendationText ? applySide(f.recommendationText, quickSide) : "",
+      };
+      insertedTextRef.current.set(f.id, inserted);
+      if (inserted.finding) setRawFindings((prev) => mergeBlock(prev, inserted.finding));
+      if (inserted.impression) setImpression((prev) => mergeImpression(prev, inserted.impression));
+      if (inserted.technique) setTechnique((prev) => mergeBlock(prev, inserted.technique));
+      if (inserted.recommendation) setRecommendation((prev) => mergeBlock(prev, inserted.recommendation));
     } else {
-      if (f.findingText) setRawFindings((prev) => removeBlock(prev, f.findingText));
-      if (f.impressionText) setImpression((prev) => removeImpression(prev, f.impressionText));
+      // Remove exactly what this button inserted (fall back to the raw
+      // template if the map has no record, e.g. after a page reload).
+      const inserted = insertedTextRef.current.get(f.id) ?? {
+        finding: f.findingText, impression: f.impressionText,
+        technique: f.techniqueText, recommendation: f.recommendationText,
+      };
+      insertedTextRef.current.delete(f.id);
+      if (inserted.finding) setRawFindings((prev) => removeBlock(prev, inserted.finding));
+      if (inserted.impression) setImpression((prev) => removeImpression(prev, inserted.impression));
+      if (inserted.technique) setTechnique((prev) => removeBlock(prev, inserted.technique));
+      if (inserted.recommendation) setRecommendation((prev) => removeBlock(prev, inserted.recommendation));
     }
+  }
+
+  function handleQuickMeasurement(text: string) {
+    setRawFindings((prev) => mergeBlock(prev, text));
   }
 
   // ── Local unsaved-draft protection ────────────────────────────────────────
@@ -609,7 +637,20 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     // Guard against double-finalize: both re-clicks while in flight
     // (finalizing flag) and re-finalizing an already-final report.
     if (finalizing || reportStatus === "FINAL") return;
-    if (!window.confirm("Finalize this report? After finalizing, editing is disabled.")) return;
+
+    // AI Report Validator (Phase 2) — rule-based pre-finalize checks.
+    // WARN ONLY: the radiologist always decides; nothing is auto-corrected.
+    const warnings = validateReport({ findings: rawFindings, impression, recommendation });
+    if (warnings.length > 0) {
+      const proceed = window.confirm(
+        `Report check found ${warnings.length} warning(s):\n\n` +
+        warnings.map((w, i) => `${i + 1}. ${w}`).join("\n") +
+        `\n\nFinalize anyway?`,
+      );
+      if (!proceed) return;
+    } else if (!window.confirm("Finalize this report? After finalizing, editing is disabled.")) {
+      return;
+    }
     setFinalizing(true);
     try {
       const html = buildPreviewHtml({
@@ -1492,6 +1533,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               <QuickFindingsPanel
                 selectedIds={selectedQuickIds}
                 onToggle={handleQuickToggle}
+                onMeasurement={handleQuickMeasurement}
+                side={quickSide}
+                onSideChange={setQuickSide}
                 disabled={isLocked}
                 initialStudyHint={`${entry?.modality ?? ""} ${entry?.studyDescription ?? ""}`}
                 isAdmin={isOwnerRole(session)}

@@ -34,6 +34,12 @@ export const radiologyQuickFindingsTable = pgTable(
     label: text("label").notNull(),
     findingText: text("finding_text").notNull().default(""),
     impressionText: text("impression_text").notNull().default(""),
+    // Phase 2 smart-report fields (add_radiology_smart_reporting.sql)
+    techniqueText: text("technique_text").notNull().default(""),
+    recommendationText: text("recommendation_text").notNull().default(""),
+    icdCode: text("icd_code"),
+    tags: text("tags").notNull().default(""),           // comma-separated
+    suggests: text("suggests").notNull().default(""),   // comma-separated labels
     category: text("category"),
     sortOrder: integer("sort_order").notNull().default(0),
     isActive: boolean("is_active").notNull().default(true),
@@ -48,3 +54,43 @@ export const radiologyQuickFindingsTable = pgTable(
 
 export type RadiologyStudyTab = typeof radiologyStudyTabsTable.$inferSelect;
 export type RadiologyQuickFinding = typeof radiologyQuickFindingsTable.$inferSelect;
+
+// ── Measurement library (Phase 2) ─────────────────────────────────────────────
+export const radiologyQuickMeasurementsTable = pgTable(
+  "radiology_quick_measurements",
+  {
+    id: serial("id").primaryKey(),
+    studyType: text("study_type").notNull(),
+    label: text("label").notNull(),
+    // {value} placeholder is replaced at insert time
+    templateText: text("template_text").notNull(),
+    unit: text("unit").notNull().default("mm"),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+  },
+  (t) => ({
+    studyLabelUq: uniqueIndex("radiology_quick_measurements_study_label_uq").on(t.studyType, t.label),
+    byStudy: index("radiology_quick_measurements_study_idx").on(t.studyType, t.isActive, t.sortOrder),
+  }),
+);
+
+// ── Per-radiologist favorites (Phase 2) ───────────────────────────────────────
+export const radiologyQuickFavoritesTable = pgTable(
+  "radiology_quick_favorites",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id").notNull(),
+    findingId: integer("finding_id").notNull().references(() => radiologyQuickFindingsTable.id, { onDelete: "cascade" }),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    userFindingUq: uniqueIndex("radiology_quick_favorites_user_finding_uq").on(t.userId, t.findingId),
+    byUser: index("radiology_quick_favorites_user_idx").on(t.userId),
+  }),
+);
+
+export type RadiologyMeasurement = typeof radiologyQuickMeasurementsTable.$inferSelect;
+export type RadiologyQuickFavorite = typeof radiologyQuickFavoritesTable.$inferSelect;
