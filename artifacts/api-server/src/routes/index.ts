@@ -69,7 +69,8 @@ import { dayCloseRouter } from "./day-close";
 import { booksSanityRouter } from "./books-sanity";
 import { requireSuperAdmin } from "../middleware/requireSuperAdmin";
 import { requireSuperAdminUsb, isValidUsbKey, isUsbGateEnforced } from "../middleware/requireSuperAdminUsb";
-import { requireStaffAuth, requireStaffPermission, requireStaffSubPermission } from "../middleware/requireStaffAuth";
+import { requireStaffAuth, requireStaffPermission, requireStaffSubPermission, requireAdminRole } from "../middleware/requireStaffAuth";
+import diagnosticsRouter from "./diagnostics";
 import { db, clinicSettingsTable, ledgersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { backupLimiter, exportLimiter, adminMutationLimiter, standardUploadLimiter, loginLimiter, generalLimiter } from "../middleware/rateLimits";
@@ -265,6 +266,10 @@ router.use("/payments", requireStaffAuth, requireStaffPermission("/payments"), p
 
 // Reports — /reports permission (covers dashboard, revenue, print reports)
 router.use("/reports", requireStaffAuth, requireStaffPermission("/reports"), reportsRouter);
+
+// Admin-only request performance diagnostics (not part of the toggleable
+// per-user permission system — see requireAdminRole).
+router.use("/diagnostics", requireStaffAuth, requireAdminRole, diagnosticsRouter);
 
 // Inventory — /inventory permission
 router.use("/inventory", requireStaffAuth, requireStaffPermission("/inventory"), inventoryRouter);

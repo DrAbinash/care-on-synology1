@@ -10,6 +10,7 @@ import { readStaffSession, canAccess, firstPermissionedPath, firstAllowedPath, l
 
 const BillingDesk     = lazy(() => import("@/pages/BillingDesk"));
 const Dashboard       = lazy(() => import("@/pages/Dashboard"));
+const Diagnostics     = lazy(() => import("@/pages/Diagnostics"));
 const Patients        = lazy(() => import("@/pages/Patients"));
 const PatientDetail   = lazy(() => import("@/pages/PatientDetail"));
 const Tests           = lazy(() => import("@/pages/Tests"));
@@ -215,7 +216,7 @@ function PermissionGuard() {
     }
     // Owner Dashboard is admin/super_admin only — redirect others to My Daily Summary.
     const normalizedRole = normalizeRole(session.user.role);
-    if (location === "/dashboard" && !FULL_ACCESS_ROLES.has(normalizedRole)) {
+    if ((location === "/dashboard" || location === "/diagnostics") && !FULL_ACCESS_ROLES.has(normalizedRole)) {
       navigate("/my-daily-summary", { replace: true });
       return;
     }
@@ -298,6 +299,7 @@ function Router() {
             <Switch>
               <Route path="/" component={BillingDesk} />
               <Route path="/dashboard" component={Dashboard} />
+              <Route path="/diagnostics" component={Diagnostics} />
               <Route path="/patients" component={Patients} />
               <Route path="/patients/:id">
                 {(params) => <PatientDetail id={Number(params.id)} />}
