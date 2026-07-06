@@ -589,6 +589,7 @@ export default function BillingDesk() {
   // default open; user can always re-expand by clicking the header.
   const [testsCollapsed, setTestsCollapsed]     = useState(false);
   const [summaryCollapsed, setSummaryCollapsed] = useState(false);
+  const [doctorCollapsed, setDoctorCollapsed]   = useState(false);
   const [paymentSplits, setPaymentSplits] = useState<PaySplit[]>([{ mode: "cash", amount: "" }]);
   const [lastBill, setLastBill]           = useState<LastBill | null>(null);
   // Real scannable QR (PNG data URL) generated via the qrcode library
@@ -1660,6 +1661,10 @@ export default function BillingDesk() {
   );
 
   const cardCls = "bg-white dark:bg-slate-800 border border-[#dde3ec] dark:border-slate-700 rounded-lg overflow-hidden shadow-sm";
+  // Same as cardCls but WITHOUT overflow-hidden — needed for any card that contains
+  // an absolutely-positioned dropdown/popover (e.g. the doctor search results),
+  // since overflow-hidden on the parent silently clips those dropdowns.
+  const cardClsNoClip = "bg-white dark:bg-slate-800 border border-[#dde3ec] dark:border-slate-700 rounded-lg shadow-sm";
 
   return (
     <div className={deskClass}>
@@ -1918,8 +1923,17 @@ export default function BillingDesk() {
 
             {/* ── REFERRING DOCTOR ──────────────────────── */}
             {(!isStepped || currentStep === 1 || currentStep === 2) && (
-            <div className={cardCls}>
-              {SH("Referring Doctor", <Stethoscope size={11} />)}
+            <div className={`${cardClsNoClip} mb-2.5`}>
+              {SHCollapsible(
+                "Referring Doctor",
+                <Stethoscope size={11} />,
+                doctorCollapsed,
+                () => setDoctorCollapsed((c) => !c),
+                <span className="text-[10px] text-[#7eb8f7] font-semibold mr-1 truncate max-w-[160px]">
+                  {doctorId ? doctors.find((d) => d.id === doctorId)?.name : "Walk-in"}
+                </span>,
+              )}
+              {!doctorCollapsed && (
               <div className="p-3 space-y-2">
                 {/* Quick doctor slots — 8 fixed-size slots, same symmetrical grid
                     pattern as Investigations quick slots below. Every box is
@@ -1940,6 +1954,7 @@ export default function BillingDesk() {
                             onClick={() => {
                               if (doc) {
                                 setDoctorId(isSelected ? null : doc.id);
+                                setDoctorCollapsed(!isSelected);
                               } else {
                                 setQuickDoctorPickerSlot(idx);
                               }
@@ -1988,7 +2003,7 @@ export default function BillingDesk() {
                       <span className="font-semibold text-[#1e3a5f] flex-1">
                         {doctors.find((d) => d.id === doctorId)?.name}
                       </span>
-                      <button onClick={() => { setDoctorId(null); setDoctorSearch(""); }} className="text-[#94a3b8] hover:text-[#64748b]"><X size={12} /></button>
+                      <button onClick={() => { setDoctorId(null); setDoctorSearch(""); setDoctorCollapsed(false); }} className="text-[#94a3b8] hover:text-[#64748b]"><X size={12} /></button>
                     </div>
                   )}
                   {!doctorId && (
@@ -2004,15 +2019,15 @@ export default function BillingDesk() {
                     </div>
                   )}
                   {doctorSearchOpen && doctorSearch.length > 0 && (
-                    <div className="absolute top-full left-0 right-0 z-20 mt-1 bg-white border border-[#dde3ec] rounded-lg shadow-lg max-h-40 overflow-y-auto">
+                    <div className="absolute top-full left-0 right-0 z-30 mt-1 bg-white border border-[#dde3ec] rounded-lg shadow-lg max-h-64 overflow-y-auto">
                       {doctors
                         .filter((d) => d.name.toLowerCase().includes(doctorSearch.toLowerCase()))
-                        .slice(0, 6)
+                        .slice(0, 8)
                         .map((d) => (
                           <button
                             key={d.id}
                             className="w-full text-left px-3 py-2 text-sm hover:bg-[#eff6ff] flex items-center gap-2"
-                            onClick={() => { setDoctorId(d.id); setDoctorSearch(""); setDoctorSearchOpen(false); }}
+                            onClick={() => { setDoctorId(d.id); setDoctorSearch(""); setDoctorSearchOpen(false); setDoctorCollapsed(true); }}
                           >
                             <Stethoscope size={11} className="text-[#2563eb]" />
                             {d.name}
@@ -2032,6 +2047,7 @@ export default function BillingDesk() {
                   onChange={(e) => setNotes(e.target.value)}
                 />
               </div>
+              )}
             </div>
             )}
 
