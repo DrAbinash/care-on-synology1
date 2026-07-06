@@ -157,31 +157,34 @@ export function RegisterPatientForm({
         </div>
       </div>
 
-      {/* LINE 2: Phone */}
-      <div className="space-y-0.5">
-        <Label className="text-xs font-extrabold">Phone <span className="text-[10px] font-normal text-slate-400">(optional)</span></Label>
-        <Input
-          value={newPatient.phone}
-          onChange={(e) =>
-            onPatientChange({ ...newPatient, phone: e.target.value })
-          }
-          placeholder="Mobile (optional for walk-in)"
-          className="h-8 text-xs"
-        />
-      </div>
-
-      {/* LINE 3: Address (3 lines of text) */}
-      <div className="space-y-0.5">
-        <Label className="text-xs font-extrabold">Address</Label>
-        <textarea
-          value={newPatient.address || ""}
-          onChange={(e) =>
-            onPatientChange({ ...newPatient, address: e.target.value })
-          }
-          placeholder="Optional - Patient's full address"
-          rows={3}
-          className="w-full px-2 py-1.5 text-xs border border-input rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-ring"
-        />
+      {/* LINE 2: Phone + Address — combined into one row to save vertical
+          space on small screens. Address becomes a single-line input here
+          (was a 3-row textarea); full multi-line address can still be
+          edited later from the patient's profile if ever needed. Both
+          fields remain optional, matching prior behavior. */}
+      <div className="flex flex-wrap gap-2">
+        <div className="flex-1 min-w-[120px] space-y-0.5">
+          <Label className="text-xs font-extrabold">Phone <span className="text-[10px] font-normal text-slate-400">(optional)</span></Label>
+          <Input
+            value={newPatient.phone}
+            onChange={(e) =>
+              onPatientChange({ ...newPatient, phone: e.target.value })
+            }
+            placeholder="Mobile (optional for walk-in)"
+            className="h-8 text-xs"
+          />
+        </div>
+        <div className="flex-1 min-w-[140px] space-y-0.5">
+          <Label className="text-xs font-extrabold">Address <span className="text-[10px] font-normal text-slate-400">(optional)</span></Label>
+          <Input
+            value={newPatient.address || ""}
+            onChange={(e) =>
+              onPatientChange({ ...newPatient, address: e.target.value })
+            }
+            placeholder="Optional - Patient's address"
+            className="h-8 text-xs"
+          />
+        </div>
       </div>
 
       {/* Submit Button */}
