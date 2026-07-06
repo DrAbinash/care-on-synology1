@@ -369,15 +369,44 @@ async function runStartupMigrations(): Promise<void> {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       -- Rename old dicom_nodes columns for databases created before May 2026
+      -- Idempotent: safe to run repeatedly regardless of which columns already exist.
       DO $$
+      DECLARE
+        has_minutes BOOLEAN;
+        has_seconds BOOLEAN;
+        has_pull_query_days BOOLEAN;
+        has_lookback_hours BOOLEAN;
       BEGIN
-        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'dicom_nodes' AND column_name = 'pull_interval_minutes') THEN
+        SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'dicom_nodes' AND column_name = 'pull_interval_minutes') INTO has_minutes;
+        SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'dicom_nodes' AND column_name = 'pull_interval_seconds') INTO has_seconds;
+
+        IF has_minutes AND NOT has_seconds THEN
+          -- Clean case: only the old column exists, rename and convert minutes -> seconds
           ALTER TABLE dicom_nodes RENAME COLUMN pull_interval_minutes TO pull_interval_seconds;
           UPDATE dicom_nodes SET pull_interval_seconds = COALESCE(pull_interval_seconds * 60, 300) WHERE pull_interval_seconds IS NOT NULL;
+        ELSIF has_minutes AND has_seconds THEN
+          -- Both exist (e.g. a prior partial migration ran): keep pull_interval_seconds,
+          -- drop the stale legacy column rather than crashing on a duplicate-column rename.
+          RAISE WARNING 'dicom_nodes has both pull_interval_minutes and pull_interval_seconds; dropping legacy pull_interval_minutes and keeping pull_interval_seconds';
+          ALTER TABLE dicom_nodes DROP COLUMN pull_interval_minutes;
+        ELSIF has_seconds THEN
+          -- Already migrated, nothing to do.
+          NULL;
+        ELSE
+          -- Neither exists yet; CREATE TABLE IF NOT EXISTS above already defines
+          -- pull_interval_seconds for fresh installs, so this should not happen.
+          RAISE WARNING 'dicom_nodes has neither pull_interval_minutes nor pull_interval_seconds';
         END IF;
-        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'dicom_nodes' AND column_name = 'pull_query_days') THEN
+
+        SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'dicom_nodes' AND column_name = 'pull_query_days') INTO has_pull_query_days;
+        SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'dicom_nodes' AND column_name = 'query_lookback_hours') INTO has_lookback_hours;
+
+        IF has_pull_query_days AND NOT has_lookback_hours THEN
           ALTER TABLE dicom_nodes RENAME COLUMN pull_query_days TO query_lookback_hours;
           UPDATE dicom_nodes SET query_lookback_hours = COALESCE(query_lookback_hours * 24, 24) WHERE query_lookback_hours IS NOT NULL;
+        ELSIF has_pull_query_days AND has_lookback_hours THEN
+          RAISE WARNING 'dicom_nodes has both pull_query_days and query_lookback_hours; dropping legacy pull_query_days and keeping query_lookback_hours';
+          ALTER TABLE dicom_nodes DROP COLUMN pull_query_days;
         END IF;
       END $$;
       ALTER TABLE dicom_nodes ADD COLUMN IF NOT EXISTS preferred_retrieve_method TEXT NOT NULL DEFAULT 'C_MOVE';
