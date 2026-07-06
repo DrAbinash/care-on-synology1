@@ -2,7 +2,7 @@
 # Care Diagnostics ERP
 #
 # Schema update flow (automatic, every deployment):
-#   care-db (healthy) → care-db-patch-v2 → care-api → care-web
+#   care-db (healthy) → care-db-patch-v2 → care-schema-verify → care-api → care-web
 #
 # care-db-patch-v2 is the SINGLE automatic schema container. It:
 #   1. Waits for PostgreSQL
@@ -12,9 +12,15 @@
 #   5. Applies feature migrations from migrations/ (Phase 1: MRI protocols, Phase 2: neuro prompts)
 #   All steps are idempotent. Safe to run on every deployment.
 #
-# care-migrate is RETAINED for manual use only:
-#   docker compose run --rm care-migrate
-#   (Runs Drizzle TypeScript migrator — same migrations, alternative path)
+# care-schema-verify runs after care-db-patch-v2 and confirms the schema
+# actually matches what the application expects before care-api starts —
+# a safety check, not a migration step itself.
+#
+# care-migrate is MANUAL/EMERGENCY ONLY (profiles: [manual] — never starts
+# during a normal `docker compose up`):
+#   docker compose --profile manual run --rm care-migrate
+#   (Runs Drizzle TypeScript migrator — same migrations, alternative path.
+#   Use only when debugging a migration issue outside the normal flow.)
 #
 # See SYNOLOGY_DB_MIGRATION_DEPLOYMENT.md for full deployment instructions.
 # =============================================================================
@@ -181,6 +187,11 @@ services:
       ICICI_SECRET_KEY: ${ICICI_SECRET_KEY:?ICICI_SECRET_KEY must be set in .env}
 
       FINGERPRINT_BRIDGE_SECRET: ${FINGERPRINT_BRIDGE_SECRET:-}
+      # Bootstrap admin safety (see .env.example for full explanation).
+      # MUST be false/unset in production after the first successful admin
+      # login — leaving it true resets the admin PIN back to default on
+      # every container restart.
+      BOOTSTRAP_ADMIN_FORCE: ${BOOTSTRAP_ADMIN_FORCE:-false}
       ORTHANC_URL: ${ORTHANC_URL:-}
       # Internal Docker service name for server-side health probes (never use LAN IP here)
       ORTHANC_INTERNAL_URL: ${ORTHANC_INTERNAL_URL:-http://care-orthanc:8042}
@@ -264,13 +275,30 @@ services:
         condition: service_healthy
 
   # ---------------------------------------------------------------------------
-  # Manual migration container — NOT in the automatic startup chain
-  # Use for: manual Drizzle TypeScript migration runs, debugging, CI
+  # Manual/emergency migration container — NOT part of normal deployment.
   #
-  # Run manually:
-  #   docker compose run --rm care-migrate
+  # care-db-patch-v2 (above) already runs all automatic, safe production
+  # migrations on every deployment — idempotent Drizzle .sql migrations,
+  # imperative ADD COLUMN IF NOT EXISTS patches, and feature migrations from
+  # migrations/*.sql. Normal Synology Container Manager rebuilds should
+  # NEVER need this service.
+  #
+  # care-migrate exists only for manual/emergency use: running the Drizzle
+  # TypeScript migrator directly (same migrations, alternative execution
+  # path) when debugging a migration issue outside the normal flow.
+  #
+  # `profiles: [manual]` ensures this service is excluded from a normal
+  # `docker compose up` / `docker compose up -d` — Compose only starts
+  # services tagged with a profile when that profile is explicitly
+  # requested. This prevents it from ever running duplicate/competing
+  # migrations alongside care-db-patch-v2 during a routine rebuild.
+  #
+  # Run manually (only when genuinely needed):
+  #   docker compose --profile manual run --rm care-migrate
   # ---------------------------------------------------------------------------
   migrate:
+    profiles:
+      - manual
     build:
       context: .
       dockerfile: Dockerfile

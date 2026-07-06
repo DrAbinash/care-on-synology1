@@ -293,7 +293,33 @@ OHIF Viewer:   http://192.168.1.137:3010
 
 ---
 
-## What NOT to do
+## Rebuilding only part of the stack (Synology Container Manager)
+
+For most changes you do NOT need to rebuild everything. Quick reference:
+
+| Situation | What to rebuild | What to leave alone |
+|---|---|---|
+| Frontend or backend code change | `care-api`, `care-web` | `care-db`, DB volume, uploads volume |
+| Database migration (new `.sql` file added) | Let `care-db-patch-v2` + `care-schema-verify` run automatically as part of a normal `docker compose up -d --build` — no separate step needed | `care-migrate` (manual/emergency only, see below) |
+| Stale build cache / weird UI or API bugs after a pull | OK to delete and rebuild `care-api`/`care-web` containers and images | **Never** delete the `care-db` container or its volume just to "fix" a cache issue |
+
+**Never delete unless specifically intended:**
+- The `care-db` container itself
+- The Postgres data volume (`db_data` — this is every patient's data)
+- The uploaded-files volume (`object_storage` — reports, scanned documents, photos)
+
+**`care-migrate` is manual/emergency only.** It is tagged `profiles: [manual]` in
+`docker-compose.yml`, so a normal `docker compose up -d` will never start it —
+this is intentional, to prevent it from ever running a competing migration
+alongside `care-db-patch-v2` during a routine rebuild. Only run it yourself,
+deliberately, when troubleshooting a migration issue outside the normal flow:
+```bash
+docker compose --profile manual run --rm care-migrate
+```
+
+---
+
+
 
 | Don't | Why |
 |---|---|
@@ -302,4 +328,5 @@ OHIF Viewer:   http://192.168.1.137:3010
 | Edit hardcoded migration lists | Not needed. Migration detection is automatic. |
 | `docker compose down -v` | Deletes the database volume. Use `docker compose down` only. |
 | Touch db-patch-entrypoint.sh for new migrations | Not needed. Just add .sql files. |
+| `docker compose run --rm care-migrate` during a routine deploy | Not needed — and no longer possible by accident. `care-db-patch-v2` already handles all automatic migrations; `care-migrate` requires `--profile manual` and is for emergency troubleshooting only. |
 

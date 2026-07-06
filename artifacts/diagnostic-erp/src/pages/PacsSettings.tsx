@@ -542,7 +542,7 @@ export default function PacsSettings() {
             </p>
           </div>
         </div>
-        <Button variant="default" size="sm" onClick={() => navigate("/radiology/settings-center")} className="shrink-0">
+        <Button variant="default" size="sm" onClick={() => navigate("/settings/radiology")} className="shrink-0">
           Go to Settings Center
         </Button>
       </div>

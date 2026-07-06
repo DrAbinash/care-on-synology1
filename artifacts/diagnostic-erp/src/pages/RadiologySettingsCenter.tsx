@@ -45,6 +45,23 @@ type HealthResponse = {
   };
 };
 
+/**
+ * Frontend-side mirror of the backend's isDockerBridgeIp (see
+ * lib/pacs/pacsConfig.ts, fixed in commit 3142eb4e). Kept as a small,
+ * independent copy since the frontend bundle cannot import server code —
+ * same logic, same 172.16.1.x exclusion for the real clinic LAN subnet, so
+ * warnings shown here always agree with what the backend would flag.
+ */
+function isDockerBridgeIpLike(value: string): boolean {
+  if (!value) return false;
+  const m = value.match(/172\.(1[6-9]|2[0-9]|3[01])\.(\d+)\./);
+  if (!m) return false;
+  const secondOctet = Number(m[1]);
+  const thirdOctet = Number(m[2]);
+  if (secondOctet === 16 && thirdOctet === 1) return false;
+  return true;
+}
+
 export default function RadiologySettingsCenter() {
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -155,39 +172,50 @@ export default function RadiologySettingsCenter() {
     onError: (err: any) => toast({ title: "Failed to save settings", description: err.message, variant: "destructive" }),
   });
 
-  // Auto detect closest profile based on network speed/reachability
+  // Auto detect closest profile based on network speed/reachability.
+  // Reads the ACTUAL configured URLs from settings (same source of truth as
+  // the rest of this page and as getRadiologyConfig() on the backend) rather
+  // than hardcoded IP literals — consistent with the bridge-IP-safe fix in
+  // commit 3142eb4e. If no OHIF/Orthanc URL is configured yet, this safely
+  // skips probing rather than guessing an address.
   useEffect(() => {
+    if (settings.length === 0) return; // wait for settings to load first
     const probeNetwork = async () => {
-      // 1. Probe LAN Orthanc first (fastest)
-      try {
-        const start = Date.now();
-        const res = await fetch("http://192.168.1.137:8042/", { method: "HEAD", mode: "no-cors" });
-        const latency = Date.now() - start;
-        setDetectedProfile("LAN");
-        setDetectionReason(`LAN reached successfully in ${latency}ms.`);
-        return;
-      } catch (e) {
-        // LAN failed, try Tailscale next
+      const orthancUrl = settings.find(s => s.key === "orthanc_url" || s.key === "ohif_base_url")?.value;
+      const tailscaleHost = settings.find(s => s.key === "tailscale_host" && s.category === "network")?.value;
+
+      // 1. Probe the clinic's configured LAN Orthanc URL first (fastest)
+      if (orthancUrl) {
+        try {
+          const start = Date.now();
+          await fetch(orthancUrl.replace(/\/$/, "") + "/", { method: "HEAD", mode: "no-cors" });
+          setDetectedProfile("LAN");
+          setDetectionReason(`LAN reached successfully in ${Date.now() - start}ms.`);
+          return;
+        } catch {
+          // LAN failed, try Tailscale next
+        }
       }
 
-      // 2. Probe Tailscale IP
-      try {
-        const start = Date.now();
-        await fetch("http://100.65.255.115:8042/", { method: "HEAD", mode: "no-cors" });
-        const latency = Date.now() - start;
-        setDetectedProfile("TAILSCALE");
-        setDetectionReason(`Tailscale reached successfully in ${latency}ms. LAN unreachable.`);
-        return;
-      } catch (e) {
-        // Both private networks unreachable, fallback to Public
+      // 2. Probe the configured Tailscale host, if set
+      if (tailscaleHost) {
+        try {
+          const start = Date.now();
+          await fetch(`http://${tailscaleHost}:8042/`, { method: "HEAD", mode: "no-cors" });
+          setDetectedProfile("TAILSCALE");
+          setDetectionReason(`Tailscale reached successfully in ${Date.now() - start}ms. LAN unreachable.`);
+          return;
+        } catch {
+          // Tailscale failed too, fall through to public
+        }
       }
 
       setDetectedProfile("PUBLIC");
-      setDetectionReason("LAN and Tailscale unreachable. Defaulted to cloud/public gateway.");
+      setDetectionReason(orthancUrl ? "LAN and Tailscale unreachable. Defaulted to cloud/public gateway." : "No Orthanc/OHIF URL configured yet — set one in the Viewers tab below.");
     };
 
     probeNetwork();
-  }, []);
+  }, [settings]);
 
   const activeProfile = profileOverride === "auto" ? detectedProfile : profileOverride;
 
@@ -208,6 +236,20 @@ export default function RadiologySettingsCenter() {
           </Button>
         }
       />
+
+      {/* Help box — required orientation text for all radiology/PACS settings */}
+      <div className="rounded-xl border bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800 p-4 flex items-start gap-2.5">
+        <Info className="text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" size={16} />
+        <p className="text-xs text-muted-foreground">
+          Use this page for all Radiology, PACS, DICOM, OHIF, Weasis, worklist, and radiology report
+          settings. <strong className="text-foreground">Public URLs</strong> (OHIF Viewer URL, Weasis WADO URL,
+          Orthanc URL) must be reachable from clinic PCs — use your LAN IP, Tailscale IP, or public
+          domain. <strong className="text-foreground">Internal URLs</strong> are only for server/container
+          communication and are configured via environment variables (see .env.example). Do not use Docker
+          bridge IPs like <code className="bg-blue-100 dark:bg-blue-900/40 px-1 rounded">172.17.x.x</code> for
+          public viewer URLs — the system will warn you if one is detected.
+        </p>
+      </div>
 
       {/* Network Profile Notification Banner */}
       <div className="rounded-xl border bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-slate-900 dark:to-slate-800 border-blue-200 dark:border-blue-800 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -377,45 +419,55 @@ export default function RadiologySettingsCenter() {
             </div>
 
             <div className="space-y-4 pt-4 border-t">
-              {/* One-click fix for clinic LAN defaults */}
+              {/* Quick-fill for clinic LAN — no IP is invented; asks for the
+                  real address instead of assuming 192.168.1.137, which is
+                  not correct for every deployment. */}
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-start gap-3">
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs font-semibold text-amber-800">Set Clinic LAN Defaults</p>
+                  <p className="text-xs font-semibold text-amber-800">Quick-fill Clinic LAN Addresses</p>
                   <p className="text-xs text-amber-700 mt-0.5">
-                    Sets OHIF → <code className="bg-amber-100 px-1 rounded">192.168.1.137:3010</code> and
-                    Weasis WADO → <code className="bg-amber-100 px-1 rounded">192.168.1.137:8042/wado</code>
+                    Fills OHIF, DICOMweb, and Weasis WADO fields below using one LAN IP you provide.
                   </p>
                 </div>
                 <button
                   className="flex-shrink-0 px-3 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white rounded-md"
                   onClick={() => {
-                    upsertSetting.mutate({ key: "ohif_base_url",               value: "http://192.168.1.137:3010",                                  category: "viewer" });
-                    upsertSetting.mutate({ key: "dicom_web_base_url",           value: "http://192.168.1.137:3010/dicom-web",                         category: "viewer" });
+                    const lanIp = window.prompt("Enter your clinic's LAN IP (e.g. 192.168.1.137) — never a Docker bridge IP like 172.17.x.x:");
+                    if (!lanIp) return;
+                    if (isDockerBridgeIpLike(lanIp)) {
+                      toast({ title: "That looks like a Docker bridge IP", description: "Use your real clinic LAN IP instead — browsers and Weasis cannot reach Docker-internal addresses.", variant: "destructive" });
+                      return;
+                    }
+                    upsertSetting.mutate({ key: "ohif_base_url",               value: `http://${lanIp}:3010`,                                  category: "viewer" });
+                    upsertSetting.mutate({ key: "dicom_web_base_url",           value: `http://${lanIp}:3010/dicom-web`,                         category: "viewer" });
                     upsertSetting.mutate({ key: "ohif_study_url_template",      value: "{OHIF_BASE_URL}/viewer?StudyInstanceUIDs={studyInstanceUID}", category: "viewer" });
-                    upsertSetting.mutate({ key: "wado_uri_base_url",            value: "http://192.168.1.137:8042/wado",                             category: "viewer" });
-                    upsertSetting.mutate({ key: "weasis_wado_url",              value: "http://192.168.1.137:8042/wado",                             category: "viewer" });
-                    upsertSetting.mutate({ key: "weasis_manifest_url_template", value: 'weasis://$dicom:get -w "http://192.168.1.137:8042/wado?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"', category: "viewer" });
+                    upsertSetting.mutate({ key: "wado_uri_base_url",            value: `http://${lanIp}:8042/wado`,                             category: "viewer" });
+                    upsertSetting.mutate({ key: "weasis_wado_url",              value: `http://${lanIp}:8042/wado`,                             category: "viewer" });
+                    upsertSetting.mutate({ key: "weasis_manifest_url_template", value: `weasis://$dicom:get -w "http://${lanIp}:8042/wado?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"`, category: "viewer" });
                     upsertSetting.mutate({ key: "viewer_mode",                  value: "BOTH",                                                       category: "viewer" });
                     upsertSetting.mutate({ key: "default_viewer",               value: "OHIF",                                                       category: "viewer" });
                   }}
                 >
-                  Set Defaults
+                  Fill In LAN IP…
                 </button>
               </div>
 
               <div className="space-y-1.5">
-                <Label className="text-xs font-semibold">OHIF Viewer URL</Label>
+                <Label className="text-xs font-semibold">OHIF Viewer URL <span className="text-muted-foreground font-normal">(public — browser-reachable)</span></Label>
                 <Input
                   value={settings.find(s => s.key === "ohif_base_url")?.value ?? ""}
                   onChange={(e) => upsertSetting.mutate({ key: "ohif_base_url", value: e.target.value, category: "viewer" })}
                   className="h-9 text-sm"
-                  placeholder="http://192.168.1.137:3010"
+                  placeholder="http://<your-lan-ip>:3010"
                 />
-                <p className="text-[11px] text-muted-foreground">Your NAS IP + port 3010 (where OHIF is running)</p>
+                {isDockerBridgeIpLike(settings.find(s => s.key === "ohif_base_url")?.value ?? "") && (
+                  <p className="text-[11px] text-red-600 font-medium">⚠ This looks like a Docker bridge IP (172.17.x.x-172.31.x.x) — browsers cannot reach it. Use your clinic LAN IP, Tailscale IP, or public domain instead.</p>
+                )}
+                <p className="text-[11px] text-muted-foreground">Your clinic LAN IP + port 3010 (where OHIF is running). Never a Docker bridge IP.</p>
               </div>
 
               <div className="space-y-1.5">
-                <Label className="text-xs font-semibold">Weasis Manifest / WADO URL</Label>
+                <Label className="text-xs font-semibold">Weasis Manifest / WADO URL <span className="text-muted-foreground font-normal">(public — Weasis-reachable)</span></Label>
                 <Input
                   value={settings.find(s => s.key === "weasis_wado_url")?.value ?? ""}
                   onChange={(e) => {
@@ -423,9 +475,27 @@ export default function RadiologySettingsCenter() {
                     upsertSetting.mutate({ key: "wado_uri_base_url", value: e.target.value, category: "viewer" });
                   }}
                   className="h-9 text-sm"
-                  placeholder="http://192.168.1.137:8042/wado"
+                  placeholder="http://<your-lan-ip>:8042/wado"
                 />
-                <p className="text-[11px] text-muted-foreground">Orthanc WADO endpoint — your NAS IP + :8042/wado</p>
+                {isDockerBridgeIpLike(settings.find(s => s.key === "weasis_wado_url")?.value ?? "") && (
+                  <p className="text-[11px] text-red-600 font-medium">⚠ This looks like a Docker bridge IP — local Weasis installs cannot reach it. Use your clinic LAN IP, Tailscale IP, or public domain instead.</p>
+                )}
+                <p className="text-[11px] text-muted-foreground">Orthanc WADO endpoint — your clinic LAN IP + :8042/wado. Never a Docker bridge IP.</p>
+              </div>
+
+              {/* Internal URLs — read-only display. These are set via .env,
+                  not editable here, since they're infra/deployment-level
+                  (container-to-container), not clinic-level configuration.
+                  See ORTHANC_INTERNAL_URL / OHIF_INTERNAL_URL in .env.example. */}
+              <div className="rounded-lg border border-dashed bg-muted/30 p-3 space-y-2">
+                <p className="text-xs font-semibold text-muted-foreground">Internal URLs (server/container only — set via .env, not here)</p>
+                <div className="grid sm:grid-cols-2 gap-2 text-[11px] font-mono text-muted-foreground">
+                  <div>ORTHANC_INTERNAL_URL<br /><span className="text-foreground">http://care-orthanc:8042</span></div>
+                  <div>OHIF_INTERNAL_URL<br /><span className="text-foreground">(optional — only if health-check probes can't reach the public URL above)</span></div>
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  These are used only for the API server's own health-check probes — never for the URL that opens in a doctor's browser or Weasis. Docker service names (like <code>care-orthanc</code>) are fine here, since this traffic never leaves the Docker network.
+                </p>
               </div>
             </div>
           </div>

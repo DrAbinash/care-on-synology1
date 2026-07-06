@@ -476,8 +476,14 @@ function Router() {
               <Route path="/samples" component={Samples} />
               <Route path="/scan-station" component={ScanStation} />
               <Route path="/report-delivery" component={ReportDelivery} />
-              <Route path="/settings/radiology" component={RadiologySettings} />
-              <Route path="/radiology/settings-center" component={RadiologySettingsCenter} />
+              {/* /settings/radiology is now the primary radiology settings
+                  page (Task 1 consolidation) — renders RadiologySettingsCenter.
+                  /radiology/settings-center is kept as a working redirect so
+                  existing bookmarks/links (Layout.tsx sidebar, cross-links in
+                  NetworkControlCenter.tsx, DicomNodes.tsx, PacsSettings.tsx,
+                  ModalityManagement.tsx) continue to work without edits. */}
+              <Route path="/settings/radiology" component={RadiologySettingsCenter} />
+              <Route path="/radiology/settings-center" component={RadiologySettings} />
               <Route path="/settings" component={Settings} />
               <Route path="/whatsapp-chatbot" component={WhatsAppChatbot} />
               <Route path="/system-update" component={SystemUpdate} />

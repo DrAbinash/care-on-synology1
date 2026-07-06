@@ -29,6 +29,7 @@ import { pool } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { validateRadiologyConfig } from "./lib/pacs/pacsConfig.js";
+import { shouldForceBootstrapReset } from "./lib/bootstrapAdmin.js";
 
 // Bootstrap admin account for fresh production databases.
 //
@@ -48,9 +49,31 @@ import { validateRadiologyConfig } from "./lib/pacs/pacsConfig.js";
 // BOOTSTRAP_ADMIN_NAME / BOOTSTRAP_ADMIN_PIN / BOOTSTRAP_ADMIN_ROLE.
 // "super_admin" is the initial privileged account used to bootstrap the
 // super-admin portal; it can then create or manage additional accounts.
+/**
+ * Pure decision function, extracted so it can be unit tested without
+ * mocking the rest of index.ts's startup side effects. See
+ * lib/bootstrapAdmin.ts for the implementation and full explanation.
+ */
+
 async function seedBootstrapAdminIfNeeded(): Promise<void> {
   try {
-    const force = true;
+    // FIXED: this was hardcoded to `true`, which silently ignored
+    // BOOTSTRAP_ADMIN_FORCE entirely and reset the bootstrap admin's PIN
+    // back to the default on EVERY container restart — including normal
+    // Synology Container Manager rebuilds — even after the doctor had
+    // already changed it through the UI. Now correctly reads the env var
+    // and defaults to false (safe) when unset, matching the documented
+    // behavior in the comment block above and in .env.example.
+    const force = shouldForceBootstrapReset(process.env);
+
+    if (force) {
+      logger.warn(
+        "BOOTSTRAP_ADMIN_FORCE is enabled. The bootstrap admin account will be reset to its " +
+        "default PIN/role on this startup. Disable this in production after logging in — " +
+        "remove BOOTSTRAP_ADMIN_FORCE from .env and redeploy, or the PIN will keep resetting " +
+        "on every restart.",
+      );
+    }
 
     const anyUser = await db.select({ id: usersTable.id }).from(usersTable).limit(1);
     if (anyUser.length > 0 && !force) return; // already populated, no force flag
