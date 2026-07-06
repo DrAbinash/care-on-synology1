@@ -108,6 +108,10 @@ export function validateReport(report: ReportForValidation): string[] {
 export interface QualityInput extends ReportForValidation {
   technique?: string;
   clinicalHistory?: string;
+  /** Phase 5: protocol checklist completeness (0-100), if a protocol is active. */
+  checklistPercent?: number;
+  /** Phase 5: required measurement labels not yet present in the text. */
+  missingRequiredMeasurements?: string[];
 }
 
 export interface QualityScore {
@@ -133,6 +137,15 @@ export function computeQualityScore(input: QualityInput): QualityScore {
   // Consistency warnings from the validator each cost 5 points.
   const warnings = validateReport(input);
   for (const w of warnings) deduct(5, w);
+
+  // Phase 5: protocol checklist + required measurements — warn only,
+  // never blocks finalize (enforced by the caller, not this function).
+  if (input.checklistPercent !== undefined && input.checklistPercent < 100) {
+    deduct(10, `Protocol checklist incomplete (${input.checklistPercent}% addressed).`);
+  }
+  if (input.missingRequiredMeasurements?.length) {
+    deduct(5, `Missing required measurement(s): ${input.missingRequiredMeasurements.join(", ")}.`);
+  }
 
   return { score: Math.max(0, score), issues };
 }

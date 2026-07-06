@@ -21,6 +21,8 @@ import {
   radiologyQuickFindingsTable,
   radiologyQuickMeasurementsTable,
   radiologyQuickFavoritesTable,
+  radiologyProtocolsTable,
+  radiologyLearnedPatternsTable,
 } from "@workspace/db/schema";
 import { asc, eq, and } from "drizzle-orm";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
@@ -37,12 +39,13 @@ router.get("/", async (_req, res) => {
     res.json(cached);
     return;
   }
-  const [tabs, findings, measurements] = await Promise.all([
+  const [tabs, findings, measurements, protocols] = await Promise.all([
     db.select().from(radiologyStudyTabsTable).orderBy(asc(radiologyStudyTabsTable.sortOrder), asc(radiologyStudyTabsTable.name)),
     db.select().from(radiologyQuickFindingsTable).orderBy(asc(radiologyQuickFindingsTable.sortOrder), asc(radiologyQuickFindingsTable.label)),
     db.select().from(radiologyQuickMeasurementsTable).orderBy(asc(radiologyQuickMeasurementsTable.sortOrder), asc(radiologyQuickMeasurementsTable.label)),
+    db.select().from(radiologyProtocolsTable).orderBy(asc(radiologyProtocolsTable.sortOrder), asc(radiologyProtocolsTable.name)),
   ]);
-  const payload = { tabs, findings, measurements };
+  const payload = { tabs, findings, measurements, protocols };
   setCached(CACHE_KEY, payload, TTL.SHORT);
   res.json(payload);
 });
@@ -284,3 +287,129 @@ router.delete("/measurements/:id", requireAdminRole, async (req, res) => {
 });
 
 export default router;
+
+// ── Protocols (admin write, staff read via the cached GET / above) ──────────
+router.post("/protocols", requireAdminRole, async (req, res) => {
+  const name = String(req.body?.name ?? "").trim();
+  const studyType = String(req.body?.studyType ?? "").trim();
+  if (!name || !studyType) {
+    res.status(400).json({ error: "name and studyType are required" });
+    return;
+  }
+  try {
+    const [row] = await db.insert(radiologyProtocolsTable).values({
+      name,
+      studyType,
+      modality: typeof req.body?.modality === "string" ? req.body.modality : "",
+      checklistJson: typeof req.body?.checklistJson === "string" ? req.body.checklistJson : "[]",
+      techniqueText: typeof req.body?.techniqueText === "string" ? req.body.techniqueText : "",
+      normalText: typeof req.body?.normalText === "string" ? req.body.normalText : "",
+      recommendationText: typeof req.body?.recommendationText === "string" ? req.body.recommendationText : "",
+      requiredMeasurements: typeof req.body?.requiredMeasurements === "string" ? req.body.requiredMeasurements : "",
+      isGoldStandard: req.body?.isGoldStandard === true,
+      sortOrder: Number.isFinite(Number(req.body?.sortOrder)) ? Number(req.body.sortOrder) : 0,
+      isActive: req.body?.isActive !== false,
+    }).returning();
+    invalidateCached(CACHE_KEY);
+    res.status(201).json(row);
+  } catch {
+    res.status(409).json({ error: "A protocol with that name already exists" });
+  }
+});
+
+router.patch("/protocols/:id", requireAdminRole, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
+  const updates: Record<string, unknown> = { updatedAt: new Date() };
+  if (typeof req.body?.name === "string" && req.body.name.trim()) updates.name = req.body.name.trim();
+  if (typeof req.body?.studyType === "string" && req.body.studyType.trim()) updates.studyType = req.body.studyType.trim();
+  if (typeof req.body?.modality === "string") updates.modality = req.body.modality;
+  if (typeof req.body?.checklistJson === "string") updates.checklistJson = req.body.checklistJson;
+  if (typeof req.body?.techniqueText === "string") updates.techniqueText = req.body.techniqueText;
+  if (typeof req.body?.normalText === "string") updates.normalText = req.body.normalText;
+  if (typeof req.body?.recommendationText === "string") updates.recommendationText = req.body.recommendationText;
+  if (typeof req.body?.requiredMeasurements === "string") updates.requiredMeasurements = req.body.requiredMeasurements;
+  if (typeof req.body?.isGoldStandard === "boolean") updates.isGoldStandard = req.body.isGoldStandard;
+  if (req.body?.sortOrder !== undefined) updates.sortOrder = Number(req.body.sortOrder) || 0;
+  if (typeof req.body?.isActive === "boolean") updates.isActive = req.body.isActive;
+  try {
+    const [row] = await db.update(radiologyProtocolsTable).set(updates).where(eq(radiologyProtocolsTable.id, id)).returning();
+    if (!row) {
+      res.status(404).json({ error: "Protocol not found" });
+      return;
+    }
+    invalidateCached(CACHE_KEY);
+    res.json(row);
+  } catch {
+    res.status(409).json({ error: "A protocol with that name already exists" });
+  }
+});
+
+router.delete("/protocols/:id", requireAdminRole, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
+  await db.delete(radiologyProtocolsTable).where(eq(radiologyProtocolsTable.id, id));
+  invalidateCached(CACHE_KEY);
+  res.json({ ok: true });
+});
+
+// ── Learning Engine (per radiologist — never cached, user-specific) ─────────
+// GET returns this radiologist's learned patterns for one trigger label so
+// the workspace can rank+display suggestions client-side (lib/learningEngine.ts).
+router.get("/learned-patterns", async (req, res) => {
+  const userId = (req as StaffAuthRequest).staffSession?.subjectId;
+  if (!userId) {
+    res.status(401).json({ error: "Staff authentication required" });
+    return;
+  }
+  const trigger = typeof req.query.trigger === "string" ? req.query.trigger : undefined;
+  const conds = [eq(radiologyLearnedPatternsTable.userId, userId)];
+  if (trigger) conds.push(eq(radiologyLearnedPatternsTable.triggerLabel, trigger));
+  const rows = await db.select().from(radiologyLearnedPatternsTable).where(and(...conds));
+  res.json(rows);
+});
+
+// POST records/increments one observed (trigger -> addition) pair for this
+// radiologist. Suggestion-only downstream — recording never auto-inserts
+// anything into anyone's report.
+router.post("/learned-patterns", async (req, res) => {
+  const userId = (req as StaffAuthRequest).staffSession?.subjectId;
+  const triggerLabel = String(req.body?.triggerLabel ?? "").trim();
+  const suggestedText = String(req.body?.suggestedText ?? "").trim();
+  if (!userId) {
+    res.status(401).json({ error: "Staff authentication required" });
+    return;
+  }
+  if (!triggerLabel || !suggestedText) {
+    res.status(400).json({ error: "triggerLabel and suggestedText are required" });
+    return;
+  }
+  const [existing] = await db
+    .select()
+    .from(radiologyLearnedPatternsTable)
+    .where(and(
+      eq(radiologyLearnedPatternsTable.userId, userId),
+      eq(radiologyLearnedPatternsTable.triggerLabel, triggerLabel),
+      eq(radiologyLearnedPatternsTable.suggestedText, suggestedText),
+    ));
+  if (existing) {
+    const [row] = await db
+      .update(radiologyLearnedPatternsTable)
+      .set({ occurrenceCount: existing.occurrenceCount + 1, lastUsedAt: new Date() })
+      .where(eq(radiologyLearnedPatternsTable.id, existing.id))
+      .returning();
+    res.json(row);
+    return;
+  }
+  const [row] = await db
+    .insert(radiologyLearnedPatternsTable)
+    .values({ userId, triggerLabel, suggestedText })
+    .returning();
+  res.status(201).json(row);
+});

@@ -7,6 +7,7 @@ import { Zap, Settings2, Star, Ruler, Lightbulb, Search } from "lucide-react";
 import { Link } from "wouter";
 import type { Side } from "@/lib/sideSwap";
 import { parseProperties, type AbnormalityInstance } from "@/lib/abnormalityEngine";
+import { computeChecklistStatus, summarizeChecklist, parseChecklist } from "@/lib/checklistEngine";
 
 /**
  * QuickFindingsPanel — Smart Reporting side panel (Phase 2).
@@ -62,10 +63,26 @@ export type QuickMeasurement = {
   isActive: boolean;
 };
 
-type QuickSelectData = { tabs: QuickStudyTab[]; findings: QuickFinding[]; measurements: QuickMeasurement[] };
+export type QuickProtocol = {
+  id: number;
+  name: string;
+  studyType: string;
+  modality: string;
+  checklistJson: string;
+  techniqueText: string;
+  normalText: string;
+  recommendationText: string;
+  requiredMeasurements: string;
+  isGoldStandard: boolean;
+  sortOrder: number;
+  isActive: boolean;
+};
+
+type QuickSelectData = { tabs: QuickStudyTab[]; findings: QuickFinding[]; measurements: QuickMeasurement[]; protocols: QuickProtocol[] };
 type FavoriteRow = { id: number; findingId: number; sortOrder: number };
 
 export { mergeBlock, removeBlock, mergeImpression, removeImpression } from "@/lib/quickFindingsMerge";
+import { rankSuggestions, type LearnedPattern } from "@/lib/learningEngine";
 
 interface Props {
   selectedIds: Set<number>;
@@ -83,6 +100,15 @@ interface Props {
   onAutoTechnique?: (text: string) => void;
   /** One-click baseline normals for a tab. */
   onInsertNormals?: (text: string) => void;
+  /** Phase 5: active protocol (drives checklist + its own technique/normal/
+   *  recommendation, which take precedence over the generic tab-level ones
+   *  while a protocol is selected). */
+  activeProtocolId?: number | null;
+  onProtocolChange?: (protocol: QuickProtocol | null) => void;
+  onChecklistChange?: (percent: number, remaining: string[]) => void;
+  /** Phase 5: called when the radiologist accepts a learned suggestion —
+   *  parent decides where the text goes (Recommendation, by convention). */
+  onAcceptLearnedSuggestion?: (text: string) => void;
 }
 
 const SIDES: Array<{ value: Side; label: string }> = [
@@ -94,6 +120,7 @@ const SIDES: Array<{ value: Side; label: string }> = [
 export default function QuickFindingsPanel({
   selectedIds, onToggle, onMeasurement, side, onSideChange, disabled, initialStudyHint, isAdmin,
   instances, onUpdateInstance, onAutoTechnique, onInsertNormals,
+  activeProtocolId, onProtocolChange, onChecklistChange, onAcceptLearnedSuggestion,
 }: Props) {
   const qc = useQueryClient();
   const searchRef = useRef<HTMLInputElement>(null);
@@ -155,6 +182,33 @@ export default function QuickFindingsPanel({
     }
     setSelectedTabs(next);
   }
+
+  // ── Protocol Engine (Phase 5) ──────────────────────────────────────────────
+  // Protocols available for the currently selected region(s). Selecting one
+  // loads its own technique/normal/recommendation (parent applies these,
+  // taking precedence over the tab-level generic ones) and activates its
+  // checklist against the currently selected findings.
+  const availableProtocols = useMemo(
+    () => (data?.protocols ?? []).filter((p) => p.isActive && effectiveTabs.has(p.studyType)),
+    [data, effectiveTabs],
+  );
+  const activeProtocol = useMemo(
+    () => availableProtocols.find((p) => p.id === activeProtocolId) ?? null,
+    [availableProtocols, activeProtocolId],
+  );
+  const checklist = useMemo(() => parseChecklist(activeProtocol?.checklistJson), [activeProtocol]);
+  const selectedRefs = useMemo(
+    () => [...selectedIds].map((id) => findingsById.get(id)).filter((f): f is QuickFinding => !!f).map((f) => ({ label: f.label, tags: f.tags })),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selectedIds, findingsById],
+  );
+  const checklistStatus = useMemo(() => computeChecklistStatus(checklist, selectedRefs), [checklist, selectedRefs]);
+  const checklistSummary = useMemo(() => summarizeChecklist(checklistStatus), [checklistStatus]);
+
+  useEffect(() => {
+    if (activeProtocol) onChecklistChange?.(checklistSummary.percent, checklistSummary.remaining);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProtocol?.id, checklistSummary.percent, checklistSummary.remaining.join("|")]);
 
   const searchLower = search.trim().toLowerCase();
   const matchesSearch = (f: QuickFinding) =>
@@ -342,6 +396,29 @@ export default function QuickFindingsPanel({
     );
   }
 
+  // Learning Engine (Phase 5): fetch this radiologist's learned patterns for
+  // each currently selected finding's label; only patterns that have
+  // crossed the usage threshold are shown, and only as a click-to-add chip
+  // — nothing is ever inserted automatically.
+  const selectedLabels = useMemo(
+    () => [...selectedIds].map((id) => findingsById.get(id)?.label).filter((l): l is string => !!l),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selectedIds, findingsById],
+  );
+  const { data: learnedPatterns = [] } = useQuery<LearnedPattern[]>({
+    queryKey: ["radiology-learned-patterns", selectedLabels.join("|")],
+    queryFn: async () => {
+      const results = await Promise.all(
+        selectedLabels.map((label) =>
+          api.get<LearnedPattern[]>(`/api/radiology/quick-select/learned-patterns?trigger=${encodeURIComponent(label)}`),
+        ),
+      );
+      return results.flat();
+    },
+    enabled: selectedLabels.length > 0 && !!onAcceptLearnedSuggestion,
+    staleTime: 30_000,
+  });
+
   function FindingButton({ f, index }: { f: QuickFinding; index?: number }) {
     const selected = selectedIds.has(f.id);
     const isFav = favoriteIds.has(f.id);
@@ -371,6 +448,16 @@ export default function QuickFindingsPanel({
         </button>
       </div>
       {selected && <PropertyChips f={f} />}
+      {selected && onAcceptLearnedSuggestion && rankSuggestions(learnedPatterns, f.label).slice(0, 1).map((p) => (
+        <button
+          key={p.suggestedText}
+          onClick={() => onAcceptLearnedSuggestion(p.suggestedText)}
+          className="ml-4 mb-1 text-[9px] text-left px-1.5 py-0.5 rounded border bg-sky-50 dark:bg-sky-950/20 border-sky-200 text-sky-700 dark:text-sky-300 hover:bg-sky-100"
+          title={`You've added this ${p.occurrenceCount}× after ${f.label} — click to add it again`}
+        >
+          💡 You usually add: "{p.suggestedText}" — click to add
+        </button>
+      ))}
       </div>
     );
   }
@@ -429,6 +516,51 @@ export default function QuickFindingsPanel({
           );
         })}
       </div>
+
+      {/* Protocol Engine: pick an indication-specific preset within the
+          selected region(s) — loads its own technique/normal/recommendation
+          and activates its checklist below. */}
+      {availableProtocols.length > 0 && (
+        <select
+          value={activeProtocolId ?? ""}
+          disabled={disabled}
+          onChange={(e) => {
+            const id = Number(e.target.value) || null;
+            onProtocolChange?.(availableProtocols.find((p) => p.id === id) ?? null);
+          }}
+          className="h-7 text-[11px] border rounded-md px-2 bg-background shrink-0"
+        >
+          <option value="">No protocol (generic)</option>
+          {availableProtocols.map((p) => (
+            <option key={p.id} value={p.id}>{p.isGoldStandard ? "★ " : ""}{p.name}</option>
+          ))}
+        </select>
+      )}
+
+      {/* Live protocol checklist — the radiologist confirms coverage by
+          selecting findings; nothing here is manually ticked. */}
+      {activeProtocol && checklist.length > 0 && (
+        <div className="rounded-md border bg-muted/20 p-1.5 shrink-0">
+          <p className="text-[9px] font-semibold text-muted-foreground mb-1">
+            Checklist — {checklistSummary.addressed}/{checklistSummary.total} ({checklistSummary.percent}%)
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {checklistStatus.map((item) => (
+              <span
+                key={item.label}
+                title={item.addressed ? `Addressed by: ${item.matchedBy.join(", ")}` : "Not yet addressed"}
+                className={`text-[9px] px-1.5 py-0.5 rounded border ${
+                  item.addressed
+                    ? "bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 text-emerald-700 dark:text-emerald-300"
+                    : "bg-background border-muted-foreground/20 text-muted-foreground"
+                }`}
+              >
+                {item.addressed ? "✓ " : ""}{item.label}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* One-click baseline normals for the selected tab(s) */}
       {onInsertNormals && [...effectiveTabs].some((n) => activeTabs.find((t) => t.name === n)?.normalText) && (

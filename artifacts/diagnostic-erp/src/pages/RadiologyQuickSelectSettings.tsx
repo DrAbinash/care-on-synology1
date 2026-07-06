@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { Plus, Trash2, Pencil, X, Save } from "lucide-react";
-import type { QuickFinding, QuickStudyTab, QuickMeasurement } from "@/components/radiology/QuickFindingsPanel";
+import type { QuickFinding, QuickStudyTab, QuickMeasurement, QuickProtocol } from "@/components/radiology/QuickFindingsPanel";
 
 /**
  * Radiology Quick Select — admin configuration page.
@@ -19,7 +19,7 @@ import type { QuickFinding, QuickStudyTab, QuickMeasurement } from "@/components
  * 403 toast rather than a blank page).
  */
 
-type QuickSelectData = { tabs: QuickStudyTab[]; findings: QuickFinding[]; measurements: QuickMeasurement[] };
+type QuickSelectData = { tabs: QuickStudyTab[]; findings: QuickFinding[]; measurements: QuickMeasurement[]; protocols: QuickProtocol[] };
 
 const EMPTY_FINDING = {
   studyType: "", label: "", findingText: "", impressionText: "",
@@ -31,6 +31,12 @@ const EMPTY_MEASUREMENT = {
   studyType: "", label: "", templateText: "", unit: "mm", sortOrder: 0, isActive: true,
 };
 
+const EMPTY_PROTOCOL = {
+  name: "", studyType: "", modality: "", checklistJson: "[]", techniqueText: "",
+  normalText: "", recommendationText: "", requiredMeasurements: "",
+  isGoldStandard: false, sortOrder: 0, isActive: true,
+};
+
 export default function RadiologyQuickSelectSettings() {
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -38,6 +44,7 @@ export default function RadiologyQuickSelectSettings() {
   const [editingFinding, setEditingFinding] = useState<(typeof EMPTY_FINDING & { id?: number }) | null>(null);
   const [editingMeasurement, setEditingMeasurement] = useState<(typeof EMPTY_MEASUREMENT & { id?: number }) | null>(null);
   const [editingTab, setEditingTab] = useState<{ id: number; name: string; techniqueText: string; normalText: string } | null>(null);
+  const [editingProtocol, setEditingProtocol] = useState<(typeof EMPTY_PROTOCOL & { id?: number; checklistText?: string }) | null>(null);
   const [filterTab, setFilterTab] = useState<string>("");
 
   const { data, isLoading } = useQuery<QuickSelectData>({
@@ -101,6 +108,27 @@ export default function RadiologyQuickSelectSettings() {
   const deleteMeasurement = useMutation({
     mutationFn: (id: number) => api.delete(`/api/radiology/quick-select/measurements/${id}`),
     onSuccess: () => { invalidate(); toast({ title: "Measurement deleted" }); },
+    onError: onErr,
+  });
+
+  // ── Protocol mutations (Phase 5) ──────────────────────────────────────────
+  const saveProtocol = useMutation({
+    mutationFn: (p: typeof EMPTY_PROTOCOL & { id?: number }) =>
+      p.id
+        ? api.patch(`/api/radiology/quick-select/protocols/${p.id}`, p)
+        : api.post("/api/radiology/quick-select/protocols", p),
+    onSuccess: () => { invalidate(); setEditingProtocol(null); toast({ title: "Protocol saved" }); },
+    onError: onErr,
+  });
+  const deleteProtocol = useMutation({
+    mutationFn: (id: number) => api.delete(`/api/radiology/quick-select/protocols/${id}`),
+    onSuccess: () => { invalidate(); toast({ title: "Protocol deleted" }); },
+    onError: onErr,
+  });
+  const toggleProtocol = useMutation({
+    mutationFn: ({ id, isActive }: { id: number; isActive: boolean }) =>
+      api.patch(`/api/radiology/quick-select/protocols/${id}`, { isActive }),
+    onSuccess: invalidate,
     onError: onErr,
   });
 
@@ -371,6 +399,107 @@ export default function RadiologyQuickSelectSettings() {
           ))}
           {(data?.measurements ?? []).length === 0 && (
             <p className="text-sm text-muted-foreground p-4">No measurements configured yet.</p>
+          )}
+        </div>
+      </div>
+      {/* ── Protocol Editor (Phase 5) ────────────────────────────────────── */}
+      <div className="rounded-xl border bg-card shadow-sm p-4 space-y-3">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <h3 className="text-sm font-semibold">Protocols</h3>
+            <p className="text-xs text-muted-foreground">Indication-specific presets within a region (e.g. "MRI Brain Trauma") — each has its own checklist, technique, normals, and recommendation.</p>
+          </div>
+          <Button size="sm" className="h-8" onClick={() => setEditingProtocol({ ...EMPTY_PROTOCOL, studyType: filterTab || tabs[0]?.name || "", checklistText: "" })}>
+            <Plus size={13} /> New Protocol
+          </Button>
+        </div>
+
+        {editingProtocol && (
+          <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+              <div>
+                <Label className="text-[11px]">Protocol name</Label>
+                <Input value={editingProtocol.name} onChange={(e) => setEditingProtocol({ ...editingProtocol, name: e.target.value })} className="h-8 text-sm" placeholder="MRI Brain Trauma" />
+              </div>
+              <div>
+                <Label className="text-[11px]">Region (study tab)</Label>
+                <select
+                  value={editingProtocol.studyType}
+                  onChange={(e) => setEditingProtocol({ ...editingProtocol, studyType: e.target.value })}
+                  className="h-8 w-full text-sm border rounded-md px-2 bg-background"
+                >
+                  <option value="">Select…</option>
+                  {tabs.map((t) => <option key={t.id} value={t.name}>{t.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <Label className="text-[11px]">Modality</Label>
+                <Input value={editingProtocol.modality} onChange={(e) => setEditingProtocol({ ...editingProtocol, modality: e.target.value })} className="h-8 text-sm" placeholder="MRI / CT / USG / XR" />
+              </div>
+              <div className="flex items-end gap-2 pb-1.5">
+                <Switch checked={editingProtocol.isGoldStandard} onCheckedChange={(v) => setEditingProtocol({ ...editingProtocol, isGoldStandard: v })} />
+                <Label className="text-[11px]">★ Gold Standard</Label>
+              </div>
+            </div>
+            <div>
+              <Label className="text-[11px]">Checklist items (one per line — the radiologist confirms each by selecting a matching finding)</Label>
+              <Textarea
+                value={editingProtocol.checklistText ?? (() => { try { return (JSON.parse(editingProtocol.checklistJson) as string[]).join("\n"); } catch { return ""; } })()}
+                onChange={(e) => setEditingProtocol({ ...editingProtocol, checklistText: e.target.value, checklistJson: JSON.stringify(e.target.value.split("\n").map((l) => l.trim()).filter(Boolean)) })}
+                className="text-sm min-h-[80px]"
+                placeholder={"Skull\nExtra-axial hemorrhage\nSubdural\nEpidural\nSAH"}
+              />
+            </div>
+            <div>
+              <Label className="text-[11px]">Technique (auto-fills Technique if empty)</Label>
+              <Textarea value={editingProtocol.techniqueText} onChange={(e) => setEditingProtocol({ ...editingProtocol, techniqueText: e.target.value })} className="text-sm min-h-[44px]" />
+            </div>
+            <div>
+              <Label className="text-[11px]">Normal paragraph ("+ normals" one-click button text)</Label>
+              <Textarea value={editingProtocol.normalText} onChange={(e) => setEditingProtocol({ ...editingProtocol, normalText: e.target.value })} className="text-sm min-h-[52px]" />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              <div>
+                <Label className="text-[11px]">Recommendation (auto-merged into Recommendation)</Label>
+                <Textarea value={editingProtocol.recommendationText} onChange={(e) => setEditingProtocol({ ...editingProtocol, recommendationText: e.target.value })} className="text-sm min-h-[40px]" />
+              </div>
+              <div>
+                <Label className="text-[11px]">Required measurements (comma list, checked against Findings text)</Label>
+                <Input value={editingProtocol.requiredMeasurements} onChange={(e) => setEditingProtocol({ ...editingProtocol, requiredMeasurements: e.target.value })} className="h-8 text-sm" placeholder="Canal diameter, Disc height" />
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <Button size="sm" variant="outline" className="h-7" onClick={() => setEditingProtocol(null)}>
+                <X size={12} /> Cancel
+              </Button>
+              <Button size="sm" className="h-7"
+                disabled={!editingProtocol.name.trim() || !editingProtocol.studyType || saveProtocol.isPending}
+                onClick={() => { const { checklistText: _drop, ...rest } = editingProtocol; void _drop; saveProtocol.mutate(rest); }}>
+                <Save size={12} /> Save
+              </Button>
+            </div>
+          </div>
+        )}
+
+        <div className="divide-y rounded-lg border overflow-hidden">
+          {(data?.protocols ?? []).filter((p) => !filterTab || p.studyType === filterTab).map((p) => (
+            <div key={p.id} className={`flex items-center gap-3 px-3 py-2 text-sm ${p.isActive ? "" : "opacity-50"}`}>
+              <span className="text-[10px] font-mono bg-muted rounded px-1.5 py-0.5 shrink-0">{p.studyType}</span>
+              <span className="font-medium shrink-0">{p.isGoldStandard ? "★ " : ""}{p.name}</span>
+              <span className="text-xs text-muted-foreground truncate flex-1">
+                {(() => { try { return (JSON.parse(p.checklistJson) as string[]).length; } catch { return 0; } })()} checklist items
+              </span>
+              <Switch checked={p.isActive} onCheckedChange={(v) => toggleProtocol.mutate({ id: p.id, isActive: v })} className="scale-75" />
+              <button onClick={() => setEditingProtocol({ ...p, checklistText: undefined })} className="text-muted-foreground hover:text-primary">
+                <Pencil size={13} />
+              </button>
+              <button onClick={() => { if (window.confirm(`Delete protocol "${p.name}"?`)) deleteProtocol.mutate(p.id); }} className="text-muted-foreground hover:text-destructive">
+                <Trash2 size={13} />
+              </button>
+            </div>
+          ))}
+          {(data?.protocols ?? []).length === 0 && (
+            <p className="text-sm text-muted-foreground p-4">No protocols configured yet.</p>
           )}
         </div>
       </div>

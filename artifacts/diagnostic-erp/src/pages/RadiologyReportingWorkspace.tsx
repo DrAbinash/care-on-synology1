@@ -24,11 +24,12 @@ import RadiologyMemoryPanel from "@/components/RadiologyMemoryPanel";
 import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
 import QuickFindingsPanel, {
   mergeBlock, removeBlock, mergeImpression, removeImpression,
-  type QuickFinding,
+  type QuickFinding, type QuickProtocol,
 } from "@/components/radiology/QuickFindingsPanel";
 import { type Side } from "@/lib/sideSwap";
 import { renderAbnormality, EMPTY_INSTANCE, type AbnormalityInstance } from "@/lib/abnormalityEngine";
 import { validateReport, computeQualityScore } from "@/lib/reportValidator";
+import { isLearnableAddition } from "@/lib/learningEngine";
 import { upsertMeasurement } from "@/lib/measurementVars";
 import CollapsibleSection from "@/components/radiology/CollapsibleSection";
 import FollowUpPanel from "@/components/radiology/FollowUpPanel";
@@ -308,6 +309,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // Phase 4: one structured instance per selected abnormality.
   const [quickInstances, setQuickInstances] = useState<Map<number, AbnormalityInstance>>(new Map());
   const insertedTextRef = useRef<Map<number, { finding: string; impression: string; technique: string; recommendation: string }>>(new Map());
+  // Learning Engine (Phase 5): remembers the last selected finding so any
+  // manually-added recommendation text at finalize time can be attributed
+  // to it and offered as a suggestion next time. Suggestion-only — never
+  // auto-inserted.
+  const lastToggledFindingRef = useRef<QuickFinding | null>(null);
 
   /** Applies rendered abnormality sections to the report: exact-remove of
    *  what was previously generated for this instance, then dedupe-merge of
@@ -333,6 +339,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   }
 
   function handleQuickToggle(f: QuickFinding, nowSelected: boolean) {
+    if (nowSelected) lastToggledFindingRef.current = f;
     setSelectedQuickIds((prev) => {
       const next = new Set(prev);
       if (nowSelected) next.add(f.id);
@@ -374,6 +381,35 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     setRawFindings((prev) => mergeBlock(prev, text));
   }
 
+  // ── Protocol Engine (Phase 5) ──────────────────────────────────────────────
+  // Selecting a protocol (e.g. "MRI Brain Trauma") loads its own technique/
+  // normal/recommendation — these take precedence over the generic tab-level
+  // ones for empty fields, and its checklist drives the live completeness
+  // score below. Switching protocols never deletes anything the radiologist
+  // has already typed.
+  const [activeProtocol, setActiveProtocol] = useState<QuickProtocol | null>(null);
+  const [checklistPercent, setChecklistPercent] = useState(100);
+  const [checklistRemaining, setChecklistRemaining] = useState<string[]>([]);
+
+  function handleProtocolChange(protocol: QuickProtocol | null) {
+    setActiveProtocol(protocol);
+    if (!protocol) return;
+    if (protocol.techniqueText) setTechnique((prev) => (prev.trim() ? prev : protocol.techniqueText));
+    if (protocol.recommendationText) setRecommendation((prev) => mergeBlock(prev, protocol.recommendationText));
+  }
+
+  function handleInsertProtocolNormals() {
+    if (activeProtocol?.normalText) setRawFindings((prev) => mergeBlock(prev, activeProtocol.normalText));
+  }
+
+  const missingRequiredMeasurements = useMemo(() => {
+    if (!activeProtocol?.requiredMeasurements) return [];
+    return activeProtocol.requiredMeasurements
+      .split(",")
+      .map((m) => m.trim())
+      .filter((m) => m && !rawFindings.toLowerCase().includes(m.toLowerCase()));
+  }, [activeProtocol, rawFindings]);
+
   // Smart Measurements (Phase 3): re-entering a measurement updates the
   // existing sentence's value everywhere instead of appending a duplicate.
   function handleSmartMeasurement(templateText: string, value: string) {
@@ -387,8 +423,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // Live Report Quality Score (Phase 3) — recomputed as the radiologist
   // types; purely informational, never blocks anything.
   const quality = useMemo(
-    () => computeQualityScore({ findings: rawFindings, impression, recommendation, technique, clinicalHistory }),
-    [rawFindings, impression, recommendation, technique, clinicalHistory],
+    () => computeQualityScore({
+      findings: rawFindings, impression, recommendation, technique, clinicalHistory,
+      checklistPercent: activeProtocol ? checklistPercent : undefined,
+      missingRequiredMeasurements,
+    }),
+    [rawFindings, impression, recommendation, technique, clinicalHistory, activeProtocol, checklistPercent, missingRequiredMeasurements],
   );
 
   // Intelligent Normal Generator (Phase 3, structured mode): sets every
@@ -720,6 +760,27 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     } else if (!window.confirm("Finalize this report? After finalizing, editing is disabled.")) {
       return;
     }
+
+    // Learning Engine (Phase 5): if the recommendation contains a sentence
+    // beyond what the last-selected finding's own template inserted, and it
+    // looks like a genuine addition, record it against that finding for
+    // this radiologist. Fire-and-forget, never blocks finalize, never
+    // inserts anything automatically — purely building up future
+    // suggestions the radiologist can choose to accept.
+    const lastFinding = lastToggledFindingRef.current;
+    if (lastFinding) {
+      const extra = recommendation
+        .split(/\n+/)
+        .map((s) => s.trim())
+        .find((s) => isLearnableAddition(s, lastFinding.recommendationText || ""));
+      if (extra) {
+        api.post("/api/radiology/quick-select/learned-patterns", {
+          triggerLabel: lastFinding.label,
+          suggestedText: extra,
+        }).catch(() => { /* learning is best-effort, never blocks finalize */ });
+      }
+    }
+
     setFinalizing(true);
     try {
       const html = buildPreviewHtml({
@@ -1185,7 +1246,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                         ? "bg-amber-50 border-amber-200 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300"
                         : "bg-red-50 border-red-200 text-red-700 dark:bg-red-950/30 dark:text-red-400"
                   }`}
-                  title={quality.issues.length ? quality.issues.map((i, n) => `${n + 1}. ${i}`).join("\n") : "Report is complete and consistent."}
+                  title={quality.issues.length ? quality.issues.map((i, n) => `${n + 1}. ${i}`).join("\n") + (checklistRemaining.length ? `\n\nChecklist remaining: ${checklistRemaining.join(", ")}` : "") : "Report is complete and consistent."}
                 >
                   Quality {quality.score}/100{quality.issues.length > 0 ? ` · ${quality.issues.length} issue${quality.issues.length > 1 ? "s" : ""}` : ""}
                 </span>
@@ -1213,6 +1274,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                       <option key={s.ts} value={s.ts}>{new Date(s.ts).toLocaleTimeString()}</option>
                     ))}
                   </select>
+                )}
+                {activeProtocol?.normalText && (
+                  <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={handleInsertProtocolNormals}
+                    title={activeProtocol.normalText}>
+                    + {activeProtocol.name} normals
+                  </Button>
                 )}
                 {useStructured && selectedTemplate && (
                   <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={fillRemainingNormals}
@@ -1668,6 +1735,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 onUpdateInstance={handleInstanceUpdate}
                 onAutoTechnique={handleAutoTechnique}
                 onInsertNormals={handleInsertNormals}
+                activeProtocolId={activeProtocol?.id ?? null}
+                onProtocolChange={handleProtocolChange}
+                onChecklistChange={(percent, remaining) => { setChecklistPercent(percent); setChecklistRemaining(remaining); }}
+                onAcceptLearnedSuggestion={(text) => setRecommendation((prev) => mergeBlock(prev, text))}
                 disabled={isLocked}
                 initialStudyHint={`${entry?.modality ?? ""} ${entry?.studyDescription ?? ""}`}
                 isAdmin={isOwnerRole(session)}

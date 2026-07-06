@@ -100,3 +100,58 @@ export const radiologyQuickFavoritesTable = pgTable(
 
 export type RadiologyMeasurement = typeof radiologyQuickMeasurementsTable.$inferSelect;
 export type RadiologyQuickFavorite = typeof radiologyQuickFavoritesTable.$inferSelect;
+
+// ── Protocol Engine (Phase 5) ─────────────────────────────────────────────────
+// A Protocol is an indication-specific preset within a body region
+// (radiology_study_tabs) — e.g. "MRI Brain Trauma" vs "MRI Brain Stroke"
+// both live under the Brain region but carry their own checklist, normal
+// paragraph, technique, and recommendation. References the region by name
+// (not FK), matching the existing radiology_quick_findings.study_type
+// pattern so tab renames never cascade-delete a protocol.
+export const radiologyProtocolsTable = pgTable(
+  "radiology_protocols",
+  {
+    id: serial("id").primaryKey(),
+    name: text("name").notNull(),                 // "MRI Brain Trauma"
+    studyType: text("study_type").notNull(),       // region, e.g. "Brain"
+    modality: text("modality").notNull().default(""), // MRI/CT/USG/XR/Mammo/Doppler
+    checklistJson: text("checklist_json").notNull().default("[]"),
+    techniqueText: text("technique_text").notNull().default(""),
+    normalText: text("normal_text").notNull().default(""),
+    recommendationText: text("recommendation_text").notNull().default(""),
+    requiredMeasurements: text("required_measurements").notNull().default(""), // comma list
+    isGoldStandard: boolean("is_gold_standard").notNull().default(false),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+  },
+  (t) => ({
+    nameUq: uniqueIndex("radiology_protocols_name_uq").on(t.name),
+    byStudy: index("radiology_protocols_study_idx").on(t.studyType, t.isActive, t.sortOrder),
+  }),
+);
+
+// ── Learning Engine (Phase 5) — per-radiologist, suggestion-only ─────────────
+// Tracks how often a radiologist follows a given quick-finding button with a
+// particular piece of free text, so the workspace can (with a suggest-only
+// UI, never automatic insertion) offer it after repeated use.
+export const radiologyLearnedPatternsTable = pgTable(
+  "radiology_learned_patterns",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id").notNull(),
+    triggerLabel: text("trigger_label").notNull(),
+    suggestedText: text("suggested_text").notNull(),
+    occurrenceCount: integer("occurrence_count").notNull().default(1),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uq: uniqueIndex("radiology_learned_patterns_uq").on(t.userId, t.triggerLabel, t.suggestedText),
+    byUserTrigger: index("radiology_learned_patterns_user_idx").on(t.userId, t.triggerLabel),
+  }),
+);
+
+export type RadiologyProtocol = typeof radiologyProtocolsTable.$inferSelect;
+export type RadiologyLearnedPattern = typeof radiologyLearnedPatternsTable.$inferSelect;
