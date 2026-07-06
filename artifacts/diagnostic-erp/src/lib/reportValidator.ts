@@ -99,3 +99,40 @@ export function validateReport(report: ReportForValidation): string[] {
 
   return warnings;
 }
+
+// ── Report Quality Score (Phase 3) ───────────────────────────────────────────
+// Live, warn-only completeness + consistency score shown in the workspace
+// header. 100 = complete & consistent. Deductions are deliberately simple
+// and explainable — each item in `issues` says exactly what to fix.
+
+export interface QualityInput extends ReportForValidation {
+  technique?: string;
+  clinicalHistory?: string;
+}
+
+export interface QualityScore {
+  score: number; // 0-100
+  issues: string[];
+}
+
+export function computeQualityScore(input: QualityInput): QualityScore {
+  const issues: string[] = [];
+  let score = 100;
+
+  const deduct = (points: number, reason: string) => {
+    score -= points;
+    issues.push(reason);
+  };
+
+  if (!(input.findings || "").trim()) deduct(30, "Findings section is empty.");
+  if ((input.impression || []).every((l) => !l.trim())) deduct(25, "Impression section is empty.");
+  if (!(input.technique || "").trim()) deduct(10, "Technique not documented.");
+  if (!(input.clinicalHistory || "").trim()) deduct(5, "Clinical history not documented.");
+  if (!(input.recommendation || "").trim()) deduct(5, "No recommendation/advice given.");
+
+  // Consistency warnings from the validator each cost 5 points.
+  const warnings = validateReport(input);
+  for (const w of warnings) deduct(5, w);
+
+  return { score: Math.max(0, score), issues };
+}

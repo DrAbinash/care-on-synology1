@@ -27,7 +27,10 @@ import QuickFindingsPanel, {
   type QuickFinding,
 } from "@/components/radiology/QuickFindingsPanel";
 import { applySide, type Side } from "@/lib/sideSwap";
-import { validateReport } from "@/lib/reportValidator";
+import { validateReport, computeQualityScore } from "@/lib/reportValidator";
+import { upsertMeasurement } from "@/lib/measurementVars";
+import CollapsibleSection from "@/components/radiology/CollapsibleSection";
+import FollowUpPanel from "@/components/radiology/FollowUpPanel";
 import { useLocalDraftBackup } from "@/hooks/useLocalDraftBackup";
 import { isOwnerRole } from "@/lib/staffSession";
 
@@ -109,7 +112,7 @@ type StylePreferences = {
   includeMeasurements: boolean;
 };
 
-type RightTab = "quickselect" | "templates" | "prior" | "ai" | "measurements" | "teaching";
+type RightTab = "quickselect" | "templates" | "followup" | "prior" | "ai" | "measurements" | "teaching";
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; locked: boolean }> = {
   DRAFT: { label: "Draft", color: "bg-yellow-100 text-yellow-800 border-yellow-300", locked: false },
@@ -337,8 +340,40 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     }
   }
 
-  function handleQuickMeasurement(text: string) {
-    setRawFindings((prev) => mergeBlock(prev, text));
+  // Smart Measurements (Phase 3): re-entering a measurement updates the
+  // existing sentence's value everywhere instead of appending a duplicate.
+  function handleSmartMeasurement(templateText: string, value: string) {
+    setRawFindings((prev) => {
+      const { text, updated } = upsertMeasurement(prev, templateText, value);
+      if (updated) toast({ title: "Measurement updated", description: "Existing value replaced in the report." });
+      return text;
+    });
+  }
+
+  // Live Report Quality Score (Phase 3) — recomputed as the radiologist
+  // types; purely informational, never blocks anything.
+  const quality = useMemo(
+    () => computeQualityScore({ findings: rawFindings, impression, recommendation, technique, clinicalHistory }),
+    [rawFindings, impression, recommendation, technique, clinicalHistory],
+  );
+
+  // Intelligent Normal Generator (Phase 3, structured mode): sets every
+  // section the radiologist has NOT touched back to its template-normal
+  // text. "Touched" = text differs from the template normal — those are
+  // never overwritten.
+  function fillRemainingNormals() {
+    const sections = selectedTemplate ? parseSectionsJson(selectedTemplate.sectionsJson) : null;
+    if (!sections) return;
+    setFindingsMap((prev) => {
+      const next = { ...prev };
+      for (const item of sections.findingsItems) {
+        const cur = next[item.label];
+        const untouched = !cur || !cur.text.trim() || cur.text === item.normal;
+        if (untouched) next[item.label] = { normal: true, text: item.normal };
+      }
+      return next;
+    });
+    toast({ title: "Remaining systems set to normal", description: "Edited sections were not changed." });
   }
 
   // ── Local unsaved-draft protection ────────────────────────────────────────
@@ -928,6 +963,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const RIGHT_TABS = [
     { id: "quickselect", label: "Quick", icon: <Zap size={11} /> },
     { id: "templates", label: "Templates", icon: <LayoutTemplate size={11} /> },
+    { id: "followup", label: "Follow-up", icon: <RefreshCw size={11} /> },
     { id: "prior", label: "Prior", icon: <ClipboardList size={11} /> },
     { id: "ai", label: "AI", icon: <Sparkles size={11} /> },
     { id: "measurements", label: "Measure", icon: <BarChart3 size={11} /> },
@@ -1104,16 +1140,68 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               </div>
             )}
 
-            {/* Clinical History */}
-            <div className="flex flex-col gap-1.5">
-              <div className="flex items-center justify-between">
-                <Label className="text-xs font-semibold">Clinical History</Label>
+            {/* Live quality score + snapshot history + normals filler (Phase 3) */}
+            {!isLocked && (
+              <div className="flex items-center gap-2 flex-wrap shrink-0">
+                <span
+                  className={`text-[10px] font-semibold rounded-full px-2 py-0.5 border ${
+                    quality.score >= 85
+                      ? "bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300"
+                      : quality.score >= 60
+                        ? "bg-amber-50 border-amber-200 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300"
+                        : "bg-red-50 border-red-200 text-red-700 dark:bg-red-950/30 dark:text-red-400"
+                  }`}
+                  title={quality.issues.length ? quality.issues.map((i, n) => `${n + 1}. ${i}`).join("\n") : "Report is complete and consistent."}
+                >
+                  Quality {quality.score}/100{quality.issues.length > 0 ? ` · ${quality.issues.length} issue${quality.issues.length > 1 ? "s" : ""}` : ""}
+                </span>
+                {draftBackup.listSnapshots().length > 0 && (
+                  <select
+                    className="h-6 text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
+                    value=""
+                    onChange={(e) => {
+                      const ts = Number(e.target.value);
+                      if (!ts) return;
+                      const snap = draftBackup.restoreSnapshot(ts);
+                      if (!snap) return;
+                      if (!window.confirm(`Restore snapshot from ${new Date(ts).toLocaleTimeString()}? Current text will be replaced.`)) return;
+                      setClinicalHistory(snap.clinicalHistory ?? "");
+                      setTechnique(snap.technique ?? "");
+                      setRawFindings(snap.rawFindings ?? "");
+                      setImpression(Array.isArray(snap.impression) ? snap.impression : []);
+                      setRecommendation(snap.recommendation ?? "");
+                      toast({ title: "Snapshot restored" });
+                    }}
+                    title="Auto-saved snapshots (one per minute while you work)"
+                  >
+                    <option value="">Snapshots ({draftBackup.listSnapshots().length})…</option>
+                    {draftBackup.listSnapshots().map((s) => (
+                      <option key={s.ts} value={s.ts}>{new Date(s.ts).toLocaleTimeString()}</option>
+                    ))}
+                  </select>
+                )}
+                {useStructured && selectedTemplate && (
+                  <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={fillRemainingNormals}
+                    title="Set every section you haven't edited to its normal text — edited sections are never changed">
+                    Fill remaining normals
+                  </Button>
+                )}
+              </div>
+            )}
+
+            {/* Clinical History — collapsible (Phase 3), layout remembered per browser */}
+            <CollapsibleSection
+              layoutKey="radiology_report_layout"
+              id="clinical_history"
+              title="Clinical History"
+              headerExtra={
                 <VoiceDictationButton
                   onInsert={(t) => setClinicalHistory((p) => p + t)}
                   targetField="clinical_history"
                   className="h-6 text-[10px]"
                 />
-              </div>
+              }
+            >
               <Textarea
                 value={clinicalHistory}
                 onChange={(e) => setClinicalHistory(e.target.value)}
@@ -1121,18 +1209,21 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 className="min-h-[56px] text-sm resize-none"
                 disabled={isLocked}
               />
-            </div>
+            </CollapsibleSection>
 
-            {/* Technique */}
-            <div className="flex flex-col gap-1.5">
-              <div className="flex items-center justify-between">
-                <Label className="text-xs font-semibold">Technique</Label>
+            {/* Technique — collapsible (Phase 3) */}
+            <CollapsibleSection
+              layoutKey="radiology_report_layout"
+              id="technique"
+              title="Technique"
+              headerExtra={
                 <VoiceDictationButton
                   onInsert={(t) => setTechnique((p) => p + t)}
                   targetField="technique"
                   className="h-5 text-[10px]"
                 />
-              </div>
+              }
+            >
               <Textarea
                 value={technique}
                 onChange={(e) => setTechnique(e.target.value)}
@@ -1140,7 +1231,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 className="min-h-[44px] text-sm resize-none"
                 disabled={isLocked}
               />
-            </div>
+            </CollapsibleSection>
 
             {/* Findings */}
             <div className="flex flex-col gap-2">
@@ -1335,9 +1426,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               )}
             </div>
 
-            {/* Recommendation */}
-            <div className="flex flex-col gap-1.5">
-              <Label className="text-xs font-semibold">Recommendation</Label>
+            {/* Recommendation / Advice — collapsible (Phase 3) */}
+            <CollapsibleSection
+              layoutKey="radiology_report_layout"
+              id="recommendation"
+              title="Recommendation / Advice"
+            >
               <Textarea
                 value={recommendation}
                 onChange={(e) => setRecommendation(e.target.value)}
@@ -1345,7 +1439,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 className="min-h-[44px] text-sm resize-none"
                 disabled={isLocked}
               />
-            </div>
+            </CollapsibleSection>
 
             {/* Critical finding */}
             <div className="flex flex-col gap-2 border rounded-md p-3 bg-red-50/40 border-red-100">
@@ -1533,7 +1627,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               <QuickFindingsPanel
                 selectedIds={selectedQuickIds}
                 onToggle={handleQuickToggle}
-                onMeasurement={handleQuickMeasurement}
+                onMeasurement={handleSmartMeasurement}
                 side={quickSide}
                 onSideChange={setQuickSide}
                 disabled={isLocked}
@@ -1542,6 +1636,19 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               />
             )}
             {rightTab === "templates" && <TemplatesTab />}
+            {rightTab === "followup" && (
+              <FollowUpPanel
+                patientId={entry?.patientId ?? null}
+                currentFindings={rawFindings}
+                onCopyFindings={(text) => setRawFindings((prev) => mergeBlock(prev, text))}
+                onCopyImpression={(lines) => setImpression((prev) => {
+                  let next = prev;
+                  for (const line of lines) next = mergeImpression(next, line);
+                  return next;
+                })}
+                disabled={isLocked}
+              />
+            )}
 
             {/* Tab 2: Prior Reports */}
             {rightTab === "prior" && (

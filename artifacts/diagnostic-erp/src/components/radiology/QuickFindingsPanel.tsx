@@ -66,7 +66,7 @@ export { mergeBlock, removeBlock, mergeImpression, removeImpression } from "@/li
 interface Props {
   selectedIds: Set<number>;
   onToggle: (finding: QuickFinding, nowSelected: boolean) => void;
-  onMeasurement?: (text: string) => void;
+  onMeasurement?: (templateText: string, value: string) => void;
   side: Side;
   onSideChange: (side: Side) => void;
   disabled?: boolean;
@@ -219,7 +219,7 @@ export default function QuickFindingsPanel({
     if (value === null) return;
     const trimmed = value.trim();
     if (!trimmed) return;
-    onMeasurement?.(m.templateText.replace(/\{value\}/g, trimmed));
+    onMeasurement?.(m.templateText, trimmed);
   }
 
   // ── Keyboard workflow ──────────────────────────────────────────────────────

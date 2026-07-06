@@ -68,7 +68,55 @@ export function useLocalDraftBackup<T extends object>(opts: {
 
   function clear() {
     discard();
+    try { localStorage.removeItem(`${storageKey}_history`); } catch { /* ignore */ }
   }
 
-  return { restoreAvailable, restore, discard, clear };
+  // ── Snapshot history (Phase 3) ─────────────────────────────────────────────
+  // In addition to the rolling "latest" backup above, a snapshot of the
+  // report is appended once per minute (only if content changed), capped at
+  // MAX_SNAPSHOTS. Any snapshot can be restored — protecting against "I
+  // accidentally deleted a paragraph five minutes ago", not just crashes.
+  const MAX_SNAPSHOTS = 30;
+  const historyKey = `${storageKey}_history`;
+  const [historyVersion, setHistoryVersion] = useState(0); // bump to refresh listings
+  const snapshotRef = useRef(snapshot);
+  snapshotRef.current = snapshot;
+
+  useEffect(() => {
+    if (!enabled) return;
+    const timer = setInterval(() => {
+      try {
+        const history: Array<{ ts: number; data: T }> = JSON.parse(localStorage.getItem(historyKey) || "[]");
+        const latest = history[history.length - 1];
+        const current = JSON.stringify(snapshotRef.current);
+        if (latest && JSON.stringify(latest.data) === current) return; // unchanged — skip
+        history.push({ ts: Date.now(), data: snapshotRef.current });
+        while (history.length > MAX_SNAPSHOTS) history.shift();
+        localStorage.setItem(historyKey, JSON.stringify(history));
+        setHistoryVersion((v) => v + 1);
+      } catch { /* storage full/blocked — non-fatal */ }
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, [enabled, historyKey]);
+
+  function listSnapshots(): Array<{ ts: number }> {
+    void historyVersion; // subscribe to refreshes
+    try {
+      const history: Array<{ ts: number; data: T }> = JSON.parse(localStorage.getItem(historyKey) || "[]");
+      return history.map(({ ts }) => ({ ts })).reverse(); // newest first
+    } catch {
+      return [];
+    }
+  }
+
+  function restoreSnapshot(ts: number): T | null {
+    try {
+      const history: Array<{ ts: number; data: T }> = JSON.parse(localStorage.getItem(historyKey) || "[]");
+      return history.find((s) => s.ts === ts)?.data ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  return { restoreAvailable, restore, discard, clear, listSnapshots, restoreSnapshot };
 }
