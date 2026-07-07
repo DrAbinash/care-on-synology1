@@ -1,4 +1,5 @@
-import { pgTable, serial, integer, text, timestamp, index, uniqueIndex, sql } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { pgTable, serial, integer, text, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
 
 // radiology_worklist — populated by external PACS (Conquest) via the internal
 // intake API. Parallel to radiology_studies (the ERP's own billing-driven
