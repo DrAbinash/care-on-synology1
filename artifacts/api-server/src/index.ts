@@ -257,6 +257,15 @@ async function runStartupMigrations(): Promise<void> {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
 
+      -- ── Backfill safety net: on any deployment where payment_logs was ──
+      -- created by an older version of this CREATE TABLE (before amount /
+      -- error_message existed), CREATE TABLE IF NOT EXISTS above is a
+      -- no-op and the columns never get added. These ALTER statements are
+      -- idempotent (IF NOT EXISTS) and guarantee both columns always exist,
+      -- regardless of when the table was first created.
+      ALTER TABLE payment_logs ADD COLUMN IF NOT EXISTS amount NUMERIC(10, 2) NOT NULL DEFAULT 0;
+      ALTER TABLE payment_logs ADD COLUMN IF NOT EXISTS error_message TEXT;
+
       CREATE INDEX IF NOT EXISTS idx_payment_logs_booking_ref
         ON payment_logs (booking_ref);
 

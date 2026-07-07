@@ -199,6 +199,31 @@ function typesCompatible(a, b) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// REPAIR MODE HELPER — type-appropriate DEFAULT literal
+// ════════════════════════════════════════════════════════════════════════════
+//
+// When repair mode has to ADD COLUMN a NOT NULL column that has no explicit
+// DEFAULT in the source SQL, it must synthesize one so existing rows can be
+// backfilled. A single hardcoded `DEFAULT ''` (the previous behaviour) is
+// invalid SQL for non-text types — e.g. `numeric` — and made repair mode
+// fail on columns like payment_logs.amount. This picks a safe literal per
+// normalised type family instead.
+const NUMERIC_TYPE_FAMILIES = new Set([
+  "integer", "bigint", "numeric", "decimal", "real", "double precision", "smallint",
+]);
+
+function defaultLiteralForType(rawType) {
+  // Strip precision/scale, e.g. "numeric(10, 2)" -> "numeric", so family
+  // lookup below matches regardless of parametrized precision.
+  const t = normaliseType(String(rawType || "").replace(/\([^)]*\)/, ""));
+  if (NUMERIC_TYPE_FAMILIES.has(t)) return "0";
+  if (t === "boolean") return "false";
+  if (t === "jsonb" || t === "json") return "'{}'::jsonb";
+  if (t.startsWith("timestamp")) return "now()";
+  return "''"; // text and anything else unrecognised
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // TABLES CREATED BY API STARTUP (not in SQL migration files)
 // These get a WARNING not a FAIL — they're created by runStartupMigrations()
 // in index.ts and will exist after the first API startup.
@@ -1014,9 +1039,19 @@ async function runRepair(client, results, expected) {
     if (!ci) continue;
 
     let colDef = `"${mc.column}" ${ci.rawType || ci.type}`;
-    if (ci.notNull && !ci.defaultVal) colDef += " DEFAULT ''"; // need a default to add NOT NULL
-    else if (ci.notNull) colDef += " NOT NULL";
-    if (ci.defaultVal != null) colDef += ` DEFAULT ${ci.defaultVal}`;
+    if (ci.defaultVal != null) {
+      // Source SQL specified an explicit default — use it verbatim.
+      colDef += ` DEFAULT ${ci.defaultVal}`;
+      if (ci.notNull) colDef += " NOT NULL";
+    } else if (ci.notNull) {
+      // NOT NULL with no explicit default: existing rows need a value to
+      // backfill, so synthesize a type-appropriate default (never a bare
+      // '' for numeric/boolean/jsonb/timestamp columns — that's invalid
+      // SQL and previously made repair fail on columns like
+      // payment_logs.amount). NOT NULL must be appended too, or the
+      // column silently ends up nullable despite the source schema.
+      colDef += ` DEFAULT ${defaultLiteralForType(ci.rawType || ci.type)} NOT NULL`;
+    }
 
     const sql = `ALTER TABLE "${mc.table}" ADD COLUMN IF NOT EXISTS ${colDef};`;
     try {
@@ -1319,8 +1354,16 @@ async function main() {
   process.exit(results.pass ? 0 : 1);
 }
 
-main().catch((err) => {
-  console.error(c.red(`✗ Unexpected error: ${err.message}`));
-  if (VERBOSE) console.error(err.stack);
-  process.exit(1);
-});
+// Only run main() when executed directly (`node scripts/db-schema-verify.cjs`).
+// When required as a module (e.g. from a regression test) this exposes pure
+// helper functions below without connecting to a database or exiting the
+// process.
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(c.red(`✗ Unexpected error: ${err.message}`));
+    if (VERBOSE) console.error(err.stack);
+    process.exit(1);
+  });
+}
+
+module.exports = { normaliseType, typesCompatible, defaultLiteralForType };
