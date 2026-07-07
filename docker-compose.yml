@@ -313,63 +313,15 @@ services:
         condition: service_healthy
 
   # ===========================================================================
-  # Federated Radiology Service
+  # NOTE: A standalone "Federated Radiology Service" (separate container +
+  # database at artifacts/radiology-service) was scaffolded here previously
+  # but never built out. Radiology reporting is fully integrated into the
+  # main ERP/API instead (Reporting Workspace, Quick Select, Protocol
+  # Engine — see artifacts/diagnostic-erp/src/pages/RadiologyReportingWorkspace.tsx).
+  # The obsolete radiology-db/radiology services and their volume were
+  # removed on 2026-07-07 since artifacts/radiology-service does not exist
+  # and nothing in the running app builds or depends on them.
   # ===========================================================================
-  # A SEPARATE container + database for radiology reporting. Talks to the ERP
-  # only via the boundary API (/api/boundary/*). The ERP's accounting, billing,
-  # and all existing flows are completely unaffected.
-  #
-  # Access: http://<nas-ip>:3002  (or reverse-proxy radiology.yourdomain.in)
-  #
-  # The ERP nav links here with ?sso=<token>; the radiology service verifies
-  # that token against the ERP and issues its own session — no double login.
-  # ===========================================================================
-
-  radiology-db:
-    image: postgres:16-alpine
-    container_name: care-radiology-db
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${RAD_DB_USER:-radiology}
-      POSTGRES_PASSWORD: ${RAD_DB_PASSWORD:-changeme_rad}
-      POSTGRES_DB: ${RAD_DB_NAME:-radiology}
-    volumes:
-      - radiology_db_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${RAD_DB_USER:-radiology} -d ${RAD_DB_NAME:-radiology}"]
-      interval: 5s
-      timeout: 5s
-      retries: 30
-
-  radiology:
-    build:
-      context: .
-      dockerfile: artifacts/radiology-service/Dockerfile
-    container_name: care-radiology
-    restart: unless-stopped
-    ports:
-      - "${RAD_HOST_PORT:-3002}:3000"
-    environment:
-      NODE_ENV: production
-      # The radiology service's OWN database (separate from ERP)
-      DATABASE_URL: postgres://${RAD_DB_USER:-radiology}:${RAD_DB_PASSWORD:-changeme_rad}@radiology-db:5432/${RAD_DB_NAME:-radiology}
-      # ERP boundary API — internal docker network (the api container name)
-      ERP_API_URL: http://care-api:8080
-      # Shared secret — MUST match the ERP's BOUNDARY_API_KEY env var
-      BOUNDARY_API_KEY: ${BOUNDARY_API_KEY:-change-this-boundary-secret}
-      # Ollama AI — your Windows PC on the same LAN (for AI-assisted reporting)
-      # Override via the admin Settings → AI page, or set here for first boot.
-      OLLAMA_URL: ${OLLAMA_URL:-http://localhost:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
-    depends_on:
-      radiology-db:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/health || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
 
 # Add the BOUNDARY_API_KEY to the care-api service's environment in your
 # .env file so both containers share the same secret:
@@ -378,4 +330,3 @@ services:
 volumes:
   db_data:
   object_storage:
-  radiology_db_data:
