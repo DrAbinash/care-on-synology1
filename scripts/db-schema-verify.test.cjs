@@ -56,3 +56,37 @@ describe("payment_logs schema stays in sync with amount/error_message", () => {
     );
   });
 });
+
+describe("radiology_worklist accession_number is no longer a unique/required field", () => {
+  const indexTs = fs.readFileSync(
+    path.join(__dirname, "../artifacts/api-server/src/index.ts"),
+    "utf8"
+  );
+  const worklistSchema = fs.readFileSync(
+    path.join(__dirname, "../lib/db/src/schema/radiologyWorklist.ts"),
+    "utf8"
+  );
+
+  it("Drizzle source no longer marks accessionNumber as notNull, and drops its unique index", () => {
+    // Guards against the exact incident: bad/duplicate DICOM accession
+    // numbers (e.g. a referring doctor's name) crashing study intake with
+    // "duplicate key value violates unique constraint radiology_worklist_accession_uq".
+    expect(worklistSchema).not.toMatch(/accessionNumber:\s*text\("accession_number"\)\.notNull\(\)/);
+    expect(worklistSchema).not.toMatch(/uniqueIndex\("radiology_worklist_accession_uq"\)/);
+    // study_instance_uid is the real identifier and must be uniquely indexed instead.
+    expect(worklistSchema).toMatch(/uniqueIndex\("radiology_worklist_uid_uq"\)/);
+  });
+
+  it("API startup migration relaxes accession_number and enforces study_instance_uid uniqueness idempotently", () => {
+    expect(indexTs).toMatch(
+      /ALTER TABLE radiology_worklist ALTER COLUMN accession_number DROP NOT NULL;/
+    );
+    expect(indexTs).toMatch(/DROP INDEX IF EXISTS radiology_worklist_accession_uq;/);
+    expect(indexTs).toMatch(
+      /CREATE UNIQUE INDEX IF NOT EXISTS radiology_worklist_uid_uq/
+    );
+    // Must be guarded so pre-existing duplicate UIDs can't abort the whole
+    // startup migration batch (same class of bug as the gstin incident).
+    expect(indexTs).toMatch(/EXCEPTION WHEN unique_violation THEN/);
+  });
+});

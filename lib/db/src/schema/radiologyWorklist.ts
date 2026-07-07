@@ -1,4 +1,4 @@
-import { pgTable, serial, integer, text, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, serial, integer, text, timestamp, index, uniqueIndex, sql } from "drizzle-orm/pg-core";
 
 // radiology_worklist — populated by external PACS (Conquest) via the internal
 // intake API. Parallel to radiology_studies (the ERP's own billing-driven
@@ -20,7 +20,7 @@ export const radiologyWorklistTable = pgTable(
     modality: text("modality").notNull().default("OT"),
     studyDescription: text("study_description"),
     studyDate: text("study_date"),
-    accessionNumber: text("accession_number").notNull(),
+    accessionNumber: text("accession_number"), // nullable, NOT globally unique — see radiologyWorklist.ts header note
     studyInstanceUID: text("study_instance_uid"),
     aeTitle: text("ae_title"),
     ipAddress: text("ip_address"),
@@ -57,7 +57,14 @@ export const radiologyWorklistTable = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },
   (t) => ({
-    accessionUq: uniqueIndex("radiology_worklist_accession_uq").on(t.accessionNumber),
+    // accession_number is external DICOM data and can legitimately repeat
+    // across different studies when a modality is misconfigured (e.g. a
+    // referring doctor's name pushed instead of a real accession) — it is
+    // NOT globally unique. study_instance_uid is the true DICOM identifier,
+    // so that's what's enforced unique here (nulls excluded so older rows
+    // without a UID are unaffected).
+    byAccession: index("radiology_worklist_accession_idx").on(t.accessionNumber),
+    uidUq: uniqueIndex("radiology_worklist_uid_uq").on(t.studyInstanceUID).where(sql`${t.studyInstanceUID} IS NOT NULL`),
     byUid: index("radiology_worklist_uid_idx").on(t.studyInstanceUID),
     byStatus: index("radiology_worklist_status_idx").on(t.status),
     byPatient: index("radiology_worklist_patient_idx").on(t.patientId),

@@ -287,18 +287,31 @@ async function runStartupMigrations(): Promise<void> {
         form_f_address_required, form_f_guardian_required, registered_address, online_booking_allowed_package_ids,
         upi_qr_image_url, upi_vpa, upi_qr_enabled, icici_enabled, icici_merchant_id, icici_aggregator_id
       )
-      SELECT 1, 'Care Diagnostics', 'Diagnostic & Pathology Services', 'CARE DIAGNOSTICS Subhash Chowk Castair Town Near Bajla Mahila College Deoghar 814112', 'CARE.DEOGHAR@GMAIL.COM', '9973497200', 'www.carediagnostics.in', null, null, 'Thank you for choosing our diagnostic services.', NOW(), '[]', '[null null null null null null]', false, false, 'Welcome', 'Welcome to our portal', true, true, false, 1, true, false, null, 1, false, false, 'NA', 'NA', 'Welcome to Kiosk', '[]', 'navy', 'A5', true, true, false, 'NA', true, 'none', false, '[]', false, false, 'NA', false, 'NA', false, 'NA', '[]', 30, 3, 5, 30, false, true, true, 'Jayshankar Bhawan Bilasi Town Deoghar Ward No 27 Hiralal Pal Road Deoghar Jharkhand 814112', '[]', 'NA', 'NA', false, false, 'NA', 'NA'
+      SELECT 1, 'Care Diagnostics', 'Diagnostic & Pathology Services', 'CARE DIAGNOSTICS Subhash Chowk Castair Town Near Bajla Mahila College Deoghar 814112', 'CARE.DEOGHAR@GMAIL.COM', '9973497200', 'www.carediagnostics.in', '', null, 'Thank you for choosing our diagnostic services.', NOW(), '[]', '[null null null null null null]', false, false, 'Welcome', 'Welcome to our portal', true, true, false, 1, true, false, '', 1, false, false, 'NA', 'NA', 'Welcome to Kiosk', '[]', 'navy', 'A5', true, true, false, 'NA', true, 'none', false, '[]', false, false, 'NA', false, 'NA', false, 'NA', '[]', 30, 3, 5, 30, false, true, true, 'Jayshankar Bhawan Bilasi Town Deoghar Ward No 27 Hiralal Pal Road Deoghar Jharkhand 814112', '[]', 'NA', 'NA', false, false, 'NA', 'NA'
       WHERE NOT EXISTS (SELECT 1 FROM clinic_settings LIMIT 1);
 
       -- ── One-time correction: earlier seeds above stored the literal
-      -- placeholder text 'GSTIN_NOT_SET' / 'RZP_KEY_NOT_SET' instead of NULL
-      -- for "not configured" fields. Since these are non-empty strings, bill
-      -- print templates (which check "if gstin is set, print it") treated
-      -- them as real values and printed "GSTIN: GSTIN_NOT_SET" on every
-      -- invoice. Safe to run every startup — only touches rows that still
-      -- have the exact placeholder text, a no-op once corrected.
-      UPDATE clinic_settings SET gstin = NULL WHERE gstin = 'GSTIN_NOT_SET';
-      UPDATE clinic_settings SET razorpay_key_id = NULL WHERE razorpay_key_id = 'RZP_KEY_NOT_SET';
+      -- placeholder text 'GSTIN_NOT_SET' / 'RZP_KEY_NOT_SET' instead of an
+      -- empty string for "not configured" fields. Since these are
+      -- non-empty strings, bill print templates (which check "if gstin is
+      -- set, print it") treated them as real values and printed
+      -- "GSTIN: GSTIN_NOT_SET" on every invoice.
+      --
+      -- Both columns are TEXT NOT NULL DEFAULT '' (see
+      -- lib/db/src/schema/clinicSettings.ts), so the fix must use '' here,
+      -- not NULL — an earlier version of this migration used NULL and
+      -- violated the NOT NULL constraint on every startup, which aborted
+      -- this entire migration batch (including unrelated statements like
+      -- outsourced_labs setup that run later in the same transaction).
+      -- Empty string is safe: all read paths already treat '' the same as
+      -- "not configured" (row.gstin ?? "", clinic?.gstin ? ... : ""),
+      -- since both are falsy.
+      --
+      -- Safe to run every startup — only touches rows still holding the
+      -- exact placeholder text or a leftover NULL from a prior failed run;
+      -- a no-op once corrected. Idempotent, non-destructive.
+      UPDATE clinic_settings SET gstin = '' WHERE gstin = 'GSTIN_NOT_SET' OR gstin IS NULL;
+      UPDATE clinic_settings SET razorpay_key_id = '' WHERE razorpay_key_id = 'RZP_KEY_NOT_SET' OR razorpay_key_id IS NULL;
       CREATE TABLE IF NOT EXISTS day_closures (
         id SERIAL PRIMARY KEY,
         closure_date TEXT NOT NULL,
@@ -448,6 +461,41 @@ async function runStartupMigrations(): Promise<void> {
       ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS match_approved_by TEXT;
       ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS match_approved_at TIMESTAMPTZ;
       ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS match_override_reason TEXT;
+
+      -- ── Fix: bad/duplicate DICOM accession numbers crashing intake ──────
+      -- radiology_worklist.accession_number was NOT NULL + globally UNIQUE.
+      -- Real-world DICOM data from misconfigured modalities sometimes pushes
+      -- non-unique junk into AccessionNumber (e.g. a referring doctor's name
+      -- instead of a real accession), which made POST
+      -- /api/internal/radiology/studies fail with
+      -- "duplicate key value violates unique constraint
+      -- radiology_worklist_accession_uq" and reject genuinely new studies.
+      --
+      -- study_instance_uid is the actual globally-unique DICOM identifier,
+      -- so that's what should be enforced at the DB level instead.
+      -- Accession number becomes an optional, non-unique display/reference
+      -- field. Schema-only change — no rows are deleted or modified.
+      ALTER TABLE radiology_worklist ALTER COLUMN accession_number DROP NOT NULL;
+      DROP INDEX IF EXISTS radiology_worklist_accession_uq;
+      CREATE INDEX IF NOT EXISTS radiology_worklist_accession_idx
+        ON radiology_worklist (accession_number);
+
+      -- Enforce true uniqueness on study_instance_uid (nulls excluded, so
+      -- older/incomplete rows without a UID are unaffected). Wrapped in a
+      -- guard: if any pre-existing rows already have duplicate non-null
+      -- UIDs (which the DB never prevented before today), creating the
+      -- index would fail — that must not abort the rest of startup. If it
+      -- is skipped, re-run after resolving duplicates
+      -- (SELECT study_instance_uid, COUNT(*) FROM radiology_worklist WHERE
+      -- study_instance_uid IS NOT NULL GROUP BY 1 HAVING COUNT(*) > 1).
+      DO $$
+      BEGIN
+        CREATE UNIQUE INDEX IF NOT EXISTS radiology_worklist_uid_uq
+          ON radiology_worklist (study_instance_uid)
+          WHERE study_instance_uid IS NOT NULL;
+      EXCEPTION WHEN unique_violation THEN
+        RAISE NOTICE 'radiology_worklist_uid_uq: skipped — existing duplicate study_instance_uid values found, resolve manually then re-deploy';
+      END $$;
 
       ALTER TABLE patient_reports ADD COLUMN IF NOT EXISTS style_preset_used TEXT;
 
