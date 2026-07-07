@@ -756,6 +756,27 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </button>
         </div>
 
+        {/* Open Radiology Cockpit (federated service) — external link with SSO */}
+        {(() => {
+          const session = readStaffSession();
+          const radUrl = (process.env.NEXT_PUBLIC_RADIOLOGY_URL || (typeof window !== "undefined" ? `${window.location.protocol}//${window.location.hostname}:3002` : "")) + (session?.token ? `/?sso=${encodeURIComponent(session.token)}` : "");
+          return radUrl ? (
+            <a
+              href={radUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Open the standalone Radiology Cockpit (MRI/CT reporting)"
+              className={cn(
+                "flex items-center rounded-lg text-sm font-medium transition-all cursor-pointer bg-primary/15 text-primary hover:bg-primary/25 border border-primary/30",
+                sidebarCollapsed ? "justify-center px-0 py-2.5 mx-1" : "gap-2 px-3 py-2.5 mx-2",
+              )}
+            >
+              <BrainCircuit size={16} />
+              {!sidebarCollapsed && <span>Radiology Cockpit</span>}
+            </a>
+          ) : null;
+        })()}
+
         {/* Nav */}
         <nav className={cn("flex-1 py-4 space-y-0.5 overflow-y-auto relative z-10", sidebarCollapsed ? "px-1" : "px-3")}>
           {visibleNav.map((entry) => {

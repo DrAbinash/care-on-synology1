@@ -117,6 +117,8 @@ import smartRadiologyRouter from "./smartRadiology";
 import risMonitoringRouter from "./risMonitoring";
 import radiologyWorkflowRouter from "./radiologyWorkflow";
 import { scanSessionsRouter } from "./scan-sessions";
+// Federated Radiology Service — boundary API (additive, server-to-server only)
+import boundaryRouter from "./boundary";
 import { gatewayWebhookRouter } from "./gateway-webhooks";
 
 const router: IRouter = Router();
@@ -174,6 +176,10 @@ router.use(generalLimiter);
 // ─── Public / unauthenticated routes ─────────────────────────────────────────
 router.use(healthRouter);
 router.use(systemRouter);
+// Federated Radiology Service boundary API — API-key auth (X-Boundary-Key),
+// not staff session. Mounted before staff-auth routes so the radiology
+// service can reach it server-to-server without a staff login.
+router.use("/boundary", boundaryRouter);
 // Internal cron trigger endpoints — auth via CRON_SECRET bearer token, not staff session.
 // Hit by a Replit Scheduled deployment (see scripts/src/trigger-cron.ts) so cron emails
 // keep firing on autoscale where in-process schedulers are disabled.
