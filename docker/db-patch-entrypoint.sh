@@ -134,12 +134,21 @@ tags=$(grep '"tag"' "${JOURNAL}" | sed 's/.*"tag"[[:space:]]*:[[:space:]]*"\([^"
 whens=$(grep '"when"' "${JOURNAL}" | sed 's/.*"when"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/')
 
 # Zip tags and whens — process them together line by line
-# Use temporary file to process pairs
+# Use temporary files to process pairs. NOTE: intentionally avoids bash-only
+# process substitution ("paste <(...) <(...)") — this container's entrypoint
+# runs under BusyBox/dash "sh" (postgres:16-alpine), which does not support
+# that syntax and would abort the whole script with a syntax error before
+# any migration runs. Plain temp files + "paste" work under any POSIX sh.
 tmpfile=$(mktemp)
-paste <(echo "${tags}") <(echo "${whens}") > "${tmpfile}" 2>/dev/null || {
+tags_file=$(mktemp)
+whens_file=$(mktemp)
+printf '%s\n' "${tags}" > "${tags_file}"
+printf '%s\n' "${whens}" > "${whens_file}"
+paste "${tags_file}" "${whens_file}" > "${tmpfile}" 2>/dev/null || {
   # Fallback: process just tags with a fixed timestamp
   echo "${tags}" | while read -r t; do echo "${t} 0"; done > "${tmpfile}"
 }
+rm -f "${tags_file}" "${whens_file}"
 
 while IFS='	 ' read -r tag when; do
   [ -z "${tag}" ] && continue
