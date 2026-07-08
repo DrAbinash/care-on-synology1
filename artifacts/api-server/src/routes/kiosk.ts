@@ -15,6 +15,8 @@ import { PaymentEngine } from "../lib/payments/PaymentEngine";
 import { calculateDobFromAge } from "./public-booking";
 import { SelfRegistrationSchema } from "@workspace/api-zod";
 import { registerPatientSelfFlow } from "../services/self-registration";
+import { resolveActiveGateway } from "../lib/payments/resolveActiveGateway";
+import { buildPrintClinic } from "../lib/buildPrintClinic";
 
 export const kioskRouter = Router();
 
@@ -126,7 +128,11 @@ kioskRouter.get("/config", async (_req, res): Promise<void> => {
   const payuSalt = process.env.PAYU_MERCHANT_SALT ?? "";
   const iciciMerchantId = process.env.ICICI_MERCHANT_ID || (s.iciciMerchantId ?? "");
   const iciciSecretKey = process.env.ICICI_SECRET_KEY || (s.iciciSecretKey ?? "");
-  const activeGateway = s.activePaymentGateway || "icici";
+
+  // Same resolution algorithm the online-booking page's /api/public/booking/config
+  // uses — kiosk and the public website always agree on which gateway is active,
+  // its banners, and its enable flags, since both read the same clinic_settings row.
+  const activeGateway = resolveActiveGateway(s) || (s.activePaymentGateway || "icici");
   const cardEnabled = activeGateway === "icici"
     ? Boolean(s.iciciEnabled && iciciMerchantId && iciciSecretKey)
     : (activeGateway === "hdfc" ? true : false);
@@ -134,8 +140,10 @@ kioskRouter.get("/config", async (_req, res): Promise<void> => {
   res.json({
     enabled: (settings["kioskEnabled"] as boolean | null) ?? false,
     paymentGateway: (settings["kioskPaymentGateway"] as string | null) ?? "upi",
-    upiVpa: (settings["kioskUpiVpa"] as string | null) ?? "",
+    upiVpa: (settings["kioskUpiVpa"] as string | null) || (s.upiVpa ?? "") || "",
     upiName: (settings["kioskUpiName"] as string | null) ?? "",
+    upiQrImageUrl: s.upiQrImageUrl ?? "",
+    upiQrEnabled: s.upiQrEnabled ?? false,
     welcomeMessage: (settings["kioskWelcomeMessage"] as string | null) ?? "",
     clinicName: s.name,
     tagline: s.tagline,
@@ -147,6 +155,17 @@ kioskRouter.get("/config", async (_req, res): Promise<void> => {
     iciciEnabled: cardEnabled,
     activeGateway,
     vipQueueEnabled: s.vipQueueEnabled ?? false,
+    enableCardPayment: s.enableCardPayment ?? true,
+    enableQrPayment: s.enableQrPayment ?? true,
+    enablePaymentLogos: s.enablePaymentLogos ?? true,
+    customIciciBannerUrl: s.customIciciBannerUrl ?? "",
+    customPhonepeBannerUrl: s.customPhonepeBannerUrl ?? "",
+    customBharatpeBannerUrl: s.customBharatpeBannerUrl ?? "",
+    customPayuBannerUrl: s.customPayuBannerUrl ?? "",
+    // Everything the shared Billing-Desk receipt template (buildBillPrintHtml)
+    // needs to render the SAME invoice layout for a kiosk registration —
+    // see PrintClinic in diagnostic-erp/src/lib/printBill.ts.
+    printClinic: buildPrintClinic(s),
   });
 });
 
@@ -173,7 +192,19 @@ kioskRouter.get("/tests", async (_req, res): Promise<void> => {
     .orderBy(testsTable.category, testsTable.name);
 
   const tests = allowedIds.length > 0 ? rows.filter(t => allowedIds.includes(t.id)) : rows;
-  res.json({ tests: tests.map(t => ({ ...t, price: Number(t.price) })) });
+
+  // Quick-select slots — same clinic_settings.quick_test_ids the Billing Desk
+  // uses, filtered down to whichever of those tests are actually reachable
+  // from the kiosk (allowed + active). Order preserved so slot assignment
+  // (configured once, in one place) stays consistent between Billing Desk
+  // and kiosk.
+  const quickRaw = (settings["quickTestIds"] as string | null) ?? "[]";
+  let quickIds: (number | null)[] = [];
+  try { quickIds = JSON.parse(quickRaw); } catch { quickIds = []; }
+  const testIdSet = new Set(tests.map(t => t.id));
+  const quickTestIds = quickIds.filter((id): id is number => id != null && testIdSet.has(id));
+
+  res.json({ tests: tests.map(t => ({ ...t, price: Number(t.price) })), quickTestIds });
 });
 
 // ── POST /api/kiosk/create-payment ───────────────────────────────────────────
@@ -539,12 +570,17 @@ kioskRouter.post("/icici-initiate", paymentLimiter, async (req, res): Promise<vo
     return;
   }
 
-  const activeGateway = settings.activePaymentGateway || "icici";
-  const gatewayEnabled = activeGateway === "icici" ? settings.iciciEnabled : true;
-  if (!gatewayEnabled) {
-    res.status(403).json({ error: `${activeGateway.toUpperCase()} payments not enabled.` });
+  // Resolved the same way as the online-booking page's config endpoint —
+  // if the configured gateway is missing credentials or disabled, this falls
+  // back to whichever gateway IS actually usable, instead of blindly trusting
+  // "activePaymentGateway" (the old check here let payu/phonepe/bharatpe
+  // through even when their *Enabled flag was off).
+  const resolvedGateway = resolveActiveGateway(settings);
+  if (!resolvedGateway) {
+    res.status(403).json({ error: `${String(settings.activePaymentGateway || "").toUpperCase()} payments not enabled.` });
     return;
   }
+  const activeGateway = resolvedGateway;
 
   const body = req.body as {
     firstName: string; lastName: string; phone: string; email?: string;

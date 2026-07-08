@@ -8,6 +8,7 @@ import {
 import { QRCodeSVG, QRCodeCanvas } from "qrcode.react";
 import type { SiteSettings } from "../types";
 import { SelfRegistrationForm } from "../../../diagnostic-erp/src/components/SelfRegistrationForm";
+import { buildBillPrintHtml, openBlankPrintWindow, writeAndPrint, type PrintBillData, type PrintClinic } from "../../../diagnostic-erp/src/lib/printBill";
 
 const BASE = import.meta.env.BASE_URL;
 const WORK_ADDR = "CARE DIAGNOSTICS, Subhash Chowk, Castair's Town, Near Bajla Mahila College, Deoghar–814112";
@@ -55,6 +56,17 @@ function submitPayuForm(payuUrl: string, fields: Record<string, string>) {
   }
   document.body.appendChild(form);
   form.submit();
+}
+
+// Which gateway actually completed this booking + its reference — used to
+// label the "Payment Details" line on the printed receipt.
+function derivePayment(b: Record<string, any>): { method: string; reference: string } {
+  if (b.razorpayPaymentId || b.razorpayOrderId) return { method: "razorpay", reference: b.razorpayPaymentId || b.razorpayOrderId || "" };
+  if (b.payuPaymentId || b.payuTxnId) return { method: "payu", reference: b.payuPaymentId || b.payuTxnId || "" };
+  if (b.phonepeProviderRefId || b.phonepeTransactionId) return { method: "phonepe", reference: b.phonepeProviderRefId || b.phonepeTransactionId || "" };
+  if (b.bharatpeProviderRefId || b.bharatpeTransactionId) return { method: "bharatpe", reference: b.bharatpeProviderRefId || b.bharatpeTransactionId || "" };
+  if (b.iciciProviderRefId || b.iciciTransactionId) return { method: "icici", reference: b.iciciProviderRefId || b.iciciTransactionId || "" };
+  return { method: "upi", reference: "" };
 }
 
 /* ── Types ── */
@@ -164,6 +176,8 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
     totalAmount: string; notes: string; testIds: string; packageIds: string;
     bookingRef: string; status: string; isVip: boolean;
     isUnconfirmedQr?: boolean;
+    billId?: number | null; gender?: string | null; ageValue?: number | null; ageUnit?: string | null;
+    paymentMethod?: string; paymentReference?: string;
   } | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [tokenNo, setTokenNo] = useState<number | null>(null);
@@ -231,6 +245,16 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
       .catch(() => setConfig({ enabled: false, keyId: "", vipEnabled: false, gateway: null }));
   }, []);
 
+  // Clinic fields for the printed receipt (GSTIN, footer messages, etc.) —
+  // same clinic_settings row Billing Desk prints from, via a dedicated
+  // public endpoint since /api/bills is staff-authenticated.
+  const [clinicPrint, setClinicPrint] = useState<PrintClinic | null>(null);
+  useEffect(() => {
+    bookingGet<PrintClinic>("/api/public/booking/clinic-print-info")
+      .then(setClinicPrint)
+      .catch(() => setClinicPrint(null));
+  }, []);
+
   // Detect payment confirmation / failure from query params (ICICI, PhonePe, BharatPe)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -248,6 +272,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
         .then((res) => {
           const b = res.booking;
           const hasGateway = b.razorpayPaymentId || b.razorpayOrderId || b.payuTxnId || b.payuPaymentId || b.phonepeTransactionId || b.bharatpeProviderRefId || b.iciciTransactionId;
+          const payment = derivePayment(b);
           setConfirmedBooking({
             name: b.name || "",
             phone: b.phone || "",
@@ -262,6 +287,12 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
             status: b.status || "",
             isVip: b.isVip === true || b.isVip === "true",
             isUnconfirmedQr: !hasGateway,
+            billId: b.billId ?? null,
+            gender: b.gender ?? null,
+            ageValue: b.ageValue ?? null,
+            ageUnit: b.ageUnit ?? null,
+            paymentMethod: payment.method,
+            paymentReference: payment.reference,
           });
           setTokenNo(res.tokenNo);
           setStep(6);
@@ -477,6 +508,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
           .then((detailRes) => {
             const b = detailRes.booking;
             const hasGateway = b.razorpayPaymentId || b.razorpayOrderId || b.payuTxnId || b.payuPaymentId || b.phonepeTransactionId || b.bharatpeProviderRefId || b.iciciTransactionId;
+            const payment = derivePayment(b);
             setConfirmedBooking({
               name: b.name || "",
               phone: b.phone || "",
@@ -491,6 +523,12 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
               status: b.status || "",
               isVip: b.isVip === true || b.isVip === "true",
               isUnconfirmedQr: !hasGateway,
+              billId: b.billId ?? null,
+              gender: b.gender ?? null,
+              ageValue: b.ageValue ?? null,
+              ageUnit: b.ageUnit ?? null,
+              paymentMethod: hasGateway ? payment.method : "upi",
+              paymentReference: hasGateway ? payment.reference : "",
             });
             setTokenNo(detailRes.tokenNo);
             setStep(6);
@@ -1189,98 +1227,47 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                 <button
                   style={{ ...btnPrimary, textDecoration: "none" }}
                   onClick={() => {
-                    let itemsHtml = "";
-                    try {
-                      const tIds = JSON.parse(confirmedBooking?.testIds || "[]");
-                      tIds.forEach((id: any) => {
-                        const item = tests.find(t => t.id === Number(id));
-                        if (item) {
-                          itemsHtml += `<div class="row"><span class="label">${item.name}</span><strong>${fmt(Number(item.price))}</strong></div>`;
-                        }
-                      });
-                      const pIds = JSON.parse(confirmedBooking?.packageIds || "[]");
-                      pIds.forEach((id: any) => {
-                        const item = pkgs.find(p => p.id === Number(id));
-                        if (item) {
-                          itemsHtml += `<div class="row"><span class="label">${item.name} (Package)</span><strong>${fmt(Number(item.price))}</strong></div>`;
-                        }
-                      });
-                    } catch(e) {}
-
-                    const win = window.open("", "_blank", "width=600,height=850");
-                    if (win) {
-                      // Real QR — read the hidden canvas's data-URL (falls back to no QR if not ready)
-                      const qrDataUrl = receiptQrRef.current?.toDataURL("image/png") || "";
-                      const clinicName = settings.siteTitle || "Care Diagnostics";
-                      const clinicAddress = settings.address || workAddr;
-                      const logoHtml = settings.logoUrl
-                        ? `<img src="${settings.logoUrl}" alt="${clinicName}" style="max-height:48px;max-width:160px;object-fit:contain;display:block;margin:0 auto 6px" />`
-                        : "";
-
-                      win.document.write(`
-                        <html><head><title>Booking Receipt – ${clinicName}</title>
-                        <style>
-                          @page { size: A4; margin: 0.4in; }
-                          * { box-sizing: border-box; }
-                          body { font-family: 'Segoe UI', system-ui, sans-serif; padding: 20px; color: #1f2937; line-height: 1.5; }
-                          .clinic-header { text-align: center; margin-bottom: 10px; }
-                          h1 { font-size: 20px; font-weight: 900; margin: 0 0 4px 0; text-align: center; letter-spacing: -0.3px; text-transform: uppercase; }
-                          .clinic-address { font-size: 11px; color: #6b7280; text-align: center; margin: 0 0 12px; }
-                          .ref { font-family: 'Courier New', monospace; font-size: 18px; font-weight: 900; color: #0369a1; text-align: center; margin: 12px 0 16px; letter-spacing: 1px; }
-                          .row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-size: 13px; }
-                          .label { color: #6b7280; font-weight: 500; }
-                          .section-title { font-weight: 800; font-size: 12px; margin-top: 16px; margin-bottom: 8px; color: #374151; text-transform: uppercase; border-bottom: 3px solid #0369a1; padding-bottom: 4px; letter-spacing: 0.5px; }
-                          .footer { margin-top: 20px; padding-top: 12px; border-top: 2px solid #e5e7eb; font-size: 12px; color: #6b7280; text-align: center; }
-                          .paid { color: #059669; font-weight: 700; }
-                          .token-box { background: linear-gradient(135deg, #f0f9ff, #e0f2fe); border: 2.5px dashed #0284c7; border-radius: 6px; padding: 12px; margin: 12px 0; text-align: center; }
-                          .token-title { font-size: 11px; color: #0c4a6e; font-weight: 700; letter-spacing: 0.5px; }
-                          .token-no { font-size: 28px; font-weight: 900; color: #082f49; margin: 4px 0; }
-                          .qr-box { text-align: center; margin-top: 16px; }
-                          .qr-img { border: 1px solid #d1d5db; padding: 4px; border-radius: 4px; background: white; }
-                          strong { font-weight: 700; color: #1f2937; }
-                        </style></head><body>
-                        <div class="clinic-header">
-                          ${logoHtml}
-                          <h1>${clinicName}</h1>
-                          ${clinicAddress ? `<div class="clinic-address">${clinicAddress}</div>` : ""}
-                        </div>
-                        <div style="font-size:12px;font-weight:700;text-align:center;color:#374151;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px">Booking Receipt</div>
-                        <div class="ref">${successRef}</div>
-                        
-                        ${tokenNo ? `
-                        <div class="token-box">
-                          <div class="token-title">DAILY QUEUE TOKEN</div>
-                          <div class="token-no">#${tokenNo}</div>
-                          <div style="font-size: .75rem; color: #555;">Please present this token at the clinic</div>
-                        </div>
-                        ` : ''}
-
-                        <div class="section-title">Patient Information</div>
-                        <div class="row"><span class="label">Patient</span><strong>${confirmedBooking?.name || "-"}</strong></div>
-                        <div class="row"><span class="label">Phone</span><strong>${confirmedBooking?.phone || "-"}</strong></div>
-                        <div class="row"><span class="label">Date</span><strong>${confirmedBooking?.selectedDate || "-"}</strong></div>
-                        <div class="row"><span class="label">Time</span><strong>${confirmedBooking?.timeSlot || "-"}</strong></div>
-
-                        <div class="section-title">Booked Services</div>
-                        ${itemsHtml}
-
-                        <div class="section-title">Payment Summary</div>
-                        <div class="row"><span class="label">Amount Paid</span><strong class="${confirmedBooking?.isUnconfirmedQr ? '' : 'paid'}" style="${confirmedBooking?.isUnconfirmedQr ? 'color:orange;' : ''}">${confirmedBooking?.isUnconfirmedQr ? `Amount ${fmt(Number(confirmedBooking?.totalAmount || 0))} (To Be Confirmed)` : fmt(Number(confirmedBooking?.totalAmount || 0))}</strong></div>
-                        <div class="row"><span class="label">Status</span><strong class="${confirmedBooking?.isUnconfirmedQr ? '' : 'paid'}" style="${confirmedBooking?.isUnconfirmedQr ? 'color:orange;' : ''}">${confirmedBooking?.isUnconfirmedQr ? "Confirmed on confirmation of Payment" : (confirmedBooking?.status || "Paid")}</strong></div>
-                        
-                        ${qrDataUrl ? `
-                        <div class="qr-box">
-                          <img class="qr-img" src="${qrDataUrl}" width="100" height="100" alt="Booking reference QR code" />
-                          <div style="font-size: .7rem; color: #666; margin-top: .25rem;">Scan to verify booking reference</div>
-                        </div>
-                        ` : ''}
-
-                        <div class="footer">Thank you for choosing ${clinicName}.<br/>${phone} | ${email}</div>
-                        </body></html>
-                      `);
-                      win.document.close();
-                      win.print();
-                    }
+                    if (!confirmedBooking) return;
+                    const win = openBlankPrintWindow();
+                    const tIds: number[] = JSON.parse(confirmedBooking.testIds || "[]");
+                    const pIds: number[] = JSON.parse(confirmedBooking.packageIds || "[]");
+                    const orderTests = [
+                      ...tIds.map((id) => tests.find((t) => t.id === Number(id))).filter(Boolean)
+                        .map((t) => ({ price: Number(t!.price), test: { code: t!.code, name: t!.name, category: t!.category } })),
+                      ...pIds.map((id) => pkgs.find((p) => p.id === Number(id))).filter(Boolean)
+                        .map((p) => ({ price: Number(p!.price), displayName: p!.name, test: { code: p!.code, name: p!.name, category: "Package" } })),
+                    ];
+                    // Real, scannable QR — read the hidden canvas's data-URL (falls back to no QR if not ready)
+                    const qrDataUrl = receiptQrRef.current?.toDataURL("image/png") || "";
+                    const bill: PrintBillData = {
+                      billNumber: confirmedBooking.bookingRef,
+                      subtotal: confirmedBooking.totalAmount,
+                      discount: 0,
+                      totalAmount: confirmedBooking.totalAmount,
+                      paidAmount: confirmedBooking.isUnconfirmedQr ? 0 : confirmedBooking.totalAmount,
+                      balanceAmount: confirmedBooking.isUnconfirmedQr ? confirmedBooking.totalAmount : 0,
+                      status: confirmedBooking.isUnconfirmedQr ? "pending" : "paid",
+                      createdAt: new Date().toISOString(),
+                      patient: {
+                        firstName: confirmedBooking.name,
+                        lastName: "",
+                        patientId: "",
+                        phone: confirmedBooking.phone,
+                        gender: confirmedBooking.gender,
+                        ageValue: confirmedBooking.ageValue,
+                        ageUnit: confirmedBooking.ageUnit,
+                      },
+                      order: { tests: orderTests },
+                      payments: confirmedBooking.isUnconfirmedQr ? [] : [{
+                        method: confirmedBooking.paymentMethod || "upi",
+                        amount: confirmedBooking.totalAmount,
+                        referenceNumber: confirmedBooking.paymentReference || null,
+                      }],
+                      tokenNo,
+                    };
+                    const clinic: PrintClinic = clinicPrint ?? { name: settings.siteTitle, address: settings.address, logoDataUrl: settings.logoUrl };
+                    const html = buildBillPrintHtml({ bill, clinic, paperSize: "A5", isBW: false, qrDataUrl, format: "classic" });
+                    writeAndPrint(win, html);
                   }}
                 >
                   <Receipt size={16} /> Print Receipt
