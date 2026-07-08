@@ -21,18 +21,20 @@ async function generateOrderNumber(): Promise<string> {
 }
 
 async function buildOrder(order: typeof ordersTable.$inferSelect) {
-  const orderTestRows = await db
-    .select({ orderTest: orderTestsTable, test: testsTable })
-    .from(orderTestsTable)
-    .leftJoin(testsTable, eq(orderTestsTable.testId, testsTable.id))
-    .where(eq(orderTestsTable.orderId, order.id));
-
-  const [patient] = await db.select().from(patientsTable).where(eq(patientsTable.id, order.patientId));
-  let doctor = null;
-  if (order.doctorId) {
-    const [d] = await db.select().from(doctorsTable).where(eq(doctorsTable.id, order.doctorId));
-    doctor = d ?? null;
-  }
+  // Hot path: runs on every order create at the billing desk — batch the
+  // independent lookups instead of awaiting them one by one.
+  const [orderTestRows, [patient], doctorRows] = await Promise.all([
+    db
+      .select({ orderTest: orderTestsTable, test: testsTable })
+      .from(orderTestsTable)
+      .leftJoin(testsTable, eq(orderTestsTable.testId, testsTable.id))
+      .where(eq(orderTestsTable.orderId, order.id)),
+    db.select().from(patientsTable).where(eq(patientsTable.id, order.patientId)),
+    order.doctorId
+      ? db.select().from(doctorsTable).where(eq(doctorsTable.id, order.doctorId))
+      : Promise.resolve([] as (typeof doctorsTable.$inferSelect)[]),
+  ]);
+  const doctor = doctorRows[0] ?? null;
 
   return {
     ...order,
@@ -102,38 +104,6 @@ ordersRouter.post("/", async (req, res) => {
     }
   }
 
-  const [patientRow] = await db.select({ id: patientsTable.id }).from(patientsTable).where(eq(patientsTable.id, patientId));
-  if (!patientRow) {
-    res.status(400).json({
-      error: "Invalid request",
-      details: [
-        {
-          path: ["patientId"],
-          message: `Patient with id ${patientId} does not exist.`,
-        },
-      ],
-    });
-    return;
-  }
-
-  let resolvedDoctor: typeof doctorsTable.$inferSelect | null = null;
-  if (doctorId !== undefined && doctorId !== null) {
-    const [d] = await db.select().from(doctorsTable).where(eq(doctorsTable.id, doctorId));
-    if (!d) {
-      res.status(400).json({
-        error: "Invalid request",
-        details: [
-          {
-            path: ["doctorId"],
-            message: `Doctor with id ${doctorId} does not exist.`,
-          },
-        ],
-      });
-      return;
-    }
-    resolvedDoctor = d;
-  }
-
   const hasCustom = !!customTests && customTests.length > 0;
   const hasLegacy = !!testIds && testIds.length > 0;
   if (!hasCustom && !hasLegacy) {
@@ -149,17 +119,60 @@ ordersRouter.post("/", async (req, res) => {
     return;
   }
 
+  // The patient/doctor/test validation lookups and the order-number sequence
+  // are independent — batch them into one round-trip wave. This POST is the
+  // first half of every billing-desk save, so serial awaits here directly
+  // delay the receipt print. Validation results are checked in the original
+  // order (patient → doctor → tests) so error precedence is unchanged.
+  const requestedTestIds = hasCustom ? customTests!.map((ct) => ct.testId) : testIds!;
+  const [patientRows, doctorRows, testRows, orderNumber] = await Promise.all([
+    db.select({ id: patientsTable.id }).from(patientsTable).where(eq(patientsTable.id, patientId)),
+    doctorId !== undefined && doctorId !== null
+      ? db.select().from(doctorsTable).where(eq(doctorsTable.id, doctorId))
+      : Promise.resolve([] as (typeof doctorsTable.$inferSelect)[]),
+    db.select().from(testsTable).where(inArray(testsTable.id, requestedTestIds)),
+    generateOrderNumber(),
+  ]);
+
+  if (!patientRows[0]) {
+    res.status(400).json({
+      error: "Invalid request",
+      details: [
+        {
+          path: ["patientId"],
+          message: `Patient with id ${patientId} does not exist.`,
+        },
+      ],
+    });
+    return;
+  }
+
+  let resolvedDoctor: typeof doctorsTable.$inferSelect | null = null;
+  if (doctorId !== undefined && doctorId !== null) {
+    const d = doctorRows[0];
+    if (!d) {
+      res.status(400).json({
+        error: "Invalid request",
+        details: [
+          {
+            path: ["doctorId"],
+            message: `Doctor with id ${doctorId} does not exist.`,
+          },
+        ],
+      });
+      return;
+    }
+    resolvedDoctor = d;
+  }
+
   // Support two formats: custom [{testId, price}] or legacy testIds[]
   // BOTH paths must verify each test id exists AND is active, otherwise we'd
   // accept orders for discontinued/unknown tests and silently fail at insert
   // time (or, worse, mis-charge the patient).
   let lineItems: { testId: number; price: string }[] = [];
   if (hasCustom) {
-    const requestedIds = customTests!.map((ct) => ct.testId);
-    const foundTests = await db.select({ id: testsTable.id, isActive: testsTable.isActive })
-      .from(testsTable)
-      .where(inArray(testsTable.id, requestedIds));
-    const foundMap = new Map(foundTests.map((t) => [t.id, t]));
+    const requestedIds = requestedTestIds;
+    const foundMap = new Map(testRows.map((t) => [t.id, t]));
     const missing = requestedIds.filter((id) => !foundMap.has(id));
     const inactive = requestedIds.filter((id) => foundMap.get(id) && !foundMap.get(id)!.isActive);
     if (missing.length > 0 || inactive.length > 0) {
@@ -179,9 +192,7 @@ ordersRouter.post("/", async (req, res) => {
     }
     lineItems = customTests!.map((ct) => ({ testId: ct.testId, price: String(ct.price) }));
   } else {
-    const tests = await db.select().from(testsTable).where(
-      inArray(testsTable.id, testIds!),
-    );
+    const tests = testRows;
     if (tests.length !== testIds!.length) {
       res.status(400).json({
         error: "Invalid request",
@@ -211,7 +222,7 @@ ordersRouter.post("/", async (req, res) => {
   }
 
   const totalAmount = lineItems.reduce((sum, t) => sum + Number(t.price), 0);
-  const orderNumber = await generateOrderNumber();
+  // orderNumber was already generated in the parallel wave above.
 
   // Resolve ledger from doctor (fallback: default ledger 1)
   const ledgerId = resolvedDoctor?.ledgerId ?? 1;
@@ -229,11 +240,8 @@ ordersRouter.post("/", async (req, res) => {
   } as any).returning();
 
   if (lineItems.length > 0) {
-    // Resolve outsource cost for each test to store in order_tests.
-    const testIds = lineItems.map((t) => t.testId);
-    const testRows = testIds.length > 0
-      ? await db.select().from(testsTable).where(inArray(testsTable.id, testIds))
-      : [];
+    // Resolve outsource cost for each test to store in order_tests — reuses
+    // the test rows already fetched for validation instead of re-querying.
     const testMap = new Map(testRows.map((t) => [t.id, t]));
     await db.insert(orderTestsTable).values(
       lineItems.map((t) => {
