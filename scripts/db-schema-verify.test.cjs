@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 const fs = require("fs");
 const path = require("path");
-const { defaultLiteralForType, parseSqlFiles } = require("./db-schema-verify.cjs");
+const { defaultLiteralForType, parseSqlFiles, diffSchema, loadJournal, extractRuntimeTableNames } = require("./db-schema-verify.cjs");
 
 // Regression coverage for the incident where care-db-patch-v2 schema
 // verification failed because payment_logs.amount and .error_message
@@ -188,5 +188,100 @@ describe("parseSqlFiles: RENAME TABLE, ALTER COLUMN TYPE, DROP INDEX (production
     ];
     const { tables } = parseSqlFiles(entries);
     expect(tables.get("t").indexes.has("t_idx")).toBe(true);
+  });
+});
+
+describe("extractRuntimeTableNames — avoids false-positive extra-table drift warnings", () => {
+  it("finds tables created inline by care-api's runStartupMigrations() in index.ts", () => {
+    const names = extractRuntimeTableNames();
+    // A handful of tables known (at the time this test was written) to be
+    // created only via CREATE TABLE IF NOT EXISTS inside index.ts, never in
+    // any migrations/*.sql or lib/db/drizzle/*.sql file. If this ever comes
+    // back empty, extra-table detection would start flagging ~90 completely
+    // legitimate tables as "possible manual drift" on every single run.
+    expect(names.size).toBeGreaterThan(50);
+    expect(names.has("dicom_nodes")).toBe(true);
+    expect(names.has("payment_logs")).toBe(true);
+    expect(names.has("day_closures")).toBe(true);
+  });
+});
+
+describe("diffSchema — extra-table (manual/out-of-band drift) detection", () => {
+  function fakeLive(tableNames) {
+    return {
+      liveTables: new Set(tableNames),
+      liveColumns: new Map(),
+      livePks: new Map(),
+      liveUniques: new Map(),
+      liveIndexes: new Set(),
+      liveIndexByTable: new Map(),
+      liveFks: [],
+      liveChecks: [],
+      journalApplied: [],
+      featureMigApplied: [],
+      deployState: {},
+    };
+  }
+
+  it("flags a table that exists in the live DB but isn't from any known source", () => {
+    const expected = parseSqlFiles([
+      { tag: "a", type: "drizzle", content: `CREATE TABLE "known_table" (\n\t"id" serial PRIMARY KEY NOT NULL\n);` },
+    ]);
+    const live = fakeLive(["known_table", "someone_added_this_by_hand"]);
+    const results = diffSchema(expected, live, new Set());
+    expect(results.extraTables).toContain("someone_added_this_by_hand");
+    expect(results.extraTables).not.toContain("known_table");
+  });
+
+  it("does NOT flag a table that's in the runtimeTableNames exclusion set (avoids false positives for care-api-created tables)", () => {
+    const expected = parseSqlFiles([]);
+    const live = fakeLive(["dicom_nodes"]);
+    const results = diffSchema(expected, live, new Set(["dicom_nodes"]));
+    expect(results.extraTables).not.toContain("dicom_nodes");
+  });
+
+  it("does NOT flag internal infra tables (schema_migration_lock, system_database_identity, etc.)", () => {
+    const expected = parseSqlFiles([]);
+    const live = fakeLive(["schema_migration_lock", "system_database_identity", "schema_migrations_log", "schema_deploy_state"]);
+    const results = diffSchema(expected, live, new Set());
+    expect(results.extraTables).toHaveLength(0);
+  });
+
+  it("extra-table detection is informational only — does not fail verification by itself", () => {
+    const expected = parseSqlFiles([]);
+    const live = fakeLive(["mystery_table"]);
+    const results = diffSchema(expected, live, new Set());
+    expect(results.extraTables).toContain("mystery_table");
+    expect(results.pass).toBe(true);
+  });
+});
+
+describe("Migration Journal Inconsistency — duplicate/out-of-order idx detection is actually surfaced", () => {
+  // Regression test for a real gap found during review: loadJournal() always
+  // computed `issues` (duplicate idx, out-of-order idx) but the calling code
+  // in main() never read that field — a corrupted journal (e.g. from a bad
+  // merge giving two migrations the same idx) would be silently ignored
+  // instead of failing verification. Fixed by merging journal.issues into
+  // crossIssues, and by making any error-level sourceIssue set results.pass
+  // = false. These are asserted at the source level (same pattern as
+  // dicomNodesMigration.test.ts) since loadJournal() reads a fixed path
+  // resolved from the real repo at module load time, not an injectable one.
+  const src = fs.readFileSync(path.join(__dirname, "db-schema-verify.cjs"), "utf8");
+
+  it("loadJournal()'s issues field is merged into crossIssues in main()", () => {
+    expect(src).toMatch(/for \(const msg of journal\.issues[\s\S]{0,80}crossIssues\.push/);
+  });
+
+  it("error-level sourceIssues set results.pass = false (so a broken journal actually blocks, not just logs)", () => {
+    expect(src).toMatch(/sourceIssues\.some\(\(i\) => i\.level === "error"\)/);
+    // Must appear at least twice: once for the initial verify, once for the
+    // post-repair re-verify.
+    const matches = src.match(/sourceIssues\.some\(\(i\) => i\.level === "error"\)/g) || [];
+    expect(matches.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("the real, current _journal.json has no duplicate or out-of-order idx (sanity check)", () => {
+    const journal = loadJournal();
+    expect(journal.issues).toEqual([]);
   });
 });

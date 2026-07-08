@@ -261,6 +261,35 @@ const RUNTIME_CREATED_TABLES = new Set([
 ]);
 
 // ════════════════════════════════════════════════════════════════════════════
+// SOURCE 6: TABLES CREATED INLINE BY care-api's runStartupMigrations()
+// ════════════════════════════════════════════════════════════════════════════
+// artifacts/api-server/src/index.ts contains ~90 `CREATE TABLE IF NOT EXISTS`
+// statements that are NOT tracked by any migrations/*.sql or
+// lib/db/drizzle/*.sql file — a separate, sanctioned source of truth for
+// table creation (see DEPLOYMENT.md "Single source of truth for schema").
+// "Extra table" (possible manual/out-of-band drift) detection below needs to
+// know about these, or it would flag ~90 completely legitimate tables as
+// suspicious every single run — noise that would bury any genuine manual
+// drift signal. This function only extracts table NAMES (not full column
+// definitions) purely for that exclusion purpose.
+function extractRuntimeTableNames() {
+  const names = new Set();
+  try {
+    const indexTsPath = path.join(REPO_ROOT, "artifacts/api-server/src/index.ts");
+    if (!fs.existsSync(indexTsPath)) return names;
+    const src = fs.readFileSync(indexTsPath, "utf8");
+    const re = /CREATE TABLE(?:\s+IF NOT EXISTS)?\s+"?(\w+)"?\s*\(/gi;
+    let m;
+    while ((m = re.exec(src)) !== null) names.add(m[1]);
+  } catch {
+    // Best-effort — if this can't be read, extra-table detection simply
+    // becomes more conservative (falls back to expected.tables only) rather
+    // than crashing the whole verifier over a nice-to-have check.
+  }
+  return names;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // SOURCE 1 + 3: PARSE MIGRATION SQL FILES
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -900,11 +929,29 @@ function detectChecksumDrift(allEntries, featureMigApplied) {
 // DIFF ENGINE
 // ════════════════════════════════════════════════════════════════════════════
 
-function diffSchema(expected, live) {
+function diffSchema(expected, live, runtimeTableNames) {
   const {
     liveTables, liveColumns, livePks, liveUniques, liveIndexes,
     liveIndexByTable, liveFks, liveChecks, journalApplied, featureMigApplied, deployState
   } = live;
+
+  // Tables created outside migrations/*.sql and lib/db/drizzle/*.sql that are
+  // NOT "drift" — they're sanctioned sources of table creation elsewhere in
+  // the codebase. A live table not in ANY of these is a genuine candidate
+  // for manual/out-of-band schema drift (someone ran CREATE TABLE by hand)
+  // and gets reported in results.extraTables. This is informational only
+  // (does not set results.pass = false) — it's just as likely to be a table
+  // for a feature that was later removed as it is to be a live problem, and
+  // a human should look at it either way rather than have deployment block.
+  const INTERNAL_INFRA_TABLES = new Set([
+    "schema_migrations_log", "schema_deploy_state",
+    "system_database_identity", "schema_migration_lock",
+  ]);
+  const knownTableNames = new Set([
+    ...expected.tables.keys(),
+    ...(runtimeTableNames || []),
+    ...INTERNAL_INFRA_TABLES,
+  ]);
 
   const results = {
     pass: true,
@@ -919,6 +966,17 @@ function diffSchema(expected, live) {
     indexesPassed: 0, indexesChecked: 0,
     journalApplied, featureMigApplied, deployState,
   };
+
+  for (const tblName of liveTables) {
+    if (!knownTableNames.has(tblName)) {
+      results.extraTables.push(tblName);
+      results.warnings.push(
+        `Table '${tblName}' exists in the database but isn't created by any migration file or ` +
+        `care-api runtime code — possible manual/out-of-band schema change. Not blocking, but worth ` +
+        `reviewing (see "Schema Drift" in DEPLOYMENT.md).`
+      );
+    }
+  }
 
   for (const [tblName, ti] of expected.tables.entries()) {
     // Skip internal tracking tables
@@ -1055,6 +1113,10 @@ function printResults(r, git, pgVersion, stats) {
   }
   if (r.runtimeOnlyMissing.length > 0 && VERBOSE)
     warnLog(`Runtime-created tables not yet in DB: ${r.runtimeOnlyMissing.join(", ")}`);
+  if (r.extraTables.length > 0) {
+    warnLog(`Tables in DB not from any known source (${r.extraTables.length}) — possible manual/out-of-band drift:`);
+    for (const t of r.extraTables) console.log(c.yellow(`     ? ${t}`));
+  }
 
   // Columns
   if (r.missingColumns.length === 0) {
@@ -1141,6 +1203,7 @@ function writeStartupMd(r, git, live, stats, allEntries, crossIssues) {
   lines.push(`| Expected Columns | ${stats.expectedCols} |`);
   lines.push(`| Actual Columns | ${stats.liveCols} |`);
   lines.push(`| Missing Tables | **${r.missingTables.length}** |`);
+  lines.push(`| Extra Tables (possible drift) | ${r.extraTables.length} |`);
   lines.push(`| Missing Columns | **${r.missingColumns.length}** |`);
   lines.push(`| Missing Indexes | ${r.missingIndexes.length} |`);
   lines.push(`| Type Mismatches | ${r.typeMismatches.length} (warnings only) |`);
@@ -1155,6 +1218,19 @@ function writeStartupMd(r, git, live, stats, allEntries, crossIssues) {
     lines.push(`## ❌ Missing Tables`);
     lines.push(``);
     for (const t of r.missingTables) lines.push(`- \`${t}\``);
+    lines.push(``);
+  }
+
+  if (r.extraTables.length > 0) {
+    lines.push(`## ⚠️ Tables Not From Any Known Source (possible manual/out-of-band drift)`);
+    lines.push(``);
+    lines.push(`These exist in the live database but aren't created by any migration file`);
+    lines.push(`(\`lib/db/drizzle/*.sql\`, \`migrations/*.sql\`) or by care-api's runtime`);
+    lines.push(`\`CREATE TABLE IF NOT EXISTS\` statements. Not blocking — could be an`);
+    lines.push(`intentional manual table, or a leftover from a removed feature — but worth`);
+    lines.push(`a human review.`);
+    lines.push(``);
+    for (const t of r.extraTables) lines.push(`- \`${t}\``);
     lines.push(``);
   }
 
@@ -1470,11 +1546,24 @@ async function main() {
   const expected = parseSqlFiles(allEntries);
   infoLog(`Expected schema: ${expected.tables.size} tables`);
 
+  // Tables created inline by care-api's runStartupMigrations() — needed so
+  // extra-table (manual drift) detection below doesn't flag ~90 legitimate
+  // runtime-created tables as suspicious every single run.
+  const runtimeTableNames = extractRuntimeTableNames();
+
   // ── Cross-check sources (Source 1 ↔ 2 ↔ 3) ───────────────────────────────
   const crossIssues = crossCheckSources(journal, drizzleEntries, featureEntries);
+  // journal.issues (duplicate idx / out-of-order idx within _journal.json
+  // itself) was previously computed by loadJournal() but never actually
+  // surfaced anywhere — merge it in here so a genuinely malformed journal
+  // (e.g. two migrations both claiming idx 6 after a bad merge) shows up
+  // instead of being silently discarded.
+  for (const msg of journal.issues || []) {
+    crossIssues.push({ level: "error", source: "journal", msg });
+  }
   if (crossIssues.length > 0) {
     for (const i of crossIssues) {
-      if (i.level === "error") warnLog(`Source issue [ERROR]: ${i.msg}`);
+      if (i.level === "error") failLog(`Source issue [ERROR]: ${i.msg}`);
       else infoLog(`Source issue [WARN]: ${i.msg}`);
     }
   }
@@ -1495,8 +1584,16 @@ async function main() {
   for (const d of driftIssues) warnLog(d.msg);
 
   // ── Diff ──────────────────────────────────────────────────────────────────
-  const results = diffSchema(expected, live);
+  const results = diffSchema(expected, live, runtimeTableNames);
   results.sourceIssues = [...crossIssues, ...driftIssues];
+  // Error-level source issues (missing SQL file for a journal entry, a
+  // corrupt/duplicate journal idx) are genuine structural problems with the
+  // migration sources themselves — not "drift" to review at leisure. They
+  // must fail the same way a missing table does, or SCHEMA_VERIFY_STRICT and
+  // --repair's post-repair pass check would silently ignore them.
+  if (results.sourceIssues.some((i) => i.level === "error")) {
+    results.pass = false;
+  }
 
   // Collect all-column counts for stats
   let expectedColCount = 0;
@@ -1538,8 +1635,11 @@ async function main() {
       await runRepair(client, results, expected);
       // Re-run verify after repair
       const live2 = await getLiveSchema(client);
-      const results2 = diffSchema(expected, live2);
+      const results2 = diffSchema(expected, live2, runtimeTableNames);
       results2.sourceIssues = results.sourceIssues;
+      if (results2.sourceIssues.some((i) => i.level === "error")) {
+        results2.pass = false;
+      }
       if (!QUIET) printResults(results2, git, live2.pgVersion, stats);
       if (!JSON_OUT) writeStartupMd(results2, git, live2, stats, allEntries, crossIssues);
       exitCode = results2.pass ? 0 : 1;
@@ -1563,6 +1663,7 @@ async function main() {
       git, pgVersion: live.pgVersion,
       stats,
       missingTables: results.missingTables,
+      extraTables: results.extraTables,
       missingColumns: results.missingColumns,
       typeMismatches: results.typeMismatches,
       missingIndexes: results.missingIndexes,
@@ -1639,4 +1740,7 @@ if (require.main === module) {
   });
 }
 
-module.exports = { normaliseType, typesCompatible, defaultLiteralForType, parseSqlFiles };
+module.exports = {
+  normaliseType, typesCompatible, defaultLiteralForType, parseSqlFiles,
+  diffSchema, crossCheckSources, loadJournal, extractRuntimeTableNames,
+};
