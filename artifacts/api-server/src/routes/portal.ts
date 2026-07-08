@@ -556,6 +556,7 @@ portalRouter.post("/staff-login", staffLoginLimiter, async (req, res) => {
       permissions,
       maxDiscount: user.maxDiscount ?? null,
       photoDataUrl: user.photoDataUrl ?? null,
+      signatureDataUrl: user.signatureDataUrl ?? null,
       sidebarTheme: user.sidebarTheme ?? null,
       pacsNetworkProfile: user.pacsNetworkProfile ?? null,
       defaultStartPage: user.defaultStartPage ?? null,

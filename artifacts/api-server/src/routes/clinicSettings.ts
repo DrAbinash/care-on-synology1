@@ -77,6 +77,7 @@ async function getOrCreate() {
       formFBillingPrompt: false,
       formFAddressRequired: true,
       formFGuardianRequired: true,
+      patientPhoneRequired: true,
       // V3 fallbacks
       receiptThankYouMessage: "Thank you for choosing Care Diagnostics.",
       receiptCollectionMessage: "Please collect your reports within 7 days.",
@@ -192,6 +193,7 @@ clinicSettingsRouter.get("/branding", async (_req, res) => {
     formFBillingPrompt: row.formFBillingPrompt ?? false,
     formFAddressRequired: row.formFAddressRequired ?? true,
     formFGuardianRequired: row.formFGuardianRequired ?? true,
+    patientPhoneRequired: row.patientPhoneRequired ?? true,
     // V3: Receipt Messages
     receiptThankYouMessage: row.receiptThankYouMessage ?? "Thank you for choosing Care Diagnostics.",
     receiptCollectionMessage: row.receiptCollectionMessage ?? "Please collect your reports within 7 days.",
@@ -280,7 +282,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
     "showHealthPackages", "showAccreditation", "showWhatsAppBooking", "showCustomFooterMessage", "autoCropIdScan",
     "autoRotateScan", "archiveImportedScans", "ollamaLocalOnly", "serviceImagesEnabled", "disclaimerEnabled",
     "mobileScanEnabled", "phonePairingEnabled", "requireDesktopConfirmation", "autoDeleteTempScans", "ocrEnabled",
-    "aadhaarQrEnabled", "autoPopulateFormFFromObMeasurements",
+    "aadhaarQrEnabled", "autoPopulateFormFFromObMeasurements", "patientPhoneRequired",
     // Phase 2 Scanner Settings
     "scannerGlobalEnabled", "scanStationKioskModeEnabled", "scanStationAutoClearEnabled",
     // Refactored fields

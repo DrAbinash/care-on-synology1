@@ -200,6 +200,12 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const insAmt = payByMode["insurance"] || 0;
   const chqAmt = payByMode["cheque"] || 0;
 
+  // On a B&W printer, force the few semantically-colored statuses (paid/
+  // balance-due) to black instead of grayscaling the whole page — a
+  // page-wide filter would also desaturate the clinic logo, which should
+  // always print in its native color regardless of printer mode.
+  const statusColor = (semantic: string): string => (isBW ? "#000" : semantic);
+
   // ── Sizing tuned for A5 thermal receipt ──
   // A5: flex column layout pushes footer to bottom so short bills fill the page
   const pageMargin = isA5 ? "2mm" : "8mm";
@@ -245,15 +251,16 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 
   const hasPayDetail = (bill.payments ?? []).length > 0;
 
-  // ── Get billed-by name from localStorage ──
-  const billedByName = (() => {
+  // ── Get billed-by name + their uploaded signature from localStorage ──
+  const session = (() => {
     try {
-      if (typeof window === "undefined") return "";
+      if (typeof window === "undefined") return null;
       const raw = window.localStorage.getItem("erp_session");
-      if (!raw) return "";
-      return JSON.parse(raw).user?.name ?? "";
-    } catch { return ""; }
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
   })();
+  const billedByName: string = session?.user?.name ?? "";
+  const billedBySignatureUrl: string = session?.user?.signatureDataUrl ?? "";
 
   const page = (copyIdx: number) => `
     <section class="receipt" style="${copyIdx > 0 ? "page-break-before:always;" : ""}${isA5 ? "display:flex;flex-direction:column;min-height:148mm;" : ""}">
@@ -355,10 +362,10 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
                     <td style="padding:3px 3px;border-top:2px solid #000;font-weight:900">TOTAL</td>
                     <td style="padding:3px 3px;border-top:2px solid #000;text-align:right;font-weight:900;white-space:nowrap">₹${fmt(bill.totalAmount)}</td>
                   </tr>
-                  <tr><td style="padding:2px 3px;border-top:1px solid #000;font-weight:800">PAID</td><td style="padding:2px 3px;border-top:1px solid #000;text-align:right;font-weight:800;white-space:nowrap;color:${isUnconfirmedQr ? "orange" : "green"}">${isUnconfirmedQr ? `${fmt(bill.totalAmount)} (To Be Confirmed)` : `₹${fmt(bill.paidAmount)}`}</td></tr>
+                  <tr><td style="padding:2px 3px;border-top:1px solid #000;font-weight:800">PAID</td><td style="padding:2px 3px;border-top:1px solid #000;text-align:right;font-weight:800;white-space:nowrap;color:${statusColor(isUnconfirmedQr ? "orange" : "green")}">${isUnconfirmedQr ? `${fmt(bill.totalAmount)} (To Be Confirmed)` : `₹${fmt(bill.paidAmount)}`}</td></tr>
                   <tr>
                     <td style="padding:3px 3px;border-top:2px solid #000;font-weight:900;font-size:${parseInt(totalPx, 10) + 2}px">BALANCE DUE</td>
-                    <td style="padding:3px 3px;border-top:2px solid #000;text-align:right;font-weight:900;white-space:nowrap;color:${isUnconfirmedQr ? "orange" : Number(bill.balanceAmount) > 0 ? "#c62828" : "green"};font-size:${parseInt(totalPx, 10) + 2}px">${isUnconfirmedQr ? "To Be Confirmed" : `₹${fmt(bill.balanceAmount)}`}</td>
+                    <td style="padding:3px 3px;border-top:2px solid #000;text-align:right;font-weight:900;white-space:nowrap;color:${statusColor(isUnconfirmedQr ? "orange" : Number(bill.balanceAmount) > 0 ? "#c62828" : "green")};font-size:${parseInt(totalPx, 10) + 2}px">${isUnconfirmedQr ? "To Be Confirmed" : `₹${fmt(bill.balanceAmount)}`}</td>
                   </tr>
                   ${cashAmt > 0 ? `<tr><td style="padding:1px 3px;color:#444;font-size:${tinyPx}">Cash</td><td style="padding:1px 3px;text-align:right;white-space:nowrap;color:#444;font-size:${tinyPx}">₹${fmt(cashAmt)}</td></tr>` : ""}
                   ${upiAmt > 0 ? `<tr><td style="padding:1px 3px;color:#444;font-size:${tinyPx}">UPI</td><td style="padding:1px 3px;text-align:right;white-space:nowrap;color:#444;font-size:${tinyPx}">₹${fmt(upiAmt)}</td></tr>` : ""}
@@ -384,7 +391,9 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
         <table style="width:100%;border-collapse:collapse">
           <tr>
             <td style="text-align:left;padding:0;vertical-align:bottom">
-              <div style="border-bottom:1px solid #000;width:130px;margin-bottom:1px"></div>
+              ${billedBySignatureUrl
+                ? `<img src="${billedBySignatureUrl}" alt="Signature" style="max-height:32px;max-width:130px;object-fit:contain;display:block;margin-bottom:1px"/>`
+                : `<div style="border-bottom:1px solid #000;width:130px;margin-bottom:1px"></div>`}
               <div style="font-size:${tinyPx};color:#555">Authorised Signature</div>
             </td>
             <td style="text-align:right;padding:0;vertical-align:bottom;font-size:${tinyPx};color:#555">
@@ -402,7 +411,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   @page { size: portrait; margin: ${pageMargin}; }
   *, *::before, *::after { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; height: 100%; }
-  body { background: #fff; color: #000; font-family: Arial, Helvetica, sans-serif; font-size: ${bodyPx}; ${isBW ? "filter: grayscale(1) contrast(1.35); -webkit-print-color-adjust: exact; print-color-adjust: exact;" : ""} }
+  body { background: #fff; color: #000; font-family: Arial, Helvetica, sans-serif; font-size: ${bodyPx}; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .receipt { width: 100%; padding: 2mm 3mm; box-sizing: border-box; }
   ${isA5 ? ".receipt { min-height: 100vh; display: flex; flex-direction: column; }" : ""}
   table { width: 100%; }

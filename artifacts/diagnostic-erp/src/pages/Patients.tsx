@@ -44,7 +44,7 @@ type PatientForm = {
   bloodGroup?: string;
 };
 
-type ClinicSettingsLite = { patientPhotoEnabled?: boolean };
+type ClinicSettingsLite = { patientPhotoEnabled?: boolean; patientPhoneRequired?: boolean };
 
 const BLOOD_GROUPS = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"];
 
@@ -66,6 +66,7 @@ export default function Patients() {
     queryFn: () => api.get("/api/clinic-settings/branding"),
   });
   const photoEnabled = !!clinicSettings?.patientPhotoEnabled;
+  const phoneRequired = clinicSettings?.patientPhoneRequired ?? true;
 
   // Debounce the search term before it reaches the server query — typing
   // still feels instant (this.search updates every keystroke for the input
@@ -423,8 +424,8 @@ export default function Patients() {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <Label>Phone *</Label>
-                <Input {...register("phone", { required: true })} className="mt-1" />
+                <Label>Phone {phoneRequired && "*"}</Label>
+                <Input {...register("phone", { required: phoneRequired })} className="mt-1" />
               </div>
               <div>
                 <Label>Blood Group</Label>
@@ -507,6 +508,7 @@ export default function Patients() {
       {editPatient && (
         <EditPatientDialog
           patient={editPatient}
+          phoneRequired={phoneRequired}
           onClose={() => setEditPatient(null)}
           onSaved={() => {
             queryClient.invalidateQueries({ queryKey: getListPatientsQueryKey() });
@@ -531,9 +533,10 @@ type EditForm = {
 };
 
 function EditPatientDialog({
-  patient, onClose, onSaved,
+  patient, phoneRequired, onClose, onSaved,
 }: {
   patient: { id: number; firstName: string; lastName: string; ageValue?: number | null; ageUnit?: string | null; dateOfBirth: string; gender: string; phone: string; email: string | null; address: string | null; bloodGroup: string | null };
+  phoneRequired: boolean;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -635,7 +638,7 @@ function EditPatientDialog({
             </div>
           </div>
           <div className="grid grid-cols-2 gap-4">
-            <div><Label>Phone *</Label><Input {...register("phone", { required: true })} className="mt-1" /></div>
+            <div><Label>Phone {phoneRequired && "*"}</Label><Input {...register("phone", { required: phoneRequired })} className="mt-1" /></div>
             <div>
               <Label>Blood Group</Label>
               <Select value={watch("bloodGroup") || undefined} onValueChange={(v) => setValue("bloodGroup", v)}>

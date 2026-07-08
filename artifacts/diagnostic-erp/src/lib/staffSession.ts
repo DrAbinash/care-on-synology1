@@ -18,6 +18,9 @@ export type StaffUser = {
   permissions: string[];
   maxDiscount: number | null;
   photoDataUrl?: string | null;
+  // Uploaded signature image — printed on this user's bills in place of a
+  // blank signature line when present (see printBill.ts).
+  signatureDataUrl?: string | null;
   // Per-user sidebar theme synced from the server. Seeded into localStorage
   // on login so the local useUserTheme hook picks it up immediately.
   sidebarTheme?: string | null;

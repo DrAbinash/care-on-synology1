@@ -74,6 +74,21 @@ function validatePhoto(v: unknown): string | null | { error: string } {
   return s;
 }
 
+// Signature images are simple line-art, so a tighter cap than the staff
+// portrait is plenty and keeps every printed bill's payload small.
+function validateSignature(v: unknown): string | null | { error: string } {
+  if (v === undefined) return null; // sentinel — caller treats as "not provided"
+  if (v === null || v === "") return null;
+  const s = String(v);
+  if (!s.startsWith("data:image/")) {
+    return { error: "signatureDataUrl must be a data:image/* URL" };
+  }
+  if (s.length > 400_000) {
+    return { error: "Signature image too large — please pick an image under 300 KB" };
+  }
+  return s;
+}
+
 router.get("/", async (_req, res) => {
   const users = await db.select().from(usersTable).orderBy(usersTable.name);
   // Strip the PIN hash but keep the boolean signal "this user has a PIN"
@@ -108,6 +123,11 @@ router.post("/", async (req: StaffAuthRequest, res) => {
     res.status(400).json({ error: photoCheck.error });
     return;
   }
+  const signatureCheck = validateSignature(req.body.signatureDataUrl);
+  if (signatureCheck && typeof signatureCheck === "object") {
+    res.status(400).json({ error: signatureCheck.error });
+    return;
+  }
 
   try {
     const [user] = await db
@@ -120,6 +140,7 @@ router.post("/", async (req: StaffAuthRequest, res) => {
         permissions: JSON.stringify(perms),
         pin: hashedPin,
         photoDataUrl: photoCheck as string | null,
+        signatureDataUrl: signatureCheck as string | null,
         // Force a PIN change on the first successful sign-in whenever an
         // admin assigns the initial PIN.
         mustChangePin: !!hashedPin,
@@ -170,6 +191,15 @@ router.patch("/:id", async (req: StaffAuthRequest, res) => {
       return;
     }
     updates.photoDataUrl = photoCheck as string | null;
+  }
+
+  if (req.body.signatureDataUrl !== undefined) {
+    const signatureCheck = validateSignature(req.body.signatureDataUrl);
+    if (signatureCheck && typeof signatureCheck === "object") {
+      res.status(400).json({ error: signatureCheck.error });
+      return;
+    }
+    updates.signatureDataUrl = signatureCheck as string | null;
   }
 
   if (req.body.sidebarTheme !== undefined) {
