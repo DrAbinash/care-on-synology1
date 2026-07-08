@@ -138,3 +138,55 @@ describe("dicom_nodes: schema-verify --repair must not resurrect deprecated colu
     expect(tables.get("dicom_nodes").columns.has("ae_title")).toBe(true);
   });
 });
+
+describe("parseSqlFiles: RENAME TABLE, ALTER COLUMN TYPE, DROP INDEX (production DB architecture hardening)", () => {
+  // These three statement types were previously invisible to the expected-
+  // schema parser, the same root-cause class of bug as the dicom_nodes
+  // column-drift incident above, just for different DDL shapes:
+  //   - a table renamed in a later migration would leave the OLD name
+  //     "expected" forever (and the new name never recognized)
+  //   - a column whose type changed in a later migration would keep
+  //     reporting a stale type-mismatch warning against its original type
+  //   - an index dropped in a later migration would stay "expected" forever
+  //     and get flagged as missing (or resurrected by --repair)
+
+  it("ALTER TABLE ... RENAME TO renames the table in the expected schema, carrying its columns forward", () => {
+    const entries = [
+      { tag: "a", type: "drizzle", content: `CREATE TABLE "old_name" (\n\t"id" serial PRIMARY KEY NOT NULL,\n\t"x" text\n);` },
+      { tag: "b", type: "drizzle", content: `ALTER TABLE old_name RENAME TO new_name;` },
+      { tag: "c", type: "drizzle", content: `ALTER TABLE "new_name" ADD COLUMN "y" integer;` },
+    ];
+    const { tables } = parseSqlFiles(entries);
+    expect(tables.has("old_name")).toBe(false);
+    expect(tables.has("new_name")).toBe(true);
+    expect([...tables.get("new_name").columns.keys()]).toEqual(expect.arrayContaining(["id", "x", "y"]));
+  });
+
+  it("ALTER TABLE ... ALTER COLUMN ... TYPE updates the expected column type instead of keeping the stale original type", () => {
+    const entries = [
+      { tag: "a", type: "drizzle", content: `CREATE TABLE "t" (\n\t"id" serial PRIMARY KEY NOT NULL,\n\t"amount" integer\n);` },
+      { tag: "b", type: "drizzle", content: `ALTER TABLE t ALTER COLUMN amount TYPE numeric(10, 2);` },
+    ];
+    const { tables } = parseSqlFiles(entries);
+    expect(tables.get("t").columns.get("amount").type).toBe("numeric");
+  });
+
+  it("DROP INDEX removes the index from the expected schema so it isn't flagged as missing/re-created forever", () => {
+    const entries = [
+      { tag: "a", type: "drizzle", content: `CREATE TABLE "t" (\n\t"id" serial PRIMARY KEY NOT NULL\n);\nCREATE INDEX "t_idx" ON "t" ("id");` },
+      { tag: "b", type: "drizzle", content: `DROP INDEX IF EXISTS t_idx;` },
+    ];
+    const { tables, indexNames } = parseSqlFiles(entries);
+    expect(tables.get("t").indexes.has("t_idx")).toBe(false);
+    expect(indexNames.has("t_idx")).toBe(false);
+  });
+
+  it("DROP INDEX followed by CREATE INDEX of the same name in the same file ends up present (redefinition, not removal)", () => {
+    const entries = [
+      { tag: "a", type: "drizzle", content: `CREATE TABLE "t" (\n\t"id" serial PRIMARY KEY NOT NULL\n);` },
+      { tag: "b", type: "drizzle", content: `DROP INDEX IF EXISTS t_idx;\nCREATE UNIQUE INDEX "t_idx" ON "t" ("id");` },
+    ];
+    const { tables } = parseSqlFiles(entries);
+    expect(tables.get("t").indexes.has("t_idx")).toBe(true);
+  });
+});

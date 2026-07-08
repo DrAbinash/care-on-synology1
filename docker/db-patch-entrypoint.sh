@@ -1,21 +1,49 @@
 #!/bin/sh
 # =============================================================================
-# db-patch-entrypoint.sh — Zero-touch schema migration for Care Diagnostics ERP
+# db-patch-entrypoint.sh — THE official schema migration container
 # =============================================================================
 #
-# DESIGN:
-#   Every future Drizzle migration and feature migration is detected and applied
-#   AUTOMATICALLY. No file needs to be edited when new migrations are added.
+# ARCHITECTURE (single source of truth for schema mutation):
+#   This container (care-db-patch-v2) is the ONLY component that normally
+#   applies Drizzle/feature SQL migrations. Everything else that touches the
+#   schema is either read-only or restricted to safe, additive, idempotent
+#   compatibility patches:
+#     - care-schema-verify   → read-only by default (--verify). Auto-repair
+#                               (ADD COLUMN IF NOT EXISTS only) requires the
+#                               operator to explicitly set SCHEMA_REPAIR=true.
+#     - care-api startup     → only ADD COLUMN/CREATE TABLE/CREATE INDEX
+#                               IF NOT EXISTS compatibility checks. New
+#                               RENAME/DROP COLUMN logic must NOT be added
+#                               there — write a migrations/*.sql file instead
+#                               and let this container apply it.
+#     - care-migrate         → MANUAL/EMERGENCY ONLY (profiles: [manual]).
+#
+#   Every future Drizzle migration and feature migration is detected and
+#   applied AUTOMATICALLY here. No file needs to be edited when new
+#   migrations are added.
 #
 #   Drizzle migrations:  detected from lib/db/drizzle/meta/_journal.json
 #   Feature migrations:  auto-discovered from migrations/ in alphabetical order
-#   Column patches:      applied from runStartupMigrations() in the API itself
 #
 # STARTUP ORDER (enforced by docker-compose depends_on):
 #   care-db (healthy)
 #     → care-db-patch-v2  (this script, exits 0 or fails hard)
-#       → care-api         (starts ONLY after this exits 0)
-#         → care-web       (starts ONLY after care-api is healthy)
+#       → care-schema-verify (read-only report, or repair if SCHEMA_REPAIR=true)
+#         → care-api         (starts ONLY after both exit 0)
+#           → care-web       (starts ONLY after care-api is healthy)
+#
+# SAFETY GUARDS (see docs/DEPLOYMENT.md for full rationale):
+#   - DB TARGET PRINTOUT: host/port/db/user/current_database()/current_schema()
+#     /server address are printed before anything runs, so a misconfigured
+#     .env pointing at the wrong Postgres is immediately visible in logs.
+#   - DB IDENTITY CHECK: a system_database_identity row (app_name=care-erp)
+#     is created on first run and verified on every run after. If it doesn't
+#     match, this script fails loudly instead of mutating a database that
+#     might not even be the intended Care ERP database.
+#   - MIGRATION LOCK: a schema_migration_lock row is acquired before any
+#     mutation and released when this script exits (success or failure), so
+#     two migration runs (e.g. an operator's manual care-migrate alongside an
+#     automatic redeploy) can never race each other.
 #
 # FAILURE BEHAVIOUR:
 #   Any psql error → set -e causes immediate non-zero exit.
@@ -39,6 +67,8 @@ set -e
 DB_HOST="${DB_HOST:-db}"
 DB_USER="${DB_USER:-erp}"
 DB_NAME="${DB_NAME:-diagnostic_erp}"
+APP_NAME="${APP_NAME:-care-erp}"
+APP_ENVIRONMENT="${APP_ENVIRONMENT:-production}"
 DRIZZLE_DIR="/migrations/drizzle"
 FEATURE_DIR="/migrations/feature"
 JOURNAL="${DRIZZLE_DIR}/meta/_journal.json"
@@ -85,7 +115,96 @@ psql_val() {
   psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" -tAq -c "$1" 2>/dev/null
 }
 
-# ── Step 2: Bootstrap migration tracking ─────────────────────────────────────
+# ── Step 1b: DEPLOYMENT GUARD — print exact DB target before touching anything
+# This is the single most effective guard against "migration ran against the
+# wrong database" incidents: a misconfigured .env (wrong DB_HOST, leftover
+# credentials from another project, etc.) is now impossible to miss in the
+# container logs, instead of silently succeeding against the wrong target.
+echo ""
+info "Deployment guard — verifying DB target…"
+server_addr=$(psql_val "SELECT COALESCE(inet_server_addr()::text, 'unix-socket');")
+echo "  ${BLUE}host (compose):${NC}      ${DB_HOST}"
+echo "  ${BLUE}port:${NC}                $(psql_val "SHOW port;")"
+echo "  ${BLUE}database (compose):${NC}  ${DB_NAME}"
+echo "  ${BLUE}username:${NC}            ${DB_USER}"
+echo "  ${BLUE}current_database():${NC}  $(psql_val "SELECT current_database();")"
+echo "  ${BLUE}current_schema():${NC}    $(psql_val "SELECT current_schema();")"
+echo "  ${BLUE}server address:${NC}      ${server_addr}"
+echo "  ${BLUE}server version:${NC}      $(psql_val "SHOW server_version;")"
+ok "DB target confirmed — proceeding"
+
+# ── Step 1c: DB IDENTITY CHECK — fail loudly instead of touching the wrong DB
+# system_database_identity is a tiny singleton table stamped with this app's
+# name the first time this script ever runs against a given database. Every
+# run after that verifies the stamp still matches. If it doesn't (e.g. .env
+# was accidentally pointed at a different project's Postgres, or a restored
+# backup from a different environment), migrations MUST NOT proceed.
+echo ""
+info "Verifying database identity…"
+psql_q -c "
+  CREATE TABLE IF NOT EXISTS public.system_database_identity (
+    id           INTEGER PRIMARY KEY DEFAULT 1,
+    app_name     TEXT NOT NULL,
+    environment  TEXT NOT NULL,
+    instance_id  TEXT NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT system_database_identity_singleton CHECK (id = 1)
+  );
+"
+existing_app_name=$(psql_val "SELECT app_name FROM public.system_database_identity WHERE id = 1;")
+if [ -z "${existing_app_name}" ]; then
+  instance_id=$(psql_val "SELECT md5(random()::text || clock_timestamp()::text);")
+  psql_q -c "
+    INSERT INTO public.system_database_identity (id, app_name, environment, instance_id)
+    VALUES (1, '${APP_NAME}', '${APP_ENVIRONMENT}', '${instance_id}')
+    ON CONFLICT (id) DO NOTHING;
+  "
+  ok "Database identity stamped: app_name='${APP_NAME}' environment='${APP_ENVIRONMENT}' instance_id=${instance_id}"
+elif [ "${existing_app_name}" != "${APP_NAME}" ]; then
+  fail "DB IDENTITY MISMATCH: this database is stamped as app_name='${existing_app_name}', but this container expects '${APP_NAME}'. Refusing to run migrations — this looks like the wrong database (wrong .env, wrong DB_HOST, or a restored backup from a different project/environment). Check docker-compose DATABASE_URL / DB_HOST / DB_NAME before retrying."
+else
+  ok "Database identity confirmed: app_name='${existing_app_name}'"
+fi
+
+# ── Step 1d: MIGRATION LOCK — prevent two migration runs racing each other
+# A lock TABLE (not a session-scoped pg_advisory_lock) is used deliberately:
+# this script issues many separate short-lived psql connections rather than
+# holding one session open for its whole run, so a session-scoped advisory
+# lock would not actually span the script. An atomic UPDATE ... WHERE is
+# connection-independent and works correctly regardless of how many separate
+# psql invocations happen while the lock is held. Stale locks (a container
+# that crashed mid-migration) auto-expire after 10 minutes so a single
+# crashed run can never permanently wedge deployments.
+echo ""
+info "Acquiring schema migration lock…"
+psql_q -c "
+  CREATE TABLE IF NOT EXISTS public.schema_migration_lock (
+    id         INTEGER PRIMARY KEY DEFAULT 1,
+    locked     BOOLEAN NOT NULL DEFAULT FALSE,
+    locked_by  TEXT,
+    locked_at  TIMESTAMPTZ,
+    CONSTRAINT schema_migration_lock_singleton CHECK (id = 1)
+  );
+  INSERT INTO public.schema_migration_lock (id, locked) VALUES (1, FALSE) ON CONFLICT (id) DO NOTHING;
+"
+LOCK_HOLDER="db-patch-v2-$(hostname 2>/dev/null || echo unknown)-$$"
+acquired=$(psql_val "
+  UPDATE public.schema_migration_lock
+  SET locked = TRUE, locked_by = '${LOCK_HOLDER}', locked_at = NOW()
+  WHERE id = 1 AND (locked = FALSE OR locked_at < NOW() - INTERVAL '10 minutes')
+  RETURNING 1;
+")
+if [ "${acquired}" != "1" ]; then
+  holder=$(psql_val "SELECT locked_by || ' since ' || locked_at FROM public.schema_migration_lock WHERE id = 1;")
+  fail "Could not acquire schema migration lock — another migration appears to be in progress (${holder}). If that run crashed more than 10 minutes ago the lock auto-expires; otherwise wait for it to finish, or manually clear it with: UPDATE schema_migration_lock SET locked=false WHERE id=1;"
+fi
+release_lock() {
+  psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=0 -q -c "
+    UPDATE public.schema_migration_lock SET locked = FALSE, locked_by = NULL WHERE id = 1 AND locked_by = '${LOCK_HOLDER}';
+  " >/dev/null 2>&1 || true
+}
+trap release_lock EXIT INT TERM
+ok "Migration lock acquired (${LOCK_HOLDER})"
 info "Bootstrapping migration tracking…"
 
 psql_q -c 'DROP TABLE IF EXISTS "public"."__drizzle_migrations";'

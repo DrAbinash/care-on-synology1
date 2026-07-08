@@ -70,9 +70,25 @@ const readline = require("readline");
 // ════════════════════════════════════════════════════════════════════════════
 
 const ARGS    = process.argv.slice(2);
-const MODE    = ARGS.includes("--repair") ? "repair"
-              : ARGS.includes("--reset")  ? "reset"
+// Repair mode now requires an EXPLICIT opt-in: either the --repair CLI flag
+// (for manual/emergency use via `docker compose run --rm care-migrate ...`)
+// or the SCHEMA_REPAIR=true environment variable (for an operator who wants
+// the old always-repair behaviour on a specific deployment). In normal
+// automated redeploys, care-schema-verify is READ-ONLY by default — it
+// reports drift but never mutates the schema. care-db-patch-v2 is the single
+// source of truth for schema changes; see docs/DEPLOYMENT.md.
+const REPAIR_REQUESTED = ARGS.includes("--repair") || process.env.SCHEMA_REPAIR === "true";
+const MODE    = ARGS.includes("--reset") ? "reset"
+              : REPAIR_REQUESTED         ? "repair"
               : "verify";
+// By default, verify mode reports drift but does NOT fail the deployment
+// (exit 0) — it's informational, same spirit as "safe compatibility check".
+// Set SCHEMA_VERIFY_STRICT=true to restore the old behaviour where any
+// drift found in --verify mode blocks care-api from starting. DB identity
+// mismatches and connection/load failures always fail hard regardless of
+// this setting — those aren't "drift", they're "this might be the wrong
+// database entirely".
+const VERIFY_STRICT = process.env.SCHEMA_VERIFY_STRICT === "true";
 const JSON_OUT  = ARGS.includes("--json");
 const VERBOSE   = ARGS.includes("--verbose") || ARGS.includes("-v");
 const QUIET     = ARGS.includes("--quiet")   || ARGS.includes("-q");
@@ -358,6 +374,27 @@ function parseSqlFiles(sqlEntries) {
       colOps.push({ index: rn.index, kind: "rename", table: rn[1], from: rn[2], to: rn[3] });
     }
 
+    // ALTER TABLE x RENAME TO y — table rename. Must not match "RENAME
+    // COLUMN" above (that requires the literal COLUMN keyword between
+    // RENAME and the column name; this pattern requires TO immediately
+    // after RENAME, so the two never both match the same text).
+    const rtRe = /ALTER TABLE(?:\s+IF EXISTS)?\s+"?(\w+)"?\s+RENAME TO\s+"?(\w+)"?/gi;
+    let rt;
+    while ((rt = rtRe.exec(clean)) !== null) {
+      colOps.push({ index: rt.index, kind: "renameTable", from: rt[1], to: rt[2] });
+    }
+
+    // ALTER TABLE x ALTER COLUMN y [SET DATA] TYPE ztype — covers the common
+    // single-clause form Drizzle generates. Without this, a column that
+    // legitimately changed type in a later migration would keep reporting a
+    // false type-mismatch warning against its original (now stale) type
+    // forever, the same class of bug fixed above for dropped/renamed columns.
+    const acTypeRe = /ALTER TABLE(?:\s+IF EXISTS)?\s+"?(\w+)"?\s+ALTER COLUMN\s+"?(\w+)"?\s+(?:SET DATA\s+)?TYPE\s+([^\n;,]+)/gi;
+    let at;
+    while ((at = acTypeRe.exec(clean)) !== null) {
+      colOps.push({ index: at.index, kind: "retype", table: at[1], column: at[2], rawTypeSrc: at[3] });
+    }
+
     colOps.sort((a, b) => a.index - b.index);
 
     for (const op of colOps) {
@@ -410,7 +447,45 @@ function parseSqlFiles(sqlEntries) {
           if (wasPk) ti.pks.add(op.to);
           if (wasUnique) ti.uniques.add(op.to);
         }
+      } else if (op.kind === "renameTable") {
+        if (tables.has(op.from) && !tables.has(op.to)) {
+          const ti = tables.get(op.from);
+          tables.delete(op.from);
+          tables.set(op.to, ti);
+        }
+      } else if (op.kind === "retype") {
+        const ti = tables.get(op.table);
+        if (ti && ti.columns.has(op.column)) {
+          let rawType = op.rawTypeSrc.trim();
+          if (/timestamp with time zone/i.test(rawType)) rawType = "timestamptz";
+          else if (/timestamp without time zone/i.test(rawType)) rawType = "timestamp";
+          if (/jsonb/i.test(rawType)) rawType = "jsonb";
+          rawType = rawType.replace(/USING.*/i, "").trim();
+          const existing = ti.columns.get(op.column);
+          ti.columns.set(op.column, {
+            ...existing,
+            type: normaliseType(rawType.split("(")[0].replace(/\(.*/, "").trim()),
+            rawType,
+            isJsonb: /jsonb/i.test(rawType),
+            fromFile: tag,
+          });
+        }
       }
+    }
+
+    // ── DROP INDEX ────────────────────────────────────────────────────────
+    // Same class of fix as DROP COLUMN above: without this, an index that
+    // was created in an old migration and later dropped by a newer one would
+    // stay "expected" forever and get flagged as a false missing-index
+    // warning (or re-created by --repair) even though dropping it was
+    // intentional. DROP INDEX doesn't name its table, so remove it from
+    // every table's index set — index names are unique per-schema in
+    // Postgres, so at most one table will ever actually contain it.
+    const diRe = /DROP INDEX(?:\s+IF EXISTS)?\s+"?(\w+)"?/gi;
+    let di;
+    while ((di = diRe.exec(clean)) !== null) {
+      indexNames.delete(di[1]);
+      for (const ti of tables.values()) ti.indexes.delete(di[1]);
     }
 
     // ── CREATE INDEX ───────────────────────────────────────────────────────
@@ -427,6 +502,108 @@ function parseSqlFiles(sqlEntries) {
   }
 
   return { tables, indexNames, sourceConsistencyIssues };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// DEPLOYMENT GUARD — print exact DB target, verify identity, take a lock
+// ════════════════════════════════════════════════════════════════════════════
+// Mirrors the same guard implemented in docker/db-patch-entrypoint.sh. Both
+// must agree on what "safe" looks like, since either one can be the first
+// component to touch a given database.
+
+async function printDbTargetGuard(client, connStr) {
+  const safeDsn = connStr.replace(/:([^:@]+)@/, ":***@");
+  const [{ current_database: db }] = (await client.query("SELECT current_database();")).rows;
+  const [{ current_schema: schema }] = (await client.query("SELECT current_schema();")).rows;
+  const [{ addr }] = (await client.query("SELECT COALESCE(inet_server_addr()::text, 'unix-socket') AS addr;")).rows;
+  const [{ port }] = (await client.query("SHOW port;")).rows;
+  const [{ server_version: version }] = (await client.query("SHOW server_version;")).rows;
+  infoLog(`Connecting: ${safeDsn}`);
+  infoLog(`  current_database(): ${db}`);
+  infoLog(`  current_schema():   ${schema}`);
+  infoLog(`  server address:     ${addr}`);
+  infoLog(`  port:               ${port}`);
+  infoLog(`  server version:     ${version}`);
+}
+
+// DB IDENTITY CHECK — read-only. care-schema-verify never creates or seeds
+// system_database_identity itself (that's care-db-patch-v2's job, since it's
+// the single source of truth for schema mutation). If the table is missing
+// entirely, that's just "db-patch-v2 hasn't run yet on this DB" and is
+// informational. If the table EXISTS with a different app_name, that is
+// always a hard failure regardless of --verify/--repair/SCHEMA_VERIFY_STRICT
+// — it means this process might not even be pointed at the right database.
+async function checkDbIdentity(client, expectedAppName) {
+  let row;
+  try {
+    const res = await client.query(
+      "SELECT app_name, environment, instance_id FROM public.system_database_identity WHERE id = 1;"
+    );
+    row = res.rows[0];
+  } catch {
+    // Table doesn't exist yet — informational only, not an error.
+    warnLog("system_database_identity table not found (care-db-patch-v2 may not have run yet on this database)");
+    return { ok: true, checked: false };
+  }
+  if (!row) {
+    warnLog("system_database_identity table exists but has no row yet");
+    return { ok: true, checked: false };
+  }
+  if (row.app_name !== expectedAppName) {
+    failLog(
+      `DB IDENTITY MISMATCH: this database is stamped as app_name='${row.app_name}' ` +
+      `(environment=${row.environment}, instance_id=${row.instance_id}), but this process ` +
+      `expects app_name='${expectedAppName}'. Refusing to proceed — this looks like the wrong ` +
+      `database (wrong DATABASE_URL, wrong DB_HOST, or a restored backup from a different ` +
+      `project/environment).`
+    );
+    return { ok: false, checked: true, row };
+  }
+  okLog(`Database identity confirmed: app_name='${row.app_name}' environment='${row.environment}'`);
+  return { ok: true, checked: true, row };
+}
+
+// MIGRATION LOCK — only taken in --repair mode (the only mode that mutates).
+// Uses the same schema_migration_lock table as db-patch-entrypoint.sh so
+// both components coordinate through one visible, connection-independent
+// lock rather than two separate locking mechanisms.
+async function acquireMigrationLock(client, holderLabel) {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS public.schema_migration_lock (
+      id         INTEGER PRIMARY KEY DEFAULT 1,
+      locked     BOOLEAN NOT NULL DEFAULT FALSE,
+      locked_by  TEXT,
+      locked_at  TIMESTAMPTZ,
+      CONSTRAINT schema_migration_lock_singleton CHECK (id = 1)
+    );
+    INSERT INTO public.schema_migration_lock (id, locked) VALUES (1, FALSE) ON CONFLICT (id) DO NOTHING;
+  `);
+  const res = await client.query(
+    `UPDATE public.schema_migration_lock
+       SET locked = TRUE, locked_by = $1, locked_at = NOW()
+     WHERE id = 1 AND (locked = FALSE OR locked_at < NOW() - INTERVAL '10 minutes')
+     RETURNING 1;`,
+    [holderLabel]
+  );
+  if (res.rowCount !== 1) {
+    const cur = await client.query("SELECT locked_by, locked_at FROM public.schema_migration_lock WHERE id = 1;");
+    const holder = cur.rows[0];
+    throw new Error(
+      `Could not acquire schema migration lock — held by ${holder?.locked_by ?? "unknown"} since ${holder?.locked_at ?? "unknown"}. ` +
+      `If that run crashed more than 10 minutes ago the lock auto-expires; otherwise wait for it to finish.`
+    );
+  }
+}
+
+async function releaseMigrationLock(client, holderLabel) {
+  try {
+    await client.query(
+      "UPDATE public.schema_migration_lock SET locked = FALSE, locked_by = NULL WHERE id = 1 AND locked_by = $1;",
+      [holderLabel]
+    );
+  } catch {
+    // Best-effort — never let lock release failure mask the real result.
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1253,9 +1430,6 @@ async function main() {
     headLog("════════════════════════════════════════════════════════\n");
   }
 
-  const safeDsn = connStr.replace(/:([^:@]+)@/, ":***@");
-  infoLog(`Connecting: ${safeDsn}`);
-
   const client = new Client({ connectionString: connStr });
   try { await client.connect(); }
   catch (err) {
@@ -1263,6 +1437,17 @@ async function main() {
     process.exit(1);
   }
   okLog("Database connected");
+
+  // ── DEPLOYMENT GUARD — print exact DB target ─────────────────────────────
+  await printDbTargetGuard(client, connStr);
+
+  // ── DB IDENTITY CHECK — fail loudly if this isn't the expected database ──
+  const expectedAppName = process.env.APP_NAME || "care-erp";
+  const identity = await checkDbIdentity(client, expectedAppName);
+  if (!identity.ok) {
+    await client.end().catch(() => {});
+    process.exit(1);
+  }
 
   // ── RESET MODE ────────────────────────────────────────────────────────────
   if (MODE === "reset") {
@@ -1331,16 +1516,38 @@ async function main() {
   };
 
   // ── REPAIR MODE ───────────────────────────────────────────────────────────
+  // The only mode that mutates the schema, so it's the only mode that takes
+  // the migration lock — and it's the only mode reachable at all without an
+  // explicit --repair flag or SCHEMA_REPAIR=true (see MODE computation above).
   if (MODE === "repair") {
-    await runRepair(client, results, expected);
-    // Re-run verify after repair
-    const live2 = await getLiveSchema(client);
-    const results2 = diffSchema(expected, live2);
-    results2.sourceIssues = results.sourceIssues;
-    if (!QUIET) printResults(results2, git, live2.pgVersion, stats);
-    if (!JSON_OUT) writeStartupMd(results2, git, live2, stats, allEntries, crossIssues);
-    await client.end().catch(() => {});
-    process.exit(results2.pass ? 0 : 1);
+    const lockHolder = `schema-verify-${process.pid}-${Date.now()}`;
+    warnLog(
+      REPAIR_REQUESTED && ARGS.includes("--repair")
+        ? "Repair mode requested via --repair flag."
+        : "Repair mode requested via SCHEMA_REPAIR=true environment variable."
+    );
+    try {
+      await acquireMigrationLock(client, lockHolder);
+    } catch (err) {
+      failLog(err.message);
+      await client.end().catch(() => {});
+      process.exit(1);
+    }
+    let exitCode = 1;
+    try {
+      await runRepair(client, results, expected);
+      // Re-run verify after repair
+      const live2 = await getLiveSchema(client);
+      const results2 = diffSchema(expected, live2);
+      results2.sourceIssues = results.sourceIssues;
+      if (!QUIET) printResults(results2, git, live2.pgVersion, stats);
+      if (!JSON_OUT) writeStartupMd(results2, git, live2, stats, allEntries, crossIssues);
+      exitCode = results2.pass ? 0 : 1;
+    } finally {
+      await releaseMigrationLock(client, lockHolder);
+      await client.end().catch(() => {});
+    }
+    process.exit(exitCode);
   }
 
   // ── VERIFY MODE (default) ─────────────────────────────────────────────────
@@ -1405,7 +1612,19 @@ async function main() {
 
   await client.end().catch(() => {});
   infoLog(`Verification complete in ${Date.now() - startMs}ms`);
-  process.exit(results.pass ? 0 : 1);
+  if (!results.pass) {
+    if (VERIFY_STRICT) {
+      failLog("Schema drift found and SCHEMA_VERIFY_STRICT=true — blocking care-api from starting.");
+      process.exit(1);
+    }
+    warnLog(
+      "Schema drift found, but care-schema-verify is read-only by default and does not block " +
+      "deployment for drift alone (see STARTUP_SCHEMA_VERIFICATION.md for details). Set " +
+      "SCHEMA_REPAIR=true to auto-repair on the next deploy, or SCHEMA_VERIFY_STRICT=true to " +
+      "make drift a hard failure instead."
+    );
+  }
+  process.exit(0);
 }
 
 // Only run main() when executed directly (`node scripts/db-schema-verify.cjs`).

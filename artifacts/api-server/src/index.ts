@@ -138,9 +138,73 @@ async function seedBootstrapAdminIfNeeded(): Promise<void> {
 // Idempotent ALTER TABLE / CREATE TABLE IF NOT EXISTS statements that extend
 // the schema without requiring a full Drizzle migration pipeline. Safe to run
 // on every startup because every clause uses IF NOT EXISTS / ADD COLUMN IF.
+// ─────────────────────────────────────────────────────────────────────────────
+// SINGLE SOURCE OF TRUTH FOR SCHEMA — POLICY FOR THIS FUNCTION
+// ─────────────────────────────────────────────────────────────────────────────
+// care-db-patch-v2 (docker/db-patch-entrypoint.sh) is the single official
+// migration container — it's the only normal-path component that applies
+// tracked, versioned migrations/*.sql and lib/db/drizzle/*.sql files.
+//
+// This function is a secondary, best-effort safety net, NOT a migration
+// system. It only exists to keep old/long-running deployments compatible
+// while a proper migrations/*.sql file catches up on the next redeploy.
+// Going forward:
+//   ✅ ALLOWED here:  CREATE TABLE IF NOT EXISTS, ALTER TABLE ADD COLUMN IF
+//                     NOT EXISTS, CREATE INDEX IF NOT EXISTS — additive,
+//                     idempotent, safe to run on every single boot.
+//   ❌ NOT ALLOWED:   new RENAME COLUMN / DROP COLUMN / RENAME TABLE logic.
+//                     Write a migrations/*.sql file instead and let
+//                     care-db-patch-v2 apply it once, in a tracked way.
+// (The existing dicom_nodes rename/drop block below predates this policy
+// and is being left in place as a self-healing guard against the exact
+// schema-verify --repair bug it was written for — but it is a read-mostly
+// check that only performs DDL when it detects actual drift, not an
+// unconditional mutation on every boot. No new blocks like it should be
+// added; see docs/DEPLOYMENT.md.)
 async function runStartupMigrations(): Promise<void> {
   const client = await pool.connect();
   try {
+    // ── DB IDENTITY CHECK (read-only) ───────────────────────────────────────
+    // Mirrors the same check in docker/db-patch-entrypoint.sh and
+    // db-schema-verify.cjs. care-api never creates or seeds
+    // system_database_identity — that's care-db-patch-v2's job — so a
+    // missing table just means db-patch-v2 hasn't run yet (informational).
+    // A row that exists with a DIFFERENT app_name means this API instance
+    // might be pointed at the wrong database entirely (bad DATABASE_URL,
+    // wrong DB_HOST, a restored backup from another project/environment) —
+    // in that case we must not run any of the compatibility patches below.
+    const expectedAppName = process.env.APP_NAME || "care-erp";
+    try {
+      const identityRes = await client.query(
+        "SELECT app_name, environment FROM public.system_database_identity WHERE id = 1;"
+      );
+      const identityRow = identityRes.rows[0];
+      if (identityRow && identityRow.app_name !== expectedAppName) {
+        throw new Error(
+          `DB IDENTITY MISMATCH: this database is stamped as app_name='${identityRow.app_name}' ` +
+          `(environment=${identityRow.environment}), but this care-api instance expects ` +
+          `app_name='${expectedAppName}'. Refusing to run any startup schema patches — this looks ` +
+          `like the wrong database. Check DATABASE_URL / DB_HOST / DB_NAME in .env.`
+        );
+      }
+    } catch (identityErr: any) {
+      if (identityErr?.message?.startsWith("DB IDENTITY MISMATCH")) throw identityErr;
+      // system_database_identity table doesn't exist yet — informational
+      // only (e.g. care-db-patch-v2 hasn't run on this DB yet). Continue;
+      // the compatibility patches below are still safe to apply.
+      logger.warn("system_database_identity not found — continuing (db-patch-v2 may not have run yet)");
+    }
+
+    // ── MIGRATION LOCK (advisory, session-scoped) ───────────────────────────
+    // This function holds a single dedicated connection for its whole
+    // duration (see `pool.connect()` above and `client.release()` below), so
+    // a real session-scoped pg_advisory_lock works correctly here — unlike
+    // docker/db-patch-entrypoint.sh, which uses a lock TABLE because it opens
+    // many short-lived connections instead of one long-lived session.
+    // Prevents this function from racing a concurrent care-db-patch-v2 run
+    // or another care-api replica's startup migrations.
+    await client.query("SELECT pg_advisory_lock(hashtext('care_erp_schema_migration'));");
+
     await client.query(`
       ALTER TABLE order_tests ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
       ALTER TABLE order_tests ADD COLUMN IF NOT EXISTS cancelled_by_name TEXT;
@@ -2610,6 +2674,10 @@ async function runStartupMigrations(): Promise<void> {
   } catch (err) {
     logger.error({ err }, "Startup migration failed — partial-cancel / outsourced-labs features may not work");
   } finally {
+    // pg_advisory_unlock() on a lock this session never took simply returns
+    // false, never throws — safe to call unconditionally here even if the
+    // identity check failed before the lock was ever acquired.
+    await client.query("SELECT pg_advisory_unlock(hashtext('care_erp_schema_migration'));").catch(() => {});
     client.release();
   }
 }

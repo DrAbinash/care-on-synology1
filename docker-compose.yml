@@ -77,6 +77,11 @@ services:
       DB_HOST: db
       DB_USER: ${DB_USER:-erp}
       DB_NAME: ${DB_NAME:-diagnostic_erp}
+      # Identity stamp — used by the deployment guard to fail loudly instead
+      # of running migrations against the wrong database (see system_database_
+      # identity in docker/db-patch-entrypoint.sh and docs/DEPLOYMENT.md).
+      APP_NAME: ${APP_NAME:-care-erp}
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-production}
       # Version metadata — stored in schema_deploy_state by the patch script
       ERP_VERSION: ${ERP_VERSION:-2.0.0}
       BUILD_NUMBER: ${BUILD_NUMBER:-0}
@@ -98,11 +103,21 @@ services:
         condition: service_healthy
 
   # ---------------------------------------------------------------------------
-  # Full schema verifier — runs after db-patch-v2, before care-api
+  # Schema verifier — runs after db-patch-v2, before care-api.
   # Uses the migrate image (Node.js + full workspace) to run
-  # scripts/db-schema-verify.cjs which parses all migration SQL files
-  # and compares against the live DB. Exits 0 on pass, 1 on fail.
-  # care-api will NOT start if this fails.
+  # scripts/db-schema-verify.cjs, which parses ALL migration SQL files
+  # (CREATE/ADD/DROP/RENAME COLUMN, RENAME TABLE, ALTER COLUMN TYPE) and
+  # compares the result against the live DB.
+  #
+  # READ-ONLY BY DEFAULT: this container reports schema drift but never
+  # mutates the schema unless SCHEMA_REPAIR=true is set below. care-db-patch-v2
+  # is the single source of truth for applying schema changes — this
+  # container's job is to confirm the result matches, not to fix it.
+  # Drift alone does not block care-api from starting (see
+  # STARTUP_SCHEMA_VERIFICATION.md after each deploy for details); set
+  # SCHEMA_VERIFY_STRICT=true to restore the old "any drift blocks
+  # deployment" behaviour. A DB identity mismatch (wrong database entirely)
+  # always blocks regardless of these settings.
   # ---------------------------------------------------------------------------
   schema-verify:
     build:
@@ -114,6 +129,14 @@ services:
     environment:
       DATABASE_URL: postgres://${DB_USER:-erp}:${DB_PASSWORD:-changeme}@db:5432/${DB_NAME:-diagnostic_erp}
       NODE_ENV: production
+      APP_NAME: ${APP_NAME:-care-erp}
+      # Auto-repair is OFF by default. Set to "true" only when you've reviewed
+      # STARTUP_SCHEMA_VERIFICATION.md and specifically want ADD COLUMN/CREATE
+      # TABLE/CREATE INDEX IF NOT EXISTS repairs applied on this deploy.
+      SCHEMA_REPAIR: ${SCHEMA_REPAIR:-false}
+      # When true, schema drift found in (non-repair) verify mode blocks
+      # care-api from starting, same as the old default behaviour.
+      SCHEMA_VERIFY_STRICT: ${SCHEMA_VERIFY_STRICT:-false}
       # Pass git metadata so startup report includes commit/branch info
       GIT_COMMIT: ${GIT_COMMIT:-unknown}
       GIT_BRANCH: ${GIT_BRANCH:-unknown}
@@ -134,7 +157,7 @@ services:
       # Mount output directory (writable) so startup MD is written to repo root
       - ./:/repo/output:rw
     working_dir: /repo/output
-    command: ["node", "/repo/scripts/db-schema-verify.cjs", "--repair", "--verbose"]
+    command: ["node", "/repo/scripts/db-schema-verify.cjs", "--verbose"]
     depends_on:
       db:
         condition: service_healthy
@@ -172,6 +195,10 @@ services:
       NODE_ENV: production
       PORT: "8080"
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Identity stamp checked (read-only) at startup before any compatibility
+      # patches run — see runStartupMigrations() in src/index.ts. Must match
+      # the same APP_NAME used by care-db-patch-v2 / care-schema-verify.
+      APP_NAME: ${APP_NAME:-care-erp}
 
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env — use a 64-char random string}
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set in .env — use a 64-char random string}
@@ -257,6 +284,15 @@ services:
         condition: service_healthy
       db-patch-v2:
         condition: service_completed_successfully
+      # Previously MISSING: care-api never actually waited on schema-verify
+      # completing, despite comments elsewhere claiming it did — the DB
+      # identity check and SCHEMA_VERIFY_STRICT mode are meaningless safety
+      # guards without this. In the default (non-strict) mode, ordinary
+      # schema drift still exits 0 quickly here, so this adds no meaningful
+      # delay to a normal deploy — it only actually blocks on a real
+      # DB-identity mismatch or an explicit SCHEMA_VERIFY_STRICT=true.
+      schema-verify:
+        condition: service_completed_successfully
 
   # ---------------------------------------------------------------------------
   # Web / nginx
@@ -308,6 +344,7 @@ services:
     environment:
       DATABASE_URL: postgres://${DB_USER:-erp}:${DB_PASSWORD:-changeme}@db:5432/${DB_NAME:-diagnostic_erp}
       NODE_ENV: production
+      APP_NAME: ${APP_NAME:-care-erp}
     depends_on:
       db:
         condition: service_healthy
