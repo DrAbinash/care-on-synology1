@@ -767,202 +767,99 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
           </div>
         ) : step === 1 ? (
           <div>
-            {/* Service Photo Tiles — Background images for service categories */}
-            {settings.serviceImagesEnabled && settings.serviceImages && (() => {
-              let serviceImgs: Record<string, string> = {};
-              try {
-                serviceImgs = JSON.parse(settings.serviceImages);
-              } catch {
-                // fallback
-              }
-              const serviceLabels: Record<string, string> = {
-                opd: "OPD Consultation",
-                emergency: "Emergency",
-                usg: "Ultrasound",
-                xray: "X-Ray",
-                ct: "CT Scan",
-                mri: "MRI Scan",
-                pathology: "Pathology",
-                packages: "Health Packages",
-                home_collection: "Home Collection",
-                doctor: "Doctor Consultation",
+            {/* Quick Select Tests — sourced from the same clinic_settings.quick_test_ids
+                Billing Desk and the kiosk use for their quick-test slots. Sized to match
+                the previous "Our Services" photo tiles (200px min-width, 180px tall) —
+                that section relied on admin-uploaded background images that were broken/
+                missing in practice, so it's replaced with these functional tiles instead. */}
+            {(() => {
+              const quickTests = (config?.quickTestIds ?? [])
+                .map((id) => (id ? tests.find((t) => t.id === id) : null))
+                .filter((t): t is TestItem => !!t);
+              if (quickTests.length === 0) return null;
+
+              const getCategoryColor = (category?: string) => {
+                if (!category) return "linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)";
+                switch (category.toLowerCase()) {
+                  case "biochemistry": return "linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)"; // Amber
+                  case "cardiology": return "linear-gradient(135deg, #fee2e2 0%, #fecaca 100%)"; // Red
+                  case "radiology": return "linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)"; // Blue
+                  case "pathology": return "linear-gradient(135deg, #f3e8ff 0%, #e9d5ff 100%)"; // Purple
+                  case "hematology": return "linear-gradient(135deg, #fce7f3 0%, #fbcfe8 100%)"; // Pink
+                  case "endocrinology": return "linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%)"; // Green
+                  case "serology": return "linear-gradient(135deg, #f5e6ff 0%, #ede9fe 100%)"; // Indigo
+                  default: return "linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%)"; // Light green
+                }
               };
-              const hasImages = Object.values(serviceImgs).some((url) => url && url.trim() !== "");
-              if (!hasImages) return null;
 
               return (
                 <div style={{ marginBottom: "1.5rem" }}>
-                  <h3 style={{ fontWeight: 700, fontSize: "1rem", marginBottom: "0.75rem", color: "hsl(var(--cd-slate))" }}>
-                    Our Services
+                  <h3 style={{ fontWeight: 700, fontSize: "1rem", marginBottom: "0.75rem", color: "hsl(var(--cd-slate))", display: "flex", alignItems: "center", gap: ".4rem" }}>
+                    ⚡ Quick Select Tests
                   </h3>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "0.75rem" }}>
-                    {Object.entries(serviceLabels).map(([key, label]) => {
-                      const imgUrl = serviceImgs[key];
-                      if (!imgUrl || imgUrl.trim() === "") return null;
-
+                    {quickTests.map((test) => {
+                      const sel = selTests.has(test.id);
+                      const categoryColor = getCategoryColor(test.category);
                       return (
-                        <div
-                          key={key}
+                        <button
+                          key={test.id}
+                          type="button"
+                          onClick={() => toggleTest(test.id)}
+                          title={`${test.name} (${test.category})`}
                           style={{
                             position: "relative",
                             height: "180px",
+                            padding: "0.75rem",
                             borderRadius: "var(--site-radius)",
-                            overflow: "hidden",
-                            backgroundImage: `url("${imgUrl}")`,
-                            backgroundSize: "cover",
-                            backgroundPosition: "center",
-                            border: "2px solid hsl(var(--site-border) / .2)",
-                            transition: "transform .2s, box-shadow .2s",
+                            border: sel ? "3px solid hsl(var(--cd-teal))" : "2px solid rgba(0,0,0,.1)",
+                            background: sel
+                              ? "linear-gradient(135deg, hsl(var(--cd-teal) / .25), hsl(var(--cd-teal) / .15))"
+                              : categoryColor,
                             cursor: "pointer",
-                          }}
-                          onMouseEnter={(e) => {
-                            const el = e.currentTarget as HTMLDivElement;
-                            el.style.transform = "translateY(-4px)";
-                            el.style.boxShadow = "0 10px 25px -5px rgba(0, 0, 0, 0.15)";
-                          }}
-                          onMouseLeave={(e) => {
-                            const el = e.currentTarget as HTMLDivElement;
-                            el.style.transform = "translateY(0)";
-                            el.style.boxShadow = "none";
+                            transition: "all .2s cubic-bezier(0.4, 0, 0.2, 1)",
+                            textAlign: "center",
+                            color: sel ? "hsl(var(--cd-teal))" : "#1f2937",
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            boxShadow: sel
+                              ? "0 10px 25px -5px hsl(var(--cd-teal) / .2), inset 0 1px 0 rgba(255,255,255,0.5)"
+                              : "0 2px 8px rgba(0,0,0,.08)",
+                            transform: sel ? "scale(1.03)" : "scale(1)",
                           }}
                         >
-                          {/* Dark overlay to ensure text readability */}
-                          <div
-                            style={{
-                              position: "absolute",
-                              inset: 0,
-                              background: "linear-gradient(180deg, rgba(0,0,0,0.2) 0%, rgba(0,0,0,0.5) 100%)",
-                            }}
-                          />
-                          {/* Service label */}
-                          <div
-                            style={{
-                              position: "absolute",
-                              bottom: 0,
-                              left: 0,
-                              right: 0,
-                              padding: "0.75rem",
-                              color: "#fff",
-                              fontWeight: 700,
-                              fontSize: "0.95rem",
-                              textAlign: "center",
-                            }}
-                          >
-                            {label}
+                          <div style={{ fontSize: "1.05rem", fontWeight: 900, letterSpacing: "0.5px", lineHeight: 1.25 }}>
+                            {test.name}
                           </div>
-                        </div>
+                          <div style={{ fontSize: "0.75rem", color: "rgba(0,0,0,0.5)", marginTop: "0.4rem", fontWeight: 600 }}>
+                            {test.category}
+                          </div>
+                          {sel && (
+                            <div style={{
+                              position: "absolute",
+                              top: "0.5rem",
+                              right: "0.5rem",
+                              width: "28px",
+                              height: "28px",
+                              borderRadius: "50%",
+                              background: "hsl(var(--cd-teal))",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              boxShadow: "0 2px 8px hsl(var(--cd-teal) / .3)",
+                            }}>
+                              <Check size={16} style={{ color: "#fff", fontWeight: "bold" }} />
+                            </div>
+                          )}
+                        </button>
                       );
                     })}
                   </div>
                 </div>
               );
             })()}
-
-            {/* Quick Test Slots — 8 fixed-width boxes in 2 rows for fast selection (McDonald's-style kiosk) */}
-            {config?.quickTestIds && config.quickTestIds.length > 0 && config.quickTestIds.some((id) => id !== null) && (
-              <div style={{
-                marginBottom: "1.5rem",
-                padding: "1.25rem",
-                background: "linear-gradient(135deg, hsl(var(--cd-teal) / .03) 0%, hsl(var(--cd-teal) / .06) 100%)",
-                border: "2px solid hsl(var(--cd-teal) / .25)",
-                borderRadius: "var(--site-radius)",
-              }}>
-                <h3 style={{ fontWeight: 800, fontSize: "1.1rem", marginBottom: "1rem", color: "hsl(var(--cd-teal))", textTransform: "uppercase", letterSpacing: "1px", display: "flex", alignItems: "center", gap: ".5rem" }}>
-                  ⚡ <span>Quick Select Tests</span>
-                </h3>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: ".8rem" }}>
-                  {config.quickTestIds.map((testId, idx) => {
-                    const test = testId ? tests.find((t) => t.id === testId) : null;
-                    
-                    // Category-based color schemes (like menu board items)
-                    const getCategoryColor = (category?: string) => {
-                      if (!category) return "linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)";
-                      switch (category.toLowerCase()) {
-                        case "biochemistry": return "linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)"; // Amber
-                        case "cardiology": return "linear-gradient(135deg, #fee2e2 0%, #fecaca 100%)"; // Red
-                        case "radiology": return "linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)"; // Blue
-                        case "pathology": return "linear-gradient(135deg, #f3e8ff 0%, #e9d5ff 100%)"; // Purple
-                        case "hematology": return "linear-gradient(135deg, #fce7f3 0%, #fbcfe8 100%)"; // Pink
-                        case "endocrinology": return "linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%)"; // Green
-                        case "serology": return "linear-gradient(135deg, #f5e6ff 0%, #ede9fe 100%)"; // Indigo
-                        default: return "linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%)"; // Light green
-                      }
-                    };
-                    
-                    const categoryColor = getCategoryColor(test?.category);
-                    
-                    return (
-                      <button
-                        key={idx}
-                        type="button"
-                        onClick={() => {
-                          if (test) toggleTest(test.id);
-                        }}
-                        title={test ? `${test.name} (${test.category})` : ""}
-                        style={{
-                          position: "relative",
-                          padding: "1.5rem 0.75rem",
-                          borderRadius: "var(--site-radius)",
-                          border: test && selTests.has(test.id) ? "3px solid hsl(var(--cd-teal))" : "2px solid rgba(0,0,0,.1)",
-                          background: test 
-                            ? (selTests.has(test.id) 
-                              ? "linear-gradient(135deg, hsl(var(--cd-teal) / .25), hsl(var(--cd-teal) / .15))" 
-                              : categoryColor)
-                            : "#f9fafb",
-                          cursor: test ? "pointer" : "default",
-                          transition: "all .25s cubic-bezier(0.4, 0, 0.2, 1)",
-                          textAlign: "center",
-                          fontWeight: 900,
-                          fontSize: "1rem",
-                          color: test && selTests.has(test.id) ? "hsl(var(--cd-teal))" : test ? "#1f2937" : "#9ca3af",
-                          overflow: "hidden",
-                          whiteSpace: "normal",
-                          wordWrap: "break-word",
-                          lineHeight: "1.25",
-                          minHeight: "7rem",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          boxShadow: test && selTests.has(test.id) 
-                            ? "0 10px 25px -5px hsl(var(--cd-teal) / .2), inset 0 1px 0 rgba(255,255,255,0.5)" 
-                            : "0 2px 8px rgba(0,0,0,.08)",
-                          transform: test && selTests.has(test.id) ? "scale(1.05)" : "scale(1)",
-                          backdropFilter: "blur(1px)",
-                        }}
-                      >
-                        <div style={{ position: "relative", width: "100%" }}>
-                          <div style={{ fontSize: "1.05rem", fontWeight: 900, letterSpacing: "0.5px" }}>
-                            {test ? test.name : ""}
-                          </div>
-                          {test && (
-                            <div style={{ fontSize: "0.7rem", color: "rgba(0,0,0,0.5)", marginTop: "0.25rem", fontWeight: 600 }}>
-                              {test.category}
-                            </div>
-                          )}
-                        </div>
-                        {test && selTests.has(test.id) && (
-                          <div style={{
-                            position: "absolute",
-                            top: "0.5rem",
-                            right: "0.5rem",
-                            width: "28px",
-                            height: "28px",
-                            borderRadius: "50%",
-                            background: "hsl(var(--cd-teal))",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            boxShadow: "0 2px 8px hsl(var(--cd-teal) / .3)",
-                          }}>
-                            <Check size={16} style={{ color: "#fff", fontWeight: "bold" }} />
-                          </div>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
 
             {/* Search & filter bar */}
             <div style={{ ...cardStyle, marginBottom: "1rem", padding: "1rem", display: "flex", gap: ".75rem", flexWrap: "wrap", alignItems: "center" }}>

@@ -182,6 +182,7 @@ publicBookingRouter.get("/config", async (_req, res): Promise<void> => {
       upiQrImageUrl: "",
       allowedTestIds: [],
       allowedPackageIds: [],
+      quickTestIds: [],
       vipPercentage: Number(settings.vipPercentage || 50),
       disclaimerRefundPercentage: settings.disclaimerRefundPercentage ?? 90,
       activePaymentGateway: null,
@@ -206,6 +207,16 @@ publicBookingRouter.get("/config", async (_req, res): Promise<void> => {
 
   const gateway = resolveActiveGateway(settings);
 
+  // Same clinic_settings.quick_test_ids Billing Desk (and the kiosk) use for
+  // their quick-select slots — the frontend cross-references these against
+  // its already-whitelisted /tests list, so an ID that isn't allowed for
+  // online booking simply won't resolve to a tile.
+  let quickTestIds: (number | null)[] = [];
+  try {
+    const parsed = JSON.parse(settings.quickTestIds || "[]");
+    if (Array.isArray(parsed)) quickTestIds = parsed;
+  } catch { /* ignore */ }
+
   res.json({
     enabled: true,
     keyId: razorpayKeyId,
@@ -222,6 +233,7 @@ publicBookingRouter.get("/config", async (_req, res): Promise<void> => {
     upiQrImageUrl: settings.upiQrImageUrl || "",
     allowedTestIds,
     allowedPackageIds,
+    quickTestIds,
     vipPercentage: Number(settings.vipPercentage || 50),
     disclaimerRefundPercentage: settings.disclaimerRefundPercentage ?? 90,
     activePaymentGateway: gateway || settings.activePaymentGateway,
