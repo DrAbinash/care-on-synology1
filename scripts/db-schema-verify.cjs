@@ -327,35 +327,89 @@ function parseSqlFiles(sqlEntries) {
       }
     }
 
-    // ── ALTER TABLE ADD COLUMN ─────────────────────────────────────────────
+    // ── ALTER TABLE ADD/DROP/RENAME COLUMN ─────────────────────────────────
+    // These three are collected together and then replayed in the order they
+    // actually appear in the file (by regex match index), because later
+    // statements in the SAME migration file can DROP or RENAME a column that
+    // an earlier statement (or an earlier migration file) ADDed. Processing
+    // ADD COLUMN in isolation — as this used to do — meant a column that was
+    // added in an old migration and later renamed/dropped by a newer one
+    // stayed "expected" forever, which is exactly what caused --repair to
+    // keep re-adding deprecated dicom_nodes columns (pull_interval_minutes,
+    // pull_query_days) on every redeploy after they'd already been migrated
+    // away to pull_interval_seconds / query_lookback_hours.
+    const colOps = [];
+
     const acRe = /ALTER TABLE(?:\s+IF EXISTS)?\s+"?(\w+)"?\s+ADD COLUMN(?:\s+IF NOT EXISTS)?\s+"?(\w+)"?\s+([^\n;,]+)/gi;
     let ac;
     while ((ac = acRe.exec(clean)) !== null) {
-      const tbl = ac[1]; const colName = ac[2];
-      let rawType = ac[3].trim();
-      const notNull = /NOT NULL/i.test(rawType);
-      const isJsonb = /jsonb/i.test(rawType);
-      if (/timestamp with time zone/i.test(rawType)) rawType = "timestamptz";
-      else if (/timestamp without time zone/i.test(rawType)) rawType = "timestamp";
-      if (/jsonb/i.test(rawType)) rawType = "jsonb";
-      rawType = rawType.replace(/NOT NULL.*/i, "").replace(/DEFAULT.*/i, "").trim();
+      colOps.push({ index: ac.index, kind: "add", table: ac[1], column: ac[2], rawTypeSrc: ac[3] });
+    }
 
-      if (!tables.has(tbl)) {
-        tables.set(tbl, { columns: new Map(), indexes: new Set(), pks: new Set(), uniques: new Set(), fks: [], fromFile: tag });
-      }
-      const ti = tables.get(tbl);
-      if (!ti.columns.has(colName)) {
-        ti.columns.set(colName, {
-          type: normaliseType(rawType.split("(")[0].replace(/\(.*/, "").trim()),
-          rawType,
-          notNull,
-          isPk: false,
-          isSerial: false,
-          isJsonb,
-          defaultVal: null,
-          fromFile: tag,
-          fromAlter: true,
-        });
+    const dcRe = /ALTER TABLE(?:\s+IF EXISTS)?\s+"?(\w+)"?\s+DROP COLUMN(?:\s+IF EXISTS)?\s+"?(\w+)"?/gi;
+    let dc;
+    while ((dc = dcRe.exec(clean)) !== null) {
+      colOps.push({ index: dc.index, kind: "drop", table: dc[1], column: dc[2] });
+    }
+
+    const rnRe = /ALTER TABLE(?:\s+IF EXISTS)?\s+"?(\w+)"?\s+RENAME COLUMN\s+"?(\w+)"?\s+TO\s+"?(\w+)"?/gi;
+    let rn;
+    while ((rn = rnRe.exec(clean)) !== null) {
+      colOps.push({ index: rn.index, kind: "rename", table: rn[1], from: rn[2], to: rn[3] });
+    }
+
+    colOps.sort((a, b) => a.index - b.index);
+
+    for (const op of colOps) {
+      if (op.kind === "add") {
+        const tbl = op.table; const colName = op.column;
+        let rawType = op.rawTypeSrc.trim();
+        const notNull = /NOT NULL/i.test(rawType);
+        const isJsonb = /jsonb/i.test(rawType);
+        if (/timestamp with time zone/i.test(rawType)) rawType = "timestamptz";
+        else if (/timestamp without time zone/i.test(rawType)) rawType = "timestamp";
+        if (/jsonb/i.test(rawType)) rawType = "jsonb";
+        rawType = rawType.replace(/NOT NULL.*/i, "").replace(/DEFAULT.*/i, "").trim();
+
+        if (!tables.has(tbl)) {
+          tables.set(tbl, { columns: new Map(), indexes: new Set(), pks: new Set(), uniques: new Set(), fks: [], fromFile: tag });
+        }
+        const ti = tables.get(tbl);
+        if (!ti.columns.has(colName)) {
+          ti.columns.set(colName, {
+            type: normaliseType(rawType.split("(")[0].replace(/\(.*/, "").trim()),
+            rawType,
+            notNull,
+            isPk: false,
+            isSerial: false,
+            isJsonb,
+            defaultVal: null,
+            fromFile: tag,
+            fromAlter: true,
+          });
+        }
+      } else if (op.kind === "drop") {
+        const ti = tables.get(op.table);
+        if (ti) {
+          ti.columns.delete(op.column);
+          ti.pks.delete(op.column);
+          ti.uniques.delete(op.column);
+        }
+      } else if (op.kind === "rename") {
+        const ti = tables.get(op.table);
+        if (ti && ti.columns.has(op.from)) {
+          const info = ti.columns.get(op.from);
+          const wasPk = ti.pks.has(op.from);
+          const wasUnique = ti.uniques.has(op.from);
+          ti.columns.delete(op.from);
+          ti.pks.delete(op.from);
+          ti.uniques.delete(op.from);
+          if (!ti.columns.has(op.to)) {
+            ti.columns.set(op.to, { ...info, fromFile: tag });
+          }
+          if (wasPk) ti.pks.add(op.to);
+          if (wasUnique) ti.uniques.add(op.to);
+        }
       }
     }
 
@@ -1366,4 +1420,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { normaliseType, typesCompatible, defaultLiteralForType };
+module.exports = { normaliseType, typesCompatible, defaultLiteralForType, parseSqlFiles };

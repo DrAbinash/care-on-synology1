@@ -431,6 +431,20 @@ async function runStartupMigrations(): Promise<void> {
           ALTER TABLE dicom_nodes DROP COLUMN pull_query_days;
         END IF;
       END $$;
+      -- Safety net for the "neither old nor new column exists" edge case (e.g. a
+      -- manual drop, or a table created by a partial/older migration path). The
+      -- DO block above only warns in that case; these two statements guarantee
+      -- the current column names always end up present, with sane defaults,
+      -- regardless of which of the 4 possible states the table was in above.
+      -- No-ops (IF NOT EXISTS) in every other case, so safe on every redeploy.
+      ALTER TABLE dicom_nodes ADD COLUMN IF NOT EXISTS pull_interval_seconds INTEGER NOT NULL DEFAULT 300;
+      ALTER TABLE dicom_nodes ADD COLUMN IF NOT EXISTS query_lookback_hours INTEGER NOT NULL DEFAULT 24;
+      -- Legacy columns must never linger: if a bad repair step (e.g. an old
+      -- schema-verifier bug) re-adds pull_interval_minutes / pull_query_days
+      -- after they were already renamed away, drop them again here so they
+      -- can never accumulate stale/unused data or confuse future migrations.
+      ALTER TABLE dicom_nodes DROP COLUMN IF EXISTS pull_interval_minutes;
+      ALTER TABLE dicom_nodes DROP COLUMN IF EXISTS pull_query_days;
       ALTER TABLE dicom_nodes ADD COLUMN IF NOT EXISTS preferred_retrieve_method TEXT NOT NULL DEFAULT 'C_MOVE';
 
       -- Default Voluson USG entry (idempotent)

@@ -205,11 +205,29 @@ function stripCustomHtmlSections(sectionsJson: string, existingSectionsJson?: st
 // ─────────────────────────────────────────────────────────────────────────────
 // Site Settings — singleton row (id = 1). Auto-creates on first read.
 // ─────────────────────────────────────────────────────────────────────────────
-async function getOrCreateSettings() {
+export async function getOrCreateSettings() {
   const [existing] = await db.select().from(siteSettingsTable).where(eq(siteSettingsTable.id, 1));
   if (existing) return existing;
-  const [created] = await db.insert(siteSettingsTable).values({ id: 1 }).returning();
-  return created;
+
+  // Row not found yet — try to create it. Under concurrent requests (e.g. two
+  // browser tabs both loading the site on a cold cache) two callers can both
+  // reach this point believing id=1 doesn't exist yet. onConflictDoNothing()
+  // makes the insert itself race-safe: whichever request wins the race
+  // creates the row, and the other's insert becomes a harmless no-op instead
+  // of crashing with "duplicate key value violates unique constraint
+  // site_settings_pkey". Either way we re-SELECT afterwards so both callers
+  // return the same, single, existing row — a GET never overwrites settings
+  // that already exist, and never throws because id=1 was already there.
+  await db.insert(siteSettingsTable).values({ id: 1 }).onConflictDoNothing();
+
+  const [row] = await db.select().from(siteSettingsTable).where(eq(siteSettingsTable.id, 1));
+  if (!row) {
+    // Should be unreachable (we just inserted or someone else did), but
+    // fail loudly rather than returning undefined to a caller that expects
+    // a settings object.
+    throw new Error("site_settings row could not be created or found for id=1");
+  }
+  return row;
 }
 
 websiteRouter.get("/settings", async (req, res) => {

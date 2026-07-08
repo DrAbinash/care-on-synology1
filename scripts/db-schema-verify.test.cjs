@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 const fs = require("fs");
 const path = require("path");
-const { defaultLiteralForType } = require("./db-schema-verify.cjs");
+const { defaultLiteralForType, parseSqlFiles } = require("./db-schema-verify.cjs");
 
 // Regression coverage for the incident where care-db-patch-v2 schema
 // verification failed because payment_logs.amount and .error_message
@@ -88,5 +88,53 @@ describe("radiology_worklist accession_number is no longer a unique/required fie
     // Must be guarded so pre-existing duplicate UIDs can't abort the whole
     // startup migration batch (same class of bug as the gstin incident).
     expect(indexTs).toMatch(/EXCEPTION WHEN unique_violation THEN/);
+  });
+});
+
+describe("dicom_nodes: schema-verify --repair must not resurrect deprecated columns", () => {
+  // Regression test for the incident where care-schema-verify's --repair mode
+  // kept re-adding pull_interval_minutes / pull_query_days to dicom_nodes on
+  // every redeploy, even though the Drizzle migrations had already renamed
+  // them to pull_interval_seconds / query_lookback_hours.
+  //
+  // Root cause: parseSqlFiles() only understood CREATE TABLE and
+  // ALTER TABLE ... ADD COLUMN. It ignored DROP COLUMN and RENAME COLUMN, so
+  // a column added in an early migration (0000_dear_forge.sql) stayed
+  // "expected" forever, even after a later migration (0006_jazzy_mojo.sql)
+  // renamed/dropped it. --repair then treated the live DB (correctly missing
+  // the deprecated column) as "behind" and ADDed it back.
+  //
+  // This test replays the exact real migration sequence for dicom_nodes
+  // (create with old columns -> rename -> add new + drop old) and asserts
+  // the final expected schema only contains the current column names.
+  const oldColumnCreate = `CREATE TABLE "dicom_nodes" (\n\t"id" serial PRIMARY KEY NOT NULL,\n\t"ae_title" text NOT NULL,\n\t"pull_interval_minutes" integer DEFAULT 15 NOT NULL,\n\t"pull_query_days" integer DEFAULT 1 NOT NULL\n);`;
+  const renameMigration = `ALTER TABLE dicom_nodes\n  RENAME COLUMN pull_interval_minutes TO pull_interval_seconds;\nALTER TABLE dicom_nodes\n  RENAME COLUMN pull_query_days TO query_lookback_hours;`;
+  const addDropMigration = `ALTER TABLE "dicom_nodes" ADD COLUMN "pull_interval_seconds" integer DEFAULT 300 NOT NULL;--> statement-breakpoint\nALTER TABLE "dicom_nodes" ADD COLUMN "query_lookback_hours" integer DEFAULT 24 NOT NULL;--> statement-breakpoint\nALTER TABLE "dicom_nodes" DROP COLUMN "pull_interval_minutes";--> statement-breakpoint\nALTER TABLE "dicom_nodes" DROP COLUMN "pull_query_days";`;
+
+  const entries = [
+    { tag: "0000_dear_forge", type: "drizzle", content: oldColumnCreate },
+    { tag: "0002_dicom_rename", type: "drizzle", content: renameMigration },
+    { tag: "0006_jazzy_mojo", type: "drizzle", content: addDropMigration },
+  ];
+
+  it("does not include deprecated pull_interval_minutes / pull_query_days in the expected schema", () => {
+    const { tables } = parseSqlFiles(entries);
+    const cols = [...tables.get("dicom_nodes").columns.keys()];
+    expect(cols).not.toContain("pull_interval_minutes");
+    expect(cols).not.toContain("pull_query_days");
+  });
+
+  it("still includes the current pull_interval_seconds / query_lookback_hours columns", () => {
+    const { tables } = parseSqlFiles(entries);
+    const cols = [...tables.get("dicom_nodes").columns.keys()];
+    expect(cols).toContain("pull_interval_seconds");
+    expect(cols).toContain("query_lookback_hours");
+  });
+
+  it("handles a RENAME COLUMN with no prior ADD COLUMN in the expected set (column carried forward, not dropped)", () => {
+    // ae_title was defined in the CREATE TABLE and never touched again — it
+    // must survive untouched through the drop/rename processing.
+    const { tables } = parseSqlFiles(entries);
+    expect(tables.get("dicom_nodes").columns.has("ae_title")).toBe(true);
   });
 });

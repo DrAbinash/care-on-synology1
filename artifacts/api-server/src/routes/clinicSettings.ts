@@ -264,6 +264,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
     const VALID_THEMES = ["navy", "violet", "teal", "charcoal", "forest"];
     const isCustom = typeof body.sidebarTheme === "string" && /^custom:#[0-9a-fA-F]{6}$/.test(body.sidebarTheme);
     if (typeof body.sidebarTheme !== "string" || (!VALID_THEMES.includes(body.sidebarTheme) && !isCustom)) {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", `sidebarTheme must be one of: ${VALID_THEMES.join(", ")} or custom:#rrggbb`, "| received body keys:", Object.keys(body));
       res.status(400).json({ error: `sidebarTheme must be one of: ${VALID_THEMES.join(", ")} or custom:#rrggbb` });
       return;
     }
@@ -305,6 +306,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
   
   if (body.preferredScanner !== undefined) {
     if (body.preferredScanner !== "mobile" && body.preferredScanner !== "bridge") {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "preferredScanner must be mobile or bridge", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "preferredScanner must be mobile or bridge" });
       return;
     }
@@ -315,6 +317,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
   for (const f of textFields) {
     if (body[f] !== undefined) {
       if (body[f] !== null && typeof body[f] !== "string") {
+        console.warn("[PUT /api/clinic-settings] rejected 400:", `${f} must be a string or null`, "| received body keys:", Object.keys(body));
         res.status(400).json({ error: `${f} must be a string or null` });
         return;
       }
@@ -329,6 +332,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
 
     if (body[f] !== undefined) {
       if (typeof body[f] !== "boolean") {
+        console.warn("[PUT /api/clinic-settings] rejected 400:", `${f} must be a boolean`, "| received body keys:", Object.keys(body));
         res.status(400).json({ error: `${f} must be a boolean` });
         return;
       }
@@ -338,6 +342,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
   // ── Ollama configuration ────────────────────────────────────────────────────
   if (body.ollamaBaseUrl !== undefined) {
     if (body.ollamaBaseUrl !== null && typeof body.ollamaBaseUrl !== "string") {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaBaseUrl must be a string or null", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "ollamaBaseUrl must be a string or null" }); return;
     }
     const trimmed = typeof body.ollamaBaseUrl === "string" ? body.ollamaBaseUrl.trim() : null;
@@ -345,9 +350,11 @@ clinicSettingsRouter.put("/", async (req, res) => {
       try {
         const u = new URL(trimmed);
         if (u.protocol !== "http:" && u.protocol !== "https:") {
+          console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaBaseUrl must be http:// or https://", "| received body keys:", Object.keys(body));
           res.status(400).json({ error: "ollamaBaseUrl must be http:// or https://" }); return;
         }
       } catch {
+        console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaBaseUrl is not a valid URL", "| received body keys:", Object.keys(body));
         res.status(400).json({ error: "ollamaBaseUrl is not a valid URL" }); return;
       }
     }
@@ -355,20 +362,24 @@ clinicSettingsRouter.put("/", async (req, res) => {
   }
   if (body.ollamaModel !== undefined) {
     if (body.ollamaModel !== null && typeof body.ollamaModel !== "string") {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaModel must be a string or null", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "ollamaModel must be a string or null" }); return;
     }
     update.ollamaModel = typeof body.ollamaModel === "string" ? body.ollamaModel.trim() || null : null;
   }
   if (body.ollamaKnownModels !== undefined) {
     if (typeof body.ollamaKnownModels !== "string") {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaKnownModels must be a JSON string", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "ollamaKnownModels must be a JSON string" }); return;
     }
     try {
       const parsed = JSON.parse(body.ollamaKnownModels);
       if (!Array.isArray(parsed) || !parsed.every((m) => typeof m === "string")) {
+        console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaKnownModels must be a JSON array of strings", "| received body keys:", Object.keys(body));
         res.status(400).json({ error: "ollamaKnownModels must be a JSON array of strings" }); return;
       }
     } catch {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaKnownModels must be valid JSON", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "ollamaKnownModels must be valid JSON" }); return;
     }
     update.ollamaKnownModels = body.ollamaKnownModels;
@@ -378,10 +389,12 @@ clinicSettingsRouter.put("/", async (req, res) => {
   for (const f of portalTextFields) {
     if (body[f] !== undefined) {
       if (typeof body[f] !== "string") {
+        console.warn("[PUT /api/clinic-settings] rejected 400:", `${f} must be a string`, "| received body keys:", Object.keys(body));
         res.status(400).json({ error: `${f} must be a string` });
         return;
       }
       if (body[f].length > 500) {
+        console.warn("[PUT /api/clinic-settings] rejected 400:", `${f} too long (max 500 chars)`, "| received body keys:", Object.keys(body));
         res.status(400).json({ error: `${f} too long (max 500 chars)` });
         return;
       }
@@ -390,6 +403,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
   }
   if (body.razorpayKeyId !== undefined) {
     if (typeof body.razorpayKeyId !== "string") {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "razorpayKeyId must be a string", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "razorpayKeyId must be a string" });
       return;
     }
@@ -397,6 +411,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
   }
   if (body.payuMerchantKey !== undefined) {
     if (typeof body.payuMerchantKey !== "string") {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "payuMerchantKey must be a string", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "payuMerchantKey must be a string" });
       return;
     }
@@ -404,6 +419,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
   }
   if (body.phonepeMerchantId !== undefined) {
     if (typeof body.phonepeMerchantId !== "string") {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "phonepeMerchantId must be a string", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "phonepeMerchantId must be a string" });
       return;
     }
@@ -411,6 +427,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
   }
   if (body.bharatpeMerchantId !== undefined) {
     if (typeof body.bharatpeMerchantId !== "string") {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "bharatpeMerchantId must be a string", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "bharatpeMerchantId must be a string" });
       return;
     }
@@ -418,6 +435,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
   }
   if (body.cashfreeAppId !== undefined) {
     if (typeof body.cashfreeAppId !== "string") {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "cashfreeAppId must be a string", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "cashfreeAppId must be a string" });
       return;
     }
@@ -425,6 +443,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
   }
   if (body.iciciMerchantId !== undefined) {
     if (typeof body.iciciMerchantId !== "string") {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "iciciMerchantId must be a string", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "iciciMerchantId must be a string" });
       return;
     }
@@ -432,6 +451,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
   }
   if (body.iciciAggregatorId !== undefined) {
     if (typeof body.iciciAggregatorId !== "string") {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "iciciAggregatorId must be a string", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "iciciAggregatorId must be a string" });
       return;
     }
@@ -439,6 +459,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
   }
   if (body.iciciSecretKey !== undefined) {
     if (typeof body.iciciSecretKey !== "string") {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "iciciSecretKey must be a string", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "iciciSecretKey must be a string" });
       return;
     }
@@ -448,6 +469,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
   for (const f of arrayJsonTextFields) {
     if (body[f] !== undefined) {
       if (typeof body[f] !== "string") {
+        console.warn("[PUT /api/clinic-settings] rejected 400:", `${f} must be a string`, "| received body keys:", Object.keys(body));
         res.status(400).json({ error: `${f} must be a string` });
         return;
       }
@@ -457,6 +479,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
   if (body.onlineBookingLedgerId !== undefined) {
     const n = Number(body.onlineBookingLedgerId);
     if (!Number.isInteger(n) || n <= 0) {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "onlineBookingLedgerId must be a positive integer", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "onlineBookingLedgerId must be a positive integer" });
       return;
     }
@@ -464,6 +487,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
   }
   if (body.billDefaultPaperSize !== undefined) {
     if (body.billDefaultPaperSize !== "A4" && body.billDefaultPaperSize !== "A5") {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "billDefaultPaperSize must be A4 or A5", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "billDefaultPaperSize must be A4 or A5" });
       return;
     }
@@ -472,6 +496,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
   if (body.billPrintCopies !== undefined) {
     const n = Number(body.billPrintCopies);
     if (!Number.isInteger(n) || (n !== 1 && n !== 2)) {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "billPrintCopies must be 1 or 2", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "billPrintCopies must be 1 or 2" });
       return;
     }
@@ -479,16 +504,19 @@ clinicSettingsRouter.put("/", async (req, res) => {
   }
   if (body.lanAllowedIps !== undefined) {
     if (typeof body.lanAllowedIps !== "string") {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "lanAllowedIps must be a JSON string", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "lanAllowedIps must be a JSON string" });
       return;
     }
     try {
       const parsed = JSON.parse(body.lanAllowedIps);
       if (!Array.isArray(parsed) || !parsed.every((v) => typeof v === "string")) {
+        console.warn("[PUT /api/clinic-settings] rejected 400:", "lanAllowedIps must be a JSON array of strings", "| received body keys:", Object.keys(body));
         res.status(400).json({ error: "lanAllowedIps must be a JSON array of strings" });
         return;
       }
     } catch {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "lanAllowedIps must be valid JSON", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "lanAllowedIps must be valid JSON" });
       return;
     }
@@ -497,6 +525,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
   if (body.commissionDiscountMode !== undefined) {
     const valid = ["none", "deduct", "deduct_rollover"];
     if (!valid.includes(body.commissionDiscountMode)) {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", `commissionDiscountMode must be one of: ${valid.join(", ")}`, "| received body keys:", Object.keys(body));
       res.status(400).json({ error: `commissionDiscountMode must be one of: ${valid.join(", ")}` });
       return;
     }
@@ -508,6 +537,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
     if (body[f] !== undefined) {
       const n = Number(body[f]);
       if (!Number.isInteger(n) || n < 0 || n > 5000) {
+        console.warn("[PUT /api/clinic-settings] rejected 400:", `${f} must be an integer between 0 and 5000`, "| received body keys:", Object.keys(body));
         res.status(400).json({ error: `${f} must be an integer between 0 and 5000` });
         return;
       }
@@ -521,6 +551,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
   }
   if (typeof update.quickTestIds === "string") {
     if (update.quickTestIds.length > 260) {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "quickTestIds payload too large", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "quickTestIds payload too large" });
       return;
     }
@@ -531,10 +562,12 @@ clinicSettingsRouter.put("/", async (req, res) => {
         parsed.length !== 8 ||
         !parsed.every((v) => v === null || (typeof v === "number" && Number.isInteger(v) && v > 0))
       ) {
+        console.warn("[PUT /api/clinic-settings] rejected 400:", "quickTestIds must be an array of exactly 8 entries (positive integer test id or null)", "| received body keys:", Object.keys(body));
         res.status(400).json({ error: "quickTestIds must be an array of exactly 8 entries (positive integer test id or null)" });
         return;
       }
     } catch {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "quickTestIds must be valid JSON", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "quickTestIds must be valid JSON" });
       return;
     }
@@ -548,6 +581,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
 
   if (typeof update.quickDoctorIds === "string") {
     if (update.quickDoctorIds.length > 260) {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "quickDoctorIds payload too large", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "quickDoctorIds payload too large" });
       return;
     }
@@ -558,10 +592,12 @@ clinicSettingsRouter.put("/", async (req, res) => {
         parsed.length !== 8 ||
         !parsed.every((v) => v === null || (typeof v === "number" && Number.isInteger(v) && v > 0))
       ) {
+        console.warn("[PUT /api/clinic-settings] rejected 400:", "quickDoctorIds must be an array of exactly 8 entries (positive integer doctor id or null)", "| received body keys:", Object.keys(body));
         res.status(400).json({ error: "quickDoctorIds must be an array of exactly 8 entries (positive integer doctor id or null)" });
         return;
       }
     } catch {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "quickDoctorIds must be valid JSON", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "quickDoctorIds must be valid JSON" });
       return;
     }
@@ -620,26 +656,30 @@ clinicSettingsRouter.post("/ollama", async (req, res) => {
 
   // ollamaEnabled
   if (b.ollamaEnabled !== undefined) {
-    if (typeof b.ollamaEnabled !== "boolean") { res.status(400).json({ error: "ollamaEnabled must be boolean" }); return; }
+    if (typeof b.ollamaEnabled !== "boolean") { console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaEnabled must be boolean", "| received body keys:", Object.keys(body));
+ res.status(400).json({ error: "ollamaEnabled must be boolean" }); return; }
     update.ollamaEnabled = b.ollamaEnabled;
   }
 
   // ollamaLocalOnly
   if (b.ollamaLocalOnly !== undefined) {
-    if (typeof b.ollamaLocalOnly !== "boolean") { res.status(400).json({ error: "ollamaLocalOnly must be boolean" }); return; }
+    if (typeof b.ollamaLocalOnly !== "boolean") { console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaLocalOnly must be boolean", "| received body keys:", Object.keys(body));
+ res.status(400).json({ error: "ollamaLocalOnly must be boolean" }); return; }
     update.ollamaLocalOnly = b.ollamaLocalOnly;
   }
 
   // ollamaAuditEnabled
   if (b.ollamaAuditEnabled !== undefined) {
-    if (typeof b.ollamaAuditEnabled !== "boolean") { res.status(400).json({ error: "ollamaAuditEnabled must be boolean" }); return; }
+    if (typeof b.ollamaAuditEnabled !== "boolean") { console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaAuditEnabled must be boolean", "| received body keys:", Object.keys(body));
+ res.status(400).json({ error: "ollamaAuditEnabled must be boolean" }); return; }
     update.ollamaAuditEnabled = b.ollamaAuditEnabled;
   }
 
   // ollamaTimeoutSeconds
   if (b.ollamaTimeoutSeconds !== undefined) {
     const n = Number(b.ollamaTimeoutSeconds);
-    if (!Number.isInteger(n) || n < 5 || n > 300) { res.status(400).json({ error: "ollamaTimeoutSeconds must be 5–300" }); return; }
+    if (!Number.isInteger(n) || n < 5 || n > 300) { console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaTimeoutSeconds must be 5–300", "| received body keys:", Object.keys(body));
+ res.status(400).json({ error: "ollamaTimeoutSeconds must be 5–300" }); return; }
     update.ollamaTimeoutSeconds = n;
   }
 
@@ -661,6 +701,7 @@ clinicSettingsRouter.post("/ollama", async (req, res) => {
   if (b.ollamaBaseUrl !== undefined) {
     const raw = b.ollamaBaseUrl ? String(b.ollamaBaseUrl).trim() : "";
     if (raw && !validateOllamaUrlSimple(raw)) {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaBaseUrl must be a valid http/https URL", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "ollamaBaseUrl must be a valid http/https URL" }); return;
     }
     update.ollamaBaseUrl = raw || null;
@@ -670,6 +711,7 @@ clinicSettingsRouter.post("/ollama", async (req, res) => {
   if (b.ollamaFallbackUrl !== undefined) {
     const raw = b.ollamaFallbackUrl ? String(b.ollamaFallbackUrl).trim() : "";
     if (raw && !validateOllamaUrlSimple(raw)) {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaFallbackUrl must be a valid http/https URL", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "ollamaFallbackUrl must be a valid http/https URL" }); return;
     }
     // Store in DB using raw SQL to handle column added by migration (not yet in drizzle schema deploy)
