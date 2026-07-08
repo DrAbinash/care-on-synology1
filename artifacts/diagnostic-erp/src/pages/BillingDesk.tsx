@@ -775,6 +775,8 @@ export default function BillingDesk() {
                   phone: updatedBill.patient.phone ?? null,
                   gender: updatedBill.patient.gender ?? null,
                   dateOfBirth: updatedBill.patient.dateOfBirth ?? null,
+                  ageValue: updatedBill.patient.ageValue ?? null,
+                  ageUnit: updatedBill.patient.ageUnit ?? null,
                 },
                 order: {
                   doctor: updatedBill.order?.doctor ? { name: updatedBill.order.doctor.name } : null,
@@ -1239,6 +1241,8 @@ export default function BillingDesk() {
                 phone: lastBillLocal.patient.phone ?? null,
                 gender: lastBillLocal.patient.gender ?? null,
                 dateOfBirth: lastBillLocal.patient.dateOfBirth ?? null,
+                ageValue: lastBillLocal.patient.ageValue ?? null,
+                ageUnit: lastBillLocal.patient.ageUnit ?? null,
               },
               order: {
                 doctor: lastBillLocal.doctorName ? { name: lastBillLocal.doctorName } : null,

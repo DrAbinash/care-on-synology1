@@ -97,6 +97,11 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   formFAddressRequired: boolean("form_f_address_required").notNull().default(true),
   // When true, husband/father name is required in the Form F billing desk popup and form.
   formFGuardianRequired: boolean("form_f_guardian_required").notNull().default(true),
+  // When true (default — matches existing behavior), phone number is a required
+  // field on the Patients page's Add/Edit Patient forms and on self-registration
+  // (kiosk / online booking / QR). When false, patients can be registered
+  // without a phone number on those surfaces.
+  patientPhoneRequired: boolean("patient_phone_required").notNull().default(true),
 
   // ── V3: Receipt Message Management ──
   receiptThankYouMessage: text("receipt_thank_you_message").notNull().default("Thank you for choosing Care Diagnostics."),

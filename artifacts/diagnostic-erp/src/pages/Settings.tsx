@@ -37,6 +37,7 @@ type AppUser = {
   maxDiscount: number | null;
   username?: string | null;
   photoDataUrl?: string | null;
+  signatureDataUrl?: string | null;
   mustChangePin?: boolean;
   defaultStartPage?: string | null;
 };
@@ -319,11 +320,13 @@ function UsersTab({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
   const [selectedPerms, setSelectedPerms] = useState<string[]>([]);
   const [photoDataUrl, setPhotoDataUrl] = useState<string | null>(null);
   const [photoErr, setPhotoErr] = useState("");
+  const [signatureDataUrl, setSignatureDataUrl] = useState<string | null>(null);
+  const [signatureErr, setSignatureErr] = useState("");
   const [saveErr, setSaveErr] = useState("");
   const { data: users = [], isLoading } = useQuery<AppUser[]>({ queryKey: ["users"], queryFn: () => api.get("/api/users") });
   const saveUser = useMutation({
     mutationFn: (body: Record<string, unknown>) => editUser ? api.patch(`/api/users/${editUser.id}`, body) : api.post("/api/users", body),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["users"] }); setOpen(false); setEditUser(null); setPhotoDataUrl(null); setSaveErr(""); reset(); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["users"] }); setOpen(false); setEditUser(null); setPhotoDataUrl(null); setSignatureDataUrl(null); setSaveErr(""); reset(); },
     onError: (e: Error) => setSaveErr(e.message || "Could not save user"),
   });
   const toggleActive = useMutation({ mutationFn: ({ id, isActive }: { id: number; isActive: boolean }) => api.patch(`/api/users/${id}`, { isActive }), onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }) });
@@ -335,6 +338,7 @@ function UsersTab({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
     setSelectedPerms(DEFAULT_PERMISSIONS["receptionist"]);
     setPhotoDataUrl(null);
     setPhotoErr(""); setSaveErr("");
+    setSignatureDataUrl(null); setSignatureErr("");
     reset({ name: "", email: "", username: "", role: "receptionist", pin: "", maxDiscount: "", defaultStartPage: "" });
     setOpen(true);
   };
@@ -343,6 +347,7 @@ function UsersTab({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
     setSelectedPerms(u.permissions ? JSON.parse(u.permissions) : DEFAULT_PERMISSIONS[u.role] ?? []);
     setPhotoDataUrl(u.photoDataUrl ?? null);
     setPhotoErr(""); setSaveErr("");
+    setSignatureDataUrl(u.signatureDataUrl ?? null); setSignatureErr("");
     // PIN field stays blank on edit — leaving it blank means "don't change".
     // Typing a new value resets it (and forces a change on next login).
     reset({ name: u.name, email: u.email, username: u.username ?? "", role: u.role, pin: "", maxDiscount: u.maxDiscount != null ? String(u.maxDiscount) : "", defaultStartPage: u.defaultStartPage ?? "" });
@@ -379,6 +384,16 @@ function UsersTab({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
     reader.readAsDataURL(file);
   };
 
+  const onSignatureChange = (file: File | null) => {
+    setSignatureErr("");
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { setSignatureErr("Please pick an image file"); return; }
+    if (file.size > 300_000) { setSignatureErr("Signature image too large — please pick an image under 300 KB"); return; }
+    const reader = new FileReader();
+    reader.onload = () => setSignatureDataUrl(String(reader.result));
+    reader.readAsDataURL(file);
+  };
+
   const onSave = handleSubmit((d) => {
     setSaveErr("");
     const body: Record<string, unknown> = {
@@ -391,6 +406,7 @@ function UsersTab({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
       permissions: selectedPerms,
       maxDiscount: d.maxDiscount !== "" ? Number(d.maxDiscount) : null,
       photoDataUrl: photoDataUrl,
+      signatureDataUrl: signatureDataUrl,
       defaultStartPage: d.defaultStartPage || null,
     };
     // Only include PIN when admin actually typed one — blank means "leave it"
@@ -509,6 +525,29 @@ function UsersTab({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
                 </div>
                 <p className="text-[11px] text-muted-foreground">Optional. Square image works best. Max 800 KB.</p>
                 {photoErr && <p className="text-xs text-destructive">{photoErr}</p>}
+              </div>
+            </div>
+
+            {/* Signature — printed on this user's bills in place of a blank
+                "Authorised Signature" line whenever they're the biller. */}
+            <div className="flex items-center gap-4">
+              {signatureDataUrl ? (
+                <img src={signatureDataUrl} alt="Signature" className="w-32 h-16 rounded-md object-contain bg-white border-2 border-card-border p-1" />
+              ) : (
+                <div className="w-32 h-16 rounded-md bg-muted border-2 border-dashed border-card-border flex items-center justify-center text-muted-foreground text-[11px]">No signature</div>
+              )}
+              <div className="space-y-2">
+                <input id="staff-signature-input" type="file" accept="image/*" className="hidden" onChange={(e) => onSignatureChange(e.target.files?.[0] ?? null)} />
+                <div className="flex gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={() => document.getElementById("staff-signature-input")?.click()}>
+                    <Upload size={13} className="mr-1.5" /> {signatureDataUrl ? "Change Signature" : "Add Signature"}
+                  </Button>
+                  {signatureDataUrl && (
+                    <Button type="button" variant="ghost" size="sm" className="text-destructive" onClick={() => setSignatureDataUrl(null)}><Trash2 size={13} className="mr-1.5" /> Remove</Button>
+                  )}
+                </div>
+                <p className="text-[11px] text-muted-foreground">Optional. Scanned/cropped signature on a white background works best. Max 300 KB.</p>
+                {signatureErr && <p className="text-xs text-destructive">{signatureErr}</p>}
               </div>
             </div>
 
@@ -633,6 +672,7 @@ type ClinicSettings = {
   billShowCode?: boolean;
   billShowCategory?: boolean;
   dayCloseAutoPrint?: boolean;
+  patientPhoneRequired?: boolean;
   // V3: Receipt messages
   receiptThankYouMessage?: string;
   receiptCollectionMessage?: string;
@@ -1430,6 +1470,21 @@ function ClinicInfoTab() {
               <span className="text-sm font-medium">{(current.billShowCategory ?? true) ? "Shown" : "Hidden"}</span>
               <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(current.billShowCategory ?? true) ? "bg-green-500" : "bg-muted-foreground/40"}`}>
                 <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${(current.billShowCategory ?? true) ? "translate-x-5" : "translate-x-1"}`} />
+              </span>
+            </button>
+          </div>
+          {/* Phone number required for patient registration */}
+          <div>
+            <p className="text-sm font-medium mb-1">Require Phone Number</p>
+            <p className="text-xs text-muted-foreground mb-2">When on, phone number is mandatory to register a patient on the Patients page and on self-registration (kiosk / online booking / QR).</p>
+            <button
+              type="button"
+              onClick={() => setForm({ ...current, patientPhoneRequired: !(current.patientPhoneRequired ?? true) })}
+              className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${(current.patientPhoneRequired ?? true) ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
+            >
+              <span className="text-sm font-medium">{(current.patientPhoneRequired ?? true) ? "Required" : "Optional"}</span>
+              <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(current.patientPhoneRequired ?? true) ? "bg-green-500" : "bg-muted-foreground/40"}`}>
+                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${(current.patientPhoneRequired ?? true) ? "translate-x-5" : "translate-x-1"}`} />
               </span>
             </button>
           </div>
