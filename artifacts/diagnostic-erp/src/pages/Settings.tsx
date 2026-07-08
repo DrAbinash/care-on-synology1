@@ -1476,7 +1476,7 @@ function ClinicInfoTab() {
           {/* Phone number required for patient registration */}
           <div>
             <p className="text-sm font-medium mb-1">Require Phone Number</p>
-            <p className="text-xs text-muted-foreground mb-2">When on, phone number is mandatory to register a patient on the Patients page and on self-registration (kiosk / online booking / QR).</p>
+            <p className="text-xs text-muted-foreground mb-2">When on, phone number is mandatory to register a patient on the Patients page. Kiosk and online booking self-registration always require a phone number regardless of this setting.</p>
             <button
               type="button"
               onClick={() => setForm({ ...current, patientPhoneRequired: !(current.patientPhoneRequired ?? true) })}
