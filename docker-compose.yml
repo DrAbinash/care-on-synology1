@@ -366,4 +366,6 @@ services:
 
 volumes:
   db_data:
+    external: true
+    name: care_main_db_data
   object_storage:
