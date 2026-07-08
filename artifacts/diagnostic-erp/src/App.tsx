@@ -298,6 +298,7 @@ function Router() {
           <Layout>
             <ModuleErrorBoundary resetKey={location}>
             <Switch>
+              <Route path="/home" component={BillingDesk} />
               <Route path="/" component={BillingDesk} />
               <Route path="/dashboard" component={Dashboard} />
               <Route path="/diagnostics" component={Diagnostics} />

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Router as WouterRouter, useLocation } from "wouter";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Phone, MessageCircle, CalendarCheck } from "lucide-react";
 import { api, setPreviewToken } from "./api";
 import type { SiteSettings, Page, Popup } from "./types";
@@ -11,6 +12,7 @@ import { WhatsAppFab, PopupHost } from "./widgets";
 import PoliciesPage from "./pages/policies";
 import BookPage from "./pages/book";
 import ScanMobilePage from "./pages/scan-mobile";
+import QueueDisplay from "./pages/queue-display";
 
 const BASE = import.meta.env.BASE_URL;
 const ROUTER_BASE = BASE.replace(/\/$/, "");
@@ -169,6 +171,7 @@ function PoliciesRoute({ settings }: { settings: SiteSettings }) {
 function AppShell({ settings, pages, popups, isPreview }: { settings: SiteSettings; pages: Page[]; popups: Popup[]; isPreview: boolean }) {
   const [loc] = useLocation();
   const slug = loc === "/" || loc === "" ? "home" : loc.replace(/^\//, "").split("/")[0];
+  const roomKey = loc.startsWith("/queue/") ? loc.replace(/^\/queue\//, "").split("/")[0] : null;
 
   // Scroll to hash anchor — fires on mount AND whenever the hash changes.
   // Redirect #appointment → /book (legacy CMS section links).
@@ -231,6 +234,35 @@ function AppShell({ settings, pages, popups, isPreview }: { settings: SiteSettin
     );
   }
 
+  if (slug === "queue") {
+    if (roomKey) {
+      return <QueueDisplay roomKey={roomKey} />;
+    }
+    return (
+      <div className="cd-state-screen">
+        <div>
+          <h1 className="cd-display cd-h2">Queue Display</h1>
+          <p className="cd-section-sub" style={{ marginTop: ".5rem" }}>Select a queue display room.</p>
+          <a href={BASE} className="cd-btn-primary" style={{ marginTop: "1.25rem" }}>&larr; Home</a>
+        </div>
+      </div>
+    );
+  }
+
+  if (slug === "home") {
+    return (
+      <>
+        {isPreview && <div className="preview-banner">Preview mode — showing drafts. Visitors won't see this until you publish.</div>}
+        <StructuredData settings={settings} />
+        <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }} className={isPreview ? "pt-8" : ""}>
+          <PageView slug={slug} settings={settings} pages={pages} popups={popups} isPreview={isPreview} />
+          <WhatsAppFab settings={settings} />
+          <MobileCTABar settings={settings} />
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       {isPreview && <div className="preview-banner">Preview mode — showing drafts. Visitors won't see this until you publish.</div>}
@@ -245,6 +277,19 @@ function AppShell({ settings, pages, popups, isPreview }: { settings: SiteSettin
 }
 
 type PreviewState = "idle" | "verifying" | "valid" | "invalid";
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: 1,
+      staleTime: 5 * 60_000,
+      refetchOnWindowFocus: true,
+      refetchOnReconnect: true,
+      refetchInterval: 60_000,
+      refetchIntervalInBackground: false,
+    },
+  },
+});
 
 function App() {
   const [data, setData] = useState<{ settings: SiteSettings; pages: Page[]; popups: Popup[] } | null>(null);
@@ -323,9 +368,11 @@ function App() {
   }
 
   return (
-    <WouterRouter base={ROUTER_BASE}>
-      <AppShell settings={data.settings} pages={data.pages} popups={data.popups} isPreview={isPreview} />
-    </WouterRouter>
+    <QueryClientProvider client={queryClient}>
+      <WouterRouter base={ROUTER_BASE}>
+        <AppShell settings={data.settings} pages={data.pages} popups={data.popups} isPreview={isPreview} />
+      </WouterRouter>
+    </QueryClientProvider>
   );
 }
 
