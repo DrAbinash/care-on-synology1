@@ -1628,17 +1628,31 @@ export default function BillingDesk() {
   // ──────────────────────────────────────────────────────────────────────────
 
   const deskClass = [
-    "h-full flex flex-col overflow-hidden bg-[#f4f6f9] dark:bg-slate-900",
+    "h-full flex flex-col overflow-hidden bg-gradient-to-br from-sky-50 via-white to-violet-50 dark:from-slate-900 dark:via-slate-900 dark:to-slate-900",
     denseTestList  ? "billing-dense"     : "",
     largeFont      ? "billing-large-font": "",
     isCompact      ? "billing-compact"   : "",
     isModernPro    ? "billing-modern-pro": "",
   ].filter(Boolean).join(" ");
 
-  // Shared section header style — Medical Blue accent strip
-  const SH = (label: string, icon?: React.ReactNode) => (
-    <div className="px-3 py-1.5 bg-[#1a3a5c] dark:bg-[#0f2540] flex items-center gap-2 border-l-4 border-[#2563eb]">
-      {icon && <span className="text-[#7eb8f7]">{icon}</span>}
+  // Bright per-section header accents — purely presentational. Each section
+  // gets its own vivid gradient so the desk reads at a glance: blue = patient,
+  // violet = doctor, teal = tests, amber = selection, green = money, indigo = pay.
+  const SH_ACCENTS: Record<string, string> = {
+    sky:     "bg-gradient-to-r from-sky-600 to-blue-600 border-sky-300",
+    violet:  "bg-gradient-to-r from-violet-600 to-purple-600 border-violet-300",
+    teal:    "bg-gradient-to-r from-teal-600 to-emerald-600 border-teal-300",
+    cyan:    "bg-gradient-to-r from-cyan-600 to-sky-600 border-cyan-300",
+    rose:    "bg-gradient-to-r from-rose-600 to-pink-600 border-rose-300",
+    amber:   "bg-gradient-to-r from-amber-500 to-orange-500 border-amber-300",
+    emerald: "bg-gradient-to-r from-emerald-600 to-green-600 border-emerald-300",
+    indigo:  "bg-gradient-to-r from-indigo-600 to-violet-600 border-indigo-300",
+  };
+
+  // Shared section header style — bright gradient strip with per-section accent
+  const SH = (label: string, icon?: React.ReactNode, accent: string = "sky") => (
+    <div className={`px-3 py-1.5 flex items-center gap-2 border-l-4 ${SH_ACCENTS[accent] ?? SH_ACCENTS.sky}`}>
+      {icon && <span className="text-white/90">{icon}</span>}
       <span className="text-[11px] font-bold uppercase tracking-wider text-white">{label}</span>
     </div>
   );
@@ -1651,24 +1665,27 @@ export default function BillingDesk() {
     collapsed: boolean,
     onToggle: () => void,
     rightSlot?: React.ReactNode,
+    accent: string = "sky",
   ) => (
     <button
       type="button"
       onClick={onToggle}
-      className="w-full px-3 py-1.5 bg-[#1a3a5c] dark:bg-[#0f2540] flex items-center gap-2 border-l-4 border-[#2563eb] text-left hover:bg-[#204568] transition-colors"
+      className={`w-full px-3 py-1.5 flex items-center gap-2 border-l-4 text-left hover:brightness-110 transition-all ${SH_ACCENTS[accent] ?? SH_ACCENTS.sky}`}
     >
-      {icon && <span className="text-[#7eb8f7] flex-shrink-0">{icon}</span>}
+      {icon && <span className="text-white/90 flex-shrink-0">{icon}</span>}
       <span className="text-[11px] font-bold uppercase tracking-wider text-white flex-1">{label}</span>
       {collapsed && rightSlot}
-      <ChevronDown size={13} className={`text-[#7eb8f7] flex-shrink-0 transition-transform ${collapsed ? "-rotate-90" : ""}`} />
+      <ChevronDown size={13} className={`text-white/80 flex-shrink-0 transition-transform ${collapsed ? "-rotate-90" : ""}`} />
     </button>
   );
 
-  const cardCls = "bg-white dark:bg-slate-800 border border-[#dde3ec] dark:border-slate-700 rounded-lg overflow-hidden shadow-sm";
+  const cardCls = "bg-white dark:bg-slate-800 border border-[#dde3ec] dark:border-slate-700 rounded-xl overflow-hidden shadow-md shadow-slate-200/60 dark:shadow-none";
   // Same as cardCls but WITHOUT overflow-hidden — needed for any card that contains
   // an absolutely-positioned dropdown/popover (e.g. the doctor search results),
   // since overflow-hidden on the parent silently clips those dropdowns.
-  const cardClsNoClip = "bg-white dark:bg-slate-800 border border-[#dde3ec] dark:border-slate-700 rounded-lg shadow-sm";
+  // Header corners are squared by overflow-hidden in cardCls; here the first
+  // child is the header itself, so it keeps its own rounding via the card.
+  const cardClsNoClip = "bg-white dark:bg-slate-800 border border-[#dde3ec] dark:border-slate-700 rounded-xl shadow-md shadow-slate-200/60 dark:shadow-none [&>*:first-child]:rounded-t-xl";
 
   return (
     <div className={deskClass}>
@@ -1676,11 +1693,11 @@ export default function BillingDesk() {
       {/* ═══════════════════════════════════════════════════════
           TOP BAR — date · title · search · recent · new
       ═══════════════════════════════════════════════════════ */}
-      <div className="flex-shrink-0 bg-[#1a3a5c] dark:bg-[#0f2540] px-3 py-1.5 flex items-center gap-3 shadow-md">
-        <span className="text-[11px] text-[#7eb8f7] flex-shrink-0 font-mono hidden sm:inline">{today()}</span>
+      <div className="flex-shrink-0 bg-gradient-to-r from-blue-700 via-indigo-600 to-violet-600 px-3 py-1.5 flex items-center gap-3 shadow-md">
+        <span className="text-[11px] text-blue-100 flex-shrink-0 font-mono hidden sm:inline">{today()}</span>
         <span className="text-[13px] font-bold text-white flex-shrink-0 tracking-wide">Billing Desk</span>
         {previewBillNo?.next && (
-          <span className="text-[10px] text-[#7eb8f7] flex-shrink-0 hidden md:inline">
+          <span className="text-[10px] text-blue-100 flex-shrink-0 hidden md:inline">
             Next: <strong className="text-white">{previewBillNo.next}</strong>
           </span>
         )}
@@ -1689,7 +1706,7 @@ export default function BillingDesk() {
           <div className="w-36 sm:w-52 lg:w-64"><BillSearchBox /></div>
           <Popover>
             <PopoverTrigger asChild>
-              <button className="h-7 px-2 rounded text-[11px] font-semibold text-[#7eb8f7] hover:bg-white/10 flex items-center gap-1 transition-colors">
+              <button className="h-7 px-2 rounded text-[11px] font-semibold text-blue-100 hover:bg-white/15 flex items-center gap-1 transition-colors">
                 <Receipt size={12} />
                 <span className="hidden md:inline">Recent</span>
               </button>
@@ -1700,7 +1717,7 @@ export default function BillingDesk() {
           </Popover>
           <button
             onClick={resetAll}
-            className="h-7 px-2 rounded text-[11px] font-semibold text-[#7eb8f7] hover:bg-white/10 flex items-center gap-1 transition-colors"
+            className="h-7 px-2 rounded text-[11px] font-semibold text-blue-100 hover:bg-white/15 flex items-center gap-1 transition-colors"
           >
             <RefreshCcw size={12} />
             <span className="hidden md:inline">New</span>
@@ -1736,7 +1753,7 @@ export default function BillingDesk() {
                   onClick={() => goToStep(s.id)}
                   className={`flex items-center gap-1.5 flex-1 justify-center px-2 py-1.5 rounded-md border text-[11px] font-bold transition-all ${
                     stepperActive(s.id)
-                      ? "bg-[#2563eb] border-[#2563eb] text-white shadow-sm"
+                      ? "bg-gradient-to-r from-blue-600 to-violet-600 border-transparent text-white shadow-md"
                       : stepperDone(s.id)
                       ? "bg-emerald-50 border-emerald-300 text-emerald-700"
                       : "bg-[#f4f6f9] border-[#dde3ec] text-[#64748b]"
@@ -1772,7 +1789,7 @@ export default function BillingDesk() {
             {/* ── PATIENT ─────────────────────────────────── */}
             {(!isStepped || currentStep === 1) && (
             <div className={cardCls}>
-              {SH("Patient", <User size={11} />)}
+              {SH("Patient", <User size={11} />, "sky")}
               <div className="p-3 space-y-2">
 
                 {/* Selected patient card */}
@@ -1885,7 +1902,7 @@ export default function BillingDesk() {
             {/* DICOM MWL fields */}
             {needsDicom && selectedPatient && (
               <div className={cardCls}>
-                {SH("DICOM Worklist", <Scan size={11} />)}
+                {SH("DICOM Worklist", <Scan size={11} />, "cyan")}
                 <div className="p-3 grid grid-cols-2 gap-2">
                   {[
                     { label: "Study Description", val: dicomStudyDesc, set: setDicomStudyDesc },
@@ -1905,7 +1922,7 @@ export default function BillingDesk() {
             {/* Form F fields */}
             {needsFormF && !clinic?.formFBillingPrompt && (
               <div className={cardCls}>
-                {SH("Form F (Required)", <FileText size={11} />)}
+                {SH("Form F (Required)", <FileText size={11} />, "rose")}
                 <div className="p-3 space-y-2">
                   {clinic?.formFGuardianRequired !== false && (
                     <div>
@@ -1933,9 +1950,10 @@ export default function BillingDesk() {
                 <Stethoscope size={11} />,
                 doctorCollapsed,
                 () => setDoctorCollapsed((c) => !c),
-                <span className="text-[10px] text-[#7eb8f7] font-semibold mr-1 truncate max-w-[160px]">
+                <span className="text-[10px] text-white/85 font-semibold mr-1 truncate max-w-[160px]">
                   {doctorId ? doctors.find((d) => d.id === doctorId)?.name : "Walk-in"}
                 </span>,
+                "violet",
               )}
               {!doctorCollapsed && (
               <div className="p-3 space-y-2">
@@ -1968,9 +1986,9 @@ export default function BillingDesk() {
                             className={`w-full px-2 py-1.5 rounded-md text-[11px] font-semibold border transition-all truncate ${doc ? "pr-6" : ""} ${
                               doc
                                 ? isSelected
-                                  ? "bg-[#2563eb] text-white border-[#2563eb] shadow-sm"
-                                  : "bg-white border-[#2563eb]/40 text-[#2563eb] hover:bg-[#eff6ff] hover:border-[#2563eb] shadow-sm"
-                                : "bg-[#f4f6f9] border-dashed border-[#dde3ec] text-[#94a3b8] hover:border-[#93c5fd] hover:text-[#2563eb]"
+                                  ? "bg-gradient-to-br from-violet-600 to-purple-600 text-white border-transparent shadow-md shadow-violet-300/50"
+                                  : "bg-violet-50 border-violet-300 text-violet-700 hover:bg-violet-100 hover:border-violet-500 shadow-sm"
+                                : "bg-[#f4f6f9] border-dashed border-[#dde3ec] text-[#94a3b8] hover:border-violet-300 hover:text-violet-600"
                             }`}
                           >
                             {doc ? (
@@ -2058,7 +2076,7 @@ export default function BillingDesk() {
             {/* ── INVESTIGATIONS ───────────────────────── */}
             {(!isStepped || currentStep === 2 || currentStep === 3) && (
             <div className={cardCls}>
-              {SH("Investigations", <FlaskConical size={11} />)}
+              {SH("Investigations", <FlaskConical size={11} />, "teal")}
               <div className="p-3 space-y-2">
 
                 {/* Quick Test Slots — 8 fixed-size slots in a symmetrical grid.
@@ -2079,8 +2097,8 @@ export default function BillingDesk() {
                               test
                                 ? selectedTestIds.has(test.id)
                                   ? "bg-emerald-50 border-emerald-300 text-emerald-700 line-through opacity-70"
-                                  : "bg-white border-[#2563eb]/40 text-[#2563eb] hover:bg-[#eff6ff] hover:border-[#2563eb] shadow-sm"
-                                : "bg-[#f4f6f9] border-dashed border-[#dde3ec] text-[#94a3b8] hover:border-[#93c5fd] hover:text-[#2563eb]"
+                                  : "bg-teal-50 border-teal-300 text-teal-700 hover:bg-teal-100 hover:border-teal-500 shadow-sm"
+                                : "bg-[#f4f6f9] border-dashed border-[#dde3ec] text-[#94a3b8] hover:border-teal-300 hover:text-teal-600"
                             }`}
                           >
                             {test ? test.name : `+ Slot ${idx + 1}`}
@@ -2203,7 +2221,7 @@ export default function BillingDesk() {
         </div>
 
         {/* ▌RIGHT COLUMN ▌────────────────────────────────── */}
-        <div className="w-full lg:w-[35%] flex flex-col min-h-0 bg-[#f8fafc] dark:bg-slate-850">
+        <div className="w-full lg:w-[35%] flex flex-col min-h-0 bg-gradient-to-b from-indigo-50/70 to-emerald-50/50 dark:from-slate-850 dark:to-slate-850">
           <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
 
             {/* ── SELECTED TESTS ───────────────────────── */}
@@ -2213,7 +2231,8 @@ export default function BillingDesk() {
                 <ClipboardList size={11} />,
                 testsCollapsed,
                 () => setTestsCollapsed((c) => !c),
-                <span className="text-[10px] text-[#7eb8f7] font-semibold mr-1">{inr(subtotal)}</span>,
+                <span className="text-[10px] text-white/85 font-semibold mr-1">{inr(subtotal)}</span>,
+                "amber",
               )}
               {!testsCollapsed && (selectedTests.length === 0 && selectedPackages.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-6 text-[#94a3b8]">
@@ -2270,7 +2289,8 @@ export default function BillingDesk() {
                 <Receipt size={11} />,
                 summaryCollapsed,
                 () => setSummaryCollapsed((c) => !c),
-                <span className="text-[10px] text-[#7eb8f7] font-semibold mr-1">Net {inr(total)}</span>,
+                <span className="text-[10px] text-white/85 font-semibold mr-1">Net {inr(total)}</span>,
+                "emerald",
               )}
               <div className="p-3 space-y-2">
 
@@ -2409,7 +2429,7 @@ export default function BillingDesk() {
 
             {/* ── PAYMENT ──────────────────────────────── */}
             <div className={`${cardCls} mx-2.5 mt-2.5 flex-shrink-0`}>
-              {SH("Payment", <CreditCard size={11} />)}
+              {SH("Payment", <CreditCard size={11} />, "indigo")}
               <div className="p-3 space-y-2.5" ref={paymentRef}>
 
                 {/* Collect now toggle */}
@@ -2515,8 +2535,8 @@ export default function BillingDesk() {
                               onClick={() => setPaymentSplits((prev) => prev.map((s, i) => i === 0 ? { ...s, mode: m } : s))}
                               className={`flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-lg border text-center transition-all ${
                                 isActive
-                                  ? "bg-[#2563eb] text-white border-[#2563eb] shadow-md"
-                                  : "bg-white border-[#dde3ec] text-[#475569] hover:border-[#93c5fd] hover:bg-[#eff6ff]"
+                                  ? "bg-gradient-to-br from-indigo-600 to-violet-600 text-white border-transparent shadow-md shadow-indigo-300/50"
+                                  : "bg-white border-[#dde3ec] text-[#475569] hover:border-indigo-300 hover:bg-indigo-50"
                               }`}
                             >
                               <span className="text-sm">{icons[m]}</span>
@@ -2536,8 +2556,8 @@ export default function BillingDesk() {
                               onClick={() => setPaymentSplits((prev) => prev.map((s, i) => i === 0 ? { ...s, mode: m } : s))}
                               className={`flex flex-col items-center gap-0.5 px-1 py-1 rounded-md border text-center transition-all ${
                                 isActive
-                                  ? "bg-[#2563eb] text-white border-[#2563eb] shadow-sm"
-                                  : "bg-white border-[#dde3ec] text-[#94a3b8] hover:border-[#93c5fd] hover:bg-[#eff6ff]"
+                                  ? "bg-gradient-to-br from-indigo-600 to-violet-600 text-white border-transparent shadow-sm"
+                                  : "bg-white border-[#dde3ec] text-[#94a3b8] hover:border-indigo-300 hover:bg-indigo-50"
                               }`}
                             >
                               <span className="text-[10px]">{icons[m]}</span>
@@ -2573,10 +2593,10 @@ export default function BillingDesk() {
                   )) ||
                   (needsDicom && !dicomFieldsComplete)
                 }
-                className={`w-full h-14 text-[16px] font-extrabold tracking-wide rounded-lg shadow-lg disabled:shadow-none border-0 transition-all ${
+                className={`w-full h-14 text-[16px] font-extrabold tracking-wide rounded-xl shadow-lg disabled:shadow-none border-0 transition-all ${
                   lastBill
-                    ? "bg-emerald-600 hover:bg-emerald-700 text-white"
-                    : "bg-[#1a3a5c] hover:bg-[#1e4976] text-white disabled:bg-[#cbd5e1] disabled:text-[#94a3b8]"
+                    ? "bg-gradient-to-r from-emerald-600 to-green-600 hover:brightness-110 text-white shadow-emerald-300/50"
+                    : "bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 hover:brightness-110 text-white shadow-indigo-300/50 disabled:bg-none disabled:bg-[#cbd5e1] disabled:text-[#94a3b8]"
                 }`}
               >
                 {lastBill ? (
