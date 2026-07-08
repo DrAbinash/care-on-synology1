@@ -8,6 +8,7 @@ import {
 import { QRCodeSVG, QRCodeCanvas } from "qrcode.react";
 import type { SiteSettings } from "../types";
 import { SelfRegistrationForm } from "../../../diagnostic-erp/src/components/SelfRegistrationForm";
+import { buildBillPrintHtml, openBlankPrintWindow, writeAndPrint, type PrintBillData, type PrintClinic } from "../../../diagnostic-erp/src/lib/printBill";
 
 const BASE = import.meta.env.BASE_URL;
 const WORK_ADDR = "CARE DIAGNOSTICS, Subhash Chowk, Castair's Town, Near Bajla Mahila College, Deoghar–814112";
@@ -55,6 +56,17 @@ function submitPayuForm(payuUrl: string, fields: Record<string, string>) {
   }
   document.body.appendChild(form);
   form.submit();
+}
+
+// Which gateway actually completed this booking + its reference — used to
+// label the "Payment Details" line on the printed receipt.
+function derivePayment(b: Record<string, any>): { method: string; reference: string } {
+  if (b.razorpayPaymentId || b.razorpayOrderId) return { method: "razorpay", reference: b.razorpayPaymentId || b.razorpayOrderId || "" };
+  if (b.payuPaymentId || b.payuTxnId) return { method: "payu", reference: b.payuPaymentId || b.payuTxnId || "" };
+  if (b.phonepeProviderRefId || b.phonepeTransactionId) return { method: "phonepe", reference: b.phonepeProviderRefId || b.phonepeTransactionId || "" };
+  if (b.bharatpeProviderRefId || b.bharatpeTransactionId) return { method: "bharatpe", reference: b.bharatpeProviderRefId || b.bharatpeTransactionId || "" };
+  if (b.iciciProviderRefId || b.iciciTransactionId) return { method: "icici", reference: b.iciciProviderRefId || b.iciciTransactionId || "" };
+  return { method: "upi", reference: "" };
 }
 
 /* ── Types ── */
@@ -164,6 +176,8 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
     totalAmount: string; notes: string; testIds: string; packageIds: string;
     bookingRef: string; status: string; isVip: boolean;
     isUnconfirmedQr?: boolean;
+    billId?: number | null; gender?: string | null; ageValue?: number | null; ageUnit?: string | null;
+    paymentMethod?: string; paymentReference?: string;
   } | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [tokenNo, setTokenNo] = useState<number | null>(null);
@@ -231,6 +245,16 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
       .catch(() => setConfig({ enabled: false, keyId: "", vipEnabled: false, gateway: null }));
   }, []);
 
+  // Clinic fields for the printed receipt (GSTIN, footer messages, etc.) —
+  // same clinic_settings row Billing Desk prints from, via a dedicated
+  // public endpoint since /api/bills is staff-authenticated.
+  const [clinicPrint, setClinicPrint] = useState<PrintClinic | null>(null);
+  useEffect(() => {
+    bookingGet<PrintClinic>("/api/public/booking/clinic-print-info")
+      .then(setClinicPrint)
+      .catch(() => setClinicPrint(null));
+  }, []);
+
   // Detect payment confirmation / failure from query params (ICICI, PhonePe, BharatPe)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -248,6 +272,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
         .then((res) => {
           const b = res.booking;
           const hasGateway = b.razorpayPaymentId || b.razorpayOrderId || b.payuTxnId || b.payuPaymentId || b.phonepeTransactionId || b.bharatpeProviderRefId || b.iciciTransactionId;
+          const payment = derivePayment(b);
           setConfirmedBooking({
             name: b.name || "",
             phone: b.phone || "",
@@ -262,6 +287,12 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
             status: b.status || "",
             isVip: b.isVip === true || b.isVip === "true",
             isUnconfirmedQr: !hasGateway,
+            billId: b.billId ?? null,
+            gender: b.gender ?? null,
+            ageValue: b.ageValue ?? null,
+            ageUnit: b.ageUnit ?? null,
+            paymentMethod: payment.method,
+            paymentReference: payment.reference,
           });
           setTokenNo(res.tokenNo);
           setStep(6);
@@ -477,6 +508,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
           .then((detailRes) => {
             const b = detailRes.booking;
             const hasGateway = b.razorpayPaymentId || b.razorpayOrderId || b.payuTxnId || b.payuPaymentId || b.phonepeTransactionId || b.bharatpeProviderRefId || b.iciciTransactionId;
+            const payment = derivePayment(b);
             setConfirmedBooking({
               name: b.name || "",
               phone: b.phone || "",
@@ -491,6 +523,12 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
               status: b.status || "",
               isVip: b.isVip === true || b.isVip === "true",
               isUnconfirmedQr: !hasGateway,
+              billId: b.billId ?? null,
+              gender: b.gender ?? null,
+              ageValue: b.ageValue ?? null,
+              ageUnit: b.ageUnit ?? null,
+              paymentMethod: hasGateway ? payment.method : "upi",
+              paymentReference: hasGateway ? payment.reference : "",
             });
             setTokenNo(detailRes.tokenNo);
             setStep(6);
@@ -575,8 +613,8 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
   return (
     <div style={{
       minHeight: "100vh",
-      background: `linear-gradient(135deg, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0.92) 100%), 
-                   url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800"><defs><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="%23e5e7eb" stroke-width="0.5"/></pattern><radialGradient id="pulse1" cx="20%" cy="30%"><stop offset="0%" style="stop-color:%230369a1;stop-opacity:0.08"/><stop offset="100%" style="stop-color:%230369a1;stop-opacity:0"/></radialGradient><radialGradient id="pulse2" cx="80%" cy="70%"><stop offset="0%" style="stop-color:%2306b6d4;stop-opacity:0.06"/><stop offset="100%" style="stop-color:%2306b6d4;stop-opacity:0"/></radialGradient></defs><rect width="1200" height="800" fill="white"/><rect width="1200" height="800" fill="url(%23grid)"/><circle cx="240" cy="240" r="200" fill="url(%23pulse1)"/><circle cx="1000" cy="600" r="250" fill="url(%23pulse2)"/><circle cx="100" cy="700" r="150" fill="url(%23pulse1)" opacity="0.5"/><circle cx="1100" cy="150" r="180" fill="url(%23pulse2)" opacity="0.4"/></svg>')`,
+      background: `linear-gradient(135deg, rgba(255,255,255,0.82) 0%, rgba(255,255,255,0.78) 100%),
+                   url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800"><defs><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="%23cbd5e1" stroke-width="0.75"/></pattern><radialGradient id="pulse1" cx="20%" cy="30%"><stop offset="0%" style="stop-color:%230369a1;stop-opacity:0.22"/><stop offset="100%" style="stop-color:%230369a1;stop-opacity:0"/></radialGradient><radialGradient id="pulse2" cx="80%" cy="70%"><stop offset="0%" style="stop-color:%2306b6d4;stop-opacity:0.18"/><stop offset="100%" style="stop-color:%2306b6d4;stop-opacity:0"/></radialGradient></defs><rect width="1200" height="800" fill="white"/><rect width="1200" height="800" fill="url(%23grid)"/><circle cx="240" cy="240" r="220" fill="url(%23pulse1)"/><circle cx="1000" cy="600" r="270" fill="url(%23pulse2)"/><circle cx="100" cy="700" r="170" fill="url(%23pulse1)" opacity="0.6"/><circle cx="1100" cy="150" r="200" fill="url(%23pulse2)" opacity="0.5"/></svg>')`,
       backgroundSize: "cover",
       backgroundAttachment: "fixed",
       backgroundPosition: "center",
@@ -729,202 +767,99 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
           </div>
         ) : step === 1 ? (
           <div>
-            {/* Service Photo Tiles — Background images for service categories */}
-            {settings.serviceImagesEnabled && settings.serviceImages && (() => {
-              let serviceImgs: Record<string, string> = {};
-              try {
-                serviceImgs = JSON.parse(settings.serviceImages);
-              } catch {
-                // fallback
-              }
-              const serviceLabels: Record<string, string> = {
-                opd: "OPD Consultation",
-                emergency: "Emergency",
-                usg: "Ultrasound",
-                xray: "X-Ray",
-                ct: "CT Scan",
-                mri: "MRI Scan",
-                pathology: "Pathology",
-                packages: "Health Packages",
-                home_collection: "Home Collection",
-                doctor: "Doctor Consultation",
+            {/* Quick Select Tests — sourced from the same clinic_settings.quick_test_ids
+                Billing Desk and the kiosk use for their quick-test slots. Sized to match
+                the previous "Our Services" photo tiles (200px min-width, 180px tall) —
+                that section relied on admin-uploaded background images that were broken/
+                missing in practice, so it's replaced with these functional tiles instead. */}
+            {(() => {
+              const quickTests = (config?.quickTestIds ?? [])
+                .map((id) => (id ? tests.find((t) => t.id === id) : null))
+                .filter((t): t is TestItem => !!t);
+              if (quickTests.length === 0) return null;
+
+              const getCategoryColor = (category?: string) => {
+                if (!category) return "linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)";
+                switch (category.toLowerCase()) {
+                  case "biochemistry": return "linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)"; // Amber
+                  case "cardiology": return "linear-gradient(135deg, #fee2e2 0%, #fecaca 100%)"; // Red
+                  case "radiology": return "linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)"; // Blue
+                  case "pathology": return "linear-gradient(135deg, #f3e8ff 0%, #e9d5ff 100%)"; // Purple
+                  case "hematology": return "linear-gradient(135deg, #fce7f3 0%, #fbcfe8 100%)"; // Pink
+                  case "endocrinology": return "linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%)"; // Green
+                  case "serology": return "linear-gradient(135deg, #f5e6ff 0%, #ede9fe 100%)"; // Indigo
+                  default: return "linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%)"; // Light green
+                }
               };
-              const hasImages = Object.values(serviceImgs).some((url) => url && url.trim() !== "");
-              if (!hasImages) return null;
 
               return (
                 <div style={{ marginBottom: "1.5rem" }}>
-                  <h3 style={{ fontWeight: 700, fontSize: "1rem", marginBottom: "0.75rem", color: "hsl(var(--cd-slate))" }}>
-                    Our Services
+                  <h3 style={{ fontWeight: 700, fontSize: "1rem", marginBottom: "0.75rem", color: "hsl(var(--cd-slate))", display: "flex", alignItems: "center", gap: ".4rem" }}>
+                    ⚡ Quick Select Tests
                   </h3>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "0.75rem" }}>
-                    {Object.entries(serviceLabels).map(([key, label]) => {
-                      const imgUrl = serviceImgs[key];
-                      if (!imgUrl || imgUrl.trim() === "") return null;
-
+                    {quickTests.map((test) => {
+                      const sel = selTests.has(test.id);
+                      const categoryColor = getCategoryColor(test.category);
                       return (
-                        <div
-                          key={key}
+                        <button
+                          key={test.id}
+                          type="button"
+                          onClick={() => toggleTest(test.id)}
+                          title={`${test.name} (${test.category})`}
                           style={{
                             position: "relative",
                             height: "180px",
+                            padding: "0.75rem",
                             borderRadius: "var(--site-radius)",
-                            overflow: "hidden",
-                            backgroundImage: `url("${imgUrl}")`,
-                            backgroundSize: "cover",
-                            backgroundPosition: "center",
-                            border: "2px solid hsl(var(--site-border) / .2)",
-                            transition: "transform .2s, box-shadow .2s",
+                            border: sel ? "3px solid hsl(var(--cd-teal))" : "2px solid rgba(0,0,0,.1)",
+                            background: sel
+                              ? "linear-gradient(135deg, hsl(var(--cd-teal) / .25), hsl(var(--cd-teal) / .15))"
+                              : categoryColor,
                             cursor: "pointer",
-                          }}
-                          onMouseEnter={(e) => {
-                            const el = e.currentTarget as HTMLDivElement;
-                            el.style.transform = "translateY(-4px)";
-                            el.style.boxShadow = "0 10px 25px -5px rgba(0, 0, 0, 0.15)";
-                          }}
-                          onMouseLeave={(e) => {
-                            const el = e.currentTarget as HTMLDivElement;
-                            el.style.transform = "translateY(0)";
-                            el.style.boxShadow = "none";
+                            transition: "all .2s cubic-bezier(0.4, 0, 0.2, 1)",
+                            textAlign: "center",
+                            color: sel ? "hsl(var(--cd-teal))" : "#1f2937",
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            boxShadow: sel
+                              ? "0 10px 25px -5px hsl(var(--cd-teal) / .2), inset 0 1px 0 rgba(255,255,255,0.5)"
+                              : "0 2px 8px rgba(0,0,0,.08)",
+                            transform: sel ? "scale(1.03)" : "scale(1)",
                           }}
                         >
-                          {/* Dark overlay to ensure text readability */}
-                          <div
-                            style={{
-                              position: "absolute",
-                              inset: 0,
-                              background: "linear-gradient(180deg, rgba(0,0,0,0.2) 0%, rgba(0,0,0,0.5) 100%)",
-                            }}
-                          />
-                          {/* Service label */}
-                          <div
-                            style={{
-                              position: "absolute",
-                              bottom: 0,
-                              left: 0,
-                              right: 0,
-                              padding: "0.75rem",
-                              color: "#fff",
-                              fontWeight: 700,
-                              fontSize: "0.95rem",
-                              textAlign: "center",
-                            }}
-                          >
-                            {label}
+                          <div style={{ fontSize: "1.05rem", fontWeight: 900, letterSpacing: "0.5px", lineHeight: 1.25 }}>
+                            {test.name}
                           </div>
-                        </div>
+                          <div style={{ fontSize: "0.75rem", color: "rgba(0,0,0,0.5)", marginTop: "0.4rem", fontWeight: 600 }}>
+                            {test.category}
+                          </div>
+                          {sel && (
+                            <div style={{
+                              position: "absolute",
+                              top: "0.5rem",
+                              right: "0.5rem",
+                              width: "28px",
+                              height: "28px",
+                              borderRadius: "50%",
+                              background: "hsl(var(--cd-teal))",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              boxShadow: "0 2px 8px hsl(var(--cd-teal) / .3)",
+                            }}>
+                              <Check size={16} style={{ color: "#fff", fontWeight: "bold" }} />
+                            </div>
+                          )}
+                        </button>
                       );
                     })}
                   </div>
                 </div>
               );
             })()}
-
-            {/* Quick Test Slots — 8 fixed-width boxes in 2 rows for fast selection (McDonald's-style kiosk) */}
-            {config?.quickTestIds && config.quickTestIds.length > 0 && config.quickTestIds.some((id) => id !== null) && (
-              <div style={{
-                marginBottom: "1.5rem",
-                padding: "1.25rem",
-                background: "linear-gradient(135deg, hsl(var(--cd-teal) / .03) 0%, hsl(var(--cd-teal) / .06) 100%)",
-                border: "2px solid hsl(var(--cd-teal) / .25)",
-                borderRadius: "var(--site-radius)",
-              }}>
-                <h3 style={{ fontWeight: 800, fontSize: "1.1rem", marginBottom: "1rem", color: "hsl(var(--cd-teal))", textTransform: "uppercase", letterSpacing: "1px", display: "flex", alignItems: "center", gap: ".5rem" }}>
-                  ⚡ <span>Quick Select Tests</span>
-                </h3>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: ".8rem" }}>
-                  {config.quickTestIds.map((testId, idx) => {
-                    const test = testId ? tests.find((t) => t.id === testId) : null;
-                    
-                    // Category-based color schemes (like menu board items)
-                    const getCategoryColor = (category?: string) => {
-                      if (!category) return "linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)";
-                      switch (category.toLowerCase()) {
-                        case "biochemistry": return "linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)"; // Amber
-                        case "cardiology": return "linear-gradient(135deg, #fee2e2 0%, #fecaca 100%)"; // Red
-                        case "radiology": return "linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)"; // Blue
-                        case "pathology": return "linear-gradient(135deg, #f3e8ff 0%, #e9d5ff 100%)"; // Purple
-                        case "hematology": return "linear-gradient(135deg, #fce7f3 0%, #fbcfe8 100%)"; // Pink
-                        case "endocrinology": return "linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%)"; // Green
-                        case "serology": return "linear-gradient(135deg, #f5e6ff 0%, #ede9fe 100%)"; // Indigo
-                        default: return "linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%)"; // Light green
-                      }
-                    };
-                    
-                    const categoryColor = getCategoryColor(test?.category);
-                    
-                    return (
-                      <button
-                        key={idx}
-                        type="button"
-                        onClick={() => {
-                          if (test) toggleTest(test.id);
-                        }}
-                        title={test ? `${test.name} (${test.category})` : ""}
-                        style={{
-                          position: "relative",
-                          padding: "1.5rem 0.75rem",
-                          borderRadius: "var(--site-radius)",
-                          border: test && selTests.has(test.id) ? "3px solid hsl(var(--cd-teal))" : "2px solid rgba(0,0,0,.1)",
-                          background: test 
-                            ? (selTests.has(test.id) 
-                              ? "linear-gradient(135deg, hsl(var(--cd-teal) / .25), hsl(var(--cd-teal) / .15))" 
-                              : categoryColor)
-                            : "#f9fafb",
-                          cursor: test ? "pointer" : "default",
-                          transition: "all .25s cubic-bezier(0.4, 0, 0.2, 1)",
-                          textAlign: "center",
-                          fontWeight: 900,
-                          fontSize: "1rem",
-                          color: test && selTests.has(test.id) ? "hsl(var(--cd-teal))" : test ? "#1f2937" : "#9ca3af",
-                          overflow: "hidden",
-                          whiteSpace: "normal",
-                          wordWrap: "break-word",
-                          lineHeight: "1.25",
-                          minHeight: "7rem",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          boxShadow: test && selTests.has(test.id) 
-                            ? "0 10px 25px -5px hsl(var(--cd-teal) / .2), inset 0 1px 0 rgba(255,255,255,0.5)" 
-                            : "0 2px 8px rgba(0,0,0,.08)",
-                          transform: test && selTests.has(test.id) ? "scale(1.05)" : "scale(1)",
-                          backdropFilter: "blur(1px)",
-                        }}
-                      >
-                        <div style={{ position: "relative", width: "100%" }}>
-                          <div style={{ fontSize: "1.05rem", fontWeight: 900, letterSpacing: "0.5px" }}>
-                            {test ? test.name : ""}
-                          </div>
-                          {test && (
-                            <div style={{ fontSize: "0.7rem", color: "rgba(0,0,0,0.5)", marginTop: "0.25rem", fontWeight: 600 }}>
-                              {test.category}
-                            </div>
-                          )}
-                        </div>
-                        {test && selTests.has(test.id) && (
-                          <div style={{
-                            position: "absolute",
-                            top: "0.5rem",
-                            right: "0.5rem",
-                            width: "28px",
-                            height: "28px",
-                            borderRadius: "50%",
-                            background: "hsl(var(--cd-teal))",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            boxShadow: "0 2px 8px hsl(var(--cd-teal) / .3)",
-                          }}>
-                            <Check size={16} style={{ color: "#fff", fontWeight: "bold" }} />
-                          </div>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
 
             {/* Search & filter bar */}
             <div style={{ ...cardStyle, marginBottom: "1rem", padding: "1rem", display: "flex", gap: ".75rem", flexWrap: "wrap", alignItems: "center" }}>
@@ -1189,98 +1124,47 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                 <button
                   style={{ ...btnPrimary, textDecoration: "none" }}
                   onClick={() => {
-                    let itemsHtml = "";
-                    try {
-                      const tIds = JSON.parse(confirmedBooking?.testIds || "[]");
-                      tIds.forEach((id: any) => {
-                        const item = tests.find(t => t.id === Number(id));
-                        if (item) {
-                          itemsHtml += `<div class="row"><span class="label">${item.name}</span><strong>${fmt(Number(item.price))}</strong></div>`;
-                        }
-                      });
-                      const pIds = JSON.parse(confirmedBooking?.packageIds || "[]");
-                      pIds.forEach((id: any) => {
-                        const item = pkgs.find(p => p.id === Number(id));
-                        if (item) {
-                          itemsHtml += `<div class="row"><span class="label">${item.name} (Package)</span><strong>${fmt(Number(item.price))}</strong></div>`;
-                        }
-                      });
-                    } catch(e) {}
-
-                    const win = window.open("", "_blank", "width=600,height=850");
-                    if (win) {
-                      // Real QR — read the hidden canvas's data-URL (falls back to no QR if not ready)
-                      const qrDataUrl = receiptQrRef.current?.toDataURL("image/png") || "";
-                      const clinicName = settings.siteTitle || "Care Diagnostics";
-                      const clinicAddress = settings.address || workAddr;
-                      const logoHtml = settings.logoUrl
-                        ? `<img src="${settings.logoUrl}" alt="${clinicName}" style="max-height:48px;max-width:160px;object-fit:contain;display:block;margin:0 auto 6px" />`
-                        : "";
-
-                      win.document.write(`
-                        <html><head><title>Booking Receipt – ${clinicName}</title>
-                        <style>
-                          @page { size: A4; margin: 0.4in; }
-                          * { box-sizing: border-box; }
-                          body { font-family: 'Segoe UI', system-ui, sans-serif; padding: 20px; color: #1f2937; line-height: 1.5; }
-                          .clinic-header { text-align: center; margin-bottom: 10px; }
-                          h1 { font-size: 20px; font-weight: 900; margin: 0 0 4px 0; text-align: center; letter-spacing: -0.3px; text-transform: uppercase; }
-                          .clinic-address { font-size: 11px; color: #6b7280; text-align: center; margin: 0 0 12px; }
-                          .ref { font-family: 'Courier New', monospace; font-size: 18px; font-weight: 900; color: #0369a1; text-align: center; margin: 12px 0 16px; letter-spacing: 1px; }
-                          .row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-size: 13px; }
-                          .label { color: #6b7280; font-weight: 500; }
-                          .section-title { font-weight: 800; font-size: 12px; margin-top: 16px; margin-bottom: 8px; color: #374151; text-transform: uppercase; border-bottom: 3px solid #0369a1; padding-bottom: 4px; letter-spacing: 0.5px; }
-                          .footer { margin-top: 20px; padding-top: 12px; border-top: 2px solid #e5e7eb; font-size: 12px; color: #6b7280; text-align: center; }
-                          .paid { color: #059669; font-weight: 700; }
-                          .token-box { background: linear-gradient(135deg, #f0f9ff, #e0f2fe); border: 2.5px dashed #0284c7; border-radius: 6px; padding: 12px; margin: 12px 0; text-align: center; }
-                          .token-title { font-size: 11px; color: #0c4a6e; font-weight: 700; letter-spacing: 0.5px; }
-                          .token-no { font-size: 28px; font-weight: 900; color: #082f49; margin: 4px 0; }
-                          .qr-box { text-align: center; margin-top: 16px; }
-                          .qr-img { border: 1px solid #d1d5db; padding: 4px; border-radius: 4px; background: white; }
-                          strong { font-weight: 700; color: #1f2937; }
-                        </style></head><body>
-                        <div class="clinic-header">
-                          ${logoHtml}
-                          <h1>${clinicName}</h1>
-                          ${clinicAddress ? `<div class="clinic-address">${clinicAddress}</div>` : ""}
-                        </div>
-                        <div style="font-size:12px;font-weight:700;text-align:center;color:#374151;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px">Booking Receipt</div>
-                        <div class="ref">${successRef}</div>
-                        
-                        ${tokenNo ? `
-                        <div class="token-box">
-                          <div class="token-title">DAILY QUEUE TOKEN</div>
-                          <div class="token-no">#${tokenNo}</div>
-                          <div style="font-size: .75rem; color: #555;">Please present this token at the clinic</div>
-                        </div>
-                        ` : ''}
-
-                        <div class="section-title">Patient Information</div>
-                        <div class="row"><span class="label">Patient</span><strong>${confirmedBooking?.name || "-"}</strong></div>
-                        <div class="row"><span class="label">Phone</span><strong>${confirmedBooking?.phone || "-"}</strong></div>
-                        <div class="row"><span class="label">Date</span><strong>${confirmedBooking?.selectedDate || "-"}</strong></div>
-                        <div class="row"><span class="label">Time</span><strong>${confirmedBooking?.timeSlot || "-"}</strong></div>
-
-                        <div class="section-title">Booked Services</div>
-                        ${itemsHtml}
-
-                        <div class="section-title">Payment Summary</div>
-                        <div class="row"><span class="label">Amount Paid</span><strong class="${confirmedBooking?.isUnconfirmedQr ? '' : 'paid'}" style="${confirmedBooking?.isUnconfirmedQr ? 'color:orange;' : ''}">${confirmedBooking?.isUnconfirmedQr ? `Amount ${fmt(Number(confirmedBooking?.totalAmount || 0))} (To Be Confirmed)` : fmt(Number(confirmedBooking?.totalAmount || 0))}</strong></div>
-                        <div class="row"><span class="label">Status</span><strong class="${confirmedBooking?.isUnconfirmedQr ? '' : 'paid'}" style="${confirmedBooking?.isUnconfirmedQr ? 'color:orange;' : ''}">${confirmedBooking?.isUnconfirmedQr ? "Confirmed on confirmation of Payment" : (confirmedBooking?.status || "Paid")}</strong></div>
-                        
-                        ${qrDataUrl ? `
-                        <div class="qr-box">
-                          <img class="qr-img" src="${qrDataUrl}" width="100" height="100" alt="Booking reference QR code" />
-                          <div style="font-size: .7rem; color: #666; margin-top: .25rem;">Scan to verify booking reference</div>
-                        </div>
-                        ` : ''}
-
-                        <div class="footer">Thank you for choosing ${clinicName}.<br/>${phone} | ${email}</div>
-                        </body></html>
-                      `);
-                      win.document.close();
-                      win.print();
-                    }
+                    if (!confirmedBooking) return;
+                    const win = openBlankPrintWindow();
+                    const tIds: number[] = JSON.parse(confirmedBooking.testIds || "[]");
+                    const pIds: number[] = JSON.parse(confirmedBooking.packageIds || "[]");
+                    const orderTests = [
+                      ...tIds.map((id) => tests.find((t) => t.id === Number(id))).filter(Boolean)
+                        .map((t) => ({ price: Number(t!.price), test: { code: t!.code, name: t!.name, category: t!.category } })),
+                      ...pIds.map((id) => pkgs.find((p) => p.id === Number(id))).filter(Boolean)
+                        .map((p) => ({ price: Number(p!.price), displayName: p!.name, test: { code: p!.code, name: p!.name, category: "Package" } })),
+                    ];
+                    // Real, scannable QR — read the hidden canvas's data-URL (falls back to no QR if not ready)
+                    const qrDataUrl = receiptQrRef.current?.toDataURL("image/png") || "";
+                    const bill: PrintBillData = {
+                      billNumber: confirmedBooking.bookingRef,
+                      subtotal: confirmedBooking.totalAmount,
+                      discount: 0,
+                      totalAmount: confirmedBooking.totalAmount,
+                      paidAmount: confirmedBooking.isUnconfirmedQr ? 0 : confirmedBooking.totalAmount,
+                      balanceAmount: confirmedBooking.isUnconfirmedQr ? confirmedBooking.totalAmount : 0,
+                      status: confirmedBooking.isUnconfirmedQr ? "pending" : "paid",
+                      createdAt: new Date().toISOString(),
+                      patient: {
+                        firstName: confirmedBooking.name,
+                        lastName: "",
+                        patientId: "",
+                        phone: confirmedBooking.phone,
+                        gender: confirmedBooking.gender,
+                        ageValue: confirmedBooking.ageValue,
+                        ageUnit: confirmedBooking.ageUnit,
+                      },
+                      order: { tests: orderTests },
+                      payments: confirmedBooking.isUnconfirmedQr ? [] : [{
+                        method: confirmedBooking.paymentMethod || "upi",
+                        amount: confirmedBooking.totalAmount,
+                        referenceNumber: confirmedBooking.paymentReference || null,
+                      }],
+                      tokenNo,
+                    };
+                    const clinic: PrintClinic = clinicPrint ?? { name: settings.siteTitle, address: settings.address, logoDataUrl: settings.logoUrl };
+                    const html = buildBillPrintHtml({ bill, clinic, paperSize: "A5", isBW: false, qrDataUrl, format: "classic" });
+                    writeAndPrint(win, html);
                   }}
                 >
                   <Receipt size={16} /> Print Receipt

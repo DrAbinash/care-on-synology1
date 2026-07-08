@@ -16,6 +16,8 @@ import {
 import { eq, and } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { PaymentEngine } from "../lib/payments/PaymentEngine";
+import { resolveActiveGateway } from "../lib/payments/resolveActiveGateway";
+import { buildPrintClinic } from "../lib/buildPrintClinic";
 import { recordPaymentDiagnostic, getRecentDiagnostics, getDiagnosticById, getLastSuccessAndFailure } from "../lib/payments/paymentDiagnostics";
 import { confirmBookingInternal } from "./online-bookings";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
@@ -180,6 +182,7 @@ publicBookingRouter.get("/config", async (_req, res): Promise<void> => {
       upiQrImageUrl: "",
       allowedTestIds: [],
       allowedPackageIds: [],
+      quickTestIds: [],
       vipPercentage: Number(settings.vipPercentage || 50),
       disclaimerRefundPercentage: settings.disclaimerRefundPercentage ?? 90,
       activePaymentGateway: null,
@@ -197,34 +200,22 @@ publicBookingRouter.get("/config", async (_req, res): Promise<void> => {
   }
 
   const razorpayKeyId = settings.razorpayKeyId || "";
-  const razorpaySecret = process.env.RAZORPAY_KEY_SECRET || "";
-  const payuSalt = process.env.PAYU_MERCHANT_SALT || "";
   const payuKey = settings.payuMerchantKey || "";
-
-  const phonepeSalt = process.env.PHONEPE_API_SECRET || "";
   const phonepeMerchantId = process.env.PHONEPE_MERCHANT_ID || settings.phonepeMerchantId || "";
-
-  const bharatpeApiKey = process.env.BHARATPE_API_KEY || "";
   const bharatpeMerchantId = process.env.BHARATPE_MERCHANT_ID || settings.bharatpeMerchantId || "";
-
   const iciciMerchantId = process.env.ICICI_MERCHANT_ID || settings.iciciMerchantId || "";
-  const iciciSecretKey = process.env.ICICI_SECRET_KEY || settings.iciciSecretKey || "";
 
-  let gateway: "razorpay" | "payu" | "phonepe" | "bharatpe" | "icici" | null = null;
-  const configuredGateway = settings.activePaymentGateway as "razorpay" | "payu" | "phonepe" | "bharatpe" | "icici";
+  const gateway = resolveActiveGateway(settings);
 
-  if (configuredGateway === "icici" && settings.iciciEnabled && iciciMerchantId && iciciSecretKey) gateway = "icici";
-  else if (configuredGateway === "bharatpe" && settings.bharatpeEnabled && bharatpeMerchantId && bharatpeApiKey) gateway = "bharatpe";
-  else if (configuredGateway === "payu" && settings.payuEnabled && payuKey && payuSalt) gateway = "payu";
-  else if (configuredGateway === "phonepe" && settings.phonepeEnabled && phonepeMerchantId && phonepeSalt) gateway = "phonepe";
-  else if (configuredGateway === "razorpay" && razorpayKeyId && razorpaySecret) gateway = "razorpay";
-  else {
-    if (settings.iciciEnabled && iciciMerchantId && iciciSecretKey) gateway = "icici";
-    else if (settings.bharatpeEnabled && bharatpeMerchantId && bharatpeApiKey) gateway = "bharatpe";
-    else if (settings.payuEnabled && payuKey && payuSalt) gateway = "payu";
-    else if (settings.phonepeEnabled && phonepeMerchantId && phonepeSalt) gateway = "phonepe";
-    else if (razorpayKeyId && razorpaySecret) gateway = "razorpay";
-  }
+  // Same clinic_settings.quick_test_ids Billing Desk (and the kiosk) use for
+  // their quick-select slots — the frontend cross-references these against
+  // its already-whitelisted /tests list, so an ID that isn't allowed for
+  // online booking simply won't resolve to a tile.
+  let quickTestIds: (number | null)[] = [];
+  try {
+    const parsed = JSON.parse(settings.quickTestIds || "[]");
+    if (Array.isArray(parsed)) quickTestIds = parsed;
+  } catch { /* ignore */ }
 
   res.json({
     enabled: true,
@@ -242,6 +233,7 @@ publicBookingRouter.get("/config", async (_req, res): Promise<void> => {
     upiQrImageUrl: settings.upiQrImageUrl || "",
     allowedTestIds,
     allowedPackageIds,
+    quickTestIds,
     vipPercentage: Number(settings.vipPercentage || 50),
     disclaimerRefundPercentage: settings.disclaimerRefundPercentage ?? 90,
     activePaymentGateway: gateway || settings.activePaymentGateway,
@@ -276,6 +268,18 @@ publicBookingRouter.get("/by-ref", async (req, res): Promise<void> => {
   }
 
   res.json({ booking: row, tokenNo });
+});
+
+// GET /api/public/booking/clinic-print-info
+// Public, read-only clinic fields needed to render the SAME Billing-Desk
+// receipt template (buildBillPrintHtml) for an online-booking confirmation
+// receipt — see PrintClinic in diagnostic-erp/src/lib/printBill.ts. Kept
+// separate from /config (payment gateway settings) since the receipt page
+// needs it whether or not a real gateway is configured.
+publicBookingRouter.get("/clinic-print-info", async (_req, res): Promise<void> => {
+  const settings = await getSettings();
+  if (!settings) { res.status(404).json({ error: "Clinic settings not found" }); return; }
+  res.json(buildPrintClinic(settings));
 });
 
 // GET /api/public/booking/my-bookings
