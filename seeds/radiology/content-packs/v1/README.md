@@ -21,8 +21,41 @@ by the engineering team; nothing here prescribes schema, API, or UI.
 | `ct_brain.yaml` | CT Brain (NCCT Head) — 15 findings |
 | `usg_abdomen.yaml` | USG Whole Abdomen — 27 findings |
 
-Remaining v1 studies (USG KUB, HRCT Chest, Chest X-ray, Lower Limb Doppler, Mammography)
+Remaining first-tranche studies (USG KUB, HRCT Chest, Chest X-ray, Lower Limb Doppler, Mammography)
 are specified in the annex and convert next using the same pack shape.
+
+### Neuro / spine-screening / MSK / orbit packs (v1.1)
+
+Added on top of the first five, binding to `_shared_libraries.yaml` **and** the additive
+`_shared_libraries_v1_1.yaml` extension:
+
+| File | Study | Notes |
+|---|---|---|
+| `_shared_libraries_v1_1.yaml` | shared extension | new params, severities, dorsal/MSK/orbit locations, measurements, recommendations, critical registry, normal templates (additive; v1 keys untouched) |
+| `_screening_whole_spine.yaml` | reusable group | whole-spine screening findings (`screen.*`) + numbering rule + screening impression rules; included by both spine-screening packs |
+| `mri_ls_spine_screening.yaml` | MRI LS Spine + whole-spine screening | reuses `mrls.*` + `screen.*` by reference; adds `mrls_scr.*` |
+| `mri_c_spine_screening.yaml` | MRI Cervical Spine + whole-spine screening | reuses `mrcs.*` + `screen.*`; adds `mrcs_scr.*` |
+| `mri_brain.yaml` | MRI Brain | refreshed to nested `ai:` format (same `mrbr.*` keys) |
+| `mri_brain_epilepsy.yaml` | MRI Brain — Epilepsy protocol | extends `mri_brain`; adds `mreps.*` |
+| `mri_brain_trigeminal.yaml` | MRI Brain — Trigeminal Neuralgia protocol | extends `mri_brain`; adds `mrtn.*` |
+| `mri_pituitary.yaml` | MRI Pituitary | `mrpit.*` |
+| `mra_brain.yaml` | MR Angiography Brain | `mra.*` |
+| `mri_posterior_fossa_cpangle.yaml` | MRI Posterior Fossa / CP Angle | `mrpf.*` |
+| `mri_dorsal_spine.yaml` | MRI Dorsal Spine | `mrds.*` |
+| `mri_spine_tuberculosis.yaml` | MRI Spine Tuberculosis (Koch's/Pott's) | `mrtb.*` |
+| `mri_knee.yaml` / `mri_shoulder.yaml` / `mri_wrist.yaml` / `mri_ankle.yaml` | MSK joints | `mrkn.* / mrsh.* / mrwr.* / mrak.*` |
+| `mri_orbits.yaml` | MRI Orbits | `mrorb.*` |
+
+**Format note.** v1.1 packs use the nested `ai:` block requested for this tranche —
+`ai: { completeness_checks, contradiction_checks, differential, follow_up }` — which adds
+`differential` and `follow_up` that the flat first-five format lacked. Both forms carry the same
+semantic fields; a future harmonization pass can align the first five. All 22 files validated:
+parse cleanly, pass the no-prefix alias rule per study, and every `param./sev./lat./loc./meas./rec./crit./tpl.`
+reference resolves against the shared libraries.
+
+**Load order:** `_shared_libraries.yaml` → `_shared_libraries_v1_1.yaml` → `_screening_whole_spine.yaml`
+→ study packs. Packs with `extends:` / `include_group:` / `included_findings_ref:` reuse keys from
+the referenced packs by reference — the importer must resolve them, not redefine them.
 
 ## Finding shape
 

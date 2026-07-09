@@ -1,0 +1,266 @@
+# CARE Radiology — MRI Knee Joint Content Pack (production v1)
+# Binds to _shared_libraries.yaml (+ v1_1). High-volume MSK study.
+
+pack:
+  pack_id: mri_knee
+  version: 1.0.0
+  locale: en-IN
+  status: active
+
+study:
+  study: MRI Knee Joint
+  modality: MR
+  aliases: [MRI knee, knee MRI, MRI knee joint]
+  description: >-
+    Internal derangement of the knee — menisci, cruciate and collateral ligaments, articular
+    cartilage, extensor mechanism, marrow and joint fluid. Common for sports injury, locking,
+    instability and osteoarthritis.
+  default_sections: [Clinical details, Technique, Menisci, Ligaments, Cartilage & bone, Other, Impression, Advice]
+  quick_select_groups:
+    - {name: Pinned, tiles: [mrkn.normal_study, mrkn.meniscus_tear, mrkn.acl_tear, mrkn.cartilage, mrkn.effusion]}
+    - {name: Menisci, tiles: [mrkn.meniscus_tear, mrkn.bucket_handle]}
+    - {name: Ligaments, tiles: [mrkn.acl_tear, mrkn.pcl_tear, mrkn.mcl_injury, mrkn.lcl_injury]}
+    - {name: Cartilage/bone, tiles: [mrkn.cartilage, mrkn.marrow_edema, mrkn.osteoarthritis]}
+    - {name: Other, tiles: [mrkn.effusion, mrkn.bakers_cyst]}
+
+findings:
+  - id_key: mrkn.normal_study
+    display_name: Normal MRI knee
+    synonyms: [normal knee, NAD knee]
+    keyboard_aliases: [nkn]
+    default_sentence: "{{tpl.normal.mri_knee}}"
+    parameters: []
+    severity: null
+    laterality: null
+    location: []
+    measurements: []
+    impression_fragment: "No internal derangement of the knee."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai:
+      completeness_checks:
+        - {id: mrkn.normal_study.k1, glyph: "circle", rule: "both menisci and all four ligaments not individually addressed", message: "Address both menisci and ACL/PCL/MCL/LCL individually."}
+      contradiction_checks:
+        - {id: mrkn.normal_study.c1, severity: block, glyph: "X", rule: "any tear/derangement present AND normal impression used", message: "Normal impression contradicts a positive finding."}
+      differential: []
+      follow_up: []
+
+  - id_key: mrkn.meniscus_tear
+    display_name: Meniscal tear
+    synonyms: [meniscus tear, meniscal injury]
+    keyboard_aliases: [mnt]
+    default_sentence: "{meniscus_pattern} tear of the {location} reaching the {articular surface} (grade {severity})."
+    parameters: [param.meniscus_pattern]
+    severity: sev.meniscus
+    laterality: null
+    location: [["medial meniscus (posterior horn)", "medial meniscus (body)", "medial meniscus (anterior horn)", "lateral meniscus (posterior horn)", "lateral meniscus (body)", "lateral meniscus (anterior horn)"]]
+    measurements: []
+    impression_fragment: "{meniscus_pattern} tear of the {location} — orthopaedic/arthroscopic correlation advised."
+    recommendation: ["Orthopaedic (MSK) consultation", "Arthroscopic correlation"]
+    recommendation_code: [rec.spec_msk_ortho, rec.arthroscopy]
+    criticality: none
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrkn.meniscus_tear.k1, glyph: "circle", rule: "meniscal tear AND articular-surface involvement / grade not stated", message: "State whether signal reaches the articular surface (grade III = tear)."}
+      contradiction_checks:
+        - {id: mrkn.meniscus_tear.c1, severity: warn, glyph: "triangle", rule: "severity grade I/II AND labelled tear", message: "Grade I/II signal is intrasubstance/degenerative, not a surface-reaching tear."}
+      differential: ["traumatic tear", "degenerative tear", "meniscocapsular separation"]
+      follow_up: ["arthroscopy if mechanical symptoms"]
+
+  - id_key: mrkn.bucket_handle
+    display_name: Bucket-handle meniscal tear
+    synonyms: [bucket handle tear, displaced meniscal fragment, double PCL sign]
+    keyboard_aliases: [bht]
+    default_sentence: "Bucket-handle tear of the {location} with a displaced fragment in the intercondylar notch (double-PCL/flipped-meniscus sign)."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [["medial meniscus", "lateral meniscus"]]
+    measurements: []
+    impression_fragment: "Bucket-handle tear of the {location} with displaced fragment — orthopaedic referral advised."
+    recommendation: ["Orthopaedic (MSK) consultation", "Arthroscopic correlation"]
+    recommendation_code: [rec.spec_msk_ortho, rec.arthroscopy]
+    criticality: significant
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: ["arthroscopy"]}
+
+  - id_key: mrkn.acl_tear
+    display_name: ACL tear
+    synonyms: [anterior cruciate ligament tear, ACL injury]
+    keyboard_aliases: [acl]
+    default_sentence: "The ACL shows {tindesc} — {tear_grade} tear{, with pivot-shift marrow contusions of the lateral femoral condyle and posterolateral tibia}."
+    parameters: [param.tear_grade]
+    severity: null
+    laterality: null
+    location: [["ACL"]]
+    measurements: []
+    impression_fragment: "{tear_grade} ACL tear — orthopaedic (MSK) referral advised."
+    recommendation: ["Orthopaedic (MSK) consultation", "Arthroscopic correlation"]
+    recommendation_code: [rec.spec_msk_ortho, rec.arthroscopy]
+    criticality: none
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrkn.acl_tear.k1, glyph: "circle", rule: "ACL tear AND secondary signs (marrow contusion pattern, anterior tibial translation) not commented", message: "Comment on secondary signs of ACL tear."}
+        - {id: mrkn.acl_tear.k2, glyph: "circle", rule: "ACL tear AND menisci not assessed for associated tear", message: "Assess menisci — ACL tears often have associated meniscal injury (O'Donoghue triad)."}
+      contradiction_checks: []
+      differential: ["acute complete tear", "partial tear", "chronic/mucoid degeneration", "ACL ganglion"]
+      follow_up: ["arthroscopy / reconstruction opinion"]
+
+  - id_key: mrkn.pcl_tear
+    display_name: PCL tear
+    synonyms: [posterior cruciate ligament tear, PCL injury]
+    keyboard_aliases: [pcl]
+    default_sentence: "The PCL shows {tear_grade} tear with abnormal thickening/signal."
+    parameters: [param.tear_grade]
+    severity: null
+    laterality: null
+    location: [["PCL"]]
+    measurements: []
+    impression_fragment: "{tear_grade} PCL tear."
+    recommendation: ["Orthopaedic (MSK) consultation"]
+    recommendation_code: [rec.spec_msk_ortho]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: []}
+
+  - id_key: mrkn.mcl_injury
+    display_name: MCL injury
+    synonyms: [medial collateral ligament sprain, MCL tear]
+    keyboard_aliases: [mcl]
+    default_sentence: "The MCL shows {tear_grade} injury with surrounding edema."
+    parameters: [param.tear_grade]
+    severity: null
+    laterality: null
+    location: [["MCL"]]
+    measurements: []
+    impression_fragment: "{tear_grade} MCL injury."
+    recommendation: []
+    recommendation_code: [rec.physio]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: []}
+
+  - id_key: mrkn.lcl_injury
+    display_name: LCL / posterolateral corner injury
+    synonyms: [lateral collateral ligament injury, PLC injury]
+    keyboard_aliases: [lcl]
+    default_sentence: "The LCL/posterolateral corner shows {tear_grade} injury."
+    parameters: [param.tear_grade]
+    severity: null
+    laterality: null
+    location: [["LCL", "posterolateral corner"]]
+    measurements: []
+    impression_fragment: "{tear_grade} LCL/posterolateral corner injury."
+    recommendation: ["Orthopaedic (MSK) consultation"]
+    recommendation_code: [rec.spec_msk_ortho]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: []}
+
+  - id_key: mrkn.cartilage
+    display_name: Chondral / cartilage lesion
+    synonyms: [cartilage defect, chondromalacia, chondral loss]
+    keyboard_aliases: [cart]
+    default_sentence: "{cartilage_grade} chondral lesion of the {location}."
+    parameters: [param.cartilage_grade]
+    severity: sev.cartilage
+    laterality: null
+    location: [["patella", "trochlea", "medial femoral condyle", "lateral femoral condyle", "medial tibial plateau", "lateral tibial plateau"]]
+    measurements: []
+    impression_fragment: "{cartilage_grade} chondral lesion of the {location}."
+    recommendation: ["Orthopaedic (MSK) consultation"]
+    recommendation_code: [rec.spec_msk_ortho]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["chondromalacia", "traumatic chondral injury", "osteoarthritic cartilage loss"], follow_up: []}
+
+  - id_key: mrkn.marrow_edema
+    display_name: Bone marrow edema / contusion
+    synonyms: [bone bruise, marrow edema, contusion]
+    keyboard_aliases: [bme]
+    default_sentence: "Subchondral marrow edema in the {location} — {contusion/stress/reactive} pattern."
+    parameters: [param.marrow_edema]
+    severity: null
+    laterality: null
+    location: [loc.knee]
+    measurements: []
+    impression_fragment: "Marrow edema in the {location}."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: false
+    ai:
+      completeness_checks: []
+      contradiction_checks:
+        - {id: mrkn.marrow_edema.c1, severity: warn, glyph: "triangle", rule: "pivot-shift marrow edema pattern present AND ACL described as intact", message: "Lateral condyle + posterolateral tibia edema suggests ACL injury — re-check the ACL."}
+      differential: ["traumatic contusion", "stress reaction", "subchondral insufficiency fracture", "osteonecrosis"]
+      follow_up: []
+
+  - id_key: mrkn.osteoarthritis
+    display_name: Osteoarthritis
+    synonyms: [OA knee, degenerative joint disease, tricompartmental OA]
+    keyboard_aliases: [oa]
+    default_sentence: "Marginal osteophytes, cartilage thinning and subchondral changes in the {compartment} compartment(s) with degenerative meniscal signal — osteoarthritis."
+    parameters: []
+    severity: sev.global
+    laterality: null
+    location: [["medial", "lateral", "patellofemoral", "tricompartmental"]]
+    measurements: []
+    impression_fragment: "{severity} osteoarthritis ({compartment})."
+    recommendation: ["Orthopaedic consultation", "Physiotherapy"]
+    recommendation_code: [rec.spec_ortho, rec.physio]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: []}
+
+  - id_key: mrkn.effusion
+    display_name: Joint effusion
+    synonyms: [knee effusion, joint fluid]
+    keyboard_aliases: [eff]
+    default_sentence: "{effusion_joint} joint effusion{, with synovial thickening}."
+    parameters: [param.effusion_joint]
+    severity: null
+    laterality: null
+    location: []
+    measurements: []
+    impression_fragment: "{effusion_joint} joint effusion."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["reactive effusion", "inflammatory/septic (if synovitis)", "hemarthrosis (trauma)"], follow_up: []}
+
+  - id_key: mrkn.bakers_cyst
+    display_name: Baker's cyst
+    synonyms: [popliteal cyst, Bakers cyst]
+    keyboard_aliases: [bak]
+    default_sentence: "A well-defined cyst ({size}) in the popliteal fossa between the medial gastrocnemius and semimembranosus — Baker's cyst{, ruptured}."
+    parameters: [param.size]
+    severity: null
+    laterality: null
+    location: [["popliteal fossa"]]
+    measurements: []
+    impression_fragment: "Baker's cyst{ (ruptured)}."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["Baker's cyst", "ganglion", "meniscal cyst"], follow_up: []}
+
+combo_tiles:
+  - {id: combo.mrkn.odonoghue, label: "O'Donoghue triad", members: [mrkn.acl_tear, mrkn.mcl_injury, {ref: mrkn.meniscus_tear, at: medial meniscus (posterior horn)}], recommendations: [rec.spec_msk_ortho, rec.arthroscopy]}
+  - {id: combo.mrkn.oa_set, label: "OA knee set", members: [mrkn.osteoarthritis, {ref: mrkn.meniscus_tear, optional: true}, {ref: mrkn.effusion, optional: true}], recommendations: [rec.spec_ortho, rec.physio]}
+  - {id: combo.mrkn.normal, label: "Normal knee", members: [mrkn.normal_study]}
+
+normal_template: tpl.normal.mri_knee
+
+critical_findings: []
+
+implementation_notes:
+  - "Meniscal grade III (surface-reaching) is the surgical tear; grades I/II are intrasubstance/degenerative — the contradiction rule enforces this."
+  - "ACL tear triggers a check of secondary signs and associated meniscal/MCL injury (O'Donoghue). Pivot-shift marrow edema with an 'intact' ACL is a warn."
+  - "Abbreviations: ACL/PCL/MCL/LCL; PLC = posterolateral corner; BME = bone marrow edema; OA = osteoarthritis."

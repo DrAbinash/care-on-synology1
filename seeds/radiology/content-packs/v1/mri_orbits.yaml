@@ -1,0 +1,231 @@
+# CARE Radiology — MRI Orbits Content Pack (production v1)
+# Binds to _shared_libraries.yaml (+ v1_1). Contrast orbit protocol.
+
+pack:
+  pack_id: mri_orbits
+  version: 1.0.0
+  locale: en-IN
+  status: active
+
+study:
+  study: MRI Orbits
+  modality: MR
+  aliases: [MRI orbit, MRI orbits, orbital MRI, MRI eye]
+  description: >-
+    Dedicated thin-section fat-suppressed contrast MRI of the orbits for proptosis, vision loss,
+    optic neuritis, orbital mass, thyroid eye disease, cellulitis and trauma. Assesses globe, optic
+    nerve, extraocular muscles, lacrimal gland and orbital apex.
+  default_sections: [Clinical details, Technique (fat-sat + contrast), Globe, Optic nerve, Extraocular muscles & apex, Impression, Advice]
+  quick_select_groups:
+    - {name: Pinned, tiles: [mrorb.normal_study, mrorb.optic_neuritis, mrorb.thyroid_eye, mrorb.orbital_mass, mrorb.orbital_cellulitis]}
+    - {name: Optic nerve, tiles: [mrorb.optic_neuritis, mrorb.optic_glioma, mrorb.optic_compression]}
+    - {name: Muscles/apex, tiles: [mrorb.thyroid_eye, mrorb.pseudotumor]}
+    - {name: Mass/infection, tiles: [mrorb.orbital_mass, mrorb.orbital_cellulitis, mrorb.lacrimal_lesion]}
+
+findings:
+  - id_key: mrorb.normal_study
+    display_name: Normal MRI orbits
+    synonyms: [normal orbits, NAD orbits]
+    keyboard_aliases: [norb]
+    default_sentence: "{{tpl.normal.mri_orbits}}"
+    parameters: []
+    severity: null
+    laterality: null
+    location: []
+    measurements: []
+    impression_fragment: "Normal orbits. No optic nerve or extraocular abnormality."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai:
+      completeness_checks:
+        - {id: mrorb.normal_study.k1, glyph: "circle", rule: "optic nerves, extraocular muscles and globes not all individually addressed", message: "Address globes, optic nerves and extraocular muscles individually."}
+      contradiction_checks:
+        - {id: mrorb.normal_study.c1, severity: block, glyph: "X", rule: "any positive finding present AND normal impression used", message: "Normal impression contradicts a positive finding."}
+      differential: []
+      follow_up: []
+
+  - id_key: mrorb.optic_neuritis
+    display_name: Optic neuritis
+    synonyms: [optic neuritis, optic nerve enhancement]
+    keyboard_aliases: [optn]
+    default_sentence: "T2 hyperintensity and enhancement of the {laterality} optic nerve with mild swelling — optic neuritis."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location: [["optic nerve"]]
+    measurements: []
+    impression_fragment: "{laterality} optic neuritis — neurology/ophthalmology correlation; brain MRI to assess demyelination advised."
+    recommendation: ["Ophthalmology consultation", "Neurology consultation", "Brain MRI for demyelination"]
+    recommendation_code: [rec.spec_ophthal, rec.spec_neuro, rec.contrast_mri]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrorb.optic_neuritis.k1, glyph: "circle", rule: "optic neuritis AND brain demyelination screen not recommended", message: "Recommend brain MRI to screen for demyelination (MS association)."}
+      contradiction_checks: []
+      differential: ["demyelinating optic neuritis (MS)", "NMO/MOG-related", "infective/granulomatous", "ischemic optic neuropathy"]
+      follow_up: ["brain MRI", "neuro-ophthalmology correlation", "aquaporin-4/MOG antibodies as advised"]
+
+  - id_key: mrorb.optic_glioma
+    display_name: Optic nerve glioma
+    synonyms: [optic pathway glioma, optic nerve tumour]
+    keyboard_aliases: [oglio]
+    default_sentence: "Fusiform enlargement of the {laterality} optic nerve with kinking and {enhancement_pattern} enhancement — optic nerve glioma."
+    parameters: [param.enhancement_pattern]
+    severity: null
+    laterality: lat.rl
+    location: [["optic nerve", "optic chiasm"]]
+    measurements: [meas.tumor_3d]
+    impression_fragment: "{laterality} optic nerve glioma — neuro-ophthalmology referral; screen for NF1."
+    recommendation: ["Ophthalmology / neuro-ophthalmology consultation", "Neurosurgical opinion"]
+    recommendation_code: [rec.spec_ophthal, rec.spec_nsx]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrorb.optic_glioma.k1, glyph: "circle", rule: "optic glioma AND chiasm/intracranial extension not assessed", message: "Assess chiasmal and intracranial extension."}
+      contradiction_checks: []
+      differential: ["optic nerve glioma (NF1)", "optic nerve sheath meningioma", "optic neuritis"]
+      follow_up: ["contrast brain MRI", "screen for neurofibromatosis type 1"]
+
+  - id_key: mrorb.optic_compression
+    display_name: Optic nerve / apex compression
+    synonyms: [optic nerve compression, apex crowding]
+    keyboard_aliases: [ocomp]
+    default_sentence: "Compression of the {laterality} optic nerve at the {orbital apex/canal} by {cause}, with nerve signal change."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location: [["orbital apex", "optic canal", "optic nerve"]]
+    measurements: []
+    impression_fragment: "{laterality} optic nerve compression — URGENT ophthalmology referral advised."
+    recommendation: ["URGENT ophthalmology referral"]
+    recommendation_code: [rec.ophthal_urgent, rec.spec_ophthal]
+    criticality: {critical: crit.orbital_emergency}
+    normal_variant: false
+    ai:
+      completeness_checks: []
+      contradiction_checks:
+        - {id: mrorb.optic_compression.c1, severity: block, glyph: "X", rule: "optic compression with acute vision loss in indication AND escalation not started", message: "Vision-threatening compression — start escalation before signing."}
+      differential: ["thyroid eye disease apex crowding", "mass compression", "hematoma", "abscess"]
+      follow_up: ["urgent ophthalmology/decompression opinion"]
+
+  - id_key: mrorb.thyroid_eye
+    display_name: Thyroid eye disease (Graves' orbitopathy)
+    synonyms: [thyroid orbitopathy, Graves' eye disease, TED]
+    keyboard_aliases: [ted]
+    default_sentence: "Fusiform enlargement of the {muscles} extraocular muscle bellies with tendon sparing (bilateral, {laterality}-predominant) — thyroid eye disease{, with apical crowding}."
+    parameters: []
+    severity: null
+    laterality: lat.rlb
+    location: [["inferior rectus", "medial rectus", "superior rectus", "multiple recti"]]
+    measurements: []
+    impression_fragment: "Thyroid eye disease (extraocular myopathy) — endocrine/ophthalmology correlation; watch for apical crowding."
+    recommendation: ["Endocrinology correlation", "Ophthalmology consultation"]
+    recommendation_code: [rec.spec_endo, rec.spec_ophthal]
+    criticality: none
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrorb.thyroid_eye.k1, glyph: "circle", rule: "thyroid eye disease AND optic nerve / apical crowding not assessed", message: "Assess apical crowding and optic nerve (compressive optic neuropathy risk)."}
+      contradiction_checks:
+        - {id: mrorb.thyroid_eye.c1, severity: warn, glyph: "triangle", rule: "muscle tendon involvement described AND labelled thyroid eye disease", message: "Tendon involvement favours orbital pseudotumor/myositis over thyroid eye disease (tendon-sparing)."}
+      differential: ["thyroid eye disease", "orbital myositis (pseudotumor)", "IgG4 disease"]
+      follow_up: ["thyroid function tests", "ophthalmology"]
+
+  - id_key: mrorb.pseudotumor
+    display_name: Orbital pseudotumor (idiopathic inflammation)
+    synonyms: [orbital pseudotumor, IOIS, orbital myositis]
+    keyboard_aliases: [ptum]
+    default_sentence: "Ill-defined enhancing inflammatory tissue involving the {location} (muscle with tendon involvement / lacrimal gland / diffuse) — idiopathic orbital inflammation (pseudotumor)."
+    parameters: []
+    severity: null
+    laterality: lat.rlb
+    location: [loc.orbit]
+    measurements: []
+    impression_fragment: "Orbital pseudotumor — steroid-responsive; ophthalmology correlation advised."
+    recommendation: ["Ophthalmology consultation"]
+    recommendation_code: [rec.spec_ophthal]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["idiopathic orbital inflammation", "thyroid eye disease", "IgG4 disease", "lymphoma"], follow_up: ["response to steroid trial", "biopsy if atypical"]}
+
+  - id_key: mrorb.orbital_mass
+    display_name: Orbital mass
+    synonyms: [orbital tumour, retrobulbar mass, cavernous hemangioma]
+    keyboard_aliases: [omass]
+    default_sentence: "A well-defined {intraconal/extraconal} mass ({size}) in the {laterality} orbit with {enhancement_pattern} enhancement, {displacing/encasing} the optic nerve."
+    parameters: [param.enhancement_pattern]
+    severity: null
+    laterality: lat.rl
+    location: [loc.orbit]
+    measurements: [meas.tumor_3d]
+    impression_fragment: "{laterality} orbital mass — ophthalmology/neurosurgical opinion advised."
+    recommendation: ["Ophthalmology consultation", "Contrast MRI / biopsy correlation"]
+    recommendation_code: [rec.spec_ophthal, rec.biopsy]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrorb.orbital_mass.k1, glyph: "circle", rule: "orbital mass AND intraconal-vs-extraconal location / optic nerve relationship not stated", message: "State intraconal vs extraconal location and the optic nerve relationship."}
+      contradiction_checks: []
+      differential: ["cavernous hemangioma (intraconal)", "schwannoma", "lymphoma", "metastasis", "lacrimal gland tumour (if superolateral)"]
+      follow_up: ["contrast MRI", "biopsy / ophthalmology"]
+
+  - id_key: mrorb.lacrimal_lesion
+    display_name: Lacrimal gland lesion
+    synonyms: [lacrimal mass, dacryoadenitis]
+    keyboard_aliases: [lac]
+    default_sentence: "Enlargement/mass of the {laterality} lacrimal gland with {enhancement_pattern} enhancement — {inflammatory (dacryoadenitis) vs neoplastic}."
+    parameters: [param.enhancement_pattern]
+    severity: null
+    laterality: lat.rl
+    location: [["lacrimal gland"]]
+    measurements: [meas.tumor_3d]
+    impression_fragment: "{laterality} lacrimal gland lesion — ophthalmology correlation advised."
+    recommendation: ["Ophthalmology consultation"]
+    recommendation_code: [rec.spec_ophthal]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["dacryoadenitis", "pleomorphic adenoma", "lymphoma", "adenoid cystic carcinoma"], follow_up: ["ophthalmology / biopsy"]}
+
+  - id_key: mrorb.orbital_cellulitis
+    display_name: Orbital cellulitis / abscess
+    synonyms: [orbital cellulitis, subperiosteal abscess, post-septal cellulitis]
+    keyboard_aliases: [ocell]
+    default_sentence: "Post-septal inflammatory change in the {laterality} orbit{ with a subperiosteal/orbital abscess} — orbital cellulitis, usually from adjacent sinusitis."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location: [loc.orbit]
+    measurements: []
+    impression_fragment: "{laterality} orbital cellulitis{ with abscess} — URGENT ENT/ophthalmology attention advised."
+    recommendation: ["URGENT ENT/ophthalmology referral", "ENT consultation"]
+    recommendation_code: [rec.ophthal_urgent, rec.spec_ent]
+    criticality: {critical: crit.orbital_emergency}
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrorb.orbital_cellulitis.k1, glyph: "circle", rule: "orbital cellulitis AND source sinus / optic nerve / cavernous sinus not assessed", message: "Assess the source sinus, optic nerve and cavernous sinus (thrombosis/intracranial spread)."}
+      contradiction_checks:
+        - {id: mrorb.orbital_cellulitis.c1, severity: block, glyph: "X", rule: "post-septal abscess / vision threat AND escalation not started", message: "Vision-threatening orbital infection — start escalation before signing."}
+      differential: ["post-septal (orbital) cellulitis", "subperiosteal abscess", "pre-septal cellulitis (if anterior only)"]
+      follow_up: ["urgent ENT + ophthalmology", "assess for cavernous sinus thrombosis / intracranial spread"]
+
+combo_tiles:
+  - {id: combo.mrorb.optic_neuritis_workup, label: "Optic neuritis workup", members: [mrorb.optic_neuritis], recommendations: [rec.spec_neuro, rec.contrast_mri]}
+  - {id: combo.mrorb.ted_set, label: "Thyroid eye disease set", members: [mrorb.thyroid_eye], recommendations: [rec.spec_endo, rec.spec_ophthal]}
+  - {id: combo.mrorb.orbital_infection, label: "Orbital cellulitis emergency", members: [mrorb.orbital_cellulitis], recommendations: [rec.ophthal_urgent, rec.spec_ent]}
+
+normal_template: tpl.normal.mri_orbits
+
+critical_findings:
+  - crit.orbital_emergency   # vision-threatening compression or infection
+
+implementation_notes:
+  - "Thyroid eye disease is tendon-SPARING; tendon involvement flags pseudotumor/myositis (contradiction rule). Both need an apical-crowding / optic-nerve check."
+  - "Optic neuritis triggers a brain-MRI demyelination screen; optic glioma triggers an NF1 screen and chiasm assessment."
+  - "Orbital cellulitis / optic compression are vision emergencies — escalation blocks unstarted sign-off."
+  - "Abbreviations: TED = thyroid eye disease; IOIS = idiopathic orbital inflammatory syndrome; NF1 = neurofibromatosis type 1; NMO/MOG = neuromyelitis optica / myelin oligodendrocyte glycoprotein."

@@ -1,0 +1,270 @@
+# CARE Radiology — MRI Spine Tuberculosis (Koch's Spine) Content Pack (production v1)
+# Binds to _shared_libraries.yaml (+ v1_1). Contrast spine TB protocol. High Indian relevance.
+
+pack:
+  pack_id: mri_spine_tuberculosis
+  version: 1.0.0
+  locale: en-IN
+  status: active
+
+study:
+  study: MRI Spine — Tuberculosis Protocol
+  modality: MR
+  aliases: [MRI Koch's spine, MRI Pott's spine, spinal TB MRI, MRI tubercular spondylitis]
+  description: >-
+    Contrast MRI (often whole-spine) to characterise spinal tuberculosis: vertebral marrow edema,
+    disc involvement, paravertebral and epidural abscess, subligamentous spread, cord compression
+    and skip lesions. Endemic in India — a core report.
+  default_sections: [Clinical details, Technique (contrast), Vertebral involvement, Disc & endplate, Paravertebral / epidural, Cord assessment, Impression, Advice]
+  quick_select_groups:
+    - {name: Pinned, tiles: [mrtb.normal_study, mrtb.spondylitis, mrtb.paravertebral_abscess, mrtb.epidural_collection, mrtb.cord_compression]}
+    - {name: Vertebra/disc, tiles: [mrtb.spondylitis, mrtb.disc_involvement, mrtb.subligamentous]}
+    - {name: Abscess, tiles: [mrtb.paravertebral_abscess, mrtb.epidural_collection, mrtb.psoas_abscess]}
+    - {name: Complications, tiles: [mrtb.cord_compression, mrtb.gibbus, mrtb.skip_lesions]}
+    - {name: Healed, tiles: [mrtb.healed]}
+
+findings:
+  - id_key: mrtb.normal_study
+    display_name: No evidence of spinal TB
+    synonyms: [normal, TB negative, no Koch's]
+    keyboard_aliases: [ntb]
+    default_sentence: "{{tpl.normal.mri_spine_tb}}"
+    parameters: []
+    severity: null
+    laterality: null
+    location: []
+    measurements: []
+    impression_fragment: "No MRI evidence of spinal tuberculosis."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai:
+      completeness_checks:
+        - {id: mrtb.normal_study.k1, glyph: "circle", rule: "whole spine not screened for skip lesions", message: "Screen the whole spine for skip lesions before calling TB negative."}
+      contradiction_checks:
+        - {id: mrtb.normal_study.c1, severity: block, glyph: "X", rule: "any TB finding present AND TB-negative impression used", message: "TB-negative impression contradicts a positive finding."}
+      differential: []
+      follow_up: []
+
+  - id_key: mrtb.spondylitis
+    display_name: Tubercular spondylitis (marrow involvement)
+    synonyms: [Pott's spine, tubercular vertebral involvement, spondylitis]
+    keyboard_aliases: [tbsp]
+    default_sentence: "Altered marrow signal (T1 hypo, T2/STIR hyper, post-contrast enhancing) involving the {location} vertebra(e) with relative disc preservation early — tubercular spondylitis."
+    parameters: [param.tb_activity]
+    severity: null
+    laterality: null
+    location: [loc.spine_whole]
+    measurements: [meas.tumor_3d]
+    impression_fragment: "Tubercular spondylitis involving {location} — correlation and ATT as per physician advised."
+    recommendation: ["Start ATT correlation", "TB/chest physician referral", "Clinical/lab correlation"]
+    recommendation_code: [rec.atd, rec.spec_tb, rec.clincorr]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrtb.spondylitis.k1, glyph: "circle", rule: "spondylitis AND number of vertebrae / contiguity not stated", message: "State the number and contiguity of involved vertebrae."}
+        - {id: mrtb.spondylitis.k2, glyph: "circle", rule: "spondylitis AND whole-spine skip-lesion screen not done", message: "Screen the whole spine for skip lesions."}
+      contradiction_checks:
+        - {id: mrtb.spondylitis.c1, severity: warn, glyph: "triangle", rule: "single vertebra with pedicle involvement and disc preservation labelled TB", message: "Solitary vertebra + pedicle involvement + disc sparing favours metastasis over TB."}
+      differential: ["tubercular spondylitis", "pyogenic spondylodiscitis", "metastasis", "brucellar spondylitis"]
+      follow_up: ["contrast whole-spine MRI", "CBNAAT / biopsy", "TB physician referral"]
+
+  - id_key: mrtb.disc_involvement
+    display_name: Disc / endplate destruction
+    synonyms: [disc involvement, endplate erosion, discitis]
+    keyboard_aliases: [tbdisc]
+    default_sentence: "Destruction of the {location} disc with endplate erosion and reduced disc height — advanced tubercular involvement."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [loc.spine_whole]
+    measurements: []
+    impression_fragment: "Disc/endplate destruction at {location} — consistent with infective (tubercular) etiology."
+    recommendation: []
+    recommendation_code: [rec.atd]
+    criticality: significant
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["tubercular (late disc involvement)", "pyogenic (early disc involvement)"], follow_up: []}
+
+  - id_key: mrtb.paravertebral_abscess
+    display_name: Paravertebral / prevertebral abscess
+    synonyms: [paravertebral collection, cold abscess, prevertebral abscess]
+    keyboard_aliases: [pva]
+    default_sentence: "A rim-enhancing paravertebral/prevertebral collection ({size}) at {location} with a thin smooth wall — cold abscess."
+    parameters: [param.size]
+    severity: null
+    laterality: lat.rlb
+    location: [loc.spine_whole]
+    measurements: [meas.tumor_3d]
+    impression_fragment: "Paravertebral cold abscess at {location} — characteristic of tubercular etiology."
+    recommendation: ["Start ATT correlation", "Consider aspiration/drainage as advised"]
+    recommendation_code: [rec.atd, rec.spec_tb]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrtb.paravertebral_abscess.k1, glyph: "circle", rule: "paravertebral abscess AND thin-vs-thick wall not described", message: "Describe wall thickness — thin smooth wall favours TB (cold abscess)."}
+      contradiction_checks: []
+      differential: ["tubercular cold abscess", "pyogenic abscess (thick irregular wall)"]
+      follow_up: ["contrast MRI", "aspiration for CBNAAT/culture"]
+
+  - id_key: mrtb.epidural_collection
+    display_name: Epidural collection / abscess
+    synonyms: [epidural abscess, epidural collection]
+    keyboard_aliases: [epac]
+    default_sentence: "An enhancing epidural collection at {location} extending over {n} segments, causing {severity} thecal sac/cord compression."
+    parameters: []
+    severity: sev.canal_compromise
+    laterality: null
+    location: [loc.spine_whole]
+    measurements: [meas.canal_encroach]
+    impression_fragment: "Tubercular epidural collection at {location} with cord compromise — urgent surgical opinion advised."
+    recommendation: ["URGENT — spine surgery opinion", "Start ATT correlation"]
+    recommendation_code: [rec.urgent, rec.spec_nsx, rec.atd]
+    criticality: {critical: crit.epidural_abscess}
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrtb.epidural_collection.k1, glyph: "circle", rule: "epidural collection AND degree of cord compression not graded", message: "Grade the degree of cord/thecal compression."}
+      contradiction_checks:
+        - {id: mrtb.epidural_collection.c1, severity: block, glyph: "X", rule: "cord compression with neuro deficit in indication AND escalation not started", message: "Epidural abscess with cord compression — start escalation before signing."}
+      differential: ["tubercular epidural abscess", "pyogenic epidural abscess", "epidural metastatic deposit"]
+      follow_up: ["urgent spine surgery opinion", "contrast MRI"]
+
+  - id_key: mrtb.psoas_abscess
+    display_name: Psoas / iliopsoas abscess
+    synonyms: [psoas abscess, iliopsoas cold abscess]
+    keyboard_aliases: [psoas]
+    default_sentence: "A rim-enhancing collection tracking within the {laterality} psoas/iliopsoas muscle from the {location} level — cold abscess."
+    parameters: [param.size]
+    severity: null
+    laterality: lat.rlb
+    location: [loc.spine_whole]
+    measurements: [meas.tumor_3d]
+    impression_fragment: "{laterality} psoas cold abscess extending from {location} — tubercular etiology."
+    recommendation: ["Start ATT correlation", "Consider image-guided drainage"]
+    recommendation_code: [rec.atd, rec.spec_tb]
+    criticality: significant
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["tubercular cold abscess", "pyogenic psoas abscess"], follow_up: ["image-guided aspiration"]}
+
+  - id_key: mrtb.subligamentous
+    display_name: Subligamentous spread
+    synonyms: [subligamentous extension, multi-level ligamentous spread]
+    keyboard_aliases: [subl]
+    default_sentence: "Subligamentous spread of enhancing granulation/collection beneath the anterior longitudinal ligament across {n} vertebral levels."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [loc.spine_whole]
+    measurements: []
+    impression_fragment: "Subligamentous spread across multiple levels — characteristic of spinal TB."
+    recommendation: []
+    recommendation_code: [rec.atd]
+    criticality: significant
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["tubercular subligamentous spread"], follow_up: []}
+
+  - id_key: mrtb.cord_compression
+    display_name: Cord compression (TB)
+    synonyms: [tubercular cord compression, Pott's paraplegia]
+    keyboard_aliases: [tbcc]
+    default_sentence: "{severity} cord compression at {location} due to {epidural collection/gibbus/granulation}, with {cord signal change/no signal change}."
+    parameters: []
+    severity: sev.canal_compromise
+    laterality: null
+    location: [loc.spine_whole]
+    measurements: [meas.cord_ap, meas.canal_encroach]
+    impression_fragment: "{severity} cord compression at {location} (Pott's) — urgent spine surgery opinion advised."
+    recommendation: ["URGENT — spine surgery opinion", "Start ATT correlation"]
+    recommendation_code: [rec.urgent, rec.spec_nsx, rec.atd]
+    criticality: {critical: crit.tb_cord_compression}
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrtb.cord_compression.k1, glyph: "circle", rule: "cord compression AND cord signal change status not stated", message: "State cord signal change (prognostic in Pott's paraplegia)."}
+      contradiction_checks:
+        - {id: mrtb.cord_compression.c1, severity: block, glyph: "X", rule: "cord compression with deficit in indication AND escalation not started", message: "TB cord compression with deficit — start escalation before signing."}
+      differential: ["epidural abscess", "gibbus deformity", "granulation tissue"]
+      follow_up: ["urgent spine surgery opinion"]
+
+  - id_key: mrtb.gibbus
+    display_name: Gibbus deformity
+    synonyms: [angular kyphosis, gibbus, kyphotic deformity]
+    keyboard_aliases: [gib]
+    default_sentence: "Angular kyphotic (gibbus) deformity at {location} from vertebral destruction/collapse (Cobb {cobb_angle})."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [loc.spine_whole]
+    measurements: [meas.cobb_angle]
+    impression_fragment: "Gibbus deformity at {location} — sequela of vertebral destruction."
+    recommendation: ["Spine surgery opinion"]
+    recommendation_code: [rec.spec_nsx]
+    criticality: significant
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: []}
+
+  - id_key: mrtb.skip_lesions
+    display_name: Skip lesions (non-contiguous)
+    synonyms: [skip lesions, non-contiguous involvement, multifocal TB]
+    keyboard_aliases: [skip]
+    default_sentence: "Non-contiguous (skip) vertebral involvement at {location} and {location} with intervening normal vertebrae — characteristic of spinal TB."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [loc.spine_whole]
+    measurements: []
+    impression_fragment: "Skip lesions involving {location} — supports tubercular etiology; whole-spine coverage advised."
+    recommendation: ["Whole-spine contrast MRI"]
+    recommendation_code: [rec.contrast_mri, rec.atd]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrtb.skip_lesions.k1, glyph: "circle", rule: "skip lesions AND whole spine not imaged", message: "Image the whole spine when skip lesions are present."}
+      contradiction_checks: []
+      differential: ["tubercular skip lesions", "multifocal metastases"]
+      follow_up: ["whole-spine contrast MRI"]
+
+  - id_key: mrtb.healed
+    display_name: Healed / treated TB
+    synonyms: [healed Koch's, treated spondylitis, quiescent TB]
+    keyboard_aliases: [htb]
+    default_sentence: "Fatty marrow reconstitution with resolution of edema/enhancement and residual deformity at {location} — healed/treated tubercular spondylitis."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [loc.spine_whole]
+    measurements: []
+    impression_fragment: "Healed tubercular spondylitis at {location} with residual deformity — no active disease."
+    recommendation: ["Clinical correlation"]
+    recommendation_code: [rec.clincorr]
+    criticality: none
+    normal_variant: false
+    ai:
+      completeness_checks: []
+      contradiction_checks:
+        - {id: mrtb.healed.c1, severity: warn, glyph: "triangle", rule: "residual marrow edema / rim-enhancing collection AND labelled healed", message: "Persistent edema/collection suggests active disease, not fully healed."}
+      differential: ["healed TB", "reactivation"]
+      follow_up: []
+
+combo_tiles:
+  - {id: combo.mrtb.classic_potts, label: "Classic Pott's spine", members: [mrtb.spondylitis, mrtb.disc_involvement, mrtb.paravertebral_abscess], recommendations: [rec.atd, rec.spec_tb]}
+  - {id: combo.mrtb.potts_paraplegia, label: "Pott's with cord compression", members: [mrtb.spondylitis, mrtb.epidural_collection, mrtb.cord_compression], recommendations: [rec.urgent, rec.spec_nsx, rec.atd]}
+  - {id: combo.mrtb.healed, label: "Healed Koch's spine", members: [mrtb.healed]}
+
+normal_template: tpl.normal.mri_spine_tb
+
+critical_findings:
+  - crit.epidural_abscess
+  - crit.tb_cord_compression
+  - crit.cauda_equina
+
+implementation_notes:
+  - "TB-vs-metastasis discriminators are baked into contradiction/differential rules: TB spares the disc early and crosses disc spaces via subligamentous spread; metastasis tends to involve pedicle and spare the disc."
+  - "Cold abscess = thin smooth enhancing wall; pyogenic = thick irregular wall — enforce wall description."
+  - "Always screen the whole spine for skip lesions and always state cord signal with compression."
+  - "Indian terms: Pott's spine / Koch's spine = spinal TB; 'cold abscess' = tubercular paravertebral collection; ATT = anti-tubercular therapy; CBNAAT = cartridge-based nucleic acid amplification test (GeneXpert)."
