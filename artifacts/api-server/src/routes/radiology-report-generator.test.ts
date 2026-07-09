@@ -134,6 +134,69 @@ describe("POST /save-draft — first save creates, second save updates (pre-exis
   });
 });
 
+describe("POST /save-draft — findings[] (Ticket A3.1): accepted, validated, ignored", () => {
+  beforeEach(() => {
+    insertedRows = [];
+    insertValuesCalls = [];
+    updateSetCalls = [];
+    updateResult = { id: 42, studyId: 7 };
+  });
+
+  test("accepts a payload WITH findings[] and saves successfully, without persisting the findings data", async () => {
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const handler = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+    const req = {
+      body: {
+        studyId: 7,
+        rawFindings: "Findings text",
+        findings: [
+          { findingId: 8842, params: { side: "", severity: "moderate", chronicity: "", level: "L4-5", value: "" } },
+          { findingId: 9001, params: { side: "right", severity: "mild", chronicity: "chronic", level: "", value: "" } },
+        ],
+      },
+      staffSession: { subjectName: "Dr. Test" },
+    };
+    const res = makeRes();
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    // Accepted (no 400) and the draft still saves — but the field is a
+    // no-op: nothing findings-shaped reaches the DB write.
+    expect(insertValuesCalls).toHaveLength(1);
+    expect(insertValuesCalls[0]).not.toHaveProperty("findings");
+    expect(res.body.draft.id).toBe(101);
+  });
+
+  test("old frontend bundle without findings[] still saves successfully — unchanged backward compatibility", async () => {
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const handler = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+    const req = {
+      body: { studyId: 7, rawFindings: "Findings text" }, // no findings key at all — pre-A3.1 shape
+      staffSession: { subjectName: "Dr. Test" },
+    };
+    const res = makeRes();
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(insertValuesCalls).toHaveLength(1);
+    expect(res.body.draft.id).toBe(101);
+  });
+
+  test("rejects a findings[] entry missing the required findingId (still validates the shape it does accept)", async () => {
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const handler = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+    const req = {
+      body: { studyId: 7, findings: [{ params: { side: "left" } }] }, // missing findingId
+      staffSession: { subjectName: "Dr. Test" },
+    };
+    const res = makeRes();
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(insertValuesCalls).toHaveLength(0);
+  });
+});
+
 describe("GET /drafts — page reload loads an existing draft, or starts blank", () => {
   test("returns the existing draft when one was previously saved for this study", async () => {
     selectDraftsResult = [{ id: 42, studyId: 7, rawFindings: "Findings text", updatedAt: "2026-07-09T00:00:00.000Z" }];

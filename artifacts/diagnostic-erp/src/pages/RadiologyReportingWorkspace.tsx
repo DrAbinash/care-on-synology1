@@ -28,6 +28,7 @@ import QuickFindingsPanel, {
 } from "@/components/radiology/QuickFindingsPanel";
 import { type Side } from "@/lib/sideSwap";
 import { renderAbnormality, EMPTY_INSTANCE, type AbnormalityInstance } from "@/lib/abnormalityEngine";
+import { deriveQuickSelectFindings } from "@/lib/quickSelectFindingsPayload";
 import { validateReport, computeQualityScore } from "@/lib/reportValidator";
 import { isLearnableAddition } from "@/lib/learningEngine";
 import { upsertMeasurement } from "@/lib/measurementVars";
@@ -752,6 +753,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       // useRadiologyDraftId.ts. Fixes the pre-existing bug where every
       // "Save Draft" click created a new orphaned radiology_report_drafts
       // row instead of updating the one already in progress.
+      //
+      // findings[] (Ticket A3.1) serializes the current Quick Select
+      // selection — the structured {findingId, params} data that was never
+      // sent to the server before. The backend accepts and validates it but
+      // does not act on it yet (see SaveDraftBody in
+      // radiology-report-generator.ts) — Ticket A3.2 owns consuming it.
       const res = await api.post<{ success: boolean; draft: { id: number } }>(
         "/api/radiology/report-generator/save-draft",
         {
@@ -767,6 +774,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           findingsSections: useStructured ? findingsMap : null,
           impression: impression.filter(Boolean),
           recommendation: recommendation || null,
+          findings: deriveQuickSelectFindings(selectedQuickIds, quickInstances),
         },
       );
       captureSavedDraftId(res.draft.id);
