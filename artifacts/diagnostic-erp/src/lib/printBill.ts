@@ -168,10 +168,19 @@ export type BuildPrintHtmlOpts = {
   barcodeDataUrl?: string;
   customFooter?: string | null;
   reportCollectionNote?: string | null;
+  // When true, the footer sits a fixed ~3-4 lines below the content instead
+  // of being pushed to the physical bottom of the A5 page via a flex-1
+  // spacer. Billing Desk relies on the flex-1 push (its A5 bills print on a
+  // fixed-length receipt sheet where a bottom-anchored footer is expected);
+  // short receipts printed from the online booking page / kiosk (usually
+  // 1-2 tests) look broken with that much forced blank space, so those
+  // callers opt into the compact gap instead. Defaults to false so Billing
+  // Desk's existing print output is unaffected.
+  compactFooterGap?: boolean;
 };
 
 export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
-  const { bill, clinic, paperSize, isBW, qrDataUrl, reprintBy, reprintReason } = opts;
+  const { bill, clinic, paperSize, isBW, qrDataUrl, reprintBy, reprintReason, compactFooterGap = false } = opts;
   const copies = Math.max(1, Math.min(2, Number(clinic?.billPrintCopies ?? 1) || 1));
   const showCode = clinic?.billShowCode !== false;
   const showCategory = clinic?.billShowCategory !== false;
@@ -263,7 +272,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const billedBySignatureUrl: string = session?.user?.signatureDataUrl ?? "";
 
   const page = (copyIdx: number) => `
-    <section class="receipt" style="${copyIdx > 0 ? "page-break-before:always;" : ""}${isA5 ? "display:flex;flex-direction:column;min-height:148mm;" : ""}">
+    <section class="receipt" style="${copyIdx > 0 ? "page-break-before:always;" : ""}${isA5 && !compactFooterGap ? "display:flex;flex-direction:column;min-height:148mm;" : ""}">
 
       ${reprintBy || reprintReason ? `<div style="text-align:center;font-size:${tinyPx};color:#a16207;border:1px dashed #d97706;padding:2px 4px;margin-bottom:4px;text-transform:uppercase;font-weight:700">DUPLICATE / RE-PRINT${reprintBy ? ` · BY ${esc(reprintBy)}` : ""}${reprintReason ? ` · ${esc(reprintReason)}` : ""}</div>` : ""}
 
@@ -316,6 +325,19 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 
       <!-- HORIZONTAL RULE -->
       <div style="border-bottom:1px solid #000;margin-bottom:6px"></div>
+
+      <!-- QUEUE TOKEN(S) — shown when this bill produced a daily queue token
+           (self-registration via kiosk / online booking, or a walk-in bill
+           routed through a department queue). -->
+      ${bill.tokenNo ? `
+      <div style="text-align:center;background:#eff6ff;border:2px dashed #0284c7;border-radius:6px;padding:4px 8px;margin-bottom:6px">
+        <div style="font-size:${tinyPx};font-weight:800;color:#0c4a6e;letter-spacing:0.5px">QUEUE TOKEN</div>
+        <div style="font-size:${parseInt(titleSize, 10) + 10}px;font-weight:900;color:#082f49;line-height:1.1">#${esc(String(bill.tokenNo))}</div>
+      </div>` : ""}
+      ${bill.testTokens && bill.testTokens.length > 0 ? `
+      <div style="font-size:${tinyPx};margin-bottom:6px">
+        ${bill.testTokens.map((tt) => `<div><strong>${esc(tt.department)}</strong>: Token #${esc(String(tt.tokenNo))}${tt.roomNumber ? ` &middot; Room ${esc(tt.roomNumber)}` : ""}</div>`).join("")}
+      </div>` : ""}
 
       <!-- TEST TABLE with borders -->
       <table style="width:100%;border-collapse:collapse;font-size:${tablePx};margin-bottom:6px">
@@ -379,8 +401,12 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
         </tbody>
       </table>
 
-      <!-- Spacer pushes footer to bottom on A5 -->
-      ${isA5 ? '<div style="flex:1"></div>' : ""}
+      <!-- Spacer: pushes footer to the bottom of the physical A5 page (Billing
+           Desk's fixed-length receipt sheet), or — when compactFooterGap is
+           set — just a fixed ~3-4 line gap so a short receipt (1-2 tests,
+           typical of online booking / kiosk) doesn't leave a huge blank
+           middle before the footer. -->
+      ${isA5 ? (compactFooterGap ? `<div style="height:${Math.round(parseInt(footerPx, 10) * 1.4 * 3.5)}px"></div>` : '<div style="flex:1"></div>') : ""}
 
       <!-- FOOTER -->
       <div style="margin-top:4px;border-top:1px solid #000;padding-top:4px;text-align:center;page-break-inside:avoid">
@@ -413,7 +439,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   html, body { margin: 0; padding: 0; height: 100%; }
   body { background: #fff; color: #000; font-family: Arial, Helvetica, sans-serif; font-size: ${bodyPx}; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .receipt { width: 100%; padding: 2mm 3mm; box-sizing: border-box; }
-  ${isA5 ? ".receipt { min-height: 100vh; display: flex; flex-direction: column; }" : ""}
+  ${isA5 && !compactFooterGap ? ".receipt { min-height: 100vh; display: flex; flex-direction: column; }" : ""}
   table { width: 100%; }
 </style></head><body>${pages}</body></html>`;
 }

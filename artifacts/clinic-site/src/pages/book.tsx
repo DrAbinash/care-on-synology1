@@ -1163,7 +1163,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                       tokenNo,
                     };
                     const clinic: PrintClinic = clinicPrint ?? { name: settings.siteTitle, address: settings.address, logoDataUrl: settings.logoUrl };
-                    const html = buildBillPrintHtml({ bill, clinic, paperSize: "A5", isBW: false, qrDataUrl, format: "classic" });
+                    const html = buildBillPrintHtml({ bill, clinic, paperSize: "A5", isBW: false, qrDataUrl, format: "classic", compactFooterGap: true });
                     writeAndPrint(win, html);
                   }}
                 >
