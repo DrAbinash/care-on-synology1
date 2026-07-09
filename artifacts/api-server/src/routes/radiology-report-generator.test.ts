@@ -17,6 +17,24 @@ let updateSetCalls: Record<string, unknown>[];
 let updateResult: Record<string, unknown> | null;
 let selectDraftsResult: Record<string, unknown>[];
 
+// Ticket A3.2 coverage state — the separate-transaction structured findings
+// dual-write. `structuredFlagEnabled` stands in for
+// ff_radiology_structured_core; `txCallCount`/`txDeleteWhereCalls`/
+// `txInsertValuesCalls` record what happened *inside* db.transaction()
+// specifically, kept apart from the legacy insert/update tracking above so
+// tests can assert the two write paths independently. `txShouldThrow` lets
+// a test simulate the structured write failing without touching the legacy
+// save mocks at all.
+let structuredFlagEnabled: boolean;
+let txCallCount: number;
+let txDeleteWhereCalls: unknown[];
+let txInsertValuesCalls: Record<string, unknown>[][];
+let txShouldThrow: boolean;
+
+vi.mock("../lib/featureFlags", () => ({
+  isFeatureEnabledServer: async (_key: string) => structuredFlagEnabled,
+}));
+
 vi.mock("@workspace/db", () => ({
   db: {
     select: () => ({
@@ -46,9 +64,31 @@ vi.mock("@workspace/db", () => ({
         };
       },
     }),
+    transaction: async (fn: (tx: unknown) => Promise<void>) => {
+      txCallCount++;
+      if (txShouldThrow) throw new Error("simulated structured write failure");
+      const tx = {
+        delete: () => ({
+          where: (cond: unknown) => {
+            txDeleteWhereCalls.push(cond);
+            return Promise.resolve();
+          },
+        }),
+        insert: () => ({
+          values: (rows: Record<string, unknown>[]) => {
+            txInsertValuesCalls.push(rows);
+            return Promise.resolve();
+          },
+        }),
+      };
+      await fn(tx);
+    },
   },
   radiologyReportDraftsTable: {
     id: "id", studyId: "study_id", patientId: "patient_id", updatedAt: "updated_at",
+  },
+  reportFindingInstancesTable: {
+    id: "id", draftId: "draft_id", findingId: "finding_id",
   },
 }));
 
@@ -80,6 +120,11 @@ describe("POST /save-draft — first save creates, second save updates (pre-exis
     insertValuesCalls = [];
     updateSetCalls = [];
     updateResult = { id: 42, studyId: 7 };
+    structuredFlagEnabled = false;
+    txCallCount = 0;
+    txDeleteWhereCalls = [];
+    txInsertValuesCalls = [];
+    txShouldThrow = false;
   });
 
   test("first save (no id in the request) INSERTs a new row", async () => {
@@ -140,6 +185,14 @@ describe("POST /save-draft — findings[] (Ticket A3.1): accepted, validated, ig
     insertValuesCalls = [];
     updateSetCalls = [];
     updateResult = { id: 42, studyId: 7 };
+    // ff_radiology_structured_core stays OFF throughout this suite — it
+    // covers A3.1's default-off behavior specifically. The dual-write itself
+    // (flag ON) is covered separately below in the A3.2 suite.
+    structuredFlagEnabled = false;
+    txCallCount = 0;
+    txDeleteWhereCalls = [];
+    txInsertValuesCalls = [];
+    txShouldThrow = false;
   });
 
   test("accepts a payload WITH findings[] and saves successfully, without persisting the findings data", async () => {
@@ -194,6 +247,126 @@ describe("POST /save-draft — findings[] (Ticket A3.1): accepted, validated, ig
 
     expect(res.statusCode).toBe(400);
     expect(insertValuesCalls).toHaveLength(0);
+  });
+});
+
+describe("POST /save-draft — structured findings dual-write (Ticket A3.2)", () => {
+  beforeEach(() => {
+    insertedRows = [];
+    insertValuesCalls = [];
+    updateSetCalls = [];
+    updateResult = { id: 42, studyId: 7 };
+    structuredFlagEnabled = true;
+    txCallCount = 0;
+    txDeleteWhereCalls = [];
+    txInsertValuesCalls = [];
+    txShouldThrow = false;
+  });
+
+  const TWO_FINDINGS = [
+    { findingId: 8842, params: { side: "", severity: "moderate", chronicity: "", level: "L4-5", value: "" } },
+    { findingId: 9001, params: { side: "right", severity: "mild", chronicity: "chronic", level: "", value: "" } },
+  ];
+
+  test("feature flag OFF (default): findings[] present, but the transaction never runs", async () => {
+    structuredFlagEnabled = false;
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const handler = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+    const req = { body: { studyId: 7, findings: TWO_FINDINGS }, staffSession: { subjectName: "Dr. Test" } };
+    const res = makeRes();
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(txCallCount).toBe(0);
+  });
+
+  test("flag ON, first save (insert, no id): replaces FindingInstance rows for the newly-created draft's id", async () => {
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const handler = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+    const req = { body: { studyId: 7, findings: TWO_FINDINGS }, staffSession: { subjectName: "Dr. Test" } };
+    const res = makeRes();
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.draft.id).toBe(101); // the inserted row's id, from the insert mock
+    expect(txCallCount).toBe(1);
+    expect(txDeleteWhereCalls).toHaveLength(1);
+    expect(txInsertValuesCalls).toHaveLength(1);
+    expect(txInsertValuesCalls[0]).toEqual([
+      { draftId: 101, findingId: 8842, structuredJson: TWO_FINDINGS[0]!.params, source: "quickselect" },
+      { draftId: 101, findingId: 9001, structuredJson: TWO_FINDINGS[1]!.params, source: "quickselect" },
+    ]);
+  });
+
+  test("flag ON, second save (update, id present): replaces FindingInstance rows for the existing draft's id", async () => {
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const handler = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+    const req = { body: { id: 42, studyId: 7, findings: TWO_FINDINGS }, staffSession: { subjectName: "Dr. Test" } };
+    const res = makeRes();
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.draft.id).toBe(42);
+    expect(txCallCount).toBe(1);
+    expect(txInsertValuesCalls[0]).toEqual([
+      { draftId: 42, findingId: 8842, structuredJson: TWO_FINDINGS[0]!.params, source: "quickselect" },
+      { draftId: 42, findingId: 9001, structuredJson: TWO_FINDINGS[1]!.params, source: "quickselect" },
+    ]);
+  });
+
+  test("flag ON, findings: [] (user deselected everything): still replaces — deletes existing rows, inserts none", async () => {
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const handler = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+    const req = { body: { id: 42, studyId: 7, findings: [] }, staffSession: { subjectName: "Dr. Test" } };
+    const res = makeRes();
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(txCallCount).toBe(1);
+    expect(txDeleteWhereCalls).toHaveLength(1);
+    expect(txInsertValuesCalls).toHaveLength(0); // no insert call at all for an empty replace
+  });
+
+  test("flag ON, old client without findings[] key at all: transaction never runs, existing rows untouched", async () => {
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const handler = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+    const req = { body: { id: 42, studyId: 7, rawFindings: "no findings key" }, staffSession: { subjectName: "Dr. Test" } };
+    const res = makeRes();
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(txCallCount).toBe(0);
+  });
+
+  test("replace-not-append: two consecutive saves for the same draft each issue their own delete+insert, not an accumulating one", async () => {
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const handler = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+
+    await handler({ body: { id: 42, studyId: 7, findings: [TWO_FINDINGS[0]] }, staffSession: {} }, makeRes());
+    await handler({ body: { id: 42, studyId: 7, findings: [TWO_FINDINGS[1]] }, staffSession: {} }, makeRes());
+
+    expect(txCallCount).toBe(2);
+    expect(txDeleteWhereCalls).toHaveLength(2); // one delete per save — each save's transaction clears before inserting
+    expect(txInsertValuesCalls[0]).toEqual([
+      { draftId: 42, findingId: 8842, structuredJson: TWO_FINDINGS[0]!.params, source: "quickselect" },
+    ]);
+    // Second save's insert reflects only its own findings — no merge with the first save's row.
+    expect(txInsertValuesCalls[1]).toEqual([
+      { draftId: 42, findingId: 9001, structuredJson: TWO_FINDINGS[1]!.params, source: "quickselect" },
+    ]);
+  });
+
+  test("structured write failure is swallowed: the draft save still succeeds and returns the saved draft", async () => {
+    txShouldThrow = true;
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const handler = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+    const req = { body: { id: 42, studyId: 7, findings: TWO_FINDINGS }, staffSession: { subjectName: "Dr. Test" } };
+    const res = makeRes();
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.draft.id).toBe(42);
+    expect(res.body.success).toBe(true);
   });
 });
 

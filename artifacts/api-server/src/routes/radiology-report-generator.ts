@@ -46,9 +46,11 @@ import {
   radiologyInstitutionalStylesTable,
   mriProtocolSpecsTable,
   mriProtocolQualityResultsTable,
+  reportFindingInstancesTable,
 } from "@workspace/db/schema";
 import { eq, and, desc, isNull, asc, ilike, or } from "drizzle-orm";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { isFeatureEnabledServer } from "../lib/featureFlags";
 
 // ── Upload directory ──────────────────────────────────────────────────────────
 
@@ -1222,16 +1224,15 @@ radiologyReportGeneratorRouter.post("/generate", async (req: Request, res: Respo
 //
 // `findings` (Radiology Roadmap Ticket A3.1) carries the structured Quick
 // Select selection — {findingId, params} per selected finding — that
-// RadiologyReportingWorkspace.tsx now serializes into every save. It is
-// accepted and validated here so a payload that includes it is never
-// rejected, but it is deliberately NOT written anywhere below: `values`
-// (used for both the insert and update branches) is built as an explicit
-// field list that never references `rest.findings`, so accepting this field
-// has no effect on what gets persisted. Consuming it into
-// report_finding_instances is Ticket A3.2's scope, not this one's. `params`
-// is intentionally loosely typed (not pinned to AbnormalityInstance's exact
-// shape) so this schema doesn't need to change in lockstep with future
-// frontend parameter-shape evolution while the field is still a no-op.
+// RadiologyReportingWorkspace.tsx serializes into every save. Since Ticket
+// A3.2, when present and `ff_radiology_structured_core` is enabled, it is
+// also dual-written into report_finding_instances — see the block after the
+// legacy draft save below. `values` (used for both the insert and update
+// branches) is still built as an explicit field list that never references
+// `rest.findings`, so the legacy draft row itself is entirely unaffected by
+// this field either way. `params` is intentionally loosely typed (not
+// pinned to AbnormalityInstance's exact shape) so this schema doesn't need
+// to change in lockstep with future frontend parameter-shape evolution.
 const SaveDraftBody = z.object({
   id: z.number().int().optional(),
   studyId: z.number().int().optional(),
@@ -1287,20 +1288,74 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     aiContributionPct: rest.aiContributionPct ?? null,
   };
 
-  if (id) {
-    const [updated] = await db
-      .update(radiologyReportDraftsTable)
-      .set(values)
-      .where(eq(radiologyReportDraftsTable.id, id))
-      .returning();
-    res.json({ success: true, draft: updated });
-  } else {
-    const [created] = await db
-      .insert(radiologyReportDraftsTable)
-      .values({ ...values, createdBy: author })
-      .returning();
-    res.json({ success: true, draft: created });
+  // Branch unification (Ticket A3.2): both the insert and update paths now
+  // resolve to a single `draft`, with exactly one response point below. This
+  // replaces the old shape where each branch called res.json() independently
+  // — needed so the structured-findings dual-write that follows has one
+  // unambiguous place to hang off, after the legacy save has fully committed
+  // and before the single response is sent. No behavior change: same two
+  // queries, same values, same response shape as before.
+  const draft = id
+    ? (
+        await db
+          .update(radiologyReportDraftsTable)
+          .set(values)
+          .where(eq(radiologyReportDraftsTable.id, id))
+          .returning()
+      )[0]
+    : (
+        await db
+          .insert(radiologyReportDraftsTable)
+          .values({ ...values, createdBy: author })
+          .returning()
+      )[0];
+
+  // Ticket A3.2 — dual-write the structured Quick Select findings into
+  // report_finding_instances, gated on ff_radiology_structured_core (default
+  // OFF). Runs in its own transaction, entirely separate from the legacy
+  // draft save above: replace-not-append (every save fully replaces this
+  // draft's FindingInstance rows, so repeated saves never accumulate
+  // duplicates), and any failure here is caught and logged only — it must
+  // never turn an already-successful draft save into a failed response.
+  // report_finding_instances has no readers yet, so a swallowed failure here
+  // has no observable effect beyond a stale/missing structured snapshot.
+  //
+  // Guarded on `rest.findings !== undefined` (not `.length > 0`): an old
+  // client that never sends the key must leave existing rows untouched, but
+  // a current client that sends `findings: []` (user deselected every Quick
+  // Select finding) is a real signal that the replace should still run and
+  // clear this draft's rows — treating an empty array like "no signal" would
+  // silently leave stale rows behind after a legitimate deselect-all save.
+  if (draft?.id && rest.findings !== undefined) {
+    const draftId = draft.id;
+    const findings = rest.findings;
+    try {
+      if (await isFeatureEnabledServer("ff_radiology_structured_core")) {
+        await db.transaction(async (tx) => {
+          await tx
+            .delete(reportFindingInstancesTable)
+            .where(eq(reportFindingInstancesTable.draftId, draftId));
+          if (findings.length > 0) {
+            await tx.insert(reportFindingInstancesTable).values(
+              findings.map((f) => ({
+                draftId,
+                findingId: f.findingId,
+                structuredJson: f.params ?? {},
+                source: "quickselect",
+              })),
+            );
+          }
+        });
+      }
+    } catch (err) {
+      console.error(
+        "[radiology-report-generator] A3.2 structured findings dual-write failed (non-fatal):",
+        err,
+      );
+    }
   }
+
+  res.json({ success: true, draft });
 });
 
 // GET /drafts — list recent drafts (optionally filtered by studyId or patientId)
