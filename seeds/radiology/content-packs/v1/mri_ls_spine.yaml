@@ -1,0 +1,373 @@
+# CARE Radiology — MRI LS Spine Content Pack (production v1)
+# Binds to _shared_libraries.yaml by key. Governed by CARE_RADIOLOGY_MASTER_DESIGN_SPEC.md.
+# Level-slotted aliases (db/pv/ex/cs/fn/lith) expand per disc level at import.
+
+pack:
+  pack_id: mri_ls_spine
+  version: 1.0.0
+  locale: en-IN
+  status: active
+
+study:
+  key: mri_ls_spine
+  display_name: MRI LS Spine
+  modality: MR
+  aliases: [MRI LS spine, lumbar spine MRI, MRI lumbosacral spine, LSS MRI]
+  default_report_sections: [Clinical details, Technique, Findings, Impression, Advice]
+  normal_template: tpl.normal.mri_ls_spine
+  quick_select_groups:
+    - {name: Pinned, tiles: [mrls.normal_study, mrls.spondylosis, "mrls.protrusion@L4-5", "mrls.protrusion@L5-S1", mrls.listhesis]}
+    - {name: Level x Morphology grid, grid: {rows: loc.spine_lumbar.discs, cols: [mrls.bulge, mrls.protrusion, mrls.extrusion]}}
+    - {name: Alignment, tiles: [mrls.straightened_lordosis, mrls.listhesis]}
+    - {name: Stenosis, tiles: [mrls.canal_stenosis, mrls.foraminal_narrowing, mrls.lf_facet]}
+    - {name: Marrow, tiles: [mrls.modic, mrls.hemangioma, mrls.collapse]}
+    - {name: Incidentals, tiles: [mrls.schmorl, mrls.tarlov]}
+
+findings:
+  - id_key: mrls.normal_study
+    display_name: Normal MRI LS spine
+    category: Normal
+    synonyms: [normal lumbar spine]
+    default_sentence: "{{tpl.normal.mri_ls_spine}}"
+    impression_fragment: "No significant disc herniation or canal stenosis."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: []
+    keyboard_alias: [nls]
+    combo_tiles: []
+    criticality: none
+    normal_variant: true
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mrls.spondylosis
+    display_name: Lumbar spondylosis (header)
+    category: Degenerative
+    synonyms: [degenerative changes, DDD, lumbar spondylotic changes]
+    default_sentence: "Marginal osteophytes with disc desiccation at multiple levels — lumbar spondylosis."
+    impression_fragment: "Lumbar spondylosis."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: []
+    keyboard_alias: [spond]
+    combo_tiles: [combo.mrls.spond_strl, combo.mrls.pivd_classic]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mrls.straightened_lordosis
+    display_name: Straightening of lumbar lordosis
+    category: Alignment
+    synonyms: [loss of lordosis, muscle spasm]
+    default_sentence: "Straightening of the lumbar lordosis — likely positional/muscle spasm."
+    impression_fragment: "Straightened lumbar lordosis."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: []
+    keyboard_alias: [strl]
+    combo_tiles: [combo.mrls.spond_strl]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mrls.desiccation
+    display_name: Disc desiccation
+    category: Degenerative
+    synonyms: [disc dehydration, dark disc]
+    default_sentence: "Reduced T2 signal of the {location} disc(s) — disc desiccation."
+    impression_fragment: null
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: [loc.spine_lumbar.discs]
+    measurements: []
+    keyboard_alias: [des]
+    combo_tiles: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mrls.bulge
+    display_name: Diffuse disc bulge
+    category: Disc
+    synonyms: [annular bulge, disc bulge]
+    default_sentence: "Diffuse posterior disc bulge at {location} indenting the thecal sac."
+    impression_fragment: "Diffuse disc bulge at {location}."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: [loc.spine_lumbar.discs]
+    measurements: [meas.canal_ap]
+    keyboard_alias: [db]                 # level-slotted stem -> db34, db45, db5s1
+    combo_tiles: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mrls.protrusion
+    display_name: Disc protrusion (PIVD)
+    category: Disc
+    synonyms: [PIVD, herniated disc, disc prolapse]
+    default_sentence: "Posterior {disc_zone} disc protrusion at {location} ({size}) indenting the thecal sac and {root_involvement} the {root} nerve root(s), with {severity} canal stenosis."
+    impression_fragment: "{location} {disc_zone} disc protrusion causing {severity} canal stenosis, {root_involvement} the {root} root(s)."
+    recommendation_code: [rec.physio, rec.clincorr]
+    parameters: [param.disc_zone, param.root_involvement, param.size]
+    severity: sev.canal
+    laterality: null
+    location_options: [loc.spine_lumbar.discs, loc.root_map]
+    measurements: [meas.canal_ap]
+    keyboard_alias: [pv]                 # -> pv34, pv45, pv5s1
+    combo_tiles: [combo.mrls.pivd_classic, combo.mrls.pivd_5s1, combo.mrls.two_level]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mrls.protrusion.c1, severity: block, glyph: "X", rule: "disc_zone in [right paracentral, left paracentral] AND named root != traversing root per loc.root_map", message: "Paracentral protrusion should involve the traversing root — root/zone mismatch."}
+      - {id: mrls.protrusion.c2, severity: warn, glyph: "triangle", rule: "severity = severe AND meas.canal_ap within normal range", message: "Severe stenosis stated but canal AP diameter looks normal."}
+    ai_completeness_rules:
+      - {id: mrls.protrusion.k1, glyph: "circle", rule: "indication names a symptomatic side AND that side not addressed at this level", message: "Address the symptomatic side named in the indication."}
+
+  - id_key: mrls.extrusion
+    display_name: Disc extrusion
+    category: Disc
+    synonyms: [extruded disc, sequestrated disc, migrated disc]
+    default_sentence: "{disc_zone} disc extrusion at {location} ({size}) with migration, compressing the {root} nerve root, with {severity} canal stenosis."
+    impression_fragment: "{location} disc extrusion compressing the {root} root, {severity} canal stenosis."
+    recommendation_code: [rec.spec_ortho, rec.spec_nsx]
+    parameters: [param.disc_zone, param.size]
+    severity: sev.canal
+    laterality: null
+    location_options: [loc.spine_lumbar.discs, loc.root_map]
+    measurements: [meas.canal_ap]
+    keyboard_alias: [ex]                 # -> ex45, ex5s1
+    combo_tiles: []
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mrls.extrusion.c1, severity: block, glyph: "X", rule: "named root inconsistent with level+zone per loc.root_map", message: "Compressed root inconsistent with level/zone."}
+    ai_completeness_rules: []
+
+  - id_key: mrls.annular_fissure
+    display_name: Annular fissure
+    category: Disc
+    synonyms: [annular tear, HIZ]
+    default_sentence: "High-intensity zone in the posterior annulus at {location} — annular fissure."
+    impression_fragment: "Annular fissure at {location}."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: [loc.spine_lumbar.discs]
+    measurements: []
+    keyboard_alias: [af]
+    combo_tiles: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mrls.canal_stenosis
+    display_name: Canal stenosis
+    category: Stenosis
+    synonyms: [LSS, spinal stenosis, canal narrowing]
+    default_sentence: "{severity} canal stenosis at {location} (AP diameter {canal_ap}) due to disc bulge, ligamentum flavum thickening and facet arthropathy."
+    impression_fragment: "{severity} canal stenosis at {location}."
+    recommendation_code: [rec.spec_ortho]
+    parameters: []
+    severity: sev.canal
+    laterality: null
+    location_options: [loc.spine_lumbar.discs]
+    measurements: [meas.canal_ap]
+    keyboard_alias: [cs]                 # -> cs34, cs45, cs5s1
+    combo_tiles: [combo.mrls.pivd_classic]
+    criticality: {significant_if: "severe"}
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mrls.canal_stenosis.c1, severity: warn, glyph: "triangle", rule: "severity vs meas.canal_ap band mismatch", message: "Stated stenosis grade does not match canal AP diameter."}
+    ai_completeness_rules: []
+
+  - id_key: mrls.foraminal_narrowing
+    display_name: Neural foraminal narrowing
+    category: Stenosis
+    synonyms: [foraminal stenosis, NFN]
+    default_sentence: "{severity} {laterality} neural foraminal narrowing at {location} {root_involvement} the exiting {root} nerve root."
+    impression_fragment: "{laterality} foraminal narrowing at {location}."
+    recommendation_code: []
+    parameters: [param.root_involvement]
+    severity: sev.canal
+    laterality: lat.rlb
+    location_options: [loc.spine_lumbar.discs, loc.root_map]
+    measurements: []
+    keyboard_alias: [fn]                 # -> fn45, fn5s1
+    combo_tiles: [combo.mrls.pivd_5s1]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mrls.foraminal_narrowing.c1, severity: block, glyph: "X", rule: "named root != exiting root per loc.root_map", message: "Foraminal narrowing involves the exiting root — root/level mismatch."}
+    ai_completeness_rules: []
+
+  - id_key: mrls.lf_facet
+    display_name: Ligamentum flavum / facet hypertrophy
+    category: Stenosis
+    synonyms: [LFH, facet arthropathy]
+    default_sentence: "Ligamentum flavum thickening with facet arthropathy at {location}."
+    impression_fragment: null
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: [loc.spine_lumbar.discs]
+    measurements: []
+    keyboard_alias: [lff]
+    combo_tiles: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mrls.listhesis
+    display_name: Spondylolisthesis
+    category: Alignment
+    synonyms: [listhesis, anterolisthesis, slip]
+    default_sentence: "Grade {severity} anterolisthesis of {location} ({listhesis_mm}), with bilateral pars defects."
+    impression_fragment: "Grade {severity} spondylolisthesis at {location} with pars defects."
+    recommendation_code: [rec.spec_ortho]
+    parameters: []
+    severity: sev.meyerding
+    laterality: null
+    location_options: [loc.spine_lumbar.vertebrae]
+    measurements: [meas.listhesis_mm]
+    keyboard_alias: [lith]              # -> lith45, lith5s1
+    combo_tiles: [combo.mrls.listhesis_set]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mrls.listhesis.c1, severity: warn, glyph: "triangle", rule: "severity grade inconsistent with meas.listhesis_mm derived Meyerding", message: "Stated Meyerding grade does not match measured translation."}
+    ai_completeness_rules: []
+
+  - id_key: mrls.modic
+    display_name: Modic end-plate changes
+    category: Marrow
+    synonyms: [end-plate changes, Modic]
+    default_sentence: "{severity} end-plate changes at {location}."
+    impression_fragment: null
+    recommendation_code: []
+    parameters: []
+    severity: sev.modic
+    laterality: null
+    location_options: [loc.spine_lumbar.discs]
+    measurements: []
+    keyboard_alias: [mod1, mod2, mod3]
+    combo_tiles: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mrls.hemangioma
+    display_name: Vertebral hemangioma
+    category: Marrow
+    synonyms: [haemangioma]
+    default_sentence: "T1/T2 hyperintense lesion in the {location} vertebral body ({size}) — hemangioma."
+    impression_fragment: "Vertebral hemangioma at {location} — incidental."
+    recommendation_code: []
+    parameters: [param.size]
+    severity: null
+    laterality: null
+    location_options: [loc.spine_lumbar.vertebrae]
+    measurements: []
+    keyboard_alias: [hem]
+    combo_tiles: []
+    criticality: none
+    normal_variant: true
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mrls.collapse
+    display_name: Vertebral collapse
+    category: Marrow
+    synonyms: [compression fracture, wedge collapse]
+    default_sentence: "{course} compression collapse of {location} with marrow edema, with retropulsion causing canal compromise."
+    impression_fragment: "{course} collapse of {location}."
+    recommendation_code: [rec.dexa, rec.spec_ortho]
+    parameters: [param.course]
+    severity: null
+    laterality: null
+    location_options: [loc.spine_lumbar.vertebrae]
+    measurements: []
+    keyboard_alias: [col]
+    combo_tiles: [combo.mrls.osteoporotic]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mrls.collapse.c1, severity: warn, glyph: "triangle", rule: "course = old/healed AND marrow edema described", message: "Marrow edema suggests acute/subacute rather than old collapse."}
+    ai_completeness_rules:
+      - {id: mrls.collapse.k1, glyph: "circle", rule: "single vertebral collapse AND no comment on marrow signal of other vertebrae", message: "Comment on marrow signal of remaining vertebrae (screen for metastatic collapse)."}
+
+  - id_key: mrls.schmorl
+    display_name: Schmorl's nodes
+    category: Incidentals
+    synonyms: [Schmorls node]
+    default_sentence: "Schmorl's nodes at {location}."
+    impression_fragment: null
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: [loc.spine_lumbar.discs]
+    measurements: []
+    keyboard_alias: [sch]
+    combo_tiles: []
+    criticality: none
+    normal_variant: true
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mrls.tarlov
+    display_name: Tarlov (perineural) cyst
+    category: Incidentals
+    synonyms: [perineural cyst]
+    default_sentence: "Perineural (Tarlov) cyst(s) at {location} ({size})."
+    impression_fragment: "Tarlov cyst — incidental."
+    recommendation_code: []
+    parameters: [param.size]
+    severity: null
+    laterality: null
+    location_options: [loc.spine_lumbar.vertebrae]
+    measurements: []
+    keyboard_alias: [tar]
+    combo_tiles: []
+    criticality: none
+    normal_variant: true
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+combo_tiles:
+  - {id: combo.mrls.spond_strl, label: "Spondylosis + spasm", members: [mrls.spondylosis, mrls.straightened_lordosis]}
+  - {id: combo.mrls.pivd_classic, label: "PIVD classic L4-5", members: [mrls.spondylosis, mrls.straightened_lordosis, {ref: mrls.protrusion, at: L4-5}, {ref: mrls.canal_stenosis, at: L4-5}]}
+  - {id: combo.mrls.pivd_5s1, label: "PIVD classic L5-S1", members: [mrls.spondylosis, mrls.straightened_lordosis, {ref: mrls.protrusion, at: L5-S1}, {ref: mrls.foraminal_narrowing, at: L5-S1}]}
+  - {id: combo.mrls.two_level, label: "Two-level PIVD", members: [{ref: mrls.protrusion, at: L4-5}, {ref: mrls.protrusion, at: L5-S1}]}
+  - {id: combo.mrls.listhesis_set, label: "Listhesis set", members: [mrls.listhesis, mrls.canal_stenosis]}
+  - {id: combo.mrls.osteoporotic, label: "Osteoporotic collapse", members: [mrls.collapse], recommendations: [rec.dexa]}
+
+study_ai_rules:
+  completeness:
+    - {id: mrls.study.k1, glyph: "circle", rule: "any disc level L1-2..L5-S1 not addressed", message: "Per-level table incomplete — address every disc level."}
+    - {id: mrls.study.k2, glyph: "circle", rule: "conus medullaris level not stated", message: "State the conus medullaris level."}
+  contradiction:
+    - {id: mrls.study.c1, severity: block, glyph: "X", rule: "finding side vs impression side mismatch at same level", message: "Side differs between findings and impression."}
+  impression_suggestions:
+    - "Order worst level first; collapse multi-level disease into one line with 'worst at {level}'."
+    - "Auto-derive Meyerding grade from meas.listhesis_mm."
+    - "Suggest rec.screening_spine when three or more levels involved."

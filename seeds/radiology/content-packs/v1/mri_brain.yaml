@@ -1,0 +1,375 @@
+# CARE Radiology — MRI Brain Content Pack (production v1)
+# Binds to _shared_libraries.yaml by key. Governed by CARE_RADIOLOGY_MASTER_DESIGN_SPEC.md.
+# id_keys are immutable. {slot} names match bound parameter/measurement keys.
+
+pack:
+  pack_id: mri_brain
+  version: 1.0.0
+  locale: en-IN
+  status: active
+
+study:
+  key: mri_brain
+  display_name: MRI Brain
+  modality: MR
+  aliases: [MRI brain, brain MRI, MR brain plain, CEMRI brain]
+  default_report_sections: [Clinical details, Technique, Findings, Impression, Advice]
+  normal_template: tpl.normal.mri_brain
+  quick_select_groups:
+    - {name: Pinned, tiles: [mrbr.normal_study, mrbr.svid, mrbr.acute_infarct, mrbr.granuloma, mrbr.pns_sinusitis]}
+    - {name: Infarct, tiles: [mrbr.acute_infarct, mrbr.lacunar_chronic, mrbr.chronic_infarct_gliosis]}
+    - {name: SVID & atrophy, tiles: [mrbr.svid, mrbr.atrophy]}
+    - {name: Granuloma/Infection, tiles: [mrbr.granuloma, mrbr.ring_lesion]}
+    - {name: Hemorrhage, tiles: [mrbr.hemorrhage, mrbr.microbleeds]}
+    - {name: SOL, tiles: [mrbr.extraaxial_mass, mrbr.intraaxial_mass]}
+    - {name: CSF spaces, tiles: [mrbr.hydrocephalus, mrbr.arachnoid_cyst]}
+    - {name: Demyelination, tiles: [mrbr.demyelination]}
+    - {name: Incidentals, tiles: [mrbr.pns_sinusitis, mrbr.empty_sella]}
+
+findings:
+  - id_key: mrbr.normal_study
+    display_name: Normal MRI brain
+    category: Normal
+    synonyms: [normal brain, NAD brain]
+    default_sentence: "{{tpl.normal.mri_brain}}"
+    impression_fragment: "No acute infarct, hemorrhage, mass lesion or abnormal enhancement."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: []
+    keyboard_alias: [nb]
+    combo_tiles: []
+    criticality: none
+    normal_variant: true
+
+  - id_key: mrbr.acute_infarct
+    display_name: Acute infarct
+    category: Infarct/Ischemia
+    synonyms: [acute stroke, restricted diffusion, DWI restriction]
+    default_sentence: "Area of diffusion restriction with corresponding low ADC in the {location} — acute infarct in the {territory} territory."
+    impression_fragment: "Acute infarct in the {laterality} {territory} territory."
+    recommendation_code: [rec.mra_mrv, rec.spec_neuro]
+    parameters: [param.size]
+    severity: null
+    laterality: lat.rlb
+    location_options: [loc.brain_sites, loc.vascular_territory]
+    measurements: [meas.lesion_size_3d]
+    keyboard_alias: [ain]
+    combo_tiles: [combo.mrbr.stroke_screen]
+    criticality: {critical_if: "large/major territory", registry: crit.large_infarct}
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mrbr.acute_infarct.c1, severity: block, glyph: "X", rule: "finding laterality != impression laterality", message: "Infarct side differs between findings and impression."}
+      - {id: mrbr.acute_infarct.c2, severity: warn, glyph: "triangle", rule: "'acute infarct' asserted without any DWI/ADC descriptor in findings", message: "Acute infarct stated without diffusion descriptor — confirm DWI restriction."}
+    ai_completeness_rules:
+      - {id: mrbr.acute_infarct.k1, glyph: "circle", rule: "indication mentions stroke/deficit AND no DWI series commented", message: "Stroke indication — comment on DWI series."}
+
+  - id_key: mrbr.lacunar_chronic
+    display_name: Chronic lacunar infarcts
+    category: Infarct/Ischemia
+    synonyms: [lacunes, old lacunar infarcts]
+    default_sentence: "{count} chronic lacunar infarct(s) in the {location}."
+    impression_fragment: "Chronic lacunar infarcts as described."
+    recommendation_code: []
+    parameters: [param.count]
+    severity: null
+    laterality: lat.rlb
+    location_options: [loc.brain_sites]
+    measurements: []
+    keyboard_alias: [lac]
+    combo_tiles: [combo.mrbr.svid_age]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mrbr.chronic_infarct_gliosis
+    display_name: Chronic infarct with gliosis
+    category: Infarct/Ischemia
+    synonyms: [old infarct, encephalomalacia, gliosis]
+    default_sentence: "Gliotic area with encephalomalacic changes in the {location} — chronic infarct."
+    impression_fragment: "Chronic infarct in the {laterality} {territory} territory."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: lat.rlb
+    location_options: [loc.brain_sites, loc.vascular_territory]
+    measurements: []
+    keyboard_alias: [cinf]
+    combo_tiles: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mrbr.chronic_infarct_gliosis.c1, severity: warn, glyph: "triangle", rule: "'chronic infarct' AND DWI restriction described at same site", message: "Chronic infarct with true diffusion restriction — reconsider acute/subacute."}
+    ai_completeness_rules: []
+
+  - id_key: mrbr.svid
+    display_name: Small-vessel ischemic changes
+    category: SVID & atrophy
+    synonyms: [SVID, white matter ischemia, chronic ischemic changes, leukoaraiosis]
+    default_sentence: "Discrete/confluent T2/FLAIR hyperintensities in the periventricular and deep white matter — chronic small-vessel ischemic changes ({severity})."
+    impression_fragment: "Chronic small-vessel ischemic changes ({severity})."
+    recommendation_code: []
+    parameters: []
+    severity: sev.fazekas
+    laterality: null
+    measurements: []
+    keyboard_alias: [svi, f1, f2, f3]
+    combo_tiles: [combo.mrbr.svid_age]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules:
+      - {id: mrbr.svid.k1, glyph: "circle", rule: "age from indication < 40 AND severity in [Fazekas II, Fazekas III]", message: "Advanced small-vessel changes in a young patient — consider commenting on alternate etiology."}
+
+  - id_key: mrbr.atrophy
+    display_name: Cerebral atrophy
+    category: SVID & atrophy
+    synonyms: [age-related atrophy, cerebral volume loss]
+    default_sentence: "Prominent cerebral sulci and ventricles suggestive of {severity} diffuse cerebral atrophy, appropriate for age."
+    impression_fragment: "Diffuse cerebral atrophy, {severity}."
+    recommendation_code: []
+    parameters: []
+    severity: sev.global
+    laterality: null
+    measurements: []
+    keyboard_alias: [atr]
+    combo_tiles: [combo.mrbr.svid_age]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mrbr.granuloma
+    display_name: Calcified granuloma
+    category: Granuloma/Infection
+    synonyms: [old NCC, healed tuberculoma, calcified NCC, neurocysticercosis]
+    default_sentence: "{count} calcified granuloma(s) in the {location} with blooming on SWI. {edema}."
+    impression_fragment: "Calcified granuloma(s) — sequelae of old neurocysticercosis/tuberculoma."
+    recommendation_code: [rec.clincorr]
+    parameters: [param.count, param.edema]
+    severity: null
+    laterality: lat.rlb
+    location_options: [loc.brain_sites]
+    measurements: []
+    keyboard_alias: [gran]
+    combo_tiles: [combo.mrbr.granuloma_stable, combo.mrbr.seizure_screen]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mrbr.granuloma.c1, severity: warn, glyph: "triangle", rule: "'calcified granuloma' AND 'marked perilesional edema'", message: "Calcified granuloma with marked edema — consider active lesion (see ring-enhancing lesion)."}
+    ai_completeness_rules:
+      - {id: mrbr.granuloma.k1, glyph: "circle", rule: "prior report recorded granuloma count AND current count not stated", message: "Prior granuloma count exists — confirm current count for comparison."}
+
+  - id_key: mrbr.ring_lesion
+    display_name: Ring-enhancing lesion (NCC/tuberculoma workup)
+    category: Granuloma/Infection
+    synonyms: [ring enhancing lesion, NCC active, tuberculoma]
+    default_sentence: "Ring-enhancing lesion ({size}) in the {location} with {edema}."
+    impression_fragment: "Ring-enhancing lesion in the {location} — neurocysticercosis vs tuberculoma."
+    recommendation_code: [rec.spec_neuro, rec.fup_3m]
+    parameters: [param.size, param.edema, param.enhancement]
+    severity: null
+    laterality: lat.rlb
+    location_options: [loc.brain_sites]
+    measurements: [meas.lesion_size_3d]
+    keyboard_alias: [rel]
+    combo_tiles: [combo.mrbr.seizure_screen]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mrbr.ring_lesion.c1, severity: warn, glyph: "triangle", rule: "enhancement != ring AND finding is ring_lesion", message: "Enhancement pattern not described as ring for a ring-enhancing lesion."}
+    ai_completeness_rules:
+      - {id: mrbr.ring_lesion.k1, glyph: "circle", rule: "ring lesion present AND no perilesional edema field set", message: "State perilesional edema — key to NCC vs tuberculoma."}
+
+  - id_key: mrbr.hemorrhage
+    display_name: Intracranial hemorrhage (MR)
+    category: Hemorrhage
+    synonyms: [ICH, hematoma, bleed]
+    default_sentence: "{course} hematoma in the {location} ({size}), with {edema}."
+    impression_fragment: "{course} intracranial hemorrhage in the {location}."
+    recommendation_code: [rec.urgent]
+    parameters: [param.course, param.size, param.edema]
+    severity: null
+    laterality: lat.rlb
+    location_options: [loc.brain_sites]
+    measurements: [meas.abc2_volume, meas.midline_shift]
+    keyboard_alias: [ich]
+    combo_tiles: []
+    criticality: {critical: crit.ich}
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mrbr.hemorrhage.c1, severity: warn, glyph: "triangle", rule: "hemorrhage asserted without SWI/GRE susceptibility descriptor", message: "Hemorrhage stated without blooming/susceptibility descriptor — confirm on SWI/GRE."}
+      - {id: mrbr.hemorrhage.c2, severity: block, glyph: "X", rule: "meas.midline_shift >= 5 AND escalation not started", message: "Midline shift >= 5 mm — start critical-results escalation before signing."}
+    ai_completeness_rules:
+      - {id: mrbr.hemorrhage.k1, glyph: "circle", rule: "hematoma with 3 diameters entered AND ABC/2 volume not computed", message: "Three diameters present — compute ABC/2 volume."}
+
+  - id_key: mrbr.microbleeds
+    display_name: Microbleeds (SWI)
+    category: Hemorrhage
+    synonyms: [microhemorrhages, SWI blooming foci]
+    default_sentence: "{count} foci of blooming on SWI in {location} distribution — microbleeds."
+    impression_fragment: "Cerebral microbleeds, {location} distribution."
+    recommendation_code: []
+    parameters: [param.count]
+    severity: null
+    laterality: null
+    location_options: [["lobar", "deep/central", "mixed"]]
+    measurements: []
+    keyboard_alias: [mb]
+    combo_tiles: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mrbr.hydrocephalus
+    display_name: Hydrocephalus
+    category: CSF spaces
+    synonyms: [ventriculomegaly, dilated ventricles]
+    default_sentence: "Dilatation of the ventricular system ({severity}), {hydro_flow}. Evans index {evans_index}."
+    impression_fragment: "{hydro_flow} hydrocephalus, {severity}."
+    recommendation_code: [rec.spec_nsx]
+    parameters: [param.hydro_flow]
+    severity: sev.hydro
+    laterality: null
+    measurements: [meas.evans_index]
+    keyboard_alias: [hcp]
+    combo_tiles: []
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mrbr.hydrocephalus.c1, severity: warn, glyph: "triangle", rule: "hydrocephalus asserted AND meas.evans_index <= 0.30", message: "Hydrocephalus stated but Evans index is within normal range."}
+    ai_completeness_rules: []
+
+  - id_key: mrbr.extraaxial_mass
+    display_name: Extra-axial mass (meningioma pattern)
+    category: SOL
+    synonyms: [meningioma, dural-based mass]
+    default_sentence: "Well-defined extra-axial dural-based mass ({size}) along the {location} with {enhancement} enhancement and dural tail, causing {edema}."
+    impression_fragment: "Extra-axial dural-based mass in the {location} — likely meningioma."
+    recommendation_code: [rec.cemri, rec.spec_nsx]
+    parameters: [param.size, param.enhancement, param.edema]
+    severity: null
+    laterality: lat.rlb
+    location_options: [loc.brain_sites]
+    measurements: [meas.lesion_size_3d, meas.midline_shift]
+    keyboard_alias: [men]
+    combo_tiles: []
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mrbr.extraaxial_mass.c1, severity: block, glyph: "X", rule: "meas.midline_shift >= 5 AND escalation not started", message: "Midline shift >= 5 mm — start critical-results escalation before signing."}
+    ai_completeness_rules: []
+
+  - id_key: mrbr.intraaxial_mass
+    display_name: Intra-axial mass (glioma/mets pattern)
+    category: SOL
+    synonyms: [SOL, glioma, metastasis, space occupying lesion]
+    default_sentence: "{count} intra-axial lesion(s) ({size}) in the {location} with {enhancement} enhancement and {edema}."
+    impression_fragment: "Intra-axial mass lesion(s) as described — neoplastic etiology to be considered."
+    recommendation_code: [rec.cemri, rec.spec_nsx, rec.biopsy]
+    parameters: [param.count, param.size, param.enhancement, param.edema]
+    severity: null
+    laterality: lat.rlb
+    location_options: [loc.brain_sites]
+    measurements: [meas.lesion_size_3d, meas.midline_shift]
+    keyboard_alias: [sol]
+    combo_tiles: [combo.mrbr.mets_screen]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mrbr.intraaxial_mass.c1, severity: block, glyph: "X", rule: "meas.midline_shift >= 5 AND escalation not started", message: "Midline shift >= 5 mm — start critical-results escalation before signing."}
+    ai_completeness_rules:
+      - {id: mrbr.intraaxial_mass.k1, glyph: "circle", rule: "count = multiple AND no contrast recommendation present", message: "Multiple lesions — consider contrast study recommendation."}
+
+  - id_key: mrbr.demyelination
+    display_name: Demyelinating plaques
+    category: Demyelination
+    synonyms: [MS plaques, demyelination]
+    default_sentence: "{count} ovoid T2/FLAIR hyperintense lesions in periventricular/juxtacortical location, perpendicular to the ventricular margins — demyelinating plaques."
+    impression_fragment: "Demyelinating disease — clinical and CSF correlation advised."
+    recommendation_code: [rec.spec_neuro, rec.clincorr]
+    parameters: [param.count]
+    severity: null
+    laterality: null
+    measurements: []
+    keyboard_alias: [dem]
+    combo_tiles: []
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mrbr.pns_sinusitis
+    display_name: PNS mucosal thickening
+    category: Incidentals
+    synonyms: [sinusitis, mucosal thickening]
+    default_sentence: "Mucosal thickening in the {location} sinuses."
+    impression_fragment: "Paranasal sinusitis."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: lat.rlb
+    location_options: [loc.pns_sinuses]
+    measurements: []
+    keyboard_alias: [pns]
+    combo_tiles: [combo.mrbr.headache_neg]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mrbr.arachnoid_cyst
+    display_name: Arachnoid cyst
+    category: Incidentals
+    synonyms: [CSF intensity cyst]
+    default_sentence: "CSF-intensity extra-axial cyst ({size}) in the {location} — arachnoid cyst."
+    impression_fragment: "Arachnoid cyst in the {location} — incidental."
+    recommendation_code: []
+    parameters: [param.size]
+    severity: null
+    laterality: lat.rlb
+    location_options: [loc.brain_sites]
+    measurements: []
+    keyboard_alias: [arc]
+    combo_tiles: []
+    criticality: none
+    normal_variant: true
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mrbr.empty_sella
+    display_name: Empty/partially empty sella
+    category: Incidentals
+    synonyms: [empty sella]
+    default_sentence: "Partially empty sella noted — usually an incidental finding."
+    impression_fragment: "Partially empty sella — incidental."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: []
+    keyboard_alias: [es]
+    combo_tiles: []
+    criticality: none
+    normal_variant: true
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+combo_tiles:
+  - {id: combo.mrbr.svid_age, label: "Age-related brain combo", members: [mrbr.svid, mrbr.atrophy, {ref: mrbr.lacunar_chronic, optional: true}]}
+  - {id: combo.mrbr.stroke_screen, label: "Stroke screen positive", members: [mrbr.acute_infarct], recommendations: [rec.mra_mrv, rec.spec_neuro]}
+  - {id: combo.mrbr.granuloma_stable, label: "Stable granuloma", members: [mrbr.granuloma], recommendations: [rec.clincorr]}
+  - {id: combo.mrbr.seizure_screen, label: "Seizure workup", members: [{ref: mrbr.granuloma, alt: mrbr.ring_lesion}], recommendations: [rec.spec_neuro]}
+  - {id: combo.mrbr.headache_neg, label: "Headache screen", members: [mrbr.normal_study, {ref: mrbr.pns_sinusitis, optional: true}]}
+  - {id: combo.mrbr.mets_screen, label: "Mets screen", members: [mrbr.intraaxial_mass], recommendations: [rec.cemri, rec.spec_onc]}
+
+study_ai_rules:
+  completeness:
+    - {id: mrbr.study.k1, glyph: "circle", rule: "no comment on paranasal sinuses/orbits", message: "Comment on PNS/orbits (common medico-legal miss)."}
+  impression_suggestions:
+    - "Assemble impression from fragments worst-first (critical > significant > rest)."
+    - "Suggest vascular territory from dictated site (e.g. corona radiata -> MCA perforator)."
+    - "Ghost Fazekas grade from white-matter description."
