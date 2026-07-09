@@ -1,0 +1,195 @@
+# CARE Radiology — USG KUB Content Pack (production v1)
+# Binds to _shared_libraries.yaml (+ v1_2). Reuses renal findings from usg_abdomen by reference.
+# Flat ai_* format (matches usg_abdomen.yaml / ct_brain.yaml).
+
+pack:
+  pack_id: usg_kub
+  version: 1.0.0
+  locale: en-IN
+  status: active
+  extends: usg_abdomen@1.0.0
+
+study:
+  study: USG KUB
+  modality: US
+  aliases: [USG KUB, KUB scan, renal ultrasound, USG kidneys ureters bladder]
+  default_report_sections: [Right kidney, Left kidney, Ureters, Urinary bladder, Prostate (males), Impression, Advice]
+  normal_template: tpl.normal.usg_kub
+  quick_select_groups:
+    - {name: Pinned, tiles: [uskb.normal_study, uskb.vuj_calculus, uskb.hun_level, usab.renal_calculus, uskb.dj_stent]}
+    - {name: Right kidney / Left kidney, include_from: usg_abdomen, tiles: [usab.renal_calculus, usab.hydronephrosis, usab.renal_cyst, usab.mrd]}
+    - {name: Ureter, tiles: [uskb.ureteric_calculus, uskb.hun_level]}
+    - {name: Bladder/Prostate, tiles: [usab.cystitis, uskb.bladder_debris, usab.prostatomegaly]}
+    - {name: Red flags, tiles: [uskb.pyonephrosis, uskb.perinephric_fluid]}
+
+# Reused as-is from usg_abdomen.yaml (do not redefine).
+included_findings_ref:
+  from: usg_abdomen
+  keys: [usab.renal_calculus, usab.hydronephrosis, usab.renal_cyst, usab.mrd, usab.cystitis, usab.prostatomegaly]
+
+findings:
+  - id_key: uskb.normal_study
+    display_name: Normal USG KUB
+    category: Normal
+    synonyms: [NAD KUB, normal renal scan]
+    keyboard_aliases: [nkub]
+    default_sentence: "{{tpl.normal.usg_kub}}"
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: []
+    measurements: []
+    impression_fragment: "No calculus or hydronephrosis in either kidney. Bladder and visualized ureters unremarkable."
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai_contradiction_rules:
+      - {id: uskb.normal_study.c1, severity: block, glyph: "X", rule: "any abnormal renal/bladder finding present AND normal-KUB impression used", message: "Normal-KUB impression contradicts an abnormal finding."}
+    ai_completeness_rules:
+      - {id: uskb.normal_study.k1, glyph: "circle", rule: "both kidneys and bladder not individually addressed", message: "Address both kidneys and the bladder individually."}
+      - {id: uskb.normal_study.k2, glyph: "circle", rule: "bladder distension adequacy not stated", message: "State bladder distension adequacy (limitation line if poorly distended)."}
+
+  - id_key: uskb.ureteric_calculus
+    display_name: Ureteric calculus with HUN
+    category: Ureter
+    synonyms: [ureteric stone, HUN, ureterolithiasis]
+    keyboard_aliases: [ucal]
+    default_sentence: "{laterality} {location} calculus ({calculus_size}) with {severity} proximal hydroureteronephrosis."
+    parameters: []
+    severity: sev.hydro
+    laterality: lat.rl
+    location_options: [loc.renal_calculus]
+    measurements: [meas.calculus_size]
+    impression_fragment: "{laterality} {location} calculus ({calculus_size}) with {severity} proximal hydroureteronephrosis."
+    recommendation_code: [rec.spec_uro, rec.ctkub, rec.lab_urine]
+    criticality: significant
+    normal_variant: false
+    combo_tiles: [combo.uskb.colic_classic]
+    ai_contradiction_rules:
+      - {id: uskb.ureteric_calculus.c1, severity: block, glyph: "X", rule: "calculus side != hydronephrosis side in same report", message: "Calculus side does not match the obstructed (hydronephrotic) side."}
+    ai_completeness_rules:
+      - {id: uskb.ureteric_calculus.k1, glyph: "circle", rule: "unilateral obstruction found AND contralateral kidney status not stated", message: "State the contralateral kidney status with unilateral obstruction."}
+
+  - id_key: uskb.vuj_calculus
+    display_name: VUJ calculus
+    category: Ureter
+    synonyms: [VUJ stone, vesicoureteric junction calculus]
+    keyboard_aliases: [rvuj, lvuj]
+    default_sentence: "Calculus ({calculus_size}) at the {laterality} vesicoureteric junction with {severity} proximal hydroureteronephrosis. Bladder well distended at examination."
+    parameters: []
+    severity: sev.hydro
+    laterality: lat.rl
+    location_options: []
+    measurements: [meas.calculus_size]
+    impression_fragment: "{laterality} VUJ calculus ({calculus_size}) with {severity} hydroureteronephrosis."
+    recommendation_code: [rec.spec_uro, rec.lab_urine]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: uskb.vuj_calculus.c1, severity: warn, glyph: "triangle", rule: "VUJ calculus reported AND bladder described as empty/poorly distended", message: "A VUJ calculus is unreliable with an underfilled bladder — note the limitation."}
+    ai_completeness_rules: []
+
+  - id_key: uskb.hun_level
+    display_name: Hydroureteronephrosis with obstruction level
+    category: Ureter
+    synonyms: [HUN, obstructive uropathy]
+    keyboard_aliases: [hun]
+    default_sentence: "{laterality} {severity} hydroureteronephrosis, traced up to the {location}; obstructing calculus seen ({calculus_size})."
+    parameters: []
+    severity: sev.hydro
+    laterality: lat.rlb
+    location_options: [loc.renal_calculus]
+    measurements: [meas.calculus_size]
+    impression_fragment: "{laterality} hydroureteronephrosis — obstruction at {location}."
+    recommendation_code: [rec.ctkub, rec.spec_uro]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules:
+      - {id: uskb.hun_level.k1, glyph: "circle", rule: "HUN present AND level of obstruction not stated", message: "State the level to which the dilatation is traced."}
+
+  - id_key: uskb.pyonephrosis
+    display_name: Pyonephrosis pattern
+    category: Red flags
+    synonyms: [infected hydronephrosis, pus in PCS]
+    keyboard_aliases: [pyo]
+    default_sentence: "{laterality} kidney shows {severity} PCS dilatation with internal echoes/debris — ?pyonephrosis."
+    parameters: []
+    severity: sev.hydro
+    laterality: lat.rl
+    location_options: []
+    measurements: []
+    impression_fragment: "?Pyonephrosis {laterality} — URGENT urology referral advised."
+    recommendation_code: [rec.urgent, rec.spec_uro]
+    criticality: {critical: crit.pyonephrosis}
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules:
+      - {id: uskb.pyonephrosis.k1, glyph: "circle", rule: "pyonephrosis suspected AND escalation not started", message: "Obstructed infected kidney — start urology escalation."}
+
+  - id_key: uskb.perinephric_fluid
+    display_name: Perinephric fluid (forniceal rupture pattern)
+    category: Red flags
+    synonyms: [perinephric collection, forniceal rupture]
+    keyboard_aliases: [pnf]
+    default_sentence: "Perinephric fluid noted around the {laterality} kidney — suggestive of forniceal rupture in the setting of obstruction."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location_options: []
+    measurements: []
+    impression_fragment: "Perinephric fluid {laterality} — forniceal rupture likely; urgent urology opinion advised."
+    recommendation_code: [rec.urgent, rec.spec_uro]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: uskb.dj_stent
+    display_name: DJ stent in situ
+    category: Post-treatment
+    synonyms: [double J stent, ureteric stent]
+    keyboard_aliases: [djs]
+    default_sentence: "{laterality} DJ stent in situ with upper coil in the renal pelvis and lower coil in the bladder. No residual calculus seen."
+    parameters: []
+    severity: null
+    laterality: lat.rlb
+    location_options: []
+    measurements: []
+    impression_fragment: "{laterality} DJ stent in situ; no residual calculus."
+    recommendation_code: [rec.spec_uro]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: uskb.bladder_debris
+    display_name: Bladder debris / cystitis
+    category: Bladder
+    synonyms: [bladder debris, cystitis]
+    keyboard_aliases: [bdb]
+    default_sentence: "Internal echoes/debris within the urinary bladder with mild wall thickening — cystitis pattern."
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: []
+    measurements: []
+    impression_fragment: "Cystitis — urine routine correlation advised."
+    recommendation_code: [rec.lab_urine]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+combo_tiles:
+  - {id: combo.uskb.colic_classic, label: "Renal colic classic", members: [uskb.ureteric_calculus, uskb.hun_level], recommendations: [rec.spec_uro, rec.ctkub]}
+  - {id: combo.uskb.stent_check, label: "Stent check", members: [uskb.dj_stent]}
+  - {id: combo.uskb.pyonephrosis_set, label: "Pyonephrosis emergency", members: [uskb.pyonephrosis], recommendations: [rec.urgent, rec.spec_uro]}
+
+critical_findings:
+  - crit.pyonephrosis
+
+implementation_notes:
+  - "Reuses usg_abdomen renal/bladder/prostate findings by reference (included_findings_ref); this pack ADDS uskb.* only."
+  - "Calculus-side vs HUN-side mismatch is a blocking contradiction; VUJ calculus with an empty bladder is a warn."
+  - "Indian terms: HUN = hydroureteronephrosis; PCS = pelvicalyceal system; DJ stent = double-J ureteric stent; 'stone' = calculus."

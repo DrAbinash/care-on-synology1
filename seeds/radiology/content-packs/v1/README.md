@@ -21,8 +21,19 @@ by the engineering team; nothing here prescribes schema, API, or UI.
 | `ct_brain.yaml` | CT Brain (NCCT Head) — 15 findings |
 | `usg_abdomen.yaml` | USG Whole Abdomen — 27 findings |
 
-Remaining first-tranche studies (USG KUB, HRCT Chest, Chest X-ray, Lower Limb Doppler, Mammography)
-are specified in the annex and convert next using the same pack shape.
+The first tranche is now complete (10/10). The remaining five use the same flat `ai_*` pack shape
+and bind to the additive `_shared_libraries_v1_2.yaml` (chest/doppler/mammography/KUB entities:
+lung/breast/vascular locations, effusion/PTX/BI-RADS/ACR/ABI scales, calc/waveform params,
+CTR/nodule/ABI/reflux measurements, sputum/HRCT/PFT recommendations, and the matching critical
+entries + normal templates):
+
+| File | Study | Findings |
+|---|---|---|
+| `usg_kub.yaml` | USG KUB (reuses `usab.*` renal set by reference) | 8 (+6 reused) |
+| `hrct_chest.yaml` | HRCT Chest | 18 |
+| `cxr.yaml` | Chest X-ray | 16 |
+| `doppler_ll.yaml` | Lower Limb Doppler (venous + arterial) | 15 |
+| `mammography.yaml` | Mammography (BI-RADS management-bound) | 13 |
 
 ### Neuro / spine-screening / MSK / orbit packs (v1.1)
 
