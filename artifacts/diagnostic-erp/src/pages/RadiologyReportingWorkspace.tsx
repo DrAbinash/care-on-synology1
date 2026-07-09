@@ -325,6 +325,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     const prev = insertedTextRef.current.get(id);
     if (prev) {
       if (prev.finding) setRawFindings((p) => removeBlock(p, prev.finding));
+      // removeImpression here is quickFindingsMerge's imported (lines, line) => string[]
+      // — previously shadowed by a same-named local function (Bug-001, now renamed
+      // to deleteImpressionLineAt below), which silently broke deselect's impression
+      // removal. Now correctly resolves to the intended exact-match removal.
       if (prev.impression) setImpression((p) => removeImpression(p, prev.impression));
       if (prev.technique) setTechnique((p) => removeBlock(p, prev.technique));
       if (prev.recommendation) setRecommendation((p) => removeBlock(p, prev.recommendation));
@@ -700,7 +704,13 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     });
   }
 
-  function removeImpression(index: number) {
+  // Named distinctly from quickFindingsMerge's imported removeImpression(lines, line)
+  // (Bug-001): this one was a same-named local function declaration that, via
+  // JS/TS hoisting, shadowed the import for this component's entire scope —
+  // including applyRendered's call at an earlier line — so Quick Select's
+  // deselect path was silently calling this by-index function instead of the
+  // intended exact-match removal. Renamed so the import resolves correctly.
+  function deleteImpressionLineAt(index: number) {
     setImpression((prev) => prev.filter((_, i) => i !== index));
   }
 
@@ -1525,7 +1535,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                         variant="ghost"
                         size="icon"
                         className="h-7 w-7 mt-0.5 shrink-0"
-                        onClick={() => removeImpression(i)}
+                        onClick={() => deleteImpressionLineAt(i)}
                       >
                         <Trash2 size={12} />
                       </Button>
