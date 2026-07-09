@@ -12,6 +12,7 @@ import accountingRouter from "./accounting";
 import usersRouter from "./users";
 import emailSettingsRouter from "./email-settings";
 import auditTrailRouter from "./audit-trail";
+import featureFlagsRouter from "./featureFlags";
 import discountsRouter from "./discounts";
 import aiRouter from "./ai";
 import pacsRouter from "./pacs";
@@ -423,6 +424,12 @@ router.use("/email-settings", requireStaffAuth, requireStaffSubPermission("/sett
 // module audit rows). Gated to security-permitted staff / admins — same gate
 // as Settings → Security.
 router.use("/audit-trail", requireStaffAuth, requireStaffSubPermission("/settings", "security"), auditTrailRouter);
+// Server-side feature flags (Radiology Implementation Roadmap, Ticket T0.1).
+// GET is open to any authenticated staff member — the client needs it on
+// every page load to hydrate ff_radiology_* flags. Mutations are gated
+// requireAdminRole INSIDE the router (see featureFlags.ts), not here, so no
+// extra permission wrapper is added at the mount point.
+router.use("/feature-flags", requireStaffAuth, featureFlagsRouter);
 // Test categories: anyone with staff auth can READ the list (Test Catalog,
 // Billing Desk, Reports filter all need it). Mutations stay admin-only via
 // the /settings permission.

@@ -95,6 +95,7 @@ import {
 import { useState, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useVersionCheck } from "@/hooks/useVersionCheck";
+import { useServerFeatureFlags } from "@/hooks/useServerFeatureFlags";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { useGlobalScanner } from "@/hooks/useGlobalScanner";
@@ -353,6 +354,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const theme = resolveTheme(effectiveThemeId);
 
   const { updateAvailable, dismiss: dismissUpdate } = useVersionCheck();
+  useServerFeatureFlags(); // hydrates ff_radiology_* flags from /api/feature-flags (Ticket T0.1)
   const isOnline = useOnlineStatus();
   const { isActive: scannerActive } = useGlobalScanner();
 
