@@ -1219,6 +1219,19 @@ radiologyReportGeneratorRouter.post("/generate", async (req: Request, res: Respo
 });
 
 // POST /save-draft
+//
+// `findings` (Radiology Roadmap Ticket A3.1) carries the structured Quick
+// Select selection — {findingId, params} per selected finding — that
+// RadiologyReportingWorkspace.tsx now serializes into every save. It is
+// accepted and validated here so a payload that includes it is never
+// rejected, but it is deliberately NOT written anywhere below: `values`
+// (used for both the insert and update branches) is built as an explicit
+// field list that never references `rest.findings`, so accepting this field
+// has no effect on what gets persisted. Consuming it into
+// report_finding_instances is Ticket A3.2's scope, not this one's. `params`
+// is intentionally loosely typed (not pinned to AbnormalityInstance's exact
+// shape) so this schema doesn't need to change in lockstep with future
+// frontend parameter-shape evolution while the field is still a no-op.
 const SaveDraftBody = z.object({
   id: z.number().int().optional(),
   studyId: z.number().int().optional(),
@@ -1235,6 +1248,12 @@ const SaveDraftBody = z.object({
   formattedReportHtml: z.string().optional(),
   formattedReportText: z.string().optional(),
   aiContributionPct: z.number().min(0).max(100).optional(),
+  findings: z.array(
+    z.object({
+      findingId: z.number().int(),
+      params: z.record(z.unknown()).optional(),
+    }).passthrough(),
+  ).optional(),
 });
 
 radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest, res: Response) => {
@@ -1247,6 +1266,8 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
   const { id, ...rest } = parsed.data;
   const author = req.staffSession?.subjectName ?? null;
 
+  // `rest.findings` (A3.1) is intentionally not read anywhere below —
+  // accepted by the schema above, ignored by this handler until A3.2.
   const values = {
     studyId: rest.studyId ?? null,
     worklistId: rest.worklistId ?? null,

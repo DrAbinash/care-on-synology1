@@ -22,7 +22,7 @@ import {
   Search, Globe, Copy, ExternalLink, Check, Network, MapPin, Database,
   RefreshCcw, FileCode, Send, QrCode, Palette, Bot, Inbox, ChevronRight,
   ArrowLeft, Phone, Layers, AlertTriangle, ScanLine, Receipt, Keyboard, Brain,
-  Sparkles, Construction, GraduationCap, Tv, GripVertical, ScrollText,
+  Sparkles, Construction, GraduationCap, Tv, GripVertical, ScrollText, Flag,
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
@@ -176,6 +176,7 @@ const TABS = [
   { id: "manual", label: "User Manual", icon: FileDown },
   { id: "security", label: "Security", icon: ShieldCheck },
   { id: "audit-log", label: "Audit Log", icon: ScrollText },
+  { id: "feature-flags", label: "Feature Flags", icon: Flag },
   { id: "password", label: "Change Password", icon: KeyRound },
 ];
 
@@ -246,7 +247,7 @@ export default function Settings() {
       if (t.id === "password" || t.id === "manual") return true;
       let action = t.id;
       if (t.id === "email" || t.id === "whatsapp") action = "notifications";
-      else if (t.id === "audit-log") action = "security";
+      else if (t.id === "audit-log" || t.id === "feature-flags") action = "security";
       else if (t.id === "billing-print" || t.id === "discount-reasons" || t.id === "receipt-messages" || t.id === "footer-services" || t.id === "promotional-footer") action = "billing";
       else if (t.id === "printers" || t.id === "scanner") action = "devices";
       else if (t.id === "departments" || t.id === "locations" || t.id === "branches" || t.id === "report-templates") action = "infrastructure";
@@ -263,7 +264,7 @@ export default function Settings() {
       if (t.id === "password" || t.id === "manual") return true;
       let action = t.id;
       if (t.id === "email" || t.id === "whatsapp") action = "notifications";
-      else if (t.id === "audit-log") action = "security";
+      else if (t.id === "audit-log" || t.id === "feature-flags") action = "security";
       else if (t.id === "billing-print" || t.id === "discount-reasons" || t.id === "receipt-messages" || t.id === "footer-services" || t.id === "promotional-footer") action = "billing";
       else if (t.id === "printers" || t.id === "scanner") action = "devices";
       else if (t.id === "departments" || t.id === "locations" || t.id === "branches" || t.id === "report-templates") action = "infrastructure";
@@ -312,6 +313,7 @@ export default function Settings() {
         {tab === "about" && <AboutTab />}
         {tab === "security" && <SecurityTab />}
         {tab === "audit-log" && <AuditLogTab />}
+        {tab === "feature-flags" && <FeatureFlagsTab />}
         {tab === "password" && <ChangePasswordTab />}
       </div>
     </div>
@@ -3395,6 +3397,82 @@ function AuditLogTab() {
             <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>Previous</Button>
             <Button variant="outline" size="sm" disabled={page >= totalPages - 1} onClick={() => setPage((p) => p + 1)}>Next</Button>
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type FeatureFlagRow = {
+  key: string; enabled: boolean; description: string;
+  updatedBy: string | null; updatedAt: string;
+};
+
+function FeatureFlagsTab() {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const { data: flags = [], isLoading } = useQuery<FeatureFlagRow[]>({
+    queryKey: ["feature-flags"],
+    queryFn: () => api.get("/api/feature-flags"),
+  });
+
+  const toggle = useMutation({
+    mutationFn: ({ key, enabled }: { key: string; enabled: boolean }) =>
+      api.patch<FeatureFlagRow>(`/api/feature-flags/${key}`, { enabled }),
+    onSuccess: (updated) => {
+      qc.invalidateQueries({ queryKey: ["feature-flags"] });
+      toast({ title: updated.enabled ? "Flag enabled" : "Flag disabled", description: updated.key });
+    },
+    onError: (err: unknown) => {
+      toast({ title: "Could not update flag", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    },
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-card border border-card-border rounded-xl p-4">
+        <h2 className="font-bold text-lg flex items-center gap-2"><Flag size={16} /> Feature Flags</h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Server-side switches for the Radiology Implementation Roadmap. Every flag below is dark by default —
+          turning one on changes real backend behavior for every radiologist, not just this browser. See the
+          roadmap document for each flag's rollout plan and rollback-by-flip guarantee.
+        </p>
+      </div>
+
+      <div className="bg-card border border-card-border rounded-xl overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-card-border bg-muted/40">
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Flag</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Description</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Last changed</th>
+                <th className="text-right px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Enabled</th>
+              </tr>
+            </thead>
+            <tbody>
+              {isLoading ? (
+                <tr><td colSpan={4} className="px-4 py-10 text-center text-muted-foreground">Loading feature flags…</td></tr>
+              ) : flags.length === 0 ? (
+                <tr><td colSpan={4} className="px-4 py-10 text-center text-muted-foreground">No feature flags found.</td></tr>
+              ) : flags.map((f) => (
+                <tr key={f.key} className="border-b border-card-border/60 hover:bg-muted/30">
+                  <td className="px-4 py-3 font-mono text-xs">{f.key}</td>
+                  <td className="px-4 py-3 text-muted-foreground max-w-md">{f.description}</td>
+                  <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
+                    {f.updatedBy ? `${f.updatedBy} · ${new Date(f.updatedAt).toLocaleString("en-IN")}` : "—"}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <Toggle
+                      checked={f.enabled}
+                      onChange={(v) => toggle.mutate({ key: f.key, enabled: v })}
+                      label={`Toggle ${f.key}`}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
