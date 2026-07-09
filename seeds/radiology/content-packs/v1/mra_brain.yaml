@@ -1,0 +1,186 @@
+# CARE Radiology — MR Angiography Brain Content Pack (production v1)
+# Binds to _shared_libraries.yaml (+ v1_1). 3D TOF intracranial MRA.
+
+pack:
+  pack_id: mra_brain
+  version: 1.0.0
+  locale: en-IN
+  status: active
+
+study:
+  study: MR Angiography Brain
+  modality: MR
+  aliases: [MRA brain, intracranial MRA, TOF angiography brain, MR angiogram head]
+  description: >-
+    3D time-of-flight angiography of the intracranial circulation (circle of Willis) for aneurysm,
+    stenosis, occlusion and vascular malformation. Usually paired with a plain brain study.
+  default_sections: [Clinical details, Technique (3D TOF), Findings (vessel-wise), Impression, Advice]
+  quick_select_groups:
+    - {name: Pinned, tiles: [mra.normal_study, mra.aneurysm, mra.stenosis, mra.occlusion, mra.hypoplasia]}
+    - {name: Aneurysm/malformation, tiles: [mra.aneurysm, mra.avm]}
+    - {name: Steno-occlusive, tiles: [mra.stenosis, mra.occlusion]}
+    - {name: Variants, tiles: [mra.hypoplasia, mra.fetal_pca]}
+
+findings:
+  - id_key: mra.normal_study
+    display_name: Normal MRA brain
+    synonyms: [normal angiogram, patent circle of Willis]
+    keyboard_aliases: [nmra]
+    default_sentence: "{{tpl.normal.mra_brain}}"
+    parameters: []
+    severity: null
+    laterality: null
+    location: []
+    measurements: []
+    impression_fragment: "Normal intracranial MR angiogram. No aneurysm, stenosis or occlusion."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai:
+      completeness_checks:
+        - {id: mra.normal_study.k1, glyph: "circle", rule: "anterior and posterior circulation not both commented", message: "Comment on both anterior and posterior circulation."}
+      contradiction_checks:
+        - {id: mra.normal_study.c1, severity: block, glyph: "X", rule: "aneurysm/stenosis/occlusion present AND normal impression used", message: "Normal impression contradicts a positive vascular finding."}
+      differential: []
+      follow_up: []
+
+  - id_key: mra.aneurysm
+    display_name: Intracranial aneurysm
+    synonyms: [aneurysm, berry aneurysm, saccular aneurysm]
+    keyboard_aliases: [anrx]
+    default_sentence: "A {aneurysm_shape} aneurysm arising from the {location} (neck {neck}, dome {dome})."
+    parameters: [param.aneurysm_shape]
+    severity: null
+    laterality: null
+    location: [loc.cerebral_arteries]
+    measurements: [meas.aneurysm_size]
+    impression_fragment: "{aneurysm_shape} aneurysm at the {location} (dome {dome}) — neurosurgical/neuro-interventional opinion advised."
+    recommendation: ["Neurosurgical / neuro-interventional consultation", "DSA correlation"]
+    recommendation_code: [rec.spec_nsx, rec.dsa]
+    criticality: {critical: crit.aneurysm}
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mra.aneurysm.k1, glyph: "circle", rule: "aneurysm stated AND neck/dome dimensions not given", message: "State aneurysm neck and dome dimensions (treatment planning)."}
+        - {id: mra.aneurysm.k2, glyph: "circle", rule: "aneurysm found AND multiplicity not addressed", message: "State whether the aneurysm is solitary or multiple."}
+      contradiction_checks:
+        - {id: mra.aneurysm.c1, severity: warn, glyph: "triangle", rule: "infundibulum < 3 mm at a branch origin labelled aneurysm", message: "Small funnel at a branch origin may be an infundibulum, not an aneurysm."}
+      differential: ["saccular aneurysm", "infundibular dilatation", "vessel loop / TOF artefact"]
+      follow_up: ["DSA / CT angiography for confirmation and planning", "neuro-interventional opinion"]
+
+  - id_key: mra.stenosis
+    display_name: Arterial stenosis
+    synonyms: [intracranial stenosis, luminal narrowing]
+    keyboard_aliases: [sten]
+    default_sentence: "Focal flow-signal loss/narrowing in the {location} suggesting {stenosis_luminal} stenosis."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [loc.cerebral_arteries]
+    measurements: [meas.stenosis_luminal]
+    impression_fragment: "Stenosis of the {location} ({stenosis_luminal}) — correlate clinically."
+    recommendation: ["Neurology consultation", "Clinical correlation"]
+    recommendation_code: [rec.spec_neuro, rec.clincorr]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks: []
+      contradiction_checks:
+        - {id: mra.stenosis.c1, severity: warn, glyph: "triangle", rule: "signal loss at a tortuous segment labelled stenosis", message: "TOF overestimates stenosis at tortuous/slow-flow segments — consider artefact."}
+      differential: ["atherosclerotic stenosis", "vasospasm", "vasculitis", "TOF flow artefact", "moyamoya (if progressive)"]
+      follow_up: ["contrast MRA / CTA / DSA if flow-limiting"]
+
+  - id_key: mra.occlusion
+    display_name: Arterial occlusion
+    synonyms: [vessel occlusion, absent flow]
+    keyboard_aliases: [occl]
+    default_sentence: "Absent flow signal in the {location} with distal reconstitution via collaterals — occlusion."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [loc.cerebral_arteries]
+    measurements: []
+    impression_fragment: "Occlusion of the {location} — correlate with parenchymal (DWI) findings."
+    recommendation: ["Neurology consultation"]
+    recommendation_code: [rec.spec_neuro]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mra.occlusion.k1, glyph: "circle", rule: "occlusion on MRA AND corresponding DWI/parenchymal correlation not mentioned", message: "Correlate the occlusion with parenchymal DWI findings on the brain study."}
+      contradiction_checks: []
+      differential: ["thromboembolic occlusion", "dissection", "severe atherosclerosis", "TOF signal dropout artefact"]
+      follow_up: ["contrast MRA / DSA", "stroke workup"]
+
+  - id_key: mra.avm
+    display_name: Arteriovenous malformation
+    synonyms: [AVM, vascular malformation, nidus]
+    keyboard_aliases: [avm]
+    default_sentence: "A tangle of abnormal vessels (nidus) in the {location} with enlarged feeding arteries and early draining veins — arteriovenous malformation."
+    parameters: []
+    severity: null
+    laterality: lat.rlb
+    location: [loc.brain_sites]
+    measurements: [meas.tumor_3d]
+    impression_fragment: "Arteriovenous malformation in the {location} — neuro-interventional opinion and DSA advised."
+    recommendation: ["Neuro-interventional consultation", "DSA correlation"]
+    recommendation_code: [rec.spec_nsx, rec.dsa]
+    criticality: significant
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["AVM", "dural AV fistula", "vascular tumour"], follow_up: ["DSA for Spetzler-Martin grading"]}
+
+  - id_key: mra.hypoplasia
+    display_name: Vessel hypoplasia/aplasia (variant)
+    synonyms: [hypoplastic vessel, A1 hypoplasia, vertebral hypoplasia]
+    keyboard_aliases: [hypo]
+    default_sentence: "The {location} is hypoplastic — a normal anatomical variant."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location: [loc.cerebral_arteries]
+    measurements: []
+    impression_fragment: "{location} hypoplasia — anatomical variant."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai:
+      completeness_checks: []
+      contradiction_checks:
+        - {id: mra.hypoplasia.c1, severity: warn, glyph: "triangle", rule: "abrupt cut-off labelled hypoplasia", message: "Abrupt cut-off favours occlusion over hypoplasia — reconsider."}
+      differential: ["congenital hypoplasia (variant)", "occlusion", "flow-gap artefact"]
+      follow_up: []
+
+  - id_key: mra.fetal_pca
+    display_name: Fetal origin PCA (variant)
+    synonyms: [fetal PCA, fetal posterior communicating artery]
+    keyboard_aliases: [fpca]
+    default_sentence: "The {laterality} posterior cerebral artery arises predominantly from the internal carotid via a prominent posterior communicating artery — fetal-type PCA (variant)."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location: []
+    measurements: []
+    impression_fragment: "{laterality} fetal-origin PCA — anatomical variant."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: []}
+
+combo_tiles:
+  - {id: combo.mra.aneurysm_workup, label: "Aneurysm workup", members: [mra.aneurysm], recommendations: [rec.spec_nsx, rec.dsa]}
+  - {id: combo.mra.stroke_vessels, label: "Stroke vessel study", members: [{ref: mra.occlusion, alt: mra.stenosis}], recommendations: [rec.spec_neuro]}
+  - {id: combo.mra.negative, label: "MRA negative", members: [mra.normal_study]}
+
+normal_template: tpl.normal.mra_brain
+
+critical_findings:
+  - crit.aneurysm
+
+implementation_notes:
+  - "TOF MRA overestimates stenosis and can create flow-gap artefacts — contradiction rules flag tortuous-segment signal loss and abrupt cut-offs."
+  - "Always give aneurysm neck + dome dimensions and state multiplicity (planning + rupture risk)."
+  - "Correlate any occlusion with DWI on the companion brain study."
+  - "Abbreviations: TOF = time-of-flight; AVM = arteriovenous malformation; PCoA = posterior communicating artery; DSA = digital subtraction angiography."

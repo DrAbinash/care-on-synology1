@@ -1,0 +1,78 @@
+# CARE Radiology — MRI LS Spine WITH Whole Spine Screening (production v1)
+# Dedicated LS spine findings reuse the LS spine set (mri_ls_spine.yaml keys) by inclusion;
+# whole-spine screening reuses _screening_whole_spine.yaml. Binds to shared libraries by key.
+
+pack:
+  pack_id: mri_ls_spine_screening
+  version: 1.0.0
+  locale: en-IN
+  status: active
+  extends: mri_ls_spine@1.0.0
+  include_group: [screening_whole_spine@1.0.0]
+
+study:
+  study: MRI LS Spine with Whole Spine Screening
+  modality: MR
+  aliases: [MRI LS spine screening, lumbar spine MRI with whole spine screen, LS spine + screening]
+  description: >-
+    Dedicated lumbosacral spine sequences plus sagittal whole-spine screening (cervical + dorsal +
+    lumbar) to exclude multi-level disease, marrow lesions, cord signal change and infection. Common
+    Indian request for backache with radiculopathy, suspected metastases, or Koch's spine.
+  default_sections: [Clinical details, Technique, Findings — Lumbosacral spine, Findings — Whole spine screening, Impression, Advice]
+  quick_select_groups:
+    - {name: Pinned, tiles: [mrls.normal_study, mrls.spondylosis, "mrls.protrusion@L4-5", "mrls.protrusion@L5-S1", screen.regions_normal]}
+    - {name: LS dedicated, include_from: mri_ls_spine, groups: [Level x Morphology grid, Alignment, Stenosis, Marrow, Incidentals]}
+    - {name: Whole spine screening, tiles: [screen.regions_normal, screen.hemangioma, screen.schmorl, screen.modic, screen.scoliosis, screen.cord_signal, screen.syrinx, screen.metastasis, screen.infection]}
+
+# Dedicated LS findings: reused as-is from mri_ls_spine.yaml (do not redefine).
+included_findings_ref:
+  from: mri_ls_spine
+  keys: [mrls.normal_study, mrls.spondylosis, mrls.straightened_lordosis, mrls.desiccation, mrls.bulge, mrls.protrusion, mrls.extrusion, mrls.annular_fissure, mrls.canal_stenosis, mrls.foraminal_narrowing, mrls.lf_facet, mrls.listhesis, mrls.modic, mrls.hemangioma, mrls.collapse, mrls.schmorl, mrls.tarlov]
+
+# Screening findings: reused as-is from _screening_whole_spine.yaml (do not redefine).
+included_screening_ref:
+  from: screening_whole_spine
+  keys: [screen.regions_normal, screen.hemangioma, screen.schmorl, screen.modic, screen.scoliosis, screen.cord_signal, screen.syrinx, screen.metastasis, screen.infection]
+
+# LS-screening-specific finding not present in either base (bridges the two).
+findings:
+  - id_key: mrls_scr.multilevel_flag
+    display_name: Multi-level disease flag (screen-driven)
+    synonyms: [diffuse degenerative disease, multi-level DDD]
+    keyboard_aliases: [mlvl]
+    default_sentence: "Multi-level degenerative disc disease involving the {location} levels, additionally noted on the screening sequences."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [loc.spine_whole]
+    measurements: []
+    impression_fragment: "Multi-level degenerative disc disease as detailed — worst at {location}."
+    recommendation: []
+    recommendation_code: [rec.physio, rec.clincorr]
+    criticality: none
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrls_scr.multilevel_flag.k1, glyph: "circle", rule: "three or more disc levels involved AND screening_spine recommendation absent", message: "Consider dedicated whole-spine imaging when three or more levels are involved."}
+      contradiction_checks: []
+      differential: []
+      follow_up: ["dedicated whole-spine MRI if clinically warranted"]
+
+combo_tiles:
+  - {id: combo.mrls_scr.backache_screen_neg, label: "Backache, LS + clean screen", members: [mrls.spondylosis, mrls.straightened_lordosis, screen.regions_normal]}
+  - {id: combo.mrls_scr.pivd_clean_screen, label: "PIVD L4-5 + clean screen", members: [{ref: mrls.protrusion, at: L4-5}, {ref: mrls.canal_stenosis, at: L4-5}, screen.regions_normal]}
+  - {id: combo.mrls_scr.mets_alert, label: "Metastasis alert", members: [screen.metastasis], recommendations: [rec.contrast_mri, rec.spec_onc]}
+
+normal_template: tpl.normal.mri_ls_spine   # dedicated; whole-spine screen normal = tpl.normal.whole_spine_screen
+
+critical_findings:
+  - crit.cauda_equina        # severe canal compromise with sphincter symptoms
+  - crit.epidural_abscess    # if screening reveals infective epidural collection
+  # inherits mrls severe stenosis (significant) from base study
+
+implementation_notes:
+  - "Do NOT redefine included_findings_ref / included_screening_ref keys — the importer resolves them from the referenced packs; this pack only ADDS mrls_scr.* and its own groups/combos."
+  - "Screening findings render under a separate 'Whole spine screening' heading, after dedicated LS findings (screening_impression_rules in _screening_whole_spine.yaml)."
+  - "Impression assembly: dedicated LS findings first (worst level first), then a single screening line; if screen clean, append screen.regions_normal impression fragment."
+  - "Vertebral numbering rule (from C2, flag transitional LS vertebra) applies to all screen.* marrow/level findings."
+  - "Indian terminology: PIVD = protrusion/extrusion; 'Koch's spine' resolves to screen.infection; 'secondaries' resolves to screen.metastasis."

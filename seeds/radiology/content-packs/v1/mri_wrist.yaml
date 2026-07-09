@@ -1,0 +1,212 @@
+# CARE Radiology — MRI Wrist Joint Content Pack (production v1)
+# Binds to _shared_libraries.yaml (+ v1_1).
+
+pack:
+  pack_id: mri_wrist
+  version: 1.0.0
+  locale: en-IN
+  status: active
+
+study:
+  study: MRI Wrist Joint
+  modality: MR
+  aliases: [MRI wrist, wrist MRI, MRI hand & wrist]
+  description: >-
+    Wrist MRI for pain, occult fracture, TFCC and intrinsic ligament injury, ganglia, tenosynovitis,
+    carpal tunnel and avascular necrosis. Common after trauma and for chronic ulnar/radial-sided pain.
+  default_sections: [Clinical details, Technique, Carpal bones, TFCC & ligaments, Tendons & nerves, Impression, Advice]
+  quick_select_groups:
+    - {name: Pinned, tiles: [mrwr.normal_study, mrwr.tfcc_tear, mrwr.scaphoid_fracture, mrwr.ganglion, mrwr.tenosynovitis]}
+    - {name: Bone, tiles: [mrwr.scaphoid_fracture, mrwr.occult_fracture, mrwr.avn]}
+    - {name: Ligament/TFCC, tiles: [mrwr.tfcc_tear, mrwr.sl_ligament]}
+    - {name: Soft tissue/nerve, tiles: [mrwr.ganglion, mrwr.tenosynovitis, mrwr.carpal_tunnel]}
+
+findings:
+  - id_key: mrwr.normal_study
+    display_name: Normal MRI wrist
+    synonyms: [normal wrist, NAD wrist]
+    keyboard_aliases: [nwr]
+    default_sentence: "{{tpl.normal.mri_wrist}}"
+    parameters: []
+    severity: null
+    laterality: null
+    location: []
+    measurements: []
+    impression_fragment: "No significant wrist abnormality."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai:
+      completeness_checks:
+        - {id: mrwr.normal_study.k1, glyph: "circle", rule: "carpal marrow, TFCC and intrinsic ligaments not all addressed", message: "Address carpal marrow signal, TFCC and scapholunate/lunotriquetral ligaments."}
+      contradiction_checks:
+        - {id: mrwr.normal_study.c1, severity: block, glyph: "X", rule: "any positive finding present AND normal impression used", message: "Normal impression contradicts a positive finding."}
+      differential: []
+      follow_up: []
+
+  - id_key: mrwr.scaphoid_fracture
+    display_name: Scaphoid fracture
+    synonyms: ["scaphoid #", "scaphoid injury"]
+    keyboard_aliases: [scaf]
+    default_sentence: "Fracture line through the {location} of the scaphoid with surrounding marrow edema{, with proximal pole sclerosis suggesting non-union/AVN}."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [["proximal pole", "waist", "distal pole"]]
+    measurements: []
+    impression_fragment: "Scaphoid ({location}) fracture — orthopaedic referral; watch for AVN of the proximal pole."
+    recommendation: ["Orthopaedic consultation"]
+    recommendation_code: [rec.spec_ortho]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrwr.scaphoid_fracture.k1, glyph: "circle", rule: "scaphoid fracture AND proximal pole vascularity not commented", message: "Comment on proximal pole marrow signal (AVN risk with waist/proximal fractures)."}
+      contradiction_checks: []
+      differential: ["acute fracture", "non-union", "bipartite scaphoid (variant)"]
+      follow_up: ["orthopaedic opinion"]
+
+  - id_key: mrwr.occult_fracture
+    display_name: Occult / bone marrow edema fracture
+    synonyms: [occult fracture, bone bruise, radiographically occult fracture]
+    keyboard_aliases: [ocf]
+    default_sentence: "Marrow edema{ with a low-signal fracture line} in the {location} — occult fracture/bone stress not seen on radiographs."
+    parameters: [param.marrow_edema]
+    severity: null
+    laterality: null
+    location: [loc.wrist]
+    measurements: []
+    impression_fragment: "Occult fracture / marrow edema of the {location}."
+    recommendation: ["Orthopaedic consultation"]
+    recommendation_code: [rec.spec_ortho]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["occult fracture", "bone contusion", "stress reaction"], follow_up: []}
+
+  - id_key: mrwr.tfcc_tear
+    display_name: TFCC tear
+    synonyms: [triangular fibrocartilage complex tear, TFCC injury]
+    keyboard_aliases: [tfcc]
+    default_sentence: "Abnormal signal/disruption of the {central/peripheral} triangular fibrocartilage complex — {traumatic (Palmer 1)/degenerative (Palmer 2)} TFCC tear."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [["TFCC (central)", "TFCC (peripheral/ulnar attachment)"]]
+    measurements: []
+    impression_fragment: "TFCC tear — orthopaedic/arthroscopic correlation advised."
+    recommendation: ["Orthopaedic (MSK) consultation", "Arthroscopic correlation"]
+    recommendation_code: [rec.spec_msk_ortho, rec.arthroscopy]
+    criticality: none
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrwr.tfcc_tear.k1, glyph: "circle", rule: "TFCC tear AND ulnar variance not commented", message: "Comment on ulnar variance — positive variance associates with degenerative TFCC tears."}
+      contradiction_checks: []
+      differential: ["traumatic (peripheral) tear", "degenerative (central) tear", "normal fibrocartilage signal"]
+      follow_up: ["wrist arthroscopy if unstable"]
+
+  - id_key: mrwr.sl_ligament
+    display_name: Scapholunate ligament tear
+    synonyms: [SL ligament tear, scapholunate dissociation]
+    keyboard_aliases: [slt]
+    default_sentence: "Disruption of the scapholunate ligament{ with widening of the SL interval} — scapholunate injury."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [["scapholunate ligament"]]
+    measurements: []
+    impression_fragment: "Scapholunate ligament tear — orthopaedic referral advised."
+    recommendation: ["Orthopaedic (MSK) consultation"]
+    recommendation_code: [rec.spec_msk_ortho]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["SL ligament tear", "degenerative perforation"], follow_up: []}
+
+  - id_key: mrwr.avn
+    display_name: Avascular necrosis (Kienbock's / scaphoid)
+    synonyms: [AVN, Kienbock disease, osteonecrosis]
+    keyboard_aliases: [avn]
+    default_sentence: "Diffuse low T1 marrow signal with collapse/sclerosis of the {lunate/scaphoid proximal pole} — avascular necrosis ({Kienbock's if lunate})."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [["lunate", "scaphoid proximal pole"]]
+    measurements: []
+    impression_fragment: "Avascular necrosis of the {location} — orthopaedic referral advised."
+    recommendation: ["Orthopaedic consultation"]
+    recommendation_code: [rec.spec_ortho]
+    criticality: significant
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["Kienbock's (lunate)", "scaphoid proximal pole AVN", "ulnar impaction (if lunate ulnar-side edema)"], follow_up: []}
+
+  - id_key: mrwr.ganglion
+    display_name: Ganglion cyst
+    synonyms: [ganglion, dorsal wrist ganglion]
+    keyboard_aliases: [gng]
+    default_sentence: "A well-defined lobulated cystic lesion ({size}) arising from the {dorsal/volar} {location} — ganglion cyst."
+    parameters: [param.size]
+    severity: null
+    laterality: null
+    location: [["scapholunate joint (dorsal)", "radiocarpal joint (volar)"]]
+    measurements: []
+    impression_fragment: "Ganglion cyst — usually benign; correlate clinically."
+    recommendation: ["Clinical correlation"]
+    recommendation_code: [rec.clincorr]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["ganglion", "synovial cyst"], follow_up: []}
+
+  - id_key: mrwr.tenosynovitis
+    display_name: Tenosynovitis (incl. De Quervain's)
+    synonyms: [tenosynovitis, De Quervain's, tendon sheath fluid]
+    keyboard_aliases: [tsyn]
+    default_sentence: "Fluid and synovial thickening around the {location} tendon(s) with tendon signal change — tenosynovitis{ (De Quervain's, first extensor compartment)}."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [["first extensor compartment", "flexor tendons", "extensor tendons"]]
+    measurements: []
+    impression_fragment: "{location} tenosynovitis."
+    recommendation: ["Clinical correlation", "Physiotherapy"]
+    recommendation_code: [rec.clincorr, rec.physio]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["overuse tenosynovitis", "inflammatory arthropathy", "infective (if aggressive)"], follow_up: []}
+
+  - id_key: mrwr.carpal_tunnel
+    display_name: Carpal tunnel syndrome features
+    synonyms: [carpal tunnel, median nerve compression, CTS]
+    keyboard_aliases: [cts]
+    default_sentence: "The median nerve is flattened/enlarged with signal change at the carpal tunnel and volar bowing of the flexor retinaculum — features of carpal tunnel syndrome."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [["carpal tunnel", "median nerve"]]
+    measurements: []
+    impression_fragment: "Features of carpal tunnel syndrome — clinical/NCS correlation advised."
+    recommendation: ["Clinical / nerve conduction study correlation"]
+    recommendation_code: [rec.clincorr]
+    criticality: none
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrwr.carpal_tunnel.k1, glyph: "circle", rule: "CTS features AND space-occupying cause not assessed", message: "Assess for a space-occupying cause (ganglion, tenosynovitis, mass) within the tunnel."}
+      contradiction_checks: []
+      differential: ["idiopathic CTS", "space-occupying lesion", "inflammatory tenosynovitis"]
+      follow_up: ["nerve conduction study"]
+
+combo_tiles:
+  - {id: combo.mrwr.trauma_set, label: "Wrist trauma set", members: [{ref: mrwr.scaphoid_fracture, alt: mrwr.occult_fracture}, {ref: mrwr.sl_ligament, optional: true}], recommendations: [rec.spec_ortho]}
+  - {id: combo.mrwr.ulnar_pain, label: "Ulnar-sided pain", members: [mrwr.tfcc_tear], recommendations: [rec.spec_msk_ortho]}
+  - {id: combo.mrwr.normal, label: "Normal wrist", members: [mrwr.normal_study]}
+
+normal_template: tpl.normal.mri_wrist
+
+critical_findings: []
+
+implementation_notes:
+  - "Scaphoid waist/proximal fractures risk proximal-pole AVN — completeness rule enforces commenting on proximal-pole vascularity."
+  - "TFCC tears: comment on ulnar variance (degenerative tears associate with positive variance)."
+  - "CTS features prompt a search for a space-occupying cause within the tunnel."
+  - "Abbreviations: TFCC = triangular fibrocartilage complex; SL = scapholunate; AVN = avascular necrosis; CTS = carpal tunnel syndrome; NCS = nerve conduction study."

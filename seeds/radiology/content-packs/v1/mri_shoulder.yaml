@@ -1,0 +1,252 @@
+# CARE Radiology — MRI Shoulder Content Pack (production v1)
+# Binds to _shared_libraries.yaml (+ v1_1).
+
+pack:
+  pack_id: mri_shoulder
+  version: 1.0.0
+  locale: en-IN
+  status: active
+
+study:
+  study: MRI Shoulder
+  modality: MR
+  aliases: [MRI shoulder, shoulder MRI, MRI shoulder joint]
+  description: >-
+    Rotator cuff, labrum, biceps, AC joint and bursa assessment for impingement, cuff tear,
+    instability and pain. Common in overhead athletes and the elderly.
+  default_sections: [Clinical details, Technique, Rotator cuff, Labrum & biceps, AC joint & bursa, Bone, Impression, Advice]
+  quick_select_groups:
+    - {name: Pinned, tiles: [mrsh.normal_study, mrsh.supraspinatus_tear, mrsh.tendinosis, mrsh.slap, mrsh.subacromial_bursitis]}
+    - {name: Rotator cuff, tiles: [mrsh.supraspinatus_tear, mrsh.tendinosis, mrsh.subscapularis_tear, mrsh.full_thickness]}
+    - {name: Labrum/biceps, tiles: [mrsh.slap, mrsh.bankart, mrsh.biceps]}
+    - {name: Impingement/other, tiles: [mrsh.subacromial_bursitis, mrsh.ac_arthropathy, mrsh.effusion]}
+
+findings:
+  - id_key: mrsh.normal_study
+    display_name: Normal MRI shoulder
+    synonyms: [normal shoulder, NAD shoulder]
+    keyboard_aliases: [nsh]
+    default_sentence: "{{tpl.normal.mri_shoulder}}"
+    parameters: []
+    severity: null
+    laterality: null
+    location: []
+    measurements: []
+    impression_fragment: "No rotator cuff tear or labral injury."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai:
+      completeness_checks:
+        - {id: mrsh.normal_study.k1, glyph: "circle", rule: "all four cuff tendons and labrum not individually addressed", message: "Address supraspinatus, infraspinatus, subscapularis, teres minor and the labrum."}
+      contradiction_checks:
+        - {id: mrsh.normal_study.c1, severity: block, glyph: "X", rule: "any tear present AND normal impression used", message: "Normal impression contradicts a positive finding."}
+      differential: []
+      follow_up: []
+
+  - id_key: mrsh.tendinosis
+    display_name: Rotator cuff tendinosis
+    synonyms: [tendinosis, tendinopathy, degeneration]
+    keyboard_aliases: [tnd]
+    default_sentence: "Intrasubstance intermediate signal with thickening of the {location} tendon, without a discrete tear — tendinosis."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [["supraspinatus", "infraspinatus", "subscapularis", "teres minor"]]
+    measurements: []
+    impression_fragment: "{location} tendinosis."
+    recommendation: ["Physiotherapy"]
+    recommendation_code: [rec.physio]
+    criticality: none
+    normal_variant: false
+    ai:
+      completeness_checks: []
+      contradiction_checks:
+        - {id: mrsh.tendinosis.c1, severity: warn, glyph: "triangle", rule: "fluid-signal gap described AND labelled tendinosis", message: "A fluid-signal gap indicates a tear, not tendinosis."}
+      differential: ["tendinosis", "partial tear"]
+      follow_up: []
+
+  - id_key: mrsh.supraspinatus_tear
+    display_name: Supraspinatus tear
+    synonyms: [SST tear, rotator cuff tear, supraspinatus injury]
+    keyboard_aliases: [sst]
+    default_sentence: "The supraspinatus tendon shows a {tendinosis} — {tear_grade} tear{, with {tendon_gap} retraction}{, with fatty atrophy of the muscle belly}."
+    parameters: [param.tendinosis, param.tear_grade]
+    severity: null
+    laterality: null
+    location: [["supraspinatus"]]
+    measurements: [meas.tendon_gap]
+    impression_fragment: "{tear_grade} supraspinatus tear — orthopaedic (MSK) referral advised."
+    recommendation: ["Orthopaedic (MSK) consultation"]
+    recommendation_code: [rec.spec_msk_ortho]
+    criticality: none
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrsh.supraspinatus_tear.k1, glyph: "circle", rule: "full-thickness tear AND retraction / muscle atrophy not stated", message: "State tendon retraction and muscle atrophy (reparability)."}
+        - {id: mrsh.supraspinatus_tear.k2, glyph: "circle", rule: "cuff tear AND other cuff tendons not addressed", message: "Address the remaining cuff tendons for tear extension."}
+      contradiction_checks: []
+      differential: ["partial-thickness (articular/bursal)", "full-thickness tear", "tendinosis"]
+      follow_up: ["orthopaedic opinion", "arthroscopy if surgical"]
+
+  - id_key: mrsh.full_thickness
+    display_name: Full-thickness cuff tear with retraction
+    synonyms: [complete cuff tear, massive cuff tear]
+    keyboard_aliases: [ftt]
+    default_sentence: "Full-thickness tear of the {location} with {tendon_gap} retraction and {muscle atrophy grade} — {reparable/likely irreparable}."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [["supraspinatus", "infraspinatus", "subscapularis"]]
+    measurements: [meas.tendon_gap]
+    impression_fragment: "Full-thickness {location} tear with retraction — orthopaedic referral advised."
+    recommendation: ["Orthopaedic (MSK) consultation"]
+    recommendation_code: [rec.spec_msk_ortho]
+    criticality: significant
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: ["orthopaedic opinion"]}
+
+  - id_key: mrsh.subscapularis_tear
+    display_name: Subscapularis tear
+    synonyms: [subscap tear]
+    keyboard_aliases: [ssc]
+    default_sentence: "The subscapularis tendon shows a {tear_grade} tear{, with medial biceps subluxation/dislocation}."
+    parameters: [param.tear_grade]
+    severity: null
+    laterality: null
+    location: [["subscapularis"]]
+    measurements: []
+    impression_fragment: "{tear_grade} subscapularis tear."
+    recommendation: ["Orthopaedic (MSK) consultation"]
+    recommendation_code: [rec.spec_msk_ortho]
+    criticality: none
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrsh.subscapularis_tear.k1, glyph: "circle", rule: "subscapularis tear AND biceps position not commented", message: "Comment on biceps position — subscapularis tears destabilise the biceps."}
+      contradiction_checks: []
+      differential: []
+      follow_up: []
+
+  - id_key: mrsh.slap
+    display_name: SLAP / superior labral tear
+    synonyms: [SLAP tear, superior labrum tear]
+    keyboard_aliases: [slap]
+    default_sentence: "Abnormal signal extending into the superior labrum at the biceps anchor — SLAP (superior labral) tear."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [["superior labrum"]]
+    measurements: []
+    impression_fragment: "SLAP tear — orthopaedic/arthroscopic correlation advised."
+    recommendation: ["Orthopaedic (MSK) consultation", "Arthroscopic correlation"]
+    recommendation_code: [rec.spec_msk_ortho, rec.arthroscopy]
+    criticality: none
+    normal_variant: false
+    ai:
+      completeness_checks: []
+      contradiction_checks:
+        - {id: mrsh.slap.c1, severity: warn, glyph: "triangle", rule: "no MR arthrogram AND confident SLAP call", message: "Labral tears are best assessed on MR arthrogram — temper confidence on conventional MRI."}
+      differential: ["SLAP tear", "sublabral recess (normal variant)", "paralabral cyst"]
+      follow_up: ["MR arthrogram if clinically suspected and conventional MRI equivocal"]
+
+  - id_key: mrsh.bankart
+    display_name: Bankart / anterior labral lesion
+    synonyms: [Bankart lesion, anterior instability, Hill-Sachs]
+    keyboard_aliases: [bank]
+    default_sentence: "Anteroinferior labral tear (Bankart lesion){ with a Hill-Sachs impaction of the posterosuperior humeral head} — anterior instability."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [["anterior/anteroinferior labrum"]]
+    measurements: []
+    impression_fragment: "Bankart lesion{ with Hill-Sachs} — anterior shoulder instability; orthopaedic referral advised."
+    recommendation: ["Orthopaedic (MSK) consultation"]
+    recommendation_code: [rec.spec_msk_ortho]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["Bankart", "bony Bankart", "ALPSA/Perthes variant"], follow_up: []}
+
+  - id_key: mrsh.biceps
+    display_name: Long head of biceps abnormality
+    synonyms: [biceps tendinosis, biceps subluxation, biceps tear]
+    keyboard_aliases: [bic]
+    default_sentence: "The long head of biceps shows {tendinosis/subluxation/tear} within/at the bicipital groove."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [["long head of biceps"]]
+    measurements: []
+    impression_fragment: "Long head of biceps {abnormality}."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: []}
+
+  - id_key: mrsh.subacromial_bursitis
+    display_name: Subacromial-subdeltoid bursitis / impingement
+    synonyms: [SASD bursitis, impingement, subacromial bursitis]
+    keyboard_aliases: [sasd]
+    default_sentence: "Fluid/thickening in the subacromial-subdeltoid bursa{ with a {type} acromion and subacromial spur} — impingement."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [["subacromial-subdeltoid bursa"]]
+    measurements: []
+    impression_fragment: "Subacromial-subdeltoid bursitis with impingement features."
+    recommendation: ["Physiotherapy", "Orthopaedic consultation"]
+    recommendation_code: [rec.physio, rec.spec_ortho]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: []}
+
+  - id_key: mrsh.ac_arthropathy
+    display_name: AC joint arthropathy
+    synonyms: [AC joint OA, acromioclavicular arthropathy]
+    keyboard_aliases: [acj]
+    default_sentence: "Acromioclavicular joint osteoarthritis with capsular hypertrophy and inferior osteophytes narrowing the supraspinatus outlet."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [["AC joint"]]
+    measurements: []
+    impression_fragment: "AC joint arthropathy contributing to outlet impingement."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: []}
+
+  - id_key: mrsh.effusion
+    display_name: Glenohumeral joint effusion
+    synonyms: [shoulder effusion, joint fluid]
+    keyboard_aliases: [eff]
+    default_sentence: "{effusion_joint} glenohumeral joint effusion."
+    parameters: [param.effusion_joint]
+    severity: null
+    laterality: null
+    location: []
+    measurements: []
+    impression_fragment: "{effusion_joint} glenohumeral effusion."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: []}
+
+combo_tiles:
+  - {id: combo.mrsh.impingement_set, label: "Impingement + cuff", members: [mrsh.supraspinatus_tear, mrsh.subacromial_bursitis, {ref: mrsh.ac_arthropathy, optional: true}], recommendations: [rec.spec_msk_ortho]}
+  - {id: combo.mrsh.instability_set, label: "Anterior instability", members: [mrsh.bankart], recommendations: [rec.spec_msk_ortho]}
+  - {id: combo.mrsh.normal, label: "Normal shoulder", members: [mrsh.normal_study]}
+
+normal_template: tpl.normal.mri_shoulder
+
+critical_findings: []
+
+implementation_notes:
+  - "State retraction + muscle atrophy for any full-thickness cuff tear (determines reparability)."
+  - "Labral tears (SLAP/Bankart) are best on MR arthrogram — the contradiction rule tempers confident calls on conventional MRI."
+  - "Subscapularis tear triggers a biceps-position check (biceps instability)."
+  - "Abbreviations: SST = supraspinatus; SASD = subacromial-subdeltoid; SLAP = superior labrum anterior-posterior; AC = acromioclavicular."

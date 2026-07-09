@@ -1,0 +1,162 @@
+# CARE Radiology — MRI Brain Epilepsy Protocol (production v1)
+# Extends mri_brain@1.1.0 (all mrbr.* findings available); adds epilepsy-protocol findings.
+# Binds to _shared_libraries.yaml (+ v1_1).
+
+pack:
+  pack_id: mri_brain_epilepsy
+  version: 1.0.0
+  locale: en-IN
+  status: active
+  extends: mri_brain@1.1.0
+
+study:
+  study: MRI Brain — Epilepsy Protocol
+  modality: MR
+  aliases: [MRI epilepsy protocol, seizure protocol MRI, MRI brain epilepsy, HARNESS protocol]
+  description: >-
+    Dedicated seizure protocol with thin oblique-coronal T2/FLAIR through the hippocampi, high-res
+    T1 for cortex, and gradient/SWI. Targets mesial temporal sclerosis, cortical malformations,
+    focal lesions and gliosis. Common in young Indian patients with refractory seizures.
+  default_sections: [Clinical details, Technique (epilepsy protocol), Findings, Hippocampal assessment, Impression, Advice]
+  quick_select_groups:
+    - {name: Pinned, tiles: [mreps.normal_study, mreps.mts, mrbr.granuloma, mreps.fcd, mreps.gliosis]}
+    - {name: Hippocampus, tiles: [mreps.mts, mreps.hippocampal_asymmetry]}
+    - {name: Cortex, tiles: [mreps.fcd, mreps.heterotopia, mreps.gliosis]}
+    - {name: Common causes (Indian), tiles: [mrbr.granuloma, mrbr.ring_lesion]}
+
+findings:
+  - id_key: mreps.normal_study
+    display_name: Normal MRI brain (epilepsy protocol)
+    synonyms: [normal seizure protocol, MRI-negative epilepsy]
+    keyboard_aliases: [neps]
+    default_sentence: "{{tpl.normal.mri_brain_epilepsy}}"
+    parameters: []
+    severity: null
+    laterality: null
+    location: []
+    measurements: []
+    impression_fragment: "No epileptogenic substrate identified on the epilepsy protocol."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai:
+      completeness_checks:
+        - {id: mreps.normal_study.k1, glyph: "circle", rule: "hippocampi not explicitly compared for volume/signal symmetry", message: "Explicitly compare hippocampal volume and signal symmetry."}
+      contradiction_checks:
+        - {id: mreps.normal_study.c1, severity: block, glyph: "X", rule: "any positive epileptogenic finding present AND normal-protocol impression used", message: "Normal-protocol impression contradicts a positive finding."}
+      differential: []
+      follow_up: []
+
+  - id_key: mreps.mts
+    display_name: Mesial temporal sclerosis
+    synonyms: [MTS, hippocampal sclerosis, HS]
+    keyboard_aliases: [mts]
+    default_sentence: "The {laterality} hippocampus shows volume loss with increased T2/FLAIR signal and loss of internal architecture — mesial temporal sclerosis."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location: [["right hippocampus", "left hippocampus"]]
+    measurements: []
+    impression_fragment: "{laterality} mesial temporal sclerosis — correlate with EEG/seizure semiology."
+    recommendation: ["Neurology / epilepsy-surgery evaluation", "Clinical and EEG correlation"]
+    recommendation_code: [rec.spec_neuro, rec.clincorr]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mreps.mts.k1, glyph: "circle", rule: "MTS stated AND contralateral hippocampus not commented", message: "Comment on the contralateral hippocampus (bilateral MTS changes management)."}
+        - {id: mreps.mts.k2, glyph: "circle", rule: "MTS stated AND ipsilateral fornix/mammillary body atrophy not assessed", message: "Assess ipsilateral fornix and mammillary body atrophy."}
+      contradiction_checks:
+        - {id: mreps.mts.c1, severity: warn, glyph: "triangle", rule: "'sclerosis' asserted AND hippocampal volume described as normal/symmetric", message: "MTS requires volume loss — reconcile with symmetric hippocampi."}
+      differential: ["mesial temporal sclerosis", "hippocampal malrotation (incidental)", "limbic encephalitis", "low-grade tumour"]
+      follow_up: ["epilepsy-surgery workup (video-EEG, PET) if drug-resistant"]
+
+  - id_key: mreps.hippocampal_asymmetry
+    display_name: Hippocampal asymmetry (indeterminate)
+    synonyms: [hippocampal volume asymmetry]
+    keyboard_aliases: [hasym]
+    default_sentence: "Mild {laterality} hippocampal asymmetry without definite signal change — indeterminate; suggest follow-up/volumetry."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location: []
+    measurements: []
+    impression_fragment: "Indeterminate {laterality} hippocampal asymmetry — clinical/EEG correlation and follow-up advised."
+    recommendation: ["Clinical/EEG correlation", "Follow-up imaging"]
+    recommendation_code: [rec.clincorr, rec.fup_6m]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["early MTS", "hippocampal malrotation", "normal variant"], follow_up: ["hippocampal volumetry", "follow-up MRI"]}
+
+  - id_key: mreps.fcd
+    display_name: Focal cortical dysplasia
+    synonyms: [FCD, cortical malformation, blurred grey-white junction]
+    keyboard_aliases: [fcd]
+    default_sentence: "Focal cortical thickening with blurring of the grey-white junction and a transmantle T2/FLAIR hyperintense band in the {location} — focal cortical dysplasia."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location: [loc.brain_sites]
+    measurements: []
+    impression_fragment: "Focal cortical dysplasia in the {location} — epilepsy-surgery evaluation advised."
+    recommendation: ["Epilepsy-surgery evaluation", "Neurology consultation"]
+    recommendation_code: [rec.spec_neuro]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mreps.fcd.k1, glyph: "circle", rule: "FCD suspected AND transmantle sign / grey-white blurring not described", message: "Describe the transmantle sign and grey-white junction to support FCD."}
+      contradiction_checks: []
+      differential: ["focal cortical dysplasia", "low-grade glioneuronal tumour (DNET/ganglioglioma)", "gliosis"]
+      follow_up: ["high-resolution / 3T MRI", "PET-MRI for epilepsy surgery"]
+
+  - id_key: mreps.heterotopia
+    display_name: Grey matter heterotopia
+    synonyms: [heterotopia, nodular heterotopia, band heterotopia]
+    keyboard_aliases: [het]
+    default_sentence: "Grey-matter-intensity nodule(s) along the {location} — heterotopia."
+    parameters: [param.count]
+    severity: null
+    laterality: lat.rlb
+    location: [["subependymal", "periventricular", "subcortical"]]
+    measurements: []
+    impression_fragment: "Grey matter heterotopia as described."
+    recommendation: ["Neurology consultation"]
+    recommendation_code: [rec.spec_neuro]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["nodular heterotopia", "tuberous sclerosis subependymal nodules", "subependymal spread of tumour"], follow_up: []}
+
+  - id_key: mreps.gliosis
+    display_name: Focal gliosis / encephalomalacia (epileptogenic)
+    synonyms: [gliosis, post-insult gliosis, encephalomalacia]
+    keyboard_aliases: [glio]
+    default_sentence: "Focal gliosis/encephalomalacia in the {location} — likely epileptogenic focus from a remote insult."
+    parameters: []
+    severity: null
+    laterality: lat.rlb
+    location: [loc.brain_sites]
+    measurements: []
+    impression_fragment: "Focal gliosis in the {location} — possible epileptogenic focus."
+    recommendation: ["Clinical/EEG correlation"]
+    recommendation_code: [rec.clincorr, rec.spec_neuro]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["post-traumatic gliosis", "post-infective gliosis", "old infarct"], follow_up: []}
+
+combo_tiles:
+  - {id: combo.mreps.mts_workup, label: "MTS workup", members: [mreps.mts], recommendations: [rec.spec_neuro]}
+  - {id: combo.mreps.ncc_seizure, label: "NCC as seizure cause", members: [{ref: mrbr.granuloma, alt: mrbr.ring_lesion}], recommendations: [rec.spec_neuro]}
+  - {id: combo.mreps.mri_negative, label: "MRI-negative epilepsy", members: [mreps.normal_study], recommendations: []}
+
+normal_template: tpl.normal.mri_brain_epilepsy
+
+critical_findings:
+  - crit.ich   # if unexpected acute hemorrhage found
+
+implementation_notes:
+  - "Extends mri_brain — all mrbr.* findings (infarct, granuloma, SOL, hemorrhage) remain available; this pack ADDS mreps.* substrate findings."
+  - "In the Indian setting, calcified granuloma (NCC) is the single most common structural seizure cause — keep it pinned alongside MTS."
+  - "Always compare hippocampi side-to-side; the completeness engine blocks an implicit-normal hippocampal read."
+  - "Abbreviations: MTS = mesial temporal sclerosis; FCD = focal cortical dysplasia; DNET (differential) = dysembryoplastic neuroepithelial tumour."
