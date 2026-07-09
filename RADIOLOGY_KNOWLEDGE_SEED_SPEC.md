@@ -1,3 +1,5 @@
+> **Partially superseded:** design conventions, shared libraries and engineering notes (Parts 1–2, 7) are consolidated into [CARE_RADIOLOGY_MASTER_DESIGN_SPEC.md](CARE_RADIOLOGY_MASTER_DESIGN_SPEC.md) §6, §8, §15–16, which prevail where texts differ. **Parts 3–6 (study seed blocks and registers) remain the normative data annex of the master spec.**
+
 # CARE Radiology — Knowledge Seed Specification (v1)
 
 **Author:** Radiology Knowledge Seed Architect, CARE ERP

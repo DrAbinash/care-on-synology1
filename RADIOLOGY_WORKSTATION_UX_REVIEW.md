@@ -1,3 +1,5 @@
+> **Superseded:** consolidated into [CARE_RADIOLOGY_MASTER_DESIGN_SPEC.md](CARE_RADIOLOGY_MASTER_DESIGN_SPEC.md), the single authoritative design document. Where texts differ, the master spec prevails. Retained for historical traceability.
+
 # CARE Radiology Workstation — UX Review & Experience Redesign
 
 **Author:** Chief Product Officer / Chief UX Designer, CARE ERP Radiology

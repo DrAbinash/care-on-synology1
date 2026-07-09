@@ -1,3 +1,5 @@
+> **Superseded:** consolidated into [CARE_RADIOLOGY_MASTER_DESIGN_SPEC.md](CARE_RADIOLOGY_MASTER_DESIGN_SPEC.md), the single authoritative design document. Where texts differ, the master spec prevails. Retained for historical traceability.
+
 # CARE Radiology — Master Clinical Knowledge Catalog (v1)
 
 **Author:** Chief Radiology Knowledge Designer, CARE ERP
