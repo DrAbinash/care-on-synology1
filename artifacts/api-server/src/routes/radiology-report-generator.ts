@@ -49,9 +49,13 @@ import {
   reportFindingInstancesTable,
 } from "@workspace/db/schema";
 import { eq, and, desc, isNull, asc, ilike, or } from "drizzle-orm";
-import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import { regenerateDraftStructuredJson } from "../lib/radiologyStructuredJsonCache";
+import {
+  checkDraftStructuredJsonDrift,
+  scanDraftsForStructuredJsonDrift,
+} from "../lib/radiologyStructuredJsonDrift";
 
 // ── Upload directory ──────────────────────────────────────────────────────────
 
@@ -1373,6 +1377,40 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
 
   res.json({ success: true, draft });
 });
+
+// GET /structured-json-drift — admin-only, read-only diagnostic (Ticket
+// A5). Compares radiology_report_drafts.structured_json (the cache) against
+// a fresh rebuild from report_finding_instances (the source of truth) for
+// draft rows only — never touches patient_reports. Detection only: this
+// endpoint never writes anything, and there is deliberately no auto-repair
+// wired to it. Pass ?draftId=<id> to check one draft; omit it to scan every
+// draft that could possibly be out of sync. Gated on
+// ff_radiology_structured_core — checked here (for a clear "disabled"
+// response) and again inside the drift-check functions themselves.
+radiologyReportGeneratorRouter.get(
+  "/structured-json-drift",
+  requireAdminRole,
+  async (req: Request, res: Response) => {
+    if (!(await isFeatureEnabledServer("ff_radiology_structured_core"))) {
+      res.json({ success: true, enabled: false, message: "ff_radiology_structured_core is disabled" });
+      return;
+    }
+
+    const draftIdParam = req.query.draftId ? Number(req.query.draftId) : null;
+    if (draftIdParam !== null) {
+      if (!Number.isInteger(draftIdParam) || draftIdParam <= 0) {
+        res.status(400).json({ success: false, error: "Invalid draftId" });
+        return;
+      }
+      const result = await checkDraftStructuredJsonDrift(draftIdParam);
+      res.json({ success: true, enabled: true, result });
+      return;
+    }
+
+    const summary = await scanDraftsForStructuredJsonDrift();
+    res.json({ success: true, enabled: true, summary });
+  },
+);
 
 // GET /drafts — list recent drafts (optionally filtered by studyId or patientId)
 radiologyReportGeneratorRouter.get("/drafts", async (req: Request, res: Response) => {
