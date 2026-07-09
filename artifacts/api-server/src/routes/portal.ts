@@ -21,6 +21,7 @@ import {
 import { eq, and, desc, gt, sql, count, or } from "drizzle-orm";
 import { sanitizePatient } from "./patients";
 import { requireStaffAuth, requireStaffPermission, normalizeRole } from "../middleware/requireStaffAuth";
+import { auditFromRequest } from "../lib/audit";
 
 export const portalRouter = Router();
 
@@ -385,6 +386,18 @@ portalRouter.post("/staff-login", staffLoginLimiter, async (req, res) => {
         );
       }
     }
+    // Record the failed attempt in the immutable audit trail so admins can
+    // spot brute-force / credential-stuffing patterns from Settings → Audit Log.
+    void auditFromRequest(req, {
+      userId: user.id,
+      userName: user.name,
+      role: normalizeRole(user.role),
+      action: "login_failed",
+      module: "system",
+      entityType: "user",
+      entityId: String(user.id),
+      reason: "Incorrect PIN",
+    });
     res.status(401).json({ error: "Invalid username or PIN" });
     return;
   }
@@ -545,6 +558,17 @@ portalRouter.post("/staff-login", staffLoginLimiter, async (req, res) => {
     lastActivityAt: now,
   });
 
+  // Successful staff login — recorded in the audit trail (module "system").
+  void auditFromRequest(req, {
+    userId: user.id,
+    userName: user.name,
+    role: normalizeRole(user.role),
+    action: "login",
+    module: "system",
+    entityType: "user",
+    entityId: String(user.id),
+  });
+
   res.json({
     token,
     user: {
@@ -624,6 +648,19 @@ portalRouter.post("/staff-change-pin", async (req, res) => {
     .update(usersTable)
     .set({ pin: hashed, mustChangePin: false })
     .where(eq(usersTable.id, user.id));
+
+  // Audit the credential change. The PIN value itself is never logged — only
+  // the fact that this user changed their own PIN, with IP/user-agent.
+  void auditFromRequest(req, {
+    userId: user.id,
+    userName: user.name,
+    role: normalizeRole(user.role),
+    action: "password_change",
+    module: "system",
+    entityType: "user",
+    entityId: String(user.id),
+    reason: "Staff changed their own PIN",
+  });
 
   res.json({ ok: true });
 });
@@ -760,7 +797,22 @@ portalRouter.get("/admin/patient-portal-status/:patientId", requireStaffAuth, re
 portalRouter.post("/logout", async (req, res) => {
   const auth = req.headers.authorization || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  if (token) await db.delete(portalSessionsTable).where(eq(portalSessionsTable.token, token));
+  if (token) {
+    const [session] = await db.select().from(portalSessionsTable).where(eq(portalSessionsTable.token, token)).limit(1);
+    if (session && session.scope === "staff") {
+      const [u] = await db.select({ role: usersTable.role }).from(usersTable).where(eq(usersTable.id, session.subjectId)).limit(1);
+      void auditFromRequest(req, {
+        userId: session.subjectId,
+        userName: session.subjectName,
+        role: normalizeRole(u?.role ?? "staff"),
+        action: "logout",
+        module: "system",
+        entityType: "user",
+        entityId: String(session.subjectId),
+      });
+    }
+    await db.delete(portalSessionsTable).where(eq(portalSessionsTable.token, token));
+  }
   res.json({ ok: true });
 });
 

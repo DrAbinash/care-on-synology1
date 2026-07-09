@@ -11,6 +11,7 @@ import inventoryRouter from "./inventory";
 import accountingRouter from "./accounting";
 import usersRouter from "./users";
 import emailSettingsRouter from "./email-settings";
+import auditTrailRouter from "./audit-trail";
 import discountsRouter from "./discounts";
 import aiRouter from "./ai";
 import pacsRouter from "./pacs";
@@ -418,6 +419,10 @@ router.use(
   clinicSettingsRouter,
 );
 router.use("/email-settings", requireStaffAuth, requireStaffSubPermission("/settings", "notifications"), emailSettingsRouter);
+// Immutable audit-trail viewer (login/logout/password/account events + all
+// module audit rows). Gated to security-permitted staff / admins — same gate
+// as Settings → Security.
+router.use("/audit-trail", requireStaffAuth, requireStaffSubPermission("/settings", "security"), auditTrailRouter);
 // Test categories: anyone with staff auth can READ the list (Test Catalog,
 // Billing Desk, Reports filter all need it). Mutations stay admin-only via
 // the /settings permission.
