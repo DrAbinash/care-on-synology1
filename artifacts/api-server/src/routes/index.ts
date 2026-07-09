@@ -73,6 +73,7 @@ import { requireSuperAdminUsb, isValidUsbKey, isUsbGateEnforced } from "../middl
 import { requireStaffAuth, requireStaffPermission, requireStaffSubPermission, requireAdminRole } from "../middleware/requireStaffAuth";
 import diagnosticsRouter from "./diagnostics";
 import radiologyQuickFindingsRouter from "./radiologyQuickFindings";
+import radiologyCatalogRouter from "./radiologyCatalog";
 import { db, clinicSettingsTable, ledgersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { backupLimiter, exportLimiter, adminMutationLimiter, standardUploadLimiter, loginLimiter, generalLimiter } from "../middleware/rateLimits";
@@ -535,6 +536,18 @@ router.use(
   requireStaffAuth,
   requireStaffPermission("/radiology"),
   radiologyQuickFindingsRouter,
+);
+
+// Radiology Canonical Catalog (Tickets B1 + B2) — the canonical parameter
+// library + finding graph. FOUNDATION ONLY: the router itself is gated behind
+// the ff_radiology_catalog feature flag (default OFF) and returns 404 until
+// enabled, so nothing in the running product consumes these tables yet. Reads:
+// radiology staff. Mutations: admin-only (enforced inside the router).
+router.use(
+  "/radiology/catalog",
+  requireStaffAuth,
+  requireStaffPermission("/radiology"),
+  radiologyCatalogRouter,
 );
 
 // Radiology Snippets — Quick Add, Smart Format, Favorites, Macros
