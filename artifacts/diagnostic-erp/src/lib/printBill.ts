@@ -208,7 +208,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 
   // ── Sizing tuned for A5 thermal receipt ──
   // A5: flex column layout pushes footer to bottom so short bills fill the page
-  const pageMargin = isA5 ? "5mm" : "8mm";
+  const pageMargin = isA5 ? "10mm" : "8mm";
   const titleSize = isA5 ? "15px" : "16px";
   const patientNameSize = isA5 ? "14px" : "18px";    // compact patient / ref / date block
   const bodyPx = isA5 ? "14px" : "13px";             // tagline under logo
