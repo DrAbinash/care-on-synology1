@@ -51,6 +51,7 @@ import {
 import { eq, and, desc, isNull, asc, ilike, or } from "drizzle-orm";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
+import { regenerateDraftStructuredJson } from "../lib/radiologyStructuredJsonCache";
 
 // ── Upload directory ──────────────────────────────────────────────────────────
 
@@ -1350,6 +1351,21 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     } catch (err) {
       console.error(
         "[radiology-report-generator] A3.2 structured findings dual-write failed (non-fatal):",
+        err,
+      );
+    }
+
+    // Ticket A4 — regenerate the structured_json cache on this draft from
+    // the report_finding_instances rows A3.2 just replaced. Its own
+    // try/catch, deliberately separate from A3.2's block above: A4 is fully
+    // removable without touching A3.2, and a regeneration failure must not
+    // affect the draft save response any more than A3.2's failure does.
+    // regenerateDraftStructuredJson re-checks the feature flag itself.
+    try {
+      await regenerateDraftStructuredJson(draftId);
+    } catch (err) {
+      console.error(
+        "[radiology-report-generator] A4 structured_json cache regeneration failed (non-fatal):",
         err,
       );
     }

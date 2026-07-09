@@ -31,6 +31,19 @@ let txDeleteWhereCalls: unknown[];
 let txInsertValuesCalls: Record<string, unknown>[][];
 let txShouldThrow: boolean;
 
+// Ticket A4 coverage state — the structured_json cache regeneration that
+// runs after A3.2's dual-write. `cacheFindingRows` stands in for what a
+// fresh SELECT against report_finding_instances would currently return for
+// the draft being saved (set directly by each test, independent of what
+// A3.2's own delete/insert mock recorded — they're separate mock code
+// paths). `cacheUpdateSetCalls` records the structured_json UPDATE,
+// kept apart from `updateSetCalls` (the legacy draft-fields UPDATE) so
+// tests can assert the two independently. `cacheRegenShouldThrow` lets a
+// test simulate the regeneration read failing.
+let cacheFindingRows: Record<string, unknown>[];
+let cacheUpdateSetCalls: Record<string, unknown>[];
+let cacheRegenShouldThrow: boolean;
+
 vi.mock("../lib/featureFlags", () => ({
   isFeatureEnabledServer: async (_key: string) => structuredFlagEnabled,
 }));
@@ -40,7 +53,20 @@ vi.mock("@workspace/db", () => ({
     select: () => ({
       from: () => ({
         where: () => ({
+          // Two different callers share this chain shape:
+          //  - GET /drafts always chains .limit(50) before awaiting.
+          //  - A4's regenerateDraftStructuredJson awaits .orderBy() directly,
+          //    never calling .limit().
+          // Returning an object that is both a thenable (resolving to the
+          // FindingInstance rows) AND exposes .limit() (resolving to the
+          // drafts list) serves both callers without needing to inspect
+          // which table was queried.
           orderBy: () => ({
+            then: (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
+              (cacheRegenShouldThrow
+                ? Promise.reject(new Error("simulated structured_json cache regeneration failure"))
+                : Promise.resolve(cacheFindingRows)
+              ).then(resolve, reject),
             limit: async () => selectDraftsResult,
           }),
         }),
@@ -56,6 +82,13 @@ vi.mock("@workspace/db", () => ({
     }),
     update: () => ({
       set: (v: Record<string, unknown>) => {
+        // A4's cache regeneration issues its own UPDATE with exactly one
+        // key ({ structuredJson }); the legacy draft-fields UPDATE always
+        // sets many fields. Shape, not table identity, tells them apart.
+        if (Object.keys(v).length === 1 && Object.prototype.hasOwnProperty.call(v, "structuredJson")) {
+          cacheUpdateSetCalls.push(v);
+          return { where: () => Promise.resolve() };
+        }
         updateSetCalls.push(v);
         return {
           where: () => ({
@@ -125,6 +158,9 @@ describe("POST /save-draft — first save creates, second save updates (pre-exis
     txDeleteWhereCalls = [];
     txInsertValuesCalls = [];
     txShouldThrow = false;
+    cacheFindingRows = [];
+    cacheUpdateSetCalls = [];
+    cacheRegenShouldThrow = false;
   });
 
   test("first save (no id in the request) INSERTs a new row", async () => {
@@ -193,6 +229,9 @@ describe("POST /save-draft — findings[] (Ticket A3.1): accepted, validated, ig
     txDeleteWhereCalls = [];
     txInsertValuesCalls = [];
     txShouldThrow = false;
+    cacheFindingRows = [];
+    cacheUpdateSetCalls = [];
+    cacheRegenShouldThrow = false;
   });
 
   test("accepts a payload WITH findings[] and saves successfully, without persisting the findings data", async () => {
@@ -261,6 +300,12 @@ describe("POST /save-draft — structured findings dual-write (Ticket A3.2)", ()
     txDeleteWhereCalls = [];
     txInsertValuesCalls = [];
     txShouldThrow = false;
+    // A4's regeneration also runs in this suite (same flag, wired right
+    // after A3.2), so its own state is reset here too — most tests below
+    // don't care about it, but it must not leak between them.
+    cacheFindingRows = [];
+    cacheUpdateSetCalls = [];
+    cacheRegenShouldThrow = false;
   });
 
   const TWO_FINDINGS = [
@@ -367,6 +412,127 @@ describe("POST /save-draft — structured findings dual-write (Ticket A3.2)", ()
     expect(res.statusCode).toBe(200);
     expect(res.body.draft.id).toBe(42);
     expect(res.body.success).toBe(true);
+  });
+});
+
+describe("POST /save-draft — structured_json cache regeneration (Ticket A4)", () => {
+  beforeEach(() => {
+    insertedRows = [];
+    insertValuesCalls = [];
+    updateSetCalls = [];
+    updateResult = { id: 42, studyId: 7 };
+    structuredFlagEnabled = true;
+    txCallCount = 0;
+    txDeleteWhereCalls = [];
+    txInsertValuesCalls = [];
+    txShouldThrow = false;
+    cacheFindingRows = [];
+    cacheUpdateSetCalls = [];
+    cacheRegenShouldThrow = false;
+  });
+
+  const ONE_FINDING = {
+    findingId: 8842,
+    params: { side: "", severity: "moderate", chronicity: "", level: "L4-5", value: "" },
+  };
+
+  test("structured_json matches the current FindingInstance rows for this draft after a save", async () => {
+    // Simulates what a fresh SELECT against report_finding_instances would
+    // return right after A3.2's dual-write committed this row.
+    cacheFindingRows = [
+      {
+        id: 1, draftId: 42, reportId: null, findingId: 8842, anatomicZoneId: null, structureId: null,
+        category: "", modality: "", structuredJson: ONE_FINDING.params, catalogVersion: "0",
+        source: "quickselect", confirmed: false, confirmedBy: null, confirmedAt: null,
+        createdAt: "2026-07-09T00:00:00.000Z", updatedAt: null,
+      },
+    ];
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const handler = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+    const req = { body: { id: 42, studyId: 7, findings: [ONE_FINDING] }, staffSession: {} };
+    const res = makeRes();
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(cacheUpdateSetCalls).toHaveLength(1);
+    expect(cacheUpdateSetCalls[0]!.structuredJson).toEqual([
+      {
+        findingId: 8842, anatomicZoneId: null, structureId: null, category: "", modality: "",
+        structuredJson: ONE_FINDING.params, catalogVersion: "0", source: "quickselect", confirmed: false,
+      },
+    ]);
+  });
+
+  test("empty findings[] (deselect-all) clears the structured_json cache to null", async () => {
+    cacheFindingRows = []; // the replace already ran with zero rows before regeneration reads it back
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const handler = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+    const req = { body: { id: 42, studyId: 7, findings: [] }, staffSession: {} };
+    const res = makeRes();
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(cacheUpdateSetCalls).toHaveLength(1);
+    expect(cacheUpdateSetCalls[0]!.structuredJson).toBeNull();
+  });
+
+  test("regeneration failure is swallowed — the draft save still succeeds and returns the saved draft", async () => {
+    cacheRegenShouldThrow = true;
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const handler = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+    const req = { body: { id: 42, studyId: 7, findings: [ONE_FINDING] }, staffSession: {} };
+    const res = makeRes();
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.draft.id).toBe(42);
+    expect(res.body.success).toBe(true);
+    expect(cacheUpdateSetCalls).toHaveLength(0); // never reached the UPDATE — failed during the read
+  });
+
+  test("touches only this draft's own row — no other UPDATE occurs (radiology-report-generator.ts never imports patientReportsTable)", async () => {
+    cacheFindingRows = [
+      {
+        id: 1, draftId: 42, reportId: null, findingId: 8842, anatomicZoneId: null, structureId: null,
+        category: "", modality: "", structuredJson: ONE_FINDING.params, catalogVersion: "0",
+        source: "quickselect", confirmed: false, confirmedBy: null, confirmedAt: null,
+        createdAt: "2026-07-09T00:00:00.000Z", updatedAt: null,
+      },
+    ];
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const handler = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+    const req = { body: { id: 42, studyId: 7, findings: [ONE_FINDING] }, staffSession: {} };
+    const res = makeRes();
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    // Exactly one legacy draft-fields UPDATE and one structured_json cache
+    // UPDATE, both scoped to this draft's own row — nothing else. Since the
+    // route module never imports patientReportsTable at all (confirmed by
+    // grep before implementing this ticket), there is no code path here
+    // that could touch patient_reports even accidentally.
+    expect(updateSetCalls).toHaveLength(1);
+    expect(cacheUpdateSetCalls).toHaveLength(1);
+  });
+
+  test("skips regeneration entirely when the feature flag is off, same as A3.2's own gate", async () => {
+    structuredFlagEnabled = false;
+    cacheFindingRows = [
+      {
+        id: 1, draftId: 42, reportId: null, findingId: 8842, anatomicZoneId: null, structureId: null,
+        category: "", modality: "", structuredJson: ONE_FINDING.params, catalogVersion: "0",
+        source: "quickselect", confirmed: false, confirmedBy: null, confirmedAt: null,
+        createdAt: "2026-07-09T00:00:00.000Z", updatedAt: null,
+      },
+    ];
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const handler = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+    const req = { body: { id: 42, studyId: 7, findings: [ONE_FINDING] }, staffSession: {} };
+    const res = makeRes();
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(cacheUpdateSetCalls).toHaveLength(0);
   });
 });
 
