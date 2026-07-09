@@ -34,6 +34,7 @@ import { upsertMeasurement } from "@/lib/measurementVars";
 import CollapsibleSection from "@/components/radiology/CollapsibleSection";
 import FollowUpPanel from "@/components/radiology/FollowUpPanel";
 import { useLocalDraftBackup } from "@/hooks/useLocalDraftBackup";
+import { useRadiologyDraftId } from "@/hooks/useRadiologyDraftId";
 import { isOwnerRole } from "@/lib/staffSession";
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -485,6 +486,36 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     enabled: !!studyId,
   });
 
+  // ── Draft identity (Radiology Roadmap Ticket A3.0) ────────────────────────
+  // Loads any existing radiology_report_drafts row for this study and tracks
+  // its id, so "Save Draft" updates that same row instead of inserting a new
+  // orphaned one on every click — the shared hook this page was missing
+  // (pages/RadiologyReportGenerator.tsx already had the correct pattern; see
+  // hooks/useRadiologyDraftId.ts). Quick Select's structured click state
+  // (selectedQuickIds/quickInstances) is not part of this — it was never
+  // persisted before this fix and still isn't; only the previously-saved
+  // flattened text fields are restored here.
+  const { draftId, existingDraft, captureSavedDraftId } = useRadiologyDraftId(studyId);
+
+  useEffect(() => {
+    if (!existingDraft) return;
+    if (existingDraft.clinicalHistory) setClinicalHistory(existingDraft.clinicalHistory);
+    if (existingDraft.rawFindings) setRawFindings(existingDraft.rawFindings);
+    if (existingDraft.findingsSections) {
+      try {
+        setFindingsMap(JSON.parse(existingDraft.findingsSections) as Record<string, { normal: boolean; text: string }>);
+        setUseStructured(true);
+      } catch { /* ignore malformed JSON — falls back to whatever rawFindings already restored */ }
+    }
+    if (existingDraft.impression) {
+      try {
+        const arr = JSON.parse(existingDraft.impression) as string[];
+        if (Array.isArray(arr)) setImpression(arr);
+      } catch { /* ignore malformed JSON */ }
+    }
+    if (existingDraft.recommendation) setRecommendation(existingDraft.recommendation);
+  }, [existingDraft]);
+
   const { data: templates = [] } = useQuery<StructuredTemplate[]>({
     queryKey: ["structured-templates"],
     queryFn: () => api.get<StructuredTemplate[]>("/api/radiology/structured-report-templates"),
@@ -716,19 +747,29 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   async function saveDraft() {
     setSaving(true);
     try {
-      await api.post("/api/radiology/report-generator/save-draft", {
-        studyId: entry?.studyId ?? null,
-        worklistId: entry?.id ?? null,
-        patientId: entry?.patientId ?? null,
-        templateId: selectedTemplate?.templateName || null,
-        modality: entry?.modality || null,
-        studyName: selectedTemplate?.templateName || entry?.studyDescription || null,
-        clinicalHistory: clinicalHistory || null,
-        rawFindings: rawFindings || null,
-        findingsSections: useStructured ? findingsMap : null,
-        impression: impression.filter(Boolean),
-        recommendation: recommendation || null,
-      });
+      // id omitted on the first save (server creates the row); included on
+      // every save after (server updates that same row) — see
+      // useRadiologyDraftId.ts. Fixes the pre-existing bug where every
+      // "Save Draft" click created a new orphaned radiology_report_drafts
+      // row instead of updating the one already in progress.
+      const res = await api.post<{ success: boolean; draft: { id: number } }>(
+        "/api/radiology/report-generator/save-draft",
+        {
+          id: draftId ?? undefined,
+          studyId: entry?.studyId ?? null,
+          worklistId: entry?.id ?? null,
+          patientId: entry?.patientId ?? null,
+          templateId: selectedTemplate?.templateName || null,
+          modality: entry?.modality || null,
+          studyName: selectedTemplate?.templateName || entry?.studyDescription || null,
+          clinicalHistory: clinicalHistory || null,
+          rawFindings: rawFindings || null,
+          findingsSections: useStructured ? findingsMap : null,
+          impression: impression.filter(Boolean),
+          recommendation: recommendation || null,
+        },
+      );
+      captureSavedDraftId(res.draft.id);
       toast({ title: "Draft Saved" });
     } catch (err) {
       toast({
