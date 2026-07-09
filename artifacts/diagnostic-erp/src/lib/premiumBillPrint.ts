@@ -4,7 +4,7 @@
 // Print-safe: only black ink, no background colors, no color text.
 
 import { type PrintBillData, type PrintClinic } from "./printBill";
-import { type BillPaperSize } from "./billPrintSettings";
+import { type BillPaperSize, getPaperSizeCss } from "./billPrintSettings";
 
 export type BuildPremiumBillOpts = {
   bill: PrintBillData;
@@ -181,16 +181,17 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
   const footerPx = isSparse ? "13px" : isCompact ? "10px" : "11px";
   const tinyPx = isSparse ? "11px" : isCompact ? "9px" : "10px";
   const qrSize = isSparse ? "95px" : isCompact ? "55px" : "72px";
-  const pageMargin = isSparse ? "4mm" : "3mm";
-  const pageMarginBottom = isSparse ? "5mm" : "4mm";
+  const pageMargin = "10mm";
+  const pageMarginBottom = "10mm";
   const sectionGap = isSparse ? "14px" : isCompact ? "4px" : "6px";
   const tableCellPad = isSparse ? "6px 8px" : isCompact ? "3px 5px" : "4px 6px";
   const paymentBoxPad = isSparse ? "8px 0" : "4px 0";
   const sparseGap = isSparse ? "10px" : "0"; // extra gap between major sections in sparse mode
 
   const isA5 = paperSize === "A5-portrait" || paperSize === "A5-landscape";
-  const pageSizeStr = paperSize === "A5-landscape" ? "landscape" : "portrait";
-  const pageWidth = paperSize === "A5-landscape" ? "198mm" : paperSize === "A5-portrait" ? "136mm" : paperSize === "half-a4" ? "148mm" : "210mm";
+  const paperSizeCss = getPaperSizeCss(paperSize);
+  const pageSizeStr = paperSizeCss.pageSize;
+  const pageWidth = paperSizeCss.width;
 
   // ── Billed-by name, their uploaded signature, & system info ──
   const premiumSession = (() => {

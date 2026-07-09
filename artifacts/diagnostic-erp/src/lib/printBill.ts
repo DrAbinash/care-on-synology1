@@ -208,7 +208,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 
   // ── Sizing tuned for A5 thermal receipt ──
   // A5: flex column layout pushes footer to bottom so short bills fill the page
-  const pageMargin = isA5 ? "2mm" : "8mm";
+  const pageMargin = isA5 ? "10mm" : "8mm";
   const titleSize = isA5 ? "15px" : "16px";
   const patientNameSize = isA5 ? "14px" : "18px";    // compact patient / ref / date block
   const bodyPx = isA5 ? "14px" : "13px";             // tagline under logo
@@ -263,7 +263,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const billedBySignatureUrl: string = session?.user?.signatureDataUrl ?? "";
 
   const page = (copyIdx: number) => `
-    <section class="receipt" style="${copyIdx > 0 ? "page-break-before:always;" : ""}${isA5 ? "display:flex;flex-direction:column;min-height:148mm;" : ""}">
+    <section class="receipt" style="${copyIdx > 0 ? "page-break-before:always;" : ""}${isA5 ? "display:flex;flex-direction:column;min-height:210mm;" : ""}">
 
       ${reprintBy || reprintReason ? `<div style="text-align:center;font-size:${tinyPx};color:#a16207;border:1px dashed #d97706;padding:2px 4px;margin-bottom:4px;text-transform:uppercase;font-weight:700">DUPLICATE / RE-PRINT${reprintBy ? ` · BY ${esc(reprintBy)}` : ""}${reprintReason ? ` · ${esc(reprintReason)}` : ""}</div>` : ""}
 
@@ -408,7 +408,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 
   return `<!doctype html><html><head><meta charset="utf-8"><title>Bill ${esc(bill.billNumber)}</title>
 <style>
-  @page { size: portrait; margin: ${pageMargin}; }
+  @page { size: ${isA5 ? "A5" : "A4"} portrait; margin: ${pageMargin}; }
   *, *::before, *::after { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; height: 100%; }
   body { background: #fff; color: #000; font-family: Arial, Helvetica, sans-serif; font-size: ${bodyPx}; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
