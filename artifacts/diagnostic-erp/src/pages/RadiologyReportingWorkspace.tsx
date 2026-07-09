@@ -1161,7 +1161,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                     className="h-7 text-xs gap-1"
                     onClick={() =>
                       entry.studyInstanceUID &&
-                      window.open(`/radiology/viewer/${entry.studyInstanceUID}`, "_blank")
+                      // Must include the app's own base path — in production
+                      // diagnostic-erp is served under /erp/, and a bare
+                      // /radiology/viewer/... falls through to the public
+                      // website's SPA (no matching nginx route) instead.
+                      window.open(`${import.meta.env.BASE_URL.replace(/\/$/, "")}/radiology/viewer/${entry.studyInstanceUID}`, "_blank")
                     }
                     disabled={!entry.studyInstanceUID}
                   >
