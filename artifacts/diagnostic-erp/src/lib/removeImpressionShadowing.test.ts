@@ -20,11 +20,22 @@ import { mergeImpression, removeImpression } from "./quickFindingsMerge";
  * Fix: renamed the local function to deleteImpressionLineAt so the import
  * resolves correctly; no other logic changed.
  *
+ * Ticket F1b later extracted applyRendered's entire remove/merge sequence
+ * into renderEngine.ts's applyRenderedTransition (a pure function) — so
+ * RadiologyReportingWorkspace.tsx no longer imports quickFindingsMerge's
+ * removeImpression directly at all, and the two structural checks below
+ * that used to assert on that direct import/call were updated accordingly.
+ * This is a strictly stronger guarantee than before: the collision-prone
+ * import isn't present in this file anymore, so Bug-001's exact failure
+ * mode (a local declaration shadowing it) is now structurally impossible
+ * here, not just avoided by naming. renderEngine.ts imports the pure
+ * function under an aliased name (_removeImpression) specifically to avoid
+ * re-introducing the same class of collision there.
+ *
  * Two complementary guards below, since applyRendered itself cannot be
  * unit-tested directly — it lives inside a component that imports `@/`-
  * aliased modules the root vitest config can't resolve (same constraint
- * documented in lib/radiologyDraftId.ts), and this ticket explicitly does
- * not extract it (that's Ticket F1b's job):
+ * documented in lib/radiologyDraftId.ts):
  *   1. A source-text structural check (same technique as
  *      lib/dockerCompose.test.ts) proving the shadowing shape can't
  *      silently reappear.
@@ -46,16 +57,19 @@ describe("RadiologyReportingWorkspace.tsx — removeImpression shadowing regress
     expect(/\bfunction\s+deleteImpressionLineAt\s*\(\s*index:\s*number\s*\)/.test(source)).toBe(true);
   });
 
-  test("removeImpression is still imported from QuickFindingsPanel's re-export of quickFindingsMerge", () => {
+  test("the component no longer imports quickFindingsMerge's removeImpression directly (Ticket F1b moved it into renderEngine)", () => {
     const importBlock = source.match(
       /import QuickFindingsPanel,\s*\{([\s\S]*?)\}\s*from\s*"@\/components\/radiology\/QuickFindingsPanel";/,
     );
     expect(importBlock, "expected the QuickFindingsPanel import block to exist").not.toBeNull();
-    expect(importBlock![1]).toMatch(/\bremoveImpression\b/);
+    expect(importBlock![1]).not.toMatch(/\bremoveImpression\b/);
   });
 
-  test("applyRendered still calls the imported 2-arg removeImpression(lines, line) form", () => {
-    expect(/removeImpression\(p,\s*prev\.impression\)/.test(source)).toBe(true);
+  test("applyRendered calls renderEngine's applyRenderedTransition (which internally uses the correct removeImpression)", () => {
+    const importBlock = source.match(/import\s*\{([\s\S]*?)\}\s*from\s*"@\/lib\/renderEngine";/);
+    expect(importBlock, "expected a @/lib/renderEngine import block to exist").not.toBeNull();
+    expect(importBlock![1]).toMatch(/\bapplyRenderedTransition\b/);
+    expect(/applyRenderedTransition\(/.test(source)).toBe(true);
   });
 });
 

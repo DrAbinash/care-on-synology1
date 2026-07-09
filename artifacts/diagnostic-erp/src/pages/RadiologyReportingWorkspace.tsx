@@ -23,11 +23,14 @@ import RadiologyCopilotPanel from "@/components/RadiologyCopilotPanel";
 import RadiologyMemoryPanel from "@/components/RadiologyMemoryPanel";
 import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
 import QuickFindingsPanel, {
-  mergeBlock, removeBlock, mergeImpression, removeImpression,
   type QuickFinding, type QuickProtocol,
 } from "@/components/radiology/QuickFindingsPanel";
-import { type Side } from "@/lib/sideSwap";
-import { renderAbnormality, EMPTY_INSTANCE, type AbnormalityInstance } from "@/lib/abnormalityEngine";
+import {
+  renderAbnormality, type AbnormalityInstance, type RenderedAbnormality, type Side,
+  mergeBlock, mergeImpression,
+  applyRenderedTransition, toggleQuickSelection, setQuickInstance, deleteQuickInstance,
+  seedQuickInstance, patchQuickInstance,
+} from "@/lib/renderEngine";
 import { deriveQuickSelectFindings } from "@/lib/quickSelectFindingsPayload";
 import { validateReport, computeQualityScore } from "@/lib/reportValidator";
 import { isLearnableAddition } from "@/lib/learningEngine";
@@ -310,7 +313,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const [quickSide, setQuickSide] = useState<Side>("left");
   // Phase 4: one structured instance per selected abnormality.
   const [quickInstances, setQuickInstances] = useState<Map<number, AbnormalityInstance>>(new Map());
-  const insertedTextRef = useRef<Map<number, { finding: string; impression: string; technique: string; recommendation: string }>>(new Map());
+  const insertedTextRef = useRef<Map<number, RenderedAbnormality>>(new Map());
   // Learning Engine (Phase 5): remembers the last selected finding so any
   // manually-added recommendation text at finalize time can be attributed
   // to it and offered as a suggestion next time. Suggestion-only — never
@@ -320,49 +323,35 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   /** Applies rendered abnormality sections to the report: exact-remove of
    *  what was previously generated for this instance, then dedupe-merge of
    *  the new render. Edited sentences no longer match exactly → removal
-   *  no-ops → manual edits always win. */
-  function applyRendered(id: number, next: { finding: string; impression: string; technique: string; recommendation: string } | null) {
+   *  no-ops → manual edits always win. The remove/merge decision itself is
+   *  renderEngine's applyRenderedTransition (Ticket F1b) — a pure function;
+   *  this wrapper only owns reading/writing the actual React state and the
+   *  insertedTextRef ref, which stay in the component per F1b's scope. */
+  function applyRendered(id: number, next: RenderedAbnormality | null) {
     const prev = insertedTextRef.current.get(id);
-    if (prev) {
-      if (prev.finding) setRawFindings((p) => removeBlock(p, prev.finding));
-      // removeImpression here is quickFindingsMerge's imported (lines, line) => string[]
-      // — previously shadowed by a same-named local function (Bug-001, now renamed
-      // to deleteImpressionLineAt below), which silently broke deselect's impression
-      // removal. Now correctly resolves to the intended exact-match removal.
-      if (prev.impression) setImpression((p) => removeImpression(p, prev.impression));
-      if (prev.technique) setTechnique((p) => removeBlock(p, prev.technique));
-      if (prev.recommendation) setRecommendation((p) => removeBlock(p, prev.recommendation));
-    }
-    if (next) {
-      insertedTextRef.current.set(id, next);
-      if (next.finding) setRawFindings((p) => mergeBlock(p, next.finding));
-      if (next.impression) setImpression((p) => mergeImpression(p, next.impression));
-      if (next.technique) setTechnique((p) => mergeBlock(p, next.technique));
-      if (next.recommendation) setRecommendation((p) => mergeBlock(p, next.recommendation));
-    } else {
-      insertedTextRef.current.delete(id);
-    }
+    const result = applyRenderedTransition(
+      { rawFindings, impression, technique, recommendation },
+      prev,
+      next,
+    );
+    if (next) insertedTextRef.current.set(id, next);
+    else insertedTextRef.current.delete(id);
+    setRawFindings(result.rawFindings);
+    setImpression(result.impression);
+    setTechnique(result.technique);
+    setRecommendation(result.recommendation);
   }
 
   function handleQuickToggle(f: QuickFinding, nowSelected: boolean) {
     if (nowSelected) lastToggledFindingRef.current = f;
-    setSelectedQuickIds((prev) => {
-      const next = new Set(prev);
-      if (nowSelected) next.add(f.id);
-      else next.delete(f.id);
-      return next;
-    });
+    setSelectedQuickIds((prev) => toggleQuickSelection(prev, f.id, nowSelected));
     if (nowSelected) {
       // New instance seeded from the global side selector.
-      const inst: AbnormalityInstance = { ...EMPTY_INSTANCE, side: quickSide };
-      setQuickInstances((prev) => new Map(prev).set(f.id, inst));
+      const inst = seedQuickInstance(quickSide);
+      setQuickInstances((prev) => setQuickInstance(prev, f.id, inst));
       applyRendered(f.id, renderAbnormality(f, inst));
     } else {
-      setQuickInstances((prev) => {
-        const next = new Map(prev);
-        next.delete(f.id);
-        return next;
-      });
+      setQuickInstances((prev) => deleteQuickInstance(prev, f.id));
       applyRendered(f.id, null);
     }
   }
@@ -370,9 +359,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   /** Phase 4: property chip changed → re-render this abnormality and
    *  update the entire report instantly (all four sections). */
   function handleInstanceUpdate(f: QuickFinding, patch: Partial<AbnormalityInstance>) {
-    const current = quickInstances.get(f.id) ?? { ...EMPTY_INSTANCE, side: quickSide };
-    const inst = { ...current, ...patch };
-    setQuickInstances((prev) => new Map(prev).set(f.id, inst));
+    const inst = patchQuickInstance(quickInstances.get(f.id), quickSide, patch);
+    setQuickInstances((prev) => setQuickInstance(prev, f.id, inst));
     applyRendered(f.id, renderAbnormality(f, inst));
   }
 
