@@ -47,37 +47,47 @@ function whereEq(table: CatalogTableName, where?: Record<string, unknown>): SQL[
   return Object.entries(where).map(([k, v]) => eq(col(table, k), v as never));
 }
 
+/**
+ * A minimal executor surface: the global `db` OR a drizzle transaction `tx`
+ * both satisfy it, so the same store can run inside or outside a transaction.
+ * (Used by the K3 importer to run all writes in one transaction.)
+ */
+export type CatalogExecutor = Pick<typeof db, "select" | "insert" | "update">;
+
 export class DrizzleCatalogStore implements CatalogStore {
+  // Defaults to the global db handle; the importer passes a transaction (§K3).
+  constructor(private exec: CatalogExecutor = db) {}
+
   async insert(table: CatalogTableName, values: Record<string, unknown>): Promise<StoredRow> {
-    const [row] = await db.insert(TABLES[table]).values(values as never).returning();
+    const [row] = await this.exec.insert(TABLES[table]).values(values as never).returning();
     return row as StoredRow;
   }
 
   async getById(table: CatalogTableName, id: number, opts?: { includeDeleted?: boolean }): Promise<StoredRow | null> {
     const conds: SQL[] = [eq(col(table, "id"), id)];
     if (!opts?.includeDeleted) conds.push(isNull(col(table, "deletedAt")));
-    const [row] = await db.select().from(TABLES[table]).where(and(...conds)).limit(1);
+    const [row] = await this.exec.select().from(TABLES[table]).where(and(...conds)).limit(1);
     return (row as StoredRow) ?? null;
   }
 
   async findOne(table: CatalogTableName, where: Record<string, unknown>, opts?: { includeDeleted?: boolean }): Promise<StoredRow | null> {
     const conds = whereEq(table, where);
     if (!opts?.includeDeleted) conds.push(isNull(col(table, "deletedAt")));
-    const [row] = await db.select().from(TABLES[table]).where(and(...conds)).limit(1);
+    const [row] = await this.exec.select().from(TABLES[table]).where(and(...conds)).limit(1);
     return (row as StoredRow) ?? null;
   }
 
   async list(table: CatalogTableName, opts?: ListOpts): Promise<StoredRow[]> {
     const conds = whereEq(table, opts?.where);
     if (!opts?.includeDeleted) conds.push(isNull(col(table, "deletedAt")));
-    let query = db.select().from(TABLES[table]).where(conds.length ? and(...conds) : undefined).orderBy(asc(col(table, "id"))) as any;
+    let query = this.exec.select().from(TABLES[table]).where(conds.length ? and(...conds) : undefined).orderBy(asc(col(table, "id"))) as any;
     if (opts?.limit != null) query = query.limit(opts.limit);
     if (opts?.offset != null) query = query.offset(opts.offset);
     return (await query) as StoredRow[];
   }
 
   async update(table: CatalogTableName, id: number, patch: Record<string, unknown>): Promise<StoredRow | null> {
-    const [row] = await db.update(TABLES[table]).set(patch as never).where(eq(col(table, "id"), id)).returning();
+    const [row] = await this.exec.update(TABLES[table]).set(patch as never).where(eq(col(table, "id"), id)).returning();
     return (row as StoredRow) ?? null;
   }
 
@@ -86,7 +96,7 @@ export class DrizzleCatalogStore implements CatalogStore {
     const ors = fields.map((f) => ilike(col(table, f), like));
     const conds: SQL[] = [isNull(col(table, "deletedAt"))];
     if (ors.length) conds.push(or(...ors) as SQL);
-    let query = db.select().from(TABLES[table]).where(and(...conds)).orderBy(asc(col(table, "id"))) as any;
+    let query = this.exec.select().from(TABLES[table]).where(and(...conds)).orderBy(asc(col(table, "id"))) as any;
     if (opts?.limit != null) query = query.limit(opts.limit);
     return (await query) as StoredRow[];
   }
@@ -94,7 +104,7 @@ export class DrizzleCatalogStore implements CatalogStore {
   async count(table: CatalogTableName, opts?: { includeDeleted?: boolean; where?: Record<string, unknown> }): Promise<number> {
     const conds = whereEq(table, opts?.where);
     if (!opts?.includeDeleted) conds.push(isNull(col(table, "deletedAt")));
-    const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(TABLES[table]).where(conds.length ? and(...conds) : undefined);
+    const [row] = await this.exec.select({ n: sql<number>`count(*)::int` }).from(TABLES[table]).where(conds.length ? and(...conds) : undefined);
     return row?.n ?? 0;
   }
 }

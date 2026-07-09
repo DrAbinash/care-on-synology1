@@ -148,4 +148,29 @@ export class InMemoryCatalogStore implements CatalogStore {
   async count(table: CatalogTableName, opts?: { includeDeleted?: boolean; where?: Record<string, unknown> }): Promise<number> {
     return this.rows(table).filter((r) => (opts?.includeDeleted || !r.deletedAt) && this.matches(r, opts?.where)).length;
   }
+
+  // ── Transaction simulation (used by InMemoryCatalogRepository for K3 rollback tests) ──
+  /** Deep-copy the entire store state. */
+  snapshot(): string {
+    return JSON.stringify({
+      data: [...this.data.entries()],
+      seq: [...this.seq.entries()],
+    });
+  }
+
+  /** Restore state captured by snapshot() — models a transaction ROLLBACK. */
+  restore(snap: string): void {
+    const parsed = JSON.parse(snap, (key, value) =>
+      // revive Date-looking ISO strings on known timestamp fields
+      typeof value === "string" && /^\d{4}-\d\d-\d\dT/.test(value) ? new Date(value) : value,
+    ) as { data: [CatalogTableName, StoredRow[]][]; seq: [CatalogTableName, number][] };
+    this.data = new Map(parsed.data);
+    this.seq = new Map(parsed.seq);
+    this.byId = new Map();
+    for (const t of CATALOG_TABLE_NAMES) {
+      const idx = new Map<number, StoredRow>();
+      for (const row of this.data.get(t) ?? []) idx.set(row.id, row);
+      this.byId.set(t, idx);
+    }
+  }
 }
