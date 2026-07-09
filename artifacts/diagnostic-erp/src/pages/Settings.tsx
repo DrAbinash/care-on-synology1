@@ -22,7 +22,7 @@ import {
   Search, Globe, Copy, ExternalLink, Check, Network, MapPin, Database,
   RefreshCcw, FileCode, Send, QrCode, Palette, Bot, Inbox, ChevronRight,
   ArrowLeft, Phone, Layers, AlertTriangle, ScanLine, Receipt, Keyboard, Brain,
-  Sparkles, Construction, GraduationCap, Tv, GripVertical,
+  Sparkles, Construction, GraduationCap, Tv, GripVertical, ScrollText,
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
@@ -175,6 +175,7 @@ const TABS = [
   { id: "radiology", label: "Radiology", icon: ScanLine },
   { id: "manual", label: "User Manual", icon: FileDown },
   { id: "security", label: "Security", icon: ShieldCheck },
+  { id: "audit-log", label: "Audit Log", icon: ScrollText },
   { id: "password", label: "Change Password", icon: KeyRound },
 ];
 
@@ -245,11 +246,12 @@ export default function Settings() {
       if (t.id === "password" || t.id === "manual") return true;
       let action = t.id;
       if (t.id === "email" || t.id === "whatsapp") action = "notifications";
+      else if (t.id === "audit-log") action = "security";
       else if (t.id === "billing-print" || t.id === "discount-reasons" || t.id === "receipt-messages" || t.id === "footer-services" || t.id === "promotional-footer") action = "billing";
       else if (t.id === "printers" || t.id === "scanner") action = "devices";
       else if (t.id === "departments" || t.id === "locations" || t.id === "branches" || t.id === "report-templates") action = "infrastructure";
       else if (t.id === "portal" || t.id === "online-booking" || t.id === "kiosk") action = "portals";
-      
+
       return hasSubPermission(session, "/settings", action);
     });
   }, [session]);
@@ -261,11 +263,12 @@ export default function Settings() {
       if (t.id === "password" || t.id === "manual") return true;
       let action = t.id;
       if (t.id === "email" || t.id === "whatsapp") action = "notifications";
+      else if (t.id === "audit-log") action = "security";
       else if (t.id === "billing-print" || t.id === "discount-reasons" || t.id === "receipt-messages" || t.id === "footer-services" || t.id === "promotional-footer") action = "billing";
       else if (t.id === "printers" || t.id === "scanner") action = "devices";
       else if (t.id === "departments" || t.id === "locations" || t.id === "branches" || t.id === "report-templates") action = "infrastructure";
       else if (t.id === "portal" || t.id === "online-booking" || t.id === "kiosk" || t.id === "queue-settings") action = "portals";
-      
+
       return hasSubPermission(initialSession, "/settings", action);
     });
     return initialAllowed[0]?.id ?? "password";
@@ -308,6 +311,7 @@ export default function Settings() {
         {tab === "manual" && <ManualTab />}
         {tab === "about" && <AboutTab />}
         {tab === "security" && <SecurityTab />}
+        {tab === "audit-log" && <AuditLogTab />}
         {tab === "password" && <ChangePasswordTab />}
       </div>
     </div>
@@ -3112,10 +3116,29 @@ function EmailTab() {
   const { toast } = useToast();
   const qc = useQueryClient();
   const { data: settings } = useQuery<EmailSettings>({ queryKey: ["email-settings"], queryFn: () => api.get("/api/email-settings") });
-  const { register, handleSubmit, reset } = useForm<EmailSettings>({ defaultValues: settings });
-  useEffect(() => { if (settings) reset(settings); }, [settings, reset]);
+  const { register, handleSubmit, reset, watch, setValue } = useForm<EmailSettings>({ defaultValues: settings });
+
+  // extraRecipients is persisted server-side as a JSON array string. In the
+  // form we present it as a friendly comma-separated list and convert back to
+  // an array on save (the previous version sent a raw string, which the API
+  // silently discarded because it only accepts an array).
+  useEffect(() => {
+    if (!settings) return;
+    let recips = "";
+    try {
+      const arr = JSON.parse(settings.extraRecipients || "[]");
+      recips = Array.isArray(arr) ? arr.join(", ") : String(settings.extraRecipients || "");
+    } catch {
+      recips = settings.extraRecipients || "";
+    }
+    reset({ ...settings, extraRecipients: recips });
+  }, [settings, reset]);
+
   const save = useMutation({
-    mutationFn: (body: EmailSettings) => api.post("/api/email-settings", body),
+    mutationFn: (body: EmailSettings) => {
+      const extra = String(body.extraRecipients || "").split(",").map(s => s.trim()).filter(Boolean);
+      return api.post("/api/email-settings", { ...body, extraRecipients: extra });
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["email-settings"] });
       toast({ title: "Saved", description: "Email settings updated successfully." });
@@ -3124,27 +3147,256 @@ function EmailTab() {
       toast({ title: "Save failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
     },
   });
+
+  const testEmail = useMutation({
+    mutationFn: () => api.post<{ ok: boolean; message: string }>("/api/email-settings/test", {}),
+    onSuccess: (r) => toast({ title: r.ok ? "Test email sent" : "Test failed", description: r.message, variant: r.ok ? undefined : "destructive" }),
+    onError: (err: unknown) => toast({ title: "Test failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
+  });
+
+  const sendSummaryNow = useMutation({
+    mutationFn: () => api.post<{ ok: boolean; message: string }>("/api/email-settings/send-summary", {}),
+    onSuccess: (r) => toast({ title: r.ok ? "Daily summary sent" : "Send failed", description: r.message, variant: r.ok ? undefined : "destructive" }),
+    onError: (err: unknown) => toast({ title: "Send failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
+  });
+
+  const smtpSecure = !!watch("smtpSecure");
+  const billEditEnabled = watch("billEditEnabled") !== false;
+  const dailySummaryEnabled = watch("dailySummaryEnabled") !== false;
+
   return (
     <div className="grid grid-cols-1 gap-4">
       <div className="bg-card border border-card-border rounded-xl p-4">
-        <p className="text-sm text-muted-foreground">Configure SMTP and email notifications.</p>
+        <h2 className="font-bold text-lg flex items-center gap-2"><Mail size={16} /> Email Notifications</h2>
+        <p className="text-sm text-muted-foreground mt-1">Configure the SMTP server and control which automated emails go out to the admin recipients.</p>
       </div>
-      <form onSubmit={handleSubmit((d) => save.mutate(d))} className="space-y-4 bg-card border border-card-border rounded-xl p-4">
-        <div className="grid md:grid-cols-2 gap-4">
-          <div><Label>SMTP Host</Label><Input {...register("smtpHost")} className="mt-1" /></div>
-          <div><Label>SMTP Port</Label><Input {...register("smtpPort")} className="mt-1" /></div>
-          <div><Label>SMTP User</Label><Input {...register("smtpUser")} className="mt-1" /></div>
-          <div><Label>SMTP Password</Label><Input {...register("smtpPassword")} className="mt-1" type="password" /></div>
-          <div><Label>From Address</Label><Input {...register("fromAddress")} className="mt-1" /></div>
-          <div><Label>From Name</Label><Input {...register("fromName")} className="mt-1" /></div>
-          <div><Label>Admin Email</Label><Input {...register("adminEmail")} className="mt-1" /></div>
-          <div><Label>Extra Recipients</Label><Input {...register("extraRecipients")} className="mt-1" /></div>
+
+      <form onSubmit={handleSubmit((d) => save.mutate(d))} className="space-y-5">
+        {/* ── SMTP Server ── */}
+        <div className="space-y-4 bg-card border border-card-border rounded-xl p-4">
+          <h3 className="font-semibold text-sm uppercase text-muted-foreground">SMTP Server</h3>
+          <div className="grid md:grid-cols-2 gap-4">
+            <div><Label>SMTP Host</Label><Input {...register("smtpHost")} className="mt-1" placeholder="smtp.gmail.com" /></div>
+            <div><Label>SMTP Port</Label><Input {...register("smtpPort")} className="mt-1" placeholder="587" /></div>
+            <div><Label>SMTP User</Label><Input {...register("smtpUser")} className="mt-1" /></div>
+            <div><Label>SMTP Password</Label><Input {...register("smtpPassword")} className="mt-1" type="password" placeholder="Leave as •••• to keep unchanged" /></div>
+            <div><Label>From Address</Label><Input {...register("fromAddress")} className="mt-1" placeholder="noreply@clinic.com" /></div>
+            <div><Label>From Name</Label><Input {...register("fromName")} className="mt-1" /></div>
+          </div>
+          <div className="flex items-start justify-between gap-4 pt-1">
+            <div>
+              <Label className="font-medium">Use SSL/TLS (secure)</Label>
+              <p className="text-[11px] text-muted-foreground">Turn on for port 465 (implicit TLS). Leave off for 587 (STARTTLS).</p>
+            </div>
+            <Toggle checked={smtpSecure} onChange={(v) => setValue("smtpSecure", v, { shouldDirty: true })} label="Toggle SMTP secure" />
+          </div>
         </div>
-        <div className="flex justify-end gap-2">
+
+        {/* ── Recipients ── */}
+        <div className="space-y-4 bg-card border border-card-border rounded-xl p-4">
+          <h3 className="font-semibold text-sm uppercase text-muted-foreground">Recipients</h3>
+          <div className="grid md:grid-cols-2 gap-4">
+            <div><Label>Admin Email</Label><Input {...register("adminEmail")} className="mt-1" placeholder="owner@clinic.com" /></div>
+            <div>
+              <Label>Extra Recipients</Label>
+              <Input {...register("extraRecipients")} className="mt-1" placeholder="a@clinic.com, b@clinic.com" />
+              <p className="text-[11px] text-muted-foreground mt-1">Comma-separated. These receive the same alerts as the admin email.</p>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Automated emails ── */}
+        <div className="space-y-4 bg-card border border-card-border rounded-xl p-4">
+          <h3 className="font-semibold text-sm uppercase text-muted-foreground">Automated Emails</h3>
+
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <Label className="font-medium">Bill edit / reprint notifications</Label>
+              <p className="text-[11px] text-muted-foreground">Emails the admins whenever a bill is edited or re-printed, with a before/after change table.</p>
+            </div>
+            <Toggle checked={billEditEnabled} onChange={(v) => setValue("billEditEnabled", v, { shouldDirty: true })} label="Toggle bill edit emails" />
+          </div>
+
+          <div className="border-t border-card-border pt-4 flex items-start justify-between gap-4">
+            <div>
+              <Label className="font-medium">Daily summary email</Label>
+              <p className="text-[11px] text-muted-foreground">A once-a-day report of revenue, bills created/paid/pending, payments, and bills edited.</p>
+            </div>
+            <Toggle checked={dailySummaryEnabled} onChange={(v) => setValue("dailySummaryEnabled", v, { shouldDirty: true })} label="Toggle daily summary" />
+          </div>
+          {dailySummaryEnabled && (
+            <div className="pl-1">
+              <Label>Send daily summary at</Label>
+              <Input type="time" {...register("dailySummaryTime")} className="mt-1 w-40" />
+              <p className="text-[11px] text-muted-foreground mt-1">Server local time. The summary is sent automatically once per day at this time.</p>
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="outline" type="button" onClick={() => testEmail.mutate()} disabled={testEmail.isPending}>
+            {testEmail.isPending ? "Sending…" : "Send Test Email"}
+          </Button>
+          <Button variant="outline" type="button" onClick={() => sendSummaryNow.mutate()} disabled={sendSummaryNow.isPending}>
+            {sendSummaryNow.isPending ? "Sending…" : "Send Summary Now"}
+          </Button>
           <Button variant="outline" type="button" onClick={() => reset(settings)} disabled={!settings}>Reset</Button>
           <Button type="submit" disabled={save.isPending}>{save.isPending ? "Saving..." : "Save"}</Button>
         </div>
       </form>
+    </div>
+  );
+}
+
+type AuditRow = {
+  id: number; userId: number | null; userName: string; role: string;
+  action: string; module: string; entityType: string | null; entityId: string | null;
+  reason: string | null; ipAddress: string | null; userAgent: string | null; createdAt: string;
+};
+type AuditResponse = { rows: AuditRow[]; total: number; limit: number; offset: number };
+type AuditFacets = { actions: string[]; modules: string[] };
+
+function auditActionStyle(action: string): string {
+  const a = action.toLowerCase();
+  if (a === "login") return "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300";
+  if (a === "logout") return "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300";
+  if (a === "login_failed") return "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300";
+  if (a === "password_change") return "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300";
+  if (a === "delete") return "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300";
+  if (a === "create") return "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300";
+  if (a === "edit" || a === "reprint") return "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300";
+  if (a === "refund") return "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300";
+  return "bg-muted text-muted-foreground";
+}
+
+function AuditLogTab() {
+  const [action, setAction] = useState("");
+  const [moduleName, setModuleName] = useState("");
+  const [q, setQ] = useState("");
+  const [debouncedQ, setDebouncedQ] = useState("");
+  const [page, setPage] = useState(0);
+  const limit = 50;
+
+  useEffect(() => {
+    const t = setTimeout(() => { setDebouncedQ(q); setPage(0); }, 350);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  const { data: facets } = useQuery<AuditFacets>({
+    queryKey: ["audit-facets"],
+    queryFn: () => api.get("/api/audit-trail/facets"),
+  });
+
+  const params = new URLSearchParams();
+  if (action) params.set("action", action);
+  if (moduleName) params.set("module", moduleName);
+  if (debouncedQ) params.set("q", debouncedQ);
+  params.set("limit", String(limit));
+  params.set("offset", String(page * limit));
+
+  const { data, isLoading, isFetching } = useQuery<AuditResponse>({
+    queryKey: ["audit-trail", action, moduleName, debouncedQ, page],
+    queryFn: () => api.get(`/api/audit-trail?${params.toString()}`),
+    placeholderData: (prev) => prev,
+  });
+
+  const rows = data?.rows ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-card border border-card-border rounded-xl p-4">
+        <h2 className="font-bold text-lg flex items-center gap-2"><ScrollText size={16} /> Audit Log</h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Tamper-evident record of security-sensitive actions — logins, logouts, failed sign-ins, password changes,
+          and account administration — plus billing and other module events. Entries are append-only and cannot be edited or deleted.
+        </p>
+      </div>
+
+      {/* Filters */}
+      <div className="bg-card border border-card-border rounded-xl p-4 grid gap-3 md:grid-cols-4">
+        <div className="md:col-span-2">
+          <Label className="text-xs">Search</Label>
+          <div className="relative mt-1">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="User, reason, IP, or entity ID" className="pl-8" />
+          </div>
+        </div>
+        <div>
+          <Label className="text-xs">Action</Label>
+          <select
+            value={action}
+            onChange={(e) => { setAction(e.target.value); setPage(0); }}
+            className="mt-1 w-full h-9 rounded-md border border-input bg-background px-3 text-sm"
+          >
+            <option value="">All actions</option>
+            {(facets?.actions ?? []).map((a) => <option key={a} value={a}>{a}</option>)}
+          </select>
+        </div>
+        <div>
+          <Label className="text-xs">Module</Label>
+          <select
+            value={moduleName}
+            onChange={(e) => { setModuleName(e.target.value); setPage(0); }}
+            className="mt-1 w-full h-9 rounded-md border border-input bg-background px-3 text-sm"
+          >
+            <option value="">All modules</option>
+            {(facets?.modules ?? []).map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="bg-card border border-card-border rounded-xl overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-card-border bg-muted/40">
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">When</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">User</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Action</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Module</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Details</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">IP</th>
+              </tr>
+            </thead>
+            <tbody>
+              {isLoading ? (
+                <tr><td colSpan={6} className="px-4 py-10 text-center text-muted-foreground">Loading audit log…</td></tr>
+              ) : rows.length === 0 ? (
+                <tr><td colSpan={6} className="px-4 py-10 text-center text-muted-foreground">No audit entries match these filters.</td></tr>
+              ) : rows.map((r) => (
+                <tr key={r.id} className="border-b border-card-border/60 hover:bg-muted/30">
+                  <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">{new Date(r.createdAt).toLocaleString("en-IN")}</td>
+                  <td className="px-4 py-3">
+                    <div className="font-medium">{r.userName}</div>
+                    <div className="text-[11px] text-muted-foreground">{r.role}</div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-medium ${auditActionStyle(r.action)}`}>{r.action}</span>
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground">{r.module}</td>
+                  <td className="px-4 py-3 max-w-sm">
+                    <div className="text-foreground">{r.reason || (r.entityType ? `${r.entityType} ${r.entityId ?? ""}`.trim() : "—")}</div>
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{r.ipAddress || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex items-center justify-between px-4 py-3 border-t border-card-border text-sm">
+          <span className="text-muted-foreground">
+            {total > 0 ? `${page * limit + 1}–${Math.min((page + 1) * limit, total)} of ${total}` : "0 entries"}
+            {isFetching && !isLoading ? " · refreshing…" : ""}
+          </span>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>Previous</Button>
+            <Button variant="outline" size="sm" disabled={page >= totalPages - 1} onClick={() => setPage((p) => p + 1)}>Next</Button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -3169,6 +3421,15 @@ type WhatsappCfg = {
   aiAssistantName?: string;
   aiSystemPrompt?: string;
   aiEscalationMessage?: string;
+  // Automation triggers
+  autoSendBillCreated?: boolean;
+  appointmentReminderEnabled?: boolean;
+  appointmentReminderTime?: string;
+  appointmentReminderTemplate?: string;
+  duesReminderEnabled?: boolean;
+  duesReminderTime?: string;
+  duesReminderMinAmount?: number;
+  duesReminderTemplate?: string;
 };
 type WhatsappNumber = {
   id: number;
@@ -3934,7 +4195,7 @@ function WhatsappTab() {
   const [bookingPhone, setBookingPhone] = useState("");
   const [showToken, setShowToken] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [waSubTab, setWaSubTab] = useState<"numbers" | "config" | "webhook" | "ai" | "inbox">("numbers");
+  const [waSubTab, setWaSubTab] = useState<"numbers" | "config" | "automations" | "webhook" | "ai" | "inbox">("numbers");
   const cur = form ?? cfg ?? null;
 
   const save = useMutation({
@@ -3955,11 +4216,12 @@ function WhatsappTab() {
   };
 
   const WA_SUB_TABS = [
-    { id: "numbers", label: "Numbers",        icon: Phone },
-    { id: "config",  label: "Cloud API",      icon: MessageCircle },
-    { id: "webhook", label: "Webhook Setup",   icon: Globe },
-    { id: "ai",      label: "AI Assistant",    icon: Bot },
-    { id: "inbox",   label: "Inbox",           icon: Inbox },
+    { id: "numbers",     label: "Numbers",       icon: Phone },
+    { id: "config",      label: "Cloud API",     icon: MessageCircle },
+    { id: "automations", label: "Automations",   icon: Sparkles },
+    { id: "webhook",     label: "Webhook Setup",  icon: Globe },
+    { id: "ai",          label: "AI Assistant",   icon: Bot },
+    { id: "inbox",       label: "Inbox",          icon: Inbox },
   ] as const;
 
   return (
@@ -4092,6 +4354,120 @@ function WhatsappTab() {
               </p>
             )}
             {!cur.enabled && <p className="text-xs text-muted-foreground mt-3">Enable WhatsApp above to send test messages.</p>}
+          </div>
+        </div>
+      )}
+
+      {/* ── Automations ── */}
+      {waSubTab === "automations" && (
+        <div className="space-y-4">
+          <div className="bg-card border border-card-border rounded-xl p-5">
+            <h2 className="font-bold text-lg flex items-center gap-2"><Sparkles size={16} /> Automated WhatsApp Triggers</h2>
+            <p className="text-sm text-muted-foreground mt-1">
+              Choose which events automatically message patients. Patient-facing reminders are OFF until you switch them on.
+              Every trigger also requires the master WhatsApp switch on the Cloud API tab.
+            </p>
+            {!cur.enabled && (
+              <p className="text-xs mt-2 text-amber-600 flex items-center gap-1">
+                <AlertTriangle size={13} /> WhatsApp is currently disabled — enable it on the Cloud API tab for any of these to actually send.
+              </p>
+            )}
+          </div>
+
+          {/* Bill created */}
+          <div className="bg-card border border-card-border rounded-xl p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="font-semibold flex items-center gap-2"><Receipt size={14} /> Bill created</h3>
+                <p className="text-[11px] text-muted-foreground mt-1">Sends the approved bill template (name, bill no., amount, queue token) the moment a new bill is generated.</p>
+              </div>
+              <Toggle checked={cur.autoSendBillCreated !== false} onChange={(v) => update("autoSendBillCreated", v)} label="Toggle bill created" />
+            </div>
+          </div>
+
+          {/* Report ready */}
+          <div className="bg-card border border-card-border rounded-xl p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="font-semibold flex items-center gap-2"><Send size={14} /> Report ready</h3>
+                <p className="text-[11px] text-muted-foreground mt-1">Auto-delivers the report link when a verifier finalises a patient report. (Same setting as “Auto-send on verify” on the Cloud API tab.)</p>
+              </div>
+              <Toggle checked={!!cur.autoSendOnVerify} onChange={(v) => update("autoSendOnVerify", v)} label="Toggle report ready" />
+            </div>
+          </div>
+
+          {/* Appointment reminder */}
+          <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="font-semibold flex items-center gap-2"><ClipboardList size={14} /> Appointment reminder</h3>
+                <p className="text-[11px] text-muted-foreground mt-1">Once a day, messages every patient scheduled for the <strong>next day</strong>.</p>
+              </div>
+              <Toggle checked={!!cur.appointmentReminderEnabled} onChange={(v) => update("appointmentReminderEnabled", v)} label="Toggle appointment reminder" />
+            </div>
+            {cur.appointmentReminderEnabled && (
+              <div className="grid md:grid-cols-[auto_1fr] gap-4 pt-3 border-t border-card-border">
+                <div>
+                  <Label>Send at (server time)</Label>
+                  <Input type="time" value={cur.appointmentReminderTime ?? "18:00"} onChange={(e) => update("appointmentReminderTime", e.target.value)} className="mt-1 w-40" />
+                </div>
+                <div>
+                  <Label>Custom message (optional)</Label>
+                  <Textarea
+                    value={cur.appointmentReminderTemplate ?? ""}
+                    onChange={(e) => update("appointmentReminderTemplate", e.target.value)}
+                    rows={3}
+                    className="mt-1 font-mono text-xs"
+                    placeholder={"Leave empty for the default. Placeholders: {{name}} {{date}} {{time}}"}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Dues reminder */}
+          <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="font-semibold flex items-center gap-2"><CreditCard size={14} /> Dues reminder</h3>
+                <p className="text-[11px] text-muted-foreground mt-1">Once a day, messages every patient whose total outstanding balance is at or above the threshold below. One consolidated message per patient.</p>
+              </div>
+              <Toggle checked={!!cur.duesReminderEnabled} onChange={(v) => update("duesReminderEnabled", v)} label="Toggle dues reminder" />
+            </div>
+            {cur.duesReminderEnabled && (
+              <div className="grid md:grid-cols-3 gap-4 pt-3 border-t border-card-border">
+                <div>
+                  <Label>Send at (server time)</Label>
+                  <Input type="time" value={cur.duesReminderTime ?? "11:00"} onChange={(e) => update("duesReminderTime", e.target.value)} className="mt-1 w-40" />
+                </div>
+                <div>
+                  <Label>Minimum balance (₹)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={cur.duesReminderMinAmount ?? 0}
+                    onChange={(e) => setForm({ ...(cur as WhatsappCfg), duesReminderMinAmount: Math.max(0, Math.floor(Number(e.target.value) || 0)) })}
+                    className="mt-1 w-40"
+                  />
+                  <p className="text-[11px] text-muted-foreground mt-1">Skip patients owing less than this.</p>
+                </div>
+                <div>
+                  <Label>Custom message (optional)</Label>
+                  <Textarea
+                    value={cur.duesReminderTemplate ?? ""}
+                    onChange={(e) => update("duesReminderTemplate", e.target.value)}
+                    rows={3}
+                    className="mt-1 font-mono text-xs"
+                    placeholder={"Leave empty for the default. Placeholders: {{name}} {{amount}}"}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" type="button" onClick={() => setForm(cfg ?? null)}>Reset</Button>
+            <Button onClick={() => save.mutate(cur as WhatsappCfg)} disabled={save.isPending}>{save.isPending ? "Saving…" : "Save"}</Button>
           </div>
         </div>
       )}

@@ -3,7 +3,7 @@ import { db } from "@workspace/db";
 import {
   emailSettingsTable, billsTable, billAuditsTable, paymentsTable,
   doctorsTable, commissionRulesTable, orderTestsTable, ordersTable, testsTable,
-  dicomNodesTable, dicomPullJobsTable,
+  dicomNodesTable, dicomPullJobsTable, whatsappSettingsTable,
 } from "@workspace/db/schema";
 import { sendDailySummaryEmail, sendCommissionMonthEndEmail, sendMonthlyAuditEmail } from "./email";
 import { runBooksSanity } from "./routes/books-sanity";
@@ -31,6 +31,7 @@ export function startCronScheduler() {
   scheduleSessionIdleSweep();
   scheduleAuditLogPurge();
   schedulePacsPullerWatchdog();
+  scheduleWhatsappReminders();
 
   // Start the in-process DIMSE pull agent if enabled.
   // When ENABLE_DICOM_PULL_AGENT is set, the agent polls for pull jobs and
@@ -500,6 +501,61 @@ function scheduleDaily() {
   });
 
   console.log("[cron] Daily summary scheduler started (checks every minute)");
+}
+
+// ── WhatsApp reminder scheduler ───────────────────────────────────────────────
+// Every minute, checks whatsapp_settings for the configured appointment- and
+// dues-reminder times and fires each at most once per day. Both are off by
+// default; the run functions themselves re-check the enabled flags, so a
+// setting flipped off mid-day never sends. Times use the same server-local
+// clock convention as the daily-summary scheduler above.
+function scheduleWhatsappReminders() {
+  cron.schedule("* * * * *", async () => {
+    try {
+      const [settings] = await db.select().from(whatsappSettingsTable).limit(1);
+      if (!settings || !settings.enabled) return;
+
+      const now = new Date();
+      const dateKey = now.toISOString().split("T")[0];
+
+      if (settings.appointmentReminderEnabled && settings.appointmentReminderTime) {
+        const [h, m] = settings.appointmentReminderTime.split(":").map(Number);
+        const key = `wa-appt-${dateKey}`;
+        if (now.getHours() === h && now.getMinutes() === m && !firedToday.has(key)) {
+          firedToday.add(key);
+          const { runAppointmentReminders } = await import("./routes/whatsapp");
+          const r = await runAppointmentReminders();
+          console.log(`[cron] WhatsApp appointment reminders: sent=${r.sent} failed=${r.failed} total=${r.total}${r.skipped ? ` (skipped: ${r.reason})` : ""}`);
+        }
+      }
+
+      if (settings.duesReminderEnabled && settings.duesReminderTime) {
+        const [h, m] = settings.duesReminderTime.split(":").map(Number);
+        const key = `wa-dues-${dateKey}`;
+        if (now.getHours() === h && now.getMinutes() === m && !firedToday.has(key)) {
+          firedToday.add(key);
+          const { runDuesReminders } = await import("./routes/whatsapp");
+          const r = await runDuesReminders();
+          console.log(`[cron] WhatsApp dues reminders: sent=${r.sent} failed=${r.failed} total=${r.total}${r.skipped ? ` (skipped: ${r.reason})` : ""}`);
+        }
+      }
+    } catch (err) {
+      console.error("[cron] WhatsApp reminder check failed:", err);
+    }
+  });
+
+  console.log("[cron] WhatsApp reminder scheduler started (checks every minute)");
+}
+
+// Manual triggers used by the internal-cron endpoints (and callable in tests).
+export async function runWhatsappAppointmentReminders() {
+  const { runAppointmentReminders } = await import("./routes/whatsapp");
+  return runAppointmentReminders();
+}
+
+export async function runWhatsappDuesReminders() {
+  const { runDuesReminders } = await import("./routes/whatsapp");
+  return runDuesReminders();
 }
 
 function scheduleMonthEndCommission() {
