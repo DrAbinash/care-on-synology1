@@ -99,14 +99,28 @@ const patientLoginLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
+  // Only failed attempts count toward the quota — a correct login (200) is
+  // never held against the IP. Without this, a handful of legitimate logins
+  // from the same IP/network (multiple tabs, a page refresh, several patients
+  // on shared clinic WiFi) can lock everyone out even though nobody was ever
+  // wrong about their credentials.
+  skipSuccessfulRequests: true,
   message: { error: "Too many login attempts. Please try again in 15 minutes." },
 });
 
 const staffLoginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 5,
+  max: 8,
   standardHeaders: true,
   legacyHeaders: false,
+  // Same reasoning as patientLoginLimiter above: this IP-based limiter is a
+  // second, coarser layer on top of the per-account lockout (which already
+  // tracks only genuine PIN failures via failedLoginAttempts/lockedUntil and
+  // exempts super_admin). Without skipSuccessfulRequests, a staff member
+  // simply logging in a few times in a row (new tab, session expired,
+  // switching devices on the same clinic network) could trip this limiter
+  // even with a correct PIN every time.
+  skipSuccessfulRequests: true,
   message: { error: "Too many login attempts. Please try again in 15 minutes." },
 });
 
