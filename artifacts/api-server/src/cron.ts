@@ -7,6 +7,7 @@ import {
 } from "@workspace/db/schema";
 import { sendDailySummaryEmail, sendCommissionMonthEndEmail, sendMonthlyAuditEmail } from "./email";
 import { runBooksSanity } from "./routes/books-sanity";
+import { exportDatabaseSql, exportDatabaseSqlFallback } from "./routes/backupReplication";
 import { auditRunsTable, watchdogStatusTable } from "@workspace/db/schema";
 import { gte, and, lte, eq, inArray, isNull, or, lt } from "drizzle-orm";
 import { encryptBackup } from "@workspace/crypto";
@@ -59,7 +60,7 @@ function scheduleAutomatedBackups() {
   console.log("[cron] Automated backup scheduler started (checks every minute)");
 }
 
-async function fireScheduledBackups() {
+export async function fireScheduledBackups() {
   const { backupJobsTable, backupJobLogsTable } = await import("@workspace/db/schema");
   const { sendBackupFailureEmail } = await import("./email");
   const now = new Date();
@@ -113,52 +114,66 @@ async function fireScheduledBackups() {
       notes: "Triggered by cron scheduler",
     }).returning();
 
-    let rowCount = 0;
+    let rowCount: number | null = 0;
     let sizeBytes = 0;
     let filePath: string | null = null;
     let notes = "";
 
     try {
       if (job.backupType === "DB" || job.backupType === "FULL" || job.backupType === "CONFIG") {
-        // Master-data backup (same as /api/backup/run)
-        const tables: Record<string, string[]> = {
+        // Master-data backup via pg_dump (Ticket E0.1 / CRIT-1 fix).
+        //
+        // Previously this ran SELECT * FROM ${table} LIMIT 5000 per table
+        // with no pagination — any table over 5000 rows was silently
+        // truncated, and the job was unconditionally marked "success"
+        // regardless. pg_dump has no row cap, and DB/FULL omit a table
+        // allowlist entirely (a full dump — no list to fall out of sync
+        // with schema changes, unlike the old hardcoded table arrays, one
+        // of which had already drifted and was missing patient_reports).
+        // CONFIG stays scoped to a few small config tables via --table
+        // filtering. exportDatabaseSql/exportDatabaseSqlFallback (see
+        // backupReplication.ts) only resolve once the export is verified
+        // complete — a failed or truncated pg_dump run rejects instead of
+        // silently resolving, so it lands in the catch block below and is
+        // correctly recorded as "failed", never "success".
+        const scopedTables: Record<string, string[] | undefined> = {
           CONFIG: ["clinic_settings", "email_settings", "printer_settings", "pacs_settings"],
-          DB: ["patients", "bills", "radiology_studies", "patient_reports", "orders", "report_delivery_logs"],
-          FULL: ["patients", "bills", "orders", "order_tests", "payments", "clinic_settings", "doctors", "diagnostic_tests", "test_categories", "radiology_studies"],
+          DB: undefined,
+          FULL: undefined,
         };
-        const targetTables = tables[job.backupType] ?? tables.CONFIG;
-        const exportData: Record<string, unknown[]> = {};
-        for (const table of targetTables) {
-          try {
-            const rows = await db.execute(`SELECT * FROM ${table} LIMIT 5000`);
-            exportData[table] = rows.rows;
-            rowCount += rows.rows.length;
-          } catch { /* table may not exist */ }
+        const tableFilter = scopedTables[job.backupType];
+
+        let dump: { filePath: string; sizeBytes: number; rowCount: number | null };
+        try {
+          dump = await exportDatabaseSql(tableFilter);
+        } catch (pgDumpErr) {
+          console.warn(`[cron] pg_dump unavailable for backup job #${job.id}, using fallback exporter:`, pgDumpErr);
+          dump = await exportDatabaseSqlFallback(tableFilter);
         }
-        const json = JSON.stringify({
-          generatedAt: new Date().toISOString(),
-          version: 1,
-          tables: exportData,
-          checksum: require("node:crypto").createHash("sha256").update(JSON.stringify(exportData)).digest("hex"),
-        });
-        sizeBytes = Buffer.byteLength(json, "utf8");
+
+        sizeBytes = dump.sizeBytes;
+        rowCount = dump.rowCount;
+        const sql = require("fs").readFileSync(dump.filePath, "utf-8");
 
         // Write to disk if destinationPath provided
         if (job.destinationPath) {
           try {
             const dir = require("path").dirname(job.destinationPath);
             require("fs").mkdirSync(dir, { recursive: true });
-            const enc = encryptBackup(json);
-            const dest = `${job.destinationPath}/backup_${job.jobName}_${new Date().toISOString().replace(/[:.]/g, "-")}.json.enc`;
+            const enc = encryptBackup(sql);
+            const dest = `${job.destinationPath}/backup_${job.jobName}_${new Date().toISOString().replace(/[:.]/g, "-")}.sql.enc`;
             require("fs").writeFileSync(dest, enc);
             filePath = dest;
-            notes = `Backup saved to ${dest}`;
+            notes = `Backup saved to ${dest} (${(sizeBytes / 1024 / 1024).toFixed(2)} MB)`;
           } catch (e: unknown) {
             notes = `In-memory backup; disk write failed: ${e instanceof Error ? e.message : String(e)}`;
           }
         } else {
-          notes = `In-memory ${job.backupType} backup (${rowCount} rows, ${sizeBytes} bytes)`;
+          notes = `In-memory ${job.backupType} backup (${(sizeBytes / 1024 / 1024).toFixed(2)} MB)`;
         }
+
+        // The unencrypted intermediate dump must not linger on disk.
+        require("fs").unlink(dump.filePath, () => {});
       } else {
         notes = `${job.backupType} backup type not yet implemented in scheduler.`;
       }

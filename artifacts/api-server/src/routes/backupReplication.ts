@@ -89,7 +89,30 @@ function parseDatabaseUrl(): { host: string; port: string; database: string; use
   }
 }
 
-async function exportDatabaseSql(): Promise<{ filePath: string; sizeBytes: number; rowCount: number | null }> {
+// Emergency Ticket E0.1 — CRIT-1 (scheduled backup false-success risk).
+//
+// Previously this promise resolved as soon as the write stream fired
+// "finish" (i.e. pg_dump's stdout closed), without waiting for pg_dump's
+// own "close" event to confirm a zero exit code. If pg_dump crashed or
+// failed partway through a dump, its stdout still closed (ending the
+// stream, firing "finish") *before or around the same time as* the
+// process's "close" event reported the real (non-zero) exit code — so the
+// promise could already be resolved as success by the time the failure was
+// known, silently swallowing the later reject() call (a settled promise
+// ignores further resolve/reject calls). A partial, truncated dump could
+// therefore be recorded as a successful backup.
+//
+// Fixed by waiting for BOTH the stream to finish AND the process to close,
+// and only resolving if the exit code was 0 and the output file is
+// non-empty — the two are combined via trySettle() so ordering between the
+// two async events no longer matters.
+//
+// `tables`, if provided, adds --table filtering (same flag pg_dump already
+// supports and internal-backup.ts's /download endpoint already uses) for
+// small, scoped backups (e.g. CONFIG) — omit it for a full database dump.
+export async function exportDatabaseSql(
+  tables?: string[],
+): Promise<{ filePath: string; sizeBytes: number; rowCount: number | null }> {
   const creds = parseDatabaseUrl();
   if (!creds) throw new Error("DATABASE_URL not configured");
 
@@ -107,6 +130,9 @@ async function exportDatabaseSql(): Promise<{ filePath: string; sizeBytes: numbe
     "--clean",
     "--if-exists",
   ];
+  for (const t of tables ?? []) {
+    args.push("--table", t);
+  }
 
   const env = { ...process.env, PGPASSWORD: creds.password };
 
@@ -114,30 +140,62 @@ async function exportDatabaseSql(): Promise<{ filePath: string; sizeBytes: numbe
     const pgDump = spawn("pg_dump", args, { env, stdio: ["ignore", "pipe", "pipe"] });
     const outStream = createWriteStream(filePath);
     let errorOutput = "";
+    let settled = false;
+    let streamFinished = false;
+    let closeCode: number | null = null;
+
+    const trySettle = () => {
+      if (settled || !streamFinished || closeCode === null) return;
+      settled = true;
+      if (closeCode !== 0) {
+        reject(new Error(`pg_dump exited with code ${closeCode}: ${errorOutput}`));
+        return;
+      }
+      const stats = statSync(filePath);
+      if (stats.size === 0) {
+        reject(new Error("pg_dump produced an empty file — treating as a failed backup"));
+        return;
+      }
+      resolve({ filePath, sizeBytes: stats.size, rowCount: null });
+    };
 
     pgDump.stderr.on("data", (chunk) => { errorOutput += String(chunk); });
     pgDump.stdout.pipe(outStream);
 
     pgDump.on("error", (err) => {
+      if (settled) return;
+      settled = true;
       reject(new Error(`pg_dump failed to start: ${err.message}`));
     });
 
     outStream.on("finish", () => {
-      const stats = statSync(filePath);
-      resolve({ filePath, sizeBytes: stats.size, rowCount: null });
+      streamFinished = true;
+      trySettle();
     });
 
-    outStream.on("error", (err) => reject(err));
+    outStream.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    });
 
     pgDump.on("close", (code) => {
-      if (code !== 0) {
-        reject(new Error(`pg_dump exited with code ${code}: ${errorOutput}`));
-      }
+      closeCode = code ?? -1;
+      trySettle();
     });
   });
 }
 
-async function exportDatabaseSqlFallback(): Promise<{ filePath: string; sizeBytes: number; rowCount: number | null }> {
+// Fallback for exportDatabaseSql when pg_dump itself isn't available on the
+// host. Already correctly paginated (no row cap — the do/while loop below
+// keeps fetching 500-row pages until a short page confirms the table is
+// exhausted), unlike cron.ts's old SELECT * LIMIT 5000 (Ticket E0.1's
+// CRIT-1 fix). `tableFilter`, if provided, scopes the export to just those
+// tables (mirrors exportDatabaseSql's `tables` param) — omit for every
+// table in the schema.
+export async function exportDatabaseSqlFallback(
+  tableFilter?: string[],
+): Promise<{ filePath: string; sizeBytes: number; rowCount: number | null }> {
   // Fallback: use node-postgres to export schema + data as SQL
   const { pool } = await import("@workspace/db");
   const client = await pool.connect();
@@ -153,7 +211,10 @@ async function exportDatabaseSqlFallback(): Promise<{ filePath: string; sizeByte
       WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
       ORDER BY table_name
     `);
-    const tables = schemaRes.rows.map((r) => r.table_name as string);
+    const allTables = schemaRes.rows.map((r) => r.table_name as string);
+    const tables = tableFilter && tableFilter.length > 0
+      ? allTables.filter((t) => tableFilter.includes(t))
+      : allTables;
 
     lines.push("-- Care Diagnostics Database Export");
     lines.push(`-- Generated: ${new Date().toISOString()}`);
