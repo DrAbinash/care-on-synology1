@@ -49,6 +49,8 @@ import { validateStructuredReport } from "../lib/structuredReport/validator";
 import { noFindingsCatalogPort } from "../lib/radiologyD1DraftWriter";
 import { UnavailableAiRulesRegistryPort } from "../lib/structuredReport/aiRulesRegistry";
 import { canonicalHashPayload, computeChainHash } from "../lib/audit";
+// ── Ticket D6 — structured read path (flag-gated, legacy display default) ───
+import { readStructuredReport, type StructuredReadResult } from "../lib/radiologyStructuredRead";
 
 export const patientReportsRouter: IRouter = Router();
 export const signaturesRouter: IRouter = Router();
@@ -118,6 +120,76 @@ async function rotatePublicToken(reportId: number): Promise<{ token: string; exp
 // Neither must be reachable without a valid staff session.
 patientReportsRouter.use(requireStaffAuth);
 signaturesRouter.use(requireStaffAuth);
+
+// ────────────────────────────────────────────────────────────────────────────
+// Ticket D6 — structured read path (flag-gated; legacy display is the default)
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the D6 read pipeline for one patient_reports row when the read flag is
+ * on and the row is a radiology report carrying structured_json. Returns null
+ * whenever the display must be the stored legacy body with no diagnostics
+ * attached (flag off / not radiology / no structured document) — callers then
+ * behave byte-identically to the pre-D6 route. NEVER writes anything.
+ */
+async function applyStructuredRead(r: {
+  id: number;
+  type: string;
+  body: string;
+  structuredJson: unknown;
+  renderEngineVersion: string | null;
+  catalogVersion: string | null;
+}): Promise<StructuredReadResult | null> {
+  if (r.type !== "radiology" || r.structuredJson == null) return null;
+  try {
+    // Flag check INSIDE the try: a transient feature_flags read failure must
+    // degrade to the stored legacy body, never 500 a report display.
+    if (!(await isFeatureEnabledServer("ff_radiology_structured_read"))) return null;
+    const catalogStore = new DrizzleCatalogStore();
+    const result = await readStructuredReport(
+      { body: r.body, structuredJson: r.structuredJson, renderEngineVersion: r.renderEngineVersion, catalogVersion: r.catalogVersion },
+      {
+        catalogPort: new DrizzleStructuredReportCatalogPort(catalogStore),
+        // R14b: the finalize audit row D5 wrote for this document. entityType
+        // is part of the predicate so the (entity_type, entity_id) composite
+        // index serves this lookup — without it the planner has to scan every
+        // 'finalize' row ever written, on every structured report display.
+        auditLogLookup: async (docId, hash) => {
+          const rows = await db
+            .select({ newValue: auditLogsTable.newValue })
+            .from(auditLogsTable)
+            .where(and(
+              eq(auditLogsTable.action, "finalize"),
+              eq(auditLogsTable.entityType, "structured_report"),
+              eq(auditLogsTable.entityId, docId),
+            ))
+            .limit(5);
+          return rows.some((row) => (row.newValue ?? "").includes(hash));
+        },
+        amendsLookup: async () => null,
+      },
+    );
+    // Phase 5 audit: a divergence or integrity failure must leave a server-
+    // side trace on EVERY surface (GET /:id and all five buildReportHtml
+    // consumers inherit this single choke point). Log-only — the read path
+    // never writes to the database.
+    if (result.comparisonClass === "CLINICAL_DIFFERENCE" || result.comparisonClass === "INVALID_STRUCTURED_JSON") {
+      console.warn("[patient-reports] D6 structured read fell back to the stored body:", JSON.stringify({
+        reportId: r.id,
+        comparisonClass: result.comparisonClass,
+        hashVerified: result.diagnostics.hashVerified,
+        fallbackReason: result.diagnostics.fallbackReason,
+        divergentLines: result.diagnostics.divergentLines.length,
+        validationErrors: result.diagnostics.validationErrors.map((e) => e.rule),
+      }));
+    }
+    return result;
+  } catch (err) {
+    // A read-path failure must never break report display — legacy body wins.
+    console.error("[patient-reports] D6 structured read failed (non-fatal, serving stored body):", err);
+    return null;
+  }
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 // Ticket D5 — structured signed finalize (flag-gated; legacy path is default)
@@ -620,8 +692,28 @@ patientReportsRouter.get("/:id", async (req, res) => {
     return;
   }
   const shares = await db.select().from(reportSharesTable).where(eq(reportSharesTable.reportId, id)).orderBy(desc(reportSharesTable.createdAt));
+  // Ticket D6 — flag-gated display cutover for the viewer. Response-level
+  // only (nothing is written): body is served from the validated D4 render
+  // when it is IDENTICAL / APPROVED_FORMATTING_ONLY vs the stored signed
+  // body; otherwise (and with the flag off) the stored body passes through
+  // unchanged. Diagnostics ride along additively for audit.
+  //
+  // The `body` key is substituted ONLY on rows the PATCH route refuses to
+  // edit (verified/delivered): editors round-trip GET /:id's `body` straight
+  // back through PATCH on save, so substituting it on an editable row would
+  // let a zero-edit save silently overwrite the stored signed bytes with the
+  // render (adversarial-review finding, D6). On editable rows the render is
+  // still available additively as `displayBody`.
+  const structuredRead = await applyStructuredRead(row.r);
+  const bodyImmutable = row.r.status === "verified" || row.r.status === "delivered";
   res.json({
     ...row.r,
+    ...(structuredRead
+      ? {
+          ...(bodyImmutable ? { body: structuredRead.body } : { displayBody: structuredRead.body }),
+          structuredRead: structuredRead.diagnostics,
+        }
+      : {}),
     patientName: [row.patientFirstName, row.patientLastName].filter(Boolean).join(" "),
     patientCode: row.patientCode,
     patientPhone: row.patientPhone,
@@ -843,6 +935,22 @@ patientReportsRouter.patch("/:id", async (req, res) => {
       typeof b.title === "string" || typeof b.impression === "string"
     ) {
       res.status(409).json({ error: "Verified reports cannot be edited. Use Amend instead." });
+      return;
+    }
+  }
+  // Ticket D6 defense-in-depth: a row carrying a SIGNED-final structured
+  // document (D5) is a signed medico-legal artifact regardless of the legacy
+  // status column (D5 rows keep the schema default "draft"). Editing its
+  // content in place would silently diverge — or destroy — the signed bytes,
+  // so it gets the same use-Amend contract as verified reports.
+  const signedStructured =
+    (existing.structuredJson as { audit?: { signature?: { state?: string } } } | null)?.audit?.signature?.state === "final";
+  if (signedStructured) {
+    if (
+      typeof b.body === "string" || typeof b.parameters !== "undefined" ||
+      typeof b.title === "string" || typeof b.impression === "string"
+    ) {
+      res.status(409).json({ error: "Signed structured reports cannot be edited. Use Amend instead." });
       return;
     }
   }
@@ -1104,6 +1212,12 @@ export async function buildReportHtml(reportId: number, autoPrint: boolean, useU
   if (!row) return null;
   const r = row.r;
 
+  // Ticket D6 — flag-gated display cutover for every server-rendered surface
+  // that flows through this builder (print, PDF, public/WhatsApp PDF, email
+  // share, PACS archive). Local variable only; the row/DB are never written.
+  const structuredRead = await applyStructuredRead(r);
+  const displayBody = structuredRead ? structuredRead.body : r.body;
+
   const [clinic] = await db.select().from(clinicSettingsTable).limit(1);
 
   // Load institutional style if radiology report
@@ -1337,7 +1451,7 @@ export async function buildReportHtml(reportId: number, autoPrint: boolean, useU
       ${criticalBanner}
       ${r.impression ? `<div class="impression"><strong>Impression:</strong> ${escapeHtml(r.impression)}</div>` : ""}
       ${parametersHtml}
-      ${r.body ? `<div class="body">${r.type === "radiology" ? r.body : escapeHtml(r.body)}</div>` : ""}
+      ${displayBody ? `<div class="body">${r.type === "radiology" ? displayBody : escapeHtml(displayBody)}</div>` : ""}
       ${verifiedBlock}
       <div class="sigs">
         ${sigBlock(sigPrimary, r.signedByName, "Signed:", r.signedAt as Date | null)}
