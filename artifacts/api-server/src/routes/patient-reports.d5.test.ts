@@ -68,6 +68,7 @@ vi.mock("@workspace/db/schema", () => ({
   reportFindingInstancesTable: TBL.rfi,
   radiologyQuickFindingsTable: TBL.quickFindings,
   auditLogsTable: TBL.auditLogs,
+  patientReportAmendmentsTable: { __name: "patient_report_amendments", originalReportId: "original_report_id", amendedReportId: "amended_report_id", rootReportId: "root_report_id", sequenceNumber: "sequence_number" },
 }));
 
 function makeSelectChain(tbl: { __name?: string }, opts: { inTx: boolean }) {
