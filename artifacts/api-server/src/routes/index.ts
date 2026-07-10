@@ -24,6 +24,7 @@ import { expensesRouter } from "./expenses";
 import discountReasonsRouter from "./discountReasons";
 import testCategoriesRouter from "./testCategories";
 import clinicSettingsRouter from "./clinicSettings";
+import staffQuickDoctorsRouter from "./staffQuickDoctors";
 import { ledgersRouter } from "./ledgers";
 import { tokensRouter } from "./tokens";
 import { testTokensRouter } from "./test-tokens";
@@ -420,6 +421,17 @@ router.use(
   },
   clinicSettingsRouter,
 );
+
+// Per-staff Billing Desk Quick Doctor slot layout — personal data, not a
+// clinic-wide setting. Any authenticated staff member may read/write their
+// OWN row; requireStaffAuth alone is the correct (and only) gate here — see
+// staffQuickDoctors.ts, which always scopes to req.staffSession.subjectId
+// and never trusts a client-supplied staffId. Do NOT gate this with
+// requireStaffSubPermission("/settings", ...) — that would reintroduce the
+// "Failed to save quick doctor" 403 for non-admin staff this route exists
+// to fix.
+router.use("/my/quick-doctors", requireStaffAuth, staffQuickDoctorsRouter);
+
 router.use("/email-settings", requireStaffAuth, requireStaffSubPermission("/settings", "notifications"), emailSettingsRouter);
 // Immutable audit-trail viewer (login/logout/password/account events + all
 // module audit rows). Gated to security-permitted staff / admins — same gate

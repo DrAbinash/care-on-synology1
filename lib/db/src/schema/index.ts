@@ -132,3 +132,4 @@ export * from "./radiologyQuickFindings";
 export * from "./featureFlags";
 export * from "./reportFindingInstances";
 export * from "./radiologyCatalog";
+export * from "./staffQuickDoctors";
