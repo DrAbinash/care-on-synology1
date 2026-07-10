@@ -19,7 +19,36 @@ import {
   radiologyShareLinksTable,
 } from "@workspace/db/schema";
 import { sendReportEmail } from "../email";
-import { requireStaffAuth } from "../middleware/requireStaffAuth";
+import { requireStaffAuth, type StaffAuthRequest } from "../middleware/requireStaffAuth";
+// ── Ticket D5 — structured signed-report path (flag-gated, legacy default) ───
+import {
+  radiologyReportDraftsTable,
+  radiologyWorklistTable,
+  reportFindingInstancesTable,
+  radiologyQuickFindingsTable,
+  auditLogsTable,
+} from "@workspace/db/schema";
+import { asc } from "drizzle-orm";
+import { isFeatureEnabledServer } from "../lib/featureFlags";
+import {
+  canStructuredSign,
+  prepareStructuredFinalReport,
+  buildFinalD1Source,
+  parseDraftImpression,
+  STRUCTURED_RENDERER_VERSION,
+  type FinalWorklistRow,
+} from "../lib/radiologyD1FinalWriter";
+import {
+  materializeFindings,
+  CatalogStoreFindingResolver,
+  type MaterializationOutput,
+} from "../lib/radiologyFindingMaterializer";
+import { DrizzleCatalogStore } from "../lib/radiologyCatalog/drizzleStore";
+import { DrizzleStructuredReportCatalogPort } from "../lib/structuredReport/catalogAccess";
+import { validateStructuredReport } from "../lib/structuredReport/validator";
+import { noFindingsCatalogPort } from "../lib/radiologyD1DraftWriter";
+import { UnavailableAiRulesRegistryPort } from "../lib/structuredReport/aiRulesRegistry";
+import { canonicalHashPayload, computeChainHash } from "../lib/audit";
 
 export const patientReportsRouter: IRouter = Router();
 export const signaturesRouter: IRouter = Router();
@@ -89,6 +118,324 @@ async function rotatePublicToken(reportId: number): Promise<{ token: string; exp
 // Neither must be reachable without a valid staff session.
 patientReportsRouter.use(requireStaffAuth);
 signaturesRouter.use(requireStaffAuth);
+
+// ────────────────────────────────────────────────────────────────────────────
+// Ticket D5 — structured signed finalize (flag-gated; legacy path is default)
+// ────────────────────────────────────────────────────────────────────────────
+
+/** Typed control-flow throw for "structured path cannot proceed safely" —
+ *  rolls back the transaction; the caller falls back to the legacy finalize
+ *  with the reason recorded. Never silently signs divergent content. */
+class StructuredFinalSkip extends Error {
+  constructor(public skipCode: string, public detail?: unknown) {
+    super(skipCode);
+    this.name = "StructuredFinalSkip";
+  }
+}
+
+interface StructuredFinalizeArgs {
+  reportNumber: string;
+  studyId: number;
+  patientId: number;
+  testId: number;
+  orderTestId: number | null;
+  orderId: number | null;
+  billId: number | null;
+  title: string;
+  parameters: string | null;
+  clientImpressionText: string | null;
+  templateId: number | null;
+  isCritical: boolean;
+  criticalNote: string | null;
+  presetUsed: string | null;
+}
+
+type StructuredFinalizeOutcome =
+  | { kind: "signed"; row: typeof patientReportsTable.$inferSelect; diagnostics: Record<string, unknown> }
+  | { kind: "skipped"; diagnostics: Record<string, unknown> };
+
+/**
+ * The D5 signed transaction (Phase 3). ONE db.transaction:
+ *  re-read draft + finding instances → materialize (D3.5) → prepare the FINAL
+ *  D1 document (D2 writer, finalize mode) + D4 render + legacy-equivalence
+ *  check → insert the finalize audit row (chain protocol, reserved id) →
+ *  authoritative D1 validation (real R14b lookup against that row) → insert
+ *  patient_reports (D4 body + structured_json + versions + server authorship)
+ *  → snapshot finding instances with report_id → stamp draft.final_report_id.
+ * Any skip/failure throws → the WHOLE transaction rolls back (no partial
+ * signed state, audit chain intact) → caller falls back to legacy finalize.
+ */
+async function structuredFinalizeTransaction(
+  req: StaffAuthRequest,
+  args: StructuredFinalizeArgs,
+): Promise<StructuredFinalizeOutcome> {
+  const session = req.staffSession!;
+  const signedAtIso = new Date().toISOString();
+
+  try {
+    const row = await db.transaction(async (tx) => {
+      // 1) Re-read the authoritative draft for this study (latest wins).
+      const [draft] = await tx
+        .select()
+        .from(radiologyReportDraftsTable)
+        .where(eq(radiologyReportDraftsTable.studyId, args.studyId))
+        .orderBy(desc(radiologyReportDraftsTable.updatedAt))
+        .limit(1);
+      if (!draft) throw new StructuredFinalSkip("no_draft_for_study");
+
+      // 2) Re-read current finding instances (source of truth, A3.2).
+      const instances = await tx
+        .select()
+        .from(reportFindingInstancesTable)
+        .where(eq(reportFindingInstancesTable.draftId, draft.id))
+        .orderBy(asc(reportFindingInstancesTable.id));
+
+      // 3) Worklist row → study identifiers.
+      let worklist: FinalWorklistRow | null = null;
+      if (draft.worklistId != null) {
+        const [w] = await tx
+          .select()
+          .from(radiologyWorklistTable)
+          .where(eq(radiologyWorklistTable.id, draft.worklistId))
+          .limit(1);
+        worklist = (w as FinalWorklistRow | undefined) ?? null;
+      }
+
+      // 4) Materialize truthful D1 findings via the catalog (D3.5). Without
+      //    the catalog there is nothing to sign structurally — prepare will
+      //    return render_empty and this transaction rolls back to legacy.
+      const source = buildFinalD1Source(
+        draft,
+        worklist,
+        instances.map((r) => ({ findingId: r.findingId, structuredJson: r.structuredJson, source: r.source })),
+      );
+      let materialized: MaterializationOutput = { findings: [], measurements: [], recommendations: [], skipped: [] };
+      let catalogPort = noFindingsCatalogPort;
+      if (await isFeatureEnabledServer("ff_radiology_catalog")) {
+        const catalogStore = new DrizzleCatalogStore();
+        const resolver = new CatalogStoreFindingResolver(catalogStore, async (qfId) => {
+          const [qf] = await tx
+            .select({ label: radiologyQuickFindingsTable.label })
+            .from(radiologyQuickFindingsTable)
+            .where(eq(radiologyQuickFindingsTable.id, qfId))
+            .limit(1);
+          return qf?.label ? { label: qf.label } : null;
+        });
+        materialized = await materializeFindings(
+          source.findingSelections.map((s) => ({ findingId: s.findingId, params: s.params as Record<string, unknown>, source: s.source })),
+          resolver,
+          { actor: source.createdBy ?? session.subjectName, createdAtIso: source.createdAtIso },
+        );
+        catalogPort = new DrizzleStructuredReportCatalogPort(catalogStore);
+      }
+
+      // 5) Reserve the audit-chain row id (sequences are non-transactional, so
+      //    this cannot collide even across concurrent finalizes). The id is
+      //    hashed INTO the signed document (audit_log_ref), which is why it
+      //    must exist before the writer runs.
+      const nextvalRes = await tx.execute(
+        sql`SELECT nextval(pg_get_serial_sequence('audit_logs','id')) AS id`,
+      );
+      const nextvalRows = (Array.isArray(nextvalRes) ? nextvalRes : (nextvalRes as { rows?: unknown[] }).rows ?? []) as Array<{ id: unknown }>;
+      const auditLogRef = Number(nextvalRows[0]?.id);
+      if (!Number.isFinite(auditLogRef) || auditLogRef <= 0) {
+        throw new StructuredFinalSkip("audit_id_reservation_failed");
+      }
+
+      // 6) PURE preparation: final D1 document (D2 writer, finalize mode) +
+      //    D4 render + legacy-equivalence verdict. Validation here runs
+      //    without the audit lookup (the row is not inserted yet) — the
+      //    authoritative validation with the real lookup runs at step 9.
+      const prepared = await prepareStructuredFinalReport({
+        source,
+        materialized,
+        draftLegacy: {
+          rawFindings: draft.rawFindings,
+          impression: parseDraftImpression(draft.impression),
+          recommendation: draft.recommendation,
+          clientImpressionText: args.clientImpressionText,
+        },
+        sign: {
+          signedBy: session.subjectName,
+          signedRole: session.role,
+          signedById: session.subjectId,
+          signedAtIso,
+          auditLogRef,
+        },
+        validationPorts: { catalogPort, amendsLookup: async () => null },
+      });
+      if (!prepared.ok) {
+        throw new StructuredFinalSkip(`prepare_${prepared.stage}`, {
+          skipReasons: prepared.skipReasons,
+          validationErrors: prepared.validationErrors,
+        });
+      }
+
+      // 7) Legacy-equivalence policy (Phase 4): only sign structured content
+      //    that is clinically identical (after approved formatting
+      //    normalizations) to the draft's own legacy fields. Anything else
+      //    falls back to the legacy finalize with the mismatch recorded.
+      if (prepared.equivalence.verdict !== "equivalent") {
+        throw new StructuredFinalSkip("clinical_divergence", prepared.equivalence);
+      }
+
+      // 8) Insert the finalize audit row at the reserved id, following the
+      //    exact audit-chain protocol (xact-scoped chain lock → read previous
+      //    chainHash → canonical payload hash → insert). `id` is not part of
+      //    the hashed payload, so the explicit id does not affect the chain.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('care_erp_audit_chain'))`);
+      const [prevAudit] = await tx
+        .select({ chainHash: auditLogsTable.chainHash })
+        .from(auditLogsTable)
+        .orderBy(desc(auditLogsTable.id))
+        .limit(1);
+      const previousHash = prevAudit?.chainHash ?? "";
+      const auditCreatedAt = new Date();
+      const forwarded = req.headers["x-forwarded-for"];
+      const ipAddress = typeof forwarded === "string" ? forwarded.split(",")[0].trim() : (req.ip ?? req.socket?.remoteAddress ?? "");
+      const userAgent = String(req.headers["user-agent"] ?? "");
+      const auditNewValue = JSON.stringify({
+        document_id: prepared.document.document_id,
+        signed_content_sha256: prepared.document.audit.signature.signed_content_sha256,
+        report_number: args.reportNumber,
+        draft_id: draft.id,
+      });
+      const canonical = canonicalHashPayload({
+        userId: session.subjectId,
+        userName: session.subjectName,
+        role: session.role,
+        action: "finalize",
+        module: "radiology",
+        entityType: "structured_report",
+        entityId: prepared.document.document_id,
+        oldValue: null,
+        newValue: auditNewValue,
+        reason: null,
+        ipAddress,
+        userAgent,
+        createdAt: auditCreatedAt.toISOString(),
+        previousHash,
+      });
+      await tx.insert(auditLogsTable).values({
+        id: auditLogRef,
+        userId: session.subjectId,
+        userName: session.subjectName,
+        role: session.role,
+        action: "finalize",
+        module: "radiology",
+        entityType: "structured_report",
+        entityId: prepared.document.document_id,
+        oldValue: null,
+        newValue: auditNewValue,
+        ipAddress,
+        userAgent,
+        reason: null,
+        previousHash,
+        chainHash: computeChainHash(canonical),
+        createdAt: auditCreatedAt,
+      });
+
+      // 9) AUTHORITATIVE validation — finalize mode with the REAL R14b lookup
+      //    against the row just inserted. Any blocking error rolls everything
+      //    back (audit row included; chain lock is xact-scoped).
+      const authoritative = await validateStructuredReport(prepared.document, {
+        catalog: catalogPort,
+        aiRules: new UnavailableAiRulesRegistryPort(),
+        mode: "finalize",
+        auditLogLookup: async (docId, hash) => {
+          const [row] = await tx.select().from(auditLogsTable).where(eq(auditLogsTable.id, auditLogRef)).limit(1);
+          return !!row && row.action === "finalize" && row.entityId === docId && (row.newValue ?? "").includes(hash);
+        },
+        amendsLookup: async () => null,
+      });
+      if (!authoritative.ok) {
+        throw new StructuredFinalSkip("d1_validation_failed", { validationErrors: authoritative.errors });
+      }
+
+      // 10) Insert the signed patient_reports row. body = D4 render;
+      //     authorship = server session identity (client createdBy ignored).
+      const [reportRow] = await tx.insert(patientReportsTable).values({
+        reportNumber: args.reportNumber,
+        type: "radiology",
+        patientId: args.patientId,
+        testId: args.testId,
+        orderTestId: args.orderTestId,
+        orderId: args.orderId,
+        billId: args.billId,
+        studyId: args.studyId,
+        title: args.title,
+        body: prepared.renderedBody,
+        parameters: args.parameters,
+        impression: prepared.legacyShape.impression.join("\n") || null,
+        templateId: args.templateId,
+        createdBy: session.subjectName,
+        signedByName: session.subjectName,
+        signedAt: new Date(signedAtIso),
+        isCritical: args.isCritical,
+        criticalNote: args.criticalNote,
+        stylePresetUsed: args.presetUsed,
+        structuredJson: prepared.document,
+        renderEngineVersion: STRUCTURED_RENDERER_VERSION,
+        templateVersion: draft.templateId,
+        catalogVersion: source.catalogSchemaVersion,
+      }).returning();
+
+      // 11) Snapshot the signed finding instances with report_id. Copies carry
+      //     reportId and a NULL draftId so the A4 cache / A5 drift logic
+      //     (which query by draftId) never see them as live draft rows.
+      if (instances.length > 0) {
+        await tx.insert(reportFindingInstancesTable).values(
+          instances.map((r) => ({
+            draftId: null,
+            reportId: reportRow.id,
+            findingId: r.findingId,
+            anatomicZoneId: r.anatomicZoneId,
+            structureId: r.structureId,
+            category: r.category,
+            modality: r.modality,
+            structuredJson: r.structuredJson,
+            catalogVersion: r.catalogVersion,
+            source: r.source,
+            confirmed: r.confirmed,
+            confirmedBy: r.confirmedBy,
+            confirmedAt: r.confirmedAt,
+          })),
+        );
+      }
+
+      // 12) Promote the draft (the column's documented purpose). Draft status
+      //     is deliberately untouched — nothing sets it today (legacy
+      //     contract), and the workspace manages its own finalized state.
+      await tx
+        .update(radiologyReportDraftsTable)
+        .set({ finalReportId: reportRow.id })
+        .where(eq(radiologyReportDraftsTable.id, draft.id));
+
+      return reportRow;
+    });
+
+    return {
+      kind: "signed",
+      row,
+      diagnostics: {
+        attempted: true,
+        signed: true,
+        documentId: (row.structuredJson as { document_id?: string } | null)?.document_id,
+        renderEngineVersion: STRUCTURED_RENDERER_VERSION,
+      },
+    };
+  } catch (err) {
+    if (err instanceof StructuredFinalSkip) {
+      req.log?.warn?.({ skip: err.skipCode, detail: err.detail }, "D5 structured finalize skipped — falling back to legacy");
+      return {
+        kind: "skipped",
+        diagnostics: { attempted: true, signed: false, fallback: "legacy", reason: err.skipCode, detail: err.detail },
+      };
+    }
+    throw err; // unexpected → caller decides (falls back to legacy, reason recorded)
+  }
+}
+
 
 // ────────────────────────────────────────────────────────────────────────────
 // Signatures CRUD
@@ -387,6 +734,59 @@ patientReportsRouter.post("/", async (req, res) => {
     }
   }
 
+  // ── Ticket D5 — structured signed finalize (default OFF) ─────────────────
+  // Only a radiology report tied to a study is eligible, only when
+  // ff_radiology_structured_final is enabled, and only for a session with
+  // real sign authority. Every ineligible/failed case falls through to the
+  // legacy path below — flag OFF is byte-identical to the pre-D5 route.
+  let structuredDiagnostics: Record<string, unknown> | null = null;
+  const studyIdNum = b.studyId ? Number(b.studyId) : null;
+  if (type === "radiology" && studyIdNum && (await isFeatureEnabledServer("ff_radiology_structured_final"))) {
+    const session = (req as StaffAuthRequest).staffSession;
+    const authority = canStructuredSign(session ?? null);
+    if (!authority.allowed) {
+      // Structured signing denied (typist / missing :sign grant / no session).
+      // The legacy finalize below proceeds exactly as today.
+      structuredDiagnostics = { attempted: false, signed: false, fallback: "legacy", reason: authority.reason };
+    } else {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const reportNumber = await nextReportNumber();
+        try {
+          const outcome = await structuredFinalizeTransaction(req as StaffAuthRequest, {
+            reportNumber,
+            studyId: studyIdNum,
+            patientId,
+            testId,
+            orderTestId: b.orderTestId ? Number(b.orderTestId) : null,
+            orderId: b.orderId ? Number(b.orderId) : null,
+            billId: b.billId ? Number(b.billId) : null,
+            title: String(b.title ?? `${test.name} — Report`).trim(),
+            parameters: typeof b.parameters === "string" ? b.parameters : (b.parameters ? JSON.stringify(b.parameters) : null),
+            clientImpressionText: typeof b.impression === "string" ? b.impression : null,
+            templateId: b.templateId ? Number(b.templateId) : null,
+            isCritical: b.isCritical === true,
+            criticalNote: typeof b.criticalNote === "string" ? b.criticalNote : null,
+            presetUsed,
+          });
+          if (outcome.kind === "signed") {
+            res.status(201).json({ ...outcome.row, structuredFinal: outcome.diagnostics });
+            return;
+          }
+          structuredDiagnostics = outcome.diagnostics;
+          break; // clean skip → legacy fallback
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (/duplicate key|unique/i.test(msg) && attempt < 2) continue; // fresh number, retry
+          // Unexpected failure: the transaction already rolled back (no partial
+          // signed state). Record it and fall back to the legacy finalize.
+          req.log?.error({ err }, "D5 structured finalize transaction failed — falling back to legacy");
+          structuredDiagnostics = { attempted: true, signed: false, fallback: "legacy", reason: "structured_txn_failed", error: msg };
+          break;
+        }
+      }
+    }
+  }
+
   // Retry on UNIQUE collision for the report number.
   for (let attempt = 0; attempt < 3; attempt++) {
     const reportNumber = await nextReportNumber();
@@ -410,7 +810,9 @@ patientReportsRouter.post("/", async (req, res) => {
         criticalNote: typeof b.criticalNote === "string" ? b.criticalNote : null,
         stylePresetUsed: presetUsed,
       }).returning();
-      res.status(201).json(row);
+      // Legacy response is byte-identical when no structured attempt was made
+      // (flag OFF); with the flag ON, fallback diagnostics ride along additively.
+      res.status(201).json(structuredDiagnostics ? { ...row, structuredFinal: structuredDiagnostics } : row);
       return;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

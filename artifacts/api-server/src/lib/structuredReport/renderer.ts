@@ -26,6 +26,13 @@ import type {
   ImpressionItem,
 } from "./types";
 
+/** Version stamped into patient_reports.render_engine_version by the D5
+ *  structured-finalize path when THIS renderer produced the signed body —
+ *  distinct from the legacy frontend engine's RENDER_ENGINE_VERSION ("1.0.0"
+ *  in diagnostic-erp/src/lib/renderEngine.ts). Bump on any output-affecting
+ *  change (the byte-for-byte golden tests pin the output for each version). */
+export const STRUCTURED_RENDERER_VERSION = "d4-structured-1.0.0";
+
 // ── Options / template snapshot ──────────────────────────────────────────────
 
 export interface RenderOptions {
