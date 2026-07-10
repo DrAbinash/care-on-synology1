@@ -27,7 +27,13 @@ import {
   reportFindingInstancesTable,
   radiologyQuickFindingsTable,
   auditLogsTable,
+  patientReportAmendmentsTable,
 } from "@workspace/db/schema";
+// ── Ticket D7 — structured amendment chain ───────────────────────────────────
+import {
+  prepareStructuredAmendment,
+  type AmendmentParent,
+} from "../lib/radiologyD1AmendmentWriter";
 import { asc } from "drizzle-orm";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import {
@@ -166,7 +172,32 @@ async function applyStructuredRead(r: {
             .limit(5);
           return rows.some((row) => (row.newValue ?? "").includes(hash));
         },
-        amendsLookup: async () => null,
+        // R14c (D7): the validator asks about the PRIOR document of an
+        // amendment row. The linkage row is the proof it exists and was
+        // signed-final at amend time; the parent row's live document supplies
+        // the state. "Already amended" must exclude the very document being
+        // read — a chain is linear, and the row on screen IS that amendment.
+        amendsLookup: async (priorDocId) => {
+          const [link] = await db
+            .select()
+            .from(patientReportAmendmentsTable)
+            .where(eq(patientReportAmendmentsTable.originalDocumentId, priorDocId))
+            .limit(1);
+          if (!link) return null;
+          const [parentRow] = await db
+            .select({ structuredJson: patientReportsTable.structuredJson })
+            .from(patientReportsTable)
+            .where(eq(patientReportsTable.id, link.originalReportId))
+            .limit(1);
+          const parentDoc = parentRow?.structuredJson as { audit?: { signature?: { state?: string } } } | null;
+          const state = parentDoc?.audit?.signature?.state;
+          if (typeof state !== "string") return null;
+          const selfDocId = (r.structuredJson as { document_id?: unknown })?.document_id;
+          return {
+            state,
+            alreadyAmendedBy: link.amendedDocumentId === selfDocId ? null : link.amendedDocumentId,
+          };
+        },
       },
     );
     // Phase 5 audit: a divergence or integrity failure must leave a server-
@@ -188,6 +219,75 @@ async function applyStructuredRead(r: {
     // A read-path failure must never break report display — legacy body wins.
     console.error("[patient-reports] D6 structured read failed (non-fatal, serving stored body):", err);
     return null;
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Ticket D7 — structured amendment chain (helpers; route registered below)
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface AmendmentChainInfo {
+  rootReportId: number;
+  latestReportId: number;
+  superseded: boolean;
+  chain: Array<{
+    sequenceNumber: number;
+    originalReportId: number;
+    amendedReportId: number;
+    amendedDocumentId: string;
+    reason: string;
+    amendedByName: string;
+    createdAt: Date;
+  }>;
+}
+
+/**
+ * Resolve the amendment chain a report participates in (as root, middle, or
+ * tip). Returns null for reports with no amendments — the common case, two
+ * cheap indexed lookups. Read-only; history is never mutated.
+ */
+async function loadAmendmentChain(reportId: number): Promise<AmendmentChainInfo | null> {
+  const [asAmendment] = await db
+    .select()
+    .from(patientReportAmendmentsTable)
+    .where(eq(patientReportAmendmentsTable.amendedReportId, reportId))
+    .limit(1);
+  const [asOriginal] = await db
+    .select()
+    .from(patientReportAmendmentsTable)
+    .where(eq(patientReportAmendmentsTable.originalReportId, reportId))
+    .limit(1);
+  const anyLink = asAmendment ?? asOriginal;
+  if (!anyLink) return null;
+
+  const chain = await db
+    .select()
+    .from(patientReportAmendmentsTable)
+    .where(eq(patientReportAmendmentsTable.rootReportId, anyLink.rootReportId))
+    .orderBy(asc(patientReportAmendmentsTable.sequenceNumber));
+  const latestReportId = chain.length > 0 ? chain[chain.length - 1].amendedReportId : reportId;
+  return {
+    rootReportId: anyLink.rootReportId,
+    latestReportId,
+    superseded: latestReportId !== reportId,
+    chain: chain.map((l) => ({
+      sequenceNumber: l.sequenceNumber,
+      originalReportId: l.originalReportId,
+      amendedReportId: l.amendedReportId,
+      amendedDocumentId: l.amendedDocumentId,
+      reason: l.reason,
+      amendedByName: l.amendedByName,
+      createdAt: l.createdAt,
+    })),
+  };
+}
+
+/** Typed HTTP failure for the amend transaction — no partial amendments:
+ *  any throw rolls the whole transaction back and maps to one clear error. */
+class AmendError extends Error {
+  constructor(public httpStatus: number, public code: string, public detail?: unknown) {
+    super(code);
+    this.name = "AmendError";
   }
 }
 
@@ -669,7 +769,14 @@ patientReportsRouter.get("/stats", async (_req, res) => {
 });
 
 patientReportsRouter.get("/:id", async (req, res) => {
-  const id = Number(req.params.id);
+  let id = Number(req.params.id);
+  // Ticket D7 — ?resolve=latest serves the newest version of the amendment
+  // chain this report belongs to (read-only; every historical version stays
+  // retrievable by its own id). Without the param, behavior is unchanged.
+  const chainInfoForRequested = await loadAmendmentChain(id);
+  if (req.query.resolve === "latest" && chainInfoForRequested && chainInfoForRequested.superseded) {
+    id = chainInfoForRequested.latestReportId;
+  }
   const [row] = await db
     .select({
       r: patientReportsTable,
@@ -706,6 +813,10 @@ patientReportsRouter.get("/:id", async (req, res) => {
   // still available additively as `displayBody`.
   const structuredRead = await applyStructuredRead(row.r);
   const bodyImmutable = row.r.status === "verified" || row.r.status === "delivered";
+  // D7 — amendment chain for the row actually being served (recomputed when
+  // ?resolve=latest redirected to a different row). Additive; null when the
+  // report has never been amended.
+  const amendment = id === Number(req.params.id) ? chainInfoForRequested : await loadAmendmentChain(id);
   res.json({
     ...row.r,
     ...(structuredRead
@@ -714,6 +825,7 @@ patientReportsRouter.get("/:id", async (req, res) => {
           structuredRead: structuredRead.diagnostics,
         }
       : {}),
+    ...(amendment ? { amendment } : {}),
     patientName: [row.patientFirstName, row.patientLastName].filter(Boolean).join(" "),
     patientCode: row.patientCode,
     patientPhone: row.patientPhone,
@@ -794,6 +906,357 @@ async function nextReportNumber(): Promise<string> {
   `).then((r) => (Array.isArray(r) ? r : (r as { rows: unknown[] }).rows ?? [])) as unknown as [{ n: number }];
   return `${prefix}${String(n + 1).padStart(3, "0")}`;
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Ticket D7 — Amend: a signed structured report is superseded by a NEW signed
+// row; the original row/document is never modified. One transaction, no
+// partial amendments; failures return a typed error (there is no legacy
+// fallback — amending is an explicit structured-path action).
+// ────────────────────────────────────────────────────────────────────────────
+patientReportsRouter.post("/:id/amend", async (req, res) => {
+  const parentReportId = Number(req.params.id);
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const reason = typeof b.reason === "string" ? b.reason.trim() : "";
+  const session = (req as StaffAuthRequest).staffSession;
+
+  try {
+    if (!parentReportId) throw new AmendError(400, "invalid_report_id");
+    if (!reason) throw new AmendError(400, "amendment_reason_required");
+    if (!(await isFeatureEnabledServer("ff_radiology_structured_final"))) {
+      throw new AmendError(409, "structured_final_flag_disabled");
+    }
+    const authority = canStructuredSign(session ?? null);
+    if (!authority.allowed) throw new AmendError(403, "sign_authority_required", authority.reason);
+
+    const signedAtIso = new Date().toISOString();
+
+    const outcome = await db.transaction(async (tx) => {
+      // 1) Reload the signed parent row.
+      const [parent] = await tx
+        .select()
+        .from(patientReportsTable)
+        .where(eq(patientReportsTable.id, parentReportId))
+        .limit(1);
+      if (!parent) throw new AmendError(404, "report_not_found");
+      if (parent.type !== "radiology" || parent.structuredJson == null) {
+        throw new AmendError(409, "not_a_signed_structured_report");
+      }
+      const parentDoc = parent.structuredJson as { document_id?: string; audit?: { signature?: { state?: string } } };
+      if (parentDoc?.audit?.signature?.state !== "final" || !parentDoc.document_id) {
+        throw new AmendError(409, "not_a_signed_structured_report");
+      }
+
+      // Linear chain: the parent must not already be amended (authoritative
+      // re-check inside the tx; the UNIQUE(original_report_id) constraint is
+      // the race-proof backstop at insert time).
+      const [existingLink] = await tx
+        .select()
+        .from(patientReportAmendmentsTable)
+        .where(eq(patientReportAmendmentsTable.originalReportId, parent.id))
+        .limit(1);
+      if (existingLink) throw new AmendError(409, "already_amended", { amendedReportId: existingLink.amendedReportId });
+
+      // Chain root/sequence: if the parent is itself an amendment, carry root.
+      const [parentAsAmendment] = await tx
+        .select()
+        .from(patientReportAmendmentsTable)
+        .where(eq(patientReportAmendmentsTable.amendedReportId, parent.id))
+        .limit(1);
+      const rootReportId = parentAsAmendment?.rootReportId ?? parent.id;
+      const priorAmendmentCount = parentAsAmendment?.sequenceNumber ?? 0;
+      const rootDocumentId = parentAsAmendment
+        ? (await tx
+            .select({ originalDocumentId: patientReportAmendmentsTable.originalDocumentId })
+            .from(patientReportAmendmentsTable)
+            .where(eq(patientReportAmendmentsTable.rootReportId, rootReportId))
+            .orderBy(asc(patientReportAmendmentsTable.sequenceNumber))
+            .limit(1)).at(0)?.originalDocumentId ?? null
+        : null;
+
+      // 2) Reload the amendment draft (the study's authoritative draft) + 3) findings.
+      if (parent.studyId == null) throw new AmendError(409, "no_study_for_report");
+      const [draft] = await tx
+        .select()
+        .from(radiologyReportDraftsTable)
+        .where(eq(radiologyReportDraftsTable.studyId, parent.studyId))
+        .orderBy(desc(radiologyReportDraftsTable.updatedAt))
+        .limit(1);
+      if (!draft) throw new AmendError(409, "no_amendment_draft_for_study");
+      const instances = await tx
+        .select()
+        .from(reportFindingInstancesTable)
+        .where(eq(reportFindingInstancesTable.draftId, draft.id))
+        .orderBy(asc(reportFindingInstancesTable.id));
+
+      let worklist: FinalWorklistRow | null = null;
+      if (draft.worklistId != null) {
+        const [w] = await tx.select().from(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, draft.worklistId)).limit(1);
+        worklist = (w as FinalWorklistRow | undefined) ?? null;
+      }
+
+      const source = buildFinalD1Source(
+        draft,
+        worklist,
+        instances.map((r) => ({ findingId: r.findingId, structuredJson: r.structuredJson, source: r.source })),
+      );
+      let materialized: MaterializationOutput = { findings: [], measurements: [], recommendations: [], skipped: [] };
+      let catalogPort = noFindingsCatalogPort;
+      if (await isFeatureEnabledServer("ff_radiology_catalog")) {
+        const catalogStore = new DrizzleCatalogStore();
+        const resolver = new CatalogStoreFindingResolver(catalogStore, async (qfId) => {
+          const [qf] = await tx
+            .select({ label: radiologyQuickFindingsTable.label })
+            .from(radiologyQuickFindingsTable)
+            .where(eq(radiologyQuickFindingsTable.id, qfId))
+            .limit(1);
+          return qf?.label ? { label: qf.label } : null;
+        });
+        materialized = await materializeFindings(
+          source.findingSelections.map((s) => ({ findingId: s.findingId, params: s.params as Record<string, unknown>, source: s.source })),
+          resolver,
+          { actor: source.createdBy ?? session!.subjectName, createdAtIso: source.createdAtIso },
+        );
+        catalogPort = new DrizzleStructuredReportCatalogPort(catalogStore);
+      }
+
+      // Reserve the NEW patient_reports id (the amendment document_id derives
+      // from it — a disjoint id space from draft-derived ids) + the audit id.
+      const ridRes = await tx.execute(sql`SELECT nextval(pg_get_serial_sequence('patient_reports','id')) AS id`);
+      const ridRows = (Array.isArray(ridRes) ? ridRes : (ridRes as { rows?: unknown[] }).rows ?? []) as Array<{ id: unknown }>;
+      const newReportId = Number(ridRows[0]?.id);
+      const aidRes = await tx.execute(sql`SELECT nextval(pg_get_serial_sequence('audit_logs','id')) AS id`);
+      const aidRows = (Array.isArray(aidRes) ? aidRes : (aidRes as { rows?: unknown[] }).rows ?? []) as Array<{ id: unknown }>;
+      const auditLogRef = Number(aidRows[0]?.id);
+      if (!Number.isFinite(newReportId) || newReportId <= 0 || !Number.isFinite(auditLogRef) || auditLogRef <= 0) {
+        throw new AmendError(500, "id_reservation_failed");
+      }
+
+      // 4) Build the amendment document (pure), 5) validated below.
+      const parentInput: AmendmentParent = {
+        reportId: parent.id,
+        patientId: parent.patientId,
+        document: parent.structuredJson,
+        rootDocumentId,
+        rootReportId,
+        priorAmendmentCount,
+      };
+      const prepared = await prepareStructuredAmendment({
+        parent: parentInput,
+        source,
+        materialized,
+        draftLegacy: {
+          rawFindings: draft.rawFindings,
+          impression: parseDraftImpression(draft.impression),
+          recommendation: draft.recommendation,
+          clientImpressionText: typeof b.impression === "string" ? b.impression : null,
+        },
+        sign: {
+          signedBy: session!.subjectName,
+          signedRole: session!.role,
+          signedById: session!.subjectId,
+          signedAtIso,
+          auditLogRef,
+        },
+        reason,
+        newReportId,
+        draftPatientId: draft.patientId,
+        // R14c at prepare time: the amendment doc names the parent as its
+        // prior, and this tx has already verified the parent is signed-final
+        // and not yet amended (pre-check above). The authoritative re-check
+        // with the live linkage query runs again below, before the insert.
+        validationPorts: {
+          catalogPort,
+          amendsLookup: async (docId) =>
+            docId === parentDoc.document_id
+              ? { state: parentDoc.audit!.signature!.state as string, alreadyAmendedBy: null }
+              : null,
+        },
+      });
+      if (!prepared.ok) throw new AmendError(409, `amendment_${prepared.stage}`, {
+        detail: prepared.detail, skipReasons: prepared.skipReasons, validationErrors: prepared.validationErrors,
+      });
+      if (prepared.equivalence.verdict !== "equivalent") {
+        throw new AmendError(409, "amendment_clinical_divergence", prepared.equivalence);
+      }
+
+      // Finalize audit row (chain protocol, reserved id) — R14b for the NEW doc.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('care_erp_audit_chain'))`);
+      const [prevAudit] = await tx
+        .select({ chainHash: auditLogsTable.chainHash })
+        .from(auditLogsTable)
+        .orderBy(desc(auditLogsTable.id))
+        .limit(1);
+      const previousHash = prevAudit?.chainHash ?? "";
+      const auditCreatedAt = new Date();
+      const forwarded = req.headers["x-forwarded-for"];
+      const ipAddress = typeof forwarded === "string" ? forwarded.split(",")[0].trim() : (req.ip ?? req.socket?.remoteAddress ?? "");
+      const userAgent = String(req.headers["user-agent"] ?? "");
+      const auditNewValue = JSON.stringify({
+        document_id: prepared.document.document_id,
+        signed_content_sha256: prepared.document.audit.signature.signed_content_sha256,
+        amends_document_id: prepared.amendment.amendsDocumentId,
+        amends_report_id: parent.id,
+        sequence_number: prepared.amendment.sequenceNumber,
+      });
+      const canonical = canonicalHashPayload({
+        userId: session!.subjectId,
+        userName: session!.subjectName,
+        role: session!.role,
+        action: "finalize",
+        module: "radiology",
+        entityType: "structured_report",
+        entityId: prepared.document.document_id,
+        oldValue: null,
+        newValue: auditNewValue,
+        reason,
+        ipAddress,
+        userAgent,
+        createdAt: auditCreatedAt.toISOString(),
+        previousHash,
+      });
+      await tx.insert(auditLogsTable).values({
+        id: auditLogRef,
+        userId: session!.subjectId,
+        userName: session!.subjectName,
+        role: session!.role,
+        action: "finalize",
+        module: "radiology",
+        entityType: "structured_report",
+        entityId: prepared.document.document_id,
+        oldValue: null,
+        newValue: auditNewValue,
+        ipAddress,
+        userAgent,
+        reason,
+        previousHash,
+        chainHash: computeChainHash(canonical),
+        createdAt: auditCreatedAt,
+      });
+
+      // 5) AUTHORITATIVE validation with the REAL lookups (R14b + R14c).
+      const authoritative = await validateStructuredReport(prepared.document, {
+        catalog: catalogPort,
+        aiRules: new UnavailableAiRulesRegistryPort(),
+        mode: "finalize",
+        auditLogLookup: async (docId, hash) => {
+          const [row] = await tx.select().from(auditLogsTable).where(eq(auditLogsTable.id, auditLogRef)).limit(1);
+          return !!row && row.action === "finalize" && row.entityId === docId && (row.newValue ?? "").includes(hash);
+        },
+        amendsLookup: async (docId) => {
+          if (docId !== parentDoc.document_id) return null;
+          const [link] = await tx
+            .select()
+            .from(patientReportAmendmentsTable)
+            .where(eq(patientReportAmendmentsTable.originalReportId, parent.id))
+            .limit(1);
+          return {
+            state: parentDoc.audit!.signature!.state as string,
+            alreadyAmendedBy: link ? link.amendedDocumentId : null,
+          };
+        },
+      });
+      if (!authoritative.ok) {
+        throw new AmendError(409, "amendment_d1_validation_failed", { validationErrors: authoritative.errors });
+      }
+
+      // 7) Insert the NEW signed row at the reserved id.
+      const reportNumber = await nextReportNumber();
+      const [newRow] = await tx.insert(patientReportsTable).values({
+        id: newReportId,
+        reportNumber,
+        type: "radiology",
+        patientId: parent.patientId,
+        testId: parent.testId,
+        orderTestId: parent.orderTestId,
+        orderId: parent.orderId,
+        billId: parent.billId,
+        studyId: parent.studyId,
+        title: parent.title,
+        body: prepared.renderedBody,
+        parameters: parent.parameters,
+        impression: prepared.legacyShape.impression.join("\n") || null,
+        templateId: parent.templateId,
+        createdBy: session!.subjectName,
+        signedByName: session!.subjectName,
+        signedAt: new Date(signedAtIso),
+        isCritical: parent.isCritical,
+        criticalNote: parent.criticalNote,
+        stylePresetUsed: parent.stylePresetUsed,
+        structuredJson: prepared.document,
+        renderEngineVersion: STRUCTURED_RENDERER_VERSION,
+        templateVersion: draft.templateId,
+        catalogVersion: source.catalogSchemaVersion,
+      }).returning();
+
+      // 8) Snapshot the amendment's finding instances.
+      if (instances.length > 0) {
+        await tx.insert(reportFindingInstancesTable).values(
+          instances.map((r) => ({
+            draftId: null,
+            reportId: newRow.id,
+            findingId: r.findingId,
+            anatomicZoneId: r.anatomicZoneId,
+            structureId: r.structureId,
+            category: r.category,
+            modality: r.modality,
+            structuredJson: r.structuredJson,
+            catalogVersion: r.catalogVersion,
+            source: r.source,
+            confirmed: r.confirmed,
+            confirmedBy: r.confirmedBy,
+            confirmedAt: r.confirmedAt,
+          })),
+        );
+      }
+
+      // 9) Amendment linkage — UNIQUE(original_report_id) makes a concurrent
+      // double-amend fail THIS insert, rolling the whole amendment back.
+      await tx.insert(patientReportAmendmentsTable).values({
+        originalReportId: parent.id,
+        amendedReportId: newRow.id,
+        rootReportId,
+        originalDocumentId: parentDoc.document_id,
+        amendedDocumentId: prepared.document.document_id,
+        sequenceNumber: prepared.amendment.sequenceNumber,
+        reason,
+        amendedById: session!.subjectId,
+        amendedByName: session!.subjectName,
+      });
+
+      // Draft points at the newest signed version (D5 semantics carried forward).
+      await tx
+        .update(radiologyReportDraftsTable)
+        .set({ finalReportId: newRow.id })
+        .where(eq(radiologyReportDraftsTable.id, draft.id));
+
+      // 10) The parent row is deliberately never written. 11) Commit.
+      return { newRow, amendment: prepared.amendment };
+    });
+
+    // 12) Downstream jobs after commit only — the amend endpoint itself
+    // triggers none (parity with create; clients drive worklist updates).
+    res.status(201).json({
+      report: outcome.newRow,
+      amendment: {
+        ...outcome.amendment,
+        amendedReportId: outcome.newRow.id,
+      },
+    });
+  } catch (err) {
+    if (err instanceof AmendError) {
+      res.status(err.httpStatus).json({ error: err.code, detail: err.detail ?? null });
+      return;
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    // The UNIQUE(original_report_id) constraint firing = concurrent double-amend.
+    if (/duplicate key|unique/i.test(msg)) {
+      res.status(409).json({ error: "already_amended", detail: "concurrent amendment detected" });
+      return;
+    }
+    req.log?.error({ err }, "D7 amendment transaction failed");
+    res.status(500).json({ error: "amendment_failed" });
+  }
+});
 
 // ────────────────────────────────────────────────────────────────────────────
 // Create

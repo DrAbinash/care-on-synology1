@@ -35,6 +35,7 @@ export * from "./radiology";
 export * from "./radiologyShareLinks";
 export * from "./signatures";
 export * from "./patientReports";
+export * from "./patientReportAmendments";
 export * from "./doctorPayouts";
 export * from "./machines";
 export * from "./departments";
