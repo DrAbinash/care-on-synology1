@@ -8,6 +8,9 @@ import {
   type DraftD1Source,
 } from "./radiologyD1DraftWriter";
 import { verifyContentSha256 } from "./structuredReport/hash";
+import { materializeFindings, CatalogStoreFindingResolver } from "./radiologyFindingMaterializer";
+import { InMemoryCatalogStore } from "./radiologyCatalog/store";
+import { DrizzleStructuredReportCatalogPort } from "./structuredReport/catalogAccess";
 
 // Ticket D3 — pure adapter + build/validate. No DB, no feature flag, no clock:
 // the whole point is that this is a pure, deterministic function of its input.
@@ -176,5 +179,89 @@ describe("buildAndValidateDraftD1Document — produces a D1-VALID document", () 
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.skipReasons.length).toBeGreaterThan(0);
+  });
+});
+
+// ── Ticket D3.5 — materialized findings flow into a D1-VALID document ──────────
+
+async function seedMaterializerCatalog() {
+  const store = new InMemoryCatalogStore(() => new Date("2026-07-10T00:00:00Z"));
+  const cat = await store.insert("finding_categories", { key: "spine", label: "Spine" });
+  const def = await store.insert("finding_definitions", {
+    key: "spine.disc_herniation", categoryId: cat.id, label: "Disc herniation",
+    narrative: "There is a disc herniation.", impression: "Disc herniation.",
+  });
+  await store.insert("finding_aliases", { findingId: def.id, aliasKey: "L4-L5 disc herniation", normalized: "l4-l5 disc herniation", source: "legacy_quick_select" });
+  await store.insert("finding_severity_bindings", { findingId: def.id, key: "extrusion", label: "Extrusion", rank: 3 });
+  await store.insert("finding_locations", { findingId: def.id, key: "l4_l5", label: "L4-L5", laterality: null });
+  await store.insert("finding_measurement_bindings", { findingId: def.id, key: "canal_ap_diameter", label: "Canal AP", unit: "mm" });
+  await store.insert("finding_recommendations", { findingId: def.id, recommendationText: "Correlate clinically.", priority: "routine" });
+  return store;
+}
+
+describe("D3.5 — materialized findings produce a D1-VALID document (validator must pass)", () => {
+  const CTX = { actor: "dr_test", createdAtIso: "2026-07-10T09:00:00Z" };
+  const selection = { findingId: 1, params: { side: "left", severity: "extrusion", level: "L4-L5", value: "8" }, source: "quickselect" };
+
+  it("valid materialized findings → ok, findings/measurements/recommendations present, hash verifies", async () => {
+    const store = await seedMaterializerCatalog();
+    const resolver = new CatalogStoreFindingResolver(store, async () => ({ label: "L4-L5 disc herniation" }));
+    const materialized = await materializeFindings([selection], resolver, CTX);
+    expect(materialized.findings).toHaveLength(1); // sanity: it did materialize
+
+    const src = completeSource({ findingSelections: [selection], materialized });
+    const catalogPort = new DrizzleStructuredReportCatalogPort(store);
+    const result = await buildAndValidateDraftD1Document(src, { catalogPort });
+
+    expect(result.ok, JSON.stringify((result as any).validationErrors ?? (result as any).skipReasons)).toBe(true);
+    if (!result.ok) return;
+    expect(result.document.findings).toHaveLength(1);
+    expect(result.document.findings[0].definition_ref).toBe("finding.spine.disc_herniation");
+    expect(result.document.measurements).toHaveLength(1);
+    expect(result.document.recommendations).toHaveLength(1);
+    // materialized doc still has no final signature fields (draft)
+    expect(result.document.audit.signature.state).toBe("draft");
+    expect(result.document.audit.signature.signed_content_sha256).toBeNull();
+    // hash verifies
+    expect(verifyContentSha256(result.document).ok).toBe(true);
+    // extensions no longer carries the materialized selection as quick_select_findings
+    const ext = result.document.extensions?.x_care_draft as any;
+    expect(ext.materialized_count).toBe(1);
+    expect(ext.skipped_findings).toEqual([]);
+    expect(ext.quick_select_findings).toBeUndefined();
+  });
+
+  it("skipped (unresolvable) selection is preserved in extensions, valid doc, findings:[]", async () => {
+    const store = await seedMaterializerCatalog();
+    const resolver = new CatalogStoreFindingResolver(store, async () => null); // nothing resolves
+    const materialized = await materializeFindings([selection], resolver, CTX);
+    expect(materialized.findings).toEqual([]);
+    expect(materialized.skipped).toHaveLength(1);
+
+    const src = completeSource({ findingSelections: [selection], materialized });
+    const result = await buildAndValidateDraftD1Document(src, { catalogPort: new DrizzleStructuredReportCatalogPort(store) });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.document.findings).toEqual([]);
+    const ext = result.document.extensions?.x_care_draft as any;
+    expect(ext.skipped_findings).toHaveLength(1);
+    expect(ext.skipped_findings[0].finding_id).toBe(1);
+  });
+
+  it("changed materialized finding changes the hash", async () => {
+    const store = await seedMaterializerCatalog();
+    const resolver = new CatalogStoreFindingResolver(store, async () => ({ label: "L4-L5 disc herniation" }));
+    const port = new DrizzleStructuredReportCatalogPort(store);
+    const a = await buildAndValidateDraftD1Document(
+      completeSource({ findingSelections: [selection], materialized: await materializeFindings([selection], resolver, CTX) }),
+      { catalogPort: port },
+    );
+    const selection2 = { ...selection, params: { ...selection.params, value: "12" } };
+    const b = await buildAndValidateDraftD1Document(
+      completeSource({ findingSelections: [selection2], materialized: await materializeFindings([selection2], resolver, CTX) }),
+      { catalogPort: port },
+    );
+    if (!a.ok || !b.ok) throw new Error("expected ok");
+    expect(a.contentSha256).not.toBe(b.contentSha256);
   });
 });

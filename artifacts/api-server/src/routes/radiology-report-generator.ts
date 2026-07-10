@@ -60,6 +60,10 @@ import {
   buildAndValidateDraftD1Document,
   type DraftD1Source,
 } from "../lib/radiologyD1DraftWriter";
+import { CatalogStoreFindingResolver } from "../lib/radiologyFindingMaterializer";
+import { DrizzleCatalogStore } from "../lib/radiologyCatalog/drizzleStore";
+import { DrizzleStructuredReportCatalogPort } from "../lib/structuredReport/catalogAccess";
+import { radiologyQuickFindingsTable } from "@workspace/db/schema";
 
 // ── Upload directory ──────────────────────────────────────────────────────────
 
@@ -1491,8 +1495,32 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
             .limit(1);
           worklist = (row as D3WorklistRow | undefined) ?? null;
         }
+        const source = buildD1DraftSource(draft as D3DraftRow, findings, worklist);
+        // Ticket D3.5 — when the canonical catalog is enabled (ff_radiology_catalog),
+        // materialize the Quick-Select selections into real D1 findings via the
+        // B1/B2 catalog; unresolvable ones stay in extensions for audit. When the
+        // catalog is off, D3's behavior stands (findings:[], full selection in
+        // extensions). Building the store/port/resolver issues no query by
+        // itself — the resolver only reads the catalog for selections that
+        // materialize.
+        const catalogStore = (await isFeatureEnabledServer("ff_radiology_catalog"))
+          ? new DrizzleCatalogStore()
+          : null;
         const built = await buildAndValidateDraftD1Document(
-          buildD1DraftSource(draft as D3DraftRow, findings, worklist),
+          source,
+          catalogStore
+            ? {
+                resolver: new CatalogStoreFindingResolver(catalogStore, async (qfId) => {
+                  const [row] = await db
+                    .select({ label: radiologyQuickFindingsTable.label })
+                    .from(radiologyQuickFindingsTable)
+                    .where(eq(radiologyQuickFindingsTable.id, qfId))
+                    .limit(1);
+                  return row?.label ? { label: row.label } : null;
+                }),
+                catalogPort: new DrizzleStructuredReportCatalogPort(catalogStore),
+              }
+            : {},
         );
         if (built.ok) {
           await db

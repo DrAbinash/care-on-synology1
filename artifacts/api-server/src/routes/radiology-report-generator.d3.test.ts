@@ -12,14 +12,18 @@ import { describe, expect, test, vi, beforeEach } from "vitest";
 // into the Express Router's stack and invoke the real handler directly.
 
 // Feature-flag state: D3 requires BOTH flags. Independently controllable.
+// ff_radiology_catalog additionally gates D3.5 materialization (default off, so
+// the D3 tests exercise the findings:[] path; one D3.5 test turns it on).
 let coreFlagEnabled: boolean;
 let d1DraftFlagEnabled: boolean;
+let catalogFlagEnabled: boolean;
 
 // D3-writer mock: control what buildAndValidateDraftD1Document returns/throws
 // so the route test focuses on wiring, not the (separately-tested) internals.
 let d1BuildResult: unknown;
 let d1BuildShouldThrow: boolean;
 let buildCallCount: number;
+let lastBuildOpts: unknown;
 
 // DB mock recording.
 let insertValuesCalls: Record<string, unknown>[];
@@ -32,7 +36,9 @@ let a4RegenCallCount: number;
 
 vi.mock("../lib/featureFlags", () => ({
   isFeatureEnabledServer: async (key: string) =>
-    key === "ff_radiology_structured_d1_draft" ? d1DraftFlagEnabled : coreFlagEnabled,
+    key === "ff_radiology_structured_d1_draft" ? d1DraftFlagEnabled
+    : key === "ff_radiology_catalog" ? catalogFlagEnabled
+    : coreFlagEnabled,
 }));
 
 // A4 cache regeneration is exercised in its own suite; here it must not
@@ -42,10 +48,26 @@ vi.mock("../lib/radiologyStructuredJsonCache", () => ({
 }));
 
 vi.mock("../lib/radiologyD1DraftWriter", () => ({
-  buildAndValidateDraftD1Document: async () => {
+  buildAndValidateDraftD1Document: async (_src: unknown, opts: unknown) => {
     buildCallCount++;
+    lastBuildOpts = opts;
     if (d1BuildShouldThrow) throw new Error("simulated D3 writer/validator failure");
     return d1BuildResult;
+  },
+}));
+
+// D3.5 route wiring pulls these in; construction alone must not query the DB.
+vi.mock("../lib/radiologyFindingMaterializer", () => ({
+  CatalogStoreFindingResolver: class {
+    constructor(public store: unknown, public lookup: unknown) {}
+  },
+}));
+vi.mock("../lib/radiologyCatalog/drizzleStore", () => ({
+  DrizzleCatalogStore: class {},
+}));
+vi.mock("../lib/structuredReport/catalogAccess", () => ({
+  DrizzleStructuredReportCatalogPort: class {
+    constructor(public store: unknown) {}
   },
 }));
 
@@ -111,6 +133,7 @@ vi.mock("@workspace/db/schema", () => ({
   radiologyReportDraftsTable: { __name: "drafts", id: "id", worklistId: "worklist_id" },
   radiologyWorklistTable: { __name: "worklist", id: "id" },
   reportFindingInstancesTable: { __name: "rfi", draftId: "draft_id" },
+  radiologyQuickFindingsTable: { __name: "quick_findings", id: "id", label: "label" },
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -149,9 +172,11 @@ describe("Ticket D3 — POST /save-draft D1 persistence wiring", () => {
   beforeEach(() => {
     coreFlagEnabled = true;       // D3 requires core; default it on for these tests
     d1DraftFlagEnabled = true;    // and the D3 flag on, except where a test turns it off
+    catalogFlagEnabled = false;   // D3.5 materialization off by default (findings:[] path)
     d1BuildResult = { ok: true, document: OK_DOC, contentSha256: "sha256:deadbeef", warnings: [] };
     d1BuildShouldThrow = false;
     buildCallCount = 0;
+    lastBuildOpts = undefined;
     insertValuesCalls = [];
     legacyUpdateSetCalls = [];
     d1UpdateSetCalls = [];
@@ -259,6 +284,22 @@ describe("Ticket D3 — POST /save-draft D1 persistence wiring", () => {
   test("existing A4 regeneration still runs (no regression from D3)", async () => {
     await saveDraft(findingsBody);
     expect(a4RegenCallCount).toBe(1);
+  });
+
+  test("D3.5: catalog flag OFF → no resolver passed (findings:[] path)", async () => {
+    catalogFlagEnabled = false;
+    await saveDraft(findingsBody);
+    expect(buildCallCount).toBe(1);
+    expect((lastBuildOpts as { resolver?: unknown }).resolver).toBeUndefined();
+  });
+
+  test("D3.5: catalog flag ON → a resolver + catalog port are passed to materialize findings", async () => {
+    catalogFlagEnabled = true;
+    await saveDraft(findingsBody);
+    expect(buildCallCount).toBe(1);
+    const opts = lastBuildOpts as { resolver?: unknown; catalogPort?: unknown };
+    expect(opts.resolver).toBeDefined();       // materialization is wired
+    expect(opts.catalogPort).toBeDefined();     // and validated against the real catalog
   });
 });
 

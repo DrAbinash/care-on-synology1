@@ -40,6 +40,12 @@ import {
 import type { StructuredReportCatalogPort } from "./structuredReport/catalogAccess";
 import { UnavailableAiRulesRegistryPort } from "./structuredReport/aiRulesRegistry";
 import type { ValidationIssue } from "./structuredReport/validator";
+import {
+  materializeFindings,
+  type MaterializationOutput,
+  type FindingCatalogResolver,
+  type FindingSelectionParams,
+} from "./radiologyFindingMaterializer";
 
 /** Authoring app identity stamped into provenance/audit — truthful constants,
  *  not placeholders (the version is this bridge's own version, not a fake
@@ -111,6 +117,12 @@ export interface DraftD1Source {
   contentPackVersions: Record<string, string>;
   aiRulesVersions: Record<string, string>;
   findingSelections: DraftD1FindingSelection[];
+  /** Ticket D3.5 — when present, real D1 findings[]/measurements[]/
+   *  recommendations[] (from the FindingMaterializer) are emitted, and only the
+   *  UN-materialized (skipped) selections are preserved in extensions. When
+   *  absent (catalog off/unavailable), D3's behavior stands: findings:[] and the
+   *  full raw selection carried in extensions. */
+  materialized?: MaterializationOutput;
 }
 
 export type BuildWriterInputResult =
@@ -163,6 +175,31 @@ export function buildDraftD1WriterInput(src: DraftD1Source): BuildWriterInputRes
   // Deduplicated, sorted for determinism.
   const inputMethods = Array.from(new Set(src.findingSelections.map((f) => f.source))).sort();
 
+  // Ticket D3.5 — real D1 findings from the materializer when available; else
+  // D3's empty findings[] + full raw selection carried in extensions.
+  const mat = src.materialized;
+  const findings = mat ? mat.findings : [];
+  const measurements = mat ? mat.measurements : [];
+  const recommendations = mat ? mat.recommendations : [];
+  const draftExtension: Record<string, unknown> = mat
+    ? {
+        source: "radiology_report_drafts",
+        draft_id: src.draftId,
+        materialized_count: mat.findings.length,
+        // Only the selections that could NOT be truthfully materialized are
+        // preserved here for audit (D3.5); materialized ones now live in findings[].
+        skipped_findings: mat.skipped,
+      }
+    : {
+        source: "radiology_report_drafts",
+        draft_id: src.draftId,
+        quick_select_findings: src.findingSelections.map((f) => ({
+          finding_id: f.findingId,
+          params: f.params,
+          source: f.source,
+        })),
+      };
+
   const input: WriteStructuredReportInput = {
     document_id: deriveDraftDocumentId(src.draftId),
     schema_version: STRUCTURED_REPORT_SCHEMA_VERSION,
@@ -187,10 +224,11 @@ export function buildDraftD1WriterInput(src: DraftD1Source): BuildWriterInputRes
         performing_physician_ref: { system: "care.staff", value: idf.performingPhysician },
       },
     },
-    // See HONEST SCOPE — no D1 findings are fabricated from current capture.
-    findings: [],
-    measurements: [],
-    recommendations: [],
+    // D3.5: real D1 findings from the catalog materializer when available;
+    // otherwise D3's truthful empty set (see HONEST SCOPE).
+    findings,
+    measurements,
+    recommendations,
     critical_flags: [],
     provenance: {
       created_by: src.createdBy!,
@@ -218,21 +256,11 @@ export function buildDraftD1WriterInput(src: DraftD1Source): BuildWriterInputRes
         amends_document_id: null,
       },
     },
-    // Sanctioned open channel (D1 §11.1): the truthful raw structured selection,
-    // verbatim. This is what makes the document reflect the draft's real
-    // findings (so a finding change changes content_sha256) WITHOUT inventing
-    // any D1 clinical field. Replaced by real D1 findings in a later ticket.
-    extensions: {
-      x_care_draft: {
-        source: "radiology_report_drafts",
-        draft_id: src.draftId,
-        quick_select_findings: src.findingSelections.map((f) => ({
-          finding_id: f.findingId,
-          params: f.params,
-          source: f.source,
-        })),
-      },
-    },
+    // Sanctioned open channel (D1 §11.1). Without materialization this carries
+    // the full raw selection (D3); with materialization it carries only the
+    // skipped selections for audit (D3.5) — materialized findings live in
+    // findings[] above.
+    extensions: { x_care_draft: draftExtension },
   };
 
   return { ok: true, input };
@@ -262,21 +290,56 @@ export type BuildDraftD1Result =
   | { ok: true; document: StructuredReportDocument; contentSha256: string; warnings: ValidationIssue[] }
   | { ok: false; skipReasons: string[]; validationErrors?: ValidationIssue[] };
 
+export interface BuildDraftD1Options {
+  /** Catalog port used to validate finding/param/measurement refs (R1/R4/R5).
+   *  REQUIRED when materialized findings are produced (D3.5); ignored otherwise.
+   *  Defaults to the no-op port, which is only safe for findings:[] documents. */
+  catalogPort?: StructuredReportCatalogPort;
+  /** Ticket D3.5 — when provided, the source's findingSelections are
+   *  materialized into real D1 findings via this resolver (and validated with
+   *  `catalogPort`). When omitted, any pre-set `src.materialized` is used, else
+   *  D3's findings:[] behavior stands. */
+  resolver?: FindingCatalogResolver;
+}
+
 /**
  * Build the canonical D1 document via the D2 writer and validate it with the
  * D1 validator in DRAFT mode. Pure (no DB, no flag, no clock). Returns a skip
  * (never throws for adapter/validation issues) so the caller can log-and-skip
  * without endangering the legacy draft save.
+ *
+ * When the source carries D3.5 materialized findings, pass `opts.catalogPort`
+ * (a real catalog port) so R1/R4/R5 can resolve the emitted refs; the default
+ * no-op port only suffices for D3's findings:[] documents.
  */
-export async function buildAndValidateDraftD1Document(src: DraftD1Source): Promise<BuildDraftD1Result> {
-  const adapted = buildDraftD1WriterInput(src);
+export async function buildAndValidateDraftD1Document(
+  src: DraftD1Source,
+  opts: BuildDraftD1Options = {},
+): Promise<BuildDraftD1Result> {
+  // D3.5 — materialize the selections through the catalog when a resolver is
+  // supplied. Runs BEFORE assembly so the materialized findings/measurements/
+  // recommendations flow into the document (and skipped ones into extensions).
+  let effectiveSrc = src;
+  if (opts.resolver) {
+    const materialized = await materializeFindings(
+      src.findingSelections.map((s) => ({ findingId: s.findingId, params: s.params as FindingSelectionParams, source: s.source })),
+      opts.resolver,
+      { actor: src.createdBy ?? "unknown", createdAtIso: src.createdAtIso },
+    );
+    effectiveSrc = { ...src, materialized };
+  }
+
+  const adapted = buildDraftD1WriterInput(effectiveSrc);
   if (!adapted.ok) return { ok: false, skipReasons: adapted.skipReasons };
+
+  const hasFindings = (effectiveSrc.materialized?.findings.length ?? 0) > 0;
+  const catalog = hasFindings ? (opts.catalogPort ?? noFindingsCatalogPort) : noFindingsCatalogPort;
 
   const result = await writeStructuredReport(adapted.input, {
     mode: "draft",
     // WriterValidationContext = Omit<ValidationContext, "mode">; the writer
     // supplies mode ("draft") from the options above.
-    validation: { catalog: noFindingsCatalogPort, aiRules: new UnavailableAiRulesRegistryPort() },
+    validation: { catalog, aiRules: new UnavailableAiRulesRegistryPort() },
   });
 
   if (!result.validation || !result.validation.ok) {
