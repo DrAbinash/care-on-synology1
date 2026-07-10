@@ -69,6 +69,19 @@ is the source of truth; the categories below summarize it.
 - Access control rules
 - Authentication flow (unless fixing bugs)
 
+**New authenticated GET endpoint that returns data scoped to the caller's own
+identity (`req.staffSession.subjectId`, `req.portalSession.subjectId`, or
+equivalent)?** The service worker (`artifacts/diagnostic-erp/public/sw.js`)
+caches every `GET /api/*` response by URL alone — it cannot tell your
+response apart from anyone else's. On a shared hospital workstation, that
+means the next person to log in can be served YOUR cached data before their
+own request completes. You must add the endpoint's full path to
+`NETWORK_ONLY_PREFIXES` in `sw.js` — see the comment block there for how, and
+`artifacts/api-server/src/routes/personalEndpointCacheGuard.test.ts`, which
+fails CI automatically if you forget. (This is not a hypothetical: this
+exact bug shipped once already — see git history for "Fix CRITICAL: service
+worker leaks personal data across staff/patients…".)
+
 ### Existing Business Rules
 - Appointment scheduling rules
 - Test procedure workflows
@@ -169,6 +182,8 @@ Before building any new feature:
 - [ ] Add comprehensive tests
 - [ ] Document any new concepts
 - [ ] Consider long-term maintenance
+- [ ] New GET endpoint returns caller-identity-scoped data? Add it to
+      `NETWORK_ONLY_PREFIXES` in `sw.js` (see Permissions & Security above)
 
 ### Validation
 - [ ] All tests pass locally
