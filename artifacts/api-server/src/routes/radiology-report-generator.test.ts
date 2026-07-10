@@ -26,6 +26,12 @@ let selectDraftsResult: Record<string, unknown>[];
 // a test simulate the structured write failing without touching the legacy
 // save mocks at all.
 let structuredFlagEnabled: boolean;
+// Ticket D3's write is gated on a SEPARATE flag (ff_radiology_structured_d1_draft).
+// It defaults false and no test in THIS file enables it, so the D3 block never
+// runs here — these tests stay purely about the legacy save + A3.2/A4/A5, exactly
+// as before D3. D3's own route integration lives in
+// radiology-report-generator.d3.test.ts.
+let d1DraftFlagEnabled = false;
 let txCallCount: number;
 let txDeleteWhereCalls: unknown[];
 let txInsertValuesCalls: Record<string, unknown>[][];
@@ -59,7 +65,8 @@ let driftDistinctFindingDraftIds: Array<{ draftId: number | null }>;
 let driftCachedDraftIds: Array<{ id: number }>;
 
 vi.mock("../lib/featureFlags", () => ({
-  isFeatureEnabledServer: async (_key: string) => structuredFlagEnabled,
+  isFeatureEnabledServer: async (key: string) =>
+    key === "ff_radiology_structured_d1_draft" ? d1DraftFlagEnabled : structuredFlagEnabled,
 }));
 
 vi.mock("@workspace/db", () => ({

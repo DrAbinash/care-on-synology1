@@ -35,9 +35,20 @@ describe("radiology_report_drafts.structured_json — additive, nullable, option
       formattedReportHtml: null, formattedReportText: null, status: "DRAFT",
       finalReportId: null,
       structuredJson: null, // compiles only if the column is genuinely nullable
+      structuredJsonD1: null, // Ticket D3 — the canonical D1 document column, also nullable
       createdBy: null, createdAt: new Date(), updatedAt: new Date(),
     };
     expect(fakeSelectedRow.structuredJson).toBeNull();
+    expect(fakeSelectedRow.structuredJsonD1).toBeNull();
+  });
+
+  it("structuredJsonD1 (Ticket D3) is additive/nullable/optional on insert, distinct from the A4 structured_json cache", () => {
+    const optional: typeof radiologyReportDraftsTable.$inferInsert = { modality: "MR" };
+    expect(optional.structuredJsonD1).toBeUndefined();
+    const withDoc: typeof radiologyReportDraftsTable.$inferInsert = { structuredJsonD1: { schema_version: "1.0.0" } };
+    expect(withDoc.structuredJsonD1).toEqual({ schema_version: "1.0.0" });
+    // the two columns are independent
+    expect(() => eq(radiologyReportDraftsTable.structuredJsonD1, { a: 1 })).not.toThrow();
   });
 
   it("the column reference works with drizzle-orm's real eq() helper", () => {

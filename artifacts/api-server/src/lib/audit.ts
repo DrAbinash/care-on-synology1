@@ -20,8 +20,15 @@ const AUDIT_CHAIN_XACT_LOCK = sql`pg_advisory_xact_lock(hashtext('care_erp_audit
 /**
  * Compute the canonical JSON string for chain hashing.
  * Order is fixed to ensure deterministic hashes regardless of object key order.
+ *
+ * Exported (Ticket D5) so the structured-finalize transaction can insert its
+ * `action='finalize'` row with the exact same hashing recipe while holding the
+ * chain lock inside its own transaction (auditLog() manages its own separate
+ * transaction, which would break finalize atomicity). The recipe itself is
+ * unchanged — `id` is deliberately NOT part of the hashed payload, which is
+ * what makes reserve-id-then-insert possible without breaking the chain.
  */
-function canonicalHashPayload(row: {
+export function canonicalHashPayload(row: {
   userId: number | null;
   userName: string;
   role: string;

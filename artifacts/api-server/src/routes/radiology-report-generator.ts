@@ -56,6 +56,14 @@ import {
   checkDraftStructuredJsonDrift,
   scanDraftsForStructuredJsonDrift,
 } from "../lib/radiologyStructuredJsonDrift";
+import {
+  buildAndValidateDraftD1Document,
+  type DraftD1Source,
+} from "../lib/radiologyD1DraftWriter";
+import { CatalogStoreFindingResolver } from "../lib/radiologyFindingMaterializer";
+import { DrizzleCatalogStore } from "../lib/radiologyCatalog/drizzleStore";
+import { DrizzleStructuredReportCatalogPort } from "../lib/structuredReport/catalogAccess";
+import { radiologyQuickFindingsTable } from "@workspace/db/schema";
 
 // ── Upload directory ──────────────────────────────────────────────────────────
 
@@ -1238,6 +1246,96 @@ radiologyReportGeneratorRouter.post("/generate", async (req: Request, res: Respo
 // this field either way. `params` is intentionally loosely typed (not
 // pinned to AbnormalityInstance's exact shape) so this schema doesn't need
 // to change in lockstep with future frontend parameter-shape evolution.
+// ── Ticket D3 — truthful source assembly for the canonical D1 document ────────
+// Pure helpers that turn the just-saved draft row (+ its PACS worklist row, when
+// linked, which carries the DICOM study identifiers) into a DraftD1Source.
+// Every value is sourced truthfully or left null/"" so the pure adapter
+// (radiologyD1DraftWriter.ts) SKIPS rather than fabricate — see that module's
+// HONEST SCOPE header.
+
+function d3ToIsoOrEmpty(v: unknown): string {
+  if (v instanceof Date) return v.toISOString();
+  if (typeof v === "string" && v.length > 0 && !Number.isNaN(new Date(v).getTime())) {
+    return new Date(v).toISOString();
+  }
+  return "";
+}
+
+// DICOM StudyDate is "YYYYMMDD"; the worklist column is free text and may
+// already be ISO. Returns a valid ISO-8601 datetime, or "" (→ adapter skips).
+function d3DicomDateToIso(v: string | null | undefined): string {
+  if (!v) return "";
+  const m = /^(\d{4})(\d{2})(\d{2})$/.exec(v.trim());
+  if (m) return `${m[1]}-${m[2]}-${m[3]}T00:00:00Z`;
+  return d3ToIsoOrEmpty(v);
+}
+
+interface D3DraftRow {
+  id: number;
+  worklistId: number | null;
+  patientId: number | null;
+  templateId: string | null;
+  modality: string | null;
+  studyName: string | null;
+  createdBy: string | null;
+  createdAt: Date | string | null;
+  updatedAt: Date | string | null;
+}
+interface D3WorklistRow {
+  patientId: number | null;
+  studyInstanceUID: string | null;
+  accessionNumber: string | null;
+  studyDate: string | null;
+  studyDescription: string | null;
+  referringDoctor: string | null;
+  assignedRadiologist: string | null;
+}
+
+function buildD1DraftSource(
+  draft: D3DraftRow,
+  findings: Array<{ findingId: number; params?: Record<string, unknown> }>,
+  worklist: D3WorklistRow | null,
+): DraftD1Source {
+  const patientRefValue =
+    draft.patientId != null ? String(draft.patientId)
+    : worklist?.patientId != null ? String(worklist.patientId)
+    : "";
+  const identifiers = worklist
+    ? {
+        studyInstanceUid: worklist.studyInstanceUID ?? "",
+        accessionNumber: worklist.accessionNumber ?? "",
+        patientRefValue,
+        studyDatetimeIso: d3DicomDateToIso(worklist.studyDate),
+        referringPhysician: worklist.referringDoctor ?? "",
+        performingPhysician: worklist.assignedRadiologist ?? "",
+      }
+    : null;
+  return {
+    draftId: draft.id,
+    createdBy: draft.createdBy ?? null,
+    createdAtIso: d3ToIsoOrEmpty(draft.createdAt),
+    updatedAtIso: d3ToIsoOrEmpty(draft.updatedAt),
+    modality: draft.modality ?? null,
+    // body_region has no dedicated column; the PACS study description is the
+    // closest truthful value (null → adapter skips, e.g. manual drafts).
+    bodyRegion: worklist?.studyDescription ?? null,
+    studyType: draft.studyName ?? null,
+    templateId: draft.templateId ?? null,
+    identifiers,
+    // The B1/B2 catalog is currently unversioned (report_finding_instances.
+    // catalog_version defaults "0"); "0" is the truthful current label, not a
+    // placeholder pretending to be a real version.
+    catalogSchemaVersion: "0",
+    contentPackVersions: {},
+    aiRulesVersions: {},
+    findingSelections: findings.map((f) => ({
+      findingId: f.findingId,
+      params: f.params ?? {},
+      source: "quickselect",
+    })),
+  };
+}
+
 const SaveDraftBody = z.object({
   id: z.number().int().optional(),
   studyId: z.number().int().optional(),
@@ -1370,6 +1468,75 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     } catch (err) {
       console.error(
         "[radiology-report-generator] A4 structured_json cache regeneration failed (non-fatal):",
+        err,
+      );
+    }
+
+    // Ticket D3 — persist a canonical D1 structured_json document for this
+    // draft into the SEPARATE structured_json_d1 column (NEVER the A4-owned
+    // structured_json, which A5 drift-checks). Own try/catch + own flag,
+    // exactly like A3.2/A4 above: any failure here is logged only and can never
+    // turn an already-successful draft save into a failed response. Gated on
+    // ff_radiology_structured_d1_draft AND ff_radiology_structured_core (both
+    // default OFF). The adapter skips truthfully when required D1 fields are
+    // unavailable; the D2 writer is the ONLY producer of content_sha256; draft
+    // documents never carry final signature fields.
+    try {
+      if (
+        (await isFeatureEnabledServer("ff_radiology_structured_d1_draft")) &&
+        (await isFeatureEnabledServer("ff_radiology_structured_core"))
+      ) {
+        let worklist: D3WorklistRow | null = null;
+        if (draft.worklistId != null) {
+          const [row] = await db
+            .select()
+            .from(radiologyWorklistTable)
+            .where(eq(radiologyWorklistTable.id, draft.worklistId))
+            .limit(1);
+          worklist = (row as D3WorklistRow | undefined) ?? null;
+        }
+        const source = buildD1DraftSource(draft as D3DraftRow, findings, worklist);
+        // Ticket D3.5 — when the canonical catalog is enabled (ff_radiology_catalog),
+        // materialize the Quick-Select selections into real D1 findings via the
+        // B1/B2 catalog; unresolvable ones stay in extensions for audit. When the
+        // catalog is off, D3's behavior stands (findings:[], full selection in
+        // extensions). Building the store/port/resolver issues no query by
+        // itself — the resolver only reads the catalog for selections that
+        // materialize.
+        const catalogStore = (await isFeatureEnabledServer("ff_radiology_catalog"))
+          ? new DrizzleCatalogStore()
+          : null;
+        const built = await buildAndValidateDraftD1Document(
+          source,
+          catalogStore
+            ? {
+                resolver: new CatalogStoreFindingResolver(catalogStore, async (qfId) => {
+                  const [row] = await db
+                    .select({ label: radiologyQuickFindingsTable.label })
+                    .from(radiologyQuickFindingsTable)
+                    .where(eq(radiologyQuickFindingsTable.id, qfId))
+                    .limit(1);
+                  return row?.label ? { label: row.label } : null;
+                }),
+                catalogPort: new DrizzleStructuredReportCatalogPort(catalogStore),
+              }
+            : {},
+        );
+        if (built.ok) {
+          await db
+            .update(radiologyReportDraftsTable)
+            .set({ structuredJsonD1: built.document })
+            .where(eq(radiologyReportDraftsTable.id, draftId));
+        } else {
+          console.warn(
+            "[radiology-report-generator] D3 D1 structured_json persist skipped (non-fatal):",
+            "skipReasons" in built ? built.skipReasons : built,
+          );
+        }
+      }
+    } catch (err) {
+      console.error(
+        "[radiology-report-generator] D3 D1 structured_json persist failed (non-fatal):",
         err,
       );
     }

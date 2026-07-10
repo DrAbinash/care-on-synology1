@@ -40,6 +40,14 @@ export const radiologyReportDraftsTable = pgTable(
     // later ticket (A4), never a source of truth. Not read or written by
     // any route yet.
     structuredJson: jsonb("structured_json"),
+    // Canonical D1 structured report document (docs/STRUCTURED_REPORT_JSON_SPEC_v1.md)
+    // for this draft, produced by the D2 writer (Ticket D3). DISTINCT from
+    // `structured_json` above, which is the A4 finding-instance cache that A5
+    // drift-checks — the two shapes are unrelated and must never share a
+    // column. Nullable; written only when ff_radiology_structured_d1_draft is
+    // enabled AND the adapter can produce a truthful, D1-valid document (else
+    // left untouched). Draft-only; patient_reports has its own column.
+    structuredJsonD1: jsonb("structured_json_d1"),
     createdBy: text("created_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true })
