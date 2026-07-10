@@ -7,6 +7,12 @@
  *   Static assets (hashed Vite output)   → Cache-first (immutable hashes)
  *   API GET requests                     → Stale-while-revalidate (24 h max age)
  *   Mutations + auth + version check     → Network-only (never cached)
+ *   Per-staff/per-patient personal data  → Network-only (never cached — Cache
+ *   (see NETWORK_ONLY_PREFIXES)             Storage keys by URL only, not by
+ *                                             Authorization, so caching any of
+ *                                             these would leak one identity's
+ *                                             data to the next on a shared
+ *                                             workstation/kiosk)
  *   SPA navigation (non-asset GET)       → Offline: serve cached index.html
  *
  * This SW makes the desktop/Electron build truly offline-capable:
@@ -32,6 +38,41 @@ const NETWORK_ONLY_PREFIXES = [
   "/api/sync/push",
   "/api/sync/pull",
   "/api/sync/trigger",
+  // Every per-staff personal-preference endpoint (e.g. /api/my/quick-doctors)
+  // lives under this prefix. Cache Storage keys purely by request URL — it
+  // does not vary by the Authorization header — so caching a GET here would
+  // let a second staff member on a shared workstation be served the FIRST
+  // staff member's cached personal data before the background revalidation
+  // fetch completes. Excluding the whole prefix (not just today's one
+  // endpoint) means every future /api/my/* route is safe by default.
+  "/api/my/",
+
+  // The rest of this list is a repository-wide audit sweep for every OTHER
+  // authenticated endpoint that returns data scoped to the calling
+  // staff/patient identity rather than a shared resource, found the same way
+  // the /api/my/quick-doctors leak was found: same URL, response varies by
+  // Authorization, Cache Storage doesn't know the difference. Each entry is
+  // scoped as narrowly as its router allows — a whole-router prefix only
+  // where EVERY GET on that router is personal; otherwise the exact
+  // personal-only path(s), leaving that router's shared/non-personal GETs
+  // (templates, catalogs, study data, etc.) cacheable as before.
+  "/api/users/me/",                                 // DICOM Q/R saved search presets
+  "/api/radiology/report-generator/preferences",     // report formatting preferences
+  "/api/radiology/report-generator/style-preferences", // impression/terminology style
+  "/api/radiology-memory/",                          // every GET here is staffId-scoped (impressions/analytics/search/patterns/measurements/classifications)
+  "/api/radiology/quick-select/favorites",           // per-radiologist Quick Select favorites
+  "/api/radiology/quick-select/learned-patterns",    // per-radiologist learning engine patterns
+  "/api/portal/me",                                  // patient portal: profile (GET /me itself) + /me/bills, /me/visits,
+                                                      // /me/reports, /me/appointments — all match via this one prefix
+                                                      // since "/api/portal/me" is itself a prefix of "/api/portal/me/bills" etc. (PHI)
+  "/api/auth/webauthn/credentials",                  // caller's own registered passkeys
+  "/api/radiology/user-findings-preferences",        // per-radiologist findings display preferences
+  "/api/radiology/user-report-preferences",          // per-radiologist report preferences
+  "/api/radiology/knowledge/personal-templates",     // radiologist's own template library
+  "/api/radiology/knowledge/favorites",               // radiologist's favorited templates
+  "/api/radiology/smart/favorite-sets",              // per-radiologist smart-finding favorite sets
+  "/api/teaching-cases/favorites",                   // per-staff favorited teaching cases
+  "/api/day-close/my-",                              // per-cashier drawer/closure status — shared billing terminals
 ];
 
 // Paths that should NOT be redirected to index.html (real files/API)
