@@ -13,7 +13,7 @@ import { useToast } from "@/hooks/use-toast";
 import { readStaffSession } from "@/lib/staffSession";
 import { api } from "@/lib/fetchApi";
 import { finalizeRadiologyReport, saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
-import { openWeasisLaunchRedirect, openOhifViewerPage } from "@/lib/viewerService";
+import OpenStudyPanel from "@/components/radiology/OpenStudyPanel";
 import {
   ArrowLeft, ExternalLink, Sparkles, Save, CheckCircle2, AlertTriangle,
   Printer, RefreshCw, Star, ClipboardList, Plus, Trash2, Eye,
@@ -653,14 +653,6 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // ACTIONS
   // ══════════════════════════════════════════════════════════════════════════
 
-  function openWeasis() {
-    if (!entry?.studyInstanceUID) {
-      toast({ title: "No StudyInstanceUID", variant: "destructive" });
-      return;
-    }
-    openWeasisLaunchRedirect(entry.studyInstanceUID);
-  }
-
   function applyMacro(macro: TemplateMacro) {
     const ctx: Record<string, string> = {
       patient_name: entry?.patientName || "",
@@ -1169,41 +1161,23 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   <span className="truncate">{entry.referringDoctor || "—"}</span>
                   <span className="text-muted-foreground">Date</span>
                   <span>{entry.studyDate || "—"}</span>
+                  <span className="text-muted-foreground">Study UID</span>
+                  <span className="font-mono text-[10px] truncate" title={entry.studyInstanceUID || undefined}>
+                    {entry.studyInstanceUID || "— missing —"}
+                  </span>
                 </div>
-                {/* Viewer launch buttons */}
-                <div className="flex gap-1.5 flex-wrap pt-1">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 text-xs gap-1"
-                    onClick={openWeasis}
-                    disabled={!entry.studyInstanceUID}
-                  >
-                    <MonitorPlay size={12} /> Weasis
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 text-xs gap-1"
-                    onClick={() =>
-                      entry.studyInstanceUID && openOhifViewerPage(entry.studyInstanceUID)
-                    }
-                    disabled={!entry.studyInstanceUID}
-                  >
-                    <Monitor size={12} /> OHIF
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 text-xs gap-1"
-                    onClick={() =>
-                      entry.studyInstanceUID && openWeasisLaunchRedirect(entry.studyInstanceUID)
-                    }
-                    disabled={!entry.studyInstanceUID}
-                  >
-                    <ExternalLink size={12} /> PACS
-                  </Button>
-                </div>
+                {/* M1.2 — the ONE study-launch control (network auto-selection,
+                    forced modes, route badge, diagnostics). URL construction
+                    lives in lib/studyLaunchService, not in this page. */}
+                <OpenStudyPanel
+                  study={{
+                    studyInstanceUID: entry.studyInstanceUID ?? null,
+                    accessionNumber: entry.accessionNumber ?? null,
+                    patientId: entry.patientId ?? null,
+                    worklistId: entry.id ?? null,
+                  }}
+                  isAdmin={isOwnerRole(session)}
+                />
               </div>
             )}
           </div>

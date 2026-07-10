@@ -127,9 +127,17 @@ describe("M1.1 — no duplicate state/service copies reactivate", () => {
     expect(lifecycle).toContain('deliveryStatus: "READY_TO_SEND"');
   });
 
-  it("the canonical workspace launches viewers through lib/viewerService", () => {
+  it("the canonical workspace launches studies through the ONE launch pipeline (M1.2)", () => {
     const workspace = read("pages/RadiologyReportingWorkspace.tsx");
-    expect(workspace).toContain('from "@/lib/viewerService"');
-    expect(workspace).not.toContain("weasis-launch-redirect`"); // no inline URL copy left
+    // Since M1.2 every launch goes through OpenStudyPanel →
+    // lib/studyLaunchService (network selection + URL construction). The
+    // page itself builds no viewer URLs.
+    expect(workspace).toContain('from "@/components/radiology/OpenStudyPanel"');
+    expect(workspace).not.toContain("weasis-launch-redirect"); // no inline URL copy left
+    expect(workspace).not.toContain("window.open(`/radiology/viewer");
+    const panel = read("components/radiology/OpenStudyPanel.tsx");
+    expect(panel).toContain('from "@/lib/studyLaunchService"');
+    // The panel builds no URLs either — the service is the single source.
+    expect(panel).not.toContain("StudyInstanceUIDs=");
   });
 });

@@ -31,6 +31,7 @@ import {
   AmendmentManagerCard, SonographerModeCard, DicomSrExportCard,
 } from "@/components/smartRadiology/SmartRadiologyCards";
 import { RisMonitorCommandGrid } from "@/components/risMonitoring/RisMonitorCards";
+import ViewerNetworkRoutesCard from "@/components/radiology/ViewerNetworkRoutesCard";
 
 type Setting = { id: number; key: string; value: string | null; category: string; isSecret: boolean };
 type ServiceHealth = { name: string; endpoint: string; status: "green" | "yellow" | "red"; details: string };
@@ -499,6 +500,14 @@ export default function RadiologySettingsCenter() {
               </div>
             </div>
           </div>
+
+          {/* M1.2 — network routes for reliable study launch (AUTO/LAN/
+              Tailscale/Cloudflare/Public). One owner section; LAN reuses the
+              existing keys above. */}
+          <ViewerNetworkRoutesCard
+            getSetting={(key) => settings.find((s) => s.key === key)?.value ?? ""}
+            setSetting={(key, value) => upsertSetting.mutate({ key, value, category: "viewer" })}
+          />
         </TabsContent>
 
         {/* Tab content 5: DICOM & MWL */}
