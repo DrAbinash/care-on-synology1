@@ -11,7 +11,7 @@ import {
   radiologyStudiesTable,
   radiologyInstitutionalStylesTable,
 } from "@workspace/db/schema";
-import { eq, and, desc, sql, ilike, or, isNull, isNotNull } from "drizzle-orm";
+import { eq, and, desc, sql, ilike, or, isNull, isNotNull, inArray } from "drizzle-orm";
 import { sendReportWhatsapp, sendReportDelivery } from "./whatsapp";
 import crypto from "node:crypto";
 import {
@@ -38,12 +38,15 @@ import { asc } from "drizzle-orm";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import {
   canStructuredSign,
+  canStructuredVerify,
+  SIGN_DENY_ROLES,
   prepareStructuredFinalReport,
   buildFinalD1Source,
   parseDraftImpression,
   STRUCTURED_RENDERER_VERSION,
   type FinalWorklistRow,
 } from "../lib/radiologyD1FinalWriter";
+import { verifyContentSha256 } from "../lib/structuredReport/hash";
 import {
   materializeFindings,
   CatalogStoreFindingResolver,
@@ -389,6 +392,349 @@ function versionedFilename(version: ResolvedReportVersion): string {
   const base = (version.resolvedReport.reportNumber || `report-${version.resolvedReportId}`).replace(/[^A-Za-z0-9._-]+/g, "_");
   const suffix = version.totalVersions > 1 ? `-v${version.sequenceNumber}of${version.totalVersions}${version.resolvedSuperseded ? "-SUPERSEDED" : ""}` : "";
   return `${base}${suffix}.html`;
+}
+
+// ── Ticket D9 — amendment verify-path hardening ──────────────────────────────
+
+interface StructuredSignedDocShape {
+  document_id: string;
+  audit: {
+    revision?: number;
+    signature: {
+      state?: string;
+      signed_by?: string;
+      signed_at?: string;
+      signed_content_sha256?: string;
+      amends_document_id?: string;
+    };
+  };
+}
+
+/** The row carries a signed-FINAL structured document (shape gate only —
+ *  full D1 validation is D6's job; this decides which lifecycle the sign/
+ *  verify routes apply). */
+function structuredSignedDocOf(structuredJson: unknown): StructuredSignedDocShape | null {
+  const doc = structuredJson as StructuredSignedDocShape | null;
+  if (
+    doc && typeof doc === "object" && !Array.isArray(doc) &&
+    typeof doc.document_id === "string" &&
+    doc.audit?.signature?.state === "final"
+  ) return doc;
+  return null;
+}
+
+/** D9 Phase 7 — hash-chained lifecycle audit record (attempts, rejections,
+ *  legacy-sign refusals). Success events are written INSIDE the verify
+ *  transaction instead, so they roll back with it. auditLog never throws. */
+async function auditLifecycleEvent(
+  action: "verify_attempt" | "verify_rejected" | "legacy_sign_rejected",
+  actor: { userId?: number | null; userName?: string; role?: string },
+  entityId: string,
+  payload: Record<string, unknown>,
+  reason: string,
+) {
+  await auditLog({
+    userId: actor.userId ?? null,
+    userName: actor.userName ?? "system",
+    role: actor.role ?? "system",
+    action,
+    module: "radiology",
+    entityType: "patient_report",
+    entityId,
+    newValue: JSON.stringify(payload),
+    reason,
+  });
+}
+
+/**
+ * D9 Phase 3 — structured countersign. Verifies a structured-SIGNED root or
+ * amendment directly from its current lifecycle state (draft — legacy sign
+ * is refused for these rows, the D1 signature IS the sign step).
+ *
+ * Guarantees:
+ *  - verifier identity comes exclusively from the authenticated session;
+ *  - verifier must differ from the original signer (row AND document);
+ *  - content_sha256 must verify BEFORE verification — tampered documents are
+ *    never countersigned;
+ *  - superseded historical versions are never verified (no policy override
+ *    in D9) and a corrupt chain blocks verification outright;
+ *  - the signed structured document bytes are NEVER touched — only row-level
+ *    verification fields + status are stamped;
+ *  - row update and the hash-chained "verify" audit record commit in ONE
+ *    transaction; any failure rolls both back.
+ *
+ * Returns {status, body} for the route to send.
+ */
+async function performStructuredVerify(
+  session: NonNullable<StaffAuthRequest["staffSession"]>,
+  existing: { id: number; status: string; signedByName: string | null; signatureId: number | null; structuredJson: unknown },
+  doc: StructuredSignedDocShape,
+  verifierSigId: number | null,
+  verifierNotes: string | null,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const actor = { userId: session.subjectId, userName: session.subjectName, role: session.role };
+  const revision = doc.audit.revision ?? null;
+  await auditLifecycleEvent("verify_attempt", actor, doc.document_id, { reportId: existing.id, revision }, "structured_countersign");
+
+  const authority = canStructuredVerify(session);
+  if (!authority.allowed) {
+    await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision }, authority.reason ?? "verify_authority_required");
+    return { status: 403, body: { error: "verify_authority_required", detail: authority.reason } };
+  }
+
+  if (existing.status === "verified" || existing.status === "delivered") {
+    return { status: 409, body: { error: "Report already verified" } };
+  }
+
+  // Signer/verifier distinctness — against BOTH the row-level signer and the
+  // document's cryptographic signer. Session identity only; client strings
+  // never participate.
+  const sessionName = session.subjectName.trim().toLowerCase();
+  const rowSigner = (existing.signedByName ?? "").trim().toLowerCase();
+  const docSigner = (doc.audit.signature.signed_by ?? "").trim().toLowerCase();
+  if (sessionName === rowSigner || sessionName === docSigner) {
+    await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision, signer: existing.signedByName }, "verifier_must_differ_from_signer");
+    return { status: 409, body: { error: "verifier_must_differ", message: "Verifier must be a different person from the signer" } };
+  }
+
+  // Integrity gate: the stored document must hash-verify before anyone
+  // countersigns it.
+  const hashCheck = verifyContentSha256(existing.structuredJson as Parameters<typeof verifyContentSha256>[0]);
+  if (!hashCheck.ok) {
+    await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision }, "content_hash_verification_failed");
+    return { status: 409, body: { error: "structured_hash_verification_failed", message: "The stored structured document does not verify against its content hash. Verification refused; investigate before countersigning." } };
+  }
+
+  // Chain position: only the version that is (still) the newest may normally
+  // become deliverable. Corrupt chains block verification outright.
+  const version = await resolveReportVersion(existing.id, { mode: "specific", includeChain: true });
+  if (version && version.warnings.length > 0) {
+    await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision, warnings: version.warnings }, "chain_integrity_warning");
+    return { status: 409, body: { error: "chain_integrity_warning", detail: version.warnings } };
+  }
+  if (version && version.superseded) {
+    await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision, latestReportId: version.latestReportId }, "superseded_version_cannot_be_verified");
+    return { status: 409, body: { error: "superseded_version_cannot_be_verified", message: "A newer signed amendment exists; verify the latest version instead.", latestReportId: version.latestReportId } };
+  }
+
+  // Optional verifier signature image — validated like the legacy path, and
+  // still bound by distinctness on the signature id.
+  if (verifierSigId != null) {
+    const [sig] = await db.select().from(signaturesTable).where(eq(signaturesTable.id, verifierSigId));
+    if (!sig) return { status: 404, body: { error: "Verifier signature not found" } };
+    if (existing.signatureId && existing.signatureId === verifierSigId) {
+      await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision }, "verifier_signature_matches_signer");
+      return { status: 409, body: { error: "verifier_must_differ", message: "Verifier must be a different person from the signer" } };
+    }
+  }
+
+  try {
+    const updated = await db.transaction(async (tx) => {
+      // Re-read inside the transaction — the pre-checks above are advisory;
+      // these are authoritative.
+      const [row] = await tx.select().from(patientReportsTable).where(eq(patientReportsTable.id, existing.id)).limit(1);
+      if (!row) throw new AmendError(404, "report_not_found");
+      if (row.status === "verified" || row.status === "delivered") throw new AmendError(409, "already_verified");
+      const [link] = await tx
+        .select()
+        .from(patientReportAmendmentsTable)
+        .where(eq(patientReportAmendmentsTable.originalReportId, existing.id))
+        .limit(1);
+      if (link) throw new AmendError(409, "superseded_version_cannot_be_verified", { amendedReportId: link.amendedReportId });
+
+      const [updatedRow] = await tx.update(patientReportsTable).set({
+        verifiedBySignatureId: verifierSigId,
+        verifiedByName: session.subjectName, // session identity, never client input
+        verifiedAt: new Date(),
+        verifierNotes,
+        status: "verified",
+      }).where(eq(patientReportsTable.id, existing.id)).returning();
+
+      // Hash-chained success record, same chain protocol as D5/D7 finalize.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('care_erp_audit_chain'))`);
+      const [prevAudit] = await tx
+        .select({ chainHash: auditLogsTable.chainHash })
+        .from(auditLogsTable)
+        .orderBy(desc(auditLogsTable.id))
+        .limit(1);
+      const previousHash = prevAudit?.chainHash ?? "";
+      const createdAt = new Date();
+      const newValue = JSON.stringify({
+        report_id: existing.id,
+        document_id: doc.document_id,
+        signed_content_sha256: doc.audit.signature.signed_content_sha256 ?? null,
+        verified_by: session.subjectName,
+        verified_by_id: session.subjectId,
+        revision,
+        root_report_id: version?.rootReportId ?? existing.id,
+        latest_report_id: version?.latestReportId ?? existing.id,
+        sequence_number: version?.sequenceNumber ?? 1,
+      });
+      const canonical = canonicalHashPayload({
+        userId: session.subjectId,
+        userName: session.subjectName,
+        role: session.role,
+        action: "verify",
+        module: "radiology",
+        entityType: "structured_report",
+        entityId: doc.document_id,
+        oldValue: null,
+        newValue,
+        reason: "structured_countersign",
+        ipAddress: "",
+        userAgent: "",
+        createdAt: createdAt.toISOString(),
+        previousHash,
+      });
+      await tx.insert(auditLogsTable).values({
+        userId: session.subjectId,
+        userName: session.subjectName,
+        role: session.role,
+        action: "verify",
+        module: "radiology",
+        entityType: "structured_report",
+        entityId: doc.document_id,
+        oldValue: null,
+        newValue,
+        ipAddress: "",
+        userAgent: "",
+        reason: "structured_countersign",
+        previousHash,
+        chainHash: computeChainHash(canonical),
+        createdAt,
+      });
+
+      return updatedRow;
+    });
+    return {
+      status: 200,
+      body: {
+        ...updated,
+        structuredVerify: {
+          documentId: doc.document_id,
+          revision,
+          contentSha256Verified: true,
+          verifiedBy: session.subjectName,
+        },
+      },
+    };
+  } catch (err) {
+    if (err instanceof AmendError) {
+      await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision, detail: err.detail }, err.code);
+      return { status: err.httpStatus, body: { error: err.code, detail: err.detail } };
+    }
+    await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision }, "verify_transaction_failed");
+    return { status: 500, body: { error: "verify_transaction_failed" } };
+  }
+}
+
+/** Masked recipient string — enough for staff to recognize the destination,
+ *  never the full address (recipient privacy in lifecycle metadata). */
+function maskRecipient(recipient: string | null): string | null {
+  if (!recipient) return null;
+  if (recipient === "public-link") return "public-link";
+  if (recipient.includes("@")) {
+    const [user, domain] = recipient.split("@");
+    return `${user.slice(0, 1)}***@${domain}`;
+  }
+  const digits = recipient.replace(/\D/g, "");
+  if (digits.length >= 4) return `${digits.slice(0, 2)}${"*".repeat(Math.max(0, digits.length - 4))}${digits.slice(-2)}`;
+  return "***";
+}
+
+/** D9 Phase 4/6 — additive lifecycle metadata for the read API. Computed
+ *  only (no durable notification store yet — explicitly deferred); read-only.
+ *  `version` is the D8 resolution for the row actually being served. */
+async function buildLifecycleMetadata(
+  row: {
+    id: number;
+    type: string;
+    status: string;
+    structuredJson: unknown;
+    verifiedAt: Date | null;
+    verifiedByName: string | null;
+    signedByName: string | null;
+    createdAt: Date;
+  },
+  version: ResolvedReportVersion,
+) {
+  const doc = structuredSignedDocOf(row.structuredJson);
+  const superseded = version.resolvedSuperseded;
+  const deliverable = row.status === "verified" || row.status === "delivered";
+  const isAmendment = version.sequenceNumber > 1;
+  const pendingVerification = !!doc && !deliverable && !superseded;
+  const state = superseded
+    ? "superseded"
+    : row.status === "delivered"
+      ? "delivered"
+      : row.status === "verified"
+        ? "verified"
+        : pendingVerification
+          ? "pending_verification"
+          : isAmendment
+            ? "amendment_created"
+            : row.status;
+
+  // Phase 6 — prior recipients on OLDER versions of a verified latest
+  // amendment. One IN query, only when it can matter; deduped by
+  // channel+recipient; recipients masked. "Completed" is inferred from a
+  // sent share row on THIS latest version (the only durable mechanism that
+  // exists today); acknowledged/dismissed durable state is deferred.
+  let priorDeliveries: Array<{ channel: string; recipient: string | null; reportId: number; at: string | null }> = [];
+  let recipientNotificationPending = false;
+  if (doc && isAmendment && deliverable && !superseded && version.totalVersions > 1) {
+    const olderIds = (version.chain ?? [])
+      .filter((c) => c.sequenceNumber < version.sequenceNumber)
+      .map((c) => c.reportId);
+    if (olderIds.length > 0) {
+      const shareRows = await db
+        .select()
+        .from(reportSharesTable)
+        .where(and(
+          inArray(reportSharesTable.reportId, [...olderIds, row.id]),
+          eq(reportSharesTable.status, "sent"),
+        ));
+      const seen = new Set<string>();
+      let redelivered = false;
+      for (const s of shareRows) {
+        if (s.reportId === row.id) { redelivered = true; continue; }
+        const key = `${s.channel}:${s.recipient ?? ""}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        priorDeliveries.push({
+          channel: s.channel,
+          recipient: maskRecipient(s.recipient),
+          reportId: s.reportId,
+          at: s.createdAt ? new Date(s.createdAt).toISOString() : null,
+        });
+      }
+      recipientNotificationPending = priorDeliveries.length > 0 && !redelivered;
+      if (recipientNotificationPending) {
+        // Phase 7 — prompt creation is observable server-side. Log-only: the
+        // read path stays write-free; durable prompt state is deferred.
+        console.warn("[patient-reports] D9 re-delivery prompt:", JSON.stringify({
+          reportId: row.id,
+          rootReportId: version.rootReportId,
+          revision: version.sequenceNumber,
+          priorChannels: priorDeliveries.map((p) => p.channel),
+        }));
+      }
+    }
+  }
+
+  return {
+    state,
+    structuredSigned: !!doc,
+    amendmentPendingVerification: !!doc && isAmendment && pendingVerification,
+    pendingVerification,
+    deliverable,
+    superseded,
+    latestVersion: !superseded,
+    verifiedAt: row.verifiedAt ? new Date(row.verifiedAt).toISOString() : null,
+    verifiedBy: row.verifiedByName,
+    recipientNotificationPending,
+    priorDeliveries,
+  };
 }
 
 /** Typed HTTP failure for the amend transaction — no partial amendments:
@@ -935,6 +1281,9 @@ patientReportsRouter.get("/:id", async (req, res) => {
   // D7 back-compat `amendment` key + D8 additive `version` metadata, both
   // describing the row actually being SERVED — derived from one resolution.
   const amendment = amendmentKeyFromVersion(version);
+  // D9 — additive lifecycle metadata (pending verification, deliverability,
+  // recipient re-delivery prompt). Computed only; GET stays write-free.
+  const lifecycle = await buildLifecycleMetadata(row.r, version);
   res.json({
     ...row.r,
     ...(structuredRead
@@ -945,6 +1294,7 @@ patientReportsRouter.get("/:id", async (req, res) => {
       : {}),
     ...(amendment ? { amendment } : {}),
     version: versionMetadata(version),
+    lifecycle,
     patientName: [row.patientFirstName, row.patientLastName].filter(Boolean).join(" "),
     patientCode: row.patientCode,
     patientPhone: row.patientPhone,
@@ -1568,6 +1918,15 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
   const id = Number(req.params.id);
   const b = (req.body ?? {}) as Record<string, unknown>;
   const signatureId = b.signatureId ? Number(b.signatureId) : null;
+  // D9 defense in depth: roles that may never sign are refused up front,
+  // even on the legacy path and even if the UI already hides the action.
+  const session = (req as StaffAuthRequest).staffSession;
+  const sessionRole = (session?.role ?? "").toLowerCase();
+  if (SIGN_DENY_ROLES.has(sessionRole)) {
+    await auditLifecycleEvent("legacy_sign_rejected", { userId: session?.subjectId, userName: session?.subjectName, role: session?.role }, String(id), { reportId: id }, `role_cannot_sign:${sessionRole}`);
+    res.status(403).json({ error: "role_cannot_sign", message: "This role is not authorized to sign reports." });
+    return;
+  }
   const [existing] = await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, id));
   if (!existing) {
     res.status(404).json({ error: "Report not found" });
@@ -1575,6 +1934,27 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
   }
   if (existing.status === "verified" || existing.status === "delivered") {
     res.status(409).json({ error: "Report already verified" });
+    return;
+  }
+  // D9 Phase 2 — a report carrying a signed-FINAL structured document is
+  // already cryptographically signed (D5/D7 stamped row authorship from the
+  // server session). Legacy sign would overwrite signedByName/signedAt/
+  // signatureId with client-supplied values and misrepresent lifecycle
+  // state; it is refused, and the caller is pointed at the structured
+  // countersign workflow. Legacy unstructured reports are untouched.
+  const signedDoc = structuredSignedDocOf(existing.structuredJson);
+  if (signedDoc) {
+    await auditLifecycleEvent(
+      "legacy_sign_rejected",
+      { userId: session?.subjectId, userName: session?.subjectName, role: session?.role },
+      signedDoc.document_id,
+      { reportId: id, documentId: signedDoc.document_id, signedBy: existing.signedByName },
+      "structured_signed_report",
+    );
+    res.status(409).json({
+      error: "structured_signed_report",
+      message: "This report carries a signed structured document; its signature cannot be overwritten. Use POST /:id/verify to countersign it.",
+    });
     return;
   }
   let signedByName = typeof b.signedByName === "string" ? b.signedByName.trim() : "";
@@ -1609,6 +1989,27 @@ patientReportsRouter.post("/:id/verify", async (req, res) => {
   const [existing] = await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, id));
   if (!existing) {
     res.status(404).json({ error: "Report not found" });
+    return;
+  }
+  // D9 Phase 3 — structured countersign. A row carrying a signed-FINAL
+  // structured document is verifiable directly from its current lifecycle
+  // state (the D1 signature IS the sign step; legacy sign is refused for
+  // these rows). Flag OFF falls through to the exact pre-D9 legacy guards.
+  const structuredDoc = structuredSignedDocOf(existing.structuredJson);
+  if (structuredDoc && (await isFeatureEnabledServer("ff_radiology_structured_final"))) {
+    const session = (req as StaffAuthRequest).staffSession;
+    if (!session) {
+      res.status(401).json({ error: "Staff authentication required" });
+      return;
+    }
+    const result = await performStructuredVerify(
+      session,
+      existing,
+      structuredDoc,
+      verifierSigId,
+      typeof b.verifierNotes === "string" ? b.verifierNotes : null,
+    );
+    res.status(result.status).json(result.body);
     return;
   }
   if (existing.status === "draft") {

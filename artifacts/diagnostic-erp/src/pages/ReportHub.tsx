@@ -56,7 +56,31 @@ type ReportRow = {
   testName?: string;
   testCode?: string;
   version?: ReportVersionMeta;
+  lifecycle?: ReportLifecycleMeta;
+  structuredJson?: { audit?: { signature?: { state?: string } } } | null;
 };
+
+// D9 — additive lifecycle metadata GET /:id returns.
+type ReportLifecycleMeta = {
+  state: string;
+  structuredSigned: boolean;
+  amendmentPendingVerification: boolean;
+  pendingVerification: boolean;
+  deliverable: boolean;
+  superseded: boolean;
+  latestVersion: boolean;
+  verifiedAt: string | null;
+  verifiedBy: string | null;
+  recipientNotificationPending: boolean;
+  priorDeliveries: Array<{ channel: string; recipient: string | null; reportId: number; at: string | null }>;
+};
+
+// D9 — a structured-signed row in draft status is awaiting COUNTERSIGN, not a
+// legacy sign (the server refuses legacy sign for these rows). List rows
+// carry structuredJson, so this is derivable without extra requests.
+function isPendingStructuredVerify(r: ReportRow): boolean {
+  return r.status === "draft" && r.structuredJson?.audit?.signature?.state === "final";
+}
 
 // D8 — amendment-chain metadata GET /:id returns additively.
 type ReportVersionMeta = {
@@ -318,7 +342,12 @@ export default function ReportHub() {
                       <div className="text-[11px] text-muted-foreground">{r.testCode ?? ""}</div>
                     </td>
                     <td className="px-3 py-2 uppercase text-xs">{r.type}</td>
-                    <td className="px-3 py-2"><StatusPill status={r.status} /></td>
+                    <td className="px-3 py-2">
+                      <StatusPill status={r.status} />
+                      {isPendingStructuredVerify(r) && (
+                        <span className="ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-100 text-amber-800">Pending Verify</span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-[11px] leading-tight">
                       {r.signedByName ? <div>✍ {r.signedByName}</div> : <span className="text-muted-foreground">—</span>}
                       {r.verifiedByName ? <div className="text-blue-700">✓ {r.verifiedByName}</div> : null}
@@ -326,8 +355,8 @@ export default function ReportHub() {
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap gap-1">
                         <Button size="sm" variant="outline" onClick={() => openEditor(r)} data-testid={`btn-edit-${r.id}`}><Eye className="h-3.5 w-3.5 mr-1" /> Open</Button>
-                        {r.status === "draft" && <Button size="sm" onClick={() => openSign(r)}><ShieldCheck className="h-3.5 w-3.5 mr-1" /> Sign</Button>}
-                        {r.status === "pending_verification" && <Button size="sm" onClick={() => openVerify(r)}><CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Verify</Button>}
+                        {r.status === "draft" && !isPendingStructuredVerify(r) && <Button size="sm" onClick={() => openSign(r)}><ShieldCheck className="h-3.5 w-3.5 mr-1" /> Sign</Button>}
+                        {(r.status === "pending_verification" || isPendingStructuredVerify(r)) && <Button size="sm" onClick={() => openVerify(r)}><CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Verify</Button>}
                         {(r.status === "verified" || r.status === "delivered") && (
                           <>
                             <Button size="sm" variant="outline" onClick={() => openPrint(r)}><Printer className="h-3.5 w-3.5 mr-1" /> Print</Button>
@@ -542,6 +571,60 @@ function VersionBanner({ report, onOpenVersion }: {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// D9 — amendment lifecycle: pending-verification banner (with Verify action)
+// and the re-delivery prompt when a verified amendment supersedes a report
+// that was already delivered. Additive; the D8 VersionBanner stays as-is.
+// ────────────────────────────────────────────────────────────────────────────
+function LifecycleBanner({ report, onVerify, onShare }: {
+  report: ReportRow;
+  onVerify: (r: ReportRow) => void;
+  onShare: (r: ReportRow) => void;
+}) {
+  const [dismissed, setDismissed] = useState(false); // session-local only; durable ack state is deferred
+  const lc = report.lifecycle;
+  if (!lc) return null;
+  const v = report.version;
+
+  if (lc.pendingVerification && lc.structuredSigned) {
+    return (
+      <div className="rounded-md border border-amber-500 bg-amber-50 text-amber-900 px-3 py-2 text-xs font-semibold">
+        {lc.amendmentPendingVerification
+          ? <>Amendment pending verification — Version {v?.sequenceNumber ?? "?"} of {v?.totalVersions ?? "?"}</>
+          : <>Signed structured report — pending verification</>}
+        {v?.amendmentReason && <span className="font-normal"> • Reason: {v.amendmentReason}</span>}
+        <div className="font-normal mt-0.5">
+          Signed by {report.signedByName ?? "—"} • Created {new Date(report.createdAt).toLocaleString("en-IN")}.
+          A different authorized doctor must countersign before delivery.
+        </div>
+        <div className="mt-2">
+          <Button size="sm" onClick={() => onVerify(report)}><CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Verify (countersign)</Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (lc.deliverable && lc.recipientNotificationPending && !dismissed) {
+    return (
+      <div className="rounded-md border border-emerald-500 bg-emerald-50 text-emerald-900 px-3 py-2 text-xs font-semibold">
+        Verified amendment — Revision {v?.sequenceNumber ?? "?"}. Earlier version(s) were already delivered:
+        <div className="font-normal mt-1 space-y-0.5">
+          {lc.priorDeliveries.map((d, i) => (
+            <div key={i}>• {d.channel}{d.recipient ? ` → ${d.recipient}` : ""}{d.at ? ` (${new Date(d.at).toLocaleDateString("en-IN")})` : ""}</div>
+          ))}
+        </div>
+        <div className="font-normal mt-1">Recommend re-sharing the amended report so recipients are not left with the superseded version.</div>
+        <div className="mt-2 flex gap-2">
+          <Button size="sm" onClick={() => onShare(report)}><Send className="h-3.5 w-3.5 mr-1" /> Share amended report</Button>
+          <Button size="sm" variant="ghost" onClick={() => setDismissed(true)}>Dismiss</Button>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Editor — body + parameters + impression + critical + template
 // ────────────────────────────────────────────────────────────────────────────
 type Template = { id: number; testId: number; name: string; content: string; format: string };
@@ -622,6 +705,7 @@ function EditorDialog({
         </DialogHeader>
 
         <VersionBanner report={report} onOpenVersion={(id, historical) => setViewVersion({ id, historical })} />
+        <LifecycleBanner report={report} onVerify={onVerify} onShare={onShare} />
 
         <div className="grid grid-cols-3 gap-4">
           <div className="col-span-2 space-y-3">
@@ -735,8 +819,8 @@ function EditorDialog({
             <div className="border rounded-md p-3 text-xs space-y-2">
               <div className="font-semibold">Actions</div>
               {editable && <Button onClick={save} disabled={busy} className="w-full">{busy ? "Saving…" : "Save Draft"}</Button>}
-              {report.status === "draft" && <Button onClick={() => onSign(report)} className="w-full" variant="default" data-testid="btn-sidebar-sign"><ShieldCheck className="h-4 w-4 mr-1" /> Sign</Button>}
-              {report.status === "pending_verification" && <Button onClick={() => onVerify(report)} className="w-full"><CheckCircle2 className="h-4 w-4 mr-1" /> Verify</Button>}
+              {report.status === "draft" && !report.lifecycle?.structuredSigned && <Button onClick={() => onSign(report)} className="w-full" variant="default" data-testid="btn-sidebar-sign"><ShieldCheck className="h-4 w-4 mr-1" /> Sign</Button>}
+              {(report.status === "pending_verification" || (report.lifecycle?.pendingVerification && report.lifecycle?.structuredSigned)) && <Button onClick={() => onVerify(report)} className="w-full"><CheckCircle2 className="h-4 w-4 mr-1" /> Verify</Button>}
               {(report.status === "verified" || report.status === "delivered") && (
                 <>
                   <Button onClick={() => onPrint(report)} variant="outline" className="w-full"><Printer className="h-4 w-4 mr-1" /> Print</Button>
