@@ -54,9 +54,15 @@ import { DrizzleStructuredReportCatalogPort } from "../lib/structuredReport/cata
 import { validateStructuredReport } from "../lib/structuredReport/validator";
 import { noFindingsCatalogPort } from "../lib/radiologyD1DraftWriter";
 import { UnavailableAiRulesRegistryPort } from "../lib/structuredReport/aiRulesRegistry";
-import { canonicalHashPayload, computeChainHash } from "../lib/audit";
+import { canonicalHashPayload, computeChainHash, auditLog } from "../lib/audit";
 // ── Ticket D6 — structured read path (flag-gated, legacy display default) ───
 import { readStructuredReport, type StructuredReadResult } from "../lib/radiologyStructuredRead";
+// ── Ticket D8 — canonical amendment-chain resolution (read-only) ─────────────
+import {
+  resolveReportVersion,
+  type ResolvedReportVersion,
+  type ResolveMode,
+} from "../lib/radiologyReportVersion";
 
 export const patientReportsRouter: IRouter = Router();
 export const signaturesRouter: IRouter = Router();
@@ -242,35 +248,18 @@ export interface AmendmentChainInfo {
 }
 
 /**
- * Resolve the amendment chain a report participates in (as root, middle, or
- * tip). Returns null for reports with no amendments — the common case, two
- * cheap indexed lookups. Read-only; history is never mutated.
+ * Ticket D8 — the D7-shaped `amendment` response key, now derived from the
+ * canonical resolver's output (one chain implementation, zero duplicate
+ * queries). Shape is unchanged for existing clients; null when the served
+ * row has no amendment chain. `superseded` describes the row being SERVED.
  */
-async function loadAmendmentChain(reportId: number): Promise<AmendmentChainInfo | null> {
-  const [asAmendment] = await db
-    .select()
-    .from(patientReportAmendmentsTable)
-    .where(eq(patientReportAmendmentsTable.amendedReportId, reportId))
-    .limit(1);
-  const [asOriginal] = await db
-    .select()
-    .from(patientReportAmendmentsTable)
-    .where(eq(patientReportAmendmentsTable.originalReportId, reportId))
-    .limit(1);
-  const anyLink = asAmendment ?? asOriginal;
-  if (!anyLink) return null;
-
-  const chain = await db
-    .select()
-    .from(patientReportAmendmentsTable)
-    .where(eq(patientReportAmendmentsTable.rootReportId, anyLink.rootReportId))
-    .orderBy(asc(patientReportAmendmentsTable.sequenceNumber));
-  const latestReportId = chain.length > 0 ? chain[chain.length - 1].amendedReportId : reportId;
+function amendmentKeyFromVersion(version: ResolvedReportVersion): AmendmentChainInfo | null {
+  if (version.resolutionReason === "no_chain" || !version.links || version.links.length === 0) return null;
   return {
-    rootReportId: anyLink.rootReportId,
-    latestReportId,
-    superseded: latestReportId !== reportId,
-    chain: chain.map((l) => ({
+    rootReportId: version.rootReportId,
+    latestReportId: version.latestReportId,
+    superseded: version.resolvedSuperseded,
+    chain: version.links.map((l) => ({
       sequenceNumber: l.sequenceNumber,
       originalReportId: l.originalReportId,
       amendedReportId: l.amendedReportId,
@@ -280,6 +269,126 @@ async function loadAmendmentChain(reportId: number): Promise<AmendmentChainInfo 
       createdAt: l.createdAt,
     })),
   };
+}
+
+/** D8 — the additive `version` metadata object every read/delivery surface
+ *  reports. Never includes full rows; ids + banner facts only. */
+function versionMetadata(version: ResolvedReportVersion) {
+  return {
+    requestedReportId: version.requestedReportId,
+    resolvedReportId: version.resolvedReportId,
+    rootReportId: version.rootReportId,
+    latestReportId: version.latestReportId,
+    sequenceNumber: version.sequenceNumber,
+    totalVersions: version.totalVersions,
+    superseded: version.resolvedSuperseded,
+    requestedSuperseded: version.superseded,
+    amendmentReason: version.amendmentReason,
+    latestAmendmentReason: version.latestAmendmentReason,
+    resolutionReason: version.resolutionReason,
+    warnings: version.warnings,
+    ...(version.chain ? { chain: version.chain } : {}),
+  };
+}
+
+/** D8 Phase 7 — one structured diagnostic line per resolution that matters:
+ *  a redirect, a superseded serve, or a chain-integrity warning. Read paths
+ *  stay write-free; this is log-only. */
+function logVersionResolution(surface: string, version: ResolvedReportVersion, context?: Record<string, unknown>) {
+  if (
+    version.resolvedReportId === version.requestedReportId &&
+    !version.resolvedSuperseded &&
+    version.warnings.length === 0
+  ) return;
+  console.warn("[patient-reports] D8 version resolution:", JSON.stringify({
+    surface,
+    requestedReportId: version.requestedReportId,
+    deliveredReportId: version.resolvedReportId,
+    rootReportId: version.rootReportId,
+    latestReportId: version.latestReportId,
+    sequenceNumber: version.sequenceNumber,
+    totalVersions: version.totalVersions,
+    superseded: version.resolvedSuperseded,
+    historicalOverride: version.resolutionReason === "explicit_specific" || version.resolutionReason === "explicit_root",
+    resolutionReason: version.resolutionReason,
+    warnings: version.warnings,
+    ...context,
+  }));
+}
+
+/** D8 — pick the effective resolve mode for a surface: explicit query wins;
+ *  otherwise default to LATEST only when the structured-final flag (the only
+ *  mechanism that creates amendments) is on. Flag OFF ⇒ "specific", i.e. the
+ *  exact pre-D8 behavior. A flag-read failure degrades to "specific". */
+async function effectiveResolveMode(explicit: string | undefined): Promise<ResolveMode> {
+  if (explicit === "latest" || explicit === "specific" || explicit === "root") return explicit;
+  try {
+    return (await isFeatureEnabledServer("ff_radiology_structured_final")) ? "latest" : "specific";
+  } catch {
+    return "specific";
+  }
+}
+
+/** D8 Phase 5 — response metadata stating exactly which revision was
+ *  delivered (also what file-naming keys off). Additive headers only. */
+function setVersionHeaders(res: { setHeader(name: string, value: string): unknown }, version: ResolvedReportVersion) {
+  res.setHeader("X-Report-Requested-Id", String(version.requestedReportId));
+  res.setHeader("X-Report-Delivered-Id", String(version.resolvedReportId));
+  res.setHeader("X-Report-Version", `${version.sequenceNumber}/${version.totalVersions}`);
+  if (version.resolvedSuperseded) res.setHeader("X-Report-Superseded", "true");
+}
+
+/** D8 Phase 6/7 — the auditable requested-vs-delivered record for delivery
+ *  surfaces. Written to the hash-chained audit log ONLY when the resolution
+ *  is noteworthy (redirect, superseded serve, historical override, or chain
+ *  warning); an ordinary same-id delivery stays exactly as cheap as before.
+ *  auditLog never throws (fire-and-forget contract), so deliveries cannot be
+ *  broken by audit failures. Signed report bytes are never touched. */
+async function auditDeliveryResolution(
+  surface: string,
+  version: ResolvedReportVersion,
+  actor: { userId?: number | null; userName?: string; role?: string },
+  context?: Record<string, unknown>,
+) {
+  const historicalOverride =
+    version.resolutionReason === "explicit_specific" || version.resolutionReason === "explicit_root";
+  if (
+    version.resolvedReportId === version.requestedReportId &&
+    !version.resolvedSuperseded &&
+    !historicalOverride &&
+    version.warnings.length === 0
+  ) return;
+  await auditLog({
+    userId: actor.userId ?? null,
+    userName: actor.userName ?? "system",
+    role: actor.role ?? "system",
+    action: "deliver_version",
+    module: "radiology",
+    entityType: "patient_report",
+    entityId: String(version.resolvedReportId),
+    newValue: JSON.stringify({
+      surface,
+      requestedReportId: version.requestedReportId,
+      deliveredReportId: version.resolvedReportId,
+      rootReportId: version.rootReportId,
+      latestReportId: version.latestReportId,
+      sequenceNumber: version.sequenceNumber,
+      totalVersions: version.totalVersions,
+      superseded: version.resolvedSuperseded,
+      historicalOverride,
+      warnings: version.warnings,
+      ...context,
+    }),
+    reason: version.resolutionReason,
+  });
+}
+
+/** D8 — version-suffixed filename for saved PDFs/HTML ("where practical":
+ *  only when the report actually has multiple versions). */
+function versionedFilename(version: ResolvedReportVersion): string {
+  const base = (version.resolvedReport.reportNumber || `report-${version.resolvedReportId}`).replace(/[^A-Za-z0-9._-]+/g, "_");
+  const suffix = version.totalVersions > 1 ? `-v${version.sequenceNumber}of${version.totalVersions}${version.resolvedSuperseded ? "-SUPERSEDED" : ""}` : "";
+  return `${base}${suffix}.html`;
 }
 
 /** Typed HTTP failure for the amend transaction — no partial amendments:
@@ -769,14 +878,24 @@ patientReportsRouter.get("/stats", async (_req, res) => {
 });
 
 patientReportsRouter.get("/:id", async (req, res) => {
-  let id = Number(req.params.id);
-  // Ticket D7 — ?resolve=latest serves the newest version of the amendment
-  // chain this report belongs to (read-only; every historical version stays
-  // retrievable by its own id). Without the param, behavior is unchanged.
-  const chainInfoForRequested = await loadAmendmentChain(id);
-  if (req.query.resolve === "latest" && chainInfoForRequested && chainInfoForRequested.superseded) {
-    id = chainInfoForRequested.latestReportId;
+  const requestedId = Number(req.params.id);
+  // Ticket D8 — canonical version resolution. Explicit ?version=latest|
+  // specific|root wins (D7's ?resolve=latest is kept as an alias for
+  // "latest"); otherwise clinical display defaults to the LATEST signed
+  // version when ff_radiology_structured_final is on, and to the exact
+  // requested row (pre-D8 behavior) when it is off. Read-only — this route
+  // performs no writes regardless of resolution outcome.
+  const explicitMode = typeof req.query.version === "string"
+    ? req.query.version.toLowerCase()
+    : req.query.resolve === "latest" ? "latest" : undefined;
+  const mode = await effectiveResolveMode(explicitMode);
+  const version = await resolveReportVersion(requestedId, { mode, includeChain: true });
+  if (!version) {
+    res.status(404).json({ error: "Report not found" });
+    return;
   }
+  const id = version.resolvedReportId;
+  logVersionResolution("viewer_get", version);
   const [row] = await db
     .select({
       r: patientReportsTable,
@@ -813,10 +932,9 @@ patientReportsRouter.get("/:id", async (req, res) => {
   // still available additively as `displayBody`.
   const structuredRead = await applyStructuredRead(row.r);
   const bodyImmutable = row.r.status === "verified" || row.r.status === "delivered";
-  // D7 — amendment chain for the row actually being served (recomputed when
-  // ?resolve=latest redirected to a different row). Additive; null when the
-  // report has never been amended.
-  const amendment = id === Number(req.params.id) ? chainInfoForRequested : await loadAmendmentChain(id);
+  // D7 back-compat `amendment` key + D8 additive `version` metadata, both
+  // describing the row actually being SERVED — derived from one resolution.
+  const amendment = amendmentKeyFromVersion(version);
   res.json({
     ...row.r,
     ...(structuredRead
@@ -826,6 +944,7 @@ patientReportsRouter.get("/:id", async (req, res) => {
         }
       : {}),
     ...(amendment ? { amendment } : {}),
+    version: versionMetadata(version),
     patientName: [row.patientFirstName, row.patientLastName].filter(Boolean).join(" "),
     patientCode: row.patientCode,
     patientPhone: row.patientPhone,
@@ -1656,7 +1775,78 @@ function escapeHtml(s: string | null | undefined): string {
 
 type Param = { name: string; result?: string; value?: string; unit?: string; refRange?: string; flag?: string };
 
+// ── Ticket D8 — version-aware artifact builder ───────────────────────────────
+// Every server-rendered delivery surface (print, PDF, public-token PDF, email
+// share, PACS archive) flows through here. Resolution to the LATEST signed
+// version is the default (flag-gated via effectiveResolveMode); explicit
+// historical access renders the exact requested row WITH a superseded
+// watermark. Read-only with respect to report rows.
+
+export interface ReportArtifactOptions {
+  autoPrint?: boolean;
+  useUpdatedStyle?: boolean;
+  /** Diagnostic label for Phase 7 logging: print|pdf|public_pdf|email|pacs. */
+  surface?: string;
+  /** Explicit resolve mode; undefined → flag-gated default. */
+  versionMode?: ResolveMode;
+  /** Patient-facing surfaces pass ["verified","delivered"] so "latest" never
+   *  resolves to a version that surface is not allowed to deliver. */
+  deliverableStatuses?: string[];
+}
+
+export interface ReportArtifact {
+  html: string;
+  version: ResolvedReportVersion;
+}
+
+export async function buildReportArtifact(
+  reportId: number,
+  opts: ReportArtifactOptions = {},
+): Promise<ReportArtifact | null> {
+  const mode = await effectiveResolveMode(opts.versionMode);
+  const version = await resolveReportVersion(reportId, {
+    mode,
+    includeChain: true,
+    deliverableStatuses: opts.deliverableStatuses,
+  });
+  if (!version) return null;
+  logVersionResolution(opts.surface ?? "artifact", version);
+  const html = await renderReportVersionHtml(version.resolvedReportId, opts.autoPrint === true, opts.useUpdatedStyle, version);
+  if (html == null) return null;
+  return { html, version };
+}
+
+/** Pre-D8 surface kept verbatim for existing callers: default version policy,
+ *  html-only result. */
 export async function buildReportHtml(reportId: number, autoPrint: boolean, useUpdatedStyle?: boolean): Promise<string | null> {
+  const artifact = await buildReportArtifact(reportId, { autoPrint, useUpdatedStyle });
+  return artifact ? artifact.html : null;
+}
+
+/** D8 Phase 4 — the visual safeguards. A superseded row NEVER renders without
+ *  the banner + diagonal watermark; the latest amendment announces itself with
+ *  version number and reason; a corrupt chain surfaces an integrity warning.
+ *  Pure string building — no queries, no writes. */
+function versionSafeguardHtml(version: ResolvedReportVersion): { banner: string; watermark: string } {
+  const parts: string[] = [];
+  let watermark = "";
+  if (version.warnings.length > 0) {
+    parts.push(`<div class="version-warning">⚠ AMENDMENT HISTORY WARNING — the amendment chain for this report could not be verified (${escapeHtml(version.warnings[0])}). Showing the exact requested version.</div>`);
+  }
+  if (version.resolvedSuperseded) {
+    const superseding = version.chain?.find((c) => c.sequenceNumber === version.sequenceNumber + 1) ?? null;
+    const supersedingInfo = superseding
+      ? `<br/>Amended${superseding.amendedAt ? ` on ${new Date(superseding.amendedAt).toLocaleString("en-IN")}` : ""}${superseding.amendedByName ? ` by ${escapeHtml(superseding.amendedByName)}` : ""}${superseding.reason ? ` — Reason: ${escapeHtml(superseding.reason)}` : ""}`
+      : "";
+    parts.push(`<div class="superseded-banner">SUPERSEDED — A NEWER SIGNED AMENDMENT EXISTS<br/>This document is Version ${version.sequenceNumber} of ${version.totalVersions} and must not be used for clinical decisions. Latest version: ${escapeHtml(version.latestReport?.reportNumber ?? `#${version.latestReportId}`)}.${supersedingInfo}</div>`);
+    watermark = `<div class="superseded-watermark" aria-hidden="true">SUPERSEDED</div>`;
+  } else if (version.sequenceNumber > 1) {
+    parts.push(`<div class="amended-banner">AMENDED REPORT — Version ${version.sequenceNumber} of ${version.totalVersions}${version.amendmentReason ? ` • Reason: ${escapeHtml(version.amendmentReason)}` : ""}<br/>This version supersedes all earlier versions. Previous versions remain on file.</div>`);
+  }
+  return { banner: parts.join("\n      "), watermark };
+}
+
+async function renderReportVersionHtml(reportId: number, autoPrint: boolean, useUpdatedStyle?: boolean, version?: ResolvedReportVersion): Promise<string | null> {
   const [row] = await db
     .select({
       r: patientReportsTable,
@@ -1838,6 +2028,10 @@ export async function buildReportHtml(reportId: number, autoPrint: boolean, useU
     }
   }
 
+  // D8 — visual safeguards for the served version (empty strings when the
+  // report has no amendment chain: byte-identical pre-D8 output).
+  const safeguards = version ? versionSafeguardHtml(version) : { banner: "", watermark: "" };
+
   const qrHtml = (showQrVerification && r.type === "radiology") ? `
     <div style="float:left;margin-top:10px;text-align:left;">
       <div style="display:inline-block;padding:4px;border:1px solid #ccc;background:#fff;border-radius:4px;">
@@ -1885,8 +2079,13 @@ export async function buildReportHtml(reportId: number, autoPrint: boolean, useU
       .sigwhen { margin-top:3px; font-style:italic; }
       .ftr { margin-top:18px; font-size:9px; color:#64748b; text-align:center; border-top:1px solid #cbd5e1; padding-top:6px; clear: both; }
       .reportno { float:right; font-family:monospace; color:#475569; font-size:10px; }
+      .superseded-banner { background:#7f1d1d; color:#fff; border:2px solid #450a0a; padding:10px 14px; font-weight:800; font-size:13px; margin:0 0 12px; border-radius:4px; letter-spacing:0.3px; }
+      .amended-banner { background:#eff6ff; color:#1e3a8a; border:1.5px solid #3b82f6; padding:8px 12px; font-weight:700; font-size:12px; margin:0 0 12px; border-radius:4px; }
+      .version-warning { background:#fef3c7; color:#92400e; border:1.5px solid #f59e0b; padding:8px 12px; font-weight:700; font-size:12px; margin:0 0 12px; border-radius:4px; }
+      .superseded-watermark { position:fixed; top:38%; left:0; right:0; text-align:center; transform:rotate(-28deg); font-size:104px; font-weight:900; color:rgba(185,28,28,0.14); letter-spacing:10px; z-index:9999; pointer-events:none; }
       ${customStyles}
     </style></head><body>
+      ${safeguards.watermark}
       <div class="hdr">
         ${clinic?.logoDataUrl ? `<img src="${clinic.logoDataUrl}" alt="logo"/>` : ""}
         <div>
@@ -1911,6 +2110,7 @@ export async function buildReportHtml(reportId: number, autoPrint: boolean, useU
         <div><span>Type</span><strong>${escapeHtml(r.type.toUpperCase())}</strong></div>
         <div><span>Status</span><strong>${escapeHtml(r.status.replace(/_/g, " ").toUpperCase())}</strong></div>
       </div>
+      ${safeguards.banner}
       ${criticalBanner}
       ${r.impression ? `<div class="impression"><strong>Impression:</strong> ${escapeHtml(r.impression)}</div>` : ""}
       ${parametersHtml}
@@ -1926,35 +2126,57 @@ export async function buildReportHtml(reportId: number, autoPrint: boolean, useU
     </body></html>`;
 }
 
+// D8 — print/PDF default to the LATEST signed version (flag-gated); explicit
+// ?version=specific|root keeps exact historical access, rendered WITH the
+// superseded banner + watermark. Delivery side effects (share log, delivered
+// stamp, audit) always target the row actually served.
+function explicitVersionParam(req: Request): ResolveMode | undefined {
+  const v = typeof req.query.version === "string" ? req.query.version.toLowerCase() : "";
+  return v === "latest" || v === "specific" || v === "root" ? v : undefined;
+}
+
 patientReportsRouter.get("/:id/print", async (req, res) => {
   const id = Number(req.params.id);
   const useUpdatedStyle = req.query.useUpdatedStyle === "true";
-  const html = await buildReportHtml(id, true, useUpdatedStyle);
-  if (!html) {
+  const artifact = await buildReportArtifact(id, {
+    autoPrint: true, useUpdatedStyle, surface: "print", versionMode: explicitVersionParam(req),
+  });
+  if (!artifact) {
     res.status(404).send("Report not found");
     return;
   }
+  const servedId = artifact.version.resolvedReportId;
   // Log a "print" share entry (best-effort).
-  await db.insert(reportSharesTable).values({ reportId: id, channel: "print", sharedBy: (req.query.by as string) || null }).catch(() => {});
-  // If the report was verified, mark as delivered on first print.
-  await markDeliveredIfVerified(id).catch(() => {});
+  await db.insert(reportSharesTable).values({ reportId: servedId, channel: "print", sharedBy: (req.query.by as string) || null }).catch(() => {});
+  // If the served report was verified, mark as delivered on first print.
+  await markDeliveredIfVerified(servedId).catch(() => {});
+  const session = (req as StaffAuthRequest).staffSession;
+  await auditDeliveryResolution("print", artifact.version, { userId: session?.subjectId, userName: session?.subjectName, role: session?.role });
   res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.send(html);
+  setVersionHeaders(res, artifact.version);
+  res.send(artifact.html);
 });
 
 // PDF endpoint = same HTML but without auto-print (browser/user can save as PDF).
 patientReportsRouter.get("/:id/pdf", async (req, res) => {
   const id = Number(req.params.id);
   const useUpdatedStyle = req.query.useUpdatedStyle === "true";
-  const html = await buildReportHtml(id, false, useUpdatedStyle);
-  if (!html) {
+  const artifact = await buildReportArtifact(id, {
+    useUpdatedStyle, surface: "pdf", versionMode: explicitVersionParam(req),
+  });
+  if (!artifact) {
     res.status(404).send("Report not found");
     return;
   }
-  await db.insert(reportSharesTable).values({ reportId: id, channel: "pdf", sharedBy: (req.query.by as string) || null }).catch(() => {});
-  await markDeliveredIfVerified(id).catch(() => {});
+  const servedId = artifact.version.resolvedReportId;
+  await db.insert(reportSharesTable).values({ reportId: servedId, channel: "pdf", sharedBy: (req.query.by as string) || null }).catch(() => {});
+  await markDeliveredIfVerified(servedId).catch(() => {});
+  const session = (req as StaffAuthRequest).staffSession;
+  await auditDeliveryResolution("pdf", artifact.version, { userId: session?.subjectId, userName: session?.subjectName, role: session?.role });
   res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.send(html);
+  res.setHeader("Content-Disposition", `inline; filename="${versionedFilename(artifact.version)}"`);
+  setVersionHeaders(res, artifact.version);
+  res.send(artifact.html);
 });
 
 // PUBLIC tokenized PDF — no staff auth. Looked up by random token, only
@@ -1975,16 +2197,31 @@ publicReportsRouter.get("/:token/pdf", async (req, res) => {
     res.status(403).send("Report not yet finalized"); return;
   }
   const useUpdatedStyle = req.query.useUpdatedStyle === "true";
-  const html = await buildReportHtml(row.id, false, useUpdatedStyle);
-  if (!html) { res.status(404).send("Not found"); return; }
+  // D8 Phase 6 — a token minted for a now-superseded report resolves to the
+  // latest signed amendment by default, but ONLY to a version this surface is
+  // allowed to deliver (verified/delivered — drafts never leak to patients).
+  // If no newer version qualifies yet, the token's own row is served WITH the
+  // superseded banner + watermark — never presented as current. Access
+  // control is unchanged: the token was validated against its row above, no
+  // new token is minted, no internal ids appear in the URL, and there is no
+  // patient-controllable version parameter.
+  const artifact = await buildReportArtifact(row.id, {
+    useUpdatedStyle, surface: "public_pdf",
+    deliverableStatuses: ["verified", "delivered"],
+  });
+  if (!artifact) { res.status(404).send("Not found"); return; }
+  const servedId = artifact.version.resolvedReportId;
   await db.insert(reportSharesTable).values({
-    reportId: row.id, channel: "pdf", recipient: "public-link",
+    reportId: servedId, channel: "pdf", recipient: "public-link",
     sharedBy: "patient-link", status: "sent",
   }).catch(() => undefined);
-  await markDeliveredIfVerified(row.id).catch(() => undefined);
+  await markDeliveredIfVerified(servedId).catch(() => undefined);
+  await auditDeliveryResolution("public_pdf", artifact.version, { userName: "patient-link", role: "public" }, { tokenReportId: row.id });
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
-  res.send(html);
+  res.setHeader("Content-Disposition", `inline; filename="${versionedFilename(artifact.version)}"`);
+  setVersionHeaders(res, artifact.version);
+  res.send(artifact.html);
 });
 
 async function markDeliveredIfVerified(id: number) {
@@ -2007,13 +2244,26 @@ function reportPublicUrl(req: Request, reportId: number): string {
 }
 
 patientReportsRouter.post("/:id/share", async (req, res) => {
-  const id = Number(req.params.id);
+  const requestedId = Number(req.params.id);
   const b = (req.body ?? {}) as Record<string, unknown>;
   const channel = String(b.channel ?? "").toLowerCase();
   if (!["whatsapp", "email", "pdf", "print"].includes(channel)) {
     res.status(400).json({ error: "channel must be whatsapp|email|pdf|print" });
     return;
   }
+
+  // D8 — sharing targets the LATEST deliverable version by default
+  // (flag-gated; never resolves to a draft). The share log, delivery stamp,
+  // WhatsApp link, and email HTML all reference the row actually shared.
+  const shareVersion = await resolveReportVersion(requestedId, {
+    mode: await effectiveResolveMode(undefined),
+    deliverableStatuses: ["verified", "delivered"],
+  });
+  if (!shareVersion) {
+    res.status(404).json({ error: "Report not found" });
+    return;
+  }
+  const id = shareVersion.resolvedReportId;
 
   const [row] = await db
     .select({ r: patientReportsTable, patientPhone: patientsTable.phone, patientEmail: patientsTable.email, patientFirstName: patientsTable.firstName, patientLastName: patientsTable.lastName, testName: testsTable.name })
@@ -2051,13 +2301,17 @@ patientReportsRouter.post("/:id/share", async (req, res) => {
       res.status(400).json({ error: "No email on file. Provide recipient." });
       return;
     }
-    const html = await buildReportHtml(id, false);
-    const result = await sendReportEmail({ to: recipient, subject: `Your Report: ${row.r.reportNumber}`, html: html ?? "", patientName, reportNumber: row.r.reportNumber });
+    // `id` is already the resolved version; "specific" renders exactly that
+    // row (its banner still reflects its own chain position).
+    const emailArtifact = await buildReportArtifact(id, { surface: "email", versionMode: "specific" });
+    const result = await sendReportEmail({ to: recipient, subject: `Your Report: ${row.r.reportNumber}`, html: emailArtifact?.html ?? "", patientName, reportNumber: row.r.reportNumber });
     if (!result.ok) { status = "failed"; errorMessage = result.error ?? "Email send failed"; }
   }
 
   const [share] = await db.insert(reportSharesTable).values({ reportId: id, channel, recipient, sharedBy, status, errorMessage }).returning();
   if (status === "sent") await markDeliveredIfVerified(id);
+  const session = (req as StaffAuthRequest).staffSession;
+  await auditDeliveryResolution(`share_${channel}`, shareVersion, { userId: session?.subjectId, userName: session?.subjectName ?? sharedBy ?? "system", role: session?.role }, { recipient });
 
   res.json({ ok: status === "sent", share, error: errorMessage });
 });

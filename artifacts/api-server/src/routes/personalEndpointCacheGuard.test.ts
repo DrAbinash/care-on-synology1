@@ -109,6 +109,8 @@ const REVIEWED_NOT_PERSONAL: Array<{ file: string; localPath: string; reason: st
   { file: "radiology.ts", localPath: "/studies/:id/lock", reason: "study-scoped lock status; isMine differs per caller but this is a shared clinical concurrency resource, not personal preference data — flagged separately in the audit report, not a cache-exclusion candidate" },
   { file: "banking.ts", localPath: "/export", reason: "response is scoped only by accountId/fromDate/toDate query params (shared bank-transaction export, gated by banking permission, not by caller identity); subjectId appears only in a fire-and-forget audit-log write (void auditFromRequest(...)) issued AFTER res.json() has already sent the response" },
   { file: "risMonitoring.ts", localPath: "/audit-export", reason: "admin-only (requireAdmin) shared audit-log export, response scoped only by from/to/user/studyId query params, not caller identity; subjectId appears only in a fire-and-forget audit-log write issued AFTER res.send(csv) has already sent the response" },
+  { file: "patient-reports.ts", localPath: "/:id/print", reason: "report-scoped HTML identical for every staff caller (router-level requireStaffAuth gates access); subjectId appears only as the actor identity in the D8 requested-vs-delivered delivery audit record — the response never varies by caller" },
+  { file: "patient-reports.ts", localPath: "/:id/pdf", reason: "same as /:id/print — report-scoped HTML; subjectId only feeds the D8 delivery audit record, never the response body" },
 ];
 
 function loadServiceWorkerSandbox(): Record<string, any> {

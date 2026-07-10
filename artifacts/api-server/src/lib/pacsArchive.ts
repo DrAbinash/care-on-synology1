@@ -7,7 +7,7 @@ import {
 } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
 import { chromium } from "playwright";
-import { buildReportHtml } from "../routes/patient-reports.js";
+import { buildReportArtifact, type ReportArtifact } from "../routes/patient-reports.js";
 import { logger } from "./logger.js";
 
 import { getRadiologyConfig } from "./pacs/pacsConfig";
@@ -28,7 +28,15 @@ function orthancHeaders(user: string, pass: string): Record<string, string> {
   return headers;
 }
 
-export async function archiveReportToPacs(studyId: number): Promise<{ success: boolean; instanceId?: string; error?: string }> {
+export async function archiveReportToPacs(
+  studyId: number,
+  opts: {
+    /** D8 — PACS archives the LATEST signed version by default; pass
+     *  "specific" to explicitly archive the historical row as-is (it renders
+     *  with the superseded watermark). */
+    versionMode?: "latest" | "specific";
+  } = {},
+): Promise<{ success: boolean; instanceId?: string; error?: string }> {
   logger.info({ studyId }, "[pacs-archive] Starting report archival to Orthanc");
 
   // 1. Fetch study
@@ -80,8 +88,13 @@ export async function archiveReportToPacs(studyId: number): Promise<{ success: b
     }
     const sexStr = patient?.gender || "O";
 
-    // 3. Resolve report HTML
+    // 3. Resolve report HTML. D8: amendments share the parent's studyId, so
+    // whichever row this unordered pick lands on, buildReportArtifact resolves
+    // the chain to the latest signed version (default) — the archived PDF can
+    // never silently be a superseded report, and an explicitly historical
+    // archive carries the superseded watermark baked into its HTML.
     let htmlContent = "";
+    let artifact: ReportArtifact | null = null;
     const [report] = await db
       .select()
       .from(patientReportsTable)
@@ -89,7 +102,8 @@ export async function archiveReportToPacs(studyId: number): Promise<{ success: b
       .limit(1);
 
     if (report) {
-      htmlContent = await buildReportHtml(report.id, false) || "";
+      artifact = await buildReportArtifact(report.id, { surface: "pacs", versionMode: opts.versionMode });
+      htmlContent = artifact?.html || "";
     }
 
     if (!htmlContent) {
@@ -162,6 +176,12 @@ export async function archiveReportToPacs(studyId: number): Promise<{ success: b
     const studyDateRaw = study.studyDate ? String(study.studyDate).replace(/-/g, "") : "";
     const referringDoctor = study.referringDoctor || "";
 
+    // D8 — the DICOM series states which revision was archived; a superseded
+    // historical export is labeled as such (never presented as current).
+    const v = artifact?.version;
+    const versionLabel = v && v.totalVersions > 1
+      ? ` v${v.sequenceNumber}/${v.totalVersions}${v.resolvedSuperseded ? " SUPERSEDED" : " (amended)"}`
+      : "";
     const tags = {
       PatientName: patientName.replace(/\^/g, " "), // Clean caret character if any
       PatientID: patientIdStr,
@@ -171,7 +191,7 @@ export async function archiveReportToPacs(studyId: number): Promise<{ success: b
       ReferringPhysicianName: referringDoctor,
       SOPClassUID: "1.2.840.10008.5.1.4.1.1.104.1", // Encapsulated PDF Storage
       Modality: "OT",
-      SeriesDescription: "Radiology Report PDF",
+      SeriesDescription: `Radiology Report PDF${versionLabel}`.slice(0, 64),
     };
 
     logger.info({ studyId, url }, "[pacs-archive] Uploading encapsulated PDF DICOM to Orthanc");
@@ -207,7 +227,18 @@ export async function archiveReportToPacs(studyId: number): Promise<{ success: b
       accessionNumber: study.accessionNumber,
       action: "ORTHANC_UPLOAD_SUCCESS",
       actor: "system",
-      details: JSON.stringify({ instanceId, path: result.Path }),
+      details: JSON.stringify({
+        instanceId,
+        path: result.Path,
+        // D8 — auditable requested-vs-delivered record for the PACS surface.
+        ...(v ? {
+          requestedReportId: v.requestedReportId,
+          deliveredReportId: v.resolvedReportId,
+          reportVersion: `${v.sequenceNumber}/${v.totalVersions}`,
+          superseded: v.resolvedSuperseded,
+          chainWarnings: v.warnings,
+        } : {}),
+      }),
     }).catch(() => undefined);
 
     logger.info({ studyId, instanceId }, "[pacs-archive] Report archived successfully");

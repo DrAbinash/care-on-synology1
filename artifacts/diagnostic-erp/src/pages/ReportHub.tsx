@@ -55,6 +55,33 @@ type ReportRow = {
   patientEmail?: string | null;
   testName?: string;
   testCode?: string;
+  version?: ReportVersionMeta;
+};
+
+// D8 — amendment-chain metadata GET /:id returns additively.
+type ReportVersionMeta = {
+  requestedReportId: number;
+  resolvedReportId: number;
+  rootReportId: number;
+  latestReportId: number;
+  sequenceNumber: number;
+  totalVersions: number;
+  superseded: boolean;
+  requestedSuperseded: boolean;
+  amendmentReason: string | null;
+  latestAmendmentReason: string | null;
+  resolutionReason: string;
+  warnings: string[];
+  chain?: Array<{
+    sequenceNumber: number;
+    reportId: number;
+    reportNumber: string | null;
+    status: string | null;
+    isLatest: boolean;
+    amendedByName: string | null;
+    amendedAt: string | null;
+    reason: string | null;
+  }>;
 };
 
 type ReportShare = {
@@ -437,6 +464,84 @@ function CreateReportDialog({ open, onOpenChange, onCreated }: { open: boolean; 
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// D8 — amendment-version safeguards: a superseded report never displays as if
+// it is current; the latest amendment announces its version and reason.
+// ────────────────────────────────────────────────────────────────────────────
+function VersionBanner({ report, onOpenVersion }: {
+  report: ReportRow;
+  onOpenVersion: (id: number, historical: boolean) => void;
+}) {
+  const [showHistory, setShowHistory] = useState(false);
+  const v = report.version;
+  if (!v) return null;
+
+  const warning = v.warnings.length > 0 ? (
+    <div className="rounded-md border border-amber-400 bg-amber-50 text-amber-900 px-3 py-2 text-xs font-semibold">
+      ⚠ Amendment history warning — the version chain for this report could not be fully verified. Showing the requested version.
+    </div>
+  ) : null;
+
+  if (v.totalVersions <= 1) return warning;
+
+  const history = showHistory && v.chain && v.chain.length > 0 && (
+    <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs space-y-1">
+      {v.chain.map((c) => (
+        <div key={c.reportId} className="flex items-center gap-2">
+          <span className="font-semibold">V{c.sequenceNumber}</span>
+          <span className="font-mono">{c.reportNumber ?? `#${c.reportId}`}</span>
+          {c.isLatest && <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">LATEST</span>}
+          {c.reason && <span className="text-muted-foreground truncate" title={c.reason}>— {c.reason}</span>}
+          {c.amendedByName && <span className="text-muted-foreground">by {c.amendedByName}{c.amendedAt ? ` on ${new Date(c.amendedAt).toLocaleDateString("en-IN")}` : ""}</span>}
+          {c.reportId !== report.id && (
+            <Button size="sm" variant="ghost" className="h-5 px-2 text-[11px] ml-auto" onClick={() => onOpenVersion(c.reportId, !c.isLatest)}>Open</Button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+
+  if (v.superseded) {
+    return (
+      <div className="space-y-2">
+        {warning}
+        <div className="rounded-md border-2 border-red-800 bg-red-700 text-white px-3 py-2 text-sm font-bold">
+          SUPERSEDED — A newer signed amendment exists
+          <div className="text-xs font-medium mt-1">
+            This is Version {v.sequenceNumber} of {v.totalVersions}. Do not use for clinical decisions.
+            {v.latestAmendmentReason && <> Latest amendment reason: {v.latestAmendmentReason}</>}
+          </div>
+          <div className="mt-2 flex gap-2">
+            <Button size="sm" variant="secondary" onClick={() => onOpenVersion(v.latestReportId, false)}>Open latest version</Button>
+            <Button size="sm" variant="ghost" className="text-white" onClick={() => setShowHistory((s) => !s)}>History</Button>
+          </div>
+        </div>
+        {history}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {warning}
+      <div className="rounded-md border border-blue-500 bg-blue-50 text-blue-900 px-3 py-2 text-xs font-semibold">
+        Amended report — Version {v.sequenceNumber} of {v.totalVersions}
+        {v.amendmentReason && <> • Reason: {v.amendmentReason}</>}
+        {v.resolvedReportId !== v.requestedReportId && (
+          <span className="font-normal"> (requested version was superseded — showing the latest signed version)</span>
+        )}
+        <div className="mt-1 flex gap-2">
+          <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => setShowHistory((s) => !s)}>History</Button>
+          {v.resolvedReportId !== v.requestedReportId && (
+            <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={() => onOpenVersion(v.requestedReportId, true)}>View original as requested</Button>
+          )}
+        </div>
+      </div>
+      {history}
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Editor — body + parameters + impression + critical + template
 // ────────────────────────────────────────────────────────────────────────────
 type Template = { id: number; testId: number; name: string; content: string; format: string };
@@ -456,9 +561,15 @@ function EditorDialog({
   const [criticalNote, setCriticalNote] = useState("");
   const [templates, setTemplates] = useState<Template[]>([]);
   const [busy, setBusy] = useState(false);
+  // D8 — which version this dialog is looking at. The server resolves the
+  // default view to the latest signed version; explicit historical views pin
+  // the exact row with ?version=specific.
+  const [viewVersion, setViewVersion] = useState<{ id: number; historical: boolean }>({ id: reportId, historical: false });
+
+  useEffect(() => { setViewVersion({ id: reportId, historical: false }); }, [reportId]);
 
   useEffect(() => {
-    api.get<ReportRow & { shares: ReportShare[] }>(`/api/patient-reports/${reportId}`).then((r) => {
+    api.get<ReportRow & { shares: ReportShare[] }>(`/api/patient-reports/${viewVersion.id}${viewVersion.historical ? "?version=specific" : ""}`).then((r) => {
       setReport(r);
       setBody(r.body || "");
       setImpression(r.impression ?? "");
@@ -467,7 +578,7 @@ function EditorDialog({
       try { setParams(r.parameters ? JSON.parse(r.parameters) : []); } catch { setParams([]); }
       api.get<Template[]>(`/api/patient-reports/templates/${r.testId}`).then(setTemplates).catch(() => setTemplates([]));
     }).catch((err) => toast({ title: "Load failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }));
-  }, [reportId, toast]);
+  }, [viewVersion, toast]);
 
   const editable = report ? report.status === "draft" : false;
 
@@ -509,6 +620,8 @@ function EditorDialog({
             {report.patientName} ({report.patientCode}) • {report.testName} • Created {new Date(report.createdAt).toLocaleString("en-IN")}
           </DialogDescription>
         </DialogHeader>
+
+        <VersionBanner report={report} onOpenVersion={(id, historical) => setViewVersion({ id, historical })} />
 
         <div className="grid grid-cols-3 gap-4">
           <div className="col-span-2 space-y-3">
