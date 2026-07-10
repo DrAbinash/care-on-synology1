@@ -1,0 +1,7 @@
+schema_version: "1.0.0"
+pack:
+  id: fixture.broken
+  version: "1.0.0"
+findings:
+  - id_key: x
+    display_name: [unclosed

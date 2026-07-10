@@ -669,7 +669,6 @@ export default function BillingDesk() {
     dicomMwlTestIds?: string;
     dicomMwlTestDefaults?: string;
     quickTestIds?: string;
-    quickDoctorIds?: string;
     billPrintCopies?: number;
     qrOnBillEnabled?: boolean;
     billShowCode?: boolean;
@@ -917,8 +916,19 @@ export default function BillingDesk() {
   const [quickPickerSlot, setQuickPickerSlot] = useState<number | null>(null);
   const [quickPickerSearch, setQuickPickerSearch] = useState("");
 
-  // ── Quick Doctor Slots (8 slots, synced with clinic settings — server is
-  // the source of truth; localStorage is only a fast first-paint cache) ────
+  // ── Quick Doctor Slots (8 slots, per-STAFF-MEMBER layout — each user has
+  // their own; server is the source of truth, localStorage is only a fast
+  // first-paint cache). Was previously synced from clinic-wide
+  // clinic.quickDoctorIds via PUT /api/clinic-settings, which (a) the public
+  // /branding endpoint never actually returned (the "sync from server" effect
+  // below was silently dead code) and (b) required the /settings.clinic admin
+  // permission to write, so any non-admin staff got a 403 "Failed to save
+  // quick doctor". Now backed by /api/my/quick-doctors — one row per staff
+  // member, writable by that staff member alone (requireStaffAuth only). ──
+  const { data: myQuickDoctors } = useQuery<{ quickDoctorIds?: string }>({
+    queryKey: ["my-quick-doctors"],
+    queryFn: () => api.get("/api/my/quick-doctors"),
+  });
   const [quickDoctorIds, setQuickDoctorIds] = useState<(number | null)[]>(() => {
     try {
       const stored = localStorage.getItem("billingDesk:quickDoctors");
@@ -930,15 +940,15 @@ export default function BillingDesk() {
       return out;
     } catch { return [null, null, null, null, null, null, null, null]; }
   });
-  // Sync from the server once clinic settings load — this is the actual
-  // saved configuration (assignQuickDoctor below writes here via PUT
-  // /api/clinic-settings). Without this, a browser whose localStorage was
-  // ever cleared — or a different device — would show empty slots even
-  // though the configuration was successfully saved earlier.
+  // Sync from the server once the caller's own quick-doctor layout loads —
+  // this is the actual saved configuration (assignQuickDoctorSlot below
+  // writes here via PUT /api/my/quick-doctors). Without this, a browser whose
+  // localStorage was ever cleared — or a different device — would show empty
+  // slots even though the configuration was successfully saved earlier.
   useEffect(() => {
-    if (!clinic?.quickDoctorIds) return;
+    if (!myQuickDoctors?.quickDoctorIds) return;
     try {
-      const arr = JSON.parse(clinic.quickDoctorIds);
+      const arr = JSON.parse(myQuickDoctors.quickDoctorIds);
       if (Array.isArray(arr)) {
         const out = arr.slice(0, 8).map((v: unknown) => (typeof v === "number" ? v : null));
         while (out.length < 8) out.push(null);
@@ -946,7 +956,7 @@ export default function BillingDesk() {
         localStorage.setItem("billingDesk:quickDoctors", JSON.stringify(out));
       }
     } catch { /* keep current state on parse failure */ }
-  }, [clinic?.quickDoctorIds]);
+  }, [myQuickDoctors?.quickDoctorIds]);
   const [quickDoctorPickerSlot, setQuickDoctorPickerSlot] = useState<number | null>(null);
   const [quickDoctorPickerSearch, setQuickDoctorPickerSearch] = useState("");
   // (Register New Patient form is now always visible — no toggle state needed)
@@ -1406,11 +1416,14 @@ export default function BillingDesk() {
     }
   }
 
-  // ── Quick Doctor slot save (server-synced, mirrors assignQuickSlot above) ──
+  // ── Quick Doctor slot save (server-synced, mirrors assignQuickSlot above).
+  // Personal per-staff-member layout — /api/my/quick-doctors, not the
+  // clinic-wide /api/clinic-settings — so any authenticated staff member can
+  // save their own slots without needing the /settings.clinic permission. ──
   const saveQuickDoctorsMut = useMutation({
     mutationFn: (ids: (number | null)[]) =>
-      api.put("/api/clinic-settings", { quickDoctorIds: JSON.stringify(ids) }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["clinic-settings"] }),
+      api.put("/api/my/quick-doctors", { quickDoctorIds: JSON.stringify(ids) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["my-quick-doctors"] }),
     onError: () => toast({ title: "Failed to save quick doctor", variant: "destructive" }),
   });
   function assignQuickDoctorSlot(slotIdx: number, doctorId: number | null) {
