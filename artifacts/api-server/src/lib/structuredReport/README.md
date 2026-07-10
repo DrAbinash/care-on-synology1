@@ -10,9 +10,10 @@ revision 2 — **frozen**) names as "what the next phase must build" (§19):
 
 > **FOUNDATION ONLY.** Nothing in the running product reads or writes
 > `structured_json` yet. No route, migration, or UI depends on this module.
-> D1 §19 items 3–6 (writer/serializer, up-migration reader, the additive
-> `structured_json` migrations + `report_finding_index`, and the renderer
-> switch) are **not built here** — see "Next" below.
+> D1 §19 item 3 (writer/serializer) now also lives here (see `writer.ts`,
+> `canonicalizer.ts`, `hash.ts` below). D1 §19 items 4–6 (up-migration reader,
+> the additive `structured_json` migrations + `report_finding_index`, and the
+> renderer switch) are **not built here** — see "Next" below.
 
 ## Files
 
@@ -21,6 +22,9 @@ revision 2 — **frozen**) names as "what the next phase must build" (§19):
 | `types.ts` | TypeScript transcription of D1 §1–§11/§18 — the document shape, every enum, every reference namespace. |
 | `schema/structured-report-v1.schema.json` | The normative JSON Schema (Draft 2020-12), D1 §1.5, fully filled out (every `$def`). |
 | `validator.ts` | `validateStructuredReport(document, ctx)` — every rule R0–R18 from D1 §12, tagged by rule id, with `ctx.mode: "draft" \| "finalize"` driving the warn/reject split (R8, R15, R16 warn-on-draft/reject-on-finalize; R14/R14b/R14c and R13's signed_by-distinctness half are finalize-only). |
+| `canonicalizer.ts` | RFC 8785 JSON Canonicalization Scheme (JCS) — the canonicalization half of D1 §10's hash. Pure, deterministic. (D1 §19 item 3.) |
+| `hash.ts` | `content_sha256 = SHA-256( JCS(document minus /audit/content_sha256 and /audit/signature/signed_content_sha256) )`, D1 §10. Non-mutating exclusion strip + `verifyContentSha256`. (D1 §19 item 3.) |
+| `writer.ts` | The writer/serializer: assembles a canonical document from its parts (findings/measurements/impression/recommendations/critical-flags/AI-provenance/catalog-snapshot/study-context/provenance/audit) in D1 §1.1 field order, reconciles `provenance.revision`↔`audit.revision` (R10b), stamps `content_sha256` (and, at finalize, `signature.signed_content_sha256`), and optionally round-trips through the validator. Pure and deterministic. (D1 §19 item 3.) |
 | `catalogAccess.ts` | Read-only port over the existing B1/B2 `CatalogStore` for R1 (finding./param. global resolution) and R4/R5/R6 (severity/location/measurement/parameter bindings, which are **finding-scoped**, not global scales — §1.4). |
 | `aiRulesRegistry.ts` | Port for R15/R16 (`ai_contradiction_rules`/`ai_completeness_rules`). **Honest gap, not papered over:** K1 validates these at pack-import time but no B1/B2 table persists them, so there is today no live source to query. The default port reports `available: false`; the validator then emits a structural warning instead of a false "0 rules, clean pass." Swap in a real implementation once one exists — no validator change required. |
 | `goldenExamples.test.ts` | The five worked examples from D1 §17, seeded against a real (in-memory) B1/B2 catalog, validated end-to-end — the load-bearing proof that this module is actually consistent with the frozen spec's own canonical examples, not just internally self-consistent. |
@@ -49,8 +53,11 @@ actually exists (`provider`); see the comment at its definition.
 
 ## Next
 
-Per D1 §19: (3) the writer/serializer that emits `structured_json` + rendered
-prose and computes `content_sha256` via RFC 8785 JCS + SHA-256 with byte-for-byte
-golden fixtures; (4) the reader/up-migration registry (§2.3); (5) the additive,
-flag-gated `structured_json` columns + expression indexes + `report_finding_index`
-migrations (§13/§15); (6) the renderer switch and analytics projection.
+Per D1 §19, still to build: (4) the reader/up-migration registry (§2.3); (5) the
+additive, flag-gated `structured_json` columns + expression indexes +
+`report_finding_index` migrations (§13/§15); (6) the renderer switch and analytics
+projection. Item (3), the writer/serializer that emits `structured_json` and
+computes `content_sha256` via RFC 8785 JCS + SHA-256 with byte-for-byte golden
+fixtures, is now built here (`writer.ts`/`canonicalizer.ts`/`hash.ts`); the
+rendered-prose strings it stores are pinned at author time (§3.4/§7) and supplied
+to the writer — synthesizing prose is the renderer's job in item (6).
