@@ -73,7 +73,21 @@ const NETWORK_ONLY_PREFIXES = [
   "/api/radiology/smart/favorite-sets",              // per-radiologist smart-finding favorite sets
   "/api/teaching-cases/favorites",                   // per-staff favorited teaching cases
   "/api/day-close/my-",                              // per-cashier drawer/closure status — shared billing terminals
+  "/api/radiology/user-item-usage",                  // per-radiologist recent-item usage log
+  "/api/dicom-workflow/radiologist-queue",           // conditionally personal (?filter=assigned_to_me
+                                                      // scopes results by the caller's own radiologist id;
+                                                      // other filter values are shared — excluded whole-path
+                                                      // since NETWORK_ONLY_PREFIXES matches pathname only,
+                                                      // not query strings, so it can't be split by filter value)
 ];
+
+// Guardrail: artifacts/api-server/src/routes/personalEndpointCacheGuard.test.ts
+// scans every route file for GET handlers that reference an authenticated-
+// identity marker (subjectId, req.user, req.patient, req.portalUser) and
+// fails CI if one isn't listed above (or explicitly reviewed as a shared
+// resource in that test's REVIEWED_NOT_PERSONAL list). If you're adding a new
+// personal-data endpoint: add it above, then add a matching row to that
+// test's KNOWN_PERSONAL_ENDPOINTS — the test will fail until both are done.
 
 // Paths that should NOT be redirected to index.html (real files/API)
 const SKIP_SHELL_PATHS = [

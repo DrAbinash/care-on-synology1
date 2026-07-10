@@ -105,6 +105,8 @@ describe("public/sw.js — NETWORK_ONLY_PREFIXES excludes /api/my/* (shared-work
       "/api/day-close/my-drawer-status",
       "/api/day-close/my-list",
       "/api/day-close/my-post-closure-activity",
+      "/api/radiology/user-item-usage",
+      "/api/dicom-workflow/radiologist-queue",
     ];
     for (const pathname of personalPaths) {
       expect(sandbox.isNetworkOnly({ pathname }), `expected "${pathname}" to be network-only`).toBe(true);
