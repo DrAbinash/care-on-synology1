@@ -1336,28 +1336,44 @@ function buildD1DraftSource(
   };
 }
 
+// Ticket M1.4 — this schema previously rejected the canonical workspace's
+// actual payload two ways (verified empirically before the fix):
+//   1. every empty field is sent as `null` (`clinicalHistory: clinicalHistory
+//      || null`, `patientId: entry?.patientId ?? null`, …) and `.optional()`
+//      does not accept null → 400 "Invalid request";
+//   2. the workspace's structured sections are `{ [label]: { normal, text } }`
+//      objects, not the legacy generator's `{ [label]: string }` → 400.
+// So "Save Draft" from RadiologyReportingWorkspace could never succeed. The
+// fields are now nullish and findingsSections accepts BOTH section shapes
+// (each page round-trips its own shape through the same JSON text column —
+// nothing server-side reads inside it).
 const SaveDraftBody = z.object({
-  id: z.number().int().optional(),
-  studyId: z.number().int().optional(),
-  worklistId: z.number().int().optional(),
-  patientId: z.number().int().optional(),
-  templateId: z.string().optional(),
-  modality: z.string().optional(),
-  studyName: z.string().optional(),
-  clinicalHistory: z.string().optional(),
-  rawFindings: z.string().optional(),
-  findingsSections: z.record(z.string()).optional(),
-  impression: z.array(z.string()).optional(),
-  recommendation: z.string().optional(),
-  formattedReportHtml: z.string().optional(),
-  formattedReportText: z.string().optional(),
-  aiContributionPct: z.number().min(0).max(100).optional(),
+  id: z.number().int().nullish(),
+  studyId: z.number().int().nullish(),
+  worklistId: z.number().int().nullish(),
+  patientId: z.number().int().nullish(),
+  templateId: z.string().nullish(),
+  modality: z.string().nullish(),
+  studyName: z.string().nullish(),
+  clinicalHistory: z.string().nullish(),
+  rawFindings: z.string().nullish(),
+  findingsSections: z.record(
+    z.union([
+      z.string(),
+      z.object({ normal: z.boolean(), text: z.string() }).passthrough(),
+    ]),
+  ).nullish(),
+  impression: z.array(z.string()).nullish(),
+  recommendation: z.string().nullish(),
+  formattedReportHtml: z.string().nullish(),
+  formattedReportText: z.string().nullish(),
+  aiContributionPct: z.number().min(0).max(100).nullish(),
   findings: z.array(
     z.object({
       findingId: z.number().int(),
       params: z.record(z.unknown()).optional(),
     }).passthrough(),
-  ).optional(),
+  ).nullish(),
 });
 
 radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest, res: Response) => {
@@ -1423,13 +1439,14 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
   // report_finding_instances has no readers yet, so a swallowed failure here
   // has no observable effect beyond a stale/missing structured snapshot.
   //
-  // Guarded on `rest.findings !== undefined` (not `.length > 0`): an old
-  // client that never sends the key must leave existing rows untouched, but
-  // a current client that sends `findings: []` (user deselected every Quick
-  // Select finding) is a real signal that the replace should still run and
-  // clear this draft's rows — treating an empty array like "no signal" would
-  // silently leave stale rows behind after a legitimate deselect-all save.
-  if (draft?.id && rest.findings !== undefined) {
+  // Guarded on `rest.findings != null` (not `.length > 0`): an old client
+  // that never sends the key — or sends an explicit null — must leave
+  // existing rows untouched, but a current client that sends `findings: []`
+  // (user deselected every Quick Select finding) is a real signal that the
+  // replace should still run and clear this draft's rows — treating an empty
+  // array like "no signal" would silently leave stale rows behind after a
+  // legitimate deselect-all save.
+  if (draft?.id && rest.findings != null) {
     const draftId = draft.id;
     const findings = rest.findings;
     try {
@@ -1596,6 +1613,127 @@ radiologyReportGeneratorRouter.get("/drafts", async (req: Request, res: Response
     .limit(50);
 
   res.json({ success: true, drafts: rows });
+});
+
+// ─── Ticket M1.4 — read-only workflow endpoints ──────────────────────────────
+
+// GET /finding-instances?draftId=N — the Quick Select selections persisted by
+// A3.2 for one draft, exactly what the canonical workspace needs to RESTORE
+// its structured click state after a reload. Read-only; only the fields the
+// UI hydrates from.
+radiologyReportGeneratorRouter.get("/finding-instances", async (req: Request, res: Response) => {
+  const draftId = Number(req.query.draftId);
+  if (!Number.isInteger(draftId) || draftId <= 0) {
+    res.status(400).json({ success: false, error: "Invalid draftId" });
+    return;
+  }
+  const rows = await db
+    .select({
+      findingId: reportFindingInstancesTable.findingId,
+      structuredJson: reportFindingInstancesTable.structuredJson,
+      source: reportFindingInstancesTable.source,
+    })
+    .from(reportFindingInstancesTable)
+    .where(eq(reportFindingInstancesTable.draftId, draftId));
+  res.json({ success: true, instances: rows });
+});
+
+// POST /validate-draft {draftId} — run the EXISTING D3/D3.5 builder + D1
+// validator over a saved draft, read-only (never persists anything), so the
+// workspace can show real blocking errors / warnings before finalize instead
+// of client-side guesses. Mirrors the save-draft D3 block's inputs exactly;
+// no validation logic is reimplemented here or in the frontend.
+radiologyReportGeneratorRouter.post("/validate-draft", async (req: Request, res: Response) => {
+  const draftId = Number((req.body as { draftId?: unknown })?.draftId);
+  if (!Number.isInteger(draftId) || draftId <= 0) {
+    res.status(400).json({ success: false, error: "Invalid draftId" });
+    return;
+  }
+  const [draft] = await db
+    .select()
+    .from(radiologyReportDraftsTable)
+    .where(eq(radiologyReportDraftsTable.id, draftId))
+    .limit(1);
+  if (!draft) {
+    res.status(404).json({ success: false, error: "Draft not found" });
+    return;
+  }
+
+  const structuredEnabled =
+    (await isFeatureEnabledServer("ff_radiology_structured_d1_draft")) &&
+    (await isFeatureEnabledServer("ff_radiology_structured_core"));
+  if (!structuredEnabled) {
+    res.json({
+      success: true,
+      structured: { enabled: false, attempted: false },
+      legacy: { rawFindings: Boolean(draft.rawFindings?.trim()), impression: Boolean(draft.impression) },
+    });
+    return;
+  }
+
+  const instanceRows = await db
+    .select({ findingId: reportFindingInstancesTable.findingId, structuredJson: reportFindingInstancesTable.structuredJson })
+    .from(reportFindingInstancesTable)
+    .where(eq(reportFindingInstancesTable.draftId, draftId));
+  const findings = instanceRows.map((r) => ({
+    findingId: r.findingId,
+    params: (r.structuredJson ?? {}) as Record<string, unknown>,
+  }));
+
+  let worklist: D3WorklistRow | null = null;
+  if (draft.worklistId != null) {
+    const [row] = await db
+      .select()
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, draft.worklistId))
+      .limit(1);
+    worklist = (row as D3WorklistRow | undefined) ?? null;
+  }
+
+  const source = buildD1DraftSource(draft as D3DraftRow, findings, worklist);
+  const catalogStore = (await isFeatureEnabledServer("ff_radiology_catalog"))
+    ? new DrizzleCatalogStore()
+    : null;
+  const built = await buildAndValidateDraftD1Document(
+    source,
+    catalogStore
+      ? {
+          resolver: new CatalogStoreFindingResolver(catalogStore, async (qfId) => {
+            const [row] = await db
+              .select({ label: radiologyQuickFindingsTable.label })
+              .from(radiologyQuickFindingsTable)
+              .where(eq(radiologyQuickFindingsTable.id, qfId))
+              .limit(1);
+            return row?.label ? { label: row.label } : null;
+          }),
+          catalogPort: new DrizzleStructuredReportCatalogPort(catalogStore),
+        }
+      : {},
+  );
+
+  res.json({
+    success: true,
+    structured: built.ok
+      ? {
+          enabled: true,
+          attempted: true,
+          built: true,
+          documentId: built.document.document_id,
+          contentSha256: built.contentSha256,
+          findingsCount: Array.isArray(built.document.findings) ? built.document.findings.length : 0,
+          errors: [],
+          warnings: built.warnings,
+        }
+      : {
+          enabled: true,
+          attempted: true,
+          built: false,
+          skipReasons: built.skipReasons,
+          errors: built.validationErrors ?? [],
+          warnings: [],
+        },
+    legacy: { rawFindings: Boolean(draft.rawFindings?.trim()), impression: Boolean(draft.impression) },
+  });
 });
 
 // GET /drafts/:id

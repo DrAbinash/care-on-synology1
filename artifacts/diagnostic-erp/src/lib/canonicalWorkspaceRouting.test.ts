@@ -141,3 +141,39 @@ describe("M1.1 — no duplicate state/service copies reactivate", () => {
     expect(panel).not.toContain("StudyInstanceUIDs=");
   });
 });
+
+describe("M1.4 — canonical reporting workflow integration", () => {
+  const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+
+  it("the workspace's state RULES live in lib/workspaceReportState (no inline second store)", () => {
+    expect(workspace).toContain('from "@/lib/workspaceReportState"');
+    for (const helper of [
+      "isReportDirty", "shouldOfferBackupRestore", "restorableSelections",
+      "deriveLifecycleBadges", "canVerifyReport", "matchWorkspaceShortcut",
+    ]) {
+      expect(workspace, `workspace must use ${helper} from the lib`).toContain(helper);
+    }
+  });
+
+  it("validation and selections come from the backend — never recomputed in React", () => {
+    // Read-only backend endpoints added by M1.4; the page only displays
+    // their results (no D4/D1 logic in the frontend).
+    expect(workspace).toContain("/api/radiology/report-generator/validate-draft");
+    expect(workspace).toContain("/api/radiology/report-generator/finding-instances");
+    // No client-side hashing/validating of structured documents.
+    expect(workspace).not.toMatch(/sha256\s*\(/i);
+    expect(workspace).not.toContain("schema_version");
+  });
+
+  it("the ONE QuickFindingsPanel restores persisted selections via onFindingsLoaded", () => {
+    expect(workspace).toContain("onFindingsLoaded={handleFindingsLoaded}");
+    const panel = read("components/radiology/QuickFindingsPanel.tsx");
+    expect(panel).toContain("onFindingsLoaded");
+    expect(panel).toContain("data-qs-search"); // Ctrl+K / "/" focus target
+  });
+
+  it("the D9 verify action uses the existing route — no new verification transport", () => {
+    expect(workspace).toContain("/verify");
+    expect(workspace).toContain("canVerifyReport");
+  });
+});

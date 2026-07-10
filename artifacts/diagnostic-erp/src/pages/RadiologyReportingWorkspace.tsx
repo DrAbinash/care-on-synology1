@@ -42,6 +42,12 @@ import FollowUpPanel from "@/components/radiology/FollowUpPanel";
 import { useLocalDraftBackup } from "@/hooks/useLocalDraftBackup";
 import { useRadiologyDraftId } from "@/hooks/useRadiologyDraftId";
 import { isOwnerRole } from "@/lib/staffSession";
+import {
+  serializeReportSnapshot, isReportDirty, shouldOfferBackupRestore,
+  restorableSelections, extractD1QuickSelections, toInstanceParams,
+  deriveLifecycleBadges, canVerifyReport, matchWorkspaceShortcut,
+  type FinalReportMeta, type PersistedInstanceRow,
+} from "@/lib/workspaceReportState";
 
 // ════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -122,6 +128,46 @@ type StylePreferences = {
 };
 
 type RightTab = "quickselect" | "templates" | "followup" | "prior" | "ai" | "measurements" | "teaching";
+
+/** M1.4 — POST /api/radiology/report-generator/validate-draft response: the
+ *  backend runs the REAL D3/D3.5 builder + D1 validator read-only; nothing
+ *  here is computed client-side. */
+type ValidateDraftResponse = {
+  success: boolean;
+  structured:
+    | { enabled: false; attempted: false }
+    | {
+        enabled: true; attempted: true; built: true;
+        documentId: string; contentSha256: string; findingsCount: number;
+        errors: unknown[]; warnings: string[];
+      }
+    | {
+        enabled: true; attempted: true; built: false;
+        skipReasons: string[]; errors: unknown[]; warnings: string[];
+      };
+  legacy: { rawFindings: boolean; impression: boolean };
+};
+
+/** Renders a backend validation issue (string or {code,message,path} object)
+ *  as one human-readable line — display only, no interpretation. */
+function validationIssueText(issue: unknown): string {
+  if (typeof issue === "string") return issue;
+  if (issue && typeof issue === "object") {
+    const o = issue as { code?: unknown; message?: unknown; path?: unknown };
+    const parts = [o.code, o.path, o.message].filter((p): p is string => typeof p === "string" && p.length > 0);
+    if (parts.length) return parts.join(" — ");
+    try { return JSON.stringify(issue); } catch { /* fall through */ }
+  }
+  return String(issue);
+}
+
+const BADGE_TONE_CLASS: Record<string, string> = {
+  green: "bg-green-100 text-green-800 border-green-300",
+  amber: "bg-amber-100 text-amber-800 border-amber-300",
+  red: "bg-red-100 text-red-800 border-red-300",
+  blue: "bg-blue-100 text-blue-800 border-blue-300",
+  slate: "bg-slate-100 text-slate-700 border-slate-300",
+};
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; locked: boolean }> = {
   DRAFT: { label: "Draft", color: "bg-yellow-100 text-yellow-800 border-yellow-300", locked: false },
@@ -255,7 +301,13 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const qc = useQueryClient();
-  const session = readStaffSession();
+  // Read ONCE per mount (M1.4). readStaffSession() parses localStorage into a
+  // fresh object every call; as a plain per-render read it fed the
+  // style-preferences effect below a new identity on every render, producing
+  // an INFINITE effect→setState→render→effect fetch loop (measured: 151
+  // requests to /style-preferences in 20s — enough to trip the API's
+  // 300/min rate limit and 429 real saves).
+  const session = useMemo(() => readStaffSession(), []);
   const previewRef = useRef<HTMLDivElement>(null);
 
   // ── Layout ────────────────────────────────────────────────────────────────
@@ -303,6 +355,32 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const [finalizing, setFinalizing] = useState(false);
   const [teachingNotes, setTeachingNotes] = useState("");
   const [savingTeaching, setSavingTeaching] = useState(false);
+
+  // ── M1.4 — workflow state (Phase 2) ───────────────────────────────────────
+  // Deliberately NOT a second store: plain local state whose RULES (dirty
+  // detection, backup gating, selection restore, lifecycle badges, verify
+  // permission, shortcuts) live as pure functions in
+  // lib/workspaceReportState.ts.
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  /** Serialized snapshot of the last state known to match the server (saved,
+   *  finalized, or machine-hydrated FROM the server). null = nothing known. */
+  const [lastSavedSnapshot, setLastSavedSnapshot] = useState<string | null>(null);
+  /** Machine hydration steps (draft load, template auto-fill, AI pre-fill,
+   *  selection restore) request a baseline recapture; the effect below runs
+   *  in the render AFTER their state has flushed, so it always serializes the
+   *  post-hydration values. User edits never request a recapture — they are
+   *  exactly what "dirty" must detect. */
+  const [baselineRecapturePending, setBaselineRecapturePending] = useState(false);
+  /** Truthful D5 outcome of the finalize that happened in THIS session:
+   *  {signed:true,...} or {signed:false, fallback:"legacy", reason}. */
+  const [structuredFinalInfo, setStructuredFinalInfo] = useState<Record<string, unknown> | null>(null);
+  /** Truthful reason when finalize could not create a patient-facing report
+   *  row (unbilled study — patient_reports.test_id is NOT NULL). */
+  const [reportCreationSkipped, setReportCreationSkipped] = useState<string | null>(null);
+  const [finalizedReportId, setFinalizedReportId] = useState<number | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  /** Admin-only structured diagnostics drawer inside the preview (Phase 7). */
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
 
   // ── Quick Select — Smart Report Engine (Phase 2) ──────────────────────────
   // Each button is a smart object (technique / findings / impression /
@@ -451,7 +529,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // crash, accidental tab close, or temporary API failure never loses work.
   // Cleared on successful finalize.
   const draftSnapshot = useMemo(
-    () => ({ clinicalHistory, technique, rawFindings, impression, recommendation }),
+    // `at` (M1.4) lets the restore banner compare backup age against the
+    // server draft's updatedAt — only a backup NEWER than the server offer
+    // restores (lib/workspaceReportState.shouldOfferBackupRestore).
+    () => ({ at: Date.now(), clinicalHistory, technique, rawFindings, impression, recommendation }),
     [clinicalHistory, technique, rawFindings, impression, recommendation],
   );
   const draftBackup = useLocalDraftBackup({
@@ -490,10 +571,59 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // (selectedQuickIds/quickInstances) is not part of this — it was never
   // persisted before this fix and still isn't; only the previously-saved
   // flattened text fields are restored here.
-  const { draftId, existingDraft, captureSavedDraftId } = useRadiologyDraftId(studyId);
+  const { draftId, existingDraft, captureSavedDraftId, isLoadingExistingDraft } = useRadiologyDraftId(studyId);
 
+  // ── M1.4 — study-switch isolation (Phase 4/10) ────────────────────────────
+  // Navigating this mounted page from one study to another (same route,
+  // different :studyId param — wouter does NOT remount) must never carry the
+  // previous patient's text, selections, or exact-removal state across.
+  const activeStudyRef = useRef<number | undefined>(studyId);
+  useEffect(() => {
+    if (activeStudyRef.current === studyId) return;
+    activeStudyRef.current = studyId;
+    setClinicalHistory(""); setTechnique(""); setRawFindings("");
+    setImpression([]); setRecommendation(""); setFindingsMap({});
+    setUseStructured(true);
+    setSelectedQuickIds(new Set()); setQuickInstances(new Map());
+    insertedTextRef.current = new Map();
+    lastToggledFindingRef.current = null;
+    setIsCritical(false); setCriticalNote("");
+    setReportStatus("DRAFT");
+    setSelectedTemplateId(null);
+    setAiOutput("");
+    setLastSavedSnapshot(null); setLastSavedAt(null);
+    setStructuredFinalInfo(null); setFinalizedReportId(null);
+    setReportCreationSkipped(null);
+    setShowDiagnostics(false);
+  }, [studyId]);
+
+  // ── M1.4 — draft hydration (Phase 3), ONCE per study ─────────────────────
+  // The old effect re-ran on every background refetch of the drafts query
+  // (object identity changes), re-writing server text over whatever the
+  // radiologist had typed since — a silent manual-edit clobber. Hydration now
+  // happens exactly once per study, and only after the study identity has
+  // loaded so the patient cross-check below can run.
+  const hydratedDraftForStudyRef = useRef<number | null>(null);
   useEffect(() => {
     if (!existingDraft) return;
+    if (studyId != null && !entry) return; // wait for study identity
+    const studyKey = studyId ?? -1;
+    if (hydratedDraftForStudyRef.current === studyKey) return;
+    // Never merge two patients' drafts (Phase 3 rule 8). The drafts query is
+    // already study-scoped server-side; this cross-check refuses a mislinked
+    // row instead of hydrating the wrong patient's text.
+    if (
+      existingDraft.patientId != null && entry?.patientId != null &&
+      existingDraft.patientId !== entry.patientId
+    ) {
+      hydratedDraftForStudyRef.current = studyKey;
+      console.warn(
+        `[workspace] draft ${existingDraft.id} belongs to patient ${existingDraft.patientId} ` +
+        `but study ${studyId} belongs to patient ${entry.patientId} — draft NOT loaded`,
+      );
+      return;
+    }
+    hydratedDraftForStudyRef.current = studyKey;
     if (existingDraft.clinicalHistory) setClinicalHistory(existingDraft.clinicalHistory);
     if (existingDraft.rawFindings) setRawFindings(existingDraft.rawFindings);
     if (existingDraft.findingsSections) {
@@ -501,6 +631,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         setFindingsMap(JSON.parse(existingDraft.findingsSections) as Record<string, { normal: boolean; text: string }>);
         setUseStructured(true);
       } catch { /* ignore malformed JSON — falls back to whatever rawFindings already restored */ }
+    } else if (existingDraft.rawFindings) {
+      // A free-text draft must come back VISIBLE as free text — the default
+      // structured view would hide the restored rawFindings behind template
+      // sections (Phase 3 rule 4: exact content back).
+      setUseStructured(false);
     }
     if (existingDraft.impression) {
       try {
@@ -509,7 +644,72 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       } catch { /* ignore malformed JSON */ }
     }
     if (existingDraft.recommendation) setRecommendation(existingDraft.recommendation);
-  }, [existingDraft]);
+    // Server-hydrated content is the CLEAN baseline, not an unsaved edit.
+    setBaselineRecapturePending(true);
+  }, [existingDraft, entry, studyId]);
+
+  // ── M1.4 — Quick Select selection restore (Phase 3 rule 5 / Phase 4) ─────
+  // Primary source: the A3.2 report_finding_instances rows for this draft
+  // (GET /finding-instances). Fallback: the D1 draft document's extension
+  // selections (structured_json_d1). When neither exists (flags off / legacy
+  // draft), behavior stays exactly as before: flattened text only.
+  const { data: instancesData } = useQuery<{
+    success: boolean;
+    instances: Array<{ findingId: number; structuredJson: unknown; source: string }>;
+  }>({
+    queryKey: ["radiology-finding-instances", draftId],
+    queryFn: () => api.get(`/api/radiology/report-generator/finding-instances?draftId=${draftId}`),
+    enabled: !!draftId,
+    staleTime: 60_000,
+  });
+
+  /** Latest loaded Quick Select templates (set by QuickFindingsPanel's
+   *  onFindingsLoaded) — needed to rebuild exact-match removal state for
+   *  RESTORED selections without re-inserting any text. */
+  const quickFindingTemplatesRef = useRef<QuickFinding[] | null>(null);
+
+  /** For each restored selection whose template is known, record what its
+   *  render WOULD have inserted — the saved draft text already contains those
+   *  sentences, so deselect can exact-remove them. Never touches the text. */
+  function seedRestoredInsertedText(
+    findings: QuickFinding[],
+    ids: Set<number>,
+    insts: Map<number, AbnormalityInstance>,
+  ) {
+    for (const f of findings) {
+      if (!ids.has(f.id) || insertedTextRef.current.has(f.id)) continue;
+      const inst = insts.get(f.id);
+      if (inst) insertedTextRef.current.set(f.id, renderAbnormality(f, inst));
+    }
+  }
+
+  function handleFindingsLoaded(findings: QuickFinding[]) {
+    quickFindingTemplatesRef.current = findings;
+    seedRestoredInsertedText(findings, selectedQuickIds, quickInstances);
+  }
+
+  const selectionsRestoredForDraftRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!draftId || !instancesData) return;
+    if (selectionsRestoredForDraftRef.current === draftId) return;
+    selectionsRestoredForDraftRef.current = draftId;
+    let rows: PersistedInstanceRow[] = instancesData.success ? instancesData.instances : [];
+    if (rows.length === 0 && existingDraft?.id === draftId) {
+      rows = extractD1QuickSelections(existingDraft.structuredJsonD1);
+    }
+    const selections = restorableSelections(rows);
+    if (selections.length === 0) return;
+    const ids = new Set(selections.map((s) => s.findingId));
+    const map = new Map<number, AbnormalityInstance>();
+    for (const s of selections) map.set(s.findingId, toInstanceParams(s.params));
+    setSelectedQuickIds(ids);
+    setQuickInstances(map);
+    if (quickFindingTemplatesRef.current) {
+      seedRestoredInsertedText(quickFindingTemplatesRef.current, ids, map);
+    }
+    // Restored selections are saved state — keep the workspace clean.
+    setBaselineRecapturePending(true);
+  }, [draftId, instancesData, existingDraft]);
 
   const { data: templates = [] } = useQuery<StructuredTemplate[]>({
     queryKey: ["structured-templates"],
@@ -534,47 +734,81 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       .catch(() => { /* ignore */ });
   }, [session]);
 
-  // Auto-select template based on worklist entry
+  // Auto-select template based on worklist entry — ONCE per study (M1.4).
+  // The old version kept selectedTemplateId in its deps and re-forced the
+  // auto match on every change, instantly reverting any template the
+  // radiologist picked by hand. It now fires once; manual choices stick.
+  const autoTemplateForStudyRef = useRef<number | null>(null);
+  // "auto" = machine-initiated apply (mount/study match) → fills ONLY empty
+  // fields and stays clean; "manual" = explicit user click in the Templates
+  // tab → full apply (pre-M1.4 behavior) and counts as an unsaved edit.
+  const templateApplySourceRef = useRef<"auto" | "manual">("auto");
   useEffect(() => {
     if (!entry || templates.length === 0) return;
+    const studyKey = studyId ?? -1;
+    if (autoTemplateForStudyRef.current === studyKey) return;
+    autoTemplateForStudyRef.current = studyKey;
     const modalityMap: Record<string, string> = { "X-RAY": "X-RAY", USG: "USG", MRI: "MRI", CT: "CT" };
     const mod = modalityMap[entry.modality] || entry.modality;
     const bodyPart = (entry.studyDescription || "").toUpperCase();
     let match = templates.find((t) => t.modality === mod && bodyPart.includes(t.bodyPart));
     if (!match) match = templates.find((t) => t.modality === mod);
-    if (match && match.id !== selectedTemplateId) setSelectedTemplateId(match.id);
-  }, [entry, templates, selectedTemplateId]);
+    if (match && match.id !== selectedTemplateId) {
+      templateApplySourceRef.current = "auto";
+      setSelectedTemplateId(match.id);
+    }
+  }, [entry, templates, selectedTemplateId, studyId]);
 
   const selectedTemplate = useMemo(
     () => templates.find((t) => t.id === selectedTemplateId) ?? null,
     [templates, selectedTemplateId]
   );
 
-  // Load template content when selected
+  // Load template content when selected. Auto-selection must never clobber a
+  // hydrated draft or typed text (the draft/template queries race — whichever
+  // resolved last used to win); it only fills fields that are still empty.
   useEffect(() => {
     if (!selectedTemplate) return;
     const sections = parseSectionsJson(selectedTemplate.sectionsJson);
-    setTechnique(sections.technique);
     const map: Record<string, { normal: boolean; text: string }> = {};
     for (const item of sections.findingsItems) {
       map[item.label] = { normal: true, text: item.normal };
     }
-    setFindingsMap(map);
-    setRawFindings(selectedTemplate.defaultFindings || "");
-    setImpression(selectedTemplate.defaultImpression ? [selectedTemplate.defaultImpression] : []);
-    setRecommendation("Please correlate with clinical findings.");
+    if (templateApplySourceRef.current === "manual") {
+      // Explicit user choice: full apply, and it IS an unsaved change.
+      setTechnique(sections.technique);
+      setFindingsMap(map);
+      setRawFindings(selectedTemplate.defaultFindings || "");
+      setImpression(selectedTemplate.defaultImpression ? [selectedTemplate.defaultImpression] : []);
+      setRecommendation("Please correlate with clinical findings.");
+      return;
+    }
+    setTechnique((prev) => (prev.trim() ? prev : sections.technique));
+    setFindingsMap((prev) => (Object.keys(prev).length > 0 ? prev : map));
+    setRawFindings((prev) => (prev.trim() ? prev : selectedTemplate.defaultFindings || ""));
+    setImpression((prev) =>
+      prev.filter(Boolean).length > 0
+        ? prev
+        : selectedTemplate.defaultImpression ? [selectedTemplate.defaultImpression] : prev,
+    );
+    setRecommendation((prev) => (prev.trim() ? prev : "Please correlate with clinical findings."));
+    // Machine fill → part of the clean baseline.
+    setBaselineRecapturePending(true);
   }, [selectedTemplate]);
 
-  // Pre-populate from AI draft
+  // Pre-populate from AI draft — fill-empty-only (M1.4): a saved draft (the
+  // radiologist's actual work) must always beat the AI suggestion; the old
+  // unconditional writes raced the draft hydration for the same fields.
   useEffect(() => {
     if (!entry?.aiDraftJson) return;
     try {
       const draft = JSON.parse(entry.aiDraftJson) as Record<string, string>;
-      if (draft.clinical_history) setClinicalHistory(draft.clinical_history);
-      if (draft.technique) setTechnique(draft.technique);
-      if (draft.findings) setRawFindings(draft.findings);
-      if (draft.impression) setImpression([draft.impression]);
-      if (draft.recommendation) setRecommendation(draft.recommendation);
+      if (draft.clinical_history) setClinicalHistory((prev) => (prev.trim() ? prev : draft.clinical_history));
+      if (draft.technique) setTechnique((prev) => (prev.trim() ? prev : draft.technique));
+      if (draft.findings) setRawFindings((prev) => (prev.trim() ? prev : draft.findings));
+      if (draft.impression) setImpression((prev) => (prev.filter(Boolean).length > 0 ? prev : [draft.impression]));
+      if (draft.recommendation) setRecommendation((prev) => (prev.trim() ? prev : draft.recommendation));
+      setBaselineRecapturePending(true);
     } catch { /* ignore */ }
   }, [entry?.aiDraftJson]);
 
@@ -608,6 +842,134 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   }, [templates]);
 
   const isLocked = STATUS_CONFIG[reportStatus]?.locked ?? false;
+
+  // ── M1.4 — derived workflow state ─────────────────────────────────────────
+
+  /** Dirty = current content differs from the last state known to match the
+   *  server (rules in lib/workspaceReportState.ts). Locked reports are never
+   *  dirty — editing is disabled. */
+  const dirty = !isLocked && isReportDirty(
+    { clinicalHistory, technique, rawFindings, impression, recommendation, quickSelectIds: Array.from(selectedQuickIds) },
+    lastSavedSnapshot,
+  );
+
+  // Baseline recapture: runs in the render AFTER a machine-hydration step's
+  // state has flushed (the pending flag is state, so this effect sees the
+  // hydrated values, never the pre-hydration closure).
+  useEffect(() => {
+    if (!baselineRecapturePending) return;
+    setBaselineRecapturePending(false);
+    setLastSavedSnapshot(serializeReportSnapshot({
+      clinicalHistory, technique, rawFindings, impression, recommendation,
+      quickSelectIds: Array.from(selectedQuickIds),
+    }));
+  }, [baselineRecapturePending, clinicalHistory, technique, rawFindings, impression, recommendation, selectedQuickIds]);
+
+  // Unsaved-change safeguard (Phase 10): browser-level warning on tab close /
+  // hard navigation while dirty.
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
+  // Keyboard shortcuts (Phase 11) — matching rules live in
+  // lib/workspaceReportState.matchWorkspaceShortcut. Re-attached per render
+  // so the handlers always see current state; guards mirror the buttons'.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const shortcut = matchWorkspaceShortcut({
+        key: e.key, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey,
+        target: e.target as { tagName?: string } | null,
+      });
+      if (!shortcut) return;
+      switch (shortcut) {
+        case "save":
+          e.preventDefault();
+          if (!isLocked && !saving) void saveDraft();
+          break;
+        case "finalize":
+          e.preventDefault();
+          if (!isLocked && !finalizing) void finalizeReport();
+          break;
+        case "quickselect": {
+          e.preventDefault();
+          setRightTab("quickselect");
+          // The panel mounts (and loads its dataset) when the tab switches,
+          // and its search input can remount as the data arrives — keep
+          // re-asserting focus briefly until it actually sticks.
+          let attempts = 0;
+          const tryFocus = () => {
+            const el = document.querySelector<HTMLInputElement>("[data-qs-search]");
+            if (el && document.activeElement === el) return;
+            el?.focus();
+            if (++attempts < 15) window.setTimeout(tryFocus, 100);
+          };
+          window.setTimeout(tryFocus, 50);
+          break;
+        }
+        case "open-study":
+          e.preventDefault();
+          document.querySelector<HTMLButtonElement>('[data-testid="btn-open-study"]')?.click();
+          break;
+        case "escape":
+          if (showDiagnostics) setShowDiagnostics(false);
+          else if (previewMode) setPreviewMode(false);
+          break;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  // ── M1.4 — lifecycle / amendment metadata (Phase 9, D8/D9 read-only) ─────
+  // The linked patient_reports row: freshly finalized in this session, or
+  // referenced by the worklist entry, or the row a structured finalize
+  // promoted this draft into. GET /:id resolves to the LATEST version (D8)
+  // and carries additive `version` + `lifecycle` metadata (D8/D9).
+  const linkedReportId = finalizedReportId ?? entry?.reportId ?? existingDraft?.finalReportId ?? null;
+  const { data: finalReport } = useQuery<FinalReportMeta & { id?: number; signedByName?: string | null }>({
+    queryKey: ["workspace-final-report", linkedReportId],
+    queryFn: () => api.get(`/api/patient-reports/${linkedReportId}`),
+    enabled: !!linkedReportId,
+  });
+  const lifecycleBadges = deriveLifecycleBadges(finalReport ?? null);
+  const verifyGate = canVerifyReport(
+    session ? { subjectName: session.user.name, role: session.user.role, permissions: session.user.permissions } : null,
+    finalReport ?? null,
+  );
+  const lifecycleState = finalReport?.lifecycle?.state ?? finalReport?.status ?? null;
+  const reportSuperseded = Boolean(finalReport?.version?.superseded || finalReport?.lifecycle?.superseded);
+  /** Verify shows only for permitted users on a verifiable row; the D9 route
+   *  re-enforces everything server-side. */
+  const canShowVerify = Boolean(finalReport) && verifyGate.allowed && !reportSuperseded &&
+    lifecycleState !== "draft" && lifecycleState !== "verified" && lifecycleState !== "delivered";
+
+  // ── M1.4 — backend validation (Phase 7) — fetched on demand ──────────────
+  const { data: draftValidation, isFetching: validating, refetch: refetchValidation } = useQuery<ValidateDraftResponse>({
+    queryKey: ["radiology-validate-draft", draftId],
+    queryFn: () => api.post<ValidateDraftResponse>("/api/radiology/report-generator/validate-draft", { draftId }),
+    enabled: false,
+  });
+
+  // ── M1.4 — local-backup restore gating (Phase 3 rule 7) ───────────────────
+  const serverDraftContent = useMemo(() => {
+    if (!existingDraft) return null;
+    let impressionLines: string[] = [];
+    try {
+      const arr = JSON.parse(existingDraft.impression ?? "[]") as unknown;
+      if (Array.isArray(arr)) impressionLines = arr.filter((l): l is string => typeof l === "string");
+    } catch { /* malformed stored impression — compare as empty */ }
+    return {
+      clinicalHistory: existingDraft.clinicalHistory ?? "",
+      rawFindings: existingDraft.rawFindings ?? "",
+      impression: impressionLines,
+      recommendation: existingDraft.recommendation ?? "",
+    };
+  }, [existingDraft]);
+  const offerBackupRestore = !isLocked && draftBackup.restoreAvailable &&
+    shouldOfferBackupRestore(draftBackup.peek(), existingDraft?.updatedAt ?? null, serverDraftContent);
 
   const previewHtml = useMemo(
     () =>
@@ -737,29 +1099,41 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     toast({ title: "Inserted into impression" });
   }
 
-  async function saveDraft() {
+  /** Canonical draft save (M1.1 transport, M1.4 workflow). Returns the saved
+   *  draft id on success and null on failure, so finalizeReport can persist
+   *  the editor state first and validate exactly what will be signed. On
+   *  failure nothing is cleared — the typed text stays. */
+  async function saveDraft(): Promise<number | null> {
+    if (saving || isLocked) return null;
+    if (!entry) {
+      toast({ title: "No study loaded", description: "Open a study from the worklist before saving.", variant: "destructive" });
+      return null;
+    }
     setSaving(true);
     try {
       // id omitted on the first save (server creates the row); included on
       // every save after (server updates that same row) — see
-      // useRadiologyDraftId.ts. Fixes the pre-existing bug where every
-      // "Save Draft" click created a new orphaned radiology_report_drafts
-      // row instead of updating the one already in progress.
+      // useRadiologyDraftId.ts.
+      //
+      // studyId is the page's OWN study identity (the :studyId route param,
+      // i.e. the worklist row id) — the same key useRadiologyDraftId reloads
+      // by. The previous payload stored entry.studyId (the radiology_studies
+      // id, often null and never equal to the reload key), so saved drafts
+      // could not be found again — reload always started blank (M1.4 broken
+      // link #2).
       //
       // findings[] (Ticket A3.1) serializes the current Quick Select
-      // selection — the structured {findingId, params} data that was never
-      // sent to the server before. The backend accepts and validates it but
-      // does not act on it yet (see SaveDraftBody in
-      // radiology-report-generator.ts) — Ticket A3.2 owns consuming it.
+      // selection; A3.2 persists it to report_finding_instances, which is
+      // what the selection restore above reads back.
       const res = await saveRadiologyDraft<{ success: boolean; draft: { id: number } }>(
         {
           id: draftId ?? undefined,
-          studyId: entry?.studyId ?? null,
-          worklistId: entry?.id ?? null,
-          patientId: entry?.patientId ?? null,
+          studyId: studyId ?? entry.studyId ?? null,
+          worklistId: entry.id ?? null,
+          patientId: entry.patientId ?? null,
           templateId: selectedTemplate?.templateName || null,
-          modality: entry?.modality || null,
-          studyName: selectedTemplate?.templateName || entry?.studyDescription || null,
+          modality: entry.modality || null,
+          studyName: selectedTemplate?.templateName || entry.studyDescription || null,
           clinicalHistory: clinicalHistory || null,
           rawFindings: rawFindings || null,
           findingsSections: useStructured ? findingsMap : null,
@@ -769,13 +1143,25 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         },
       );
       captureSavedDraftId(res.draft.id);
+      // The server now holds exactly the selections we sent — the restore
+      // effect must not re-apply them over the editor after this save.
+      selectionsRestoredForDraftRef.current = res.draft.id;
+      setLastSavedAt(new Date());
+      setLastSavedSnapshot(serializeReportSnapshot({
+        clinicalHistory, technique, rawFindings, impression, recommendation,
+        quickSelectIds: Array.from(selectedQuickIds),
+      }));
+      // An open preview's validation is now stale; refresh on next open.
+      void qc.invalidateQueries({ queryKey: ["radiology-validate-draft"] });
       toast({ title: "Draft Saved" });
+      return res.draft.id;
     } catch (err) {
       toast({
         title: "Save Failed",
         description: err instanceof Error ? err.message : "Error",
         variant: "destructive",
       });
+      return null;
     } finally {
       setSaving(false);
     }
@@ -786,19 +1172,77 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     // Guard against double-finalize: both re-clicks while in flight
     // (finalizing flag) and re-finalizing an already-final report.
     if (finalizing || reportStatus === "FINAL") return;
+    setFinalizing(true);
+    let confirmed = false;
+    try {
+      // 1) Persist the editor state first (M1.4): D5 signs from the DRAFT's
+      //    persisted data, so an unsaved editor would validate and sign
+      //    yesterday's content. A failed save aborts finalize truthfully.
+      let effectiveDraftId = draftId;
+      if (dirty || !effectiveDraftId) {
+        effectiveDraftId = await saveDraft();
+        if (effectiveDraftId === null) return;
+      }
 
-    // AI Report Validator (Phase 2) — rule-based pre-finalize checks.
-    // WARN ONLY: the radiologist always decides; nothing is auto-corrected.
-    const warnings = validateReport({ findings: rawFindings, impression, recommendation });
-    if (warnings.length > 0) {
-      const proceed = window.confirm(
-        `Report check found ${warnings.length} warning(s):\n\n` +
-        warnings.map((w, i) => `${i + 1}. ${w}`).join("\n") +
-        `\n\nFinalize anyway?`,
+      // 2) Backend validation of exactly what will be signed — the REAL
+      //    D3/D3.5 builder + D1 validator, read-only. Unreachable validation
+      //    is reported, never guessed.
+      let validation: ValidateDraftResponse | null = null;
+      try {
+        validation = await api.post<ValidateDraftResponse>(
+          "/api/radiology/report-generator/validate-draft",
+          { draftId: effectiveDraftId },
+        );
+      } catch { validation = null; }
+
+      const s = validation?.structured;
+      let validationSummary: string;
+      let blockingErrors: string[] = [];
+      if (!validation) {
+        validationSummary = "Structured validation: could not be checked (endpoint unreachable).";
+      } else if (!s || !s.enabled) {
+        validationSummary = "Structured validation: disabled — legacy finalize path.";
+      } else if (s.built) {
+        validationSummary = `Structured document valid — ${s.findingsCount} finding(s).` +
+          (s.warnings.length ? `\nWarnings (non-blocking):\n${s.warnings.map((w, i) => `  ${i + 1}. ${w}`).join("\n")}` : "");
+      } else if (s.errors.length > 0) {
+        blockingErrors = s.errors.map(validationIssueText);
+        validationSummary =
+          `STRUCTURED VALIDATION FAILED — ${blockingErrors.length} error(s):\n` +
+          blockingErrors.map((e, i) => `  ${i + 1}. ${e}`).join("\n") +
+          "\nFinalizing now will sign via the LEGACY path (no structured document).";
+      } else {
+        validationSummary =
+          `Structured document skipped (${s.skipReasons.join("; ") || "no structured data"}) — legacy finalize path.`;
+      }
+
+      // 3) Client-side rule warnings (existing validator — warn only).
+      const warnings = validateReport({ findings: rawFindings, impression, recommendation });
+
+      // 4) ONE explicit confirmation carrying the exact identity being
+      //    signed (Phase 7/8): patient, study, modality, accession +
+      //    validation state. window.confirm is this page's existing dialog
+      //    idiom — not redesigning.
+      const identity =
+        `Patient: ${entry.patientName}${entry.age || entry.sex ? ` (${[entry.age, entry.sex].filter(Boolean).join("/")})` : ""}\n` +
+        `Study: ${entry.studyDescription || "—"} · ${entry.modality}\n` +
+        `Accession: ${entry.accessionNumber}`;
+      const warningBlock = warnings.length
+        ? `\nReport check warnings:\n${warnings.map((w, i) => `  ${i + 1}. ${w}`).join("\n")}\n`
+        : "";
+      // Unbilled study: the report row cannot be created (test_id NOT NULL) —
+      // say so BEFORE the radiologist commits, not after.
+      const unbilledNote = entry.patientId && !entry.studyId
+        ? "\nNote: no billed test is linked to this study — the worklist will be marked final, but no patient-facing report row can be created.\n"
+        : "";
+      confirmed = window.confirm(
+        `Finalize this report?\n\n${identity}\n\n${validationSummary}\n${warningBlock}${unbilledNote}\nAfter finalizing, editing is disabled.`,
       );
-      if (!proceed) return;
-    } else if (!window.confirm("Finalize this report? After finalizing, editing is disabled.")) {
-      return;
+      if (!confirmed) return;
+    } finally {
+      // The in-flight guard for phases 1–4; the signing block below manages
+      // its own flag lifetime so a thrown error can't leave it stuck.
+      if (!confirmed) setFinalizing(false);
     }
 
     // Learning Engine (Phase 5): if the recommendation contains a sentence
@@ -845,15 +1289,32 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       });
 
       // M1.1 — canonical finalize path shared with every reporting surface.
-      const { reportId } = await finalizeRadiologyReport(entry, {
-        title: selectedTemplate?.templateName || entry.studyDescription || "Radiology Report",
-        htmlBody: html,
-        impression,
-        isCritical,
-        criticalNote,
-        createdBy: session?.user.name ?? "Radiologist",
-        actor: session?.user.name ?? "staff",
-      });
+      // D5 (when ff_radiology_structured_final is on) signs the structured
+      // document server-side with SESSION-derived authorship and reports the
+      // TRUE outcome in structuredFinal; createdBy below only labels the
+      // legacy row path.
+      const { reportId, structuredFinal, reportCreationSkipped: skippedReason } = await finalizeRadiologyReport(
+        {
+          patientId: entry.patientId,
+          studyId: entry.studyId,
+          // The page's study key (worklist row id) — the same key drafts are
+          // saved under, so D5 finds THIS study's draft.
+          worklistId: entry.id ?? studyId ?? null,
+          modality: entry.modality,
+          studyDescription: entry.studyDescription,
+          accessionNumber: entry.accessionNumber,
+          studyInstanceUID: entry.studyInstanceUID,
+        },
+        {
+          title: selectedTemplate?.templateName || entry.studyDescription || "Radiology Report",
+          htmlBody: html,
+          impression,
+          isCritical,
+          criticalNote,
+          createdBy: session?.user.name ?? "Radiologist",
+          actor: session?.user.name ?? "staff",
+        },
+      );
 
       await api.post("/api/radiology/report-generator/log-action", {
         studyId: entry.studyId || entry.id,
@@ -866,15 +1327,36 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       });
 
       setReportStatus("FINAL");
+      setFinalizedReportId(reportId);
+      setStructuredFinalInfo(structuredFinal);
+      setReportCreationSkipped(skippedReason);
+      // Finalized content is on the server — the workspace is clean now.
+      setLastSavedSnapshot(serializeReportSnapshot({
+        clinicalHistory, technique, rawFindings, impression, recommendation,
+        quickSelectIds: Array.from(selectedQuickIds),
+      }));
       // Finalized text is now safely on the server — remove the local
       // backup so patient report text never lingers on a shared machine.
       draftBackup.clear();
+      // Surface the TRUE finalize path (Phase 8) — never claim a structured
+      // sign that did not happen.
+      const signedStructured = structuredFinal?.signed === true;
+      const legacyFallback = structuredFinal?.signed === false;
       toast({
-        title: "Report Finalized",
-        description: reportId ? `Report ID: ${reportId}` : "Worklist updated.",
+        title: signedStructured ? "Report Finalized — structured document signed" : "Report Finalized",
+        description: skippedReason
+          ? `Worklist marked final, but NO patient report row was created: ${skippedReason}.`
+          : legacyFallback
+            ? `Signed via LEGACY path: ${typeof structuredFinal?.reason === "string" ? structuredFinal.reason : "structured signing unavailable"}`
+            : reportId ? `Report ID: ${reportId}` : "Worklist updated.",
+        ...(legacyFallback || skippedReason ? { variant: "destructive" as const } : {}),
       });
       void qc.invalidateQueries({ queryKey: ["workspace-entry", studyId] });
       void qc.invalidateQueries({ queryKey: ["radiology-worklist"] });
+      // Lifecycle metadata for the fresh report (Phase 8: refresh
+      // report/version metadata, preserve access to the signed report).
+      void qc.invalidateQueries({ queryKey: ["workspace-final-report"] });
+      void qc.invalidateQueries({ queryKey: ["radiology-existing-draft", studyId] });
     } catch (err) {
       toast({
         title: "Finalize Failed",
@@ -883,6 +1365,35 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       });
     } finally {
       setFinalizing(false);
+    }
+  }
+
+  /** M1.4 Phase 9 — countersign via the existing D9 route. UI gating only;
+   *  the server re-enforces role, permission, and verifier≠signer. */
+  async function verifyReport() {
+    if (!finalReport || verifying) return;
+    const targetId = finalReport.id ?? linkedReportId;
+    if (!targetId) return;
+    if (!window.confirm(
+      `Verify (countersign) this report as ${session?.user.name ?? "current user"}?\n\n` +
+      `This records you as the verifying radiologist.`,
+    )) return;
+    setVerifying(true);
+    try {
+      await api.post(`/api/patient-reports/${targetId}/verify`, {
+        verifiedByName: session?.user.name ?? undefined,
+      });
+      toast({ title: "Report verified" });
+      void qc.invalidateQueries({ queryKey: ["workspace-final-report"] });
+      void qc.invalidateQueries({ queryKey: ["workspace-entry", studyId] });
+    } catch (err) {
+      toast({
+        title: "Verify failed",
+        description: err instanceof Error ? err.message : "Error",
+        variant: "destructive",
+      });
+    } finally {
+      setVerifying(false);
     }
   }
 
@@ -998,7 +1509,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           {filteredTemplates.map((t) => (
             <button
               key={t.id}
-              onClick={() => setSelectedTemplateId(t.id)}
+              onClick={() => {
+                // Explicit user choice → full template apply (M1.4).
+                templateApplySourceRef.current = "manual";
+                setSelectedTemplateId(t.id);
+              }}
               className={`text-left text-xs px-2 py-1.5 rounded border transition-colors ${
                 selectedTemplateId === t.id
                   ? "bg-primary text-primary-foreground border-primary"
@@ -1109,6 +1624,22 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         >
           {STATUS_CONFIG[reportStatus]?.label || reportStatus}
         </Badge>
+        {/* M1.4 — draft-load + dirty state, always truthful */}
+        {!!studyId && isLoadingExistingDraft && (
+          <span className="shrink-0 text-[10px] text-muted-foreground">Loading draft…</span>
+        )}
+        {!!studyId && !isLoadingExistingDraft && !existingDraft && !lastSavedAt && (
+          <span className="shrink-0 text-[10px] text-muted-foreground">No saved draft</span>
+        )}
+        {dirty ? (
+          <Badge variant="outline" className="shrink-0 text-[10px] bg-amber-50 text-amber-800 border-amber-300">
+            Unsaved changes
+          </Badge>
+        ) : lastSavedAt ? (
+          <span className="shrink-0 text-[10px] text-muted-foreground">
+            Saved {lastSavedAt.toLocaleTimeString()}
+          </span>
+        ) : null}
         <div className="flex items-center gap-1.5 shrink-0">
           <Switch
             id="structured"
@@ -1216,8 +1747,72 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               </div>
             )}
 
-            {/* Unsaved local backup found — offer restore */}
-            {!isLocked && draftBackup.restoreAvailable && (
+            {/* M1.4 — truthful "no report row" note for THIS session's finalize */}
+            {reportCreationSkipped && (
+              <div className="flex items-center gap-2 p-2 rounded-md bg-amber-50 border border-amber-200 text-amber-900 text-[11px] shrink-0">
+                <AlertTriangle size={13} className="shrink-0" />
+                <span>
+                  Worklist marked final, but no patient-facing report row was created: {reportCreationSkipped}.
+                </span>
+              </div>
+            )}
+
+            {/* M1.4 — truthful finalize path for THIS session's finalize */}
+            {structuredFinalInfo && (
+              structuredFinalInfo.signed === true ? (
+                <div className="flex items-center gap-2 p-2 rounded-md bg-blue-50 border border-blue-200 text-blue-800 text-[11px] shrink-0">
+                  <CheckCircle2 size={13} className="shrink-0" />
+                  <span>
+                    Structured document signed
+                    {typeof structuredFinalInfo.documentId === "string" ? ` · ${structuredFinalInfo.documentId}` : ""}
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 p-2 rounded-md bg-amber-50 border border-amber-200 text-amber-900 text-[11px] shrink-0">
+                  <AlertTriangle size={13} className="shrink-0" />
+                  <span>
+                    Finalized via the LEGACY path — no structured document was signed
+                    {typeof structuredFinalInfo.reason === "string" ? ` (${structuredFinalInfo.reason})` : ""}.
+                  </span>
+                </div>
+              )
+            )}
+
+            {/* M1.4 — D8/D9 lifecycle, version and amendment state of the
+                linked final report; Verify appears only for permitted users
+                (server re-enforces). */}
+            {(lifecycleBadges.length > 0 || canShowVerify) && (
+              <div className="flex items-center gap-1.5 flex-wrap shrink-0">
+                {lifecycleBadges.map((b) => (
+                  <span
+                    key={b.label}
+                    className={`text-[10px] font-semibold rounded-full px-2 py-0.5 border ${BADGE_TONE_CLASS[b.tone] ?? BADGE_TONE_CLASS.slate}`}
+                  >
+                    {b.label}
+                  </span>
+                ))}
+                {canShowVerify && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 text-[10px] gap-1 border-green-300 text-green-700 hover:bg-green-50"
+                    onClick={verifyReport}
+                    disabled={verifying}
+                    title="Countersign this report as the verifying radiologist (D9)"
+                  >
+                    {verifying ? <RefreshCw size={10} className="animate-spin" /> : <CheckCircle2 size={10} />}
+                    Verify report
+                  </Button>
+                )}
+                {!canShowVerify && verifyGate.reason === "verifier must differ from signer" && (
+                  <span className="text-[10px] text-muted-foreground">Verification requires a second radiologist.</span>
+                )}
+              </div>
+            )}
+
+            {/* Unsaved local backup found — offered ONLY when newer than the
+                server draft AND actually different from it (M1.4 Phase 3). */}
+            {offerBackupRestore && (
               <div className="flex items-center gap-2 p-2 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-xs font-medium shrink-0">
                 <AlertTriangle size={14} className="shrink-0" />
                 <span className="flex-1">Unsaved report text from a previous session was found on this computer.</span>
@@ -1604,6 +2199,62 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                     </Button>
                   </div>
                 </div>
+                {/* M1.4 — REAL backend validation of the saved draft (the
+                    D3/D3.5 builder + D1 validator run read-only server-side;
+                    nothing here is recomputed in React). */}
+                <div className="px-3 py-2 border-b text-[11px] space-y-1">
+                  {!draftId ? (
+                    <div className="text-muted-foreground">Save the draft to run structured validation.</div>
+                  ) : validating ? (
+                    <div className="text-muted-foreground">Running structured validation…</div>
+                  ) : !draftValidation ? (
+                    <div className="text-muted-foreground">Structured validation not loaded.</div>
+                  ) : !draftValidation.structured.enabled ? (
+                    <div className="text-muted-foreground">
+                      Structured validation disabled — legacy draft only
+                      {` (findings ${draftValidation.legacy.rawFindings ? "present" : "missing"}, impression ${draftValidation.legacy.impression ? "present" : "missing"}).`}
+                    </div>
+                  ) : draftValidation.structured.built ? (
+                    <>
+                      <div className="text-green-700 font-medium">
+                        ✓ Structured document valid — {draftValidation.structured.findingsCount} finding(s)
+                      </div>
+                      {draftValidation.structured.warnings.map((w, i) => (
+                        <div key={i} className="text-amber-700">⚠ {w}</div>
+                      ))}
+                    </>
+                  ) : draftValidation.structured.errors.length > 0 ? (
+                    <>
+                      <div className="text-red-700 font-semibold">
+                        ✗ Structured validation failed — {draftValidation.structured.errors.length} blocking error(s); finalize would use the legacy path
+                      </div>
+                      {draftValidation.structured.errors.map((err, i) => (
+                        <div key={i} className="text-red-700">{i + 1}. {validationIssueText(err)}</div>
+                      ))}
+                    </>
+                  ) : (
+                    <div className="text-amber-700">
+                      Structured document skipped ({(draftValidation.structured.skipReasons ?? []).join("; ") || "no structured data"}) — legacy fallback.
+                    </div>
+                  )}
+                  {/* Renderer/hash diagnostics — admin-only drawer (Phase 7) */}
+                  {isOwnerRole(session) && draftValidation?.structured.enabled && draftValidation.structured.built && (
+                    <div>
+                      <button
+                        className="underline text-muted-foreground"
+                        onClick={() => setShowDiagnostics((v) => !v)}
+                      >
+                        {showDiagnostics ? "Hide" : "Show"} structured diagnostics
+                      </button>
+                      {showDiagnostics && (
+                        <div className="mt-1 font-mono text-[10px] text-muted-foreground break-all">
+                          <div>document_id: {draftValidation.structured.documentId}</div>
+                          <div>content_sha256: {draftValidation.structured.contentSha256}</div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
                 <div
                   ref={previewRef}
                   className="p-4"
@@ -1620,8 +2271,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 size="sm"
                 variant="outline"
                 className="h-8 text-xs gap-1.5"
-                onClick={saveDraft}
+                onClick={() => void saveDraft()}
                 disabled={saving}
+                title="Save draft (Ctrl+S)"
               >
                 {saving ? <RefreshCw size={12} className="animate-spin" /> : <Save size={12} />}
                 Save Draft
@@ -1631,7 +2283,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               size="sm"
               variant="outline"
               className="h-8 text-xs gap-1.5"
-              onClick={() => setPreviewMode((v) => !v)}
+              onClick={() => {
+                // Opening the preview refreshes the REAL backend validation
+                // of the saved draft (M1.4 Phase 7).
+                if (!previewMode && draftId) void refetchValidation();
+                setPreviewMode(!previewMode);
+              }}
             >
               <Eye size={12} /> {previewMode ? "Hide Preview" : "Preview"}
             </Button>
@@ -1659,8 +2316,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               <Button
                 size="sm"
                 className="h-8 text-xs gap-1.5 bg-green-600 hover:bg-green-700 text-white"
-                onClick={finalizeReport}
+                onClick={() => void finalizeReport()}
                 disabled={finalizing}
+                title="Finalize report (Ctrl+Enter)"
               >
                 {finalizing ? (
                   <RefreshCw size={12} className="animate-spin" />
@@ -1734,6 +2392,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 onProtocolChange={handleProtocolChange}
                 onChecklistChange={(percent, remaining) => { setChecklistPercent(percent); setChecklistRemaining(remaining); }}
                 onAcceptLearnedSuggestion={(text) => setRecommendation((prev) => mergeBlock(prev, text))}
+                onFindingsLoaded={handleFindingsLoaded}
                 disabled={isLocked}
                 initialStudyHint={`${entry?.modality ?? ""} ${entry?.studyDescription ?? ""}`}
                 isAdmin={isOwnerRole(session)}
