@@ -33,10 +33,10 @@ interface RadiologyFeature {
 const FEATURES: RadiologyFeature[] = [
   // Active / Daily but hidden
   {
-    name: "Unified Reporting",
+    name: "Reporting Workspace (canonical)",
     route: "/radiology/reporting-workspace",
-    purpose: "New consolidated reporting page with embedded viewer, measurements, AI draft, and templates.",
-    status: "Future",
+    purpose: "THE canonical radiology reporting page (M1.1): embedded viewer, structured Quick Select findings, templates, finalize.",
+    status: "Active",
     adminOnly: false,
     icon: FileText,
   },

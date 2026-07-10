@@ -12,6 +12,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { readStaffSession } from "@/lib/staffSession";
 import { api } from "@/lib/fetchApi";
+import { finalizeRadiologyReport, saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
+import { openWeasisLaunchRedirect, openOhifViewerPage } from "@/lib/viewerService";
 import {
   ArrowLeft, ExternalLink, Sparkles, Save, CheckCircle2, AlertTriangle,
   Printer, RefreshCw, Star, ClipboardList, Plus, Trash2, Eye,
@@ -656,7 +658,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       toast({ title: "No StudyInstanceUID", variant: "destructive" });
       return;
     }
-    window.open(`/api/radiology/studies/${entry.studyInstanceUID}/weasis-launch-redirect`, "_blank");
+    openWeasisLaunchRedirect(entry.studyInstanceUID);
   }
 
   function applyMacro(macro: TemplateMacro) {
@@ -757,8 +759,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       // sent to the server before. The backend accepts and validates it but
       // does not act on it yet (see SaveDraftBody in
       // radiology-report-generator.ts) — Ticket A3.2 owns consuming it.
-      const res = await api.post<{ success: boolean; draft: { id: number } }>(
-        "/api/radiology/report-generator/save-draft",
+      const res = await saveRadiologyDraft<{ success: boolean; draft: { id: number } }>(
         {
           id: draftId ?? undefined,
           studyId: entry?.studyId ?? null,
@@ -851,36 +852,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         impressionStyle,
       });
 
-      let reportId: number | null = null;
-      if (entry.patientId) {
-        const report = await api.post<{ id: number }>("/api/patient-reports", {
-          patientId: entry.patientId,
-          testId: null,
-          studyId: entry.studyId ?? null,
-          type: "radiology",
-          title:
-            selectedTemplate?.templateName || entry.studyDescription || "Radiology Report",
-          body: html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(),
-          impression: impression.join("\n"),
-          parameters: JSON.stringify({
-            modality: entry.modality,
-            studyDescription: entry.studyDescription,
-            accessionNumber: entry.accessionNumber,
-            studyInstanceUID: entry.studyInstanceUID,
-          }),
-          isCritical,
-          criticalNote: isCritical ? criticalNote : null,
-          createdBy: session?.user.name ?? "Radiologist",
-        });
-        reportId = report.id;
-      }
-
-      await api.post("/api/internal/radiology/report-status", {
-        accessionNumber: entry.accessionNumber,
-        studyInstanceUID: entry.studyInstanceUID,
-        status: "REPORT_FINAL",
-        deliveryStatus: "READY_TO_SEND",
-        reportId: reportId ?? undefined,
+      // M1.1 — canonical finalize path shared with every reporting surface.
+      const { reportId } = await finalizeRadiologyReport(entry, {
+        title: selectedTemplate?.templateName || entry.studyDescription || "Radiology Report",
+        htmlBody: html,
+        impression,
+        isCritical,
+        criticalNote,
+        createdBy: session?.user.name ?? "Radiologist",
         actor: session?.user.name ?? "staff",
       });
 
@@ -1207,8 +1186,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                     variant="outline"
                     className="h-7 text-xs gap-1"
                     onClick={() =>
-                      entry.studyInstanceUID &&
-                      window.open(`/radiology/viewer/${entry.studyInstanceUID}`, "_blank")
+                      entry.studyInstanceUID && openOhifViewerPage(entry.studyInstanceUID)
                     }
                     disabled={!entry.studyInstanceUID}
                   >
@@ -1219,11 +1197,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                     variant="outline"
                     className="h-7 text-xs gap-1"
                     onClick={() =>
-                      entry.studyInstanceUID &&
-                      window.open(
-                        `/api/radiology/studies/${entry.studyInstanceUID}/weasis-launch-redirect`,
-                        "_blank"
-                      )
+                      entry.studyInstanceUID && openWeasisLaunchRedirect(entry.studyInstanceUID)
                     }
                     disabled={!entry.studyInstanceUID}
                   >

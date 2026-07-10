@@ -47,7 +47,6 @@ const RadiologyLegacy = lazy(() => import("@/pages/RadiologyLegacy"));
 const RadiologyWorklist = lazy(() => import("@/pages/RadiologyWorklist"));
 const RadiologistCockpit = lazy(() => import("@/pages/RadiologistCockpit"));
 const RadiologyReportEditor = lazy(() => import("@/pages/RadiologyReportEditor"));
-const RadiologyReportUnified = lazy(() => import("@/pages/RadiologyReportUnified"));
 const RadiologyReportGen = lazy(() => import("@/pages/RadiologyReportGenerator"));
 const RadiologyReportingWorkspace = lazy(() => import("@/pages/RadiologyReportingWorkspace"));
 const PacsDashboard         = lazy(() => import("@/pages/PacsDashboard"));
@@ -344,14 +343,26 @@ function Router() {
               <Route path="/radiology/report-generator/:studyId">
                 {(params) => <RadiologyReportGen studyId={Number(params.studyId)} />}
               </Route>
-              {/* Cockpit unification (July 2026): /radiology/report/:studyId is
-                  now the single radiologist working page, served by the full
-                  Reporting Workspace (viewer buttons, dictation, templates,
-                  quick-select, prior reports, finalize, print). Both pages
-                  fetch the same /api/internal/radiology/worklist/:id entry,
-                  so the swap is data-compatible. The older simple editor
-                  stays reachable at /radiology/report-legacy/:studyId for
-                  one release in case of muscle-memory bookmarks. */}
+              {/* M1.1 canonical workspace consolidation (July 2026).
+                  RadiologyReportingWorkspace is THE canonical radiology
+                  reporting page. Route map:
+                    /radiology/report/:studyId            → canonical (primary)
+                    /radiology/reporting-workspace(/:id)  → canonical (named alias)
+                    /radiology/unified-report/:worklistId → canonical (old URL kept)
+                    /radiology/report-legacy/:studyId     → redirect to canonical
+                                                            (old simple editor removed
+                                                            after its one-release grace)
+                    /radiology/cockpit                    → RadiologistCockpit (deprecated,
+                                                            fully functional, M1.2 merge)
+                    /radiology/command-center(/:id)       → RadiologyCommandCenter
+                                                            (deprecated, fully functional)
+                    /radiology/report-generator(/:id)     → RadiologyReportGenerator
+                                                            (deprecated; unique macro/
+                                                            key-image admin UI)
+                  All legacy routes keep working; duplicated save/finalize
+                  transport now lives in lib/radiologyReportLifecycle. The
+                  former RadiologyReportUnified page (never routed) was
+                  removed in M1.1. */}
               <Route path="/radiology/report/:studyId">
                 {(params) => <RadiologyReportingWorkspace studyId={Number(params.studyId)} />}
               </Route>
