@@ -7,7 +7,7 @@ import {
 } from "@workspace/db/schema";
 import { sendDailySummaryEmail, sendCommissionMonthEndEmail, sendMonthlyAuditEmail } from "./email";
 import { runBooksSanity } from "./routes/books-sanity";
-import { exportDatabaseSql, exportDatabaseSqlFallback } from "./routes/backupReplication";
+import { exportDatabaseSql, exportDatabaseSqlFallback, computeSha256 } from "./routes/backupReplication";
 import { auditRunsTable, watchdogStatusTable } from "@workspace/db/schema";
 import { gte, and, lte, eq, inArray, isNull, or, lt } from "drizzle-orm";
 import { encryptBackup } from "@workspace/crypto";
@@ -154,6 +154,7 @@ export async function fireScheduledBackups() {
     let sizeBytes = 0;
     let filePath: string | null = null;
     let notes = "";
+    let checksum: string | null = null;
 
     try {
       if (job.backupType === "DB" || job.backupType === "FULL" || job.backupType === "CONFIG") {
@@ -191,21 +192,27 @@ export async function fireScheduledBackups() {
         rowCount = dump.rowCount;
         const sql = require("fs").readFileSync(dump.filePath, "utf-8");
 
+        // Ticket E0.1d — SHA-256 over the encrypted content, exactly as it
+        // will be written to disk, so a later verifyBackupChecksum() call
+        // against the file on disk detects any corruption of the at-rest
+        // artifact (not just of the pre-encryption SQL).
+        const enc = encryptBackup(sql);
+        checksum = computeSha256(enc);
+
         // Write to disk if destinationPath provided
         if (job.destinationPath) {
           try {
             const dir = require("path").dirname(job.destinationPath);
             require("fs").mkdirSync(dir, { recursive: true });
-            const enc = encryptBackup(sql);
             const dest = `${job.destinationPath}/backup_${job.jobName}_${new Date().toISOString().replace(/[:.]/g, "-")}.sql.enc`;
             require("fs").writeFileSync(dest, enc);
             filePath = dest;
-            notes = `Backup saved to ${dest} (${(sizeBytes / 1024 / 1024).toFixed(2)} MB)`;
+            notes = `Backup saved to ${dest} (${(sizeBytes / 1024 / 1024).toFixed(2)} MB, SHA-256: ${checksum})`;
           } catch (e: unknown) {
             notes = `In-memory backup; disk write failed: ${e instanceof Error ? e.message : String(e)}`;
           }
         } else {
-          notes = `In-memory ${job.backupType} backup (${(sizeBytes / 1024 / 1024).toFixed(2)} MB)`;
+          notes = `In-memory ${job.backupType} backup (${(sizeBytes / 1024 / 1024).toFixed(2)} MB, SHA-256: ${checksum})`;
         }
 
         // The unencrypted intermediate dump must not linger on disk.
@@ -241,6 +248,7 @@ export async function fireScheduledBackups() {
         filePath,
         notes,
         encrypted: true,
+        checksum,
       }).where(eq(backupJobLogsTable.id, logRow?.id ?? 0));
 
       await db.update(backupJobsTable).set({

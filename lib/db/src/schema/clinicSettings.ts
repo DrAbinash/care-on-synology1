@@ -9,7 +9,10 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   email: text("email").notNull().default(""),
   phone: text("phone").notNull().default(""),
   website: text("website").notNull().default(""),
-  gstin: text("gstin").notNull().default(""),
+  // Nullable: NULL means "GSTIN not configured yet". The app relies on this
+  // (see the GSTIN_NOT_SET placeholder cleanup at startup) so this column
+  // must NOT be NOT NULL — see migrations/fix_gstin_razorpay_nullable.sql
+  gstin: text("gstin"),
   logoDataUrl: text("logo_data_url"),
   footerNote: text("footer_note").notNull().default("Thank you for choosing our diagnostic services."),
   formFTestIds: text("form_f_test_ids").notNull().default("[]"),
@@ -26,7 +29,8 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   portalAllowProfileEdit: boolean("portal_allow_profile_edit").notNull().default(true),
   // Online booking
   onlineBookingEnabled: boolean("online_booking_enabled").notNull().default(false),
-  razorpayKeyId: text("razorpay_key_id").notNull().default(""),
+  // Nullable: NULL means "Razorpay not configured yet" (same reasoning as gstin above).
+  razorpayKeyId: text("razorpay_key_id"),
   onlineBookingLedgerId: integer("online_booking_ledger_id").notNull().default(1),
   vipQueueEnabled: boolean("vip_queue_enabled").notNull().default(false),
   // PayU India

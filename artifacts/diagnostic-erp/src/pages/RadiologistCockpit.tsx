@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { api } from "@/lib/fetchApi";
-import { readStaffSession } from "@/lib/staffSession";
+import { readStaffSession, normalizeRole } from "@/lib/staffSession";
+import { toUnifiedStatus, priorityInfo, worklistRoleView } from "@/lib/radiologyStatus";
 import { useToast } from "@/hooks/use-toast";
 import { launchViewer } from "@/lib/viewerService";
 import { finalizeRadiologyReport, saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
@@ -30,7 +31,7 @@ import {
   Ruler, GitCompare, History as HistoryIcon, BrainCircuit, WandSparkles,
   Pencil, SpellCheck, Repeat2, FileDown, Mic, Heart, Baby, Stethoscope, X, Plus,
   TrendingUp, TrendingDown, Minus
-} from "lucide-react";
+, Printer, Gem } from "lucide-react";
 import VoiceDictationButton from "@/components/VoiceDictationButton";
 import ChocolateBoxPanel, { type ChocolateFinding } from "@/components/ChocolateBoxPanel";
 import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
@@ -66,6 +67,9 @@ type WorklistEntry = {
   weasisUrl: string | null;
   status: string;
   assignedRadiologist: string | null;
+  priority?: string | null;    // Phase D: reuses radiology_studies.priority
+  billNumber?: string | null;  // Phase D: via study→bill (single endpoint)
+  uhid?: string | null;        // Phase D: ERP UHID
   aiDraftStatus: string;
   aiDraftJson?: string | null;
   reportId: number | null;
@@ -76,6 +80,21 @@ type WorklistEntry = {
   lockUserName?: string | null;
   lockTime?: string | null;
   lockLastActivityAt?: string | null;
+};
+
+// Phase F: winner template system (radiology_master_templates), including
+// rows migrated from the four legacy systems (MIGRATED_* groups).
+type MasterTemplate = {
+  id: number;
+  groupName: string;
+  templateName: string;
+  modality: string;
+  studyType: string | null;
+  bodyPart: string | null;
+  findings: string;
+  impression: string;
+  recommendations: string | null;
+  isActive: boolean;
 };
 
 type StructuredTemplate = {
@@ -191,6 +210,11 @@ function RadiologistCockpit() {
 
   // Active study state
   const [activeStudyId, setActiveStudyId] = useState<number | null>(null);
+
+  // Phase D: role-based Reading Room behavior. Page access remains governed
+  // by the existing permission system; this only gates in-page actions.
+  const cockpitRole = worklistRoleView(normalizeRole(readStaffSession()?.user?.role || ""));
+  const canSign = cockpitRole === "radiologist" || cockpitRole === "owner";
 
   // Pagination for worklist
   const [visibleWorklistCount, setVisibleWorklistCount] = useState(30);
@@ -330,6 +354,16 @@ function RadiologistCockpit() {
     queryFn: () => api.get<StructuredTemplate[]>("/api/radiology/structured-report-templates"),
     staleTime: 300000,
   });
+
+  // 3b. Phase F: Master Template Library (winner system — includes templates
+  // consolidated from the legacy systems). Additive: the structured-template
+  // list above is untouched; both appear in the picker.
+  const { data: masterTemplatesResp } = useQuery<{ templates: MasterTemplate[]; count: number }>({
+    queryKey: ["master-templates"],
+    queryFn: () => api.get("/api/radiology/master-templates"),
+    staleTime: 300000,
+  });
+  const masterTemplates = masterTemplatesResp?.templates ?? [];
 
   // 4. Viewer Configuration Settings
   const { data: pacsViewerSettings = {} } = useQuery<Record<string, string>>({
@@ -1411,8 +1445,22 @@ function RadiologistCockpit() {
       });
     },
     onSuccess: () => {
-      toast({ title: "Report Finalized", description: "Report signed and finalized." });
       qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
+      // Usability: auto-advance to the next pending study so the radiologist
+      // doesn't have to return to the Worklist and click in again for every
+      // report. Never silent — always a visible toast; if there's nothing
+      // left, say so instead of leaving the toast generic.
+      const next = queueContext.next;
+      if (next) {
+        toast({
+          title: "Report Finalized",
+          description: `Moving to next patient: ${next.patientName} (${next.modality})`,
+        });
+        setActiveStudyId(next.id);
+        window.history.replaceState(null, "", `${window.location.pathname}?studyId=${next.id}`);
+      } else {
+        toast({ title: "Report Finalized", description: "Worklist is clear — no more pending studies." });
+      }
     },
     onError: (e: any) => toast({ title: "Finalization Failed", description: e.message, variant: "destructive" }),
   });
@@ -1425,6 +1473,20 @@ function RadiologistCockpit() {
       finalizeMutation.mutate();
     }
   };
+
+  // Usability: Ctrl/Cmd+Enter to Finalize & Sign — used dozens of times a
+  // day by a busy radiologist. Disabled while typing in a select/menu to
+  // avoid accidental triggers; safe no-op if no study is loaded.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && study && study.status !== "REPORT_FINAL" && !finalizeMutation.isPending) {
+        e.preventDefault();
+        handleFinalizeClick();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [study, finalizeMutation.isPending, completenessDetails.pct, qualityCheckIssues.length]);
 
   // AI Draft Generation
   const generateAiDraftMutation = useMutation({
@@ -1540,6 +1602,15 @@ function RadiologistCockpit() {
     });
   }, [worklist, modalityFilter, searchQuery]);
 
+  // Usability: queue position + "next pending study" — reuses the worklist
+  // array already loaded for the sidebar, no new API calls, no DB changes.
+  const queueContext = useMemo(() => {
+    const pending = filteredWorklist.filter((w) => w.status !== "REPORT_FINAL");
+    const idx = activeStudyId ? pending.findIndex((w) => w.id === activeStudyId) : -1;
+    const next = idx >= 0 && idx < pending.length - 1 ? pending[idx + 1] : pending.find((w) => w.id !== activeStudyId) || null;
+    return { pendingTotal: pending.length, position: idx >= 0 ? idx + 1 : null, next };
+  }, [filteredWorklist, activeStudyId]);
+
   // Productivity Metrics
   const productivityStats = useMemo(() => {
     const todayStr = new Date().toISOString().split("T")[0];
@@ -1624,6 +1695,17 @@ function RadiologistCockpit() {
     }
   };
 
+  // Phase F: apply a Master Library template. Deliberately leaves
+  // selectedTemplateId alone — that field (and the draft's templateId)
+  // references the structured_report_templates id namespace; reusing it for
+  // master ids would misattribute drafts. Master apply fills content only.
+  const handleApplyMasterTemplate = (tpl: MasterTemplate) => {
+    setSelectedTemplateId(null);
+    setRawFindings(tpl.findings || "");
+    if (tpl.impression) setImpression([tpl.impression]);
+    toast({ title: "Master Template Applied", description: `${tpl.templateName} (${tpl.groupName.replace(/_/g, " ")})` });
+  };
+
   // Append Structured Builder Findings
   const handleAppendBuilderFindings = () => {
     if (selectedBuilders.length === 0) return;
@@ -1689,6 +1771,9 @@ function RadiologistCockpit() {
           <div>Today finalized: <span className="text-emerald-400 font-bold">{productivityStats.finalizedToday}</span></div>
           <div>Avg TAT: <span className="text-indigo-400 font-bold">{productivityStats.avgTurnaround}</span></div>
           <div>Pending queue: <span className="text-amber-400 font-bold">{productivityStats.pendingCount}</span></div>
+          {queueContext.position !== null && (
+            <div>Viewing: <span className="text-slate-200 font-bold">{queueContext.position} of {queueContext.pendingTotal}</span></div>
+          )}
         </div>
       </div>
 
@@ -1869,7 +1954,7 @@ function RadiologistCockpit() {
                   {currentStep === 4 && (
                     <span className="text-amber-500 text-[10px] font-bold">Suggested Action: Fill missing report fields</span>
                   )}
-                  {currentStep === 5 && (
+                  {currentStep === 5 && canSign && (
                     <Button size="sm" onClick={handleFinalizeClick} className="bg-emerald-600 hover:bg-emerald-700 h-6 text-[10px] text-white font-bold">
                       Suggested Action: Finalize & Sign
                     </Button>
@@ -1937,6 +2022,18 @@ function RadiologistCockpit() {
                   <div className="text-[11px] text-slate-400">
                     Accession: <span className="font-mono text-slate-300">{study.accessionNumber}</span> &bull; Modality: <span className="text-slate-300">{study.modality}</span> &bull; Description: <span className="text-slate-300">{study.studyDescription}</span>
                   </div>
+                  <div className="text-[11px] text-slate-400 flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <span>UHID: <span className="font-mono text-slate-300">{study.uhid ?? "\u2014"}</span></span>
+                    <span>Bill: <span className="font-mono text-slate-300">{study.billNumber ?? "\u2014"}</span></span>
+                    <span>Ref: <span className="text-slate-300">{study.referringDoctor ?? "\u2014"}</span></span>
+                    {study.assignedRadiologist && <span>Radiologist: <span className="text-slate-300">{study.assignedRadiologist}</span></span>}
+                    {(() => { const u = toUnifiedStatus(study.status, study.deliveryStatus); return (
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-semibold ${u.color}`} title={`Internal: ${study.status}`}>{u.label}</span>
+                    ); })()}
+                    {(() => { const pr = priorityInfo(study.priority); return pr.highlight ? (
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-bold ${pr.color}`}>{pr.label}</span>
+                    ) : null; })()}
+                  </div>
                 </div>
 
                 {/* Viewer Launcher buttons */}
@@ -1947,6 +2044,29 @@ function RadiologistCockpit() {
                   <Button size="sm" onClick={handleLaunchWeasis} className="bg-indigo-600 hover:bg-indigo-700 text-xs h-8 flex items-center gap-1 text-white">
                     <Tv2 className="h-3.5 w-3.5" /> Launch Weasis
                   </Button>
+                  {/* Phase D: entry point to the preserved Premium Reporting module */}
+                  {canSign && (study.reportId != null || study.status === "REPORT_IN_PROGRESS" || study.status === "REPORT_FINAL") && (
+                    <Button
+                      size="sm"
+                      onClick={() => navigate(`/radiology/report-generator/${study.id}?premium=1`)}
+                      className="bg-amber-600 hover:bg-amber-700 text-xs h-8 flex items-center gap-1 text-white"
+                      title="Open Premium Report Preview"
+                    >
+                      <Gem className="h-3.5 w-3.5" /> Premium Preview
+                    </Button>
+                  )}
+                  {/* Phase D: one-click print of the saved report */}
+                  {study.reportId != null && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => window.open(`/api/patient-reports/${study.reportId}/print`, "_blank", "noopener,noreferrer")}
+                      className="border-slate-700 text-slate-200 hover:bg-slate-900 text-xs h-8 flex items-center gap-1"
+                      title="Print / Share report"
+                    >
+                      <Printer className="h-3.5 w-3.5" /> Print
+                    </Button>
+                  )}
                 </div>
               </div>
 
@@ -2001,6 +2121,31 @@ function RadiologistCockpit() {
                     </Button>
                   ))}
                 </div>
+                {/* Phase F: unified picker — Master Template Library (winner
+                    system incl. consolidated legacy templates), filtered to
+                    the current study's modality when known. Additive only. */}
+                {masterTemplates.length > 0 && (
+                  <div className="pt-1.5 space-y-1">
+                    <Label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Master Library</Label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {masterTemplates
+                        .filter((m) => !study?.modality || m.modality === study.modality || m.modality === (study.modality === "X-RAY" ? "XR" : study.modality))
+                        .slice(0, 8)
+                        .map((m) => (
+                          <Button
+                            key={`master-${m.id}`}
+                            size="sm"
+                            variant="outline"
+                            title={`${m.groupName.replace(/_/g, " ")}${m.bodyPart ? " · " + m.bodyPart : ""}`}
+                            onClick={() => handleApplyMasterTemplate(m)}
+                            className="h-7 text-[10px] bg-slate-950 border-emerald-900/60 text-emerald-300 hover:bg-emerald-950/30"
+                          >
+                            {m.templateName}
+                          </Button>
+                        ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Main Report Editor Input Form */}
@@ -2170,6 +2315,7 @@ function RadiologistCockpit() {
                     <Save className="h-4 w-4 mr-1.5" /> Save Draft
                   </Button>
 
+                  {canSign ? (
                   <Button
                     onClick={handleFinalizeClick}
                     disabled={finalizeMutation.isPending || study.status === "REPORT_FINAL"}
@@ -2177,6 +2323,11 @@ function RadiologistCockpit() {
                   >
                     <CheckCircle2 className="h-4 w-4 mr-1.5" /> Finalize & Sign
                   </Button>
+                  ) : (
+                  <span className="text-[11px] text-slate-500 self-center px-2" title="Only a radiologist can sign the final report">
+                    Final sign-off: radiologist only
+                  </span>
+                  )}
                 </div>
               </div>
             </div>

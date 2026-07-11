@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 import PresentationTemplateManager from "@/components/radiology/PresentationTemplateManager";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { hostForProfile, orthancBaseForProfile, ohifBaseForProfile, publicBaseUrl } from "@/lib/networkProfiles";
 import PageHeader from "@/components/PageHeader";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -165,6 +166,14 @@ export default function RadiologySettingsCenter() {
 
 
   // Mutation to update pacs settings
+  // Phase E helper: read a saved setting value by key ("" when unset)
+  const sv = (key: string, fallback = "") =>
+    settings.find((x) => x.key === key)?.value ?? fallback;
+  const svOn = (key: string, defaultOn = true) => {
+    const v = sv(key);
+    return v === "" ? defaultOn : v === "true";
+  };
+
   const upsertSetting = useMutation({
     mutationFn: (body: object) => api.post("/api/radiology/pacs-settings", body),
     onSuccess: () => {
@@ -193,37 +202,32 @@ export default function RadiologySettingsCenter() {
   useEffect(() => {
     if (settings.length === 0) return; // wait for settings to load first
     const probeNetwork = async () => {
-      const orthancUrl = settings.find(s => s.key === "orthanc_url" || s.key === "ohif_base_url")?.value;
-      const tailscaleHost = settings.find(s => s.key === "tailscale_host" && s.category === "network")?.value;
-
-      // 1. Probe the clinic's configured LAN Orthanc URL first (fastest)
-      if (orthancUrl) {
-        try {
-          const start = Date.now();
-          await fetch(orthancUrl.replace(/\/$/, "") + "/", { method: "HEAD", mode: "no-cors" });
-          setDetectedProfile("LAN");
-          setDetectionReason(`LAN reached successfully in ${Date.now() - start}ms.`);
-          return;
-        } catch {
-          // LAN failed, try Tailscale next
-        }
+      // 1. Probe LAN Orthanc first (fastest)
+      try {
+        const start = Date.now();
+        await fetch(`${orthancBaseForProfile("LAN")}/`, { method: "HEAD", mode: "no-cors" });
+        const latency = Date.now() - start;
+        setDetectedProfile("LAN");
+        setDetectionReason(`LAN reached successfully in ${latency}ms.`);
+        return;
+      } catch (e) {
+        // LAN failed, try Tailscale next
       }
 
-      // 2. Probe the configured Tailscale host, if set
-      if (tailscaleHost) {
-        try {
-          const start = Date.now();
-          await fetch(`http://${tailscaleHost}:8042/`, { method: "HEAD", mode: "no-cors" });
-          setDetectedProfile("TAILSCALE");
-          setDetectionReason(`Tailscale reached successfully in ${Date.now() - start}ms. LAN unreachable.`);
-          return;
-        } catch {
-          // Tailscale failed too, fall through to public
-        }
+      // 2. Probe Tailscale IP
+      try {
+        const start = Date.now();
+        await fetch(`${orthancBaseForProfile("TAILSCALE")}/`, { method: "HEAD", mode: "no-cors" });
+        const latency = Date.now() - start;
+        setDetectedProfile("TAILSCALE");
+        setDetectionReason(`Tailscale reached successfully in ${latency}ms. LAN unreachable.`);
+        return;
+      } catch (e) {
+        // Both private networks unreachable, fallback to Public
       }
 
       setDetectedProfile("PUBLIC");
-      setDetectionReason(orthancUrl ? "LAN and Tailscale unreachable. Defaulted to cloud/public gateway." : "No Orthanc/OHIF URL configured yet — set one in the Viewers tab below.");
+      setDetectionReason("LAN and Tailscale unreachable. Defaulted to cloud/public gateway.");
     };
 
     probeNetwork();
@@ -291,6 +295,7 @@ export default function RadiologySettingsCenter() {
       {/* Navigation tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList className="flex flex-wrap h-auto gap-1 bg-muted p-1 rounded-lg">
+          <TabsTrigger value="general"><ShieldCheck size={14} className="mr-1.5" />General</TabsTrigger>
           <TabsTrigger value="network"><Network size={14} className="mr-1.5" />Profiles</TabsTrigger>
           <TabsTrigger value="modalities"><Server size={14} className="mr-1.5" />Modalities</TabsTrigger>
           <TabsTrigger value="pacs"><Radio size={14} className="mr-1.5" />PACS Servers</TabsTrigger>
@@ -298,6 +303,7 @@ export default function RadiologySettingsCenter() {
           <TabsTrigger value="mwl"><Wrench size={14} className="mr-1.5" />DICOM &amp; MWL</TabsTrigger>
           <TabsTrigger value="reporting"><BrainCircuit size={14} className="mr-1.5" />AI &amp; Templates</TabsTrigger>
           <TabsTrigger value="style"><Palette size={14} className="mr-1.5" />Report Style</TabsTrigger>
+          <TabsTrigger value="premium"><Zap size={14} className="mr-1.5" />Premium Report</TabsTrigger>
           <TabsTrigger value="voice"><Mic size={14} className="mr-1.5" />Voice</TabsTrigger>
           <TabsTrigger value="diagnostics"><Activity size={14} className="mr-1.5" />Diagnostics</TabsTrigger>
           <TabsTrigger value="history"><Info size={14} className="mr-1.5" />History</TabsTrigger>
@@ -305,7 +311,77 @@ export default function RadiologySettingsCenter() {
         </TabsList>
 
         {/* Tab content 1: Network Profiles */}
+        {/* ── Phase E: GENERAL — plain-language everyday options ── */}
+        <TabsContent value="general" className="space-y-4">
+          <div className="rounded-xl border bg-card p-5 space-y-4 max-w-2xl">
+            <h3 className="text-sm font-bold">General Radiology Options</h3>
+            <p className="text-xs text-muted-foreground">Everyday behavior of the Radiology module. Safe to change; takes effect immediately for new page loads.</p>
+            <div className="space-y-1">
+              <Label className="text-xs">Default Radiologist</Label>
+              <Input
+                className="h-8 text-sm"
+                placeholder="e.g. Dr. Abinash"
+                defaultValue={sv("default_radiologist")}
+                onBlur={(e) => upsertSetting.mutate({ key: "default_radiologist", value: e.target.value, category: "radiology" })}
+                disabled={!isAdmin}
+              />
+              <p className="text-[11px] text-muted-foreground">Shown as the pre-selected radiologist on new studies when none is assigned.</p>
+            </div>
+            <div className="flex items-center justify-between border rounded-lg p-3">
+              <div>
+                <Label className="text-xs font-semibold">Highlight Urgent / VIP studies</Label>
+                <p className="text-[11px] text-muted-foreground">Tints STAT / EMERGENCY / URGENT / VIP rows in the Worklist and Reading Room.</p>
+              </div>
+              <Switch checked={svOn("urgent_highlight_enabled")} disabled={!isAdmin}
+                onCheckedChange={(v) => upsertSetting.mutate({ key: "urgent_highlight_enabled", value: String(v), category: "radiology" })} />
+            </div>
+            <div className="flex items-center justify-between border rounded-lg p-3">
+              <div>
+                <Label className="text-xs font-semibold">Lock report after Final sign-off</Label>
+                <p className="text-[11px] text-muted-foreground">Finalized reports are locked in the Reading Room (Save/Finalize disabled after sign-off). Keep ON; owner amendments go through preserved owner tools.</p>
+              </div>
+              <Switch checked={svOn("report_final_lock")} disabled={!isAdmin}
+                onCheckedChange={(v) => upsertSetting.mutate({ key: "report_final_lock", value: String(v), category: "radiology" })} />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Aging alert after (hours)</Label>
+              <Input
+                type="number" min={1} max={72} className="h-8 text-sm w-32"
+                placeholder="4"
+                defaultValue={sv("radiology_aging_alert_hours", "4")}
+                onBlur={(e) => upsertSetting.mutate({ key: "radiology_aging_alert_hours", value: e.target.value.trim() || "4", category: "radiology" })}
+                disabled={!isAdmin}
+              />
+              <p className="text-[11px] text-muted-foreground">A red "waiting" badge appears on Worklist studies that haven't been finalized within this many hours — helps reception spot studies stuck in the queue.</p>
+            </div>
+          </div>
+        </TabsContent>
+
         <TabsContent value="network" className="space-y-4">
+          {/* Phase E: runtime overrides for the Phase B central network config.
+              Saved to admin settings (category "viewer") — hydrated by
+              applyNetworkSettings() at runtime, NO rebuild or restart needed. */}
+          <div className="rounded-xl border bg-card p-5 space-y-3">
+            <h3 className="text-sm font-bold flex items-center gap-2"><Network size={14} /> Network Hosts (advanced — leave blank to use system defaults)</h3>
+            <p className="text-xs text-muted-foreground">
+              If the clinic network ever changes, update these here — the whole system (viewers, probes, health checks) follows immediately. Current defaults: LAN {hostForProfile("LAN")}, Tailscale {hostForProfile("TAILSCALE")}, Public {hostForProfile("PUBLIC")}.
+            </p>
+            <div className="grid md:grid-cols-3 gap-3">
+              {([
+                ["network_lan_host", "LAN Host (clinic)", hostForProfile("LAN")],
+                ["network_tailscale_host", "Tailscale Host (remote)", hostForProfile("TAILSCALE")],
+                ["network_public_domain", "Public Domain", hostForProfile("PUBLIC")],
+                ["orthanc_http_port", "Orthanc HTTP Port", "8042"],
+                ["ohif_http_port", "OHIF Port", "3010"],
+              ] as const).map(([key, label, ph]) => (
+                <div key={key} className="space-y-1">
+                  <Label className="text-xs">{label}</Label>
+                  <Input className="h-8 text-sm font-mono" placeholder={ph} defaultValue={sv(key)} disabled={!isAdmin}
+                    onBlur={(e) => upsertSetting.mutate({ key, value: e.target.value.trim(), category: "viewer" })} />
+                </div>
+              ))}
+            </div>
+          </div>
           <div className="grid md:grid-cols-3 gap-4">
             <div className="rounded-xl border bg-card p-5 space-y-3">
               <div className="flex justify-between items-start">
@@ -314,12 +390,12 @@ export default function RadiologySettingsCenter() {
               </div>
               <h3 className="font-semibold text-base">LAN Profile (Local Network)</h3>
               <p className="text-xs text-muted-foreground">
-                Uses local IP addresses (`192.168.1.137`). High speed, secure, zero latency.
+                Uses local IP addresses ({hostForProfile("LAN")}). High speed, secure, zero latency.
                 Modality acquisition pushes (GE Voluson, CT, MRI) should strictly prefer this.
               </p>
               <div className="pt-2 text-xs font-mono text-muted-foreground space-y-1">
-                <p>OHIF Base: http://192.168.1.137:3010</p>
-                <p>Orthanc REST: http://192.168.1.137:8042</p>
+                <p>OHIF Base: {ohifBaseForProfile("LAN")}</p>
+                <p>Orthanc REST: {orthancBaseForProfile("LAN")}</p>
               </div>
             </div>
 
@@ -330,12 +406,12 @@ export default function RadiologySettingsCenter() {
               </div>
               <h3 className="font-semibold text-base">Tailscale VPN Profile</h3>
               <p className="text-xs text-muted-foreground">
-                Connects through Tailscale network (`100.65.255.115`). Allows radiologist/owner to review
+                Connects through Tailscale network ({hostForProfile("TAILSCALE")}). Allows radiologist/owner to review
                 studies and launch OHIF/Weasis outside the clinic network securely.
               </p>
               <div className="pt-2 text-xs font-mono text-muted-foreground space-y-1">
-                <p>OHIF Base: http://100.65.255.115:3010</p>
-                <p>Orthanc REST: http://100.65.255.115:8042</p>
+                <p>OHIF Base: {ohifBaseForProfile("TAILSCALE")}</p>
+                <p>Orthanc REST: {orthancBaseForProfile("TAILSCALE")}</p>
               </div>
             </div>
 
@@ -346,11 +422,11 @@ export default function RadiologySettingsCenter() {
               </div>
               <h3 className="font-semibold text-base">Public Cloud Profile</h3>
               <p className="text-xs text-muted-foreground">
-                Uses Cloudflare domain (`caredeoghar.com`) for secure patient booking, report delivery,
+                Uses Cloudflare domain ({hostForProfile("PUBLIC")}) for secure patient booking, report delivery,
                 and online billing desk tasks. Viewer access is disabled for speed &amp; transport privacy.
               </p>
               <div className="pt-2 text-xs font-mono text-muted-foreground space-y-1">
-                <p>ERP URL: https://caredeoghar.com</p>
+                <p>ERP URL: {publicBaseUrl()}</p>
                 <p>Ingestion port: Closed on WAN</p>
               </div>
             </div>
@@ -471,7 +547,7 @@ export default function RadiologySettingsCenter() {
                   value={settings.find(s => s.key === "ohif_base_url")?.value ?? ""}
                   onChange={(e) => upsertSetting.mutate({ key: "ohif_base_url", value: e.target.value, category: "viewer" })}
                   className="h-9 text-sm"
-                  placeholder="http://<your-lan-ip>:3010"
+                  placeholder={ohifBaseForProfile("LAN")}
                 />
                 {isDockerBridgeIpLike(settings.find(s => s.key === "ohif_base_url")?.value ?? "") && (
                   <p className="text-[11px] text-red-600 font-medium">⚠ This looks like a Docker bridge IP (172.17.x.x-172.31.x.x) — browsers cannot reach it. Use your clinic LAN IP, Tailscale IP, or public domain instead.</p>
@@ -488,7 +564,7 @@ export default function RadiologySettingsCenter() {
                     upsertSetting.mutate({ key: "wado_uri_base_url", value: e.target.value, category: "viewer" });
                   }}
                   className="h-9 text-sm"
-                  placeholder="http://<your-lan-ip>:8042/wado"
+                  placeholder={`${orthancBaseForProfile("LAN")}/wado`}
                 />
                 {isDockerBridgeIpLike(settings.find(s => s.key === "weasis_wado_url")?.value ?? "") && (
                   <p className="text-[11px] text-red-600 font-medium">⚠ This looks like a Docker bridge IP — local Weasis installs cannot reach it. Use your clinic LAN IP, Tailscale IP, or public domain instead.</p>
@@ -663,6 +739,19 @@ export default function RadiologySettingsCenter() {
               Open Flight Deck
             </Button>
           </div>
+          {/* Phase E: owner-only deep diagnostic pages (preserved, linked here) —
+              the Flight Deck above covers connectivity/workflow diagnostics but
+              does not link out to these standalone admin pages, so they still
+              need their own shortcuts here. */}
+          {isAdmin && (
+            <div className="rounded-xl border bg-card p-4 flex flex-wrap items-center gap-2">
+              <span className="text-xs font-semibold mr-2">Debug / Logs (owner only):</span>
+              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => (window.location.href = "/radiology/pacs-logs")}>PACS Logs</Button>
+              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => (window.location.href = "/radiology/watchdog")}>Watchdog</Button>
+              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => (window.location.href = "/radiology/dicom-agent-dashboard")}>DICOM Agent</Button>
+              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => (window.location.href = "/radiology/network-control-center")}>Network Control Center</Button>
+            </div>
+          )}
           <div className="grid lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 rounded-xl border bg-card p-5 space-y-4">
               <h3 className="font-semibold text-sm flex items-center gap-2">
@@ -817,6 +906,38 @@ export default function RadiologySettingsCenter() {
         </TabsContent>
 
         {/* Tab content 8.5: Institutional Report Style */}
+        {/* ── Phase E: PREMIUM REPORT — admin toggles (module itself preserved) ── */}
+        <TabsContent value="premium" className="space-y-4">
+          <div className="rounded-xl border bg-card p-5 space-y-3 max-w-3xl">
+            <h3 className="text-sm font-bold">Premium Report Presentation</h3>
+            <p className="text-xs text-muted-foreground">
+              Owner configuration for the preserved Premium Report module (opened via the "Premium Preview" button in the Reading Room and Worklist). These switches are stored as admin settings and applied by the Premium Report module.
+            </p>
+            <div className="grid md:grid-cols-2 gap-2">
+              {([
+                ["premium_layout_enabled", "Premium Report Layout", "Master switch for the premium presentation layer."],
+                ["premium_image_panel", "Image Panel", "Right-side representative DICOM images from Orthanc."],
+                ["premium_qr_verification", "QR Verification", "Printed QR code for report authenticity checks."],
+                ["premium_digital_signature", "Digital Signature", "Radiologist signature block on the final report."],
+                ["premium_journal_style", "Journal Style", "Academic journal-style typography."],
+                ["premium_structured_reports", "Structured Reports", "Section-structured findings layout."],
+                ["premium_multipage", "Multi-page Reports", "Allow reports to span multiple printed pages."],
+                ["premium_hospital_branding", "Hospital Branding", "Clinic logo and letterhead on premium reports."],
+                ["premium_themes", "Report Themes", "Allow selecting alternative premium themes."],
+              ] as const).map(([key, label, help]) => (
+                <div key={key} className="flex items-center justify-between border rounded-lg p-3">
+                  <div className="pr-3">
+                    <Label className="text-xs font-semibold">{label}</Label>
+                    <p className="text-[11px] text-muted-foreground">{help}</p>
+                  </div>
+                  <Switch checked={svOn(key)} disabled={!isAdmin}
+                    onCheckedChange={(v) => upsertSetting.mutate({ key, value: String(v), category: "premium" })} />
+                </div>
+              ))}
+            </div>
+          </div>
+        </TabsContent>
+
         <TabsContent value="style" className="space-y-4">
           {/* R1.2 — versioned enterprise template engine. Admins manage
               versions/activation/import/export; radiologists can preview. */}

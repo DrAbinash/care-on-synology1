@@ -251,8 +251,18 @@ router.use("/website", websiteRouter);
 // Patient data — /patients permission
 router.use("/patients", requireStaffAuth, requireStaffPermission("/patients"), patientsRouter);
 
-// Doctor management — /doctors permission
-router.use("/doctors", requireStaffAuth, requireStaffPermission("/doctors"), doctorsRouter);
+// Doctor catalogue: any authenticated staff can READ (Billing Desk's
+// referring-doctor picker and Register.tsx both need the doctor list, same
+// as /tests). Mutations (create/update/delete/import) stay /doctors-gated.
+router.use(
+  "/doctors",
+  requireStaffAuth,
+  (req, res, next) => {
+    if (req.method === "GET") return next();
+    return requireStaffPermission("/doctors")(req, res, next);
+  },
+  doctorsRouter,
+);
 
 // Test catalogue — /tests permission
 // Tests catalog: any authenticated staff can READ (Billing Desk, Packages,

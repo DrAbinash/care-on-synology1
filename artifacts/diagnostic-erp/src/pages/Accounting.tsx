@@ -126,6 +126,12 @@ function VoucherBadge({ type }: { type: string }) {
 export default function Accounting() {
   const qc = useQueryClient();
   const { toast } = useToast();
+  // Deep-link support (e.g. Banking page links here to open Scan & Import
+  // directly). Falls back to the default tab if no/invalid ?tab= param.
+  const [accountingTab, setAccountingTab] = useState<string>(() => {
+    if (typeof window === "undefined") return "vouchers";
+    return new URLSearchParams(window.location.search).get("tab") || "vouchers";
+  });
   const [accOpen, setAccOpen] = useState(false);
   const [voucherOpen, setVoucherOpen] = useState(false);
   const [voucherType, setVoucherType] = useState("payment");
@@ -433,7 +439,7 @@ export default function Accounting() {
       />
 
       <div className="px-6">
-        <Tabs defaultValue="vouchers">
+        <Tabs value={accountingTab} onValueChange={setAccountingTab}>
           <TabsList className="mb-4 flex-wrap gap-1 h-auto">
             <TabsTrigger value="vouchers">Vouchers</TabsTrigger>
             <TabsTrigger value="accounts">Chart of Accounts</TabsTrigger>

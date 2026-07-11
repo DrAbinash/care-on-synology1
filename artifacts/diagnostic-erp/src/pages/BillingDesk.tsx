@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import "@/styles/billingDeskModern.css"; // Modern Pro skin (presentation only)
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
 import { api } from "@/lib/fetchApi";
@@ -439,14 +440,14 @@ export default function BillingDesk() {
 
   // ── New patient form visibility ──────────────────────
   // ── Layout mode (unified / stepped) ─────────────────
-  const [layoutMode, setLayoutMode] = useState<"unified" | "stepped" | "compact" | "classic" | "modern-pro">(() => {
+  const [layoutMode, setLayoutMode] = useState<"unified" | "stepped" | "compact" | "classic" | "modern">(() => {
     const stored = typeof window !== "undefined" ? localStorage.getItem("billingDeskLayout") : null;
-    return (stored as "unified" | "stepped" | "compact") || "unified";
+    return (stored as "unified" | "stepped" | "compact" | "classic" | "modern") || "unified";
   });
   useEffect(() => {
     const handler = () => {
       const stored = typeof window !== "undefined" ? localStorage.getItem("billingDeskLayout") : null;
-      setLayoutMode((stored as "unified" | "stepped" | "compact") || "unified");
+      setLayoutMode((stored as "unified" | "stepped" | "compact" | "classic" | "modern") || "unified");
     };
     window.addEventListener("storage", handler);
     window.addEventListener("billingDeskLayoutChanged", handler);
@@ -457,7 +458,6 @@ export default function BillingDesk() {
   }, []);
   const isStepped = layoutMode === "stepped";
   const isCompact = layoutMode === "compact";
-  const isModernPro = layoutMode === "modern-pro";
 
   // ── Reactive feature flags ────────────────────────────────────────────────
   // These were previously plain derived values (isFeatureEnabled() called once
@@ -961,7 +961,12 @@ export default function BillingDesk() {
   const [quickDoctorPickerSearch, setQuickDoctorPickerSearch] = useState("");
   // (Register New Patient form is now always visible — no toggle state needed)
 
-  const { data: doctors = [] } = useQuery<Doctor[]>({
+  // isError/refetch are surfaced in the doctor-search dropdown and the Quick
+  // Doctor slot picker below — without them, a failed /api/doctors request
+  // (network blip, backend down) renders as an empty list, which is visually
+  // identical to "no doctors registered yet" and gives staff no way to tell
+  // a real outage apart from a genuinely empty roster.
+  const { data: doctors = [], isError: doctorsError, refetch: refetchDoctors } = useQuery<Doctor[]>({
     queryKey: ["doctors-list"],
     queryFn: () => api.get<{ doctors: Doctor[] }>("/api/doctors").then((d) => d.doctors ?? []),
     staleTime: Infinity,
@@ -1645,7 +1650,6 @@ export default function BillingDesk() {
     denseTestList  ? "billing-dense"     : "",
     largeFont      ? "billing-large-font": "",
     isCompact      ? "billing-compact"   : "",
-    isModernPro    ? "billing-modern-pro": "",
   ].filter(Boolean).join(" ");
 
   // Bright per-section header accents — purely presentational. Each section
@@ -1701,7 +1705,7 @@ export default function BillingDesk() {
   const cardClsNoClip = "bg-white dark:bg-slate-800 border border-[#dde3ec] dark:border-slate-700 rounded-xl shadow-md shadow-slate-200/60 dark:shadow-none [&>*:first-child]:rounded-t-xl";
 
   return (
-    <div className={deskClass}>
+    <div className={deskClass} data-desk={layoutMode}>
 
       {/* ═══════════════════════════════════════════════════════
           TOP BAR — date · title · search · recent · new
@@ -2069,7 +2073,12 @@ export default function BillingDesk() {
                             {d.specialization && <span className="ml-auto text-[11px] text-[#94a3b8]">{d.specialization}</span>}
                           </button>
                         ))}
-                      {doctors.filter((d) => d.name.toLowerCase().includes(doctorSearch.toLowerCase())).length === 0 && (
+                      {doctorsError ? (
+                        <div className="px-3 py-2 text-sm text-red-600 flex items-center justify-between gap-2">
+                          <span>Couldn't load doctors — check your connection.</span>
+                          <button type="button" onClick={() => refetchDoctors()} className="underline shrink-0">Retry</button>
+                        </div>
+                      ) : doctors.filter((d) => d.name.toLowerCase().includes(doctorSearch.toLowerCase())).length === 0 && (
                         <div className="px-3 py-2 text-sm text-[#94a3b8]">No doctor found</div>
                       )}
                     </div>
@@ -2753,7 +2762,12 @@ export default function BillingDesk() {
                     {d.specialization && <span className="text-[11px] text-[#94a3b8]">{d.specialization}</span>}
                   </button>
                 ))}
-              {doctors.filter((d) => !quickDoctorPickerSearch || d.name.toLowerCase().includes(quickDoctorPickerSearch.toLowerCase())).length === 0 && (
+              {doctorsError ? (
+                <div className="px-3 py-2 text-sm text-red-600 flex items-center justify-between gap-2">
+                  <span>Couldn't load doctors — check your connection.</span>
+                  <button type="button" onClick={() => refetchDoctors()} className="underline shrink-0">Retry</button>
+                </div>
+              ) : doctors.filter((d) => !quickDoctorPickerSearch || d.name.toLowerCase().includes(quickDoctorPickerSearch.toLowerCase())).length === 0 && (
                 <div className="px-3 py-2 text-sm text-[#94a3b8]">No doctor found</div>
               )}
             </div>
@@ -2842,7 +2856,13 @@ export default function BillingDesk() {
                           txnRef: gatewayPaymentInfo.txnRef,
                           patientName: selectedPatient ? `${selectedPatient.firstName} ${selectedPatient.lastName ?? ""}`.trim() : "",
                         });
-                        void openOnSecondMonitor(`/display/payment-qr?${params.toString()}`, "paymentQrDisplay");
+                        // Must include this app's own base path — in production
+                        // diagnostic-erp is served under /erp/ (nginx has no route
+                        // for a bare /display/payment-qr, so an un-prefixed path
+                        // falls through to the public website's SPA and renders
+                        // its "Page not found" screen instead of the QR display).
+                        const erpBase = import.meta.env.BASE_URL.replace(/\/$/, "");
+                        void openOnSecondMonitor(`${erpBase}/display/payment-qr?${params.toString()}`, "paymentQrDisplay");
                       }}
                       className="mt-2 text-xs font-semibold text-[#2563eb] hover:underline flex items-center gap-1 mx-auto"
                     >

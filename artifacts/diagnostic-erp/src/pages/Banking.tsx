@@ -17,6 +17,7 @@ import {
   CreditCard, Activity, CheckCircle, Unlink, Link2, Globe,
   Wallet, Send, Clock, AlertCircle, ShieldAlert, Ban, FileCheck,
   XCircle, RotateCcw, ScrollText, Banknote, Eye, Fingerprint, Calendar,
+  ScanLine,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -605,6 +606,12 @@ export default function Banking() {
           Banking
         </h1>
         <div className="flex gap-2">
+          {/* Recovered discoverability: bank statement AI import already
+              exists and works under Accounting → Scan & Import — this links
+              to it rather than rebuilding a second import UI here. */}
+          <Button variant="outline" size="sm" onClick={() => (window.location.href = "/accounting?tab=scan-import")} className="gap-1.5">
+            <ScanLine className="w-4 h-4" /> Import Bank Statement (AI)
+          </Button>
           <Button variant="outline" onClick={async () => {
             setRefreshAllLoading(true);
             try {

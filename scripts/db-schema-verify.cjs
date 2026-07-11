@@ -167,8 +167,29 @@ function tryExec(cmd) {
 
 function normaliseType(raw) {
   if (!raw) return "unknown";
-  const t = raw.toLowerCase().trim()
+  let t = String(raw).trim();
+  // Strip a schema-qualification prefix (`public.foo`, `"public"."foo"`) —
+  // PostgreSQL resolves both to the same type, and only the unqualified
+  // name is ever exposed via udt_name. Must run BEFORE the wrapping-quote
+  // strip below, or a quoted+qualified type like `"public"."outsource_status"`
+  // would only get its schema prefix removed, leaving the quotes in place.
+  t = t.replace(/^"?[A-Za-z_][A-Za-z0-9_]*"?\./, "");
+  // Strip a wrapping pair of double quotes around a custom/enum type name
+  // (e.g. `"outsource_status"`, as written in a CREATE TABLE column
+  // definition referencing a CREATE TYPE ... AS ENUM). PostgreSQL's
+  // information_schema always reports the udt_name unquoted, so a quoted
+  // expected type would otherwise never match live and would be reported as
+  // a permanent false-positive mismatch for every enum-typed column.
+  t = t.replace(/^"([^"]+)"$/, "$1");
+  t = t.toLowerCase().trim()
     .replace(/\s+/g, " ")
+    // Defensive net: a trailing comma/semicolon here means a caller passed
+    // a raw comma-separated-list token through without stopping at the
+    // delimiter. The real fix is parsing correctly upstream (see
+    // TYPE_TOKEN_COLUMN_RE) — this only guards against the same class of
+    // bug resurfacing through some other, not-yet-audited caller.
+    .replace(/[,;]+$/, "")
+    .replace(/\s*\[\s*\]/g, "[]")
     .replace(/character varying(\(\d+\))?/g, "text")
     .replace(/character\s*varying/g, "text")
     .replace(/^varchar(\(\d+\))?$/, "text")
@@ -213,6 +234,36 @@ function typesCompatible(a, b) {
   }
   return false;
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// SQL COLUMN-DEFINITION TOKEN PATTERNS
+// ════════════════════════════════════════════════════════════════════════════
+// Root cause of the "expected 'text,' / got 'text'" false-positive class:
+// the type-token capture used to be a bare `\S+`, which greedily consumes
+// ANY non-whitespace character — including the comma that ends a column
+// definition in a CREATE TABLE body. For a line like `"email" text,` that
+// captured "text," (comma and all), so ~35% of all columns parsed from this
+// repo's real migrations carried a spurious trailing comma no live
+// PostgreSQL type ever has. TYPE_TOKEN_COLUMN_RE stops at the delimiter
+// instead of swallowing it.
+
+// Group 1: quoted column name. Group 2: the type token — either a quoted
+// identifier (custom/enum type, e.g. "outsource_status") or a word token
+// with optional " varying" (character varying), optional
+// "(precision[, scale])" (whitespace-tolerant, e.g. "numeric(10, 2)"), and
+// optional array bracket suffixes (e.g. "text[]").
+const TYPE_TOKEN_COLUMN_RE =
+  /^"([^"]+)"\s+("[^"]+"|\w+(?:\s+varying)?(?:\s*\(\s*\d+(?:\s*,\s*\d+)?\s*\))?(?:\s*\[\s*\])*)/i;
+
+// Matches a DEFAULT value: a single-quoted string literal (handling ''
+// escapes and an optional ::type cast), OR a single-level parenthesized
+// call such as now() / nextval('x_id_seq'::regclass), OR a bare token
+// (number/boolean/identifier) up to the next whitespace/comma/semicolon.
+// The old `[^\s,)]+` stopped at the first space or ")", so it truncated any
+// multi-word quoted default (`DEFAULT 'AI Draft...'` -> `'AI`) and
+// unbalanced function-call defaults (`DEFAULT now()` -> `now(`).
+const DEFAULT_VALUE_RE =
+  /DEFAULT\s+('(?:[^']|'')*'(?:::[\w".[\]]+)?|\([^)]*\)|[^\s,;]+)/i;
 
 // ════════════════════════════════════════════════════════════════════════════
 // REPAIR MODE HELPER — type-appropriate DEFAULT literal
@@ -326,7 +377,22 @@ function parseSqlFiles(sqlEntries) {
         if (line.startsWith("--")) continue;
 
         // Column definition
-        const colM = line.match(/^"([^"]+)"\s+(\S+(?:\s+with time zone|\s+without time zone)?(?:\(\d+(?:,\s*\d+)?\))?)/i);
+        //
+        // The type-token group used to be a bare `\S+`, which is greedy over
+        // ANY non-whitespace character — including the comma that separates
+        // this column from the next one. For a line like `"email" text,` it
+        // captured "text," (comma included), so the expected type stored for
+        // ~35% of all columns in this codebase's migrations carried a
+        // spurious trailing comma that no live PostgreSQL type ever has —
+        // the exact false-positive class reported as
+        // `expected 'text,' / got 'text'`. TYPE_TOKEN_RE instead matches
+        // either a quoted identifier (custom/enum types like
+        // "outsource_status") or a word token with optional " varying",
+        // optional "(precision[, scale])" (internal whitespace tolerant),
+        // and optional array brackets — so it stops cleanly at the comma,
+        // NOT NULL/DEFAULT/PRIMARY KEY keywords, or closing paren instead of
+        // swallowing them.
+        const colM = line.match(TYPE_TOKEN_COLUMN_RE);
         if (colM && !line.match(/^CONSTRAINT/i)) {
           const colName = colM[1];
           let rawType = colM[2];
@@ -338,7 +404,15 @@ function parseSqlFiles(sqlEntries) {
           const isUniq  = /UNIQUE/i.test(line);
           const isSerial = /\bserial\b/i.test(line) || /\bbigserial\b/i.test(line);
           const isJsonb  = /\bjsonb\b/i.test(line);
-          const defaultM = line.match(/DEFAULT\s+([^\s,)]+)/i);
+          // Same class of bug as the type token above: the old
+          // `[^\s,)]+` stopped at the FIRST space or close-paren, so
+          // `DEFAULT now()` captured "now(" (unbalanced) and any multi-word
+          // quoted default like `DEFAULT 'AI Draft – Requires Radiologist
+          // Review'` captured only `'AI`. DEFAULT_VALUE_RE instead matches a
+          // full single-quoted string literal (handling '' escapes and an
+          // optional ::type cast), a single-level parenthesized call, or a
+          // bare token — whichever applies.
+          const defaultM = line.match(DEFAULT_VALUE_RE);
           const defaultVal = defaultM ? defaultM[1] : null;
 
           if (!ti.columns.has(colName)) {
@@ -777,7 +851,19 @@ async function getLiveSchema(client) {
   const liveColumns = new Map();
   for (const r of colRes.rows) {
     if (!liveColumns.has(r.table_name)) liveColumns.set(r.table_name, new Map());
-    const normType = normaliseType(r.data_type === "USER-DEFINED" ? r.udt_name : r.data_type);
+    // For an array column (e.g. `text[]`), PostgreSQL reports
+    // data_type='ARRAY' with NO element-type info in data_type itself —
+    // the element type only appears in udt_name, prefixed with an
+    // underscore (udt_name='_text' for text[]). Without this, every real
+    // array column would report live type "array" forever, which can never
+    // match the "text[]" (etc.) that parseSqlFiles captures from source —
+    // a genuine, confirmed false positive (4 columns in this codebase:
+    // radiology_snippets.tags and 3 more), not a hypothetical one.
+    let typeSource;
+    if (r.data_type === "ARRAY") typeSource = `${r.udt_name.replace(/^_/, "")}[]`;
+    else if (r.data_type === "USER-DEFINED") typeSource = r.udt_name;
+    else typeSource = r.data_type;
+    const normType = normaliseType(typeSource);
     liveColumns.get(r.table_name).set(r.column_name, {
       type: normType, rawType: r.data_type, udt: r.udt_name,
       isNullable: r.is_nullable === "YES",
@@ -958,6 +1044,19 @@ function diffSchema(expected, live, runtimeTableNames) {
     missingTables: [], runtimeOnlyMissing: [], extraTables: [],
     missingColumns: [], typeMismatches: [], nullableMismatches: [],
     missingIndexes: [], missingFks: [],
+    // Normalization events that were found NOT to be drift (e.g. varchar vs
+    // text, or 'text' vs 'text' after quote/case/whitespace normalization).
+    // These are intentionally excluded from typeMismatches/warnings/pass —
+    // recorded here instead so the normalization logic stays auditable
+    // rather than silently invisible (see PHASE 4 reporting requirements).
+    ignored: [],
+    // Unified, richly-classified view of every finding above (including
+    // ignored ones): { table, column, level, classification, expected,
+    // actual, reason, suggestedFix }. The category-specific arrays above
+    // keep their original (mostly plain-string/minimal-object) shapes
+    // unchanged for existing consumers (--repair, printResults,
+    // writeStartupMd, tests) — this is purely additive.
+    findings: [],
     jsonbColumns: [], serialColumns: [],
     sourceIssues: [],
     warnings: [],
@@ -970,6 +1069,16 @@ function diffSchema(expected, live, runtimeTableNames) {
   for (const tblName of liveTables) {
     if (!knownTableNames.has(tblName)) {
       results.extraTables.push(tblName);
+      results.findings.push({
+        table: tblName, column: null,
+        level: "INFO", classification: "REAL",
+        expected: null, actual: "(table present)",
+        reason: `Table exists in the live database but isn't created by any migration file ` +
+          `(lib/db/drizzle/*.sql, migrations/*.sql) or care-api's runtime CREATE TABLE IF NOT ` +
+          `EXISTS statements — possible manual/out-of-band schema change, or a leftover from a ` +
+          `removed feature.`,
+        suggestedFix: `Review manually (see "Schema Drift" in DEPLOYMENT.md). Not blocking.`,
+      });
       results.warnings.push(
         `Table '${tblName}' exists in the database but isn't created by any migration file or ` +
         `care-api runtime code — possible manual/out-of-band schema change. Not blocking, but worth ` +
@@ -987,9 +1096,25 @@ function diffSchema(expected, live, runtimeTableNames) {
     if (!liveTables.has(tblName)) {
       if (RUNTIME_CREATED_TABLES.has(tblName)) {
         results.runtimeOnlyMissing.push(tblName);
+        results.findings.push({
+          table: tblName, column: null,
+          level: "INFO", classification: "EXPECTED DIFFERENCE",
+          expected: "(table present)", actual: "(table absent)",
+          reason: `Table is created by care-api's runStartupMigrations() on first startup, not by ` +
+            `a migration file — absence before first boot is expected, not drift.`,
+          suggestedFix: "None — will self-heal on next care-api startup.",
+        });
         results.warnings.push(`Table '${tblName}' not yet in DB — created by API on first startup (non-fatal)`);
       } else {
         results.missingTables.push(tblName);
+        results.findings.push({
+          table: tblName, column: null,
+          level: "ERROR", classification: "REAL",
+          expected: "(table present)", actual: "(table absent)",
+          reason: "Table declared in migration source but does not exist in the live database.",
+          suggestedFix: `Run "docker compose up -d --build" (applies pending migrations) or ` +
+            `"node scripts/db-schema-verify.cjs --repair".`,
+        });
         results.pass = false;
       }
       continue;
@@ -1003,6 +1128,14 @@ function diffSchema(expected, live, runtimeTableNames) {
 
       if (!liveCols.has(colName)) {
         results.missingColumns.push({ table: tblName, column: colName, expectedType: colInfo.type, fromFile: colInfo.fromFile });
+        results.findings.push({
+          table: tblName, column: colName,
+          level: "ERROR", classification: "REAL",
+          expected: colInfo.type, actual: "(column absent)",
+          reason: "Column declared in migration source but missing on the live table.",
+          suggestedFix: `Run "docker compose up -d --build" (applies pending migrations) or ` +
+            `"node scripts/db-schema-verify.cjs --repair".`,
+        });
         results.pass = false;
         continue;
       }
@@ -1010,9 +1143,39 @@ function diffSchema(expected, live, runtimeTableNames) {
 
       const liveCol = liveCols.get(colName);
 
-      // Type compatibility
-      if (!typesCompatible(colInfo.type, liveCol.type)) {
+      // Type compatibility. typesCompatible() already normalizes case,
+      // whitespace, quoting, schema-qualification, trailing punctuation, and
+      // known PostgreSQL type aliases (varchar/text, timestamp variants,
+      // serial/identity, json/jsonb) — anything that STILL doesn't match
+      // after that is a genuine difference, not a formatting artifact.
+      if (typesCompatible(colInfo.type, liveCol.type)) {
+        if (colInfo.type !== liveCol.type) {
+          // Raw tokens differed but normalized to the same/compatible type —
+          // this is exactly the kind of thing that used to be reported as a
+          // false positive. Record it as IGNORED (visible, not hidden) so
+          // the normalization stays auditable instead of silent.
+          const ignoredEntry = {
+            table: tblName, column: colName,
+            expected: colInfo.type, actual: liveCol.type,
+            level: "IGNORED", classification: "EXPECTED DIFFERENCE",
+            reason: `'${colInfo.type}' and '${liveCol.type}' are PostgreSQL-equivalent type ` +
+              `representations (see TYPE_GROUPS / normaliseType in scripts/db-schema-verify.cjs) — ` +
+              `not schema drift.`,
+            suggestedFix: "None — this is intentional normalization, not an error.",
+          };
+          results.ignored.push(ignoredEntry);
+          results.findings.push(ignoredEntry);
+        }
+      } else {
         results.typeMismatches.push({ table: tblName, column: colName, expected: colInfo.type, actual: liveCol.type });
+        results.findings.push({
+          table: tblName, column: colName,
+          level: "WARNING", classification: "REAL",
+          expected: colInfo.type, actual: liveCol.type,
+          reason: `No known PostgreSQL-equivalent alias between '${colInfo.type}' and '${liveCol.type}'.`,
+          suggestedFix: `Run a migration to align the column type, or if these ARE equivalent, add ` +
+            `them to TYPE_GROUPS in scripts/db-schema-verify.cjs.`,
+        });
         results.warnings.push(`Type mismatch ${tblName}.${colName}: expected '${colInfo.type}', live is '${liveCol.type}'`);
       }
 
@@ -1029,6 +1192,15 @@ function diffSchema(expected, live, runtimeTableNames) {
       // NOT NULL mismatch (warn only — safe to have DB more permissive)
       if (colInfo.notNull && liveCol.isNullable) {
         results.nullableMismatches.push({ table: tblName, column: colName });
+        results.findings.push({
+          table: tblName, column: colName,
+          level: "WARNING", classification: "REAL",
+          expected: "NOT NULL", actual: "NULLABLE",
+          reason: `Migration declares NOT NULL but the live column allows NULL. Safe direction ` +
+            `(the DB is more permissive than the source), but drifted from source of truth.`,
+          suggestedFix: `Backfill any existing NULLs then run ALTER TABLE ... ALTER COLUMN ... SET ` +
+            `NOT NULL, or update the Drizzle schema to match reality if NULL is now intentional.`,
+        });
         results.warnings.push(`Nullable mismatch: ${tblName}.${colName} expected NOT NULL but DB allows NULL`);
       }
     }
@@ -1038,6 +1210,15 @@ function diffSchema(expected, live, runtimeTableNames) {
       results.indexesChecked++;
       if (!liveIndexes.has(idxName)) {
         results.missingIndexes.push({ table: tblName, index: idxName });
+        results.findings.push({
+          table: tblName, column: null,
+          level: "WARNING", classification: "REAL",
+          expected: idxName, actual: "(index absent)",
+          reason: "Index declared in migration source but missing on the live table — degrades " +
+            "query performance, does not affect correctness.",
+          suggestedFix: `Run the migration that creates it. "--repair" cannot recreate an index from ` +
+            `its name alone — it needs the original CREATE INDEX definition.`,
+        });
         results.warnings.push(`Missing index '${idxName}' on '${tblName}'`);
       } else {
         results.indexesPassed++;
@@ -1048,6 +1229,15 @@ function diffSchema(expected, live, runtimeTableNames) {
     for (const fk of ti.fks) {
       if (!liveTables.has(fk.refTable) && !RUNTIME_CREATED_TABLES.has(fk.refTable)) {
         results.missingFks.push({ table: tblName, refTable: fk.refTable });
+        results.findings.push({
+          table: tblName, column: null,
+          level: "WARNING", classification: "REAL",
+          expected: fk.refTable, actual: "(referenced table absent)",
+          reason: `Migration references '${fk.refTable}' as a foreign key target, but that table ` +
+            `doesn't exist live and isn't a known runtime-created table.`,
+          suggestedFix: `Run "docker compose up -d --build" (applies pending migrations) or verify ` +
+            `'${fk.refTable}' wasn't renamed/dropped without updating this migration.`,
+        });
         results.warnings.push(`FK target missing: ${tblName} → ${fk.refTable}`);
       }
     }
@@ -1127,11 +1317,24 @@ function printResults(r, git, pgVersion, stats) {
       console.log(c.red(`     ✗ ${mc.table}.${mc.column}  [${mc.expectedType}]  (from ${mc.fromFile})`));
   }
 
-  // Type mismatches
+  // Type mismatches — genuine drift only. typesCompatible() already
+  // normalizes case/whitespace/quoting/aliases before anything reaches this
+  // array (see diffSchema), so everything here is a real difference, not a
+  // formatting artifact — hence WARNING, not "schema compatible".
   if (r.typeMismatches.length > 0) {
-    warnLog(`Type mismatches (${r.typeMismatches.length}) — schema compatible:`);
-    if (VERBOSE) for (const t of r.typeMismatches)
+    warnLog(`Type mismatches (${r.typeMismatches.length}) — [WARNING] genuine differences, non-blocking:`);
+    for (const t of r.typeMismatches)
       console.log(c.yellow(`     ! ${t.table}.${t.column}: expected '${t.expected}', got '${t.actual}'`));
+  }
+
+  // Normalization events — visible-but-ignored so the normalization logic
+  // stays auditable instead of silent (only shown with --verbose; these are
+  // not drift, just formatting/alias differences PostgreSQL treats as
+  // identical).
+  if (VERBOSE && r.ignored.length > 0) {
+    infoLog(`Normalized (${r.ignored.length}) — [IGNORED] not drift, PostgreSQL-equivalent types:`);
+    for (const i of r.ignored)
+      console.log(c.dim(`     · ${i.table}.${i.column}: '${i.expected}' ≡ '${i.actual}'`));
   }
 
   // Indexes
@@ -1202,11 +1405,12 @@ function writeStartupMd(r, git, live, stats, allEntries, crossIssues) {
   lines.push(`| Actual Tables | ${stats.liveTables} |`);
   lines.push(`| Expected Columns | ${stats.expectedCols} |`);
   lines.push(`| Actual Columns | ${stats.liveCols} |`);
-  lines.push(`| Missing Tables | **${r.missingTables.length}** |`);
-  lines.push(`| Extra Tables (possible drift) | ${r.extraTables.length} |`);
-  lines.push(`| Missing Columns | **${r.missingColumns.length}** |`);
-  lines.push(`| Missing Indexes | ${r.missingIndexes.length} |`);
-  lines.push(`| Type Mismatches | ${r.typeMismatches.length} (warnings only) |`);
+  lines.push(`| Missing Tables [ERROR] | **${r.missingTables.length}** |`);
+  lines.push(`| Extra Tables (possible drift) [INFO] | ${r.extraTables.length} |`);
+  lines.push(`| Missing Columns [ERROR] | **${r.missingColumns.length}** |`);
+  lines.push(`| Missing Indexes [WARNING] | ${r.missingIndexes.length} |`);
+  lines.push(`| Type Mismatches [WARNING] — genuine, non-blocking | ${r.typeMismatches.length} |`);
+  lines.push(`| Normalized Differences [IGNORED] — not drift | ${r.ignored.length} |`);
   lines.push(`| Source Issues | ${crossIssues.length} |`);
   lines.push(`| Warnings | ${r.warnings.length} |`);
   lines.push(`| Deploy State db_patch_ok | ${r.deployState.db_patch_ok ?? "MISSING"} |`);
@@ -1235,17 +1439,45 @@ function writeStartupMd(r, git, live, stats, allEntries, crossIssues) {
   }
 
   if (r.missingColumns.length > 0) {
-    lines.push(`## ❌ Missing Columns`);
+    lines.push(`## ❌ Missing Columns  [ERROR]`);
     lines.push(``);
-    lines.push(`| Table | Column | Expected Type | Source File |`);
-    lines.push(`|---|---|---|---|`);
+    lines.push(`| Table | Column | Expected Type | Source File | Suggested Fix |`);
+    lines.push(`|---|---|---|---|---|`);
     for (const mc of r.missingColumns)
-      lines.push(`| \`${mc.table}\` | \`${mc.column}\` | \`${mc.expectedType}\` | ${mc.fromFile} |`);
+      lines.push(`| \`${mc.table}\` | \`${mc.column}\` | \`${mc.expectedType}\` | ${mc.fromFile} | Run \`docker compose up -d --build\` or \`--repair\` |`);
+    lines.push(``);
+  }
+
+  if (r.typeMismatches.length > 0) {
+    lines.push(`## ⚠️ Type Mismatches  [WARNING] — genuine differences, non-blocking`);
+    lines.push(``);
+    lines.push(`Every entry below survived normalization (case, whitespace, quoting, schema`);
+    lines.push(`qualification, trailing punctuation, and known PostgreSQL type aliases already`);
+    lines.push(`accounted for) — these are real drift, not formatting artifacts.`);
+    lines.push(``);
+    lines.push(`| Table | Column | Expected | Actual | Reason |`);
+    lines.push(`|---|---|---|---|---|`);
+    for (const t of r.typeMismatches)
+      lines.push(`| \`${t.table}\` | \`${t.column}\` | \`${t.expected}\` | \`${t.actual}\` | No known equivalent alias |`);
+    lines.push(``);
+  }
+
+  if (r.ignored.length > 0) {
+    lines.push(`## ℹ️ Normalized Differences  [IGNORED] — not drift`);
+    lines.push(``);
+    lines.push(`Raw type tokens differed but normalized to the same or a PostgreSQL-equivalent`);
+    lines.push(`type (see \`TYPE_GROUPS\` / \`normaliseType\` in \`scripts/db-schema-verify.cjs\`).`);
+    lines.push(`Listed here for audit visibility, not because they need action.`);
+    lines.push(``);
+    lines.push(`| Table | Column | Expected | Actual |`);
+    lines.push(`|---|---|---|---|`);
+    for (const i of r.ignored)
+      lines.push(`| \`${i.table}\` | \`${i.column}\` | \`${i.expected}\` | \`${i.actual}\` |`);
     lines.push(``);
   }
 
   if (r.missingIndexes.length > 0) {
-    lines.push(`## ⚠️ Missing Indexes`);
+    lines.push(`## ⚠️ Missing Indexes  [WARNING]`);
     lines.push(``);
     for (const i of r.missingIndexes) lines.push(`- \`${i.index}\` on \`${i.table}\``);
     lines.push(``);
@@ -1666,6 +1898,8 @@ async function main() {
       extraTables: results.extraTables,
       missingColumns: results.missingColumns,
       typeMismatches: results.typeMismatches,
+      ignored: results.ignored,
+      findings: results.findings,
       missingIndexes: results.missingIndexes,
       sourceIssues: results.sourceIssues,
       warnings: results.warnings,
@@ -1743,4 +1977,5 @@ if (require.main === module) {
 module.exports = {
   normaliseType, typesCompatible, defaultLiteralForType, parseSqlFiles,
   diffSchema, crossCheckSources, loadJournal, extractRuntimeTableNames,
+  TYPE_TOKEN_COLUMN_RE, DEFAULT_VALUE_RE,
 };
