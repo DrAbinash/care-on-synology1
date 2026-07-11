@@ -297,6 +297,8 @@ export const KNOWN_PACS_SETTINGS: SettingDescriptor[] = [
   { key: "tailscale_host", category: "network", purpose: "Tailscale IP/hostname of the NAS" },
   // workflow (M1.6A) — read by key only; the settings writer defaults it to "general"
   { key: "radiology_lock_ttl_seconds", category: "general", purpose: "study lock TTL (derived expiry)", numeric: { min: 30, max: 86_400 } },
+  // report presentation (R1.1) — read by key only via lib/reportPresentationConfig
+  { key: "report_presentation_template", category: "report", purpose: "presentation template for every rendered report surface", enumValues: ["care-classic", "care-premium"] },
   // voice (M1.6B2/B3)
   { key: "voice_enabled", category: "voice", purpose: "voice command layer on/off", enumValues: ["true", "false"] },
   { key: "voice_provider", category: "voice", purpose: "default STT provider", enumValues: ["browser", "server", "local", "auto"] },

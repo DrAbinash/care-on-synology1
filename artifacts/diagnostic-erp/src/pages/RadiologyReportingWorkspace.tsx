@@ -21,6 +21,7 @@ import {
   LayoutTemplate, BarChart3, Monitor,
 } from "lucide-react";
 import EmbeddedWadoViewer from "@/components/EmbeddedWadoViewer";
+import ReportImagePicker from "@/components/radiology/ReportImagePicker";
 import RadiologyCopilotPanel from "@/components/RadiologyCopilotPanel";
 import RadiologyMemoryPanel from "@/components/RadiologyMemoryPanel";
 import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
@@ -335,6 +336,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // ── Layout ────────────────────────────────────────────────────────────────
   const [rightTab, setRightTab] = useState<RightTab>("templates");
   const [previewMode, setPreviewMode] = useState(false);
+  // R1.1 — the preview shows the CANONICAL server-rendered document (shared
+  // presentation layer) whenever a saved draft/report exists; the client-side
+  // assembly remains only as the unsaved-draft fallback.
+  const [serverPreviewHtml, setServerPreviewHtml] = useState<string | null>(null);
 
   // ── Template selection ────────────────────────────────────────────────────
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
@@ -1315,6 +1320,23 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // promoted this draft into. GET /:id resolves to the LATEST version (D8)
   // and carries additive `version` + `lifecycle` metadata (D8/D9).
   const linkedReportId = finalizedReportId ?? entry?.reportId ?? existingDraft?.finalReportId ?? null;
+
+  // R1.1 — load the canonical server-rendered document for the preview panel.
+  useEffect(() => {
+    if (!previewMode) return;
+    const url = linkedReportId
+      ? `/api/patient-reports/${linkedReportId}/print?preview=true`
+      : draftId
+        ? `/api/radiology/report-generator/drafts/${draftId}/print-preview`
+        : null;
+    if (!url) { setServerPreviewHtml(null); return; }
+    let cancelled = false;
+    api.get<string>(url)
+      .then((html) => { if (!cancelled) setServerPreviewHtml(typeof html === "string" ? html : null); })
+      .catch(() => { if (!cancelled) setServerPreviewHtml(null); });
+    return () => { cancelled = true; };
+  }, [previewMode, draftId, linkedReportId]);
+
   const { data: finalReport } = useQuery<FinalReportMeta & { id?: number; signedByName?: string | null }>({
     queryKey: ["workspace-final-report", linkedReportId],
     queryFn: () => api.get(`/api/patient-reports/${linkedReportId}`),
@@ -1930,7 +1952,30 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     toast({ title: "Study reloaded" });
   }
 
-  function printReport() {
+  // R1.1 — print the CANONICAL server artifact (the exact document every
+  // delivery surface produces), not the on-screen editing preview. A
+  // finalized report prints its patient-reports artifact; a draft prints the
+  // shared-layer draft preview (DRAFT watermark). Falls back to the local
+  // preview only when nothing is saved yet.
+  async function printReport() {
+    const url = linkedReportId
+      ? `/api/patient-reports/${linkedReportId}/print`
+      : draftId
+        ? `/api/radiology/report-generator/drafts/${draftId}/print-preview?autoPrint=true`
+        : null;
+    if (url) {
+      try {
+        const html = await api.get<string>(url);
+        const w = window.open("", "_blank");
+        if (!w) return;
+        w.document.write(html); // artifact carries its own auto-print script
+        w.document.close();
+        w.focus();
+        return;
+      } catch {
+        toast({ title: "Server print failed — using local preview", variant: "destructive" });
+      }
+    }
     if (!previewRef.current) return;
     const w = window.open("", "_blank");
     if (!w) return;
@@ -2408,6 +2453,17 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 </div>
               </div>
             )}
+          </div>
+
+          {/* R1.1 — selected report images: persisted as DICOM references,
+              rendered into every artifact by the shared presentation layer. */}
+          <div className="shrink-0 p-2 border-t overflow-y-auto max-h-64">
+            <ReportImagePicker
+              draftId={draftId}
+              studyId={entry?.studyId ?? null}
+              studyInstanceUID={entry?.studyInstanceUID ?? null}
+              disabled={isLocked}
+            />
           </div>
         </div>
 
@@ -2950,8 +3006,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                       <div className="text-green-700 font-medium">
                         ✓ Structured document valid — {draftValidation.structured.findingsCount} finding(s)
                       </div>
+                      {/* warnings arrive as issue OBJECTS ({rule, severity, path,
+                          message}) — render through the same text helper the
+                          errors use, or React throws "Objects are not valid as
+                          a React child" and the whole preview panel dies. */}
                       {draftValidation.structured.warnings.map((w, i) => (
-                        <div key={i} className="text-amber-700">⚠ {w}</div>
+                        <div key={i} className="text-amber-700">⚠ {validationIssueText(w)}</div>
                       ))}
                     </>
                   ) : draftValidation.structured.errors.length > 0 ? (
@@ -2986,11 +3046,25 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                     </div>
                   )}
                 </div>
-                <div
-                  ref={previewRef}
-                  className="p-4"
-                  dangerouslySetInnerHTML={{ __html: previewHtml }}
-                />
+                {serverPreviewHtml ? (
+                  /* R1.1 — the canonical server-rendered document (shared
+                     presentation layer): exactly what print/PDF/delivery
+                     produce, selected images included. */
+                  <iframe
+                    title="Report preview"
+                    srcDoc={serverPreviewHtml}
+                    className="w-full border-none bg-white"
+                    style={{ minHeight: "70vh" }}
+                    sandbox="allow-same-origin"
+                    data-testid="server-report-preview"
+                  />
+                ) : (
+                  <div
+                    ref={previewRef}
+                    className="p-4"
+                    dangerouslySetInnerHTML={{ __html: previewHtml }}
+                  />
+                )}
               </div>
             )}
           </div>

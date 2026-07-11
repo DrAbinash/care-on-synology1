@@ -174,7 +174,11 @@ export const radiologyReportKeyImagesTable = pgTable(
   }),
 );
 
-// radiology_image_references — structured key image references attached to a report draft
+// radiology_image_references — structured key image references attached to a report draft.
+// R1.1: extended additively with the DICOM identifier triple + frame + display
+// order so selected images persist as REFERENCES (StudyInstanceUID /
+// SeriesInstanceUID / SOPInstanceUID / frame / caption / order) — never
+// browser blob URLs. `description` doubles as the caption.
 export const radiologyImageReferencesTable = pgTable(
   "radiology_image_references",
   {
@@ -184,6 +188,11 @@ export const radiologyImageReferencesTable = pgTable(
     seriesNumber: text("series_number"),
     imageNumber: text("image_number"),
     description: text("description").notNull(),
+    studyInstanceUid: text("study_instance_uid"),
+    seriesInstanceUid: text("series_instance_uid"),
+    sopInstanceUid: text("sop_instance_uid"),
+    frameNumber: integer("frame_number"),
+    displayOrder: integer("display_order").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },

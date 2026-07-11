@@ -51,6 +51,12 @@ import {
 } from "@workspace/db/schema";
 import { eq, and, desc, isNull, asc, ilike, or } from "drizzle-orm";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
+import {
+  escapeHtml, renderReportDocument, resolvePresentationTemplate,
+  type ReportDocumentModel, type ReportKeyImageModel,
+} from "../lib/reportPresentation";
+import { selectedPresentationTemplateId } from "../lib/reportPresentationConfig";
+import { resolveDraftKeyImages } from "../lib/reportImages";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import { checkWriteLock } from "../lib/studyLocks";
 import { regenerateDraftStructuredJson } from "../lib/radiologyStructuredJsonCache";
@@ -1769,6 +1775,97 @@ radiologyReportGeneratorRouter.get("/drafts/:id", async (req: Request, res: Resp
   res.json({ success: true, draft });
 });
 
+// ── R1.1 — server-rendered DRAFT preview through THE shared presentation
+// layer. The workspace's on-screen preview and its Print button both show
+// this exact document, so what the radiologist sees is what every delivery
+// surface produces (one render pipeline, no duplicated HTML). Read-only;
+// drafts render with a DRAFT watermark and can never pass as final.
+radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!id) { res.status(400).json({ success: false, error: "Invalid id" }); return; }
+  const [draft] = await db.select().from(radiologyReportDraftsTable).where(eq(radiologyReportDraftsTable.id, id));
+  if (!draft) { res.status(404).send("Draft not found"); return; }
+
+  const [worklist] = draft.worklistId
+    ? await db.select().from(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, draft.worklistId)).limit(1)
+    : [undefined];
+  const [clinic] = await db.select().from(clinicSettingsTable).limit(1);
+
+  // Body: findings sections + impression + recommendation from the draft row
+  // (presentation of existing content only — no clinical wording is altered).
+  const esc = (s: string | null | undefined) => escapeHtml(s ?? "");
+  let sectionsHtml = "";
+  try {
+    const sections = draft.findingsSections ? (JSON.parse(draft.findingsSections) as Record<string, string>) : {};
+    sectionsHtml = Object.entries(sections)
+      .filter(([, content]) => (content ?? "").trim())
+      .map(([name, content]) => `<div class="section-heading">${esc(name)}</div><p>${esc(content).replaceAll("\n", "<br/>")}</p>`)
+      .join("\n");
+  } catch { /* malformed sections JSON → fall through to raw findings */ }
+  if (!sectionsHtml && draft.rawFindings?.trim()) {
+    sectionsHtml = `<div class="section-heading">Findings</div><p>${esc(draft.rawFindings).replaceAll("\n", "<br/>")}</p>`;
+  }
+  let impressionList = "";
+  try {
+    const bullets = draft.impression ? (JSON.parse(draft.impression) as string[]) : [];
+    if (Array.isArray(bullets) && bullets.filter(Boolean).length > 0) {
+      impressionList = `<div class="section-heading">Impression</div><ol>${bullets.filter(Boolean).map((b) => `<li>${esc(b)}</li>`).join("")}</ol>`;
+    }
+  } catch {
+    if (draft.impression?.trim()) impressionList = `<div class="section-heading">Impression</div><p>${esc(draft.impression)}</p>`;
+  }
+  const bodyHtml = [
+    draft.clinicalHistory?.trim() ? `<div class="section-heading">Clinical History</div><p>${esc(draft.clinicalHistory)}</p>` : "",
+    sectionsHtml,
+    impressionList,
+    draft.recommendation?.trim() ? `<div class="section-heading">Recommendation</div><p>${esc(draft.recommendation)}</p>` : "",
+  ].filter(Boolean).join("\n");
+
+  let keyImages: ReportKeyImageModel[] = [];
+  try { keyImages = await resolveDraftKeyImages(id); } catch { keyImages = []; }
+
+  const model: ReportDocumentModel = {
+    reportNumber: `DRAFT-${draft.id}`,
+    studyTitle: draft.studyName || worklist?.studyDescription || `${draft.modality ?? ""} Study`.trim(),
+    typeLabel: "RADIOLOGY",
+    statusLabel: (draft.status ?? "DRAFT").toUpperCase(),
+    clinic: {
+      name: clinic?.name ?? "Care Diagnostics",
+      tagline: clinic?.tagline ?? "",
+      address: clinic?.address ?? "",
+      phone: clinic?.phone ?? "",
+      email: clinic?.email ?? "",
+      website: clinic?.website ?? "",
+      logoDataUrl: clinic?.logoDataUrl ?? null,
+    },
+    patientRows: [
+      { label: "Patient", value: worklist?.patientName ?? "" },
+      { label: "Age / Sex", value: [worklist?.age, worklist?.sex].filter(Boolean).join(" / ") },
+      { label: "Accession No.", value: worklist?.accessionNumber ?? "" },
+      { label: "Study Date", value: worklist?.studyDate ?? "" },
+      { label: "Modality", value: draft.modality ?? worklist?.modality ?? "" },
+      { label: "Referring Doctor", value: worklist?.referringDoctor ?? "" },
+      { label: "Status", value: "DRAFT — NOT SIGNED" },
+    ],
+    bodyHtml,
+    keyImages,
+    stamp: { kind: "draft", label: "DRAFT (not signed)" },
+    signatures: [],
+    showQrPlaceholder: false,
+    footerNote: clinic?.footerNote ?? "",
+    generatedAtLabel: new Date().toLocaleString("en-IN"),
+    draftWatermark: true,
+    autoPrint: req.query.autoPrint === "true",
+  };
+
+  const template = resolvePresentationTemplate(await selectedPresentationTemplateId(
+    typeof req.query.template === "string" ? req.query.template : undefined,
+  ));
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
+  res.send(renderReportDocument(model, template));
+});
+
 // POST /key-images — multipart upload
 radiologyReportGeneratorRouter.post(
   "/key-images",
@@ -2117,16 +2214,27 @@ radiologyReportGeneratorRouter.get("/image-references", async (req: Request, res
   const conds = [];
   if (draftId) conds.push(eq(radiologyImageReferencesTable.draftId, draftId));
   if (studyId) conds.push(eq(radiologyImageReferencesTable.studyId, studyId));
-  const rows = await db.select().from(radiologyImageReferencesTable).where(conds.length ? and(...conds) : undefined).orderBy(asc(radiologyImageReferencesTable.createdAt));
+  const rows = await db.select().from(radiologyImageReferencesTable).where(conds.length ? and(...conds) : undefined)
+    .orderBy(asc(radiologyImageReferencesTable.displayOrder), asc(radiologyImageReferencesTable.createdAt));
   res.json(rows);
 });
 
+// R1.1 — image references persist the DICOM identifier triple + frame +
+// display order (StudyInstanceUID / SeriesInstanceUID / SOPInstanceUID /
+// FrameNumber / caption / order). NEVER pixel data or browser blob URLs;
+// pixels resolve server-side at render time (lib/reportImages.ts).
+const UID = /^[0-9.]{1,128}$/;
 const ImageRefSchema = z.object({
   draftId: z.number().int(),
   studyId: z.number().int().optional(),
   seriesNumber: z.string().max(20).optional(),
   imageNumber: z.string().max(20).optional(),
   description: z.string().min(1).max(500),
+  studyInstanceUid: z.string().regex(UID).optional(),
+  seriesInstanceUid: z.string().regex(UID).optional(),
+  sopInstanceUid: z.string().regex(UID).optional(),
+  frameNumber: z.number().int().min(1).max(10_000).optional(),
+  displayOrder: z.number().int().min(0).max(1_000).optional(),
 });
 
 radiologyReportGeneratorRouter.post("/image-references", async (req: StaffAuthRequest, res: Response) => {
@@ -2138,8 +2246,38 @@ radiologyReportGeneratorRouter.post("/image-references", async (req: StaffAuthRe
     seriesNumber: parsed.data.seriesNumber ?? null,
     imageNumber: parsed.data.imageNumber ?? null,
     description: parsed.data.description,
+    studyInstanceUid: parsed.data.studyInstanceUid ?? null,
+    seriesInstanceUid: parsed.data.seriesInstanceUid ?? null,
+    sopInstanceUid: parsed.data.sopInstanceUid ?? null,
+    frameNumber: parsed.data.frameNumber ?? null,
+    displayOrder: parsed.data.displayOrder ?? 0,
   }).returning();
   res.status(201).json(row);
+});
+
+// R1.1 — caption/order edits for a persisted reference (presentation only).
+const ImageRefPatchSchema = z.object({
+  description: z.string().min(1).max(500).optional(),
+  displayOrder: z.number().int().min(0).max(1_000).optional(),
+});
+
+radiologyReportGeneratorRouter.patch("/image-references/:id", async (req: StaffAuthRequest, res: Response) => {
+  const id = Number(req.params.id);
+  if (!id) { res.status(400).json({ error: "Invalid id" }); return; }
+  const parsed = ImageRefPatchSchema.safeParse(req.body);
+  if (!parsed.success || (parsed.data.description === undefined && parsed.data.displayOrder === undefined)) {
+    res.status(400).json({ error: "description or displayOrder required" });
+    return;
+  }
+  const [row] = await db.update(radiologyImageReferencesTable)
+    .set({
+      ...(parsed.data.description !== undefined ? { description: parsed.data.description } : {}),
+      ...(parsed.data.displayOrder !== undefined ? { displayOrder: parsed.data.displayOrder } : {}),
+    })
+    .where(eq(radiologyImageReferencesTable.id, id))
+    .returning();
+  if (!row) { res.status(404).json({ error: "Not found" }); return; }
+  res.json(row);
 });
 
 radiologyReportGeneratorRouter.delete("/image-references/:id", async (req: StaffAuthRequest, res: Response) => {

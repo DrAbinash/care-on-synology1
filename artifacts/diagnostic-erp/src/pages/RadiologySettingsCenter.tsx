@@ -817,6 +817,27 @@ export default function RadiologySettingsCenter() {
 
         {/* Tab content 8.5: Institutional Report Style */}
         <TabsContent value="style" className="space-y-4">
+          {/* R1.1 — ONE presentation template for every rendered surface
+              (preview, print, PDF, delivery). Admin-only, defaults to the
+              classic look until changed. */}
+          {isAdmin && (
+            <div className="rounded-xl border bg-card p-5 space-y-2" data-testid="presentation-template-card">
+              <h3 className="font-semibold text-sm">Report presentation template</h3>
+              <p className="text-xs text-muted-foreground">
+                Applies to browser preview, print, PDF and every delivered copy. "CARE Premium" activates the
+                publication-quality layout (clinical report left, selected images right).
+              </p>
+              <select
+                value={settings.find((s) => s.key === "report_presentation_template")?.value ?? "care-classic"}
+                onChange={(e) => upsertSetting.mutate({ key: "report_presentation_template", value: e.target.value, category: "report" })}
+                className="w-full max-w-sm h-9 text-sm border rounded-md px-2 bg-background"
+                data-testid="presentation-template-select"
+              >
+                <option value="care-classic">CARE Classic (current default)</option>
+                <option value="care-premium">CARE Premium (report + image panel)</option>
+              </select>
+            </div>
+          )}
           <RadiologyStylePanel />
         </TabsContent>
 
