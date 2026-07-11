@@ -51,6 +51,7 @@ import {
 import { eq, and, desc, isNull, asc, ilike, or } from "drizzle-orm";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
+import { checkWriteLock } from "../lib/studyLocks";
 import { regenerateDraftStructuredJson } from "../lib/radiologyStructuredJsonCache";
 import {
   checkDraftStructuredJsonDrift,
@@ -1385,6 +1386,23 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
 
   const { id, ...rest } = parsed.data;
   const author = req.staffSession?.subjectName ?? null;
+
+  // M1.6A — respect active study locks: a draft save against a worklist row
+  // that ANOTHER user actively holds is refused, so two radiologists can
+  // never silently overwrite each other's in-progress report. Unlocked, own,
+  // or expired locks never block (pre-lock flows keep working unchanged).
+  if (rest.worklistId != null && req.staffSession) {
+    const gate = await checkWriteLock(rest.worklistId, req.staffSession.subjectId);
+    if (gate.blocked) {
+      res.status(409).json({
+        success: false,
+        error: "LOCKED_BY_OTHER",
+        lockedBy: gate.lockedBy,
+        message: `This study is currently being reported by ${gate.lockedBy}. Your text was not saved to the shared draft.`,
+      });
+      return;
+    }
+  }
 
   // `rest.findings` (A3.1) is intentionally not read anywhere below —
   // accepted by the schema above, ignored by this handler until A3.2.

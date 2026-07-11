@@ -45,9 +45,9 @@ describe("completion + position + indicators (Phase 6)", () => {
       parked: [{ id: 3, reason: null, parkedAt: 1 }],
     });
     expect(queueIndicators(s)).toEqual([
-      { id: 1, current: true, completed: false, parked: false },
-      { id: 2, current: false, completed: true, parked: false },
-      { id: 3, current: false, completed: false, parked: true },
+      { id: 1, current: true, completed: false, parked: false, lockedByOther: false },
+      { id: 2, current: false, completed: true, parked: false, lockedByOther: false },
+      { id: 3, current: false, completed: false, parked: true, lockedByOther: false },
     ]);
   });
 });
@@ -142,6 +142,64 @@ describe("park / unpark / prune (Phase 5)", () => {
     expect(parseParked('{"a":1}')).toEqual([]);
     expect(parseParked('[{"id":3,"reason":"x","parkedAt":9},{"id":"junk"},null,{"id":-1}]'))
       .toEqual([{ id: 3, reason: "x", parkedAt: 9 }]);
+  });
+});
+
+describe("M1.6A — lock-aware eligibility + assignment precedence", () => {
+  const NOW = new Date("2026-07-11T10:00:00Z").getTime();
+  const activeLockRow = (id: number, lockUserId: number) => study(id, {
+    lockUserId, lockUserName: `User ${lockUserId}`,
+    lockExpiresAt: new Date(NOW + 120_000).toISOString(),
+  });
+
+  it("rows actively locked by ANOTHER user are skipped and flagged; own/expired locks are not", () => {
+    const s = snap({
+      queue: [
+        study(1),
+        activeLockRow(2, 99),                                             // other's active lock
+        study(3, { lockUserId: 1, lockExpiresAt: new Date(NOW + 60_000).toISOString() }), // my lock
+        study(4, { lockUserId: 99, lockExpiresAt: new Date(NOW - 60_000).toISOString() }), // expired
+      ],
+      currentId: 1, myUserId: 1, nowMs: NOW,
+    });
+    expect(nextEligibleStudy(s)?.id).toBe(3);
+    const ind = queueIndicators(s);
+    expect(ind.find((i) => i.id === 2)?.lockedByOther).toBe(true);
+    expect(ind.find((i) => i.id === 3)?.lockedByOther).toBe(false);
+    expect(ind.find((i) => i.id === 4)?.lockedByOther).toBe(false);
+  });
+
+  it("next-study preference: assigned-to-me beats unassigned beats pooled, scan order within tier", () => {
+    const s = snap({
+      queue: [
+        study(1),
+        study(2, { assignedRadiologist: "Dr. Other" }),   // pooled
+        study(3),                                          // unassigned
+        study(4, { assignedRadiologist: "Dr. Asha Rao" }), // MINE — later in scan order
+      ],
+      currentId: 1, myUserId: 1, myName: "Dr. Asha Rao", nowMs: NOW,
+    });
+    expect(nextEligibleStudy(s)?.id).toBe(4);
+    // without my assignment in the queue: unassigned (3) beats pooled (2)
+    const s2 = { ...s, queue: [study(1), study(2, { assignedRadiologist: "Dr. Other" }), study(3)] };
+    expect(nextEligibleStudy(s2)?.id).toBe(3);
+    // no identity provided: unassigned STILL outranks someone-else's-assignment
+    // (the assignment data is real regardless of who is asking); rows without
+    // any assignment info keep plain scan order — the M1.5 suites above pin that.
+    const s3 = snap({ queue: [study(1), study(2, { assignedRadiologist: "Dr. Other" }), study(3)], currentId: 1 });
+    expect(nextEligibleStudy(s3)?.id).toBe(3);
+  });
+
+  it("return-to-parked skips a parked study someone else claimed meanwhile", () => {
+    const s = snap({
+      queue: [study(1), activeLockRow(2, 99), study(3)],
+      currentId: 3, myUserId: 1, nowMs: NOW,
+      parked: [
+        { id: 2, reason: null, parkedAt: 100 }, // oldest, but now locked by 99
+        { id: 1, reason: null, parkedAt: 200 },
+      ],
+    });
+    expect(nextParkedStudy(s)?.id).toBe(1);
   });
 });
 

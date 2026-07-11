@@ -24,6 +24,11 @@ export interface QueueStudy {
   accessionNumber: string;
   status: string;
   reportId?: number | null;
+  // M1.6A — assignment + lock fields (absent on pre-lock payloads).
+  assignedRadiologist?: string | null;
+  lockUserId?: number | null;
+  lockUserName?: string | null;
+  lockExpiresAt?: string | null;
 }
 
 export interface ParkedStudy {
@@ -43,6 +48,20 @@ export interface WorkflowSnapshot {
   /** Studies finalized in THIS session — excluded from "next eligible" even
    *  before the queue refetch reflects the server status flip. */
   completedIds: ReadonlySet<number>;
+  /** M1.6A — when present, rows actively locked by ANOTHER user are excluded
+   *  from next-eligible and flagged in the indicators, and next-study prefers
+   *  assigned-to-me → unassigned → pooled. Absent = pre-lock behavior. */
+  myUserId?: number | null;
+  myName?: string | null;
+  nowMs?: number;
+}
+
+/** Active foreign lock, from the server-computed expiry only. */
+export function isQueueRowLockedByOther(row: QueueStudy, myUserId: number | null | undefined, nowMs: number | undefined): boolean {
+  if (row.lockUserId == null || myUserId == null || nowMs == null) return false;
+  if (row.lockUserId === myUserId) return false;
+  const expires = row.lockExpiresAt ? new Date(row.lockExpiresAt).getTime() : NaN;
+  return Number.isFinite(expires) && expires > nowMs;
 }
 
 export function isStudyCompleted(study: QueueStudy, completedIds: ReadonlySet<number>): boolean {
@@ -65,6 +84,8 @@ export interface QueueIndicator {
   current: boolean;
   completed: boolean;
   parked: boolean;
+  /** M1.6A — actively locked by another user (visibly marked, not eligible). */
+  lockedByOther: boolean;
 }
 
 export function queueIndicators(snapshot: WorkflowSnapshot): QueueIndicator[] {
@@ -73,6 +94,7 @@ export function queueIndicators(snapshot: WorkflowSnapshot): QueueIndicator[] {
     current: s.id === snapshot.currentId,
     completed: isStudyCompleted(s, snapshot.completedIds),
     parked: isStudyParked(s.id, snapshot.parked),
+    lockedByOther: isQueueRowLockedByOther(s, snapshot.myUserId, snapshot.nowMs),
   }));
 }
 
@@ -81,28 +103,41 @@ export function queueIndicators(snapshot: WorkflowSnapshot): QueueIndicator[] {
 /**
  * The next ELIGIBLE study: scanning forward from the current position (wrap
  * around), skip the current study, everything completed (server status or
- * finalized this session), and everything parked. Returns null when nothing
- * is left to report.
+ * finalized this session), everything parked, and (M1.6A) everything actively
+ * locked by another user. Among the eligible candidates the pick prefers
+ * assigned-to-me → unassigned → pooled (assigned to someone else), keeping
+ * scan order within a tier. Returns null when nothing is left to report.
  */
 export function nextEligibleStudy(snapshot: WorkflowSnapshot): QueueStudy | null {
   const { queue, currentId } = snapshot;
   if (queue.length === 0) return null;
   const start = currentId == null ? -1 : queue.findIndex((s) => s.id === currentId);
+  const myName = (snapshot.myName ?? "").trim().toLowerCase();
+  let best: { candidate: QueueStudy; tier: number } | null = null;
   for (let step = 1; step <= queue.length; step++) {
     const candidate = queue[(start + step + queue.length) % queue.length];
     if (candidate.id === currentId) continue;
     if (isStudyCompleted(candidate, snapshot.completedIds)) continue;
     if (isStudyParked(candidate.id, snapshot.parked)) continue;
-    return candidate;
+    if (isQueueRowLockedByOther(candidate, snapshot.myUserId, snapshot.nowMs)) continue;
+    const assigned = (candidate.assignedRadiologist ?? "").trim().toLowerCase();
+    const tier = assigned && myName && assigned === myName ? 0 : !assigned ? 1 : 2;
+    if (!best || tier < best.tier) best = { candidate, tier };
+    if (best.tier === 0) break; // nothing can beat an assigned-to-me study
   }
-  return null;
+  return best?.candidate ?? null;
 }
 
-/** The next study for RETURN TO PARKED: oldest-parked first, still in queue. */
+/** The next study for RETURN TO PARKED: oldest-parked first, still in queue,
+ *  and (M1.6A) not actively locked by another user in the meantime. */
 export function nextParkedStudy(snapshot: WorkflowSnapshot): QueueStudy | null {
   const inQueue = new Map(snapshot.queue.map((s) => [s.id, s]));
   const candidates = [...snapshot.parked]
-    .filter((p) => p.id !== snapshot.currentId && inQueue.has(p.id))
+    .filter((p) => {
+      const row = inQueue.get(p.id);
+      return p.id !== snapshot.currentId && row !== undefined &&
+        !isQueueRowLockedByOther(row, snapshot.myUserId, snapshot.nowMs);
+    })
     .sort((a, b) => a.parkedAt - b.parkedAt);
   return candidates.length ? inQueue.get(candidates[0].id)! : null;
 }

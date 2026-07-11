@@ -51,8 +51,10 @@ import {
 import { canLeaveStudy, type QueueStudy } from "@/lib/reportingWorkflow";
 import { createCommandDispatcher } from "@/lib/workspaceCommands";
 import { useReportingWorkflow } from "@/hooks/useReportingWorkflow";
+import { useStudyLock } from "@/hooks/useStudyLock";
+import { lockStatusMessage, QUEUE_SCOPE_LABELS, type QueueScope } from "@/lib/studyLockState";
 import type { StudyLaunchResult } from "@/lib/studyLaunchService";
-import { ChevronLeft, ChevronRight, PauseCircle } from "lucide-react";
+import { ChevronLeft, ChevronRight, PauseCircle, Lock } from "lucide-react";
 
 // ════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -399,8 +401,31 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   /** Admin-only structured diagnostics drawer inside the preview (Phase 7). */
   const [showDiagnostics, setShowDiagnostics] = useState(false);
 
+  // ── M1.6A — assignment-aware queue scope + study lock ────────────────────
+  const [queueScope, setQueueScope] = useState<QueueScope>(() => {
+    try {
+      const stored = window.localStorage.getItem("radiology_queue_scope");
+      return stored === "mine" || stored === "unassigned" || stored === "pool" ? stored : "all";
+    } catch { return "all"; }
+  });
+  function changeQueueScope(next: QueueScope) {
+    setQueueScope(next);
+    try { window.localStorage.setItem("radiology_queue_scope", next); } catch { /* private mode */ }
+  }
+
   // ── M1.5 — workflow controller (queue, history, parked, transitions) ─────
-  const workflow = useReportingWorkflow(studyId);
+  const workflow = useReportingWorkflow(studyId, {
+    scope: queueScope,
+    myUserId: session?.user.id ?? null,
+    myName: session?.user.name ?? null,
+  });
+
+  // Claim the current study on entry (visible in the status bar — never
+  // silent), heartbeat while held, stop after finalize. Server expiry stays
+  // authoritative; losing the lock never touches local text.
+  const studyLock = useStudyLock(studyId, { enabled: reportStatus !== "FINAL" });
+  const lockedByOther = studyLock.status === "locked-by-other";
+  const lockLost = studyLock.status === "expired-lost";
   /** Viewer launch state mirrored up from OpenStudyPanel: transitions are
    *  blocked while a launch is in flight, and the status bar shows the last
    *  outcome. */
@@ -911,7 +936,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     return Array.from(set).sort();
   }, [templates]);
 
-  const isLocked = STATUS_CONFIG[reportStatus]?.locked ?? false;
+  const statusLocked = STATUS_CONFIG[reportStatus]?.locked ?? false;
+  // M1.6A — the editing gate: a finalized report OR a study actively locked
+  // by another user is read-only. All existing disabled= paths hang off this.
+  const isLocked = statusLocked || lockedByOther;
 
   // ── M1.4 — derived workflow state ─────────────────────────────────────────
 
@@ -1272,6 +1300,16 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     // Guard against double-finalize: both re-clicks while in flight
     // (finalizing flag) and re-finalizing an already-final report.
     if (finalizing || reportStatus === "FINAL") return;
+    // M1.6A — ownership gate (the server re-checks; this keeps the failure
+    // early and the message clear). Draft text is never touched either way.
+    if (lockedByOther) {
+      toast({ title: "Cannot finalize", description: `${lockStatusMessage("locked-by-other", studyLock.ownerName)}.`, variant: "destructive" });
+      return;
+    }
+    if (lockLost) {
+      toast({ title: "Cannot finalize", description: "Your study lock expired — reclaim the study first. Your text is preserved.", variant: "destructive" });
+      return;
+    }
     setFinalizing(true);
     let confirmed = false;
     try {
@@ -1536,6 +1574,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
    *  report state when the :studyId param changes. */
   function goToStudy(target: QueueStudy) {
     cancelCurrentStudyRequests();
+    // M1.6A — leaving safely (guards passed) releases our lock; a failed
+    // release is harmless because expiry is authoritative.
+    studyLock.release(studyId);
     workflow.beginTransition(studyId, target);
     navigate(`/radiology/report/${target.id}`);
   }
@@ -1569,6 +1610,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     }
     if (!guardedLeave()) return;
     cancelCurrentStudyRequests();
+    studyLock.release(studyId);
     const targetId = workflow.beginPreviousTransition(studyId);
     if (targetId == null) return;
     navigate(`/radiology/report/${targetId}`);
@@ -1823,7 +1865,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           variant="ghost"
           size="sm"
           className="h-7 gap-1 text-xs shrink-0"
-          onClick={() => navigate("/radiology/worklist")}
+          onClick={() => {
+            // Explicit exit — release our lock when safe (expiry covers the rest).
+            studyLock.release(studyId);
+            navigate("/radiology/worklist");
+          }}
         >
           <ArrowLeft size={13} /> Worklist
         </Button>
@@ -1885,6 +1931,21 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         {saving && <span className="text-blue-700">Saving…</span>}
         {finalizing && <span className="text-blue-700">Finalizing…</span>}
         {workflow.transitioning && <span className="text-blue-700">Switching study…</span>}
+        {/* M1.6A — lock ownership, always visible and truthful */}
+        {studyLock.status !== "idle" && studyLock.status !== "not-found" && studyLock.status !== "completed" && (
+          <span
+            data-testid="lock-status"
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 border text-[10px] font-semibold ${
+              studyLock.status === "mine" ? "bg-green-100 text-green-800 border-green-300"
+              : studyLock.status === "locked-by-other" ? "bg-red-100 text-red-800 border-red-300"
+              : studyLock.status === "claiming" ? "bg-slate-100 text-slate-700 border-slate-300"
+              : "bg-amber-100 text-amber-800 border-amber-300"
+            }`}
+            title={studyLock.expiresAt ? `Lock expires ${new Date(studyLock.expiresAt).toLocaleTimeString()} (heartbeat keeps it alive)` : undefined}
+          >
+            <Lock size={9} /> {lockStatusMessage(studyLock.status, studyLock.ownerName)}
+          </span>
+        )}
         <span className="text-muted-foreground" data-testid="viewer-status">
           Viewer:{" "}
           {viewerLaunch.busy
@@ -1896,7 +1957,19 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 : "—"}
         </span>
         <div className="ml-auto flex items-center gap-1">
-          {/* Jump to a specific queue row — indicators: → current ✓ done ⏸ parked */}
+          {/* M1.6A — assignment-aware queue scope */}
+          <select
+            className="h-6 text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
+            value={queueScope}
+            data-testid="queue-scope"
+            onChange={(e) => changeQueueScope(e.target.value as QueueScope)}
+            title="Queue scope: which studies Next/Previous and the queue list cover"
+          >
+            {(Object.keys(QUEUE_SCOPE_LABELS) as QueueScope[]).map((s) => (
+              <option key={s} value={s}>{QUEUE_SCOPE_LABELS[s]}</option>
+            ))}
+          </select>
+          {/* Jump to a specific queue row — →current ✓done ⏸parked 🔒locked */}
           <select
             className="h-6 max-w-[260px] text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
             value=""
@@ -1914,7 +1987,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             <option value="">Queue ({workflow.position.total})…</option>
             {workflow.queue.map((s) => {
               const ind = workflow.indicators.find((i) => i.id === s.id);
-              const prefix = ind?.current ? "→ " : ind?.completed ? "✓ " : ind?.parked ? "⏸ " : "";
+              const prefix = ind?.current ? "→ " : ind?.completed ? "✓ " : ind?.parked ? "⏸ " : ind?.lockedByOther ? "🔒 " : "";
               return (
                 <option key={s.id} value={s.id}>
                   {prefix}{s.patientName} · {s.modality} · {s.accessionNumber}
@@ -2040,9 +2113,59 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
 
             {/* Finalized banner */}
-            {isLocked && (
+            {statusLocked && (
               <div className="flex items-center gap-2 p-2 rounded-md bg-green-50 border border-green-200 text-green-800 text-xs font-medium shrink-0">
                 <CheckCircle2 size={14} /> Report is finalized. Editing is disabled.
+              </div>
+            )}
+
+            {/* M1.6A — locked by another radiologist: read-only view */}
+            {!statusLocked && lockedByOther && (
+              <div className="flex items-center gap-2 p-2 rounded-md bg-red-50 border border-red-200 text-red-800 text-xs font-medium shrink-0">
+                <Lock size={14} className="shrink-0" />
+                <span className="flex-1">
+                  {lockStatusMessage("locked-by-other", studyLock.ownerName)} — read-only view. Editing and finalize are
+                  disabled until the study is released{studyLock.expiresAt ? ` (lock expires ${new Date(studyLock.expiresAt).toLocaleTimeString()})` : ""}.
+                </span>
+                <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={() => void studyLock.claim()}>
+                  Retry claim
+                </Button>
+                {isOwnerRole(session) && (
+                  <Button size="sm" variant="outline" className="h-6 text-[10px] border-red-300 text-red-700"
+                    onClick={() => {
+                      const reason = window.prompt(`Admin override — force-release the lock held by ${studyLock.ownerName ?? "another user"}?\nReason (required for the audit log):`, "");
+                      if (reason === null || !reason.trim()) return;
+                      void studyLock.forceRelease(reason.trim()).then((ok) => {
+                        if (!ok) toast({ title: "Override failed", description: "Admin override required.", variant: "destructive" });
+                      });
+                    }}>
+                    Admin override
+                  </Button>
+                )}
+              </div>
+            )}
+
+            {/* M1.6A — our lock lapsed while editing: text preserved, reclaim to continue */}
+            {!statusLocked && lockLost && (
+              <div className="flex items-center gap-2 p-2 rounded-md bg-amber-50 border border-amber-200 text-amber-900 text-xs font-medium shrink-0">
+                <AlertTriangle size={14} className="shrink-0" />
+                <span className="flex-1">
+                  {lockStatusMessage("expired-lost", null)}. Your text is preserved locally — reclaim before saving or finalizing.
+                </span>
+                <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={() => void studyLock.claim()}>
+                  Reclaim study
+                </Button>
+              </div>
+            )}
+
+            {/* M1.6A — heartbeat unreachable: lock may lapse server-side */}
+            {!statusLocked && studyLock.status === "connection-lost" && (
+              <div className="flex items-center gap-2 p-2 rounded-md bg-amber-50 border border-amber-200 text-amber-900 text-xs font-medium shrink-0">
+                <AlertTriangle size={14} className="shrink-0" />
+                <span className="flex-1">{lockStatusMessage("connection-lost", null)}. Your text is safe locally.</span>
+                <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={() => void studyLock.claim()}>
+                  Reconnect
+                </Button>
               </div>
             )}
 

@@ -79,7 +79,13 @@ function StatusBadge({ status }: { status: string }) {
 
 function LockBadge({ entry, currentUserId }: { entry: any; currentUserId?: number | null }) {
   const lastAct = entry.lockLastActivityAt || entry.lockTime;
-  const isLocked = entry.lockUserId && lastAct && (Date.now() - new Date(lastAct).getTime()) <= 30 * 60 * 1000;
+  // M1.6A — prefer the SERVER-computed expiry (lock_last_activity_at + the
+  // configured TTL); the 30-minute window is only the pre-lock-era fallback.
+  const isLocked = entry.lockUserId && (
+    entry.lockExpiresAt
+      ? new Date(entry.lockExpiresAt).getTime() > Date.now()
+      : lastAct && (Date.now() - new Date(lastAct).getTime()) <= 30 * 60 * 1000
+  );
   
   if (!isLocked) {
     return (
@@ -475,9 +481,13 @@ export default function RadiologyWorklist() {
     // Client-side modality filter
     if (modalityFilter !== "all" && e.modality !== modalityFilter) return false;
 
-    // Client-side lock filter
+    // Client-side lock filter — server-computed expiry first (M1.6A)
     const lastAct = e.lockLastActivityAt || e.lockTime;
-    const isLocked = e.lockUserId && lastAct && (Date.now() - new Date(lastAct).getTime()) <= 30 * 60 * 1000;
+    const isLocked = e.lockUserId && (
+      (e as { lockExpiresAt?: string | null }).lockExpiresAt
+        ? new Date((e as { lockExpiresAt?: string | null }).lockExpiresAt as string).getTime() > Date.now()
+        : lastAct && (Date.now() - new Date(lastAct).getTime()) <= 30 * 60 * 1000
+    );
     const isMine = isLocked && e.lockUserId === session?.user?.id;
 
     if (lockFilter === "available" && isLocked) return false;

@@ -7,6 +7,7 @@ import {
   pushHistory, popHistory, parkStudy, unparkStudy, pruneParked, parseParked,
   isStudyParked,
 } from "@/lib/reportingWorkflow";
+import { filterQueueByScope, type QueueScope } from "@/lib/studyLockState";
 
 /**
  * useReportingWorkflow — Ticket M1.5 Phase 2: the ONE workflow controller for
@@ -39,16 +40,35 @@ function writeParked(parked: ParkedStudy[]): void {
   } catch { /* private mode — parked state stays in-memory */ }
 }
 
-export function useReportingWorkflow(currentStudyId: number | undefined) {
+export interface ReportingWorkflowOptions {
+  /** M1.6A — assignment-aware queue scope (My Studies / Unassigned / Pool /
+   *  All permitted). next/previous/park operate WITHIN the scoped queue. */
+  scope?: QueueScope;
+  /** Session identity for lock-awareness (skip locked-by-other rows) and
+   *  assignment preference (assigned-to-me first). */
+  myUserId?: number | null;
+  myName?: string | null;
+}
+
+export function useReportingWorkflow(currentStudyId: number | undefined, options: ReportingWorkflowOptions = {}) {
+  const { scope = "all", myUserId = null, myName = null } = options;
   const qc = useQueryClient();
 
   // Same key as pages/RadiologyWorklist.tsx — shared cache, no second fetch.
-  const { data: queue = [], isFetching: queueRefreshing, refetch: refetchQueue, dataUpdatedAt } = useQuery<QueueStudy[]>({
+  const { data: fullQueue = [], isFetching: queueRefreshing, refetch: refetchQueue, dataUpdatedAt } = useQuery<QueueStudy[]>({
     queryKey: ["radiology-pacs-worklist"],
     queryFn: () => api.get<QueueStudy[]>("/api/radiology/pacs-worklist"),
     refetchInterval: 30_000,
     placeholderData: (prev) => prev, // background refresh never blanks the strip
   });
+
+  // The ACTIVE queue is the scoped one; parked pruning below deliberately
+  // uses the FULL queue so switching scopes never discards parked markers
+  // for studies that merely fell outside the current filter.
+  const queue = useMemo(
+    () => filterQueueByScope(fullQueue, scope, myName),
+    [fullQueue, scope, myName],
+  );
 
   const [parked, setParked] = useState<ParkedStudy[]>(readParked);
   const [completedIds, setCompletedIds] = useState<ReadonlySet<number>>(new Set());
@@ -60,19 +80,32 @@ export function useReportingWorkflow(currentStudyId: number | undefined) {
    *  claimed at transition time; the page cross-checks the loaded entry. */
   const expectedPatientRef = useRef<{ studyId: number; patientId: number | null } | null>(null);
 
-  // Parked entries for finished/vanished studies must not linger.
+  // Parked entries for finished/vanished studies must not linger — pruned
+  // against the FULL queue (scope changes never delete parked markers).
   useEffect(() => {
-    if (queue.length === 0) return;
+    if (fullQueue.length === 0) return;
     setParked((prev) => {
-      const pruned = pruneParked(prev, queue, completedIds);
+      const pruned = pruneParked(prev, fullQueue, completedIds);
       if (pruned.length !== prev.length) writeParked(pruned);
       return pruned.length !== prev.length ? pruned : prev;
     });
-  }, [queue, completedIds]);
+  }, [fullQueue, completedIds]);
 
   const snapshot: WorkflowSnapshot = useMemo(
-    () => ({ queue, currentId: currentStudyId ?? null, parked, completedIds }),
-    [queue, currentStudyId, parked, completedIds],
+    () => ({
+      queue,
+      currentId: currentStudyId ?? null,
+      parked,
+      completedIds,
+      myUserId,
+      myName,
+      // Refreshed whenever the queue data refreshes (≤30s stale) — plenty for
+      // lock-expiry display; the CURRENT study's lock state is authoritative
+      // from useStudyLock, not from here.
+      nowMs: Date.now(),
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [queue, currentStudyId, parked, completedIds, myUserId, myName, dataUpdatedAt],
   );
 
   const position = useMemo(() => queuePosition(queue, currentStudyId ?? null), [queue, currentStudyId]);

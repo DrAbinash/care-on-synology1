@@ -209,3 +209,34 @@ describe("M1.5 — productivity workflow stays canonical", () => {
     expect(workspace).toContain("onLaunchStateChange={setViewerLaunch}");
   });
 });
+
+describe("M1.6A — study locking stays canonical", () => {
+  const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+
+  it("the workspace claims through the ONE lock hook; rules live in libs", () => {
+    expect(workspace).toContain('from "@/hooks/useStudyLock"');
+    expect(workspace).toContain('from "@/lib/studyLockState"');
+    const hook = read("hooks/useStudyLock.ts");
+    for (const endpoint of ["/claim", "/heartbeat", "/release", "/force-release"]) {
+      expect(hook, `hook must own the ${endpoint} transport`).toContain(`worklist-lock/\${target}${endpoint}`);
+    }
+  });
+
+  it("no client-supplied lock owner identity anywhere", () => {
+    // Owner identity is server-derived from the staff session; the frontend
+    // never posts a lockUserId/lockUserName.
+    const hook = read("hooks/useStudyLock.ts");
+    expect(hook).not.toMatch(/post[^;]*lockUserId/s);
+    expect(workspace).not.toMatch(/post[^;]*lockUserName/s);
+  });
+
+  it("locked-by-other folds into the ONE editing gate (read-only view)", () => {
+    expect(workspace).toContain("statusLocked || lockedByOther");
+  });
+
+  it("assignment-aware scope filters run through the workflow controller", () => {
+    expect(workspace).toContain('data-testid="queue-scope"');
+    const hook = read("hooks/useReportingWorkflow.ts");
+    expect(hook).toContain("filterQueueByScope");
+  });
+});

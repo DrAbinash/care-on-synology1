@@ -34,6 +34,8 @@ import { and, asc, desc, eq, gte, ilike, isNull, lte, or, sql } from "drizzle-or
 import crypto from "node:crypto";
 import { FULL_ACCESS_ROLES, type StaffAuthRequest } from "../middleware/requireStaffAuth.js";
 import { computeStudyPriority, applyPriorityToStudy } from "../lib/studyPriorityEngine";
+import { getLockTtlSeconds } from "../lib/studyLocks";
+import { lockExpiresAt } from "../lib/studyLockRules";
 import { assignRadiologistToStudy } from "../lib/radiologistAssignment";
 import { createVerificationRecord, recordPrelimReport, recordPeerReview, verifyReport, finalizeReport, getVerificationQueue } from "../lib/peerReview";
 import { flagCriticalFinding, scanForCriticalFindings, getCriticalFindingsForStudy, acknowledgeFinding } from "../lib/criticalFindingsAlert";
@@ -360,21 +362,33 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         deliveryStatus: radiologyWorklistTable.deliveryStatus,
         createdAt: radiologyWorklistTable.createdAt,
         updatedAt: radiologyWorklistTable.updatedAt,
-        lockUserId: sql<number | null>`NULL::integer`,
-        lockUserName: sql<string | null>`NULL::text`,
-        lockTime: sql<Date | null>`NULL::timestamp with time zone`,
-        lockLastActivityAt: sql<Date | null>`NULL::timestamp with time zone`,
-        lockWorkstation: sql<string | null>`NULL::text`,
+        // M1.6A — real lock columns (NULL placeholders until the study-lock
+        // ticket added the columns + claim/release service).
+        lockUserId: radiologyWorklistTable.lockUserId,
+        lockUserName: radiologyWorklistTable.lockUserName,
+        lockTime: radiologyWorklistTable.lockTime,
+        lockLastActivityAt: radiologyWorklistTable.lockLastActivityAt,
+        lockWorkstation: radiologyWorklistTable.lockWorkstation,
       })
       .from(radiologyWorklistTable)
       .where(conds.length > 0 ? and(...conds) : undefined)
       .orderBy(desc(radiologyWorklistTable.createdAt))
       .limit(500);
 
-    let filtered = rows;
+    // M1.6A — serve lock expiry SERVER-computed (lock_last_activity_at +
+    // configured TTL), so no client derives it from its own clock or a
+    // guessed TTL window.
+    const lockTtlSeconds = await getLockTtlSeconds();
+    const rowsWithExpiry = rows.map((r) => ({
+      ...r,
+      lockTtlSeconds,
+      lockExpiresAt: lockExpiresAt(r, lockTtlSeconds)?.toISOString() ?? null,
+    }));
+
+    let filtered = rowsWithExpiry;
     if (search) {
       const s = search.toLowerCase();
-      filtered = rows.filter((r) =>
+      filtered = rowsWithExpiry.filter((r) =>
         (r.patientName ?? "").toLowerCase().includes(s) ||
         (r.accessionNumber ?? "").toLowerCase().includes(s) ||
         (r.studyDescription ?? "").toLowerCase().includes(s) ||
