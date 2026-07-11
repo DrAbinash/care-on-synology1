@@ -2366,6 +2366,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   isAdmin={isOwnerRole(session)}
                   onLaunchStateChange={setViewerLaunch}
                 />
+
               </div>
             )}
           </div>
