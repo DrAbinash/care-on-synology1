@@ -40,6 +40,10 @@ export const backupJobLogsTable = pgTable(
     errorMessage: text("error_message"),
     notes: text("notes"),
     encrypted: boolean("encrypted").default(false),
+    // SHA-256 (hex) of the completed backup's encrypted content, exactly as
+    // written to filePath — Ticket E0.1d. Nullable: only set for backups
+    // completed after this ticket landed.
+    checksum: text("checksum"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
