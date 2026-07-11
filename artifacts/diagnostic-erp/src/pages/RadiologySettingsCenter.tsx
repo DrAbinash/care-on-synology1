@@ -1,4 +1,6 @@
 import { useState, useEffect } from "react";
+import { useLocation } from "wouter";
+import PresentationTemplateManager from "@/components/radiology/PresentationTemplateManager";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { hostForProfile, orthancBaseForProfile, ohifBaseForProfile, publicBaseUrl } from "@/lib/networkProfiles";
@@ -75,6 +77,7 @@ function isDockerBridgeIpLike(value: string): boolean {
 export default function RadiologySettingsCenter() {
   const { toast } = useToast();
   const qc = useQueryClient();
+  const [, navigate] = useLocation();
   const isAdmin = FULL_ACCESS_ROLES.has(normalizeRole(readStaffSession()?.user.role ?? ""));
 
   const [activeTab, setActiveTab] = useState("network");
@@ -727,7 +730,19 @@ export default function RadiologySettingsCenter() {
 
         {/* Tab content 7: Diagnostics */}
         <TabsContent value="diagnostics" className="space-y-4">
-          {/* Phase E: owner-only deep diagnostic pages (preserved, linked here) */}
+          {/* M1.3 — deep diagnostics live on the ONE admin Flight Deck page. */}
+          <div className="rounded-xl border bg-card p-4 flex items-center justify-between gap-3 text-sm">
+            <span className="text-muted-foreground">
+              Full deployment diagnostics (viewer, DICOMweb, network routes, workflow simulation, settings verification) live on the Flight Deck.
+            </span>
+            <Button size="sm" variant="outline" onClick={() => navigate("/radiology/flight-deck")} data-testid="link-flight-deck">
+              Open Flight Deck
+            </Button>
+          </div>
+          {/* Phase E: owner-only deep diagnostic pages (preserved, linked here) —
+              the Flight Deck above covers connectivity/workflow diagnostics but
+              does not link out to these standalone admin pages, so they still
+              need their own shortcuts here. */}
           {isAdmin && (
             <div className="rounded-xl border bg-card p-4 flex flex-wrap items-center gap-2">
               <span className="text-xs font-semibold mr-2">Debug / Logs (owner only):</span>
@@ -924,6 +939,9 @@ export default function RadiologySettingsCenter() {
         </TabsContent>
 
         <TabsContent value="style" className="space-y-4">
+          {/* R1.2 — versioned enterprise template engine. Admins manage
+              versions/activation/import/export; radiologists can preview. */}
+          <PresentationTemplateManager isAdmin={isAdmin} />
           <RadiologyStylePanel />
         </TabsContent>
 

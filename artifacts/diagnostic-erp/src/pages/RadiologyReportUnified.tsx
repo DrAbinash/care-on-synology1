@@ -16,7 +16,6 @@ import {
   generateReportPDF, loadPrintSettings, savePrintSettings, type PrintSettings,
 } from "@/lib/reportPdfGenerator";
 import ReportPrintSettingsDialog from "@/components/ReportPrintSettingsDialog";
-import PremiumReportViewer from "@/components/PremiumReportViewer";
 import RadiologyProductivityPanel from "@/components/RadiologyProductivityPanel";
 import RadiologyKnowledgePanel from "@/components/RadiologyKnowledgePanel";
 import RadiologySmartFindingsPanel from "@/components/RadiologySmartFindingsPanel";

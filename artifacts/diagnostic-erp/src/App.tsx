@@ -97,6 +97,7 @@ const RadiologyReportingWorkspace = lazy(() => import("@/pages/RadiologyReportin
 const PacsDashboard         = lazy(() => import("@/pages/PacsDashboard"));
 const RadiologySettings     = lazy(() => import("@/pages/RadiologySettings"));
 const RadiologySettingsCenter = lazy(() => import("@/pages/RadiologySettingsCenter"));
+const RadiologyFlightDeck = lazy(() => import("@/pages/RadiologyFlightDeck"));
 const RadiologyQuickSelectSettings = lazy(() => import("@/pages/RadiologyQuickSelectSettings"));
 const RadiologyOperationsDashboard = lazy(() => import("@/pages/RadiologyOperationsDashboard"));
 const MyReportingAnalytics         = lazy(() => import("@/pages/MyReportingAnalytics"));
@@ -551,6 +552,8 @@ function Router() {
               <Route path="/settings/radiology">
                 {() => <AdminOnlySettings><RadiologySettingsCenter /></AdminOnlySettings>}
               </Route>
+              {/* M1.3 — the ONE admin diagnostics page (Flight Deck). */}
+              <Route path="/radiology/flight-deck" component={RadiologyFlightDeck} />
               <Route path="/settings/radiology-quick-select" component={RadiologyQuickSelectSettings} />
               <Route path="/radiology/settings">
                 {() => <AdminOnlySettings><RadiologySettingsCenter /></AdminOnlySettings>}

@@ -24,7 +24,19 @@ import { readStaffSession } from "@/lib/staffSession";
 import { api } from "@/lib/fetchApi";
 import SpinalMeasurementPanel from "@/components/SpinalMeasurementPanel";
 import ReportPrintSettingsDialog from "@/components/ReportPrintSettingsDialog";
-import PremiumReportViewer from "@/components/PremiumReportViewer";
+import { useQuery as usePremiumPreviewQuery } from "@tanstack/react-query";
+
+/** R1.1 — premium preview through the shared server presentation layer
+ *  (replaces the retired client-only PremiumReportViewer). */
+function PremiumServerPreview({ draftId }: { draftId: number }) {
+  const { data: html } = usePremiumPreviewQuery<string>({
+    queryKey: ["draft-print-preview", draftId, "care-premium"],
+    queryFn: () => api.get<string>(`/api/radiology/report-generator/drafts/${draftId}/print-preview?template=care-premium`),
+  });
+  return html
+    ? <iframe title="Premium report preview" srcDoc={html} className="w-full h-full border-none" sandbox="allow-same-origin" />
+    : <div className="h-full flex items-center justify-center text-xs text-muted-foreground">Rendering premium preview…</div>;
+}
 import {
   generateReportPDF, loadPrintSettings, savePrintSettings, type PrintSettings,
 } from "@/lib/reportPdfGenerator";
@@ -2096,28 +2108,18 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
             </div>
 
             {premiumMode ? (
-              /* PREMIUM MODE */
-              <div style={{ height: "680px" }}>
-                <PremiumReportViewer
-                  data={{
-                    patientName: demog.patientName,
-                    age: demog.age ?? null,
-                    sex: demog.sex ?? null,
-                    uhid: demog.uhid ?? null,
-                    accessionNumber: demog.accessionNumber,
-                    studyDate: demog.studyDate ?? null,
-                    referringDoctor: demog.referringDoctor ?? null,
-                    reportingDoctor: session?.user?.name ?? null,
-                    modality: demog.modality || template?.modality || "MRI",
-                    studyDescription: demog.studyDescription ?? template?.studyName ?? null,
-                    clinicalHistory: clinicalHistory,
-                    technique: template?.technique ?? null,
-                    findings: Object.values(findingsSections).filter(Boolean).join("\n\n"),
-                    impression: impressionRaw,
-                    recommendation: recommendation,
-                  }}
-                  studyInstanceUID={null}
-                />
+              /* PREMIUM MODE — R1.1: the former client-only PremiumReportViewer
+                 (browser-direct Orthanc, never wired to delivery) is merged
+                 into the ONE server presentation layer. This iframe shows the
+                 exact premium document every delivery surface can produce. */
+              <div style={{ height: "680px" }} className="rounded-lg border overflow-hidden bg-white">
+                {draftId ? (
+                  <PremiumServerPreview draftId={draftId} />
+                ) : (
+                  <div className="h-full flex items-center justify-center text-xs text-muted-foreground p-6 text-center">
+                    Save the draft once to render the premium preview (server-side, identical to print/PDF).
+                  </div>
+                )}
               </div>
             ) : (
               /* STANDARD MODE */

@@ -80,6 +80,8 @@ const NETWORK_ONLY_PREFIXES = [
                                                       // other filter values are shared — excluded whole-path
                                                       // since NETWORK_ONLY_PREFIXES matches pathname only,
                                                       // not query strings, so it can't be split by filter value)
+  "/api/radiology-diagnostics/",                     // M1.3 Flight Deck: live deployment diagnostics — a cached
+                                                      // "HEALTHY" verdict would be a stale lie; always hit the network
 ];
 
 // Guardrail: artifacts/api-server/src/routes/personalEndpointCacheGuard.test.ts

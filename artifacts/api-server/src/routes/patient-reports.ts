@@ -12,6 +12,11 @@ import {
   radiologyInstitutionalStylesTable,
 } from "@workspace/db/schema";
 import { eq, and, desc, sql, ilike, or, isNull, isNotNull, inArray } from "drizzle-orm";
+import {
+  freezeReportPresentation, parseExplicitTemplateParam, resolveTemplateForRender,
+  resolveTemplateRecordForRender,
+} from "../lib/presentationTemplateStore";
+import type { CopyType } from "../lib/presentationTemplateModel";
 import { sendReportWhatsapp, sendReportDelivery } from "./whatsapp";
 import crypto from "node:crypto";
 import {
@@ -47,6 +52,11 @@ import {
   type FinalWorklistRow,
 } from "../lib/radiologyD1FinalWriter";
 import { verifyContentSha256 } from "../lib/structuredReport/hash";
+import {
+  renderReportDocument,
+  type ReportDocumentModel, type ReportKeyImageModel, type ReportParameterRow, type ReportSignatureModel,
+} from "../lib/reportPresentation";
+import { resolveReportKeyImages } from "../lib/reportImages";
 import {
   materializeFindings,
   CatalogStoreFindingResolver,
@@ -1735,6 +1745,7 @@ patientReportsRouter.post("/:id/amend", async (req, res) => {
       req.log?.error({ err }, "BEND-1 obligation creation after amendment failed");
     }
 
+    void freezeSignedReportPresentation(outcome.newRow.id);
     res.status(201).json({
       report: outcome.newRow,
       amendment: {
@@ -1825,6 +1836,7 @@ patientReportsRouter.post("/", async (req, res) => {
             presetUsed,
           });
           if (outcome.kind === "signed") {
+            void freezeSignedReportPresentation(outcome.row.id);
             res.status(201).json({ ...outcome.row, structuredFinal: outcome.diagnostics });
             return;
           }
@@ -2008,6 +2020,7 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
     signedAt: new Date(),
     status: "pending_verification",
   }).where(eq(patientReportsTable.id, id)).returning();
+  if (row) void freezeSignedReportPresentation(row.id);
   res.json(row);
 });
 
@@ -2225,6 +2238,12 @@ export interface ReportArtifactOptions {
   /** Patient-facing surfaces pass ["verified","delivered"] so "latest" never
    *  resolves to a version that surface is not allowed to deliver. */
   deliverableStatuses?: string[];
+  /** R1.1/R1.2 — presentation template override "key" or "key@version"
+   *  (staff print/PDF only). When absent, precedence applies: frozen signed
+   *  identity → copy-type active selection → standard active → care-classic. */
+  templateId?: string;
+  /** R1.2 — copy type demanded by the surface (public delivery → patient). */
+  copyType?: CopyType;
 }
 
 export interface ReportArtifact {
@@ -2244,9 +2263,21 @@ export async function buildReportArtifact(
   });
   if (!version) return null;
   logVersionResolution(opts.surface ?? "artifact", version);
-  const html = await renderReportVersionHtml(version.resolvedReportId, opts.autoPrint === true, opts.useUpdatedStyle, version);
+  const html = await renderReportVersionHtml(version.resolvedReportId, opts.autoPrint === true, opts.useUpdatedStyle, version, opts.templateId, opts.copyType);
   if (html == null) return null;
   return { html, version };
+}
+
+// R1.2 Phase 3 — record the presentation template a report was SIGNED
+// under. Best-effort: signing must never fail because of presentation
+// bookkeeping; unique(report_id) makes it idempotent and never-rewriting.
+async function freezeSignedReportPresentation(reportId: number): Promise<void> {
+  try {
+    // Freeze the STANDARD (clinical) identity WITH its full definition, so the
+    // finalized report re-renders exactly even if the version row is later lost.
+    const record = await resolveTemplateRecordForRender({ copyType: "standard" });
+    await freezeReportPresentation(reportId, record);
+  } catch { /* the freeze-less report falls back to the active selection */ }
 }
 
 /** Pre-D8 surface kept verbatim for existing callers: default version policy,
@@ -2279,7 +2310,7 @@ function versionSafeguardHtml(version: ResolvedReportVersion): { banner: string;
   return { banner: parts.join("\n      "), watermark };
 }
 
-async function renderReportVersionHtml(reportId: number, autoPrint: boolean, useUpdatedStyle?: boolean, version?: ResolvedReportVersion): Promise<string | null> {
+async function renderReportVersionHtml(reportId: number, autoPrint: boolean, useUpdatedStyle?: boolean, version?: ResolvedReportVersion, templateId?: string, copyType?: CopyType): Promise<string | null> {
   const [row] = await db
     .select({
       r: patientReportsTable,
@@ -2378,59 +2409,44 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
     return `${yrs}y`;
   })();
 
-  let parametersHtml = "";
+  // R1.1 — parameters, stamp, banners and signatures are now MODELED and the
+  // shared presentation layer renders them (one pipeline, no duplicated HTML).
+  let parameterRows: ReportParameterRow[] = [];
   if (r.parameters) {
     try {
       const arr = JSON.parse(r.parameters) as Param[];
-      if (Array.isArray(arr) && arr.length > 0) {
-        parametersHtml = `
-          <table class="params">
-            <thead><tr><th>Parameter</th><th>Result</th><th>Unit</th><th>Reference Range</th></tr></thead>
-            <tbody>
-              ${arr.map((p) => {
-                const result = String(p.result ?? p.value ?? "");
-                const flag = String(p.flag ?? "normal").toLowerCase();
-                // Restrict flag to a safe CSS class suffix: only lowercase letters,
-                // digits, and hyphens. This prevents attribute injection.
-                const safeFlag = flag.replace(/[^a-z0-9-]/g, "");
-                const flagged = safeFlag !== "normal" && safeFlag !== "";
-                return `<tr class="${flagged ? "abnormal" : ""}">
-                  <td>${escapeHtml(p.name)}</td>
-                  <td><strong>${escapeHtml(result)}</strong>${flagged ? ` <span class="flag flag-${safeFlag}">${escapeHtml(safeFlag.toUpperCase())}</span>` : ""}</td>
-                  <td>${escapeHtml(p.unit ?? "")}</td>
-                  <td>${escapeHtml(p.refRange ?? "")}</td>
-                </tr>`;
-              }).join("")}
-            </tbody>
-          </table>`;
+      if (Array.isArray(arr)) {
+        parameterRows = arr.map((p) => {
+          const flag = String(p.flag ?? "normal").toLowerCase().replace(/[^a-z0-9-]/g, "");
+          return {
+            name: p.name,
+            result: String(p.result ?? p.value ?? ""),
+            unit: p.unit ?? "",
+            refRange: p.refRange ?? "",
+            flag: flag === "normal" ? "" : flag,
+          };
+        });
       }
     } catch { /* ignore parse errors */ }
   }
 
-  const verifiedBlock = r.verifiedAt
-    ? `<div class="stamp verified">VERIFIED on ${new Date(r.verifiedAt).toLocaleString("en-IN")}</div>`
-    : (r.signedAt ? `<div class="stamp pending">PRELIMINARY — pending verification</div>` : `<div class="stamp draft">DRAFT (not signed)</div>`);
-  const criticalBanner = r.isCritical
-    ? `<div class="critical">⚠ CRITICAL VALUE — IMMEDIATE ATTENTION REQUIRED${r.criticalNote ? `: ${escapeHtml(r.criticalNote)}` : ""}</div>`
-    : "";
+  const stamp: ReportDocumentModel["stamp"] = r.verifiedAt
+    ? { kind: "verified", label: `VERIFIED on ${new Date(r.verifiedAt).toLocaleString("en-IN")}` }
+    : r.signedAt
+      ? { kind: "pending", label: "PRELIMINARY — pending verification" }
+      : { kind: "draft", label: "DRAFT (not signed)" };
 
-  function sigBlock(sig: typeof sigPrimary, fallbackName: string | null, label: string, when: Date | null) {
-    if (!sig && !fallbackName) return "";
-    const img = (sig?.imageDataUrl && showDigitalSignature) ? `<img src="${sig.imageDataUrl}" alt="signature"/>` : "";
-    const name = showRadiologistName ? (sig?.name ?? fallbackName ?? "") : "";
-    const reg = (sig?.registrationNo && showRegNumber) ? `Reg. No: ${escapeHtml(sig.registrationNo)}` : "";
-    const qual = (sig?.qualification && showDegree) ? escapeHtml(sig.qualification) : "";
-    const role = sig?.role ? escapeHtml(sig.role) : "";
-    const timeStr = (when && showTimestamp) ? ` ${new Date(when).toLocaleString("en-IN")}` : "";
-    return `
-      <div class="sigbox">
-        <div class="sigimg">${img}</div>
-        <div class="sigline"></div>
-        <div class="signame">${escapeHtml(name)}</div>
-        <div class="sigmeta">${qual}${qual && role ? " • " : ""}${role}</div>
-        <div class="sigmeta">${reg}</div>
-        <div class="sigmeta sigwhen">${label}${timeStr}</div>
-      </div>`;
+  function sigModel(sig: typeof sigPrimary, fallbackName: string | null, label: string, when: Date | null): ReportSignatureModel | null {
+    if (!sig && !fallbackName) return null;
+    return {
+      imageDataUrl: showDigitalSignature ? sig?.imageDataUrl ?? null : null,
+      name: showRadiologistName ? (sig?.name ?? fallbackName ?? "") : "",
+      qualification: showDegree ? sig?.qualification ?? null : null,
+      role: sig?.role ?? null,
+      registrationNo: showRegNumber ? sig?.registrationNo ?? null : null,
+      label,
+      whenLabel: when && showTimestamp ? ` ${new Date(when).toLocaleString("en-IN")}` : "",
+    };
   }
 
   // Build style overrides
@@ -2462,107 +2478,86 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
   }
 
   // D8 — visual safeguards for the served version (empty strings when the
-  // report has no amendment chain: byte-identical pre-D8 output).
+  // report has no amendment chain). Semantics are FROZEN — the fragments pass
+  // through the presentation layer unchanged.
   const safeguards = version ? versionSafeguardHtml(version) : { banner: "", watermark: "" };
 
-  const qrHtml = (showQrVerification && r.type === "radiology") ? `
-    <div style="float:left;margin-top:10px;text-align:left;">
-      <div style="display:inline-block;padding:4px;border:1px solid #ccc;background:#fff;border-radius:4px;">
-        <span style="font-size:8px;display:block;color:#666;font-weight:bold;">QR Verification</span>
-        <div style="width:50px;height:50px;background:#000;color:#fff;font-size:7px;display:flex;align-items:center;justify-content:center;font-weight:bold;">SECURE</div>
-      </div>
-    </div>
-  ` : "";
+  // R1.1 — selected key images resolve from persisted DICOM references
+  // (draft → final_report_id linkage; amendments share the root's draft).
+  // Failure-tolerant: a slow/absent PACS never blocks printing.
+  let keyImages: ReportKeyImageModel[] = [];
+  if (r.type === "radiology") {
+    try {
+      keyImages = await resolveReportKeyImages([
+        version?.rootReportId ?? reportId,
+        version?.resolvedReportId ?? reportId,
+        reportId,
+      ]);
+    } catch { keyImages = []; }
+  }
 
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(r.reportNumber)} — ${escapeHtml(r.title)}</title>
-    <style>
-      @page { size: A4; margin: 14mm; }
-      body { font-family: 'Segoe UI', Arial, sans-serif; color:#111; margin:0; font-size:12px; }
-      .hdr { display:flex; align-items:center; gap:14px; border-bottom:3px solid #4338ca; padding-bottom:10px; margin-bottom:12px; }
-      .hdr img { width:60px; height:60px; object-fit:contain; }
-      .hdr .name { font-size:20px; font-weight:800; color:#1e1b4b; line-height:1.1; }
-      .hdr .tagline { color:#475569; font-size:11px; }
-      .hdr .contact { margin-left:auto; text-align:right; font-size:10px; color:#475569; line-height:1.4; }
-      .meta { display:grid; grid-template-columns:repeat(4, 1fr); gap:6px 14px; padding:10px 12px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; font-size:11px; margin-bottom:14px; }
-      .meta div span { color:#64748b; display:block; font-size:9px; text-transform:uppercase; letter-spacing:0.5px; }
-      .meta div strong { font-size:12px; }
-      h1.title { font-size:16px; margin:0 0 6px; color:#1e1b4b; }
-      .impression { background:#fef9c3; border-left:3px solid #ca8a04; padding:8px 12px; margin:0 0 12px; font-size:12px; }
-      .body { white-space:pre-wrap; line-height:1.5; margin:0 0 14px; }
-      .params { width:100%; border-collapse:collapse; margin:10px 0 16px; font-size:11px; }
-      .params th { background:#1e1b4b; color:#fff; padding:6px 8px; text-align:left; }
-      .params td { padding:5px 8px; border-bottom:1px solid #e2e8f0; }
-      .params tr.abnormal td { background:#fef2f2; }
-      .flag { font-size:9px; padding:1px 5px; border-radius:3px; font-weight:700; }
-      .flag-low { background:#dbeafe; color:#1e40af; }
-      .flag-high { background:#fee2e2; color:#b91c1c; }
-      .flag-critical { background:#7f1d1d; color:#fff; }
-      .stamp { display:inline-block; padding:4px 12px; border-radius:4px; font-weight:700; font-size:11px; margin:8px 0; }
-      .stamp.verified { background:#dcfce7; color:#166534; border:1px solid #86efac; }
-      .stamp.pending { background:#fef3c7; color:#92400e; border:1px solid #fcd34d; }
-      .stamp.draft { background:#fee2e2; color:#991b1b; border:1px solid #fca5a5; }
-      .critical { background:#7f1d1d; color:#fff; padding:8px 12px; font-weight:800; font-size:13px; margin:0 0 12px; border-radius:4px; letter-spacing:0.3px; }
-      .sigs { display:flex; gap:30px; justify-content:flex-end; margin-top:30px; }
-      .sigbox { width:200px; text-align:center; }
-      .sigbox .sigimg { height:50px; display:flex; align-items:flex-end; justify-content:center; }
-      .sigbox .sigimg img { max-height:50px; max-width:180px; object-fit:contain; }
-      .sigline { border-top:1.5px solid #111; margin:2px 0 4px; }
-      .signame { font-weight:700; font-size:12px; }
-      .sigmeta { font-size:10px; color:#475569; line-height:1.3; }
-      .sigwhen { margin-top:3px; font-style:italic; }
-      .ftr { margin-top:18px; font-size:9px; color:#64748b; text-align:center; border-top:1px solid #cbd5e1; padding-top:6px; clear: both; }
-      .reportno { float:right; font-family:monospace; color:#475569; font-size:10px; }
-      .superseded-banner { background:#7f1d1d; color:#fff; border:2px solid #450a0a; padding:10px 14px; font-weight:800; font-size:13px; margin:0 0 12px; border-radius:4px; letter-spacing:0.3px; }
-      .amended-banner { background:#eff6ff; color:#1e3a8a; border:1.5px solid #3b82f6; padding:8px 12px; font-weight:700; font-size:12px; margin:0 0 12px; border-radius:4px; }
-      .version-warning { background:#fef3c7; color:#92400e; border:1.5px solid #f59e0b; padding:8px 12px; font-weight:700; font-size:12px; margin:0 0 12px; border-radius:4px; }
-      .superseded-watermark { position:fixed; top:38%; left:0; right:0; text-align:center; transform:rotate(-28deg); font-size:104px; font-weight:900; color:rgba(185,28,28,0.14); letter-spacing:10px; z-index:9999; pointer-events:none; }
-      ${customStyles}
-    </style></head><body>
-      ${safeguards.watermark}
-      <div class="hdr">
-        ${clinic?.logoDataUrl ? `<img src="${clinic.logoDataUrl}" alt="logo"/>` : ""}
-        <div>
-          <div class="name">${escapeHtml(clinic?.name ?? "Care Diagnostics")}</div>
-          <div class="tagline">${escapeHtml(clinic?.tagline ?? "")}</div>
-        </div>
-        <div class="contact">
-          ${escapeHtml(clinic?.address ?? "")}<br/>
-          ${escapeHtml(clinic?.phone ?? "")} ${clinic?.email ? `• ${escapeHtml(clinic.email)}` : ""}<br/>
-          ${clinic?.website ? escapeHtml(clinic.website) : ""}
-        </div>
-      </div>
-      <span class="reportno">Report #: ${escapeHtml(r.reportNumber)}</span>
-      <h1 class="title">${escapeHtml(r.title)}</h1>
-      <div class="meta">
-        <div><span>Patient</span><strong>${escapeHtml(patientName)}</strong></div>
-        <div><span>Patient ID</span><strong>${escapeHtml(row.patientCode ?? "—")}</strong></div>
-        <div><span>Age / Sex</span><strong>${ageStr}${ageStr && row.patientGender ? " / " : ""}${escapeHtml(row.patientGender ?? "")}</strong></div>
-        <div><span>Date</span><strong>${new Date(r.createdAt).toLocaleDateString("en-IN")}</strong></div>
-        <div><span>Test</span><strong>${escapeHtml(row.testName ?? "—")}</strong></div>
-        <div><span>Test Code</span><strong>${escapeHtml(row.testCode ?? "—")}</strong></div>
-        <div><span>Type</span><strong>${escapeHtml(r.type.toUpperCase())}</strong></div>
-        <div><span>Status</span><strong>${escapeHtml(r.status.replace(/_/g, " ").toUpperCase())}</strong></div>
-      </div>
-      ${safeguards.banner}
-      ${criticalBanner}
-      ${r.impression ? `<div class="impression"><strong>Impression:</strong> ${escapeHtml(r.impression)}</div>` : ""}
-      ${parametersHtml}
-      ${displayBody ? `<div class="body">${r.type === "radiology" ? displayBody : escapeHtml(displayBody)}</div>` : ""}
-      ${verifiedBlock}
-      <div class="sigs">
-        ${sigBlock(sigPrimary, r.signedByName, "Signed:", r.signedAt as Date | null)}
-        ${sigBlock(sigVerifier, r.verifiedByName, "Verified:", r.verifiedAt as Date | null)}
-      </div>
-      ${qrHtml}
-      <div class="ftr">${escapeHtml(clinic?.footerNote ?? "")} • Generated ${new Date().toLocaleString("en-IN")}</div>
-      ${autoPrint ? `<script>window.onload=()=>{setTimeout(()=>window.print(),250);}</script>` : ""}
-    </body></html>`;
+  const model: ReportDocumentModel = {
+    reportNumber: r.reportNumber,
+    studyTitle: r.title,
+    typeLabel: r.type.toUpperCase(),
+    statusLabel: r.status.replace(/_/g, " ").toUpperCase(),
+    clinic: {
+      name: clinic?.name ?? "Care Diagnostics",
+      tagline: clinic?.tagline ?? "",
+      address: clinic?.address ?? "",
+      phone: clinic?.phone ?? "",
+      email: clinic?.email ?? "",
+      website: clinic?.website ?? "",
+      logoDataUrl: clinic?.logoDataUrl ?? null,
+    },
+    patientRows: [
+      { label: "Patient", value: patientName },
+      { label: "Patient ID", value: row.patientCode ?? "\u2014" },
+      { label: "Age / Sex", value: `${ageStr}${ageStr && row.patientGender ? " / " : ""}${row.patientGender ?? ""}` },
+      { label: "Date", value: new Date(r.createdAt).toLocaleDateString("en-IN") },
+      { label: "Test", value: row.testName ?? "\u2014" },
+      { label: "Test Code", value: row.testCode ?? "\u2014" },
+      { label: "Type", value: r.type.toUpperCase() },
+      { label: "Status", value: r.status.replace(/_/g, " ").toUpperCase() },
+    ],
+    safeguardBannerHtml: safeguards.banner,
+    safeguardWatermarkHtml: safeguards.watermark,
+    isCritical: r.isCritical,
+    criticalNote: r.criticalNote,
+    impression: r.impression,
+    parameters: parameterRows,
+    // Radiology bodies are trusted HTML from the frozen render pipeline;
+    // everything else is escaped plain text (unchanged behavior).
+    ...(r.type === "radiology" ? { bodyHtml: displayBody ?? "" } : { bodyText: displayBody ?? "" }),
+    keyImages,
+    stamp,
+    signatures: [
+      sigModel(sigPrimary, r.signedByName, "Signed:", r.signedAt as Date | null),
+      sigModel(sigVerifier, r.verifiedByName, "Verified:", r.verifiedAt as Date | null),
+    ].filter((s): s is ReportSignatureModel => s != null),
+    showQrPlaceholder: showQrVerification && r.type === "radiology",
+    footerNote: clinic?.footerNote ?? "",
+    generatedAtLabel: new Date().toLocaleString("en-IN"),
+    autoPrint,
+  };
+
+  // R1.2 — deterministic template resolution: explicit staff override →
+  // frozen signed identity of THIS revision → copy-type active selection →
+  // standard active selection → care-classic. Never throws; a resolution
+  // problem can never stop a report from printing.
+  const template = await resolveTemplateForRender({ explicit: templateId, reportId, copyType });
+  return renderReportDocument(model, template, { customCss: customStyles });
 }
 
 // D8 — print/PDF default to the LATEST signed version (flag-gated); explicit
 // ?version=specific|root keeps exact historical access, rendered WITH the
 // superseded banner + watermark. Delivery side effects (share log, delivered
 // stamp, audit) always target the row actually served.
+function explicitTemplateParam(req: Request): string | undefined {
+  const t = typeof req.query.template === "string" ? req.query.template.trim() : "";
+  return parseExplicitTemplateParam(t) ? t : undefined;
+}
+
 function explicitVersionParam(req: Request): ResolveMode | undefined {
   const v = typeof req.query.version === "string" ? req.query.version.toLowerCase() : "";
   return v === "latest" || v === "specific" || v === "root" ? v : undefined;
@@ -2571,20 +2566,27 @@ function explicitVersionParam(req: Request): ResolveMode | undefined {
 patientReportsRouter.get("/:id/print", async (req, res) => {
   const id = Number(req.params.id);
   const useUpdatedStyle = req.query.useUpdatedStyle === "true";
+  // R1.1 — ?preview=true renders the SAME artifact for on-screen preview
+  // WITHOUT delivery bookkeeping (no share log, no delivered stamp, no
+  // delivery audit) and without the auto-print script. Presentation only.
+  const previewOnly = req.query.preview === "true";
   const artifact = await buildReportArtifact(id, {
-    autoPrint: true, useUpdatedStyle, surface: "print", versionMode: explicitVersionParam(req),
+    autoPrint: !previewOnly, useUpdatedStyle, surface: previewOnly ? "print_preview" : "print", versionMode: explicitVersionParam(req),
+    templateId: explicitTemplateParam(req),
   });
   if (!artifact) {
     res.status(404).send("Report not found");
     return;
   }
   const servedId = artifact.version.resolvedReportId;
-  // Log a "print" share entry (best-effort).
-  await db.insert(reportSharesTable).values({ reportId: servedId, channel: "print", sharedBy: (req.query.by as string) || null }).catch(() => {});
-  // If the served report was verified, mark as delivered on first print.
-  await markDeliveredIfVerified(servedId).catch(() => {});
-  const session = (req as StaffAuthRequest).staffSession;
-  await auditDeliveryResolution("print", artifact.version, { userId: session?.subjectId, userName: session?.subjectName, role: session?.role });
+  if (!previewOnly) {
+    // Log a "print" share entry (best-effort).
+    await db.insert(reportSharesTable).values({ reportId: servedId, channel: "print", sharedBy: (req.query.by as string) || null }).catch(() => {});
+    // If the served report was verified, mark as delivered on first print.
+    await markDeliveredIfVerified(servedId).catch(() => {});
+    const session = (req as StaffAuthRequest).staffSession;
+    await auditDeliveryResolution("print", artifact.version, { userId: session?.subjectId, userName: session?.subjectName, role: session?.role });
+  }
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   setVersionHeaders(res, artifact.version);
   res.send(artifact.html);
@@ -2596,6 +2598,7 @@ patientReportsRouter.get("/:id/pdf", async (req, res) => {
   const useUpdatedStyle = req.query.useUpdatedStyle === "true";
   const artifact = await buildReportArtifact(id, {
     useUpdatedStyle, surface: "pdf", versionMode: explicitVersionParam(req),
+    templateId: explicitTemplateParam(req),
   });
   if (!artifact) {
     res.status(404).send("Report not found");
@@ -2641,6 +2644,7 @@ publicReportsRouter.get("/:token/pdf", async (req, res) => {
   const artifact = await buildReportArtifact(row.id, {
     useUpdatedStyle, surface: "public_pdf",
     deliverableStatuses: ["verified", "delivered"],
+    copyType: "patient",
   });
   if (!artifact) { res.status(404).send("Not found"); return; }
   const servedId = artifact.version.resolvedReportId;
