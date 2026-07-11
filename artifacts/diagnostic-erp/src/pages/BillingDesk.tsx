@@ -5,7 +5,7 @@ import QRCode from "qrcode";
 import { api } from "@/lib/fetchApi";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import { incrementPendingSyncCount } from "@/hooks/useSyncStatus";
-import { readStaffSession, isFeatureEnabled } from "@/lib/staffSession";
+import { readStaffSession, isFeatureEnabled, isOwnerRole } from "@/lib/staffSession";
 import { genUUID } from "@/lib/utils";
 import { getBillPaperSize } from "@/lib/billPrintLayout";
 import { getAutoBillPaperSize } from "@/lib/billPrintSettings";
@@ -578,6 +578,14 @@ export default function BillingDesk() {
   }
 
   // ── Billing ────────────────────────────────────────
+  // The server enforces the actual discount cap (see the maxDiscount check in
+  // POST /api/bills) — this is read-only, staff-facing context so a non-admin
+  // user knows their limit BEFORE typing a discount and hitting a save error,
+  // instead of only finding out from the 403 after the fact.
+  const myStaffSession = useMemo(() => readStaffSession(), []);
+  const myIsFullAccess = isOwnerRole(myStaffSession);
+  const myMaxDiscountPct = myStaffSession?.user.maxDiscount ?? 0;
+
   const [discountType, setDiscountType]   = useState<"amount" | "pct">("amount");
   const [discountValue, setDiscountValue] = useState<number>(0);
   const [discountReason, setDiscountReason] = useState<string>("");
@@ -2359,6 +2367,13 @@ export default function BillingDesk() {
                       )}
                     </div>
                   </div>
+                  {!myIsFullAccess && (
+                    <p className="text-[10px] text-[#94a3b8]">
+                      {myMaxDiscountPct > 0
+                        ? `Your limit: up to ${myMaxDiscountPct}% on this bill.`
+                        : "You're not authorized to apply a discount — ask an admin."}
+                    </p>
+                  )}
                   <div className="flex items-center gap-1.5">
                     <div className="flex border border-[#dde3ec] rounded-md overflow-hidden flex-shrink-0">
                       <button

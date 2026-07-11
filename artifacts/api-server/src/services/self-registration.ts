@@ -176,7 +176,11 @@ export async function registerPatientSelfFlow(params: RegisterPatientSelfFlowPar
       });
     }
 
-    const billNumber = await generateBillNumber(ledgerId);
+    // Same bill-number race guard as POST /api/bills (see bills.ts) — without
+    // it, two concurrent self-registrations/online bookings can compute the
+    // same next bill_number and one insert fails with a unique-violation.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('care_erp_bill_number'))`);
+    const billNumber = await generateBillNumber(ledgerId, tx);
     const [bill] = await tx
       .insert(billsTable)
       .values({
