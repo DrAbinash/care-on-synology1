@@ -201,6 +201,14 @@ router.post("/radiology-impression", requireStaffAuth, async (req, res) => {
   }
 });
 
+// M1.6B2 — capability probe for the voice layer's provider selection. Reports
+// ONLY whether server-side transcription is configured; never key material.
+router.get("/transcribe/status", requireStaffAuth, (_req, res) => {
+  res.json({
+    available: Boolean(process.env.AI_INTEGRATIONS_GEMINI_API_KEY && process.env.AI_INTEGRATIONS_GEMINI_BASE_URL),
+  });
+});
+
 // Transcribe a short voice dictation. Body: { audioBase64, mimeType }
 // Browsers' built-in Web Speech API does the live transcription on the client;
 // this endpoint is the server-side fallback for browsers that lack it (Firefox,

@@ -241,6 +241,57 @@ describe("M1.6A — study locking stays canonical", () => {
   });
 });
 
+describe("M1.6B2 — voice layer stays canonical", () => {
+  const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+
+  it("the workspace mounts the ONE voice pipeline (hook + bar), rules in libs", () => {
+    expect(workspace).toContain('from "@/hooks/useVoiceSession"');
+    expect(workspace).toContain('from "@/components/radiology/VoiceCommandBar"');
+    expect(workspace).toContain('from "@/lib/voiceCommandGrammar"');
+    expect(workspace).toContain('from "@/lib/voiceSessionState"');
+    const hook = read("hooks/useVoiceSession.ts");
+    expect(hook).toContain('from "@/lib/voiceSafetyPolicy"');
+    expect(hook).toContain('from "@/lib/voiceTranscription"');
+  });
+
+  it("voice workflow intents execute ONLY through the M1.5 dispatcher", () => {
+    // The adapter's workflow branch dispatches by command id — no parallel
+    // workflow implementation for voice.
+    expect(workspace).toMatch(/case "workflow":[\s\S]{0,400}commandDispatcher\.dispatch\(intent\.command\)/);
+    // The page builds no recognizer of its own — capture lives in the
+    // provider layer only (the per-field VoiceDictationButton predates this
+    // and keeps its own hook; the PAGE must not add another).
+    expect(workspace).not.toContain("webkitSpeechRecognition");
+    expect(workspace).not.toContain("new SpeechRecognition");
+  });
+
+  it("voice never invents transport: audit + transcribe ride existing patterns", () => {
+    expect(workspace).toContain("/api/radiology/voice-command-audit");
+    const provider = read("lib/voiceTranscription.ts");
+    expect(provider).toContain("/api/ai/transcribe"); // the EXISTING server endpoint
+    expect(provider).not.toMatch(/api[_-]key/i);      // no keys in the frontend
+  });
+
+  it("the embedded viewer exposes only its existing operations to voice", () => {
+    const viewer = read("components/EmbeddedWadoViewer.tsx");
+    expect(viewer).toContain("useImperativeHandle");
+    expect(viewer).toMatch(/\{ nextFrame, prevFrame, zoomIn, zoomOut, resetView \}/);
+  });
+
+  it("voice quick-search drives the panel's ONE search state via externalSearch", () => {
+    const panel = read("components/radiology/QuickFindingsPanel.tsx");
+    expect(panel).toContain("externalSearch");
+    expect(workspace).toContain("externalSearch={qsExternalSearch}");
+  });
+
+  it("voice settings live in RadiologySettingsCenter (pacs_settings, category voice)", () => {
+    const settings = read("pages/RadiologySettingsCenter.tsx");
+    expect(settings).toContain('category: "voice"');
+    expect(settings).toContain("VoiceSettingsPanel");
+    expect(workspace).toContain("parseVoiceSettings");
+  });
+});
+
 describe("M1.6B1 — assignment management stays canonical", () => {
   it("assignment writes go ONLY through the worklist-assignment endpoints", () => {
     const worklist = read("pages/RadiologyWorklist.tsx");

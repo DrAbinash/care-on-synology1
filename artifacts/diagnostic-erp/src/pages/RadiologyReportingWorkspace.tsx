@@ -55,6 +55,14 @@ import { useStudyLock } from "@/hooks/useStudyLock";
 import { lockStatusMessage, QUEUE_SCOPE_LABELS, parseQueueScope, assignmentCategoryOf, type QueueScope } from "@/lib/studyLockState";
 import type { StudyLaunchResult } from "@/lib/studyLaunchService";
 import { ChevronLeft, ChevronRight, PauseCircle, Lock } from "lucide-react";
+// M1.6B2 — the ONE voice pipeline (providers/grammar/safety live in libs; the
+// hook executes through THIS page's adapter → the M1.5 command dispatcher).
+import { useVoiceSession, type VoiceExecutionResult } from "@/hooks/useVoiceSession";
+import VoiceCommandBar from "@/components/radiology/VoiceCommandBar";
+import { normalizeDictationText, describeIntent, type ParsedVoiceCommand, type ViewerOp } from "@/lib/voiceCommandGrammar";
+import { voiceKeyAction } from "@/lib/voiceSessionState";
+import { parseVoiceSettings, fetchServerTranscribeAvailable } from "@/lib/voiceTranscription";
+import type { EmbeddedViewerHandle } from "@/components/EmbeddedWadoViewer";
 
 // ════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -443,6 +451,29 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const [viewerLaunch, setViewerLaunch] = useState<{ busy: boolean; lastResult: StudyLaunchResult | null }>({
     busy: false,
     lastResult: null,
+  });
+
+  // ── M1.6B2 — voice layer wiring ───────────────────────────────────────────
+  /** Live handle onto the embedded viewer (null unless a study is rendered) —
+   *  voice viewer commands call the SAME setters the toolbar buttons use. */
+  const embeddedViewerRef = useRef<EmbeddedViewerHandle | null>(null);
+  /** Voice "search finding <term>" → the panel adopts this as its search text. */
+  const [qsExternalSearch, setQsExternalSearch] = useState<{ seq: number; term: string } | null>(null);
+  /** Spoken park reason: non-null makes parkCurrentStudy skip its prompt
+   *  (voice supplies "" when no reason was spoken). Cleared after dispatch. */
+  const voiceParkReasonRef = useRef<string | null>(null);
+  // Same query key as RadiologySettingsCenter — one cache entry.
+  const { data: pacsSettingsRows } = useQuery<Array<{ id: number; key: string; value: string | null; category: string }>>({
+    queryKey: ["pacs-settings"],
+    queryFn: () => api.get("/api/radiology/pacs-settings"),
+    staleTime: 5 * 60_000,
+  });
+  const voiceSettings = useMemo(() => parseVoiceSettings(pacsSettingsRows), [pacsSettingsRows]);
+  const { data: voiceServerAvailable = false } = useQuery<boolean>({
+    queryKey: ["voice-transcribe-status"],
+    queryFn: fetchServerTranscribeAvailable,
+    enabled: voiceSettings.enabled,
+    staleTime: 5 * 60_000,
   });
 
   // ── Quick Select — Smart Report Engine (Phase 2) ──────────────────────────
@@ -1007,6 +1038,43 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     // The ONE launch pipeline (M1.2) — trigger the panel's primary action.
     document.querySelector<HTMLButtonElement>('[data-testid="btn-open-study"]')?.click();
   }
+  /** M1.6B2 — focus a report editor via its data-editor attribute (same
+   *  retry-until-stable pattern as focusQuickSearch; sections can remount). */
+  function focusEditor(which: "findings" | "impression") {
+    if (which === "impression" && impression.length === 0 && !isLocked) addImpressionLine();
+    const selector = which === "findings"
+      ? (useStructured ? '[data-editor="findings-section"]' : '[data-editor="findings"]')
+      : '[data-editor="impression"]';
+    let attempts = 0;
+    const tryFocus = () => {
+      const all = document.querySelectorAll<HTMLTextAreaElement>(selector);
+      const el = all.length > 0 ? all[all.length - 1] : null;
+      if (el && document.activeElement === el) return;
+      el?.focus();
+      if (++attempts < 10) window.setTimeout(tryFocus, 100);
+    };
+    window.setTimeout(tryFocus, 0);
+  }
+  /** The workspace's ONE "close the top panel" rule — Escape and the
+   *  close-panel command share it. */
+  function closeTopPanel() {
+    if (showDiagnostics) setShowDiagnostics(false);
+    else if (previewMode) setPreviewMode(false);
+  }
+  /** M1.6B2 — unpark: the current study if parked, else return to the oldest
+   *  parked study (through the normal transition guards). */
+  function unparkStudyCommand() {
+    if (studyId != null && workflow.isParked(studyId)) {
+      workflow.unpark(studyId);
+      toast({ title: "Study unparked" });
+      return;
+    }
+    const parkedNext = workflow.peekParked();
+    if (!parkedNext) { toast({ title: "No parked studies" }); return; }
+    if (!guardedLeave()) return;
+    workflow.unpark(parkedNext.id);
+    goToStudy(parkedNext);
+  }
   const commandDispatcher = createCommandDispatcher({
     save: () => { if (!isLocked && !saving) void saveDraft(); },
     finalize: () => { if (!isLocked && !finalizing) void finalizeReport(); },
@@ -1016,6 +1084,147 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     refresh: () => refreshQueueAndCurrent(),
     "open-viewer": openViewer,
     "focus-quick-search": focusQuickSearch,
+    // M1.6B2 — same guard style as above; handlers own their guards.
+    verify: () => { if (canShowVerify && !verifying) void verifyReport(); },
+    unpark: () => unparkStudyCommand(),
+    "reload-current": () => reloadCurrentStudy(),
+    "focus-findings": () => focusEditor("findings"),
+    "focus-impression": () => focusEditor("impression"),
+    "close-panel": () => closeTopPanel(),
+  });
+
+  // ── M1.6B2 — the voice execution adapter ──────────────────────────────────
+  // Workflow intents dispatch through THE command dispatcher (no second
+  // workflow path); edits go through the SAME setters/handlers buttons use.
+  // The safety policy has already gated by lock/permission/mode; handlers
+  // keep their own guards on top.
+
+  function voiceDictate(intent: { target: "findings" | "impression" | "recommendation"; mode: "append" | "replace"; text: string }): VoiceExecutionResult {
+    const text = normalizeDictationText(intent.text, { autoPunctuation: voiceSettings.autoPunctuation });
+    if (!text) return { ok: false, message: "Nothing to insert" };
+    if (intent.target === "findings") {
+      const prev = rawFindings;
+      setRawFindings(intent.mode === "replace" ? text : prev.trim() ? `${prev.replace(/\s+$/, "")}\n${text}` : text);
+      return {
+        ok: true, message: `${intent.mode === "replace" ? "Replaced" : "Appended to"} findings`,
+        undo: () => setRawFindings(prev), undoLabel: "findings edit",
+      };
+    }
+    if (intent.target === "impression") {
+      const prev = impression;
+      setImpression(intent.mode === "replace" ? [text] : [...prev, text]);
+      return {
+        ok: true, message: `${intent.mode === "replace" ? "Replaced" : "Appended to"} impression`,
+        undo: () => setImpression(prev), undoLabel: "impression edit",
+      };
+    }
+    const prev = recommendation;
+    setRecommendation(intent.mode === "replace" ? text : prev.trim() ? `${prev.replace(/\s+$/, "")}\n${text}` : text);
+    return {
+      ok: true, message: `${intent.mode === "replace" ? "Replaced" : "Appended to"} recommendation`,
+      undo: () => setRecommendation(prev), undoLabel: "recommendation edit",
+    };
+  }
+
+  function voiceQuickSelect(action: "search" | "select" | "remove", term: string): VoiceExecutionResult {
+    if (action === "search") {
+      setQsExternalSearch((prev) => ({ seq: (prev?.seq ?? 0) + 1, term }));
+      focusQuickSearch();
+      return { ok: true, message: `Searching quick findings for “${term}”` };
+    }
+    const templates = quickFindingTemplatesRef.current;
+    if (!templates?.length) return { ok: false, message: "Quick findings are not loaded yet — open the Quick tab once" };
+    const norm = term.trim().toLowerCase();
+    const pool = action === "remove" ? templates.filter((f) => selectedQuickIds.has(f.id)) : templates;
+    let matches = pool.filter((f) => f.label.trim().toLowerCase() === norm);
+    if (matches.length === 0) matches = pool.filter((f) => f.label.toLowerCase().includes(norm));
+    if (matches.length === 0) {
+      return { ok: false, message: action === "remove" ? `No selected finding matches “${term}”` : `No quick finding matches “${term}”` };
+    }
+    if (matches.length > 1) {
+      return { ok: false, message: `Multiple findings match “${term}”: ${matches.slice(0, 3).map((f) => f.label).join(" · ")} — say the full name` };
+    }
+    const f = matches[0];
+    const nowSelected = action === "select";
+    if (nowSelected && selectedQuickIds.has(f.id)) return { ok: true, message: `“${f.label}” is already selected` };
+    handleQuickToggle(f, nowSelected);
+    return {
+      ok: true, message: `${nowSelected ? "Selected" : "Removed"} “${f.label}”`,
+      undo: () => handleQuickToggle(f, !nowSelected), undoLabel: `quick finding ${nowSelected ? "selection" : "removal"}`,
+    };
+  }
+
+  function voiceQuickModifier(property: "side" | "severity" | "level", value: string): VoiceExecutionResult {
+    const f = lastToggledFindingRef.current;
+    if (!f || !selectedQuickIds.has(f.id)) {
+      return { ok: false, message: "Select a quick finding first — the modifier applies to the last selected finding" };
+    }
+    const prevValue = quickInstances.get(f.id)?.[property] ?? "";
+    handleInstanceUpdate(f, { [property]: value } as Partial<AbnormalityInstance>);
+    return {
+      ok: true, message: `Set ${property} = ${value} on “${f.label}”`,
+      undo: () => handleInstanceUpdate(f, { [property]: prevValue } as Partial<AbnormalityInstance>),
+      undoLabel: `${property} change`,
+    };
+  }
+
+  function voiceViewer(op: ViewerOp): VoiceExecutionResult {
+    const h = embeddedViewerRef.current;
+    if (!h) return { ok: false, message: "Embedded viewer is not open for this study" };
+    const ops: Record<ViewerOp, () => void> = {
+      "next-image": h.nextFrame, "previous-image": h.prevFrame,
+      "zoom-in": h.zoomIn, "zoom-out": h.zoomOut, "reset-view": h.resetView,
+    };
+    ops[op]();
+    return { ok: true, message: describeIntent({ type: "viewer", op }) };
+  }
+
+  function executeVoiceCommand(parse: ParsedVoiceCommand): VoiceExecutionResult {
+    const intent = parse.intent;
+    if (!intent) return { ok: false, message: "Nothing to execute" };
+    switch (intent.type) {
+      case "cancel":
+        return { ok: true, message: "Cancelled" };
+      case "workflow": {
+        // Spoken park reason (possibly "") skips the prompt; cleared right
+        // after — dispatch invokes the handler synchronously.
+        if (intent.command === "park") voiceParkReasonRef.current = intent.reason ?? "";
+        const res = commandDispatcher.dispatch(intent.command);
+        if (intent.command === "park") voiceParkReasonRef.current = null;
+        return res.executed
+          ? { ok: true, message: describeIntent(intent) }
+          : { ok: false, message: `Command not available (${res.reason ?? "unknown"})` };
+      }
+      case "dictate": return voiceDictate(intent);
+      case "quick-select": return voiceQuickSelect(intent.action, intent.term);
+      case "quick-modifier": return voiceQuickModifier(intent.property, intent.value);
+      case "viewer": return voiceViewer(intent.op);
+      case "viewer-unsupported": return { ok: false, message: `The embedded viewer does not support ${intent.capability}` };
+    }
+  }
+
+  const voice = useVoiceSession({
+    studyId,
+    settings: voiceSettings,
+    serverAvailable: voiceServerAvailable,
+    getContext: () => ({
+      studyId: studyId ?? null,
+      dirty,
+      isLocked,
+      lockedByOther,
+      lockLost,
+      canVerify: canShowVerify,
+      structuredFindings: useStructured,
+      viewerAvailable: embeddedViewerRef.current != null,
+      confirmationPolicy: voiceSettings.confirmationPolicy,
+    }),
+    execute: executeVoiceCommand,
+    // Phase 11 — minimal metadata only: command type, study, outcome. The
+    // server derives the actor from the session; no transcript is ever sent.
+    onAudit: (commandType, outcome) => {
+      if (studyId == null) return;
+      void api.post("/api/radiology/voice-command-audit", { commandType, studyId, outcome }).catch(() => undefined);
+    },
   });
 
   // Keyboard shortcuts (M1.4 Phase 11 + M1.5 Phase 8) — matching rules live
@@ -1024,14 +1233,39 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // state.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // M1.6B2 — voice keys FIRST (Ctrl+Space toggle, Space push-to-talk
+      // outside editors, Enter confirms a non-finalize preview, Escape
+      // cancels an ACTIVE voice capture/preview). Null falls through to the
+      // pinned M1.4/M1.5 shortcut matrix unchanged.
+      const action = voiceKeyAction(
+        {
+          key: e.key, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey,
+          shiftKey: e.shiftKey, repeat: e.repeat,
+          target: e.target as { tagName?: string; isContentEditable?: boolean } | null,
+        },
+        {
+          enabled: voice.enabled,
+          pttKey: voiceSettings.pttKey,
+          capturing: voice.capturing,
+          hasPendingPreview: voice.pending != null,
+          confirmViaEnterAllowed: voice.pending?.verdict.confirmViaEnterAllowed ?? false,
+        },
+      );
+      if (action) {
+        e.preventDefault();
+        if (action === "toggle-listen") voice.toggleListening();
+        else if (action === "ptt-start") voice.startListening("ptt");
+        else if (action === "confirm-pending") voice.confirmPending("enter");
+        else voice.cancel();
+        return;
+      }
       const shortcut = matchWorkspaceShortcut({
         key: e.key, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey, shiftKey: e.shiftKey,
         target: e.target as { tagName?: string } | null,
       });
       if (!shortcut) return;
       if (shortcut === "escape") {
-        if (showDiagnostics) setShowDiagnostics(false);
-        else if (previewMode) setPreviewMode(false);
+        closeTopPanel();
         return;
       }
       e.preventDefault();
@@ -1044,8 +1278,16 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         : shortcut; // save | finalize
       commandDispatcher.dispatch(command);
     };
+    // Releasing Space ends a push-to-talk capture (start is keydown above).
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === " " && voice.captureTrigger === "ptt") voice.stopListening();
+    };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKeyUp);
+    };
   });
 
   // ── M1.4 — lifecycle / amendment metadata (Phase 9, D8/D9 read-only) ─────
@@ -1636,7 +1878,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       return;
     }
     if (!guardedLeave()) return;
-    const reason = window.prompt("Park this study — reason (optional):", "");
+    // M1.6B2 — a spoken reason (possibly "") skips the prompt; button/keyboard
+    // parks still prompt exactly as before.
+    const voiceReason = voiceParkReasonRef.current;
+    const reason = voiceReason !== null ? voiceReason : window.prompt("Park this study — reason (optional):", "");
     if (reason === null) return; // cancelled
     workflow.park(studyId, reason);
     const target = workflow.peekNext();
@@ -2042,6 +2287,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         </div>
       </div>
 
+      {/* ── M1.6B2 — voice command bar (hidden entirely when disabled; the
+          workspace never depends on voice — keyboard/mouse stay canonical) ── */}
+      {voiceSettings.enabled && <VoiceCommandBar voice={voice} />}
+
       {/* ── 3-column body ──────────────────────────────────────────────────── */}
       <div className="flex flex-1 overflow-hidden">
 
@@ -2125,6 +2374,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           <div className="flex-1 overflow-hidden">
             {entry?.studyInstanceUID ? (
               <EmbeddedWadoViewer
+                ref={embeddedViewerRef}
                 studyInstanceUID={entry.studyInstanceUID}
                 accessionNumber={entry.accessionNumber}
               />
@@ -2448,6 +2698,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                           placeholder="Describe finding..."
                           className="min-h-[48px] text-xs mt-1 resize-none"
                           disabled={isLocked}
+                          data-editor="findings-section"
                         />
                       )}
                       {item.normal && (
@@ -2475,6 +2726,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   placeholder="Enter free-text findings..."
                   className="min-h-[180px] text-sm font-mono resize-y"
                   disabled={isLocked}
+                  data-editor="findings"
                 />
               )}
             </div>
@@ -2518,6 +2770,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                       placeholder={`Impression point ${i + 1}`}
                       className="min-h-[40px] text-sm flex-1 resize-none"
                       disabled={isLocked}
+                      data-editor="impression"
                     />
                     {!isLocked && (
                       <Button
@@ -2587,6 +2840,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 placeholder="Recommendation..."
                 className="min-h-[44px] text-sm resize-none"
                 disabled={isLocked}
+                data-editor="recommendation"
               />
             </CollapsibleSection>
 
@@ -2844,6 +3098,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 onSideChange={setQuickSide}
                 instances={quickInstances}
                 onUpdateInstance={handleInstanceUpdate}
+                externalSearch={qsExternalSearch}
                 onAutoTechnique={handleAutoTechnique}
                 onInsertNormals={handleInsertNormals}
                 activeProtocolId={activeProtocol?.id ?? null}

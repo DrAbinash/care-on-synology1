@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle, type ForwardedRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
@@ -53,10 +53,20 @@ function useGestureZoom(onZoom: (delta: number) => void) {
   return { handleTouchMove, handleTouchEnd };
 }
 
-export default function EmbeddedWadoViewer({ studyInstanceUID, accessionNumber }: {
+/** M1.6B2 — the viewer operations that really exist, exposed for the voice
+ *  layer. The handle is non-null only while a study is actually rendered. */
+export interface EmbeddedViewerHandle {
+  nextFrame: () => void;
+  prevFrame: () => void;
+  zoomIn: () => void;
+  zoomOut: () => void;
+  resetView: () => void;
+}
+
+const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
   studyInstanceUID: string | null;
   accessionNumber?: string | null;
-}) {
+}>(function EmbeddedWadoViewer({ studyInstanceUID, accessionNumber }, ref) {
   if (!studyInstanceUID) {
     return (
       <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground text-sm">
@@ -66,12 +76,15 @@ export default function EmbeddedWadoViewer({ studyInstanceUID, accessionNumber }
     );
   }
 
-  return <ViewerContent studyInstanceUID={studyInstanceUID} accessionNumber={accessionNumber} />;
-}
+  return <ViewerContent studyInstanceUID={studyInstanceUID} accessionNumber={accessionNumber} controlRef={ref} />;
+});
 
-function ViewerContent({ studyInstanceUID, accessionNumber }: {
+export default EmbeddedWadoViewer;
+
+function ViewerContent({ studyInstanceUID, accessionNumber, controlRef }: {
   studyInstanceUID: string;
   accessionNumber?: string | null;
+  controlRef?: ForwardedRef<EmbeddedViewerHandle>;
 }) {
   const [selectedSeriesUID, setSelectedSeriesUID] = useState<string | null>(null);
   const [selectedInstIdx, setSelectedInstIdx] = useState(0);
@@ -176,6 +189,9 @@ function ViewerContent({ studyInstanceUID, accessionNumber }: {
 
   const nextFrame = () => setSelectedInstIdx((i) => Math.min(i + 1, instances.length - 1));
   const prevFrame = () => setSelectedInstIdx((i) => Math.max(i - 1, 0));
+
+  // M1.6B2 — same setters the toolbar buttons call, nothing more.
+  useImperativeHandle(controlRef, () => ({ nextFrame, prevFrame, zoomIn, zoomOut, resetView }));
 
   const imageTransform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
   const imageFilter = `brightness(${brightness}%) contrast(${contrast}%)`;

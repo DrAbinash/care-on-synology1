@@ -113,6 +113,10 @@ interface Props {
    *  can rehydrate persisted selections (needs the finding templates to seed
    *  exact-match removal state). Read-only exposure; no behavior change. */
   onFindingsLoaded?: (findings: QuickFinding[]) => void;
+  /** M1.6B2 — voice "search finding <term>": the parent bumps seq with a new
+   *  term and the panel adopts it as the search text. Display-only control of
+   *  the SAME search state the keyboard uses — no second search path. */
+  externalSearch?: { seq: number; term: string } | null;
 }
 
 const SIDES: Array<{ value: Side; label: string }> = [
@@ -125,11 +129,19 @@ export default function QuickFindingsPanel({
   selectedIds, onToggle, onMeasurement, side, onSideChange, disabled, initialStudyHint, isAdmin,
   instances, onUpdateInstance, onAutoTechnique, onInsertNormals,
   activeProtocolId, onProtocolChange, onChecklistChange, onAcceptLearnedSuggestion,
-  onFindingsLoaded,
+  onFindingsLoaded, externalSearch,
 }: Props) {
   const qc = useQueryClient();
   const searchRef = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState("");
+
+  // M1.6B2 — adopt a voice-driven search term (one adoption per seq bump).
+  const externalSearchSeqRef = useRef(0);
+  useEffect(() => {
+    if (!externalSearch || externalSearch.seq === externalSearchSeqRef.current) return;
+    externalSearchSeqRef.current = externalSearch.seq;
+    setSearch(externalSearch.term);
+  }, [externalSearch]);
 
   const { data, isLoading } = useQuery<QuickSelectData>({
     queryKey: ["radiology-quick-select"],

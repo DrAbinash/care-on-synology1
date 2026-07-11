@@ -13,8 +13,15 @@ import {
   Network, Server, MonitorPlay, Radio, BrainCircuit,
   Wrench, Activity, ShieldAlert, Laptop, CheckCircle2,
   XCircle, AlertTriangle, RefreshCw, Plus, Save, Trash2,
-  Tv2, Zap, ShieldCheck, PlayCircle, Info, Palette
+  Tv2, Zap, ShieldCheck, PlayCircle, Info, Palette, Mic
 } from "lucide-react";
+import type { UseMutationResult } from "@tanstack/react-query";
+// M1.6B2 — voice layer settings (same pacs_settings persistence as this page)
+import {
+  parseVoiceSettings, resolveProviderChoice, createVoiceProvider,
+  isWebSpeechSupported, fetchServerTranscribeAvailable,
+  type TranscriptionSession,
+} from "@/lib/voiceTranscription";
 import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 
 // Sub-panels imported or reconstructed for unified look
@@ -287,6 +294,7 @@ export default function RadiologySettingsCenter() {
           <TabsTrigger value="mwl"><Wrench size={14} className="mr-1.5" />DICOM &amp; MWL</TabsTrigger>
           <TabsTrigger value="reporting"><BrainCircuit size={14} className="mr-1.5" />AI &amp; Templates</TabsTrigger>
           <TabsTrigger value="style"><Palette size={14} className="mr-1.5" />Report Style</TabsTrigger>
+          <TabsTrigger value="voice"><Mic size={14} className="mr-1.5" />Voice</TabsTrigger>
           <TabsTrigger value="diagnostics"><Activity size={14} className="mr-1.5" />Diagnostics</TabsTrigger>
           <TabsTrigger value="history"><Info size={14} className="mr-1.5" />History</TabsTrigger>
           <TabsTrigger value="advanced"><ShieldAlert size={14} className="mr-1.5" />Advanced</TabsTrigger>
@@ -800,6 +808,11 @@ export default function RadiologySettingsCenter() {
           <RadiologyStylePanel />
         </TabsContent>
 
+        {/* Tab content 8.6: Voice commands & dictation (M1.6B2) */}
+        <TabsContent value="voice" className="space-y-4">
+          <VoiceSettingsPanel settings={settings} upsertSetting={upsertSetting} isAdmin={isAdmin} />
+        </TabsContent>
+
         {/* Tab content 9: Advanced */}
         <TabsContent value="advanced" className="space-y-4">
           <div className="rounded-xl border bg-card p-5 space-y-4">
@@ -837,6 +850,189 @@ export default function RadiologySettingsCenter() {
           </div>
         </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// M1.6B2 — Voice commands & dictation settings (pacs_settings, category
+// "voice"; consumed by the Reporting Workspace's voice layer). POST is
+// admin-gated server-side, so controls are disabled for non-admins.
+// ════════════════════════════════════════════════════════════════════════════
+
+function VoiceSettingsPanel({ settings, upsertSetting, isAdmin }: {
+  settings: Setting[];
+  upsertSetting: UseMutationResult<unknown, Error, object>;
+  isAdmin: boolean;
+}) {
+  const voice = parseVoiceSettings(settings);
+  const set = (key: string, value: string) => upsertSetting.mutate({ key, value, category: "voice" });
+
+  const { data: serverAvailable = false } = useQuery<boolean>({
+    queryKey: ["voice-transcribe-status"],
+    queryFn: fetchServerTranscribeAvailable,
+    staleTime: 60_000,
+  });
+  const webSpeech = isWebSpeechSupported();
+  const effectiveProvider = resolveProviderChoice(voice.provider, {
+    serverAvailable, webSpeechSupported: webSpeech, injectedPresent: false,
+  });
+
+  const [micTest, setMicTest] = useState<string | null>(null);
+  const [micDevices, setMicDevices] = useState<Array<{ deviceId: string; label: string }>>([]);
+  const [sttTest, setSttTest] = useState<string | null>(null);
+  const [sttTesting, setSttTesting] = useState(false);
+
+  async function testMicrophone() {
+    setMicTest("Requesting microphone…");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const label = stream.getAudioTracks()[0]?.label || "unnamed device";
+      stream.getTracks().forEach((t) => t.stop());
+      setMicTest(`✓ Microphone OK: ${label}`);
+      // After permission, labels become readable — refresh the device list.
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      setMicDevices(devices.filter((d) => d.kind === "audioinput").map((d) => ({ deviceId: d.deviceId, label: d.label || d.deviceId })));
+    } catch (err) {
+      const name = err instanceof DOMException ? err.name : "";
+      setMicTest(name === "NotAllowedError"
+        ? "✗ Permission denied — allow the microphone in the browser's site settings, then retry"
+        : `✗ Microphone test failed${name ? ` (${name})` : ""}`);
+    }
+  }
+
+  function testTranscription() {
+    if (!effectiveProvider) { setSttTest("✗ No transcription provider available"); return; }
+    setSttTesting(true);
+    setSttTest("Listening for ~4 seconds — say a short phrase…");
+    const provider = createVoiceProvider(effectiveProvider);
+    let session: TranscriptionSession | null = null;
+    session = provider.start(
+      { lang: voice.language, deviceId: voice.inputDeviceId },
+      {
+        onInterim: (t) => { if (t) setSttTest(`… ${t}`); },
+        onStatus: () => undefined,
+        onResult: (r) => {
+          setSttTesting(false);
+          setSttTest(r.transcript ? `✓ Heard: “${r.transcript}”` : "✗ Heard nothing — check the microphone and try again");
+        },
+        onError: (message) => { setSttTesting(false); setSttTest(`✗ ${message}`); },
+      },
+    );
+    window.setTimeout(() => session?.stop(), 4000);
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border bg-card p-5 space-y-4">
+        <h3 className="font-semibold text-sm flex items-center gap-2">
+          <Mic size={16} className="text-primary" /> Voice Commands &amp; Dictation
+        </h3>
+        <p className="text-xs text-muted-foreground">
+          Voice drives the Reporting Workspace's existing command dispatcher — it never bypasses locks,
+          permissions, or the finalize confirmation. When voice is off or unavailable, keyboard and mouse
+          work exactly as before.
+        </p>
+        {!isAdmin && (
+          <p className="text-xs text-amber-700">Only administrators can change these settings.</p>
+        )}
+
+        <div className="grid sm:grid-cols-2 gap-4">
+          <div className="flex items-center gap-2">
+            <Switch id="voice-enabled" checked={voice.enabled} disabled={!isAdmin}
+              onCheckedChange={(v) => set("voice_enabled", v ? "true" : "false")} />
+            <Label htmlFor="voice-enabled" className="text-xs cursor-pointer">Voice enabled</Label>
+          </div>
+          <div className="flex items-center gap-2">
+            <Switch id="voice-punct" checked={voice.autoPunctuation} disabled={!isAdmin}
+              onCheckedChange={(v) => set("voice_auto_punctuation", v ? "true" : "false")} />
+            <Label htmlFor="voice-punct" className="text-xs cursor-pointer">Auto punctuation (capitalize + terminal period, spoken “full stop/comma/new line”)</Label>
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Transcription provider</Label>
+            <select className="w-full h-9 text-sm border rounded-md px-2 bg-background" disabled={!isAdmin}
+              value={voice.provider} onChange={(e) => set("voice_provider", e.target.value)}>
+              <option value="auto">Auto (server when configured, else browser)</option>
+              <option value="server">Server (clinic AI provider)</option>
+              <option value="browser">Browser (Web Speech API)</option>
+            </select>
+            <p className="text-[11px] text-muted-foreground">
+              Server transcription: {serverAvailable ? "configured ✓" : "not configured (AI provider key missing)"} ·
+              Browser Web Speech: {webSpeech ? "supported ✓" : "not supported"} ·
+              Effective: <strong>{effectiveProvider ?? "none — voice will show as unavailable"}</strong>
+            </p>
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Recognition language</Label>
+            <Input className="h-9 text-sm" disabled={!isAdmin} defaultValue={voice.language}
+              key={voice.language} onBlur={(e) => { if (e.target.value.trim() && e.target.value.trim() !== voice.language) set("voice_language", e.target.value.trim()); }}
+              placeholder="en-IN" />
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Push-to-talk key</Label>
+            <select className="w-full h-9 text-sm border rounded-md px-2 bg-background" disabled={!isAdmin}
+              value={voice.pttKey} onChange={(e) => set("voice_ptt_key", e.target.value)}>
+              <option value="Space">Space (held, outside text fields)</option>
+              <option value="off">Off (buttons / Ctrl+Space only)</option>
+            </select>
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Default mode</Label>
+            <select className="w-full h-9 text-sm border rounded-md px-2 bg-background" disabled={!isAdmin}
+              value={voice.defaultMode} onChange={(e) => set("voice_default_mode", e.target.value)}>
+              <option value="command">Command mode (parse spoken commands)</option>
+              <option value="dictation">Dictation mode (insert utterances as text, previewed)</option>
+            </select>
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Confirmation policy</Label>
+            <select className="w-full h-9 text-sm border rounded-md px-2 bg-background" disabled={!isAdmin}
+              value={voice.confirmationPolicy} onChange={(e) => set("voice_confirmation_policy", e.target.value)}>
+              <option value="standard">Standard (confirm replace/verify/finalize and dirty transitions)</option>
+              <option value="strict">Strict (confirm every edit too)</option>
+            </select>
+            <p className="text-[11px] text-muted-foreground">Finalize ALWAYS requires a click plus the standard finalize confirmation — no policy relaxes that.</p>
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Microphone device (server transcription only)</Label>
+            <select className="w-full h-9 text-sm border rounded-md px-2 bg-background" disabled={!isAdmin || micDevices.length === 0}
+              value={voice.inputDeviceId ?? ""} onChange={(e) => set("voice_input_device", e.target.value)}>
+              <option value="">System default</option>
+              {micDevices.map((d) => <option key={d.deviceId} value={d.deviceId}>{d.label}</option>)}
+            </select>
+            <p className="text-[11px] text-muted-foreground">
+              Run “Test microphone” to list devices. Browser Web Speech always uses the system default microphone —
+              the browser API offers no device selection.
+            </p>
+          </div>
+        </div>
+
+        {/* Local vs cloud — truthful privacy note (Phase 11) */}
+        <div className="rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-950/20 p-3 text-[11px] text-amber-900 dark:text-amber-200">
+          <strong>Where audio goes:</strong> Server transcription sends recorded audio to this clinic's API server,
+          which forwards it to the configured AI provider (Gemini) using a server-side key — no keys or direct external
+          calls in the browser. Browser Web Speech (Chrome/Edge) sends audio to the browser vendor's speech service.
+          No local/offline engine is installed. Raw audio is never logged; the workspace audits only high-risk voice
+          commands (finalize/verify) with command type, user, study and outcome — never the dictated text.
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <Button variant="outline" size="sm" onClick={() => void testMicrophone()}>
+            <Mic size={13} className="mr-1.5" /> Test microphone
+          </Button>
+          {micTest && <span className="text-xs">{micTest}</span>}
+          <Button variant="outline" size="sm" onClick={testTranscription} disabled={sttTesting || !effectiveProvider}>
+            <PlayCircle size={13} className="mr-1.5" /> Test transcription
+          </Button>
+          {sttTest && <span className="text-xs">{sttTest}</span>}
+        </div>
+      </div>
     </div>
   );
 }

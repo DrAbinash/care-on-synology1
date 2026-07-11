@@ -21,6 +21,14 @@ export const WORKSPACE_COMMANDS = [
   "refresh",
   "open-viewer",
   "focus-quick-search",
+  // M1.6B2 — added for the voice layer; buttons/keyboard reach the same
+  // handlers, so every entry here stays a single choke point per action.
+  "verify",
+  "unpark",
+  "reload-current",
+  "focus-findings",
+  "focus-impression",
+  "close-panel",
 ] as const;
 
 export type WorkspaceCommand = (typeof WORKSPACE_COMMANDS)[number];

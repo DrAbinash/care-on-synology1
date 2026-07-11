@@ -31,6 +31,7 @@ import { testTokensRouter } from "./test-tokens";
 import { radiologyRouter } from "./radiology";
 import { radiologyWorklistLocksRouter } from "./radiology-worklist-locks";
 import { radiologyWorklistAssignmentsRouter } from "./radiology-worklist-assignments";
+import { radiologyVoiceRouter } from "./radiology-voice";
 import { pacsEnterpriseRouter } from "./pacsEnterprise";
 import displayRouter from "./display";
 import queueDisplaySettingsRouter from "./queueDisplaySettings";
@@ -537,6 +538,10 @@ router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"),
 // Assignment management (Ticket M1.6B1) — organizational ownership, distinct
 // from the lock above. /worklist-assignment/*, /radiologists, /workload.
 router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), radiologyWorklistAssignmentsRouter);
+
+// Voice-command audit (Ticket M1.6B2) — high-risk voice attempts/outcomes
+// into the hash-chained audit log. /voice-command-audit only.
+router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), radiologyVoiceRouter);
 
 // Radiology studies — open to all authenticated staff (doctors, radiologists, etc.)
 router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), radiologyRouter);
