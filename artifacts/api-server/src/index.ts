@@ -355,27 +355,20 @@ async function runStartupMigrations(): Promise<void> {
       WHERE NOT EXISTS (SELECT 1 FROM clinic_settings LIMIT 1);
 
       -- ── One-time correction: earlier seeds above stored the literal
-      -- placeholder text 'GSTIN_NOT_SET' / 'RZP_KEY_NOT_SET' instead of an
-      -- empty string for "not configured" fields. Since these are
-      -- non-empty strings, bill print templates (which check "if gstin is
-      -- set, print it") treated them as real values and printed
-      -- "GSTIN: GSTIN_NOT_SET" on every invoice.
-      --
-      -- Both columns are TEXT NOT NULL DEFAULT '' (see
-      -- lib/db/src/schema/clinicSettings.ts), so the fix must use '' here,
-      -- not NULL — an earlier version of this migration used NULL and
-      -- violated the NOT NULL constraint on every startup, which aborted
-      -- this entire migration batch (including unrelated statements like
-      -- outsourced_labs setup that run later in the same transaction).
-      -- Empty string is safe: all read paths already treat '' the same as
-      -- "not configured" (row.gstin ?? "", clinic?.gstin ? ... : ""),
-      -- since both are falsy.
-      --
-      -- Safe to run every startup — only touches rows still holding the
-      -- exact placeholder text or a leftover NULL from a prior failed run;
-      -- a no-op once corrected. Idempotent, non-destructive.
-      UPDATE clinic_settings SET gstin = '' WHERE gstin = 'GSTIN_NOT_SET' OR gstin IS NULL;
-      UPDATE clinic_settings SET razorpay_key_id = '' WHERE razorpay_key_id = 'RZP_KEY_NOT_SET' OR razorpay_key_id IS NULL;
+      -- placeholder text 'GSTIN_NOT_SET' / 'RZP_KEY_NOT_SET' instead of NULL
+      -- for "not configured" fields. Since these are non-empty strings, bill
+      -- print templates (which check "if gstin is set, print it") treated
+      -- them as real values and printed "GSTIN: GSTIN_NOT_SET" on every
+      -- invoice. Safe to run every startup — only touches rows that still
+      -- have the exact placeholder text, a no-op once corrected.
+      UPDATE clinic_settings SET gstin = NULL WHERE gstin = 'GSTIN_NOT_SET';
+      UPDATE clinic_settings SET razorpay_key_id = NULL WHERE razorpay_key_id = 'RZP_KEY_NOT_SET';
+      -- These columns were originally created NOT NULL, but the app stores
+      -- NULL to mean "not configured" (see the two UPDATEs above). Relax
+      -- the constraint so settings saves with GST/Razorpay left blank
+      -- don't crash with a not-null violation.
+      ALTER TABLE clinic_settings ALTER COLUMN gstin DROP NOT NULL;
+      ALTER TABLE clinic_settings ALTER COLUMN razorpay_key_id DROP NOT NULL;
       CREATE TABLE IF NOT EXISTS day_closures (
         id SERIAL PRIMARY KEY,
         closure_date TEXT NOT NULL,
