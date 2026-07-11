@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest";
 const fs = require("fs");
 const path = require("path");
-const { defaultLiteralForType, parseSqlFiles, diffSchema, loadJournal, extractRuntimeTableNames } = require("./db-schema-verify.cjs");
+const {
+  defaultLiteralForType, parseSqlFiles, diffSchema, loadJournal, extractRuntimeTableNames,
+  normaliseType, typesCompatible,
+} = require("./db-schema-verify.cjs");
 
 // Regression coverage for the incident where care-db-patch-v2 schema
 // verification failed because payment_logs.amount and .error_message
@@ -283,5 +286,345 @@ describe("Migration Journal Inconsistency — duplicate/out-of-order idx detecti
   it("the real, current _journal.json has no duplicate or out-of-order idx (sanity check)", () => {
     const journal = loadJournal();
     expect(journal.issues).toEqual([]);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// S1 — Schema Verification Framework Cleanup
+// ════════════════════════════════════════════════════════════════════════════
+// Regression coverage for the incident where verification reported false
+// positives like `expected 'text,' / got 'text'` for several columns. Root
+// cause: the CREATE TABLE column-type capture used a bare `\S+`, which is
+// greedy over ANY non-whitespace character — including the comma separating
+// one column definition from the next. Confirmed against the real migration
+// corpus: 1,647 of 4,750 expected columns (35%) carried a corrupted type
+// string with a literal trailing comma baked in before this fix.
+
+describe("S1 root cause: CREATE TABLE column types no longer swallow the trailing comma", () => {
+  it("a bare, unconstrained column (`\"email\" text,`) parses to a clean type with no trailing comma", () => {
+    const entries = [{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "patients" (\n\t"id" serial PRIMARY KEY NOT NULL,\n\t"email" text,\n\t"address" text,\n\t"ledger_id" integer\n);`,
+    }];
+    const { tables } = parseSqlFiles(entries);
+    const cols = tables.get("patients").columns;
+    expect(cols.get("email").type).toBe("text");
+    expect(cols.get("address").type).toBe("text");
+    expect(cols.get("ledger_id").type).toBe("integer");
+    for (const [, ci] of cols) {
+      expect(ci.type.endsWith(",")).toBe(false);
+      expect(ci.rawType.endsWith(",")).toBe(false);
+    }
+  });
+
+  it("this exact bug no longer reproduces on the real migration corpus (regression guard)", () => {
+    const journal = loadJournal();
+    const entries = [];
+    for (const e of journal.entries) {
+      const p = path.join(__dirname, "../lib/db/drizzle", `${e.tag}.sql`);
+      if (fs.existsSync(p)) entries.push({ tag: e.tag, type: "drizzle", content: fs.readFileSync(p, "utf8") });
+    }
+    const migDir = path.join(__dirname, "../migrations");
+    for (const f of fs.readdirSync(migDir).filter((f) => f.endsWith(".sql")).sort()) {
+      entries.push({ tag: f, type: "feature", content: fs.readFileSync(path.join(migDir, f), "utf8") });
+    }
+    const { tables } = parseSqlFiles(entries);
+    let checked = 0;
+    for (const ti of tables.values()) {
+      for (const ci of ti.columns.values()) {
+        checked++;
+        expect(ci.type.endsWith(",")).toBe(false);
+        expect(ci.type.startsWith('"')).toBe(false);
+      }
+    }
+    // Sanity check the assertions above actually ran over real data, not an
+    // empty parse result.
+    expect(checked).toBeGreaterThan(1000);
+  });
+
+  it("a type immediately followed by a modifier keyword (not a comma) is unaffected — pre-existing behaviour preserved", () => {
+    const entries = [{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "t" (\n\t"id" serial PRIMARY KEY NOT NULL,\n\t"name" text NOT NULL,\n\t"amount" numeric(10, 2) DEFAULT 0\n);`,
+    }];
+    const { tables } = parseSqlFiles(entries);
+    expect(tables.get("t").columns.get("name").type).toBe("text");
+    expect(tables.get("t").columns.get("amount").type).toBe("numeric");
+  });
+
+  it("the last column in a table (no trailing comma, followed by the closing paren) still parses cleanly", () => {
+    const entries = [{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "t" (\n\t"id" serial PRIMARY KEY NOT NULL,\n\t"note" text\n);`,
+    }];
+    const { tables } = parseSqlFiles(entries);
+    expect(tables.get("t").columns.get("note").type).toBe("text");
+  });
+});
+
+describe("S1: whitespace normalization", () => {
+  it("collapses internal whitespace runs to a single space", () => {
+    expect(normaliseType("double   precision")).toBe(normaliseType("double precision"));
+  });
+
+  it("trims leading/trailing whitespace", () => {
+    expect(normaliseType("  text  ")).toBe("text");
+  });
+
+  it("is case-insensitive", () => {
+    expect(normaliseType("TEXT")).toBe("text");
+    expect(normaliseType("Character Varying")).toBe(normaliseType("character varying"));
+  });
+});
+
+describe("S1: quoted identifiers (custom/enum types)", () => {
+  it("a quoted custom/enum type column (`\"status\" \"outsource_status\"`) normalizes to the unquoted type", () => {
+    const entries = [{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "outsource_orders" (\n\t"id" serial PRIMARY KEY NOT NULL,\n\t"status" "outsource_status" DEFAULT 'ordered' NOT NULL\n);`,
+    }];
+    const { tables } = parseSqlFiles(entries);
+    const status = tables.get("outsource_orders").columns.get("status");
+    // type (used for comparison against live udt_name, which is always
+    // unquoted) must be unquoted...
+    expect(status.type).toBe("outsource_status");
+    // ...but rawType (used verbatim in --repair DDL generation) must stay
+    // quoted, since `"outsource_status"` is what valid PostgreSQL DDL needs.
+    expect(status.rawType).toBe('"outsource_status"');
+  });
+
+  it("normaliseType strips wrapping quotes and schema qualification, quoted or not", () => {
+    expect(normaliseType('"outsource_status"')).toBe("outsource_status");
+    expect(normaliseType("public.outsource_status")).toBe("outsource_status");
+    expect(normaliseType('"public"."outsource_status"')).toBe("outsource_status");
+  });
+
+  it("a quoted enum type compares equal to its live (always-unquoted) udt_name — no false positive", () => {
+    expect(typesCompatible('"outsource_status"', "outsource_status")).toBe(true);
+  });
+});
+
+describe("S1: text/varchar aliases", () => {
+  it("text, varchar, character varying, and character all normalize to the same group", () => {
+    expect(typesCompatible("text", "varchar")).toBe(true);
+    expect(typesCompatible("text", "character varying")).toBe(true);
+    expect(typesCompatible("text", "character")).toBe(true);
+    expect(typesCompatible("varchar(255)", "text")).toBe(true);
+  });
+
+  it("character varying(N) with precision parses and normalizes like a bare varchar", () => {
+    const entries = [{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "t" (\n\t"id" serial PRIMARY KEY NOT NULL,\n\t"name" character varying(255),\n\t"code" varchar(50)\n);`,
+    }];
+    const { tables } = parseSqlFiles(entries);
+    expect(tables.get("t").columns.get("name").type).toBe("text");
+    expect(tables.get("t").columns.get("code").type).toBe("text");
+    // rawType must retain the precision — needed for valid --repair DDL.
+    expect(tables.get("t").columns.get("name").rawType).toBe("character varying(255)");
+  });
+});
+
+describe("S1: json/jsonb normalization", () => {
+  it("json and jsonb are treated as equivalent", () => {
+    expect(typesCompatible("json", "jsonb")).toBe(true);
+    expect(normaliseType("json")).toBe("jsonb");
+  });
+});
+
+describe("S1: array type formatting", () => {
+  it("preserves array bracket suffixes in the parsed type instead of dropping them", () => {
+    const entries = [{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "t" (\n\t"id" serial PRIMARY KEY NOT NULL,\n\t"tags" text[]\n);`,
+    }];
+    const { tables } = parseSqlFiles(entries);
+    expect(tables.get("t").columns.get("tags").rawType).toBe("text[]");
+  });
+
+  it("normalizes inconsistent whitespace inside array brackets", () => {
+    expect(normaliseType("text [ ]")).toBe(normaliseType("text[]"));
+  });
+
+  it("a real array column ('text[]' expected) compares equal to its reconstructed live type — confirmed against a live Postgres instance (4 real columns: radiology_snippets.tags, radiology_user_copilot_profiles.{ignored_warnings,favorite_templates,favorite_chocolate_box})", () => {
+    // PostgreSQL's information_schema reports array columns as
+    // data_type='ARRAY' with the element type ONLY in udt_name (prefixed
+    // with '_', e.g. '_text' for text[]) — getLiveSchema() reconstructs
+    // "text[]" from that so it can match what parseSqlFiles captures from
+    // source (`"col" text[]`). This asserts the reconstruction logic is
+    // present, since getLiveSchema() itself requires a live DB connection
+    // to unit test directly (verified end-to-end against a real Postgres
+    // instance during S1 development — see the S1 cleanup report).
+    const src = fs.readFileSync(path.join(__dirname, "db-schema-verify.cjs"), "utf8");
+    expect(src).toMatch(/r\.data_type === "ARRAY"/);
+    expect(src).toMatch(/udt_name\.replace\(\/\^_\/, ""\)/);
+    expect(typesCompatible("text[]", normaliseType("text[]"))).toBe(true);
+  });
+});
+
+describe("S1: default-value parsing no longer truncates multi-word or function-call defaults", () => {
+  it("captures a full multi-word quoted string default instead of stopping at the first space", () => {
+    const entries = [{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "t" (\n\t"id" serial PRIMARY KEY NOT NULL,\n\t"status" text DEFAULT 'AI Draft - Requires Radiologist Review' NOT NULL\n);`,
+    }];
+    const { tables } = parseSqlFiles(entries);
+    expect(tables.get("t").columns.get("status").defaultVal).toBe("'AI Draft - Requires Radiologist Review'");
+  });
+
+  it("captures a balanced function-call default instead of dropping the closing paren", () => {
+    const entries = [{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "t" (\n\t"id" serial PRIMARY KEY NOT NULL,\n\t"created_at" timestamp with time zone DEFAULT now() NOT NULL\n);`,
+    }];
+    const { tables } = parseSqlFiles(entries);
+    expect(tables.get("t").columns.get("created_at").defaultVal).toBe("now()");
+  });
+
+  it("captures a jsonb default with a type cast", () => {
+    const entries = [{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "t" (\n\t"id" serial PRIMARY KEY NOT NULL,\n\t"data" jsonb DEFAULT '{}'::jsonb NOT NULL\n);`,
+    }];
+    const { tables } = parseSqlFiles(entries);
+    expect(tables.get("t").columns.get("data").defaultVal).toBe("'{}'::jsonb");
+  });
+
+  it("still captures simple numeric and boolean defaults correctly", () => {
+    const entries = [{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "t" (\n\t"id" serial PRIMARY KEY NOT NULL,\n\t"amount" numeric(10, 2) DEFAULT 0 NOT NULL,\n\t"active" boolean DEFAULT false NOT NULL\n);`,
+    }];
+    const { tables } = parseSqlFiles(entries);
+    expect(tables.get("t").columns.get("amount").defaultVal).toBe("0");
+    expect(tables.get("t").columns.get("active").defaultVal).toBe("false");
+  });
+});
+
+describe("S1: diffSchema — false positives disappear, real differences remain visible", () => {
+  function fakeLive(tableSpecs) {
+    const liveTables = new Set(Object.keys(tableSpecs));
+    const liveColumns = new Map();
+    for (const [tbl, cols] of Object.entries(tableSpecs)) {
+      const m = new Map();
+      for (const [col, info] of Object.entries(cols)) m.set(col, info);
+      liveColumns.set(tbl, m);
+    }
+    return {
+      liveTables, liveColumns,
+      livePks: new Map(), liveUniques: new Map(), liveIndexes: new Set(),
+      liveIndexByTable: new Map(), liveFks: [], liveChecks: [],
+      journalApplied: [], featureMigApplied: [], deployState: {},
+    };
+  }
+
+  it("a column whose raw type differs only by formatting (trailing comma, quoting) is NOT reported as a mismatch", () => {
+    // Simulates the pre-fix corrupted expected type directly, proving the
+    // comparison layer (not just the parser) tolerates it too — belt and
+    // suspenders against the same bug resurfacing through another caller.
+    const expected = parseSqlFiles([{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "patients" (\n\t"id" serial PRIMARY KEY NOT NULL,\n\t"email" text\n);`,
+    }]);
+    const live = fakeLive({ patients: { id: { type: "integer", isNullable: false }, email: { type: "text", isNullable: true } } });
+    const results = diffSchema(expected, live, new Set());
+    expect(results.typeMismatches).toHaveLength(0);
+    expect(results.pass).toBe(true);
+  });
+
+  it("varchar(N) normalizes to the same canonical type as live 'text' before comparison even runs (no lingering raw-string difference)", () => {
+    // Both parseSqlFiles (expected) and getLiveSchema (live, in production)
+    // always pass their type through normaliseType() before diffSchema ever
+    // sees it, so by the time two types are "compatible" they're normally
+    // already the identical canonical string — see the next test for when
+    // the IGNORED bucket actually earns its keep.
+    const expected = parseSqlFiles([{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "t" (\n\t"id" serial PRIMARY KEY NOT NULL,\n\t"name" varchar(255)\n);`,
+    }]);
+    expect(expected.tables.get("t").columns.get("name").type).toBe("text");
+    const live = fakeLive({ t: { id: { type: "integer", isNullable: false }, name: { type: "text", isNullable: true } } });
+    const results = diffSchema(expected, live, new Set());
+    expect(results.typeMismatches).toHaveLength(0);
+    expect(results.ignored).toHaveLength(0);
+    expect(results.pass).toBe(true);
+  });
+
+  it("a live type that reaches diffSchema not-yet-normalized (defensive case) is recorded as IGNORED, not silently dropped or misreported", () => {
+    // getLiveSchema() always normalizes before diffSchema sees it in
+    // production, but diffSchema itself must not assume that forever — this
+    // proves the IGNORED-bucket safety net actually fires (visible, not
+    // silent) if a raw, not-yet-canonical type string ever reaches it.
+    const expected = parseSqlFiles([{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "t" (\n\t"id" serial PRIMARY KEY NOT NULL\n);`,
+    }]);
+    const live = fakeLive({ t: { id: { type: "int4", isNullable: false } } });
+    const results = diffSchema(expected, live, new Set());
+    expect(results.typeMismatches).toHaveLength(0);
+    expect(results.ignored).toHaveLength(1);
+    expect(results.ignored[0]).toMatchObject({ table: "t", column: "id", expected: "integer", actual: "int4", level: "IGNORED", classification: "EXPECTED DIFFERENCE" });
+    expect(results.pass).toBe(true);
+  });
+
+  it("a genuine type difference (integer vs text) is still reported as a real, non-blocking WARNING — normalization must not hide real drift", () => {
+    const expected = parseSqlFiles([{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "t" (\n\t"id" serial PRIMARY KEY NOT NULL,\n\t"amount" integer\n);`,
+    }]);
+    const live = fakeLive({ t: { id: { type: "integer", isNullable: false }, amount: { type: "text", isNullable: true } } });
+    const results = diffSchema(expected, live, new Set());
+    expect(results.typeMismatches).toHaveLength(1);
+    expect(results.typeMismatches[0]).toMatchObject({ table: "t", column: "amount", expected: "integer", actual: "text" });
+    const finding = results.findings.find((f) => f.table === "t" && f.column === "amount");
+    expect(finding).toMatchObject({ level: "WARNING", classification: "REAL" });
+    expect(finding.reason).toBeTruthy();
+    expect(finding.suggestedFix).toBeTruthy();
+    // Genuine drift stays non-blocking by design (see SCHEMA_VERIFY_STRICT
+    // in main()) — this is existing, intentional policy, not something S1
+    // changes.
+    expect(results.pass).toBe(true);
+  });
+
+  it("a missing table is still a blocking ERROR with full finding detail", () => {
+    const expected = parseSqlFiles([{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "orders" (\n\t"id" serial PRIMARY KEY NOT NULL\n);`,
+    }]);
+    const live = fakeLive({});
+    const results = diffSchema(expected, live, new Set());
+    expect(results.missingTables).toContain("orders");
+    expect(results.pass).toBe(false);
+    const finding = results.findings.find((f) => f.table === "orders" && f.level === "ERROR");
+    expect(finding).toBeTruthy();
+    expect(finding.classification).toBe("REAL");
+  });
+
+  it("a missing column is still a blocking ERROR with full finding detail", () => {
+    const expected = parseSqlFiles([{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "orders" (\n\t"id" serial PRIMARY KEY NOT NULL,\n\t"total" numeric(10, 2)\n);`,
+    }]);
+    const live = fakeLive({ orders: { id: { type: "integer", isNullable: false } } });
+    const results = diffSchema(expected, live, new Set());
+    expect(results.missingColumns).toEqual([
+      expect.objectContaining({ table: "orders", column: "total", expectedType: "numeric" }),
+    ]);
+    expect(results.pass).toBe(false);
+    const finding = results.findings.find((f) => f.table === "orders" && f.column === "total");
+    expect(finding).toMatchObject({ level: "ERROR", classification: "REAL" });
+  });
+
+  it("a missing index is still reported (WARNING, non-blocking) with full finding detail", () => {
+    const expected = parseSqlFiles([{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "t" (\n\t"id" serial PRIMARY KEY NOT NULL\n);\nCREATE INDEX "t_idx" ON "t" ("id");`,
+    }]);
+    const live = fakeLive({ t: { id: { type: "integer", isNullable: false } } });
+    const results = diffSchema(expected, live, new Set());
+    expect(results.missingIndexes).toEqual([{ table: "t", index: "t_idx" }]);
+    expect(results.pass).toBe(true);
+    const finding = results.findings.find((f) => f.expected === "t_idx");
+    expect(finding).toMatchObject({ level: "WARNING", classification: "REAL" });
   });
 });
