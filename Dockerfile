@@ -42,7 +42,7 @@ RUN pnpm config set strict-dep-builds false && \
 # -----------------------------------------------------------------------------
 FROM base AS api-build
 RUN pnpm --filter @workspace/api-server run build \
- && pnpm --filter @workspace/api-server --prod --ignore-scripts deploy /api-deploy
+ && pnpm --filter @workspace/api-server --prod --ignore-scripts deploy --legacy /api-deploy
 
 
 # -----------------------------------------------------------------------------
