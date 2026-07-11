@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import PageHeader from "@/components/PageHeader";
@@ -74,6 +75,7 @@ function isDockerBridgeIpLike(value: string): boolean {
 export default function RadiologySettingsCenter() {
   const { toast } = useToast();
   const qc = useQueryClient();
+  const [, navigate] = useLocation();
   const isAdmin = FULL_ACCESS_ROLES.has(normalizeRole(readStaffSession()?.user.role ?? ""));
 
   const [activeTab, setActiveTab] = useState("network");
@@ -651,6 +653,15 @@ export default function RadiologySettingsCenter() {
 
         {/* Tab content 7: Diagnostics */}
         <TabsContent value="diagnostics" className="space-y-4">
+          {/* M1.3 — deep diagnostics live on the ONE admin Flight Deck page. */}
+          <div className="rounded-xl border bg-card p-4 flex items-center justify-between gap-3 text-sm">
+            <span className="text-muted-foreground">
+              Full deployment diagnostics (viewer, DICOMweb, network routes, workflow simulation, settings verification) live on the Flight Deck.
+            </span>
+            <Button size="sm" variant="outline" onClick={() => navigate("/radiology/flight-deck")} data-testid="link-flight-deck">
+              Open Flight Deck
+            </Button>
+          </div>
           <div className="grid lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 rounded-xl border bg-card p-5 space-y-4">
               <h3 className="font-semibold text-sm flex items-center gap-2">

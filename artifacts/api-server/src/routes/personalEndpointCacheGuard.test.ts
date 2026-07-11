@@ -95,6 +95,12 @@ const KNOWN_PERSONAL_ENDPOINTS: KnownPersonalEndpoint[] = [
   { file: "day-close.ts", localPath: "/my-post-closure-activity", fullPath: "/api/day-close/my-post-closure-activity" },
   { file: "radiology.ts", localPath: "/user-item-usage", fullPath: "/api/radiology/user-item-usage" },
   { file: "dicomWorkflow.ts", localPath: "/radiologist-queue", fullPath: "/api/dicom-workflow/radiologist-queue" },
+  // M1.3 Flight Deck: the report body is shared deployment truth, not
+  // caller-scoped (staffSession only attributes the audit entry) — but live
+  // diagnostics must NEVER be answered from Cache Storage: a stale cached
+  // "HEALTHY" verdict is precisely the lie the toolkit exists to prevent.
+  // The whole /api/radiology-diagnostics/ prefix is network-only in sw.js.
+  { file: "radiology-diagnostics.ts", localPath: "/report", fullPath: "/api/radiology-diagnostics/report" },
 ];
 
 // GET handlers reviewed and confirmed to be SHARED clinical/administrative
