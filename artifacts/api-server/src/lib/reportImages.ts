@@ -21,8 +21,13 @@ import { getRadiologyConfig } from "./pacs/pacsConfig";
 import type { ReportKeyImageModel } from "./reportPresentation";
 
 const FETCH_TIMEOUT_MS = 4000;
-const MAX_IMAGES_PER_REPORT = 8;
+// R1.3 — a report supports 0…100 images. Per-image and whole-report byte
+// budgets keep the printed artifact bounded: past the total budget the
+// remaining images are skipped gracefully (same degradation as a PACS miss).
+const MAX_IMAGES_PER_REPORT = 100;
 const MAX_IMAGE_BYTES = 400_000; // ~400 KB per rendered JPEG is plenty for print
+const TOTAL_IMAGE_BYTES_BUDGET = 8_000_000; // ~8 MB of JPEG across the document
+const FETCH_CONCURRENCY = 4;
 
 export interface ImageReferenceRow {
   id: number;
@@ -33,26 +38,56 @@ export interface ImageReferenceRow {
   sopInstanceUid: string | null;
   frameNumber: number | null;
   displayOrder: number;
+  isKeyImage: boolean;
+  createdBy: string | null;
 }
 
-/** Small in-process cache so reprints don't refetch identical instances. */
+/** R1.3 — pure: rendered-viewport edge (px) adapted to how many images the
+ *  report carries, so a 100-image report stays printable. Exported for tests.
+ *  COMPAT BOUNDARY: R1.1 rendered up to 8 images, all at 800px — existing
+ *  reports must reprint identically, so shrinking starts only at counts that
+ *  were impossible before R1.3 (>8). */
+export function viewportForImageCount(count: number): number {
+  if (count <= 8) return 800;   // every pre-R1.3 report renders as before
+  if (count <= 20) return 560;
+  if (count <= 50) return 420;
+  return 320;
+}
+
+/** Small in-process cache so reprints don't refetch identical instances.
+ *  Keyed by path AND viewport (R1.3 — viewport is adaptive), evicted by
+ *  total cached bytes so 100-image reports can't balloon server memory.
+ *  Patient pixels are never cached publicly — this cache lives in server
+ *  memory only and every HTTP surface that serves them is no-store. */
 const renderedCache = new Map<string, { dataUrl: string; at: number }>();
 const CACHE_TTL_MS = 10 * 60_000;
-const CACHE_MAX = 64;
+const CACHE_MAX = 512;
+const CACHE_MAX_BYTES = 24_000_000;
+let cacheBytes = 0;
 
 function cacheGet(key: string): string | null {
   const hit = renderedCache.get(key);
   if (!hit) return null;
-  if (Date.now() - hit.at > CACHE_TTL_MS) { renderedCache.delete(key); return null; }
+  if (Date.now() - hit.at > CACHE_TTL_MS) {
+    renderedCache.delete(key);
+    cacheBytes -= hit.dataUrl.length;
+    return null;
+  }
   return hit.dataUrl;
 }
 
 function cachePut(key: string, dataUrl: string): void {
-  if (renderedCache.size >= CACHE_MAX) {
+  const existing = renderedCache.get(key);
+  if (existing) { renderedCache.delete(key); cacheBytes -= existing.dataUrl.length; }
+  while (renderedCache.size >= CACHE_MAX || cacheBytes + dataUrl.length > CACHE_MAX_BYTES) {
     const oldest = renderedCache.keys().next().value;
-    if (oldest !== undefined) renderedCache.delete(oldest);
+    if (oldest === undefined) break;
+    const evicted = renderedCache.get(oldest);
+    renderedCache.delete(oldest);
+    if (evicted) cacheBytes -= evicted.dataUrl.length;
   }
   renderedCache.set(key, { dataUrl, at: Date.now() });
+  cacheBytes += dataUrl.length;
 }
 
 /** Server-vantage Orthanc base — same preference order as the diagnostics
@@ -87,13 +122,14 @@ export function renderedPathForReference(ref: {
   return frame ? `${base}/frames/${frame}/rendered` : `${base}/rendered`;
 }
 
-async function fetchRenderedDataUrl(path: string): Promise<string | null> {
-  const cached = cacheGet(path);
+async function fetchRenderedDataUrl(path: string, viewport: number): Promise<string | null> {
+  const key = `${path}@${viewport}`;
+  const cached = cacheGet(key);
   if (cached) return cached;
   const base = await orthancServerBase();
   if (!base) return null;
   try {
-    const res = await fetch(`${base}${path}?quality=90&viewport=800,800`, {
+    const res = await fetch(`${base}${path}?quality=90&viewport=${viewport},${viewport}`, {
       headers: { ...orthancAuthHeaders(), Accept: "image/jpeg" },
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
@@ -102,7 +138,7 @@ async function fetchRenderedDataUrl(path: string): Promise<string | null> {
     if (buf.length === 0 || buf.length > MAX_IMAGE_BYTES) return null;
     const mime = res.headers.get("content-type")?.split(";")[0] || "image/jpeg";
     const dataUrl = `data:${mime};base64,${buf.toString("base64")}`;
-    cachePut(path, dataUrl);
+    cachePut(key, dataUrl);
     return dataUrl;
   } catch {
     return null;
@@ -119,21 +155,44 @@ export async function listDraftImageReferences(draftId: number): Promise<ImageRe
   return rows as ImageReferenceRow[];
 }
 
-/** Resolve a draft's image references to inlined key-image models. */
+/** Resolve a draft's image references to inlined key-image models.
+ *  R1.3 — fetches run with bounded concurrency (a 100-image report must not
+ *  serialize 100 PACS round-trips) and stop inlining once the whole-report
+ *  byte budget is spent; document order stays displayOrder regardless. */
 export async function resolveDraftKeyImages(draftId: number): Promise<ReportKeyImageModel[]> {
   const refs = (await listDraftImageReferences(draftId))
     .filter((r) => renderedPathForReference(r) != null)
     .slice(0, MAX_IMAGES_PER_REPORT);
+  const viewport = viewportForImageCount(refs.length);
+  const srcs: (string | null)[] = new Array(refs.length).fill(null);
+  let budget = TOTAL_IMAGE_BYTES_BUDGET;
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < refs.length) {
+      const i = next++;
+      // Reserve the per-image maximum up front so concurrent workers can
+      // never overshoot the whole-report budget, then refund the unused part.
+      // Budget units are data-URL characters (base64 ≈ 4/3 of JPEG bytes).
+      const reserve = Math.ceil((MAX_IMAGE_BYTES * 4) / 3) + 64;
+      if (budget < reserve) continue; // budget spent: skip gracefully, keep order
+      budget -= reserve;
+      const src = await fetchRenderedDataUrl(renderedPathForReference(refs[i])!, viewport);
+      if (!src) { budget += reserve; continue; } // graceful: report still renders
+      budget += reserve - src.length;
+      srcs[i] = src;
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(FETCH_CONCURRENCY, refs.length) }, () => worker()));
   const out: ReportKeyImageModel[] = [];
-  for (const ref of refs) {
-    const path = renderedPathForReference(ref)!;
-    const src = await fetchRenderedDataUrl(path);
-    if (!src) continue; // graceful: report still renders
+  for (let i = 0; i < refs.length; i++) {
+    const src = srcs[i];
+    if (!src) continue;
     out.push({
       src,
-      caption: ref.description || "",
-      displayOrder: ref.displayOrder ?? 0,
-      sopInstanceUid: ref.sopInstanceUid,
+      caption: refs[i].description || "",
+      displayOrder: refs[i].displayOrder ?? 0,
+      sopInstanceUid: refs[i].sopInstanceUid,
+      isKeyImage: refs[i].isKeyImage === true,
     });
   }
   return out;

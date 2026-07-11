@@ -193,6 +193,12 @@ export const radiologyImageReferencesTable = pgTable(
     sopInstanceUid: text("sop_instance_uid"),
     frameNumber: integer("frame_number"),
     displayOrder: integer("display_order").notNull().default(0),
+    // R1.3: key-image flag + author. A partial unique index
+    // (draft_id, sop_instance_uid, COALESCE(frame_number, -1)) WHERE
+    // sop_instance_uid IS NOT NULL lives in the SQL migration — Drizzle can't
+    // express the COALESCE, so the DB enforces duplicate prevention.
+    isKeyImage: boolean("is_key_image").notNull().default(false),
+    createdBy: text("created_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },

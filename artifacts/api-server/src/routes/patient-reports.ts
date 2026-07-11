@@ -2588,6 +2588,8 @@ patientReportsRouter.get("/:id/print", async (req, res) => {
     await auditDeliveryResolution("print", artifact.version, { userId: session?.subjectId, userName: session?.subjectName, role: session?.role });
   }
   res.setHeader("Content-Type", "text/html; charset=utf-8");
+  // R1.3 — patient data (incl. inlined DICOM key images) is never cacheable.
+  res.setHeader("Cache-Control", "no-store");
   setVersionHeaders(res, artifact.version);
   res.send(artifact.html);
 });
@@ -2610,6 +2612,8 @@ patientReportsRouter.get("/:id/pdf", async (req, res) => {
   const session = (req as StaffAuthRequest).staffSession;
   await auditDeliveryResolution("pdf", artifact.version, { userId: session?.subjectId, userName: session?.subjectName, role: session?.role });
   res.setHeader("Content-Type", "text/html; charset=utf-8");
+  // R1.3 — patient data (incl. inlined DICOM key images) is never cacheable.
+  res.setHeader("Cache-Control", "no-store");
   res.setHeader("Content-Disposition", `inline; filename="${versionedFilename(artifact.version)}"`);
   setVersionHeaders(res, artifact.version);
   res.send(artifact.html);

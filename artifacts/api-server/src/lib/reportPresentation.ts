@@ -73,6 +73,8 @@ export interface ReportKeyImageModel {
   displayOrder: number;
   /** Optional deep-link identifiers kept for viewer integration (Phase 11). */
   sopInstanceUid?: string | null;
+  /** R1.3 — clinically-flagged key image; rendered with a KEY badge. */
+  isKeyImage?: boolean;
 }
 
 export interface ReportDocumentModel {
@@ -256,7 +258,7 @@ function keyImagesHtml(images: ReportKeyImageModel[], placement: "inline" | "sid
     .sort((a, b) => a.displayOrder - b.displayOrder)
     .map((img, i) => `
         <figure class="image-cell"${img.sopInstanceUid ? ` data-sop-instance-uid="${escapeHtml(img.sopInstanceUid)}"` : ""}>
-          <img src="${img.src}" class="dicom-img" alt="${escapeHtml(img.caption || `Image ${i + 1}`)}" />
+          ${img.isKeyImage ? `<span class="key-image-badge">★ KEY</span>` : ""}<img src="${img.src}" class="dicom-img" alt="${escapeHtml(img.caption || `Image ${i + 1}`)}" />
           <figcaption class="image-caption">${escapeHtml(img.caption || `Image ${i + 1}`)}</figcaption>
         </figure>`)
     .join("");
@@ -310,6 +312,9 @@ export function renderReportDocument(
   const ty = template.typography;
   const pal = template.palette;
   const images = model.keyImages ?? [];
+  // R1.3 — badge CSS is emitted only when a flagged image exists, so every
+  // pre-R1.3 document (no key flags) still renders byte-identically.
+  const hasKeyImages = images.some((img) => img.isKeyImage === true);
   const hasImages = images.length > 0;
   const sidePanel = template.layout.imagePlacement === "side-panel" && hasImages;
 
@@ -492,7 +497,14 @@ export function renderReportDocument(
       margin: 0; border: 1px solid #e0e0e0; border-radius: 4px; overflow: hidden;
       background: #000; text-align: center;
       break-inside: avoid; page-break-inside: avoid;
-    }
+    }${hasKeyImages ? `
+    .image-cell { position: relative; }
+    .key-image-badge {
+      position: absolute; top: 3px; left: 3px; z-index: 1;
+      background: ${pal.accent}; color: #fff; font-size: 8px; font-weight: 800;
+      letter-spacing: 0.06em; padding: 1px 5px; border-radius: 3px;
+      -webkit-print-color-adjust: exact; print-color-adjust: exact;
+    }` : ""}
     .dicom-img { width: 100%; max-height: 70mm; object-fit: contain; display: block; background: #000; }
     .image-caption {
       background: ${pal.accent}; color: #fff; font-weight: 600;

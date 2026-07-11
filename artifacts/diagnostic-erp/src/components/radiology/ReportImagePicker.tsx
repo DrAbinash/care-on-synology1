@@ -8,20 +8,21 @@
  * /api/radiology/report-generator/image-references — never blob URLs. The
  * server resolves pixels into every rendered artifact.
  *
- * Thumbnail click on a SELECTED image opens the study in OHIF (Phase 11 —
- * admin-configured launch URL, no public PACS URLs).
+ * R1.3 — the selected references render/manage through the ONE reusable
+ * ReportImagePanel (drag reorder, captions, key-image toggle, per-image
+ * server-built viewer launch); this component keeps the series browser and
+ * selection toggling.
  */
 
 import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { Images, ExternalLink, Trash2, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
+import { Images, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
+import ReportImagePanel from "@/components/radiology/ReportImagePanel";
 import {
-  buildImageRefPayload, nextDisplayOrder, ohifUrlForRef, thumbnailRenderedUrl,
+  buildImageRefPayload, MAX_REPORT_IMAGES, nextDisplayOrder, thumbnailRenderedUrl,
   type ReportImageRef,
 } from "@/lib/reportImageRefs";
 
@@ -78,15 +79,11 @@ export default function ReportImagePicker({
   const addRef = useMutation({
     mutationFn: (body: Record<string, unknown>) => api.post("/api/radiology/report-generator/image-references", body),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["report-image-references", draftId] }),
+    // R1.3 — includes the server's duplicate-prevention 409 ("already attached").
     onError: (err: Error) => toast({ title: "Could not add image", description: err.message, variant: "destructive" }),
   });
   const removeRef = useMutation({
     mutationFn: (id: number) => api.delete(`/api/radiology/report-generator/image-references/${id}`),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["report-image-references", draftId] }),
-  });
-  const patchRef = useMutation({
-    mutationFn: ({ id, body }: { id: number; body: Record<string, unknown> }) =>
-      api.patch(`/api/radiology/report-generator/image-references/${id}`, body),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["report-image-references", draftId] }),
   });
 
@@ -139,8 +136,8 @@ export default function ReportImagePicker({
     if (!draftId || !studyInstanceUID) return;
     const already = refs.find((r) => r.sopInstanceUid === inst.uid);
     if (already) { removeRef.mutate(already.id); return; }
-    if (refs.length >= 8) {
-      toast({ title: "Maximum 8 images per report", variant: "destructive" });
+    if (refs.length >= MAX_REPORT_IMAGES) {
+      toast({ title: `Maximum ${MAX_REPORT_IMAGES} images per report`, variant: "destructive" });
       return;
     }
     try {
@@ -158,8 +155,6 @@ export default function ReportImagePicker({
     }
   }
 
-  const ohifUrl = ohifUrlForRef(launchData?.ohifUrl);
-
   return (
     <div className="rounded-lg border bg-card" data-testid="report-image-picker">
       <button
@@ -176,43 +171,10 @@ export default function ReportImagePicker({
 
       {expanded && (
         <div className="px-3 pb-3 space-y-3">
-          {/* Selected references (persisted — captions editable, click opens OHIF) */}
-          {refs.length > 0 && (
-            <div className="space-y-1.5" data-testid="selected-refs">
-              {refs.map((ref) => {
-                const thumb = dicomWebBase ? thumbnailRenderedUrl(dicomWebBase, ref) : null;
-                return (
-                  <div key={ref.id} className="flex items-center gap-2 rounded-md border p-1.5">
-                    <button
-                      type="button"
-                      className="h-12 w-12 shrink-0 rounded bg-black overflow-hidden"
-                      title={ohifUrl ? "Open study in OHIF" : "Viewer not configured"}
-                      onClick={() => { if (ohifUrl) window.open(ohifUrl, "_blank", "noopener"); }}
-                      data-testid={`ref-thumb-${ref.id}`}
-                    >
-                      {thumb
-                        ? <img src={thumb} alt={ref.description} className="h-full w-full object-contain" loading="lazy" />
-                        : <ExternalLink size={12} className="m-auto text-muted-foreground" />}
-                    </button>
-                    <Input
-                      defaultValue={ref.description}
-                      className="h-7 text-xs flex-1"
-                      disabled={disabled}
-                      onBlur={(e) => {
-                        const caption = e.target.value.trim();
-                        if (caption && caption !== ref.description) patchRef.mutate({ id: ref.id, body: { description: caption } });
-                      }}
-                      data-testid={`ref-caption-${ref.id}`}
-                    />
-                    {!disabled && (
-                      <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => removeRef.mutate(ref.id)} data-testid={`ref-remove-${ref.id}`}>
-                        <Trash2 size={12} className="text-red-500" />
-                      </Button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+          {/* R1.3 — selected references: THE reusable enterprise image panel
+              (drag reorder, captions, key-image toggle, per-image launch). */}
+          {draftId && (
+            <ReportImagePanel draftId={draftId} dicomWebBase={dicomWebBase} disabled={disabled} />
           )}
 
           {!draftId && (

@@ -4,7 +4,7 @@ import {
   renderReportDocument, resolvePresentationTemplate,
   type ReportDocumentModel,
 } from "./reportPresentation";
-import { renderedPathForReference } from "./reportImages";
+import { renderedPathForReference, viewportForImageCount } from "./reportImages";
 
 // Ticket R1.1 — THE shared presentation layer. Every rendered surface flows
 // through renderReportDocument, so its layout/typography/page-break contract
@@ -283,5 +283,55 @@ describe("R1.2 — template capabilities", () => {
       expect(html, s.templateKey).toContain("Sunita Sharma");
       expect(html, s.templateKey).toContain("RPT-20260711-001");
     }
+  });
+});
+
+// ── R1.3 — enterprise image panel: key-image badge + adaptive sizing ─────────
+
+describe("R1.3 — key-image badge", () => {
+  const images = [
+    { src: "data:image/jpeg;base64,AAA", caption: "T2 AXIAL", displayOrder: 0, sopInstanceUid: "1.2.3.4", isKeyImage: true },
+    { src: "data:image/jpeg;base64,BBB", caption: "FLAIR", displayOrder: 1 },
+  ];
+
+  it("flagged images carry the KEY badge; unflagged ones don't", () => {
+    const html = renderReportDocument(baseModel({ keyImages: images }), resolvePresentationTemplate("care-premium"));
+    const cells = html.split("<figure");
+    const t2Cell = cells.find((c) => c.includes("T2 AXIAL"))!;
+    const flairCell = cells.find((c) => c.includes("FLAIR"))!;
+    expect(t2Cell).toContain('<span class="key-image-badge">★ KEY</span>');
+    expect(flairCell).not.toContain("key-image-badge\">");
+  });
+
+  it("no flags → no badge markup AND no badge CSS (R1.1 documents byte-unchanged)", () => {
+    const html = renderReportDocument(
+      baseModel({ keyImages: images.map((i) => ({ ...i, isKeyImage: false })) }),
+      resolvePresentationTemplate("care-premium"),
+    );
+    expect(html).not.toContain("key-image-badge");
+    expect(html).not.toContain("position: relative");
+    // The conditional must contribute ZERO bytes when false — .image-cell's
+    // closing brace is directly followed by .dicom-img, exactly as in R1.1.
+    expect(html).toContain("    }\n    .dicom-img");
+  });
+
+  it("badge renders in classic (inline) placement too — one renderer everywhere", () => {
+    const html = renderReportDocument(baseModel({ keyImages: images }), resolvePresentationTemplate("care-classic"));
+    expect(html).toContain("image-panel-inline");
+    expect(html).toContain('<span class="key-image-badge">★ KEY</span>');
+  });
+});
+
+describe("R1.3 — adaptive thumbnail viewport (0/1/5/20/100 images)", () => {
+  it("every pre-R1.3 count (≤8) keeps the R1.1 800px; only new counts shrink", () => {
+    expect(viewportForImageCount(0)).toBe(800);
+    expect(viewportForImageCount(1)).toBe(800);
+    expect(viewportForImageCount(5)).toBe(800);
+    expect(viewportForImageCount(8)).toBe(800); // R1.1 maximum — compat boundary
+    expect(viewportForImageCount(9)).toBe(560);
+    expect(viewportForImageCount(20)).toBe(560);
+    expect(viewportForImageCount(21)).toBe(420);
+    expect(viewportForImageCount(50)).toBe(420);
+    expect(viewportForImageCount(100)).toBe(320);
   });
 });
