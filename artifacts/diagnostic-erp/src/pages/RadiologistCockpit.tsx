@@ -7,6 +7,7 @@ import { toUnifiedStatus, priorityInfo, worklistRoleView } from "@/lib/radiology
 import { useToast } from "@/hooks/use-toast";
 import { launchViewer } from "@/lib/viewerService";
 import { finalizeRadiologyReport, saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
+import { useRadiologyDraftId } from "@/hooks/useRadiologyDraftId";
 import DeprecatedSurfaceBanner from "@/components/radiology/DeprecatedSurfaceBanner";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -210,6 +211,15 @@ function RadiologistCockpit() {
 
   // Active study state
   const [activeStudyId, setActiveStudyId] = useState<number | null>(null);
+
+  // Draft identity (SAVE-BUG FIX): the same load/track/update-by-id hook the
+  // canonical workspace and the report generator share. Without it every
+  // "Save Draft" here POSTed with NO id — the server's insert-vs-update
+  // branch is by id, so each save created a brand-new draft row, and
+  // reopening a study never found the previous draft (the payload also keyed
+  // studyId to the radiology_studies id instead of the worklist row id the
+  // reload query uses — the exact M1.4 broken link the workspace fixed).
+  const { draftId, existingDraft, captureSavedDraftId, isLoadingExistingDraft } = useRadiologyDraftId(activeStudyId);
 
   // Phase D: role-based Reading Room behavior. Page access remains governed
   // by the existing permission system; this only gates in-page actions.
@@ -1346,7 +1356,7 @@ function RadiologistCockpit() {
     return 5; // Step 5: Finalize
   }, [study, viewerLaunched, priorReports, priorsCompared, completenessDetails.pct, rawFindings]);
 
-  // Auto-switch tabs and load default templates
+  // Auto-switch tabs on study change
   useEffect(() => {
     if (!study) return;
     setViewerLaunched(false);
@@ -1360,27 +1370,70 @@ function RadiologistCockpit() {
     } else {
       setActiveRightTab("chocolate");
     }
+  }, [study]);
 
-    // Auto-load template if available
+  // SAVE-BUG FIX: an existing draft WINS over the template auto-apply.
+  // Previously the template was applied unconditionally on study open, so a
+  // radiologist reopening a half-written study saw template boilerplate
+  // instead of the saved draft (which the missing draft identity above also
+  // made unfindable). The template now auto-applies at most once per study
+  // and only after the draft lookup came back empty.
+  const templateAppliedForStudyRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!study || isLoadingExistingDraft || existingDraft) return;
+    if (templateAppliedForStudyRef.current === study.id) return;
     const modalityMap: Record<string, string> = { "X-RAY": "X-RAY", USG: "USG", MRI: "MRI", CT: "CT" };
     const mod = modalityMap[study.modality] || study.modality;
     const bodyPart = (study.studyDescription || "").toUpperCase();
     const match = templates.find((t) => t.modality === mod && (bodyPart.includes(t.bodyPart.toUpperCase()) || t.bodyPart.toUpperCase().includes(bodyPart)));
     if (match) {
+      templateAppliedForStudyRef.current = study.id;
       handleApplyTemplate(match);
     }
-  }, [study, templates]);
+  }, [study, templates, existingDraft, isLoadingExistingDraft]);
+
+  // SAVE-BUG FIX: hydrate the editor from the saved draft, once per study —
+  // same rules as the canonical workspace (never merge two patients' drafts).
+  const hydratedDraftForStudyRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!existingDraft || !study) return;
+    if (hydratedDraftForStudyRef.current === study.id) return;
+    hydratedDraftForStudyRef.current = study.id;
+    if (existingDraft.patientId != null && study.patientId != null && existingDraft.patientId !== study.patientId) {
+      console.warn(
+        `[cockpit] draft ${existingDraft.id} belongs to patient ${existingDraft.patientId} ` +
+        `but study ${study.id} belongs to patient ${study.patientId} — draft NOT loaded`,
+      );
+      return;
+    }
+    if (existingDraft.clinicalHistory) setClinicalHistory(existingDraft.clinicalHistory);
+    if (existingDraft.rawFindings) setRawFindings(existingDraft.rawFindings);
+    if (existingDraft.impression) {
+      try {
+        const arr = JSON.parse(existingDraft.impression) as string[];
+        if (Array.isArray(arr) && arr.length > 0) setImpression(arr);
+      } catch { /* malformed JSON — keep whatever is in the editor */ }
+    }
+    if (existingDraft.recommendation) setRecommendation(existingDraft.recommendation);
+  }, [existingDraft, study]);
 
   // ══════════════════════════════════════════════════════════════════════════
   // ACTIONS / MUTATIONS
   // ══════════════════════════════════════════════════════════════════════════
 
-  // Save Draft Mutation (M1.1: canonical shared transport)
+  // Save Draft Mutation (M1.1: canonical shared transport).
+  // SAVE-BUG FIX: `id` is omitted on the first save (server creates the row)
+  // and included on every save after (server updates that same row), and
+  // `studyId` is the WORKLIST row id — the key useRadiologyDraftId reloads
+  // by — exactly as in the canonical workspace. Previously id was never sent
+  // (every save = a new row) and studyId was the radiology_studies id (the
+  // saved draft could never be found again on reload).
   const saveDraftMutation = useMutation({
     mutationFn: async () => {
-      if (!study) return;
-      return saveRadiologyDraft({
-        studyId: study.studyId,
+      if (!study) return null;
+      return saveRadiologyDraft<{ success: boolean; draft: { id: number } }>({
+        id: draftId ?? undefined,
+        studyId: study.id,
         worklistId: study.id,
         patientId: study.patientId,
         templateId: selectedTemplateId ? String(selectedTemplateId) : null,
@@ -1392,9 +1445,11 @@ function RadiologistCockpit() {
         recommendation,
       });
     },
-    onSuccess: () => {
+    onSuccess: (res) => {
+      if (res?.draft?.id) captureSavedDraftId(res.draft.id);
       toast({ title: "Draft Saved", description: "Report draft updated successfully." });
       qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
+      qc.invalidateQueries({ queryKey: ["radiology-existing-draft", activeStudyId] });
     },
     onError: (e: any) => toast({ title: "Save Failed", description: e.message, variant: "destructive" }),
   });
