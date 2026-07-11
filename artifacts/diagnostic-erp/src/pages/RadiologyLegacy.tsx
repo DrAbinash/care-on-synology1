@@ -1,3 +1,5 @@
+// PHASE D (Radiology V2): PRESERVED. RadiologistCockpit is the single Reading Room.
+// This page is redirected or owner-only. Do not delete — kept for rollback/reference.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";

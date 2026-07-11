@@ -12,6 +12,7 @@ import {
   type ExpenseSummaryRow,
 } from "@workspace/api-client-react";
 import PageHeader from "@/components/PageHeader";
+import DocumentScanCapture from "@/components/DocumentScanCapture";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -58,6 +59,26 @@ const CATEGORIES = [
 ];
 
 const PAYMENT_MODES = ["cash", "bank-transfer", "cheque", "upi", "card"];
+
+// Recovered feature (Phase: Document Platform): maps the AI bill-scanner's
+// category/payment vocabulary onto this form's existing option lists.
+// Unrecognized values fall back to the form's current defaults — never
+// silently invents a new category or payment mode.
+const AI_CATEGORY_MAP: Record<string, string> = {
+  Salaries: "salaries", Rent: "rent", Utilities: "utilities",
+  "Office Supplies": "supplies", "Medical Supplies": "supplies",
+  "Lab Reagents": "supplies", Equipment: "equipment", Maintenance: "maintenance",
+  Travel: "travel", Food: "miscellaneous", Marketing: "marketing",
+  "Professional Fees": "miscellaneous", Taxes: "miscellaneous",
+  Insurance: "miscellaneous", Miscellaneous: "miscellaneous",
+};
+const AI_PAYMENT_MODE_MAP: Record<string, string> = {
+  cash: "cash", card: "card", upi: "upi", cheque: "cheque",
+};
+type ScanBillResult = {
+  vendor: string; date: string; amount: number; gstAmount: number;
+  category: string; description: string; paymentMode: string; confidence: string;
+};
 
 const CATEGORY_COLORS: Record<string, string> = {
   rent: "bg-blue-100 text-blue-700",
@@ -448,6 +469,33 @@ export default function Expenses() {
           <DialogHeader>
             <DialogTitle>{editExp ? "Edit Expense" : "Record Expense"}</DialogTitle>
           </DialogHeader>
+          {/* Recovered feature: AI bill scanner. Backend already existed
+              (/api/expenses/scan-bill via geminiOcrBill) but had no UI —
+              this wires the existing endpoint, no new OCR engine added. */}
+          {!editExp && (
+            <div className="pb-1">
+              <DocumentScanCapture<ScanBillResult>
+                endpoint="/api/expenses/scan-bill"
+                triggerLabel="Scan Bill / Receipt with AI"
+                helperText="Photograph or upload the bill — fields below will be auto-filled. Please review before saving."
+                onResult={(result) => {
+                  setForm({
+                    ...form,
+                    category: AI_CATEGORY_MAP[result.category] ?? form.category,
+                    description: result.description || form.description,
+                    amount: result.amount ? String(result.amount) : form.amount,
+                    expenseDate: result.date || form.expenseDate,
+                    paymentMode: AI_PAYMENT_MODE_MAP[result.paymentMode] ?? form.paymentMode,
+                    paidTo: result.vendor || form.paidTo,
+                  });
+                  toast({
+                    title: "Bill scanned",
+                    description: `Confidence: ${result.confidence}. Please verify all fields before saving.`,
+                  });
+                }}
+              />
+            </div>
+          )}
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">

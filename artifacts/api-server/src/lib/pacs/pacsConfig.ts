@@ -1,6 +1,7 @@
 import { db } from "@workspace/db";
 import { pacsSettingsTable } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
+import { NETWORK_LAN_HOST, ERP_HTTP_PORT } from "../networkDefaults";
 import { logger } from "../logger";
 
 // ── Docker bridge IP detection ──────────────────────────────────────────────
@@ -89,7 +90,7 @@ export async function getRadiologyConfig(): Promise<RadiologyConfig> {
   // http://care-orthanc:8042) is deliberately never used here — see that var
   // used correctly for internal probes in routes/pacsEnterprise.ts instead.
   const orthancUrlCandidate = process.env.ORTHANC_URL;
-  let defaultHost = "192.168.1.137"; // last-resort placeholder — update via .env
+  let defaultHost = NETWORK_LAN_HOST;
   if (orthancUrlCandidate) {
     try {
       const candidateHost = new URL(orthancUrlCandidate).hostname;
@@ -97,19 +98,19 @@ export async function getRadiologyConfig(): Promise<RadiologyConfig> {
         logger.warn(
           { orthancUrlCandidate },
           "ORTHANC_URL is set to a Docker bridge IP, which browsers and Weasis cannot reach. " +
-          "Ignoring it for browser/client launch URLs — set ORTHANC_URL to your clinic's real " +
-          "LAN IP (e.g. http://192.168.1.137:8042), Tailscale IP, or public domain instead. " +
+          `Ignoring it for browser/client launch URLs — set ORTHANC_URL to your clinic's real ` +
+          `LAN IP (e.g. http://${NETWORK_LAN_HOST}:8042), Tailscale IP, or public domain instead. ` +
           "(Container-to-container Orthanc access should use ORTHANC_INTERNAL_URL, which is unaffected.)",
         );
       } else {
         defaultHost = candidateHost;
       }
     } catch {
-      logger.warn({ orthancUrlCandidate }, "ORTHANC_URL is not a valid URL — falling back to default LAN host 192.168.1.137");
+      logger.warn({ orthancUrlCandidate }, `ORTHANC_URL is not a valid URL — falling back to default LAN host ${NETWORK_LAN_HOST}`);
     }
   }
 
-  const erpBase = process.env.PUBLIC_BASE_URL || `http://${defaultHost}:8888`;
+  const erpBase = process.env.PUBLIC_BASE_URL || `http://${defaultHost}:${ERP_HTTP_PORT}`;
 
   // ── OHIF public/browser launch URL ────────────────────────────────────────
   // OHIF_URL is the existing env var for this (see .env.example / docker-

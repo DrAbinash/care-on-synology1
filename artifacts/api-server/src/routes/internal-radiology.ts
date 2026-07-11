@@ -1392,6 +1392,9 @@ router.get("/radiology/worklist/:id", async (req, res) => {
   let pacsArchiveStatus = "none";
   let pacsArchiveResponse = null;
   let pacsInstanceId = null;
+  let priority: string | null = null;
+  let billNumber: string | null = null;
+  let uhid: string | null = null;
 
   if (row.studyId) {
     const [study] = await db
@@ -1399,6 +1402,9 @@ router.get("/radiology/worklist/:id", async (req, res) => {
         pacsArchiveStatus: radiologyStudiesTable.pacsArchiveStatus,
         pacsArchiveResponse: radiologyStudiesTable.pacsArchiveResponse,
         pacsInstanceId: radiologyStudiesTable.pacsInstanceId,
+        // Phase D (Reading Room) — reuse existing columns, no schema change
+        priority: radiologyStudiesTable.priority,
+        billId: radiologyStudiesTable.billId,
       })
       .from(radiologyStudiesTable)
       .where(eq(radiologyStudiesTable.id, row.studyId));
@@ -1407,7 +1413,23 @@ router.get("/radiology/worklist/:id", async (req, res) => {
       pacsArchiveStatus = study.pacsArchiveStatus || "none";
       pacsArchiveResponse = study.pacsArchiveResponse;
       pacsInstanceId = study.pacsInstanceId;
+      priority = study.priority ?? null;
+      if (study.billId) {
+        const [bill] = await db
+          .select({ billNumber: billsTable.billNumber })
+          .from(billsTable)
+          .where(eq(billsTable.id, study.billId));
+        billNumber = bill?.billNumber ?? null;
+      }
     }
+  }
+
+  if (row.patientId) {
+    const [pat] = await db
+      .select({ uhid: patientsTable.patientId })
+      .from(patientsTable)
+      .where(eq(patientsTable.id, row.patientId));
+    uhid = pat?.uhid ?? null;
   }
 
   res.json({
@@ -1415,6 +1437,10 @@ router.get("/radiology/worklist/:id", async (req, res) => {
     pacsArchiveStatus,
     pacsArchiveResponse,
     pacsInstanceId,
+    // Phase D additive fields (safe for old clients — extra keys ignored)
+    priority,
+    billNumber,
+    uhid,
   });
 });
 

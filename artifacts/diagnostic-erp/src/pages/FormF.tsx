@@ -583,7 +583,8 @@ export default function FormF() {
   const [portalOpen, setPortalOpen] = useState(false);
 
   // ── Document scanner bridge state (physical flatbed/ADF scanner) ──
-  const SCAN_BRIDGE_URL = "http://127.0.0.1:8766";
+  const SCAN_BRIDGE_URL =
+    (import.meta as any).env?.VITE_SCAN_BRIDGE_URL || "http://127.0.0.1:8766"; // local per-workstation scanner bridge; override per PC if ever needed
   const [scanBridgeOk, setScanBridgeOk] = useState(false);
   const [scanning, setScanning] = useState(false);
   async function triggerScanBridge() {

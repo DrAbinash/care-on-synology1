@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { hostForProfile, orthancBaseForProfile, ohifBaseForProfile, publicBaseUrl } from "@/lib/networkProfiles";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -774,22 +775,19 @@ export default function PacsSettings() {
               <h3 className="font-semibold text-sm flex items-center gap-2"><MonitorPlay size={14} />OHIF Viewer</h3>
               {isAdmin && (
                 <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => {
-                  saveViewerKey("ohif_base_url", "http://192.168.1.137:3010");
-                  saveViewerKey("dicom_web_base_url", "http://192.168.1.137:3010/dicom-web");
+                  saveViewerKey("ohif_base_url", ohifBaseForProfile("LAN"));
+                  saveViewerKey("dicom_web_base_url", `${ohifBaseForProfile("LAN")}/dicom-web`);
                   saveViewerKey("ohif_study_url_template", "{OHIF_BASE_URL}/viewer?StudyInstanceUIDs={studyInstanceUID}");
                 }}>Load Defaults</Button>
               )}
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <ViewerField label="OHIF Base URL (LAN)" description="e.g. http://172.16.1.139:3000" type="text"
+              <ViewerField label="OHIF Base URL" description={`e.g. ${ohifBaseForProfile("LAN")}`} type="text"
                 value={viewerMap["ohif_base_url"] ?? ""} onSave={(v) => saveViewerKey("ohif_base_url", v)}
-                placeholder="http://172.16.1.139:3000" disabled={!isAdmin} />
-              <ViewerField label="OHIF Base URL (Tailscale)" description="Used automatically when Tailscale network mode is active. e.g. http://100.65.255.115:3000" type="text"
-                value={viewerMap["ohif_base_url_tailscale"] ?? ""} onSave={(v) => saveViewerKey("ohif_base_url_tailscale", v)}
-                placeholder="http://100.65.255.115:3000" disabled={!isAdmin} />
-              <ViewerField label="DICOMweb Base URL" description="e.g. http://172.16.1.139:3000/dicom-web" type="text"
+                placeholder={ohifBaseForProfile("LAN")} disabled={!isAdmin} />
+              <ViewerField label="DICOMweb Base URL" description={`e.g. ${ohifBaseForProfile("LAN")}/dicom-web`} type="text"
                 value={viewerMap["dicom_web_base_url"] ?? ""} onSave={(v) => saveViewerKey("dicom_web_base_url", v)}
-                placeholder="http://172.16.1.139:3000/dicom-web" disabled={!isAdmin} />
+                placeholder={`${ohifBaseForProfile("LAN")}/dicom-web`} disabled={!isAdmin} />
             </div>
             <ViewerTemplateField
               label="OHIF Study URL Template"
@@ -798,7 +796,7 @@ export default function PacsSettings() {
               defaultValue="{OHIF_BASE_URL}/viewer?StudyInstanceUIDs={studyInstanceUID}"
               previewFn={(tpl) =>
                 tpl
-                  .replace(/\{OHIF_BASE_URL\}/g, (viewerMap["ohif_base_url"] ?? "http://192.168.1.137:3010").replace(/\/$/, ""))
+                  .replace(/\{OHIF_BASE_URL\}/g, (viewerMap["ohif_base_url"] ?? ohifBaseForProfile("LAN")).replace(/\/$/, ""))
                   .replace(/\{studyInstanceUID\}/g, "1.2.3.4.5.TEST")
               }
               onSave={(v) => saveViewerKey("ohif_study_url_template", v)}
@@ -813,9 +811,9 @@ export default function PacsSettings() {
               <h3 className="font-semibold text-sm flex items-center gap-2"><Tv2 size={14} />Weasis / WADO</h3>
               {isAdmin && (
                 <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => {
-                  saveViewerKey("wado_uri_base_url", "http://172.16.1.139:8042/wado");
+                  saveViewerKey("wado_uri_base_url", `${orthancBaseForProfile("LAN")}/wado`);
                   saveViewerKey("conquest_base_url", "");
-                  saveViewerKey("weasis_manifest_url_template", 'weasis://$dicom:get -w "http://172.16.1.139:8042/wado?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"');
+                  saveViewerKey("weasis_manifest_url_template", `weasis://$dicom:get -w "${orthancBaseForProfile("LAN")}/wado?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"`);
                 }}>Load Defaults</Button>
               )}
             </div>
@@ -826,7 +824,7 @@ export default function PacsSettings() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <ViewerField label="WADO-URI Base URL" description="Primary WADO endpoint for Weasis" type="text"
                 value={viewerMap["wado_uri_base_url"] ?? ""} onSave={(v) => saveViewerKey("wado_uri_base_url", v)}
-                placeholder="http://172.16.1.139:8042/wado" disabled={!isAdmin} />
+                placeholder={`${orthancBaseForProfile("LAN")}/wado`} disabled={!isAdmin} />
               <ViewerField label="Conquest Base URL" description="Not used — leave blank (system uses Orthanc)" type="text"
                 value={viewerMap["conquest_base_url"] ?? ""} onSave={(v) => saveViewerKey("conquest_base_url", v)}
                 placeholder="Not used" disabled={!isAdmin} />
@@ -835,7 +833,7 @@ export default function PacsSettings() {
               label="Weasis Manifest URL Template"
               description="Use {studyInstanceUID} as placeholder. This is a weasis:// URI — clicking Test attempts to launch Weasis."
               value={viewerMap["weasis_manifest_url_template"] ?? ""}
-              defaultValue={'weasis://$dicom:get -w "http://172.16.1.139:8042/wado?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"'}
+              defaultValue={`weasis://$dicom:get -w "${orthancBaseForProfile("LAN")}/wado?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"`}
               previewFn={(tpl) => tpl.replace(/\{studyInstanceUID\}/g, "1.2.3.4.5.TEST")}
               onSave={(v) => saveViewerKey("weasis_manifest_url_template", v)}
               disabled={!isAdmin}

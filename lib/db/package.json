@@ -14,7 +14,10 @@
     "push-ci": "tsx scripts/db-deploy.ts",
     "deploy": "tsx scripts/db-deploy.ts",
     "manage": "tsx scripts/db-manage.ts",
-    "db:manage": "tsx scripts/db-manage.ts"
+    "db:manage": "tsx scripts/db-manage.ts",
+    "phase-f:assess": "tsx scripts/phase-f-template-consolidation.ts assess",
+    "phase-f:execute": "tsx scripts/phase-f-template-consolidation.ts execute",
+    "phase-f:rollback": "tsx scripts/phase-f-template-consolidation.ts rollback"
   },
   "dependencies": {
     "drizzle-orm": "catalog:",

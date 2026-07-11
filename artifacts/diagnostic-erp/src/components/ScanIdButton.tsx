@@ -25,7 +25,8 @@ interface ScanIdButtonProps {
   className?: string;
 }
 
-const SCAN_BRIDGE_URL = "http://127.0.0.1:8766";
+const SCAN_BRIDGE_URL =
+  (import.meta as any).env?.VITE_SCAN_BRIDGE_URL || "http://127.0.0.1:8766"; // local per-workstation scanner bridge; override per PC if ever needed
 
 export default function ScanIdButton({
   onScanComplete,

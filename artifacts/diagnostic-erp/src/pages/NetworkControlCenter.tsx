@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { hostForProfile, orthancBaseForProfile, ohifBaseForProfile, erpPort } from "@/lib/networkProfiles";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -319,7 +320,7 @@ export default function NetworkControlCenter() {
   const checkSettingStatus = (key: string, val: string | undefined) => {
     if (!val) return { isWarning: true, message: "Missing setting value", suggest: null };
     if (val.includes("172.16.1.139") || val.includes("172.16.1.")) {
-      let suggest = val.replace(/172\.16\.1\.139/g, "192.168.1.137");
+      let suggest = val.replace(/172\.16\.1\.139/g, hostForProfile("LAN"));
       if (key === "ohif_base_url" && val.includes(":3000")) {
         suggest = suggest.replace(":3000", ":3010");
       }
@@ -676,7 +677,7 @@ export default function NetworkControlCenter() {
           <div className="bg-slate-950/50 border border-slate-800/80 rounded-xl p-4 flex flex-col justify-between">
             <span className="text-[10px] text-slate-400 uppercase tracking-wider font-bold">Active Host Target</span>
             <span className="text-lg font-bold font-mono mt-2 text-indigo-300">
-              {activeProfile === "LAN" ? "192.168.1.137" : activeProfile === "TAILSCALE" ? "100.65.255.115" : "caredeoghar.com"}
+              {hostForProfile(activeProfile === "LAN" ? "LAN" : activeProfile === "TAILSCALE" ? "TAILSCALE" : "PUBLIC")}
             </span>
             <span className="text-[10px] text-slate-500 mt-1 leading-relaxed">Centralized PACS configuration</span>
           </div>
@@ -779,7 +780,7 @@ export default function NetworkControlCenter() {
                         value={form.orthanc_ip || ""}
                         onChange={e => setForm({ ...form, orthanc_ip: e.target.value })}
                         disabled={!isEditing}
-                        placeholder="192.168.1.137"
+                        placeholder={hostForProfile("LAN")}
                         className="font-mono text-xs"
                       />
                       {checkSettingStatus("orthanc_ip", form.orthanc_ip).isWarning && (
@@ -826,7 +827,7 @@ export default function NetworkControlCenter() {
                         value={form.orthanc_dicomweb_url || ""}
                         onChange={e => setForm({ ...form, orthanc_dicomweb_url: e.target.value })}
                         disabled={!isEditing}
-                        placeholder="http://192.168.1.137:8042/dicom-web"
+                        placeholder={`${orthancBaseForProfile("LAN")}/dicom-web`}
                         className="font-mono text-xs"
                       />
                       {checkSettingStatus("orthanc_dicomweb_url", form.orthanc_dicomweb_url).isWarning && (
@@ -870,7 +871,7 @@ export default function NetworkControlCenter() {
                         value={form.conquest_ip || ""}
                         onChange={e => setForm({ ...form, conquest_ip: e.target.value })}
                         disabled={!isEditing}
-                        placeholder="192.168.1.137"
+                        placeholder={hostForProfile("LAN")}
                         className="font-mono text-xs"
                       />
                       {checkSettingStatus("conquest_ip", form.conquest_ip).isWarning && (
@@ -914,7 +915,7 @@ export default function NetworkControlCenter() {
                         value={form.ohif_base_url || ""}
                         onChange={e => setForm({ ...form, ohif_base_url: e.target.value })}
                         disabled={!isEditing}
-                        placeholder="http://192.168.1.137:3010"
+                        placeholder={ohifBaseForProfile("LAN")}
                         className="font-mono text-xs"
                       />
                       {checkSettingStatus("ohif_base_url", form.ohif_base_url).isWarning && (
@@ -941,7 +942,7 @@ export default function NetworkControlCenter() {
                         value={form.weasis_wado_url || ""}
                         onChange={e => setForm({ ...form, weasis_wado_url: e.target.value })}
                         disabled={!isEditing}
-                        placeholder="http://192.168.1.137:8042/wado"
+                        placeholder={`${orthancBaseForProfile("LAN")}/wado`}
                         className="font-mono text-xs"
                       />
                       {checkSettingStatus("weasis_wado_url", form.weasis_wado_url).isWarning && (
@@ -975,7 +976,7 @@ export default function NetworkControlCenter() {
                         value={form.erp_lan_url || ""}
                         onChange={e => setForm({ ...form, erp_lan_url: e.target.value })}
                         disabled={!isEditing}
-                        placeholder="http://192.168.1.137:8888"
+                        placeholder={`http://${hostForProfile("LAN")}:${erpPort()}`}
                         className="font-mono text-xs"
                       />
                     </div>
@@ -985,7 +986,7 @@ export default function NetworkControlCenter() {
                         value={form.erp_internal_api_url || ""}
                         onChange={e => setForm({ ...form, erp_internal_api_url: e.target.value })}
                         disabled={!isEditing}
-                        placeholder="http://192.168.1.137:8888/api/internal"
+                        placeholder={`http://${hostForProfile("LAN")}:${erpPort()}/api/internal`}
                         className="font-mono text-xs"
                       />
                     </div>

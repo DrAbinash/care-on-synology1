@@ -366,15 +366,26 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         deliveryStatus: radiologyWorklistTable.deliveryStatus,
         createdAt: radiologyWorklistTable.createdAt,
         updatedAt: radiologyWorklistTable.updatedAt,
-        // M1.6A — real lock columns (NULL placeholders until the study-lock
-        // ticket added the columns + claim/release service).
+        // M1.6A — real lock columns.
         lockUserId: radiologyWorklistTable.lockUserId,
         lockUserName: radiologyWorklistTable.lockUserName,
         lockTime: radiologyWorklistTable.lockTime,
         lockLastActivityAt: radiologyWorklistTable.lockLastActivityAt,
         lockWorkstation: radiologyWorklistTable.lockWorkstation,
+        // Phase C (unified worklist) — ADDITIVE fields only, no schema change.
+        // UHID from the matched ERP patient; bill number resolved via the
+        // linked study (radiology_studies.bill_id → bills.bill_number).
+        uhid: patientsTable.patientId,
+        billNumber: billsTable.billNumber,
+        // Priority REUSES the existing radiology_studies.priority column
+        // (stat | emergency | urgent | routine | vip) via the same join —
+        // no new table or column created (schema-growth minimization).
+        priority: radiologyStudiesTable.priority,
       })
       .from(radiologyWorklistTable)
+      .leftJoin(patientsTable, eq(radiologyWorklistTable.patientId, patientsTable.id))
+      .leftJoin(radiologyStudiesTable, eq(radiologyWorklistTable.studyId, radiologyStudiesTable.id))
+      .leftJoin(billsTable, eq(radiologyStudiesTable.billId, billsTable.id))
       .where(conds.length > 0 ? and(...conds) : undefined)
       .orderBy(desc(radiologyWorklistTable.createdAt))
       .limit(500);
@@ -396,7 +407,9 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         (r.patientName ?? "").toLowerCase().includes(s) ||
         (r.accessionNumber ?? "").toLowerCase().includes(s) ||
         (r.studyDescription ?? "").toLowerCase().includes(s) ||
-        (r.referringDoctor ?? "").toLowerCase().includes(s)
+        (r.referringDoctor ?? "").toLowerCase().includes(s) ||
+        ((r as any).uhid ?? "").toLowerCase().includes(s) ||
+        ((r as any).billNumber ?? "").toLowerCase().includes(s)
       );
     }
 

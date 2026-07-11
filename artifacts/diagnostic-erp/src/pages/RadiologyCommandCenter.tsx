@@ -1,3 +1,5 @@
+// PHASE D (Radiology V2): PRESERVED. RadiologistCockpit is the single Reading Room.
+// This page is redirected or owner-only. Do not delete — kept for rollback/reference.
 /**
  * Radiology Command Center
  * Radiologist workspace for reading studies, viewing images, and reporting.

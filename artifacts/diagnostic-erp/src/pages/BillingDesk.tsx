@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import "@/styles/billingDeskModern.css"; // Modern Pro skin (presentation only)
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
 import { api } from "@/lib/fetchApi";
@@ -439,14 +440,14 @@ export default function BillingDesk() {
 
   // ── New patient form visibility ──────────────────────
   // ── Layout mode (unified / stepped) ─────────────────
-  const [layoutMode, setLayoutMode] = useState<"unified" | "stepped" | "compact" | "classic" | "modern-pro">(() => {
+  const [layoutMode, setLayoutMode] = useState<"unified" | "stepped" | "compact" | "classic" | "modern">(() => {
     const stored = typeof window !== "undefined" ? localStorage.getItem("billingDeskLayout") : null;
-    return (stored as "unified" | "stepped" | "compact") || "unified";
+    return (stored as "unified" | "stepped" | "compact" | "classic" | "modern") || "unified";
   });
   useEffect(() => {
     const handler = () => {
       const stored = typeof window !== "undefined" ? localStorage.getItem("billingDeskLayout") : null;
-      setLayoutMode((stored as "unified" | "stepped" | "compact") || "unified");
+      setLayoutMode((stored as "unified" | "stepped" | "compact" | "classic" | "modern") || "unified");
     };
     window.addEventListener("storage", handler);
     window.addEventListener("billingDeskLayoutChanged", handler);
@@ -457,7 +458,6 @@ export default function BillingDesk() {
   }, []);
   const isStepped = layoutMode === "stepped";
   const isCompact = layoutMode === "compact";
-  const isModernPro = layoutMode === "modern-pro";
 
   // ── Reactive feature flags ────────────────────────────────────────────────
   // These were previously plain derived values (isFeatureEnabled() called once
@@ -1645,7 +1645,6 @@ export default function BillingDesk() {
     denseTestList  ? "billing-dense"     : "",
     largeFont      ? "billing-large-font": "",
     isCompact      ? "billing-compact"   : "",
-    isModernPro    ? "billing-modern-pro": "",
   ].filter(Boolean).join(" ");
 
   // Bright per-section header accents — purely presentational. Each section
@@ -1701,7 +1700,7 @@ export default function BillingDesk() {
   const cardClsNoClip = "bg-white dark:bg-slate-800 border border-[#dde3ec] dark:border-slate-700 rounded-xl shadow-md shadow-slate-200/60 dark:shadow-none [&>*:first-child]:rounded-t-xl";
 
   return (
-    <div className={deskClass}>
+    <div className={deskClass} data-desk={layoutMode}>
 
       {/* ═══════════════════════════════════════════════════════
           TOP BAR — date · title · search · recent · new
