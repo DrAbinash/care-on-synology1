@@ -8,7 +8,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
-  Mic, MicOff, Radio, HelpCircle, X, Check, Undo2, AlertTriangle, Loader2,
+  Mic, MicOff, Radio, HelpCircle, X, Check, Undo2, AlertTriangle, Loader2, Infinity as InfinityIcon, Moon,
 } from "lucide-react";
 import type { VoiceSession } from "@/hooks/useVoiceSession";
 import type { VoiceSafetyClass } from "@/lib/voiceSafetyPolicy";
@@ -57,16 +57,34 @@ export default function VoiceCommandBar({ voice }: { voice: VoiceSession }) {
         </Button>
         {/* Toggle listen (Ctrl+Space) */}
         <Button
-          size="sm" variant={voice.capturing ? "destructive" : "outline"}
+          size="sm" variant={voice.capturing && !voice.handsFree ? "destructive" : "outline"}
           className="h-6 text-[10px] gap-1 px-1.5"
           data-testid="voice-toggle"
-          disabled={!voice.enabled}
+          disabled={!voice.enabled || voice.handsFree}
           onClick={() => voice.toggleListening()}
           title="Toggle listening (Ctrl+Space); Esc cancels"
         >
-          {voice.capturing ? <MicOff size={11} /> : <Mic size={11} />}
-          {voice.capturing ? "Stop" : "Listen"}
+          {voice.capturing && !voice.handsFree ? <MicOff size={11} /> : <Mic size={11} />}
+          {voice.capturing && !voice.handsFree ? "Stop" : "Listen"}
         </Button>
+        {/* M1.6B3 — hands-free continuous session (wake/sleep phrases) */}
+        <Button
+          size="sm" variant={voice.handsFree ? "destructive" : "outline"}
+          className="h-6 text-[10px] gap-1 px-1.5"
+          data-testid="voice-handsfree"
+          disabled={!voice.enabled || (!voice.handsFree && !voice.handsFreeCapable)}
+          onClick={() => voice.toggleHandsFree()}
+          title={voice.handsFreeCapable || voice.handsFree
+            ? "Hands-free: listen continuously; say “go to sleep”/“wake up” to pause/resume, “cancel” to exit"
+            : "Hands-free needs a provider with live utterances (browser speech, or enable live segmented transcription for server/local)"}
+        >
+          <InfinityIcon size={11} /> {voice.handsFree ? "End hands-free" : "Hands-free"}
+        </Button>
+        {voice.handsFree && voice.asleep && (
+          <span data-testid="voice-asleep" className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 border text-[10px] font-semibold bg-slate-100 text-slate-700 border-slate-300">
+            <Moon size={9} /> Asleep — say “wake up”
+          </span>
+        )}
         {/* Listening / provider status — always truthful */}
         <span
           data-testid="voice-status"
@@ -224,7 +242,8 @@ export default function VoiceCommandBar({ voice }: { voice: VoiceSession }) {
           </div>
           <div className="text-[10px] text-muted-foreground mt-2">
             Hold Space (outside a text field) or the Hold button to talk · Ctrl+Space toggles listening · Esc cancels ·
-            Enter confirms non-finalize previews. Voice never bypasses locks, permissions or confirmations.
+            Enter or a spoken “confirm” applies non-finalize previews · Hands-free listens continuously with
+            “go to sleep”/“wake up”. Voice never bypasses locks, permissions or confirmations.
           </div>
         </div>
       )}

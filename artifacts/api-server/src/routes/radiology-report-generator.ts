@@ -39,6 +39,7 @@ import {
   radiologyImageReferencesTable,
   radiologyNormalSnippetsTable,
   radiologistStylePreferencesTable,
+  radiologistVoicePreferencesTable,
   radiologyReportLifecycleLogTable,
   clinicSettingsTable,
   spinalMeasurementsTable,
@@ -2187,6 +2188,53 @@ radiologyReportGeneratorRouter.put("/style-preferences", async (req: StaffAuthRe
     return;
   }
   const [row] = await db.update(radiologistStylePreferencesTable).set(data).where(eq(radiologistStylePreferencesTable.userId, Number(userId))).returning();
+  res.json(row);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// RADIOLOGIST VOICE PREFERENCES — M1.6B3 per-user voice-layer overrides.
+// Self-scoped (same pattern as style-preferences above; registered in the
+// personal-endpoint cache guard + sw.js network-only list). Values may only
+// tighten clinic policy or pick personal ergonomics — the merge rules live in
+// the frontend's mergeVoiceSettings and are enforced there by construction
+// (enabled can only be turned OFF, confirmation only raised to strict).
+// ════════════════════════════════════════════════════════════════════════════
+
+const VoicePreferencesSchema = z.object({
+  enabledOverride: z.enum(["inherit", "off"]),
+  pttKey: z.enum(["inherit", "Space", "off"]),
+  defaultMode: z.enum(["inherit", "command", "dictation"]),
+  confirmationPolicy: z.enum(["inherit", "strict"]),
+  language: z.string().max(20),
+  autoPunctuation: z.enum(["inherit", "on", "off"]),
+  inputDevice: z.string().max(200),
+});
+
+const VOICE_PREF_DEFAULTS = {
+  enabledOverride: "inherit", pttKey: "inherit", defaultMode: "inherit",
+  confirmationPolicy: "inherit", language: "", autoPunctuation: "inherit", inputDevice: "",
+} as const;
+
+radiologyReportGeneratorRouter.get("/voice-preferences", async (req: StaffAuthRequest, res: Response) => {
+  const userId = req.staffSession?.subjectId;
+  if (!userId) { res.status(401).json({ error: "Unauthorized" }); return; }
+  const rows = await db.select().from(radiologistVoicePreferencesTable).where(eq(radiologistVoicePreferencesTable.userId, Number(userId)));
+  res.json(rows.length === 0 ? VOICE_PREF_DEFAULTS : rows[0]);
+});
+
+radiologyReportGeneratorRouter.put("/voice-preferences", async (req: StaffAuthRequest, res: Response) => {
+  const userId = req.staffSession?.subjectId;
+  if (!userId) { res.status(401).json({ error: "Unauthorized" }); return; }
+  const parsed = VoicePreferencesSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "Invalid body" }); return; }
+  const data = parsed.data;
+  const existing = await db.select().from(radiologistVoicePreferencesTable).where(eq(radiologistVoicePreferencesTable.userId, Number(userId)));
+  if (existing.length === 0) {
+    const [row] = await db.insert(radiologistVoicePreferencesTable).values({ userId: Number(userId), ...data }).returning();
+    res.status(201).json(row);
+    return;
+  }
+  const [row] = await db.update(radiologistVoicePreferencesTable).set(data).where(eq(radiologistVoicePreferencesTable.userId, Number(userId))).returning();
   res.json(row);
 });
 

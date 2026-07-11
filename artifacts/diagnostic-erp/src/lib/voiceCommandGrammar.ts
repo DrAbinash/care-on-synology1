@@ -33,7 +33,12 @@ export type VoiceIntent =
   | { type: "quick-modifier"; property: "side" | "severity" | "level"; value: string }
   | { type: "viewer"; op: ViewerOp }
   | { type: "viewer-unsupported"; capability: string }
-  | { type: "cancel" };
+  | { type: "cancel" }
+  // M1.6B3 — hands-free session control. "confirm" applies a pending
+  // NON-high-risk preview (the session enforces that finalize can never be
+  // confirmed by voice); sleep/wake pause and resume the hands-free loop.
+  | { type: "confirm" }
+  | { type: "handsfree"; action: "sleep" | "wake" };
 
 export type ConfidenceBand = "CLEAR" | "AMBIGUOUS" | "UNRECOGNIZED";
 
@@ -102,6 +107,9 @@ const SEVERITIES = new Set(["mild", "moderate", "severe"]);
 const RULES: Rule[] = [
   // Voice-layer control
   { category: "Voice", example: "cancel", pattern: /^(cancel|never ?mind|dismiss|stop listening)$/, build: () => ({ type: "cancel" }) },
+  { category: "Voice", example: "confirm (non-finalize previews)", pattern: /^(confirm( command)?|yes confirm|go ahead)$/, build: () => ({ type: "confirm" }) },
+  { category: "Voice", example: "go to sleep (hands-free)", pattern: /^(go to sleep|pause listening)$/, build: () => ({ type: "handsfree", action: "sleep" }) },
+  { category: "Voice", example: "wake up (hands-free)", pattern: /^(wake up|resume listening)$/, build: () => ({ type: "handsfree", action: "wake" }) },
 
   // Workflow — explicit phrases first
   { category: "Workflow", example: "open study / open viewer", pattern: /^(open (the )?(study|viewer|images?)|launch (the )?viewer)$/, build: () => ({ type: "workflow", command: "open-viewer" }) },
@@ -269,6 +277,10 @@ export function describeIntent(intent: VoiceIntent): string {
       return `Viewer ${intent.capability} — not supported by the embedded viewer`;
     case "cancel":
       return "Cancel";
+    case "confirm":
+      return "Confirm the pending command";
+    case "handsfree":
+      return intent.action === "sleep" ? "Hands-free: go to sleep" : "Hands-free: wake up";
   }
 }
 

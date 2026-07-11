@@ -25,6 +25,15 @@ describe("safety classes (Phase 6)", () => {
     }
   });
 
+  it("M1.6B3 — session-control intents (confirm/sleep/wake) are SAFE_IMMEDIATE and never context-blocked", () => {
+    const locked = ctx({ isLocked: true, lockedByOther: true, lockLost: true, canVerify: false });
+    for (const phrase of ["confirm", "go to sleep", "wake up"]) {
+      const v = evaluate(phrase, locked);
+      expect(v.safetyClass, phrase).toBe("SAFE_IMMEDIATE");
+      expect(v.blocked, phrase).toBeNull();
+    }
+  });
+
   it("REVERSIBLE_EDIT: append text, quick select/remove, modifiers, park/unpark, save, clean next/previous", () => {
     for (const phrase of ["add finding trace effusion", "impression stable", "select finding disc bulge", "remove finding disc bulge", "laterality left", "park study", "unpark", "save draft", "next study", "previous study"]) {
       const v = evaluate(phrase);

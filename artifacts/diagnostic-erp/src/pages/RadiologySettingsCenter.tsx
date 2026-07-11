@@ -16,11 +16,12 @@ import {
   Tv2, Zap, ShieldCheck, PlayCircle, Info, Palette, Mic
 } from "lucide-react";
 import type { UseMutationResult } from "@tanstack/react-query";
-// M1.6B2 — voice layer settings (same pacs_settings persistence as this page)
+// M1.6B2/B3 — voice layer settings (same pacs_settings persistence as this
+// page) + per-radiologist overrides (radiologist_voice_preferences)
 import {
-  parseVoiceSettings, resolveProviderChoice, createVoiceProvider,
-  isWebSpeechSupported, fetchServerTranscribeAvailable,
-  type TranscriptionSession,
+  parseVoiceSettings, parseVoiceUserPrefs, resolveProviderChoice, createVoiceProvider,
+  isWebSpeechSupported, fetchTranscribeCapabilities,
+  type TranscriptionSession, type TranscribeCapabilities, type VoiceUserPrefs,
 } from "@/lib/voiceTranscription";
 import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 
@@ -867,15 +868,17 @@ function VoiceSettingsPanel({ settings, upsertSetting, isAdmin }: {
 }) {
   const voice = parseVoiceSettings(settings);
   const set = (key: string, value: string) => upsertSetting.mutate({ key, value, category: "voice" });
+  const getRaw = (key: string) => settings.find((s) => s.key === key)?.value ?? "";
 
-  const { data: serverAvailable = false } = useQuery<boolean>({
+  const { data: capabilities = { server: false, local: false } } = useQuery<TranscribeCapabilities>({
     queryKey: ["voice-transcribe-status"],
-    queryFn: fetchServerTranscribeAvailable,
+    queryFn: fetchTranscribeCapabilities,
     staleTime: 60_000,
   });
   const webSpeech = isWebSpeechSupported();
   const effectiveProvider = resolveProviderChoice(voice.provider, {
-    serverAvailable, webSpeechSupported: webSpeech, injectedPresent: false,
+    localAvailable: capabilities.local, serverAvailable: capabilities.server,
+    webSpeechSupported: webSpeech, injectedPresent: false,
   });
 
   const [micTest, setMicTest] = useState<string | null>(null);
@@ -953,14 +956,57 @@ function VoiceSettingsPanel({ settings, upsertSetting, isAdmin }: {
             <Label className="text-xs">Transcription provider</Label>
             <select className="w-full h-9 text-sm border rounded-md px-2 bg-background" disabled={!isAdmin}
               value={voice.provider} onChange={(e) => set("voice_provider", e.target.value)}>
-              <option value="auto">Auto (server when configured, else browser)</option>
+              <option value="auto">Auto (local → server → browser)</option>
+              <option value="local">Local STT server (clinic network)</option>
               <option value="server">Server (clinic AI provider)</option>
               <option value="browser">Browser (Web Speech API)</option>
             </select>
             <p className="text-[11px] text-muted-foreground">
-              Server transcription: {serverAvailable ? "configured ✓" : "not configured (AI provider key missing)"} ·
+              Local STT: {capabilities.local ? "configured ✓" : "not configured"} ·
+              Server transcription: {capabilities.server ? "configured ✓" : "not configured (AI provider key missing)"} ·
               Browser Web Speech: {webSpeech ? "supported ✓" : "not supported"} ·
               Effective: <strong>{effectiveProvider ?? "none — voice will show as unavailable"}</strong>
+            </p>
+          </div>
+
+          {/* M1.6B3 — self-hosted STT server (audio stays on the clinic network) */}
+          <div className="space-y-1">
+            <Label className="text-xs">Local STT server URL (whisper.cpp / faster-whisper on the clinic network)</Label>
+            <Input className="h-9 text-sm font-mono" disabled={!isAdmin} defaultValue={getRaw("voice_local_stt_url")}
+              key={`lsu-${getRaw("voice_local_stt_url")}`}
+              onBlur={(e) => { if (e.target.value.trim() !== getRaw("voice_local_stt_url")) set("voice_local_stt_url", e.target.value.trim()); }}
+              placeholder="http://192.168.1.137:9000 (empty = off)" />
+            <div className="flex gap-2">
+              <select className="h-8 text-xs border rounded-md px-2 bg-background" disabled={!isAdmin}
+                value={getRaw("voice_local_stt_kind") === "whispercpp" ? "whispercpp" : "openai"}
+                onChange={(e) => set("voice_local_stt_kind", e.target.value)}
+                title="Protocol the local server speaks">
+                <option value="openai">OpenAI-compatible (/v1/audio/transcriptions)</option>
+                <option value="whispercpp">whisper.cpp (/inference)</option>
+              </select>
+              <Input className="h-8 text-xs flex-1" disabled={!isAdmin} defaultValue={getRaw("voice_local_stt_model")}
+                key={`lsm-${getRaw("voice_local_stt_model")}`}
+                onBlur={(e) => { if (e.target.value.trim() !== getRaw("voice_local_stt_model")) set("voice_local_stt_model", e.target.value.trim()); }}
+                placeholder="model (optional, e.g. whisper-1)" />
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Audio is proxied through this clinic's API server — the STT address never reaches the browser.
+            </p>
+          </div>
+
+          {/* M1.6B3 — live segmented transcription for server/local providers */}
+          <div className="space-y-1">
+            <Label className="text-xs">Live segmented transcription (server/local providers)</Label>
+            <select className="w-full h-9 text-sm border rounded-md px-2 bg-background" disabled={!isAdmin}
+              value={String(voice.segmentSeconds)} onChange={(e) => set("voice_segment_seconds", e.target.value)}>
+              <option value="0">Off — one upload when you release the mic</option>
+              <option value="3">Every 3 seconds</option>
+              <option value="5">Every 5 seconds</option>
+              <option value="8">Every 8 seconds</option>
+            </select>
+            <p className="text-[11px] text-muted-foreground">
+              Streams self-contained audio segments while you speak (live interim text; enables hands-free on
+              server/local providers). Words split across a segment boundary can transcribe imperfectly.
             </p>
           </div>
 
@@ -1031,6 +1077,95 @@ function VoiceSettingsPanel({ settings, upsertSetting, isAdmin }: {
             <PlayCircle size={13} className="mr-1.5" /> Test transcription
           </Button>
           {sttTest && <span className="text-xs">{sttTest}</span>}
+        </div>
+      </div>
+
+      <MyVoicePreferencesCard />
+    </div>
+  );
+}
+
+/** M1.6B3 — the CALLER'S own voice overrides (radiologist_voice_preferences).
+ *  Self-scoped endpoints; any staff member can tune their own ergonomics.
+ *  Overrides can only tighten clinic policy: voice off for yourself, stricter
+ *  confirmations — never the reverse (merge rules in lib/voiceTranscription). */
+function MyVoicePreferencesCard() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { data: raw } = useQuery<unknown>({
+    queryKey: ["voice-user-preferences"],
+    queryFn: () => api.get("/api/radiology/report-generator/voice-preferences"),
+  });
+  const prefs = parseVoiceUserPrefs(raw);
+  const save = useMutation({
+    mutationFn: (next: VoiceUserPrefs) => api.put("/api/radiology/report-generator/voice-preferences", next),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["voice-user-preferences"] });
+      toast({ title: "Your voice preferences were saved" });
+    },
+    onError: (err: Error) => toast({ title: "Could not save preferences", description: err.message, variant: "destructive" }),
+  });
+  const patch = (p: Partial<VoiceUserPrefs>) => save.mutate({ ...prefs, ...p });
+
+  return (
+    <div className="rounded-xl border bg-card p-5 space-y-4" data-testid="my-voice-prefs">
+      <h3 className="font-semibold text-sm flex items-center gap-2">
+        <Mic size={16} className="text-primary" /> My Voice Preferences
+      </h3>
+      <p className="text-xs text-muted-foreground">
+        Personal overrides for YOUR account, layered over the clinic defaults above. You can disable voice for
+        yourself or make confirmations stricter — never the reverse. Provider and local-STT configuration stay
+        clinic-wide.
+      </p>
+      <div className="grid sm:grid-cols-2 gap-4">
+        <div className="space-y-1">
+          <Label className="text-xs">Voice for me</Label>
+          <select className="w-full h-9 text-sm border rounded-md px-2 bg-background"
+            value={prefs.enabledOverride} onChange={(e) => patch({ enabledOverride: e.target.value as VoiceUserPrefs["enabledOverride"] })}>
+            <option value="inherit">Clinic default</option>
+            <option value="off">Off for me</option>
+          </select>
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">My push-to-talk key</Label>
+          <select className="w-full h-9 text-sm border rounded-md px-2 bg-background"
+            value={prefs.pttKey} onChange={(e) => patch({ pttKey: e.target.value as VoiceUserPrefs["pttKey"] })}>
+            <option value="inherit">Clinic default</option>
+            <option value="Space">Space (held, outside text fields)</option>
+            <option value="off">Off (buttons / Ctrl+Space only)</option>
+          </select>
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">My default mode</Label>
+          <select className="w-full h-9 text-sm border rounded-md px-2 bg-background"
+            value={prefs.defaultMode} onChange={(e) => patch({ defaultMode: e.target.value as VoiceUserPrefs["defaultMode"] })}>
+            <option value="inherit">Clinic default</option>
+            <option value="command">Command mode</option>
+            <option value="dictation">Dictation mode</option>
+          </select>
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">My confirmation policy</Label>
+          <select className="w-full h-9 text-sm border rounded-md px-2 bg-background"
+            value={prefs.confirmationPolicy} onChange={(e) => patch({ confirmationPolicy: e.target.value as VoiceUserPrefs["confirmationPolicy"] })}>
+            <option value="inherit">Clinic default</option>
+            <option value="strict">Strict (confirm every edit) — stricter only</option>
+          </select>
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">My recognition language</Label>
+          <Input className="h-9 text-sm" defaultValue={prefs.language} key={`ul-${prefs.language}`}
+            onBlur={(e) => { if (e.target.value.trim() !== prefs.language) patch({ language: e.target.value.trim() }); }}
+            placeholder="empty = clinic default" />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">My auto punctuation</Label>
+          <select className="w-full h-9 text-sm border rounded-md px-2 bg-background"
+            value={prefs.autoPunctuation} onChange={(e) => patch({ autoPunctuation: e.target.value as VoiceUserPrefs["autoPunctuation"] })}>
+            <option value="inherit">Clinic default</option>
+            <option value="on">On</option>
+            <option value="off">Off</option>
+          </select>
         </div>
       </div>
     </div>

@@ -1,23 +1,31 @@
 /**
- * voiceTranscription.ts — Ticket M1.6B2 Phase 3.
+ * voiceTranscription.ts — Ticket M1.6B2 Phase 3, extended by M1.6B3.
  *
  * The ONE transcription-provider layer for the canonical voice pipeline.
- * Three providers behind one interface:
+ * Four providers behind one interface:
  *
+ *  - "local":     MediaRecorder capture → POST /api/ai/transcribe/local — the
+ *                 clinic's OWN self-hosted STT server (whisper.cpp /
+ *                 faster-whisper etc.), proxied server-side so audio never
+ *                 leaves the clinic network and the STT address never reaches
+ *                 the browser.
  *  - "server":    MediaRecorder capture → POST /api/ai/transcribe (the
- *                 EXISTING server-side Gemini endpoint; audio goes only to the
- *                 clinic's own API server, which holds the provider key —
- *                 no keys or external calls in the frontend).
- *  - "webspeech": browser Web Speech API (the existing production dictation
- *                 mechanism; Chrome's engine is itself cloud-backed).
+ *                 existing server-side Gemini endpoint; the provider key
+ *                 stays server-side).
+ *  - "webspeech": browser Web Speech API (Chrome's engine is cloud-backed).
  *  - "injected":  deterministic transcripts from window.__voiceInjectedTranscripts,
  *                 flowing through the SAME callbacks as real capture. Only
  *                 selectable when a test harness set that global before load;
- *                 it exists so verification can drive the real pipeline in
- *                 environments without microphones and is inert in production.
+ *                 inert in production.
  *
- * No local/offline STT exists in this repo (grounded), so provider order is
- * server (when configured) → Web Speech → unavailable.
+ * Preference order (M1.6B2/B3): local when configured → server when
+ * configured → Web Speech → honestly unavailable.
+ *
+ * M1.6B3 additions: SEGMENTED live transcription for the recorder providers
+ * (self-contained N-second recordings transcribed as they complete — interim
+ * text while you speak, final = the ordered concatenation) and CONTINUOUS
+ * sessions (one onResult per utterance/segment; the session stays open) for
+ * the hands-free mode.
  */
 
 // Relative import (not "@/lib/…") so root-level vitest, which has no alias
@@ -29,8 +37,8 @@ import type {
   SpeechRecognitionLike,
 } from "../types/speech";
 
-export type VoiceProviderKind = "server" | "webspeech" | "injected";
-export type VoiceProviderSetting = "auto" | "server" | "browser";
+export type VoiceProviderKind = "local" | "server" | "webspeech" | "injected";
+export type VoiceProviderSetting = "auto" | "local" | "server" | "browser";
 
 export type VoiceCaptureStatus =
   | "available" | "unavailable" | "permission-denied"
@@ -44,22 +52,38 @@ export interface TranscriptionResult {
 
 export interface TranscriptionCallbacks {
   onInterim: (text: string) => void;
+  /** Single-utterance sessions: fires ONCE with the whole capture.
+   *  Continuous sessions: fires once per utterance/segment. */
   onResult: (r: TranscriptionResult) => void;
   onStatus: (s: VoiceCaptureStatus) => void;
   onError: (message: string, opts?: { permission?: boolean; offline?: boolean }) => void;
 }
 
+export interface TranscriptionStartOptions {
+  lang: string;
+  deviceId?: string | null;
+  /** >0 → recorder providers stream self-contained segments of this length
+   *  (live interim text); 0/absent → one batch upload on stop. */
+  segmentSeconds?: number;
+  /** Hands-free: deliver one onResult per utterance/segment and keep the
+   *  session open until stop()/abort(). */
+  continuous?: boolean;
+}
+
 export interface TranscriptionSession {
-  /** Finish the capture and deliver the result. */
+  /** Finish the capture (single-utterance: deliver the result). */
   stop: () => void;
-  /** Discard the capture — no result will be delivered. */
+  /** Discard the capture — no further results will be delivered. */
   abort: () => void;
 }
 
 export interface TranscriptionProvider {
   kind: VoiceProviderKind;
   label: string;
-  start: (opts: { lang: string; deviceId?: string | null }, cb: TranscriptionCallbacks) => TranscriptionSession;
+  /** Whether this provider can run a continuous (hands-free) session with
+   *  the given settings. */
+  supportsContinuous: (settings: VoiceSettings) => boolean;
+  start: (opts: TranscriptionStartOptions, cb: TranscriptionCallbacks) => TranscriptionSession;
 }
 
 // ── Settings (persisted as pacs_settings rows, category "voice") ────────────
@@ -73,6 +97,8 @@ export interface VoiceSettings {
   defaultMode: "command" | "dictation";
   confirmationPolicy: "standard" | "strict";
   inputDeviceId: string | null;
+  /** M1.6B3 — live segmented transcription for recorder providers. 0 = off. */
+  segmentSeconds: number;
 }
 
 export const VOICE_SETTING_DEFAULTS: VoiceSettings = {
@@ -84,6 +110,7 @@ export const VOICE_SETTING_DEFAULTS: VoiceSettings = {
   defaultMode: "command",
   confirmationPolicy: "standard",
   inputDeviceId: null,
+  segmentSeconds: 0,
 };
 
 type SettingRow = { key: string; value: string | null; category?: string | null };
@@ -98,37 +125,97 @@ export function parseVoiceSettings(rows: SettingRow[] | undefined | null): Voice
   const mode = get("voice_default_mode");
   const policy = get("voice_confirmation_policy");
   const ptt = get("voice_ptt_key");
+  const seg = Number(get("voice_segment_seconds"));
   return {
     enabled: bool("voice_enabled", VOICE_SETTING_DEFAULTS.enabled),
-    provider: provider === "server" || provider === "browser" ? provider : "auto",
+    provider: provider === "server" || provider === "browser" || provider === "local" ? provider : "auto",
     language: get("voice_language") || VOICE_SETTING_DEFAULTS.language,
     pttKey: ptt === "off" ? "off" : "Space",
     autoPunctuation: bool("voice_auto_punctuation", VOICE_SETTING_DEFAULTS.autoPunctuation),
     defaultMode: mode === "dictation" ? "dictation" : "command",
     confirmationPolicy: policy === "strict" ? "strict" : "standard",
     inputDeviceId: get("voice_input_device") || null,
+    segmentSeconds: Number.isInteger(seg) && seg >= 2 && seg <= 30 ? seg : 0,
+  };
+}
+
+// ── Per-radiologist overrides (M1.6B3, radiologist_voice_preferences) ───────
+
+/** User values may only TIGHTEN policy (disable voice for self, raise
+ *  strictness) or pick personal ergonomics. Provider + local-STT + segment
+ *  config stay clinic-owned on purpose. */
+export interface VoiceUserPrefs {
+  enabledOverride: "inherit" | "off";
+  pttKey: "inherit" | "Space" | "off";
+  defaultMode: "inherit" | "command" | "dictation";
+  confirmationPolicy: "inherit" | "strict";
+  language: string;      // "" = inherit
+  autoPunctuation: "inherit" | "on" | "off";
+  inputDevice: string;   // "" = inherit
+}
+
+export const VOICE_USER_PREF_DEFAULTS: VoiceUserPrefs = {
+  enabledOverride: "inherit", pttKey: "inherit", defaultMode: "inherit",
+  confirmationPolicy: "inherit", language: "", autoPunctuation: "inherit", inputDevice: "",
+};
+
+export function parseVoiceUserPrefs(raw: unknown): VoiceUserPrefs {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const pick = <T extends string>(key: string, allowed: readonly T[], dflt: T): T => {
+    const v = r[key];
+    return typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : dflt;
+  };
+  return {
+    enabledOverride: pick("enabledOverride", ["inherit", "off"], "inherit"),
+    pttKey: pick("pttKey", ["inherit", "Space", "off"], "inherit"),
+    defaultMode: pick("defaultMode", ["inherit", "command", "dictation"], "inherit"),
+    confirmationPolicy: pick("confirmationPolicy", ["inherit", "strict"], "inherit"),
+    language: typeof r.language === "string" ? r.language : "",
+    autoPunctuation: pick("autoPunctuation", ["inherit", "on", "off"], "inherit"),
+    inputDevice: typeof r.inputDevice === "string" ? r.inputDevice : "",
+  };
+}
+
+/** Clinic settings ⊕ user overrides. Tighten-only by construction: enabled
+ *  can only go false, confirmation only up to strict; everything else is
+ *  personal ergonomics. */
+export function mergeVoiceSettings(clinic: VoiceSettings, user: VoiceUserPrefs | null | undefined): VoiceSettings {
+  if (!user) return clinic;
+  return {
+    ...clinic,
+    enabled: clinic.enabled && user.enabledOverride !== "off",
+    confirmationPolicy:
+      clinic.confirmationPolicy === "strict" || user.confirmationPolicy === "strict" ? "strict" : "standard",
+    pttKey: user.pttKey === "inherit" ? clinic.pttKey : user.pttKey,
+    defaultMode: user.defaultMode === "inherit" ? clinic.defaultMode : user.defaultMode,
+    language: user.language.trim() || clinic.language,
+    autoPunctuation: user.autoPunctuation === "inherit" ? clinic.autoPunctuation : user.autoPunctuation === "on",
+    inputDeviceId: user.inputDevice.trim() || clinic.inputDeviceId,
   };
 }
 
 // ── Provider selection (pure) ────────────────────────────────────────────────
 
 export interface ProviderEnvironment {
+  localAvailable: boolean;
   serverAvailable: boolean;
   webSpeechSupported: boolean;
   injectedPresent: boolean;
 }
 
-/** Preference order per M1.6B2: no local/offline STT exists in this repo, so
- *  the existing server-side integration wins when configured, then browser
- *  Web Speech, then honestly unavailable. An injected test queue overrides
- *  everything — it only exists in harness-controlled pages. */
+/** Preference order: the clinic's own STT server first, then the existing
+ *  server-side provider, then browser Web Speech, then honestly unavailable.
+ *  An injected test queue overrides everything — it only exists in
+ *  harness-controlled pages. */
 export function resolveProviderChoice(
   setting: VoiceProviderSetting,
   env: ProviderEnvironment,
 ): VoiceProviderKind | null {
   if (env.injectedPresent) return "injected";
+  if (setting === "local") return env.localAvailable ? "local" : null;
   if (setting === "server") return env.serverAvailable ? "server" : null;
   if (setting === "browser") return env.webSpeechSupported ? "webspeech" : null;
+  if (env.localAvailable) return "local";
   if (env.serverAvailable) return "server";
   if (env.webSpeechSupported) return "webspeech";
   return null;
@@ -150,13 +237,15 @@ export function isInjectedProviderPresent(): boolean {
   return typeof window !== "undefined" && Array.isArray(window.__voiceInjectedTranscripts);
 }
 
-/** Server capability probe — reports only a boolean, never key material. */
-export async function fetchServerTranscribeAvailable(): Promise<boolean> {
+export interface TranscribeCapabilities { server: boolean; local: boolean; }
+
+/** Server capability probe — booleans only, never keys or addresses. */
+export async function fetchTranscribeCapabilities(): Promise<TranscribeCapabilities> {
   try {
-    const res = await api.get<{ available?: boolean }>("/api/ai/transcribe/status");
-    return Boolean(res?.available);
+    const res = await api.get<{ available?: boolean; server?: boolean; local?: boolean }>("/api/ai/transcribe/status");
+    return { server: Boolean(res?.server ?? res?.available), local: Boolean(res?.local) };
   } catch {
-    return false;
+    return { server: false, local: false };
   }
 }
 
@@ -166,7 +255,8 @@ function createWebSpeechProvider(): TranscriptionProvider {
   return {
     kind: "webspeech",
     label: "Browser speech (Web Speech API)",
-    start({ lang }, cb) {
+    supportsContinuous: () => true,
+    start({ lang, continuous }, cb) {
       const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
       if (!SR) {
         cb.onError("Speech recognition is not supported in this browser. Try Chrome or Edge.");
@@ -218,10 +308,21 @@ function createWebSpeechProvider(): TranscriptionProvider {
           const alt = result[0];
           if (!alt) continue;
           if (result.isFinal) {
-            finalText += alt.transcript + " ";
-            if (typeof alt.confidence === "number" && alt.confidence > 0) {
-              confidenceSum += alt.confidence;
-              confidenceCount += 1;
+            if (continuous) {
+              // Hands-free: each final result IS one utterance.
+              const t = alt.transcript.trim();
+              if (t) {
+                cb.onResult({
+                  transcript: t,
+                  providerConfidence: typeof alt.confidence === "number" && alt.confidence > 0 ? alt.confidence : null,
+                });
+              }
+            } else {
+              finalText += alt.transcript + " ";
+              if (typeof alt.confidence === "number" && alt.confidence > 0) {
+                confidenceSum += alt.confidence;
+                confidenceCount += 1;
+              }
             }
           } else {
             interim += alt.transcript;
@@ -259,10 +360,12 @@ function createWebSpeechProvider(): TranscriptionProvider {
           try { recognition.start(); } catch { /* already restarted */ }
           return;
         }
-        cb.onResult({
-          transcript: finalText.trim(),
-          providerConfidence: confidenceCount > 0 ? confidenceSum / confidenceCount : null,
-        });
+        if (!continuous) {
+          cb.onResult({
+            transcript: finalText.trim(),
+            providerConfidence: confidenceCount > 0 ? confidenceSum / confidenceCount : null,
+          });
+        }
       };
 
       recognition.start();
@@ -271,11 +374,12 @@ function createWebSpeechProvider(): TranscriptionProvider {
       return {
         stop: () => {
           stopped = true;
-          cb.onStatus("processing");
+          if (!continuous) cb.onStatus("processing");
           try { recognition.stop(); } catch { /* not started */ }
         },
         abort: () => {
           aborted = true;
+          window.clearTimeout(watchdog);
           recognition.onend = null;
           try { recognition.abort(); } catch { /* not started */ }
         },
@@ -284,24 +388,108 @@ function createWebSpeechProvider(): TranscriptionProvider {
   };
 }
 
-// ── Server provider (MediaRecorder → existing /api/ai/transcribe) ───────────
+// ── Recorder providers (server + local STT via MediaRecorder) ───────────────
 
-function createServerProvider(): TranscriptionProvider {
+const RECORDER_ENDPOINTS: Record<"server" | "local", { endpoint: string; label: string }> = {
+  server: { endpoint: "/api/ai/transcribe", label: "Server transcription (clinic AI provider)" },
+  local: { endpoint: "/api/ai/transcribe/local", label: "Local STT server (clinic network)" },
+};
+
+function createRecorderProvider(kind: "server" | "local"): TranscriptionProvider {
+  const { endpoint, label } = RECORDER_ENDPOINTS[kind];
   return {
-    kind: "server",
-    label: "Server transcription (clinic AI provider)",
-    start({ deviceId }, cb) {
+    kind,
+    label,
+    // Hands-free on batch uploads needs live segments — otherwise nothing
+    // would ever come back while the session runs.
+    supportsContinuous: (settings) => settings.segmentSeconds > 0,
+    start({ deviceId, segmentSeconds, continuous }, cb) {
+      const segMs = segmentSeconds && segmentSeconds > 0 ? segmentSeconds * 1000 : 0;
       let recorder: MediaRecorder | null = null;
       let stream: MediaStream | null = null;
       let aborted = false;
-      const chunks: Blob[] = [];
+      let stopping = false;
+      let segmentTimer: number | null = null;
+      /** Ordered transcription chain — segment texts append in capture order. */
+      let uploadChain: Promise<void> = Promise.resolve();
+      let committed = "";
 
       const cleanup = () => {
+        if (segmentTimer != null) window.clearTimeout(segmentTimer);
+        segmentTimer = null;
         stream?.getTracks().forEach((t) => t.stop());
         stream = null;
       };
 
-      const startCapture = async () => {
+      const transcribeBlob = (blob: Blob): Promise<string> =>
+        new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const dataUrl = String(reader.result ?? "");
+            const audioBase64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+            api.post<{ text?: string }>(endpoint, { audioBase64, mimeType: blob.type })
+              .then((res) => resolve((res.text ?? "").trim()))
+              .catch(reject);
+          };
+          reader.onerror = () => reject(new Error("Could not read the recorded audio."));
+          reader.readAsDataURL(blob);
+        });
+
+      const surfaceUploadError = (err: unknown) => {
+        if (aborted) return;
+        const offline = typeof navigator !== "undefined" && !navigator.onLine;
+        aborted = true;
+        cleanup();
+        cb.onError(err instanceof Error ? err.message : `${label} failed.`, { offline });
+      };
+
+      /** One self-contained recording segment on the shared stream. Segments
+       *  (not timeslices) so every upload is an independently decodable file. */
+      const startSegment = () => {
+        if (aborted || !stream) return;
+        const chunks: Blob[] = [];
+        let rec: MediaRecorder;
+        try {
+          rec = new MediaRecorder(stream);
+        } catch {
+          aborted = true;
+          cleanup();
+          cb.onError("Audio recording is not supported in this browser.");
+          return;
+        }
+        recorder = rec;
+        rec.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+        rec.onstop = () => {
+          const isFinalSegment = stopping || aborted;
+          if (aborted) { cleanup(); return; }
+          const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+          if (!isFinalSegment) startSegment(); // keep capturing while this uploads
+          else cleanup();
+          uploadChain = uploadChain.then(async () => {
+            if (aborted) return;
+            const text = blob.size > 0 ? await transcribeBlob(blob) : "";
+            if (aborted) return;
+            if (continuous) {
+              if (text) cb.onResult({ transcript: text, providerConfidence: null });
+              if (isFinalSegment) cb.onStatus("available");
+            } else if (segMs > 0) {
+              committed = [committed, text].filter(Boolean).join(" ");
+              cb.onInterim(committed);
+              if (isFinalSegment) cb.onResult({ transcript: committed, providerConfidence: null });
+            } else if (isFinalSegment) {
+              cb.onResult({ transcript: text, providerConfidence: null });
+            }
+          }).catch(surfaceUploadError);
+        };
+        rec.start();
+        if (segMs > 0) {
+          segmentTimer = window.setTimeout(() => {
+            if (rec.state !== "inactive") rec.stop();
+          }, segMs);
+        }
+      };
+
+      const begin = async () => {
         try {
           stream = await navigator.mediaDevices.getUserMedia({
             audio: deviceId ? { deviceId: { exact: deviceId } } : true,
@@ -318,54 +506,23 @@ function createServerProvider(): TranscriptionProvider {
           return;
         }
         if (aborted) { cleanup(); return; }
-        try {
-          recorder = new MediaRecorder(stream);
-        } catch {
-          cleanup();
-          cb.onError("Audio recording is not supported in this browser.");
-          return;
-        }
-        recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-        recorder.onstop = () => {
-          cleanup();
-          if (aborted) return;
-          const blob = new Blob(chunks, { type: recorder?.mimeType || "audio/webm" });
-          if (blob.size === 0) {
-            cb.onResult({ transcript: "", providerConfidence: null });
-            return;
-          }
-          cb.onStatus("processing");
-          const reader = new FileReader();
-          reader.onload = () => {
-            const dataUrl = String(reader.result ?? "");
-            const audioBase64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
-            api.post<{ text?: string }>("/api/ai/transcribe", { audioBase64, mimeType: blob.type })
-              .then((res) => {
-                if (aborted) return;
-                cb.onResult({ transcript: (res.text ?? "").trim(), providerConfidence: null });
-              })
-              .catch((err) => {
-                if (aborted) return;
-                const offline = typeof navigator !== "undefined" && !navigator.onLine;
-                cb.onError(
-                  err instanceof Error ? err.message : "Server transcription failed.",
-                  { offline },
-                );
-              });
-          };
-          reader.onerror = () => cb.onError("Could not read the recorded audio.");
-          reader.readAsDataURL(blob);
-        };
-        recorder.start();
-        cb.onStatus("listening");
+        startSegment();
+        if (!aborted) cb.onStatus("listening");
       };
 
-      void startCapture();
+      void begin();
 
       return {
         stop: () => {
-          if (recorder && recorder.state !== "inactive") recorder.stop();
-          else cleanup();
+          stopping = true;
+          if (segmentTimer != null) window.clearTimeout(segmentTimer);
+          if (recorder && recorder.state !== "inactive") {
+            if (!continuous) cb.onStatus("processing");
+            recorder.stop();
+          } else {
+            cleanup();
+            if (!continuous) cb.onResult({ transcript: committed, providerConfidence: null });
+          }
         },
         abort: () => {
           aborted = true;
@@ -383,9 +540,26 @@ function createInjectedProvider(): TranscriptionProvider {
   return {
     kind: "injected",
     label: "Injected (test)",
-    start(_opts, cb) {
+    supportsContinuous: () => true,
+    start({ continuous }, cb) {
       let aborted = false;
       cb.onStatus("listening");
+      if (continuous) {
+        // Deliver one queue entry per tick — deterministic utterance stream.
+        const timer = window.setInterval(() => {
+          if (aborted) return;
+          const next = window.__voiceInjectedTranscripts?.shift();
+          if (next == null) return;
+          const entry = typeof next === "string" ? { text: next, confidence: undefined } : next;
+          if (!entry.text) return;
+          cb.onResult({
+            transcript: entry.text,
+            providerConfidence: typeof entry.confidence === "number" ? entry.confidence : null,
+          });
+        }, 300);
+        const end = () => { aborted = true; window.clearInterval(timer); };
+        return { stop: end, abort: end };
+      }
       const next = window.__voiceInjectedTranscripts?.shift();
       const entry = typeof next === "string" ? { text: next, confidence: undefined } : next;
       if (entry?.text) cb.onInterim(entry.text);
@@ -406,7 +580,8 @@ function createInjectedProvider(): TranscriptionProvider {
 
 export function createVoiceProvider(kind: VoiceProviderKind): TranscriptionProvider {
   switch (kind) {
-    case "server": return createServerProvider();
+    case "local": return createRecorderProvider("local");
+    case "server": return createRecorderProvider("server");
     case "webspeech": return createWebSpeechProvider();
     case "injected": return createInjectedProvider();
   }
