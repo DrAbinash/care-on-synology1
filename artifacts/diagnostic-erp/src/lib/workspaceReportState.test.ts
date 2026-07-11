@@ -228,4 +228,21 @@ describe("matchWorkspaceShortcut (Phase 11)", () => {
     expect(matchWorkspaceShortcut({ key: "Enter" })).toBeNull();
     expect(matchWorkspaceShortcut({ key: "k", altKey: true })).toBeNull();
   });
+
+  it("M1.5: Ctrl+Shift+N/P/K → next / previous / park", () => {
+    expect(matchWorkspaceShortcut({ key: "N", ctrlKey: true, shiftKey: true })).toBe("next-study");
+    expect(matchWorkspaceShortcut({ key: "P", metaKey: true, shiftKey: true })).toBe("previous-study");
+    expect(matchWorkspaceShortcut({ key: "K", ctrlKey: true, shiftKey: true })).toBe("park-study");
+  });
+
+  it("M1.5: shift-combos never fall through to the plain combos (and vice versa)", () => {
+    // Ctrl+Shift+K must NOT be quickselect; plain Ctrl+K must NOT be park.
+    expect(matchWorkspaceShortcut({ key: "k", ctrlKey: true, shiftKey: true })).toBe("park-study");
+    expect(matchWorkspaceShortcut({ key: "k", ctrlKey: true, shiftKey: false })).toBe("quickselect");
+    // Ctrl+Shift+S (browser screenshot on some platforms) must not save.
+    expect(matchWorkspaceShortcut({ key: "s", ctrlKey: true, shiftKey: true })).toBeNull();
+    expect(matchWorkspaceShortcut({ key: "Enter", ctrlKey: true, shiftKey: true })).toBeNull();
+    // Ctrl+Alt+O (AltGr on some layouts) must not hijack typing.
+    expect(matchWorkspaceShortcut({ key: "o", altKey: true, ctrlKey: true })).toBeNull();
+  });
 });

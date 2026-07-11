@@ -48,6 +48,11 @@ import {
   deriveLifecycleBadges, canVerifyReport, matchWorkspaceShortcut,
   type FinalReportMeta, type PersistedInstanceRow,
 } from "@/lib/workspaceReportState";
+import { canLeaveStudy, type QueueStudy } from "@/lib/reportingWorkflow";
+import { createCommandDispatcher } from "@/lib/workspaceCommands";
+import { useReportingWorkflow } from "@/hooks/useReportingWorkflow";
+import type { StudyLaunchResult } from "@/lib/studyLaunchService";
+import { ChevronLeft, ChevronRight, PauseCircle } from "lucide-react";
 
 // ════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -369,8 +374,20 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
    *  selection restore) request a baseline recapture; the effect below runs
    *  in the render AFTER their state has flushed, so it always serializes the
    *  post-hydration values. User edits never request a recapture — they are
-   *  exactly what "dirty" must detect. */
-  const [baselineRecapturePending, setBaselineRecapturePending] = useState(false);
+   *  exactly what "dirty" must detect.
+   *
+   *  A monotonic NONCE, deliberately not a boolean (M1.5): with a boolean,
+   *  a machine effect firing in the same effects pass as the recapture
+   *  consuming an earlier request had its set-true swallowed by the
+   *  recapture's set-false in the same batch — the restored Quick Select
+   *  selections then never entered the baseline and the workspace sat
+   *  permanently "dirty" after returning to a study (found by the M1.5
+   *  browser verification). Every increment now guarantees one capture in
+   *  the render after its batch flushes. */
+  const [baselineRecaptureNonce, setBaselineRecaptureNonce] = useState(0);
+  function requestBaselineRecapture() {
+    setBaselineRecaptureNonce((n) => n + 1);
+  }
   /** Truthful D5 outcome of the finalize that happened in THIS session:
    *  {signed:true,...} or {signed:false, fallback:"legacy", reason}. */
   const [structuredFinalInfo, setStructuredFinalInfo] = useState<Record<string, unknown> | null>(null);
@@ -381,6 +398,16 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const [verifying, setVerifying] = useState(false);
   /** Admin-only structured diagnostics drawer inside the preview (Phase 7). */
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+
+  // ── M1.5 — workflow controller (queue, history, parked, transitions) ─────
+  const workflow = useReportingWorkflow(studyId);
+  /** Viewer launch state mirrored up from OpenStudyPanel: transitions are
+   *  blocked while a launch is in flight, and the status bar shows the last
+   *  outcome. */
+  const [viewerLaunch, setViewerLaunch] = useState<{ busy: boolean; lastResult: StudyLaunchResult | null }>({
+    busy: false,
+    lastResult: null,
+  });
 
   // ── Quick Select — Smart Report Engine (Phase 2) ──────────────────────────
   // Each button is a smart object (technique / findings / impression /
@@ -577,10 +604,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // Navigating this mounted page from one study to another (same route,
   // different :studyId param — wouter does NOT remount) must never carry the
   // previous patient's text, selections, or exact-removal state across.
-  const activeStudyRef = useRef<number | undefined>(studyId);
-  useEffect(() => {
-    if (activeStudyRef.current === studyId) return;
-    activeStudyRef.current = studyId;
+  // Extracted (M1.5) so "reload current study" can reuse the exact same
+  // reset instead of duplicating the field list.
+  function resetWorkspaceState() {
     setClinicalHistory(""); setTechnique(""); setRawFindings("");
     setImpression([]); setRecommendation(""); setFindingsMap({});
     setUseStructured(true);
@@ -595,7 +621,44 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     setStructuredFinalInfo(null); setFinalizedReportId(null);
     setReportCreationSkipped(null);
     setShowDiagnostics(false);
+    setPreviewMode(false); // transient UI must not carry across patients
+    // Re-arm the once-per-study machine-hydration guards (M1.5): REVISITING a
+    // study (Previous / return-to-parked) must hydrate and restore selections
+    // again after this reset — the M1.4 refs otherwise stay armed for the
+    // draft id and would leave the editor empty AND, worse, let the next save
+    // wipe the persisted selections (found by the M1.5 browser verification).
+    hydratedDraftForStudyRef.current = null;
+    selectionsRestoredForDraftRef.current = null;
+    autoTemplateForStudyRef.current = null;
+  }
+  const activeStudyRef = useRef<number | undefined>(studyId);
+  useEffect(() => {
+    if (activeStudyRef.current === studyId) return;
+    activeStudyRef.current = studyId;
+    resetWorkspaceState();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [studyId]);
+
+  // ── M1.5 — arrival + wrong-patient cross-check (Phase 7) ─────────────────
+  // When the target study's identity loads, release the navigation lock and
+  // verify the loaded patient matches what the queue row claimed at
+  // transition time. The M1.4 draft-hydration patient guard is the second
+  // layer; this catches a worklist row whose linkage changed mid-flight.
+  useEffect(() => {
+    if (!entry) return;
+    const expectation = workflow.markArrived(entry.id);
+    if (
+      expectation && expectation.patientId != null &&
+      entry.patientId != null && expectation.patientId !== entry.patientId
+    ) {
+      toast({
+        title: "Patient identity mismatch",
+        description: `The queue listed patient #${expectation.patientId} for this study, but the loaded study belongs to patient #${entry.patientId}. Verify the patient before reporting.`,
+        variant: "destructive",
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entry?.id]);
 
   // ── M1.4 — draft hydration (Phase 3), ONCE per study ─────────────────────
   // The old effect re-ran on every background refetch of the drafts query
@@ -645,7 +708,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     }
     if (existingDraft.recommendation) setRecommendation(existingDraft.recommendation);
     // Server-hydrated content is the CLEAN baseline, not an unsaved edit.
-    setBaselineRecapturePending(true);
+    requestBaselineRecapture();
   }, [existingDraft, entry, studyId]);
 
   // ── M1.4 — Quick Select selection restore (Phase 3 rule 5 / Phase 4) ─────
@@ -691,6 +754,13 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const selectionsRestoredForDraftRef = useRef<number | null>(null);
   useEffect(() => {
     if (!draftId || !instancesData) return;
+    // Ownership guard (M1.5 Phase 7): during a study transition the adopted
+    // draftId can still belong to the PREVIOUS study for a few renders (the
+    // hook re-adopts asynchronously). Restoring then would carry the old
+    // patient's selections into the new study — verified in the M1.5 browser
+    // run. Only restore once the study-keyed draft row confirms this draftId
+    // belongs to the study on screen.
+    if (!existingDraft || existingDraft.id !== draftId) return;
     if (selectionsRestoredForDraftRef.current === draftId) return;
     selectionsRestoredForDraftRef.current = draftId;
     let rows: PersistedInstanceRow[] = instancesData.success ? instancesData.instances : [];
@@ -708,7 +778,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       seedRestoredInsertedText(quickFindingTemplatesRef.current, ids, map);
     }
     // Restored selections are saved state — keep the workspace clean.
-    setBaselineRecapturePending(true);
+    requestBaselineRecapture();
   }, [draftId, instancesData, existingDraft]);
 
   const { data: templates = [] } = useQuery<StructuredTemplate[]>({
@@ -793,7 +863,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     );
     setRecommendation((prev) => (prev.trim() ? prev : "Please correlate with clinical findings."));
     // Machine fill → part of the clean baseline.
-    setBaselineRecapturePending(true);
+    requestBaselineRecapture();
   }, [selectedTemplate]);
 
   // Pre-populate from AI draft — fill-empty-only (M1.4): a saved draft (the
@@ -808,7 +878,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       if (draft.findings) setRawFindings((prev) => (prev.trim() ? prev : draft.findings));
       if (draft.impression) setImpression((prev) => (prev.filter(Boolean).length > 0 ? prev : [draft.impression]));
       if (draft.recommendation) setRecommendation((prev) => (prev.trim() ? prev : draft.recommendation));
-      setBaselineRecapturePending(true);
+      requestBaselineRecapture();
     } catch { /* ignore */ }
   }, [entry?.aiDraftJson]);
 
@@ -856,14 +926,15 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // Baseline recapture: runs in the render AFTER a machine-hydration step's
   // state has flushed (the pending flag is state, so this effect sees the
   // hydrated values, never the pre-hydration closure).
+  const lastCapturedNonceRef = useRef(0);
   useEffect(() => {
-    if (!baselineRecapturePending) return;
-    setBaselineRecapturePending(false);
+    if (baselineRecaptureNonce === lastCapturedNonceRef.current) return;
+    lastCapturedNonceRef.current = baselineRecaptureNonce;
     setLastSavedSnapshot(serializeReportSnapshot({
       clinicalHistory, technique, rawFindings, impression, recommendation,
       quickSelectIds: Array.from(selectedQuickIds),
     }));
-  }, [baselineRecapturePending, clinicalHistory, technique, rawFindings, impression, recommendation, selectedQuickIds]);
+  }, [baselineRecaptureNonce, clinicalHistory, technique, rawFindings, impression, recommendation, selectedQuickIds]);
 
   // Unsaved-change safeguard (Phase 10): browser-level warning on tab close /
   // hard navigation while dirty.
@@ -874,50 +945,65 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
 
-  // Keyboard shortcuts (Phase 11) — matching rules live in
-  // lib/workspaceReportState.matchWorkspaceShortcut. Re-attached per render
-  // so the handlers always see current state; guards mirror the buttons'.
+  // ── M1.5 Phase 9 — THE command dispatcher ─────────────────────────────────
+  // Every workflow action (button, keyboard, and later voice) routes through
+  // one named-command dispatcher. Handlers own their guards, so behavior is
+  // identical regardless of how a command arrives. Recreated per render —
+  // closures always see current state; the function handlers hoist.
+  function focusQuickSearch() {
+    setRightTab("quickselect");
+    // The panel mounts (and loads its dataset) when the tab switches, and
+    // its search input can remount as the data arrives — keep re-asserting
+    // focus briefly until it actually sticks.
+    let attempts = 0;
+    const tryFocus = () => {
+      const el = document.querySelector<HTMLInputElement>("[data-qs-search]");
+      if (el && document.activeElement === el) return;
+      el?.focus();
+      if (++attempts < 15) window.setTimeout(tryFocus, 100);
+    };
+    window.setTimeout(tryFocus, 50);
+  }
+  function openViewer() {
+    // The ONE launch pipeline (M1.2) — trigger the panel's primary action.
+    document.querySelector<HTMLButtonElement>('[data-testid="btn-open-study"]')?.click();
+  }
+  const commandDispatcher = createCommandDispatcher({
+    save: () => { if (!isLocked && !saving) void saveDraft(); },
+    finalize: () => { if (!isLocked && !finalizing) void finalizeReport(); },
+    next: () => nextStudy(),
+    previous: () => previousStudy(),
+    park: () => parkCurrentStudy(),
+    refresh: () => refreshQueueAndCurrent(),
+    "open-viewer": openViewer,
+    "focus-quick-search": focusQuickSearch,
+  });
+
+  // Keyboard shortcuts (M1.4 Phase 11 + M1.5 Phase 8) — matching rules live
+  // in lib/workspaceReportState.matchWorkspaceShortcut; actions route through
+  // the command dispatcher. Re-attached per render so handlers see current
+  // state.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const shortcut = matchWorkspaceShortcut({
-        key: e.key, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey,
+        key: e.key, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey, shiftKey: e.shiftKey,
         target: e.target as { tagName?: string } | null,
       });
       if (!shortcut) return;
-      switch (shortcut) {
-        case "save":
-          e.preventDefault();
-          if (!isLocked && !saving) void saveDraft();
-          break;
-        case "finalize":
-          e.preventDefault();
-          if (!isLocked && !finalizing) void finalizeReport();
-          break;
-        case "quickselect": {
-          e.preventDefault();
-          setRightTab("quickselect");
-          // The panel mounts (and loads its dataset) when the tab switches,
-          // and its search input can remount as the data arrives — keep
-          // re-asserting focus briefly until it actually sticks.
-          let attempts = 0;
-          const tryFocus = () => {
-            const el = document.querySelector<HTMLInputElement>("[data-qs-search]");
-            if (el && document.activeElement === el) return;
-            el?.focus();
-            if (++attempts < 15) window.setTimeout(tryFocus, 100);
-          };
-          window.setTimeout(tryFocus, 50);
-          break;
-        }
-        case "open-study":
-          e.preventDefault();
-          document.querySelector<HTMLButtonElement>('[data-testid="btn-open-study"]')?.click();
-          break;
-        case "escape":
-          if (showDiagnostics) setShowDiagnostics(false);
-          else if (previewMode) setPreviewMode(false);
-          break;
+      if (shortcut === "escape") {
+        if (showDiagnostics) setShowDiagnostics(false);
+        else if (previewMode) setPreviewMode(false);
+        return;
       }
+      e.preventDefault();
+      const command =
+        shortcut === "quickselect" ? "focus-quick-search"
+        : shortcut === "open-study" ? "open-viewer"
+        : shortcut === "next-study" ? "next"
+        : shortcut === "previous-study" ? "previous"
+        : shortcut === "park-study" ? "park"
+        : shortcut; // save | finalize
+      commandDispatcher.dispatch(command);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -1125,7 +1211,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       // findings[] (Ticket A3.1) serializes the current Quick Select
       // selection; A3.2 persists it to report_finding_instances, which is
       // what the selection restore above reads back.
-      const res = await saveRadiologyDraft<{ success: boolean; draft: { id: number } }>(
+      const savedFindings = deriveQuickSelectFindings(selectedQuickIds, quickInstances);
+      const res = await saveRadiologyDraft<{ success: boolean; draft: { id: number } & Record<string, unknown> }>(
         {
           id: draftId ?? undefined,
           studyId: studyId ?? entry.studyId ?? null,
@@ -1139,13 +1226,26 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           findingsSections: useStructured ? findingsMap : null,
           impression: impression.filter(Boolean),
           recommendation: recommendation || null,
-          findings: deriveQuickSelectFindings(selectedQuickIds, quickInstances),
+          findings: savedFindings,
         },
       );
       captureSavedDraftId(res.draft.id);
       // The server now holds exactly the selections we sent — the restore
       // effect must not re-apply them over the editor after this save.
       selectionsRestoredForDraftRef.current = res.draft.id;
+      // M1.5 — keep the query caches truthful so RETURNING to this study
+      // (Previous / return-to-parked) hydrates what was actually saved, not
+      // the stale row cached at first load (found by the M1.5 browser
+      // verification: an edit saved just before Next vanished on Previous).
+      qc.setQueryData(["radiology-existing-draft", studyId], res.draft);
+      qc.setQueryData(["radiology-finding-instances", res.draft.id], {
+        success: true,
+        instances: savedFindings.map((f) => ({
+          findingId: f.findingId,
+          structuredJson: f.params,
+          source: "quickselect",
+        })),
+      });
       setLastSavedAt(new Date());
       setLastSavedSnapshot(serializeReportSnapshot({
         clinicalHistory, technique, rawFindings, impression, recommendation,
@@ -1330,6 +1430,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       setFinalizedReportId(reportId);
       setStructuredFinalInfo(structuredFinal);
       setReportCreationSkipped(skippedReason);
+      // M1.5 — the queue treats this study as done immediately, even before
+      // the 30s worklist refetch reflects the server status flip.
+      if (studyId != null) workflow.markCompleted(studyId);
       // Finalized content is on the server — the workspace is clean now.
       setLastSavedSnapshot(serializeReportSnapshot({
         clinicalHistory, technique, rawFindings, impression, recommendation,
@@ -1395,6 +1498,119 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     } finally {
       setVerifying(false);
     }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // M1.5 — WORKFLOW TRANSITIONS (next / previous / park / refresh)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /** Central transition gate (Phase 3/7): busy states BLOCK, dirty CONFIRMS.
+   *  Rules are pure (lib/reportingWorkflow.canLeaveStudy). */
+  function guardedLeave(): boolean {
+    const verdict = canLeaveStudy({
+      dirty, saving, finalizing,
+      viewerLaunching: viewerLaunch.busy,
+      transitioning: workflow.transitioning,
+    });
+    if (verdict.kind === "blocked") {
+      toast({ title: "Cannot switch study", description: verdict.reason, variant: "destructive" });
+      return false;
+    }
+    if (verdict.kind === "confirm") return window.confirm(verdict.reason);
+    return true;
+  }
+
+  /** Phase 7: pending requests for the departing study must never land on
+   *  the next patient's screen. Keyed queries already isolate the DATA; this
+   *  aborts the in-flight requests themselves. */
+  function cancelCurrentStudyRequests() {
+    void qc.cancelQueries({ queryKey: ["workspace-entry", studyId] });
+    void qc.cancelQueries({ queryKey: ["radiology-existing-draft", studyId] });
+    void qc.cancelQueries({ queryKey: ["radiology-finding-instances"] });
+    void qc.cancelQueries({ queryKey: ["radiology-validate-draft"] });
+    void qc.cancelQueries({ queryKey: ["workspace-final-report"] });
+  }
+
+  /** Navigate to a queue row: history + navigation lock + expected-patient
+   *  capture happen in the controller; the M1.4 isolation effect resets all
+   *  report state when the :studyId param changes. */
+  function goToStudy(target: QueueStudy) {
+    cancelCurrentStudyRequests();
+    workflow.beginTransition(studyId, target);
+    navigate(`/radiology/report/${target.id}`);
+  }
+
+  /** Phase 3 — Next Study: next eligible (skips completed + parked, wraps);
+   *  when the fresh queue is exhausted, offers the oldest parked study. */
+  function nextStudy() {
+    if (!guardedLeave()) return;
+    const target = workflow.peekNext();
+    if (target) {
+      goToStudy(target);
+      return;
+    }
+    const parkedNext = workflow.peekParked();
+    if (parkedNext) {
+      const label = `${parkedNext.patientName} · ${parkedNext.accessionNumber}`;
+      if (window.confirm(`No unreported studies left in the queue.\n\nReturn to parked study?\n${label}`)) {
+        workflow.unpark(parkedNext.id);
+        goToStudy(parkedNext);
+      }
+      return;
+    }
+    toast({ title: "Queue complete", description: "No more eligible studies to report." });
+  }
+
+  /** Phase 4 — Previous Study: true back-stack of visited studies. */
+  function previousStudy() {
+    if (workflow.historyDepth === 0) {
+      toast({ title: "No previous study", description: "You haven't navigated from another study yet." });
+      return;
+    }
+    if (!guardedLeave()) return;
+    cancelCurrentStudyRequests();
+    const targetId = workflow.beginPreviousTransition(studyId);
+    if (targetId == null) return;
+    navigate(`/radiology/report/${targetId}`);
+  }
+
+  /** Phase 5 — Park the current study (optional reason) and advance. */
+  function parkCurrentStudy() {
+    if (studyId == null || !entry) return;
+    if (workflow.isParked(studyId)) {
+      workflow.unpark(studyId);
+      toast({ title: "Study unparked" });
+      return;
+    }
+    if (!guardedLeave()) return;
+    const reason = window.prompt("Park this study — reason (optional):", "");
+    if (reason === null) return; // cancelled
+    workflow.park(studyId, reason);
+    const target = workflow.peekNext();
+    if (target) goToStudy(target);
+    else toast({ title: "Study parked", description: "No further eligible studies — staying on this study." });
+  }
+
+  /** Phase 6 — queue refresh; never touches the report being typed. */
+  function refreshQueueAndCurrent() {
+    workflow.refreshQueue();
+    // Re-pull the current study's status/lifecycle additively — hydration is
+    // once-per-study, so a refetch can NEVER rewrite the editor text.
+    void qc.invalidateQueries({ queryKey: ["workspace-entry", studyId] });
+    void qc.invalidateQueries({ queryKey: ["workspace-final-report"] });
+    toast({ title: "Queue refreshed" });
+  }
+
+  /** Phase 6 — full reload of the current study from the server (explicit,
+   *  confirmed when dirty; reuses the study-switch reset + load path). */
+  function reloadCurrentStudy() {
+    if (studyId == null) return;
+    if (dirty && !window.confirm("Reload this study from the server? Unsaved changes will be lost.")) return;
+    resetWorkspaceState(); // also re-arms the once-per-study hydration guards
+    void qc.invalidateQueries({ queryKey: ["workspace-entry", studyId] });
+    void qc.invalidateQueries({ queryKey: ["radiology-existing-draft", studyId] });
+    void qc.invalidateQueries({ queryKey: ["radiology-finding-instances"] });
+    toast({ title: "Study reloaded" });
   }
 
   function printReport() {
@@ -1653,6 +1869,88 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         </div>
       </div>
 
+      {/* ── M1.5 — workflow status bar (Phase 10) ──────────────────────────── */}
+      <div className="shrink-0 flex items-center gap-2 px-3 py-1 border-b bg-muted/20 text-[11px] flex-wrap" data-testid="workflow-status-bar">
+        <span className="text-muted-foreground" data-testid="queue-position">
+          Study {workflow.position.index >= 0 ? `${workflow.position.index + 1} of ${workflow.position.total}` : `— of ${workflow.position.total}`}
+        </span>
+        <span className="text-green-700">✓ {workflow.completedCount} completed</span>
+        <span className={workflow.parkedCount > 0 ? "text-amber-700" : "text-muted-foreground"}>⏸ {workflow.parkedCount} parked</span>
+        {workflow.isParked(studyId) && (
+          <Badge className="bg-amber-100 text-amber-800 border-amber-300 text-[10px] py-0" data-testid="parked-badge">
+            PARKED{(() => { const r = workflow.parked.find((p) => p.id === studyId)?.reason; return r ? ` — ${r}` : ""; })()}
+          </Badge>
+        )}
+        {dirty && <span className="text-amber-700">● unsaved</span>}
+        {saving && <span className="text-blue-700">Saving…</span>}
+        {finalizing && <span className="text-blue-700">Finalizing…</span>}
+        {workflow.transitioning && <span className="text-blue-700">Switching study…</span>}
+        <span className="text-muted-foreground" data-testid="viewer-status">
+          Viewer:{" "}
+          {viewerLaunch.busy
+            ? "connecting…"
+            : viewerLaunch.lastResult?.success && viewerLaunch.lastResult.selectedNetworkMode
+              ? `connected via ${viewerLaunch.lastResult.selectedNetworkMode}`
+              : viewerLaunch.lastResult && !viewerLaunch.lastResult.success
+                ? "launch failed"
+                : "—"}
+        </span>
+        <div className="ml-auto flex items-center gap-1">
+          {/* Jump to a specific queue row — indicators: → current ✓ done ⏸ parked */}
+          <select
+            className="h-6 max-w-[260px] text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
+            value=""
+            data-testid="queue-jump"
+            onChange={(e) => {
+              const id = Number(e.target.value);
+              if (!id) return;
+              const row = workflow.queue.find((s) => s.id === id);
+              if (!row || row.id === studyId) return;
+              if (!guardedLeave()) return;
+              goToStudy(row);
+            }}
+            title="Jump to a study in the queue"
+          >
+            <option value="">Queue ({workflow.position.total})…</option>
+            {workflow.queue.map((s) => {
+              const ind = workflow.indicators.find((i) => i.id === s.id);
+              const prefix = ind?.current ? "→ " : ind?.completed ? "✓ " : ind?.parked ? "⏸ " : "";
+              return (
+                <option key={s.id} value={s.id}>
+                  {prefix}{s.patientName} · {s.modality} · {s.accessionNumber}
+                </option>
+              );
+            })}
+          </select>
+          <Button size="sm" variant="outline" className="h-6 text-[10px] gap-0.5 px-1.5"
+            onClick={() => previousStudy()} disabled={workflow.historyDepth === 0 || workflow.transitioning}
+            title="Previous study (Ctrl+Shift+P)" data-testid="btn-previous-study">
+            <ChevronLeft size={11} /> Prev
+          </Button>
+          <Button size="sm" variant="outline" className="h-6 text-[10px] gap-0.5 px-1.5"
+            onClick={() => nextStudy()} disabled={workflow.transitioning}
+            title="Next eligible study (Ctrl+Shift+N)" data-testid="btn-next-study">
+            Next <ChevronRight size={11} />
+          </Button>
+          <Button size="sm" variant="outline" className="h-6 text-[10px] gap-0.5 px-1.5"
+            onClick={() => parkCurrentStudy()} disabled={!entry || workflow.transitioning}
+            title={workflow.isParked(studyId) ? "Unpark this study" : "Park this study and move on (Ctrl+Shift+K)"}
+            data-testid="btn-park-study">
+            <PauseCircle size={11} /> {workflow.isParked(studyId) ? "Unpark" : "Park"}
+          </Button>
+          <Button size="sm" variant="ghost" className="h-6 text-[10px] gap-0.5 px-1.5"
+            onClick={() => refreshQueueAndCurrent()} disabled={workflow.queueRefreshing}
+            title="Refresh the queue and this study's status" data-testid="btn-refresh-queue">
+            <RefreshCw size={11} className={workflow.queueRefreshing ? "animate-spin" : ""} /> Refresh
+          </Button>
+          <Button size="sm" variant="ghost" className="h-6 text-[10px] px-1.5"
+            onClick={() => reloadCurrentStudy()} disabled={!studyId}
+            title="Reload this study from the server (unsaved changes prompt first)" data-testid="btn-reload-study">
+            Reload
+          </Button>
+        </div>
+      </div>
+
       {/* ── 3-column body ──────────────────────────────────────────────────── */}
       <div className="flex flex-1 overflow-hidden">
 
@@ -1708,6 +2006,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                     worklistId: entry.id ?? null,
                   }}
                   isAdmin={isOwnerRole(session)}
+                  onLaunchStateChange={setViewerLaunch}
                 />
               </div>
             )}

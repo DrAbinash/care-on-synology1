@@ -177,3 +177,35 @@ describe("M1.4 — canonical reporting workflow integration", () => {
     expect(workspace).toContain("canVerifyReport");
   });
 });
+
+describe("M1.5 — productivity workflow stays canonical", () => {
+  const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+
+  it("all workflow actions route through THE command dispatcher", () => {
+    expect(workspace).toContain('from "@/lib/workspaceCommands"');
+    expect(workspace).toContain("createCommandDispatcher(");
+    expect(workspace).toContain("commandDispatcher.dispatch(");
+  });
+
+  it("queue data comes from the ONE shared worklist query (no duplicate fetch)", () => {
+    const hook = read("hooks/useReportingWorkflow.ts");
+    // Same query key as pages/RadiologyWorklist.tsx — one cache entry.
+    expect(hook).toContain('"radiology-pacs-worklist"');
+    expect(read("pages/RadiologyWorklist.tsx")).toContain('"radiology-pacs-worklist"');
+    // The workspace itself never fetches the worklist directly.
+    expect(workspace).not.toContain('"/api/radiology/pacs-worklist"');
+  });
+
+  it("transition rules live in lib/reportingWorkflow (pure), not inline", () => {
+    expect(workspace).toContain('from "@/lib/reportingWorkflow"');
+    expect(workspace).toContain("canLeaveStudy");
+    const lib = read("lib/reportingWorkflow.ts");
+    expect(lib).toContain("nextEligibleStudy");
+    expect(lib).toContain("canLeaveStudy");
+  });
+
+  it("the launch panel exposes its state instead of the page duplicating launch logic", () => {
+    expect(read("components/radiology/OpenStudyPanel.tsx")).toContain("onLaunchStateChange");
+    expect(workspace).toContain("onLaunchStateChange={setViewerLaunch}");
+  });
+});

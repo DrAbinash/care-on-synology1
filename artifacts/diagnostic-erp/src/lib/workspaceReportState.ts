@@ -282,23 +282,34 @@ export function canVerifyReport(
   return { allowed: true, reason: null };
 }
 
-// ─── Keyboard shortcuts (Phase 11) ───────────────────────────────────────────
+// ─── Keyboard shortcuts (M1.4 Phase 11 + M1.5 Phase 8) ──────────────────────
 
-export type WorkspaceShortcut = "save" | "finalize" | "quickselect" | "open-study" | "escape";
+export type WorkspaceShortcut =
+  | "save" | "finalize" | "quickselect" | "open-study" | "escape"
+  | "next-study" | "previous-study" | "park-study";
 
 export function matchWorkspaceShortcut(e: {
   key: string;
   ctrlKey?: boolean;
   metaKey?: boolean;
   altKey?: boolean;
+  shiftKey?: boolean;
   target?: { tagName?: string } | null;
 }): WorkspaceShortcut | null {
   const mod = Boolean(e.ctrlKey || e.metaKey);
+  const shift = Boolean(e.shiftKey);
   const key = e.key.toLowerCase();
-  if (mod && key === "s") return "save";
-  if (mod && key === "enter") return "finalize";
-  if (mod && key === "k") return "quickselect";
-  if (e.altKey && key === "o") return "open-study";
+  // M1.5 workflow combos — matched FIRST so Ctrl+Shift+K never falls through
+  // to the plain Ctrl+K quick-select rule.
+  if (mod && shift && key === "n") return "next-study";
+  if (mod && shift && key === "p") return "previous-study";
+  if (mod && shift && key === "k") return "park-study";
+  // Plain combos are shift-exclusive: Ctrl+Shift+S (browser screenshot on
+  // some platforms) must not save, Ctrl+Shift+Enter must not finalize.
+  if (mod && !shift && key === "s") return "save";
+  if (mod && !shift && key === "enter") return "finalize";
+  if (mod && !shift && key === "k") return "quickselect";
+  if (e.altKey && !mod && key === "o") return "open-study";
   if (key === "escape") return "escape";
   // "/" focuses quick-select search ONLY outside text inputs — typing a
   // slash into the findings editor must never steal focus.

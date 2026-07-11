@@ -93,7 +93,14 @@ interface LaunchDiagnosticsResponse {
   endpoints: Record<string, string>;
 }
 
-export default function OpenStudyPanel({ study, isAdmin }: { study: OpenStudyIdentity; isAdmin: boolean }) {
+export default function OpenStudyPanel({ study, isAdmin, onLaunchStateChange }: {
+  study: OpenStudyIdentity;
+  isAdmin: boolean;
+  /** M1.5 — lets the workspace's workflow controller know a launch is in
+   *  flight (study switches are blocked while connecting) and what the last
+   *  launch outcome was (the "Viewer" status chip). Read-only exposure. */
+  onLaunchStateChange?: (state: { busy: boolean; lastResult: StudyLaunchResult | null }) => void;
+}) {
   const { data: settings = {} as Record<string, string> } = useQuery<Record<string, string>>({
     queryKey: ["pacs-viewer-settings"],
     queryFn: async () => {
@@ -121,6 +128,12 @@ export default function OpenStudyPanel({ study, isAdmin }: { study: OpenStudyIde
     setResult(null);
     setPacsCheck(null);
   }, [study.studyInstanceUID]);
+
+  // M1.5 — mirror launch state up to the workflow controller.
+  useEffect(() => {
+    onLaunchStateChange?.({ busy, lastResult: result });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy, result]);
 
   const defaultViewer: ViewerType = settings["default_viewer"] === "WEASIS" ? "WEASIS" : "OHIF";
 
