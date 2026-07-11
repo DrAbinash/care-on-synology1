@@ -1,6 +1,7 @@
 import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard,
+  Activity,
   ShieldAlert,
   Usb,
   Users,
@@ -94,6 +95,7 @@ import {
 import { useState, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useVersionCheck } from "@/hooks/useVersionCheck";
+import { useServerFeatureFlags } from "@/hooks/useServerFeatureFlags";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { useGlobalScanner } from "@/hooks/useGlobalScanner";
@@ -151,8 +153,6 @@ const navItems: NavEntry[] = [
     children: [
       { path: "/radiology/operations-dashboard", icon: Gauge,          label: "Operations Dashboard" },
       { path: "/radiology/my-analytics",         icon: BarChart3,      label: "My Analytics" },
-      { path: "/radiology/cockpit",            icon: Stethoscope,    label: "Radiologist Cockpit" },
-      { path: "/radiology/my-collection",       icon: ShieldAlert,    label: "DICOM Match Center" },
       { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist Hub" },
       { path: "/pacs",                        icon: Monitor,        label: "PACS Viewer" },
       { path: "/radiology/normal-templates",   icon: ClipboardCheck, label: "Normal Templates" },
@@ -217,6 +217,7 @@ const navItems: NavEntry[] = [
     label: "Administration",
     children: [
       { path: "/dashboard", icon: LayoutDashboard, label: "Owner Dashboard", ownerOnly: true },
+      { path: "/diagnostics", icon: Activity, label: "API Diagnostics", ownerOnly: true },
       { path: "/reports", icon: BarChart3, label: "Reports" },
       { path: "/expenses", icon: TrendingDown, label: "Expenses" },
       { path: "/staff", icon: Fingerprint, label: "Staff Directory" },
@@ -238,7 +239,8 @@ const navItems: NavEntry[] = [
       { path: "/settings",                  icon: Settings2,      label: "General Settings" },
       { path: "/knowledge-base",            icon: BookOpen,       label: "Knowledge Base" },
       { path: "/ai-caller-credentials",     icon: KeyRound,       label: "AI Caller Credentials", ownerOnly: true },
-      { path: "/radiology/settings", icon: Radio,          label: "Radiology Settings", ownerOnly: true },
+      { path: "/settings/radiology", icon: Radio,          label: "Radiology Settings", ownerOnly: true },
+      { path: "/settings/radiology-quick-select", icon: Zap, label: "Quick Select Buttons", ownerOnly: true },
       { path: "/tests",                     icon: FlaskConical,   label: "Test Catalog" },
       { path: "/outsourced-labs",           icon: Building2,      label: "Outsourced Labs" },
       { path: "/outsourced-cost-report",    icon: IndianRupee,    label: "Outsource Costs" },
@@ -349,6 +351,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const theme = resolveTheme(effectiveThemeId);
 
   const { updateAvailable, dismiss: dismissUpdate } = useVersionCheck();
+  useServerFeatureFlags(); // hydrates ff_radiology_* flags from /api/feature-flags (Ticket T0.1)
   const isOnline = useOnlineStatus();
   const { isActive: scannerActive } = useGlobalScanner();
 
@@ -751,6 +754,27 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <X size={16} />
           </button>
         </div>
+
+        {/* Open Radiology Cockpit (federated service) — external link with SSO */}
+        {(() => {
+          const session = readStaffSession();
+          const radUrl = (process.env.NEXT_PUBLIC_RADIOLOGY_URL || (typeof window !== "undefined" ? `${window.location.protocol}//${window.location.hostname}:3002` : "")) + (session?.token ? `/?sso=${encodeURIComponent(session.token)}` : "");
+          return radUrl ? (
+            <a
+              href={radUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Open the standalone Radiology Cockpit (MRI/CT reporting)"
+              className={cn(
+                "flex items-center rounded-lg text-sm font-medium transition-all cursor-pointer bg-primary/15 text-primary hover:bg-primary/25 border border-primary/30",
+                sidebarCollapsed ? "justify-center px-0 py-2.5 mx-1" : "gap-2 px-3 py-2.5 mx-2",
+              )}
+            >
+              <BrainCircuit size={16} />
+              {!sidebarCollapsed && <span>Radiology Cockpit</span>}
+            </a>
+          ) : null;
+        })()}
 
         {/* Nav */}
         <nav className={cn("flex-1 py-4 space-y-0.5 overflow-y-auto relative z-10", sidebarCollapsed ? "px-1" : "px-3")}>

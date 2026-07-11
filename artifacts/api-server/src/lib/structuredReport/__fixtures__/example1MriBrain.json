@@ -1,0 +1,61 @@
+{
+  "schema_version": "1.0.0",
+  "kind": "radiology.structured_report",
+  "document_id": "01J9Z6BRA1N0STDY000000A100",
+  "catalog_snapshot": { "content_pack_versions": { "neuro.mri": "2.1.0" }, "catalog_schema_version": "1.0.0", "ai_rules_version": { "neuro.mri": "2.1.0" } },
+  "study_context": { "modality": "MRI", "body_region": "brain", "study_type": "plain",
+    "template_ref": "tpl.mri_brain_plain", "laterality_default": "lat.na",
+    "comparison": { "has_prior": false, "prior_study_ref": null, "interval_note": null },
+    "identifiers": { "study_instance_uid": "1.2.840.113619.2.55.3.1", "accession_number": "ACC-20260709-MR-001",
+      "patient_ref": { "system": "care.patient_id", "value": "PAT-000112" }, "study_datetime": "2026-07-09T09:55:00Z",
+      "referring_physician_ref": { "system": "care.staff", "value": "dr_mehta" }, "performing_physician_ref": { "system": "care.staff", "value": "tech_priya" } } },
+  "sections": [
+    { "lid": "s1", "kind": "technique", "rendered": "Multiplanar multisequence MRI of the brain without contrast." },
+    { "lid": "s2", "kind": "findings", "finding_refs": ["f1","f2"], "measurement_refs": [], "rendered": "…" },
+    { "lid": "s3", "kind": "impression", "rendered": "…" }
+  ],
+  "findings": [
+    { "lid": "f1", "definition_ref": "finding.brain.normal_survey", "presence": "normal",
+      "certainty": "definite", "laterality": null, "locations": [], "severity": null, "interval_change": null,
+      "parameters": [], "measurement_refs": [],
+      "sentence": "Ventricles, sulci and basal cisterns are normal. No diffusion restriction. No abnormal enhancement territory.",
+      "impression_fragment": "No acute intracranial abnormality.", "sentence_source": "content_pack_default",
+      "status_flags": { "is_significant": false, "is_critical": false, "is_incidental": false },
+      "included_from": null,
+      "provenance": { "origin": "quick_select", "actor": "dr_abinash", "source_ref": "qs.brain.normal", "created_at": "2026-07-09T10:03:00Z", "edited": false },
+      "ai": null, "order": 10 },
+    { "lid": "f2", "definition_ref": "finding.brain.small_vessel_ischemia", "presence": "present",
+      "certainty": "definite", "laterality": "lat.bilateral",
+      "locations": ["loc.periventricular","loc.deep_white_matter"], "severity": "sev.fazekas_2", "interval_change": null,
+      "parameters": [ { "param": "param.signal", "kind": "option", "option": "t2_flair_hyper", "label": "T2/FLAIR hyperintense" } ],
+      "measurement_refs": [],
+      "sentence": "Scattered T2/FLAIR hyperintensities in the periventricular and deep white matter, Fazekas grade 2.",
+      "impression_fragment": "Moderate chronic small vessel ischemic changes.", "sentence_source": "edited",
+      "status_flags": { "is_significant": true, "is_critical": false, "is_incidental": false },
+      "included_from": null,
+      "provenance": { "origin": "quick_select", "actor": "dr_abinash", "source_ref": "qs.brain.svd_fazekas2", "created_at": "2026-07-09T10:05:00Z", "edited": true, "edited_by": "dr_abinash", "edited_at": "2026-07-09T10:06:10Z" },
+      "ai": null, "order": 20 }
+  ],
+  "measurements": [],
+  "impression": {
+    "fragments": [
+      { "lid": "imp1", "finding_ref": "f1", "text": "No acute intracranial abnormality.", "source": "finding_fragment", "rank": 1,
+        "provenance": { "origin": "content_pack_default", "actor": "dr_abinash", "created_at": "2026-07-09T10:07:00Z", "edited": false }, "ai": null },
+      { "lid": "imp2", "finding_ref": "f2", "text": "Moderate chronic small vessel ischemic changes (Fazekas 2).", "source": "ai_suggestion", "rank": 2,
+        "provenance": { "origin": "ai_suggestion", "actor": "system", "created_at": "2026-07-09T10:07:05Z", "edited": true, "edited_by": "dr_abinash", "edited_at": "2026-07-09T10:07:40Z" },
+        "ai": { "suggested": true, "run_id": "airun_01J9Z6RUNBRA1N0000000A1", "accepted_verbatim": false, "confidence": 0.74,
+          "model_ref": "llama3.1:8b-instruct-q4", "prompt_ref": "aiprompt.impression.neuro", "prompt_version": 7 } }
+    ],
+    "items": [
+      { "lid": "impi1", "fragment_refs": ["imp1"], "text": "1. No acute intracranial abnormality." },
+      { "lid": "impi2", "fragment_refs": ["imp2"], "text": "2. Moderate chronic small vessel ischemic changes (Fazekas 2)." }
+    ],
+    "rendered": "IMPRESSION:\n1. No acute intracranial abnormality.\n2. Moderate chronic small vessel ischemic changes (Fazekas 2)."
+  },
+  "recommendations": [],
+  "critical_flags": [],
+  "provenance": { "created_by": "dr_abinash", "created_at": "2026-07-09T10:00:00Z", "authoring_app": "care-radiology-report-generator", "authoring_app_version": "2.3.1", "input_methods": ["quick_select","ai_suggestion"], "content_pack_versions": { "neuro.mri": "2.1.0" }, "template_ref": "tpl.mri_brain_plain", "revision": 3 },
+  "ai": { "runs": [ { "run_id": "airun_01J9Z6RUNBRA1N0000000A1", "purpose": "impression_suggestion", "provider": "ollama", "model_ref": "llama3.1:8b-instruct-q4", "model_digest": "sha256:aa11", "prompt_ref": "aiprompt.impression.neuro", "prompt_version": 7, "prompt_digest": "sha256:bb22", "params": { "temperature": 0.2, "seed": 42 }, "input_digest": "sha256:cc33", "input_refs": { "finding_lids": ["f2"], "image_sop_uids": [] }, "output_lids": ["imp2"], "started_at": "2026-07-09T10:07:00Z", "latency_ms": 1610, "output_digest": "sha256:dd44", "human_review": "accepted_edited" } ], "guarding": { "auto_sign": false } },
+  "audit": { "schema_version": "1.0.0", "hash_algorithm": "jcs-sha256/1", "created_at": "2026-07-09T10:00:00Z", "last_modified_at": "2026-07-09T10:07:40Z", "revision": 3, "revisions": [ { "revision": 1, "at": "2026-07-09T10:00:00Z", "by": "dr_abinash", "action": "created" } ], "content_sha256": "sha256:ee55", "audit_log_ref": null, "signature": { "state": "draft", "signed_by": null, "signed_role": null, "signed_at": null, "signed_content_sha256": null, "amends_document_id": null } },
+  "extensions": {}
+}

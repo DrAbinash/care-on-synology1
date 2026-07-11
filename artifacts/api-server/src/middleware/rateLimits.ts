@@ -57,13 +57,45 @@ export const adminMutationLimiter = rateLimit({
   message: { error: "Too many admin requests. Please slow down." },
 });
 
-/** General API — generous but prevents abuse. */
+/**
+ * Returns true only when the request carries a bearer token that exactly
+ * matches INTERNAL_API_KEY. Used to let trusted server-to-server callers
+ * (DICOM pull agent, HL7 inbound, backup cron, etc.) skip the shared public
+ * rate limiter, since they are already independently authenticated by
+ * requireInternalApiKey / requireStaffOrInternalAuth at the route level in
+ * internal-radiology.ts, internal-backup.ts, and hl7.ts.
+ *
+ * This does NOT weaken security: a request with a missing or wrong key
+ * still counts against the public limiter's quota (so credential-guessing
+ * traffic is still throttled), and every internal route still independently
+ * verifies the key/session itself — this function only decides whether the
+ * *rate limiter* applies, never whether the *request* is authorized.
+ */
+export function hasValidInternalApiKey(req: import("express").Request): boolean {
+  const expected = process.env["INTERNAL_API_KEY"];
+  if (!expected) return false; // no key configured -> never skip, fail closed
+  const header = req.header("authorization") ?? "";
+  const provided = header.startsWith("Bearer ") ? header.slice(7) : "";
+  return provided.length > 0 && provided === expected;
+}
+
+/**
+ * General API — generous but prevents abuse.
+ *
+ * Skips trusted internal automation traffic (paths under /internal/, e.g.
+ * /api/internal/radiology/studies, /api/internal/radiology/dicom-event) when
+ * a valid INTERNAL_API_KEY bearer token is present, so a busy DICOM batch
+ * pull cannot be intermittently 429'd by sharing the same quota as ordinary
+ * public API traffic. Public routes and any /internal/* request without a
+ * valid key are rate-limited exactly as before.
+ */
 export const generalLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: 300,
   standardHeaders,
   legacyHeaders,
   message: { error: "Too many requests. Please slow down." },
+  skip: (req) => req.path.startsWith("/internal/") && hasValidInternalApiKey(req),
 });
 
 /** Standard document/image upload routes (JSON base64, up to 25 MB). */

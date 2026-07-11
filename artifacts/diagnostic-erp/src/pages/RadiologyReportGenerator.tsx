@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import PageHeader from "@/components/PageHeader";
 import VoiceDictationButton from "@/components/VoiceDictationButton";
+import { saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
+import DeprecatedSurfaceBanner from "@/components/radiology/DeprecatedSurfaceBanner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -17,6 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { useRadiologyDraftId } from "@/hooks/useRadiologyDraftId";
 import { readStaffSession } from "@/lib/staffSession";
 import { api } from "@/lib/fetchApi";
 import SpinalMeasurementPanel from "@/components/SpinalMeasurementPanel";
@@ -170,6 +173,15 @@ function useLocalStorage<T>(key: string, initial: T) {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
+/**
+ * @deprecated M1.1 consolidation — RadiologyReportingWorkspace
+ * (/radiology/report/:studyId) is the canonical radiology reporting page.
+ * This page stays routed at /radiology/report-generator (nothing regresses;
+ * no in-app navigation targets it) because it is still the only UI for text
+ * macros / smart-macros CRUD, key-image upload, report preferences, and the
+ * patient-less "manual mode" — all M1.2 merge candidates. Its draft saves
+ * go through the shared lib/radiologyReportLifecycle transport.
+ */
 export default function RadiologyReportGenerator({ studyId }: { studyId?: number }) {
   const [, navigate] = useLocation();
   const { toast } = useToast();
@@ -200,7 +212,10 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
     // Phase C: unified worklist "Premium" button deep-links with ?premium=1.
     try { return new URLSearchParams(window.location.search).get("premium") === "1"; } catch { return false; }
   });
-  const [draftId, setDraftId] = useState<number | null>(null);
+  // Draft identity (Radiology Roadmap Ticket A3.0) — extracted into a shared
+  // hook so this page and RadiologyReportingWorkspace.tsx share one
+  // load/track/update-by-id implementation instead of each re-deriving it.
+  const { draftId, existingDraft, captureSavedDraftId } = useRadiologyDraftId(studyId);
   const [generating, setGenerating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [finalSaving, setFinalSaving] = useState(false);
@@ -278,7 +293,6 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
   useEffect(() => {
     if (!studyId) return;
     void loadStudyData(studyId);
-    void loadExistingDraft(studyId);
   }, [studyId]);
 
   useEffect(() => {
@@ -461,34 +475,31 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
     }
   }
 
-  async function loadExistingDraft(sid: number) {
-    try {
-      const d = await api.get<{ success: boolean; drafts: Array<{ id: number; templateId: string | null; clinicalHistory: string | null; rawFindings: string | null; findingsSections: string | null; impression: string | null; recommendation: string | null; formattedReportHtml: string | null }> }>(
-        `/api/radiology/report-generator/drafts?studyId=${sid}`,
-      );
-      const latest = d.drafts[0];
-      if (!latest) return;
-      setDraftId(latest.id);
-      if (latest.templateId) setTemplateId(latest.templateId);
-      if (latest.clinicalHistory) setClinicalHistory(latest.clinicalHistory);
-      if (latest.findingsSections) {
-        try {
-          setFindingsSections(JSON.parse(latest.findingsSections) as Record<string, string>);
-        } catch { /* ignore */ }
+  // Hydrates this page's own fields from the draft useRadiologyDraftId
+  // loaded for this study — same hydration logic as before A3.0, just
+  // sourced from the shared hook's already-fetched row instead of a
+  // second, separately-managed fetch.
+  useEffect(() => {
+    if (!existingDraft) return;
+    if (existingDraft.templateId) setTemplateId(existingDraft.templateId);
+    if (existingDraft.clinicalHistory) setClinicalHistory(existingDraft.clinicalHistory);
+    if (existingDraft.findingsSections) {
+      try {
+        setFindingsSections(JSON.parse(existingDraft.findingsSections) as Record<string, string>);
+      } catch { /* ignore */ }
+    }
+    if (existingDraft.impression) {
+      try {
+        const arr = JSON.parse(existingDraft.impression) as string[];
+        setImpressionRaw(arr.join("\n"));
+      } catch {
+        setImpressionRaw(existingDraft.impression);
       }
-      if (latest.impression) {
-        try {
-          const arr = JSON.parse(latest.impression) as string[];
-          setImpressionRaw(arr.join("\n"));
-        } catch {
-          setImpressionRaw(latest.impression);
-        }
-      }
-      if (latest.recommendation) setRecommendation(latest.recommendation);
-      if (latest.formattedReportHtml) setPreviewHtml(latest.formattedReportHtml);
-      await loadKeyImages(latest.id, sid);
-    } catch { /* ignore */ }
-  }
+    }
+    if (existingDraft.recommendation) setRecommendation(existingDraft.recommendation);
+    if (existingDraft.formattedReportHtml) setPreviewHtml(existingDraft.formattedReportHtml);
+    void loadKeyImages(existingDraft.id, studyId);
+  }, [existingDraft]);
 
   async function loadKeyImages(did?: number, sid?: number) {
     const params = did ? `draftId=${did}` : sid ? `studyId=${sid}` : null;
@@ -648,8 +659,7 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
         .split("\n")
         .map((s) => s.trim())
         .filter(Boolean);
-      const r = await api.post<{ success: boolean; draft: { id: number } }>(
-        "/api/radiology/report-generator/save-draft",
+      const r = await saveRadiologyDraft<{ success: boolean; draft: { id: number } }>(
         {
           id: draftId ?? undefined,
           studyId: studyId ?? undefined,
@@ -667,7 +677,7 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
             : undefined,
         },
       );
-      setDraftId(r.draft.id);
+      captureSavedDraftId(r.draft.id);
       toast({ title: "Draft saved" });
     } catch (e) {
       toast({ variant: "destructive", title: "Save failed", description: String(e) });
@@ -716,7 +726,7 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
         .map((s) => s.trim())
         .filter(Boolean);
 
-      await api.post("/api/radiology/report-generator/save-draft", {
+      await saveRadiologyDraft({
         id: draftId ?? undefined,
         studyId: studyId ?? undefined,
         patientId: demog.patientId,
@@ -1654,6 +1664,10 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
 
   return (
     <div className="flex flex-col h-full">
+      <DeprecatedSurfaceBanner
+        surface="Radiology Report Generator"
+        note="unique here: text/smart macros, key images, manual mode — merging into the canonical workspace is tracked for M1.2"
+      />
       {/* Print-only style */}
       <style>{`
         @media print {

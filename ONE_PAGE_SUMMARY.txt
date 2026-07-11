@@ -1,0 +1,126 @@
+╔════════════════════════════════════════════════════════════════════════════════╗
+║                ABNORMALITY ENGINE MIGRATION FIX - ONE PAGE                     ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+PROBLEM
+═══════════════════════════════════════════════════════════════════════════════
+  ✗ care-db-patch-v2 crashes during startup
+  ✗ Error: "relation radiology_quick_findings does not exist"
+  ✗ Deployment pipeline halts at stage 2 of 6
+  ✗ API never starts; diagnostic center can't access system
+
+ROOT CAUSE
+═══════════════════════════════════════════════════════════════════════════════
+  Feature migrations run in ALPHABETICAL ORDER:
+  
+  ❌ add_abnormality_engine.sql (runs FIRST)
+     └─ Tries to ALTER radiology_quick_findings table
+  
+  ❌ add_radiology_quick_findings.sql (runs LATER)
+     └─ Creates the radiology_quick_findings table
+  
+  Problem: Abnormality engine tries to use table BEFORE it's created!
+  
+  Like trying to paint a wall that doesn't exist yet.
+
+SOLUTION
+═══════════════════════════════════════════════════════════════════════════════
+  1. RENAME FILE (forces correct order)
+     add_abnormality_engine.sql → z_add_abnormality_engine.sql
+     
+     Now runs LAST (z prefix sorts after a,b,c...y)
+  
+  2. ADD GUARDS (safe if table doesn't exist)
+     DO $$
+       IF EXISTS (SELECT 1 FROM information_schema.tables 
+                  WHERE table_name = 'radiology_quick_findings') THEN
+         ALTER TABLE ...
+       ELSE
+         RAISE WARNING 'Table not found; skipping'
+       END IF;
+     END $$;
+  
+  3. MAINTAIN IDEMPOTENCY (safe to run multiple times)
+     ADD COLUMN IF NOT EXISTS ...
+     UPDATE ... WHERE ... = ''  (never overwrites)
+
+EXECUTION ORDER - AFTER FIX
+═══════════════════════════════════════════════════════════════════════════════
+  ✓ add_radiology_navigator_regions.sql
+  ✓ add_radiology_protocols.sql
+  ✓ add_radiology_quick_findings.sql      ← Creates table
+  ✓ add_radiology_smart_reporting.sql
+  ✓ z_add_abnormality_engine.sql          ← Uses table ✓
+
+FILES CHANGED
+═══════════════════════════════════════════════════════════════════════════════
+  Deleted (broken):  migrations/add_abnormality_engine.sql
+  Added (fixed):     migrations/z_add_abnormality_engine.sql
+
+DEPLOYMENT CHECKLIST
+═══════════════════════════════════════════════════════════════════════════════
+  [ ] Git pull latest code
+  [ ] Rebuild Docker images (Synology Container Manager)
+  [ ] Restart containers
+  [ ] Monitor logs: docker-compose logs care-db-patch-v2
+  [ ] Watch for: "✓ ALL MIGRATIONS COMPLETED SUCCESSFULLY"
+  [ ] Verify: http://192.168.1.137:3000/health returns {"status":"ok"}
+  [ ] Test UI: Radiology → Reporting Workspace loads ✓
+  [ ] Click Quick Select button: Works without error ✓
+
+VERIFICATION (After Deployment)
+═══════════════════════════════════════════════════════════════════════════════
+  docker-compose logs care-db-patch-v2 | grep "z_add_abnormality"
+  → Should show: "✓ Running: migrations/z_add_abnormality_engine.sql"
+
+  docker exec care-db psql -U postgres -d care_erp_db -c \
+    "SELECT COUNT(*) FROM radiology_quick_findings WHERE properties != '';"
+  → Should return: 50+ (rows with properties set)
+
+  curl http://192.168.1.137:3000/health
+  → Should return: {"status":"ok","uptime":...}
+
+SAFETY PROPERTIES
+═══════════════════════════════════════════════════════════════════════════════
+  ✅ Idempotent     Safe to run unlimited times
+  ✅ Backward Compat No existing data changes
+  ✅ Forward Compat Works on fresh/deployed databases
+  ✅ Data Preserved No data loss or corruption
+  ✅ Non-destructive Columns added, nothing removed
+
+ROLLBACK (If needed)
+═══════════════════════════════════════════════════════════════════════════════
+  git revert HEAD
+  docker-compose build && docker-compose down && docker-compose up -d
+
+KEY FACTS
+═══════════════════════════════════════════════════════════════════════════════
+  • Simple rename + guards = complete fix
+  • No code logic changes
+  • No data migration required
+  • No API changes
+  • Safe to deploy immediately
+  • Safe to redeploy unlimited times
+
+EXPECTED RESULT
+═══════════════════════════════════════════════════════════════════════════════
+  Before:  care-db-patch-v2 CRASHES
+           Pipeline halts at stage 2
+           Deployment fails
+
+  After:   care-db-patch-v2 SUCCEEDS ✓
+           All 6 stages complete
+           API starts normally ✓
+           Radiology features work ✓
+
+QUESTIONS?
+═══════════════════════════════════════════════════════════════════════════════
+  See: TECHNICAL_ANALYSIS_AND_FIX.md (detailed technical deep-dive)
+  See: ABNORMALITY_ENGINE_FIX_DEPLOYMENT.md (step-by-step deployment guide)
+  See: VERIFY_FIX.sh (automated verification script)
+
+═══════════════════════════════════════════════════════════════════════════════
+Status: ✅ FIXED & READY FOR PRODUCTION DEPLOYMENT
+Date:   July 7, 2026
+Branch: feature/website-login-redirection
+═══════════════════════════════════════════════════════════════════════════════

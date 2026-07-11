@@ -21,6 +21,7 @@ import {
 import { eq, and, desc, gt, sql, count, or } from "drizzle-orm";
 import { sanitizePatient } from "./patients";
 import { requireStaffAuth, requireStaffPermission, normalizeRole } from "../middleware/requireStaffAuth";
+import { auditFromRequest } from "../lib/audit";
 
 export const portalRouter = Router();
 
@@ -99,14 +100,28 @@ const patientLoginLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
+  // Only failed attempts count toward the quota — a correct login (200) is
+  // never held against the IP. Without this, a handful of legitimate logins
+  // from the same IP/network (multiple tabs, a page refresh, several patients
+  // on shared clinic WiFi) can lock everyone out even though nobody was ever
+  // wrong about their credentials.
+  skipSuccessfulRequests: true,
   message: { error: "Too many login attempts. Please try again in 15 minutes." },
 });
 
 const staffLoginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 5,
+  max: 8,
   standardHeaders: true,
   legacyHeaders: false,
+  // Same reasoning as patientLoginLimiter above: this IP-based limiter is a
+  // second, coarser layer on top of the per-account lockout (which already
+  // tracks only genuine PIN failures via failedLoginAttempts/lockedUntil and
+  // exempts super_admin). Without skipSuccessfulRequests, a staff member
+  // simply logging in a few times in a row (new tab, session expired,
+  // switching devices on the same clinic network) could trip this limiter
+  // even with a correct PIN every time.
+  skipSuccessfulRequests: true,
   message: { error: "Too many login attempts. Please try again in 15 minutes." },
 });
 
@@ -385,6 +400,18 @@ portalRouter.post("/staff-login", staffLoginLimiter, async (req, res) => {
         );
       }
     }
+    // Record the failed attempt in the immutable audit trail so admins can
+    // spot brute-force / credential-stuffing patterns from Settings → Audit Log.
+    void auditFromRequest(req, {
+      userId: user.id,
+      userName: user.name,
+      role: normalizeRole(user.role),
+      action: "login_failed",
+      module: "system",
+      entityType: "user",
+      entityId: String(user.id),
+      reason: "Incorrect PIN",
+    });
     res.status(401).json({ error: "Invalid username or PIN" });
     return;
   }
@@ -545,6 +572,17 @@ portalRouter.post("/staff-login", staffLoginLimiter, async (req, res) => {
     lastActivityAt: now,
   });
 
+  // Successful staff login — recorded in the audit trail (module "system").
+  void auditFromRequest(req, {
+    userId: user.id,
+    userName: user.name,
+    role: normalizeRole(user.role),
+    action: "login",
+    module: "system",
+    entityType: "user",
+    entityId: String(user.id),
+  });
+
   res.json({
     token,
     user: {
@@ -556,6 +594,7 @@ portalRouter.post("/staff-login", staffLoginLimiter, async (req, res) => {
       permissions,
       maxDiscount: user.maxDiscount ?? null,
       photoDataUrl: user.photoDataUrl ?? null,
+      signatureDataUrl: user.signatureDataUrl ?? null,
       sidebarTheme: user.sidebarTheme ?? null,
       pacsNetworkProfile: user.pacsNetworkProfile ?? null,
       defaultStartPage: user.defaultStartPage ?? null,
@@ -623,6 +662,19 @@ portalRouter.post("/staff-change-pin", async (req, res) => {
     .update(usersTable)
     .set({ pin: hashed, mustChangePin: false })
     .where(eq(usersTable.id, user.id));
+
+  // Audit the credential change. The PIN value itself is never logged — only
+  // the fact that this user changed their own PIN, with IP/user-agent.
+  void auditFromRequest(req, {
+    userId: user.id,
+    userName: user.name,
+    role: normalizeRole(user.role),
+    action: "password_change",
+    module: "system",
+    entityType: "user",
+    entityId: String(user.id),
+    reason: "Staff changed their own PIN",
+  });
 
   res.json({ ok: true });
 });
@@ -759,7 +811,22 @@ portalRouter.get("/admin/patient-portal-status/:patientId", requireStaffAuth, re
 portalRouter.post("/logout", async (req, res) => {
   const auth = req.headers.authorization || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  if (token) await db.delete(portalSessionsTable).where(eq(portalSessionsTable.token, token));
+  if (token) {
+    const [session] = await db.select().from(portalSessionsTable).where(eq(portalSessionsTable.token, token)).limit(1);
+    if (session && session.scope === "staff") {
+      const [u] = await db.select({ role: usersTable.role }).from(usersTable).where(eq(usersTable.id, session.subjectId)).limit(1);
+      void auditFromRequest(req, {
+        userId: session.subjectId,
+        userName: session.subjectName,
+        role: normalizeRole(u?.role ?? "staff"),
+        action: "logout",
+        module: "system",
+        entityType: "user",
+        entityId: String(session.subjectId),
+      });
+    }
+    await db.delete(portalSessionsTable).where(eq(portalSessionsTable.token, token));
+  }
   res.json({ ok: true });
 });
 

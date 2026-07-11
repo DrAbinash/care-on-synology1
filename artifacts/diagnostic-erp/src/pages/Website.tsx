@@ -448,6 +448,25 @@ function PagesTab() {
     mutationFn: (p: Page) => api.patch(`/api/website/pages/${p.id}`, { status: p.status === "published" ? "draft" : "published" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["website", "pages"] }),
   });
+  // ROOT CAUSE FIX (Page not found: /home doesn't exist or isn't published):
+  // This status badge doubles as a one-click toggle button, but it renders
+  // as a plain colored pill with no visual affordance that clicking it
+  // instantly unpublishes the page — no confirmation, no undo. A single
+  // accidental click on the "home" page's badge silently took the entire
+  // public website offline while site_settings.is_published stayed true,
+  // which is exactly what made it look like a random regression rather
+  // than a deliberate action. Guarding the destructive direction (going
+  // FROM published TO draft) with a confirmation, with extra wording when
+  // it's the live homepage specifically.
+  function handleTogglePublish(p: Page) {
+    if (p.status === "published") {
+      const warning = p.slug === "home"
+        ? `Unpublish "${p.title}"? This is your live homepage — visitors to caredeoghar.com will immediately see "Page not found" until you publish it again.`
+        : `Unpublish "${p.title}"? It will stop showing on the public website until you publish it again.`;
+      if (!window.confirm(warning)) return;
+    }
+    togglePub.mutate(p);
+  }
   const remove = useMutation({
     mutationFn: (id: number) => api.delete(`/api/website/pages/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["website", "pages"] }),
@@ -477,7 +496,7 @@ function PagesTab() {
                 <td className="p-3 font-medium">{p.title}</td>
                 <td className="p-3 font-mono text-xs">/{p.slug}</td>
                 <td className="p-3" onClick={(e) => e.stopPropagation()}>
-                  <button onClick={() => togglePub.mutate(p)} className={`px-2 py-0.5 rounded-full text-xs font-semibold ${p.status === "published" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
+                  <button onClick={() => handleTogglePublish(p)} title={p.status === "published" ? "Click to unpublish" : "Click to publish"} className={`px-2 py-0.5 rounded-full text-xs font-semibold ${p.status === "published" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
                     {p.status}
                   </button>
                 </td>

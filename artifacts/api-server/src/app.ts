@@ -9,6 +9,7 @@ import { logger } from "./lib/logger";
 import { errorHandler } from "./middleware/errorHandler";
 import { generalLimiter, dicomUploadLimiter } from "./middleware/rateLimits";
 import { dicomUploadsRouter } from "./routes/dicom-uploads";
+import { recordRequest } from "./lib/requestMetrics";
 
 // Helmet is loaded lazily so a missing optional dependency never crashes the
 // server. Production deployments should include it; dev environments can
@@ -241,6 +242,31 @@ app.use("/api/dicom-uploads", dicomUploadLimiter, dicomUploadsRouter);
 // via a separate router-level limit check.
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true, limit: "5mb" }));
+
+// ── Diagnostics: lightweight request-timing capture ────────────────────────
+// Records method, path, status code, duration (ms), and caller role for
+// every /api/* request into an in-memory ring buffer (see requestMetrics.ts)
+// used by the admin-only Diagnostics page (/diagnostics, GET /api/diagnostics/*).
+// Deliberately records NOTHING else — no headers, no request/response body,
+// no query string, no tokens. req.staffSession is populated further down the
+// middleware chain by requireStaffAuth (where applicable); reading it inside
+// the "finish" handler (which fires after the whole request completed) means
+// it is already set by then for any authenticated route.
+app.use("/api", (req: Request, res: Response, next: NextFunction) => {
+  const startedAt = process.hrtime.bigint();
+  res.on("finish", () => {
+    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+    const role = (req as unknown as { staffSession?: { role?: string } }).staffSession?.role;
+    recordRequest({
+      method: req.method,
+      path: req.path,
+      statusCode: res.statusCode,
+      durationMs,
+      role: role || "anonymous",
+    });
+  });
+  next();
+});
 
 app.use("/api", generalLimiter, router);
 

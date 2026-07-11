@@ -4,7 +4,7 @@
 // Print-safe: only black ink, no background colors, no color text.
 
 import { type PrintBillData, type PrintClinic } from "./printBill";
-import { type BillPaperSize } from "./billPrintSettings";
+import { type BillPaperSize, getPaperSizeCss } from "./billPrintSettings";
 
 export type BuildPremiumBillOpts = {
   bill: PrintBillData;
@@ -163,6 +163,11 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
   const chqAmt = payByMode["cheque"] || 0;
   const bankAmt = payByMode["bank transfer"] || 0;
 
+  // On a B&W printer, force the "unconfirmed" orange status to black instead
+  // of grayscaling the whole page — a page-wide filter would also desaturate
+  // the clinic logo, which should always print in its native color.
+  const statusColor = (semantic: string): string => (isBW ? "#000" : semantic);
+
   // ── Sizing tuned for A5 ──
   const basePx = isSparse ? "14px" : isCompact ? "11px" : "13px";
   const headerPx = isSparse ? "11px" : isCompact ? "10px" : "11px";
@@ -176,26 +181,28 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
   const footerPx = isSparse ? "13px" : isCompact ? "10px" : "11px";
   const tinyPx = isSparse ? "11px" : isCompact ? "9px" : "10px";
   const qrSize = isSparse ? "95px" : isCompact ? "55px" : "72px";
-  const pageMargin = isSparse ? "4mm" : "3mm";
-  const pageMarginBottom = isSparse ? "5mm" : "4mm";
+  const pageMargin = "10mm";
+  const pageMarginBottom = "10mm";
   const sectionGap = isSparse ? "14px" : isCompact ? "4px" : "6px";
   const tableCellPad = isSparse ? "6px 8px" : isCompact ? "3px 5px" : "4px 6px";
   const paymentBoxPad = isSparse ? "8px 0" : "4px 0";
   const sparseGap = isSparse ? "10px" : "0"; // extra gap between major sections in sparse mode
 
   const isA5 = paperSize === "A5-portrait" || paperSize === "A5-landscape";
-  const pageSizeStr = paperSize === "A5-landscape" ? "landscape" : "portrait";
-  const pageWidth = paperSize === "A5-landscape" ? "198mm" : paperSize === "A5-portrait" ? "136mm" : paperSize === "half-a4" ? "148mm" : "210mm";
+  const paperSizeCss = getPaperSizeCss(paperSize);
+  const pageSizeStr = paperSizeCss.pageSize;
+  const pageWidth = paperSizeCss.width;
 
-  // ── Billed-by name & system info ──
-  const billedByName = (() => {
+  // ── Billed-by name, their uploaded signature, & system info ──
+  const premiumSession = (() => {
     try {
-      if (typeof window === "undefined") return "";
+      if (typeof window === "undefined") return null;
       const raw = window.localStorage.getItem("erp_session");
-      if (!raw) return "";
-      return JSON.parse(raw).user?.name ?? "";
-    } catch { return ""; }
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
   })();
+  const billedByName: string = premiumSession?.user?.name ?? "";
+  const billedBySignatureUrl: string = premiumSession?.user?.signatureDataUrl ?? "";
 
   const now = new Date();
   const nowDateStr = now.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
@@ -242,8 +249,8 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
 
   const balanceRow = isUnconfirmedQr
     ? `<tr>
-      <td style="padding:4px 6px;border-top:2px solid #000;font-weight:900;font-size:${bigTotalPx};white-space:nowrap;color:orange">DUE</td>
-      <td style="padding:4px 6px;border-top:2px solid #000;text-align:right;font-weight:900;font-size:${bigTotalPx};white-space:nowrap;color:orange">To Be Confirmed</td>
+      <td style="padding:4px 6px;border-top:2px solid #000;font-weight:900;font-size:${bigTotalPx};white-space:nowrap;color:${statusColor("orange")}">DUE</td>
+      <td style="padding:4px 6px;border-top:2px solid #000;text-align:right;font-weight:900;font-size:${bigTotalPx};white-space:nowrap;color:${statusColor("orange")}">To Be Confirmed</td>
     </tr>`
     : hasDue
     ? `<tr>
@@ -356,7 +363,9 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
     : "";
 
   const signatureLine = showSignatureLine
-    ? `<div style="border-bottom:1px solid #000;width:130px;margin-bottom:2px"></div><div style="font-size:${tinyPx};font-weight:600">Authorised Signature</div>`
+    ? `${billedBySignatureUrl
+        ? `<img src="${billedBySignatureUrl}" alt="Signature" style="max-height:32px;max-width:130px;object-fit:contain;display:block;margin-bottom:2px"/>`
+        : `<div style="border-bottom:1px solid #000;width:130px;margin-bottom:2px"></div>`}<div style="font-size:${tinyPx};font-weight:600">Authorised Signature</div>`
     : "";
 
   const computerGenerated = showComputerGenerated
@@ -439,7 +448,7 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
     background: #fff; color: #000;
     font-family: Arial, Helvetica, sans-serif;
     font-size: ${basePx};
-    ${isBW ? "filter: grayscale(1) contrast(1.35); -webkit-print-color-adjust: exact; print-color-adjust: exact;" : ""}
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
   }
   .receipt {
     display: flex;
@@ -596,7 +605,7 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
                       <td style="padding:4px 4px;border-top:2px solid #000;font-weight:900;font-size:${bigTotalPx}">TOTAL</td>
                       <td style="padding:4px 4px;border-top:2px solid #000;text-align:right;font-weight:900;font-size:${bigTotalPx};white-space:nowrap">₹${fmt(bill.totalAmount)}</td>
                     </tr>
-                    <tr><td style="padding:3px 4px;border-top:1px solid #000;font-weight:800">PAID</td><td style="padding:3px 4px;border-top:1px solid #000;text-align:right;font-weight:800;white-space:nowrap;color:${isUnconfirmedQr ? "orange" : "inherit"}">${isUnconfirmedQr ? `₹${fmt(bill.totalAmount)} (To Be Confirmed)` : `₹${fmt(bill.paidAmount)}`}</td></tr>
+                    <tr><td style="padding:3px 4px;border-top:1px solid #000;font-weight:800">PAID</td><td style="padding:3px 4px;border-top:1px solid #000;text-align:right;font-weight:800;white-space:nowrap;color:${isUnconfirmedQr ? statusColor("orange") : "inherit"}">${isUnconfirmedQr ? `₹${fmt(bill.totalAmount)} (To Be Confirmed)` : `₹${fmt(bill.paidAmount)}`}</td></tr>
                     ${balanceRow}
                   </tbody>
                 </table>

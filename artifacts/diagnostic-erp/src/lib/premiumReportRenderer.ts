@@ -3,7 +3,7 @@
  * Premium Radiology Report Renderer — Care Diagnostics
  *
  * Builds a publication-quality HTML report from existing report data.
- * Called from RadiologyReportGenerator.tsx and RadiologyReportUnified.tsx.
+ * Called from RadiologyReportGenerator.tsx (RadiologyReportUnified was removed in M1.1).
  * Does NOT modify any database, schema, or existing API.
  * Is purely a presentation transformation layer.
  */

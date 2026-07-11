@@ -1,0 +1,213 @@
+# CARE Radiology — MRI Cervical Spine Content Pack (production v1)
+# Binds to _shared_libraries.yaml by key. Reuses the shared spine set (levels: loc.spine_cervical).
+# Governed by CARE_RADIOLOGY_MASTER_DESIGN_SPEC.md.
+
+pack:
+  pack_id: mri_c_spine
+  version: 1.0.0
+  locale: en-IN
+  status: active
+
+study:
+  key: mri_c_spine
+  display_name: MRI Cervical Spine
+  modality: MR
+  aliases: [MRI cervical spine, C-spine MRI, MRI neck spine]
+  default_report_sections: [Clinical details, Technique, Findings, Impression, Advice]
+  normal_template: tpl.normal.mri_c_spine
+  quick_select_groups:
+    - {name: Pinned, tiles: [mrcs.normal_study, mrcs.cspondylosis, "mrcs.doc@C5-6", "mrcs.doc@C6-7", mrcs.cord_signal]}
+    - {name: Level x Morphology grid, grid: {rows: loc.spine_cervical.discs, cols: [mrcs.doc, mrcs.protrusion]}}
+    - {name: Cord ladder, tiles: [mrcs.doc, mrcs.cord_signal]}
+    - {name: Foramina/UV, tiles: [mrcs.uncovertebral, mrcs.foraminal_narrowing]}
+
+findings:
+  - id_key: mrcs.normal_study
+    display_name: Normal MRI cervical spine
+    category: Normal
+    synonyms: [normal cervical spine]
+    default_sentence: "{{tpl.normal.mri_c_spine}}"
+    impression_fragment: "No cord compression or myelopathy signal."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: []
+    keyboard_alias: [ncs]
+    combo_tiles: []
+    criticality: none
+    normal_variant: true
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mrcs.cspondylosis
+    display_name: Cervical spondylosis (header)
+    category: Degenerative
+    synonyms: [cervical spondylotic changes, DDD cervical]
+    default_sentence: "Marginal osteophytes with disc desiccation at multiple levels — cervical spondylosis."
+    impression_fragment: "Cervical spondylosis."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: []
+    keyboard_alias: [cspond]
+    combo_tiles: [combo.mrcs.spond_strc, combo.mrcs.doc_classic]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mrcs.straightened_lordosis
+    display_name: Straightening of cervical lordosis
+    category: Alignment
+    synonyms: [loss of cervical lordosis, reversal of lordosis]
+    default_sentence: "Straightening of the cervical lordosis — likely muscle spasm."
+    impression_fragment: "Straightened cervical lordosis."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: []
+    keyboard_alias: [strc]
+    combo_tiles: [combo.mrcs.spond_strc]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mrcs.doc
+    display_name: Disc-osteophyte complex
+    category: Disc
+    synonyms: [DOC, disc osteophyte bar]
+    default_sentence: "Posterior disc-osteophyte complex at {location} {cord_ladder}, with {severity} canal stenosis (AP {canal_ap})."
+    impression_fragment: "{location} disc-osteophyte complex {cord_ladder}, {severity} canal stenosis."
+    recommendation_code: [rec.physio, rec.clincorr]
+    parameters: [param.cord_ladder]
+    severity: sev.canal
+    laterality: null
+    location_options: [loc.spine_cervical.discs]
+    measurements: [meas.canal_ap, meas.cord_ap]
+    keyboard_alias: [doc]              # -> doc34, doc45, doc56, doc67
+    combo_tiles: [combo.mrcs.doc_classic]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mrcs.doc.c1, severity: warn, glyph: "triangle", rule: "cord_ladder = 'compressing the cord with signal change' AND meas.cord_ap within normal range", message: "Cord compression stated but cord AP diameter appears normal."}
+      - {id: mrcs.doc.c2, severity: block, glyph: "X", rule: "cord_ladder = 'compressing the cord with signal change' AND finding mrcs.cord_signal not present in report", message: "Cord compression with signal change stated — document cord signal finding."}
+    ai_completeness_rules:
+      - {id: mrcs.doc.k1, glyph: "circle", rule: "severity in [moderate, severe] AND cord signal not commented", message: "Comment explicitly on cord signal when canal stenosis is moderate or severe."}
+
+  - id_key: mrcs.protrusion
+    display_name: Cervical disc protrusion
+    category: Disc
+    synonyms: [cervical PIVD]
+    default_sentence: "{disc_zone} disc protrusion at {location} ({size}) {cord_ladder}, {root_involvement} the {root} nerve root."
+    impression_fragment: "{location} disc protrusion {cord_ladder}."
+    recommendation_code: [rec.physio, rec.clincorr]
+    parameters: [param.disc_zone, param.cord_ladder, param.root_involvement, param.size]
+    severity: null
+    laterality: null
+    location_options: [loc.spine_cervical.discs, loc.root_map]
+    measurements: [meas.canal_ap]
+    keyboard_alias: [cpv]             # -> cpv56, cpv67
+    combo_tiles: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mrcs.protrusion.c1, severity: block, glyph: "X", rule: "named root inconsistent with level per loc.root_map (C5-6 -> C6)", message: "Named root inconsistent with cervical disc level."}
+    ai_completeness_rules: []
+
+  - id_key: mrcs.uncovertebral
+    display_name: Uncovertebral arthropathy
+    category: Foramina
+    synonyms: [UV arthropathy, uncinate hypertrophy]
+    default_sentence: "Uncovertebral arthropathy at {location} causing {severity} {laterality} neural foraminal narrowing."
+    impression_fragment: "{laterality} foraminal narrowing at {location} (uncovertebral arthropathy)."
+    recommendation_code: []
+    parameters: []
+    severity: sev.canal
+    laterality: lat.rlb
+    location_options: [loc.spine_cervical.discs]
+    measurements: []
+    keyboard_alias: [uv]              # -> uv56, uv67
+    combo_tiles: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mrcs.foraminal_narrowing
+    display_name: Cervical foraminal narrowing
+    category: Foramina
+    synonyms: [foraminal stenosis, NFN cervical]
+    default_sentence: "{severity} {laterality} neural foraminal narrowing at {location} {root_involvement} the exiting {root} root."
+    impression_fragment: "{laterality} foraminal narrowing at {location}."
+    recommendation_code: []
+    parameters: [param.root_involvement]
+    severity: sev.canal
+    laterality: lat.rlb
+    location_options: [loc.spine_cervical.discs, loc.root_map]
+    measurements: []
+    keyboard_alias: [cfn]            # -> cfn56, cfn67
+    combo_tiles: [combo.mrcs.doc_classic]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mrcs.foraminal_narrowing.c1, severity: block, glyph: "X", rule: "named root != exiting root per loc.root_map", message: "Foraminal narrowing involves the exiting root — root/level mismatch."}
+    ai_completeness_rules: []
+
+  - id_key: mrcs.cord_signal
+    display_name: Cord signal change / myelomalacia
+    category: Cord
+    synonyms: [myelomalacia, cord edema, compressive myelopathy]
+    default_sentence: "T2 hyperintense signal within the cord at {location} — compressive myelopathy/myelomalacia."
+    impression_fragment: "Cord signal change at {location} — compressive myelopathy. Surgical opinion advised."
+    recommendation_code: [rec.spec_nsx, rec.urgent]
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: [loc.spine_cervical.discs]
+    measurements: [meas.cord_ap]
+    keyboard_alias: [myl]
+    combo_tiles: []
+    criticality: {critical_if: "acute/progressive deficit in indication", registry: crit.cord_compression}
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mrcs.cord_signal.c1, severity: warn, glyph: "triangle", rule: "cord signal change present AND rec.spec_nsx absent", message: "Cord signal change — surgical opinion recommendation expected."}
+    ai_completeness_rules:
+      - {id: mrcs.cord_signal.k1, glyph: "circle", rule: "cord signal change present AND acute/progressive deficit in indication AND escalation not started", message: "Progressive-deficit indication with cord signal change — consider critical escalation."}
+
+  - id_key: mrcs.opll
+    display_name: OPLL
+    category: Degenerative
+    synonyms: [ossified posterior longitudinal ligament]
+    default_sentence: "Ossification of the posterior longitudinal ligament from {location} contributing to canal stenosis."
+    impression_fragment: "OPLL with canal stenosis as described."
+    recommendation_code: [rec.spec_nsx]
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: [loc.spine_cervical.vertebrae]
+    measurements: []
+    keyboard_alias: [opll]
+    combo_tiles: []
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+combo_tiles:
+  - {id: combo.mrcs.spond_strc, label: "C-spondylosis + spasm", members: [mrcs.cspondylosis, mrcs.straightened_lordosis]}
+  - {id: combo.mrcs.doc_classic, label: "DOC classic C5-6", members: [mrcs.cspondylosis, mrcs.straightened_lordosis, {ref: mrcs.doc, at: C5-6}, {ref: mrcs.foraminal_narrowing, at: C5-6}]}
+
+study_ai_rules:
+  completeness:
+    - {id: mrcs.study.k1, glyph: "circle", rule: "any disc level C2-3..C7-T1 not addressed", message: "Per-level table incomplete — address every cervical disc level."}
+    - {id: mrcs.study.k2, glyph: "circle", rule: "craniovertebral junction not commented", message: "Comment on the craniovertebral junction."}
+    - {id: mrcs.study.k3, glyph: "circle", rule: "any canal stenosis moderate+ AND cord signal not explicitly commented", message: "Comment on cord signal whenever canal stenosis is moderate or greater."}
+  contradiction:
+    - {id: mrcs.study.c1, severity: block, glyph: "X", rule: "finding side vs impression side mismatch at same level", message: "Side differs between findings and impression."}
+  impression_suggestions:
+    - "Cord-ladder step drives impression severity ordering (compression > indentation > abutment)."
+    - "Auto-suggest rec.spec_nsx whenever cord signal change is present."

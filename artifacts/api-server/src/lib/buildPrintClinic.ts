@@ -1,0 +1,51 @@
+import { clinicSettingsTable } from "@workspace/db/schema";
+
+// Shape matches PrintClinic in diagnostic-erp/src/lib/printBill.ts exactly —
+// this is the same clinic_settings row Billing Desk prints from, so kiosk
+// and online-booking receipts render the identical layout as a walk-in bill.
+export function buildPrintClinic(s: typeof clinicSettingsTable.$inferSelect) {
+  return {
+    name: s.name,
+    tagline: s.tagline,
+    address: s.address,
+    phone: s.phone,
+    email: s.email,
+    website: s.website,
+    gstin: s.gstin,
+    logoDataUrl: s.logoDataUrl,
+    footerNote: s.footerNote,
+    billPrintCopies: s.billPrintCopies,
+    billShowCode: s.billShowCode,
+    billShowCategory: s.billShowCategory,
+    qrOnBillEnabled: s.qrOnBillEnabled,
+    receiptThankYouMessage: s.receiptThankYouMessage,
+    receiptCollectionMessage: s.receiptCollectionMessage,
+    receiptQrMessage: s.receiptQrMessage,
+    receiptPromotionalMessage: s.receiptPromotionalMessage,
+    serviceFooter: s.serviceFooter,
+    showFollowUpMessage: s.showFollowUpMessage,
+    followUpMessage: s.followUpMessage,
+    showPromotionalFooter: s.showPromotionalFooter,
+    promotionalTitle: s.promotionalTitle,
+    promotionalDescription: s.promotionalDescription,
+    showPatientSince: s.showPatientSince,
+    showVerifiedBadge: s.showVerifiedBadge,
+    showAuditInfoOnPatientCopy: s.showAuditInfoOnPatientCopy,
+    showWorkingHours: s.showWorkingHours,
+    workingHoursMessage: s.workingHoursMessage,
+    showHomeCollection: s.showHomeCollection,
+    homeCollectionMessage: s.homeCollectionMessage,
+    showEmergency: s.showEmergency,
+    emergencyMessage: s.emergencyMessage,
+    showReferralProgram: s.showReferralProgram,
+    referralProgramMessage: s.referralProgramMessage,
+    showHealthPackages: s.showHealthPackages,
+    healthPackagesMessage: s.healthPackagesMessage,
+    showAccreditation: s.showAccreditation,
+    accreditationMessage: s.accreditationMessage,
+    showWhatsAppBooking: s.showWhatsAppBooking,
+    whatsAppBookingMessage: s.whatsAppBookingMessage,
+    showCustomFooterMessage: s.showCustomFooterMessage,
+    customFooterMessage: s.customFooterMessage,
+  };
+}

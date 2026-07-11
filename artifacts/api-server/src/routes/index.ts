@@ -11,6 +11,8 @@ import inventoryRouter from "./inventory";
 import accountingRouter from "./accounting";
 import usersRouter from "./users";
 import emailSettingsRouter from "./email-settings";
+import auditTrailRouter from "./audit-trail";
+import featureFlagsRouter from "./featureFlags";
 import discountsRouter from "./discounts";
 import aiRouter from "./ai";
 import pacsRouter from "./pacs";
@@ -22,12 +24,17 @@ import { expensesRouter } from "./expenses";
 import discountReasonsRouter from "./discountReasons";
 import testCategoriesRouter from "./testCategories";
 import clinicSettingsRouter from "./clinicSettings";
+import staffQuickDoctorsRouter from "./staffQuickDoctors";
 import { ledgersRouter } from "./ledgers";
 import { tokensRouter } from "./tokens";
 import { testTokensRouter } from "./test-tokens";
 import { radiologyRouter } from "./radiology";
+import { radiologyWorklistLocksRouter } from "./radiology-worklist-locks";
+import { radiologyWorklistAssignmentsRouter } from "./radiology-worklist-assignments";
+import { radiologyVoiceRouter } from "./radiology-voice";
 import { pacsEnterpriseRouter } from "./pacsEnterprise";
 import displayRouter from "./display";
+import queueDisplaySettingsRouter from "./queueDisplaySettings";
 import { whatsappRouter, whatsappWebhookRouter } from "./whatsapp";
 import { waChatbotRouter, waChatbotWebhookRouter } from "./waChatbot";
 import { printersRouter } from "./printers";
@@ -68,7 +75,10 @@ import { dayCloseRouter } from "./day-close";
 import { booksSanityRouter } from "./books-sanity";
 import { requireSuperAdmin } from "../middleware/requireSuperAdmin";
 import { requireSuperAdminUsb, isValidUsbKey, isUsbGateEnforced } from "../middleware/requireSuperAdminUsb";
-import { requireStaffAuth, requireStaffPermission, requireStaffSubPermission } from "../middleware/requireStaffAuth";
+import { requireStaffAuth, requireStaffPermission, requireStaffSubPermission, requireAdminRole } from "../middleware/requireStaffAuth";
+import diagnosticsRouter from "./diagnostics";
+import radiologyQuickFindingsRouter from "./radiologyQuickFindings";
+import radiologyCatalogRouter from "./radiologyCatalog";
 import { db, clinicSettingsTable, ledgersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { backupLimiter, exportLimiter, adminMutationLimiter, standardUploadLimiter, loginLimiter, generalLimiter } from "../middleware/rateLimits";
@@ -114,6 +124,8 @@ import smartRadiologyRouter from "./smartRadiology";
 import risMonitoringRouter from "./risMonitoring";
 import radiologyWorkflowRouter from "./radiologyWorkflow";
 import { scanSessionsRouter } from "./scan-sessions";
+// Federated Radiology Service — boundary API (additive, server-to-server only)
+import boundaryRouter from "./boundary";
 import { gatewayWebhookRouter } from "./gateway-webhooks";
 
 const router: IRouter = Router();
@@ -171,6 +183,10 @@ router.use(generalLimiter);
 // ─── Public / unauthenticated routes ─────────────────────────────────────────
 router.use(healthRouter);
 router.use(systemRouter);
+// Federated Radiology Service boundary API — API-key auth (X-Boundary-Key),
+// not staff session. Mounted before staff-auth routes so the radiology
+// service can reach it server-to-server without a staff login.
+router.use("/boundary", boundaryRouter);
 // Internal cron trigger endpoints — auth via CRON_SECRET bearer token, not staff session.
 // Hit by a Replit Scheduled deployment (see scripts/src/trigger-cron.ts) so cron emails
 // keep firing on autoscale where in-process schedulers are disabled.
@@ -179,9 +195,10 @@ router.use("/internal/cron", internalCronRouter);
 // Called by Conquest PACS scripts and other server-to-server automations.
 // Internal backup download — streams pg_dump output for off-site replication.
 router.use("/internal/backup", internalBackupRouter);
-router.use("/internal", internalRadiologyRouter);
+router.use("/internal", internalRadiologyRouter); // [ZONE: radiology] name is generic, content is 100% radiology (DICOM agent callbacks)
 router.use("/portal", portalRouter);
 router.use("/display", displayRouter);
+router.use("/settings/queue-display", queueDisplaySettingsRouter);
 router.use("/bridge", bridgeRouter);
 // Public tokenized PDF download for patient WhatsApp links — no staff auth.
 router.use("/p/r", publicReportsRouter);
@@ -225,11 +242,24 @@ router.use("/website", websiteRouter);
 // immediately after requireStaffAuth so that low-privilege staff cannot access
 // modules they have not been granted, even by calling the API directly.
 
+// [ZONE: shared] patients, doctors, tests catalogue — used by both Billing
+// and Radiology. See /PROTECTED_FILES.md before modifying.
+
 // Patient data — /patients permission
 router.use("/patients", requireStaffAuth, requireStaffPermission("/patients"), patientsRouter);
 
-// Doctor management — /doctors permission
-router.use("/doctors", requireStaffAuth, requireStaffPermission("/doctors"), doctorsRouter);
+// Doctor catalogue: any authenticated staff can READ (Billing Desk's
+// referring-doctor picker and Register.tsx both need the doctor list, same
+// as /tests). Mutations (create/update/delete/import) stay /doctors-gated.
+router.use(
+  "/doctors",
+  requireStaffAuth,
+  (req, res, next) => {
+    if (req.method === "GET") return next();
+    return requireStaffPermission("/doctors")(req, res, next);
+  },
+  doctorsRouter,
+);
 
 // Test catalogue — /tests permission
 // Tests catalog: any authenticated staff can READ (Billing Desk, Packages,
@@ -244,6 +274,11 @@ router.use(
   testsRouter,
 );
 
+// [ZONE: billing] PROTECTED — orders, bills, payments, reports, inventory,
+// accounting, discounts, expenses, ledgers, day-close, books-sanity.
+// Any change here requires Dr. Abinash's explicit sign-off.
+// See /PROTECTED_FILES.md.
+
 // Order management — /orders permission
 router.use("/orders", requireStaffAuth, requireStaffPermission("/orders"), ordersRouter);
 
@@ -255,6 +290,10 @@ router.use("/payments", requireStaffAuth, requireStaffPermission("/payments"), p
 
 // Reports — /reports permission (covers dashboard, revenue, print reports)
 router.use("/reports", requireStaffAuth, requireStaffPermission("/reports"), reportsRouter);
+
+// Admin-only request performance diagnostics (not part of the toggleable
+// per-user permission system — see requireAdminRole).
+router.use("/diagnostics", requireStaffAuth, requireAdminRole, diagnosticsRouter);
 
 // Inventory — /inventory permission
 router.use("/inventory", requireStaffAuth, requireStaffPermission("/inventory"), inventoryRouter);
@@ -294,6 +333,8 @@ router.use("/ledgers", requireStaffAuth, requireStaffPermission("/accounting"), 
 router.use("/day-close", requireStaffAuth, dayCloseRouter);
 // Books Sanity / CA review — admin + super-admin only (same auth shape as day-close)
 router.use("/books-sanity", requireStaffAuth, requireStaffPermission("/day-close"), booksSanityRouter);
+
+// [ZONE: shared] staff, settings, infrastructure config — used by both zones.
 
 router.use("/staff", requireStaffAuth, requireStaffSubPermission("/settings", "users"), staffRouter);
 
@@ -393,7 +434,28 @@ router.use(
   },
   clinicSettingsRouter,
 );
+
+// Per-staff Billing Desk Quick Doctor slot layout — personal data, not a
+// clinic-wide setting. Any authenticated staff member may read/write their
+// OWN row; requireStaffAuth alone is the correct (and only) gate here — see
+// staffQuickDoctors.ts, which always scopes to req.staffSession.subjectId
+// and never trusts a client-supplied staffId. Do NOT gate this with
+// requireStaffSubPermission("/settings", ...) — that would reintroduce the
+// "Failed to save quick doctor" 403 for non-admin staff this route exists
+// to fix.
+router.use("/my/quick-doctors", requireStaffAuth, staffQuickDoctorsRouter);
+
 router.use("/email-settings", requireStaffAuth, requireStaffSubPermission("/settings", "notifications"), emailSettingsRouter);
+// Immutable audit-trail viewer (login/logout/password/account events + all
+// module audit rows). Gated to security-permitted staff / admins — same gate
+// as Settings → Security.
+router.use("/audit-trail", requireStaffAuth, requireStaffSubPermission("/settings", "security"), auditTrailRouter);
+// Server-side feature flags (Radiology Implementation Roadmap, Ticket T0.1).
+// GET is open to any authenticated staff member — the client needs it on
+// every page load to hydrate ff_radiology_* flags. Mutations are gated
+// requireAdminRole INSIDE the router (see featureFlags.ts), not here, so no
+// extra permission wrapper is added at the mount point.
+router.use("/feature-flags", requireStaffAuth, featureFlagsRouter);
 // Test categories: anyone with staff auth can READ the list (Test Catalog,
 // Billing Desk, Reports filter all need it). Mutations stay admin-only via
 // the /settings permission.
@@ -436,6 +498,10 @@ router.use(
   outsourcedLabsRouter,
 );
 
+// [ZONE: radiology] Radiology / PACS / DICOM / USG / AI reporting.
+// No direct billing impact — can be developed and debugged more freely
+// than the billing zone above. See /PROTECTED_FILES.md.
+
 // DICOM / PACS — /dicom-nodes permission
 router.use("/pacs", requireStaffAuth, requireStaffPermission("/dicom-nodes"), pacsRouter);
 router.use("/dicom", requireStaffAuth, requireStaffPermission("/dicom-nodes"), dicomRouter);
@@ -474,6 +540,19 @@ router.use("/ris-monitor", requireStaffAuth, requireStaffPermission("/radiology"
 // Phase 12: Real Radiology Workflow & DICOM Operations
 router.use("/radiology-workflow", requireStaffAuth, requireStaffPermission("/radiology"), radiologyWorkflowRouter);
 
+// Study locks / claiming (Ticket M1.6A) — one active lock per worklist study
+// so two radiologists never unknowingly report the same study. Mounted before
+// radiologyRouter; the /worklist-lock/* subpaths are unique to this router.
+router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), radiologyWorklistLocksRouter);
+
+// Assignment management (Ticket M1.6B1) — organizational ownership, distinct
+// from the lock above. /worklist-assignment/*, /radiologists, /workload.
+router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), radiologyWorklistAssignmentsRouter);
+
+// Voice-command audit (Ticket M1.6B2) — high-risk voice attempts/outcomes
+// into the hash-chained audit log. /voice-command-audit only.
+router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), radiologyVoiceRouter);
+
 // Radiology studies — open to all authenticated staff (doctors, radiologists, etc.)
 router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), radiologyRouter);
 
@@ -492,6 +571,28 @@ router.use(
   requireStaffAuth,
   requireStaffPermission("/radiology"),
   structuredReportTemplatesRouter,
+);
+
+// Radiology Quick Select — configurable study tabs + one-click finding
+// buttons for the Reporting Workspace side panel. Reads: any radiology
+// staff. Mutations: admin-only (enforced inside the router).
+router.use(
+  "/radiology/quick-select",
+  requireStaffAuth,
+  requireStaffPermission("/radiology"),
+  radiologyQuickFindingsRouter,
+);
+
+// Radiology Canonical Catalog (Tickets B1 + B2) — the canonical parameter
+// library + finding graph. FOUNDATION ONLY: the router itself is gated behind
+// the ff_radiology_catalog feature flag (default OFF) and returns 404 until
+// enabled, so nothing in the running product consumes these tables yet. Reads:
+// radiology staff. Mutations: admin-only (enforced inside the router).
+router.use(
+  "/radiology/catalog",
+  requireStaffAuth,
+  requireStaffPermission("/radiology"),
+  radiologyCatalogRouter,
 );
 
 // Radiology Snippets — Quick Add, Smart Format, Favorites, Macros
@@ -614,12 +715,15 @@ router.use("/wa-chatbot", requireStaffAuth, requireStaffSubPermission("/settings
 // ─── Banking module ────────────────────────────────────────────────────────────
 // Provider-agnostic banking: balance, transactions, payments, webhooks,
 // reconciliation. Requires /banking permission for all endpoints.
+// [ZONE: billing] PROTECTED — see /PROTECTED_FILES.md.
 // Banking webhooks are mounted PUBLICLY before auth so bank providers can
 // POST without a staff bearer token. Signature verification happens inside
 // the handler.
 router.use("/banking/webhooks", bankingWebhookRouter);
 router.use("/banking", requireStaffAuth, requireStaffPermission("/banking"), bankingRouter);
 
+// [ZONE: shared, billing-adjacent] touches patients/orders/bills/payments
+// together — do not modify from radiology-focused work. See /PROTECTED_FILES.md.
 // Offline sync — push/pull changes between local desktop instance and cloud.
 router.use("/sync", requireStaffAuth, syncRouter);
 

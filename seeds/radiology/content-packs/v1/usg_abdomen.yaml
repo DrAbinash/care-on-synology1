@@ -1,0 +1,558 @@
+# CARE Radiology — USG Whole Abdomen Content Pack (production v1)
+# Binds to _shared_libraries.yaml by key. Governed by CARE_RADIOLOGY_MASTER_DESIGN_SPEC.md.
+# Highest-volume study; organized organ-by-organ (the report IS the checklist).
+
+pack:
+  pack_id: usg_abdomen
+  version: 1.0.0
+  locale: en-IN
+  status: active
+
+study:
+  key: usg_abdomen
+  display_name: USG Whole Abdomen
+  modality: US
+  aliases: [USG whole abdomen, ultrasound abdomen, USG abdomen & pelvis, W/A scan]
+  default_report_sections: [Liver, GB & CBD, Pancreas, Spleen, Kidneys, Ureters, Urinary bladder, Prostate / Uterus & adnexa, Free fluid & others, Impression, Advice]
+  normal_template: tpl.normal.usg_abdomen
+  quick_select_groups:
+    - {name: Pinned, tiles: [usab.normal_study, usab.fatty_liver, usab.cholelithiasis, usab.renal_calculus, usab.prostatomegaly]}
+    - {name: Liver, tiles: [usab.fatty_liver, usab.hepatomegaly, usab.cld, usab.liver_cyst, usab.hemangioma, usab.focal_lesion]}
+    - {name: GB/CBD, tiles: [usab.cholelithiasis, usab.gb_sludge, usab.gb_wall, usab.gb_polyp, usab.cbd_dilated]}
+    - {name: Spleen/Pancreas, tiles: [usab.splenomegaly, usab.pancreas_obscured]}
+    - {name: Kidneys, tiles: [usab.renal_calculus, usab.hydronephrosis, usab.renal_cyst, usab.mrd]}
+    - {name: Bladder/Prostate, tiles: [usab.cystitis, usab.prostatomegaly]}
+    - {name: Uterus/Adnexa, tiles: [usab.fibroid, usab.bulky_uterus, usab.ovarian_cyst, usab.pco]}
+    - {name: General, tiles: [usab.ascites, usab.mesenteric_nodes, usab.appendicitis]}
+
+findings:
+  - id_key: usab.normal_study
+    display_name: Normal USG abdomen
+    category: Normal
+    synonyms: [NAD abdomen, normal scan]
+    default_sentence: "{{tpl.normal.usg_abdomen}}"
+    impression_fragment: "No significant abnormality detected in the visualized abdominal organs."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: []
+    keyboard_alias: [nab]
+    combo_tiles: [combo.usab.wa_male_neg]
+    criticality: none
+    normal_variant: true
+    ai_contradiction_rules:
+      - {id: usab.normal_study.c1, severity: block, glyph: "X", rule: "any abnormal organ finding present AND normal-study impression used", message: "Normal-abdomen impression contradicts an abnormal organ finding."}
+    ai_completeness_rules: []
+
+  - id_key: usab.fatty_liver
+    display_name: Fatty liver
+    category: Liver
+    synonyms: [hepatic steatosis, FL, fatty infiltration, bright liver]
+    default_sentence: "Liver shows diffusely increased echogenicity — {severity} fatty infiltration."
+    impression_fragment: "{severity} fatty liver."
+    recommendation_code: [rec.lab_lft]
+    parameters: []
+    severity: sev.fatty_liver
+    laterality: null
+    measurements: [meas.liver_span]
+    keyboard_alias: [fl1, fl2, fl3]
+    combo_tiles: [combo.usab.fl_rest_normal, combo.usab.fl_hm, combo.usab.fl2_chole]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: usab.fatty_liver.c1, severity: warn, glyph: "triangle", rule: "fatty_liver AND cld both asserted for liver", message: "Fatty liver and chronic liver disease both stated — reconcile liver echotexture."}
+    ai_completeness_rules: []
+
+  - id_key: usab.hepatomegaly
+    display_name: Hepatomegaly
+    category: Liver
+    synonyms: [HM, enlarged liver]
+    default_sentence: "Liver is enlarged (span {liver_span}) with normal echotexture."
+    impression_fragment: "Hepatomegaly."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: [meas.liver_span]
+    keyboard_alias: [hm]
+    combo_tiles: [combo.usab.fl_hm]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: usab.hepatomegaly.c1, severity: warn, glyph: "triangle", rule: "hepatomegaly asserted AND meas.liver_span <= 15.5 cm", message: "Hepatomegaly stated but liver span is within normal limits."}
+    ai_completeness_rules: []
+
+  - id_key: usab.cld
+    display_name: Coarse echotexture (CLD pattern)
+    category: Liver
+    synonyms: [chronic liver disease, cirrhotic liver, coarse liver]
+    default_sentence: "Liver shows coarse echotexture with irregular surface and reduced span — chronic liver parenchymal disease."
+    impression_fragment: "Chronic liver parenchymal disease — clinical and LFT correlation advised."
+    recommendation_code: [rec.lab_lft, rec.clincorr]
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: [meas.liver_span, meas.portal_vein]
+    keyboard_alias: [cld]
+    combo_tiles: [combo.usab.cld_portal]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules:
+      - {id: usab.cld.k1, glyph: "circle", rule: "CLD present AND portal vein / spleen / ascites not assessed", message: "With CLD, assess portal vein, spleen size and free fluid (portal hypertension screen)."}
+
+  - id_key: usab.liver_cyst
+    display_name: Simple hepatic cyst
+    category: Liver
+    synonyms: [hepatic cyst]
+    default_sentence: "Well-defined anechoic cyst ({size}) in the {location} of liver — simple hepatic cyst."
+    impression_fragment: "Simple hepatic cyst — incidental."
+    recommendation_code: []
+    parameters: [param.size]
+    severity: null
+    laterality: null
+    location_options: [loc.liver]
+    measurements: []
+    keyboard_alias: [lcy]
+    combo_tiles: []
+    criticality: none
+    normal_variant: true
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: usab.hemangioma
+    display_name: Hepatic hemangioma pattern
+    category: Liver
+    synonyms: [liver hemangioma]
+    default_sentence: "Well-defined hyperechoic lesion ({size}) in the {location} — likely hemangioma."
+    impression_fragment: "Hepatic hemangioma — follow-up/contrast imaging if clinically indicated."
+    recommendation_code: [rec.fup_usg6w]
+    parameters: [param.size]
+    severity: null
+    laterality: null
+    location_options: [loc.liver]
+    measurements: []
+    keyboard_alias: [lhem]
+    combo_tiles: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: usab.focal_lesion
+    display_name: Focal liver lesion (workup)
+    category: Liver
+    synonyms: [liver SOL, hepatic mass]
+    default_sentence: "{count} {echotexture} focal lesion(s) ({size}) in the {location} of liver, {margin}."
+    impression_fragment: "Focal hepatic lesion(s) — further characterization advised."
+    recommendation_code: [rec.cect, rec.cemri]
+    parameters: [param.count, param.echotexture, param.size, param.margin]
+    severity: null
+    laterality: null
+    location_options: [loc.liver]
+    measurements: []
+    keyboard_alias: [fll]
+    combo_tiles: []
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: usab.cholelithiasis
+    display_name: Cholelithiasis
+    category: GB/CBD
+    synonyms: [gallstones, GB calculus, cholelithiasis]
+    default_sentence: "Gallbladder shows {count} calculus/calculi (largest {calculus_size}) with posterior acoustic shadowing. Wall is normal."
+    impression_fragment: "Cholelithiasis. No sonographic evidence of cholecystitis."
+    recommendation_code: [rec.spec_surg]
+    parameters: [param.count, param.gb_status]
+    severity: null
+    laterality: null
+    measurements: [meas.calculus_size, meas.gb_wall]
+    keyboard_alias: [chole]
+    combo_tiles: [combo.usab.chole_rest_normal, combo.usab.fl2_chole]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: usab.cholelithiasis.c1, severity: warn, glyph: "triangle", rule: "gb_status = post-cholecystectomy AND cholelithiasis asserted", message: "Cholelithiasis stated in a post-cholecystectomy gallbladder."}
+    ai_completeness_rules: []
+
+  - id_key: usab.gb_sludge
+    display_name: GB sludge
+    category: GB/CBD
+    synonyms: [biliary sludge]
+    default_sentence: "Echogenic non-shadowing sludge noted within the gallbladder."
+    impression_fragment: "Gallbladder sludge."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: []
+    keyboard_alias: [slg]
+    combo_tiles: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: usab.gb_wall
+    display_name: GB wall thickening (cholecystitis pattern)
+    category: GB/CBD
+    synonyms: [acute cholecystitis, GB wall edema]
+    default_sentence: "Gallbladder wall is thickened ({gb_wall}) with pericholecystic fluid, positive sonographic Murphy's sign, with calculus impacted at neck."
+    impression_fragment: "Acute calculous cholecystitis — surgical consultation advised."
+    recommendation_code: [rec.spec_surg, rec.urgent]
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: [meas.gb_wall]
+    keyboard_alias: [gbwt]
+    combo_tiles: [combo.usab.acute_abd]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: usab.gb_wall.c1, severity: warn, glyph: "triangle", rule: "'cholecystitis' impression AND no wall thickening / Murphy descriptor in findings", message: "Cholecystitis impression without wall/Murphy descriptor in findings."}
+    ai_completeness_rules: []
+
+  - id_key: usab.gb_polyp
+    display_name: GB polyp
+    category: GB/CBD
+    synonyms: [gallbladder polyp]
+    default_sentence: "Non-mobile, non-shadowing polypoidal lesion ({calculus_size}) along the gallbladder wall — polyp."
+    impression_fragment: "Gallbladder polyp ({calculus_size}) — follow-up ultrasound advised."
+    recommendation_code: [rec.fup_6m]
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: [meas.calculus_size]
+    keyboard_alias: [gbp]
+    combo_tiles: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: usab.cbd_dilated
+    display_name: CBD dilatation
+    category: GB/CBD
+    synonyms: [dilated CBD, biliary dilatation, IHBRD]
+    default_sentence: "Common bile duct is dilated ({cbd}), with intrahepatic biliary radicle dilatation; distal CBD obscured by bowel gas."
+    impression_fragment: "Biliary dilatation — MRCP advised for further evaluation."
+    recommendation_code: [rec.mrcp]
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: [meas.cbd]
+    keyboard_alias: [cbd]
+    combo_tiles: []
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: usab.cbd_dilated.c1, severity: warn, glyph: "triangle", rule: "CBD dilatation asserted AND meas.cbd within normal limit for cholecystectomy status", message: "CBD dilatation stated but measurement is within the applicable normal limit."}
+    ai_completeness_rules: []
+
+  - id_key: usab.pancreas_obscured
+    display_name: Pancreas obscured (limitation line)
+    category: Pancreas
+    synonyms: [pancreas gas]
+    default_sentence: "Visualized pancreas is unremarkable; body/tail partially obscured by bowel gas."
+    impression_fragment: null
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: []
+    keyboard_alias: [pno]
+    combo_tiles: []
+    criticality: none
+    normal_variant: true
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: usab.splenomegaly
+    display_name: Splenomegaly
+    category: Spleen
+    synonyms: [SM, enlarged spleen]
+    default_sentence: "Spleen is enlarged (span {spleen_span}) with normal echotexture."
+    impression_fragment: "Splenomegaly."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: [meas.spleen_span]
+    keyboard_alias: [sm]
+    combo_tiles: [combo.usab.cld_portal]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: usab.splenomegaly.c1, severity: warn, glyph: "triangle", rule: "splenomegaly asserted AND meas.spleen_span <= 12.5 cm", message: "Splenomegaly stated but spleen span is within normal limits."}
+    ai_completeness_rules: []
+
+  - id_key: usab.renal_calculus
+    display_name: Renal calculus
+    category: Kidneys
+    synonyms: [kidney stone, renal stone, nephrolithiasis]
+    default_sentence: "{laterality} kidney shows a calculus ({calculus_size}) in the {location} with posterior acoustic shadowing."
+    impression_fragment: "{laterality} renal calculus ({calculus_size}, {location})."
+    recommendation_code: [rec.spec_uro, rec.lab_urine]
+    parameters: []
+    severity: null
+    laterality: lat.rlb
+    location_options: [loc.renal_calculus]
+    measurements: [meas.calculus_size]
+    keyboard_alias: [rcal, lcal]
+    combo_tiles: [combo.usab.calc_hn]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules:
+      - {id: usab.renal_calculus.k1, glyph: "circle", rule: "renal calculus present AND hydronephrosis status of same kidney not stated", message: "State hydronephrosis status for a kidney with a calculus."}
+
+  - id_key: usab.hydronephrosis
+    display_name: Hydronephrosis
+    category: Kidneys
+    synonyms: [HN, PCS dilatation, hydroureteronephrosis]
+    default_sentence: "{laterality} kidney shows {severity} hydronephrosis with proximal hydroureter."
+    impression_fragment: "{severity} {laterality} hydro(uretero)nephrosis."
+    recommendation_code: [rec.spec_uro]
+    parameters: []
+    severity: sev.hydro
+    laterality: lat.rlb
+    measurements: []
+    keyboard_alias: [hn1, hn2, hn3]
+    combo_tiles: [combo.usab.calc_hn]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: usab.hydronephrosis.c1, severity: block, glyph: "X", rule: "hydronephrosis side != causative calculus side in same report", message: "Hydronephrosis side does not match the obstructing calculus side."}
+    ai_completeness_rules: []
+
+  - id_key: usab.renal_cyst
+    display_name: Simple renal cortical cyst
+    category: Kidneys
+    synonyms: [renal cyst, cortical cyst]
+    default_sentence: "Well-defined anechoic cortical cyst ({size}) in the {location} of the {laterality} kidney."
+    impression_fragment: "Simple renal cortical cyst — incidental."
+    recommendation_code: []
+    parameters: [param.size]
+    severity: null
+    laterality: lat.rlb
+    location_options: [loc.renal_pole]
+    measurements: []
+    keyboard_alias: [rcy]
+    combo_tiles: []
+    criticality: none
+    normal_variant: true
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: usab.mrd
+    display_name: Medical renal disease
+    category: Kidneys
+    synonyms: [raised cortical echogenicity, renal parenchymal disease, MRD]
+    default_sentence: "Both kidneys show increased cortical echogenicity with {cmd} corticomedullary differentiation — medical renal disease, {severity}."
+    impression_fragment: "Bilateral medical renal disease, {severity} — correlate with RFT."
+    recommendation_code: [rec.lab_rft, rec.spec_uro]
+    parameters: [param.cmd]
+    severity: sev.mrd
+    laterality: null
+    measurements: [meas.kidney_size]
+    keyboard_alias: [mrd1, mrd2, mrd3]
+    combo_tiles: []
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: usab.mrd.c1, severity: warn, glyph: "triangle", rule: "severity = Grade III AND cmd = preserved", message: "Grade III medical renal disease usually shows lost CMD — reconcile."}
+    ai_completeness_rules: []
+
+  - id_key: usab.cystitis
+    display_name: Cystitis pattern (bladder wall thickening)
+    category: Bladder
+    synonyms: [UB wall thickening, cystitis]
+    default_sentence: "Urinary bladder wall is diffusely thickened with internal echoes — cystitis pattern (bladder under-distension to be excluded)."
+    impression_fragment: "Cystitis — urine routine correlation advised."
+    recommendation_code: [rec.lab_urine]
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: []
+    keyboard_alias: [cys]
+    combo_tiles: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: usab.prostatomegaly
+    display_name: Prostatomegaly
+    category: Prostate
+    synonyms: [BPH, enlarged prostate, prostate enlargement]
+    default_sentence: "Prostate is enlarged, {severity} (volume ~{prostate_volume}), with median lobe indenting the bladder base. Post-void residue {pvr}."
+    impression_fragment: "Prostatomegaly, {severity} with post-void residue as noted."
+    recommendation_code: [rec.spec_uro]
+    parameters: []
+    severity: sev.prostate
+    laterality: null
+    measurements: [meas.prostate_volume, meas.pvr]
+    keyboard_alias: [pros1, pros2, pros3]
+    combo_tiles: [combo.usab.bph_screen, combo.usab.wa_male_neg]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: usab.prostatomegaly.c1, severity: warn, glyph: "triangle", rule: "severity grade inconsistent with meas.prostate_volume derived grade", message: "Stated prostate grade does not match calculated volume."}
+    ai_completeness_rules:
+      - {id: usab.prostatomegaly.k1, glyph: "circle", rule: "prostatomegaly present AND PVR not measured", message: "Measure post-void residue with prostatomegaly."}
+
+  - id_key: usab.bulky_uterus
+    display_name: Bulky uterus
+    category: Uterus/Adnexa
+    synonyms: [bulky uterus, uterine enlargement]
+    default_sentence: "Uterus is bulky with homogeneous myometrial echotexture. Endometrial thickness {et}."
+    impression_fragment: "Bulky uterus."
+    recommendation_code: [rec.spec_gyn]
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: [meas.et]
+    keyboard_alias: [blk]
+    combo_tiles: [combo.usab.gyn_screen]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: usab.fibroid
+    display_name: Uterine fibroid
+    category: Uterus/Adnexa
+    synonyms: [leiomyoma, myoma, fibroid]
+    default_sentence: "{count} well-defined hypoechoic {fibroid_site} fibroid(s), largest {size}."
+    impression_fragment: "Uterine fibroid(s) as described — gynaecological correlation advised."
+    recommendation_code: [rec.spec_gyn]
+    parameters: [param.count, param.size, param.fibroid_site]
+    severity: null
+    laterality: null
+    measurements: [meas.et]
+    keyboard_alias: [fib]
+    combo_tiles: [combo.usab.gyn_screen]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: usab.ovarian_cyst
+    display_name: Ovarian cyst (simple/hemorrhagic)
+    category: Uterus/Adnexa
+    synonyms: [adnexal cyst, functional cyst]
+    default_sentence: "{laterality} ovary shows a simple anechoic cyst ({size}). No internal vascularity."
+    impression_fragment: "{laterality} ovarian cyst — follow-up ultrasound after 6 weeks advised."
+    recommendation_code: [rec.fup_usg6w, rec.spec_gyn]
+    parameters: [param.size]
+    severity: null
+    laterality: lat.rlb
+    measurements: []
+    keyboard_alias: [ova]
+    combo_tiles: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: usab.pco
+    display_name: Polycystic ovarian morphology
+    category: Uterus/Adnexa
+    synonyms: [PCO, PCOS pattern]
+    default_sentence: "Both ovaries are bulky with multiple small peripheral follicles — polycystic ovarian morphology."
+    impression_fragment: "Polycystic ovarian morphology — hormonal/clinical correlation advised."
+    recommendation_code: [rec.clincorr, rec.spec_gyn]
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: []
+    keyboard_alias: [pco]
+    combo_tiles: [combo.usab.pcod_screen]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: usab.ascites
+    display_name: Ascites / free fluid
+    category: General
+    synonyms: [free fluid, peritoneal fluid]
+    default_sentence: "{severity} free fluid noted in the peritoneal cavity, with internal echoes/septations."
+    impression_fragment: "Ascites, {severity} — clinical correlation advised."
+    recommendation_code: [rec.clincorr]
+    parameters: []
+    severity: sev.ascites
+    laterality: null
+    measurements: []
+    keyboard_alias: [asc]
+    combo_tiles: [combo.usab.cld_portal]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: usab.mesenteric_nodes
+    display_name: Mesenteric lymphadenopathy
+    category: General
+    synonyms: [mesenteric nodes, mesenteric adenitis]
+    default_sentence: "Few enlarged mesenteric lymph nodes (largest {node_short_axis} short axis), likely reactive."
+    impression_fragment: "Mesenteric lymphadenopathy — likely reactive."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: [meas.node_short_axis]
+    keyboard_alias: [msn]
+    combo_tiles: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: usab.appendicitis
+    display_name: Acute appendicitis
+    category: General
+    synonyms: [appendicitis, inflamed appendix]
+    default_sentence: "Appendix is dilated ({appendix_diam}), non-compressible with probe tenderness and surrounding echogenic fat — acute appendicitis."
+    impression_fragment: "Acute appendicitis — urgent surgical consultation advised."
+    recommendation_code: [rec.spec_surg, rec.urgent]
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: [meas.appendix_diam]
+    keyboard_alias: [app]
+    combo_tiles: [combo.usab.acute_abd]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: usab.appendicitis.c1, severity: warn, glyph: "triangle", rule: "appendicitis asserted AND meas.appendix_diam <= 6 mm", message: "Appendicitis stated but appendix diameter is within normal limits."}
+    ai_completeness_rules: []
+
+combo_tiles:
+  - {id: combo.usab.fl_rest_normal, label: "FL Gr {n}, rest NAD", members: [usab.fatty_liver], assemble: "fatty liver line + rest-normal template lines"}
+  - {id: combo.usab.fl_hm, label: "FL + hepatomegaly", members: [usab.fatty_liver, usab.hepatomegaly]}
+  - {id: combo.usab.fl2_chole, label: "FL II + gallstones", members: [{ref: usab.fatty_liver, grade: Grade II}, usab.cholelithiasis]}
+  - {id: combo.usab.chole_rest_normal, label: "Gallstones, rest NAD", members: [usab.cholelithiasis], assemble: "cholelithiasis line + rest-normal template lines"}
+  - {id: combo.usab.calc_hn, label: "Calculus + HN", members: [usab.renal_calculus, usab.hydronephrosis], shared_slots: [laterality]}
+  - {id: combo.usab.bph_screen, label: "BPH screen", members: [usab.prostatomegaly, {ref: usab.cystitis, optional: true}]}
+  - {id: combo.usab.cld_portal, label: "CLD + portal HTN screen", members: [usab.cld, usab.splenomegaly, usab.ascites]}
+  - {id: combo.usab.pcod_screen, label: "PCOD screen", members: [usab.pco, {ref: usab.bulky_uterus, optional: true}]}
+  - {id: combo.usab.gyn_screen, label: "Gyn screen", members: [usab.bulky_uterus, usab.fibroid]}
+  - {id: combo.usab.acute_abd, label: "Acute abdomen set", members: [{ref: usab.gb_wall, alt: usab.appendicitis}, {ref: usab.ascites, optional: true}]}
+  - {id: combo.usab.wa_male_neg, label: "Male W/A negative", members: [usab.normal_study, usab.prostatomegaly]}
+
+study_ai_rules:
+  completeness:
+    - {id: usab.study.k1, glyph: "circle", rule: "any default report-section organ not addressed or limitation-lined", message: "Organ checklist incomplete — address every organ or add a limitation line."}
+    - {id: usab.study.k2, glyph: "circle", rule: "prostatomegaly present AND PVR not reported", message: "Report post-void residue with prostatomegaly."}
+    - {id: usab.study.k3, glyph: "circle", rule: "uterus finding present AND endometrial thickness not reported", message: "Report endometrial thickness with uterine findings."}
+  contradiction:
+    - {id: usab.study.c1, severity: warn, glyph: "triangle", rule: "measurement value in narrative differs from measurement field (spans, volumes)", message: "Measurement in the text differs from the measurement field."}
+    - {id: usab.study.c2, severity: warn, glyph: "triangle", rule: "calculus location = ureter/VUJ in whole-abdomen study", message: "Ureteric/VUJ calculus — add HUN comment or route to KUB workflow."}
+  impression_suggestions:
+    - "When only the liver is abnormal: '{FL grade} fatty liver. Rest of the visualized organs are unremarkable.'"
+    - "Auto-pair finding -> recommendation (calculus -> uro; MRD -> RFT; CLD -> LFT)."
+    - "Derive prostate grade from volume; compute PVR percentage and flag significance."

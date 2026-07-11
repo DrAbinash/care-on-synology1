@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import { readStaffSession } from "@/lib/staffSession";
 import PageHeader from "@/components/PageHeader";
 import { Link } from "wouter";
@@ -282,7 +283,7 @@ export default function DailySummary() {
     queryKey: ["category-test-summary", ctRange.from, ctRange.to],
     queryFn: () =>
       api.get(`/api/daily-summary/category-test-summary?from=${ctRange.from}&to=${ctRange.to}`),
-    staleTime: 60_000,
+    ...FINANCIAL_QUERY_OPTIONS,
   });
 
   // ── Export helpers for Category & Test Wise Summary ─────────────────────
@@ -361,9 +362,8 @@ export default function DailySummary() {
     queryKey: ["daily-summary", date, staffFilter],
     queryFn: () =>
       api.get(`/api/daily-summary?date=${encodeURIComponent(date)}${staffFilter !== "all" ? `&staffName=${encodeURIComponent(staffFilter)}` : ""}`),
-    staleTime: 30_000,
-    refetchInterval: 15_000,
-    refetchIntervalInBackground: true,
+    ...FINANCIAL_QUERY_OPTIONS,
+    refetchIntervalInBackground: true, // kept: this page is sometimes left open on a display screen
   });
 
   const summary = data?.summary ?? {

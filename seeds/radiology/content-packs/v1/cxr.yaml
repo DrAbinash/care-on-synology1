@@ -1,0 +1,342 @@
+# CARE Radiology — Chest X-ray Content Pack (production v1)
+# Binds to _shared_libraries.yaml (+ v1_2). Flat ai_* format. Optimized for the two-line read.
+
+pack:
+  pack_id: cxr
+  version: 1.0.0
+  locale: en-IN
+  status: active
+
+study:
+  study: Chest X-ray
+  modality: XR
+  aliases: [chest X-ray, CXR PA, X-ray chest, chest radiograph]
+  default_report_sections: [Findings, Impression, Advice]
+  normal_template: tpl.normal.cxr
+  quick_select_groups:
+    - {name: Pinned, tiles: [cxr.normal_study, cxr.kochs_sequelae, cxr.consolidation, cxr.pleural_effusion, cxr.cardiomegaly]}
+    - {name: TB set, tiles: [cxr.kochs_sequelae, cxr.active_kochs, cxr.miliary]}
+    - {name: Infective, tiles: [cxr.consolidation, cxr.infiltrates]}
+    - {name: Pleura, tiles: [cxr.pleural_effusion, cxr.blunted_cp, cxr.pneumothorax]}
+    - {name: Cardiac, tiles: [cxr.cardiomegaly, cxr.congestion]}
+    - {name: Other, tiles: [cxr.hyperinflation, cxr.nodule_mass, cxr.rib_fracture, cxr.free_gas, cxr.tubes_lines]}
+
+findings:
+  - id_key: cxr.normal_study
+    display_name: Normal chest X-ray
+    category: Normal
+    synonyms: [NAD chest, normal CXR]
+    keyboard_aliases: [nadx]
+    default_sentence: "{{tpl.normal.cxr}}"
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: []
+    measurements: []
+    impression_fragment: "No significant abnormality detected."
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai_contradiction_rules:
+      - {id: cxr.normal_study.c1, severity: block, glyph: "X", rule: "any positive finding present AND normal impression used", message: "Normal impression contradicts a positive finding."}
+    ai_completeness_rules:
+      - {id: cxr.normal_study.k1, glyph: "circle", rule: "both apices and both CP angles not addressed", message: "Address both apices and both CP angles."}
+      - {id: cxr.normal_study.k2, glyph: "circle", rule: "cardiac size not commented on a PA film", message: "Comment on cardiac size on PA films."}
+
+  - id_key: cxr.consolidation
+    display_name: Consolidation
+    category: Infective
+    synonyms: [pneumonia, air-space opacity, haziness]
+    keyboard_aliases: [cons]
+    default_sentence: "Homogeneous opacity in the {location} with air bronchograms — consolidation."
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: [loc.lung_zones]
+    measurements: []
+    impression_fragment: "{location} consolidation — infective etiology likely."
+    recommendation_code: [rec.clincorr, rec.fup_cxr2w]
+    criticality: none
+    normal_variant: false
+    combo_tiles: [combo.cxr.pneumonia]
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: cxr.infiltrates
+    display_name: Patchy infiltrates
+    category: Infective
+    synonyms: [patchy opacities, bronchopneumonia]
+    keyboard_aliases: [infl]
+    default_sentence: "Patchy non-homogeneous opacities in the {location}."
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: [loc.lung_zones]
+    measurements: []
+    impression_fragment: "Patchy infiltrates {location} — infective etiology likely."
+    recommendation_code: [rec.clincorr, rec.fup_cxr2w]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: cxr.kochs_sequelae
+    display_name: Old healed Koch's (fibrocalcific)
+    category: TB
+    synonyms: [old Koch's, fibrocalcific changes, healed TB]
+    keyboard_aliases: [kochs]
+    default_sentence: "Fibrocalcific opacities in the {location} with apical pleural thickening and volume loss."
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: [loc.lung_zones]
+    measurements: []
+    impression_fragment: "Fibrocalcific changes {location} — sequelae of old healed Koch's. No active lesion."
+    recommendation_code: []
+    criticality: none
+    normal_variant: false
+    combo_tiles: [combo.cxr.old_kochs]
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: cxr.active_kochs
+    display_name: Active Koch's pattern
+    category: TB
+    synonyms: [active TB, upper zone infiltrates with cavity]
+    keyboard_aliases: [aktb]
+    default_sentence: "Non-homogeneous opacities in the {location}, with cavitation."
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: [loc.lung_zones]
+    measurements: []
+    impression_fragment: "Active Koch's to be excluded — sputum CBNAAT advised."
+    recommendation_code: [rec.lab_sputum, rec.hrct]
+    criticality: significant
+    normal_variant: false
+    combo_tiles: [combo.cxr.tb_active_set]
+    ai_contradiction_rules:
+      - {id: cxr.active_kochs.c1, severity: warn, glyph: "triangle", rule: "'active' and 'old healed' both applied to the same zone", message: "Active and healed both stated for one zone — clarify activity."}
+    ai_completeness_rules: []
+
+  - id_key: cxr.miliary
+    display_name: Miliary pattern (CXR)
+    category: TB
+    synonyms: [miliary TB, miliary mottling]
+    keyboard_aliases: [mil]
+    default_sentence: "Innumerable discrete miliary nodules distributed uniformly in both lung fields."
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: []
+    measurements: []
+    impression_fragment: "Miliary pattern — disseminated Koch's to be excluded; urgent physician correlation."
+    recommendation_code: [rec.lab_sputum, rec.hrct, rec.urgent]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: cxr.pleural_effusion
+    display_name: Pleural effusion
+    category: Pleura
+    synonyms: [pleural fluid, hydrothorax]
+    keyboard_aliases: [eff]
+    default_sentence: "{laterality} pleural effusion ({severity}), with underlying collapse, with mediastinal shift to the opposite side."
+    parameters: []
+    severity: sev.effusion
+    laterality: lat.rlb
+    location_options: []
+    measurements: []
+    impression_fragment: "{laterality} pleural effusion, {severity}."
+    recommendation_code: [rec.clincorr]
+    criticality: {critical_if: "massive with mediastinal shift", registry: crit.massive_effusion}
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: cxr.blunted_cp
+    display_name: Blunted CP angle
+    category: Pleura
+    synonyms: [CP angle blunting, minimal effusion]
+    keyboard_aliases: [cpb]
+    default_sentence: "Blunting of the {laterality} costophrenic angle — minimal effusion/pleural thickening."
+    parameters: []
+    severity: null
+    laterality: lat.rlb
+    location_options: []
+    measurements: []
+    impression_fragment: "Blunted {laterality} CP angle — minimal effusion/thickening."
+    recommendation_code: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: cxr.pneumothorax
+    display_name: Pneumothorax
+    category: Pleura
+    synonyms: [PTX, collapsed lung]
+    keyboard_aliases: [ptx]
+    default_sentence: "{laterality} pneumothorax ({severity}) with visceral pleural edge visible, with mediastinal shift to the opposite side (tension)."
+    parameters: []
+    severity: sev.ptx
+    laterality: lat.rl
+    location_options: []
+    measurements: []
+    impression_fragment: "{laterality} pneumothorax ({severity}) — URGENT attention advised."
+    recommendation_code: [rec.urgent]
+    criticality: {critical_if: "tension/complete", registry: crit.tension_ptx}
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: cxr.pneumothorax.c1, severity: block, glyph: "X", rule: "tension/complete descriptor present AND escalation not started", message: "Tension/complete pneumothorax — start escalation before signing."}
+    ai_completeness_rules: []
+
+  - id_key: cxr.cardiomegaly
+    display_name: Cardiomegaly
+    category: Cardiac
+    synonyms: [enlarged cardiac shadow, increased CTR]
+    keyboard_aliases: [cmg]
+    default_sentence: "Cardiac shadow is enlarged (CTR {ctr})."
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: []
+    measurements: [meas.ctr]
+    impression_fragment: "Cardiomegaly — echocardiographic correlation suggested."
+    recommendation_code: [rec.echo_corr]
+    criticality: none
+    normal_variant: false
+    combo_tiles: [combo.cxr.chf_screen]
+    ai_contradiction_rules:
+      - {id: cxr.cardiomegaly.c1, severity: warn, glyph: "triangle", rule: "cardiomegaly asserted AND meas.ctr <= 0.50", message: "Cardiomegaly stated but CTR is within normal limits."}
+    ai_completeness_rules: []
+
+  - id_key: cxr.congestion
+    display_name: Pulmonary venous congestion
+    category: Cardiac
+    synonyms: [CHF pattern, pulmonary edema, upper lobe diversion]
+    keyboard_aliases: [cong]
+    default_sentence: "Prominent upper-lobe vessels with perihilar haze and Kerley B lines — pulmonary venous congestion."
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: []
+    measurements: []
+    impression_fragment: "Features of pulmonary venous congestion — clinical/echo correlation."
+    recommendation_code: [rec.echo_corr, rec.clincorr]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: cxr.hyperinflation
+    display_name: Hyperinflated lung fields
+    category: Airways
+    synonyms: [COPD pattern, emphysematous chest]
+    keyboard_aliases: [hyp]
+    default_sentence: "Both lung fields are hyperinflated with flattened domes of diaphragm — COPD pattern."
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: []
+    measurements: []
+    impression_fragment: "Hyperinflated lungs — COPD; PFT correlation advised."
+    recommendation_code: [rec.pft]
+    criticality: none
+    normal_variant: false
+    combo_tiles: [combo.cxr.copd_set]
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: cxr.nodule_mass
+    display_name: Nodule / mass opacity
+    category: Nodule/Mass
+    synonyms: [coin lesion, lung opacity, SPN]
+    keyboard_aliases: [nod]
+    default_sentence: "Well-defined {size} nodular/mass opacity in the {location}."
+    parameters: [param.size, param.margin]
+    severity: null
+    laterality: null
+    location_options: [loc.lung_zones]
+    measurements: []
+    impression_fragment: "{location} nodule/mass — HRCT chest advised for characterization."
+    recommendation_code: [rec.hrct]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: cxr.rib_fracture
+    display_name: Rib fracture
+    category: Bones
+    synonyms: [rib fracture, rib injury]
+    keyboard_aliases: [ribfx]
+    default_sentence: "Fracture of the {laterality} rib(s), without underlying pneumothorax/hemothorax."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location_options: []
+    measurements: []
+    impression_fragment: "{laterality} rib fracture(s) as described."
+    recommendation_code: [rec.clincorr]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules:
+      - {id: cxr.rib_fracture.k1, glyph: "circle", rule: "rib fracture reported AND underlying PTX/effusion not commented", message: "Comment on underlying pneumothorax/haemothorax with a rib fracture."}
+
+  - id_key: cxr.free_gas
+    display_name: Free gas under diaphragm
+    category: Emergency
+    synonyms: [pneumoperitoneum, gas under diaphragm]
+    keyboard_aliases: [gas]
+    default_sentence: "Crescentic lucency of free gas under the right hemidiaphragm."
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: []
+    measurements: []
+    impression_fragment: "Pneumoperitoneum — SURGICAL EMERGENCY; findings communicated."
+    recommendation_code: [rec.urgent, rec.spec_surg]
+    criticality: {critical: crit.free_gas}
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: cxr.free_gas.c1, severity: block, glyph: "X", rule: "free gas under diaphragm AND escalation not started", message: "Pneumoperitoneum — start surgical escalation before signing."}
+    ai_completeness_rules: []
+
+  - id_key: cxr.tubes_lines
+    display_name: Tubes & lines (ICU film)
+    category: ICU
+    synonyms: [ET tube, CV line, ICD, NG tube]
+    keyboard_aliases: [tube]
+    default_sentence: "Support device noted with tip {tube_position}."
+    parameters: [param.tube_position]
+    severity: null
+    laterality: null
+    location_options: []
+    measurements: []
+    impression_fragment: "Support device — {tube_position}."
+    recommendation_code: []
+    criticality: {significant_if: "malpositioned"}
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+combo_tiles:
+  - {id: combo.cxr.old_kochs, label: "Old Koch's stable", members: [cxr.kochs_sequelae]}
+  - {id: combo.cxr.pneumonia, label: "Pneumonia set", members: [cxr.consolidation], recommendations: [rec.fup_cxr2w, rec.clincorr]}
+  - {id: combo.cxr.chf_screen, label: "CHF screen", members: [cxr.cardiomegaly, cxr.congestion], recommendations: [rec.echo_corr]}
+  - {id: combo.cxr.copd_set, label: "COPD set", members: [cxr.hyperinflation], recommendations: [rec.pft]}
+  - {id: combo.cxr.tb_active_set, label: "Active TB workup", members: [cxr.active_kochs], recommendations: [rec.lab_sputum, rec.hrct]}
+
+critical_findings:
+  - crit.tension_ptx
+  - crit.massive_effusion
+  - crit.free_gas
+
+implementation_notes:
+  - "Shortest report in the product — optimized for the two-line read; keep the normal line and zone grid pinned."
+  - "CTR auto-calc drives the cardiomegaly ghost; tension PTX and free gas block unstarted sign-off."
+  - "TB-activity guard: 'active' and 'old healed' on the same zone is a warn."
+  - "Indian terms: Koch's = pulmonary TB; NAD; CTR = cardiothoracic ratio; PTX = pneumothorax; ICD = intercostal drain; CBNAAT for sputum."

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Search, X } from "lucide-react";
@@ -56,6 +57,7 @@ export default function Payments() {
     queryKey: ["payments", page, debouncedQ],
     queryFn: () => api.get(`/api/payments?${params.toString()}`),
     placeholderData: (prev) => prev,
+    ...FINANCIAL_QUERY_OPTIONS,
   });
 
   const formatCurrency = (n: number) =>

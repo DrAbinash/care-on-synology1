@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -372,11 +373,12 @@ export default function DayClose() {
   const previewQ = useQuery<Preview>({
     queryKey: ["day-close-preview"],
     queryFn: () => api.get<Preview>("/api/day-close/preview"),
-    refetchInterval: 30_000,
+    ...FINANCIAL_QUERY_OPTIONS,
   });
   const closuresQ = useQuery<Closure[]>({
     queryKey: ["day-close-list"],
     queryFn: () => api.get<Closure[]>("/api/day-close"),
+    ...FINANCIAL_QUERY_OPTIONS,
   });
   const clinicQ = useQuery<ClinicLite>({
     queryKey: ["clinic-settings"],
@@ -386,7 +388,7 @@ export default function DayClose() {
   const staffStatusQ = useQuery<StaffStatusResult>({
     queryKey: ["day-close-staff-status"],
     queryFn: () => api.get<StaffStatusResult>("/api/day-close/staff-status"),
-    refetchInterval: 30_000,
+    ...FINANCIAL_QUERY_OPTIONS,
     enabled: isOwner,
   });
 

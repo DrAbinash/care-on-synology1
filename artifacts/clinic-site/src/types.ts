@@ -34,6 +34,8 @@ export type SiteSettings = {
   pinterestMetaTag: string;
   customHeadHtml: string;
   socialLinks: string;
+  serviceImagesEnabled: boolean;
+  serviceImages: string; // JSON string: { "opd": "url", "usg": "url", etc. }
   isPublished: boolean;
   publishedRevision: number;
   lastPublishedAt: string | null;

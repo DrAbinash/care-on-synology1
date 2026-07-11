@@ -9,11 +9,15 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   email: text("email").notNull().default(""),
   phone: text("phone").notNull().default(""),
   website: text("website").notNull().default(""),
-  gstin: text("gstin").notNull().default(""),
+  // Nullable: NULL means "GSTIN not configured yet". The app relies on this
+  // (see the GSTIN_NOT_SET placeholder cleanup at startup) so this column
+  // must NOT be NOT NULL — see migrations/fix_gstin_razorpay_nullable.sql
+  gstin: text("gstin"),
   logoDataUrl: text("logo_data_url"),
   footerNote: text("footer_note").notNull().default("Thank you for choosing our diagnostic services."),
   formFTestIds: text("form_f_test_ids").notNull().default("[]"),
-  quickTestIds: text("quick_test_ids").notNull().default("[null,null,null,null,null,null]"),
+  quickTestIds: text("quick_test_ids").notNull().default("[null,null,null,null,null,null,null,null]"),
+  quickDoctorIds: text("quick_doctor_ids").notNull().default("[null,null,null,null,null,null,null,null]"),
   patientPhotoEnabled: boolean("patient_photo_enabled").notNull().default(false),
   showTatOnBill: boolean("show_tat_on_bill").notNull().default(false),
   billPrintCopies: integer("bill_print_copies").notNull().default(1),
@@ -25,7 +29,8 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   portalAllowProfileEdit: boolean("portal_allow_profile_edit").notNull().default(true),
   // Online booking
   onlineBookingEnabled: boolean("online_booking_enabled").notNull().default(false),
-  razorpayKeyId: text("razorpay_key_id").notNull().default(""),
+  // Nullable: NULL means "Razorpay not configured yet" (same reasoning as gstin above).
+  razorpayKeyId: text("razorpay_key_id"),
   onlineBookingLedgerId: integer("online_booking_ledger_id").notNull().default(1),
   vipQueueEnabled: boolean("vip_queue_enabled").notNull().default(false),
   // PayU India
@@ -96,6 +101,12 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   formFAddressRequired: boolean("form_f_address_required").notNull().default(true),
   // When true, husband/father name is required in the Form F billing desk popup and form.
   formFGuardianRequired: boolean("form_f_guardian_required").notNull().default(true),
+  // When true (default — matches existing behavior), phone number is a required
+  // field on the Patients page's Add/Edit Patient forms. When false, staff can
+  // register patients there without a phone number. Kiosk and online-booking
+  // self-registration ALWAYS require a phone regardless of this setting —
+  // patients registering themselves must be reachable.
+  patientPhoneRequired: boolean("patient_phone_required").notNull().default(true),
 
   // ── V3: Receipt Message Management ──
   receiptThankYouMessage: text("receipt_thank_you_message").notNull().default("Thank you for choosing Care Diagnostics."),

@@ -5,6 +5,29 @@ import { db } from "@workspace/db";
 import { usersTable } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { auditFromRequest } from "../lib/audit";
+
+// Records an account-administration event (create/edit/delete/password reset)
+// in the immutable audit trail. The acting user is taken from the staff
+// session; the target user is the entity. Fire-and-forget — never blocks or
+// fails the request.
+function auditAccountAction(
+  req: StaffAuthRequest,
+  action: string,
+  targetUserId: number,
+  reason: string,
+): void {
+  void auditFromRequest(req, {
+    userId: req.staffSession?.subjectId ?? null,
+    userName: req.staffSession?.subjectName ?? "system",
+    role: req.staffSession?.role ?? "system",
+    action,
+    module: "settings",
+    entityType: "user",
+    entityId: String(targetUserId),
+    reason,
+  });
+}
 
 const router = Router();
 
@@ -74,6 +97,21 @@ function validatePhoto(v: unknown): string | null | { error: string } {
   return s;
 }
 
+// Signature images are simple line-art, so a tighter cap than the staff
+// portrait is plenty and keeps every printed bill's payload small.
+function validateSignature(v: unknown): string | null | { error: string } {
+  if (v === undefined) return null; // sentinel — caller treats as "not provided"
+  if (v === null || v === "") return null;
+  const s = String(v);
+  if (!s.startsWith("data:image/")) {
+    return { error: "signatureDataUrl must be a data:image/* URL" };
+  }
+  if (s.length > 400_000) {
+    return { error: "Signature image too large — please pick an image under 300 KB" };
+  }
+  return s;
+}
+
 router.get("/", async (_req, res) => {
   const users = await db.select().from(usersTable).orderBy(usersTable.name);
   // Strip the PIN hash but keep the boolean signal "this user has a PIN"
@@ -108,6 +146,11 @@ router.post("/", async (req: StaffAuthRequest, res) => {
     res.status(400).json({ error: photoCheck.error });
     return;
   }
+  const signatureCheck = validateSignature(req.body.signatureDataUrl);
+  if (signatureCheck && typeof signatureCheck === "object") {
+    res.status(400).json({ error: signatureCheck.error });
+    return;
+  }
 
   try {
     const [user] = await db
@@ -120,6 +163,7 @@ router.post("/", async (req: StaffAuthRequest, res) => {
         permissions: JSON.stringify(perms),
         pin: hashedPin,
         photoDataUrl: photoCheck as string | null,
+        signatureDataUrl: signatureCheck as string | null,
         // Force a PIN change on the first successful sign-in whenever an
         // admin assigns the initial PIN.
         mustChangePin: !!hashedPin,
@@ -127,6 +171,7 @@ router.post("/", async (req: StaffAuthRequest, res) => {
         defaultStartPage: defaultStartPage || null,
       })
       .returning();
+    auditAccountAction(req, "create", user.id, `Created user "${user.name}" (${user.role})`);
     res.status(201).json({ ...user, pin: undefined, hasPin: !!user.pin, maxDiscount: user.maxDiscount != null ? Number(user.maxDiscount) : null });
   } catch (e) {
     const msg = (e as { message?: string })?.message ?? "";
@@ -172,6 +217,15 @@ router.patch("/:id", async (req: StaffAuthRequest, res) => {
     updates.photoDataUrl = photoCheck as string | null;
   }
 
+  if (req.body.signatureDataUrl !== undefined) {
+    const signatureCheck = validateSignature(req.body.signatureDataUrl);
+    if (signatureCheck && typeof signatureCheck === "object") {
+      res.status(400).json({ error: signatureCheck.error });
+      return;
+    }
+    updates.signatureDataUrl = signatureCheck as string | null;
+  }
+
   if (req.body.sidebarTheme !== undefined) {
     updates.sidebarTheme = typeof req.body.sidebarTheme === "string" ? req.body.sidebarTheme : null;
   }
@@ -198,6 +252,17 @@ router.patch("/:id", async (req: StaffAuthRequest, res) => {
     if (!user) {
       res.status(404).json({ error: "User not found" });
       return;
+    }
+    // Audit the sensitive parts of an account edit: role changes, PIN resets,
+    // and activation toggles. These are the fields a security review cares
+    // about; cosmetic edits (photo, theme) are intentionally not logged.
+    const changed: string[] = [];
+    if (req.body.role !== undefined && req.body.role !== existing.role) changed.push(`role → ${req.body.role}`);
+    if (req.body.pin !== undefined && req.body.pin !== null && req.body.pin !== "") changed.push("PIN reset");
+    if (req.body.isActive !== undefined) changed.push(req.body.isActive ? "activated" : "deactivated");
+    if (req.body.permissions !== undefined) changed.push("permissions updated");
+    if (changed.length > 0) {
+      auditAccountAction(req, req.body.pin ? "password_change" : "edit", user.id, `Edited user "${user.name}": ${changed.join(", ")}`);
     }
     res.json({ ...user, pin: undefined, hasPin: !!user.pin, maxDiscount: user.maxDiscount != null ? Number(user.maxDiscount) : null });
   } catch (e) {
@@ -257,19 +322,21 @@ router.patch("/:id/password", async (req, res) => {
 
   const hashed = await bcrypt.hash(newPinStr, BCRYPT_ROUNDS);
   const [updated] = await db.update(usersTable).set({ pin: hashed }).where(eq(usersTable.id, id)).returning();
+  auditAccountAction(req as StaffAuthRequest, "password_change", id, `Changed PIN for "${updated.name}"`);
   res.json({ ...updated, pin: undefined, maxDiscount: updated.maxDiscount != null ? Number(updated.maxDiscount) : null });
   return;
 });
 
 router.delete("/:id", async (req: StaffAuthRequest, res) => {
   const id = Number(req.params.id);
-  const [existing] = await db.select({ role: usersTable.role }).from(usersTable).where(eq(usersTable.id, id)).limit(1);
+  const [existing] = await db.select({ role: usersTable.role, name: usersTable.name }).from(usersTable).where(eq(usersTable.id, id)).limit(1);
   if (!existing) {
     res.json({ ok: true });
     return;
   }
   if (blockSuperAdminEscalation(req, res, { existingRole: existing.role })) return;
   await db.delete(usersTable).where(eq(usersTable.id, id));
+  auditAccountAction(req, "delete", id, `Deleted user "${existing.name}" (${existing.role})`);
   res.json({ ok: true });
   return;
 });

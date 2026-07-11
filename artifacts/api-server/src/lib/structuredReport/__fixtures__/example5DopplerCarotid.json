@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0.0", "kind": "radiology.structured_report", "document_id": "01J9Z6CAR0T1D0STDY0000A100",
+  "catalog_snapshot": { "content_pack_versions": { "vascular.doppler": "1.1.0" }, "catalog_schema_version": "1.0.0", "ai_rules_version": { "vascular.doppler": "1.1.0" } },
+  "study_context": { "modality": "USG", "body_region": "carotid_doppler", "study_type": "doppler", "template_ref": "tpl.doppler_carotid", "laterality_default": "lat.bilateral",
+    "comparison": { "has_prior": false, "prior_study_ref": null, "interval_note": null },
+    "identifiers": { "study_instance_uid": "1.2.840.113619.2.55.3.5", "accession_number": "ACC-20260709-US-005",
+      "patient_ref": { "system": "care.patient_id", "value": "PAT-000559" }, "study_datetime": "2026-07-09T12:55:00Z",
+      "referring_physician_ref": { "system": "care.staff", "value": "dr_das" }, "performing_physician_ref": { "system": "care.staff", "value": "tech_ravi" } } },
+  "findings": [
+    { "lid": "f1", "definition_ref": "finding.carotid.stenosis", "presence": "present", "certainty": "definite",
+      "laterality": "lat.right", "locations": ["loc.ica_proximal"], "severity": "sev.stenosis_70_99", "interval_change": null,
+      "parameters": [
+        { "param": "param.plaque_morphology", "kind": "option", "option": "heterogeneous", "label": "Heterogeneous plaque" },
+        { "param": "param.plaque_surface", "kind": "option", "option": "irregular", "label": "Irregular surface" }
+      ],
+      "measurement_refs": ["m1","m2","m3","m4"],
+      "sentence": "Heterogeneous plaque with irregular surface in the proximal right ICA producing 70–99% stenosis by velocity criteria (PSV 320 cm/s, ICA/CCA ratio 4.6).",
+      "impression_fragment": "Severe (70–99%) stenosis of the right internal carotid artery.", "sentence_source": "content_pack_default",
+      "status_flags": { "is_significant": true, "is_critical": false, "is_incidental": false }, "included_from": null,
+      "provenance": { "origin": "manual", "actor": "dr_abinash", "created_at": "2026-07-09T13:00:00Z", "edited": false }, "ai": null, "order": 10 },
+    { "lid": "f2", "definition_ref": "finding.carotid.normal", "presence": "normal", "certainty": "definite",
+      "laterality": "lat.left", "locations": ["loc.ica_proximal"], "severity": null, "interval_change": null, "parameters": [], "measurement_refs": ["m5"],
+      "sentence": "Left carotid system shows normal flow with no significant stenosis.", "impression_fragment": "Normal left carotid system.", "sentence_source": "content_pack_default",
+      "status_flags": { "is_significant": false, "is_critical": false, "is_incidental": false }, "included_from": null,
+      "provenance": { "origin": "quick_select", "actor": "dr_abinash", "source_ref": "qs.carotid.normal", "created_at": "2026-07-09T13:04:00Z", "edited": false }, "ai": null, "order": 20 }
+  ],
+  "measurements": [
+    { "lid": "m1", "measurement_ref": "meas.doppler_psv", "finding_ref": "f1", "site": "loc.ica_proximal", "laterality": "lat.right", "value": 320.0, "unit": "cm/s", "value_kind": "scalar", "value_iso": null, "range": null, "components": null, "normal_range": { "low": 0, "high": 125, "unit": "cm/s", "source": "catalog" }, "abnormal": true, "prior_value": null, "prior_measurement_ref_document": null, "change_pct": null, "provenance": { "origin": "manual", "source": "manual", "confidence": 0.92, "edited": false }, "display": "Right ICA PSV 320 cm/s" },
+    { "lid": "m2", "measurement_ref": "meas.doppler_edv", "finding_ref": "f1", "site": "loc.ica_proximal", "laterality": "lat.right", "value": 110.0, "unit": "cm/s", "value_kind": "scalar", "value_iso": null, "range": null, "components": null, "normal_range": { "low": 0, "high": 40, "unit": "cm/s", "source": "catalog" }, "abnormal": true, "prior_value": null, "prior_measurement_ref_document": null, "change_pct": null, "provenance": { "origin": "manual", "source": "manual", "confidence": 0.9, "edited": false }, "display": "Right ICA EDV 110 cm/s" },
+    { "lid": "m3", "measurement_ref": "meas.doppler_ica_cca_ratio", "finding_ref": "f1", "site": "loc.ica_proximal", "laterality": "lat.right", "value": 4.6, "unit": "1", "value_kind": "ratio", "value_iso": null, "range": null,
+      "components": [ { "measurement_ref": "meas.doppler_psv", "value": 320, "unit": "cm/s" }, { "measurement_ref": "meas.doppler_cca_psv", "value": 70, "unit": "cm/s" } ],
+      "normal_range": { "low": 0, "high": 2.0, "unit": "1", "source": "catalog" }, "abnormal": true, "prior_value": null, "prior_measurement_ref_document": null, "change_pct": null, "provenance": { "origin": "calculated", "source": "calculated", "confidence": 1.0, "edited": false }, "display": "ICA/CCA ratio 4.6" },
+    { "lid": "m4", "measurement_ref": "meas.doppler_ri", "finding_ref": "f1", "site": "loc.ica_proximal", "laterality": "lat.right", "value": 0.66, "unit": "1", "value_kind": "index", "value_iso": null, "range": null,
+      "components": [ { "measurement_ref": "meas.doppler_psv", "value": 320, "unit": "cm/s" }, { "measurement_ref": "meas.doppler_edv", "value": 110, "unit": "cm/s" } ],
+      "normal_range": null, "abnormal": false, "prior_value": null, "prior_measurement_ref_document": null, "change_pct": null, "provenance": { "origin": "calculated", "source": "calculated", "confidence": 1.0, "edited": false }, "display": "RI 0.66" },
+    { "lid": "m5", "measurement_ref": "meas.doppler_psv", "finding_ref": "f2", "site": "loc.ica_proximal", "laterality": "lat.left", "value": 78.0, "unit": "cm/s", "value_kind": "scalar", "value_iso": null, "range": null, "components": null, "normal_range": { "low": 0, "high": 125, "unit": "cm/s", "source": "catalog" }, "abnormal": false, "prior_value": null, "prior_measurement_ref_document": null, "change_pct": null, "provenance": { "origin": "manual", "source": "manual", "confidence": 0.92, "edited": false }, "display": "Left ICA PSV 78 cm/s" }
+  ],
+  "impression": {
+    "fragments": [
+      { "lid": "imp1", "finding_ref": "f1", "text": "Severe (70–99%) stenosis of the right internal carotid artery.", "source": "finding_fragment", "rank": 1, "provenance": { "origin": "content_pack_default", "actor": "dr_abinash", "created_at": "2026-07-09T13:06:00Z", "edited": false }, "ai": null },
+      { "lid": "imp2", "finding_ref": "f2", "text": "Normal left carotid system.", "source": "finding_fragment", "rank": 2, "provenance": { "origin": "content_pack_default", "actor": "dr_abinash", "created_at": "2026-07-09T13:06:01Z", "edited": false }, "ai": null }
+    ],
+    "items": [
+      { "lid": "impi1", "fragment_refs": ["imp1"], "text": "1. Severe (70–99%) stenosis of the right internal carotid artery." },
+      { "lid": "impi2", "fragment_refs": ["imp2"], "text": "2. Normal left carotid system." }
+    ],
+    "rendered": "IMPRESSION:\n1. Severe (70–99%) stenosis of the right internal carotid artery.\n2. Normal left carotid system."
+  },
+  "recommendations": [ { "lid": "rec1", "recommendation_ref": "rec.vascular_referral", "finding_refs": ["f1"], "text": "Vascular surgery consultation advised for symptomatic high-grade stenosis.", "priority": "urgent", "provenance": { "origin": "content_pack_default", "actor": "dr_abinash", "created_at": "2026-07-09T13:07:00Z", "edited": false }, "ai": null } ],
+  "critical_flags": [],
+  "provenance": { "created_by": "dr_abinash", "created_at": "2026-07-09T13:00:00Z", "authoring_app": "care-radiology-report-generator", "authoring_app_version": "2.3.1", "input_methods": ["manual","quick_select"], "content_pack_versions": { "vascular.doppler": "1.1.0" }, "template_ref": "tpl.doppler_carotid", "revision": 3 },
+  "ai": { "runs": [], "guarding": { "auto_sign": false } },
+  "audit": { "schema_version": "1.0.0", "hash_algorithm": "jcs-sha256/1", "created_at": "2026-07-09T13:00:00Z", "last_modified_at": "2026-07-09T13:07:00Z", "revision": 3, "revisions": [ { "revision": 1, "at": "2026-07-09T13:00:00Z", "by": "dr_abinash", "action": "created" } ], "content_sha256": "sha256:3c4d5e", "audit_log_ref": null, "signature": { "state": "draft", "signed_by": null, "signed_role": null, "signed_at": null, "signed_content_sha256": null, "amends_document_id": null } },
+  "extensions": {}
+}

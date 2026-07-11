@@ -221,9 +221,11 @@ export async function sendDailySummaryEmail(params: {
   pendingBills: number;
   totalPayments: number;
   billsEdited: number;
-}) {
+}, opts?: { force?: boolean }) {
   const s = await getEmailSettings();
-  if (!s || !s.dailySummaryEnabled) return;
+  // `force` is used by the manual "Send Summary Now" button so an admin can
+  // verify delivery even while the scheduled daily send is turned off.
+  if (!s || (!s.dailySummaryEnabled && !opts?.force)) return;
 
   const transport = await getTransporter();
   if (!transport) return;

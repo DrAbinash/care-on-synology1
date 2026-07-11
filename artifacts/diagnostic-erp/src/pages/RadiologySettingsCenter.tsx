@@ -14,8 +14,15 @@ import {
   Network, Server, MonitorPlay, Radio, BrainCircuit,
   Wrench, Activity, ShieldAlert, Laptop, CheckCircle2,
   XCircle, AlertTriangle, RefreshCw, Plus, Save, Trash2,
-  Tv2, Zap, ShieldCheck, PlayCircle, Info, Palette
+  Tv2, Zap, ShieldCheck, PlayCircle, Info, Palette, Mic
 } from "lucide-react";
+import type { UseMutationResult } from "@tanstack/react-query";
+// M1.6B2 — voice layer settings (same pacs_settings persistence as this page)
+import {
+  parseVoiceSettings, resolveProviderChoice, createVoiceProvider,
+  isWebSpeechSupported, fetchServerTranscribeAvailable,
+  type TranscriptionSession,
+} from "@/lib/voiceTranscription";
 import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 
 // Sub-panels imported or reconstructed for unified look
@@ -32,6 +39,7 @@ import {
   AmendmentManagerCard, SonographerModeCard, DicomSrExportCard,
 } from "@/components/smartRadiology/SmartRadiologyCards";
 import { RisMonitorCommandGrid } from "@/components/risMonitoring/RisMonitorCards";
+import ViewerNetworkRoutesCard from "@/components/radiology/ViewerNetworkRoutesCard";
 
 type Setting = { id: number; key: string; value: string | null; category: string; isSecret: boolean };
 type ServiceHealth = { name: string; endpoint: string; status: "green" | "yellow" | "red"; details: string };
@@ -45,6 +53,23 @@ type HealthResponse = {
     conquestDicom: ServiceHealth;
   };
 };
+
+/**
+ * Frontend-side mirror of the backend's isDockerBridgeIp (see
+ * lib/pacs/pacsConfig.ts, fixed in commit 3142eb4e). Kept as a small,
+ * independent copy since the frontend bundle cannot import server code —
+ * same logic, same 172.16.1.x exclusion for the real clinic LAN subnet, so
+ * warnings shown here always agree with what the backend would flag.
+ */
+function isDockerBridgeIpLike(value: string): boolean {
+  if (!value) return false;
+  const m = value.match(/172\.(1[6-9]|2[0-9]|3[01])\.(\d+)\./);
+  if (!m) return false;
+  const secondOctet = Number(m[1]);
+  const thirdOctet = Number(m[2]);
+  if (secondOctet === 16 && thirdOctet === 1) return false;
+  return true;
+}
 
 export default function RadiologySettingsCenter() {
   const { toast } = useToast();
@@ -164,13 +189,19 @@ export default function RadiologySettingsCenter() {
     onError: (err: any) => toast({ title: "Failed to save settings", description: err.message, variant: "destructive" }),
   });
 
-  // Auto detect closest profile based on network speed/reachability
+  // Auto detect closest profile based on network speed/reachability.
+  // Reads the ACTUAL configured URLs from settings (same source of truth as
+  // the rest of this page and as getRadiologyConfig() on the backend) rather
+  // than hardcoded IP literals — consistent with the bridge-IP-safe fix in
+  // commit 3142eb4e. If no OHIF/Orthanc URL is configured yet, this safely
+  // skips probing rather than guessing an address.
   useEffect(() => {
+    if (settings.length === 0) return; // wait for settings to load first
     const probeNetwork = async () => {
       // 1. Probe LAN Orthanc first (fastest)
       try {
         const start = Date.now();
-        const res = await fetch(`${orthancBaseForProfile("LAN")}/`, { method: "HEAD", mode: "no-cors" });
+        await fetch(`${orthancBaseForProfile("LAN")}/`, { method: "HEAD", mode: "no-cors" });
         const latency = Date.now() - start;
         setDetectedProfile("LAN");
         setDetectionReason(`LAN reached successfully in ${latency}ms.`);
@@ -196,7 +227,7 @@ export default function RadiologySettingsCenter() {
     };
 
     probeNetwork();
-  }, []);
+  }, [settings]);
 
   const activeProfile = profileOverride === "auto" ? detectedProfile : profileOverride;
 
@@ -217,6 +248,20 @@ export default function RadiologySettingsCenter() {
           </Button>
         }
       />
+
+      {/* Help box — required orientation text for all radiology/PACS settings */}
+      <div className="rounded-xl border bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800 p-4 flex items-start gap-2.5">
+        <Info className="text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" size={16} />
+        <p className="text-xs text-muted-foreground">
+          Use this page for all Radiology, PACS, DICOM, OHIF, Weasis, worklist, and radiology report
+          settings. <strong className="text-foreground">Public URLs</strong> (OHIF Viewer URL, Weasis WADO URL,
+          Orthanc URL) must be reachable from clinic PCs — use your LAN IP, Tailscale IP, or public
+          domain. <strong className="text-foreground">Internal URLs</strong> are only for server/container
+          communication and are configured via environment variables (see .env.example). Do not use Docker
+          bridge IPs like <code className="bg-blue-100 dark:bg-blue-900/40 px-1 rounded">172.17.x.x</code> for
+          public viewer URLs — the system will warn you if one is detected.
+        </p>
+      </div>
 
       {/* Network Profile Notification Banner */}
       <div className="rounded-xl border bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-slate-900 dark:to-slate-800 border-blue-200 dark:border-blue-800 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -255,6 +300,7 @@ export default function RadiologySettingsCenter() {
           <TabsTrigger value="reporting"><BrainCircuit size={14} className="mr-1.5" />AI &amp; Templates</TabsTrigger>
           <TabsTrigger value="style"><Palette size={14} className="mr-1.5" />Report Style</TabsTrigger>
           <TabsTrigger value="premium"><Zap size={14} className="mr-1.5" />Premium Report</TabsTrigger>
+          <TabsTrigger value="voice"><Mic size={14} className="mr-1.5" />Voice</TabsTrigger>
           <TabsTrigger value="diagnostics"><Activity size={14} className="mr-1.5" />Diagnostics</TabsTrigger>
           <TabsTrigger value="history"><Info size={14} className="mr-1.5" />History</TabsTrigger>
           <TabsTrigger value="advanced"><ShieldAlert size={14} className="mr-1.5" />Advanced</TabsTrigger>
@@ -458,45 +504,55 @@ export default function RadiologySettingsCenter() {
             </div>
 
             <div className="space-y-4 pt-4 border-t">
-              {/* One-click fix for clinic LAN defaults */}
+              {/* Quick-fill for clinic LAN — no IP is invented; asks for the
+                  real address instead of assuming 192.168.1.137, which is
+                  not correct for every deployment. */}
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-start gap-3">
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs font-semibold text-amber-800">Set Clinic LAN Defaults</p>
+                  <p className="text-xs font-semibold text-amber-800">Quick-fill Clinic LAN Addresses</p>
                   <p className="text-xs text-amber-700 mt-0.5">
-                    Sets OHIF → <code className="bg-amber-100 px-1 rounded">{hostForProfile("LAN")}:3010</code> and
-                    Weasis WADO → <code className="bg-amber-100 px-1 rounded">{hostForProfile("LAN")}:8042/wado</code>
+                    Fills OHIF, DICOMweb, and Weasis WADO fields below using one LAN IP you provide.
                   </p>
                 </div>
                 <button
                   className="flex-shrink-0 px-3 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white rounded-md"
                   onClick={() => {
-                    upsertSetting.mutate({ key: "ohif_base_url",               value: ohifBaseForProfile("LAN"),                                  category: "viewer" });
-                    upsertSetting.mutate({ key: "dicom_web_base_url",           value: `${ohifBaseForProfile("LAN")}/dicom-web`,                         category: "viewer" });
+                    const lanIp = window.prompt("Enter your clinic's LAN IP (e.g. 192.168.1.137) — never a Docker bridge IP like 172.17.x.x:");
+                    if (!lanIp) return;
+                    if (isDockerBridgeIpLike(lanIp)) {
+                      toast({ title: "That looks like a Docker bridge IP", description: "Use your real clinic LAN IP instead — browsers and Weasis cannot reach Docker-internal addresses.", variant: "destructive" });
+                      return;
+                    }
+                    upsertSetting.mutate({ key: "ohif_base_url",               value: `http://${lanIp}:3010`,                                  category: "viewer" });
+                    upsertSetting.mutate({ key: "dicom_web_base_url",           value: `http://${lanIp}:3010/dicom-web`,                         category: "viewer" });
                     upsertSetting.mutate({ key: "ohif_study_url_template",      value: "{OHIF_BASE_URL}/viewer?StudyInstanceUIDs={studyInstanceUID}", category: "viewer" });
-                    upsertSetting.mutate({ key: "wado_uri_base_url",            value: `${orthancBaseForProfile("LAN")}/wado`,                             category: "viewer" });
-                    upsertSetting.mutate({ key: "weasis_wado_url",              value: `${orthancBaseForProfile("LAN")}/wado`,                             category: "viewer" });
-                    upsertSetting.mutate({ key: "weasis_manifest_url_template", value: `weasis://$dicom:get -w "${orthancBaseForProfile("LAN")}/wado?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"`, category: "viewer" });
+                    upsertSetting.mutate({ key: "wado_uri_base_url",            value: `http://${lanIp}:8042/wado`,                             category: "viewer" });
+                    upsertSetting.mutate({ key: "weasis_wado_url",              value: `http://${lanIp}:8042/wado`,                             category: "viewer" });
+                    upsertSetting.mutate({ key: "weasis_manifest_url_template", value: `weasis://$dicom:get -w "http://${lanIp}:8042/wado?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"`, category: "viewer" });
                     upsertSetting.mutate({ key: "viewer_mode",                  value: "BOTH",                                                       category: "viewer" });
                     upsertSetting.mutate({ key: "default_viewer",               value: "OHIF",                                                       category: "viewer" });
                   }}
                 >
-                  Set Defaults
+                  Fill In LAN IP…
                 </button>
               </div>
 
               <div className="space-y-1.5">
-                <Label className="text-xs font-semibold">OHIF Viewer URL</Label>
+                <Label className="text-xs font-semibold">OHIF Viewer URL <span className="text-muted-foreground font-normal">(public — browser-reachable)</span></Label>
                 <Input
                   value={settings.find(s => s.key === "ohif_base_url")?.value ?? ""}
                   onChange={(e) => upsertSetting.mutate({ key: "ohif_base_url", value: e.target.value, category: "viewer" })}
                   className="h-9 text-sm"
                   placeholder={ohifBaseForProfile("LAN")}
                 />
-                <p className="text-[11px] text-muted-foreground">Your NAS IP + port 3010 (where OHIF is running)</p>
+                {isDockerBridgeIpLike(settings.find(s => s.key === "ohif_base_url")?.value ?? "") && (
+                  <p className="text-[11px] text-red-600 font-medium">⚠ This looks like a Docker bridge IP (172.17.x.x-172.31.x.x) — browsers cannot reach it. Use your clinic LAN IP, Tailscale IP, or public domain instead.</p>
+                )}
+                <p className="text-[11px] text-muted-foreground">Your clinic LAN IP + port 3010 (where OHIF is running). Never a Docker bridge IP.</p>
               </div>
 
               <div className="space-y-1.5">
-                <Label className="text-xs font-semibold">Weasis Manifest / WADO URL</Label>
+                <Label className="text-xs font-semibold">Weasis Manifest / WADO URL <span className="text-muted-foreground font-normal">(public — Weasis-reachable)</span></Label>
                 <Input
                   value={settings.find(s => s.key === "weasis_wado_url")?.value ?? ""}
                   onChange={(e) => {
@@ -506,10 +562,36 @@ export default function RadiologySettingsCenter() {
                   className="h-9 text-sm"
                   placeholder={`${orthancBaseForProfile("LAN")}/wado`}
                 />
-                <p className="text-[11px] text-muted-foreground">Orthanc WADO endpoint — your NAS IP + :8042/wado</p>
+                {isDockerBridgeIpLike(settings.find(s => s.key === "weasis_wado_url")?.value ?? "") && (
+                  <p className="text-[11px] text-red-600 font-medium">⚠ This looks like a Docker bridge IP — local Weasis installs cannot reach it. Use your clinic LAN IP, Tailscale IP, or public domain instead.</p>
+                )}
+                <p className="text-[11px] text-muted-foreground">Orthanc WADO endpoint — your clinic LAN IP + :8042/wado. Never a Docker bridge IP.</p>
+              </div>
+
+              {/* Internal URLs — read-only display. These are set via .env,
+                  not editable here, since they're infra/deployment-level
+                  (container-to-container), not clinic-level configuration.
+                  See ORTHANC_INTERNAL_URL / OHIF_INTERNAL_URL in .env.example. */}
+              <div className="rounded-lg border border-dashed bg-muted/30 p-3 space-y-2">
+                <p className="text-xs font-semibold text-muted-foreground">Internal URLs (server/container only — set via .env, not here)</p>
+                <div className="grid sm:grid-cols-2 gap-2 text-[11px] font-mono text-muted-foreground">
+                  <div>ORTHANC_INTERNAL_URL<br /><span className="text-foreground">http://care-orthanc:8042</span></div>
+                  <div>OHIF_INTERNAL_URL<br /><span className="text-foreground">(optional — only if health-check probes can't reach the public URL above)</span></div>
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  These are used only for the API server's own health-check probes — never for the URL that opens in a doctor's browser or Weasis. Docker service names (like <code>care-orthanc</code>) are fine here, since this traffic never leaves the Docker network.
+                </p>
               </div>
             </div>
           </div>
+
+          {/* M1.2 — network routes for reliable study launch (AUTO/LAN/
+              Tailscale/Cloudflare/Public). One owner section; LAN reuses the
+              existing keys above. */}
+          <ViewerNetworkRoutesCard
+            getSetting={(key) => settings.find((s) => s.key === key)?.value ?? ""}
+            setSetting={(key, value) => upsertSetting.mutate({ key, value, category: "viewer" })}
+          />
         </TabsContent>
 
         {/* Tab content 5: DICOM & MWL */}
@@ -844,6 +926,11 @@ export default function RadiologySettingsCenter() {
           <RadiologyStylePanel />
         </TabsContent>
 
+        {/* Tab content 8.6: Voice commands & dictation (M1.6B2) */}
+        <TabsContent value="voice" className="space-y-4">
+          <VoiceSettingsPanel settings={settings} upsertSetting={upsertSetting} isAdmin={isAdmin} />
+        </TabsContent>
+
         {/* Tab content 9: Advanced */}
         <TabsContent value="advanced" className="space-y-4">
           <div className="rounded-xl border bg-card p-5 space-y-4">
@@ -881,6 +968,189 @@ export default function RadiologySettingsCenter() {
           </div>
         </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// M1.6B2 — Voice commands & dictation settings (pacs_settings, category
+// "voice"; consumed by the Reporting Workspace's voice layer). POST is
+// admin-gated server-side, so controls are disabled for non-admins.
+// ════════════════════════════════════════════════════════════════════════════
+
+function VoiceSettingsPanel({ settings, upsertSetting, isAdmin }: {
+  settings: Setting[];
+  upsertSetting: UseMutationResult<unknown, Error, object>;
+  isAdmin: boolean;
+}) {
+  const voice = parseVoiceSettings(settings);
+  const set = (key: string, value: string) => upsertSetting.mutate({ key, value, category: "voice" });
+
+  const { data: serverAvailable = false } = useQuery<boolean>({
+    queryKey: ["voice-transcribe-status"],
+    queryFn: fetchServerTranscribeAvailable,
+    staleTime: 60_000,
+  });
+  const webSpeech = isWebSpeechSupported();
+  const effectiveProvider = resolveProviderChoice(voice.provider, {
+    serverAvailable, webSpeechSupported: webSpeech, injectedPresent: false,
+  });
+
+  const [micTest, setMicTest] = useState<string | null>(null);
+  const [micDevices, setMicDevices] = useState<Array<{ deviceId: string; label: string }>>([]);
+  const [sttTest, setSttTest] = useState<string | null>(null);
+  const [sttTesting, setSttTesting] = useState(false);
+
+  async function testMicrophone() {
+    setMicTest("Requesting microphone…");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const label = stream.getAudioTracks()[0]?.label || "unnamed device";
+      stream.getTracks().forEach((t) => t.stop());
+      setMicTest(`✓ Microphone OK: ${label}`);
+      // After permission, labels become readable — refresh the device list.
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      setMicDevices(devices.filter((d) => d.kind === "audioinput").map((d) => ({ deviceId: d.deviceId, label: d.label || d.deviceId })));
+    } catch (err) {
+      const name = err instanceof DOMException ? err.name : "";
+      setMicTest(name === "NotAllowedError"
+        ? "✗ Permission denied — allow the microphone in the browser's site settings, then retry"
+        : `✗ Microphone test failed${name ? ` (${name})` : ""}`);
+    }
+  }
+
+  function testTranscription() {
+    if (!effectiveProvider) { setSttTest("✗ No transcription provider available"); return; }
+    setSttTesting(true);
+    setSttTest("Listening for ~4 seconds — say a short phrase…");
+    const provider = createVoiceProvider(effectiveProvider);
+    let session: TranscriptionSession | null = null;
+    session = provider.start(
+      { lang: voice.language, deviceId: voice.inputDeviceId },
+      {
+        onInterim: (t) => { if (t) setSttTest(`… ${t}`); },
+        onStatus: () => undefined,
+        onResult: (r) => {
+          setSttTesting(false);
+          setSttTest(r.transcript ? `✓ Heard: “${r.transcript}”` : "✗ Heard nothing — check the microphone and try again");
+        },
+        onError: (message) => { setSttTesting(false); setSttTest(`✗ ${message}`); },
+      },
+    );
+    window.setTimeout(() => session?.stop(), 4000);
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border bg-card p-5 space-y-4">
+        <h3 className="font-semibold text-sm flex items-center gap-2">
+          <Mic size={16} className="text-primary" /> Voice Commands &amp; Dictation
+        </h3>
+        <p className="text-xs text-muted-foreground">
+          Voice drives the Reporting Workspace's existing command dispatcher — it never bypasses locks,
+          permissions, or the finalize confirmation. When voice is off or unavailable, keyboard and mouse
+          work exactly as before.
+        </p>
+        {!isAdmin && (
+          <p className="text-xs text-amber-700">Only administrators can change these settings.</p>
+        )}
+
+        <div className="grid sm:grid-cols-2 gap-4">
+          <div className="flex items-center gap-2">
+            <Switch id="voice-enabled" checked={voice.enabled} disabled={!isAdmin}
+              onCheckedChange={(v) => set("voice_enabled", v ? "true" : "false")} />
+            <Label htmlFor="voice-enabled" className="text-xs cursor-pointer">Voice enabled</Label>
+          </div>
+          <div className="flex items-center gap-2">
+            <Switch id="voice-punct" checked={voice.autoPunctuation} disabled={!isAdmin}
+              onCheckedChange={(v) => set("voice_auto_punctuation", v ? "true" : "false")} />
+            <Label htmlFor="voice-punct" className="text-xs cursor-pointer">Auto punctuation (capitalize + terminal period, spoken “full stop/comma/new line”)</Label>
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Transcription provider</Label>
+            <select className="w-full h-9 text-sm border rounded-md px-2 bg-background" disabled={!isAdmin}
+              value={voice.provider} onChange={(e) => set("voice_provider", e.target.value)}>
+              <option value="auto">Auto (server when configured, else browser)</option>
+              <option value="server">Server (clinic AI provider)</option>
+              <option value="browser">Browser (Web Speech API)</option>
+            </select>
+            <p className="text-[11px] text-muted-foreground">
+              Server transcription: {serverAvailable ? "configured ✓" : "not configured (AI provider key missing)"} ·
+              Browser Web Speech: {webSpeech ? "supported ✓" : "not supported"} ·
+              Effective: <strong>{effectiveProvider ?? "none — voice will show as unavailable"}</strong>
+            </p>
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Recognition language</Label>
+            <Input className="h-9 text-sm" disabled={!isAdmin} defaultValue={voice.language}
+              key={voice.language} onBlur={(e) => { if (e.target.value.trim() && e.target.value.trim() !== voice.language) set("voice_language", e.target.value.trim()); }}
+              placeholder="en-IN" />
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Push-to-talk key</Label>
+            <select className="w-full h-9 text-sm border rounded-md px-2 bg-background" disabled={!isAdmin}
+              value={voice.pttKey} onChange={(e) => set("voice_ptt_key", e.target.value)}>
+              <option value="Space">Space (held, outside text fields)</option>
+              <option value="off">Off (buttons / Ctrl+Space only)</option>
+            </select>
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Default mode</Label>
+            <select className="w-full h-9 text-sm border rounded-md px-2 bg-background" disabled={!isAdmin}
+              value={voice.defaultMode} onChange={(e) => set("voice_default_mode", e.target.value)}>
+              <option value="command">Command mode (parse spoken commands)</option>
+              <option value="dictation">Dictation mode (insert utterances as text, previewed)</option>
+            </select>
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Confirmation policy</Label>
+            <select className="w-full h-9 text-sm border rounded-md px-2 bg-background" disabled={!isAdmin}
+              value={voice.confirmationPolicy} onChange={(e) => set("voice_confirmation_policy", e.target.value)}>
+              <option value="standard">Standard (confirm replace/verify/finalize and dirty transitions)</option>
+              <option value="strict">Strict (confirm every edit too)</option>
+            </select>
+            <p className="text-[11px] text-muted-foreground">Finalize ALWAYS requires a click plus the standard finalize confirmation — no policy relaxes that.</p>
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Microphone device (server transcription only)</Label>
+            <select className="w-full h-9 text-sm border rounded-md px-2 bg-background" disabled={!isAdmin || micDevices.length === 0}
+              value={voice.inputDeviceId ?? ""} onChange={(e) => set("voice_input_device", e.target.value)}>
+              <option value="">System default</option>
+              {micDevices.map((d) => <option key={d.deviceId} value={d.deviceId}>{d.label}</option>)}
+            </select>
+            <p className="text-[11px] text-muted-foreground">
+              Run “Test microphone” to list devices. Browser Web Speech always uses the system default microphone —
+              the browser API offers no device selection.
+            </p>
+          </div>
+        </div>
+
+        {/* Local vs cloud — truthful privacy note (Phase 11) */}
+        <div className="rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-950/20 p-3 text-[11px] text-amber-900 dark:text-amber-200">
+          <strong>Where audio goes:</strong> Server transcription sends recorded audio to this clinic's API server,
+          which forwards it to the configured AI provider (Gemini) using a server-side key — no keys or direct external
+          calls in the browser. Browser Web Speech (Chrome/Edge) sends audio to the browser vendor's speech service.
+          No local/offline engine is installed. Raw audio is never logged; the workspace audits only high-risk voice
+          commands (finalize/verify) with command type, user, study and outcome — never the dictated text.
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <Button variant="outline" size="sm" onClick={() => void testMicrophone()}>
+            <Mic size={13} className="mr-1.5" /> Test microphone
+          </Button>
+          {micTest && <span className="text-xs">{micTest}</span>}
+          <Button variant="outline" size="sm" onClick={testTranscription} disabled={sttTesting || !effectiveProvider}>
+            <PlayCircle size={13} className="mr-1.5" /> Test transcription
+          </Button>
+          {sttTest && <span className="text-xs">{sttTest}</span>}
+        </div>
+      </div>
     </div>
   );
 }

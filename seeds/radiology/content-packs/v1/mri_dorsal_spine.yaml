@@ -1,0 +1,269 @@
+# CARE Radiology — MRI Dorsal (Thoracic) Spine Content Pack (production v1)
+# Reuses the shared spine grammar (disc morphology/zone/root via v1 params) with dorsal levels.
+# Binds to _shared_libraries.yaml (+ v1_1).
+
+pack:
+  pack_id: mri_dorsal_spine
+  version: 1.0.0
+  locale: en-IN
+  status: active
+
+study:
+  study: MRI Dorsal Spine
+  modality: MR
+  aliases: [MRI dorsal spine, MRI thoracic spine, MRI D-spine, DL spine MRI]
+  description: >-
+    Dorsal (thoracic) spine MRI for back pain, myelopathy, trauma, suspected cord compression,
+    metastases or Koch's spine. Cord-centric — the thoracic canal is narrow, so cord signal and
+    compression dominate the read.
+  default_sections: [Clinical details, Technique, Findings, Cord assessment, Impression, Advice]
+  quick_select_groups:
+    - {name: Pinned, tiles: [mrds.normal_study, mrds.spondylosis, mrds.disc_herniation, mrds.cord_compression, mrds.collapse]}
+    - {name: Alignment/degenerative, tiles: [mrds.spondylosis, mrds.kyphoscoliosis, mrds.disc_herniation]}
+    - {name: Cord, tiles: [mrds.cord_compression, mrds.cord_signal, mrds.syrinx]}
+    - {name: Marrow, tiles: [mrds.collapse, mrds.hemangioma, mrds.metastasis, mrds.infection]}
+
+findings:
+  - id_key: mrds.normal_study
+    display_name: Normal MRI dorsal spine
+    synonyms: [normal thoracic spine, NAD dorsal spine]
+    keyboard_aliases: [nds]
+    default_sentence: "{{tpl.normal.mri_dorsal_spine}}"
+    parameters: []
+    severity: null
+    laterality: null
+    location: []
+    measurements: []
+    impression_fragment: "No significant dorsal disc herniation, canal stenosis or cord compression."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai:
+      completeness_checks:
+        - {id: mrds.normal_study.k1, glyph: "circle", rule: "cord signal not explicitly stated normal", message: "Explicitly state normal cord signal."}
+      contradiction_checks:
+        - {id: mrds.normal_study.c1, severity: block, glyph: "X", rule: "any positive finding present AND normal impression used", message: "Normal impression contradicts a positive finding."}
+      differential: []
+      follow_up: []
+
+  - id_key: mrds.spondylosis
+    display_name: Dorsal spondylosis
+    synonyms: [thoracic spondylosis, degenerative changes]
+    keyboard_aliases: [dspon]
+    default_sentence: "Marginal osteophytes with disc desiccation at multiple dorsal levels — dorsal spondylosis."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [loc.spine_dorsal]
+    measurements: []
+    impression_fragment: "Dorsal spondylosis."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: []}
+
+  - id_key: mrds.disc_herniation
+    display_name: Dorsal disc herniation
+    synonyms: [thoracic disc protrusion, dorsal PIVD, disc herniation]
+    keyboard_aliases: [ddh]
+    default_sentence: "{disc_morphology} disc at {location} ({disc_zone}) indenting the thecal sac and {root_involvement} the cord/roots, with {severity} canal compromise."
+    parameters: [param.disc_morphology, param.disc_zone, param.root_involvement]
+    severity: sev.canal
+    laterality: null
+    location: [loc.spine_dorsal.discs]
+    measurements: [meas.canal_ap]
+    impression_fragment: "{location} {disc_morphology} disc causing {severity} canal compromise."
+    recommendation: ["Orthopaedic / neurosurgical opinion", "Clinical correlation"]
+    recommendation_code: [rec.spec_ortho, rec.clincorr]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrds.disc_herniation.k1, glyph: "circle", rule: "disc herniation AND cord signal at that level not commented", message: "Comment on cord signal at any dorsal disc herniation (narrow canal)."}
+      contradiction_checks: []
+      differential: ["degenerative disc herniation", "calcified thoracic disc", "disc-osteophyte complex"]
+      follow_up: ["dedicated axial / contrast sequences if cord signal abnormal"]
+
+  - id_key: mrds.cord_compression
+    display_name: Cord compression
+    synonyms: [thoracic cord compression, compressive myelopathy]
+    keyboard_aliases: [dcc]
+    default_sentence: "{severity} compression of the dorsal cord at {location} due to {cause}, with {cord signal change/no signal change}."
+    parameters: []
+    severity: sev.canal_compromise
+    laterality: null
+    location: [loc.spine_dorsal]
+    measurements: [meas.cord_ap, meas.canal_encroach]
+    impression_fragment: "{severity} dorsal cord compression at {location} — surgical opinion advised."
+    recommendation: ["Neurosurgical / spine surgery opinion", "URGENT if acute deficit"]
+    recommendation_code: [rec.spec_nsx, rec.urgent]
+    criticality: {critical_if: "acute/progressive deficit", registry: crit.cord_compression}
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrds.cord_compression.k1, glyph: "circle", rule: "cord compression AND cord signal change status not stated", message: "State whether cord signal change is present (prognostic)."}
+      contradiction_checks:
+        - {id: mrds.cord_compression.c1, severity: block, glyph: "X", rule: "severe/critical compression with acute deficit in indication AND escalation not started", message: "Acute cord compression — start escalation before signing."}
+      differential: ["disc/osteophyte", "metastatic epidural compression", "infective (TB) epidural collection", "epidural hematoma"]
+      follow_up: ["urgent spine surgery opinion", "contrast MRI to define cause"]
+
+  - id_key: mrds.cord_signal
+    display_name: Cord signal change (dorsal)
+    synonyms: [myelomalacia, cord edema, cord T2 hyperintensity]
+    keyboard_aliases: [dcs]
+    default_sentence: "Abnormal T2 hyperintense cord signal at {location} — {differential}."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [loc.spine_dorsal]
+    measurements: []
+    impression_fragment: "Dorsal cord signal change at {location} — clinical correlation and contrast study advised."
+    recommendation: ["Neurology consultation", "Contrast MRI"]
+    recommendation_code: [rec.spec_neuro, rec.contrast_mri]
+    criticality: significant
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["compressive myelopathy", "demyelination", "cord infarct", "transverse myelitis", "cord tumour"], follow_up: ["contrast MRI", "neurology correlation"]}
+
+  - id_key: mrds.syrinx
+    display_name: Syrinx (dorsal cord)
+    synonyms: [syringomyelia, syrinx]
+    keyboard_aliases: [dsyr]
+    default_sentence: "CSF-signal cavity within the dorsal cord from {location} to {location} — syrinx (length {syrinx})."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [loc.spine_dorsal]
+    measurements: [meas.syrinx]
+    impression_fragment: "Dorsal cord syrinx — assess CVJ for Chiari and exclude an associated tumour."
+    recommendation: ["Neurosurgical consultation", "Contrast MRI"]
+    recommendation_code: [rec.spec_nsx, rec.contrast_mri]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrds.syrinx.k1, glyph: "circle", rule: "syrinx AND CVJ / associated tumour not assessed", message: "Assess the CVJ (Chiari) and exclude an associated cord tumour."}
+      contradiction_checks: []
+      differential: ["Chiari-related", "post-traumatic", "tumour-associated", "idiopathic"]
+      follow_up: ["contrast MRI", "CVJ imaging"]
+
+  - id_key: mrds.kyphoscoliosis
+    display_name: Kyphosis / kyphoscoliosis
+    synonyms: [exaggerated kyphosis, kyphoscoliosis]
+    keyboard_aliases: [kyph]
+    default_sentence: "Exaggerated dorsal kyphosis with {scoliosis_dir} scoliosis (Cobb {cobb_angle}), apex at {location}."
+    parameters: [param.scoliosis_dir]
+    severity: sev.scoliosis
+    laterality: null
+    location: [loc.spine_dorsal]
+    measurements: [meas.cobb_angle]
+    impression_fragment: "Dorsal kyphoscoliosis, {severity}, apex at {location}."
+    recommendation: ["Orthopaedic consultation"]
+    recommendation_code: [rec.spec_ortho]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["postural/degenerative", "congenital", "post-tubercular gibbus"], follow_up: []}
+
+  - id_key: mrds.collapse
+    display_name: Vertebral collapse (dorsal)
+    synonyms: [compression fracture, wedge collapse, vertebra plana]
+    keyboard_aliases: [dcol]
+    default_sentence: "{course} compression collapse of the {location} vertebra with {marrow edema present/absent}{, retropulsion causing canal compromise}."
+    parameters: [param.course]
+    severity: null
+    laterality: null
+    location: [loc.spine_dorsal.vertebrae]
+    measurements: [meas.canal_encroach]
+    impression_fragment: "{course} collapse of {location} — {benign vs pathological} pattern; correlation advised."
+    recommendation: ["Orthopaedic consultation", "DEXA / further imaging"]
+    recommendation_code: [rec.spec_ortho, rec.dexa]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrds.collapse.k1, glyph: "circle", rule: "vertebral collapse AND benign-vs-pathological features not addressed", message: "Address benign (edema, retropulsed fragment) vs pathological (marrow replacement, epidural soft tissue, posterior element/pedicle involvement) features."}
+      contradiction_checks:
+        - {id: mrds.collapse.c1, severity: warn, glyph: "triangle", rule: "posterior element/pedicle marrow replacement AND labelled osteoporotic", message: "Pedicle marrow replacement favours pathological over osteoporotic collapse."}
+      differential: ["osteoporotic collapse", "metastatic collapse", "tubercular collapse", "traumatic fracture"]
+      follow_up: ["contrast MRI", "bone scan / biopsy if pathological features"]
+
+  - id_key: mrds.hemangioma
+    display_name: Vertebral hemangioma (dorsal)
+    synonyms: [haemangioma]
+    keyboard_aliases: [dhem]
+    default_sentence: "T1/T2 hyperintense lesion with coarse trabeculae in the {location} vertebral body — typical hemangioma."
+    parameters: [param.size]
+    severity: null
+    laterality: null
+    location: [loc.spine_dorsal.vertebrae]
+    measurements: []
+    impression_fragment: "Vertebral hemangioma at {location} — incidental."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["typical hemangioma", "atypical hemangioma", "focal deposit"], follow_up: []}
+
+  - id_key: mrds.metastasis
+    display_name: Dorsal marrow metastasis
+    synonyms: [marrow deposit, secondaries, metastatic collapse]
+    keyboard_aliases: [dmet]
+    default_sentence: "{count} T1-hypointense marrow-replacing lesion(s) in the {location} vertebra(e){, with epidural soft tissue and cord compromise} — suspicious for metastases."
+    parameters: [param.count]
+    severity: null
+    laterality: null
+    location: [loc.spine_dorsal.vertebrae]
+    measurements: [meas.tumor_3d, meas.canal_encroach]
+    impression_fragment: "Dorsal marrow metastases at {location}{ with epidural extension} — oncology referral and contrast study advised."
+    recommendation: ["Contrast MRI", "Bone scan / PET-CT", "Oncology referral"]
+    recommendation_code: [rec.contrast_mri, rec.bone_scan, rec.spec_onc]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrds.metastasis.k1, glyph: "circle", rule: "marrow metastasis AND epidural extension / cord compromise not commented", message: "Comment on epidural extension and cord compromise."}
+      contradiction_checks: []
+      differential: ["metastases", "myeloma", "lymphoma", "tubercular deposits"]
+      follow_up: ["contrast MRI", "bone scan / PET-CT", "oncology referral"]
+
+  - id_key: mrds.infection
+    display_name: Dorsal spondylodiscitis (Koch's / pyogenic)
+    synonyms: [spondylodiscitis, Koch's spine, discitis, Pott's spine]
+    keyboard_aliases: [dinf]
+    default_sentence: "Altered marrow signal in the {location} vertebra(e) with disc destruction and paravertebral/epidural collection — infective spondylodiscitis (tubercular vs pyogenic)."
+    parameters: [param.tb_activity]
+    severity: null
+    laterality: null
+    location: [loc.spine_dorsal.vertebrae]
+    measurements: [meas.canal_encroach]
+    impression_fragment: "Dorsal infective spondylodiscitis at {location} — tubercular vs pyogenic; contrast study and correlation advised."
+    recommendation: ["Contrast MRI", "Start ATT correlation", "Clinical/lab correlation"]
+    recommendation_code: [rec.contrast_mri, rec.atd, rec.clincorr]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrds.infection.k1, glyph: "circle", rule: "infective changes AND paravertebral/epidural collection not commented", message: "Comment on paravertebral and epidural collections."}
+      contradiction_checks:
+        - {id: mrds.infection.c1, severity: warn, glyph: "triangle", rule: "disc space preserved AND labelled infective", message: "Preserved disc favours metastasis over infection (esp. TB spares disc early)."}
+      differential: ["tubercular spondylodiscitis (Pott's)", "pyogenic spondylodiscitis", "degenerative Modic I change"]
+      follow_up: ["contrast MRI", "ESR/CRP, TB workup", "consider MRI spine tuberculosis protocol"]
+
+combo_tiles:
+  - {id: combo.mrds.myelopathy, label: "Dorsal myelopathy set", members: [mrds.cord_compression, mrds.cord_signal], recommendations: [rec.spec_nsx]}
+  - {id: combo.mrds.mets_cord, label: "Metastasis + cord compromise", members: [mrds.metastasis, mrds.cord_compression], recommendations: [rec.urgent, rec.spec_onc, rec.spec_nsx]}
+  - {id: combo.mrds.kochs, label: "Dorsal Koch's spine", members: [mrds.infection], recommendations: [rec.contrast_mri, rec.atd]}
+
+normal_template: tpl.normal.mri_dorsal_spine
+
+critical_findings:
+  - crit.cord_compression
+  - crit.epidural_abscess
+  - crit.tb_cord_compression
+
+implementation_notes:
+  - "Dorsal canal is narrow — cord signal must be stated with any disc herniation or compression (completeness rules)."
+  - "Benign vs pathological collapse: pedicle/posterior-element marrow replacement and epidural soft tissue flag pathological."
+  - "For dedicated TB assessment route to mri_spine_tuberculosis.yaml."
+  - "Indian terms: Pott's spine / Koch's spine = tubercular spondylodiscitis; 'gibbus' = angular kyphotic deformity; 'secondaries' = metastasis."

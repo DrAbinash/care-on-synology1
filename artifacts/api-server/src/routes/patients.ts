@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, patientsTable, patientCounterTable } from "@workspace/db";
-import { eq, ilike, or, sql, desc, and, gt } from "drizzle-orm";
+import { eq, ilike, or, sql, desc, and, gt, inArray } from "drizzle-orm";
 import {
   ListPatientsQueryParams,
   CreatePatientBody,
@@ -329,40 +329,56 @@ patientsRouter.get("/:id/history", async (req, res) => {
 
   const orders = await db.select().from(ordersTable).where(eq(ordersTable.patientId, parsed.data.id)).orderBy(desc(ordersTable.createdAt));
 
-  const ordersWithTests = await Promise.all(
-    orders.map(async (order) => {
-      const orderTests = await db
+  // Fetch this patient once (already known from the route param — no need to
+  // re-query it per order) and batch-fetch order-tests + doctors in two
+  // queries total instead of 2 queries PER ORDER (was a classic N+1: a
+  // patient with 40 orders triggered ~120 sequential DB round-trips here).
+  const [patient] = await db.select().from(patientsTable).where(eq(patientsTable.id, parsed.data.id));
+  const sanitizedPatient = patient ? sanitizePatient(patient) : null;
+
+  const orderIds = orders.map((o) => o.id);
+  const doctorIds = [...new Set(orders.map((o) => o.doctorId).filter((id): id is number => id != null))];
+
+  const allOrderTests = orderIds.length
+    ? await db
         .select({ orderTest: orderTestsTable, test: testsTable })
         .from(orderTestsTable)
         .leftJoin(testsTable, eq(orderTestsTable.testId, testsTable.id))
-        .where(eq(orderTestsTable.orderId, order.id));
+        .where(inArray(orderTestsTable.orderId, orderIds))
+    : [];
+  const testsByOrderId = new Map<number, typeof allOrderTests>();
+  for (const row of allOrderTests) {
+    const list = testsByOrderId.get(row.orderTest.orderId) ?? [];
+    list.push(row);
+    testsByOrderId.set(row.orderTest.orderId, list);
+  }
 
-      let doctor = null;
-      if (order.doctorId) {
-        const [d] = await db.select().from(doctorsTable).where(eq(doctorsTable.id, order.doctorId));
-        doctor = d ?? null;
-      }
+  const doctors = doctorIds.length
+    ? await db.select().from(doctorsTable).where(inArray(doctorsTable.id, doctorIds))
+    : [];
+  const doctorsById = new Map(doctors.map((d) => [d.id, d]));
 
-      const [patient] = await db.select().from(patientsTable).where(eq(patientsTable.id, order.patientId));
+  const ordersWithTests = orders.map((order) => {
+    const orderTests = testsByOrderId.get(order.id) ?? [];
+    const doctor = order.doctorId ? (doctorsById.get(order.doctorId) ?? null) : null;
 
-      return {
-        ...order,
-        totalAmount: Number(order.totalAmount),
-        patient: patient ? sanitizePatient(patient) : null,
-        doctor,
-        tests: orderTests.map((ot) => ({
-          ...ot.orderTest,
-          price: Number(ot.orderTest.price),
-          test: ot.test
-            ? {
-                ...ot.test,
-                price: Number(ot.test.price),
-              }
-            : null,
-        })),
-      };
-    })
-  );
+    return {
+      ...order,
+      totalAmount: Number(order.totalAmount),
+      patient: sanitizedPatient,
+      doctor,
+      tests: orderTests.map((ot) => ({
+        ...ot.orderTest,
+        price: Number(ot.orderTest.price),
+        test: ot.test
+          ? {
+              ...ot.test,
+              price: Number(ot.test.price),
+            }
+          : null,
+      })),
+    };
+  });
 
   res.json({ orders: ordersWithTests, total: ordersWithTests.length, page: 1, limit: 100 });
 });

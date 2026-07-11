@@ -39,9 +39,9 @@ export default function Radiology() {
         {
           name: "Radiology Command Center",
           path: "/radiology/command-center",
-          description: "Recommended unified single-screen workstation. View list, open DICOM images, run AI drafts, write, and finalize reports.",
+          description: "Legacy single-screen workstation (deprecated in M1.1 — use the Reporting Workspace). Still fully functional.",
           icon: Layers,
-          badge: "Recommended",
+          badge: "Legacy",
           openInCommandCenter: true
         },
         {
@@ -140,11 +140,11 @@ export default function Radiology() {
       icon: Sliders,
       items: [
         {
-          name: "Legacy Reporting Workspace",
+          name: "Reporting Workspace",
           path: "/radiology/reporting-workspace",
-          description: "Legacy side-by-side template editor interface.",
+          description: "THE canonical radiology reporting page (M1.1): embedded viewer, Quick Select structured findings, templates, finalize.",
           icon: FileText,
-          badge: "Legacy"
+          badge: "Recommended"
         },
         {
           name: "Legacy Report Generator",
@@ -284,27 +284,27 @@ export default function Radiology() {
         subtitle="Grouped navigation console for radiology operations, reporting, and administration"
       />
 
-      {/* Featured Banner for Command Center */}
+      {/* Featured Banner — the canonical Reporting Workspace (M1.1 consolidation) */}
       <Card className="border-emerald-500/30 bg-emerald-500/5 overflow-hidden shadow-sm hover:shadow-md transition-shadow">
         <div className="p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div className="space-y-1.5 max-w-2xl">
             <div className="flex items-center gap-2">
-              <Badge className="bg-emerald-500 text-white font-bold uppercase tracking-wider text-[10px]">Recommended Workspace</Badge>
+              <Badge className="bg-emerald-500 text-white font-bold uppercase tracking-wider text-[10px]">Canonical Workspace</Badge>
               <Sparkles className="h-4 w-4 text-emerald-500 animate-spin" style={{ animationDuration: "3s" }} />
             </div>
             <CardTitle className="text-xl font-bold text-slate-100 flex items-center gap-2">
               <Layers className="text-emerald-500 h-5 w-5" />
-              Radiology Command Center
+              Reporting Workspace
             </CardTitle>
             <CardDescription className="text-slate-300 text-sm">
-              Worklist, Viewer, Findings, AI drafts, templates, and finalization in a single, unified view. Stop jumping back and forth between multiple separate pages.
+              The one radiologist reporting page: embedded viewer, structured Quick Select findings, templates, prior studies, and finalize — open studies from the Worklist Hub with "Open Report".
             </CardDescription>
           </div>
           <Button
-            onClick={() => navigate("/radiology/command-center")}
+            onClick={() => navigate("/radiology/reporting-workspace")}
             className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold flex items-center gap-2 px-5 h-11 shrink-0"
           >
-            Launch Command Center
+            Open Reporting Workspace
             <ArrowRight size={16} />
           </Button>
         </div>

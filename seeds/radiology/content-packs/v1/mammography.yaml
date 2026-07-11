@@ -1,0 +1,285 @@
+# CARE Radiology — Mammography Content Pack (production v1)
+# Binds to _shared_libraries.yaml (+ v1_2). Flat ai_* format.
+# BI-RADS category is structurally bound to its management line (sev.birads.mandatory_management).
+
+pack:
+  pack_id: mammography
+  version: 1.0.0
+  locale: en-IN
+  status: active
+
+study:
+  study: Mammography
+  modality: MG
+  aliases: [mammogram, MMG, bilateral mammography, screening mammogram]
+  default_report_sections: [Clinical details, Technique & comparison, Breast composition, Right breast, Left breast, Axillae, Impression (BI-RADS + management), Advice]
+  normal_template: tpl.normal.mammography
+  hard_rules:
+    - "Composition (sev.acr_density) is mandatory before sign-off."
+    - "Every study must end with a BI-RADS assessment; overall = worst side."
+    - "A BI-RADS category cannot be inserted without its bound management line (sev.birads.mandatory_management)."
+  quick_select_groups:
+    - {name: Pinned, tiles: [mmg.normal_b1, mmg.composition, mmg.benign_mass, mmg.birads_assessment, mmg.axillary_node]}
+    - {name: Composition, tiles: [mmg.composition]}
+    - {name: Mass, tiles: [mmg.benign_mass, mmg.suspicious_mass]}
+    - {name: Calcifications, tiles: [mmg.benign_calcs, mmg.suspicious_calcs]}
+    - {name: Other findings, tiles: [mmg.asymmetry, mmg.distortion, mmg.skin_nipple]}
+    - {name: Benign library, tiles: [mmg.postop_scar, mmg.intramammary_node]}
+    - {name: BI-RADS bar, tiles: [mmg.birads_assessment]}
+
+findings:
+  - id_key: mmg.normal_b1
+    display_name: Normal mammogram (BI-RADS 1)
+    category: Normal
+    synonyms: [normal MMG, negative mammogram]
+    keyboard_aliases: [mmn]
+    default_sentence: "{{tpl.normal.mammography}}"
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: []
+    measurements: []
+    impression_fragment: "BI-RADS 1 — Negative. Routine screening as per age."
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai_contradiction_rules:
+      - {id: mmg.normal_b1.c1, severity: block, glyph: "X", rule: "any suspicious finding present AND BI-RADS 1 impression used", message: "BI-RADS 1 contradicts a suspicious finding."}
+    ai_completeness_rules:
+      - {id: mmg.normal_b1.k1, glyph: "circle", rule: "breast composition not stated", message: "State breast composition (mandatory before sign-off)."}
+
+  - id_key: mmg.composition
+    display_name: Breast composition (ACR a-d)
+    category: Composition
+    synonyms: [breast density, ACR density]
+    keyboard_aliases: [da, db, dc, dd]
+    default_sentence: "Both breasts show {severity} fibroglandular composition."
+    parameters: []
+    severity: sev.acr_density
+    laterality: null
+    location_options: []
+    measurements: []
+    impression_fragment: null
+    recommendation_code: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mmg.benign_mass
+    display_name: Benign-appearing mass (fibroadenoma pattern)
+    category: Mass
+    synonyms: [FA, fibroadenoma, circumscribed mass]
+    keyboard_aliases: [fa]
+    default_sentence: "Well-circumscribed oval equal-density mass ({mass_size_2d}) in the {location}, with coarse popcorn calcification."
+    parameters: [param.mass_shape, param.margin]
+    severity: null
+    laterality: null
+    location_options: [loc.breast_locator]
+    measurements: [meas.mass_size_2d]
+    impression_fragment: "Benign-appearing mass {location} — likely fibroadenoma."
+    recommendation_code: [rec.usg_corr]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mmg.suspicious_mass
+    display_name: Suspicious mass
+    category: Mass
+    synonyms: [spiculated mass, irregular mass]
+    keyboard_aliases: [spic]
+    default_sentence: "Irregular high-density mass ({mass_size_2d}) with {margin} margins in the {location}, with associated suspicious calcifications and skin/nipple retraction."
+    parameters: [param.mass_shape, param.margin]
+    severity: null
+    laterality: null
+    location_options: [loc.breast_locator]
+    measurements: [meas.mass_size_2d]
+    impression_fragment: "Suspicious mass {location} — see BI-RADS assessment."
+    recommendation_code: [rec.biopsy]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mmg.suspicious_mass.c1, severity: block, glyph: "X", rule: "spiculated/irregular margin described AND BI-RADS <= 2 assigned", message: "Suspicious descriptor with BI-RADS 2 or less — descriptor/category mismatch."}
+    ai_completeness_rules: []
+
+  - id_key: mmg.benign_calcs
+    display_name: Typically benign calcifications
+    category: Calcifications
+    synonyms: [vascular calcs, popcorn calcs, dystrophic calcs]
+    keyboard_aliases: [bcal]
+    default_sentence: "{calc_morphology} calcifications in the {location} — typically benign."
+    parameters: [param.calc_morphology]
+    severity: null
+    laterality: null
+    location_options: [loc.breast_locator]
+    measurements: []
+    impression_fragment: "Typically benign calcifications."
+    recommendation_code: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mmg.suspicious_calcs
+    display_name: Suspicious microcalcifications
+    category: Calcifications
+    synonyms: [microcalcs, pleomorphic calcifications]
+    keyboard_aliases: [scal]
+    default_sentence: "{calc_morphology} microcalcifications in {calc_distribution} distribution in the {location}."
+    parameters: [param.calc_morphology, param.calc_distribution]
+    severity: null
+    laterality: null
+    location_options: [loc.breast_locator]
+    measurements: []
+    impression_fragment: "Suspicious microcalcifications {location} — see BI-RADS assessment."
+    recommendation_code: [rec.biopsy]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mmg.suspicious_calcs.c1, severity: block, glyph: "X", rule: "fine pleomorphic/linear-branching calcs described AND BI-RADS <= 2 assigned", message: "Suspicious calcifications with BI-RADS 2 or less — descriptor/category mismatch."}
+    ai_completeness_rules: []
+
+  - id_key: mmg.asymmetry
+    display_name: Asymmetry / developing asymmetry
+    category: Asymmetry
+    synonyms: [focal asymmetry, developing asymmetry]
+    keyboard_aliases: [asym]
+    default_sentence: "{change} asymmetry in the {location}, new compared with prior mammogram."
+    parameters: [param.change]
+    severity: null
+    laterality: null
+    location_options: [loc.breast_locator]
+    measurements: []
+    impression_fragment: "Asymmetry {location} — see BI-RADS assessment."
+    recommendation_code: [rec.usg_corr]
+    criticality: {significant_if: "developing/new"}
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mmg.distortion
+    display_name: Architectural distortion
+    category: Distortion
+    synonyms: [architectural distortion]
+    keyboard_aliases: [dist]
+    default_sentence: "Architectural distortion in the {location} without definite central mass, no prior surgery at this site."
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: [loc.breast_locator]
+    measurements: []
+    impression_fragment: "Architectural distortion {location} — see BI-RADS assessment."
+    recommendation_code: [rec.biopsy]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mmg.skin_nipple
+    display_name: Skin thickening / nipple retraction
+    category: Associated features
+    synonyms: [skin thickening, nipple retraction]
+    keyboard_aliases: [sknp]
+    default_sentence: "Skin thickening/nipple retraction noted in the {laterality} breast, new compared with priors."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location_options: []
+    measurements: []
+    impression_fragment: "Associated skin/nipple change {laterality} — see BI-RADS assessment."
+    recommendation_code: []
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mmg.axillary_node
+    display_name: Axillary lymph node
+    category: Axilla
+    synonyms: [axillary LAP]
+    keyboard_aliases: [axn]
+    default_sentence: "{laterality} axillary node(s): enlarged, dense, with loss of fatty hilum ({node_short_axis})."
+    parameters: []
+    severity: null
+    laterality: lat.rlb
+    location_options: []
+    measurements: [meas.node_short_axis]
+    impression_fragment: "{laterality} axillary lymphadenopathy — suspicious morphology."
+    recommendation_code: []
+    criticality: {significant_if: "suspicious morphology"}
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mmg.postop_scar
+    display_name: Post-operative / stable scar
+    category: Benign
+    synonyms: [surgical scar, stable scar]
+    keyboard_aliases: [scar]
+    default_sentence: "Architectural distortion at the {location} corresponding to prior surgery — stable compared with prior films."
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: [loc.breast_locator]
+    measurements: []
+    impression_fragment: "Stable post-surgical changes."
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mmg.intramammary_node
+    display_name: Intramammary node
+    category: Benign
+    synonyms: [intramammary lymph node]
+    keyboard_aliases: [imn]
+    default_sentence: "Small circumscribed node with fatty hilum in the {location} — benign intramammary node."
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: [loc.breast_locator]
+    measurements: []
+    impression_fragment: null
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: mmg.birads_assessment
+    display_name: BI-RADS assessment (+ bound management)
+    category: Assessment
+    synonyms: [BI-RADS, birads category]
+    keyboard_aliases: [b0, b1, b2, b3, b4a, b4b, b4c, b5, b6]
+    default_sentence: null
+    parameters: []
+    severity: sev.birads
+    laterality: null
+    location_options: []
+    measurements: []
+    impression_fragment: "BI-RADS {severity} — {bound management line}."
+    recommendation_code: []
+    criticality: {critical_if: "category 5", registry: crit.birads5}
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: mmg.birads_assessment.c1, severity: block, glyph: "X", rule: "BI-RADS category present AND bound management line absent", message: "BI-RADS category without its bound management line — cannot sign."}
+      - {id: mmg.birads_assessment.c2, severity: block, glyph: "X", rule: "finding side vs indication (palpable-lump) side mismatch", message: "Finding side does not match the clinically indicated side."}
+    ai_completeness_rules:
+      - {id: mmg.birads_assessment.k1, glyph: "circle", rule: "overall BI-RADS not set to worst side", message: "Set overall BI-RADS to the worst side."}
+      - {id: mmg.birads_assessment.k2, glyph: "circle", rule: "priors available AND comparison not stated", message: "State comparison with prior mammograms when available."}
+
+combo_tiles:
+  - {id: combo.mmg.screen_neg, label: "Screening negative", members: [mmg.composition, mmg.normal_b1]}
+  - {id: combo.mmg.benign_set, label: "Benign screen (B2)", members: [mmg.composition, mmg.benign_mass, {ref: mmg.birads_assessment, category: "2"}]}
+  - {id: combo.mmg.suspicious_set, label: "Suspicious (B4/5)", members: [{ref: mmg.suspicious_mass, alt: mmg.suspicious_calcs}, {ref: mmg.birads_assessment, category: "4a"}], recommendations: [rec.biopsy]}
+
+critical_findings:
+  - crit.birads5
+
+implementation_notes:
+  - "sev.birads must be seeded so inserting a category ALWAYS carries its bound management line (mandatory_management: true). There must be no seed path yielding a category without management."
+  - "Descriptor-vs-category is a BLOCKING contradiction: spiculated mass or fine pleomorphic calcs with BI-RADS <= 2 cannot sign."
+  - "Composition is mandatory (c/d auto-appends the dense-breast rider); overall BI-RADS = worst side."
+  - "BI-RADS 5 is critical (crit.birads5). Indian terms: MMG = mammogram; FA = fibroadenoma; microcalcs; UOQ/UIQ/LOQ/LIQ quadrants; CC/MLO views."

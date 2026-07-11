@@ -70,9 +70,25 @@ const readline = require("readline");
 // ════════════════════════════════════════════════════════════════════════════
 
 const ARGS    = process.argv.slice(2);
-const MODE    = ARGS.includes("--repair") ? "repair"
-              : ARGS.includes("--reset")  ? "reset"
+// Repair mode now requires an EXPLICIT opt-in: either the --repair CLI flag
+// (for manual/emergency use via `docker compose run --rm care-migrate ...`)
+// or the SCHEMA_REPAIR=true environment variable (for an operator who wants
+// the old always-repair behaviour on a specific deployment). In normal
+// automated redeploys, care-schema-verify is READ-ONLY by default — it
+// reports drift but never mutates the schema. care-db-patch-v2 is the single
+// source of truth for schema changes; see docs/DEPLOYMENT.md.
+const REPAIR_REQUESTED = ARGS.includes("--repair") || process.env.SCHEMA_REPAIR === "true";
+const MODE    = ARGS.includes("--reset") ? "reset"
+              : REPAIR_REQUESTED         ? "repair"
               : "verify";
+// By default, verify mode reports drift but does NOT fail the deployment
+// (exit 0) — it's informational, same spirit as "safe compatibility check".
+// Set SCHEMA_VERIFY_STRICT=true to restore the old behaviour where any
+// drift found in --verify mode blocks care-api from starting. DB identity
+// mismatches and connection/load failures always fail hard regardless of
+// this setting — those aren't "drift", they're "this might be the wrong
+// database entirely".
+const VERIFY_STRICT = process.env.SCHEMA_VERIFY_STRICT === "true";
 const JSON_OUT  = ARGS.includes("--json");
 const VERBOSE   = ARGS.includes("--verbose") || ARGS.includes("-v");
 const QUIET     = ARGS.includes("--quiet")   || ARGS.includes("-q");
@@ -151,8 +167,29 @@ function tryExec(cmd) {
 
 function normaliseType(raw) {
   if (!raw) return "unknown";
-  const t = raw.toLowerCase().trim()
+  let t = String(raw).trim();
+  // Strip a schema-qualification prefix (`public.foo`, `"public"."foo"`) —
+  // PostgreSQL resolves both to the same type, and only the unqualified
+  // name is ever exposed via udt_name. Must run BEFORE the wrapping-quote
+  // strip below, or a quoted+qualified type like `"public"."outsource_status"`
+  // would only get its schema prefix removed, leaving the quotes in place.
+  t = t.replace(/^"?[A-Za-z_][A-Za-z0-9_]*"?\./, "");
+  // Strip a wrapping pair of double quotes around a custom/enum type name
+  // (e.g. `"outsource_status"`, as written in a CREATE TABLE column
+  // definition referencing a CREATE TYPE ... AS ENUM). PostgreSQL's
+  // information_schema always reports the udt_name unquoted, so a quoted
+  // expected type would otherwise never match live and would be reported as
+  // a permanent false-positive mismatch for every enum-typed column.
+  t = t.replace(/^"([^"]+)"$/, "$1");
+  t = t.toLowerCase().trim()
     .replace(/\s+/g, " ")
+    // Defensive net: a trailing comma/semicolon here means a caller passed
+    // a raw comma-separated-list token through without stopping at the
+    // delimiter. The real fix is parsing correctly upstream (see
+    // TYPE_TOKEN_COLUMN_RE) — this only guards against the same class of
+    // bug resurfacing through some other, not-yet-audited caller.
+    .replace(/[,;]+$/, "")
+    .replace(/\s*\[\s*\]/g, "[]")
     .replace(/character varying(\(\d+\))?/g, "text")
     .replace(/character\s*varying/g, "text")
     .replace(/^varchar(\(\d+\))?$/, "text")
@@ -199,6 +236,61 @@ function typesCompatible(a, b) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// SQL COLUMN-DEFINITION TOKEN PATTERNS
+// ════════════════════════════════════════════════════════════════════════════
+// Root cause of the "expected 'text,' / got 'text'" false-positive class:
+// the type-token capture used to be a bare `\S+`, which greedily consumes
+// ANY non-whitespace character — including the comma that ends a column
+// definition in a CREATE TABLE body. For a line like `"email" text,` that
+// captured "text," (comma and all), so ~35% of all columns parsed from this
+// repo's real migrations carried a spurious trailing comma no live
+// PostgreSQL type ever has. TYPE_TOKEN_COLUMN_RE stops at the delimiter
+// instead of swallowing it.
+
+// Group 1: quoted column name. Group 2: the type token — either a quoted
+// identifier (custom/enum type, e.g. "outsource_status") or a word token
+// with optional " varying" (character varying), optional
+// "(precision[, scale])" (whitespace-tolerant, e.g. "numeric(10, 2)"), and
+// optional array bracket suffixes (e.g. "text[]").
+const TYPE_TOKEN_COLUMN_RE =
+  /^"([^"]+)"\s+("[^"]+"|\w+(?:\s+varying)?(?:\s*\(\s*\d+(?:\s*,\s*\d+)?\s*\))?(?:\s*\[\s*\])*)/i;
+
+// Matches a DEFAULT value: a single-quoted string literal (handling ''
+// escapes and an optional ::type cast), OR a single-level parenthesized
+// call such as now() / nextval('x_id_seq'::regclass), OR a bare token
+// (number/boolean/identifier) up to the next whitespace/comma/semicolon.
+// The old `[^\s,)]+` stopped at the first space or ")", so it truncated any
+// multi-word quoted default (`DEFAULT 'AI Draft...'` -> `'AI`) and
+// unbalanced function-call defaults (`DEFAULT now()` -> `now(`).
+const DEFAULT_VALUE_RE =
+  /DEFAULT\s+('(?:[^']|'')*'(?:::[\w".[\]]+)?|\([^)]*\)|[^\s,;]+)/i;
+
+// ════════════════════════════════════════════════════════════════════════════
+// REPAIR MODE HELPER — type-appropriate DEFAULT literal
+// ════════════════════════════════════════════════════════════════════════════
+//
+// When repair mode has to ADD COLUMN a NOT NULL column that has no explicit
+// DEFAULT in the source SQL, it must synthesize one so existing rows can be
+// backfilled. A single hardcoded `DEFAULT ''` (the previous behaviour) is
+// invalid SQL for non-text types — e.g. `numeric` — and made repair mode
+// fail on columns like payment_logs.amount. This picks a safe literal per
+// normalised type family instead.
+const NUMERIC_TYPE_FAMILIES = new Set([
+  "integer", "bigint", "numeric", "decimal", "real", "double precision", "smallint",
+]);
+
+function defaultLiteralForType(rawType) {
+  // Strip precision/scale, e.g. "numeric(10, 2)" -> "numeric", so family
+  // lookup below matches regardless of parametrized precision.
+  const t = normaliseType(String(rawType || "").replace(/\([^)]*\)/, ""));
+  if (NUMERIC_TYPE_FAMILIES.has(t)) return "0";
+  if (t === "boolean") return "false";
+  if (t === "jsonb" || t === "json") return "'{}'::jsonb";
+  if (t.startsWith("timestamp")) return "now()";
+  return "''"; // text and anything else unrecognised
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // TABLES CREATED BY API STARTUP (not in SQL migration files)
 // These get a WARNING not a FAIL — they're created by runStartupMigrations()
 // in index.ts and will exist after the first API startup.
@@ -218,6 +310,35 @@ const RUNTIME_CREATED_TABLES = new Set([
   // Internal tracking tables created by db-patch-entrypoint.sh
   "schema_migrations_log", "schema_deploy_state",
 ]);
+
+// ════════════════════════════════════════════════════════════════════════════
+// SOURCE 6: TABLES CREATED INLINE BY care-api's runStartupMigrations()
+// ════════════════════════════════════════════════════════════════════════════
+// artifacts/api-server/src/index.ts contains ~90 `CREATE TABLE IF NOT EXISTS`
+// statements that are NOT tracked by any migrations/*.sql or
+// lib/db/drizzle/*.sql file — a separate, sanctioned source of truth for
+// table creation (see DEPLOYMENT.md "Single source of truth for schema").
+// "Extra table" (possible manual/out-of-band drift) detection below needs to
+// know about these, or it would flag ~90 completely legitimate tables as
+// suspicious every single run — noise that would bury any genuine manual
+// drift signal. This function only extracts table NAMES (not full column
+// definitions) purely for that exclusion purpose.
+function extractRuntimeTableNames() {
+  const names = new Set();
+  try {
+    const indexTsPath = path.join(REPO_ROOT, "artifacts/api-server/src/index.ts");
+    if (!fs.existsSync(indexTsPath)) return names;
+    const src = fs.readFileSync(indexTsPath, "utf8");
+    const re = /CREATE TABLE(?:\s+IF NOT EXISTS)?\s+"?(\w+)"?\s*\(/gi;
+    let m;
+    while ((m = re.exec(src)) !== null) names.add(m[1]);
+  } catch {
+    // Best-effort — if this can't be read, extra-table detection simply
+    // becomes more conservative (falls back to expected.tables only) rather
+    // than crashing the whole verifier over a nice-to-have check.
+  }
+  return names;
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // SOURCE 1 + 3: PARSE MIGRATION SQL FILES
@@ -256,7 +377,22 @@ function parseSqlFiles(sqlEntries) {
         if (line.startsWith("--")) continue;
 
         // Column definition
-        const colM = line.match(/^"([^"]+)"\s+(\S+(?:\s+with time zone|\s+without time zone)?(?:\(\d+(?:,\s*\d+)?\))?)/i);
+        //
+        // The type-token group used to be a bare `\S+`, which is greedy over
+        // ANY non-whitespace character — including the comma that separates
+        // this column from the next one. For a line like `"email" text,` it
+        // captured "text," (comma included), so the expected type stored for
+        // ~35% of all columns in this codebase's migrations carried a
+        // spurious trailing comma that no live PostgreSQL type ever has —
+        // the exact false-positive class reported as
+        // `expected 'text,' / got 'text'`. TYPE_TOKEN_RE instead matches
+        // either a quoted identifier (custom/enum types like
+        // "outsource_status") or a word token with optional " varying",
+        // optional "(precision[, scale])" (internal whitespace tolerant),
+        // and optional array brackets — so it stops cleanly at the comma,
+        // NOT NULL/DEFAULT/PRIMARY KEY keywords, or closing paren instead of
+        // swallowing them.
+        const colM = line.match(TYPE_TOKEN_COLUMN_RE);
         if (colM && !line.match(/^CONSTRAINT/i)) {
           const colName = colM[1];
           let rawType = colM[2];
@@ -268,7 +404,15 @@ function parseSqlFiles(sqlEntries) {
           const isUniq  = /UNIQUE/i.test(line);
           const isSerial = /\bserial\b/i.test(line) || /\bbigserial\b/i.test(line);
           const isJsonb  = /\bjsonb\b/i.test(line);
-          const defaultM = line.match(/DEFAULT\s+([^\s,)]+)/i);
+          // Same class of bug as the type token above: the old
+          // `[^\s,)]+` stopped at the FIRST space or close-paren, so
+          // `DEFAULT now()` captured "now(" (unbalanced) and any multi-word
+          // quoted default like `DEFAULT 'AI Draft – Requires Radiologist
+          // Review'` captured only `'AI`. DEFAULT_VALUE_RE instead matches a
+          // full single-quoted string literal (handling '' escapes and an
+          // optional ::type cast), a single-level parenthesized call, or a
+          // bare token — whichever applies.
+          const defaultM = line.match(DEFAULT_VALUE_RE);
           const defaultVal = defaultM ? defaultM[1] : null;
 
           if (!ti.columns.has(colName)) {
@@ -302,36 +446,149 @@ function parseSqlFiles(sqlEntries) {
       }
     }
 
-    // ── ALTER TABLE ADD COLUMN ─────────────────────────────────────────────
+    // ── ALTER TABLE ADD/DROP/RENAME COLUMN ─────────────────────────────────
+    // These three are collected together and then replayed in the order they
+    // actually appear in the file (by regex match index), because later
+    // statements in the SAME migration file can DROP or RENAME a column that
+    // an earlier statement (or an earlier migration file) ADDed. Processing
+    // ADD COLUMN in isolation — as this used to do — meant a column that was
+    // added in an old migration and later renamed/dropped by a newer one
+    // stayed "expected" forever, which is exactly what caused --repair to
+    // keep re-adding deprecated dicom_nodes columns (pull_interval_minutes,
+    // pull_query_days) on every redeploy after they'd already been migrated
+    // away to pull_interval_seconds / query_lookback_hours.
+    const colOps = [];
+
     const acRe = /ALTER TABLE(?:\s+IF EXISTS)?\s+"?(\w+)"?\s+ADD COLUMN(?:\s+IF NOT EXISTS)?\s+"?(\w+)"?\s+([^\n;,]+)/gi;
     let ac;
     while ((ac = acRe.exec(clean)) !== null) {
-      const tbl = ac[1]; const colName = ac[2];
-      let rawType = ac[3].trim();
-      const notNull = /NOT NULL/i.test(rawType);
-      const isJsonb = /jsonb/i.test(rawType);
-      if (/timestamp with time zone/i.test(rawType)) rawType = "timestamptz";
-      else if (/timestamp without time zone/i.test(rawType)) rawType = "timestamp";
-      if (/jsonb/i.test(rawType)) rawType = "jsonb";
-      rawType = rawType.replace(/NOT NULL.*/i, "").replace(/DEFAULT.*/i, "").trim();
+      colOps.push({ index: ac.index, kind: "add", table: ac[1], column: ac[2], rawTypeSrc: ac[3] });
+    }
 
-      if (!tables.has(tbl)) {
-        tables.set(tbl, { columns: new Map(), indexes: new Set(), pks: new Set(), uniques: new Set(), fks: [], fromFile: tag });
+    const dcRe = /ALTER TABLE(?:\s+IF EXISTS)?\s+"?(\w+)"?\s+DROP COLUMN(?:\s+IF EXISTS)?\s+"?(\w+)"?/gi;
+    let dc;
+    while ((dc = dcRe.exec(clean)) !== null) {
+      colOps.push({ index: dc.index, kind: "drop", table: dc[1], column: dc[2] });
+    }
+
+    const rnRe = /ALTER TABLE(?:\s+IF EXISTS)?\s+"?(\w+)"?\s+RENAME COLUMN\s+"?(\w+)"?\s+TO\s+"?(\w+)"?/gi;
+    let rn;
+    while ((rn = rnRe.exec(clean)) !== null) {
+      colOps.push({ index: rn.index, kind: "rename", table: rn[1], from: rn[2], to: rn[3] });
+    }
+
+    // ALTER TABLE x RENAME TO y — table rename. Must not match "RENAME
+    // COLUMN" above (that requires the literal COLUMN keyword between
+    // RENAME and the column name; this pattern requires TO immediately
+    // after RENAME, so the two never both match the same text).
+    const rtRe = /ALTER TABLE(?:\s+IF EXISTS)?\s+"?(\w+)"?\s+RENAME TO\s+"?(\w+)"?/gi;
+    let rt;
+    while ((rt = rtRe.exec(clean)) !== null) {
+      colOps.push({ index: rt.index, kind: "renameTable", from: rt[1], to: rt[2] });
+    }
+
+    // ALTER TABLE x ALTER COLUMN y [SET DATA] TYPE ztype — covers the common
+    // single-clause form Drizzle generates. Without this, a column that
+    // legitimately changed type in a later migration would keep reporting a
+    // false type-mismatch warning against its original (now stale) type
+    // forever, the same class of bug fixed above for dropped/renamed columns.
+    const acTypeRe = /ALTER TABLE(?:\s+IF EXISTS)?\s+"?(\w+)"?\s+ALTER COLUMN\s+"?(\w+)"?\s+(?:SET DATA\s+)?TYPE\s+([^\n;,]+)/gi;
+    let at;
+    while ((at = acTypeRe.exec(clean)) !== null) {
+      colOps.push({ index: at.index, kind: "retype", table: at[1], column: at[2], rawTypeSrc: at[3] });
+    }
+
+    colOps.sort((a, b) => a.index - b.index);
+
+    for (const op of colOps) {
+      if (op.kind === "add") {
+        const tbl = op.table; const colName = op.column;
+        let rawType = op.rawTypeSrc.trim();
+        const notNull = /NOT NULL/i.test(rawType);
+        const isJsonb = /jsonb/i.test(rawType);
+        if (/timestamp with time zone/i.test(rawType)) rawType = "timestamptz";
+        else if (/timestamp without time zone/i.test(rawType)) rawType = "timestamp";
+        if (/jsonb/i.test(rawType)) rawType = "jsonb";
+        rawType = rawType.replace(/NOT NULL.*/i, "").replace(/DEFAULT.*/i, "").trim();
+
+        if (!tables.has(tbl)) {
+          tables.set(tbl, { columns: new Map(), indexes: new Set(), pks: new Set(), uniques: new Set(), fks: [], fromFile: tag });
+        }
+        const ti = tables.get(tbl);
+        if (!ti.columns.has(colName)) {
+          ti.columns.set(colName, {
+            type: normaliseType(rawType.split("(")[0].replace(/\(.*/, "").trim()),
+            rawType,
+            notNull,
+            isPk: false,
+            isSerial: false,
+            isJsonb,
+            defaultVal: null,
+            fromFile: tag,
+            fromAlter: true,
+          });
+        }
+      } else if (op.kind === "drop") {
+        const ti = tables.get(op.table);
+        if (ti) {
+          ti.columns.delete(op.column);
+          ti.pks.delete(op.column);
+          ti.uniques.delete(op.column);
+        }
+      } else if (op.kind === "rename") {
+        const ti = tables.get(op.table);
+        if (ti && ti.columns.has(op.from)) {
+          const info = ti.columns.get(op.from);
+          const wasPk = ti.pks.has(op.from);
+          const wasUnique = ti.uniques.has(op.from);
+          ti.columns.delete(op.from);
+          ti.pks.delete(op.from);
+          ti.uniques.delete(op.from);
+          if (!ti.columns.has(op.to)) {
+            ti.columns.set(op.to, { ...info, fromFile: tag });
+          }
+          if (wasPk) ti.pks.add(op.to);
+          if (wasUnique) ti.uniques.add(op.to);
+        }
+      } else if (op.kind === "renameTable") {
+        if (tables.has(op.from) && !tables.has(op.to)) {
+          const ti = tables.get(op.from);
+          tables.delete(op.from);
+          tables.set(op.to, ti);
+        }
+      } else if (op.kind === "retype") {
+        const ti = tables.get(op.table);
+        if (ti && ti.columns.has(op.column)) {
+          let rawType = op.rawTypeSrc.trim();
+          if (/timestamp with time zone/i.test(rawType)) rawType = "timestamptz";
+          else if (/timestamp without time zone/i.test(rawType)) rawType = "timestamp";
+          if (/jsonb/i.test(rawType)) rawType = "jsonb";
+          rawType = rawType.replace(/USING.*/i, "").trim();
+          const existing = ti.columns.get(op.column);
+          ti.columns.set(op.column, {
+            ...existing,
+            type: normaliseType(rawType.split("(")[0].replace(/\(.*/, "").trim()),
+            rawType,
+            isJsonb: /jsonb/i.test(rawType),
+            fromFile: tag,
+          });
+        }
       }
-      const ti = tables.get(tbl);
-      if (!ti.columns.has(colName)) {
-        ti.columns.set(colName, {
-          type: normaliseType(rawType.split("(")[0].replace(/\(.*/, "").trim()),
-          rawType,
-          notNull,
-          isPk: false,
-          isSerial: false,
-          isJsonb,
-          defaultVal: null,
-          fromFile: tag,
-          fromAlter: true,
-        });
-      }
+    }
+
+    // ── DROP INDEX ────────────────────────────────────────────────────────
+    // Same class of fix as DROP COLUMN above: without this, an index that
+    // was created in an old migration and later dropped by a newer one would
+    // stay "expected" forever and get flagged as a false missing-index
+    // warning (or re-created by --repair) even though dropping it was
+    // intentional. DROP INDEX doesn't name its table, so remove it from
+    // every table's index set — index names are unique per-schema in
+    // Postgres, so at most one table will ever actually contain it.
+    const diRe = /DROP INDEX(?:\s+IF EXISTS)?\s+"?(\w+)"?/gi;
+    let di;
+    while ((di = diRe.exec(clean)) !== null) {
+      indexNames.delete(di[1]);
+      for (const ti of tables.values()) ti.indexes.delete(di[1]);
     }
 
     // ── CREATE INDEX ───────────────────────────────────────────────────────
@@ -348,6 +605,108 @@ function parseSqlFiles(sqlEntries) {
   }
 
   return { tables, indexNames, sourceConsistencyIssues };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// DEPLOYMENT GUARD — print exact DB target, verify identity, take a lock
+// ════════════════════════════════════════════════════════════════════════════
+// Mirrors the same guard implemented in docker/db-patch-entrypoint.sh. Both
+// must agree on what "safe" looks like, since either one can be the first
+// component to touch a given database.
+
+async function printDbTargetGuard(client, connStr) {
+  const safeDsn = connStr.replace(/:([^:@]+)@/, ":***@");
+  const [{ current_database: db }] = (await client.query("SELECT current_database();")).rows;
+  const [{ current_schema: schema }] = (await client.query("SELECT current_schema();")).rows;
+  const [{ addr }] = (await client.query("SELECT COALESCE(inet_server_addr()::text, 'unix-socket') AS addr;")).rows;
+  const [{ port }] = (await client.query("SHOW port;")).rows;
+  const [{ server_version: version }] = (await client.query("SHOW server_version;")).rows;
+  infoLog(`Connecting: ${safeDsn}`);
+  infoLog(`  current_database(): ${db}`);
+  infoLog(`  current_schema():   ${schema}`);
+  infoLog(`  server address:     ${addr}`);
+  infoLog(`  port:               ${port}`);
+  infoLog(`  server version:     ${version}`);
+}
+
+// DB IDENTITY CHECK — read-only. care-schema-verify never creates or seeds
+// system_database_identity itself (that's care-db-patch-v2's job, since it's
+// the single source of truth for schema mutation). If the table is missing
+// entirely, that's just "db-patch-v2 hasn't run yet on this DB" and is
+// informational. If the table EXISTS with a different app_name, that is
+// always a hard failure regardless of --verify/--repair/SCHEMA_VERIFY_STRICT
+// — it means this process might not even be pointed at the right database.
+async function checkDbIdentity(client, expectedAppName) {
+  let row;
+  try {
+    const res = await client.query(
+      "SELECT app_name, environment, instance_id FROM public.system_database_identity WHERE id = 1;"
+    );
+    row = res.rows[0];
+  } catch {
+    // Table doesn't exist yet — informational only, not an error.
+    warnLog("system_database_identity table not found (care-db-patch-v2 may not have run yet on this database)");
+    return { ok: true, checked: false };
+  }
+  if (!row) {
+    warnLog("system_database_identity table exists but has no row yet");
+    return { ok: true, checked: false };
+  }
+  if (row.app_name !== expectedAppName) {
+    failLog(
+      `DB IDENTITY MISMATCH: this database is stamped as app_name='${row.app_name}' ` +
+      `(environment=${row.environment}, instance_id=${row.instance_id}), but this process ` +
+      `expects app_name='${expectedAppName}'. Refusing to proceed — this looks like the wrong ` +
+      `database (wrong DATABASE_URL, wrong DB_HOST, or a restored backup from a different ` +
+      `project/environment).`
+    );
+    return { ok: false, checked: true, row };
+  }
+  okLog(`Database identity confirmed: app_name='${row.app_name}' environment='${row.environment}'`);
+  return { ok: true, checked: true, row };
+}
+
+// MIGRATION LOCK — only taken in --repair mode (the only mode that mutates).
+// Uses the same schema_migration_lock table as db-patch-entrypoint.sh so
+// both components coordinate through one visible, connection-independent
+// lock rather than two separate locking mechanisms.
+async function acquireMigrationLock(client, holderLabel) {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS public.schema_migration_lock (
+      id         INTEGER PRIMARY KEY DEFAULT 1,
+      locked     BOOLEAN NOT NULL DEFAULT FALSE,
+      locked_by  TEXT,
+      locked_at  TIMESTAMPTZ,
+      CONSTRAINT schema_migration_lock_singleton CHECK (id = 1)
+    );
+    INSERT INTO public.schema_migration_lock (id, locked) VALUES (1, FALSE) ON CONFLICT (id) DO NOTHING;
+  `);
+  const res = await client.query(
+    `UPDATE public.schema_migration_lock
+       SET locked = TRUE, locked_by = $1, locked_at = NOW()
+     WHERE id = 1 AND (locked = FALSE OR locked_at < NOW() - INTERVAL '10 minutes')
+     RETURNING 1;`,
+    [holderLabel]
+  );
+  if (res.rowCount !== 1) {
+    const cur = await client.query("SELECT locked_by, locked_at FROM public.schema_migration_lock WHERE id = 1;");
+    const holder = cur.rows[0];
+    throw new Error(
+      `Could not acquire schema migration lock — held by ${holder?.locked_by ?? "unknown"} since ${holder?.locked_at ?? "unknown"}. ` +
+      `If that run crashed more than 10 minutes ago the lock auto-expires; otherwise wait for it to finish.`
+    );
+  }
+}
+
+async function releaseMigrationLock(client, holderLabel) {
+  try {
+    await client.query(
+      "UPDATE public.schema_migration_lock SET locked = FALSE, locked_by = NULL WHERE id = 1 AND locked_by = $1;",
+      [holderLabel]
+    );
+  } catch {
+    // Best-effort — never let lock release failure mask the real result.
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -492,7 +851,19 @@ async function getLiveSchema(client) {
   const liveColumns = new Map();
   for (const r of colRes.rows) {
     if (!liveColumns.has(r.table_name)) liveColumns.set(r.table_name, new Map());
-    const normType = normaliseType(r.data_type === "USER-DEFINED" ? r.udt_name : r.data_type);
+    // For an array column (e.g. `text[]`), PostgreSQL reports
+    // data_type='ARRAY' with NO element-type info in data_type itself —
+    // the element type only appears in udt_name, prefixed with an
+    // underscore (udt_name='_text' for text[]). Without this, every real
+    // array column would report live type "array" forever, which can never
+    // match the "text[]" (etc.) that parseSqlFiles captures from source —
+    // a genuine, confirmed false positive (4 columns in this codebase:
+    // radiology_snippets.tags and 3 more), not a hypothetical one.
+    let typeSource;
+    if (r.data_type === "ARRAY") typeSource = `${r.udt_name.replace(/^_/, "")}[]`;
+    else if (r.data_type === "USER-DEFINED") typeSource = r.udt_name;
+    else typeSource = r.data_type;
+    const normType = normaliseType(typeSource);
     liveColumns.get(r.table_name).set(r.column_name, {
       type: normType, rawType: r.data_type, udt: r.udt_name,
       isNullable: r.is_nullable === "YES",
@@ -644,17 +1015,48 @@ function detectChecksumDrift(allEntries, featureMigApplied) {
 // DIFF ENGINE
 // ════════════════════════════════════════════════════════════════════════════
 
-function diffSchema(expected, live) {
+function diffSchema(expected, live, runtimeTableNames) {
   const {
     liveTables, liveColumns, livePks, liveUniques, liveIndexes,
     liveIndexByTable, liveFks, liveChecks, journalApplied, featureMigApplied, deployState
   } = live;
+
+  // Tables created outside migrations/*.sql and lib/db/drizzle/*.sql that are
+  // NOT "drift" — they're sanctioned sources of table creation elsewhere in
+  // the codebase. A live table not in ANY of these is a genuine candidate
+  // for manual/out-of-band schema drift (someone ran CREATE TABLE by hand)
+  // and gets reported in results.extraTables. This is informational only
+  // (does not set results.pass = false) — it's just as likely to be a table
+  // for a feature that was later removed as it is to be a live problem, and
+  // a human should look at it either way rather than have deployment block.
+  const INTERNAL_INFRA_TABLES = new Set([
+    "schema_migrations_log", "schema_deploy_state",
+    "system_database_identity", "schema_migration_lock",
+  ]);
+  const knownTableNames = new Set([
+    ...expected.tables.keys(),
+    ...(runtimeTableNames || []),
+    ...INTERNAL_INFRA_TABLES,
+  ]);
 
   const results = {
     pass: true,
     missingTables: [], runtimeOnlyMissing: [], extraTables: [],
     missingColumns: [], typeMismatches: [], nullableMismatches: [],
     missingIndexes: [], missingFks: [],
+    // Normalization events that were found NOT to be drift (e.g. varchar vs
+    // text, or 'text' vs 'text' after quote/case/whitespace normalization).
+    // These are intentionally excluded from typeMismatches/warnings/pass —
+    // recorded here instead so the normalization logic stays auditable
+    // rather than silently invisible (see PHASE 4 reporting requirements).
+    ignored: [],
+    // Unified, richly-classified view of every finding above (including
+    // ignored ones): { table, column, level, classification, expected,
+    // actual, reason, suggestedFix }. The category-specific arrays above
+    // keep their original (mostly plain-string/minimal-object) shapes
+    // unchanged for existing consumers (--repair, printResults,
+    // writeStartupMd, tests) — this is purely additive.
+    findings: [],
     jsonbColumns: [], serialColumns: [],
     sourceIssues: [],
     warnings: [],
@@ -663,6 +1065,27 @@ function diffSchema(expected, live) {
     indexesPassed: 0, indexesChecked: 0,
     journalApplied, featureMigApplied, deployState,
   };
+
+  for (const tblName of liveTables) {
+    if (!knownTableNames.has(tblName)) {
+      results.extraTables.push(tblName);
+      results.findings.push({
+        table: tblName, column: null,
+        level: "INFO", classification: "REAL",
+        expected: null, actual: "(table present)",
+        reason: `Table exists in the live database but isn't created by any migration file ` +
+          `(lib/db/drizzle/*.sql, migrations/*.sql) or care-api's runtime CREATE TABLE IF NOT ` +
+          `EXISTS statements — possible manual/out-of-band schema change, or a leftover from a ` +
+          `removed feature.`,
+        suggestedFix: `Review manually (see "Schema Drift" in DEPLOYMENT.md). Not blocking.`,
+      });
+      results.warnings.push(
+        `Table '${tblName}' exists in the database but isn't created by any migration file or ` +
+        `care-api runtime code — possible manual/out-of-band schema change. Not blocking, but worth ` +
+        `reviewing (see "Schema Drift" in DEPLOYMENT.md).`
+      );
+    }
+  }
 
   for (const [tblName, ti] of expected.tables.entries()) {
     // Skip internal tracking tables
@@ -673,9 +1096,25 @@ function diffSchema(expected, live) {
     if (!liveTables.has(tblName)) {
       if (RUNTIME_CREATED_TABLES.has(tblName)) {
         results.runtimeOnlyMissing.push(tblName);
+        results.findings.push({
+          table: tblName, column: null,
+          level: "INFO", classification: "EXPECTED DIFFERENCE",
+          expected: "(table present)", actual: "(table absent)",
+          reason: `Table is created by care-api's runStartupMigrations() on first startup, not by ` +
+            `a migration file — absence before first boot is expected, not drift.`,
+          suggestedFix: "None — will self-heal on next care-api startup.",
+        });
         results.warnings.push(`Table '${tblName}' not yet in DB — created by API on first startup (non-fatal)`);
       } else {
         results.missingTables.push(tblName);
+        results.findings.push({
+          table: tblName, column: null,
+          level: "ERROR", classification: "REAL",
+          expected: "(table present)", actual: "(table absent)",
+          reason: "Table declared in migration source but does not exist in the live database.",
+          suggestedFix: `Run "docker compose up -d --build" (applies pending migrations) or ` +
+            `"node scripts/db-schema-verify.cjs --repair".`,
+        });
         results.pass = false;
       }
       continue;
@@ -689,6 +1128,14 @@ function diffSchema(expected, live) {
 
       if (!liveCols.has(colName)) {
         results.missingColumns.push({ table: tblName, column: colName, expectedType: colInfo.type, fromFile: colInfo.fromFile });
+        results.findings.push({
+          table: tblName, column: colName,
+          level: "ERROR", classification: "REAL",
+          expected: colInfo.type, actual: "(column absent)",
+          reason: "Column declared in migration source but missing on the live table.",
+          suggestedFix: `Run "docker compose up -d --build" (applies pending migrations) or ` +
+            `"node scripts/db-schema-verify.cjs --repair".`,
+        });
         results.pass = false;
         continue;
       }
@@ -696,9 +1143,39 @@ function diffSchema(expected, live) {
 
       const liveCol = liveCols.get(colName);
 
-      // Type compatibility
-      if (!typesCompatible(colInfo.type, liveCol.type)) {
+      // Type compatibility. typesCompatible() already normalizes case,
+      // whitespace, quoting, schema-qualification, trailing punctuation, and
+      // known PostgreSQL type aliases (varchar/text, timestamp variants,
+      // serial/identity, json/jsonb) — anything that STILL doesn't match
+      // after that is a genuine difference, not a formatting artifact.
+      if (typesCompatible(colInfo.type, liveCol.type)) {
+        if (colInfo.type !== liveCol.type) {
+          // Raw tokens differed but normalized to the same/compatible type —
+          // this is exactly the kind of thing that used to be reported as a
+          // false positive. Record it as IGNORED (visible, not hidden) so
+          // the normalization stays auditable instead of silent.
+          const ignoredEntry = {
+            table: tblName, column: colName,
+            expected: colInfo.type, actual: liveCol.type,
+            level: "IGNORED", classification: "EXPECTED DIFFERENCE",
+            reason: `'${colInfo.type}' and '${liveCol.type}' are PostgreSQL-equivalent type ` +
+              `representations (see TYPE_GROUPS / normaliseType in scripts/db-schema-verify.cjs) — ` +
+              `not schema drift.`,
+            suggestedFix: "None — this is intentional normalization, not an error.",
+          };
+          results.ignored.push(ignoredEntry);
+          results.findings.push(ignoredEntry);
+        }
+      } else {
         results.typeMismatches.push({ table: tblName, column: colName, expected: colInfo.type, actual: liveCol.type });
+        results.findings.push({
+          table: tblName, column: colName,
+          level: "WARNING", classification: "REAL",
+          expected: colInfo.type, actual: liveCol.type,
+          reason: `No known PostgreSQL-equivalent alias between '${colInfo.type}' and '${liveCol.type}'.`,
+          suggestedFix: `Run a migration to align the column type, or if these ARE equivalent, add ` +
+            `them to TYPE_GROUPS in scripts/db-schema-verify.cjs.`,
+        });
         results.warnings.push(`Type mismatch ${tblName}.${colName}: expected '${colInfo.type}', live is '${liveCol.type}'`);
       }
 
@@ -715,6 +1192,15 @@ function diffSchema(expected, live) {
       // NOT NULL mismatch (warn only — safe to have DB more permissive)
       if (colInfo.notNull && liveCol.isNullable) {
         results.nullableMismatches.push({ table: tblName, column: colName });
+        results.findings.push({
+          table: tblName, column: colName,
+          level: "WARNING", classification: "REAL",
+          expected: "NOT NULL", actual: "NULLABLE",
+          reason: `Migration declares NOT NULL but the live column allows NULL. Safe direction ` +
+            `(the DB is more permissive than the source), but drifted from source of truth.`,
+          suggestedFix: `Backfill any existing NULLs then run ALTER TABLE ... ALTER COLUMN ... SET ` +
+            `NOT NULL, or update the Drizzle schema to match reality if NULL is now intentional.`,
+        });
         results.warnings.push(`Nullable mismatch: ${tblName}.${colName} expected NOT NULL but DB allows NULL`);
       }
     }
@@ -724,6 +1210,15 @@ function diffSchema(expected, live) {
       results.indexesChecked++;
       if (!liveIndexes.has(idxName)) {
         results.missingIndexes.push({ table: tblName, index: idxName });
+        results.findings.push({
+          table: tblName, column: null,
+          level: "WARNING", classification: "REAL",
+          expected: idxName, actual: "(index absent)",
+          reason: "Index declared in migration source but missing on the live table — degrades " +
+            "query performance, does not affect correctness.",
+          suggestedFix: `Run the migration that creates it. "--repair" cannot recreate an index from ` +
+            `its name alone — it needs the original CREATE INDEX definition.`,
+        });
         results.warnings.push(`Missing index '${idxName}' on '${tblName}'`);
       } else {
         results.indexesPassed++;
@@ -734,6 +1229,15 @@ function diffSchema(expected, live) {
     for (const fk of ti.fks) {
       if (!liveTables.has(fk.refTable) && !RUNTIME_CREATED_TABLES.has(fk.refTable)) {
         results.missingFks.push({ table: tblName, refTable: fk.refTable });
+        results.findings.push({
+          table: tblName, column: null,
+          level: "WARNING", classification: "REAL",
+          expected: fk.refTable, actual: "(referenced table absent)",
+          reason: `Migration references '${fk.refTable}' as a foreign key target, but that table ` +
+            `doesn't exist live and isn't a known runtime-created table.`,
+          suggestedFix: `Run "docker compose up -d --build" (applies pending migrations) or verify ` +
+            `'${fk.refTable}' wasn't renamed/dropped without updating this migration.`,
+        });
         results.warnings.push(`FK target missing: ${tblName} → ${fk.refTable}`);
       }
     }
@@ -799,6 +1303,10 @@ function printResults(r, git, pgVersion, stats) {
   }
   if (r.runtimeOnlyMissing.length > 0 && VERBOSE)
     warnLog(`Runtime-created tables not yet in DB: ${r.runtimeOnlyMissing.join(", ")}`);
+  if (r.extraTables.length > 0) {
+    warnLog(`Tables in DB not from any known source (${r.extraTables.length}) — possible manual/out-of-band drift:`);
+    for (const t of r.extraTables) console.log(c.yellow(`     ? ${t}`));
+  }
 
   // Columns
   if (r.missingColumns.length === 0) {
@@ -809,11 +1317,24 @@ function printResults(r, git, pgVersion, stats) {
       console.log(c.red(`     ✗ ${mc.table}.${mc.column}  [${mc.expectedType}]  (from ${mc.fromFile})`));
   }
 
-  // Type mismatches
+  // Type mismatches — genuine drift only. typesCompatible() already
+  // normalizes case/whitespace/quoting/aliases before anything reaches this
+  // array (see diffSchema), so everything here is a real difference, not a
+  // formatting artifact — hence WARNING, not "schema compatible".
   if (r.typeMismatches.length > 0) {
-    warnLog(`Type mismatches (${r.typeMismatches.length}) — schema compatible:`);
-    if (VERBOSE) for (const t of r.typeMismatches)
+    warnLog(`Type mismatches (${r.typeMismatches.length}) — [WARNING] genuine differences, non-blocking:`);
+    for (const t of r.typeMismatches)
       console.log(c.yellow(`     ! ${t.table}.${t.column}: expected '${t.expected}', got '${t.actual}'`));
+  }
+
+  // Normalization events — visible-but-ignored so the normalization logic
+  // stays auditable instead of silent (only shown with --verbose; these are
+  // not drift, just formatting/alias differences PostgreSQL treats as
+  // identical).
+  if (VERBOSE && r.ignored.length > 0) {
+    infoLog(`Normalized (${r.ignored.length}) — [IGNORED] not drift, PostgreSQL-equivalent types:`);
+    for (const i of r.ignored)
+      console.log(c.dim(`     · ${i.table}.${i.column}: '${i.expected}' ≡ '${i.actual}'`));
   }
 
   // Indexes
@@ -884,10 +1405,12 @@ function writeStartupMd(r, git, live, stats, allEntries, crossIssues) {
   lines.push(`| Actual Tables | ${stats.liveTables} |`);
   lines.push(`| Expected Columns | ${stats.expectedCols} |`);
   lines.push(`| Actual Columns | ${stats.liveCols} |`);
-  lines.push(`| Missing Tables | **${r.missingTables.length}** |`);
-  lines.push(`| Missing Columns | **${r.missingColumns.length}** |`);
-  lines.push(`| Missing Indexes | ${r.missingIndexes.length} |`);
-  lines.push(`| Type Mismatches | ${r.typeMismatches.length} (warnings only) |`);
+  lines.push(`| Missing Tables [ERROR] | **${r.missingTables.length}** |`);
+  lines.push(`| Extra Tables (possible drift) [INFO] | ${r.extraTables.length} |`);
+  lines.push(`| Missing Columns [ERROR] | **${r.missingColumns.length}** |`);
+  lines.push(`| Missing Indexes [WARNING] | ${r.missingIndexes.length} |`);
+  lines.push(`| Type Mismatches [WARNING] — genuine, non-blocking | ${r.typeMismatches.length} |`);
+  lines.push(`| Normalized Differences [IGNORED] — not drift | ${r.ignored.length} |`);
   lines.push(`| Source Issues | ${crossIssues.length} |`);
   lines.push(`| Warnings | ${r.warnings.length} |`);
   lines.push(`| Deploy State db_patch_ok | ${r.deployState.db_patch_ok ?? "MISSING"} |`);
@@ -902,18 +1425,59 @@ function writeStartupMd(r, git, live, stats, allEntries, crossIssues) {
     lines.push(``);
   }
 
-  if (r.missingColumns.length > 0) {
-    lines.push(`## ❌ Missing Columns`);
+  if (r.extraTables.length > 0) {
+    lines.push(`## ⚠️ Tables Not From Any Known Source (possible manual/out-of-band drift)`);
     lines.push(``);
-    lines.push(`| Table | Column | Expected Type | Source File |`);
-    lines.push(`|---|---|---|---|`);
+    lines.push(`These exist in the live database but aren't created by any migration file`);
+    lines.push(`(\`lib/db/drizzle/*.sql\`, \`migrations/*.sql\`) or by care-api's runtime`);
+    lines.push(`\`CREATE TABLE IF NOT EXISTS\` statements. Not blocking — could be an`);
+    lines.push(`intentional manual table, or a leftover from a removed feature — but worth`);
+    lines.push(`a human review.`);
+    lines.push(``);
+    for (const t of r.extraTables) lines.push(`- \`${t}\``);
+    lines.push(``);
+  }
+
+  if (r.missingColumns.length > 0) {
+    lines.push(`## ❌ Missing Columns  [ERROR]`);
+    lines.push(``);
+    lines.push(`| Table | Column | Expected Type | Source File | Suggested Fix |`);
+    lines.push(`|---|---|---|---|---|`);
     for (const mc of r.missingColumns)
-      lines.push(`| \`${mc.table}\` | \`${mc.column}\` | \`${mc.expectedType}\` | ${mc.fromFile} |`);
+      lines.push(`| \`${mc.table}\` | \`${mc.column}\` | \`${mc.expectedType}\` | ${mc.fromFile} | Run \`docker compose up -d --build\` or \`--repair\` |`);
+    lines.push(``);
+  }
+
+  if (r.typeMismatches.length > 0) {
+    lines.push(`## ⚠️ Type Mismatches  [WARNING] — genuine differences, non-blocking`);
+    lines.push(``);
+    lines.push(`Every entry below survived normalization (case, whitespace, quoting, schema`);
+    lines.push(`qualification, trailing punctuation, and known PostgreSQL type aliases already`);
+    lines.push(`accounted for) — these are real drift, not formatting artifacts.`);
+    lines.push(``);
+    lines.push(`| Table | Column | Expected | Actual | Reason |`);
+    lines.push(`|---|---|---|---|---|`);
+    for (const t of r.typeMismatches)
+      lines.push(`| \`${t.table}\` | \`${t.column}\` | \`${t.expected}\` | \`${t.actual}\` | No known equivalent alias |`);
+    lines.push(``);
+  }
+
+  if (r.ignored.length > 0) {
+    lines.push(`## ℹ️ Normalized Differences  [IGNORED] — not drift`);
+    lines.push(``);
+    lines.push(`Raw type tokens differed but normalized to the same or a PostgreSQL-equivalent`);
+    lines.push(`type (see \`TYPE_GROUPS\` / \`normaliseType\` in \`scripts/db-schema-verify.cjs\`).`);
+    lines.push(`Listed here for audit visibility, not because they need action.`);
+    lines.push(``);
+    lines.push(`| Table | Column | Expected | Actual |`);
+    lines.push(`|---|---|---|---|`);
+    for (const i of r.ignored)
+      lines.push(`| \`${i.table}\` | \`${i.column}\` | \`${i.expected}\` | \`${i.actual}\` |`);
     lines.push(``);
   }
 
   if (r.missingIndexes.length > 0) {
-    lines.push(`## ⚠️ Missing Indexes`);
+    lines.push(`## ⚠️ Missing Indexes  [WARNING]`);
     lines.push(``);
     for (const i of r.missingIndexes) lines.push(`- \`${i.index}\` on \`${i.table}\``);
     lines.push(``);
@@ -1014,9 +1578,19 @@ async function runRepair(client, results, expected) {
     if (!ci) continue;
 
     let colDef = `"${mc.column}" ${ci.rawType || ci.type}`;
-    if (ci.notNull && !ci.defaultVal) colDef += " DEFAULT ''"; // need a default to add NOT NULL
-    else if (ci.notNull) colDef += " NOT NULL";
-    if (ci.defaultVal != null) colDef += ` DEFAULT ${ci.defaultVal}`;
+    if (ci.defaultVal != null) {
+      // Source SQL specified an explicit default — use it verbatim.
+      colDef += ` DEFAULT ${ci.defaultVal}`;
+      if (ci.notNull) colDef += " NOT NULL";
+    } else if (ci.notNull) {
+      // NOT NULL with no explicit default: existing rows need a value to
+      // backfill, so synthesize a type-appropriate default (never a bare
+      // '' for numeric/boolean/jsonb/timestamp columns — that's invalid
+      // SQL and previously made repair fail on columns like
+      // payment_logs.amount). NOT NULL must be appended too, or the
+      // column silently ends up nullable despite the source schema.
+      colDef += ` DEFAULT ${defaultLiteralForType(ci.rawType || ci.type)} NOT NULL`;
+    }
 
     const sql = `ALTER TABLE "${mc.table}" ADD COLUMN IF NOT EXISTS ${colDef};`;
     try {
@@ -1164,9 +1738,6 @@ async function main() {
     headLog("════════════════════════════════════════════════════════\n");
   }
 
-  const safeDsn = connStr.replace(/:([^:@]+)@/, ":***@");
-  infoLog(`Connecting: ${safeDsn}`);
-
   const client = new Client({ connectionString: connStr });
   try { await client.connect(); }
   catch (err) {
@@ -1174,6 +1745,17 @@ async function main() {
     process.exit(1);
   }
   okLog("Database connected");
+
+  // ── DEPLOYMENT GUARD — print exact DB target ─────────────────────────────
+  await printDbTargetGuard(client, connStr);
+
+  // ── DB IDENTITY CHECK — fail loudly if this isn't the expected database ──
+  const expectedAppName = process.env.APP_NAME || "care-erp";
+  const identity = await checkDbIdentity(client, expectedAppName);
+  if (!identity.ok) {
+    await client.end().catch(() => {});
+    process.exit(1);
+  }
 
   // ── RESET MODE ────────────────────────────────────────────────────────────
   if (MODE === "reset") {
@@ -1196,11 +1778,24 @@ async function main() {
   const expected = parseSqlFiles(allEntries);
   infoLog(`Expected schema: ${expected.tables.size} tables`);
 
+  // Tables created inline by care-api's runStartupMigrations() — needed so
+  // extra-table (manual drift) detection below doesn't flag ~90 legitimate
+  // runtime-created tables as suspicious every single run.
+  const runtimeTableNames = extractRuntimeTableNames();
+
   // ── Cross-check sources (Source 1 ↔ 2 ↔ 3) ───────────────────────────────
   const crossIssues = crossCheckSources(journal, drizzleEntries, featureEntries);
+  // journal.issues (duplicate idx / out-of-order idx within _journal.json
+  // itself) was previously computed by loadJournal() but never actually
+  // surfaced anywhere — merge it in here so a genuinely malformed journal
+  // (e.g. two migrations both claiming idx 6 after a bad merge) shows up
+  // instead of being silently discarded.
+  for (const msg of journal.issues || []) {
+    crossIssues.push({ level: "error", source: "journal", msg });
+  }
   if (crossIssues.length > 0) {
     for (const i of crossIssues) {
-      if (i.level === "error") warnLog(`Source issue [ERROR]: ${i.msg}`);
+      if (i.level === "error") failLog(`Source issue [ERROR]: ${i.msg}`);
       else infoLog(`Source issue [WARN]: ${i.msg}`);
     }
   }
@@ -1221,8 +1816,16 @@ async function main() {
   for (const d of driftIssues) warnLog(d.msg);
 
   // ── Diff ──────────────────────────────────────────────────────────────────
-  const results = diffSchema(expected, live);
+  const results = diffSchema(expected, live, runtimeTableNames);
   results.sourceIssues = [...crossIssues, ...driftIssues];
+  // Error-level source issues (missing SQL file for a journal entry, a
+  // corrupt/duplicate journal idx) are genuine structural problems with the
+  // migration sources themselves — not "drift" to review at leisure. They
+  // must fail the same way a missing table does, or SCHEMA_VERIFY_STRICT and
+  // --repair's post-repair pass check would silently ignore them.
+  if (results.sourceIssues.some((i) => i.level === "error")) {
+    results.pass = false;
+  }
 
   // Collect all-column counts for stats
   let expectedColCount = 0;
@@ -1242,16 +1845,41 @@ async function main() {
   };
 
   // ── REPAIR MODE ───────────────────────────────────────────────────────────
+  // The only mode that mutates the schema, so it's the only mode that takes
+  // the migration lock — and it's the only mode reachable at all without an
+  // explicit --repair flag or SCHEMA_REPAIR=true (see MODE computation above).
   if (MODE === "repair") {
-    await runRepair(client, results, expected);
-    // Re-run verify after repair
-    const live2 = await getLiveSchema(client);
-    const results2 = diffSchema(expected, live2);
-    results2.sourceIssues = results.sourceIssues;
-    if (!QUIET) printResults(results2, git, live2.pgVersion, stats);
-    if (!JSON_OUT) writeStartupMd(results2, git, live2, stats, allEntries, crossIssues);
-    await client.end().catch(() => {});
-    process.exit(results2.pass ? 0 : 1);
+    const lockHolder = `schema-verify-${process.pid}-${Date.now()}`;
+    warnLog(
+      REPAIR_REQUESTED && ARGS.includes("--repair")
+        ? "Repair mode requested via --repair flag."
+        : "Repair mode requested via SCHEMA_REPAIR=true environment variable."
+    );
+    try {
+      await acquireMigrationLock(client, lockHolder);
+    } catch (err) {
+      failLog(err.message);
+      await client.end().catch(() => {});
+      process.exit(1);
+    }
+    let exitCode = 1;
+    try {
+      await runRepair(client, results, expected);
+      // Re-run verify after repair
+      const live2 = await getLiveSchema(client);
+      const results2 = diffSchema(expected, live2, runtimeTableNames);
+      results2.sourceIssues = results.sourceIssues;
+      if (results2.sourceIssues.some((i) => i.level === "error")) {
+        results2.pass = false;
+      }
+      if (!QUIET) printResults(results2, git, live2.pgVersion, stats);
+      if (!JSON_OUT) writeStartupMd(results2, git, live2, stats, allEntries, crossIssues);
+      exitCode = results2.pass ? 0 : 1;
+    } finally {
+      await releaseMigrationLock(client, lockHolder);
+      await client.end().catch(() => {});
+    }
+    process.exit(exitCode);
   }
 
   // ── VERIFY MODE (default) ─────────────────────────────────────────────────
@@ -1267,8 +1895,11 @@ async function main() {
       git, pgVersion: live.pgVersion,
       stats,
       missingTables: results.missingTables,
+      extraTables: results.extraTables,
       missingColumns: results.missingColumns,
       typeMismatches: results.typeMismatches,
+      ignored: results.ignored,
+      findings: results.findings,
       missingIndexes: results.missingIndexes,
       sourceIssues: results.sourceIssues,
       warnings: results.warnings,
@@ -1316,11 +1947,35 @@ async function main() {
 
   await client.end().catch(() => {});
   infoLog(`Verification complete in ${Date.now() - startMs}ms`);
-  process.exit(results.pass ? 0 : 1);
+  if (!results.pass) {
+    if (VERIFY_STRICT) {
+      failLog("Schema drift found and SCHEMA_VERIFY_STRICT=true — blocking care-api from starting.");
+      process.exit(1);
+    }
+    warnLog(
+      "Schema drift found, but care-schema-verify is read-only by default and does not block " +
+      "deployment for drift alone (see STARTUP_SCHEMA_VERIFICATION.md for details). Set " +
+      "SCHEMA_REPAIR=true to auto-repair on the next deploy, or SCHEMA_VERIFY_STRICT=true to " +
+      "make drift a hard failure instead."
+    );
+  }
+  process.exit(0);
 }
 
-main().catch((err) => {
-  console.error(c.red(`✗ Unexpected error: ${err.message}`));
-  if (VERBOSE) console.error(err.stack);
-  process.exit(1);
-});
+// Only run main() when executed directly (`node scripts/db-schema-verify.cjs`).
+// When required as a module (e.g. from a regression test) this exposes pure
+// helper functions below without connecting to a database or exiting the
+// process.
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(c.red(`✗ Unexpected error: ${err.message}`));
+    if (VERBOSE) console.error(err.stack);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  normaliseType, typesCompatible, defaultLiteralForType, parseSqlFiles,
+  diffSchema, crossCheckSources, loadJournal, extractRuntimeTableNames,
+  TYPE_TOKEN_COLUMN_RE, DEFAULT_VALUE_RE,
+};

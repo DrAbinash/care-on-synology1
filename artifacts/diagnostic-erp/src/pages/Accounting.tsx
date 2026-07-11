@@ -1,6 +1,7 @@
 import { useState, Fragment, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import { useToast } from "@/hooks/use-toast";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -169,6 +170,7 @@ export default function Accounting() {
   const { data: accounts = [], isLoading: accLoading } = useQuery<Account[]>({
     queryKey: ["accounts"],
     queryFn: () => api.get("/api/accounting/accounts"),
+    ...FINANCIAL_QUERY_OPTIONS,
   });
   const { data: vouchers = [], isLoading: vLoading } = useQuery<Voucher[]>({
     queryKey: ["vouchers", filters],
@@ -181,10 +183,12 @@ export default function Accounting() {
       if (filters.billId) params.set("billId", filters.billId);
       return api.get(`/api/accounting/vouchers?${params}`);
     },
+    ...FINANCIAL_QUERY_OPTIONS,
   });
   const { data: ledger = [] } = useQuery<LedgerEntry[]>({
     queryKey: ["ledger"],
     queryFn: () => api.get("/api/accounting/ledger"),
+    ...FINANCIAL_QUERY_OPTIONS,
   });
   const { data: trialBalance, refetch: refetchTB, isFetching: tbFetching } = useQuery<TrialBalance>({
     queryKey: ["trial-balance", rptFrom, rptTo],

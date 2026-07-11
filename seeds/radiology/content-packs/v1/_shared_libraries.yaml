@@ -1,0 +1,160 @@
+# CARE Radiology — Shared Libraries Pack
+# Governed by CARE_RADIOLOGY_MASTER_DESIGN_SPEC.md §6, §8, §15.
+# All study packs bind to these entities BY KEY. Never inline-copy values into findings.
+# Keys are immutable API (master spec P13). Wording is practice-editable via overlays.
+
+pack:
+  pack_id: shared_libraries
+  version: 1.0.0
+  locale: en-IN
+  status: active
+
+parameter_library:
+  param.size:             {type: measurement, units: [mm, cm], dims: [1, 3], render: "~{v} mm / {a} x {b} cm"}
+  param.count:            {type: choice, values: [single, "few (2-5)", multiple, innumerable]}
+  param.course:           {type: choice, values: [acute, subacute, chronic, acute-on-chronic, old/healed]}
+  param.change:           {type: choice, values: [new, stable, increased, decreased, resolved]}
+  param.margin:           {type: choice, values: [well-defined, ill-defined, lobulated, spiculated]}
+  param.enhancement:      {type: choice, values: [none, homogeneous, heterogeneous, ring, nodular, peripheral]}
+  param.echotexture:      {type: choice, values: [anechoic, hypoechoic, isoechoic, hyperechoic, mixed echogenicity]}
+  param.ct_density:       {type: choice, values: [hypodense, isodense, hyperdense, mixed density]}
+  param.mr_signal:        {type: choice, values: [T1 hypo, T1 hyper, T2/FLAIR hyper, T2 hypo, DWI restricted, SWI blooming]}
+  param.edema:            {type: choice, values: [no perilesional edema, mild perilesional edema, marked perilesional edema]}
+  param.disc_morphology:  {type: choice, values: [diffuse bulge, protrusion, extrusion, sequestration]}
+  param.disc_zone:        {type: choice, values: [central, right paracentral, left paracentral, right foraminal, left foraminal, extraforaminal]}
+  param.root_involvement: {type: choice, values: [abutting, indenting, compressing]}
+  param.cord_ladder:      {type: choice, ordered: true, values: [indenting the thecal sac, abutting the cord, indenting the cord, compressing the cord with signal change]}
+  param.cmd:              {type: choice, values: [preserved, partially lost, lost]}
+  param.gb_status:        {type: choice, values: [well distended, contracted, post-cholecystectomy]}
+  param.fibroid_site:     {type: choice, values: [submucosal, intramural, subserosal, fundal, cervical]}
+  param.hydro_flow:       {type: choice, values: [communicating, obstructive]}
+
+severity_library:
+  sev.global:      {values: [mild, moderate, severe]}
+  sev.hydro:       {values: [mild, moderate, gross]}
+  sev.ascites:     {values: [mild, moderate, gross]}
+  sev.fazekas:     {values: [Fazekas I, Fazekas II, Fazekas III]}
+  sev.fatty_liver: {values: [Grade I, Grade II, Grade III]}
+  sev.mrd:         {values: [Grade I, Grade II, Grade III], label: medical renal disease}
+  sev.prostate:    {values: ["Grade I (20-40 g)", "Grade II (40-60 g)", "Grade III (>60 g)"], derive_from: meas.prostate_volume}
+  sev.modic:       {values: [Modic type I, Modic type II, Modic type III]}
+  sev.meyerding:   {values: [Grade I, Grade II, Grade III, Grade IV], derive_from: meas.listhesis_mm}
+  sev.canal:       {values: [mild, moderate, severe]}
+
+laterality_library:
+  lat.rl:  [right, left]
+  lat.rlb: [right, left, bilateral, "bilateral, right > left", "bilateral, left > right"]
+  lat.mid: [right, left, bilateral, midline]
+
+location_library:
+  loc.brain_sites: [frontal, parietal, temporal, occipital, cerebellar, brainstem, basal ganglia, thalamus, corona radiata, centrum semiovale, periventricular white matter, corpus callosum]
+  loc.vascular_territory: [MCA, ACA, PCA, PICA, watershed, lacunar/perforator]
+  loc.pns_sinuses: [maxillary, ethmoid, frontal, sphenoid, pansinus]
+  loc.skull_bones: [frontal bone, parietal bone, temporal bone, occipital bone, skull base]
+  loc.spine_lumbar:
+    vertebrae: [L1, L2, L3, L4, L5, S1]
+    discs: [L1-2, L2-3, L3-4, L4-5, L5-S1]
+    roots: [L1, L2, L3, L4, L5, S1]
+  loc.spine_cervical:
+    vertebrae: [C1, C2, C3, C4, C5, C6, C7, T1]
+    discs: [C2-3, C3-4, C4-5, C5-6, C6-7, C7-T1]
+    roots: [C3, C4, C5, C6, C7, C8]
+  loc.root_map:
+    rule: "traversing root = lower vertebra of disc level; exiting root = upper vertebra"
+    examples: {"L4-5 paracentral": "traversing L5", "L5-S1 foraminal": "exiting L5", "C5-6": "C6 root"}
+  loc.liver: {lobes: [right, left, caudate], segments: [I, II, III, IV, V, VI, VII, VIII], segments_optional: true}
+  loc.renal_calculus: [upper calyx, mid calyx, lower calyx, renal pelvis, PUJ, upper ureter, mid ureter, distal ureter, VUJ]
+  loc.renal_pole: [upper pole, interpolar region, lower pole]
+  loc.uterus_ovary: [uterus, right ovary, left ovary, right adnexa, left adnexa, pouch of Douglas]
+
+measurement_library:
+  meas.lesion_size_3d:  {unit: mm, dims: 3}
+  meas.midline_shift:   {unit: mm, critical_at: ">= 5", critical_registry: crit.midline_shift}
+  meas.evans_index:     {unit: ratio, auto_calc: "frontal horn width / max internal skull diameter", flag: "> 0.30 = ventriculomegaly"}
+  meas.abc2_volume:     {unit: ml, auto_calc: "A x B x C / 2"}
+  meas.sdh_thickness:   {unit: mm}
+  meas.canal_ap:        {unit: mm, per: disc_level}
+  meas.cord_ap:         {unit: mm, at: maximal compression}
+  meas.listhesis_mm:    {unit: mm, derives: sev.meyerding}
+  meas.liver_span:      {unit: cm, flag: "> 15.5 = hepatomegaly (adult)"}
+  meas.spleen_span:     {unit: cm, flag: "> 12.5 = splenomegaly (adult)"}
+  meas.kidney_size:     {unit: cm, per_side: true, fields: [length, width, cortical_thickness]}
+  meas.cbd:             {unit: mm, flag: "> 6 (post-cholecystectomy > 8-10)"}
+  meas.portal_vein:     {unit: mm, flag: "> 13"}
+  meas.gb_wall:         {unit: mm, flag: "> 3 (fasting)"}
+  meas.prostate_volume: {unit: g, auto_calc: "L x W x H x 0.52", derives: sev.prostate}
+  meas.pvr:             {unit: ml, fields: [pre_void, post_void], auto_calc: "percent retention", flag: "significant per practice setting (default > 50 ml)"}
+  meas.et:              {unit: mm, label: endometrial thickness}
+  meas.calculus_size:   {unit: mm}
+  meas.appendix_diam:   {unit: mm, flag: "> 6 with probe tenderness"}
+  meas.node_short_axis: {unit: mm, flag: "> 10 significant"}
+  meas.mass_size_2d:    {unit: mm, dims: 2}
+
+recommendation_library:
+  rec.clincorr:       "Clinical correlation is suggested."
+  rec.fup_usg6w:      "Follow-up ultrasound after 6 weeks is suggested."
+  rec.fup_3m:         "Follow-up imaging after 3 months is suggested."
+  rec.fup_6m:         "Follow-up imaging after 6 months is suggested."
+  rec.repeat_ncct24h: "Repeat NCCT head after 24 hours or earlier if clinical deterioration."
+  rec.spec_uro:       "Urology consultation is advised."
+  rec.spec_neuro:     "Neurology consultation is advised."
+  rec.spec_nsx:       "Neurosurgical consultation is advised."
+  rec.spec_ortho:     "Orthopaedic consultation is advised."
+  rec.spec_gyn:       "Gynaecological correlation is advised."
+  rec.spec_onc:       "Oncology referral is advised."
+  rec.spec_surg:      "Surgical consultation is advised."
+  rec.cect:           "Contrast-enhanced CT is suggested for further evaluation."
+  rec.cemri:          "Contrast-enhanced MRI is suggested for further evaluation."
+  rec.mrcp:           "MRCP is suggested for further evaluation."
+  rec.ctkub:          "NCCT KUB is suggested for further evaluation."
+  rec.mra_mrv:        "MR angiography/venography is suggested as clinically indicated."
+  rec.cta:            "CT angiography is suggested."
+  rec.biopsy:         "Histopathological / FNAC correlation is suggested."
+  rec.lab_lft:        "Correlation with liver function tests is advised."
+  rec.lab_rft:        "Correlation with renal function tests is advised."
+  rec.lab_urine:      "Correlation with urine routine/microscopy is advised."
+  rec.physio:         "Physiotherapy and analgesics as per treating physician."
+  rec.screening_spine: "Screening MRI of the whole spine is suggested."
+  rec.dexa:           "DEXA / bone density correlation is suggested."
+  rec.urgent:
+    template: "URGENT {specialist} attention is advised — findings communicated to the referring doctor at {time}."
+    slots: [specialist, time]
+    filled_by: escalation_workflow
+
+critical_registry:
+  crit.ich:            {specialist: neurosurgical, findings: [ctbr.ich, ctbr.sah, ctbr.contusions, mrbr.hemorrhage]}
+  crit.sdh_edh:        {specialist: neurosurgical, findings: [ctbr.sdh, ctbr.edh]}
+  crit.midline_shift:  {specialist: neurosurgical, trigger: "meas.midline_shift >= 5 mm"}
+  crit.large_infarct:  {specialist: "neurology (stroke)", findings: [mrbr.acute_infarct, ctbr.acute_infarct], condition: "large/major territory"}
+  crit.diffuse_edema:  {specialist: neurosurgical, findings: [ctbr.diffuse_edema]}
+  crit.cord_compression: {specialist: spine surgery, findings: [mrcs.cord_signal], condition: "acute/progressive deficit in indication"}
+
+normal_templates:
+  tpl.normal.mri_brain: >-
+    Normal study. No acute infarct, hemorrhage, mass lesion or abnormal enhancement.
+    Ventricles and sulci are normal. Posterior fossa structures are unremarkable.
+    Visualized paranasal sinuses and orbits are clear.
+  tpl.normal.mri_ls_spine: >-
+    Normal lumbar lordosis. Vertebral bodies show normal alignment and marrow signal.
+    Intervertebral discs show preserved height and hydration. No significant disc bulge,
+    protrusion or canal stenosis. Conus and visualized cord are normal.
+  tpl.normal.mri_c_spine: >-
+    Normal cervical lordosis. Vertebral alignment and marrow signal are normal. Discs show
+    preserved height and hydration without herniation. No canal stenosis, cord compression
+    or abnormal cord signal. Craniovertebral junction is normal.
+  tpl.normal.ct_brain: >-
+    No evidence of intracranial hemorrhage, mass effect or midline shift. Grey-white
+    differentiation is preserved. Ventricles and basal cisterns are normal. No fracture
+    of the visualized skull vault. Visualized paranasal sinuses and mastoids are clear.
+  tpl.normal.usg_abdomen: >-
+    Liver is normal in size and echotexture; no focal lesion. Gallbladder is well distended
+    with no calculus; CBD is not dilated. Pancreas and spleen are unremarkable. Both kidneys
+    are normal in size and echotexture with preserved corticomedullary differentiation; no
+    calculus or hydronephrosis. Urinary bladder is normal. No free fluid or lymphadenopathy.
+
+alias_rules:
+  max_length: 4
+  unique_within: study
+  no_prefix_collision: true          # seed import MUST fail loudly on violation
+  reserved_global: [nad, urgent, clincorr]
+  level_slotted_stems: [db, pv, ex, cs, fn, lith, doc, cpv, uv, cfn]   # expand per disc level at import

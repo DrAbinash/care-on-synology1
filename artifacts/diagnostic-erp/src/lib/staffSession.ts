@@ -18,6 +18,9 @@ export type StaffUser = {
   permissions: string[];
   maxDiscount: number | null;
   photoDataUrl?: string | null;
+  // Uploaded signature image — printed on this user's bills in place of a
+  // blank signature line when present (see printBill.ts).
+  signatureDataUrl?: string | null;
   // Per-user sidebar theme synced from the server. Seeded into localStorage
   // on login so the local useUserTheme hook picks it up immediately.
   sidebarTheme?: string | null;
@@ -340,7 +343,7 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   ollamaSupport: false,
   caseOfMonth: false,
   annotationLayer: false,
-  hideDeprecatedNav: true,
+  hideDeprecatedNav: false,
   billingDeskStepped: false,
   // Billing Desk display preferences (all apply immediately without page refresh)
   billingDeskQuickTests: true,       // Show quick test slots
@@ -353,20 +356,75 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   billingDeskShowOptionalFields: false, // Show DOB, blood group, address always
   billingDeskKeyboardNav: true,      // Enable keyboard shortcuts
   billingDeskAutoFocus: true,        // Auto-focus next field after selection
+  // Radiology Implementation Roadmap (Ticket T0.1+) — server-backed flags.
+  // Defaults here are the pre-hydration fallback only; once
+  // setServerFeatureFlags() has been called (see hooks/useServerFeatureFlags),
+  // the server's feature_flags table is authoritative for these keys and
+  // wins over both this default and any stale localStorage copy. All off.
+  ff_radiology_structured_core: false,
+  ff_radiology_render_v2: false,
+  ff_radiology_measurement_pool: false,
+  ff_radiology_classification: false,
+  ff_radiology_modality_expand: false,
+  ff_radiology_catalog_delta: false,
+  ff_radiology_search_v2: false,
+  ff_radiology_hierarchy: false,
+  ff_radiology_presets: false,
+  ff_radiology_voice_structured: false,
+  ff_radiology_multiwindow: false,
+  ff_radiology_ai_assist: false,
+  ff_radiology_scale_partition: false,
 };
 
+const RADIOLOGY_FLAG_PREFIX = "ff_radiology_";
+
+// Populated by setServerFeatureFlags() once /api/feature-flags has loaded.
+// Deliberately NOT fetched from this file — staffSession.ts must stay free
+// of any dependency on lib/fetchApi.ts, which itself imports from this file
+// (ERP_SESSION_KEY/StaffSession/clearStaffSession); importing `api` here
+// would create a circular module dependency. The actual fetch lives in
+// hooks/useServerFeatureFlags.ts, a layer above both.
+let serverRadiologyFlags: Record<string, boolean> | null = null;
+
 export function getFeatureFlags(): Record<string, boolean> {
+  let flags: Record<string, boolean>;
   try {
     const raw = typeof window !== "undefined" ? window.localStorage.getItem("featureFlags") : null;
     const parsed = raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
-    return { ...FEATURE_FLAG_DEFAULTS, ...parsed };
+    flags = { ...FEATURE_FLAG_DEFAULTS, ...parsed };
   } catch {
-    return { ...FEATURE_FLAG_DEFAULTS };
+    flags = { ...FEATURE_FLAG_DEFAULTS };
   }
+  // Server wins for ff_radiology_* keys once hydrated — overlaid last so
+  // neither the default nor a locally-toggled value can shadow it.
+  if (serverRadiologyFlags) {
+    return { ...flags, ...serverRadiologyFlags };
+  }
+  return flags;
 }
 
 export function isFeatureEnabled(flag: string): boolean {
   return getFeatureFlags()[flag] ?? FEATURE_FLAG_DEFAULTS[flag] ?? false;
+}
+
+/**
+ * Called once by hooks/useServerFeatureFlags after GET /api/feature-flags
+ * resolves. Only "ff_radiology_" prefixed keys are accepted — this function
+ * can never be used to make a server value override any other (pre-existing,
+ * client-only) flag. Re-dispatches the same "featureFlagsChanged" event the
+ * existing setFeatureFlag() uses, so any component already re-rendering on
+ * local toggles picks up the server values immediately, with no new
+ * subscription mechanism needed.
+ */
+export function setServerFeatureFlags(flags: Record<string, boolean>): void {
+  const radiologyOnly: Record<string, boolean> = {};
+  for (const [key, value] of Object.entries(flags)) {
+    if (key.startsWith(RADIOLOGY_FLAG_PREFIX)) radiologyOnly[key] = value;
+  }
+  serverRadiologyFlags = radiologyOnly;
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("featureFlagsChanged", { detail: { source: "server" } }));
+  }
 }
 
 export function setFeatureFlag(flag: string, value: boolean): void {

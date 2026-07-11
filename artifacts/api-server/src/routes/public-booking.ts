@@ -16,6 +16,9 @@ import {
 import { eq, and } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { PaymentEngine } from "../lib/payments/PaymentEngine";
+import { resolveActiveGateway } from "../lib/payments/resolveActiveGateway";
+import { buildPrintClinic } from "../lib/buildPrintClinic";
+import { recordPaymentDiagnostic, getRecentDiagnostics, getDiagnosticById, getLastSuccessAndFailure } from "../lib/payments/paymentDiagnostics";
 import { confirmBookingInternal } from "./online-bookings";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
 
@@ -179,6 +182,7 @@ publicBookingRouter.get("/config", async (_req, res): Promise<void> => {
       upiQrImageUrl: "",
       allowedTestIds: [],
       allowedPackageIds: [],
+      quickTestIds: [],
       vipPercentage: Number(settings.vipPercentage || 50),
       disclaimerRefundPercentage: settings.disclaimerRefundPercentage ?? 90,
       activePaymentGateway: null,
@@ -196,34 +200,22 @@ publicBookingRouter.get("/config", async (_req, res): Promise<void> => {
   }
 
   const razorpayKeyId = settings.razorpayKeyId || "";
-  const razorpaySecret = process.env.RAZORPAY_KEY_SECRET || "";
-  const payuSalt = process.env.PAYU_MERCHANT_SALT || "";
   const payuKey = settings.payuMerchantKey || "";
-
-  const phonepeSalt = process.env.PHONEPE_API_SECRET || "";
   const phonepeMerchantId = process.env.PHONEPE_MERCHANT_ID || settings.phonepeMerchantId || "";
-
-  const bharatpeApiKey = process.env.BHARATPE_API_KEY || "";
   const bharatpeMerchantId = process.env.BHARATPE_MERCHANT_ID || settings.bharatpeMerchantId || "";
-
   const iciciMerchantId = process.env.ICICI_MERCHANT_ID || settings.iciciMerchantId || "";
-  const iciciSecretKey = process.env.ICICI_SECRET_KEY || settings.iciciSecretKey || "";
 
-  let gateway: "razorpay" | "payu" | "phonepe" | "bharatpe" | "icici" | null = null;
-  const configuredGateway = settings.activePaymentGateway as "razorpay" | "payu" | "phonepe" | "bharatpe" | "icici";
+  const gateway = resolveActiveGateway(settings);
 
-  if (configuredGateway === "icici" && settings.iciciEnabled && iciciMerchantId && iciciSecretKey) gateway = "icici";
-  else if (configuredGateway === "bharatpe" && settings.bharatpeEnabled && bharatpeMerchantId && bharatpeApiKey) gateway = "bharatpe";
-  else if (configuredGateway === "payu" && settings.payuEnabled && payuKey && payuSalt) gateway = "payu";
-  else if (configuredGateway === "phonepe" && settings.phonepeEnabled && phonepeMerchantId && phonepeSalt) gateway = "phonepe";
-  else if (configuredGateway === "razorpay" && razorpayKeyId && razorpaySecret) gateway = "razorpay";
-  else {
-    if (settings.iciciEnabled && iciciMerchantId && iciciSecretKey) gateway = "icici";
-    else if (settings.bharatpeEnabled && bharatpeMerchantId && bharatpeApiKey) gateway = "bharatpe";
-    else if (settings.payuEnabled && payuKey && payuSalt) gateway = "payu";
-    else if (settings.phonepeEnabled && phonepeMerchantId && phonepeSalt) gateway = "phonepe";
-    else if (razorpayKeyId && razorpaySecret) gateway = "razorpay";
-  }
+  // Same clinic_settings.quick_test_ids Billing Desk (and the kiosk) use for
+  // their quick-select slots — the frontend cross-references these against
+  // its already-whitelisted /tests list, so an ID that isn't allowed for
+  // online booking simply won't resolve to a tile.
+  let quickTestIds: (number | null)[] = [];
+  try {
+    const parsed = JSON.parse(settings.quickTestIds || "[]");
+    if (Array.isArray(parsed)) quickTestIds = parsed;
+  } catch { /* ignore */ }
 
   res.json({
     enabled: true,
@@ -241,6 +233,7 @@ publicBookingRouter.get("/config", async (_req, res): Promise<void> => {
     upiQrImageUrl: settings.upiQrImageUrl || "",
     allowedTestIds,
     allowedPackageIds,
+    quickTestIds,
     vipPercentage: Number(settings.vipPercentage || 50),
     disclaimerRefundPercentage: settings.disclaimerRefundPercentage ?? 90,
     activePaymentGateway: gateway || settings.activePaymentGateway,
@@ -275,6 +268,18 @@ publicBookingRouter.get("/by-ref", async (req, res): Promise<void> => {
   }
 
   res.json({ booking: row, tokenNo });
+});
+
+// GET /api/public/booking/clinic-print-info
+// Public, read-only clinic fields needed to render the SAME Billing-Desk
+// receipt template (buildBillPrintHtml) for an online-booking confirmation
+// receipt — see PrintClinic in diagnostic-erp/src/lib/printBill.ts. Kept
+// separate from /config (payment gateway settings) since the receipt page
+// needs it whether or not a real gateway is configured.
+publicBookingRouter.get("/clinic-print-info", async (_req, res): Promise<void> => {
+  const settings = await getSettings();
+  if (!settings) { res.status(404).json({ error: "Clinic settings not found" }); return; }
+  res.json(buildPrintClinic(settings));
 });
 
 // GET /api/public/booking/my-bookings
@@ -1156,6 +1161,13 @@ publicBookingRouter.post("/icici-initiate", createOrderLimiter, async (req, res)
       email: email.trim(),
       amount,
       returnUrl,
+      reqHeaders: {
+        "x-forwarded-for": (req.headers["x-forwarded-for"] as string) || "",
+        "user-agent": (req.headers["user-agent"] as string) || "",
+        referer: (req.headers["referer"] as string) || (req.headers["referrer"] as string) || "",
+        origin: (req.headers["origin"] as string) || "",
+        "x-client-ip": req.ip || req.socket?.remoteAddress || "",
+      },
     });
 
     if (!result.success) {
@@ -1249,6 +1261,18 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
       respDescription: respDescription || "callback",
       timestamp: new Date().toISOString(),
     };
+
+    const successCodes = ["0000", "000", "success", "SUCCESS", "SUC", "TXN_SUCCESS", "R1000"];
+    recordPaymentDiagnostic({
+      gateway: "icici",
+      stage: "callback",
+      merchantTxnNo,
+      success: successCodes.includes(responseCode) || successCodes.includes(status),
+      responseCode: responseCode || status || null,
+      responseMessage: respDescription || null,
+      responseBody: queryOrBody,
+      req,
+    }).catch(() => {});
   }
 
   if (!merchantTxnNo) {
@@ -1697,30 +1721,214 @@ publicBookingRouter.post("/qr-confirm", bookingLimiter, async (req, res): Promis
 
 // ── ICICI Diagnostics routes ──────────────────────────────────────────────────
 import { requireStaffAuth } from "../middleware/requireStaffAuth";
+import JSZip from "jszip";
 
+// GET /icici-diagnostics — full troubleshooting dashboard header (env, URLs, ids, build, last success/failure)
 publicBookingRouter.get("/icici-diagnostics", requireStaffAuth, async (req, res): Promise<void> => {
   const settings = await getSettings();
   const base = getPublicBase(req as Parameters<typeof getPublicBase>[0]);
   const returnUrl = `${base}/api/public/booking/icici-callback`;
   const iciciBase = getIciciBase();
   const initiateSaleUrl = `${iciciBase}${getIciciPrefix()}/pg/api/v2/initiateSale`;
-  
+  const commandUrl = `${iciciBase}/pg/api/command`;
+
   const merchantId = process.env.ICICI_MERCHANT_ID || settings?.iciciMerchantId || "";
   const aggregatorId = process.env.ICICI_AGGREGATOR_ID || settings?.iciciAggregatorId || "";
 
+  let lastSuccessAt: string | null = null;
+  let lastFailureAt: string | null = null;
+  try {
+    const stats = await getLastSuccessAndFailure("icici");
+    lastSuccessAt = stats.lastSuccessAt;
+    lastFailureAt = stats.lastFailureAt;
+  } catch { /* diagnostics table may not exist yet on older deployments — non-fatal */ }
+
   res.json({
-    publicBaseUrl: process.env.PUBLIC_BASE_URL || process.env.BASE_URL || null,
-    resolvedPublicBaseUrl: base,
+    // Environment
+    environment: process.env.NODE_ENV === "production" ? "production" : "uat/test",
     iciciMode: process.env.NODE_ENV === "production" ? "production" : "uat/test",
-    initiateSaleUrl,
-    returnUrl,
-    callbackUrl: returnUrl,
+
+    // Merchant identity
     merchantId,
     aggregatorId,
+
+    // URLs
+    baseUrl: iciciBase,
+    initiateSaleUrl,
+    commandUrl,
+    callbackUrl: returnUrl,
+    returnUrl,
+    publicBaseUrl: process.env.PUBLIC_BASE_URL || process.env.BASE_URL || null,
+    resolvedPublicBaseUrl: base,
+
+    // Build / deploy identity
+    gitCommit: (process.env.GIT_COMMIT || "unknown").slice(0, 12),
+    dockerImageVersion: process.env.BUILD_NUMBER || "unknown",
+    buildTimestamp: process.env.BUILD_DATE || "unknown",
+
+    // Timeline
+    lastSuccessfulPaymentAt: lastSuccessAt,
+    lastFailedPaymentAt: lastFailureAt,
     lastTransaction: lastIciciTransaction,
   });
 });
 
+// GET /icici-diagnostics/history — last 50 attempts (summary rows for a list view)
+publicBookingRouter.get("/icici-diagnostics/history", requireStaffAuth, async (req, res): Promise<void> => {
+  try {
+    const rows = await getRecentDiagnostics("icici", 50);
+    res.json({
+      count: rows.length,
+      attempts: rows.map((r) => ({
+        id: r.id,
+        stage: r.stage,
+        success: r.success,
+        merchantTxnNo: r.merchantTxnNo,
+        bookingRef: r.bookingRef,
+        amount: r.amount,
+        responseCode: r.responseCode,
+        responseMessage: r.responseMessage,
+        httpStatus: r.httpStatus,
+        redirectUri: r.redirectUri,
+        clientIp: r.clientIp,
+        createdAt: r.createdAt,
+      })),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: "Could not load diagnostics history.", details: err.message });
+  }
+});
+
+// GET /icici-diagnostics/history/:id — full raw detail for one attempt (request, response, headers, timing)
+publicBookingRouter.get("/icici-diagnostics/history/:id", requireStaffAuth, async (req, res): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) {
+    res.status(400).json({ error: "Invalid diagnostic id." });
+    return;
+  }
+  try {
+    const row = await getDiagnosticById(id);
+    if (!row) {
+      res.status(404).json({ error: "Diagnostic record not found." });
+      return;
+    }
+    res.json({
+      ...row,
+      requestPayload: row.requestPayload ? JSON.parse(row.requestPayload) : null,
+      requestHeaders: row.requestHeaders ? JSON.parse(row.requestHeaders) : null,
+      responseBody: row.responseBody ? tryParseJson(row.responseBody) : null,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: "Could not load diagnostic detail.", details: err.message });
+  }
+});
+
+function tryParseJson(text: string): unknown {
+  try { return JSON.parse(text); } catch { return text; }
+}
+
+// GET /icici-diagnostics/export — downloadable ZIP bundle for sending to ICICI support
+publicBookingRouter.get("/icici-diagnostics/export", requireStaffAuth, async (req, res): Promise<void> => {
+  try {
+    const settings = await getSettings();
+    const base = getPublicBase(req as Parameters<typeof getPublicBase>[0]);
+    const iciciBase = getIciciBase();
+    const rows = await getRecentDiagnostics("icici", 50);
+
+    const zip = new JSZip();
+
+    // 1. Environment snapshot (no secrets)
+    zip.file("environment_snapshot.json", JSON.stringify({
+      environment: process.env.NODE_ENV === "production" ? "production" : "uat/test",
+      merchantId: process.env.ICICI_MERCHANT_ID || settings?.iciciMerchantId || "",
+      aggregatorId: process.env.ICICI_AGGREGATOR_ID || settings?.iciciAggregatorId || "",
+      baseUrl: iciciBase,
+      initiateSaleUrl: `${iciciBase}/pg/api/v2/initiateSale`,
+      commandUrl: `${iciciBase}/pg/api/command`,
+      callbackUrl: `${base}/api/public/booking/icici-callback`,
+      publicBaseUrl: process.env.PUBLIC_BASE_URL || process.env.BASE_URL || null,
+      gitCommit: process.env.GIT_COMMIT || "unknown",
+      dockerImageVersion: process.env.BUILD_NUMBER || "unknown",
+      buildTimestamp: process.env.BUILD_DATE || "unknown",
+      exportedAt: new Date().toISOString(),
+    }, null, 2));
+
+    // 2. Build version info
+    try {
+      const versionRes = await fetch(`${base}/api/system/version`);
+      const versionJson = await versionRes.json();
+      zip.file("build_version.json", JSON.stringify(versionJson, null, 2));
+    } catch {
+      zip.file("build_version.json", JSON.stringify({ note: "Could not fetch /api/system/version at export time." }));
+    }
+
+    // 3. Last 50 attempts — request payload, response payload, headers, timing
+    const historyFolder = zip.folder("payment_attempts");
+    for (const r of rows) {
+      const fileName = `${r.id}_${r.merchantTxnNo || "unknown"}_${r.stage}.json`;
+      historyFolder?.file(fileName, JSON.stringify({
+        id: r.id,
+        stage: r.stage,
+        success: r.success,
+        merchantTxnNo: r.merchantTxnNo,
+        bookingRef: r.bookingRef,
+        amount: r.amount,
+        currency: r.currency,
+        httpStatus: r.httpStatus,
+        responseCode: r.responseCode,
+        responseMessage: r.responseMessage,
+        requestUrl: r.requestUrl,
+        requestPayload: r.requestPayload ? tryParseJson(r.requestPayload) : null,
+        requestHeaders: r.requestHeaders ? tryParseJson(r.requestHeaders) : null,
+        responseBody: r.responseBody ? tryParseJson(r.responseBody) : null,
+        redirectUri: r.redirectUri,
+        tranCtx: r.tranCtx,
+        secureHashMasked: r.secureHashMasked,
+        merchantId: r.merchantId,
+        aggregatorId: r.aggregatorId,
+        returnUrl: r.returnUrl,
+        callbackUrl: r.callbackUrl,
+        publicBaseUrl: r.publicBaseUrl,
+        clientIp: r.clientIp,
+        forwardedFor: r.forwardedFor,
+        userAgent: r.userAgent,
+        referer: r.referer,
+        origin: r.origin,
+        gitCommit: r.gitCommit,
+        dockerImageVersion: r.dockerImageVersion,
+        buildTimestamp: r.buildTimestamp,
+        environment: r.environment,
+        durationMs: r.durationMs,
+        createdAt: r.createdAt,
+      }, null, 2));
+    }
+
+    // 4. Summary README
+    zip.file("README.txt", [
+      "Care Diagnostics — ICICI Orange Pay Diagnostic Bundle",
+      `Exported: ${new Date().toISOString()}`,
+      `Attempts included: ${rows.length} (most recent first)`,
+      "",
+      "Contents:",
+      "  environment_snapshot.json — current merchant/URL/build configuration (no secrets)",
+      "  build_version.json        — ERP version, git commit, schema status",
+      "  payment_attempts/         — one file per attempt: full request + response",
+      "",
+      "Share this bundle with ICICI Orange Pay support for troubleshooting.",
+    ].join("\n"));
+
+    const buffer = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+    const fileName = `icici-diagnostics-${new Date().toISOString().slice(0, 10)}.zip`;
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+    res.send(buffer);
+  } catch (err: any) {
+    logger.error({ err }, "Failed to build ICICI diagnostic export bundle");
+    res.status(500).json({ error: "Could not build diagnostic bundle.", details: err.message });
+  }
+});
+
+// POST /icici-diagnostics/run — quick reachability check for our own callback URL
 publicBookingRouter.post("/icici-diagnostics/run", requireStaffAuth, async (req, res): Promise<void> => {
   const base = getPublicBase(req as Parameters<typeof getPublicBase>[0]);
   const returnUrl = `${base}/api/public/booking/icici-callback`;

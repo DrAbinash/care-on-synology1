@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, fetchApi } from "@/lib/fetchApi";
+import { api, fetchApi, getStaffToken } from "@/lib/fetchApi";
 import { useSuperAdmin, getSuperAdminToken } from "@/hooks/useSuperAdmin";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -22,7 +22,7 @@ import {
   Search, Globe, Copy, ExternalLink, Check, Network, MapPin, Database,
   RefreshCcw, FileCode, Send, QrCode, Palette, Bot, Inbox, ChevronRight,
   ArrowLeft, Phone, Layers, AlertTriangle, ScanLine, Receipt, Keyboard, Brain,
-  Sparkles, Construction, GraduationCap,
+  Sparkles, Construction, GraduationCap, Tv, GripVertical, ScrollText, Flag,
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
@@ -37,6 +37,7 @@ type AppUser = {
   maxDiscount: number | null;
   username?: string | null;
   photoDataUrl?: string | null;
+  signatureDataUrl?: string | null;
   mustChangePin?: boolean;
   defaultStartPage?: string | null;
 };
@@ -159,6 +160,7 @@ const TABS = [
   { id: "online-booking", label: "Online Booking", icon: CreditCard },
   { id: "kiosk", label: "Self-Reg Kiosk", icon: QrCode },
   { id: "queue-settings", label: "Queue Settings", icon: ClipboardList },
+  { id: "queue-display", label: "Queue Display (TV)", icon: Tv },
   { id: "form-f", label: "Form F Tests", icon: FileText },
   { id: "scanner", label: "Scanner", icon: ScanLine },
   { id: "email", label: "Email Notifications", icon: Mail },
@@ -173,6 +175,8 @@ const TABS = [
   { id: "radiology", label: "Radiology", icon: ScanLine },
   { id: "manual", label: "User Manual", icon: FileDown },
   { id: "security", label: "Security", icon: ShieldCheck },
+  { id: "audit-log", label: "Audit Log", icon: ScrollText },
+  { id: "feature-flags", label: "Feature Flags", icon: Flag },
   { id: "password", label: "Change Password", icon: KeyRound },
 ];
 
@@ -243,11 +247,12 @@ export default function Settings() {
       if (t.id === "password" || t.id === "manual") return true;
       let action = t.id;
       if (t.id === "email" || t.id === "whatsapp") action = "notifications";
+      else if (t.id === "audit-log" || t.id === "feature-flags") action = "security";
       else if (t.id === "billing-print" || t.id === "discount-reasons" || t.id === "receipt-messages" || t.id === "footer-services" || t.id === "promotional-footer") action = "billing";
       else if (t.id === "printers" || t.id === "scanner") action = "devices";
       else if (t.id === "departments" || t.id === "locations" || t.id === "branches" || t.id === "report-templates") action = "infrastructure";
       else if (t.id === "portal" || t.id === "online-booking" || t.id === "kiosk") action = "portals";
-      
+
       return hasSubPermission(session, "/settings", action);
     });
   }, [session]);
@@ -259,11 +264,12 @@ export default function Settings() {
       if (t.id === "password" || t.id === "manual") return true;
       let action = t.id;
       if (t.id === "email" || t.id === "whatsapp") action = "notifications";
+      else if (t.id === "audit-log" || t.id === "feature-flags") action = "security";
       else if (t.id === "billing-print" || t.id === "discount-reasons" || t.id === "receipt-messages" || t.id === "footer-services" || t.id === "promotional-footer") action = "billing";
       else if (t.id === "printers" || t.id === "scanner") action = "devices";
       else if (t.id === "departments" || t.id === "locations" || t.id === "branches" || t.id === "report-templates") action = "infrastructure";
       else if (t.id === "portal" || t.id === "online-booking" || t.id === "kiosk" || t.id === "queue-settings") action = "portals";
-      
+
       return hasSubPermission(initialSession, "/settings", action);
     });
     return initialAllowed[0]?.id ?? "password";
@@ -290,6 +296,7 @@ export default function Settings() {
         {tab === "online-booking" && <OnlineBookingTab />}
         {tab === "kiosk" && <KioskSettingsTab />}
         {tab === "queue-settings" && <QueueSettingsTab />}
+        {tab === "queue-display" && <QueueDisplaySettingsTab />}
         {tab === "form-f" && <FormFTestsTab />}
         {tab === "scanner" && <ScannerSettingsTab />}
         {tab === "email" && <EmailTab />}
@@ -305,6 +312,8 @@ export default function Settings() {
         {tab === "manual" && <ManualTab />}
         {tab === "about" && <AboutTab />}
         {tab === "security" && <SecurityTab />}
+        {tab === "audit-log" && <AuditLogTab />}
+        {tab === "feature-flags" && <FeatureFlagsTab />}
         {tab === "password" && <ChangePasswordTab />}
       </div>
     </div>
@@ -317,11 +326,13 @@ function UsersTab({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
   const [selectedPerms, setSelectedPerms] = useState<string[]>([]);
   const [photoDataUrl, setPhotoDataUrl] = useState<string | null>(null);
   const [photoErr, setPhotoErr] = useState("");
+  const [signatureDataUrl, setSignatureDataUrl] = useState<string | null>(null);
+  const [signatureErr, setSignatureErr] = useState("");
   const [saveErr, setSaveErr] = useState("");
   const { data: users = [], isLoading } = useQuery<AppUser[]>({ queryKey: ["users"], queryFn: () => api.get("/api/users") });
   const saveUser = useMutation({
     mutationFn: (body: Record<string, unknown>) => editUser ? api.patch(`/api/users/${editUser.id}`, body) : api.post("/api/users", body),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["users"] }); setOpen(false); setEditUser(null); setPhotoDataUrl(null); setSaveErr(""); reset(); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["users"] }); setOpen(false); setEditUser(null); setPhotoDataUrl(null); setSignatureDataUrl(null); setSaveErr(""); reset(); },
     onError: (e: Error) => setSaveErr(e.message || "Could not save user"),
   });
   const toggleActive = useMutation({ mutationFn: ({ id, isActive }: { id: number; isActive: boolean }) => api.patch(`/api/users/${id}`, { isActive }), onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }) });
@@ -333,6 +344,7 @@ function UsersTab({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
     setSelectedPerms(DEFAULT_PERMISSIONS["receptionist"]);
     setPhotoDataUrl(null);
     setPhotoErr(""); setSaveErr("");
+    setSignatureDataUrl(null); setSignatureErr("");
     reset({ name: "", email: "", username: "", role: "receptionist", pin: "", maxDiscount: "", defaultStartPage: "" });
     setOpen(true);
   };
@@ -341,6 +353,7 @@ function UsersTab({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
     setSelectedPerms(u.permissions ? JSON.parse(u.permissions) : DEFAULT_PERMISSIONS[u.role] ?? []);
     setPhotoDataUrl(u.photoDataUrl ?? null);
     setPhotoErr(""); setSaveErr("");
+    setSignatureDataUrl(u.signatureDataUrl ?? null); setSignatureErr("");
     // PIN field stays blank on edit — leaving it blank means "don't change".
     // Typing a new value resets it (and forces a change on next login).
     reset({ name: u.name, email: u.email, username: u.username ?? "", role: u.role, pin: "", maxDiscount: u.maxDiscount != null ? String(u.maxDiscount) : "", defaultStartPage: u.defaultStartPage ?? "" });
@@ -377,6 +390,16 @@ function UsersTab({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
     reader.readAsDataURL(file);
   };
 
+  const onSignatureChange = (file: File | null) => {
+    setSignatureErr("");
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { setSignatureErr("Please pick an image file"); return; }
+    if (file.size > 300_000) { setSignatureErr("Signature image too large — please pick an image under 300 KB"); return; }
+    const reader = new FileReader();
+    reader.onload = () => setSignatureDataUrl(String(reader.result));
+    reader.readAsDataURL(file);
+  };
+
   const onSave = handleSubmit((d) => {
     setSaveErr("");
     const body: Record<string, unknown> = {
@@ -389,6 +412,7 @@ function UsersTab({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
       permissions: selectedPerms,
       maxDiscount: d.maxDiscount !== "" ? Number(d.maxDiscount) : null,
       photoDataUrl: photoDataUrl,
+      signatureDataUrl: signatureDataUrl,
       defaultStartPage: d.defaultStartPage || null,
     };
     // Only include PIN when admin actually typed one — blank means "leave it"
@@ -510,6 +534,29 @@ function UsersTab({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
               </div>
             </div>
 
+            {/* Signature — printed on this user's bills in place of a blank
+                "Authorised Signature" line whenever they're the biller. */}
+            <div className="flex items-center gap-4">
+              {signatureDataUrl ? (
+                <img src={signatureDataUrl} alt="Signature" className="w-32 h-16 rounded-md object-contain bg-white border-2 border-card-border p-1" />
+              ) : (
+                <div className="w-32 h-16 rounded-md bg-muted border-2 border-dashed border-card-border flex items-center justify-center text-muted-foreground text-[11px]">No signature</div>
+              )}
+              <div className="space-y-2">
+                <input id="staff-signature-input" type="file" accept="image/*" className="hidden" onChange={(e) => onSignatureChange(e.target.files?.[0] ?? null)} />
+                <div className="flex gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={() => document.getElementById("staff-signature-input")?.click()}>
+                    <Upload size={13} className="mr-1.5" /> {signatureDataUrl ? "Change Signature" : "Add Signature"}
+                  </Button>
+                  {signatureDataUrl && (
+                    <Button type="button" variant="ghost" size="sm" className="text-destructive" onClick={() => setSignatureDataUrl(null)}><Trash2 size={13} className="mr-1.5" /> Remove</Button>
+                  )}
+                </div>
+                <p className="text-[11px] text-muted-foreground">Optional. Scanned/cropped signature on a white background works best. Max 300 KB.</p>
+                {signatureErr && <p className="text-xs text-destructive">{signatureErr}</p>}
+              </div>
+            </div>
+
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label>Name *</Label>
@@ -547,10 +594,10 @@ function UsersTab({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
               </div>
               <div>
                 <Label>Default Start Page</Label>
-                <Select value={watch("defaultStartPage") || ""} onValueChange={(v) => setValue("defaultStartPage", v)}>
+                <Select value={watch("defaultStartPage") || "__none__"} onValueChange={(v) => setValue("defaultStartPage", v === "__none__" ? "" : v)}>
                   <SelectTrigger className="mt-1"><SelectValue placeholder="Default Dashboard" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">Default Dashboard</SelectItem>
+                    <SelectItem value="__none__">Default Dashboard</SelectItem>
                     {ALL_MODULES.map(m => (
                       <SelectItem key={m.path} value={m.path}>{m.label}</SelectItem>
                     ))}
@@ -631,6 +678,7 @@ type ClinicSettings = {
   billShowCode?: boolean;
   billShowCategory?: boolean;
   dayCloseAutoPrint?: boolean;
+  patientPhoneRequired?: boolean;
   // V3: Receipt messages
   receiptThankYouMessage?: string;
   receiptCollectionMessage?: string;
@@ -1431,6 +1479,21 @@ function ClinicInfoTab() {
               </span>
             </button>
           </div>
+          {/* Phone number required for patient registration */}
+          <div>
+            <p className="text-sm font-medium mb-1">Require Phone Number</p>
+            <p className="text-xs text-muted-foreground mb-2">When on, phone number is mandatory to register a patient on the Patients page. Kiosk and online booking self-registration always require a phone number regardless of this setting.</p>
+            <button
+              type="button"
+              onClick={() => setForm({ ...current, patientPhoneRequired: !(current.patientPhoneRequired ?? true) })}
+              className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${(current.patientPhoneRequired ?? true) ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
+            >
+              <span className="text-sm font-medium">{(current.patientPhoneRequired ?? true) ? "Required" : "Optional"}</span>
+              <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(current.patientPhoneRequired ?? true) ? "bg-green-500" : "bg-muted-foreground/40"}`}>
+                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${(current.patientPhoneRequired ?? true) ? "translate-x-5" : "translate-x-1"}`} />
+              </span>
+            </button>
+          </div>
           {/* Receipt Layout Style */}
           <div>
             <p className="text-sm font-medium mb-1">Receipt Layout Style</p>
@@ -1881,9 +1944,26 @@ function OnlineBookingCatalogSelector({
     if (next.has(id)) next.delete(id); else next.add(id);
     setForm((prev) => prev && { ...prev, onlineBookingAllowedTestIds: JSON.stringify([...next]) });
   };
+
+  const toggleAllTests = (selectAll: boolean) => {
+    const next = new Set<number>();
+    if (selectAll) {
+      activeTests.forEach((t) => next.add(t.id));
+    }
+    setForm((prev) => prev && { ...prev, onlineBookingAllowedTestIds: JSON.stringify([...next]) });
+  };
+
   const togglePkg = (id: number) => {
     const next = new Set(allowedPkgIds);
     if (next.has(id)) next.delete(id); else next.add(id);
+    setForm((prev) => prev && { ...prev, onlineBookingAllowedPackageIds: JSON.stringify([...next]) });
+  };
+
+  const toggleAllPkgs = (selectAll: boolean) => {
+    const next = new Set<number>();
+    if (selectAll) {
+      activePkgs.forEach((p) => next.add(p.id));
+    }
     setForm((prev) => prev && { ...prev, onlineBookingAllowedPackageIds: JSON.stringify([...next]) });
   };
 
@@ -1918,10 +1998,28 @@ function OnlineBookingCatalogSelector({
 
       {/* Tests */}
       <div>
-        <div className="flex items-center gap-2 mb-2">
-          <FlaskConical size={14} className="text-muted-foreground" />
-          <span className="font-semibold text-sm">Tests</span>
-          <span className="text-xs text-muted-foreground">({activeTests.length} active)</span>
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <div className="flex items-center gap-2">
+            <FlaskConical size={14} className="text-muted-foreground" />
+            <span className="font-semibold text-sm">Tests</span>
+            <span className="text-xs text-muted-foreground">({activeTests.length} active)</span>
+          </div>
+          {activeTests.length > 0 && (() => {
+            const isIndeterminate = allowedTestIds.size > 0 && allowedTestIds.size < activeTests.length;
+            const isChecked = allowedTestIds.size === activeTests.length && activeTests.length > 0;
+            return (
+              <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-primary hover:underline">
+                <input
+                  ref={(el) => { if (el) el.indeterminate = isIndeterminate; }}
+                  type="checkbox"
+                  className="w-4 h-4 accent-primary"
+                  checked={isChecked}
+                  onChange={(e) => toggleAllTests(e.target.checked)}
+                />
+                Select All
+              </label>
+            );
+          })()}
         </div>
         <div className="relative mb-2">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -1964,10 +2062,28 @@ function OnlineBookingCatalogSelector({
       {/* Packages */}
       {activePkgs.length > 0 && (
         <div>
-          <div className="flex items-center gap-2 mb-2">
-            <Boxes size={14} className="text-muted-foreground" />
-            <span className="font-semibold text-sm">Packages</span>
-            <span className="text-xs text-muted-foreground">({activePkgs.length} active)</span>
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <div className="flex items-center gap-2">
+              <Boxes size={14} className="text-muted-foreground" />
+              <span className="font-semibold text-sm">Packages</span>
+              <span className="text-xs text-muted-foreground">({activePkgs.length} active)</span>
+            </div>
+            {activePkgs.length > 0 && (() => {
+              const isIndeterminate = allowedPkgIds.size > 0 && allowedPkgIds.size < activePkgs.length;
+              const isChecked = allowedPkgIds.size === activePkgs.length && activePkgs.length > 0;
+              return (
+                <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-primary hover:underline">
+                  <input
+                    ref={(el) => { if (el) el.indeterminate = isIndeterminate; }}
+                    type="checkbox"
+                    className="w-4 h-4 accent-primary"
+                    checked={isChecked}
+                    onChange={(e) => toggleAllPkgs(e.target.checked)}
+                  />
+                  Select All
+                </label>
+              );
+            })()}
           </div>
           <div className="relative mb-2">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -2005,6 +2121,13 @@ function OnlineBookingTab() {
   const { toast } = useToast();
   const [logSearch, setLogSearch] = useState("");
   const [logStatusFilter, setLogStatusFilter] = useState("all");
+  const [iciciDiag, setIciciDiag] = useState<Record<string, unknown> | null>(null);
+  const [iciciDiagLoading, setIciciDiagLoading] = useState(false);
+  const [iciciDiagError, setIciciDiagError] = useState("");
+  const [iciciHistory, setIciciHistory] = useState<Array<Record<string, unknown>> | null>(null);
+  const [iciciHistoryLoading, setIciciHistoryLoading] = useState(false);
+  const [iciciSelectedAttempt, setIciciSelectedAttempt] = useState<Record<string, unknown> | null>(null);
+  const [iciciExportLoading, setIciciExportLoading] = useState(false);
   const { data: bookingsData, isLoading: isLoadingBookings } = useQuery<{ bookings: any[] }>({
     queryKey: ["online-bookings-logs"],
     queryFn: () => api.get("/api/online-bookings?limit=100"),
@@ -2060,7 +2183,22 @@ function OnlineBookingTab() {
   }, [data]);
 
   const save = useMutation({
-    mutationFn: (body: OnlineBookingSettings) => api.put("/api/clinic-settings", body),
+    mutationFn: async (body: OnlineBookingSettings) => {
+      // Save to clinic settings
+      await api.put("/api/clinic-settings", body);
+      // Also sync service images to website settings
+      if (body.serviceImagesEnabled || body.serviceImages) {
+        try {
+          await api.patch("/api/website/settings", {
+            serviceImagesEnabled: body.serviceImagesEnabled,
+            serviceImages: body.serviceImages,
+          });
+        } catch (err) {
+          // Log but don't fail if website sync fails (clinic settings saved successfully)
+          console.warn("Warning: Website settings sync failed, but clinic settings saved", err);
+        }
+      }
+    },
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["clinic-settings"] }); toast({ title: "Online booking settings saved" }); },
     onError: (err: any) => toast({ title: "Save failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
   });
@@ -2497,9 +2635,160 @@ function OnlineBookingTab() {
             placeholder="e.g. A100000000007164"
           />
         </div>
-        <div className="flex justify-end gap-2 pt-2 border-t border-card-border">
+        <div className="flex flex-wrap justify-end gap-2 pt-2 border-t border-card-border">
+          <Button
+            variant="outline"
+            onClick={async () => {
+              setIciciDiagLoading(true);
+              setIciciDiagError("");
+              setIciciDiag(null);
+              try {
+                const result = await api.get<Record<string, unknown>>("/api/public/booking/icici-diagnostics");
+                setIciciDiag(result);
+              } catch (err) {
+                setIciciDiagError(err instanceof Error ? err.message : "Could not load diagnostics");
+              } finally {
+                setIciciDiagLoading(false);
+              }
+            }}
+            disabled={iciciDiagLoading}
+          >
+            {iciciDiagLoading ? "Checking…" : "Test ICICI Connection"}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={async () => {
+              setIciciHistoryLoading(true);
+              setIciciSelectedAttempt(null);
+              try {
+                const result = await api.get<{ attempts: Array<Record<string, unknown>> }>("/api/public/booking/icici-diagnostics/history");
+                setIciciHistory(result.attempts || []);
+              } catch (err) {
+                setIciciDiagError(err instanceof Error ? err.message : "Could not load payment history");
+              } finally {
+                setIciciHistoryLoading(false);
+              }
+            }}
+            disabled={iciciHistoryLoading}
+          >
+            {iciciHistoryLoading ? "Loading…" : iciciHistory ? "Refresh History" : "View Last 50 Attempts"}
+          </Button>
+          <Button
+            variant="outline"
+            disabled={iciciExportLoading}
+            onClick={async () => {
+              setIciciExportLoading(true);
+              try {
+                const token = getStaffToken();
+                const resp = await fetch("/api/public/booking/icici-diagnostics/export", {
+                  headers: token ? { Authorization: `Bearer ${token}` } : {},
+                });
+                if (!resp.ok) throw new Error(`Export failed (HTTP ${resp.status})`);
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `icici-diagnostics-${new Date().toISOString().slice(0, 10)}.zip`;
+                a.click();
+                URL.revokeObjectURL(url);
+              } catch (err) {
+                setIciciDiagError(err instanceof Error ? err.message : "Could not export diagnostic bundle");
+              } finally {
+                setIciciExportLoading(false);
+              }
+            }}
+          >
+            {iciciExportLoading ? "Building ZIP…" : "Export Diagnostic Bundle"}
+          </Button>
           <Button onClick={() => save.mutate(form)} disabled={save.isPending}>{save.isPending ? "Saving…" : "Save"}</Button>
         </div>
+        {iciciDiagError && (
+          <div className="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive">{iciciDiagError}</div>
+        )}
+        {iciciDiag && (
+          <div className="rounded-lg border border-card-border bg-muted/30 p-3 space-y-1.5 text-xs font-mono">
+            <div className="flex justify-between"><span className="text-muted-foreground">Environment</span><span className={String(iciciDiag.environment) === "production" ? "text-emerald-600 font-bold" : "text-amber-600 font-bold"}>{String(iciciDiag.environment ?? "—")}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Merchant ID</span><span>{String(iciciDiag.merchantId || "— NOT SET —")}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Aggregator ID</span><span>{String(iciciDiag.aggregatorId || "— NOT SET —")}</span></div>
+            <div className="flex justify-between gap-2"><span className="text-muted-foreground shrink-0">Base URL</span><span className="break-all text-right">{String(iciciDiag.baseUrl ?? "—")}</span></div>
+            <div className="flex justify-between gap-2"><span className="text-muted-foreground shrink-0">Initiate URL</span><span className="break-all text-right">{String(iciciDiag.initiateSaleUrl ?? "—")}</span></div>
+            <div className="flex justify-between gap-2"><span className="text-muted-foreground shrink-0">Command URL</span><span className="break-all text-right">{String(iciciDiag.commandUrl ?? "—")}</span></div>
+            <div className="flex justify-between gap-2"><span className="text-muted-foreground shrink-0">Callback URL</span><span className="break-all text-right">{String(iciciDiag.callbackUrl ?? "—")}</span></div>
+            <div className="flex justify-between gap-2"><span className="text-muted-foreground shrink-0">Public Base URL</span><span className="break-all text-right">{String(iciciDiag.publicBaseUrl ?? iciciDiag.resolvedPublicBaseUrl ?? "—")}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Build / Commit</span><span>{String(iciciDiag.dockerImageVersion ?? "—")} · {String(iciciDiag.gitCommit ?? "—")}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Last successful payment</span><span className="text-emerald-600">{iciciDiag.lastSuccessfulPaymentAt ? new Date(String(iciciDiag.lastSuccessfulPaymentAt)).toLocaleString() : "— none recorded —"}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Last failed payment</span><span className="text-destructive">{iciciDiag.lastFailedPaymentAt ? new Date(String(iciciDiag.lastFailedPaymentAt)).toLocaleString() : "— none recorded —"}</span></div>
+            {!!iciciDiag.lastTransaction && (
+              <div className="pt-1.5 mt-1.5 border-t border-card-border">
+                <div className="text-muted-foreground mb-1">Last ICICI callback received:</div>
+                <pre className="whitespace-pre-wrap break-all">{JSON.stringify(iciciDiag.lastTransaction, null, 2)}</pre>
+              </div>
+            )}
+            <p className="text-[11px] text-muted-foreground pt-1.5 mt-1.5 border-t border-card-border font-sans">
+              If Merchant ID or Aggregator ID show "NOT SET", fill them in above and Save first. If Environment says "uat/test" but you expected production, check the server's NODE_ENV setting. A failure on ICICI's own payment page (e.g. "Domain Validation Fail") happens before ICICI redirects back to us — it will not show here as a callback, but it IS captured below in "Last 50 Attempts" and in the exported bundle.
+            </p>
+          </div>
+        )}
+        {iciciHistory && (
+          <div className="rounded-lg border border-card-border bg-muted/30 p-3 space-y-2 text-xs">
+            <div className="font-bold font-sans">Last {iciciHistory.length} payment attempts (newest first)</div>
+            {iciciHistory.length === 0 ? (
+              <p className="text-muted-foreground font-sans">No attempts recorded yet.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full font-mono text-[11px]">
+                  <thead>
+                    <tr className="text-left text-muted-foreground border-b border-card-border">
+                      <th className="py-1 pr-2">Time</th>
+                      <th className="py-1 pr-2">Stage</th>
+                      <th className="py-1 pr-2">Status</th>
+                      <th className="py-1 pr-2">Txn Ref</th>
+                      <th className="py-1 pr-2">Amount</th>
+                      <th className="py-1 pr-2">Response</th>
+                      <th className="py-1 pr-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {iciciHistory.map((row) => (
+                      <tr key={String(row.id)} className="border-b border-card-border/50">
+                        <td className="py-1 pr-2 whitespace-nowrap">{new Date(String(row.createdAt)).toLocaleString()}</td>
+                        <td className="py-1 pr-2">{String(row.stage)}</td>
+                        <td className={`py-1 pr-2 font-bold ${row.success ? "text-emerald-600" : "text-destructive"}`}>{row.success ? "OK" : "FAILED"}</td>
+                        <td className="py-1 pr-2">{String(row.merchantTxnNo || row.bookingRef || "—")}</td>
+                        <td className="py-1 pr-2">{row.amount ? `₹${row.amount}` : "—"}</td>
+                        <td className="py-1 pr-2 max-w-[160px] truncate">{String(row.responseCode || row.responseMessage || "—")}</td>
+                        <td className="py-1 pr-2">
+                          <button
+                            className="text-primary underline font-sans"
+                            onClick={async () => {
+                              try {
+                                const detail = await api.get<Record<string, unknown>>(`/api/public/booking/icici-diagnostics/history/${row.id}`);
+                                setIciciSelectedAttempt(detail);
+                              } catch (err) {
+                                setIciciDiagError(err instanceof Error ? err.message : "Could not load attempt detail");
+                              }
+                            }}
+                          >
+                            View
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {iciciSelectedAttempt && (
+              <div className="mt-2 pt-2 border-t border-card-border">
+                <div className="flex justify-between items-center mb-1 font-sans">
+                  <span className="font-bold">Attempt #{String(iciciSelectedAttempt.id)} — raw request/response</span>
+                  <button className="text-muted-foreground underline" onClick={() => setIciciSelectedAttempt(null)}>Close</button>
+                </div>
+                <pre className="whitespace-pre-wrap break-all font-mono text-[11px] bg-background rounded p-2 max-h-96 overflow-y-auto">{JSON.stringify(iciciSelectedAttempt, null, 2)}</pre>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
         <div>
@@ -2829,10 +3118,29 @@ function EmailTab() {
   const { toast } = useToast();
   const qc = useQueryClient();
   const { data: settings } = useQuery<EmailSettings>({ queryKey: ["email-settings"], queryFn: () => api.get("/api/email-settings") });
-  const { register, handleSubmit, reset } = useForm<EmailSettings>({ defaultValues: settings });
-  useEffect(() => { if (settings) reset(settings); }, [settings, reset]);
+  const { register, handleSubmit, reset, watch, setValue } = useForm<EmailSettings>({ defaultValues: settings });
+
+  // extraRecipients is persisted server-side as a JSON array string. In the
+  // form we present it as a friendly comma-separated list and convert back to
+  // an array on save (the previous version sent a raw string, which the API
+  // silently discarded because it only accepts an array).
+  useEffect(() => {
+    if (!settings) return;
+    let recips = "";
+    try {
+      const arr = JSON.parse(settings.extraRecipients || "[]");
+      recips = Array.isArray(arr) ? arr.join(", ") : String(settings.extraRecipients || "");
+    } catch {
+      recips = settings.extraRecipients || "";
+    }
+    reset({ ...settings, extraRecipients: recips });
+  }, [settings, reset]);
+
   const save = useMutation({
-    mutationFn: (body: EmailSettings) => api.post("/api/email-settings", body),
+    mutationFn: (body: EmailSettings) => {
+      const extra = String(body.extraRecipients || "").split(",").map(s => s.trim()).filter(Boolean);
+      return api.post("/api/email-settings", { ...body, extraRecipients: extra });
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["email-settings"] });
       toast({ title: "Saved", description: "Email settings updated successfully." });
@@ -2841,27 +3149,332 @@ function EmailTab() {
       toast({ title: "Save failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
     },
   });
+
+  const testEmail = useMutation({
+    mutationFn: () => api.post<{ ok: boolean; message: string }>("/api/email-settings/test", {}),
+    onSuccess: (r) => toast({ title: r.ok ? "Test email sent" : "Test failed", description: r.message, variant: r.ok ? undefined : "destructive" }),
+    onError: (err: unknown) => toast({ title: "Test failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
+  });
+
+  const sendSummaryNow = useMutation({
+    mutationFn: () => api.post<{ ok: boolean; message: string }>("/api/email-settings/send-summary", {}),
+    onSuccess: (r) => toast({ title: r.ok ? "Daily summary sent" : "Send failed", description: r.message, variant: r.ok ? undefined : "destructive" }),
+    onError: (err: unknown) => toast({ title: "Send failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
+  });
+
+  const smtpSecure = !!watch("smtpSecure");
+  const billEditEnabled = watch("billEditEnabled") !== false;
+  const dailySummaryEnabled = watch("dailySummaryEnabled") !== false;
+
   return (
     <div className="grid grid-cols-1 gap-4">
       <div className="bg-card border border-card-border rounded-xl p-4">
-        <p className="text-sm text-muted-foreground">Configure SMTP and email notifications.</p>
+        <h2 className="font-bold text-lg flex items-center gap-2"><Mail size={16} /> Email Notifications</h2>
+        <p className="text-sm text-muted-foreground mt-1">Configure the SMTP server and control which automated emails go out to the admin recipients.</p>
       </div>
-      <form onSubmit={handleSubmit((d) => save.mutate(d))} className="space-y-4 bg-card border border-card-border rounded-xl p-4">
-        <div className="grid md:grid-cols-2 gap-4">
-          <div><Label>SMTP Host</Label><Input {...register("smtpHost")} className="mt-1" /></div>
-          <div><Label>SMTP Port</Label><Input {...register("smtpPort")} className="mt-1" /></div>
-          <div><Label>SMTP User</Label><Input {...register("smtpUser")} className="mt-1" /></div>
-          <div><Label>SMTP Password</Label><Input {...register("smtpPassword")} className="mt-1" type="password" /></div>
-          <div><Label>From Address</Label><Input {...register("fromAddress")} className="mt-1" /></div>
-          <div><Label>From Name</Label><Input {...register("fromName")} className="mt-1" /></div>
-          <div><Label>Admin Email</Label><Input {...register("adminEmail")} className="mt-1" /></div>
-          <div><Label>Extra Recipients</Label><Input {...register("extraRecipients")} className="mt-1" /></div>
+
+      <form onSubmit={handleSubmit((d) => save.mutate(d))} className="space-y-5">
+        {/* ── SMTP Server ── */}
+        <div className="space-y-4 bg-card border border-card-border rounded-xl p-4">
+          <h3 className="font-semibold text-sm uppercase text-muted-foreground">SMTP Server</h3>
+          <div className="grid md:grid-cols-2 gap-4">
+            <div><Label>SMTP Host</Label><Input {...register("smtpHost")} className="mt-1" placeholder="smtp.gmail.com" /></div>
+            <div><Label>SMTP Port</Label><Input {...register("smtpPort")} className="mt-1" placeholder="587" /></div>
+            <div><Label>SMTP User</Label><Input {...register("smtpUser")} className="mt-1" /></div>
+            <div><Label>SMTP Password</Label><Input {...register("smtpPassword")} className="mt-1" type="password" placeholder="Leave as •••• to keep unchanged" /></div>
+            <div><Label>From Address</Label><Input {...register("fromAddress")} className="mt-1" placeholder="noreply@clinic.com" /></div>
+            <div><Label>From Name</Label><Input {...register("fromName")} className="mt-1" /></div>
+          </div>
+          <div className="flex items-start justify-between gap-4 pt-1">
+            <div>
+              <Label className="font-medium">Use SSL/TLS (secure)</Label>
+              <p className="text-[11px] text-muted-foreground">Turn on for port 465 (implicit TLS). Leave off for 587 (STARTTLS).</p>
+            </div>
+            <Toggle checked={smtpSecure} onChange={(v) => setValue("smtpSecure", v, { shouldDirty: true })} label="Toggle SMTP secure" />
+          </div>
         </div>
-        <div className="flex justify-end gap-2">
+
+        {/* ── Recipients ── */}
+        <div className="space-y-4 bg-card border border-card-border rounded-xl p-4">
+          <h3 className="font-semibold text-sm uppercase text-muted-foreground">Recipients</h3>
+          <div className="grid md:grid-cols-2 gap-4">
+            <div><Label>Admin Email</Label><Input {...register("adminEmail")} className="mt-1" placeholder="owner@clinic.com" /></div>
+            <div>
+              <Label>Extra Recipients</Label>
+              <Input {...register("extraRecipients")} className="mt-1" placeholder="a@clinic.com, b@clinic.com" />
+              <p className="text-[11px] text-muted-foreground mt-1">Comma-separated. These receive the same alerts as the admin email.</p>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Automated emails ── */}
+        <div className="space-y-4 bg-card border border-card-border rounded-xl p-4">
+          <h3 className="font-semibold text-sm uppercase text-muted-foreground">Automated Emails</h3>
+
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <Label className="font-medium">Bill edit / reprint notifications</Label>
+              <p className="text-[11px] text-muted-foreground">Emails the admins whenever a bill is edited or re-printed, with a before/after change table.</p>
+            </div>
+            <Toggle checked={billEditEnabled} onChange={(v) => setValue("billEditEnabled", v, { shouldDirty: true })} label="Toggle bill edit emails" />
+          </div>
+
+          <div className="border-t border-card-border pt-4 flex items-start justify-between gap-4">
+            <div>
+              <Label className="font-medium">Daily summary email</Label>
+              <p className="text-[11px] text-muted-foreground">A once-a-day report of revenue, bills created/paid/pending, payments, and bills edited.</p>
+            </div>
+            <Toggle checked={dailySummaryEnabled} onChange={(v) => setValue("dailySummaryEnabled", v, { shouldDirty: true })} label="Toggle daily summary" />
+          </div>
+          {dailySummaryEnabled && (
+            <div className="pl-1">
+              <Label>Send daily summary at</Label>
+              <Input type="time" {...register("dailySummaryTime")} className="mt-1 w-40" />
+              <p className="text-[11px] text-muted-foreground mt-1">Server local time. The summary is sent automatically once per day at this time.</p>
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="outline" type="button" onClick={() => testEmail.mutate()} disabled={testEmail.isPending}>
+            {testEmail.isPending ? "Sending…" : "Send Test Email"}
+          </Button>
+          <Button variant="outline" type="button" onClick={() => sendSummaryNow.mutate()} disabled={sendSummaryNow.isPending}>
+            {sendSummaryNow.isPending ? "Sending…" : "Send Summary Now"}
+          </Button>
           <Button variant="outline" type="button" onClick={() => reset(settings)} disabled={!settings}>Reset</Button>
           <Button type="submit" disabled={save.isPending}>{save.isPending ? "Saving..." : "Save"}</Button>
         </div>
       </form>
+    </div>
+  );
+}
+
+type AuditRow = {
+  id: number; userId: number | null; userName: string; role: string;
+  action: string; module: string; entityType: string | null; entityId: string | null;
+  reason: string | null; ipAddress: string | null; userAgent: string | null; createdAt: string;
+};
+type AuditResponse = { rows: AuditRow[]; total: number; limit: number; offset: number };
+type AuditFacets = { actions: string[]; modules: string[] };
+
+function auditActionStyle(action: string): string {
+  const a = action.toLowerCase();
+  if (a === "login") return "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300";
+  if (a === "logout") return "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300";
+  if (a === "login_failed") return "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300";
+  if (a === "password_change") return "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300";
+  if (a === "delete") return "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300";
+  if (a === "create") return "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300";
+  if (a === "edit" || a === "reprint") return "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300";
+  if (a === "refund") return "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300";
+  return "bg-muted text-muted-foreground";
+}
+
+function AuditLogTab() {
+  const [action, setAction] = useState("");
+  const [moduleName, setModuleName] = useState("");
+  const [q, setQ] = useState("");
+  const [debouncedQ, setDebouncedQ] = useState("");
+  const [page, setPage] = useState(0);
+  const limit = 50;
+
+  useEffect(() => {
+    const t = setTimeout(() => { setDebouncedQ(q); setPage(0); }, 350);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  const { data: facets } = useQuery<AuditFacets>({
+    queryKey: ["audit-facets"],
+    queryFn: () => api.get("/api/audit-trail/facets"),
+  });
+
+  const params = new URLSearchParams();
+  if (action) params.set("action", action);
+  if (moduleName) params.set("module", moduleName);
+  if (debouncedQ) params.set("q", debouncedQ);
+  params.set("limit", String(limit));
+  params.set("offset", String(page * limit));
+
+  const { data, isLoading, isFetching } = useQuery<AuditResponse>({
+    queryKey: ["audit-trail", action, moduleName, debouncedQ, page],
+    queryFn: () => api.get(`/api/audit-trail?${params.toString()}`),
+    placeholderData: (prev) => prev,
+  });
+
+  const rows = data?.rows ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-card border border-card-border rounded-xl p-4">
+        <h2 className="font-bold text-lg flex items-center gap-2"><ScrollText size={16} /> Audit Log</h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Tamper-evident record of security-sensitive actions — logins, logouts, failed sign-ins, password changes,
+          and account administration — plus billing and other module events. Entries are append-only and cannot be edited or deleted.
+        </p>
+      </div>
+
+      {/* Filters */}
+      <div className="bg-card border border-card-border rounded-xl p-4 grid gap-3 md:grid-cols-4">
+        <div className="md:col-span-2">
+          <Label className="text-xs">Search</Label>
+          <div className="relative mt-1">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="User, reason, IP, or entity ID" className="pl-8" />
+          </div>
+        </div>
+        <div>
+          <Label className="text-xs">Action</Label>
+          <select
+            value={action}
+            onChange={(e) => { setAction(e.target.value); setPage(0); }}
+            className="mt-1 w-full h-9 rounded-md border border-input bg-background px-3 text-sm"
+          >
+            <option value="">All actions</option>
+            {(facets?.actions ?? []).map((a) => <option key={a} value={a}>{a}</option>)}
+          </select>
+        </div>
+        <div>
+          <Label className="text-xs">Module</Label>
+          <select
+            value={moduleName}
+            onChange={(e) => { setModuleName(e.target.value); setPage(0); }}
+            className="mt-1 w-full h-9 rounded-md border border-input bg-background px-3 text-sm"
+          >
+            <option value="">All modules</option>
+            {(facets?.modules ?? []).map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="bg-card border border-card-border rounded-xl overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-card-border bg-muted/40">
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">When</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">User</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Action</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Module</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Details</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">IP</th>
+              </tr>
+            </thead>
+            <tbody>
+              {isLoading ? (
+                <tr><td colSpan={6} className="px-4 py-10 text-center text-muted-foreground">Loading audit log…</td></tr>
+              ) : rows.length === 0 ? (
+                <tr><td colSpan={6} className="px-4 py-10 text-center text-muted-foreground">No audit entries match these filters.</td></tr>
+              ) : rows.map((r) => (
+                <tr key={r.id} className="border-b border-card-border/60 hover:bg-muted/30">
+                  <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">{new Date(r.createdAt).toLocaleString("en-IN")}</td>
+                  <td className="px-4 py-3">
+                    <div className="font-medium">{r.userName}</div>
+                    <div className="text-[11px] text-muted-foreground">{r.role}</div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-medium ${auditActionStyle(r.action)}`}>{r.action}</span>
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground">{r.module}</td>
+                  <td className="px-4 py-3 max-w-sm">
+                    <div className="text-foreground">{r.reason || (r.entityType ? `${r.entityType} ${r.entityId ?? ""}`.trim() : "—")}</div>
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{r.ipAddress || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex items-center justify-between px-4 py-3 border-t border-card-border text-sm">
+          <span className="text-muted-foreground">
+            {total > 0 ? `${page * limit + 1}–${Math.min((page + 1) * limit, total)} of ${total}` : "0 entries"}
+            {isFetching && !isLoading ? " · refreshing…" : ""}
+          </span>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>Previous</Button>
+            <Button variant="outline" size="sm" disabled={page >= totalPages - 1} onClick={() => setPage((p) => p + 1)}>Next</Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type FeatureFlagRow = {
+  key: string; enabled: boolean; description: string;
+  updatedBy: string | null; updatedAt: string;
+};
+
+function FeatureFlagsTab() {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const { data: flags = [], isLoading } = useQuery<FeatureFlagRow[]>({
+    queryKey: ["feature-flags"],
+    queryFn: () => api.get("/api/feature-flags"),
+  });
+
+  const toggle = useMutation({
+    mutationFn: ({ key, enabled }: { key: string; enabled: boolean }) =>
+      api.patch<FeatureFlagRow>(`/api/feature-flags/${key}`, { enabled }),
+    onSuccess: (updated) => {
+      qc.invalidateQueries({ queryKey: ["feature-flags"] });
+      toast({ title: updated.enabled ? "Flag enabled" : "Flag disabled", description: updated.key });
+    },
+    onError: (err: unknown) => {
+      toast({ title: "Could not update flag", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    },
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-card border border-card-border rounded-xl p-4">
+        <h2 className="font-bold text-lg flex items-center gap-2"><Flag size={16} /> Feature Flags</h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Server-side switches for the Radiology Implementation Roadmap. Every flag below is dark by default —
+          turning one on changes real backend behavior for every radiologist, not just this browser. See the
+          roadmap document for each flag's rollout plan and rollback-by-flip guarantee.
+        </p>
+      </div>
+
+      <div className="bg-card border border-card-border rounded-xl overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-card-border bg-muted/40">
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Flag</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Description</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Last changed</th>
+                <th className="text-right px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Enabled</th>
+              </tr>
+            </thead>
+            <tbody>
+              {isLoading ? (
+                <tr><td colSpan={4} className="px-4 py-10 text-center text-muted-foreground">Loading feature flags…</td></tr>
+              ) : flags.length === 0 ? (
+                <tr><td colSpan={4} className="px-4 py-10 text-center text-muted-foreground">No feature flags found.</td></tr>
+              ) : flags.map((f) => (
+                <tr key={f.key} className="border-b border-card-border/60 hover:bg-muted/30">
+                  <td className="px-4 py-3 font-mono text-xs">{f.key}</td>
+                  <td className="px-4 py-3 text-muted-foreground max-w-md">{f.description}</td>
+                  <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
+                    {f.updatedBy ? `${f.updatedBy} · ${new Date(f.updatedAt).toLocaleString("en-IN")}` : "—"}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <Toggle
+                      checked={f.enabled}
+                      onChange={(v) => toggle.mutate({ key: f.key, enabled: v })}
+                      label={`Toggle ${f.key}`}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2886,6 +3499,15 @@ type WhatsappCfg = {
   aiAssistantName?: string;
   aiSystemPrompt?: string;
   aiEscalationMessage?: string;
+  // Automation triggers
+  autoSendBillCreated?: boolean;
+  appointmentReminderEnabled?: boolean;
+  appointmentReminderTime?: string;
+  appointmentReminderTemplate?: string;
+  duesReminderEnabled?: boolean;
+  duesReminderTime?: string;
+  duesReminderMinAmount?: number;
+  duesReminderTemplate?: string;
 };
 type WhatsappNumber = {
   id: number;
@@ -3651,7 +4273,7 @@ function WhatsappTab() {
   const [bookingPhone, setBookingPhone] = useState("");
   const [showToken, setShowToken] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [waSubTab, setWaSubTab] = useState<"numbers" | "config" | "webhook" | "ai" | "inbox">("numbers");
+  const [waSubTab, setWaSubTab] = useState<"numbers" | "config" | "automations" | "webhook" | "ai" | "inbox">("numbers");
   const cur = form ?? cfg ?? null;
 
   const save = useMutation({
@@ -3672,11 +4294,12 @@ function WhatsappTab() {
   };
 
   const WA_SUB_TABS = [
-    { id: "numbers", label: "Numbers",        icon: Phone },
-    { id: "config",  label: "Cloud API",      icon: MessageCircle },
-    { id: "webhook", label: "Webhook Setup",   icon: Globe },
-    { id: "ai",      label: "AI Assistant",    icon: Bot },
-    { id: "inbox",   label: "Inbox",           icon: Inbox },
+    { id: "numbers",     label: "Numbers",       icon: Phone },
+    { id: "config",      label: "Cloud API",     icon: MessageCircle },
+    { id: "automations", label: "Automations",   icon: Sparkles },
+    { id: "webhook",     label: "Webhook Setup",  icon: Globe },
+    { id: "ai",          label: "AI Assistant",   icon: Bot },
+    { id: "inbox",       label: "Inbox",          icon: Inbox },
   ] as const;
 
   return (
@@ -3809,6 +4432,120 @@ function WhatsappTab() {
               </p>
             )}
             {!cur.enabled && <p className="text-xs text-muted-foreground mt-3">Enable WhatsApp above to send test messages.</p>}
+          </div>
+        </div>
+      )}
+
+      {/* ── Automations ── */}
+      {waSubTab === "automations" && (
+        <div className="space-y-4">
+          <div className="bg-card border border-card-border rounded-xl p-5">
+            <h2 className="font-bold text-lg flex items-center gap-2"><Sparkles size={16} /> Automated WhatsApp Triggers</h2>
+            <p className="text-sm text-muted-foreground mt-1">
+              Choose which events automatically message patients. Patient-facing reminders are OFF until you switch them on.
+              Every trigger also requires the master WhatsApp switch on the Cloud API tab.
+            </p>
+            {!cur.enabled && (
+              <p className="text-xs mt-2 text-amber-600 flex items-center gap-1">
+                <AlertTriangle size={13} /> WhatsApp is currently disabled — enable it on the Cloud API tab for any of these to actually send.
+              </p>
+            )}
+          </div>
+
+          {/* Bill created */}
+          <div className="bg-card border border-card-border rounded-xl p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="font-semibold flex items-center gap-2"><Receipt size={14} /> Bill created</h3>
+                <p className="text-[11px] text-muted-foreground mt-1">Sends the approved bill template (name, bill no., amount, queue token) the moment a new bill is generated.</p>
+              </div>
+              <Toggle checked={cur.autoSendBillCreated !== false} onChange={(v) => update("autoSendBillCreated", v)} label="Toggle bill created" />
+            </div>
+          </div>
+
+          {/* Report ready */}
+          <div className="bg-card border border-card-border rounded-xl p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="font-semibold flex items-center gap-2"><Send size={14} /> Report ready</h3>
+                <p className="text-[11px] text-muted-foreground mt-1">Auto-delivers the report link when a verifier finalises a patient report. (Same setting as “Auto-send on verify” on the Cloud API tab.)</p>
+              </div>
+              <Toggle checked={!!cur.autoSendOnVerify} onChange={(v) => update("autoSendOnVerify", v)} label="Toggle report ready" />
+            </div>
+          </div>
+
+          {/* Appointment reminder */}
+          <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="font-semibold flex items-center gap-2"><ClipboardList size={14} /> Appointment reminder</h3>
+                <p className="text-[11px] text-muted-foreground mt-1">Once a day, messages every patient scheduled for the <strong>next day</strong>.</p>
+              </div>
+              <Toggle checked={!!cur.appointmentReminderEnabled} onChange={(v) => update("appointmentReminderEnabled", v)} label="Toggle appointment reminder" />
+            </div>
+            {cur.appointmentReminderEnabled && (
+              <div className="grid md:grid-cols-[auto_1fr] gap-4 pt-3 border-t border-card-border">
+                <div>
+                  <Label>Send at (server time)</Label>
+                  <Input type="time" value={cur.appointmentReminderTime ?? "18:00"} onChange={(e) => update("appointmentReminderTime", e.target.value)} className="mt-1 w-40" />
+                </div>
+                <div>
+                  <Label>Custom message (optional)</Label>
+                  <Textarea
+                    value={cur.appointmentReminderTemplate ?? ""}
+                    onChange={(e) => update("appointmentReminderTemplate", e.target.value)}
+                    rows={3}
+                    className="mt-1 font-mono text-xs"
+                    placeholder={"Leave empty for the default. Placeholders: {{name}} {{date}} {{time}}"}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Dues reminder */}
+          <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="font-semibold flex items-center gap-2"><CreditCard size={14} /> Dues reminder</h3>
+                <p className="text-[11px] text-muted-foreground mt-1">Once a day, messages every patient whose total outstanding balance is at or above the threshold below. One consolidated message per patient.</p>
+              </div>
+              <Toggle checked={!!cur.duesReminderEnabled} onChange={(v) => update("duesReminderEnabled", v)} label="Toggle dues reminder" />
+            </div>
+            {cur.duesReminderEnabled && (
+              <div className="grid md:grid-cols-3 gap-4 pt-3 border-t border-card-border">
+                <div>
+                  <Label>Send at (server time)</Label>
+                  <Input type="time" value={cur.duesReminderTime ?? "11:00"} onChange={(e) => update("duesReminderTime", e.target.value)} className="mt-1 w-40" />
+                </div>
+                <div>
+                  <Label>Minimum balance (₹)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={cur.duesReminderMinAmount ?? 0}
+                    onChange={(e) => setForm({ ...(cur as WhatsappCfg), duesReminderMinAmount: Math.max(0, Math.floor(Number(e.target.value) || 0)) })}
+                    className="mt-1 w-40"
+                  />
+                  <p className="text-[11px] text-muted-foreground mt-1">Skip patients owing less than this.</p>
+                </div>
+                <div>
+                  <Label>Custom message (optional)</Label>
+                  <Textarea
+                    value={cur.duesReminderTemplate ?? ""}
+                    onChange={(e) => update("duesReminderTemplate", e.target.value)}
+                    rows={3}
+                    className="mt-1 font-mono text-xs"
+                    placeholder={"Leave empty for the default. Placeholders: {{name}} {{amount}}"}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" type="button" onClick={() => setForm(cfg ?? null)}>Reset</Button>
+            <Button onClick={() => save.mutate(cur as WhatsappCfg)} disabled={save.isPending}>{save.isPending ? "Saving…" : "Save"}</Button>
           </div>
         </div>
       )}
@@ -5486,6 +6223,7 @@ function OllamaSettingsCard() {
   const [model, setModel] = useState("llama3");
   const [localOnly, setLocalOnly] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [availableModels, setAvailableModels] = useState<string[]>(() => {
     try {
       const stored = localStorage.getItem(OLLAMA_MODELS_KEY);
@@ -5540,6 +6278,7 @@ function OllamaSettingsCard() {
       toast({ title: "Enter a base URL first", variant: "destructive" });
       return;
     }
+    setTesting(true);
     try {
       const resp = await api.post<{ ok: boolean; model: string; models?: string[]; modelFound?: boolean; latencyMs?: number; error?: string }>(
         "/api/radiology-ollama/test",
@@ -5565,6 +6304,8 @@ function OllamaSettingsCard() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed";
       toast({ title: "Test failed", description: msg, variant: "destructive" });
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -5640,8 +6381,8 @@ function OllamaSettingsCard() {
         <Button size="sm" onClick={handleSave} disabled={saving}>
           {saving ? "Saving..." : "Save Ollama Settings"}
         </Button>
-        <Button size="sm" variant="outline" onClick={handleTest} type="button">
-          Test Connection
+        <Button size="sm" variant="outline" onClick={handleTest} disabled={testing} type="button">
+          {testing ? "Testing..." : "Test Connection"}
         </Button>
       </div>
     </div>
@@ -5877,6 +6618,13 @@ function RadiologySettingsTab() {
 
   return (
     <div className="max-w-2xl space-y-6">
+      <a
+        href="/settings/radiology"
+        className="flex items-center justify-between gap-3 rounded-xl border bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800 p-3 text-sm hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
+      >
+        <span>Looking for PACS, Orthanc, OHIF, Weasis, DICOM, or worklist settings? Those live on the dedicated <strong>Radiology Settings</strong> page.</span>
+        <span className="shrink-0 text-blue-600 dark:text-blue-400 font-medium">Open →</span>
+      </a>
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
         <div>
           <h2 className="font-bold text-lg flex items-center gap-2"><ScanLine size={16} /> Radiology Productivity Tools</h2>
@@ -6361,7 +7109,15 @@ function QueueSettingsTab() {
   }, [data]);
 
   const save = useMutation({
-    mutationFn: (body: OnlineBookingSettings) => api.put("/api/clinic-settings", body),
+    mutationFn: (body: OnlineBookingSettings) => {
+      // Only send queue-related fields to avoid validation errors on unrelated fields
+      const payload = {
+        queueVipMode: body.queueVipMode,
+        queuePrivacyMode: body.queuePrivacyMode,
+        queueEstimatedWaitPerPatient: body.queueEstimatedWaitPerPatient,
+      };
+      return api.put("/api/clinic-settings", payload);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["clinic-settings"] });
       toast({ title: "Queue settings saved successfully" });
@@ -6433,6 +7189,448 @@ function QueueSettingsTab() {
         <div className="flex justify-end gap-2 pt-4 border-t border-card-border">
           <Button onClick={() => save.mutate(form)} disabled={save.isPending}>{save.isPending ? "Saving…" : "Save Settings"}</Button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// QUEUE DISPLAY (TV) SETTINGS TAB
+// ============================================================
+// Manages queue_display_settings rows — one per physical TV/kiosk display
+// (USG room, X-Ray room, Reception, etc). Nothing here touches the existing
+// waiting-room Display.tsx board or its /api/display/queue feed; this only
+// controls branding/presentation for the new portrait QueueDisplay.tsx page.
+
+type InstructionItemForm = { id: string; icon: string; text: string; color: string; enabled: boolean };
+
+type QueueDisplaySettingsForm = {
+  roomKey: string;
+  displayName: string;
+  location: string;
+  logoUrl: string;
+  showLogo: boolean;
+  showDisplayName: boolean;
+  showLocation: boolean;
+  roomTitle: string;
+  showRoomTitle: boolean;
+  showNowServing: boolean;
+  showNextPatients: boolean;
+  nextPatientCount: number;
+  showQrBooking: boolean;
+  qrImageUrl: string;
+  qrHeading: string;
+  qrSubheading: string;
+  qrDescription: string;
+  qrButtonText: string;
+  instructionItems: InstructionItemForm[];
+  showAnnouncement: boolean;
+  announcementText: string;
+  phone: string;
+  showPhone: boolean;
+  website: string;
+  showWebsite: boolean;
+  slogan: string;
+  showSlogan: boolean;
+  themeMode: string;
+  primaryColor: string;
+  secondaryColor: string;
+  accentColor: string;
+  ledgerId: number;
+  departments: string;
+};
+
+function QueueDisplaySettingsTab() {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const [roomKey, setRoomKey] = useState("usg");
+  const [previewKey, setPreviewKey] = useState(0); // bump to force iframe reload
+  const [addingRoom, setAddingRoom] = useState(false);
+  const [newRoomName, setNewRoomName] = useState("");
+
+  // List of all configured displays (MRI, CT, X-Ray, USG, Reception, etc.)
+  // — fully dynamic, no fixed list. Doctors add rooms from here; each gets
+  // its own independent settings row and its own /display/:roomKey URL.
+  const { data: rooms } = useQuery<{ roomKey: string; roomTitle: string; displayName: string }[]>({
+    queryKey: ["queue-display-rooms"],
+    queryFn: () => api.get("/api/settings/queue-display"),
+  });
+
+  const { data, isLoading } = useQuery<QueueDisplaySettingsForm>({
+    queryKey: ["queue-display-settings-admin", roomKey],
+    queryFn: () => api.get(`/api/settings/queue-display/${roomKey}`),
+  });
+
+  const [form, setForm] = useState<QueueDisplaySettingsForm | null>(null);
+
+  useEffect(() => {
+    if (data) setForm(data);
+  }, [data]);
+
+  const createRoom = useMutation({
+    mutationFn: (key: string) => api.patch(`/api/settings/queue-display/${key}`, { roomTitle: key.toUpperCase().replace(/-/g, " ") + " ROOM" }),
+    onSuccess: (_res, key) => {
+      qc.invalidateQueries({ queryKey: ["queue-display-rooms"] });
+      setRoomKey(key);
+      setAddingRoom(false);
+      setNewRoomName("");
+      toast({ title: `${key.toUpperCase()} room display created` });
+    },
+    onError: (err: any) => toast({ title: "Could not create room", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
+  });
+
+  const deleteRoom = useMutation({
+    mutationFn: (key: string) => api.delete(`/api/settings/queue-display/${key}`),
+    onSuccess: (_res, key) => {
+      qc.invalidateQueries({ queryKey: ["queue-display-rooms"] });
+      toast({ title: `${key.toUpperCase()} display removed` });
+      setRoomKey((prev) => (prev === key ? "usg" : prev));
+    },
+    onError: (err: any) => toast({ title: "Delete failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
+  });
+
+  const save = useMutation({
+    mutationFn: (body: QueueDisplaySettingsForm) => api.patch(`/api/settings/queue-display/${roomKey}`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["queue-display-settings-admin", roomKey] });
+      toast({ title: "Queue display settings saved" });
+      setPreviewKey((k) => k + 1);
+    },
+    onError: (err: any) => toast({ title: "Save failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
+  });
+
+  const onLogoChange = (file: File | null) => {
+    if (!file || !form) return;
+    if (!file.type.startsWith("image/")) { toast({ title: "Please pick an image file", variant: "destructive" }); return; }
+    if (file.size > 800_000) { toast({ title: "Logo too large — pick an image under 800 KB", variant: "destructive" }); return; }
+    const reader = new FileReader();
+    reader.onload = () => setForm({ ...form, logoUrl: String(reader.result) });
+    reader.readAsDataURL(file);
+  };
+
+  const onQrChange = (file: File | null) => {
+    if (!file || !form) return;
+    if (!file.type.startsWith("image/")) { toast({ title: "Please pick an image file", variant: "destructive" }); return; }
+    if (file.size > 1_200_000) { toast({ title: "QR image too large — pick an image under 1.2 MB", variant: "destructive" }); return; }
+    const reader = new FileReader();
+    reader.onload = () => setForm({ ...form, qrImageUrl: String(reader.result) });
+    reader.readAsDataURL(file);
+  };
+
+  const updateInstruction = (id: string, patch: Partial<InstructionItemForm>) => {
+    if (!form) return;
+    setForm({
+      ...form,
+      instructionItems: form.instructionItems.map((it) => (it.id === id ? { ...it, ...patch } : it)),
+    });
+  };
+
+  const addInstruction = () => {
+    if (!form || form.instructionItems.length >= 12) return;
+    setForm({
+      ...form,
+      instructionItems: [
+        ...form.instructionItems,
+        { id: String(Date.now()), icon: "ℹ️", text: "New instruction", color: "#94a3b8", enabled: true },
+      ],
+    });
+  };
+
+  const removeInstruction = (id: string) => {
+    if (!form) return;
+    setForm({ ...form, instructionItems: form.instructionItems.filter((it) => it.id !== id) });
+  };
+
+  if (isLoading || !form) {
+    return <div className="bg-card border border-card-border rounded-xl p-8 text-center text-muted-foreground">Loading…</div>;
+  }
+
+  const previewUrl = `/queue/${roomKey}`;
+
+  return (
+    <div className="space-y-4 max-w-6xl">
+      <div className="bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-indigo-950/30 dark:to-blue-950/30 border border-indigo-200 dark:border-indigo-900 rounded-xl p-5">
+        <div className="flex items-start gap-3">
+          <Tv size={20} className="text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
+          <div>
+            <div className="font-semibold text-sm">TV / Kiosk Queue Display</div>
+            <div className="text-xs text-muted-foreground mt-1">
+              Configure a portrait TV display for a specific room (USG, X-Ray, Reception, etc).
+              Everything shown on the TV — branding, room title, QR code, instructions, footer —
+              is controlled here. Open the display at <code className="px-1 py-0.5 bg-black/5 dark:bg-white/10 rounded">/queue/{roomKey}</code> on the TV browser.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-card border border-card-border rounded-xl p-4 flex items-center gap-3 flex-wrap">
+        <Label className="text-sm shrink-0">Room</Label>
+        <Select value={roomKey} onValueChange={setRoomKey}>
+          <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {(rooms && rooms.length > 0 ? rooms : [{ roomKey: "usg", roomTitle: "USG ROOM", displayName: "" }]).map((r) => (
+              <SelectItem key={r.roomKey} value={r.roomKey}>{r.roomTitle || r.roomKey.toUpperCase()}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        {roomKey !== "usg" && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-red-600 hover:text-red-700"
+            onClick={() => {
+              if (confirm(`Remove the "${roomKey.toUpperCase()}" display? This only deletes its TV settings, not any patient/queue data.`)) {
+                deleteRoom.mutate(roomKey);
+              }
+            }}
+          >
+            <Trash2 size={13} className="mr-1" /> Remove room
+          </Button>
+        )}
+
+        {addingRoom ? (
+          <div className="flex items-center gap-2">
+            <Input
+              autoFocus
+              value={newRoomName}
+              onChange={(e) => setNewRoomName(e.target.value)}
+              placeholder="e.g. mri, ct, xray-2"
+              className="w-40 h-8 text-sm"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  const key = newRoomName.trim().toLowerCase().replace(/[^a-z0-9-]/g, "-");
+                  if (key) createRoom.mutate(key);
+                }
+                if (e.key === "Escape") setAddingRoom(false);
+              }}
+            />
+            <Button
+              size="sm"
+              onClick={() => {
+                const key = newRoomName.trim().toLowerCase().replace(/[^a-z0-9-]/g, "-");
+                if (key) createRoom.mutate(key);
+              }}
+              disabled={!newRoomName.trim() || createRoom.isPending}
+            >
+              Create
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => { setAddingRoom(false); setNewRoomName(""); }}>Cancel</Button>
+          </div>
+        ) : (
+          <Button variant="outline" size="sm" onClick={() => setAddingRoom(true)}>
+            <Plus size={13} className="mr-1" /> Add room (MRI, CT, X-Ray…)
+          </Button>
+        )}
+
+        <span className="text-xs text-muted-foreground w-full">
+          Each room (MRI, CT, X-Ray, USG, Reception…) has its own independent branding, QR code, and TV URL at <code className="px-1 py-0.5 bg-black/5 dark:bg-white/10 rounded">/queue/{roomKey}</code>.
+        </span>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[1fr_420px] gap-4">
+        {/* ── Settings form ─────────────────────────────────────────── */}
+        <div className="space-y-4">
+          {/* Header / branding */}
+          <SettingsCard title="Header & Branding">
+            <ToggleRow label="Show logo" checked={form.showLogo} onChange={(v) => setForm({ ...form, showLogo: v })} />
+            {form.showLogo && (
+              <div className="flex items-center gap-3 mb-3">
+                {form.logoUrl && <img src={form.logoUrl} className="h-12 w-12 rounded-lg object-contain bg-muted p-1" alt="" />}
+                <label className="text-xs px-3 py-1.5 border border-card-border rounded-lg cursor-pointer hover:bg-muted flex items-center gap-1.5">
+                  <Upload size={12} /> Upload logo
+                  <input type="file" accept="image/*" className="hidden" onChange={(e) => onLogoChange(e.target.files?.[0] ?? null)} />
+                </label>
+              </div>
+            )}
+            <ToggleRow label="Show center name" checked={form.showDisplayName} onChange={(v) => setForm({ ...form, showDisplayName: v })} />
+            {form.showDisplayName && (
+              <Input value={form.displayName} onChange={(e) => setForm({ ...form, displayName: e.target.value })} placeholder="CARE DIAGNOSTICS" className="mb-3" />
+            )}
+            <ToggleRow label="Show location" checked={form.showLocation} onChange={(v) => setForm({ ...form, showLocation: v })} />
+            {form.showLocation && (
+              <Input value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} placeholder="Deoghar" />
+            )}
+          </SettingsCard>
+
+          {/* Room title */}
+          <SettingsCard title="Room Title">
+            <ToggleRow label="Show room title" checked={form.showRoomTitle} onChange={(v) => setForm({ ...form, showRoomTitle: v })} />
+            {form.showRoomTitle && (
+              <Input value={form.roomTitle} onChange={(e) => setForm({ ...form, roomTitle: e.target.value })} placeholder="USG ROOM" />
+            )}
+          </SettingsCard>
+
+          {/* Now serving / next patients / queue source */}
+          <SettingsCard title="Queue Cards">
+            <ToggleRow label="Show 'Now Serving' card" checked={form.showNowServing} onChange={(v) => setForm({ ...form, showNowServing: v })} />
+            <ToggleRow label="Show 'Next Patients' card" checked={form.showNextPatients} onChange={(v) => setForm({ ...form, showNextPatients: v })} />
+            {form.showNextPatients && (
+              <div className="flex items-center gap-2 mb-3">
+                <Label className="text-xs w-40 shrink-0">Next patients to show</Label>
+                <Input type="number" min={1} max={20} value={form.nextPatientCount} onChange={(e) => setForm({ ...form, nextPatientCount: Number(e.target.value) || 5 })} className="w-24" />
+              </div>
+            )}
+            <div className="flex items-center gap-2 mb-3">
+              <Label className="text-xs w-40 shrink-0">Ledger / Book ID</Label>
+              <Input type="number" min={1} value={form.ledgerId} onChange={(e) => setForm({ ...form, ledgerId: Number(e.target.value) || 1 })} className="w-24" />
+              <span className="text-xs text-muted-foreground">Which existing queue book this TV shows (see Queue page)</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Label className="text-xs w-40 shrink-0">Departments filter</Label>
+              <Input value={form.departments} onChange={(e) => setForm({ ...form, departments: e.target.value })} placeholder="e.g. USG (blank = all)" />
+            </div>
+          </SettingsCard>
+
+          {/* QR booking */}
+          <SettingsCard title="QR Booking Card">
+            <ToggleRow label="Show QR booking card" checked={form.showQrBooking} onChange={(v) => setForm({ ...form, showQrBooking: v })} />
+            {form.showQrBooking && (
+              <>
+                <div className="flex items-center gap-3 mb-3">
+                  {form.qrImageUrl && <img src={form.qrImageUrl} className="h-16 w-16 rounded-lg object-contain bg-white p-1" alt="" />}
+                  <label className="text-xs px-3 py-1.5 border border-card-border rounded-lg cursor-pointer hover:bg-muted flex items-center gap-1.5">
+                    <Upload size={12} /> Upload QR image
+                    <input type="file" accept="image/*" className="hidden" onChange={(e) => onQrChange(e.target.files?.[0] ?? null)} />
+                  </label>
+                </div>
+                <Input value={form.qrHeading} onChange={(e) => setForm({ ...form, qrHeading: e.target.value })} placeholder="AVOID THE QUEUE" className="mb-2" />
+                <Input value={form.qrSubheading} onChange={(e) => setForm({ ...form, qrSubheading: e.target.value })} placeholder="BOOK ONLINE" className="mb-2" />
+                <Input value={form.qrDescription} onChange={(e) => setForm({ ...form, qrDescription: e.target.value })} placeholder="Scan the QR code to book your appointment online" className="mb-2" />
+                <Input value={form.qrButtonText} onChange={(e) => setForm({ ...form, qrButtonText: e.target.value })} placeholder="SCAN TO BOOK" />
+              </>
+            )}
+          </SettingsCard>
+
+          {/* Instruction rows */}
+          <SettingsCard title="Instruction Rows">
+            <div className="space-y-2 mb-3">
+              {form.instructionItems.map((it) => (
+                <div key={it.id} className="flex items-center gap-2 border border-card-border rounded-lg p-2">
+                  <GripVertical size={14} className="text-muted-foreground shrink-0" />
+                  <input
+                    value={it.icon}
+                    onChange={(e) => updateInstruction(it.id, { icon: e.target.value })}
+                    className="w-12 text-center border border-card-border rounded-md py-1 text-lg"
+                    maxLength={4}
+                  />
+                  <Input value={it.text} onChange={(e) => updateInstruction(it.id, { text: e.target.value })} className="flex-1" />
+                  <input
+                    type="color"
+                    value={/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(it.color) ? it.color : "#94a3b8"}
+                    onChange={(e) => updateInstruction(it.id, { color: e.target.value })}
+                    className="w-9 h-9 rounded-md border border-card-border shrink-0"
+                    title="Color"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => updateInstruction(it.id, { enabled: !it.enabled })}
+                    className="shrink-0"
+                    title={it.enabled ? "Visible — click to hide" : "Hidden — click to show"}
+                  >
+                    {it.enabled ? <CheckSquare size={18} className="text-emerald-500" /> : <Square size={18} className="text-muted-foreground" />}
+                  </button>
+                  <button type="button" onClick={() => removeInstruction(it.id)} className="shrink-0 text-red-500 hover:text-red-600">
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <Button type="button" variant="outline" size="sm" onClick={addInstruction} disabled={form.instructionItems.length >= 12}>
+              <Plus size={14} className="mr-1" /> Add instruction row
+            </Button>
+          </SettingsCard>
+
+          {/* Announcement */}
+          <SettingsCard title="Announcement Strip">
+            <ToggleRow label="Show announcement strip" checked={form.showAnnouncement} onChange={(v) => setForm({ ...form, showAnnouncement: v })} />
+            {form.showAnnouncement && (
+              <Input value={form.announcementText} onChange={(e) => setForm({ ...form, announcementText: e.target.value })} placeholder="Token numbers may change. Please listen for your number." />
+            )}
+          </SettingsCard>
+
+          {/* Footer */}
+          <SettingsCard title="Footer">
+            <ToggleRow label="Show phone" checked={form.showPhone} onChange={(v) => setForm({ ...form, showPhone: v })} />
+            {form.showPhone && <Input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="06562 123456" className="mb-3" />}
+            <ToggleRow label="Show website" checked={form.showWebsite} onChange={(v) => setForm({ ...form, showWebsite: v })} />
+            {form.showWebsite && <Input value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} placeholder="www.carediagnostics.com" className="mb-3" />}
+            <ToggleRow label="Show slogan" checked={form.showSlogan} onChange={(v) => setForm({ ...form, showSlogan: v })} />
+            {form.showSlogan && <Input value={form.slogan} onChange={(e) => setForm({ ...form, slogan: e.target.value })} placeholder="We care for you" />}
+          </SettingsCard>
+
+          {/* Theme */}
+          <SettingsCard title="Theme Colors">
+            <div className="grid grid-cols-3 gap-3">
+              <ColorField label="Primary (green)" value={form.primaryColor} onChange={(v) => setForm({ ...form, primaryColor: v })} />
+              <ColorField label="Secondary (blue)" value={form.secondaryColor} onChange={(v) => setForm({ ...form, secondaryColor: v })} />
+              <ColorField label="Accent (announce)" value={form.accentColor} onChange={(v) => setForm({ ...form, accentColor: v })} />
+            </div>
+          </SettingsCard>
+
+          <div className="flex items-center gap-3 sticky bottom-0 bg-background/95 backdrop-blur py-3 border-t border-card-border">
+            <Button onClick={() => save.mutate(form)} disabled={save.isPending}>
+              {save.isPending ? "Saving…" : "Save Queue Display Settings"}
+            </Button>
+            <Button variant="outline" onClick={() => window.open(previewUrl, "_blank")}>
+              <ExternalLink size={14} className="mr-1.5" /> Open TV Display
+            </Button>
+          </div>
+        </div>
+
+        {/* ── Live preview ──────────────────────────────────────────── */}
+        <div className="xl:sticky xl:top-4 h-fit">
+          <div className="text-xs font-semibold text-muted-foreground mb-2 flex items-center justify-between">
+            <span>LIVE PREVIEW</span>
+            <button type="button" onClick={() => setPreviewKey((k) => k + 1)} className="text-indigo-600 hover:underline flex items-center gap-1">
+              <RefreshCcw size={11} /> Refresh
+            </button>
+          </div>
+          <div className="border-4 border-black rounded-[24px] overflow-hidden shadow-xl mx-auto" style={{ width: 270, height: 480 }}>
+            <iframe
+              key={previewKey}
+              src={previewUrl}
+              title="Queue display preview"
+              style={{ width: 1080, height: 1920, transform: "scale(0.25)", transformOrigin: "top left", border: "none" }}
+            />
+          </div>
+          <p className="text-[11px] text-muted-foreground mt-2 text-center">
+            Preview reflects the last <b>saved</b> settings. Save to update it.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SettingsCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="bg-card border border-card-border rounded-xl p-4">
+      <div className="text-sm font-semibold mb-3">{title}</div>
+      {children}
+    </div>
+  );
+}
+
+function ToggleRow({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      className="flex items-center gap-2 mb-2 text-sm text-left w-full"
+    >
+      {checked ? <CheckSquare size={16} className="text-emerald-500 shrink-0" /> : <Square size={16} className="text-muted-foreground shrink-0" />}
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <div>
+      <Label className="text-xs block mb-1">{label}</Label>
+      <div className="flex items-center gap-2">
+        <input type="color" value={/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value) ? value : "#000000"} onChange={(e) => onChange(e.target.value)} className="w-9 h-9 rounded-md border border-card-border shrink-0" />
+        <Input value={value} onChange={(e) => onChange(e.target.value)} className="text-xs" />
       </div>
     </div>
   );
@@ -6619,7 +7817,28 @@ function ReceiptMessagesTab() {
   const current = form ?? settings ?? null;
 
   const save = useMutation({
-    mutationFn: (body: ClinicSettings) => api.put("/api/clinic-settings", body),
+    mutationFn: (body: ClinicSettings) => {
+      // Only send receipt message fields to avoid validation errors on unrelated fields
+      const payload = {
+        receiptThankYouMessage: body.receiptThankYouMessage,
+        receiptCollectionMessage: body.receiptCollectionMessage,
+        receiptQrMessage: body.receiptQrMessage,
+        receiptPromotionalMessage: body.receiptPromotionalMessage,
+        showWorkingHours: body.showWorkingHours,
+        workingHoursMessage: body.workingHoursMessage,
+        showHomeCollection: body.showHomeCollection,
+        homeCollectionMessage: body.homeCollectionMessage,
+        showHealthPackages: body.showHealthPackages,
+        healthPackagesMessage: body.healthPackagesMessage,
+        showAccreditation: body.showAccreditation,
+        accreditationMessage: body.accreditationMessage,
+        showWhatsAppBooking: body.showWhatsAppBooking,
+        whatsAppBookingMessage: body.whatsAppBookingMessage,
+        showCustomFooterMessage: body.showCustomFooterMessage,
+        customFooterMessage: body.customFooterMessage,
+      };
+      return api.put("/api/clinic-settings", payload);
+    },
     onSuccess: (saved) => {
       qc.invalidateQueries({ queryKey: ["clinic-settings"] });
       setForm(saved as ClinicSettings);
@@ -6774,7 +7993,13 @@ function FooterServicesTab() {
   const current = form ?? settings ?? null;
 
   const save = useMutation({
-    mutationFn: (body: ClinicSettings) => api.put("/api/clinic-settings", body),
+    mutationFn: (body: ClinicSettings) => {
+      // Only send Footer Service List field to avoid validation errors on unrelated fields like quickTestIds
+      const payload = {
+        serviceFooter: body.serviceFooter,
+      };
+      return api.put("/api/clinic-settings", payload);
+    },
     onSuccess: (saved) => {
       qc.invalidateQueries({ queryKey: ["clinic-settings"] });
       setForm(saved as ClinicSettings);
@@ -6844,7 +8069,19 @@ function PromotionalFooterTab() {
   const current = form ?? settings ?? null;
 
   const save = useMutation({
-    mutationFn: (body: ClinicSettings) => api.put("/api/clinic-settings", body),
+    mutationFn: (body: ClinicSettings) => {
+      // Only send Promotional Footer specific fields to avoid validation errors on unrelated fields
+      const payload = {
+        promotionalTitle: body.promotionalTitle,
+        promotionalDescription: body.promotionalDescription,
+        showPromotionalFooter: body.showPromotionalFooter,
+        showFollowUpMessage: body.showFollowUpMessage,
+        showPatientSince: body.showPatientSince,
+        showVerifiedBadge: body.showVerifiedBadge,
+        followUpMessage: body.followUpMessage,
+      };
+      return api.put("/api/clinic-settings", payload);
+    },
     onSuccess: (saved) => {
       qc.invalidateQueries({ queryKey: ["clinic-settings"] });
       setForm(saved as ClinicSettings);

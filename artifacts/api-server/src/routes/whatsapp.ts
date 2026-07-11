@@ -1,9 +1,12 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { db } from "@workspace/db";
-import { whatsappSettingsTable, whatsappNumbersTable, whatsappConversationsTable, clinicSettingsTable } from "@workspace/db/schema";
-import { eq, desc, sql, ilike } from "drizzle-orm";
+import { whatsappSettingsTable, whatsappNumbersTable, whatsappConversationsTable, clinicSettingsTable, appointmentsTable, billsTable } from "@workspace/db/schema";
+// NOTE: patientsTable is imported lower in this file (near the Form F image
+// handler); it is module-scoped and reused by the reminder queries below.
+import { eq, desc, sql, ilike, and, inArray, isNull } from "drizzle-orm";
 import { requireStaffPermission } from "../middleware/requireStaffAuth";
 import { encryptSecret, decryptSecretTolerant } from "../lib/cryptoUtils";
+import { todayIST } from "../lib/istDate";
 import { getWhatsAppService } from "../services/whatsapp/WhatsAppService";
 import { WhatsAppBotEngine } from "../services/whatsapp/WhatsAppBotEngine";
 
@@ -79,6 +82,15 @@ whatsappRouter.put("/settings", requireStaffPermission("/settings"), async (req,
   if (typeof body.aiAssistantName === "string") updates.aiAssistantName = body.aiAssistantName.trim();
   if (typeof body.aiSystemPrompt === "string") updates.aiSystemPrompt = body.aiSystemPrompt;
   if (typeof body.aiEscalationMessage === "string") updates.aiEscalationMessage = body.aiEscalationMessage.trim();
+  // ── Automation triggers ──
+  if (body.autoSendBillCreated !== undefined) updates.autoSendBillCreated = !!body.autoSendBillCreated;
+  if (body.appointmentReminderEnabled !== undefined) updates.appointmentReminderEnabled = !!body.appointmentReminderEnabled;
+  if (typeof body.appointmentReminderTime === "string") updates.appointmentReminderTime = body.appointmentReminderTime.trim() || "18:00";
+  if (typeof body.appointmentReminderTemplate === "string") updates.appointmentReminderTemplate = body.appointmentReminderTemplate;
+  if (body.duesReminderEnabled !== undefined) updates.duesReminderEnabled = !!body.duesReminderEnabled;
+  if (typeof body.duesReminderTime === "string") updates.duesReminderTime = body.duesReminderTime.trim() || "11:00";
+  if (body.duesReminderMinAmount !== undefined) updates.duesReminderMinAmount = Math.max(0, Math.floor(Number(body.duesReminderMinAmount) || 0));
+  if (typeof body.duesReminderTemplate === "string") updates.duesReminderTemplate = body.duesReminderTemplate;
   const [row] = await db.update(whatsappSettingsTable).set(updates).where(eq(whatsappSettingsTable.id, current.id)).returning();
   res.json({ ...row, accessToken: row.accessToken ? "••••••••" : "" });
 });
@@ -563,7 +575,10 @@ export async function sendBillWhatsapp(params: {
   numberId?: number;
 }): Promise<{ ok: boolean; skipped?: boolean; error?: string; messageId?: string }> {
   const s = await getOrCreateSettings();
-  if (!s.enabled) return { ok: false, skipped: true };
+  // Master WhatsApp switch AND the discrete "on bill created" automation toggle
+  // must both be on. autoSendBillCreated defaults true so existing behaviour is
+  // preserved; admins can now silence bill messages without disabling WhatsApp.
+  if (!s.enabled || s.autoSendBillCreated === false) return { ok: false, skipped: true };
 
   let cfg: NumberConfig | null = null;
   if (params.numberId) {
@@ -734,6 +749,120 @@ export async function sendReportDelivery(params: {
 
   const result = await sendTextMessageRaw(to, body, cfg);
   return result;
+}
+
+export interface ReminderRunResult {
+  skipped?: boolean;
+  reason?: string;
+  sent: number;
+  failed: number;
+  total: number;
+}
+
+/**
+ * Send WhatsApp reminders for every appointment scheduled for TOMORROW (IST).
+ * Driven by a daily cron (cron.ts) at whatsapp_settings.appointmentReminderTime.
+ * No-ops unless both the master WhatsApp switch and the appointment-reminder
+ * toggle are on. Safe to call ad-hoc via the internal-cron endpoint.
+ */
+export async function runAppointmentReminders(): Promise<ReminderRunResult> {
+  const s = await getOrCreateSettings();
+  if (!s.enabled) return { skipped: true, reason: "WhatsApp disabled", sent: 0, failed: 0, total: 0 };
+  if (!s.appointmentReminderEnabled) return { skipped: true, reason: "Appointment reminders disabled", sent: 0, failed: 0, total: 0 };
+  const cfg = await resolveDefaultNumber();
+  if (!cfg) return { skipped: true, reason: "WhatsApp settings incomplete", sent: 0, failed: 0, total: 0 };
+
+  const tomorrow = todayIST(new Date(Date.now() + 24 * 60 * 60 * 1000));
+  const rows = await db
+    .select({
+      timeSlot: appointmentsTable.timeSlot,
+      firstName: patientsTable.firstName,
+      lastName: patientsTable.lastName,
+      phone: patientsTable.phone,
+    })
+    .from(appointmentsTable)
+    .innerJoin(patientsTable, eq(appointmentsTable.patientId, patientsTable.id))
+    .where(and(
+      eq(appointmentsTable.appointmentDate, tomorrow),
+      inArray(appointmentsTable.status, ["scheduled", "confirmed"]),
+    ));
+
+  let sent = 0, failed = 0;
+  for (const r of rows) {
+    const name = `${r.firstName} ${r.lastName}`.trim();
+    const to = normalizePhone(r.phone, s.defaultCountryCode);
+    if (!to) { failed++; continue; }
+    const tpl = (s.appointmentReminderTemplate || "").trim();
+    const body = tpl
+      ? tpl.replace(/\{\{name\}\}/g, name).replace(/\{\{date\}\}/g, tomorrow).replace(/\{\{time\}\}/g, r.timeSlot ?? "")
+      : `Hello ${name}, this is a reminder of your appointment at Care Diagnostics on ${tomorrow}${r.timeSlot ? ` at ${r.timeSlot}` : ""}. Please arrive 10 minutes early. Reply here if you need to reschedule.`;
+    const res = await sendTextMessageRaw(to, body, cfg);
+    if (res.ok) sent++; else failed++;
+  }
+  return { sent, failed, total: rows.length };
+}
+
+/**
+ * Send WhatsApp dues reminders to patients whose total outstanding balance
+ * (across all active, non-cancelled bills) is at/above
+ * whatsapp_settings.duesReminderMinAmount. Driven by a daily cron at
+ * whatsapp_settings.duesReminderTime. One consolidated message per patient.
+ */
+export async function runDuesReminders(): Promise<ReminderRunResult> {
+  const s = await getOrCreateSettings();
+  if (!s.enabled) return { skipped: true, reason: "WhatsApp disabled", sent: 0, failed: 0, total: 0 };
+  if (!s.duesReminderEnabled) return { skipped: true, reason: "Dues reminders disabled", sent: 0, failed: 0, total: 0 };
+  const cfg = await resolveDefaultNumber();
+  if (!cfg) return { skipped: true, reason: "WhatsApp settings incomplete", sent: 0, failed: 0, total: 0 };
+
+  const minAmount = Math.max(0, s.duesReminderMinAmount ?? 0);
+
+  const rows = await db
+    .select({
+      patientId: billsTable.patientId,
+      firstName: patientsTable.firstName,
+      lastName: patientsTable.lastName,
+      phone: patientsTable.phone,
+      balance: billsTable.balanceAmount,
+      refund: billsTable.refundAmount,
+    })
+    .from(billsTable)
+    .innerJoin(patientsTable, eq(billsTable.patientId, patientsTable.id))
+    .where(and(
+      inArray(billsTable.status, ["pending", "partial"]),
+      isNull(billsTable.cancelledAt),
+    ));
+
+  // Aggregate outstanding per patient. trueOutstanding mirrors the My Daily
+  // Summary convention: MAX(0, balance − refund) so refunded amounts don't
+  // inflate what we chase.
+  const byPatient = new Map<number, { name: string; phone: string; total: number }>();
+  for (const r of rows) {
+    const bal = Math.max(0, Number(r.balance ?? 0) - Math.max(0, Number(r.refund ?? 0)));
+    if (bal <= 0) continue;
+    const existing = byPatient.get(r.patientId);
+    if (existing) {
+      existing.total += bal;
+    } else {
+      byPatient.set(r.patientId, { name: `${r.firstName} ${r.lastName}`.trim(), phone: r.phone, total: bal });
+    }
+  }
+
+  let sent = 0, failed = 0, total = 0;
+  for (const p of byPatient.values()) {
+    if (p.total < minAmount) continue;
+    total++;
+    const to = normalizePhone(p.phone, s.defaultCountryCode);
+    if (!to) { failed++; continue; }
+    const amt = `₹${p.total.toFixed(2)}`;
+    const tpl = (s.duesReminderTemplate || "").trim();
+    const body = tpl
+      ? tpl.replace(/\{\{name\}\}/g, p.name).replace(/\{\{amount\}\}/g, amt)
+      : `Hello ${p.name}, our records show an outstanding balance of ${amt} at Care Diagnostics. Kindly clear your dues at your earliest convenience. Please ignore this message if already paid. — Care Diagnostics`;
+    const res = await sendTextMessageRaw(to, body, cfg);
+    if (res.ok) sent++; else failed++;
+  }
+  return { sent, failed, total };
 }
 
 // ─── Webhook body types ────────────────────────────────────────────────────────

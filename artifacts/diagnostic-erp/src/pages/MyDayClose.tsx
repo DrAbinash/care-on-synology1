@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -101,12 +102,13 @@ export default function MyDayClose() {
   const previewQ = useQuery<MyPreview>({
     queryKey: ["my-day-close-preview"],
     queryFn: () => api.get<MyPreview>("/api/day-close/my-preview"),
-    refetchInterval: 30_000,
+    ...FINANCIAL_QUERY_OPTIONS,
   });
 
   const historyQ = useQuery<MyClose[]>({
     queryKey: ["my-day-close-list"],
     queryFn: () => api.get<MyClose[]>("/api/day-close/my-list"),
+    ...FINANCIAL_QUERY_OPTIONS,
   });
 
   // Post-closure activity — only fetched after a successful close to show the
@@ -121,8 +123,7 @@ export default function MyDayClose() {
   const postClosureQ = useQuery<PostClosureActivity>({
     queryKey: ["my-post-closure-activity"],
     queryFn: () => api.get<PostClosureActivity>("/api/day-close/my-post-closure-activity"),
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+    ...FINANCIAL_QUERY_OPTIONS,
   });
 
   const [actuals, setActuals] = useState({ cash: "", upi: "", card: "", cheque: "", other: "" });

@@ -8,10 +8,22 @@ import {
   UpdateDepartmentBody,
   DeleteDepartmentParams,
 } from "@workspace/api-zod";
+import { getCached, setCached, invalidateCached, TTL } from "../lib/ttlCache";
+
+const DEPARTMENTS_CACHE_KEY = "departments:list:v1";
 
 export const departmentsRouter = Router();
 
 departmentsRouter.get("/", async (_req, res) => {
+  // This list runs 4 queries (departments + usage counts across tests,
+  // staff, and machines) every time it's called — but department
+  // definitions barely ever change. Cache for 5 min, invalidated on any
+  // create/update/delete below.
+  const cached = getCached<unknown[]>(DEPARTMENTS_CACHE_KEY);
+  if (cached) {
+    res.json(cached);
+    return;
+  }
   const rows = await db.select().from(departmentsTable).orderBy(departmentsTable.name);
   // Count usage in tests, staff, machines
   const [testCounts, staffCounts, machineCounts] = await Promise.all([
@@ -22,7 +34,9 @@ departmentsRouter.get("/", async (_req, res) => {
   const tCount = new Map(testCounts.map(r => [r.name, r.c]));
   const sCount = new Map(staffCounts.map(r => [r.name, r.c]));
   const mCount = new Map(machineCounts.map(r => [r.name, r.c]));
-  res.json(rows.map(r => ({ ...r, testCount: tCount.get(r.name) || 0, staffCount: sCount.get(r.name) || 0, machineCount: mCount.get(r.name) || 0 })));
+  const payload = rows.map(r => ({ ...r, testCount: tCount.get(r.name) || 0, staffCount: sCount.get(r.name) || 0, machineCount: mCount.get(r.name) || 0 }));
+  setCached(DEPARTMENTS_CACHE_KEY, payload, TTL.MEDIUM);
+  res.json(payload);
 });
 
 departmentsRouter.post("/", async (req, res) => {
@@ -47,6 +61,7 @@ departmentsRouter.post("/", async (req, res) => {
       contactEmail: body.contactEmail ?? null,
       isActive: body.isActive !== false,
     }).returning();
+    invalidateCached(DEPARTMENTS_CACHE_KEY);
     res.status(201).json(row);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Failed";
@@ -90,6 +105,7 @@ departmentsRouter.patch("/:id", async (req, res) => {
 
   try {
     const [row] = await db.update(departmentsTable).set(updates).where(eq(departmentsTable.id, id)).returning();
+    invalidateCached(DEPARTMENTS_CACHE_KEY);
     res.json(row);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Failed";
@@ -114,5 +130,6 @@ departmentsRouter.delete("/:id", async (req, res) => {
     return;
   }
   await db.delete(departmentsTable).where(eq(departmentsTable.id, id));
+  invalidateCached(DEPARTMENTS_CACHE_KEY);
   res.json({ success: true });
 });

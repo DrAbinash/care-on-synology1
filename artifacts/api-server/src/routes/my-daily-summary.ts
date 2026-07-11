@@ -730,3 +730,312 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     })),
   });
 });
+
+// ── GET /drilldown — detail records behind a single summary card ──────────
+// Mounted at /api/dashboard/my-daily-summary/drilldown (same router prefix
+// as the summary above — this stays alongside the existing endpoint rather
+// than introducing a separate top-level route). requireStaffAuth applied at
+// routes/index.ts, same as every other route on this router.
+//
+// IMPORTANT: this endpoint performs NO new calculations. Every number and
+// filter here mirrors the exact logic already used by GET / above — same
+// dayBoundsRange(), same staffName resolution (staff see only their own
+// data; owner/admin/super-admin may view another staff member or the
+// all-staff aggregate), same paymentMethodClassifier for cash/digital
+// splits, same "dues = payment on a bill created before the period" rule,
+// same cancellation-attributed-to-canceller rule. It only ever LISTS the
+// underlying rows that the summary numbers above are already built from.
+const DRILLDOWN_TYPES = [
+  "totalBills", "duesCollected", "cancellations", "outstandingDues",
+  "collectibleAmount", "netDigitalCollection", "totalExpenses",
+  "expectedPhysicalCash", "totalReceived", "discountsGiven",
+  "cancellationCount", "averageBillValue",
+] as const;
+type DrilldownType = typeof DRILLDOWN_TYPES[number];
+
+myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
+  const session = req.staffSession!;
+  const type = req.query.type as string;
+  if (!DRILLDOWN_TYPES.includes(type as DrilldownType)) {
+    return res.status(400).json({ error: `Unknown drilldown type. Supported: ${DRILLDOWN_TYPES.join(", ")}` });
+  }
+
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  const from = typeof req.query.from === "string" ? req.query.from : today;
+  const to = typeof req.query.to === "string" ? req.query.to : from;
+
+  const isOwner = FULL_ACCESS_ROLES.has(session.role);
+  const isSuperAdmin = session.role === "super_admin";
+  const staffName: string | null =
+    isOwner && typeof req.query.staffName === "string" && req.query.staffName.trim()
+      ? req.query.staffName.trim()
+      : isSuperAdmin
+        ? null
+        : session.subjectName;
+
+  const { start, end } = dayBoundsRange(from, to);
+  const fmtDate = (d: Date | string | null) =>
+    d ? (d instanceof Date ? d.toISOString() : String(d)) : null;
+  const formatMethod = (m: string | null | undefined): string => {
+    const methodStr = m ?? "cash";
+    if (methodStr.toLowerCase().startsWith("online")) {
+      return methodStr.replace(/^online/i, "Web booking");
+    }
+    return methodStr;
+  };
+
+  // Bills created in range — the base row-set for several drilldowns below.
+  const billsInRange = await db
+    .select({
+      id: billsTable.id,
+      billNumber: billsTable.billNumber,
+      totalAmount: billsTable.totalAmount,
+      balanceAmount: billsTable.balanceAmount,
+      discount: billsTable.discount,
+      discountReason: billsTable.discountReason,
+      status: billsTable.status,
+      createdAt: billsTable.createdAt,
+      createdByName: billsTable.createdByName,
+      patientFirstName: patientsTable.firstName,
+      patientLastName: patientsTable.lastName,
+      referringDoctor: doctorsTable.name,
+    })
+    .from(billsTable)
+    .leftJoin(patientsTable, eq(billsTable.patientId, patientsTable.id))
+    .leftJoin(ordersTable, eq(billsTable.orderId, ordersTable.id))
+    .leftJoin(doctorsTable, eq(ordersTable.doctorId, doctorsTable.id))
+    .where(and(
+      gte(billsTable.createdAt, start),
+      lt(billsTable.createdAt, end),
+      ...(staffName !== null ? [eq(billsTable.createdByName, staffName)] : []),
+    ))
+    .orderBy(sql`${billsTable.createdAt} DESC`);
+  const patientNameOf = (r: { patientFirstName: string | null; patientLastName: string | null }) =>
+    r.patientFirstName ? `${r.patientFirstName} ${r.patientLastName ?? ""}`.trim() : "Unknown";
+
+  type Table = { label: string; columns: string[]; rows: (string | number | null)[][] };
+  let result: Table;
+
+  switch (type as DrilldownType) {
+    case "totalBills":
+    case "averageBillValue": {
+      result = {
+        label: type === "averageBillValue" ? "Average Bill Value — Bills Included" : "Total Bills Generated",
+        columns: ["Bill #", "Patient", "Referring Doctor", "Amount", "Status", "Created At"],
+        rows: billsInRange.map((r) => [
+          r.billNumber, patientNameOf(r), r.referringDoctor ?? "—",
+          Number(r.totalAmount), r.status, fmtDate(r.createdAt),
+        ]),
+      };
+      break;
+    }
+
+    case "discountsGiven": {
+      const withDiscount = billsInRange.filter((r) => r.status !== "cancelled" && Number(r.discount ?? 0) > 0);
+      result = {
+        label: "Discounts Given",
+        columns: ["Bill #", "Patient", "Bill Amount", "Discount", "Reason"],
+        rows: withDiscount.map((r) => [
+          r.billNumber, patientNameOf(r), Number(r.totalAmount), Number(r.discount ?? 0), r.discountReason ?? "—",
+        ]),
+      };
+      break;
+    }
+
+    case "outstandingDues": {
+      const withBalance = billsInRange.filter((r) => r.status !== "cancelled" && Number(r.balanceAmount ?? 0) > 0);
+      result = {
+        label: "Outstanding / Dues",
+        columns: ["Bill #", "Patient", "Bill Amount", "Balance Due", "Created At"],
+        rows: withBalance.map((r) => [
+          r.billNumber, patientNameOf(r), Number(r.totalAmount), Number(r.balanceAmount ?? 0), fmtDate(r.createdAt),
+        ]),
+      };
+      break;
+    }
+
+    case "cancellations":
+    case "cancellationCount": {
+      const cancelledRows = await db
+        .select({
+          billNumber: billsTable.billNumber,
+          totalAmount: billsTable.totalAmount,
+          createdByName: billsTable.createdByName,
+          cancelledByName: billsTable.cancelledByName,
+          cancelledAt: billsTable.cancelledAt,
+        })
+        .from(billsTable)
+        .where(and(
+          gte(billsTable.cancelledAt, start),
+          lt(billsTable.cancelledAt, end),
+          ...(staffName !== null ? [eq(billsTable.cancelledByName, staffName)] : []),
+        ))
+        .orderBy(sql`${billsTable.cancelledAt} DESC`);
+      result = {
+        label: "Cancellations",
+        columns: ["Bill #", "Amount", "Created By", "Cancelled By", "Cancelled At"],
+        rows: cancelledRows.map((r) => [
+          r.billNumber, Number(r.totalAmount), r.createdByName ?? "—", r.cancelledByName ?? "—", fmtDate(r.cancelledAt),
+        ]),
+      };
+      break;
+    }
+
+    case "duesCollected": {
+      const duesPaymentRows = await db
+        .select({
+          paymentAmount: paymentsTable.amount,
+          billNumber: billsTable.billNumber,
+          balanceAmount: billsTable.balanceAmount,
+          patientFirstName: patientsTable.firstName,
+          patientLastName: patientsTable.lastName,
+          createdAt: paymentsTable.createdAt,
+        })
+        .from(paymentsTable)
+        .innerJoin(billsTable, eq(paymentsTable.billId, billsTable.id))
+        .leftJoin(patientsTable, eq(billsTable.patientId, patientsTable.id))
+        .where(and(
+          gte(paymentsTable.createdAt, start),
+          lt(paymentsTable.createdAt, end),
+          lt(billsTable.createdAt, start),
+          sql`${paymentsTable.amount}::numeric > 0`,
+          ...(staffName !== null ? [eq(paymentsTable.recordedByName, staffName)] : []),
+        ))
+        .orderBy(sql`${paymentsTable.createdAt} DESC`);
+      result = {
+        label: "Dues Collected (payments on bills from earlier days)",
+        columns: ["Bill #", "Patient", "Amount Collected", "Remaining Balance", "Paid At"],
+        rows: duesPaymentRows.map((r) => [
+          r.billNumber, patientNameOf(r), Number(r.paymentAmount), Number(r.balanceAmount ?? 0), fmtDate(r.createdAt),
+        ]),
+      };
+      break;
+    }
+
+    case "totalReceived":
+    case "netDigitalCollection": {
+      const paymentRows = await db
+        .select({
+          billNumber: billsTable.billNumber,
+          amount: paymentsTable.amount,
+          method: paymentsTable.method,
+          createdAt: paymentsTable.createdAt,
+        })
+        .from(paymentsTable)
+        .innerJoin(billsTable, eq(paymentsTable.billId, billsTable.id))
+        .where(and(
+          gte(paymentsTable.createdAt, start),
+          lt(paymentsTable.createdAt, end),
+          ...(staffName !== null ? [eq(paymentsTable.recordedByName, staffName)] : []),
+        ))
+        .orderBy(sql`${paymentsTable.createdAt} DESC`);
+      const filtered = type === "netDigitalCollection"
+        ? paymentRows.filter((p) => classifyPaymentMethod(p.method).isKnown && isDigitalSettlement(p.method))
+        : paymentRows.filter((p) => Number(p.amount) > 0);
+      result = {
+        label: type === "netDigitalCollection" ? "Net Digital Collection (UPI/Card/Online, incl. refunds)" : "Total Received",
+        columns: ["Bill #", "Amount", "Method", "Recorded At"],
+        rows: filtered.map((r) => [r.billNumber, Number(r.amount), formatMethod(r.method), fmtDate(r.createdAt)]),
+      };
+      break;
+    }
+
+    case "totalExpenses": {
+      const expenseFilter = staffName !== null ? sql`AND approved_by = ${staffName}` : sql``;
+      const expenseRows = await db.execute<{
+        expense_id: string; category: string; description: string;
+        amount: string; payment_mode: string; paid_to: string | null; created_at: string;
+      }>(sql`
+        SELECT expense_id, category, description, amount, payment_mode, paid_to, created_at
+        FROM expenses
+        WHERE created_at >= ${start.toISOString()} AND created_at < ${end.toISOString()}
+        ${expenseFilter}
+        ORDER BY created_at DESC
+      `);
+      result = {
+        label: "Total Expenses",
+        columns: ["Expense #", "Category", "Description", "Amount", "Mode", "Paid To", "Date"],
+        rows: expenseRows.rows.map((r) => [
+          r.expense_id, r.category, r.description, Number(r.amount), r.payment_mode, r.paid_to ?? "—", fmtDate(r.created_at),
+        ]),
+      };
+      break;
+    }
+
+    case "collectibleAmount":
+    case "expectedPhysicalCash": {
+      // These two are FORMULA results (multiple signed components summed),
+      // not a single record list — see UnifiedReconciliationPanel and the
+      // KPI formula row on My Daily Summary for the exact same breakdown.
+      // Rather than inventing a fake per-record table, show the same
+      // component breakdown transparently as its own small table.
+      const cashPayments = await db
+        .select({ amount: paymentsTable.amount, method: paymentsTable.method })
+        .from(paymentsTable)
+        .innerJoin(billsTable, eq(paymentsTable.billId, billsTable.id))
+        .where(and(
+          gte(paymentsTable.createdAt, start),
+          lt(paymentsTable.createdAt, end),
+          ...(staffName !== null ? [eq(paymentsTable.recordedByName, staffName)] : []),
+        ));
+      const cashIn = cashPayments.filter((p) => Number(p.amount) > 0 && classifyPaymentMethod(p.method).isKnown && isPhysicalCash(p.method))
+        .reduce((s, p) => s + Number(p.amount), 0);
+      const cashRefunded = cashPayments.filter((p) => Number(p.amount) < 0 && classifyPaymentMethod(p.method).isKnown && isPhysicalCash(p.method))
+        .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
+      const digitalIn = cashPayments.filter((p) => Number(p.amount) > 0 && classifyPaymentMethod(p.method).isKnown && isDigitalSettlement(p.method))
+        .reduce((s, p) => s + Number(p.amount), 0);
+      const digitalRefunded = cashPayments.filter((p) => Number(p.amount) < 0 && classifyPaymentMethod(p.method).isKnown && isDigitalSettlement(p.method))
+        .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
+      const expFilter = staffName !== null ? sql`AND approved_by = ${staffName}` : sql``;
+      const expRows = await db.execute<{ cash_expenses: string; digital_expenses: string }>(sql`
+        SELECT
+          COALESCE(SUM(amount::numeric) FILTER (WHERE LOWER(payment_mode) = 'cash'), 0)::text AS cash_expenses,
+          COALESCE(SUM(amount::numeric) FILTER (WHERE LOWER(payment_mode) <> 'cash'), 0)::text AS digital_expenses
+        FROM expenses
+        WHERE created_at >= ${start.toISOString()} AND created_at < ${end.toISOString()}
+        ${expFilter}
+      `);
+      const cashExpenses = Number(expRows.rows[0]?.cash_expenses ?? 0);
+      const digitalExpenses = Number(expRows.rows[0]?.digital_expenses ?? 0);
+      const billsIncl = billsInRange.reduce((s, r) => s + Number(r.totalAmount), 0);
+      const cancelledOnBills = billsInRange.filter((r) => r.status === "cancelled").reduce((s, r) => s + Number(r.totalAmount), 0);
+      const outstandingBills = billsInRange.filter((r) => r.status !== "cancelled").reduce((s, r) => s + Number(r.balanceAmount ?? 0), 0);
+
+      if (type === "expectedPhysicalCash") {
+        result = {
+          label: "Expected Physical Cash — Breakdown",
+          columns: ["Component", "Amount"],
+          rows: [
+            ["Cash Collected", cashIn],
+            ["− Cash Refunded", -cashRefunded],
+            ["− Cash Expenses", -cashExpenses],
+            ["= Expected Physical Cash", cashIn - cashRefunded - cashExpenses],
+          ],
+        };
+      } else {
+        result = {
+          label: "Collectible Amount — Breakdown",
+          columns: ["Component", "Amount"],
+          rows: [
+            ["Total Bills Generated", billsIncl],
+            ["− Cancelled Bills", -cancelledOnBills],
+            ["− Outstanding / Dues", -outstandingBills],
+            ["= Collectible Amount", billsIncl - cancelledOnBills - outstandingBills],
+          ],
+        };
+      }
+      // Suppress unused-var lint for digitalIn/digitalRefunded when only one branch used them
+      void digitalIn; void digitalRefunded;
+      break;
+    }
+
+    default:
+      return res.status(400).json({ error: "Unsupported drilldown type" });
+  }
+
+  return res.json({
+    type,
+    from, to, staffName: staffName ?? "All Staff",
+    ...result,
+  });
+});

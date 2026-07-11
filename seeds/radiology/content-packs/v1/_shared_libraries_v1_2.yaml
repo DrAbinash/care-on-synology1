@@ -1,0 +1,124 @@
+# CARE Radiology — Shared Libraries EXTENSION v1.2 (additive)
+# Adds entities needed by the chest / doppler / mammography / KUB study packs.
+# Additive only (master spec §15.6): new keys, no edits to v1 / v1.1 keys.
+# Load AFTER _shared_libraries.yaml and _shared_libraries_v1_1.yaml.
+
+pack:
+  pack_id: shared_libraries_ext_2
+  version: 1.2.0
+  locale: en-IN
+  status: active
+  extends: shared_libraries@1.0.0
+
+parameter_library:
+  # --- chest ---
+  param.lung_distribution: {type: choice, values: [upper-predominant, lower-predominant, peripheral/subpleural, central/peribronchovascular, diffuse]}
+  param.nodule_character:  {type: choice, values: [solid, part-solid, ground-glass]}
+  param.bronchiectasis_type: {type: choice, values: [cylindrical, varicose, cystic]}
+  param.tube_position:     {type: choice, values: [in appropriate position, low/high — repositioning suggested, malpositioned]}
+  # --- doppler ---
+  param.waveform:          {type: choice, values: [triphasic, biphasic, monophasic]}
+  param.thrombus_age:      {type: choice, values: ["acute (echogenic, non-compressible, distended)", "chronic (wall-adherent, partially recanalized)"]}
+  # --- mammography ---
+  param.calc_morphology:   {type: choice, ordered: true, values: [vascular, coarse popcorn, rim, milk-of-calcium, dystrophic, amorphous, fine pleomorphic, fine linear-branching], benign_cutoff_index: 4}
+  param.calc_distribution: {type: choice, values: [grouped, linear, segmental, regional, diffuse]}
+  param.mass_shape:        {type: choice, values: [oval, round, irregular]}
+
+severity_library:
+  sev.effusion:     {values: [mild, moderate, massive]}
+  sev.ptx:          {values: [minimal, moderate, complete, tension]}
+  sev.extent_lung:  {values: ["mild (<25%)", "moderate (25-50%)", "extensive (>50%)"]}
+  sev.stenosis_pct: {values: ["<50%", "50-70%", ">70%", occlusion]}
+  sev.abi:          {values: [">=0.9 normal", "0.5-0.89 claudication range", "<0.5 critical ischemia"], derive_from: meas.abi}
+  sev.acr_density:
+    values: ["a (fatty)", "b (scattered)", "c (heterogeneously dense)", "d (extremely dense)"]
+    rider_on: ["c (heterogeneously dense)", "d (extremely dense)"]
+    rider: "Dense breast tissue limits sensitivity; ultrasound correlation is advised."
+  sev.birads:
+    values: ["0", "1", "2", "3", "4a", "4b", "4c", "5", "6"]
+    mandatory_management: true      # a category cannot seed/sign without its bound line
+    management:
+      "0":  "Incomplete — additional views / ultrasound correlation required before final assessment."
+      "1":  "Negative. Routine screening as per age."
+      "2":  "Benign findings. Routine screening as per age."
+      "3":  "Probably benign. Short-interval follow-up mammogram in 6 months is advised."
+      "4a": "Suspicious (low). Tissue diagnosis (biopsy) is recommended."
+      "4b": "Suspicious (moderate). Tissue diagnosis (biopsy) is recommended."
+      "4c": "Suspicious (high). Tissue diagnosis (biopsy) is recommended."
+      "5":  "Highly suggestive of malignancy. Biopsy and breast surgery/oncology referral advised."
+      "6":  "Known biopsy-proven malignancy. Oncology management as planned."
+    criticality: {"5": crit.birads5}
+
+location_library:
+  loc.lung_zones: [right upper zone, right mid zone, right lower zone, left upper zone, left mid zone, left lower zone]
+  loc.lung_lobes: [RUL, RML, RLL, LUL, lingula, LLL]
+  loc.node_stations: [right paratracheal, left paratracheal, prevascular, subcarinal, right hilar, left hilar, right axillary, left axillary]
+  loc.breast_locator:
+    side: lat.rl
+    quadrant: [UOQ, UIQ, LOQ, LIQ, central, retroareolar]
+    clock: "1-12"
+    depth: [anterior, middle, posterior]
+    distance_from_nipple: cm
+  loc.venous_ll: [CFV, SFJ, "femoral vein (SFV)", popliteal vein, posterior tibial veins, peroneal veins, GSV above knee, GSV below knee, SSV, SPJ, perforators]
+  loc.arterial_ll: [CFA, SFA, popliteal artery, ATA, PTA, peroneal artery, DPA]
+
+measurement_library:
+  meas.ctr:             {unit: ratio, auto_calc: "cardiac width / thoracic width", flag: "> 0.50 on PA = cardiomegaly"}
+  meas.nodule_avg:      {unit: mm, auto_calc: "(long + short) / 2", feeds: rec.fleischner}
+  meas.cavity_wall:     {unit: mm}
+  meas.ctss:            {unit: "/25", auto_calc: "sum of lobe scores (0-5 x 5 lobes)"}
+  meas.effusion_depth:  {unit: mm}
+  meas.vein_diameter:   {unit: mm, sites: [SFJ, GSV thigh, GSV knee, GSV calf, SSV]}
+  meas.reflux_duration: {unit: seconds, flag: "> 0.5 superficial / > 1.0 deep = significant"}
+  meas.psv:             {unit: cm/s, per: arterial station, ratios: true}
+  meas.abi:             {unit: ratio, auto_calc: "ankle pressure / brachial pressure", per_side: true, derives: sev.abi}
+
+recommendation_library:
+  rec.hrct:        "HRCT chest is suggested for further evaluation."
+  rec.lab_sputum:  "Sputum for AFB / CBNAAT is advised."
+  rec.fup_cxr2w:   "Follow-up chest X-ray after 2 weeks of treatment is suggested."
+  rec.echo_corr:   "Echocardiographic correlation is suggested."
+  rec.pft:         "Pulmonary function tests are advised."
+  rec.usg_corr:    "Ultrasound correlation is advised."
+  rec.petct:       "PET-CT is suggested for staging/characterization."
+  rec.spec_pulmo:  "Pulmonology consultation is advised."
+  rec.spec_vasc:   "Vascular surgery opinion is advised."
+  rec.spec_breast: "Breast surgery consultation is advised."
+  rec.fup_mmg6m:   "Short-interval follow-up mammogram in 6 months is advised."
+  rec.fleischner:
+    template: "Follow-up CT chest at {interval} as per Fleischner guidelines."
+    slots: [interval]
+    filled_by: "AI from meas.nodule_avg + risk; radiologist confirms"
+
+critical_registry:
+  crit.pyonephrosis:     {specialist: urology, findings: [uskb.pyonephrosis], condition: "obstructed infected kidney"}
+  crit.tension_ptx:      {specialist: emergency/pulmonology, findings: [cxr.pneumothorax], condition: "tension or complete pneumothorax"}
+  crit.massive_effusion: {specialist: pulmonology, findings: [cxr.pleural_effusion], condition: "massive effusion with mediastinal shift"}
+  crit.free_gas:         {specialist: surgical, findings: [cxr.free_gas], condition: "pneumoperitoneum"}
+  crit.acute_prox_dvt:   {specialist: physician/vascular, findings: [dopll.acute_dvt], condition: "acute femoro-popliteal DVT"}
+  crit.critical_ischemia: {specialist: vascular surgery, findings: [dopll.occlusion], condition: "ABI < 0.5 or acute arterial occlusion"}
+  crit.birads5:          {specialist: breast surgery/oncology, findings: [mmg.birads_assessment], condition: "BI-RADS category 5"}
+
+normal_templates:
+  tpl.normal.usg_kub: >-
+    Both kidneys are normal in size and echotexture; no calculus or hydronephrosis. Visualized
+    ureters are not dilated. Urinary bladder is normal in outline; no calculus. No significant
+    post-void residue.
+  tpl.normal.hrct_chest: >-
+    No significant abnormality in the lung parenchyma, airways, pleura or mediastinum.
+    No consolidation, ground-glass opacity, nodule or fibrosis. No pleural effusion or
+    significant mediastinal lymphadenopathy.
+  tpl.normal.cxr: >-
+    Both lung fields are clear. Costophrenic angles are free. Cardiac size is within normal
+    limits. Bony thorax and soft tissues are unremarkable.
+  tpl.normal.doppler_ll_venous: >-
+    Deep veins of the examined lower limb are normal in caliber, compressible, and show
+    normal phasic flow with augmentation. No evidence of deep venous thrombosis. No
+    significant saphenous or perforator incompetence.
+  tpl.normal.doppler_ll_arterial: >-
+    Arteries of the examined lower limb show normal caliber, wall pattern and triphasic
+    flow. No hemodynamically significant stenosis. ABI is within normal limits.
+  tpl.normal.mammography: >-
+    Both breasts show {composition} fibroglandular composition. No suspicious mass,
+    microcalcification, asymmetry or architectural distortion. Skin and nipples are normal.
+    Axillae are unremarkable. BI-RADS 1 — routine screening as per age.

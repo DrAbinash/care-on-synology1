@@ -1,0 +1,131 @@
+# CARE Radiology — Shared Libraries EXTENSION v1.1 (additive)
+# Adds entities needed by the neuro / spine-screening / MSK / orbit study packs.
+# Additive only (master spec §15.6): new keys, no edits to v1 keys.
+# Load AFTER _shared_libraries.yaml. Study packs bind to keys from BOTH files.
+
+pack:
+  pack_id: shared_libraries_ext
+  version: 1.1.0
+  locale: en-IN
+  status: active
+  extends: shared_libraries@1.0.0
+
+parameter_library:
+  # --- musculoskeletal ---
+  param.tear_grade:      {type: choice, ordered: true, values: [low-grade/partial, high-grade/near-complete, full-thickness/complete]}
+  param.meniscus_pattern: {type: choice, values: [horizontal, oblique, radial, longitudinal, bucket-handle, complex, degenerative]}
+  param.cartilage_grade: {type: choice, ordered: true, values: [grade 1 (signal only), grade 2 (<50% depth), grade 3 (>50% depth), grade 4 (full-thickness + subchondral)]}
+  param.tendinosis:      {type: choice, values: [tendinosis, low-grade partial tear, high-grade partial tear, full-thickness tear with retraction]}
+  param.effusion_joint:  {type: choice, values: [none, mild, moderate, gross]}
+  param.marrow_edema:    {type: choice, values: [none, focal, diffuse]}
+  # --- neuro / spine screening ---
+  param.enhancement_pattern: {type: choice, values: [none, homogeneous, heterogeneous, ring/peripheral, dural tail, leptomeningeal]}
+  param.tb_activity:     {type: choice, values: [active, healed/quiescent]}
+  param.scoliosis_dir:   {type: choice, values: [dextroscoliosis, levoscoliosis]}
+  param.aneurysm_shape:  {type: choice, values: [saccular, fusiform]}
+
+severity_library:
+  sev.meniscus:      {values: [grade I (intrasubstance), grade II (linear, non-articular), grade III (tear reaching articular surface)], ordered: true}
+  sev.cartilage:     {values: [grade 1, grade 2, grade 3, grade 4], derive_from: param.cartilage_grade}
+  sev.scoliosis:     {values: ["mild (10-25 deg)", "moderate (25-45 deg)", "severe (>45 deg)"], derive_from: meas.cobb_angle}
+  sev.canal_compromise: {values: [mild, moderate, severe/critical], ordered: true}   # for cord compression grading
+
+location_library:
+  loc.spine_dorsal:
+    vertebrae: [D1, D2, D3, D4, D5, D6, D7, D8, D9, D10, D11, D12]
+    discs: [D1-2, D2-3, D3-4, D4-5, D5-6, D6-7, D7-8, D8-9, D9-10, D10-11, D11-12, D12-L1]
+    roots: [D1, D2, D3, D4, D5, D6, D7, D8, D9, D10, D11, D12]
+  loc.spine_whole:
+    regions: [cervical, dorsal, lumbar, sacral]
+    numbering_reference: "count from C2; confirm with sacral segmentation; note transitional vertebra"
+  loc.knee: [medial meniscus, lateral meniscus, ACL, PCL, MCL, LCL, medial femoral condyle, lateral femoral condyle, patella, trochlea, tibial plateau, popliteal fossa, extensor mechanism]
+  loc.shoulder: [supraspinatus, infraspinatus, subscapularis, teres minor, long head of biceps, anterior labrum, posterior labrum, superior labrum (SLAP), AC joint, glenohumeral joint, subacromial-subdeltoid bursa]
+  loc.wrist: [scaphoid, lunate, triquetrum, TFCC, scapholunate ligament, lunotriquetral ligament, distal radius, flexor tendons, extensor tendons, carpal tunnel, median nerve]
+  loc.ankle: [ATFL, CFL, PTFL, deltoid ligament, Achilles tendon, peroneal tendons, tibialis posterior tendon, tibialis anterior tendon, talar dome, sinus tarsi, plantar fascia]
+  loc.orbit: [globe, optic nerve, optic nerve sheath, extraocular muscles, lacrimal gland, retrobulbar fat, orbital apex, cavernous sinus, superior orbital fissure]
+  loc.pituitary: [anterior pituitary, posterior pituitary, pituitary stalk, optic chiasm, cavernous sinus (right), cavernous sinus (left), sphenoid sinus]
+  loc.cp_angle: [right CP angle, left CP angle, internal auditory canal (right), internal auditory canal (left), cerebellum, brainstem, fourth ventricle]
+  loc.cerebral_arteries: [ICA, MCA (M1/M2), ACA (A1/A2), PCA, vertebral artery, basilar artery, PICA, AICA, SCA, circle of Willis]
+
+measurement_library:
+  meas.cobb_angle:       {unit: degrees, derives: sev.scoliosis}
+  meas.pituitary_height: {unit: mm, flag: "> 9 (non-pregnant adult) = enlarged"}
+  meas.microadenoma:     {unit: mm, flag: "< 10 = microadenoma; >= 10 = macroadenoma"}
+  meas.tumor_3d:         {unit: mm, dims: 3}
+  meas.syrinx:           {unit: mm, fields: [length_cm, ap_diameter_mm], label: syrinx dimensions}
+  meas.disc_height:      {unit: mm}
+  meas.tendon_gap:       {unit: cm, label: tendon retraction gap}
+  meas.aneurysm_size:    {unit: mm, fields: [neck, dome]}
+  meas.stenosis_luminal: {unit: "%", label: luminal narrowing}
+  meas.optic_nerve_diam: {unit: mm, flag: "> 6 (with sheath) = raised ICP suspicion"}
+  meas.effusion_joint_ml: {unit: ml}
+  meas.canal_encroach:   {unit: "%", label: percentage canal compromise}
+
+recommendation_library:
+  rec.atd:            "Correlation with clinical/lab evidence of tuberculosis and start of anti-tubercular therapy as per treating physician."
+  rec.spec_tb:        "Referral to TB/chest physician for management is advised."
+  rec.spec_endo:      "Endocrinology consultation and correlation with hormonal profile is advised."
+  rec.spec_ophthal:   "Ophthalmology consultation is advised."
+  rec.spec_ent:       "ENT consultation is advised."
+  rec.spec_msk_ortho: "Orthopaedic (MSK) consultation is advised."
+  rec.arthroscopy:    "Arthroscopic correlation is advised."
+  rec.dsa:            "Catheter angiography (DSA) correlation is advised for confirmation/planning."
+  rec.contrast_dynamic: "Dynamic contrast-enhanced MRI is advised for further evaluation."
+  rec.contrast_mri:   "Contrast-enhanced MRI is advised for further evaluation."
+  rec.bone_scan:      "Whole-body bone scan / PET-CT correlation is advised for lesion characterization and staging."
+  rec.hormonal:       "Correlation with hormonal assay (prolactin, GH, ACTH, TSH) is advised."
+  rec.mrv:            "MR venography is advised as clinically indicated."
+  rec.ophthal_urgent: "Urgent ophthalmology referral is advised."
+
+critical_registry:
+  crit.cauda_equina:        {specialist: spine surgery, findings: [screen.cord_compression, mrls_scr.severe_compression], condition: "conus/cauda compression with sphincter symptoms"}
+  crit.epidural_abscess:    {specialist: spine surgery, findings: [mrtb.epidural_collection], condition: "epidural collection with cord compromise"}
+  crit.tb_cord_compression: {specialist: spine surgery, findings: [mrtb.cord_compression], condition: "active TB with cord compression"}
+  crit.aneurysm:            {specialist: neurosurgical, findings: [mra.aneurysm], condition: "intracranial aneurysm"}
+  crit.pituitary_apoplexy:  {specialist: neurosurgical/endocrine, findings: [mrpit.apoplexy], condition: "haemorrhage into pituitary mass with visual symptoms"}
+  crit.orbital_emergency:   {specialist: ophthalmology, findings: [mrorb.orbital_cellulitis, mrorb.optic_compression], condition: "vision-threatening orbital process"}
+
+normal_templates:
+  tpl.normal.mri_dorsal_spine: >-
+    Normal dorsal (thoracic) kyphosis. Vertebral bodies show normal alignment, height and
+    marrow signal. Intervertebral discs show preserved height and hydration. No significant disc
+    herniation, canal stenosis or cord compression. Visualized cord shows normal signal.
+  tpl.normal.whole_spine_screen: >-
+    Screening sagittal images of the whole spine show normal vertebral alignment and marrow
+    signal, no vertebral collapse, no focal marrow lesion, and normal cord signal without syrinx.
+  tpl.normal.mri_brain_epilepsy: >-
+    Normal study on epilepsy protocol. Hippocampi are symmetrical with normal volume and signal.
+    No mesial temporal sclerosis, cortical malformation, focal lesion or gliosis.
+  tpl.normal.mri_brain_trigeminal: >-
+    Normal study. No neurovascular conflict at the root entry zone of either trigeminal nerve.
+    Cisternal segments of the fifth nerves are normal. No cerebellopontine angle lesion.
+  tpl.normal.mri_pituitary: >-
+    Pituitary gland is normal in height and signal with homogeneous enhancement. Stalk is midline.
+    Optic chiasm is normal. Cavernous sinuses are symmetric. No microadenoma or macroadenoma.
+  tpl.normal.mra_brain: >-
+    Normal flow-related signal in the intracranial arterial circulation. The circle of Willis and
+    its branches are normal in course and caliber. No aneurysm, stenosis, occlusion or vascular
+    malformation.
+  tpl.normal.mri_posterior_fossa: >-
+    Normal posterior fossa. Cerebellum, brainstem and fourth ventricle are normal. Both CP angles
+    and internal auditory canals are normal. No mass lesion or abnormal enhancement.
+  tpl.normal.mri_spine_tb: >-
+    No vertebral marrow signal abnormality, disc destruction, paravertebral/epidural collection or
+    cord compression to suggest spinal tuberculosis.
+  tpl.normal.mri_knee: >-
+    Menisci, cruciate and collateral ligaments are intact. Articular cartilage is preserved.
+    No significant joint effusion, marrow edema or Baker's cyst. Extensor mechanism is normal.
+  tpl.normal.mri_shoulder: >-
+    Rotator cuff tendons are intact without tear. Long head of biceps is normal. Labrum is intact.
+    No significant joint effusion or subacromial-subdeltoid bursitis. AC joint is unremarkable.
+  tpl.normal.mri_wrist: >-
+    Carpal bones show normal marrow signal and alignment. TFCC and intrinsic ligaments are intact.
+    Flexor and extensor tendons are normal. No occult fracture, effusion or ganglion.
+  tpl.normal.mri_ankle: >-
+    Ligaments (lateral complex, deltoid), tendons (Achilles, peroneal, tibialis posterior) are
+    intact. Talar dome cartilage is preserved. No significant effusion, marrow edema or sinus
+    tarsi abnormality.
+  tpl.normal.mri_orbits: >-
+    Both globes are normal in size and outline. Optic nerves, extraocular muscles and lacrimal
+    glands are symmetric and normal. Retrobulbar fat is clear. No mass, inflammation or optic
+    nerve abnormality.

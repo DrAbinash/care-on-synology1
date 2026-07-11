@@ -1,4 +1,4 @@
-import { pgTable, serial, text, boolean, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, boolean, timestamp, integer } from "drizzle-orm/pg-core";
 
 export const whatsappSettingsTable = pgTable("whatsapp_settings", {
   id: serial("id").primaryKey(),
@@ -11,6 +11,22 @@ export const whatsappSettingsTable = pgTable("whatsapp_settings", {
   autoSendOnVerify: boolean("auto_send_on_verify").notNull().default(false),
   reportMessageTemplate: text("report_message_template").notNull().default(""),
   includeViewerLink: boolean("include_viewer_link").notNull().default(true),
+  // ── Automation triggers ────────────────────────────────────────────────
+  // Discrete toggle for the on-bill-creation template send (still requires the
+  // master `enabled` flag). Defaults on to preserve existing behaviour where
+  // any enabled WhatsApp config auto-sent a bill message.
+  autoSendBillCreated: boolean("auto_send_bill_created").notNull().default(true),
+  // Appointment reminder — a daily cron sends tomorrow's scheduled patients a
+  // reminder at appointmentReminderTime (server-local HH:MM). Off by default.
+  appointmentReminderEnabled: boolean("appointment_reminder_enabled").notNull().default(false),
+  appointmentReminderTime: text("appointment_reminder_time").notNull().default("18:00"),
+  appointmentReminderTemplate: text("appointment_reminder_template").notNull().default(""),
+  // Dues reminder — a daily cron messages patients with an outstanding balance
+  // at/above duesReminderMinAmount, at duesReminderTime. Off by default.
+  duesReminderEnabled: boolean("dues_reminder_enabled").notNull().default(false),
+  duesReminderTime: text("dues_reminder_time").notNull().default("11:00"),
+  duesReminderMinAmount: integer("dues_reminder_min_amount").notNull().default(0),
+  duesReminderTemplate: text("dues_reminder_template").notNull().default(""),
   // WhatsApp Business webhook (Meta Cloud API)
   wabaId: text("waba_id").notNull().default(""),
   webhookVerifyToken: text("webhook_verify_token").notNull().default(""),

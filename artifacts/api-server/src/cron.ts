@@ -3,10 +3,11 @@ import { db } from "@workspace/db";
 import {
   emailSettingsTable, billsTable, billAuditsTable, paymentsTable,
   doctorsTable, commissionRulesTable, orderTestsTable, ordersTable, testsTable,
-  dicomNodesTable, dicomPullJobsTable,
+  dicomNodesTable, dicomPullJobsTable, whatsappSettingsTable,
 } from "@workspace/db/schema";
 import { sendDailySummaryEmail, sendCommissionMonthEndEmail, sendMonthlyAuditEmail } from "./email";
 import { runBooksSanity } from "./routes/books-sanity";
+import { exportDatabaseSql, exportDatabaseSqlFallback, computeSha256 } from "./routes/backupReplication";
 import { auditRunsTable, watchdogStatusTable } from "@workspace/db/schema";
 import { gte, and, lte, eq, inArray, isNull, or, lt } from "drizzle-orm";
 import { encryptBackup } from "@workspace/crypto";
@@ -31,6 +32,7 @@ export function startCronScheduler() {
   scheduleSessionIdleSweep();
   scheduleAuditLogPurge();
   schedulePacsPullerWatchdog();
+  scheduleWhatsappReminders();
 
   // Start the in-process DIMSE pull agent if enabled.
   // When ENABLE_DICOM_PULL_AGENT is set, the agent polls for pull jobs and
@@ -58,7 +60,7 @@ function scheduleAutomatedBackups() {
   console.log("[cron] Automated backup scheduler started (checks every minute)");
 }
 
-async function fireScheduledBackups() {
+export async function fireScheduledBackups() {
   const { backupJobsTable, backupJobLogsTable } = await import("@workspace/db/schema");
   const { sendBackupFailureEmail } = await import("./email");
   const now = new Date();
@@ -112,52 +114,73 @@ async function fireScheduledBackups() {
       notes: "Triggered by cron scheduler",
     }).returning();
 
-    let rowCount = 0;
+    let rowCount: number | null = 0;
     let sizeBytes = 0;
     let filePath: string | null = null;
     let notes = "";
+    let checksum: string | null = null;
 
     try {
       if (job.backupType === "DB" || job.backupType === "FULL" || job.backupType === "CONFIG") {
-        // Master-data backup (same as /api/backup/run)
-        const tables: Record<string, string[]> = {
+        // Master-data backup via pg_dump (Ticket E0.1 / CRIT-1 fix).
+        //
+        // Previously this ran SELECT * FROM ${table} LIMIT 5000 per table
+        // with no pagination — any table over 5000 rows was silently
+        // truncated, and the job was unconditionally marked "success"
+        // regardless. pg_dump has no row cap, and DB/FULL omit a table
+        // allowlist entirely (a full dump — no list to fall out of sync
+        // with schema changes, unlike the old hardcoded table arrays, one
+        // of which had already drifted and was missing patient_reports).
+        // CONFIG stays scoped to a few small config tables via --table
+        // filtering. exportDatabaseSql/exportDatabaseSqlFallback (see
+        // backupReplication.ts) only resolve once the export is verified
+        // complete — a failed or truncated pg_dump run rejects instead of
+        // silently resolving, so it lands in the catch block below and is
+        // correctly recorded as "failed", never "success".
+        const scopedTables: Record<string, string[] | undefined> = {
           CONFIG: ["clinic_settings", "email_settings", "printer_settings", "pacs_settings"],
-          DB: ["patients", "bills", "radiology_studies", "patient_reports", "orders", "report_delivery_logs"],
-          FULL: ["patients", "bills", "orders", "order_tests", "payments", "clinic_settings", "doctors", "diagnostic_tests", "test_categories", "radiology_studies"],
+          DB: undefined,
+          FULL: undefined,
         };
-        const targetTables = tables[job.backupType] ?? tables.CONFIG;
-        const exportData: Record<string, unknown[]> = {};
-        for (const table of targetTables) {
-          try {
-            const rows = await db.execute(`SELECT * FROM ${table} LIMIT 5000`);
-            exportData[table] = rows.rows;
-            rowCount += rows.rows.length;
-          } catch { /* table may not exist */ }
+        const tableFilter = scopedTables[job.backupType];
+
+        let dump: { filePath: string; sizeBytes: number; rowCount: number | null };
+        try {
+          dump = await exportDatabaseSql(tableFilter);
+        } catch (pgDumpErr) {
+          console.warn(`[cron] pg_dump unavailable for backup job #${job.id}, using fallback exporter:`, pgDumpErr);
+          dump = await exportDatabaseSqlFallback(tableFilter);
         }
-        const json = JSON.stringify({
-          generatedAt: new Date().toISOString(),
-          version: 1,
-          tables: exportData,
-          checksum: require("node:crypto").createHash("sha256").update(JSON.stringify(exportData)).digest("hex"),
-        });
-        sizeBytes = Buffer.byteLength(json, "utf8");
+
+        sizeBytes = dump.sizeBytes;
+        rowCount = dump.rowCount;
+        const sql = require("fs").readFileSync(dump.filePath, "utf-8");
+
+        // Ticket E0.1d — SHA-256 over the encrypted content, exactly as it
+        // will be written to disk, so a later verifyBackupChecksum() call
+        // against the file on disk detects any corruption of the at-rest
+        // artifact (not just of the pre-encryption SQL).
+        const enc = encryptBackup(sql);
+        checksum = computeSha256(enc);
 
         // Write to disk if destinationPath provided
         if (job.destinationPath) {
           try {
             const dir = require("path").dirname(job.destinationPath);
             require("fs").mkdirSync(dir, { recursive: true });
-            const enc = encryptBackup(json);
-            const dest = `${job.destinationPath}/backup_${job.jobName}_${new Date().toISOString().replace(/[:.]/g, "-")}.json.enc`;
+            const dest = `${job.destinationPath}/backup_${job.jobName}_${new Date().toISOString().replace(/[:.]/g, "-")}.sql.enc`;
             require("fs").writeFileSync(dest, enc);
             filePath = dest;
-            notes = `Backup saved to ${dest}`;
+            notes = `Backup saved to ${dest} (${(sizeBytes / 1024 / 1024).toFixed(2)} MB, SHA-256: ${checksum})`;
           } catch (e: unknown) {
             notes = `In-memory backup; disk write failed: ${e instanceof Error ? e.message : String(e)}`;
           }
         } else {
-          notes = `In-memory ${job.backupType} backup (${rowCount} rows, ${sizeBytes} bytes)`;
+          notes = `In-memory ${job.backupType} backup (${(sizeBytes / 1024 / 1024).toFixed(2)} MB, SHA-256: ${checksum})`;
         }
+
+        // The unencrypted intermediate dump must not linger on disk.
+        require("fs").unlink(dump.filePath, () => {});
       } else {
         notes = `${job.backupType} backup type not yet implemented in scheduler.`;
       }
@@ -189,6 +212,7 @@ async function fireScheduledBackups() {
         filePath,
         notes,
         encrypted: true,
+        checksum,
       }).where(eq(backupJobLogsTable.id, logRow?.id ?? 0));
 
       await db.update(backupJobsTable).set({
@@ -412,7 +436,7 @@ export async function fireMonthlyAudit(now: Date): Promise<void> {
 
 // ── DICOM Auto-Pull scheduler ────────────────────────────────────────────────
 // Every 5 minutes: find all active nodes with autoPull=true whose last pull
-// is older than their configured pullIntervalMinutes (or never pulled), and
+// is older than their configured pullIntervalSeconds (or never pulled), and
 // create a new dicom_pull_job for each. The local DICOM Pull Agent picks these
 // jobs up and executes the actual findscu + movescu commands.
 
@@ -500,6 +524,61 @@ function scheduleDaily() {
   });
 
   console.log("[cron] Daily summary scheduler started (checks every minute)");
+}
+
+// ── WhatsApp reminder scheduler ───────────────────────────────────────────────
+// Every minute, checks whatsapp_settings for the configured appointment- and
+// dues-reminder times and fires each at most once per day. Both are off by
+// default; the run functions themselves re-check the enabled flags, so a
+// setting flipped off mid-day never sends. Times use the same server-local
+// clock convention as the daily-summary scheduler above.
+function scheduleWhatsappReminders() {
+  cron.schedule("* * * * *", async () => {
+    try {
+      const [settings] = await db.select().from(whatsappSettingsTable).limit(1);
+      if (!settings || !settings.enabled) return;
+
+      const now = new Date();
+      const dateKey = now.toISOString().split("T")[0];
+
+      if (settings.appointmentReminderEnabled && settings.appointmentReminderTime) {
+        const [h, m] = settings.appointmentReminderTime.split(":").map(Number);
+        const key = `wa-appt-${dateKey}`;
+        if (now.getHours() === h && now.getMinutes() === m && !firedToday.has(key)) {
+          firedToday.add(key);
+          const { runAppointmentReminders } = await import("./routes/whatsapp");
+          const r = await runAppointmentReminders();
+          console.log(`[cron] WhatsApp appointment reminders: sent=${r.sent} failed=${r.failed} total=${r.total}${r.skipped ? ` (skipped: ${r.reason})` : ""}`);
+        }
+      }
+
+      if (settings.duesReminderEnabled && settings.duesReminderTime) {
+        const [h, m] = settings.duesReminderTime.split(":").map(Number);
+        const key = `wa-dues-${dateKey}`;
+        if (now.getHours() === h && now.getMinutes() === m && !firedToday.has(key)) {
+          firedToday.add(key);
+          const { runDuesReminders } = await import("./routes/whatsapp");
+          const r = await runDuesReminders();
+          console.log(`[cron] WhatsApp dues reminders: sent=${r.sent} failed=${r.failed} total=${r.total}${r.skipped ? ` (skipped: ${r.reason})` : ""}`);
+        }
+      }
+    } catch (err) {
+      console.error("[cron] WhatsApp reminder check failed:", err);
+    }
+  });
+
+  console.log("[cron] WhatsApp reminder scheduler started (checks every minute)");
+}
+
+// Manual triggers used by the internal-cron endpoints (and callable in tests).
+export async function runWhatsappAppointmentReminders() {
+  const { runAppointmentReminders } = await import("./routes/whatsapp");
+  return runAppointmentReminders();
+}
+
+export async function runWhatsappDuesReminders() {
+  const { runDuesReminders } = await import("./routes/whatsapp");
+  return runDuesReminders();
 }
 
 function scheduleMonthEndCommission() {

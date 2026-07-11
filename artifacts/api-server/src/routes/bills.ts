@@ -118,24 +118,28 @@ function parseBillNumberParts(billNumber: string): { monthPrefix: string; seq: n
 }
 
 async function buildBill(bill: typeof billsTable.$inferSelect) {
-  const [patient] = await db.select().from(patientsTable).where(eq(patientsTable.id, bill.patientId));
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, bill.orderId));
-
-  const payments = await db.select().from(paymentsTable).where(eq(paymentsTable.billId, bill.id)).orderBy(desc(paymentsTable.createdAt));
+  // Runs on the hot save-and-print path (and once per row on the bills list),
+  // so the independent lookups are batched instead of awaited one by one.
+  const [[patient], [order], payments] = await Promise.all([
+    db.select().from(patientsTable).where(eq(patientsTable.id, bill.patientId)),
+    db.select().from(ordersTable).where(eq(ordersTable.id, bill.orderId)),
+    db.select().from(paymentsTable).where(eq(paymentsTable.billId, bill.id)).orderBy(desc(paymentsTable.createdAt)),
+  ]);
 
   let orderDetails = null;
   if (order) {
-    const orderTestRows = await db
-      .select({ orderTest: orderTestsTable, test: testsTable })
-      .from(orderTestsTable)
-      .leftJoin(testsTable, eq(orderTestsTable.testId, testsTable.id))
-      .where(eq(orderTestsTable.orderId, order.id));
+    const [orderTestRows, doctorRows] = await Promise.all([
+      db
+        .select({ orderTest: orderTestsTable, test: testsTable })
+        .from(orderTestsTable)
+        .leftJoin(testsTable, eq(orderTestsTable.testId, testsTable.id))
+        .where(eq(orderTestsTable.orderId, order.id)),
+      order.doctorId
+        ? db.select().from(doctorsTable).where(eq(doctorsTable.id, order.doctorId))
+        : Promise.resolve([] as (typeof doctorsTable.$inferSelect)[]),
+    ]);
 
-    let doctor = null;
-    if (order.doctorId) {
-      const [d] = await db.select().from(doctorsTable).where(eq(doctorsTable.id, order.doctorId));
-      doctor = d ?? null;
-    }
+    const doctor = doctorRows[0] ?? null;
 
     orderDetails = {
       ...order,
@@ -415,17 +419,54 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
     return;
   }
 
+  // The guard lookups, order-line fetch, ledger resolution, and Form-F clinic
+  // flags are all independent once the order row is loaded — batch them into
+  // one round-trip wave instead of five sequential awaits. This is the hot
+  // billing-desk save path; every serial round-trip here delays the receipt
+  // print. Result checks below run in the original order so error precedence
+  // is unchanged.
+  const tenSecondsAgo = new Date(Date.now() - 60_000); // 60s window (was 10s) — covers slow connections and timeout retries
+  const [existingBillRows, existingRecentRows, orderLineTests, ledgerId, formFClinic] = await Promise.all([
+    db
+      .select({ id: billsTable.id, billNumber: billsTable.billNumber })
+      .from(billsTable)
+      .where(and(eq(billsTable.orderId, orderId), ne(billsTable.status, "cancelled")))
+      .limit(1),
+    db
+      .select({ id: billsTable.id, billNumber: billsTable.billNumber })
+      .from(billsTable)
+      .where(and(
+        eq(billsTable.patientId, order.patientId),
+        ne(billsTable.status, "cancelled"),
+        gt(billsTable.createdAt, tenSecondsAgo),
+      ))
+      .limit(1),
+    db
+      .select({ testId: orderTestsTable.testId, isActive: testsTable.isActive, name: testsTable.name })
+      .from(orderTestsTable)
+      .innerJoin(testsTable, eq(testsTable.id, orderTestsTable.testId))
+      .where(eq(orderTestsTable.orderId, orderId)),
+    resolveLedgerForOrder(orderId),
+    // Only shapes the response at the very end; a failure here must not fail
+    // billing, so it degrades to null instead of rejecting the whole wave.
+    db
+      .select({ formFTestIds: clinicSettingsTable.formFTestIds, formFBillingPrompt: clinicSettingsTable.formFBillingPrompt })
+      .from(clinicSettingsTable)
+      .limit(1)
+      .then((rows) => rows[0] ?? null)
+      .catch((e) => {
+        req.log?.warn?.({ err: e }, "Form-F billing prompt check failed");
+        return null;
+      }),
+  ]);
+
   // Guard against double-billing:
   // 1) Same order — prevents re-billing an order that already has a bill.
-  // 2) Same patient within 10s — catches rapid double-clicks that create two
+  // 2) Same patient within 60s — catches rapid double-clicks that create two
   //    separate orders. The frontend also has a synchronous generatingRef
   //    guard, but this backend fence defends against network retries,
   //    multi-tab races, and keyboard+click races.
-  const [existingBill] = await db
-    .select({ id: billsTable.id, billNumber: billsTable.billNumber })
-    .from(billsTable)
-    .where(and(eq(billsTable.orderId, orderId), ne(billsTable.status, "cancelled")))
-    .limit(1);
+  const [existingBill] = existingBillRows;
   if (existingBill) {
     res.status(409).json({
       error: `This order already has an active bill (${existingBill.billNumber}). Cancel it first before creating a new one.`,
@@ -433,16 +474,7 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
     return;
   }
 
-  const tenSecondsAgo = new Date(Date.now() - 60_000); // 60s window (was 10s) — covers slow connections and timeout retries
-  const [existingRecent] = await db
-    .select({ id: billsTable.id, billNumber: billsTable.billNumber })
-    .from(billsTable)
-    .where(and(
-      eq(billsTable.patientId, order.patientId),
-      ne(billsTable.status, "cancelled"),
-      gt(billsTable.createdAt, tenSecondsAgo),
-    ))
-    .limit(1);
+  const [existingRecent] = existingRecentRows;
   if (existingRecent) {
     res.status(409).json({
       error: `A bill for this patient was just created (${existingRecent.billNumber}). Please wait a few seconds before billing again.`,
@@ -453,11 +485,6 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
   // Refuse to bill against an order that contains discontinued / removed tests
   // (matches the same guard applied at order creation in orders.ts). Catches
   // the case where a test is deactivated *between* order creation and billing.
-  const orderLineTests = await db
-    .select({ testId: orderTestsTable.testId, isActive: testsTable.isActive, name: testsTable.name })
-    .from(orderTestsTable)
-    .innerJoin(testsTable, eq(testsTable.id, orderTestsTable.testId))
-    .where(eq(orderTestsTable.orderId, orderId));
   const inactiveLineTests = orderLineTests.filter((t) => !t.isActive);
   if (inactiveLineTests.length > 0) {
     res.status(400).json({
@@ -495,8 +522,6 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
 
   const taxAmount = 0;
   const totalAmount = subtotal - discountAmt + taxAmount;
-
-  const ledgerId = await resolveLedgerForOrder(orderId);
 
   // Atomically: generate bill number, backfill order's ledgerId, bind patient
   // to ledger, and insert the bill row. Previously these were 3-4 sequential
@@ -556,50 +581,44 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
     return { bill: billRow, pat: patRow, validPayments };
   });
 
-  // Auto-generate queue token (per book, resets daily) — never blocks bill creation
-  let tokenInfo: { tokenNo: number; tokenDate: string } | null = null;
-  try {
-    tokenInfo = await generateTokenForBill({
+  // Post-commit fan-out — three independent jobs that each hit different
+  // tables: the queue token (per book, resets daily), the per-test department
+  // tokens (a bill with USG + X-Ray + MRI ends up with three department
+  // tokens), and the radiology study rows (X-Ray / USG / MRI / CT /
+  // Mammography / DEXA, idempotent per orderTest). Run concurrently so the
+  // billing desk waits for the slowest one, not the sum of all three. Each
+  // failure is logged but never blocks bill creation.
+  const [tokenInfo, testTokens, studies] = await Promise.all([
+    generateTokenForBill({
       ledgerId,
       billId: bill.id,
       patientId: order.patientId,
       priority: isVip ? 5 : 0,
-    });
-  } catch (err) {
-    console.warn("Token generation failed:", err);
-  }
-
-  // Auto-generate per-test queue tokens — one per ordered test, sequenced by
-  // department. A bill with USG + X-Ray + MRI ends up with three department
-  // tokens. Failure is logged but never blocks bill creation.
-  let testTokens: Array<{ orderTestId: number; testName: string; department: string; roomNumber: string; tokenNo: number }> = [];
-  try {
-    testTokens = await generateTestTokensForOrder({
+    }).catch((err) => {
+      console.warn("Token generation failed:", err);
+      return null;
+    }),
+    generateTestTokensForOrder({
       ledgerId,
       billId: bill.id,
       orderId: order.id,
       patientId: order.patientId,
       priority: isVip ? 5 : 0,
-    });
-  } catch (err) {
-    console.warn("Per-test token generation failed:", err);
-  }
-
-  // Auto-create radiology studies for radiology-department tests on the order
-  // (X-Ray / USG / MRI / CT / Mammography / DEXA). Idempotent per orderTest.
-  // Failure is logged but never blocks bill creation.
-  let studies: Array<{ orderTestId: number; testName: string; modality: string; accessionNumber: string }> = [];
-  try {
-    studies = await generateStudiesForOrder({
+    }).catch((err) => {
+      console.warn("Per-test token generation failed:", err);
+      return [];
+    }),
+    generateStudiesForOrder({
       billId: bill.id,
       orderId: order.id,
       patientId: order.patientId,
       priority: isVip ? "vip" : "routine",
       dicomFields,
-    });
-  } catch (err) {
-    console.warn("Radiology study fan-out failed:", err);
-  }
+    }).catch((err) => {
+      console.warn("Radiology study fan-out failed:", err);
+      return [];
+    }),
+  ]);
 
   // Auto-generate accounting vouchers for each inline payment — async, never blocks billing
   const patientName = pat ? `${pat.firstName} ${pat.lastName}`.trim() : undefined;
@@ -627,11 +646,11 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
 
   // Determine if this bill contains any Form-F-required tests so the billing
   // desk can prompt for address + guardian name when the clinic setting is on.
+  // Uses the clinic row pre-fetched in the parallel wave above.
   let needsFormFData = false;
   try {
-    const [clinic] = await db.select({ formFTestIds: clinicSettingsTable.formFTestIds, formFBillingPrompt: clinicSettingsTable.formFBillingPrompt }).from(clinicSettingsTable).limit(1);
-    if (clinic?.formFBillingPrompt) {
-      const formFTestIds: number[] = JSON.parse(clinic.formFTestIds ?? "[]");
+    if (formFClinic?.formFBillingPrompt) {
+      const formFTestIds: number[] = JSON.parse(formFClinic.formFTestIds ?? "[]");
       needsFormFData = formFTestIds.length > 0 && orderLineTests.some((t) => formFTestIds.includes(t.testId));
     }
   } catch (e) {

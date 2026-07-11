@@ -34,4 +34,25 @@ if (import.meta.env.PROD && "serviceWorker" in navigator) {
   });
 }
 
+// Handle stale-chunk-after-redeploy: when the ERP is rebuilt, the browser
+// may have an already-loaded page whose lazy-loaded routes still reference
+// old, now-deleted hashed chunk filenames. Vite fires "vite:preloadError"
+// when such a dynamic import() 404s. The fix is a one-time hard reload to
+// fetch the current index.html and chunk manifest. Guarded via
+// sessionStorage so a genuinely broken deploy doesn't reload-loop forever.
+window.addEventListener("vite:preloadError", () => {
+  const key = "erp_chunk_reload_attempted";
+  if (!sessionStorage.getItem(key)) {
+    sessionStorage.setItem(key, "1");
+    window.location.reload();
+  }
+});
+
 createRoot(document.getElementById("root")!).render(<App />);
+
+// Once the app has mounted successfully, clear the reload guard so a LATER
+// redeploy during this same browser session can still trigger one auto-reload
+// instead of being silently suppressed by an old guard flag.
+window.setTimeout(() => {
+  try { sessionStorage.removeItem("erp_chunk_reload_attempted"); } catch { /* ignore */ }
+}, 5000);

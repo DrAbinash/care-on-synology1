@@ -1,0 +1,54 @@
+{
+  "schema_version": "1.0.0", "kind": "radiology.structured_report", "document_id": "01J9Z6SP1NEAB0STDY0000A100",
+  "catalog_snapshot": { "content_pack_versions": { "spine.mri": "1.3.0" }, "catalog_schema_version": "1.0.0", "ai_rules_version": { "spine.mri": "1.3.0" } },
+  "study_context": { "modality": "MRI", "body_region": "ls_spine", "study_type": "plain", "template_ref": "tpl.mri_ls_spine_plain", "laterality_default": "lat.na",
+    "comparison": { "has_prior": false, "prior_study_ref": null, "interval_note": null },
+    "identifiers": { "study_instance_uid": "1.2.840.113619.2.55.3.2", "accession_number": "ACC-20260709-MR-002",
+      "patient_ref": { "system": "care.patient_id", "value": "PAT-000221" }, "study_datetime": "2026-07-09T11:00:00Z",
+      "referring_physician_ref": { "system": "care.staff", "value": "dr_khan" }, "performing_physician_ref": { "system": "care.staff", "value": "tech_ravi" } } },
+  "findings": [
+    { "lid": "f1", "definition_ref": "finding.spine.disc_herniation", "presence": "present", "certainty": "definite",
+      "laterality": "lat.left", "locations": ["loc.l4_l5"], "severity": "sev.extrusion", "interval_change": null,
+      "parameters": [
+        { "param": "param.disc_level", "kind": "option", "option": "l4_l5", "label": "L4–L5" },
+        { "param": "param.herniation_type", "kind": "option", "option": "paracentral_left", "label": "Left paracentral" },
+        { "param": "param.nerve_root_contact", "kind": "boolean", "value": true, "label": "Contacts traversing nerve root" }
+      ],
+      "measurement_refs": [],
+      "sentence": "Left paracentral disc extrusion at L4–L5 indenting the thecal sac and contacting the traversing left L5 nerve root.",
+      "impression_fragment": "L4–L5 left paracentral disc extrusion with left L5 nerve root contact.",
+      "sentence_source": "content_pack_default",
+      "status_flags": { "is_significant": true, "is_critical": false, "is_incidental": false }, "included_from": null,
+      "provenance": { "origin": "quick_select", "actor": "dr_abinash", "source_ref": "qs.spine.l4l5_extrusion", "created_at": "2026-07-09T11:00:00Z", "edited": false }, "ai": null, "order": 10 },
+    { "lid": "f2", "definition_ref": "finding.spine.canal_stenosis", "presence": "present", "certainty": "probable",
+      "laterality": null, "locations": ["loc.l4_l5"], "severity": "sev.moderate", "interval_change": null,
+      "parameters": [], "measurement_refs": ["m1"],
+      "sentence": "Moderate central canal narrowing at L4–L5.", "impression_fragment": "Moderate L4–L5 central canal stenosis.",
+      "sentence_source": "content_pack_default", "status_flags": { "is_significant": true, "is_critical": false, "is_incidental": false }, "included_from": null,
+      "provenance": { "origin": "manual", "actor": "dr_abinash", "created_at": "2026-07-09T11:02:00Z", "edited": false }, "ai": null, "order": 20 }
+  ],
+  "measurements": [
+    { "lid": "m1", "measurement_ref": "meas.canal_ap_diameter", "finding_ref": "f2", "site": "loc.l4_l5", "laterality": null,
+      "value": 8.5, "unit": "mm", "value_kind": "scalar", "value_iso": null, "range": null, "components": null,
+      "normal_range": { "low": 12, "high": 20, "unit": "mm", "source": "catalog" }, "abnormal": true,
+      "prior_value": null, "prior_measurement_ref_document": null, "change_pct": null,
+      "provenance": { "origin": "manual", "source": "manual", "confidence": 0.9, "edited": false }, "display": "AP canal diameter L4–L5: 8.5 mm (reduced)" }
+  ],
+  "impression": {
+    "fragments": [
+      { "lid": "imp1", "finding_ref": "f1", "text": "L4–L5 left paracentral disc extrusion with left L5 nerve root contact.", "source": "finding_fragment", "rank": 1, "provenance": { "origin": "content_pack_default", "actor": "dr_abinash", "created_at": "2026-07-09T11:05:00Z", "edited": false }, "ai": null },
+      { "lid": "imp2", "finding_ref": "f2", "text": "Moderate L4–L5 central canal stenosis.", "source": "finding_fragment", "rank": 2, "provenance": { "origin": "content_pack_default", "actor": "dr_abinash", "created_at": "2026-07-09T11:05:02Z", "edited": false }, "ai": null }
+    ],
+    "items": [ { "lid": "impi1", "fragment_refs": ["imp1","imp2"], "text": "1. L4–L5 left paracentral disc extrusion with left L5 nerve root contact and moderate central canal stenosis." } ],
+    "rendered": "IMPRESSION:\n1. L4–L5 left paracentral disc extrusion with left L5 nerve root contact and moderate central canal stenosis."
+  },
+  "recommendations": [
+    { "lid": "rec1", "recommendation_ref": "rec.clinical_correlation", "finding_refs": ["f1"], "text": "Clinical correlation with left L5 radiculopathy is advised.", "priority": "routine",
+      "provenance": { "origin": "content_pack_default", "actor": "dr_abinash", "created_at": "2026-07-09T11:06:00Z", "edited": false }, "ai": null }
+  ],
+  "critical_flags": [],
+  "provenance": { "created_by": "dr_abinash", "created_at": "2026-07-09T11:00:00Z", "authoring_app": "care-radiology-report-generator", "authoring_app_version": "2.3.1", "input_methods": ["quick_select","manual"], "content_pack_versions": { "spine.mri": "1.3.0" }, "template_ref": "tpl.mri_ls_spine_plain", "revision": 2 },
+  "ai": { "runs": [], "guarding": { "auto_sign": false } },
+  "audit": { "schema_version": "1.0.0", "hash_algorithm": "jcs-sha256/1", "created_at": "2026-07-09T11:00:00Z", "last_modified_at": "2026-07-09T11:06:00Z", "revision": 2, "revisions": [ { "revision": 1, "at": "2026-07-09T11:00:00Z", "by": "dr_abinash", "action": "created" } ], "content_sha256": "sha256:ff66", "audit_log_ref": null, "signature": { "state": "draft", "signed_by": null, "signed_role": null, "signed_at": null, "signed_content_sha256": null, "amends_document_id": null } },
+  "extensions": {}
+}

@@ -86,9 +86,10 @@ export async function resolveActiveProfile(
   const activeOverride = dbProfile || localOverride || "auto";
 
   if (activeOverride && activeOverride !== "auto") {
-    return { 
+    const targetHost = hostForProfile(activeOverride as NetworkProfile);
+    return {
       profile: activeOverride as "LAN" | "TAILSCALE" | "PUBLIC", 
-      reason: `Manual override saved in ${dbProfile ? "User Database Profile" : "Local Browser Settings"}`, 
+      reason: `Manual override saved in ${dbProfile ? "User Database Profile" : "Local Browser Settings"} (${targetHost})`, 
       latencyMs: 0 
     };
   }
@@ -255,6 +256,24 @@ export function recordFailedLaunch(stage: string, url: string, status: string) {
 }
 
 // ─── LAUNCH LOGIC ─────────────────────────────────────────────────────────────
+
+/**
+ * M1.1 consolidation — the two redirect-style launches the canonical
+ * Reporting Workspace uses. Previously inlined (window.open with hand-built
+ * URLs) in RadiologyReportingWorkspace and RadiologyReportEditor; shared here
+ * so every reporting surface launches viewers through this one module.
+ * The server-side redirect endpoint handles profile adaptation itself, so
+ * these need no settings — use launchViewer() below when client-side
+ * LAN/Tailscale URL adaptation is required.
+ */
+export function openWeasisLaunchRedirect(studyInstanceUID: string): void {
+  window.open(`/api/radiology/studies/${encodeURIComponent(studyInstanceUID)}/weasis-launch-redirect`, "_blank");
+}
+
+/** Opens the in-app OHIF viewer page (/radiology/viewer/:uid) in a new tab. */
+export function openOhifViewerPage(studyInstanceUID: string): void {
+  window.open(`/radiology/viewer/${encodeURIComponent(studyInstanceUID)}`, "_blank");
+}
 
 export function getOhifUrl(studyInstanceUID: string, settings: Record<string, string>, profile: "LAN" | "TAILSCALE" | "PUBLIC" = "LAN"): string {
   const rawBaseUrl = settings["ohif_base_url"]?.trim();
