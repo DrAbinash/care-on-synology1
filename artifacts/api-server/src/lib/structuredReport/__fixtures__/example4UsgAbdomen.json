@@ -1,0 +1,47 @@
+{
+  "schema_version": "1.0.0", "kind": "radiology.structured_report", "document_id": "01J9Z6ABD0MEN0STDY0000A100",
+  "catalog_snapshot": { "content_pack_versions": { "abdomen.usg": "1.4.0" }, "catalog_schema_version": "1.0.0", "ai_rules_version": { "abdomen.usg": "1.4.0" } },
+  "study_context": { "modality": "USG", "body_region": "abdomen", "study_type": "grayscale", "template_ref": "tpl.usg_abdomen", "laterality_default": "lat.na",
+    "comparison": { "has_prior": false, "prior_study_ref": null, "interval_note": null },
+    "identifiers": { "study_instance_uid": "1.2.840.113619.2.55.3.4", "accession_number": "ACC-20260709-US-004",
+      "patient_ref": { "system": "care.patient_id", "value": "PAT-000447" }, "study_datetime": "2026-07-09T09:25:00Z",
+      "referring_physician_ref": { "system": "care.staff", "value": "dr_singh" }, "performing_physician_ref": { "system": "care.staff", "value": "tech_priya" } } },
+  "findings": [
+    { "lid": "f1", "definition_ref": "finding.abdomen.normal_survey", "presence": "normal", "certainty": "definite",
+      "laterality": null, "locations": [], "severity": null, "interval_change": null, "parameters": [], "measurement_refs": ["m1","m2","m3"],
+      "sentence": "Liver normal in size and echotexture. Both kidneys normal. Gallbladder, CBD, pancreas, spleen unremarkable. No free fluid.",
+      "impression_fragment": "Normal abdominal ultrasound apart from the finding below.", "sentence_source": "content_pack_default",
+      "status_flags": { "is_significant": false, "is_critical": false, "is_incidental": false },
+      "included_from": null,
+      "provenance": { "origin": "quick_select", "actor": "dr_abinash", "source_ref": "qs.abd.normal", "created_at": "2026-07-09T09:30:00Z", "edited": false }, "ai": null, "order": 10 },
+    { "lid": "f2", "definition_ref": "finding.liver.simple_cyst", "presence": "present", "certainty": "definite",
+      "laterality": "lat.right", "locations": ["loc.right_lobe"], "severity": null, "interval_change": null,
+      "parameters": [
+        { "param": "param.echogenicity", "kind": "option", "option": "anechoic", "label": "Anechoic" },
+        { "param": "param.margin", "kind": "option", "option": "well_defined", "label": "Well-defined" },
+        { "param": "param.posterior_enhancement", "kind": "boolean", "value": true, "label": "Posterior acoustic enhancement" }
+      ],
+      "measurement_refs": ["m4"],
+      "sentence": "Well-defined anechoic cyst with posterior acoustic enhancement in the right lobe of the liver, measuring 14 mm.",
+      "impression_fragment": "Simple hepatic cyst, right lobe — benign, incidental.", "sentence_source": "content_pack_default",
+      "status_flags": { "is_significant": false, "is_critical": false, "is_incidental": true }, "included_from": null,
+      "provenance": { "origin": "quick_select", "actor": "dr_abinash", "source_ref": "qs.liver.simple_cyst", "created_at": "2026-07-09T09:34:00Z", "edited": false }, "ai": null, "order": 20 }
+  ],
+  "measurements": [
+    { "lid": "m1", "measurement_ref": "meas.liver_span", "finding_ref": "f1", "site": "loc.right_lobe", "laterality": null, "value": 142.0, "unit": "mm", "value_kind": "scalar", "value_iso": null, "range": null, "components": null, "normal_range": { "low": 120, "high": 160, "unit": "mm", "source": "catalog" }, "abnormal": false, "prior_value": null, "prior_measurement_ref_document": null, "change_pct": null, "provenance": { "origin": "measurement_import", "source": "dicom_sr", "confidence": 0.97, "sop_instance_uid": "1.2.840.113619.2.1", "captured_at": "2026-07-09T09:31:00Z", "actor": "OHIF", "edited": false }, "display": "Liver span 142 mm" },
+    { "lid": "m2", "measurement_ref": "meas.kidney_length", "finding_ref": "f1", "site": "loc.kidney_right", "laterality": "lat.right", "value": 102.0, "unit": "mm", "value_kind": "scalar", "value_iso": null, "range": null, "components": null, "normal_range": { "low": 90, "high": 120, "unit": "mm", "source": "catalog" }, "abnormal": false, "prior_value": null, "prior_measurement_ref_document": null, "change_pct": null, "provenance": { "origin": "measurement_import", "source": "dicom_sr", "confidence": 0.98, "sop_instance_uid": "1.2.840.113619.2.2", "edited": false }, "display": "Right kidney 102 mm" },
+    { "lid": "m3", "measurement_ref": "meas.kidney_length", "finding_ref": "f1", "site": "loc.kidney_left", "laterality": "lat.left", "value": 99.0, "unit": "mm", "value_kind": "scalar", "value_iso": null, "range": null, "components": null, "normal_range": { "low": 90, "high": 120, "unit": "mm", "source": "catalog" }, "abnormal": false, "prior_value": null, "prior_measurement_ref_document": null, "change_pct": null, "provenance": { "origin": "measurement_import", "source": "dicom_sr", "confidence": 0.98, "edited": false }, "display": "Left kidney 99 mm" },
+    { "lid": "m4", "measurement_ref": "meas.cyst_diameter", "finding_ref": "f2", "site": "loc.right_lobe", "laterality": null, "value": 14.0, "unit": "mm", "value_kind": "scalar", "value_iso": null, "range": null, "components": null, "normal_range": null, "abnormal": false, "prior_value": null, "prior_measurement_ref_document": null, "change_pct": null, "provenance": { "origin": "manual", "source": "manual", "confidence": 0.9, "edited": false }, "display": "Cyst 14 mm" }
+  ],
+  "impression": {
+    "fragments": [ { "lid": "imp1", "finding_ref": "f2", "text": "Simple hepatic cyst in the right lobe (14 mm) — benign, incidental.", "source": "finding_fragment", "rank": 1, "provenance": { "origin": "content_pack_default", "actor": "dr_abinash", "created_at": "2026-07-09T09:36:00Z", "edited": false }, "ai": null } ],
+    "items": [ { "lid": "impi1", "fragment_refs": ["imp1"], "text": "1. Otherwise normal abdominal ultrasound with an incidental 14 mm simple hepatic cyst in the right lobe." } ],
+    "rendered": "IMPRESSION:\n1. Otherwise normal abdominal ultrasound with an incidental 14 mm simple hepatic cyst in the right lobe."
+  },
+  "recommendations": [ { "lid": "rec1", "recommendation_ref": "rec.no_followup_needed", "finding_refs": ["f2"], "text": "No follow-up required for this benign simple cyst.", "priority": "routine", "provenance": { "origin": "content_pack_default", "actor": "dr_abinash", "created_at": "2026-07-09T09:36:30Z", "edited": false }, "ai": null } ],
+  "critical_flags": [],
+  "provenance": { "created_by": "dr_abinash", "created_at": "2026-07-09T09:30:00Z", "authoring_app": "care-radiology-report-generator", "authoring_app_version": "2.3.1", "input_methods": ["quick_select","measurement_import"], "content_pack_versions": { "abdomen.usg": "1.4.0" }, "template_ref": "tpl.usg_abdomen", "revision": 4 },
+  "ai": { "runs": [], "guarding": { "auto_sign": false } },
+  "audit": { "schema_version": "1.0.0", "hash_algorithm": "jcs-sha256/1", "created_at": "2026-07-09T09:30:00Z", "last_modified_at": "2026-07-09T09:36:30Z", "revision": 4, "revisions": [ { "revision": 1, "at": "2026-07-09T09:30:00Z", "by": "dr_abinash", "action": "created" } ], "content_sha256": "sha256:2b3c4d", "audit_log_ref": null, "signature": { "state": "draft", "signed_by": null, "signed_role": null, "signed_at": null, "signed_content_sha256": null, "amends_document_id": null } },
+  "extensions": {}
+}

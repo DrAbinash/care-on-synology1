@@ -1,0 +1,74 @@
+# CARE Radiology — MRI Cervical Spine WITH Whole Spine Screening (production v1)
+# Dedicated cervical findings reuse mri_c_spine.yaml keys; whole-spine screening reuses
+# _screening_whole_spine.yaml. Binds to shared libraries by key.
+
+pack:
+  pack_id: mri_c_spine_screening
+  version: 1.0.0
+  locale: en-IN
+  status: active
+  extends: mri_c_spine@1.0.0
+  include_group: [screening_whole_spine@1.0.0]
+
+study:
+  study: MRI Cervical Spine with Whole Spine Screening
+  modality: MR
+  aliases: [MRI cervical spine screening, C-spine MRI with whole spine screen, cervical + screening]
+  description: >-
+    Dedicated cervical spine sequences plus sagittal whole-spine screening. Common request for
+    cervical radiculo-myelopathy, suspected demyelination, and screening for multi-level cord
+    signal change, syrinx, marrow lesions or infection.
+  default_sections: [Clinical details, Technique, Findings — Cervical spine, Findings — Whole spine screening, Impression, Advice]
+  quick_select_groups:
+    - {name: Pinned, tiles: [mrcs.normal_study, mrcs.cspondylosis, "mrcs.doc@C5-6", mrcs.cord_signal, screen.regions_normal]}
+    - {name: Cervical dedicated, include_from: mri_c_spine, groups: [Level x Morphology grid, Cord ladder, Foramina/UV]}
+    - {name: Whole spine screening, tiles: [screen.regions_normal, screen.hemangioma, screen.schmorl, screen.modic, screen.scoliosis, screen.cord_signal, screen.syrinx, screen.metastasis, screen.infection]}
+
+included_findings_ref:
+  from: mri_c_spine
+  keys: [mrcs.normal_study, mrcs.cspondylosis, mrcs.straightened_lordosis, mrcs.doc, mrcs.protrusion, mrcs.uncovertebral, mrcs.foraminal_narrowing, mrcs.cord_signal, mrcs.opll]
+
+included_screening_ref:
+  from: screening_whole_spine
+  keys: [screen.regions_normal, screen.hemangioma, screen.schmorl, screen.modic, screen.scoliosis, screen.cord_signal, screen.syrinx, screen.metastasis, screen.infection]
+
+findings:
+  - id_key: mrcs_scr.demyelination_flag
+    display_name: Demyelination screen flag (cord plaques)
+    synonyms: [MS plaques cord, demyelinating cord lesions]
+    keyboard_aliases: [dmye]
+    default_sentence: "Short-segment T2 hyperintense cord lesions at {location} on the screening sequences, less than two vertebral segments in length — favour demyelination."
+    parameters: [param.count]
+    severity: null
+    laterality: null
+    location: [loc.spine_whole]
+    measurements: []
+    impression_fragment: "Cord lesions favouring demyelination — brain MRI and neurology correlation advised."
+    recommendation: []
+    recommendation_code: [rec.contrast_mri, rec.spec_neuro]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrcs_scr.demyelination_flag.k1, glyph: "circle", rule: "cord demyelinating lesions AND brain MRI not recommended", message: "Recommend brain MRI to assess demyelination burden."}
+      contradiction_checks:
+        - {id: mrcs_scr.demyelination_flag.c1, severity: warn, glyph: "triangle", rule: "lesion length >= 3 vertebral segments AND labelled demyelination", message: "Longitudinally extensive lesion favours NMO/myelitis over classic demyelination."}
+      differential: ["multiple sclerosis", "NMO spectrum", "transverse myelitis", "cord ischemia"]
+      follow_up: ["brain MRI", "neurology correlation", "aquaporin-4 / MOG antibodies as advised"]
+
+combo_tiles:
+  - {id: combo.mrcs_scr.radiculo_screen_neg, label: "Cervical radiculopathy + clean screen", members: [mrcs.cspondylosis, {ref: mrcs.doc, at: C5-6}, screen.regions_normal]}
+  - {id: combo.mrcs_scr.myelopathy_set, label: "Cervical myelopathy set", members: [mrcs.cord_signal, screen.regions_normal], recommendations: [rec.spec_nsx]}
+  - {id: combo.mrcs_scr.demyelination_workup, label: "Demyelination workup", members: [mrcs_scr.demyelination_flag], recommendations: [rec.contrast_mri, rec.spec_neuro]}
+
+normal_template: tpl.normal.mri_c_spine
+
+critical_findings:
+  - crit.cord_compression        # acute/progressive cervical cord compression (from base)
+  - crit.epidural_abscess        # if screening reveals infective epidural collection
+
+implementation_notes:
+  - "Do NOT redefine included keys; this pack ADDS mrcs_scr.* only."
+  - "Screening findings render after dedicated cervical findings, under 'Whole spine screening'."
+  - "Cord signal change on the cervical dedicated study (mrcs.cord_signal) is distinct from screen.cord_signal found incidentally at dorsal/lumbar levels — keep both."
+  - "Indian terminology: 'cervical PIVD', 'DOC' (disc-osteophyte complex), 'myelomalacia' resolve to existing keys."

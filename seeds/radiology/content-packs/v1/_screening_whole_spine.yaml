@@ -1,0 +1,216 @@
+# CARE Radiology — Whole Spine Screening (reusable finding group)
+# Included by mri_ls_spine_screening.yaml and mri_c_spine_screening.yaml via `include_group`.
+# Defined ONCE (master spec P11) so both screening studies share one vocabulary.
+# Binds to _shared_libraries.yaml + _shared_libraries_v1_1.yaml.
+
+pack:
+  pack_id: screening_whole_spine
+  version: 1.0.0
+  locale: en-IN
+  status: active
+  role: include_group          # not a standalone study; findings carry the screen.* namespace
+
+vertebral_numbering:
+  rule: "Number vertebrae on the sagittal screen from C2 downward; confirm against sacrum. Flag any transitional lumbosacral vertebra (sacralised L5 / lumbarised S1) and state the counting convention used."
+  applies_to: [screen.hemangioma, screen.schmorl, screen.modic, screen.collapse_screen, screen.marrow_lesion, screen.cord_signal, screen.syrinx]
+
+findings:
+  - id_key: screen.regions_normal
+    display_name: Whole spine screen — normal
+    synonyms: [screening normal, whole spine unremarkable]
+    keyboard_aliases: [wsn]
+    default_sentence: "{{tpl.normal.whole_spine_screen}}"
+    parameters: []
+    severity: null
+    laterality: null
+    location: []
+    measurements: []
+    impression_fragment: "Screening of the whole spine is unremarkable."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai:
+      completeness_checks:
+        - {id: screen.regions_normal.k1, glyph: "circle", rule: "cervical, dorsal and lumbar regions not all commented on the screen", message: "State all three regions (cervical, dorsal, lumbar) on the whole-spine screen."}
+      contradiction_checks:
+        - {id: screen.regions_normal.c1, severity: block, glyph: "X", rule: "any positive screen finding present AND screen-normal statement used", message: "Screen-normal statement contradicts a positive screening finding."}
+      differential: []
+      follow_up: []
+
+  - id_key: screen.hemangioma
+    display_name: Vertebral hemangioma (screen)
+    synonyms: [haemangioma, typical hemangioma]
+    keyboard_aliases: [shem]
+    default_sentence: "T1/T2 hyperintense lesion with coarse trabeculae in the {location} vertebral body — typical hemangioma."
+    parameters: [param.size]
+    severity: null
+    laterality: null
+    location: [loc.spine_whole]
+    measurements: []
+    impression_fragment: "Vertebral hemangioma at {location} — incidental."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai:
+      completeness_checks: []
+      contradiction_checks:
+        - {id: screen.hemangioma.c1, severity: warn, glyph: "triangle", rule: "lesion labelled hemangioma AND cortical breach / soft-tissue component described", message: "Atypical/aggressive features — reconsider hemangioma vs metastasis."}
+      differential: ["typical hemangioma", "atypical hemangioma", "focal marrow deposit"]
+      follow_up: []
+
+  - id_key: screen.schmorl
+    display_name: Schmorl's node (screen)
+    synonyms: [Schmorls node, endplate herniation]
+    keyboard_aliases: [ssch]
+    default_sentence: "Schmorl's node(s) at the {location} endplate(s)."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [loc.spine_whole]
+    measurements: []
+    impression_fragment: null
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: []}
+
+  - id_key: screen.modic
+    display_name: Modic end-plate changes (screen)
+    synonyms: [Modic, end-plate changes]
+    keyboard_aliases: [smod]
+    default_sentence: "{severity} end-plate (Modic) changes at {location}."
+    parameters: []
+    severity: sev.modic
+    laterality: null
+    location: [loc.spine_whole]
+    measurements: []
+    impression_fragment: null
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: []}
+
+  - id_key: screen.scoliosis
+    display_name: Scoliosis (screen)
+    synonyms: [spinal curvature, scoliotic curve]
+    keyboard_aliases: [scol]
+    default_sentence: "{scoliosis_dir} of the {region} spine with apex at {location}, Cobb angle {cobb_angle}."
+    parameters: [param.scoliosis_dir]
+    severity: sev.scoliosis
+    laterality: null
+    location: [loc.spine_whole]
+    measurements: [meas.cobb_angle]
+    impression_fragment: "{severity} {scoliosis_dir} with apex at {location}."
+    recommendation: []
+    recommendation_code: [rec.spec_ortho]
+    criticality: none
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: screen.scoliosis.k1, glyph: "circle", rule: "scoliosis stated AND Cobb angle not measured", message: "Measure the Cobb angle to grade the curve."}
+      contradiction_checks:
+        - {id: screen.scoliosis.c1, severity: warn, glyph: "triangle", rule: "severity band inconsistent with meas.cobb_angle", message: "Stated scoliosis grade does not match measured Cobb angle."}
+      differential: []
+      follow_up: []
+
+  - id_key: screen.cord_signal
+    display_name: Cord signal change (screen)
+    synonyms: [myelomalacia, cord edema, cord T2 hyperintensity]
+    keyboard_aliases: [scord]
+    default_sentence: "Abnormal T2 hyperintense cord signal at the {location} level — {differential}."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [loc.spine_whole]
+    measurements: []
+    impression_fragment: "Cord signal change at {location} — clinical correlation and dedicated imaging advised."
+    recommendation: []
+    recommendation_code: [rec.contrast_mri, rec.spec_neuro]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: screen.cord_signal.k1, glyph: "circle", rule: "cord signal change on screen AND dedicated regional sequences not recommended", message: "Recommend dedicated axial/contrast sequences of the involved segment."}
+      contradiction_checks: []
+      differential: ["demyelination", "cord ischemia/infarct", "compressive myelopathy", "transverse myelitis", "cord neoplasm"]
+      follow_up: ["dedicated contrast MRI of the involved segment", "neurology correlation"]
+
+  - id_key: screen.syrinx
+    display_name: Syrinx / syringomyelia (screen)
+    synonyms: [syrinx, syringohydromyelia, central canal dilatation]
+    keyboard_aliases: [syr]
+    default_sentence: "CSF-signal cavity within the cord extending from {location} to {location} — syrinx (length {syrinx}), {associated Chiari/normal tonsils}."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [loc.spine_whole]
+    measurements: [meas.syrinx]
+    impression_fragment: "Syrinx involving the {location} cord — assess craniovertebral junction for Chiari."
+    recommendation: []
+    recommendation_code: [rec.contrast_mri, rec.spec_nsx]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: screen.syrinx.k1, glyph: "circle", rule: "syrinx present AND craniovertebral junction / cerebellar tonsils not assessed", message: "Assess the craniovertebral junction for Chiari malformation with any syrinx."}
+      contradiction_checks: []
+      differential: ["Chiari-associated syrinx", "post-traumatic syrinx", "tumour-associated syrinx", "prominent central canal (non-pathological)"]
+      follow_up: ["dedicated CVJ imaging", "neurosurgical opinion"]
+
+  - id_key: screen.metastasis
+    display_name: Marrow metastasis screening
+    synonyms: [marrow deposit, metastatic deposit, secondaries, marrow lesion]
+    keyboard_aliases: [smet]
+    default_sentence: "{count} T1-hypointense marrow-replacing lesion(s) in the {location} vertebra(e){, with pathological collapse}{, with epidural soft tissue} — suspicious for metastatic deposit(s)."
+    parameters: [param.count, param.enhancement_pattern]
+    severity: null
+    laterality: null
+    location: [loc.spine_whole]
+    measurements: [meas.tumor_3d]
+    impression_fragment: "Marrow lesion(s) at {location} — suspicious for metastases; further evaluation advised."
+    recommendation: []
+    recommendation_code: [rec.contrast_mri, rec.bone_scan, rec.spec_onc]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: screen.metastasis.k1, glyph: "circle", rule: "marrow lesion present AND epidural extension / cord compromise not commented", message: "Comment on epidural extension and cord compromise for any marrow lesion."}
+      contradiction_checks:
+        - {id: screen.metastasis.c1, severity: warn, glyph: "triangle", rule: "lesion T1-hyperintense AND labelled metastasis", message: "T1-hyperintense marrow lesion favours hemangioma/fat, not metastasis."}
+      differential: ["metastases", "multiple myeloma", "lymphoma", "atypical hemangiomata", "infective (tubercular) deposits"]
+      follow_up: ["contrast MRI", "bone scan / PET-CT", "oncology referral"]
+
+  - id_key: screen.infection
+    display_name: Infection screening (spondylodiscitis)
+    synonyms: [spondylodiscitis, discitis, infective etiology, Koch's spine]
+    keyboard_aliases: [sinf]
+    default_sentence: "Altered marrow signal in the {location} vertebra(e) with disc space involvement and paravertebral soft tissue{, with epidural extension} — infective spondylodiscitis (tubercular vs pyogenic)."
+    parameters: [param.tb_activity]
+    severity: null
+    laterality: null
+    location: [loc.spine_whole]
+    measurements: []
+    impression_fragment: "Infective spondylodiscitis at {location} — tubercular vs pyogenic; correlation and dedicated contrast study advised."
+    recommendation: []
+    recommendation_code: [rec.contrast_mri, rec.atd, rec.clincorr]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: screen.infection.k1, glyph: "circle", rule: "infective changes AND epidural/paravertebral collection not commented", message: "Comment on paravertebral and epidural collections with any infective changes."}
+      contradiction_checks:
+        - {id: screen.infection.c1, severity: warn, glyph: "triangle", rule: "disc space preserved AND marrow lesion labelled infective", message: "Preserved disc space favours metastasis over infection — reconsider."}
+      differential: ["tubercular spondylodiscitis", "pyogenic spondylodiscitis", "modic type I degenerative change"]
+      follow_up: ["dedicated contrast MRI of the involved segment", "ESR/CRP and TB workup"]
+
+screening_impression_rules:
+  - "State the three regions (cervical, dorsal, lumbar) explicitly; a whole-spine screen impression must not be silent on any region."
+  - "Report screen findings AFTER the primary (dedicated-region) findings, under a distinct 'Whole spine screening' heading."
+  - "Any cord signal change, syrinx, marrow-replacing lesion or infective change found on screening triggers a recommendation for dedicated contrast sequences of that segment — a screen never substitutes for a dedicated study."
+  - "If screening is clean, use screen.regions_normal — do not omit the screening statement entirely."
+  - "Incidental benign lesions (hemangioma, Schmorl's node) go in findings but need no separate recommendation."
+  - "Number vertebrae from C2 and flag transitional anatomy so the operating surgeon localises to the correct level."

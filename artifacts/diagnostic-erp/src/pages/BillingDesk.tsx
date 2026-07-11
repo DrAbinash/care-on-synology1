@@ -3,6 +3,7 @@ import "@/styles/billingDeskModern.css"; // Modern Pro skin (presentation only)
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
 import { api } from "@/lib/fetchApi";
+import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import { incrementPendingSyncCount } from "@/hooks/useSyncStatus";
 import { readStaffSession, isFeatureEnabled } from "@/lib/staffSession";
 import { genUUID } from "@/lib/utils";
@@ -74,6 +75,8 @@ import {
   FileText,
   Settings2,
   ClipboardList,
+  ChevronDown,
+  Monitor,
   CreditCard,
   Barcode,
   Save,
@@ -137,6 +140,58 @@ const inr = (n: number) =>
 const today = () => new Date().toLocaleDateString("en-IN", {
   weekday: "short", year: "numeric", month: "short", day: "numeric",
 });
+
+// ── Second-monitor auto-placement ──────────────────────────────────────────
+// Opens `url` positioned on the second monitor automatically, with no manual
+// dragging required, using the best method the browser/connection allows:
+//
+//  1. Window Management API (window.getScreenDetails) — exact placement on
+//     whichever screen isn't currently showing this window, with automatic
+//     fullscreen. Only available in a SECURE context (https://) in Chrome/Edge
+//     100+, and only after a one-time browser permission prompt. This ERP
+//     currently runs on plain http:// on the LAN, so this path is unavailable
+//     today — it activates automatically the moment the clinic moves to
+//     HTTPS (e.g. via Tailscale HTTPS or a proper certificate), no code
+//     changes needed then.
+//  2. Practical fallback (works today, over plain HTTP, no permissions):
+//     assumes the second monitor is extended to the right of the primary —
+//     the default Windows/most-common clinic PC setup — and opens the window
+//     at that offset, sized to fill a typical monitor. Not pixel-perfect on
+//     unusual monitor arrangements, but lands correctly for the common case
+//     with zero dragging. A "Fullscreen" button on the display page itself
+//     (one click, no drag) covers the rest.
+async function openOnSecondMonitor(url: string, windowName: string): Promise<void> {
+  const wm = (window as unknown as { getScreenDetails?: () => Promise<{
+    screens: Array<{ availLeft: number; availTop: number; availWidth: number; availHeight: number }>;
+    currentScreen: { availLeft: number; availTop: number };
+  }> }).getScreenDetails;
+
+  if (wm && window.isSecureContext) {
+    try {
+      const details = await wm();
+      const other = details.screens.find(
+        (s) => s.availLeft !== details.currentScreen.availLeft || s.availTop !== details.currentScreen.availTop
+      ) ?? details.screens[0];
+      const win = window.open(
+        url,
+        windowName,
+        `left=${other.availLeft},top=${other.availTop},width=${other.availWidth},height=${other.availHeight}`
+      );
+      if (win) {
+        win.addEventListener("load", () => {
+          try { win.document.documentElement.requestFullscreen?.(); } catch { /* best effort */ }
+        });
+        return;
+      }
+    } catch {
+      // Permission denied or API unavailable this call — fall through to heuristic.
+    }
+  }
+
+  // Fallback: place just past the primary screen's right edge.
+  const left = window.screen.width;
+  window.open(url, windowName, `left=${left},top=0,width=1024,height=900`);
+}
 
 // ──────────────────────────────────────────────────────
 // Helpers
@@ -529,6 +584,12 @@ export default function BillingDesk() {
   const [discountNote, setDiscountNote]     = useState<string>("");
   const [payNow, setPayNow]               = useState(true);
   const [isVipActive, setIsVipActive]     = useState(false);
+  // Collapse panels once the user moves on to the next step — mirrors the
+  // Register Patient form's auto-collapse-after-selection behavior. Both
+  // default open; user can always re-expand by clicking the header.
+  const [testsCollapsed, setTestsCollapsed]     = useState(false);
+  const [summaryCollapsed, setSummaryCollapsed] = useState(false);
+  const [doctorCollapsed, setDoctorCollapsed]   = useState(false);
   const [paymentSplits, setPaymentSplits] = useState<PaySplit[]>([{ mode: "cash", amount: "" }]);
   const [lastBill, setLastBill]           = useState<LastBill | null>(null);
   // Real scannable QR (PNG data URL) generated via the qrcode library
@@ -617,6 +678,17 @@ export default function BillingDesk() {
     queryFn: () => api.get("/api/clinic-settings/branding"),
   });
 
+  // VIP surcharge % — same clinic setting Online Booking uses (Settings →
+  // Online Booking → VIP Priority Booking Premium). Kept as its own query
+  // (not merged into the public /branding endpoint above) since pricing
+  // configuration shouldn't be exposed on an unauthenticated route.
+  const { data: vipSettings } = useQuery<{ vipPercentage?: string }>({
+    queryKey: ["clinic-settings-vip"],
+    queryFn: () => api.get("/api/clinic-settings"),
+    staleTime: 5 * 60_000,
+  });
+  const vipPercentage = vipSettings?.vipPercentage ? Number(vipSettings.vipPercentage) : 50;
+
   // ── Form F ─────────────────────────────────────────
   const formFTestIdSet: Set<number> = (() => {
     try { return new Set(JSON.parse(clinic?.formFTestIds ?? "[]") as number[]); }
@@ -702,6 +774,8 @@ export default function BillingDesk() {
                   phone: updatedBill.patient.phone ?? null,
                   gender: updatedBill.patient.gender ?? null,
                   dateOfBirth: updatedBill.patient.dateOfBirth ?? null,
+                  ageValue: updatedBill.patient.ageValue ?? null,
+                  ageUnit: updatedBill.patient.ageUnit ?? null,
                 },
                 order: {
                   doctor: updatedBill.order?.doctor ? { name: updatedBill.order.doctor.name } : null,
@@ -828,50 +902,64 @@ export default function BillingDesk() {
   }, [needsDicom, selectedTests.map((t) => t.testId).join(","), doctorId]);
 
 
-  // ── Quick Test Tabs (6 customizable slots) ─────────
+  // ── Quick Test Tabs (8 customizable slots) ─────────
   const quickTestIds: (number | null)[] = useMemo(() => {
     try {
-      const arr = JSON.parse(clinic?.quickTestIds ?? "[null,null,null,null,null,null]");
+      const arr = JSON.parse(clinic?.quickTestIds ?? "[null,null,null,null,null,null,null,null]");
       const out: (number | null)[] = Array.isArray(arr)
-        ? arr.slice(0, 6).map((v: unknown) => (typeof v === "number" ? v : null))
+        ? arr.slice(0, 8).map((v: unknown) => (typeof v === "number" ? v : null))
         : [];
-      while (out.length < 6) out.push(null);
+      while (out.length < 8) out.push(null);
       return out;
-    } catch { return [null, null, null, null, null, null]; }
+    } catch { return [null, null, null, null, null, null, null, null]; }
   }, [clinic?.quickTestIds]);
   const [quickPickerSlot, setQuickPickerSlot] = useState<number | null>(null);
   const [quickPickerSearch, setQuickPickerSearch] = useState("");
 
-  // ── Quick Doctor Slots (6 slots stored in localStorage) ────────────
+  // ── Quick Doctor Slots (8 slots, per-STAFF-MEMBER layout — each user has
+  // their own; server is the source of truth, localStorage is only a fast
+  // first-paint cache). Was previously synced from clinic-wide
+  // clinic.quickDoctorIds via PUT /api/clinic-settings, which (a) the public
+  // /branding endpoint never actually returned (the "sync from server" effect
+  // below was silently dead code) and (b) required the /settings.clinic admin
+  // permission to write, so any non-admin staff got a 403 "Failed to save
+  // quick doctor". Now backed by /api/my/quick-doctors — one row per staff
+  // member, writable by that staff member alone (requireStaffAuth only). ──
+  const { data: myQuickDoctors } = useQuery<{ quickDoctorIds?: string }>({
+    queryKey: ["my-quick-doctors"],
+    queryFn: () => api.get("/api/my/quick-doctors"),
+  });
   const [quickDoctorIds, setQuickDoctorIds] = useState<(number | null)[]>(() => {
     try {
       const stored = localStorage.getItem("billingDesk:quickDoctors");
-      const arr = stored ? JSON.parse(stored) : [null, null, null, null, null, null];
+      const arr = stored ? JSON.parse(stored) : [null, null, null, null, null, null, null, null];
       const out: (number | null)[] = Array.isArray(arr)
-        ? arr.slice(0, 6).map((v: unknown) => (typeof v === "number" ? v : null))
+        ? arr.slice(0, 8).map((v: unknown) => (typeof v === "number" ? v : null))
         : [];
-      while (out.length < 6) out.push(null);
+      while (out.length < 8) out.push(null);
       return out;
-    } catch { return [null, null, null, null, null, null]; }
+    } catch { return [null, null, null, null, null, null, null, null]; }
   });
+  // Sync from the server once the caller's own quick-doctor layout loads —
+  // this is the actual saved configuration (assignQuickDoctorSlot below
+  // writes here via PUT /api/my/quick-doctors). Without this, a browser whose
+  // localStorage was ever cleared — or a different device — would show empty
+  // slots even though the configuration was successfully saved earlier.
+  useEffect(() => {
+    if (!myQuickDoctors?.quickDoctorIds) return;
+    try {
+      const arr = JSON.parse(myQuickDoctors.quickDoctorIds);
+      if (Array.isArray(arr)) {
+        const out = arr.slice(0, 8).map((v: unknown) => (typeof v === "number" ? v : null));
+        while (out.length < 8) out.push(null);
+        setQuickDoctorIds(out);
+        localStorage.setItem("billingDesk:quickDoctors", JSON.stringify(out));
+      }
+    } catch { /* keep current state on parse failure */ }
+  }, [myQuickDoctors?.quickDoctorIds]);
   const [quickDoctorPickerSlot, setQuickDoctorPickerSlot] = useState<number | null>(null);
   const [quickDoctorPickerSearch, setQuickDoctorPickerSearch] = useState("");
   // (Register New Patient form is now always visible — no toggle state needed)
-  // Mutable copy of quick test slots — initialized from clinic settings, saved to localStorage
-  const [quickTestSlots, setQuickTestSlots] = useState<(number | null)[]>(() => {
-    try {
-      const saved = localStorage.getItem("billingDesk:quickTests");
-      if (saved) {
-        const arr = JSON.parse(saved) as (number | null)[];
-        if (Array.isArray(arr)) {
-          const out = arr.slice(0, 6).map((v) => (typeof v === "number" ? v : null));
-          while (out.length < 6) out.push(null);
-          return out;
-        }
-      }
-    } catch { /* fall through */ }
-    return [null, null, null, null, null, null];
-  });
 
   const { data: doctors = [] } = useQuery<Doctor[]>({
     queryKey: ["doctors-list"],
@@ -1021,12 +1109,17 @@ export default function BillingDesk() {
       // (after resetAll) generates a fresh UUID, which is the correct behaviour.
       const clientRef = genUUID();
 
-      // 1. Create order (with custom per-test prices to preserve package discounts)
+      // 1. Create order (with custom per-test prices to preserve package discounts
+      //    AND VIP surcharge — same approach self-registration.ts uses for Online
+      //    Booking: inflate each test's price by the VIP multiplier so the bill
+      //    total the backend computes naturally includes the surcharge without
+      //    any backend changes).
+      const vipMultiplier = isVipActive ? 1 + (vipPercentage / 100) : 1;
       const order = await api.post<{ id: number; orderNumber: string }>("/api/orders", {
         patientId: selectedPatient.id,
         doctorId: doctorId ?? undefined,
         notes: notes || undefined,
-        tests: selectedTests.map((t) => ({ testId: t.testId, price: t.price })),
+        tests: selectedTests.map((t) => ({ testId: t.testId, price: t.price * vipMultiplier })),
         clientRef,
       });
 
@@ -1158,6 +1251,8 @@ export default function BillingDesk() {
                 phone: lastBillLocal.patient.phone ?? null,
                 gender: lastBillLocal.patient.gender ?? null,
                 dateOfBirth: lastBillLocal.patient.dateOfBirth ?? null,
+                ageValue: lastBillLocal.patient.ageValue ?? null,
+                ageUnit: lastBillLocal.patient.ageUnit ?? null,
               },
               order: {
                 doctor: lastBillLocal.doctorName ? { name: lastBillLocal.doctorName } : null,
@@ -1265,7 +1360,11 @@ export default function BillingDesk() {
   const discountAmt = discountType === "amount"
     ? Math.min(discountValue, subtotal)
     : Math.min((subtotal * discountValue) / 100, subtotal);
-  const total       = Math.max(0, subtotal - discountAmt);
+  // VIP surcharge — identical formula to self-registration.ts (used by
+  // Online Booking): subtotal × (vipPercentage / 100). Computed on the raw
+  // subtotal (not post-discount), same base self-registration.ts uses.
+  const vipSurchargeAmt = isVipActive ? subtotal * (vipPercentage / 100) : 0;
+  const total       = Math.max(0, subtotal - discountAmt) + vipSurchargeAmt;
   const paidTotal   = payNow ? paymentSplits.reduce((s, p) => s + (Number(p.amount) || 0), 0) : 0;
   const balance     = Math.max(0, total - paidTotal);
 
@@ -1291,13 +1390,13 @@ export default function BillingDesk() {
     const latest = queryClient.getQueryData<{ quickTestIds?: string }>(["clinic-settings"]);
     let current: (number | null)[];
     try {
-      const arr = JSON.parse(latest?.quickTestIds ?? "[null,null,null,null,null,null]");
+      const arr = JSON.parse(latest?.quickTestIds ?? "[null,null,null,null,null,null,null,null]");
       current = Array.isArray(arr)
-        ? arr.slice(0, 6).map((v: unknown) => (typeof v === "number" ? v : null))
-        : [null, null, null, null, null, null];
-      while (current.length < 6) current.push(null);
+        ? arr.slice(0, 8).map((v: unknown) => (typeof v === "number" ? v : null))
+        : [null, null, null, null, null, null, null, null];
+      while (current.length < 8) current.push(null);
     } catch {
-      current = [null, null, null, null, null, null];
+      current = [null, null, null, null, null, null, null, null];
     }
     const next = [...current];
     next[slotIdx] = testId;
@@ -1315,6 +1414,35 @@ export default function BillingDesk() {
       toast({ title: "Saved test no longer exists — please reassign" });
       setQuickPickerSlot(slotIdx);
     }
+  }
+
+  // ── Quick Doctor slot save (server-synced, mirrors assignQuickSlot above).
+  // Personal per-staff-member layout — /api/my/quick-doctors, not the
+  // clinic-wide /api/clinic-settings — so any authenticated staff member can
+  // save their own slots without needing the /settings.clinic permission. ──
+  const saveQuickDoctorsMut = useMutation({
+    mutationFn: (ids: (number | null)[]) =>
+      api.put("/api/my/quick-doctors", { quickDoctorIds: JSON.stringify(ids) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["my-quick-doctors"] }),
+    onError: () => toast({ title: "Failed to save quick doctor", variant: "destructive" }),
+  });
+  function assignQuickDoctorSlot(slotIdx: number, doctorId: number | null) {
+    // BUG FIX: previously rebuilt `current` from queryClient.getQueryData
+    // (the last server-confirmed snapshot). Picking two slots quickly — before
+    // the first slot's PUT + cache-invalidation round-trip finished — meant
+    // the second call rebuilt from a snapshot that didn't have the first
+    // slot's selection yet, so the PUT for slot 2 silently overwrote slot 1
+    // on the server. Fixing by basing `next` on the current in-memory
+    // quickDoctorIds state instead, which already reflects every optimistic
+    // update made so far in this session, avoiding the stale-read race.
+    setQuickDoctorIds((current) => {
+      const next = [...current];
+      while (next.length < 8) next.push(null);
+      next[slotIdx] = doctorId;
+      localStorage.setItem("billingDesk:quickDoctors", JSON.stringify(next));
+      saveQuickDoctorsMut.mutate(next);
+      return next;
+    });
   }
 
   function addPackage(pkg: Pkg) {
@@ -1497,13 +1625,8 @@ export default function BillingDesk() {
     setHusbandName("");
     setPatientAddress("");
     setIsVipActive(false);
-  }
-
-  function assignQuickDoctor(slotIdx: number, doctorId: number | null) {
-    const next = [...quickDoctorIds];
-    next[slotIdx] = doctorId;
-    setQuickDoctorIds(next);
-    localStorage.setItem("billingDesk:quickDoctors", JSON.stringify(next));
+    setTestsCollapsed(false);
+    setSummaryCollapsed(false);
   }
 
   const canGenerate = !!selectedPatient && selectedTests.length > 0 && !(discountAmt > 0 && !discountReason);
@@ -1518,21 +1641,63 @@ export default function BillingDesk() {
   // ──────────────────────────────────────────────────────────────────────────
 
   const deskClass = [
-    "h-full flex flex-col overflow-hidden bg-[#f4f6f9] dark:bg-slate-900",
+    "h-full flex flex-col overflow-hidden bg-gradient-to-br from-sky-50 via-white to-violet-50 dark:from-slate-900 dark:via-slate-900 dark:to-slate-900",
     denseTestList  ? "billing-dense"     : "",
     largeFont      ? "billing-large-font": "",
     isCompact      ? "billing-compact"   : "",
   ].filter(Boolean).join(" ");
 
-  // Shared section header style — Medical Blue accent strip
-  const SH = (label: string, icon?: React.ReactNode) => (
-    <div className="px-3 py-1.5 bg-[#1a3a5c] dark:bg-[#0f2540] flex items-center gap-2 border-l-4 border-[#2563eb]">
-      {icon && <span className="text-[#7eb8f7]">{icon}</span>}
+  // Bright per-section header accents — purely presentational. Each section
+  // gets its own vivid gradient so the desk reads at a glance: blue = patient,
+  // violet = doctor, teal = tests, amber = selection, green = money, indigo = pay.
+  const SH_ACCENTS: Record<string, string> = {
+    sky:     "bg-gradient-to-r from-sky-600 to-blue-600 border-sky-300",
+    violet:  "bg-gradient-to-r from-violet-600 to-purple-600 border-violet-300",
+    teal:    "bg-gradient-to-r from-teal-600 to-emerald-600 border-teal-300",
+    cyan:    "bg-gradient-to-r from-cyan-600 to-sky-600 border-cyan-300",
+    rose:    "bg-gradient-to-r from-rose-600 to-pink-600 border-rose-300",
+    amber:   "bg-gradient-to-r from-amber-500 to-orange-500 border-amber-300",
+    emerald: "bg-gradient-to-r from-emerald-600 to-green-600 border-emerald-300",
+    indigo:  "bg-gradient-to-r from-indigo-600 to-violet-600 border-indigo-300",
+  };
+
+  // Shared section header style — bright gradient strip with per-section accent
+  const SH = (label: string, icon?: React.ReactNode, accent: string = "sky") => (
+    <div className={`px-3 py-1.5 flex items-center gap-2 border-l-4 ${SH_ACCENTS[accent] ?? SH_ACCENTS.sky}`}>
+      {icon && <span className="text-white/90">{icon}</span>}
       <span className="text-[11px] font-bold uppercase tracking-wider text-white">{label}</span>
     </div>
   );
 
-  const cardCls = "bg-white dark:bg-slate-800 border border-[#dde3ec] dark:border-slate-700 rounded-lg overflow-hidden shadow-sm";
+  // Collapsible variant — same look, but clickable with a chevron and an
+  // optional right-aligned summary (e.g. Net Total) shown while collapsed.
+  const SHCollapsible = (
+    label: string,
+    icon: React.ReactNode,
+    collapsed: boolean,
+    onToggle: () => void,
+    rightSlot?: React.ReactNode,
+    accent: string = "sky",
+  ) => (
+    <button
+      type="button"
+      onClick={onToggle}
+      className={`w-full px-3 py-1.5 flex items-center gap-2 border-l-4 text-left hover:brightness-110 transition-all ${SH_ACCENTS[accent] ?? SH_ACCENTS.sky}`}
+    >
+      {icon && <span className="text-white/90 flex-shrink-0">{icon}</span>}
+      <span className="text-[11px] font-bold uppercase tracking-wider text-white flex-1">{label}</span>
+      {collapsed && rightSlot}
+      <ChevronDown size={13} className={`text-white/80 flex-shrink-0 transition-transform ${collapsed ? "-rotate-90" : ""}`} />
+    </button>
+  );
+
+  const cardCls = "bg-white dark:bg-slate-800 border border-[#dde3ec] dark:border-slate-700 rounded-xl overflow-hidden shadow-md shadow-slate-200/60 dark:shadow-none";
+  // Same as cardCls but WITHOUT overflow-hidden — needed for any card that contains
+  // an absolutely-positioned dropdown/popover (e.g. the doctor search results),
+  // since overflow-hidden on the parent silently clips those dropdowns.
+  // Header corners are squared by overflow-hidden in cardCls; here the first
+  // child is the header itself, so it keeps its own rounding via the card.
+  const cardClsNoClip = "bg-white dark:bg-slate-800 border border-[#dde3ec] dark:border-slate-700 rounded-xl shadow-md shadow-slate-200/60 dark:shadow-none [&>*:first-child]:rounded-t-xl";
 
   return (
     <div className={deskClass} data-desk={layoutMode}>
@@ -1540,11 +1705,11 @@ export default function BillingDesk() {
       {/* ═══════════════════════════════════════════════════════
           TOP BAR — date · title · search · recent · new
       ═══════════════════════════════════════════════════════ */}
-      <div className="flex-shrink-0 bg-[#1a3a5c] dark:bg-[#0f2540] px-3 py-1.5 flex items-center gap-3 shadow-md">
-        <span className="text-[11px] text-[#7eb8f7] flex-shrink-0 font-mono hidden sm:inline">{today()}</span>
+      <div className="flex-shrink-0 bg-gradient-to-r from-blue-700 via-indigo-600 to-violet-600 px-3 py-1.5 flex items-center gap-3 shadow-md">
+        <span className="text-[11px] text-blue-100 flex-shrink-0 font-mono hidden sm:inline">{today()}</span>
         <span className="text-[13px] font-bold text-white flex-shrink-0 tracking-wide">Billing Desk</span>
         {previewBillNo?.next && (
-          <span className="text-[10px] text-[#7eb8f7] flex-shrink-0 hidden md:inline">
+          <span className="text-[10px] text-blue-100 flex-shrink-0 hidden md:inline">
             Next: <strong className="text-white">{previewBillNo.next}</strong>
           </span>
         )}
@@ -1553,7 +1718,7 @@ export default function BillingDesk() {
           <div className="w-36 sm:w-52 lg:w-64"><BillSearchBox /></div>
           <Popover>
             <PopoverTrigger asChild>
-              <button className="h-7 px-2 rounded text-[11px] font-semibold text-[#7eb8f7] hover:bg-white/10 flex items-center gap-1 transition-colors">
+              <button className="h-7 px-2 rounded text-[11px] font-semibold text-blue-100 hover:bg-white/15 flex items-center gap-1 transition-colors">
                 <Receipt size={12} />
                 <span className="hidden md:inline">Recent</span>
               </button>
@@ -1564,7 +1729,7 @@ export default function BillingDesk() {
           </Popover>
           <button
             onClick={resetAll}
-            className="h-7 px-2 rounded text-[11px] font-semibold text-[#7eb8f7] hover:bg-white/10 flex items-center gap-1 transition-colors"
+            className="h-7 px-2 rounded text-[11px] font-semibold text-blue-100 hover:bg-white/15 flex items-center gap-1 transition-colors"
           >
             <RefreshCcw size={12} />
             <span className="hidden md:inline">New</span>
@@ -1600,7 +1765,7 @@ export default function BillingDesk() {
                   onClick={() => goToStep(s.id)}
                   className={`flex items-center gap-1.5 flex-1 justify-center px-2 py-1.5 rounded-md border text-[11px] font-bold transition-all ${
                     stepperActive(s.id)
-                      ? "bg-[#2563eb] border-[#2563eb] text-white shadow-sm"
+                      ? "bg-gradient-to-r from-blue-600 to-violet-600 border-transparent text-white shadow-md"
                       : stepperDone(s.id)
                       ? "bg-emerald-50 border-emerald-300 text-emerald-700"
                       : "bg-[#f4f6f9] border-[#dde3ec] text-[#64748b]"
@@ -1636,7 +1801,7 @@ export default function BillingDesk() {
             {/* ── PATIENT ─────────────────────────────────── */}
             {(!isStepped || currentStep === 1) && (
             <div className={cardCls}>
-              {SH("Patient", <User size={11} />)}
+              {SH("Patient", <User size={11} />, "sky")}
               <div className="p-3 space-y-2">
 
                 {/* Selected patient card */}
@@ -1749,7 +1914,7 @@ export default function BillingDesk() {
             {/* DICOM MWL fields */}
             {needsDicom && selectedPatient && (
               <div className={cardCls}>
-                {SH("DICOM Worklist", <Scan size={11} />)}
+                {SH("DICOM Worklist", <Scan size={11} />, "cyan")}
                 <div className="p-3 grid grid-cols-2 gap-2">
                   {[
                     { label: "Study Description", val: dicomStudyDesc, set: setDicomStudyDesc },
@@ -1769,7 +1934,7 @@ export default function BillingDesk() {
             {/* Form F fields */}
             {needsFormF && !clinic?.formFBillingPrompt && (
               <div className={cardCls}>
-                {SH("Form F (Required)", <FileText size={11} />)}
+                {SH("Form F (Required)", <FileText size={11} />, "rose")}
                 <div className="p-3 space-y-2">
                   {clinic?.formFGuardianRequired !== false && (
                     <div>
@@ -1791,47 +1956,75 @@ export default function BillingDesk() {
 
             {/* ── REFERRING DOCTOR ──────────────────────── */}
             {(!isStepped || currentStep === 1 || currentStep === 2) && (
-            <div className={cardCls}>
-              {SH("Referring Doctor", <Stethoscope size={11} />)}
+            <div className={`${cardClsNoClip} mb-2.5`}>
+              {SHCollapsible(
+                "Referring Doctor",
+                <Stethoscope size={11} />,
+                doctorCollapsed,
+                () => setDoctorCollapsed((c) => !c),
+                <span className="text-[10px] text-white/85 font-semibold mr-1 truncate max-w-[160px]">
+                  {doctorId ? doctors.find((d) => d.id === doctorId)?.name : "Walk-in"}
+                </span>,
+                "violet",
+              )}
+              {!doctorCollapsed && (
               <div className="p-3 space-y-2">
-                {/* Quick doctor slots — same "chocolate box" pattern as Investigations quick slots below.
-                    Click a filled slot to select that doctor for this bill. Click an empty (dashed)
-                    slot, or right-click any slot, to assign/change which doctor lives there. */}
+                {/* Quick doctor slots — 8 fixed-size slots, same symmetrical grid
+                    pattern as Investigations quick slots below. Every box is
+                    identical width; long doctor names truncate with an
+                    ellipsis (full name still shown on hover via title).
+                    Click a filled slot to select that doctor for this bill.
+                    Click an empty (dashed) slot, or right-click any slot, to
+                    assign/change which doctor lives there. */}
                 {showQuickTestsSetting && (
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="grid grid-cols-4 gap-1.5">
                     {quickDoctorIds.map((docId, idx) => {
                       const doc = docId != null ? doctors.find((d) => d.id === docId) : null;
                       const isSelected = !!doc && doctorId === doc.id;
                       return (
-                        <button
-                          key={idx}
-                          type="button"
-                          onClick={() => {
-                            if (doc) {
-                              setDoctorId(isSelected ? null : doc.id);
-                            } else {
-                              setQuickDoctorPickerSlot(idx);
-                            }
-                          }}
-                          onContextMenu={(e) => { e.preventDefault(); setQuickDoctorPickerSlot(idx); }}
-                          className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border transition-all ${
-                            doc
-                              ? isSelected
-                                ? "bg-[#2563eb] text-white border-[#2563eb] shadow-sm"
-                                : "bg-white border-[#2563eb]/40 text-[#2563eb] hover:bg-[#eff6ff] hover:border-[#2563eb] shadow-sm"
-                              : "bg-[#f4f6f9] border-dashed border-[#dde3ec] text-[#94a3b8] hover:border-[#93c5fd] hover:text-[#2563eb]"
-                          }`}
-                          title={doc ? `${doc.name} — right-click to change` : "Click to assign a doctor to this slot"}
-                        >
-                          {doc ? (
-                            <>
-                              {doc.name}
-                              {pinnedDoctorIds.has(doc.id) && <Star size={8} className="inline ml-1 text-amber-400 fill-amber-400" />}
-                            </>
-                          ) : (
-                            `+ Slot ${idx + 1}`
+                        <div key={idx} className="relative group">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (doc) {
+                                setDoctorId(isSelected ? null : doc.id);
+                                setDoctorCollapsed(!isSelected);
+                              } else {
+                                setQuickDoctorPickerSlot(idx);
+                              }
+                            }}
+                            onContextMenu={(e) => { e.preventDefault(); setQuickDoctorPickerSlot(idx); }}
+                            title={doc ? doc.name : "Click to assign a doctor to this slot"}
+                            className={`w-full px-2 py-1.5 rounded-md text-[11px] font-semibold border transition-all truncate ${doc ? "pr-6" : ""} ${
+                              doc
+                                ? isSelected
+                                  ? "bg-gradient-to-br from-violet-600 to-purple-600 text-white border-transparent shadow-md shadow-violet-300/50"
+                                  : "bg-violet-50 border-violet-300 text-violet-700 hover:bg-violet-100 hover:border-violet-500 shadow-sm"
+                                : "bg-[#f4f6f9] border-dashed border-[#dde3ec] text-[#94a3b8] hover:border-violet-300 hover:text-violet-600"
+                            }`}
+                          >
+                            {doc ? (
+                              <>
+                                {doc.name}
+                                {pinnedDoctorIds.has(doc.id) && <Star size={8} className="inline ml-1 text-amber-400 fill-amber-400" />}
+                              </>
+                            ) : (
+                              `+ Slot ${idx + 1}`
+                            )}
+                          </button>
+                          {doc && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setQuickDoctorPickerSlot(idx); }}
+                              className={`absolute top-1/2 right-1 -translate-y-1/2 rounded p-0.5 transition-colors ${
+                                isSelected ? "text-white/70 hover:text-white hover:bg-white/20" : "text-[#93c5fd] hover:text-[#2563eb] hover:bg-[#eff6ff]"
+                              }`}
+                              title="Edit this slot — assign a different doctor"
+                            >
+                              <Pencil size={10} />
+                            </button>
                           )}
-                        </button>
+                        </div>
                       );
                     })}
                   </div>
@@ -1844,7 +2037,7 @@ export default function BillingDesk() {
                       <span className="font-semibold text-[#1e3a5f] flex-1">
                         {doctors.find((d) => d.id === doctorId)?.name}
                       </span>
-                      <button onClick={() => { setDoctorId(null); setDoctorSearch(""); }} className="text-[#94a3b8] hover:text-[#64748b]"><X size={12} /></button>
+                      <button onClick={() => { setDoctorId(null); setDoctorSearch(""); setDoctorCollapsed(false); }} className="text-[#94a3b8] hover:text-[#64748b]"><X size={12} /></button>
                     </div>
                   )}
                   {!doctorId && (
@@ -1860,15 +2053,15 @@ export default function BillingDesk() {
                     </div>
                   )}
                   {doctorSearchOpen && doctorSearch.length > 0 && (
-                    <div className="absolute top-full left-0 right-0 z-20 mt-1 bg-white border border-[#dde3ec] rounded-lg shadow-lg max-h-40 overflow-y-auto">
+                    <div className="absolute top-full left-0 right-0 z-30 mt-1 bg-white border border-[#dde3ec] rounded-lg shadow-lg max-h-64 overflow-y-auto">
                       {doctors
                         .filter((d) => d.name.toLowerCase().includes(doctorSearch.toLowerCase()))
-                        .slice(0, 6)
+                        .slice(0, 8)
                         .map((d) => (
                           <button
                             key={d.id}
                             className="w-full text-left px-3 py-2 text-sm hover:bg-[#eff6ff] flex items-center gap-2"
-                            onClick={() => { setDoctorId(d.id); setDoctorSearch(""); setDoctorSearchOpen(false); }}
+                            onClick={() => { setDoctorId(d.id); setDoctorSearch(""); setDoctorSearchOpen(false); setDoctorCollapsed(true); }}
                           >
                             <Stethoscope size={11} className="text-[#2563eb]" />
                             {d.name}
@@ -1888,43 +2081,51 @@ export default function BillingDesk() {
                   onChange={(e) => setNotes(e.target.value)}
                 />
               </div>
+              )}
             </div>
             )}
 
             {/* ── INVESTIGATIONS ───────────────────────── */}
             {(!isStepped || currentStep === 2 || currentStep === 3) && (
             <div className={cardCls}>
-              {SH("Investigations", <FlaskConical size={11} />)}
+              {SH("Investigations", <FlaskConical size={11} />, "teal")}
               <div className="p-3 space-y-2">
 
-                {/* Quick Test Slots */}
+                {/* Quick Test Slots — 8 fixed-size slots in a symmetrical grid.
+                    Every box is identical width; long test names truncate
+                    with an ellipsis (full name still shown on hover via title). */}
                 {showQuickTestsSetting && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {quickTestSlots.map((slot, idx) => {
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {quickTestIds.map((slot, idx) => {
                       const test = slot != null ? allTests.find((t) => t.id === slot) : null;
                       return (
-                        <button
-                          key={idx}
-                          type="button"
-                          onClick={() => {
-                            if (test) {
-                              if (!selectedTestIds.has(test.id)) addTest(test);
-                            } else {
-                              setQuickPickerSlot(idx);
-                            }
-                          }}
-                          onContextMenu={(e) => { e.preventDefault(); setQuickPickerSlot(idx); }}
-                          className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border transition-all ${
-                            test
-                              ? selectedTestIds.has(test.id)
-                                ? "bg-emerald-50 border-emerald-300 text-emerald-700 line-through opacity-70"
-                                : "bg-white border-[#2563eb]/40 text-[#2563eb] hover:bg-[#eff6ff] hover:border-[#2563eb] shadow-sm"
-                              : "bg-[#f4f6f9] border-dashed border-[#dde3ec] text-[#94a3b8] hover:border-[#93c5fd] hover:text-[#2563eb]"
-                          }`}
-                          title={test ? `Add ${test.name}` : "Right-click to configure slot"}
-                        >
-                          {test ? test.name : `+ Slot ${idx + 1}`}
-                        </button>
+                        <div key={idx} className="relative group">
+                          <button
+                            type="button"
+                            onClick={() => handleQuickTabClick(idx)}
+                            onContextMenu={(e) => { e.preventDefault(); setQuickPickerSlot(idx); }}
+                            title={test ? test.name : "Click to assign a test to this slot"}
+                            className={`w-full px-2 py-1.5 rounded-md text-[11px] font-semibold border transition-all truncate ${test ? "pr-6" : ""} ${
+                              test
+                                ? selectedTestIds.has(test.id)
+                                  ? "bg-emerald-50 border-emerald-300 text-emerald-700 line-through opacity-70"
+                                  : "bg-teal-50 border-teal-300 text-teal-700 hover:bg-teal-100 hover:border-teal-500 shadow-sm"
+                                : "bg-[#f4f6f9] border-dashed border-[#dde3ec] text-[#94a3b8] hover:border-teal-300 hover:text-teal-600"
+                            }`}
+                          >
+                            {test ? test.name : `+ Slot ${idx + 1}`}
+                          </button>
+                          {test && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setQuickPickerSlot(idx); }}
+                              className="absolute top-1/2 right-1 -translate-y-1/2 rounded p-0.5 text-[#93c5fd] hover:text-[#2563eb] hover:bg-[#eff6ff] transition-colors"
+                              title="Edit this slot — assign a different test"
+                            >
+                              <Pencil size={10} />
+                            </button>
+                          )}
+                        </div>
                       );
                     })}
                   </div>
@@ -2032,13 +2233,20 @@ export default function BillingDesk() {
         </div>
 
         {/* ▌RIGHT COLUMN ▌────────────────────────────────── */}
-        <div className="w-full lg:w-[35%] flex flex-col min-h-0 bg-[#f8fafc] dark:bg-slate-850">
+        <div className="w-full lg:w-[35%] flex flex-col min-h-0 bg-gradient-to-b from-indigo-50/70 to-emerald-50/50 dark:from-slate-850 dark:to-slate-850">
           <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
 
             {/* ── SELECTED TESTS ───────────────────────── */}
             <div className={`${cardCls} mx-2.5 mt-2.5 flex-shrink-0`}>
-              {SH(`Selected Tests (${selectedTests.length})`, <ClipboardList size={11} />)}
-              {selectedTests.length === 0 && selectedPackages.length === 0 ? (
+              {SHCollapsible(
+                `Selected Tests (${selectedTests.length})`,
+                <ClipboardList size={11} />,
+                testsCollapsed,
+                () => setTestsCollapsed((c) => !c),
+                <span className="text-[10px] text-white/85 font-semibold mr-1">{inr(subtotal)}</span>,
+                "amber",
+              )}
+              {!testsCollapsed && (selectedTests.length === 0 && selectedPackages.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-6 text-[#94a3b8]">
                   <FlaskConical size={20} className="mb-1.5 opacity-30" />
                   <p className="text-xs">No investigations added yet</p>
@@ -2083,14 +2291,23 @@ export default function BillingDesk() {
                     </div>
                   )}
                 </div>
-              )}
+              ))}
             </div>
 
             {/* ── BILL SUMMARY + DISCOUNT + VIP ────────── */}
             <div className={`${cardCls} mx-2.5 mt-2.5 flex-shrink-0`}>
-              {SH("Bill Summary", <Receipt size={11} />)}
+              {SHCollapsible(
+                "Bill Summary",
+                <Receipt size={11} />,
+                summaryCollapsed,
+                () => setSummaryCollapsed((c) => !c),
+                <span className="text-[10px] text-white/85 font-semibold mr-1">Net {inr(total)}</span>,
+                "emerald",
+              )}
               <div className="p-3 space-y-2">
 
+                {!summaryCollapsed && (
+                <>
                 {/* Auto-discount suggestion */}
                 {suggestion && suggestion.discount > 0 && (
                   <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 flex items-center gap-2 text-xs">
@@ -2115,17 +2332,32 @@ export default function BillingDesk() {
                 </div>
 
                 {/* Discount row */}
-                <div className="space-y-1.5">
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold text-[#94a3b8] uppercase tracking-wider">Discount</span>
+                    <div className="flex items-center gap-2">
+                      {discountAmt > 0 && <span className="text-[12px] text-amber-700 font-bold">−{inr(discountAmt)}</span>}
+                      {selectedTests.length > 0 && (
+                        <button
+                          onClick={fetchSuggestion}
+                          disabled={suggLoading}
+                          className="text-[10px] text-[#2563eb] hover:underline flex-shrink-0 flex items-center gap-0.5"
+                        >
+                          <Zap size={9} className={suggLoading ? "animate-pulse" : ""} />
+                          Auto
+                        </button>
+                      )}
+                    </div>
+                  </div>
                   <div className="flex items-center gap-1.5">
-                    <span className="text-[12px] text-[#64748b] w-14 flex-shrink-0">Discount</span>
                     <div className="flex border border-[#dde3ec] rounded-md overflow-hidden flex-shrink-0">
                       <button
                         onClick={() => setDiscountType("amount")}
-                        className={`px-2 py-0.5 text-[11px] font-bold transition-colors ${discountType === "amount" ? "bg-[#2563eb] text-white" : "hover:bg-[#f4f6f9] text-[#64748b]"}`}
+                        className={`px-2.5 py-1 text-[12px] font-bold transition-colors ${discountType === "amount" ? "bg-[#2563eb] text-white" : "hover:bg-[#f4f6f9] text-[#64748b]"}`}
                       >₹</button>
                       <button
                         onClick={() => setDiscountType("pct")}
-                        className={`px-2 py-0.5 text-[11px] font-bold transition-colors ${discountType === "pct" ? "bg-[#2563eb] text-white" : "hover:bg-[#f4f6f9] text-[#64748b]"}`}
+                        className={`px-2.5 py-1 text-[12px] font-bold transition-colors ${discountType === "pct" ? "bg-[#2563eb] text-white" : "hover:bg-[#f4f6f9] text-[#64748b]"}`}
                       >%</button>
                     </div>
                     <Input
@@ -2134,15 +2366,16 @@ export default function BillingDesk() {
                       step="0.01"
                       value={discountValue || ""}
                       onChange={(e) => setDiscountValue(Number(e.target.value))}
+                      onFocus={() => setTestsCollapsed(true)}
                       placeholder="0"
-                      className="h-7 text-sm flex-1 min-w-0"
+                      className="h-8 text-sm flex-1 min-w-[70px]"
                     />
                     {subtotal > 0 && (
                       <Button
                         size="sm"
                         variant="outline"
                         type="button"
-                        className="h-7 px-2 text-[10px] border-[#bfdbfe] text-[#2563eb] hover:bg-[#eff6ff] font-bold flex-shrink-0"
+                        className="h-8 px-2.5 text-[11px] border-[#bfdbfe] text-[#2563eb] hover:bg-[#eff6ff] font-bold flex-shrink-0"
                         onClick={() => {
                           setDiscountType("pct");
                           setDiscountValue(10);
@@ -2153,20 +2386,9 @@ export default function BillingDesk() {
                         10%
                       </Button>
                     )}
-                    {discountAmt > 0 && <span className="text-[12px] text-amber-700 font-bold flex-shrink-0">−{inr(discountAmt)}</span>}
-                    {selectedTests.length > 0 && (
-                      <button
-                        onClick={fetchSuggestion}
-                        disabled={suggLoading}
-                        className="text-[10px] text-[#2563eb] hover:underline flex-shrink-0 flex items-center gap-0.5"
-                      >
-                        <Zap size={9} className={suggLoading ? "animate-pulse" : ""} />
-                        Auto
-                      </button>
-                    )}
                   </div>
                   {discountAmt > 0 && (
-                    <div className="space-y-1 pl-[60px]">
+                    <div className="space-y-1">
                       <select
                         value={discountReason}
                         onChange={(e) => setDiscountReason(e.target.value)}
@@ -2200,9 +2422,16 @@ export default function BillingDesk() {
                   <label htmlFor="vip-toggle" className="text-[12px] font-semibold text-[#475569] cursor-pointer select-none">
                     ⭐ VIP Priority
                   </label>
+                  {isVipActive && (
+                    <span className="text-[12px] text-amber-700 font-bold ml-auto">
+                      +{inr(vipSurchargeAmt)} <span className="font-medium text-amber-600">({vipPercentage}%)</span>
+                    </span>
+                  )}
                 </div>
+                </>
+                )}
 
-                {/* ── NET TOTAL — visual anchor of the screen ── */}
+                {/* ── NET TOTAL — visual anchor, always visible even when collapsed ── */}
                 <div className="flex items-center justify-between py-2 border-t-2 border-[#1a3a5c]">
                   <span className="text-[13px] font-bold text-[#1a3a5c] uppercase tracking-wide">Net Total</span>
                   <span className="text-[28px] font-extrabold text-[#1a3a5c] tabular-nums leading-none">{inr(total)}</span>
@@ -2212,7 +2441,7 @@ export default function BillingDesk() {
 
             {/* ── PAYMENT ──────────────────────────────── */}
             <div className={`${cardCls} mx-2.5 mt-2.5 flex-shrink-0`}>
-              {SH("Payment", <CreditCard size={11} />)}
+              {SH("Payment", <CreditCard size={11} />, "indigo")}
               <div className="p-3 space-y-2.5" ref={paymentRef}>
 
                 {/* Collect now toggle */}
@@ -2239,6 +2468,7 @@ export default function BillingDesk() {
                       placeholder={total.toFixed(2)}
                       value={paymentSplits[0]?.amount ?? ""}
                       onChange={(e) => setPaymentSplits((prev) => prev.map((s, i) => i === 0 ? { ...s, amount: e.target.value } : s))}
+                      onFocus={() => setSummaryCollapsed(true)}
                       className="h-12 text-xl font-bold tracking-tight text-center border-[#2563eb]/40 focus:border-[#2563eb]"
                     />
 
@@ -2317,8 +2547,8 @@ export default function BillingDesk() {
                               onClick={() => setPaymentSplits((prev) => prev.map((s, i) => i === 0 ? { ...s, mode: m } : s))}
                               className={`flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-lg border text-center transition-all ${
                                 isActive
-                                  ? "bg-[#2563eb] text-white border-[#2563eb] shadow-md"
-                                  : "bg-white border-[#dde3ec] text-[#475569] hover:border-[#93c5fd] hover:bg-[#eff6ff]"
+                                  ? "bg-gradient-to-br from-indigo-600 to-violet-600 text-white border-transparent shadow-md shadow-indigo-300/50"
+                                  : "bg-white border-[#dde3ec] text-[#475569] hover:border-indigo-300 hover:bg-indigo-50"
                               }`}
                             >
                               <span className="text-sm">{icons[m]}</span>
@@ -2338,8 +2568,8 @@ export default function BillingDesk() {
                               onClick={() => setPaymentSplits((prev) => prev.map((s, i) => i === 0 ? { ...s, mode: m } : s))}
                               className={`flex flex-col items-center gap-0.5 px-1 py-1 rounded-md border text-center transition-all ${
                                 isActive
-                                  ? "bg-[#2563eb] text-white border-[#2563eb] shadow-sm"
-                                  : "bg-white border-[#dde3ec] text-[#94a3b8] hover:border-[#93c5fd] hover:bg-[#eff6ff]"
+                                  ? "bg-gradient-to-br from-indigo-600 to-violet-600 text-white border-transparent shadow-sm"
+                                  : "bg-white border-[#dde3ec] text-[#94a3b8] hover:border-indigo-300 hover:bg-indigo-50"
                               }`}
                             >
                               <span className="text-[10px]">{icons[m]}</span>
@@ -2375,10 +2605,10 @@ export default function BillingDesk() {
                   )) ||
                   (needsDicom && !dicomFieldsComplete)
                 }
-                className={`w-full h-14 text-[16px] font-extrabold tracking-wide rounded-lg shadow-lg disabled:shadow-none border-0 transition-all ${
+                className={`w-full h-14 text-[16px] font-extrabold tracking-wide rounded-xl shadow-lg disabled:shadow-none border-0 transition-all ${
                   lastBill
-                    ? "bg-emerald-600 hover:bg-emerald-700 text-white"
-                    : "bg-[#1a3a5c] hover:bg-[#1e4976] text-white disabled:bg-[#cbd5e1] disabled:text-[#94a3b8]"
+                    ? "bg-gradient-to-r from-emerald-600 to-green-600 hover:brightness-110 text-white shadow-emerald-300/50"
+                    : "bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 hover:brightness-110 text-white shadow-indigo-300/50 disabled:bg-none disabled:bg-[#cbd5e1] disabled:text-[#94a3b8]"
                 }`}
               >
                 {lastBill ? (
@@ -2459,10 +2689,7 @@ export default function BillingDesk() {
                     className="w-full text-left px-3 py-2 rounded border border-[#dde3ec] hover:bg-[#eff6ff] text-sm flex items-center justify-between"
                     onClick={() => {
                       if (quickPickerSlot !== null) {
-                        const next = [...quickTestSlots];
-                        next[quickPickerSlot] = t.id;
-                        setQuickTestSlots(next);
-                        localStorage.setItem("billingDesk:quickTests", JSON.stringify(next));
+                        assignQuickSlot(quickPickerSlot, t.id);
                       }
                       setQuickPickerSlot(null);
                       setQuickPickerSearch("");
@@ -2473,14 +2700,13 @@ export default function BillingDesk() {
                   </button>
                 ))}
             </div>
-            {quickPickerSlot !== null && quickTestSlots[quickPickerSlot] != null && (
+            {quickPickerSlot !== null && quickTestIds[quickPickerSlot] != null && (
               <button
                 className="text-xs text-red-500 hover:underline"
                 onClick={() => {
-                  const next = [...quickTestSlots];
-                  next[quickPickerSlot] = null;
-                  setQuickTestSlots(next);
-                  localStorage.setItem("billingDesk:quickTests", JSON.stringify(next));
+                  if (quickPickerSlot !== null) {
+                    assignQuickSlot(quickPickerSlot, null);
+                  }
                   setQuickPickerSlot(null);
                 }}
               >
@@ -2515,10 +2741,7 @@ export default function BillingDesk() {
                     className="w-full text-left px-3 py-2 rounded border border-[#dde3ec] hover:bg-[#eff6ff] text-sm flex items-center gap-2"
                     onClick={() => {
                       if (quickDoctorPickerSlot !== null) {
-                        assignQuickDoctor(quickDoctorPickerSlot, d.id);
-                        api.put("/api/clinic-settings", { quickDoctorIds: JSON.stringify(
-                          quickDoctorIds.map((v, i) => (i === quickDoctorPickerSlot ? d.id : v))
-                        ) }).catch(() => {});
+                        assignQuickDoctorSlot(quickDoctorPickerSlot, d.id);
                       }
                       setQuickDoctorPickerSlot(null);
                       setQuickDoctorPickerSearch("");
@@ -2538,10 +2761,7 @@ export default function BillingDesk() {
                 className="text-xs text-red-500 hover:underline"
                 onClick={() => {
                   if (quickDoctorPickerSlot !== null) {
-                    assignQuickDoctor(quickDoctorPickerSlot, null);
-                    api.put("/api/clinic-settings", { quickDoctorIds: JSON.stringify(
-                      quickDoctorIds.map((v, i) => (i === quickDoctorPickerSlot ? null : v))
-                    ) }).catch(() => {});
+                    assignQuickDoctorSlot(quickDoctorPickerSlot, null);
                   }
                   setQuickDoctorPickerSlot(null);
                 }}
@@ -2609,7 +2829,31 @@ export default function BillingDesk() {
             {gatewayPaymentInfo && gatewayPaymentStatus === "pending" && (
               <>
                 {gatewayQrUrl ? (
-                  <img src={gatewayQrUrl} alt="Payment QR" className="w-40 h-40 mx-auto rounded-lg border" />
+                  <>
+                    <img src={gatewayQrUrl} alt="Payment QR" className="w-40 h-40 mx-auto rounded-lg border" />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const qrData = gatewayPaymentInfo.tranCtx || gatewayPaymentInfo.redirectUrl;
+                        const params = new URLSearchParams({
+                          qrData,
+                          amount: String(gatewayPaymentInfo.amount),
+                          txnRef: gatewayPaymentInfo.txnRef,
+                          patientName: selectedPatient ? `${selectedPatient.firstName} ${selectedPatient.lastName ?? ""}`.trim() : "",
+                        });
+                        // Must include this app's own base path — in production
+                        // diagnostic-erp is served under /erp/ (nginx has no route
+                        // for a bare /display/payment-qr, so an un-prefixed path
+                        // falls through to the public website's SPA and renders
+                        // its "Page not found" screen instead of the QR display).
+                        const erpBase = import.meta.env.BASE_URL.replace(/\/$/, "");
+                        void openOnSecondMonitor(`${erpBase}/display/payment-qr?${params.toString()}`, "paymentQrDisplay");
+                      }}
+                      className="mt-2 text-xs font-semibold text-[#2563eb] hover:underline flex items-center gap-1 mx-auto"
+                    >
+                      <Monitor size={13} /> Open on Second Screen
+                    </button>
+                  </>
                 ) : (
                   <a
                     href={gatewayPaymentInfo.redirectUrl}
@@ -2885,8 +3129,7 @@ function RecentBillsPanel() {
   const { data, isLoading, isError } = useQuery<{ bills: RecentBill[] }>({
     queryKey: ["recent-bills-today"],
     queryFn: () => api.get<{ bills: RecentBill[] }>("/api/bills?limit=20&page=1"),
-    staleTime: 15_000,
-    refetchOnWindowFocus: true,
+    ...FINANCIAL_QUERY_OPTIONS,
   });
 
   const today = new Date().toDateString();

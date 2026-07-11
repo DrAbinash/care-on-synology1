@@ -1,0 +1,141 @@
+# CARE Radiology — MRI Brain Trigeminal Neuralgia Protocol (production v1)
+# Extends mri_brain@1.1.0; adds trigeminal-protocol findings (neurovascular conflict focus).
+# Binds to _shared_libraries.yaml (+ v1_1).
+
+pack:
+  pack_id: mri_brain_trigeminal
+  version: 1.0.0
+  locale: en-IN
+  status: active
+  extends: mri_brain@1.1.0
+
+study:
+  study: MRI Brain — Trigeminal Neuralgia Protocol
+  modality: MR
+  aliases: [MRI trigeminal neuralgia, TN protocol MRI, MRI 5th nerve, FIESTA/CISS trigeminal]
+  description: >-
+    High-resolution heavily T2-weighted (CISS/FIESTA) sequences through the cisternal segments of
+    the trigeminal nerves with 3D TOF angiography to assess neurovascular conflict at the root entry
+    zone, plus screening for CP-angle and pontine lesions.
+  default_sections: [Clinical details, Technique (CISS/FIESTA + TOF), Findings, Trigeminal nerve assessment, Impression, Advice]
+  quick_select_groups:
+    - {name: Pinned, tiles: [mrtn.normal_study, mrtn.nvc, mrtn.nvc_indentation, mrtn.cpa_lesion, mrtn.pontine_lesion]}
+    - {name: Neurovascular conflict, tiles: [mrtn.nvc, mrtn.nvc_indentation]}
+    - {name: Secondary causes, tiles: [mrtn.cpa_lesion, mrtn.pontine_lesion, mrbr.demyelination]}
+
+findings:
+  - id_key: mrtn.normal_study
+    display_name: Normal (no neurovascular conflict)
+    synonyms: [no NVC, normal trigeminal protocol]
+    keyboard_aliases: [ntn]
+    default_sentence: "{{tpl.normal.mri_brain_trigeminal}}"
+    parameters: []
+    severity: null
+    laterality: null
+    location: []
+    measurements: []
+    impression_fragment: "No neurovascular conflict or secondary cause for trigeminal neuralgia identified."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai:
+      completeness_checks:
+        - {id: mrtn.normal_study.k1, glyph: "circle", rule: "both trigeminal nerves not individually assessed on CISS/FIESTA", message: "Assess both trigeminal nerves individually on the high-resolution sequence."}
+      contradiction_checks:
+        - {id: mrtn.normal_study.c1, severity: block, glyph: "X", rule: "NVC or CP-angle lesion present AND normal impression used", message: "Normal impression contradicts a positive finding."}
+      differential: []
+      follow_up: []
+
+  - id_key: mrtn.nvc
+    display_name: Neurovascular conflict (contact)
+    synonyms: [NVC, neurovascular compression, vascular loop, SCA loop]
+    keyboard_aliases: [nvc]
+    default_sentence: "A vascular loop (likely {vessel}) is in contact with the cisternal segment / root entry zone of the {laterality} trigeminal nerve — neurovascular conflict."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location: [["right trigeminal REZ", "left trigeminal REZ"]]
+    measurements: []
+    impression_fragment: "{laterality} neurovascular conflict at the trigeminal root entry zone — correlate with symptom side."
+    recommendation: ["Neurosurgical consultation (microvascular decompression)", "Clinical correlation with symptom side"]
+    recommendation_code: [rec.spec_nsx, rec.clincorr]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrtn.nvc.k1, glyph: "circle", rule: "NVC stated AND offending vessel not named", message: "Name the offending vessel (SCA most common)."}
+        - {id: mrtn.nvc.k2, glyph: "circle", rule: "NVC side not correlated with clinical symptom side in indication", message: "Correlate the conflict side with the symptomatic side."}
+      contradiction_checks:
+        - {id: mrtn.nvc.c1, severity: warn, glyph: "triangle", rule: "conflict side opposite to symptomatic side in indication", message: "Conflict is contralateral to symptoms — note discrepancy, may be incidental."}
+      differential: ["SCA (superior cerebellar artery) loop", "AICA loop", "venous conflict"]
+      follow_up: ["neurosurgical opinion for microvascular decompression"]
+
+  - id_key: mrtn.nvc_indentation
+    display_name: Neurovascular conflict with indentation/atrophy
+    synonyms: [nerve indentation, nerve atrophy, grade 3 NVC]
+    keyboard_aliases: [nvi]
+    default_sentence: "The vascular loop causes indentation/distortion with atrophy of the {laterality} trigeminal nerve at the root entry zone — high-grade neurovascular conflict."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location: []
+    measurements: []
+    impression_fragment: "High-grade {laterality} neurovascular conflict with nerve indentation/atrophy — favourable for microvascular decompression."
+    recommendation: ["Neurosurgical consultation (microvascular decompression)"]
+    recommendation_code: [rec.spec_nsx]
+    criticality: significant
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: ["neurosurgical opinion"]}
+
+  - id_key: mrtn.cpa_lesion
+    display_name: CP-angle lesion (secondary cause)
+    synonyms: [CP angle mass, epidermoid, vestibular schwannoma, meningioma CPA]
+    keyboard_aliases: [cpal]
+    default_sentence: "A {size} lesion in the {laterality} cerebellopontine angle contacting the trigeminal nerve — secondary cause for trigeminal neuralgia."
+    parameters: [param.size, param.enhancement_pattern]
+    severity: null
+    laterality: lat.rl
+    location: [loc.cp_angle]
+    measurements: [meas.tumor_3d]
+    impression_fragment: "{laterality} CP-angle lesion — secondary trigeminal neuralgia; contrast MRI and neurosurgical opinion advised."
+    recommendation: ["Contrast MRI", "Neurosurgical consultation"]
+    recommendation_code: [rec.contrast_mri, rec.spec_nsx]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks: []
+      contradiction_checks: []
+      differential: ["epidermoid cyst", "vestibular schwannoma", "meningioma", "arachnoid cyst"]
+      follow_up: ["contrast MRI (DWI to characterise epidermoid)", "neurosurgical opinion"]
+
+  - id_key: mrtn.pontine_lesion
+    display_name: Pontine / brainstem lesion (secondary cause)
+    synonyms: [pontine plaque, brainstem lesion]
+    keyboard_aliases: [pon]
+    default_sentence: "T2/FLAIR hyperintense lesion in the {laterality} pons involving the trigeminal nucleus/tract — possible demyelinating or ischemic cause."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location: [["pons", "root entry zone (intra-axial)"]]
+    measurements: []
+    impression_fragment: "Pontine lesion involving the trigeminal pathway — demyelination/ischemia; neurology correlation advised."
+    recommendation: ["Neurology consultation", "Contrast MRI"]
+    recommendation_code: [rec.spec_neuro, rec.contrast_mri]
+    criticality: significant
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["demyelination (MS)", "pontine ischemia", "brainstem glioma"], follow_up: ["contrast MRI brain + whole spine if demyelination suspected"]}
+
+combo_tiles:
+  - {id: combo.mrtn.classic_nvc, label: "Classic NVC positive", members: [mrtn.nvc], recommendations: [rec.spec_nsx]}
+  - {id: combo.mrtn.secondary_tn, label: "Secondary TN (CPA)", members: [mrtn.cpa_lesion], recommendations: [rec.contrast_mri, rec.spec_nsx]}
+  - {id: combo.mrtn.negative_study, label: "TN protocol negative", members: [mrtn.normal_study]}
+
+normal_template: tpl.normal.mri_brain_trigeminal
+
+critical_findings: []
+
+implementation_notes:
+  - "Extends mri_brain — mrbr.demyelination is reused as a secondary-cause differential; this pack ADDS mrtn.* only."
+  - "Always name the offending vessel and correlate conflict side with the symptomatic side (completeness rules)."
+  - "Abbreviations: NVC = neurovascular conflict; REZ = root entry zone; SCA/AICA = superior/anterior-inferior cerebellar artery; CISS/FIESTA = high-res heavily T2 sequences."

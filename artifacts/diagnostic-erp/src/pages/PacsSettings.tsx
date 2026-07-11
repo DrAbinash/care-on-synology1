@@ -543,7 +543,7 @@ export default function PacsSettings() {
             </p>
           </div>
         </div>
-        <Button variant="default" size="sm" onClick={() => navigate("/radiology/settings-center")} className="shrink-0">
+        <Button variant="default" size="sm" onClick={() => navigate("/settings/radiology")} className="shrink-0">
           Go to Settings Center
         </Button>
       </div>
@@ -817,6 +817,10 @@ export default function PacsSettings() {
                 }}>Load Defaults</Button>
               )}
             </div>
+            <p className="text-xs text-muted-foreground -mt-2">
+              Uses the same LAN/Tailscale host swap as OHIF (configured above). Whichever IP appears in the
+              template below is automatically replaced with the Tailscale IP when Tailscale mode is active.
+            </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <ViewerField label="WADO-URI Base URL" description="Primary WADO endpoint for Weasis" type="text"
                 value={viewerMap["wado_uri_base_url"] ?? ""} onSave={(v) => saveViewerKey("wado_uri_base_url", v)}

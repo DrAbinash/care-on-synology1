@@ -9,11 +9,20 @@ import {
   UpdateBranchBody,
   DeleteBranchParams,
 } from "@workspace/api-zod";
+import { getCached, setCached, invalidateCached, TTL } from "../lib/ttlCache";
+
+const BRANCHES_CACHE_KEY = "branches:list:v1";
 
 export const branchesRouter = Router();
 
 branchesRouter.get("/", async (_req, res) => {
+  const cached = getCached<unknown[]>(BRANCHES_CACHE_KEY);
+  if (cached) {
+    res.json(cached);
+    return;
+  }
   const rows = await db.select().from(branchesTable).orderBy(branchesTable.name);
+  setCached(BRANCHES_CACHE_KEY, rows, TTL.MEDIUM);
   res.json(rows);
 });
 
@@ -69,6 +78,7 @@ branchesRouter.post("/", async (req, res) => {
       }).returning();
       return inserted;
     });
+    invalidateCached(BRANCHES_CACHE_KEY);
     res.status(201).json(row);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Failed";
@@ -126,6 +136,7 @@ branchesRouter.patch("/:id", async (req, res) => {
       const [updated] = await tx.update(branchesTable).set(updates).where(eq(branchesTable.id, id)).returning();
       return updated;
     });
+    invalidateCached(BRANCHES_CACHE_KEY);
     res.json(row);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Failed";
@@ -154,5 +165,6 @@ branchesRouter.delete("/:id", async (req, res) => {
     return;
   }
   await db.delete(branchesTable).where(eq(branchesTable.id, id));
+  invalidateCached(BRANCHES_CACHE_KEY);
   res.json({ success: true });
 });

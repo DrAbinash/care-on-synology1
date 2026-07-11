@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import PageHeader from "@/components/PageHeader";
 import { Label } from "@/components/ui/label";
 import {
@@ -35,6 +36,7 @@ export default function OutsourceLedger() {
     queryKey: ["ledger", selectedLabId],
     queryFn: () => api.get<LedgerRow[]>(`/api/outsourced-labs/${selectedLabId}/ledger`),
     enabled: !!selectedLabId,
+    ...FINANCIAL_QUERY_OPTIONS,
   });
 
   const activeLabs = labs.filter((l) => l.isActive);

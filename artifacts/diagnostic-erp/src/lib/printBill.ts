@@ -168,10 +168,19 @@ export type BuildPrintHtmlOpts = {
   barcodeDataUrl?: string;
   customFooter?: string | null;
   reportCollectionNote?: string | null;
+  // When true, the footer sits a fixed ~3-4 lines below the content instead
+  // of being pushed to the physical bottom of the A5 page via a flex-1
+  // spacer. Billing Desk relies on the flex-1 push (its A5 bills print on a
+  // fixed-length receipt sheet where a bottom-anchored footer is expected);
+  // short receipts printed from the online booking page / kiosk (usually
+  // 1-2 tests) look broken with that much forced blank space, so those
+  // callers opt into the compact gap instead. Defaults to false so Billing
+  // Desk's existing print output is unaffected.
+  compactFooterGap?: boolean;
 };
 
 export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
-  const { bill, clinic, paperSize, isBW, qrDataUrl, reprintBy, reprintReason } = opts;
+  const { bill, clinic, paperSize, isBW, qrDataUrl, reprintBy, reprintReason, compactFooterGap = false } = opts;
   const copies = Math.max(1, Math.min(2, Number(clinic?.billPrintCopies ?? 1) || 1));
   const showCode = clinic?.billShowCode !== false;
   const showCategory = clinic?.billShowCategory !== false;
@@ -200,9 +209,15 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const insAmt = payByMode["insurance"] || 0;
   const chqAmt = payByMode["cheque"] || 0;
 
+  // On a B&W printer, force the few semantically-colored statuses (paid/
+  // balance-due) to black instead of grayscaling the whole page — a
+  // page-wide filter would also desaturate the clinic logo, which should
+  // always print in its native color regardless of printer mode.
+  const statusColor = (semantic: string): string => (isBW ? "#000" : semantic);
+
   // ── Sizing tuned for A5 thermal receipt ──
   // A5: flex column layout pushes footer to bottom so short bills fill the page
-  const pageMargin = isA5 ? "2mm" : "8mm";
+  const pageMargin = isA5 ? "10mm" : "8mm";
   const titleSize = isA5 ? "15px" : "16px";
   const patientNameSize = isA5 ? "14px" : "18px";    // compact patient / ref / date block
   const bodyPx = isA5 ? "14px" : "13px";             // tagline under logo
@@ -245,18 +260,19 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 
   const hasPayDetail = (bill.payments ?? []).length > 0;
 
-  // ── Get billed-by name from localStorage ──
-  const billedByName = (() => {
+  // ── Get billed-by name + their uploaded signature from localStorage ──
+  const session = (() => {
     try {
-      if (typeof window === "undefined") return "";
+      if (typeof window === "undefined") return null;
       const raw = window.localStorage.getItem("erp_session");
-      if (!raw) return "";
-      return JSON.parse(raw).user?.name ?? "";
-    } catch { return ""; }
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
   })();
+  const billedByName: string = session?.user?.name ?? "";
+  const billedBySignatureUrl: string = session?.user?.signatureDataUrl ?? "";
 
   const page = (copyIdx: number) => `
-    <section class="receipt" style="${copyIdx > 0 ? "page-break-before:always;" : ""}${isA5 ? "display:flex;flex-direction:column;min-height:148mm;" : ""}">
+    <section class="receipt" style="${copyIdx > 0 ? "page-break-before:always;" : ""}${isA5 && !compactFooterGap ? "display:flex;flex-direction:column;min-height:148mm;" : ""}">
 
       ${reprintBy || reprintReason ? `<div style="text-align:center;font-size:${tinyPx};color:#a16207;border:1px dashed #d97706;padding:2px 4px;margin-bottom:4px;text-transform:uppercase;font-weight:700">DUPLICATE / RE-PRINT${reprintBy ? ` · BY ${esc(reprintBy)}` : ""}${reprintReason ? ` · ${esc(reprintReason)}` : ""}</div>` : ""}
 
@@ -310,6 +326,19 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
       <!-- HORIZONTAL RULE -->
       <div style="border-bottom:1px solid #000;margin-bottom:6px"></div>
 
+      <!-- QUEUE TOKEN(S) — shown when this bill produced a daily queue token
+           (self-registration via kiosk / online booking, or a walk-in bill
+           routed through a department queue). -->
+      ${bill.tokenNo ? `
+      <div style="text-align:center;background:#eff6ff;border:2px dashed #0284c7;border-radius:6px;padding:4px 8px;margin-bottom:6px">
+        <div style="font-size:${tinyPx};font-weight:800;color:#0c4a6e;letter-spacing:0.5px">QUEUE TOKEN</div>
+        <div style="font-size:${parseInt(titleSize, 10) + 10}px;font-weight:900;color:#082f49;line-height:1.1">#${esc(String(bill.tokenNo))}</div>
+      </div>` : ""}
+      ${bill.testTokens && bill.testTokens.length > 0 ? `
+      <div style="font-size:${tinyPx};margin-bottom:6px">
+        ${bill.testTokens.map((tt) => `<div><strong>${esc(tt.department)}</strong>: Token #${esc(String(tt.tokenNo))}${tt.roomNumber ? ` &middot; Room ${esc(tt.roomNumber)}` : ""}</div>`).join("")}
+      </div>` : ""}
+
       <!-- TEST TABLE with borders -->
       <table style="width:100%;border-collapse:collapse;font-size:${tablePx};margin-bottom:6px">
         <thead>
@@ -355,10 +384,10 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
                     <td style="padding:3px 3px;border-top:2px solid #000;font-weight:900">TOTAL</td>
                     <td style="padding:3px 3px;border-top:2px solid #000;text-align:right;font-weight:900;white-space:nowrap">₹${fmt(bill.totalAmount)}</td>
                   </tr>
-                  <tr><td style="padding:2px 3px;border-top:1px solid #000;font-weight:800">PAID</td><td style="padding:2px 3px;border-top:1px solid #000;text-align:right;font-weight:800;white-space:nowrap;color:${isUnconfirmedQr ? "orange" : "green"}">${isUnconfirmedQr ? `${fmt(bill.totalAmount)} (To Be Confirmed)` : `₹${fmt(bill.paidAmount)}`}</td></tr>
+                  <tr><td style="padding:2px 3px;border-top:1px solid #000;font-weight:800">PAID</td><td style="padding:2px 3px;border-top:1px solid #000;text-align:right;font-weight:800;white-space:nowrap;color:${statusColor(isUnconfirmedQr ? "orange" : "green")}">${isUnconfirmedQr ? `${fmt(bill.totalAmount)} (To Be Confirmed)` : `₹${fmt(bill.paidAmount)}`}</td></tr>
                   <tr>
                     <td style="padding:3px 3px;border-top:2px solid #000;font-weight:900;font-size:${parseInt(totalPx, 10) + 2}px">BALANCE DUE</td>
-                    <td style="padding:3px 3px;border-top:2px solid #000;text-align:right;font-weight:900;white-space:nowrap;color:${isUnconfirmedQr ? "orange" : Number(bill.balanceAmount) > 0 ? "#c62828" : "green"};font-size:${parseInt(totalPx, 10) + 2}px">${isUnconfirmedQr ? "To Be Confirmed" : `₹${fmt(bill.balanceAmount)}`}</td>
+                    <td style="padding:3px 3px;border-top:2px solid #000;text-align:right;font-weight:900;white-space:nowrap;color:${statusColor(isUnconfirmedQr ? "orange" : Number(bill.balanceAmount) > 0 ? "#c62828" : "green")};font-size:${parseInt(totalPx, 10) + 2}px">${isUnconfirmedQr ? "To Be Confirmed" : `₹${fmt(bill.balanceAmount)}`}</td>
                   </tr>
                   ${cashAmt > 0 ? `<tr><td style="padding:1px 3px;color:#444;font-size:${tinyPx}">Cash</td><td style="padding:1px 3px;text-align:right;white-space:nowrap;color:#444;font-size:${tinyPx}">₹${fmt(cashAmt)}</td></tr>` : ""}
                   ${upiAmt > 0 ? `<tr><td style="padding:1px 3px;color:#444;font-size:${tinyPx}">UPI</td><td style="padding:1px 3px;text-align:right;white-space:nowrap;color:#444;font-size:${tinyPx}">₹${fmt(upiAmt)}</td></tr>` : ""}
@@ -372,8 +401,12 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
         </tbody>
       </table>
 
-      <!-- Spacer pushes footer to bottom on A5 -->
-      ${isA5 ? '<div style="flex:1"></div>' : ""}
+      <!-- Spacer: pushes footer to the bottom of the physical A5 page (Billing
+           Desk's fixed-length receipt sheet), or — when compactFooterGap is
+           set — just a fixed ~3-4 line gap so a short receipt (1-2 tests,
+           typical of online booking / kiosk) doesn't leave a huge blank
+           middle before the footer. -->
+      ${isA5 ? (compactFooterGap ? `<div style="height:${Math.round(parseInt(footerPx, 10) * 1.4 * 3.5)}px"></div>` : '<div style="flex:1"></div>') : ""}
 
       <!-- FOOTER -->
       <div style="margin-top:4px;border-top:1px solid #000;padding-top:4px;text-align:center;page-break-inside:avoid">
@@ -384,7 +417,9 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
         <table style="width:100%;border-collapse:collapse">
           <tr>
             <td style="text-align:left;padding:0;vertical-align:bottom">
-              <div style="border-bottom:1px solid #000;width:130px;margin-bottom:1px"></div>
+              ${billedBySignatureUrl
+                ? `<img src="${billedBySignatureUrl}" alt="Signature" style="max-height:32px;max-width:130px;object-fit:contain;display:block;margin-bottom:1px"/>`
+                : `<div style="border-bottom:1px solid #000;width:130px;margin-bottom:1px"></div>`}
               <div style="font-size:${tinyPx};color:#555">Authorised Signature</div>
             </td>
             <td style="text-align:right;padding:0;vertical-align:bottom;font-size:${tinyPx};color:#555">
@@ -399,12 +434,12 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 
   return `<!doctype html><html><head><meta charset="utf-8"><title>Bill ${esc(bill.billNumber)}</title>
 <style>
-  @page { size: portrait; margin: ${pageMargin}; }
+  @page { size: ${isA5 ? "A5" : "A4"} portrait; margin: ${pageMargin}; }
   *, *::before, *::after { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; height: 100%; }
-  body { background: #fff; color: #000; font-family: Arial, Helvetica, sans-serif; font-size: ${bodyPx}; ${isBW ? "filter: grayscale(1) contrast(1.35); -webkit-print-color-adjust: exact; print-color-adjust: exact;" : ""} }
+  body { background: #fff; color: #000; font-family: Arial, Helvetica, sans-serif; font-size: ${bodyPx}; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .receipt { width: 100%; padding: 2mm 3mm; box-sizing: border-box; }
-  ${isA5 ? ".receipt { min-height: 100vh; display: flex; flex-direction: column; }" : ""}
+  ${isA5 && !compactFooterGap ? ".receipt { min-height: 100vh; display: flex; flex-direction: column; }" : ""}
   table { width: 100%; }
 </style></head><body>${pages}</body></html>`;
 }

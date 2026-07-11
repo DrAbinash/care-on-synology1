@@ -27,7 +27,26 @@ export function errorHandler(
   _next: NextFunction,
 ): void {
   const isProd = process.env.NODE_ENV === "production";
-  const status = err.statusCode ?? 500;
+
+  // Express's own body-parser (express.json()) throws errors with `.status`
+  // (and sometimes `.statusCode`), e.g. malformed JSON in the request body
+  // (`err.type === "entity.parse.failed"`) or a payload over the configured
+  // size limit (`err.type === "entity.too.large"`). Previously this handler
+  // only checked `err.statusCode`, so those errors fell through to the
+  // generic 500 branch below — a client sending broken JSON saw "Internal
+  // server error" instead of a clear "your request body isn't valid JSON"
+  // message, which is confusing to debug from the frontend and looks like a
+  // server bug rather than a malformed request.
+  const bodyParserType = (err as any).type as string | undefined;
+  let status = err.statusCode ?? (err as any).status ?? 500;
+  let message = err.message;
+  if (bodyParserType === "entity.parse.failed") {
+    status = 400;
+    message = "Request body is not valid JSON.";
+  } else if (bodyParserType === "entity.too.large") {
+    status = 413;
+    message = "Request body is too large.";
+  }
 
   // Log everything server-side so we can investigate later.
   logger.error({
@@ -35,6 +54,7 @@ export function errorHandler(
     stack: err.stack,
     cause: (err as any).cause ?? null,
     status,
+    bodyParserType: bodyParserType ?? null,
     url: _req.originalUrl,
     method: _req.method,
   }, "API error caught by global handler");
@@ -42,8 +62,8 @@ export function errorHandler(
   // Never leak stack traces or internal details in production.
   const response: Record<string, unknown> = { error: "Internal server error" };
 
-  if (status === 400 && err.message) {
-    response.error = err.message;
+  if ((status === 400 || status === 413) && message) {
+    response.error = message;
   }
   if (!isProd) {
     response.detail = err.message;

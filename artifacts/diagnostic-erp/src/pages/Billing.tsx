@@ -6,6 +6,7 @@ import {
 } from "@workspace/api-client-react";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import PageHeader from "@/components/PageHeader";
 import StatusBadge from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
@@ -114,7 +115,7 @@ export default function Billing() {
   }>({
     queryKey: ["bills-list", status, page, dateFrom, dateTo, createdBy],
     queryFn: () => api.get(billsUrl),
-    staleTime: 15_000,
+    ...FINANCIAL_QUERY_OPTIONS,
   });
   const { data: orders } = useListOrders({ status: "completed", limit: 100 });
 

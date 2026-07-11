@@ -52,6 +52,10 @@ export const siteSettingsTable = pgTable("site_settings", {
   // Social links (JSON object)
   socialLinks: text("social_links").notNull().default("{}"),
 
+  // Service photo tiles (JSON object with service category keys and image URLs)
+  serviceImagesEnabled: boolean("service_images_enabled").notNull().default(false),
+  serviceImages: text("service_images").notNull().default("{}"), // { "opd": "url", "usg": "url", etc. }
+
   // Site history / audit JSON array
   siteHistory: text("site_history").notNull().default("[]"),
 

@@ -54,7 +54,7 @@ advancedDashboardRouter.get("/", async (req: StaffAuthRequest, res) => {
     WHERE created_at >= ${start} AND created_at <= ${end}
     ${staffFilter ? sql`AND created_by_name = ${staffFilter}` : sql``}
     GROUP BY COALESCE(created_by_name, 'Unknown')
-    ORDER BY total_billing::numeric DESC
+    ORDER BY COALESCE(SUM(total_amount::numeric) FILTER (WHERE status <> 'cancelled'), 0) DESC
   `);
 
   // ── 2. Payments grouped by staff ─────────────────────────────────────────

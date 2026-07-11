@@ -33,6 +33,17 @@ async function generateAppointmentId(): Promise<string> {
 router.get("/", async (req, res) => {
   const { date, status, patientId, doctorId } = req.query as Record<string, string>;
 
+  // Safety default: if the caller passes NO filter at all (no date, no
+  // patient, no doctor), this previously loaded every appointment ever
+  // created with two joins, every time. The normal ERP UI always sends a
+  // date, so this only guards against a future caller (or a stray request)
+  // omitting all filters. Explicit ?all=true bypasses the default for the
+  // rare legitimate "all appointments" report use case, still capped at 500.
+  const noFilterGiven = !date && !status && !patientId && !doctorId;
+  const wantsAll = req.query.all === "true";
+  const effectiveDate = noFilterGiven && !wantsAll ? todayIST() : date;
+  const rowLimit = wantsAll ? 500 : 200;
+
   const rows = await db
     .select({
       appointment: appointmentsTable,
@@ -53,13 +64,14 @@ router.get("/", async (req, res) => {
     .leftJoin(doctorsTable, eq(appointmentsTable.doctorId, doctorsTable.id))
     .where(
       and(
-        date ? eq(appointmentsTable.appointmentDate, date) : undefined,
+        effectiveDate ? eq(appointmentsTable.appointmentDate, effectiveDate) : undefined,
         status ? eq(appointmentsTable.status, status) : undefined,
         patientId ? eq(appointmentsTable.patientId, Number(patientId)) : undefined,
         doctorId ? eq(appointmentsTable.doctorId, Number(doctorId)) : undefined,
       )
     )
-    .orderBy(desc(appointmentsTable.createdAt));
+    .orderBy(desc(appointmentsTable.createdAt))
+    .limit(rowLimit);
 
   return res.json(
     rows.map((r) => ({

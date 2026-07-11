@@ -3,6 +3,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
 import { loadSummaryPdfOrientation, persistSummaryPdfOrientation, type PaperOrientation } from "@/lib/paperSize";
+import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -65,10 +66,10 @@ function buildHTML(config: ExportConfig): string {
   const ts = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
 
   // Build the reconciliation section rows
-  const renderSection = (sec: ExportSection): string => {
-    const rows = sec.metrics.map(([label, value]) => {
+  const renderSectionRows = (sec: ExportSection): string => {
+    return sec.metrics.map(([label, value]) => {
       if (isBlankRow(label, value)) {
-        return `<tr><td colspan="3" style="height:4px;padding:0;border:none"></td></tr>`;
+        return `<tr><td colspan="3" style="height:3px;padding:0;border:none"></td></tr>`;
       }
       if (isSectionHeader(label)) {
         const title = label.replace(/^──\s*/, "").replace(/\s*──+$/, "").trim();
@@ -78,8 +79,8 @@ function buildHTML(config: ExportConfig): string {
                  : title.includes("CASH") ? "#1e293b"
                  : "#374151";
         return `<tr>
-          <td colspan="3" style="background:${bg};color:#fff;font-size:9px;font-weight:700;
-            letter-spacing:.08em;text-transform:uppercase;padding:4px 10px 4px 8px;border:none">
+          <td colspan="3" style="background:${bg};color:#fff;font-size:8.5px;font-weight:700;
+            letter-spacing:.08em;text-transform:uppercase;padding:3px 8px 3px 6px;border:none">
             ${title}
           </td>
         </tr>`;
@@ -99,10 +100,10 @@ function buildHTML(config: ExportConfig): string {
                   : info     ? "#fffbeb"
                   : "transparent";
 
-      const labelStyle = `font-size:${finalRow ? "11" : "10"}px;
+      const labelStyle = `font-size:${finalRow ? "10.5" : "9"}px;
         color:${info ? "#92400e" : deduct ? "#991b1b" : total || finalRow ? "#0f172a" : "#374151"};
         font-weight:${total || finalRow ? "700" : "400"};
-        padding:${finalRow ? "6" : "3"}px 8px 3px ${finalRow ? "8" : "12"}px`;
+        padding:${finalRow ? "5" : "2"}px 6px 2px ${finalRow ? "6" : "10"}px`;
 
       const sign = deduct ? "−" : total || finalRow ? "=" : info ? "ℹ" : "";
       const signColor = deduct ? "#991b1b" : total ? "#0f172a" : info ? "#d97706" : "#94a3b8";
@@ -115,49 +116,71 @@ function buildHTML(config: ExportConfig): string {
         : info      ? "#92400e"
         : "#111827";
 
-      const valueStyle = `font-size:${finalRow ? "13" : "10"}px;font-weight:${total || finalRow ? "700" : "500"};
-        color:${valueColor};text-align:right;font-family:monospace;
-        padding:${finalRow ? "6" : "3"}px 10px 3px 8px;white-space:nowrap`;
+      const valueStyle = `font-size:${finalRow ? "12" : "9"}px;font-weight:${total || finalRow ? "700" : "500"};
+        color:${valueColor};text-align:right;font-family:'Courier New',monospace;
+        padding:${finalRow ? "5" : "2"}px 8px 2px 6px;white-space:nowrap`;
 
-      return `<tr style="background:${rowBg};border-bottom:${total || finalRow ? "1px solid #e2e8f0" : "none"}">
-        <td style="width:18px;text-align:center;color:${signColor};font-size:10px;font-weight:700;padding:3px 2px 3px 8px;border:none">
+      return `<tr style="background:${rowBg};border-bottom:${total || finalRow ? "1px solid #cbd5e1" : "none"}">
+        <td style="width:16px;text-align:center;color:${signColor};font-size:9px;font-weight:700;padding:2px 2px 2px 6px;border:none">
           ${sign}
         </td>
         <td style="${labelStyle}">${label}</td>
         <td style="${valueStyle}">${value}</td>
       </tr>`;
     }).join("");
-
-    return `
-      <div style="margin-bottom:16px">
-        <div style="font-size:11px;font-weight:700;color:#1e40af;margin-bottom:4px;
-          border-bottom:2px solid #1e40af;padding-bottom:3px">${sec.title}</div>
-        <table style="width:100%;border-collapse:collapse">${rows}</table>
-      </div>`;
   };
 
-  const sectionsHTML = config.sections.map(renderSection).join("");
+  // A "calculation box": thick navy border, colored title bar fused to the
+  // top edge (not a separate floating heading), table inside — reads like a
+  // boxed worksheet calculation rather than a loose stack of plain tables.
+  const renderSectionBox = (sec: ExportSection): string => `
+    <div style="border:2px solid #1e293b;border-radius:5px;overflow:hidden;
+      margin-bottom:12px;break-inside:avoid;box-shadow:none">
+      <div style="background:#1e293b;color:#fff;padding:5px 10px;
+        font-size:10.5px;font-weight:800;letter-spacing:.02em">${sec.title}</div>
+      <table style="width:100%;border-collapse:collapse;table-layout:fixed">
+        <colgroup><col style="width:16px"><col><col style="width:120px"></colgroup>
+        <tbody>${renderSectionRows(sec)}</tbody>
+      </table>
+    </div>`;
 
-  // Data tables
+  // Main section (always the detailed Reconciliation Summary ledger) gets the
+  // wide left column; any remaining, shorter sections (Digital Payment
+  // Breakdown, Discount Analysis, ...) stack in a narrower right column so
+  // the page width is used instead of everything running down in one strip.
+  const [mainSection, ...sideSections] = config.sections;
+  const hasSideColumn = sideSections.length > 0;
+
+  const sectionsHTML = mainSection
+    ? (hasSideColumn
+        ? `<div style="display:grid;grid-template-columns:1.35fr 1fr;gap:12px;align-items:start">
+             <div>${renderSectionBox(mainSection)}</div>
+             <div>${sideSections.map(renderSectionBox).join("")}</div>
+           </div>`
+        : renderSectionBox(mainSection))
+    : "";
+
+  // Data tables — same boxed treatment, bold header row, compact cells
   const tablesHTML = config.tables.map((t) => {
     const headerCells = t.headers.map((h) =>
-      `<th style="padding:5px 8px;background:#1e40af;color:white;text-align:left;
-        font-size:9px;font-weight:600;white-space:nowrap">${h}</th>`
+      `<th style="padding:4px 6px;background:#1e293b;color:white;text-align:left;
+        font-size:8px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;white-space:nowrap">${h}</th>`
     ).join("");
 
     const bodyRows = t.rows.map((row, i) => {
-      const cells = row.map((cell, ci) => {
+      const cells = row.map((cell) => {
         const isAmt = typeof cell === "string" && cell.includes("₹");
-        return `<td style="padding:3px 8px;font-size:9px;border-bottom:1px solid #f1f5f9;
-          text-align:${isAmt ? "right" : "left"};font-family:${isAmt ? "monospace" : "inherit"}">${cell}</td>`;
+        return `<td style="padding:2.5px 6px;font-size:8.5px;border-bottom:1px solid #e2e8f0;
+          text-align:${isAmt ? "right" : "left"};font-family:${isAmt ? "'Courier New',monospace" : "inherit"}">${cell}</td>`;
       }).join("");
       return `<tr style="background:${i % 2 === 0 ? "#f8fafc" : "white"}">${cells}</tr>`;
     }).join("");
 
     return `
-      <div style="margin-bottom:18px;page-break-inside:avoid">
-        <div style="font-size:11px;font-weight:700;color:#1e40af;margin-bottom:4px;
-          border-bottom:2px solid #1e40af;padding-bottom:3px">${t.title}</div>
+      <div style="border:2px solid #1e293b;border-radius:5px;overflow:hidden;
+        margin-bottom:12px;break-inside:avoid">
+        <div style="background:#1e293b;color:#fff;padding:5px 10px;
+          font-size:10.5px;font-weight:800;letter-spacing:.02em">${t.title}</div>
         <table style="width:100%;border-collapse:collapse">
           <thead><tr>${headerCells}</tr></thead>
           <tbody>${bodyRows}</tbody>
@@ -174,38 +197,38 @@ function buildHTML(config: ExportConfig): string {
     * { box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
-      margin: 0; padding: 20px; color: #111827; font-size: 11px;
+      margin: 0; padding: 16px; color: #111827; font-size: 10px;
       background: #fff;
     }
     @media print {
       body { padding: 0; }
-      @page { margin: 10mm 12mm; size: A4 portrait; }
+      @page { margin: 8mm 10mm; size: A4 portrait; }
       .no-print { display: none !important; }
       .page-break { page-break-before: always; }
-      div[style*="page-break-inside:avoid"] { page-break-inside: avoid; }
+      div[style*="break-inside:avoid"] { page-break-inside: avoid; }
     }
   </style>
 </head>
 <body>
 
   <!-- Header -->
-  <div style="background:linear-gradient(135deg,#1e3a8a,#1e40af);color:white;
-    padding:14px 18px;border-radius:6px 6px 0 0;margin-bottom:0">
+  <div style="background:linear-gradient(135deg,#0f172a,#1e293b);color:white;
+    padding:12px 16px;border-radius:6px 6px 0 0;margin-bottom:0;border:2px solid #0f172a;border-bottom:none">
     <div style="display:flex;justify-content:space-between;align-items:flex-start">
       <div>
-        <div style="font-size:16px;font-weight:800;letter-spacing:-.02em">${config.title}</div>
-        <div style="font-size:11px;opacity:.85;margin-top:3px">${config.subtitle}</div>
+        <div style="font-size:17px;font-weight:900;letter-spacing:-.02em">${config.title}</div>
+        <div style="font-size:10px;opacity:.85;margin-top:2px;font-weight:600">${config.subtitle}</div>
       </div>
-      <div style="text-align:right;opacity:.75;font-size:9px">
-        <div>Care Diagnostics ERP</div>
+      <div style="text-align:right;opacity:.75;font-size:8.5px">
+        <div style="font-weight:700">Care Diagnostics ERP</div>
         <div style="margin-top:2px">${ts}</div>
       </div>
     </div>
   </div>
 
   <!-- Body -->
-  <div style="background:white;border:1px solid #e2e8f0;border-top:none;
-    padding:16px 18px;border-radius:0 0 6px 6px;margin-bottom:16px">
+  <div style="background:#f8fafc;border:2px solid #0f172a;border-top:none;
+    padding:12px;border-radius:0 0 6px 6px;margin-bottom:12px">
     ${sectionsHTML}
   </div>
 
@@ -213,8 +236,8 @@ function buildHTML(config: ExportConfig): string {
   ${tablesHTML}
 
   <!-- Footer -->
-  <div style="margin-top:16px;padding-top:8px;border-top:1px solid #e5e7eb;
-    font-size:8px;color:#9ca3af;display:flex;justify-content:space-between">
+  <div style="margin-top:10px;padding-top:6px;border-top:1px solid #cbd5e1;
+    font-size:7.5px;color:#94a3b8;display:flex;justify-content:space-between">
     <span>Care Diagnostics ERP — Confidential</span>
     <span>${ts}</span>
   </div>
@@ -239,7 +262,7 @@ function doPrint(config: ExportConfig) {
 // ─── PDF ──────────────────────────────────────────────────────────────────────
 
 // Colour constants matching the HTML builder
-const PDF_BLUE: [number, number, number] = [30, 64, 175];
+const PDF_NAVY: [number, number, number] = [15, 23, 42];
 const PDF_DARK: [number, number, number] = [15, 23, 42];
 const PDF_RED:  [number, number, number] = [153, 27, 27];
 const PDF_GRN:  [number, number, number] = [22, 101, 52];
@@ -269,7 +292,7 @@ async function downloadPDF(config: ExportConfig, orientation: PaperOrientation):
   const ts     = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
 
   // ── Cover header bar ─────────────────────────────────────────────────────
-  doc.setFillColor(30, 58, 138);
+  doc.setFillColor(...PDF_NAVY);
   doc.rect(0, 0, pageW, 24, "F");
   doc.setTextColor(255, 255, 255);
   doc.setFontSize(15);
@@ -288,16 +311,17 @@ async function downloadPDF(config: ExportConfig, orientation: PaperOrientation):
   for (const section of config.sections) {
     if (y > pageH - 30) { doc.addPage(); y = margin; }
 
-    // Section title
-    doc.setTextColor(...PDF_BLUE);
+    const boxTop = y;
+
+    // Header bar — filled navy, fused directly to the table below (no gap),
+    // matching the 'boxed ledger' look used in Print/Email.
+    doc.setFillColor(...PDF_NAVY);
+    doc.rect(margin, y, pageW - margin * 2, 6, "F");
+    doc.setTextColor(255, 255, 255);
     doc.setFontSize(9);
     doc.setFont("helvetica", "bold");
-    doc.text(section.title, margin, y);
-    // Underline
-    doc.setDrawColor(...PDF_BLUE);
-    doc.setLineWidth(0.3);
-    doc.line(margin, y + 0.8, pageW - margin, y + 0.8);
-    y += 5;
+    doc.text(section.title, margin + 2, y + 4.2);
+    y += 6;
 
     // Build body rows with visual styling
     const bodyRows: string[][] = [];
@@ -318,7 +342,7 @@ async function downloadPDF(config: ExportConfig, orientation: PaperOrientation):
         const title = label.replace(/^──\s*/, "").replace(/\s*──+$/, "").trim();
         const bg = sectionBgFor(title);
         bodyRows.push(["", title, ""]);
-        rowStyles.push({ fillColor: bg, textColor: [255, 255, 255], fontStyle: "bold", fontSize: 8 });
+        rowStyles.push({ fillColor: bg, textColor: [255, 255, 255], fontStyle: "bold", fontSize: 7.5 });
         continue;
       }
 
@@ -352,7 +376,7 @@ async function downloadPDF(config: ExportConfig, orientation: PaperOrientation):
         fillColor: fillCol,
         textColor: textCol,
         fontStyle: (totalRow || finalRow) ? "bold" : "normal",
-        fontSize: finalRow ? 10 : 8,
+        fontSize: finalRow ? 9.5 : 7.5,
       });
     }
 
@@ -360,7 +384,7 @@ async function downloadPDF(config: ExportConfig, orientation: PaperOrientation):
       startY: y,
       body: bodyRows,
       theme: "plain",
-      styles: { fontSize: 8, cellPadding: { top: 1.5, bottom: 1.5, left: 2, right: 2 }, overflow: "linebreak" },
+      styles: { fontSize: 7.5, cellPadding: { top: 1, bottom: 1, left: 2, right: 2 }, overflow: "linebreak" },
       columnStyles: {
         0: { cellWidth: 6, halign: "center", fontSize: 7 },
         1: { cellWidth: orientation === "landscape" ? 180 : 120 },
@@ -377,29 +401,36 @@ async function downloadPDF(config: ExportConfig, orientation: PaperOrientation):
       },
     });
 
-    y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
+    y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY;
+
+    // Thick box border around the whole section (header bar + table)
+    doc.setDrawColor(...PDF_NAVY);
+    doc.setLineWidth(0.5);
+    doc.rect(margin, boxTop, pageW - margin * 2, y - boxTop);
+
+    y += 6;
   }
 
   // ── Data tables ───────────────────────────────────────────────────────────
   for (const table of config.tables) {
     if (y > pageH - 40) { doc.addPage(); y = margin; }
 
-    doc.setTextColor(...PDF_BLUE);
+    const boxTop = y;
+    doc.setFillColor(...PDF_NAVY);
+    doc.rect(margin, y, pageW - margin * 2, 6, "F");
+    doc.setTextColor(255, 255, 255);
     doc.setFontSize(9);
     doc.setFont("helvetica", "bold");
-    doc.text(table.title, margin, y);
-    doc.setDrawColor(...PDF_BLUE);
-    doc.setLineWidth(0.3);
-    doc.line(margin, y + 0.8, pageW - margin, y + 0.8);
-    y += 4;
+    doc.text(table.title, margin + 2, y + 4.2);
+    y += 6;
 
     autoTable(doc, {
       startY: y,
       head: [table.headers],
       body: table.rows.map((row) => row.map(String)),
       theme: "striped",
-      styles: { fontSize: 7, cellPadding: 1.5, overflow: "linebreak" },
-      headStyles: { fillColor: PDF_BLUE, textColor: [255, 255, 255] as [number,number,number], fontSize: 7 },
+      styles: { fontSize: 6.5, cellPadding: 1.2, overflow: "linebreak" },
+      headStyles: { fillColor: PDF_NAVY, textColor: [255, 255, 255] as [number,number,number], fontSize: 6.5, fontStyle: "bold" },
       // Right-align any column whose header or value looks like currency
       didParseCell(data) {
         const v = String(data.cell.raw ?? "");
@@ -411,7 +442,14 @@ async function downloadPDF(config: ExportConfig, orientation: PaperOrientation):
       margin: { left: margin, right: margin },
     });
 
-    y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
+    y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY;
+
+    // Thick box border around the whole table (header bar + rows)
+    doc.setDrawColor(...PDF_NAVY);
+    doc.setLineWidth(0.5);
+    doc.rect(margin, boxTop, pageW - margin * 2, y - boxTop);
+
+    y += 6;
   }
 
   // ── Page footers ─────────────────────────────────────────────────────────
@@ -509,21 +547,16 @@ async function sendSummaryEmail(
   endpoint: string,
 ): Promise<{ ok: boolean; error?: string }> {
   try {
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({
-        to,
-        subject: `${config.title} — ${config.subtitle}`,
-        htmlBody: buildHTML(config),
-      }),
+    // Use the shared authenticated api client — it attaches the staff
+    // Bearer token from localStorage. A raw fetch() here only sends cookies,
+    // but this app authenticates via Authorization header, so every request
+    // through plain fetch() was rejected with 401 regardless of who was
+    // logged in (including superadmin).
+    return await api.post<{ ok: boolean; error?: string }>(endpoint, {
+      to,
+      subject: `${config.title} — ${config.subtitle}`,
+      htmlBody: buildHTML(config),
     });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({})) as { error?: string };
-      return { ok: false, error: body.error ?? `Server error ${res.status}` };
-    }
-    return res.json() as Promise<{ ok: boolean; error?: string }>;
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Network error" };
   }

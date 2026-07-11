@@ -1,3 +1,4 @@
+import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -42,32 +43,57 @@ export function RegisterPatientForm({
   const hasName = !!(newPatient.firstName?.trim() || newPatient.lastName?.trim());
   const isFormValid = hasName && !isLoading;
 
+  // The Name textbox shows exactly what the user is typing — including a
+  // trailing space while they're in the middle of typing a surname. This is
+  // intentionally NOT derived from firstName/lastName on every render (that
+  // was the bug: reconstructing "firstName + lastName" and trimming it
+  // erased any space the instant it was typed, making the spacebar appear
+  // broken). It's reset from the parent only when the parent's name changes
+  // out from under us (e.g. clearing the form after registration).
+  const [nameText, setNameText] = useState(`${newPatient.firstName} ${newPatient.lastName}`.trim());
+  const lastSyncedName = useRef(nameText);
+  useEffect(() => {
+    const parentName = `${newPatient.firstName} ${newPatient.lastName}`.trim();
+    // Only overwrite local text if the parent's name changed for a reason
+    // OTHER than our own onChange below (e.g. form reset, patient search
+    // picked a different record) — otherwise this would fight the user's
+    // typing the same way the old derived-value bug did.
+    if (parentName !== lastSyncedName.current) {
+      setNameText(parentName);
+      lastSyncedName.current = parentName;
+    }
+  }, [newPatient.firstName, newPatient.lastName]);
+
   return (
     <div className="space-y-3">
       {/* LINE 1: Name / Age / Sex */}
       <div className="flex flex-wrap gap-2">
         {/* Name */}
-        <div className="flex-1 min-w-[200px] space-y-0.5">
+        <div className="flex-1 min-w-[140px] space-y-0.5">
           <Label className="text-xs font-extrabold">Name *</Label>
           <Input
-            value={`${newPatient.firstName} ${newPatient.lastName}`.trim()}
+            value={nameText}
             onChange={(e) => {
-              const parts = e.target.value.trim().split(/\s+/);
+              const raw = e.target.value;
+              setNameText(raw);
+              const trimmed = raw.trim();
+              const parts = trimmed.split(/\s+/);
               const first = parts[0] || "";
               const last = parts.slice(1).join(" ") || "";
+              lastSyncedName.current = trimmed;
               onPatientChange({
                 ...newPatient,
                 firstName: first,
                 lastName: last,
               });
             }}
-            placeholder="Full name"
+            placeholder="Full name (e.g. Rohit Kumar)"
             className="h-8 text-xs"
           />
         </div>
 
-        {/* Age with dropdown */}
-        <div className="w-[120px] space-y-0.5">
+        {/* Age with dropdown — widened per Dr. Abinash's request for easier entry/reading */}
+        <div className="w-[165px] space-y-0.5">
           <Label className="text-xs font-extrabold">Age</Label>
           <div className="flex gap-1">
             <Input
@@ -82,7 +108,7 @@ export function RegisterPatientForm({
                 })
               }
               placeholder="0"
-              className="h-8 text-xs flex-1"
+              className="h-8 text-xs flex-[1.3]"
             />
             <Select
               value={newPatient.ageUnit}
@@ -93,7 +119,7 @@ export function RegisterPatientForm({
                 })
               }
             >
-              <SelectTrigger className="h-8 text-xs w-[60px] px-2">
+              <SelectTrigger className="h-8 text-xs w-[68px] px-2">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -105,8 +131,8 @@ export function RegisterPatientForm({
           </div>
         </div>
 
-        {/* Sex */}
-        <div className="w-[90px] space-y-0.5">
+        {/* Sex — reduced width, it's just a 1-word dropdown */}
+        <div className="w-[78px] space-y-0.5">
           <Label className="text-xs font-extrabold">Sex</Label>
           <Select
             value={newPatient.gender}
@@ -131,31 +157,34 @@ export function RegisterPatientForm({
         </div>
       </div>
 
-      {/* LINE 2: Phone */}
-      <div className="space-y-0.5">
-        <Label className="text-xs font-extrabold">Phone <span className="text-[10px] font-normal text-slate-400">(optional)</span></Label>
-        <Input
-          value={newPatient.phone}
-          onChange={(e) =>
-            onPatientChange({ ...newPatient, phone: e.target.value })
-          }
-          placeholder="Mobile (optional for walk-in)"
-          className="h-8 text-xs"
-        />
-      </div>
-
-      {/* LINE 3: Address (3 lines of text) */}
-      <div className="space-y-0.5">
-        <Label className="text-xs font-extrabold">Address</Label>
-        <textarea
-          value={newPatient.address || ""}
-          onChange={(e) =>
-            onPatientChange({ ...newPatient, address: e.target.value })
-          }
-          placeholder="Optional - Patient's full address"
-          rows={3}
-          className="w-full px-2 py-1.5 text-xs border border-input rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-ring"
-        />
+      {/* LINE 2: Phone + Address — combined into one row to save vertical
+          space on small screens. Address becomes a single-line input here
+          (was a 3-row textarea); full multi-line address can still be
+          edited later from the patient's profile if ever needed. Both
+          fields remain optional, matching prior behavior. */}
+      <div className="flex flex-wrap gap-2">
+        <div className="flex-1 min-w-[120px] space-y-0.5">
+          <Label className="text-xs font-extrabold">Phone <span className="text-[10px] font-normal text-slate-400">(optional)</span></Label>
+          <Input
+            value={newPatient.phone}
+            onChange={(e) =>
+              onPatientChange({ ...newPatient, phone: e.target.value })
+            }
+            placeholder="Mobile (optional for walk-in)"
+            className="h-8 text-xs"
+          />
+        </div>
+        <div className="flex-1 min-w-[140px] space-y-0.5">
+          <Label className="text-xs font-extrabold">Address <span className="text-[10px] font-normal text-slate-400">(optional)</span></Label>
+          <Input
+            value={newPatient.address || ""}
+            onChange={(e) =>
+              onPatientChange({ ...newPatient, address: e.target.value })
+            }
+            placeholder="Optional - Patient's address"
+            className="h-8 text-xs"
+          />
+        </div>
       </div>
 
       {/* Submit Button */}

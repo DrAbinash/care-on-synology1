@@ -1,0 +1,251 @@
+# CARE Radiology — MRI Ankle Content Pack (production v1)
+# Binds to _shared_libraries.yaml (+ v1_1).
+
+pack:
+  pack_id: mri_ankle
+  version: 1.0.0
+  locale: en-IN
+  status: active
+
+study:
+  study: MRI Ankle
+  modality: MR
+  aliases: [MRI ankle, ankle MRI, MRI ankle joint]
+  description: >-
+    Ankle MRI for ligament injury, Achilles and other tendon pathology, osteochondral lesions,
+    sinus tarsi syndrome and plantar fasciitis. Common after inversion injury and for chronic pain.
+  default_sections: [Clinical details, Technique, Ligaments, Tendons, Bone & cartilage, Impression, Advice]
+  quick_select_groups:
+    - {name: Pinned, tiles: [mrak.normal_study, mrak.atfl_injury, mrak.achilles, mrak.ocl_talus, mrak.peroneal]}
+    - {name: Ligaments, tiles: [mrak.atfl_injury, mrak.cfl_injury, mrak.deltoid, mrak.syndesmosis]}
+    - {name: Tendons, tiles: [mrak.achilles, mrak.peroneal, mrak.tibialis_posterior]}
+    - {name: Bone/other, tiles: [mrak.ocl_talus, mrak.sinus_tarsi, mrak.plantar_fascia]}
+
+findings:
+  - id_key: mrak.normal_study
+    display_name: Normal MRI ankle
+    synonyms: [normal ankle, NAD ankle]
+    keyboard_aliases: [nak]
+    default_sentence: "{{tpl.normal.mri_ankle}}"
+    parameters: []
+    severity: null
+    laterality: null
+    location: []
+    measurements: []
+    impression_fragment: "No significant ankle abnormality."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai:
+      completeness_checks:
+        - {id: mrak.normal_study.k1, glyph: "circle", rule: "lateral ligament complex, Achilles and talar dome not all addressed", message: "Address the lateral ligaments, Achilles/peroneal/tibialis posterior tendons and talar dome."}
+      contradiction_checks:
+        - {id: mrak.normal_study.c1, severity: block, glyph: "X", rule: "any tear/lesion present AND normal impression used", message: "Normal impression contradicts a positive finding."}
+      differential: []
+      follow_up: []
+
+  - id_key: mrak.atfl_injury
+    display_name: ATFL injury
+    synonyms: [anterior talofibular ligament tear, lateral ligament sprain]
+    keyboard_aliases: [atfl]
+    default_sentence: "The anterior talofibular ligament shows {tear_grade} injury with surrounding edema (inversion injury)."
+    parameters: [param.tear_grade]
+    severity: null
+    laterality: null
+    location: [["ATFL"]]
+    measurements: []
+    impression_fragment: "{tear_grade} ATFL injury."
+    recommendation: ["Physiotherapy"]
+    recommendation_code: [rec.physio]
+    criticality: none
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrak.atfl_injury.k1, glyph: "circle", rule: "ATFL injury AND CFL / associated osteochondral lesion not assessed", message: "Assess the CFL and talar dome — inversion injuries commonly involve both."}
+      contradiction_checks: []
+      differential: ["acute sprain/tear", "chronic ligament attenuation"]
+      follow_up: []
+
+  - id_key: mrak.cfl_injury
+    display_name: CFL injury
+    synonyms: [calcaneofibular ligament tear]
+    keyboard_aliases: [cfl]
+    default_sentence: "The calcaneofibular ligament shows {tear_grade} injury."
+    parameters: [param.tear_grade]
+    severity: null
+    laterality: null
+    location: [["CFL"]]
+    measurements: []
+    impression_fragment: "{tear_grade} CFL injury."
+    recommendation: []
+    recommendation_code: [rec.physio]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: []}
+
+  - id_key: mrak.deltoid
+    display_name: Deltoid ligament injury
+    synonyms: [medial ligament injury, deltoid tear]
+    keyboard_aliases: [delt]
+    default_sentence: "The deltoid (medial) ligament shows {tear_grade} injury."
+    parameters: [param.tear_grade]
+    severity: null
+    laterality: null
+    location: [["deltoid ligament"]]
+    measurements: []
+    impression_fragment: "{tear_grade} deltoid ligament injury."
+    recommendation: ["Orthopaedic consultation"]
+    recommendation_code: [rec.spec_ortho]
+    criticality: none
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrak.deltoid.k1, glyph: "circle", rule: "deltoid injury AND syndesmosis / proximal fibula not assessed", message: "Assess the syndesmosis and proximal fibula (Maisonneuve pattern) with a deltoid injury."}
+      contradiction_checks: []
+      differential: []
+      follow_up: []
+
+  - id_key: mrak.syndesmosis
+    display_name: Syndesmotic (high ankle) injury
+    synonyms: [syndesmosis injury, high ankle sprain, AITFL tear]
+    keyboard_aliases: [synd]
+    default_sentence: "Disruption/edema of the tibiofibular syndesmosis (AITFL/interosseous) — high ankle sprain."
+    parameters: [param.tear_grade]
+    severity: null
+    laterality: null
+    location: [["syndesmosis"]]
+    measurements: []
+    impression_fragment: "Syndesmotic injury — orthopaedic referral advised (stability assessment)."
+    recommendation: ["Orthopaedic consultation"]
+    recommendation_code: [rec.spec_ortho]
+    criticality: significant
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: ["weight-bearing radiographs for stability"]}
+
+  - id_key: mrak.achilles
+    display_name: Achilles tendon pathology
+    synonyms: [Achilles tendinosis, Achilles tear, tendo-Achilles rupture]
+    keyboard_aliases: [ach]
+    default_sentence: "The Achilles tendon shows {tendinosis} — {tear_grade} tear{, with {tendon_gap} gap}{, with retraction}."
+    parameters: [param.tendinosis, param.tear_grade]
+    severity: null
+    laterality: null
+    location: [["Achilles tendon"]]
+    measurements: [meas.tendon_gap]
+    impression_fragment: "Achilles {tendinosis/tear} — orthopaedic referral advised."
+    recommendation: ["Orthopaedic consultation"]
+    recommendation_code: [rec.spec_ortho]
+    criticality: none
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrak.achilles.k1, glyph: "circle", rule: "full-thickness Achilles tear AND gap size not stated", message: "State the tendon gap for a complete Achilles tear (surgical planning)."}
+      contradiction_checks:
+        - {id: mrak.achilles.c1, severity: warn, glyph: "triangle", rule: "fluid-filled gap AND labelled tendinosis", message: "A fluid-filled gap indicates a tear, not tendinosis."}
+      differential: ["tendinosis", "partial tear", "complete rupture"]
+      follow_up: ["orthopaedic opinion"]
+
+  - id_key: mrak.peroneal
+    display_name: Peroneal tendon pathology
+    synonyms: [peroneal tear, peroneal subluxation, peroneal tenosynovitis]
+    keyboard_aliases: [pero]
+    default_sentence: "The peroneal tendon(s) show {tendinosis/split tear/subluxation} with surrounding tenosynovitis."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [["peroneus longus", "peroneus brevis"]]
+    measurements: []
+    impression_fragment: "Peroneal tendon {abnormality}."
+    recommendation: ["Orthopaedic consultation"]
+    recommendation_code: [rec.spec_ortho]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["split tear", "tendinosis/tenosynovitis", "subluxation (retinaculum injury)"], follow_up: []}
+
+  - id_key: mrak.tibialis_posterior
+    display_name: Tibialis posterior dysfunction
+    synonyms: [PTTD, tibialis posterior tear, posterior tibial tendon]
+    keyboard_aliases: [ptt]
+    default_sentence: "The tibialis posterior tendon shows {tendinosis/partial tear} with tenosynovitis{, with associated pes planus/spring ligament laxity}."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [["tibialis posterior tendon"]]
+    measurements: []
+    impression_fragment: "Tibialis posterior tendon dysfunction — orthopaedic correlation advised."
+    recommendation: ["Orthopaedic consultation"]
+    recommendation_code: [rec.spec_ortho]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: []}
+
+  - id_key: mrak.ocl_talus
+    display_name: Osteochondral lesion of the talus
+    synonyms: [OCL talus, osteochondral defect, talar dome lesion, OCD]
+    keyboard_aliases: [ocl]
+    default_sentence: "An osteochondral lesion of the {medial/lateral} talar dome ({size}) with {stable/unstable} features (fluid/cyst beneath the fragment)."
+    parameters: [param.cartilage_grade]
+    severity: null
+    laterality: null
+    location: [["medial talar dome", "lateral talar dome"]]
+    measurements: []
+    impression_fragment: "Osteochondral lesion of the {location} talar dome — {stable/unstable}; orthopaedic referral advised."
+    recommendation: ["Orthopaedic (MSK) consultation"]
+    recommendation_code: [rec.spec_msk_ortho]
+    criticality: none
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrak.ocl_talus.k1, glyph: "circle", rule: "OCL present AND stability (subchondral fluid/cyst, displaced fragment) not stated", message: "State stability features — fluid beneath the fragment indicates instability."}
+      contradiction_checks: []
+      differential: ["osteochondral lesion", "subchondral cyst", "avascular necrosis"]
+      follow_up: ["orthopaedic opinion for unstable lesions"]
+
+  - id_key: mrak.sinus_tarsi
+    display_name: Sinus tarsi syndrome
+    synonyms: [sinus tarsi, sinus tarsi syndrome]
+    keyboard_aliases: [sts]
+    default_sentence: "Loss of the normal sinus tarsi fat with edema/fibrosis — sinus tarsi syndrome."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [["sinus tarsi"]]
+    measurements: []
+    impression_fragment: "Sinus tarsi syndrome — clinical correlation advised."
+    recommendation: ["Clinical correlation"]
+    recommendation_code: [rec.clincorr]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: []}
+
+  - id_key: mrak.plantar_fascia
+    display_name: Plantar fasciitis
+    synonyms: [plantar fasciitis, plantar fascia thickening]
+    keyboard_aliases: [pf]
+    default_sentence: "Thickening and edema of the proximal plantar fascia at the calcaneal attachment{, with a plantar calcaneal spur} — plantar fasciitis."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [["plantar fascia"]]
+    measurements: []
+    impression_fragment: "Plantar fasciitis."
+    recommendation: ["Physiotherapy"]
+    recommendation_code: [rec.physio]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: []}
+
+combo_tiles:
+  - {id: combo.mrak.inversion_set, label: "Inversion injury set", members: [mrak.atfl_injury, {ref: mrak.cfl_injury, optional: true}, {ref: mrak.ocl_talus, optional: true}], recommendations: [rec.physio, rec.spec_ortho]}
+  - {id: combo.mrak.achilles_rupture, label: "Achilles rupture", members: [mrak.achilles], recommendations: [rec.spec_ortho]}
+  - {id: combo.mrak.normal, label: "Normal ankle", members: [mrak.normal_study]}
+
+normal_template: tpl.normal.mri_ankle
+
+critical_findings: []
+
+implementation_notes:
+  - "Inversion injuries: ATFL injury triggers CFL + talar dome assessment; deltoid injury triggers a syndesmosis/proximal fibula check (Maisonneuve)."
+  - "State the gap for complete Achilles tears and stability features for talar OCLs."
+  - "Abbreviations: ATFL/CFL/PTFL = lateral ligament complex; AITFL = anterior inferior tibiofibular ligament; OCL/OCD = osteochondral lesion/defect; PTTD = posterior tibial tendon dysfunction."

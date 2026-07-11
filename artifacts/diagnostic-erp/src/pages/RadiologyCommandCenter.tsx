@@ -2,7 +2,17 @@
 // This page is redirected or owner-only. Do not delete — kept for rollback/reference.
 /**
  * Radiology Command Center
- * Unified radiologist workspace for reading studies, viewing images, and reporting.
+ * Radiologist workspace for reading studies, viewing images, and reporting.
+ *
+ * @deprecated M1.1 consolidation — RadiologyReportingWorkspace
+ * (/radiology/report/:studyId) is the canonical radiology reporting page;
+ * this page's earlier "unified workspace" claim (and its header labeling the
+ * workspace "Legacy") predated that decision and was inverted here. The
+ * Command Center stays routed at /radiology/command-center with no
+ * functional regression, but new features land in the canonical workspace
+ * only. Its duplicate save/finalize logic delegates to
+ * lib/radiologyReportLifecycle; remaining unique pieces (worklist sidebar,
+ * prior-study merge, local-AI tab) are M1.2 merge candidates.
  */
 
 import { useState, useEffect, useMemo } from "react";
@@ -10,6 +20,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
 import { api } from "@/lib/fetchApi";
 import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
+import { finalizeRadiologyReport, saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
+import DeprecatedSurfaceBanner from "@/components/radiology/DeprecatedSurfaceBanner";
 import {
   registerDraftRescueSaver, deregisterDraftRescueSaver,
   writeRescueDraft, readRescueDraft, clearRescueDraft,
@@ -777,7 +789,7 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
       // Compute AI contribution % — chars inserted by AI / total chars in findings+impression
       const totalChars = (rawFindings.length + impression.filter(Boolean).join("").length) || 1;
       const aiPct = Math.min(100, Math.round((aiCharsInserted / totalChars) * 100));
-      return api.post("/api/radiology/report-generator/save-draft", {
+      return saveRadiologyDraft({
         studyId: study.studyId,
         worklistId: study.id,
         patientId: study.patientId,
@@ -829,35 +841,14 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
         </div>
       `;
 
-      let reportId = null;
-      if (study.patientId) {
-        const report = await api.post<{ id: number }>("/api/patient-reports", {
-          patientId: study.patientId,
-          testId: null,
-          studyId: study.studyId,
-          type: "radiology",
-          title: finalTitle,
-          body: htmlBody.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(),
-          impression: impression.join("\n"),
-          parameters: JSON.stringify({
-            modality: study.modality,
-            studyDescription: study.studyDescription,
-            accessionNumber: study.accessionNumber,
-            studyInstanceUID: study.studyInstanceUID,
-          }),
-          isCritical,
-          criticalNote: isCritical ? criticalNote : null,
-          createdBy: session?.user.name ?? "Radiologist",
-        });
-        reportId = report.id;
-      }
-
-      await api.post("/api/internal/radiology/report-status", {
-        accessionNumber: study.accessionNumber,
-        studyInstanceUID: study.studyInstanceUID,
-        status: "REPORT_FINAL",
-        deliveryStatus: "READY_TO_SEND",
-        reportId: reportId ?? undefined,
+      // M1.1 — canonical finalize path shared with the Reporting Workspace.
+      await finalizeRadiologyReport(study, {
+        title: finalTitle,
+        htmlBody,
+        impression,
+        isCritical,
+        criticalNote,
+        createdBy: session?.user.name ?? "Radiologist",
         actor: session?.user.name ?? "staff",
       });
 
@@ -1040,7 +1031,11 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
 
   return (
     <div className="min-h-[calc(100vh-3rem)] bg-slate-950 text-slate-100 flex flex-col font-sans select-none">
-      
+      <DeprecatedSurfaceBanner
+        surface="Radiology Command Center"
+        note="reports finalized here now follow the canonical READY_TO_SEND flow"
+      />
+
       {/* Header bar */}
       <div className="h-14 border-b border-slate-800 bg-slate-900/90 flex items-center justify-between px-4 shrink-0 z-10">
         <div className="flex items-center gap-3">
@@ -1074,10 +1069,12 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
           </div>
         </div>
 
-        {/* Legacy routing links */}
+        {/* M1.1: the Reporting Workspace is the CANONICAL page (this header
+            used to mislabel it "Legacy Workspace"); the template pages keep
+            their legacy labels. */}
         <div className="flex items-center gap-2">
-          <Button variant="link" onClick={() => navigate("/radiology/reporting-workspace")} className="text-xs text-slate-400 hover:text-slate-200 p-1">
-            Legacy Workspace
+          <Button variant="link" onClick={() => navigate("/radiology/reporting-workspace")} className="text-xs text-emerald-400 hover:text-emerald-300 p-1">
+            Reporting Workspace (canonical)
           </Button>
           <span className="text-slate-700">|</span>
           <Button variant="link" onClick={() => navigate("/radiology/structured-report-templates")} className="text-xs text-slate-400 hover:text-slate-200 p-1">

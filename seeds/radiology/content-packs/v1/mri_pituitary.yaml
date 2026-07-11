@@ -1,0 +1,222 @@
+# CARE Radiology — MRI Pituitary (Sella) Content Pack (production v1)
+# Binds to _shared_libraries.yaml (+ v1_1). Dynamic contrast sella protocol.
+
+pack:
+  pack_id: mri_pituitary
+  version: 1.0.0
+  locale: en-IN
+  status: active
+
+study:
+  study: MRI Pituitary
+  modality: MR
+  aliases: [MRI sella, MRI pituitary, dynamic pituitary MRI, sella MRI]
+  description: >-
+    Dedicated thin-section coronal/sagittal T1/T2 of the sella with dynamic contrast for
+    micro/macroadenoma, stalk and cavernous sinus assessment. Common requests: hyperprolactinemia,
+    acromegaly, Cushing's, visual field defect, hypopituitarism.
+  default_sections: [Clinical details, Technique (dynamic contrast), Findings, Pituitary/stalk/chiasm, Cavernous sinuses, Impression, Advice]
+  quick_select_groups:
+    - {name: Pinned, tiles: [mrpit.normal_study, mrpit.microadenoma, mrpit.macroadenoma, mrpit.empty_sella, mrpit.rathke_cyst]}
+    - {name: Adenoma, tiles: [mrpit.microadenoma, mrpit.macroadenoma, mrpit.apoplexy]}
+    - {name: Cystic/other, tiles: [mrpit.rathke_cyst, mrpit.empty_sella, mrpit.hyperplasia]}
+    - {name: Extension, tiles: [mrpit.cavernous_invasion, mrpit.chiasm_compression]}
+
+findings:
+  - id_key: mrpit.normal_study
+    display_name: Normal pituitary MRI
+    synonyms: [normal sella, NAD pituitary]
+    keyboard_aliases: [npit]
+    default_sentence: "{{tpl.normal.mri_pituitary}}"
+    parameters: []
+    severity: null
+    laterality: null
+    location: []
+    measurements: [meas.pituitary_height]
+    impression_fragment: "Normal pituitary gland. No adenoma."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai:
+      completeness_checks:
+        - {id: mrpit.normal_study.k1, glyph: "circle", rule: "pituitary height and stalk position not stated", message: "State pituitary height and stalk position."}
+      contradiction_checks:
+        - {id: mrpit.normal_study.c1, severity: block, glyph: "X", rule: "adenoma finding present AND normal impression used", message: "Normal impression contradicts an adenoma finding."}
+      differential: []
+      follow_up: []
+
+  - id_key: mrpit.microadenoma
+    display_name: Pituitary microadenoma
+    synonyms: [microadenoma, pituitary microlesion]
+    keyboard_aliases: [micro]
+    default_sentence: "A {microadenoma} focus in the {laterality} aspect of the adenohypophysis showing delayed/hypoenhancement on dynamic images — microadenoma. Stalk {deviated/midline}."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location: [loc.pituitary]
+    measurements: [meas.microadenoma, meas.pituitary_height]
+    impression_fragment: "{laterality} pituitary microadenoma ({microadenoma}) — correlate with hormonal profile."
+    recommendation: ["Endocrinology consultation", "Correlation with hormonal assay"]
+    recommendation_code: [rec.spec_endo, rec.hormonal]
+    criticality: none
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrpit.microadenoma.k1, glyph: "circle", rule: "microadenoma stated AND stalk deviation / gland convexity not commented", message: "Comment on stalk deviation and glandular convexity."}
+        - {id: mrpit.microadenoma.k2, glyph: "circle", rule: "dynamic enhancement behaviour not described", message: "Describe dynamic enhancement (microadenomas enhance later than normal gland)."}
+      contradiction_checks:
+        - {id: mrpit.microadenoma.c1, severity: warn, glyph: "triangle", rule: "lesion size >= 10 mm AND labelled microadenoma", message: ">= 10 mm is a macroadenoma, not micro."}
+      differential: ["microadenoma", "pars intermedia cyst", "focal hypoenhancement artefact"]
+      follow_up: ["hormonal assay (prolactin, IGF-1, cortisol)", "follow-up MRI as advised"]
+
+  - id_key: mrpit.macroadenoma
+    display_name: Pituitary macroadenoma
+    synonyms: [macroadenoma, pituitary mass, sellar mass]
+    keyboard_aliases: [macro]
+    default_sentence: "A {tumor_3d} sellar mass with suprasellar extension and a 'figure-of-8'/snowman configuration — macroadenoma, {enhancement_pattern} enhancement."
+    parameters: [param.enhancement_pattern]
+    severity: null
+    laterality: null
+    location: [loc.pituitary]
+    measurements: [meas.tumor_3d]
+    impression_fragment: "Pituitary macroadenoma with suprasellar extension — endocrinology and neurosurgical opinion advised."
+    recommendation: ["Endocrinology consultation", "Neurosurgical consultation"]
+    recommendation_code: [rec.spec_endo, rec.spec_nsx, rec.hormonal]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrpit.macroadenoma.k1, glyph: "circle", rule: "macroadenoma stated AND optic chiasm status not commented", message: "Comment on optic chiasm compression."}
+        - {id: mrpit.macroadenoma.k2, glyph: "circle", rule: "macroadenoma stated AND cavernous sinus involvement not commented", message: "Assess cavernous sinus involvement (Knosp)."}
+      contradiction_checks: []
+      differential: ["pituitary macroadenoma", "craniopharyngioma", "meningioma (planum/tuberculum)", "Rathke cleft cyst", "hypophysitis"]
+      follow_up: ["hormonal profile", "formal visual field charting", "neurosurgical opinion"]
+
+  - id_key: mrpit.apoplexy
+    display_name: Pituitary apoplexy
+    synonyms: [pituitary hemorrhage, apoplexy]
+    keyboard_aliases: [apop]
+    default_sentence: "Haemorrhage/infarction within a sellar mass with fluid-fluid level and acute expansion — pituitary apoplexy."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [loc.pituitary]
+    measurements: [meas.tumor_3d]
+    impression_fragment: "Pituitary apoplexy — URGENT endocrine/neurosurgical attention advised."
+    recommendation: ["URGENT — escalate", "Neurosurgical + endocrine emergency"]
+    recommendation_code: [rec.urgent, rec.spec_nsx, rec.spec_endo]
+    criticality: {critical: crit.pituitary_apoplexy}
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrpit.apoplexy.k1, glyph: "circle", rule: "apoplexy AND chiasm compression / cavernous extension not assessed", message: "Assess chiasm and cavernous sinus in apoplexy."}
+      contradiction_checks: []
+      differential: ["apoplexy of adenoma", "Rathke cyst hemorrhage", "Sheehan syndrome (postpartum)"]
+      follow_up: ["urgent endocrine (steroid cover)", "neurosurgical opinion"]
+
+  - id_key: mrpit.rathke_cyst
+    display_name: Rathke cleft cyst
+    synonyms: [Rathke cyst, pars intermedia cyst]
+    keyboard_aliases: [rck]
+    default_sentence: "A non-enhancing cyst between the anterior and posterior pituitary with a small intracystic nodule — Rathke cleft cyst ({size})."
+    parameters: [param.size]
+    severity: null
+    laterality: null
+    location: [loc.pituitary]
+    measurements: []
+    impression_fragment: "Rathke cleft cyst — usually incidental; endocrine correlation if symptomatic."
+    recommendation: ["Clinical correlation"]
+    recommendation_code: [rec.clincorr]
+    criticality: none
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["Rathke cleft cyst", "cystic microadenoma", "craniopharyngioma (if calcified/solid)"], follow_up: ["follow-up MRI if large/symptomatic"]}
+
+  - id_key: mrpit.empty_sella
+    display_name: Empty sella
+    synonyms: [empty sella, arachnoidocele]
+    keyboard_aliases: [espit]
+    default_sentence: "CSF fills an enlarged sella with a flattened pituitary gland along the floor — {partial/complete} empty sella."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [loc.pituitary]
+    measurements: [meas.pituitary_height]
+    impression_fragment: "{partial/complete} empty sella — correlate clinically; endocrine review if symptomatic."
+    recommendation: ["Clinical correlation"]
+    recommendation_code: [rec.clincorr]
+    criticality: none
+    normal_variant: true
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["primary empty sella", "secondary (post-surgery/apoplexy)", "raised ICP"], follow_up: []}
+
+  - id_key: mrpit.hyperplasia
+    display_name: Pituitary hyperplasia (physiological)
+    synonyms: [gland hyperplasia, physiological enlargement]
+    keyboard_aliases: [hyp]
+    default_sentence: "Symmetrically enlarged pituitary gland with upward convexity and homogeneous enhancement (height {pituitary_height}) — physiological hyperplasia (pregnancy/lactation/young female)."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [loc.pituitary]
+    measurements: [meas.pituitary_height]
+    impression_fragment: "Physiological pituitary hyperplasia — no discrete adenoma."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai:
+      completeness_checks: []
+      contradiction_checks:
+        - {id: mrpit.hyperplasia.c1, severity: warn, glyph: "triangle", rule: "asymmetric convexity / focal lesion present AND labelled physiological hyperplasia", message: "Focal/asymmetric enlargement favours adenoma over physiological hyperplasia."}
+      differential: ["physiological hyperplasia", "adenoma", "hypophysitis"]
+      follow_up: []
+
+  - id_key: mrpit.cavernous_invasion
+    display_name: Cavernous sinus invasion
+    synonyms: [Knosp grade, cavernous extension, ICA encasement]
+    keyboard_aliases: [cav]
+    default_sentence: "The sellar mass extends into the {laterality} cavernous sinus, encasing the cavernous ICA (Knosp grade {grade})."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location: [["right cavernous sinus", "left cavernous sinus"]]
+    measurements: []
+    impression_fragment: "{laterality} cavernous sinus invasion (Knosp {grade}) — relevant for surgical planning."
+    recommendation: ["Neurosurgical consultation"]
+    recommendation_code: [rec.spec_nsx]
+    criticality: significant
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: []}
+
+  - id_key: mrpit.chiasm_compression
+    display_name: Optic chiasm compression
+    synonyms: [chiasmal compression, suprasellar extension on chiasm]
+    keyboard_aliases: [chi]
+    default_sentence: "Suprasellar extension of the mass elevates and compresses the optic chiasm."
+    parameters: []
+    severity: null
+    laterality: null
+    location: [["optic chiasm"]]
+    measurements: []
+    impression_fragment: "Optic chiasm compression — formal visual field assessment advised."
+    recommendation: ["Ophthalmology / visual field charting", "Neurosurgical consultation"]
+    recommendation_code: [rec.spec_ophthal, rec.spec_nsx]
+    criticality: significant
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: ["formal perimetry"]}
+
+combo_tiles:
+  - {id: combo.mrpit.prolactinoma, label: "Microadenoma (hyperprolactinemia)", members: [mrpit.microadenoma], recommendations: [rec.spec_endo, rec.hormonal]}
+  - {id: combo.mrpit.macro_full, label: "Macroadenoma full workup", members: [mrpit.macroadenoma, {ref: mrpit.chiasm_compression, optional: true}, {ref: mrpit.cavernous_invasion, optional: true}], recommendations: [rec.spec_endo, rec.spec_nsx]}
+  - {id: combo.mrpit.apoplexy_emergency, label: "Apoplexy emergency", members: [mrpit.apoplexy], recommendations: [rec.urgent, rec.spec_nsx, rec.spec_endo]}
+
+normal_template: tpl.normal.mri_pituitary
+
+critical_findings:
+  - crit.pituitary_apoplexy
+
+implementation_notes:
+  - "Microadenoma (< 10 mm) vs macroadenoma (>= 10 mm) is size-driven — the contradiction rule enforces the cutoff."
+  - "Always assess chiasm + cavernous sinus with any macroadenoma (Knosp grading for surgical planning)."
+  - "Dynamic enhancement behaviour must be described for microadenoma detection."
+  - "Abbreviations: RCK = Rathke cleft cyst; Knosp = cavernous sinus invasion grade; IGF-1 = surrogate for GH."

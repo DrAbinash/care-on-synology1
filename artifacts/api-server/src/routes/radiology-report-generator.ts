@@ -46,9 +46,25 @@ import {
   radiologyInstitutionalStylesTable,
   mriProtocolSpecsTable,
   mriProtocolQualityResultsTable,
+  reportFindingInstancesTable,
 } from "@workspace/db/schema";
 import { eq, and, desc, isNull, asc, ilike, or } from "drizzle-orm";
-import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { isFeatureEnabledServer } from "../lib/featureFlags";
+import { checkWriteLock } from "../lib/studyLocks";
+import { regenerateDraftStructuredJson } from "../lib/radiologyStructuredJsonCache";
+import {
+  checkDraftStructuredJsonDrift,
+  scanDraftsForStructuredJsonDrift,
+} from "../lib/radiologyStructuredJsonDrift";
+import {
+  buildAndValidateDraftD1Document,
+  type DraftD1Source,
+} from "../lib/radiologyD1DraftWriter";
+import { CatalogStoreFindingResolver } from "../lib/radiologyFindingMaterializer";
+import { DrizzleCatalogStore } from "../lib/radiologyCatalog/drizzleStore";
+import { DrizzleStructuredReportCatalogPort } from "../lib/structuredReport/catalogAccess";
+import { radiologyQuickFindingsTable } from "@workspace/db/schema";
 
 // ── Upload directory ──────────────────────────────────────────────────────────
 
@@ -1219,22 +1235,146 @@ radiologyReportGeneratorRouter.post("/generate", async (req: Request, res: Respo
 });
 
 // POST /save-draft
+//
+// `findings` (Radiology Roadmap Ticket A3.1) carries the structured Quick
+// Select selection — {findingId, params} per selected finding — that
+// RadiologyReportingWorkspace.tsx serializes into every save. Since Ticket
+// A3.2, when present and `ff_radiology_structured_core` is enabled, it is
+// also dual-written into report_finding_instances — see the block after the
+// legacy draft save below. `values` (used for both the insert and update
+// branches) is still built as an explicit field list that never references
+// `rest.findings`, so the legacy draft row itself is entirely unaffected by
+// this field either way. `params` is intentionally loosely typed (not
+// pinned to AbnormalityInstance's exact shape) so this schema doesn't need
+// to change in lockstep with future frontend parameter-shape evolution.
+// ── Ticket D3 — truthful source assembly for the canonical D1 document ────────
+// Pure helpers that turn the just-saved draft row (+ its PACS worklist row, when
+// linked, which carries the DICOM study identifiers) into a DraftD1Source.
+// Every value is sourced truthfully or left null/"" so the pure adapter
+// (radiologyD1DraftWriter.ts) SKIPS rather than fabricate — see that module's
+// HONEST SCOPE header.
+
+function d3ToIsoOrEmpty(v: unknown): string {
+  if (v instanceof Date) return v.toISOString();
+  if (typeof v === "string" && v.length > 0 && !Number.isNaN(new Date(v).getTime())) {
+    return new Date(v).toISOString();
+  }
+  return "";
+}
+
+// DICOM StudyDate is "YYYYMMDD"; the worklist column is free text and may
+// already be ISO. Returns a valid ISO-8601 datetime, or "" (→ adapter skips).
+function d3DicomDateToIso(v: string | null | undefined): string {
+  if (!v) return "";
+  const m = /^(\d{4})(\d{2})(\d{2})$/.exec(v.trim());
+  if (m) return `${m[1]}-${m[2]}-${m[3]}T00:00:00Z`;
+  return d3ToIsoOrEmpty(v);
+}
+
+interface D3DraftRow {
+  id: number;
+  worklistId: number | null;
+  patientId: number | null;
+  templateId: string | null;
+  modality: string | null;
+  studyName: string | null;
+  createdBy: string | null;
+  createdAt: Date | string | null;
+  updatedAt: Date | string | null;
+}
+interface D3WorklistRow {
+  patientId: number | null;
+  studyInstanceUID: string | null;
+  accessionNumber: string | null;
+  studyDate: string | null;
+  studyDescription: string | null;
+  referringDoctor: string | null;
+  assignedRadiologist: string | null;
+}
+
+function buildD1DraftSource(
+  draft: D3DraftRow,
+  findings: Array<{ findingId: number; params?: Record<string, unknown> }>,
+  worklist: D3WorklistRow | null,
+): DraftD1Source {
+  const patientRefValue =
+    draft.patientId != null ? String(draft.patientId)
+    : worklist?.patientId != null ? String(worklist.patientId)
+    : "";
+  const identifiers = worklist
+    ? {
+        studyInstanceUid: worklist.studyInstanceUID ?? "",
+        accessionNumber: worklist.accessionNumber ?? "",
+        patientRefValue,
+        studyDatetimeIso: d3DicomDateToIso(worklist.studyDate),
+        referringPhysician: worklist.referringDoctor ?? "",
+        performingPhysician: worklist.assignedRadiologist ?? "",
+      }
+    : null;
+  return {
+    draftId: draft.id,
+    createdBy: draft.createdBy ?? null,
+    createdAtIso: d3ToIsoOrEmpty(draft.createdAt),
+    updatedAtIso: d3ToIsoOrEmpty(draft.updatedAt),
+    modality: draft.modality ?? null,
+    // body_region has no dedicated column; the PACS study description is the
+    // closest truthful value (null → adapter skips, e.g. manual drafts).
+    bodyRegion: worklist?.studyDescription ?? null,
+    studyType: draft.studyName ?? null,
+    templateId: draft.templateId ?? null,
+    identifiers,
+    // The B1/B2 catalog is currently unversioned (report_finding_instances.
+    // catalog_version defaults "0"); "0" is the truthful current label, not a
+    // placeholder pretending to be a real version.
+    catalogSchemaVersion: "0",
+    contentPackVersions: {},
+    aiRulesVersions: {},
+    findingSelections: findings.map((f) => ({
+      findingId: f.findingId,
+      params: f.params ?? {},
+      source: "quickselect",
+    })),
+  };
+}
+
+// Ticket M1.4 — this schema previously rejected the canonical workspace's
+// actual payload two ways (verified empirically before the fix):
+//   1. every empty field is sent as `null` (`clinicalHistory: clinicalHistory
+//      || null`, `patientId: entry?.patientId ?? null`, …) and `.optional()`
+//      does not accept null → 400 "Invalid request";
+//   2. the workspace's structured sections are `{ [label]: { normal, text } }`
+//      objects, not the legacy generator's `{ [label]: string }` → 400.
+// So "Save Draft" from RadiologyReportingWorkspace could never succeed. The
+// fields are now nullish and findingsSections accepts BOTH section shapes
+// (each page round-trips its own shape through the same JSON text column —
+// nothing server-side reads inside it).
 const SaveDraftBody = z.object({
-  id: z.number().int().optional(),
-  studyId: z.number().int().optional(),
-  worklistId: z.number().int().optional(),
-  patientId: z.number().int().optional(),
-  templateId: z.string().optional(),
-  modality: z.string().optional(),
-  studyName: z.string().optional(),
-  clinicalHistory: z.string().optional(),
-  rawFindings: z.string().optional(),
-  findingsSections: z.record(z.string()).optional(),
-  impression: z.array(z.string()).optional(),
-  recommendation: z.string().optional(),
-  formattedReportHtml: z.string().optional(),
-  formattedReportText: z.string().optional(),
-  aiContributionPct: z.number().min(0).max(100).optional(),
+  id: z.number().int().nullish(),
+  studyId: z.number().int().nullish(),
+  worklistId: z.number().int().nullish(),
+  patientId: z.number().int().nullish(),
+  templateId: z.string().nullish(),
+  modality: z.string().nullish(),
+  studyName: z.string().nullish(),
+  clinicalHistory: z.string().nullish(),
+  rawFindings: z.string().nullish(),
+  findingsSections: z.record(
+    z.union([
+      z.string(),
+      z.object({ normal: z.boolean(), text: z.string() }).passthrough(),
+    ]),
+  ).nullish(),
+  impression: z.array(z.string()).nullish(),
+  recommendation: z.string().nullish(),
+  formattedReportHtml: z.string().nullish(),
+  formattedReportText: z.string().nullish(),
+  aiContributionPct: z.number().min(0).max(100).nullish(),
+  findings: z.array(
+    z.object({
+      findingId: z.number().int(),
+      params: z.record(z.unknown()).optional(),
+    }).passthrough(),
+  ).nullish(),
 });
 
 radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest, res: Response) => {
@@ -1247,6 +1387,25 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
   const { id, ...rest } = parsed.data;
   const author = req.staffSession?.subjectName ?? null;
 
+  // M1.6A — respect active study locks: a draft save against a worklist row
+  // that ANOTHER user actively holds is refused, so two radiologists can
+  // never silently overwrite each other's in-progress report. Unlocked, own,
+  // or expired locks never block (pre-lock flows keep working unchanged).
+  if (rest.worklistId != null && req.staffSession) {
+    const gate = await checkWriteLock(rest.worklistId, req.staffSession.subjectId);
+    if (gate.blocked) {
+      res.status(409).json({
+        success: false,
+        error: "LOCKED_BY_OTHER",
+        lockedBy: gate.lockedBy,
+        message: `This study is currently being reported by ${gate.lockedBy}. Your text was not saved to the shared draft.`,
+      });
+      return;
+    }
+  }
+
+  // `rest.findings` (A3.1) is intentionally not read anywhere below —
+  // accepted by the schema above, ignored by this handler until A3.2.
   const values = {
     studyId: rest.studyId ?? null,
     worklistId: rest.worklistId ?? null,
@@ -1266,21 +1425,194 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     aiContributionPct: rest.aiContributionPct ?? null,
   };
 
-  if (id) {
-    const [updated] = await db
-      .update(radiologyReportDraftsTable)
-      .set(values)
-      .where(eq(radiologyReportDraftsTable.id, id))
-      .returning();
-    res.json({ success: true, draft: updated });
-  } else {
-    const [created] = await db
-      .insert(radiologyReportDraftsTable)
-      .values({ ...values, createdBy: author })
-      .returning();
-    res.json({ success: true, draft: created });
+  // Branch unification (Ticket A3.2): both the insert and update paths now
+  // resolve to a single `draft`, with exactly one response point below. This
+  // replaces the old shape where each branch called res.json() independently
+  // — needed so the structured-findings dual-write that follows has one
+  // unambiguous place to hang off, after the legacy save has fully committed
+  // and before the single response is sent. No behavior change: same two
+  // queries, same values, same response shape as before.
+  const draft = id
+    ? (
+        await db
+          .update(radiologyReportDraftsTable)
+          .set(values)
+          .where(eq(radiologyReportDraftsTable.id, id))
+          .returning()
+      )[0]
+    : (
+        await db
+          .insert(radiologyReportDraftsTable)
+          .values({ ...values, createdBy: author })
+          .returning()
+      )[0];
+
+  // Ticket A3.2 — dual-write the structured Quick Select findings into
+  // report_finding_instances, gated on ff_radiology_structured_core (default
+  // OFF). Runs in its own transaction, entirely separate from the legacy
+  // draft save above: replace-not-append (every save fully replaces this
+  // draft's FindingInstance rows, so repeated saves never accumulate
+  // duplicates), and any failure here is caught and logged only — it must
+  // never turn an already-successful draft save into a failed response.
+  // report_finding_instances has no readers yet, so a swallowed failure here
+  // has no observable effect beyond a stale/missing structured snapshot.
+  //
+  // Guarded on `rest.findings != null` (not `.length > 0`): an old client
+  // that never sends the key — or sends an explicit null — must leave
+  // existing rows untouched, but a current client that sends `findings: []`
+  // (user deselected every Quick Select finding) is a real signal that the
+  // replace should still run and clear this draft's rows — treating an empty
+  // array like "no signal" would silently leave stale rows behind after a
+  // legitimate deselect-all save.
+  if (draft?.id && rest.findings != null) {
+    const draftId = draft.id;
+    const findings = rest.findings;
+    try {
+      if (await isFeatureEnabledServer("ff_radiology_structured_core")) {
+        await db.transaction(async (tx) => {
+          await tx
+            .delete(reportFindingInstancesTable)
+            .where(eq(reportFindingInstancesTable.draftId, draftId));
+          if (findings.length > 0) {
+            await tx.insert(reportFindingInstancesTable).values(
+              findings.map((f) => ({
+                draftId,
+                findingId: f.findingId,
+                structuredJson: f.params ?? {},
+                source: "quickselect",
+              })),
+            );
+          }
+        });
+      }
+    } catch (err) {
+      console.error(
+        "[radiology-report-generator] A3.2 structured findings dual-write failed (non-fatal):",
+        err,
+      );
+    }
+
+    // Ticket A4 — regenerate the structured_json cache on this draft from
+    // the report_finding_instances rows A3.2 just replaced. Its own
+    // try/catch, deliberately separate from A3.2's block above: A4 is fully
+    // removable without touching A3.2, and a regeneration failure must not
+    // affect the draft save response any more than A3.2's failure does.
+    // regenerateDraftStructuredJson re-checks the feature flag itself.
+    try {
+      await regenerateDraftStructuredJson(draftId);
+    } catch (err) {
+      console.error(
+        "[radiology-report-generator] A4 structured_json cache regeneration failed (non-fatal):",
+        err,
+      );
+    }
+
+    // Ticket D3 — persist a canonical D1 structured_json document for this
+    // draft into the SEPARATE structured_json_d1 column (NEVER the A4-owned
+    // structured_json, which A5 drift-checks). Own try/catch + own flag,
+    // exactly like A3.2/A4 above: any failure here is logged only and can never
+    // turn an already-successful draft save into a failed response. Gated on
+    // ff_radiology_structured_d1_draft AND ff_radiology_structured_core (both
+    // default OFF). The adapter skips truthfully when required D1 fields are
+    // unavailable; the D2 writer is the ONLY producer of content_sha256; draft
+    // documents never carry final signature fields.
+    try {
+      if (
+        (await isFeatureEnabledServer("ff_radiology_structured_d1_draft")) &&
+        (await isFeatureEnabledServer("ff_radiology_structured_core"))
+      ) {
+        let worklist: D3WorklistRow | null = null;
+        if (draft.worklistId != null) {
+          const [row] = await db
+            .select()
+            .from(radiologyWorklistTable)
+            .where(eq(radiologyWorklistTable.id, draft.worklistId))
+            .limit(1);
+          worklist = (row as D3WorklistRow | undefined) ?? null;
+        }
+        const source = buildD1DraftSource(draft as D3DraftRow, findings, worklist);
+        // Ticket D3.5 — when the canonical catalog is enabled (ff_radiology_catalog),
+        // materialize the Quick-Select selections into real D1 findings via the
+        // B1/B2 catalog; unresolvable ones stay in extensions for audit. When the
+        // catalog is off, D3's behavior stands (findings:[], full selection in
+        // extensions). Building the store/port/resolver issues no query by
+        // itself — the resolver only reads the catalog for selections that
+        // materialize.
+        const catalogStore = (await isFeatureEnabledServer("ff_radiology_catalog"))
+          ? new DrizzleCatalogStore()
+          : null;
+        const built = await buildAndValidateDraftD1Document(
+          source,
+          catalogStore
+            ? {
+                resolver: new CatalogStoreFindingResolver(catalogStore, async (qfId) => {
+                  const [row] = await db
+                    .select({ label: radiologyQuickFindingsTable.label })
+                    .from(radiologyQuickFindingsTable)
+                    .where(eq(radiologyQuickFindingsTable.id, qfId))
+                    .limit(1);
+                  return row?.label ? { label: row.label } : null;
+                }),
+                catalogPort: new DrizzleStructuredReportCatalogPort(catalogStore),
+              }
+            : {},
+        );
+        if (built.ok) {
+          await db
+            .update(radiologyReportDraftsTable)
+            .set({ structuredJsonD1: built.document })
+            .where(eq(radiologyReportDraftsTable.id, draftId));
+        } else {
+          console.warn(
+            "[radiology-report-generator] D3 D1 structured_json persist skipped (non-fatal):",
+            "skipReasons" in built ? built.skipReasons : built,
+          );
+        }
+      }
+    } catch (err) {
+      console.error(
+        "[radiology-report-generator] D3 D1 structured_json persist failed (non-fatal):",
+        err,
+      );
+    }
   }
+
+  res.json({ success: true, draft });
 });
+
+// GET /structured-json-drift — admin-only, read-only diagnostic (Ticket
+// A5). Compares radiology_report_drafts.structured_json (the cache) against
+// a fresh rebuild from report_finding_instances (the source of truth) for
+// draft rows only — never touches patient_reports. Detection only: this
+// endpoint never writes anything, and there is deliberately no auto-repair
+// wired to it. Pass ?draftId=<id> to check one draft; omit it to scan every
+// draft that could possibly be out of sync. Gated on
+// ff_radiology_structured_core — checked here (for a clear "disabled"
+// response) and again inside the drift-check functions themselves.
+radiologyReportGeneratorRouter.get(
+  "/structured-json-drift",
+  requireAdminRole,
+  async (req: Request, res: Response) => {
+    if (!(await isFeatureEnabledServer("ff_radiology_structured_core"))) {
+      res.json({ success: true, enabled: false, message: "ff_radiology_structured_core is disabled" });
+      return;
+    }
+
+    const draftIdParam = req.query.draftId ? Number(req.query.draftId) : null;
+    if (draftIdParam !== null) {
+      if (!Number.isInteger(draftIdParam) || draftIdParam <= 0) {
+        res.status(400).json({ success: false, error: "Invalid draftId" });
+        return;
+      }
+      const result = await checkDraftStructuredJsonDrift(draftIdParam);
+      res.json({ success: true, enabled: true, result });
+      return;
+    }
+
+    const summary = await scanDraftsForStructuredJsonDrift();
+    res.json({ success: true, enabled: true, summary });
+  },
+);
 
 // GET /drafts — list recent drafts (optionally filtered by studyId or patientId)
 radiologyReportGeneratorRouter.get("/drafts", async (req: Request, res: Response) => {
@@ -1299,6 +1631,127 @@ radiologyReportGeneratorRouter.get("/drafts", async (req: Request, res: Response
     .limit(50);
 
   res.json({ success: true, drafts: rows });
+});
+
+// ─── Ticket M1.4 — read-only workflow endpoints ──────────────────────────────
+
+// GET /finding-instances?draftId=N — the Quick Select selections persisted by
+// A3.2 for one draft, exactly what the canonical workspace needs to RESTORE
+// its structured click state after a reload. Read-only; only the fields the
+// UI hydrates from.
+radiologyReportGeneratorRouter.get("/finding-instances", async (req: Request, res: Response) => {
+  const draftId = Number(req.query.draftId);
+  if (!Number.isInteger(draftId) || draftId <= 0) {
+    res.status(400).json({ success: false, error: "Invalid draftId" });
+    return;
+  }
+  const rows = await db
+    .select({
+      findingId: reportFindingInstancesTable.findingId,
+      structuredJson: reportFindingInstancesTable.structuredJson,
+      source: reportFindingInstancesTable.source,
+    })
+    .from(reportFindingInstancesTable)
+    .where(eq(reportFindingInstancesTable.draftId, draftId));
+  res.json({ success: true, instances: rows });
+});
+
+// POST /validate-draft {draftId} — run the EXISTING D3/D3.5 builder + D1
+// validator over a saved draft, read-only (never persists anything), so the
+// workspace can show real blocking errors / warnings before finalize instead
+// of client-side guesses. Mirrors the save-draft D3 block's inputs exactly;
+// no validation logic is reimplemented here or in the frontend.
+radiologyReportGeneratorRouter.post("/validate-draft", async (req: Request, res: Response) => {
+  const draftId = Number((req.body as { draftId?: unknown })?.draftId);
+  if (!Number.isInteger(draftId) || draftId <= 0) {
+    res.status(400).json({ success: false, error: "Invalid draftId" });
+    return;
+  }
+  const [draft] = await db
+    .select()
+    .from(radiologyReportDraftsTable)
+    .where(eq(radiologyReportDraftsTable.id, draftId))
+    .limit(1);
+  if (!draft) {
+    res.status(404).json({ success: false, error: "Draft not found" });
+    return;
+  }
+
+  const structuredEnabled =
+    (await isFeatureEnabledServer("ff_radiology_structured_d1_draft")) &&
+    (await isFeatureEnabledServer("ff_radiology_structured_core"));
+  if (!structuredEnabled) {
+    res.json({
+      success: true,
+      structured: { enabled: false, attempted: false },
+      legacy: { rawFindings: Boolean(draft.rawFindings?.trim()), impression: Boolean(draft.impression) },
+    });
+    return;
+  }
+
+  const instanceRows = await db
+    .select({ findingId: reportFindingInstancesTable.findingId, structuredJson: reportFindingInstancesTable.structuredJson })
+    .from(reportFindingInstancesTable)
+    .where(eq(reportFindingInstancesTable.draftId, draftId));
+  const findings = instanceRows.map((r) => ({
+    findingId: r.findingId,
+    params: (r.structuredJson ?? {}) as Record<string, unknown>,
+  }));
+
+  let worklist: D3WorklistRow | null = null;
+  if (draft.worklistId != null) {
+    const [row] = await db
+      .select()
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, draft.worklistId))
+      .limit(1);
+    worklist = (row as D3WorklistRow | undefined) ?? null;
+  }
+
+  const source = buildD1DraftSource(draft as D3DraftRow, findings, worklist);
+  const catalogStore = (await isFeatureEnabledServer("ff_radiology_catalog"))
+    ? new DrizzleCatalogStore()
+    : null;
+  const built = await buildAndValidateDraftD1Document(
+    source,
+    catalogStore
+      ? {
+          resolver: new CatalogStoreFindingResolver(catalogStore, async (qfId) => {
+            const [row] = await db
+              .select({ label: radiologyQuickFindingsTable.label })
+              .from(radiologyQuickFindingsTable)
+              .where(eq(radiologyQuickFindingsTable.id, qfId))
+              .limit(1);
+            return row?.label ? { label: row.label } : null;
+          }),
+          catalogPort: new DrizzleStructuredReportCatalogPort(catalogStore),
+        }
+      : {},
+  );
+
+  res.json({
+    success: true,
+    structured: built.ok
+      ? {
+          enabled: true,
+          attempted: true,
+          built: true,
+          documentId: built.document.document_id,
+          contentSha256: built.contentSha256,
+          findingsCount: Array.isArray(built.document.findings) ? built.document.findings.length : 0,
+          errors: [],
+          warnings: built.warnings,
+        }
+      : {
+          enabled: true,
+          attempted: true,
+          built: false,
+          skipReasons: built.skipReasons,
+          errors: built.validationErrors ?? [],
+          warnings: [],
+        },
+    legacy: { rawFindings: Boolean(draft.rawFindings?.trim()), impression: Boolean(draft.impression) },
+  });
 });
 
 // GET /drafts/:id

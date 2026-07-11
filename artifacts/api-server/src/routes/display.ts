@@ -37,6 +37,7 @@ import {
 import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { requireStaffAuth } from "../middleware/requireStaffAuth";
 import { queueBroadcaster, type QueueUpdateEvent } from "../lib/queueBroadcast";
+import { withCache, TTL } from "../lib/ttlCache";
 
 export const displayRouter: IRouter = Router();
 
@@ -103,7 +104,13 @@ async function fetchQueueData(opts: {
 }): Promise<object> {
   const { ledgerId, departments, date } = opts;
 
-  const [settings] = await db.select().from(clinicSettingsTable).limit(1);
+  // Every active TV/kiosk display polls this function every 5-10s. The
+  // clinic settings row (queuePrivacyMode) changes essentially never, so
+  // reading it live on every single poll was an unnecessary DB round-trip
+  // multiplied by however many waiting-room screens are on the network.
+  const settings = await withCache("clinic-settings:queue-privacy", TTL.SHORT, () =>
+    db.select().from(clinicSettingsTable).limit(1).then((rows) => rows[0])
+  );
   const privacyMode = settings?.queuePrivacyMode || "masked";
 
   const conds = [

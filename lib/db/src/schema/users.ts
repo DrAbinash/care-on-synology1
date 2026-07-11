@@ -17,6 +17,10 @@ export const usersTable = pgTable("users", {
   // data URL (kept small client-side, < 800 KB) so it round-trips through
   // existing JSON endpoints without needing object-storage plumbing.
   photoDataUrl: text("photo_data_url"),
+  // Optional uploaded signature image (base64 data URL, same convention as
+  // photoDataUrl). Printed on this user's bills in place of a blank
+  // "Authorised Signature" line when set.
+  signatureDataUrl: text("signature_data_url"),
   // Per-user sidebar colour preference — synced across devices via DB.
   // localStorage acts as a same-session cache; this column is the source of truth.
   sidebarTheme: text("sidebar_theme"),

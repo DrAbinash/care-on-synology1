@@ -1,0 +1,221 @@
+# CARE Radiology — MRI Posterior Fossa / CP Angle Content Pack (production v1)
+# Binds to _shared_libraries.yaml (+ v1_1). CISS/FIESTA + contrast IAC protocol.
+
+pack:
+  pack_id: mri_posterior_fossa_cpangle
+  version: 1.0.0
+  locale: en-IN
+  status: active
+
+study:
+  study: MRI Posterior Fossa / CP Angle
+  modality: MR
+  aliases: [MRI CP angle, MRI IAC, MRI posterior fossa, CP angle protocol, MRI internal auditory canal]
+  description: >-
+    High-resolution CISS/FIESTA through the internal auditory canals with contrast, for
+    sensorineural hearing loss, tinnitus, vertigo and CP-angle mass. Assesses the vestibulocochlear
+    and facial nerves, IAC, CP angle, brainstem and fourth ventricle.
+  default_sections: [Clinical details, Technique (CISS/FIESTA + contrast), Findings, IAC / CP angle, Brainstem & 4th ventricle, Impression, Advice]
+  quick_select_groups:
+    - {name: Pinned, tiles: [mrpf.normal_study, mrpf.vestibular_schwannoma, mrpf.meningioma, mrpf.epidermoid, mrpf.labyrinthitis]}
+    - {name: CP-angle mass, tiles: [mrpf.vestibular_schwannoma, mrpf.meningioma, mrpf.epidermoid, mrpf.arachnoid_cyst]}
+    - {name: Inner ear / IAC, tiles: [mrpf.labyrinthitis, mrpf.iac_normal_variant]}
+    - {name: Brainstem/4V, tiles: [mrpf.brainstem_lesion, mrpf.fourth_vent_lesion]}
+
+findings:
+  - id_key: mrpf.normal_study
+    display_name: Normal posterior fossa / CP angle
+    synonyms: [normal IAC, normal CP angle]
+    keyboard_aliases: [npf]
+    default_sentence: "{{tpl.normal.mri_posterior_fossa}}"
+    parameters: []
+    severity: null
+    laterality: null
+    location: []
+    measurements: []
+    impression_fragment: "Normal internal auditory canals and CP angles. No mass lesion."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai:
+      completeness_checks:
+        - {id: mrpf.normal_study.k1, glyph: "circle", rule: "both IACs and both CP angles not individually assessed", message: "Assess both IACs and CP angles individually."}
+        - {id: mrpf.normal_study.k2, glyph: "circle", rule: "membranous labyrinth signal not commented", message: "Comment on membranous labyrinth signal (fluid intensity)."}
+      contradiction_checks:
+        - {id: mrpf.normal_study.c1, severity: block, glyph: "X", rule: "CP-angle mass present AND normal impression used", message: "Normal impression contradicts a mass finding."}
+      differential: []
+      follow_up: []
+
+  - id_key: mrpf.vestibular_schwannoma
+    display_name: Vestibular schwannoma (acoustic neuroma)
+    synonyms: [acoustic neuroma, VS, 8th nerve schwannoma]
+    keyboard_aliases: [vsch]
+    default_sentence: "An avidly enhancing {location} mass ({size}) centred on the IAC with an 'ice-cream cone' configuration and IAC widening — vestibular schwannoma."
+    parameters: [param.enhancement_pattern]
+    severity: null
+    laterality: lat.rl
+    location: [loc.cp_angle]
+    measurements: [meas.tumor_3d]
+    impression_fragment: "{laterality} vestibular schwannoma — ENT/neurosurgical opinion advised."
+    recommendation: ["ENT consultation", "Neurosurgical consultation"]
+    recommendation_code: [rec.spec_ent, rec.spec_nsx]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrpf.vestibular_schwannoma.k1, glyph: "circle", rule: "schwannoma stated AND brainstem/4th-ventricle mass effect not commented", message: "Comment on brainstem compression and 4th ventricle effacement."}
+        - {id: mrpf.vestibular_schwannoma.k2, glyph: "circle", rule: "unilateral VS AND contralateral IAC not assessed (NF2 screen)", message: "Assess the contralateral IAC to screen for NF2."}
+      contradiction_checks:
+        - {id: mrpf.vestibular_schwannoma.c1, severity: warn, glyph: "triangle", rule: "broad dural base with dural tail described AND labelled schwannoma", message: "Dural tail / broad base favours meningioma over schwannoma."}
+      differential: ["vestibular schwannoma", "meningioma", "facial nerve schwannoma", "epidermoid"]
+      follow_up: ["ENT + audiometry", "neurosurgical opinion", "screen for NF2 if young/bilateral"]
+
+  - id_key: mrpf.meningioma
+    display_name: CP-angle meningioma
+    synonyms: [meningioma CPA, dural-based CPA mass]
+    keyboard_aliases: [cmen]
+    default_sentence: "A broad dural-based enhancing mass ({size}) at the {location} with a dural tail, eccentric to the IAC — meningioma."
+    parameters: [param.enhancement_pattern]
+    severity: null
+    laterality: lat.rl
+    location: [loc.cp_angle]
+    measurements: [meas.tumor_3d]
+    impression_fragment: "{laterality} CP-angle meningioma — neurosurgical opinion advised."
+    recommendation: ["Neurosurgical consultation"]
+    recommendation_code: [rec.spec_nsx]
+    criticality: significant
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["meningioma", "vestibular schwannoma", "dural metastasis"], follow_up: ["neurosurgical opinion"]}
+
+  - id_key: mrpf.epidermoid
+    display_name: Epidermoid cyst
+    synonyms: [epidermoid, primary cholesteatoma]
+    keyboard_aliases: [epi]
+    default_sentence: "A CSF-signal lesion at the {location} that shows diffusion restriction and incomplete FLAIR suppression, insinuating around vessels/nerves — epidermoid cyst."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location: [loc.cp_angle]
+    measurements: [meas.tumor_3d]
+    impression_fragment: "{laterality} CP-angle epidermoid cyst — neurosurgical opinion advised."
+    recommendation: ["Neurosurgical consultation"]
+    recommendation_code: [rec.spec_nsx]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrpf.epidermoid.k1, glyph: "circle", rule: "CSF-signal CPA lesion AND DWI behaviour not stated", message: "State DWI behaviour — epidermoid restricts, arachnoid cyst does not."}
+      contradiction_checks: []
+      differential: ["epidermoid cyst", "arachnoid cyst", "cystic schwannoma"]
+      follow_up: ["neurosurgical opinion"]
+
+  - id_key: mrpf.arachnoid_cyst
+    display_name: CP-angle arachnoid cyst
+    synonyms: [arachnoid cyst CPA]
+    keyboard_aliases: [acpa]
+    default_sentence: "A CSF-signal cyst at the {location} that suppresses completely on FLAIR and does not restrict diffusion — arachnoid cyst."
+    parameters: [param.size]
+    severity: null
+    laterality: lat.rl
+    location: [loc.cp_angle]
+    measurements: []
+    impression_fragment: "{laterality} CP-angle arachnoid cyst — usually incidental."
+    recommendation: []
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["arachnoid cyst", "epidermoid (restricts on DWI)"], follow_up: []}
+
+  - id_key: mrpf.labyrinthitis
+    display_name: Labyrinthitis / labyrinthine enhancement
+    synonyms: [labyrinthitis, cochlear enhancement, inner ear inflammation]
+    keyboard_aliases: [lab]
+    default_sentence: "Abnormal enhancement of the {laterality} membranous labyrinth (cochlea/vestibule) — labyrinthitis."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location: [["cochlea", "vestibule", "semicircular canals"]]
+    measurements: []
+    impression_fragment: "{laterality} labyrinthitis — ENT correlation advised."
+    recommendation: ["ENT consultation"]
+    recommendation_code: [rec.spec_ent]
+    criticality: none
+    normal_variant: false
+    ai:
+      completeness_checks: []
+      contradiction_checks:
+        - {id: mrpf.labyrinthitis.c1, severity: warn, glyph: "triangle", rule: "labyrinthine T2 signal loss/ossification AND labelled acute labyrinthitis", message: "Labyrinthine ossification suggests chronic labyrinthitis ossificans, not acute."}
+      differential: ["viral/bacterial labyrinthitis", "labyrinthitis ossificans", "intralabyrinthine schwannoma"]
+      follow_up: ["ENT + audiometry"]
+
+  - id_key: mrpf.brainstem_lesion
+    display_name: Brainstem lesion
+    synonyms: [pontine lesion, brainstem plaque, brainstem glioma]
+    keyboard_aliases: [bst]
+    default_sentence: "T2/FLAIR hyperintense lesion in the {location} — {differential}."
+    parameters: [param.enhancement_pattern]
+    severity: null
+    laterality: lat.rlb
+    location: [["pons", "midbrain", "medulla"]]
+    measurements: []
+    impression_fragment: "Brainstem lesion in the {location} — clinical correlation and contrast MRI advised."
+    recommendation: ["Neurology consultation", "Contrast MRI"]
+    recommendation_code: [rec.spec_neuro, rec.contrast_mri]
+    criticality: significant
+    normal_variant: false
+    ai: {completeness_checks: [], contradiction_checks: [], differential: ["demyelination", "brainstem infarct", "brainstem glioma", "encephalitis"], follow_up: ["contrast MRI", "neurology correlation"]}
+
+  - id_key: mrpf.fourth_vent_lesion
+    display_name: Fourth ventricle / vermian lesion
+    synonyms: [4th ventricle mass, vermian mass]
+    keyboard_aliases: [v4]
+    default_sentence: "A mass in/around the fourth ventricle ({size}) with {enhancement_pattern} enhancement, causing {obstructive hydrocephalus/no hydrocephalus}."
+    parameters: [param.enhancement_pattern]
+    severity: null
+    laterality: null
+    location: [["fourth ventricle", "cerebellar vermis"]]
+    measurements: [meas.tumor_3d]
+    impression_fragment: "Fourth-ventricular/vermian mass — neurosurgical opinion advised."
+    recommendation: ["Neurosurgical consultation", "Contrast MRI"]
+    recommendation_code: [rec.spec_nsx, rec.contrast_mri]
+    criticality: significant
+    normal_variant: false
+    ai:
+      completeness_checks:
+        - {id: mrpf.fourth_vent_lesion.k1, glyph: "circle", rule: "4th ventricle mass AND hydrocephalus status not stated", message: "State whether there is obstructive hydrocephalus."}
+      contradiction_checks: []
+      differential: ["medulloblastoma (child)", "ependymoma", "metastasis", "hemangioblastoma"]
+      follow_up: ["contrast MRI", "neurosurgical opinion"]
+
+  - id_key: mrpf.iac_normal_variant
+    display_name: IAC normal / vascular loop (variant)
+    synonyms: [AICA loop, IAC vascular loop]
+    keyboard_aliases: [iacv]
+    default_sentence: "An AICA vascular loop projects into the {laterality} IAC without a mass — anatomical variant."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location: []
+    measurements: []
+    impression_fragment: "{laterality} AICA loop in the IAC — anatomical variant; correlate with symptoms."
+    recommendation: ["Clinical correlation"]
+    recommendation_code: [rec.clincorr]
+    criticality: none
+    normal_variant: true
+    ai: {completeness_checks: [], contradiction_checks: [], differential: [], follow_up: []}
+
+combo_tiles:
+  - {id: combo.mrpf.snhl_workup, label: "SNHL workup (schwannoma)", members: [mrpf.vestibular_schwannoma], recommendations: [rec.spec_ent, rec.spec_nsx]}
+  - {id: combo.mrpf.cpa_cyst, label: "CPA cystic lesion", members: [{ref: mrpf.epidermoid, alt: mrpf.arachnoid_cyst}]}
+  - {id: combo.mrpf.negative, label: "CP angle negative", members: [mrpf.normal_study]}
+
+normal_template: tpl.normal.mri_posterior_fossa
+
+critical_findings: []
+
+implementation_notes:
+  - "Epidermoid vs arachnoid cyst turns on DWI — the completeness rule enforces stating DWI behaviour for CSF-signal CPA lesions."
+  - "Any unilateral vestibular schwannoma triggers a contralateral-IAC check to screen for NF2."
+  - "State hydrocephalus with any 4th-ventricular mass."
+  - "Abbreviations: IAC = internal auditory canal; VS = vestibular schwannoma; SNHL = sensorineural hearing loss; AICA = anterior inferior cerebellar artery; NF2 = neurofibromatosis type 2."

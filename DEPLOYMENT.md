@@ -13,6 +13,20 @@ Nothing else is ever required. Schema migrations run automatically.
 
 ## How it works
 
+### Single source of truth for schema
+
+Five components can theoretically touch the database. Only one of them
+actually applies schema *changes* in a normal deployment — everything else is
+either read-only or restricted to safe, additive compatibility patches:
+
+| Component | Role | Mutates schema? |
+|---|---|---|
+| `care-db-patch-v2` | **THE official migration container.** Applies every Drizzle (`lib/db/drizzle/*.sql`) and feature (`migrations/*.sql`) migration, tracked and idempotent. | Yes — this is its whole job. |
+| `care-schema-verify` | Compares live DB against every migration file. **Read-only by default.** | Only if `SCHEMA_REPAIR=true` is explicitly set. |
+| `care-api` startup | `runStartupMigrations()` — belt-and-suspenders compatibility patches. | Only `ADD COLUMN`/`CREATE TABLE`/`CREATE INDEX ... IF NOT EXISTS`. No new `RENAME`/`DROP` logic is allowed here going forward. |
+| `care-migrate` | Alternate Drizzle TypeScript migrator. **Manual/emergency only** (`profiles: [manual]`) — never runs in a normal `docker compose up`. | Yes, but only when an operator runs it deliberately. |
+| `care-db` | PostgreSQL itself. Never recreated by a normal rebuild. | N/A — just storage. |
+
 ### Startup order (enforced by `docker-compose depends_on`)
 
 ```
@@ -21,24 +35,72 @@ care-db (PostgreSQL)
     ▼
 care-db-patch-v2  ← THE ONLY SCHEMA MIGRATION STEP
     │  Runs docker/db-patch-entrypoint.sh
+    │  1. Prints exact DB target (deployment guard)
+    │  2. Verifies/stamps DB identity (system_database_identity)
+    │  3. Acquires the migration lock (schema_migration_lock)
+    │  4. Applies Drizzle + feature migrations
     │  Exits 0 on success, non-zero on any failure
     │  condition: service_completed_successfully
     ▼
+care-schema-verify  ← READ-ONLY REPORT (unless SCHEMA_REPAIR=true)
+    │  Same DB-target printout + identity check as above.
+    │  Reports drift; does NOT block on drift by default.
+    │  DOES block (exit 1) on a DB identity mismatch, or on drift
+    │  if SCHEMA_VERIFY_STRICT=true.
+    │  condition: service_completed_successfully
+    ▼
 care-api  (Express.js)
-    │  Only starts after care-db-patch-v2 exits 0
-    │  healthcheck: GET /api/health/schema (every 10s, up to 15 retries)
+    │  Only starts after BOTH care-db-patch-v2 AND care-schema-verify exit 0
+    │  Read-only identity check + advisory lock before its own
+    │  ADD COLUMN IF NOT EXISTS compatibility patches run
+    │  healthcheck: GET /health (every 15s, up to 5 retries)
     │  condition: service_healthy
     ▼
 care-web  (nginx)
-    Only starts after care-api passes schema health check
+    Only starts after care-api is healthy
 ```
 
 If **any step fails**, everything downstream does NOT start. You will never have
-an API running against an old schema.
+an API running against an old (or wrong) schema.
+
+### Safety guards added on top of the migration flow
+
+**Deployment guard (DB target printout).** Both `care-db-patch-v2` and
+`care-schema-verify` print the exact host, port, database name, username,
+`current_database()`, `current_schema()`, and server address before touching
+anything. A misconfigured `.env` pointing at the wrong Postgres is now
+immediately visible in `docker compose logs`, instead of silently succeeding
+against the wrong target.
+
+**DB identity check (`system_database_identity`).** The first time
+`care-db-patch-v2` ever runs against a given database, it stamps a
+`system_database_identity` row with `app_name='care-erp'` (configurable via
+`APP_NAME`). Every run after that — by `care-db-patch-v2`, `care-schema-verify`,
+or `care-api`'s own startup — verifies the stamp still matches. If it doesn't
+(wrong `DATABASE_URL`, wrong `DB_HOST`, or a restored backup from a different
+project/environment), the mismatched component refuses to run migrations and
+fails loudly instead of touching what might be the wrong database.
+
+**Migration lock (`schema_migration_lock`).** Before applying any change,
+`care-db-patch-v2` and `care-schema-verify --repair` acquire a row-level lock
+in `schema_migration_lock` (an atomic `UPDATE ... WHERE`, not a session-scoped
+advisory lock, since `db-patch-entrypoint.sh` opens many short-lived
+connections rather than holding one session open). `care-api`'s startup
+migrations use a real `pg_advisory_lock` instead, since that function holds a
+single connection for its whole duration. Either way, two migration runs can
+never race each other. A stale lock (a container that crashed mid-migration)
+auto-expires after 10 minutes.
 
 ---
 
 ### What `care-db-patch-v2` does (automatically, on every deployment)
+
+**Step 0 — Deployment guard, identity check, migration lock**
+Prints the exact DB target (host/port/database/user/`current_database()`/
+`current_schema()`/server address), verifies or stamps
+`system_database_identity`, then acquires `schema_migration_lock`. See
+"Safety guards" above for the full rationale. Fails loudly (exit 1, nothing
+downstream starts) on an identity mismatch or an unavailable lock.
 
 **Step 1 — Wait for PostgreSQL**
 Polls `pg_isready` every 2 seconds. Fails after 60 seconds.
@@ -84,11 +146,72 @@ Records deployment metadata in `schema_deploy_state`:
 
 ---
 
+### What `care-schema-verify` does (read-only by default)
+
+Runs after `care-db-patch-v2` completes, using the full workspace (Node.js +
+`scripts/db-schema-verify.cjs`). It parses **every** migration SQL file —
+`CREATE TABLE`, `ADD COLUMN`, `DROP COLUMN`, `RENAME COLUMN`, `RENAME TO`
+(table rename), `ALTER COLUMN ... TYPE`, `DROP INDEX`/`CREATE INDEX` — in
+true chronological order, so a column or table that was renamed/dropped in a
+later migration is correctly recognized as gone, not "expected forever."
+This is what actually fixes the class of bug where a deprecated column kept
+reappearing after every redeploy.
+
+```bash
+# What runs automatically (docker-compose.yml default):
+node scripts/db-schema-verify.cjs --verbose
+
+# Equivalent to:
+SCHEMA_REPAIR=false SCHEMA_VERIFY_STRICT=false node scripts/db-schema-verify.cjs --verbose
+```
+
+**Default behavior — verify only, non-blocking on drift:**
+- Reports every mismatch found (missing tables/columns, type mismatches,
+  missing indexes) to `STARTUP_SCHEMA_VERIFICATION.md` and the container
+  logs.
+- Does **not** modify the schema.
+- Does **not** block `care-api` from starting just because drift was found
+  — ordinary drift is informational, reviewed by a human, not an
+  emergency.
+- **Always** blocks (exit 1) on a DB identity mismatch, regardless of any
+  other setting — that's not "drift", it's "this might be the wrong
+  database".
+
+**Opt-in auto-repair** (`SCHEMA_REPAIR=true` in `.env`, or `--repair` for a
+one-off manual run):
+- Applies safe, additive-only DDL: `CREATE TABLE IF NOT EXISTS`,
+  `ALTER TABLE ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`.
+- Never `DROP`s, never modifies existing data.
+- Takes the migration lock first, so it can't race `care-db-patch-v2`.
+- Re-verifies afterward; exits non-zero if repair didn't fully fix things.
+
+**Opt-in strict mode** (`SCHEMA_VERIFY_STRICT=true` in `.env`):
+- Restores the old "any drift blocks deployment" behavior, without
+  enabling auto-repair. Use this if you want to be forced to look at every
+  deploy before `care-api` starts.
+
+```bash
+# One-off manual repair run (does NOT change the .env default):
+docker compose run --rm -e SCHEMA_REPAIR=true care-schema-verify
+
+# Review what would happen without applying anything:
+docker compose run --rm care-schema-verify node scripts/db-schema-verify.cjs --verify --verbose
+```
+
+---
+
 ### What `care-api` does on startup
 
-The API's `runStartupMigrations()` function applies a second set of idempotent
-`ADD COLUMN IF NOT EXISTS` patches (belt-and-suspenders). These are non-fatal
-because `care-db-patch-v2` already guaranteed the schema.
+The API's `runStartupMigrations()` function applies a second, smaller set of
+idempotent `ADD COLUMN IF NOT EXISTS` patches (belt-and-suspenders). Before
+it does anything, it runs the same read-only DB identity check as the other
+two components (failing loudly — logged, not silent — if the database looks
+wrong) and takes a `pg_advisory_lock` so it can't race a concurrent
+`care-db-patch-v2` run. These patches are non-fatal to the API process
+because `care-db-patch-v2` already guaranteed the schema; **new
+`RENAME COLUMN`/`DROP COLUMN` logic should not be added here** — write a
+`migrations/*.sql` file instead so `care-db-patch-v2` applies it once, in a
+tracked way.
 
 The API exposes two health endpoints:
 
@@ -167,6 +290,9 @@ docker compose up -d --build
 ```bash
 # Watch migration logs (runs in db-patch-v2)
 docker compose logs -f care-db-patch-v2
+
+# Watch schema verification report (read-only unless SCHEMA_REPAIR=true)
+docker compose logs -f care-schema-verify
 
 # Watch API startup
 docker compose logs -f care-api --tail 100
@@ -267,6 +393,14 @@ HOST_PORT=8888              # host port for the ERP web interface
 PUBLIC_BASE_URL=https://caredeoghar.com
 ORTHANC_URL=http://192.168.1.137:8042
 ENABLE_SCHEDULERS=1         # enable cron jobs (billing, PACS watchdog, etc.)
+
+# Schema architecture guards (see "Safety guards" above) — safe to leave at
+# their defaults; only change these deliberately, one deploy at a time.
+APP_NAME=care-erp           # DB identity stamp — must be the same across
+                             # care-db-patch-v2 / care-schema-verify / care-api
+APP_ENVIRONMENT=production  # informational, stored alongside the identity stamp
+SCHEMA_REPAIR=false         # true = care-schema-verify auto-repairs (ADD-only)
+SCHEMA_VERIFY_STRICT=false  # true = any schema drift blocks care-api startup
 ```
 
 ---
@@ -293,7 +427,88 @@ OHIF Viewer:   http://192.168.1.137:3010
 
 ---
 
-## What NOT to do
+## Safe Synology rebuild steps (exact commands)
+
+**A normal redeploy should only ever rebuild `care-api` and `care-web`.**
+`care-db` is never recreated. `care-db-patch-v2` and `care-schema-verify` run
+automatically as part of the same `docker compose up -d --build` — you never
+invoke them separately — but neither one requires an image rebuild of its
+own beyond what Docker's layer cache already handles quickly.
+
+```bash
+# 1. SSH into the Synology NAS
+ssh admin@192.168.1.137
+cd /volume1/care-erp   # or wherever the repo is checked out
+
+# 2. Pull the latest code
+git pull
+
+# 3. Rebuild and restart — this is the ENTIRE deploy
+docker compose up -d --build
+
+# What actually happens, in order, every time:
+#   care-db            → untouched (already running, healthy)
+#   care-db-patch-v2    → recreated fresh, runs migrations, exits 0, removed
+#   care-schema-verify  → recreated fresh, verifies (read-only), exits 0, removed
+#   care-api            → image rebuilt from source, container recreated
+#   care-web            → image rebuilt from source, container recreated
+
+# 4. Confirm everything came up clean
+docker compose ps
+docker compose logs --tail 30 care-db-patch-v2
+docker compose logs --tail 30 care-schema-verify
+curl -s http://localhost:8080/health
+```
+
+**What this never does:**
+- Never deletes the `care-db` container.
+- Never touches the `db_data` Postgres volume — no patient, billing, or
+  report data is ever at risk from a normal redeploy.
+- Never runs `care-schema-verify` in repair mode (no `SCHEMA_REPAIR=true`
+  unless you've explicitly set it in `.env` for this deploy).
+- Never runs `care-migrate` (manual/emergency only, see below).
+
+**If you specifically need a one-off schema repair** (reviewed
+`STARTUP_SCHEMA_VERIFICATION.md`, decided the drift is safe to auto-fix):
+```bash
+docker compose run --rm -e SCHEMA_REPAIR=true care-schema-verify
+# then redeploy normally — SCHEMA_REPAIR was NOT saved to .env, so the next
+# normal `docker compose up -d --build` goes back to read-only verify.
+```
+
+**If a deploy fails with a DB IDENTITY MISMATCH:** stop. Do not re-run, do
+not add `SCHEMA_REPAIR=true`. Check `DATABASE_URL`/`DB_HOST`/`DB_NAME` in
+`.env` — this almost always means `.env` is pointing at the wrong database
+(a different project's Postgres, a restored backup, or a typo introduced
+while editing `.env`).
+
+---
+
+## Rebuilding only part of the stack — quick reference
+
+| Situation | What to rebuild | What to leave alone |
+|---|---|---|
+| Frontend or backend code change | `care-api`, `care-web` | `care-db`, DB volume, uploads volume |
+| Database migration (new `.sql` file added) | Let `care-db-patch-v2` + `care-schema-verify` run automatically as part of a normal `docker compose up -d --build` — no separate step needed | `care-migrate` (manual/emergency only, see below) |
+| Stale build cache / weird UI or API bugs after a pull | OK to delete and rebuild `care-api`/`care-web` containers and images | **Never** delete the `care-db` container or its volume just to "fix" a cache issue |
+
+**Never delete unless specifically intended:**
+- The `care-db` container itself
+- The Postgres data volume (`db_data` — this is every patient's data)
+- The uploaded-files volume (`object_storage` — reports, scanned documents, photos)
+
+**`care-migrate` is manual/emergency only.** It is tagged `profiles: [manual]` in
+`docker-compose.yml`, so a normal `docker compose up -d` will never start it —
+this is intentional, to prevent it from ever running a competing migration
+alongside `care-db-patch-v2` during a routine rebuild. Only run it yourself,
+deliberately, when troubleshooting a migration issue outside the normal flow:
+```bash
+docker compose --profile manual run --rm care-migrate
+```
+
+---
+
+
 
 | Don't | Why |
 |---|---|
@@ -302,4 +517,8 @@ OHIF Viewer:   http://192.168.1.137:3010
 | Edit hardcoded migration lists | Not needed. Migration detection is automatic. |
 | `docker compose down -v` | Deletes the database volume. Use `docker compose down` only. |
 | Touch db-patch-entrypoint.sh for new migrations | Not needed. Just add .sql files. |
+| `docker compose run --rm care-migrate` during a routine deploy | Not needed — and no longer possible by accident. `care-db-patch-v2` already handles all automatic migrations; `care-migrate` requires `--profile manual` and is for emergency troubleshooting only. |
+| Set `SCHEMA_REPAIR=true` permanently in `.env` | Defeats the point of read-only-by-default verification. Use it for one deploy at a time via `docker compose run --rm -e SCHEMA_REPAIR=true care-schema-verify`, then remove it. |
+| Add new `RENAME COLUMN`/`DROP COLUMN` logic to `runStartupMigrations()` in `src/index.ts` | Write a `migrations/*.sql` file instead — `care-db-patch-v2` is the single source of truth for schema mutation, per-file tracked and applied exactly once. |
+| Manually `UPDATE system_database_identity` to "fix" an identity mismatch without first confirming which database is actually correct | The mismatch is the safety net working as intended — investigate `.env` first (see "If a deploy fails with a DB IDENTITY MISMATCH" above). |
 

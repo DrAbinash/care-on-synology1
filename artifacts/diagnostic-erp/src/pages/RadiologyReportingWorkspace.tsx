@@ -14,6 +14,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { readStaffSession } from "@/lib/staffSession";
 import { api } from "@/lib/fetchApi";
+import { finalizeRadiologyReport, saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
+import OpenStudyPanel from "@/components/radiology/OpenStudyPanel";
 import {
   ArrowLeft, ExternalLink, Sparkles, Save, CheckCircle2, AlertTriangle,
   Printer, RefreshCw, Star, ClipboardList, Plus, Trash2, Eye,
@@ -24,6 +26,45 @@ import EmbeddedWadoViewer from "@/components/EmbeddedWadoViewer";
 import RadiologyCopilotPanel from "@/components/RadiologyCopilotPanel";
 import RadiologyMemoryPanel from "@/components/RadiologyMemoryPanel";
 import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
+import QuickFindingsPanel, {
+  type QuickFinding, type QuickProtocol,
+} from "@/components/radiology/QuickFindingsPanel";
+import {
+  renderAbnormality, type AbnormalityInstance, type RenderedAbnormality, type Side,
+  mergeBlock, mergeImpression,
+  applyRenderedTransition, toggleQuickSelection, setQuickInstance, deleteQuickInstance,
+  seedQuickInstance, patchQuickInstance,
+} from "@/lib/renderEngine";
+import { deriveQuickSelectFindings } from "@/lib/quickSelectFindingsPayload";
+import { validateReport, computeQualityScore } from "@/lib/reportValidator";
+import { isLearnableAddition } from "@/lib/learningEngine";
+import { upsertMeasurement } from "@/lib/measurementVars";
+import CollapsibleSection from "@/components/radiology/CollapsibleSection";
+import FollowUpPanel from "@/components/radiology/FollowUpPanel";
+import { useLocalDraftBackup } from "@/hooks/useLocalDraftBackup";
+import { useRadiologyDraftId } from "@/hooks/useRadiologyDraftId";
+import { isOwnerRole } from "@/lib/staffSession";
+import {
+  serializeReportSnapshot, isReportDirty, shouldOfferBackupRestore,
+  restorableSelections, extractD1QuickSelections, toInstanceParams,
+  deriveLifecycleBadges, canVerifyReport, matchWorkspaceShortcut,
+  type FinalReportMeta, type PersistedInstanceRow,
+} from "@/lib/workspaceReportState";
+import { canLeaveStudy, type QueueStudy } from "@/lib/reportingWorkflow";
+import { createCommandDispatcher } from "@/lib/workspaceCommands";
+import { useReportingWorkflow } from "@/hooks/useReportingWorkflow";
+import { useStudyLock } from "@/hooks/useStudyLock";
+import { lockStatusMessage, QUEUE_SCOPE_LABELS, parseQueueScope, assignmentCategoryOf, type QueueScope } from "@/lib/studyLockState";
+import type { StudyLaunchResult } from "@/lib/studyLaunchService";
+import { ChevronLeft, ChevronRight, PauseCircle, Lock } from "lucide-react";
+// M1.6B2 — the ONE voice pipeline (providers/grammar/safety live in libs; the
+// hook executes through THIS page's adapter → the M1.5 command dispatcher).
+import { useVoiceSession, type VoiceExecutionResult } from "@/hooks/useVoiceSession";
+import VoiceCommandBar from "@/components/radiology/VoiceCommandBar";
+import { normalizeDictationText, describeIntent, type ParsedVoiceCommand, type ViewerOp } from "@/lib/voiceCommandGrammar";
+import { voiceKeyAction } from "@/lib/voiceSessionState";
+import { parseVoiceSettings, fetchServerTranscribeAvailable } from "@/lib/voiceTranscription";
+import type { EmbeddedViewerHandle } from "@/components/EmbeddedWadoViewer";
 
 // ════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -48,6 +89,10 @@ type WorklistEntry = {
   weasisUrl: string | null;
   status: string;
   assignedRadiologist: string | null;
+  // M1.6B1 — id-based assignment (full-row select serves these)
+  assignedRadiologistId?: number | null;
+  assignedAt?: string | null;
+  assignedByName?: string | null;
   aiDraftStatus: string;
   aiDraftJson: string | null;
   reportId: number | null;
@@ -103,7 +148,47 @@ type StylePreferences = {
   includeMeasurements: boolean;
 };
 
-type RightTab = "templates" | "prior" | "ai" | "measurements" | "teaching";
+type RightTab = "quickselect" | "templates" | "followup" | "prior" | "ai" | "measurements" | "teaching";
+
+/** M1.4 — POST /api/radiology/report-generator/validate-draft response: the
+ *  backend runs the REAL D3/D3.5 builder + D1 validator read-only; nothing
+ *  here is computed client-side. */
+type ValidateDraftResponse = {
+  success: boolean;
+  structured:
+    | { enabled: false; attempted: false }
+    | {
+        enabled: true; attempted: true; built: true;
+        documentId: string; contentSha256: string; findingsCount: number;
+        errors: unknown[]; warnings: string[];
+      }
+    | {
+        enabled: true; attempted: true; built: false;
+        skipReasons: string[]; errors: unknown[]; warnings: string[];
+      };
+  legacy: { rawFindings: boolean; impression: boolean };
+};
+
+/** Renders a backend validation issue (string or {code,message,path} object)
+ *  as one human-readable line — display only, no interpretation. */
+function validationIssueText(issue: unknown): string {
+  if (typeof issue === "string") return issue;
+  if (issue && typeof issue === "object") {
+    const o = issue as { code?: unknown; message?: unknown; path?: unknown };
+    const parts = [o.code, o.path, o.message].filter((p): p is string => typeof p === "string" && p.length > 0);
+    if (parts.length) return parts.join(" — ");
+    try { return JSON.stringify(issue); } catch { /* fall through */ }
+  }
+  return String(issue);
+}
+
+const BADGE_TONE_CLASS: Record<string, string> = {
+  green: "bg-green-100 text-green-800 border-green-300",
+  amber: "bg-amber-100 text-amber-800 border-amber-300",
+  red: "bg-red-100 text-red-800 border-red-300",
+  blue: "bg-blue-100 text-blue-800 border-blue-300",
+  slate: "bg-slate-100 text-slate-700 border-slate-300",
+};
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; locked: boolean }> = {
   DRAFT: { label: "Draft", color: "bg-yellow-100 text-yellow-800 border-yellow-300", locked: false },
@@ -237,7 +322,13 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const qc = useQueryClient();
-  const session = readStaffSession();
+  // Read ONCE per mount (M1.4). readStaffSession() parses localStorage into a
+  // fresh object every call; as a plain per-render read it fed the
+  // style-preferences effect below a new identity on every render, producing
+  // an INFINITE effect→setState→render→effect fetch loop (measured: 151
+  // requests to /style-preferences in 20s — enough to trip the API's
+  // 300/min rate limit and 429 real saves).
+  const session = useMemo(() => readStaffSession(), []);
   const previewRef = useRef<HTMLDivElement>(null);
 
   // ── Layout ────────────────────────────────────────────────────────────────
@@ -286,6 +377,277 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const [teachingNotes, setTeachingNotes] = useState("");
   const [savingTeaching, setSavingTeaching] = useState(false);
 
+  // ── M1.4 — workflow state (Phase 2) ───────────────────────────────────────
+  // Deliberately NOT a second store: plain local state whose RULES (dirty
+  // detection, backup gating, selection restore, lifecycle badges, verify
+  // permission, shortcuts) live as pure functions in
+  // lib/workspaceReportState.ts.
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  /** Serialized snapshot of the last state known to match the server (saved,
+   *  finalized, or machine-hydrated FROM the server). null = nothing known. */
+  const [lastSavedSnapshot, setLastSavedSnapshot] = useState<string | null>(null);
+  /** Machine hydration steps (draft load, template auto-fill, AI pre-fill,
+   *  selection restore) request a baseline recapture; the effect below runs
+   *  in the render AFTER their state has flushed, so it always serializes the
+   *  post-hydration values. User edits never request a recapture — they are
+   *  exactly what "dirty" must detect.
+   *
+   *  A monotonic NONCE, deliberately not a boolean (M1.5): with a boolean,
+   *  a machine effect firing in the same effects pass as the recapture
+   *  consuming an earlier request had its set-true swallowed by the
+   *  recapture's set-false in the same batch — the restored Quick Select
+   *  selections then never entered the baseline and the workspace sat
+   *  permanently "dirty" after returning to a study (found by the M1.5
+   *  browser verification). Every increment now guarantees one capture in
+   *  the render after its batch flushes. */
+  const [baselineRecaptureNonce, setBaselineRecaptureNonce] = useState(0);
+  function requestBaselineRecapture() {
+    setBaselineRecaptureNonce((n) => n + 1);
+  }
+  /** Truthful D5 outcome of the finalize that happened in THIS session:
+   *  {signed:true,...} or {signed:false, fallback:"legacy", reason}. */
+  const [structuredFinalInfo, setStructuredFinalInfo] = useState<Record<string, unknown> | null>(null);
+  /** Truthful reason when finalize could not create a patient-facing report
+   *  row (unbilled study — patient_reports.test_id is NOT NULL). */
+  const [reportCreationSkipped, setReportCreationSkipped] = useState<string | null>(null);
+  const [finalizedReportId, setFinalizedReportId] = useState<number | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  /** Admin-only structured diagnostics drawer inside the preview (Phase 7). */
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+
+  // ── M1.6A — assignment-aware queue scope + study lock ────────────────────
+  const [queueScope, setQueueScope] = useState<QueueScope>(() => {
+    try {
+      return parseQueueScope(window.localStorage.getItem("radiology_queue_scope"));
+    } catch { return "all"; }
+  });
+
+  // M1.6B1 — assignable radiologists (By-Radiologist scope + display names).
+  const { data: radiologistsData } = useQuery<{ success: boolean; radiologists: Array<{ id: number; name: string; role: string }> }>({
+    queryKey: ["radiology-radiologists"],
+    queryFn: () => api.get("/api/radiology/radiologists"),
+    staleTime: 5 * 60_000,
+  });
+  const radiologists = radiologistsData?.radiologists ?? [];
+  function changeQueueScope(next: QueueScope) {
+    setQueueScope(next);
+    try { window.localStorage.setItem("radiology_queue_scope", next); } catch { /* private mode */ }
+  }
+
+  // ── M1.5 — workflow controller (queue, history, parked, transitions) ─────
+  const workflow = useReportingWorkflow(studyId, {
+    scope: queueScope,
+    myUserId: session?.user.id ?? null,
+    myName: session?.user.name ?? null,
+  });
+
+  // Claim the current study on entry (visible in the status bar — never
+  // silent), heartbeat while held, stop after finalize. Server expiry stays
+  // authoritative; losing the lock never touches local text.
+  const studyLock = useStudyLock(studyId, { enabled: reportStatus !== "FINAL" });
+  const lockedByOther = studyLock.status === "locked-by-other";
+  const lockLost = studyLock.status === "expired-lost";
+  /** Viewer launch state mirrored up from OpenStudyPanel: transitions are
+   *  blocked while a launch is in flight, and the status bar shows the last
+   *  outcome. */
+  const [viewerLaunch, setViewerLaunch] = useState<{ busy: boolean; lastResult: StudyLaunchResult | null }>({
+    busy: false,
+    lastResult: null,
+  });
+
+  // ── M1.6B2 — voice layer wiring ───────────────────────────────────────────
+  /** Live handle onto the embedded viewer (null unless a study is rendered) —
+   *  voice viewer commands call the SAME setters the toolbar buttons use. */
+  const embeddedViewerRef = useRef<EmbeddedViewerHandle | null>(null);
+  /** Voice "search finding <term>" → the panel adopts this as its search text. */
+  const [qsExternalSearch, setQsExternalSearch] = useState<{ seq: number; term: string } | null>(null);
+  /** Spoken park reason: non-null makes parkCurrentStudy skip its prompt
+   *  (voice supplies "" when no reason was spoken). Cleared after dispatch. */
+  const voiceParkReasonRef = useRef<string | null>(null);
+  // Same query key as RadiologySettingsCenter — one cache entry.
+  const { data: pacsSettingsRows } = useQuery<Array<{ id: number; key: string; value: string | null; category: string }>>({
+    queryKey: ["pacs-settings"],
+    queryFn: () => api.get("/api/radiology/pacs-settings"),
+    staleTime: 5 * 60_000,
+  });
+  const voiceSettings = useMemo(() => parseVoiceSettings(pacsSettingsRows), [pacsSettingsRows]);
+  const { data: voiceServerAvailable = false } = useQuery<boolean>({
+    queryKey: ["voice-transcribe-status"],
+    queryFn: fetchServerTranscribeAvailable,
+    enabled: voiceSettings.enabled,
+    staleTime: 5 * 60_000,
+  });
+
+  // ── Quick Select — Smart Report Engine (Phase 2) ──────────────────────────
+  // Each button is a smart object (technique / findings / impression /
+  // recommendation). At insert time the side selector transforms the text
+  // (left↔right↔bilateral, whole words only); insertedTextRef remembers the
+  // EXACT strings inserted per button so that deselect removes precisely
+  // what went in — even if the side selector changed afterwards. Manually
+  // edited text is never touched (exact-match removal only).
+  const [selectedQuickIds, setSelectedQuickIds] = useState<Set<number>>(new Set());
+  const [quickSide, setQuickSide] = useState<Side>("left");
+  // Phase 4: one structured instance per selected abnormality.
+  const [quickInstances, setQuickInstances] = useState<Map<number, AbnormalityInstance>>(new Map());
+  const insertedTextRef = useRef<Map<number, RenderedAbnormality>>(new Map());
+  // Learning Engine (Phase 5): remembers the last selected finding so any
+  // manually-added recommendation text at finalize time can be attributed
+  // to it and offered as a suggestion next time. Suggestion-only — never
+  // auto-inserted.
+  const lastToggledFindingRef = useRef<QuickFinding | null>(null);
+
+  /** Applies rendered abnormality sections to the report: exact-remove of
+   *  what was previously generated for this instance, then dedupe-merge of
+   *  the new render. Edited sentences no longer match exactly → removal
+   *  no-ops → manual edits always win. The remove/merge decision itself is
+   *  renderEngine's applyRenderedTransition (Ticket F1b) — a pure function;
+   *  this wrapper only owns reading/writing the actual React state and the
+   *  insertedTextRef ref, which stay in the component per F1b's scope. */
+  function applyRendered(id: number, next: RenderedAbnormality | null) {
+    const prev = insertedTextRef.current.get(id);
+    const result = applyRenderedTransition(
+      { rawFindings, impression, technique, recommendation },
+      prev,
+      next,
+    );
+    if (next) insertedTextRef.current.set(id, next);
+    else insertedTextRef.current.delete(id);
+    setRawFindings(result.rawFindings);
+    setImpression(result.impression);
+    setTechnique(result.technique);
+    setRecommendation(result.recommendation);
+  }
+
+  function handleQuickToggle(f: QuickFinding, nowSelected: boolean) {
+    if (nowSelected) lastToggledFindingRef.current = f;
+    setSelectedQuickIds((prev) => toggleQuickSelection(prev, f.id, nowSelected));
+    if (nowSelected) {
+      // New instance seeded from the global side selector.
+      const inst = seedQuickInstance(quickSide);
+      setQuickInstances((prev) => setQuickInstance(prev, f.id, inst));
+      applyRendered(f.id, renderAbnormality(f, inst));
+    } else {
+      setQuickInstances((prev) => deleteQuickInstance(prev, f.id));
+      applyRendered(f.id, null);
+    }
+  }
+
+  /** Phase 4: property chip changed → re-render this abnormality and
+   *  update the entire report instantly (all four sections). */
+  function handleInstanceUpdate(f: QuickFinding, patch: Partial<AbnormalityInstance>) {
+    const inst = patchQuickInstance(quickInstances.get(f.id), quickSide, patch);
+    setQuickInstances((prev) => setQuickInstance(prev, f.id, inst));
+    applyRendered(f.id, renderAbnormality(f, inst));
+  }
+
+  /** Auto-fill Technique from the study tab — only when Technique is empty,
+   *  so an already-written technique is never overwritten. */
+  function handleAutoTechnique(text: string) {
+    setTechnique((prev) => (prev.trim() ? prev : text));
+  }
+
+  /** One-click baseline normals — dedupe-merged, never duplicated. */
+  function handleInsertNormals(text: string) {
+    setRawFindings((prev) => mergeBlock(prev, text));
+  }
+
+  // ── Protocol Engine (Phase 5) ──────────────────────────────────────────────
+  // Selecting a protocol (e.g. "MRI Brain Trauma") loads its own technique/
+  // normal/recommendation — these take precedence over the generic tab-level
+  // ones for empty fields, and its checklist drives the live completeness
+  // score below. Switching protocols never deletes anything the radiologist
+  // has already typed.
+  const [activeProtocol, setActiveProtocol] = useState<QuickProtocol | null>(null);
+  const [checklistPercent, setChecklistPercent] = useState(100);
+  const [checklistRemaining, setChecklistRemaining] = useState<string[]>([]);
+
+  function handleProtocolChange(protocol: QuickProtocol | null) {
+    setActiveProtocol(protocol);
+    if (!protocol) return;
+    if (protocol.techniqueText) setTechnique((prev) => (prev.trim() ? prev : protocol.techniqueText));
+    if (protocol.recommendationText) setRecommendation((prev) => mergeBlock(prev, protocol.recommendationText));
+  }
+
+  function handleInsertProtocolNormals() {
+    if (activeProtocol?.normalText) setRawFindings((prev) => mergeBlock(prev, activeProtocol.normalText));
+  }
+
+  const missingRequiredMeasurements = useMemo(() => {
+    if (!activeProtocol?.requiredMeasurements) return [];
+    return activeProtocol.requiredMeasurements
+      .split(",")
+      .map((m) => m.trim())
+      .filter((m) => m && !rawFindings.toLowerCase().includes(m.toLowerCase()));
+  }, [activeProtocol, rawFindings]);
+
+  // Smart Measurements (Phase 3): re-entering a measurement updates the
+  // existing sentence's value everywhere instead of appending a duplicate.
+  function handleSmartMeasurement(templateText: string, value: string) {
+    setRawFindings((prev) => {
+      const { text, updated } = upsertMeasurement(prev, templateText, value);
+      if (updated) toast({ title: "Measurement updated", description: "Existing value replaced in the report." });
+      return text;
+    });
+  }
+
+  // Live Report Quality Score (Phase 3) — recomputed as the radiologist
+  // types; purely informational, never blocks anything.
+  const quality = useMemo(
+    () => computeQualityScore({
+      findings: rawFindings, impression, recommendation, technique, clinicalHistory,
+      checklistPercent: activeProtocol ? checklistPercent : undefined,
+      missingRequiredMeasurements,
+    }),
+    [rawFindings, impression, recommendation, technique, clinicalHistory, activeProtocol, checklistPercent, missingRequiredMeasurements],
+  );
+
+  // Intelligent Normal Generator (Phase 3, structured mode): sets every
+  // section the radiologist has NOT touched back to its template-normal
+  // text. "Touched" = text differs from the template normal — those are
+  // never overwritten.
+  function fillRemainingNormals() {
+    const sections = selectedTemplate ? parseSectionsJson(selectedTemplate.sectionsJson) : null;
+    if (!sections) return;
+    setFindingsMap((prev) => {
+      const next = { ...prev };
+      for (const item of sections.findingsItems) {
+        const cur = next[item.label];
+        const untouched = !cur || !cur.text.trim() || cur.text === item.normal;
+        if (untouched) next[item.label] = { normal: true, text: item.normal };
+      }
+      return next;
+    });
+    toast({ title: "Remaining systems set to normal", description: "Edited sections were not changed." });
+  }
+
+  // ── Local unsaved-draft protection ────────────────────────────────────────
+  // Backs up the typed report to this browser's localStorage every ~2s so a
+  // crash, accidental tab close, or temporary API failure never loses work.
+  // Cleared on successful finalize.
+  const draftSnapshot = useMemo(
+    // `at` (M1.4) lets the restore banner compare backup age against the
+    // server draft's updatedAt — only a backup NEWER than the server offer
+    // restores (lib/workspaceReportState.shouldOfferBackupRestore).
+    () => ({ at: Date.now(), clinicalHistory, technique, rawFindings, impression, recommendation }),
+    [clinicalHistory, technique, rawFindings, impression, recommendation],
+  );
+  const draftBackup = useLocalDraftBackup({
+    storageKey: `radiology_report_backup_${studyId ?? "new"}`,
+    snapshot: draftSnapshot,
+    enabled: reportStatus !== "FINAL",
+  });
+
+  function restoreLocalBackup() {
+    const b = draftBackup.restore();
+    if (!b) return;
+    if (b.clinicalHistory) setClinicalHistory(b.clinicalHistory);
+    if (b.technique) setTechnique(b.technique);
+    if (b.rawFindings) setRawFindings(b.rawFindings);
+    if (Array.isArray(b.impression) && b.impression.length) setImpression(b.impression);
+    if (b.recommendation) setRecommendation(b.recommendation);
+    toast({ title: "Unsaved work restored", description: "Your locally backed-up report text has been restored." });
+  }
+
   // ══════════════════════════════════════════════════════════════════════════
   // DATA FETCHING
   // ══════════════════════════════════════════════════════════════════════════
@@ -295,6 +657,198 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     queryFn: () => api.get<WorklistEntry>(`/api/internal/radiology/worklist/${studyId}`),
     enabled: !!studyId,
   });
+
+  // ── Draft identity (Radiology Roadmap Ticket A3.0) ────────────────────────
+  // Loads any existing radiology_report_drafts row for this study and tracks
+  // its id, so "Save Draft" updates that same row instead of inserting a new
+  // orphaned one on every click — the shared hook this page was missing
+  // (pages/RadiologyReportGenerator.tsx already had the correct pattern; see
+  // hooks/useRadiologyDraftId.ts). Quick Select's structured click state
+  // (selectedQuickIds/quickInstances) is not part of this — it was never
+  // persisted before this fix and still isn't; only the previously-saved
+  // flattened text fields are restored here.
+  const { draftId, existingDraft, captureSavedDraftId, isLoadingExistingDraft } = useRadiologyDraftId(studyId);
+
+  // ── M1.4 — study-switch isolation (Phase 4/10) ────────────────────────────
+  // Navigating this mounted page from one study to another (same route,
+  // different :studyId param — wouter does NOT remount) must never carry the
+  // previous patient's text, selections, or exact-removal state across.
+  // Extracted (M1.5) so "reload current study" can reuse the exact same
+  // reset instead of duplicating the field list.
+  function resetWorkspaceState() {
+    setClinicalHistory(""); setTechnique(""); setRawFindings("");
+    setImpression([]); setRecommendation(""); setFindingsMap({});
+    setUseStructured(true);
+    setSelectedQuickIds(new Set()); setQuickInstances(new Map());
+    insertedTextRef.current = new Map();
+    lastToggledFindingRef.current = null;
+    setIsCritical(false); setCriticalNote("");
+    setReportStatus("DRAFT");
+    setSelectedTemplateId(null);
+    setAiOutput("");
+    setLastSavedSnapshot(null); setLastSavedAt(null);
+    setStructuredFinalInfo(null); setFinalizedReportId(null);
+    setReportCreationSkipped(null);
+    setShowDiagnostics(false);
+    setPreviewMode(false); // transient UI must not carry across patients
+    // Re-arm the once-per-study machine-hydration guards (M1.5): REVISITING a
+    // study (Previous / return-to-parked) must hydrate and restore selections
+    // again after this reset — the M1.4 refs otherwise stay armed for the
+    // draft id and would leave the editor empty AND, worse, let the next save
+    // wipe the persisted selections (found by the M1.5 browser verification).
+    hydratedDraftForStudyRef.current = null;
+    selectionsRestoredForDraftRef.current = null;
+    autoTemplateForStudyRef.current = null;
+  }
+  const activeStudyRef = useRef<number | undefined>(studyId);
+  useEffect(() => {
+    if (activeStudyRef.current === studyId) return;
+    activeStudyRef.current = studyId;
+    resetWorkspaceState();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [studyId]);
+
+  // ── M1.5 — arrival + wrong-patient cross-check (Phase 7) ─────────────────
+  // When the target study's identity loads, release the navigation lock and
+  // verify the loaded patient matches what the queue row claimed at
+  // transition time. The M1.4 draft-hydration patient guard is the second
+  // layer; this catches a worklist row whose linkage changed mid-flight.
+  useEffect(() => {
+    if (!entry) return;
+    const expectation = workflow.markArrived(entry.id);
+    if (
+      expectation && expectation.patientId != null &&
+      entry.patientId != null && expectation.patientId !== entry.patientId
+    ) {
+      toast({
+        title: "Patient identity mismatch",
+        description: `The queue listed patient #${expectation.patientId} for this study, but the loaded study belongs to patient #${entry.patientId}. Verify the patient before reporting.`,
+        variant: "destructive",
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entry?.id]);
+
+  // ── M1.4 — draft hydration (Phase 3), ONCE per study ─────────────────────
+  // The old effect re-ran on every background refetch of the drafts query
+  // (object identity changes), re-writing server text over whatever the
+  // radiologist had typed since — a silent manual-edit clobber. Hydration now
+  // happens exactly once per study, and only after the study identity has
+  // loaded so the patient cross-check below can run.
+  const hydratedDraftForStudyRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!existingDraft) return;
+    if (studyId != null && !entry) return; // wait for study identity
+    const studyKey = studyId ?? -1;
+    if (hydratedDraftForStudyRef.current === studyKey) return;
+    // Never merge two patients' drafts (Phase 3 rule 8). The drafts query is
+    // already study-scoped server-side; this cross-check refuses a mislinked
+    // row instead of hydrating the wrong patient's text.
+    if (
+      existingDraft.patientId != null && entry?.patientId != null &&
+      existingDraft.patientId !== entry.patientId
+    ) {
+      hydratedDraftForStudyRef.current = studyKey;
+      console.warn(
+        `[workspace] draft ${existingDraft.id} belongs to patient ${existingDraft.patientId} ` +
+        `but study ${studyId} belongs to patient ${entry.patientId} — draft NOT loaded`,
+      );
+      return;
+    }
+    hydratedDraftForStudyRef.current = studyKey;
+    if (existingDraft.clinicalHistory) setClinicalHistory(existingDraft.clinicalHistory);
+    if (existingDraft.rawFindings) setRawFindings(existingDraft.rawFindings);
+    if (existingDraft.findingsSections) {
+      try {
+        setFindingsMap(JSON.parse(existingDraft.findingsSections) as Record<string, { normal: boolean; text: string }>);
+        setUseStructured(true);
+      } catch { /* ignore malformed JSON — falls back to whatever rawFindings already restored */ }
+    } else if (existingDraft.rawFindings) {
+      // A free-text draft must come back VISIBLE as free text — the default
+      // structured view would hide the restored rawFindings behind template
+      // sections (Phase 3 rule 4: exact content back).
+      setUseStructured(false);
+    }
+    if (existingDraft.impression) {
+      try {
+        const arr = JSON.parse(existingDraft.impression) as string[];
+        if (Array.isArray(arr)) setImpression(arr);
+      } catch { /* ignore malformed JSON */ }
+    }
+    if (existingDraft.recommendation) setRecommendation(existingDraft.recommendation);
+    // Server-hydrated content is the CLEAN baseline, not an unsaved edit.
+    requestBaselineRecapture();
+  }, [existingDraft, entry, studyId]);
+
+  // ── M1.4 — Quick Select selection restore (Phase 3 rule 5 / Phase 4) ─────
+  // Primary source: the A3.2 report_finding_instances rows for this draft
+  // (GET /finding-instances). Fallback: the D1 draft document's extension
+  // selections (structured_json_d1). When neither exists (flags off / legacy
+  // draft), behavior stays exactly as before: flattened text only.
+  const { data: instancesData } = useQuery<{
+    success: boolean;
+    instances: Array<{ findingId: number; structuredJson: unknown; source: string }>;
+  }>({
+    queryKey: ["radiology-finding-instances", draftId],
+    queryFn: () => api.get(`/api/radiology/report-generator/finding-instances?draftId=${draftId}`),
+    enabled: !!draftId,
+    staleTime: 60_000,
+  });
+
+  /** Latest loaded Quick Select templates (set by QuickFindingsPanel's
+   *  onFindingsLoaded) — needed to rebuild exact-match removal state for
+   *  RESTORED selections without re-inserting any text. */
+  const quickFindingTemplatesRef = useRef<QuickFinding[] | null>(null);
+
+  /** For each restored selection whose template is known, record what its
+   *  render WOULD have inserted — the saved draft text already contains those
+   *  sentences, so deselect can exact-remove them. Never touches the text. */
+  function seedRestoredInsertedText(
+    findings: QuickFinding[],
+    ids: Set<number>,
+    insts: Map<number, AbnormalityInstance>,
+  ) {
+    for (const f of findings) {
+      if (!ids.has(f.id) || insertedTextRef.current.has(f.id)) continue;
+      const inst = insts.get(f.id);
+      if (inst) insertedTextRef.current.set(f.id, renderAbnormality(f, inst));
+    }
+  }
+
+  function handleFindingsLoaded(findings: QuickFinding[]) {
+    quickFindingTemplatesRef.current = findings;
+    seedRestoredInsertedText(findings, selectedQuickIds, quickInstances);
+  }
+
+  const selectionsRestoredForDraftRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!draftId || !instancesData) return;
+    // Ownership guard (M1.5 Phase 7): during a study transition the adopted
+    // draftId can still belong to the PREVIOUS study for a few renders (the
+    // hook re-adopts asynchronously). Restoring then would carry the old
+    // patient's selections into the new study — verified in the M1.5 browser
+    // run. Only restore once the study-keyed draft row confirms this draftId
+    // belongs to the study on screen.
+    if (!existingDraft || existingDraft.id !== draftId) return;
+    if (selectionsRestoredForDraftRef.current === draftId) return;
+    selectionsRestoredForDraftRef.current = draftId;
+    let rows: PersistedInstanceRow[] = instancesData.success ? instancesData.instances : [];
+    if (rows.length === 0 && existingDraft?.id === draftId) {
+      rows = extractD1QuickSelections(existingDraft.structuredJsonD1);
+    }
+    const selections = restorableSelections(rows);
+    if (selections.length === 0) return;
+    const ids = new Set(selections.map((s) => s.findingId));
+    const map = new Map<number, AbnormalityInstance>();
+    for (const s of selections) map.set(s.findingId, toInstanceParams(s.params));
+    setSelectedQuickIds(ids);
+    setQuickInstances(map);
+    if (quickFindingTemplatesRef.current) {
+      seedRestoredInsertedText(quickFindingTemplatesRef.current, ids, map);
+    }
+    // Restored selections are saved state — keep the workspace clean.
+    requestBaselineRecapture();
+  }, [draftId, instancesData, existingDraft]);
 
   const { data: templates = [] } = useQuery<StructuredTemplate[]>({
     queryKey: ["structured-templates"],
@@ -319,47 +873,81 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       .catch(() => { /* ignore */ });
   }, [session]);
 
-  // Auto-select template based on worklist entry
+  // Auto-select template based on worklist entry — ONCE per study (M1.4).
+  // The old version kept selectedTemplateId in its deps and re-forced the
+  // auto match on every change, instantly reverting any template the
+  // radiologist picked by hand. It now fires once; manual choices stick.
+  const autoTemplateForStudyRef = useRef<number | null>(null);
+  // "auto" = machine-initiated apply (mount/study match) → fills ONLY empty
+  // fields and stays clean; "manual" = explicit user click in the Templates
+  // tab → full apply (pre-M1.4 behavior) and counts as an unsaved edit.
+  const templateApplySourceRef = useRef<"auto" | "manual">("auto");
   useEffect(() => {
     if (!entry || templates.length === 0) return;
+    const studyKey = studyId ?? -1;
+    if (autoTemplateForStudyRef.current === studyKey) return;
+    autoTemplateForStudyRef.current = studyKey;
     const modalityMap: Record<string, string> = { "X-RAY": "X-RAY", USG: "USG", MRI: "MRI", CT: "CT" };
     const mod = modalityMap[entry.modality] || entry.modality;
     const bodyPart = (entry.studyDescription || "").toUpperCase();
     let match = templates.find((t) => t.modality === mod && bodyPart.includes(t.bodyPart));
     if (!match) match = templates.find((t) => t.modality === mod);
-    if (match && match.id !== selectedTemplateId) setSelectedTemplateId(match.id);
-  }, [entry, templates, selectedTemplateId]);
+    if (match && match.id !== selectedTemplateId) {
+      templateApplySourceRef.current = "auto";
+      setSelectedTemplateId(match.id);
+    }
+  }, [entry, templates, selectedTemplateId, studyId]);
 
   const selectedTemplate = useMemo(
     () => templates.find((t) => t.id === selectedTemplateId) ?? null,
     [templates, selectedTemplateId]
   );
 
-  // Load template content when selected
+  // Load template content when selected. Auto-selection must never clobber a
+  // hydrated draft or typed text (the draft/template queries race — whichever
+  // resolved last used to win); it only fills fields that are still empty.
   useEffect(() => {
     if (!selectedTemplate) return;
     const sections = parseSectionsJson(selectedTemplate.sectionsJson);
-    setTechnique(sections.technique);
     const map: Record<string, { normal: boolean; text: string }> = {};
     for (const item of sections.findingsItems) {
       map[item.label] = { normal: true, text: item.normal };
     }
-    setFindingsMap(map);
-    setRawFindings(selectedTemplate.defaultFindings || "");
-    setImpression(selectedTemplate.defaultImpression ? [selectedTemplate.defaultImpression] : []);
-    setRecommendation("Please correlate with clinical findings.");
+    if (templateApplySourceRef.current === "manual") {
+      // Explicit user choice: full apply, and it IS an unsaved change.
+      setTechnique(sections.technique);
+      setFindingsMap(map);
+      setRawFindings(selectedTemplate.defaultFindings || "");
+      setImpression(selectedTemplate.defaultImpression ? [selectedTemplate.defaultImpression] : []);
+      setRecommendation("Please correlate with clinical findings.");
+      return;
+    }
+    setTechnique((prev) => (prev.trim() ? prev : sections.technique));
+    setFindingsMap((prev) => (Object.keys(prev).length > 0 ? prev : map));
+    setRawFindings((prev) => (prev.trim() ? prev : selectedTemplate.defaultFindings || ""));
+    setImpression((prev) =>
+      prev.filter(Boolean).length > 0
+        ? prev
+        : selectedTemplate.defaultImpression ? [selectedTemplate.defaultImpression] : prev,
+    );
+    setRecommendation((prev) => (prev.trim() ? prev : "Please correlate with clinical findings."));
+    // Machine fill → part of the clean baseline.
+    requestBaselineRecapture();
   }, [selectedTemplate]);
 
-  // Pre-populate from AI draft
+  // Pre-populate from AI draft — fill-empty-only (M1.4): a saved draft (the
+  // radiologist's actual work) must always beat the AI suggestion; the old
+  // unconditional writes raced the draft hydration for the same fields.
   useEffect(() => {
     if (!entry?.aiDraftJson) return;
     try {
       const draft = JSON.parse(entry.aiDraftJson) as Record<string, string>;
-      if (draft.clinical_history) setClinicalHistory(draft.clinical_history);
-      if (draft.technique) setTechnique(draft.technique);
-      if (draft.findings) setRawFindings(draft.findings);
-      if (draft.impression) setImpression([draft.impression]);
-      if (draft.recommendation) setRecommendation(draft.recommendation);
+      if (draft.clinical_history) setClinicalHistory((prev) => (prev.trim() ? prev : draft.clinical_history));
+      if (draft.technique) setTechnique((prev) => (prev.trim() ? prev : draft.technique));
+      if (draft.findings) setRawFindings((prev) => (prev.trim() ? prev : draft.findings));
+      if (draft.impression) setImpression((prev) => (prev.filter(Boolean).length > 0 ? prev : [draft.impression]));
+      if (draft.recommendation) setRecommendation((prev) => (prev.trim() ? prev : draft.recommendation));
+      requestBaselineRecapture();
     } catch { /* ignore */ }
   }, [entry?.aiDraftJson]);
 
@@ -392,7 +980,365 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     return Array.from(set).sort();
   }, [templates]);
 
-  const isLocked = STATUS_CONFIG[reportStatus]?.locked ?? false;
+  const statusLocked = STATUS_CONFIG[reportStatus]?.locked ?? false;
+  // M1.6A — the editing gate: a finalized report OR a study actively locked
+  // by another user is read-only. All existing disabled= paths hang off this.
+  const isLocked = statusLocked || lockedByOther;
+
+  // ── M1.4 — derived workflow state ─────────────────────────────────────────
+
+  /** Dirty = current content differs from the last state known to match the
+   *  server (rules in lib/workspaceReportState.ts). Locked reports are never
+   *  dirty — editing is disabled. */
+  const dirty = !isLocked && isReportDirty(
+    { clinicalHistory, technique, rawFindings, impression, recommendation, quickSelectIds: Array.from(selectedQuickIds) },
+    lastSavedSnapshot,
+  );
+
+  // Baseline recapture: runs in the render AFTER a machine-hydration step's
+  // state has flushed (the pending flag is state, so this effect sees the
+  // hydrated values, never the pre-hydration closure).
+  const lastCapturedNonceRef = useRef(0);
+  useEffect(() => {
+    if (baselineRecaptureNonce === lastCapturedNonceRef.current) return;
+    lastCapturedNonceRef.current = baselineRecaptureNonce;
+    setLastSavedSnapshot(serializeReportSnapshot({
+      clinicalHistory, technique, rawFindings, impression, recommendation,
+      quickSelectIds: Array.from(selectedQuickIds),
+    }));
+  }, [baselineRecaptureNonce, clinicalHistory, technique, rawFindings, impression, recommendation, selectedQuickIds]);
+
+  // Unsaved-change safeguard (Phase 10): browser-level warning on tab close /
+  // hard navigation while dirty.
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
+  // ── M1.5 Phase 9 — THE command dispatcher ─────────────────────────────────
+  // Every workflow action (button, keyboard, and later voice) routes through
+  // one named-command dispatcher. Handlers own their guards, so behavior is
+  // identical regardless of how a command arrives. Recreated per render —
+  // closures always see current state; the function handlers hoist.
+  function focusQuickSearch() {
+    setRightTab("quickselect");
+    // The panel mounts (and loads its dataset) when the tab switches, and
+    // its search input can remount as the data arrives — keep re-asserting
+    // focus briefly until it actually sticks.
+    let attempts = 0;
+    const tryFocus = () => {
+      const el = document.querySelector<HTMLInputElement>("[data-qs-search]");
+      if (el && document.activeElement === el) return;
+      el?.focus();
+      if (++attempts < 15) window.setTimeout(tryFocus, 100);
+    };
+    window.setTimeout(tryFocus, 50);
+  }
+  function openViewer() {
+    // The ONE launch pipeline (M1.2) — trigger the panel's primary action.
+    document.querySelector<HTMLButtonElement>('[data-testid="btn-open-study"]')?.click();
+  }
+  /** M1.6B2 — focus a report editor via its data-editor attribute (same
+   *  retry-until-stable pattern as focusQuickSearch; sections can remount). */
+  function focusEditor(which: "findings" | "impression") {
+    if (which === "impression" && impression.length === 0 && !isLocked) addImpressionLine();
+    const selector = which === "findings"
+      ? (useStructured ? '[data-editor="findings-section"]' : '[data-editor="findings"]')
+      : '[data-editor="impression"]';
+    let attempts = 0;
+    const tryFocus = () => {
+      const all = document.querySelectorAll<HTMLTextAreaElement>(selector);
+      const el = all.length > 0 ? all[all.length - 1] : null;
+      if (el && document.activeElement === el) return;
+      el?.focus();
+      if (++attempts < 10) window.setTimeout(tryFocus, 100);
+    };
+    window.setTimeout(tryFocus, 0);
+  }
+  /** The workspace's ONE "close the top panel" rule — Escape and the
+   *  close-panel command share it. */
+  function closeTopPanel() {
+    if (showDiagnostics) setShowDiagnostics(false);
+    else if (previewMode) setPreviewMode(false);
+  }
+  /** M1.6B2 — unpark: the current study if parked, else return to the oldest
+   *  parked study (through the normal transition guards). */
+  function unparkStudyCommand() {
+    if (studyId != null && workflow.isParked(studyId)) {
+      workflow.unpark(studyId);
+      toast({ title: "Study unparked" });
+      return;
+    }
+    const parkedNext = workflow.peekParked();
+    if (!parkedNext) { toast({ title: "No parked studies" }); return; }
+    if (!guardedLeave()) return;
+    workflow.unpark(parkedNext.id);
+    goToStudy(parkedNext);
+  }
+  const commandDispatcher = createCommandDispatcher({
+    save: () => { if (!isLocked && !saving) void saveDraft(); },
+    finalize: () => { if (!isLocked && !finalizing) void finalizeReport(); },
+    next: () => nextStudy(),
+    previous: () => previousStudy(),
+    park: () => parkCurrentStudy(),
+    refresh: () => refreshQueueAndCurrent(),
+    "open-viewer": openViewer,
+    "focus-quick-search": focusQuickSearch,
+    // M1.6B2 — same guard style as above; handlers own their guards.
+    verify: () => { if (canShowVerify && !verifying) void verifyReport(); },
+    unpark: () => unparkStudyCommand(),
+    "reload-current": () => reloadCurrentStudy(),
+    "focus-findings": () => focusEditor("findings"),
+    "focus-impression": () => focusEditor("impression"),
+    "close-panel": () => closeTopPanel(),
+  });
+
+  // ── M1.6B2 — the voice execution adapter ──────────────────────────────────
+  // Workflow intents dispatch through THE command dispatcher (no second
+  // workflow path); edits go through the SAME setters/handlers buttons use.
+  // The safety policy has already gated by lock/permission/mode; handlers
+  // keep their own guards on top.
+
+  function voiceDictate(intent: { target: "findings" | "impression" | "recommendation"; mode: "append" | "replace"; text: string }): VoiceExecutionResult {
+    const text = normalizeDictationText(intent.text, { autoPunctuation: voiceSettings.autoPunctuation });
+    if (!text) return { ok: false, message: "Nothing to insert" };
+    if (intent.target === "findings") {
+      const prev = rawFindings;
+      setRawFindings(intent.mode === "replace" ? text : prev.trim() ? `${prev.replace(/\s+$/, "")}\n${text}` : text);
+      return {
+        ok: true, message: `${intent.mode === "replace" ? "Replaced" : "Appended to"} findings`,
+        undo: () => setRawFindings(prev), undoLabel: "findings edit",
+      };
+    }
+    if (intent.target === "impression") {
+      const prev = impression;
+      setImpression(intent.mode === "replace" ? [text] : [...prev, text]);
+      return {
+        ok: true, message: `${intent.mode === "replace" ? "Replaced" : "Appended to"} impression`,
+        undo: () => setImpression(prev), undoLabel: "impression edit",
+      };
+    }
+    const prev = recommendation;
+    setRecommendation(intent.mode === "replace" ? text : prev.trim() ? `${prev.replace(/\s+$/, "")}\n${text}` : text);
+    return {
+      ok: true, message: `${intent.mode === "replace" ? "Replaced" : "Appended to"} recommendation`,
+      undo: () => setRecommendation(prev), undoLabel: "recommendation edit",
+    };
+  }
+
+  function voiceQuickSelect(action: "search" | "select" | "remove", term: string): VoiceExecutionResult {
+    if (action === "search") {
+      setQsExternalSearch((prev) => ({ seq: (prev?.seq ?? 0) + 1, term }));
+      focusQuickSearch();
+      return { ok: true, message: `Searching quick findings for “${term}”` };
+    }
+    const templates = quickFindingTemplatesRef.current;
+    if (!templates?.length) return { ok: false, message: "Quick findings are not loaded yet — open the Quick tab once" };
+    const norm = term.trim().toLowerCase();
+    const pool = action === "remove" ? templates.filter((f) => selectedQuickIds.has(f.id)) : templates;
+    let matches = pool.filter((f) => f.label.trim().toLowerCase() === norm);
+    if (matches.length === 0) matches = pool.filter((f) => f.label.toLowerCase().includes(norm));
+    if (matches.length === 0) {
+      return { ok: false, message: action === "remove" ? `No selected finding matches “${term}”` : `No quick finding matches “${term}”` };
+    }
+    if (matches.length > 1) {
+      return { ok: false, message: `Multiple findings match “${term}”: ${matches.slice(0, 3).map((f) => f.label).join(" · ")} — say the full name` };
+    }
+    const f = matches[0];
+    const nowSelected = action === "select";
+    if (nowSelected && selectedQuickIds.has(f.id)) return { ok: true, message: `“${f.label}” is already selected` };
+    handleQuickToggle(f, nowSelected);
+    return {
+      ok: true, message: `${nowSelected ? "Selected" : "Removed"} “${f.label}”`,
+      undo: () => handleQuickToggle(f, !nowSelected), undoLabel: `quick finding ${nowSelected ? "selection" : "removal"}`,
+    };
+  }
+
+  function voiceQuickModifier(property: "side" | "severity" | "level", value: string): VoiceExecutionResult {
+    const f = lastToggledFindingRef.current;
+    if (!f || !selectedQuickIds.has(f.id)) {
+      return { ok: false, message: "Select a quick finding first — the modifier applies to the last selected finding" };
+    }
+    const prevValue = quickInstances.get(f.id)?.[property] ?? "";
+    handleInstanceUpdate(f, { [property]: value } as Partial<AbnormalityInstance>);
+    return {
+      ok: true, message: `Set ${property} = ${value} on “${f.label}”`,
+      undo: () => handleInstanceUpdate(f, { [property]: prevValue } as Partial<AbnormalityInstance>),
+      undoLabel: `${property} change`,
+    };
+  }
+
+  function voiceViewer(op: ViewerOp): VoiceExecutionResult {
+    const h = embeddedViewerRef.current;
+    if (!h) return { ok: false, message: "Embedded viewer is not open for this study" };
+    const ops: Record<ViewerOp, () => void> = {
+      "next-image": h.nextFrame, "previous-image": h.prevFrame,
+      "zoom-in": h.zoomIn, "zoom-out": h.zoomOut, "reset-view": h.resetView,
+    };
+    ops[op]();
+    return { ok: true, message: describeIntent({ type: "viewer", op }) };
+  }
+
+  function executeVoiceCommand(parse: ParsedVoiceCommand): VoiceExecutionResult {
+    const intent = parse.intent;
+    if (!intent) return { ok: false, message: "Nothing to execute" };
+    switch (intent.type) {
+      case "cancel":
+        return { ok: true, message: "Cancelled" };
+      case "workflow": {
+        // Spoken park reason (possibly "") skips the prompt; cleared right
+        // after — dispatch invokes the handler synchronously.
+        if (intent.command === "park") voiceParkReasonRef.current = intent.reason ?? "";
+        const res = commandDispatcher.dispatch(intent.command);
+        if (intent.command === "park") voiceParkReasonRef.current = null;
+        return res.executed
+          ? { ok: true, message: describeIntent(intent) }
+          : { ok: false, message: `Command not available (${res.reason ?? "unknown"})` };
+      }
+      case "dictate": return voiceDictate(intent);
+      case "quick-select": return voiceQuickSelect(intent.action, intent.term);
+      case "quick-modifier": return voiceQuickModifier(intent.property, intent.value);
+      case "viewer": return voiceViewer(intent.op);
+      case "viewer-unsupported": return { ok: false, message: `The embedded viewer does not support ${intent.capability}` };
+    }
+  }
+
+  const voice = useVoiceSession({
+    studyId,
+    settings: voiceSettings,
+    serverAvailable: voiceServerAvailable,
+    getContext: () => ({
+      studyId: studyId ?? null,
+      dirty,
+      isLocked,
+      lockedByOther,
+      lockLost,
+      canVerify: canShowVerify,
+      structuredFindings: useStructured,
+      viewerAvailable: embeddedViewerRef.current != null,
+      confirmationPolicy: voiceSettings.confirmationPolicy,
+    }),
+    execute: executeVoiceCommand,
+    // Phase 11 — minimal metadata only: command type, study, outcome. The
+    // server derives the actor from the session; no transcript is ever sent.
+    onAudit: (commandType, outcome) => {
+      if (studyId == null) return;
+      void api.post("/api/radiology/voice-command-audit", { commandType, studyId, outcome }).catch(() => undefined);
+    },
+  });
+
+  // Keyboard shortcuts (M1.4 Phase 11 + M1.5 Phase 8) — matching rules live
+  // in lib/workspaceReportState.matchWorkspaceShortcut; actions route through
+  // the command dispatcher. Re-attached per render so handlers see current
+  // state.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // M1.6B2 — voice keys FIRST (Ctrl+Space toggle, Space push-to-talk
+      // outside editors, Enter confirms a non-finalize preview, Escape
+      // cancels an ACTIVE voice capture/preview). Null falls through to the
+      // pinned M1.4/M1.5 shortcut matrix unchanged.
+      const action = voiceKeyAction(
+        {
+          key: e.key, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey,
+          shiftKey: e.shiftKey, repeat: e.repeat,
+          target: e.target as { tagName?: string; isContentEditable?: boolean } | null,
+        },
+        {
+          enabled: voice.enabled,
+          pttKey: voiceSettings.pttKey,
+          capturing: voice.capturing,
+          hasPendingPreview: voice.pending != null,
+          confirmViaEnterAllowed: voice.pending?.verdict.confirmViaEnterAllowed ?? false,
+        },
+      );
+      if (action) {
+        e.preventDefault();
+        if (action === "toggle-listen") voice.toggleListening();
+        else if (action === "ptt-start") voice.startListening("ptt");
+        else if (action === "confirm-pending") voice.confirmPending("enter");
+        else voice.cancel();
+        return;
+      }
+      const shortcut = matchWorkspaceShortcut({
+        key: e.key, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey, shiftKey: e.shiftKey,
+        target: e.target as { tagName?: string } | null,
+      });
+      if (!shortcut) return;
+      if (shortcut === "escape") {
+        closeTopPanel();
+        return;
+      }
+      e.preventDefault();
+      const command =
+        shortcut === "quickselect" ? "focus-quick-search"
+        : shortcut === "open-study" ? "open-viewer"
+        : shortcut === "next-study" ? "next"
+        : shortcut === "previous-study" ? "previous"
+        : shortcut === "park-study" ? "park"
+        : shortcut; // save | finalize
+      commandDispatcher.dispatch(command);
+    };
+    // Releasing Space ends a push-to-talk capture (start is keydown above).
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === " " && voice.captureTrigger === "ptt") voice.stopListening();
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  });
+
+  // ── M1.4 — lifecycle / amendment metadata (Phase 9, D8/D9 read-only) ─────
+  // The linked patient_reports row: freshly finalized in this session, or
+  // referenced by the worklist entry, or the row a structured finalize
+  // promoted this draft into. GET /:id resolves to the LATEST version (D8)
+  // and carries additive `version` + `lifecycle` metadata (D8/D9).
+  const linkedReportId = finalizedReportId ?? entry?.reportId ?? existingDraft?.finalReportId ?? null;
+  const { data: finalReport } = useQuery<FinalReportMeta & { id?: number; signedByName?: string | null }>({
+    queryKey: ["workspace-final-report", linkedReportId],
+    queryFn: () => api.get(`/api/patient-reports/${linkedReportId}`),
+    enabled: !!linkedReportId,
+  });
+  const lifecycleBadges = deriveLifecycleBadges(finalReport ?? null);
+  const verifyGate = canVerifyReport(
+    session ? { subjectName: session.user.name, role: session.user.role, permissions: session.user.permissions } : null,
+    finalReport ?? null,
+  );
+  const lifecycleState = finalReport?.lifecycle?.state ?? finalReport?.status ?? null;
+  const reportSuperseded = Boolean(finalReport?.version?.superseded || finalReport?.lifecycle?.superseded);
+  /** Verify shows only for permitted users on a verifiable row; the D9 route
+   *  re-enforces everything server-side. */
+  const canShowVerify = Boolean(finalReport) && verifyGate.allowed && !reportSuperseded &&
+    lifecycleState !== "draft" && lifecycleState !== "verified" && lifecycleState !== "delivered";
+
+  // ── M1.4 — backend validation (Phase 7) — fetched on demand ──────────────
+  const { data: draftValidation, isFetching: validating, refetch: refetchValidation } = useQuery<ValidateDraftResponse>({
+    queryKey: ["radiology-validate-draft", draftId],
+    queryFn: () => api.post<ValidateDraftResponse>("/api/radiology/report-generator/validate-draft", { draftId }),
+    enabled: false,
+  });
+
+  // ── M1.4 — local-backup restore gating (Phase 3 rule 7) ───────────────────
+  const serverDraftContent = useMemo(() => {
+    if (!existingDraft) return null;
+    let impressionLines: string[] = [];
+    try {
+      const arr = JSON.parse(existingDraft.impression ?? "[]") as unknown;
+      if (Array.isArray(arr)) impressionLines = arr.filter((l): l is string => typeof l === "string");
+    } catch { /* malformed stored impression — compare as empty */ }
+    return {
+      clinicalHistory: existingDraft.clinicalHistory ?? "",
+      rawFindings: existingDraft.rawFindings ?? "",
+      impression: impressionLines,
+      recommendation: existingDraft.recommendation ?? "",
+    };
+  }, [existingDraft]);
+  const offerBackupRestore = !isLocked && draftBackup.restoreAvailable &&
+    shouldOfferBackupRestore(draftBackup.peek(), existingDraft?.updatedAt ?? null, serverDraftContent);
 
   const previewHtml = useMemo(
     () =>
@@ -438,14 +1384,6 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // ACTIONS
   // ══════════════════════════════════════════════════════════════════════════
 
-  function openWeasis() {
-    if (!entry?.studyInstanceUID) {
-      toast({ title: "No StudyInstanceUID", variant: "destructive" });
-      return;
-    }
-    window.open(`/api/radiology/studies/${entry.studyInstanceUID}/weasis-launch-redirect`, "_blank");
-  }
-
   function applyMacro(macro: TemplateMacro) {
     const ctx: Record<string, string> = {
       patient_name: entry?.patientName || "",
@@ -479,7 +1417,13 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     });
   }
 
-  function removeImpression(index: number) {
+  // Named distinctly from quickFindingsMerge's imported removeImpression(lines, line)
+  // (Bug-001): this one was a same-named local function declaration that, via
+  // JS/TS hoisting, shadowed the import for this component's entire scope —
+  // including applyRendered's call at an earlier line — so Quick Select's
+  // deselect path was silently calling this by-index function instead of the
+  // intended exact-match removal. Renamed so the import resolves correctly.
+  function deleteImpressionLineAt(index: number) {
     setImpression((prev) => prev.filter((_, i) => i !== index));
   }
 
@@ -524,29 +1468,83 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     toast({ title: "Inserted into impression" });
   }
 
-  async function saveDraft() {
+  /** Canonical draft save (M1.1 transport, M1.4 workflow). Returns the saved
+   *  draft id on success and null on failure, so finalizeReport can persist
+   *  the editor state first and validate exactly what will be signed. On
+   *  failure nothing is cleared — the typed text stays. */
+  async function saveDraft(): Promise<number | null> {
+    if (saving || isLocked) return null;
+    if (!entry) {
+      toast({ title: "No study loaded", description: "Open a study from the worklist before saving.", variant: "destructive" });
+      return null;
+    }
     setSaving(true);
     try {
-      await api.post("/api/radiology/report-generator/save-draft", {
-        studyId: entry?.studyId ?? null,
-        worklistId: entry?.id ?? null,
-        patientId: entry?.patientId ?? null,
-        templateId: selectedTemplate?.templateName || null,
-        modality: entry?.modality || null,
-        studyName: selectedTemplate?.templateName || entry?.studyDescription || null,
-        clinicalHistory: clinicalHistory || null,
-        rawFindings: rawFindings || null,
-        findingsSections: useStructured ? findingsMap : null,
-        impression: impression.filter(Boolean),
-        recommendation: recommendation || null,
+      // id omitted on the first save (server creates the row); included on
+      // every save after (server updates that same row) — see
+      // useRadiologyDraftId.ts.
+      //
+      // studyId is the page's OWN study identity (the :studyId route param,
+      // i.e. the worklist row id) — the same key useRadiologyDraftId reloads
+      // by. The previous payload stored entry.studyId (the radiology_studies
+      // id, often null and never equal to the reload key), so saved drafts
+      // could not be found again — reload always started blank (M1.4 broken
+      // link #2).
+      //
+      // findings[] (Ticket A3.1) serializes the current Quick Select
+      // selection; A3.2 persists it to report_finding_instances, which is
+      // what the selection restore above reads back.
+      const savedFindings = deriveQuickSelectFindings(selectedQuickIds, quickInstances);
+      const res = await saveRadiologyDraft<{ success: boolean; draft: { id: number } & Record<string, unknown> }>(
+        {
+          id: draftId ?? undefined,
+          studyId: studyId ?? entry.studyId ?? null,
+          worklistId: entry.id ?? null,
+          patientId: entry.patientId ?? null,
+          templateId: selectedTemplate?.templateName || null,
+          modality: entry.modality || null,
+          studyName: selectedTemplate?.templateName || entry.studyDescription || null,
+          clinicalHistory: clinicalHistory || null,
+          rawFindings: rawFindings || null,
+          findingsSections: useStructured ? findingsMap : null,
+          impression: impression.filter(Boolean),
+          recommendation: recommendation || null,
+          findings: savedFindings,
+        },
+      );
+      captureSavedDraftId(res.draft.id);
+      // The server now holds exactly the selections we sent — the restore
+      // effect must not re-apply them over the editor after this save.
+      selectionsRestoredForDraftRef.current = res.draft.id;
+      // M1.5 — keep the query caches truthful so RETURNING to this study
+      // (Previous / return-to-parked) hydrates what was actually saved, not
+      // the stale row cached at first load (found by the M1.5 browser
+      // verification: an edit saved just before Next vanished on Previous).
+      qc.setQueryData(["radiology-existing-draft", studyId], res.draft);
+      qc.setQueryData(["radiology-finding-instances", res.draft.id], {
+        success: true,
+        instances: savedFindings.map((f) => ({
+          findingId: f.findingId,
+          structuredJson: f.params,
+          source: "quickselect",
+        })),
       });
+      setLastSavedAt(new Date());
+      setLastSavedSnapshot(serializeReportSnapshot({
+        clinicalHistory, technique, rawFindings, impression, recommendation,
+        quickSelectIds: Array.from(selectedQuickIds),
+      }));
+      // An open preview's validation is now stale; refresh on next open.
+      void qc.invalidateQueries({ queryKey: ["radiology-validate-draft"] });
       toast({ title: "Draft Saved" });
+      return res.draft.id;
     } catch (err) {
       toast({
         title: "Save Failed",
         description: err instanceof Error ? err.message : "Error",
         variant: "destructive",
       });
+      return null;
     } finally {
       setSaving(false);
     }
@@ -554,6 +1552,112 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
   async function finalizeReport() {
     if (!entry) return;
+    // Guard against double-finalize: both re-clicks while in flight
+    // (finalizing flag) and re-finalizing an already-final report.
+    if (finalizing || reportStatus === "FINAL") return;
+    // M1.6A — ownership gate (the server re-checks; this keeps the failure
+    // early and the message clear). Draft text is never touched either way.
+    if (lockedByOther) {
+      toast({ title: "Cannot finalize", description: `${lockStatusMessage("locked-by-other", studyLock.ownerName)}.`, variant: "destructive" });
+      return;
+    }
+    if (lockLost) {
+      toast({ title: "Cannot finalize", description: "Your study lock expired — reclaim the study first. Your text is preserved.", variant: "destructive" });
+      return;
+    }
+    setFinalizing(true);
+    let confirmed = false;
+    try {
+      // 1) Persist the editor state first (M1.4): D5 signs from the DRAFT's
+      //    persisted data, so an unsaved editor would validate and sign
+      //    yesterday's content. A failed save aborts finalize truthfully.
+      let effectiveDraftId = draftId;
+      if (dirty || !effectiveDraftId) {
+        effectiveDraftId = await saveDraft();
+        if (effectiveDraftId === null) return;
+      }
+
+      // 2) Backend validation of exactly what will be signed — the REAL
+      //    D3/D3.5 builder + D1 validator, read-only. Unreachable validation
+      //    is reported, never guessed.
+      let validation: ValidateDraftResponse | null = null;
+      try {
+        validation = await api.post<ValidateDraftResponse>(
+          "/api/radiology/report-generator/validate-draft",
+          { draftId: effectiveDraftId },
+        );
+      } catch { validation = null; }
+
+      const s = validation?.structured;
+      let validationSummary: string;
+      let blockingErrors: string[] = [];
+      if (!validation) {
+        validationSummary = "Structured validation: could not be checked (endpoint unreachable).";
+      } else if (!s || !s.enabled) {
+        validationSummary = "Structured validation: disabled — legacy finalize path.";
+      } else if (s.built) {
+        validationSummary = `Structured document valid — ${s.findingsCount} finding(s).` +
+          (s.warnings.length ? `\nWarnings (non-blocking):\n${s.warnings.map((w, i) => `  ${i + 1}. ${w}`).join("\n")}` : "");
+      } else if (s.errors.length > 0) {
+        blockingErrors = s.errors.map(validationIssueText);
+        validationSummary =
+          `STRUCTURED VALIDATION FAILED — ${blockingErrors.length} error(s):\n` +
+          blockingErrors.map((e, i) => `  ${i + 1}. ${e}`).join("\n") +
+          "\nFinalizing now will sign via the LEGACY path (no structured document).";
+      } else {
+        validationSummary =
+          `Structured document skipped (${s.skipReasons.join("; ") || "no structured data"}) — legacy finalize path.`;
+      }
+
+      // 3) Client-side rule warnings (existing validator — warn only).
+      const warnings = validateReport({ findings: rawFindings, impression, recommendation });
+
+      // 4) ONE explicit confirmation carrying the exact identity being
+      //    signed (Phase 7/8): patient, study, modality, accession +
+      //    validation state. window.confirm is this page's existing dialog
+      //    idiom — not redesigning.
+      const identity =
+        `Patient: ${entry.patientName}${entry.age || entry.sex ? ` (${[entry.age, entry.sex].filter(Boolean).join("/")})` : ""}\n` +
+        `Study: ${entry.studyDescription || "—"} · ${entry.modality}\n` +
+        `Accession: ${entry.accessionNumber}`;
+      const warningBlock = warnings.length
+        ? `\nReport check warnings:\n${warnings.map((w, i) => `  ${i + 1}. ${w}`).join("\n")}\n`
+        : "";
+      // Unbilled study: the report row cannot be created (test_id NOT NULL) —
+      // say so BEFORE the radiologist commits, not after.
+      const unbilledNote = entry.patientId && !entry.studyId
+        ? "\nNote: no billed test is linked to this study — the worklist will be marked final, but no patient-facing report row can be created.\n"
+        : "";
+      confirmed = window.confirm(
+        `Finalize this report?\n\n${identity}\n\n${validationSummary}\n${warningBlock}${unbilledNote}\nAfter finalizing, editing is disabled.`,
+      );
+      if (!confirmed) return;
+    } finally {
+      // The in-flight guard for phases 1–4; the signing block below manages
+      // its own flag lifetime so a thrown error can't leave it stuck.
+      if (!confirmed) setFinalizing(false);
+    }
+
+    // Learning Engine (Phase 5): if the recommendation contains a sentence
+    // beyond what the last-selected finding's own template inserted, and it
+    // looks like a genuine addition, record it against that finding for
+    // this radiologist. Fire-and-forget, never blocks finalize, never
+    // inserts anything automatically — purely building up future
+    // suggestions the radiologist can choose to accept.
+    const lastFinding = lastToggledFindingRef.current;
+    if (lastFinding) {
+      const extra = recommendation
+        .split(/\n+/)
+        .map((s) => s.trim())
+        .find((s) => isLearnableAddition(s, lastFinding.recommendationText || ""));
+      if (extra) {
+        api.post("/api/radiology/quick-select/learned-patterns", {
+          triggerLabel: lastFinding.label,
+          suggestedText: extra,
+        }).catch(() => { /* learning is best-effort, never blocks finalize */ });
+      }
+    }
+
     setFinalizing(true);
     try {
       const html = buildPreviewHtml({
@@ -577,38 +1681,33 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         impressionStyle,
       });
 
-      let reportId: number | null = null;
-      if (entry.patientId) {
-        const report = await api.post<{ id: number }>("/api/patient-reports", {
+      // M1.1 — canonical finalize path shared with every reporting surface.
+      // D5 (when ff_radiology_structured_final is on) signs the structured
+      // document server-side with SESSION-derived authorship and reports the
+      // TRUE outcome in structuredFinal; createdBy below only labels the
+      // legacy row path.
+      const { reportId, structuredFinal, reportCreationSkipped: skippedReason } = await finalizeRadiologyReport(
+        {
           patientId: entry.patientId,
-          testId: null,
-          studyId: entry.studyId ?? null,
-          type: "radiology",
-          title:
-            selectedTemplate?.templateName || entry.studyDescription || "Radiology Report",
-          body: html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(),
-          impression: impression.join("\n"),
-          parameters: JSON.stringify({
-            modality: entry.modality,
-            studyDescription: entry.studyDescription,
-            accessionNumber: entry.accessionNumber,
-            studyInstanceUID: entry.studyInstanceUID,
-          }),
+          studyId: entry.studyId,
+          // The page's study key (worklist row id) — the same key drafts are
+          // saved under, so D5 finds THIS study's draft.
+          worklistId: entry.id ?? studyId ?? null,
+          modality: entry.modality,
+          studyDescription: entry.studyDescription,
+          accessionNumber: entry.accessionNumber,
+          studyInstanceUID: entry.studyInstanceUID,
+        },
+        {
+          title: selectedTemplate?.templateName || entry.studyDescription || "Radiology Report",
+          htmlBody: html,
+          impression,
           isCritical,
-          criticalNote: isCritical ? criticalNote : null,
+          criticalNote,
           createdBy: session?.user.name ?? "Radiologist",
-        });
-        reportId = report.id;
-      }
-
-      await api.post("/api/internal/radiology/report-status", {
-        accessionNumber: entry.accessionNumber,
-        studyInstanceUID: entry.studyInstanceUID,
-        status: "REPORT_FINAL",
-        deliveryStatus: "READY_TO_SEND",
-        reportId: reportId ?? undefined,
-        actor: session?.user.name ?? "staff",
-      });
+          actor: session?.user.name ?? "staff",
+        },
+      );
 
       await api.post("/api/radiology/report-generator/log-action", {
         studyId: entry.studyId || entry.id,
@@ -621,12 +1720,39 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       });
 
       setReportStatus("FINAL");
+      setFinalizedReportId(reportId);
+      setStructuredFinalInfo(structuredFinal);
+      setReportCreationSkipped(skippedReason);
+      // M1.5 — the queue treats this study as done immediately, even before
+      // the 30s worklist refetch reflects the server status flip.
+      if (studyId != null) workflow.markCompleted(studyId);
+      // Finalized content is on the server — the workspace is clean now.
+      setLastSavedSnapshot(serializeReportSnapshot({
+        clinicalHistory, technique, rawFindings, impression, recommendation,
+        quickSelectIds: Array.from(selectedQuickIds),
+      }));
+      // Finalized text is now safely on the server — remove the local
+      // backup so patient report text never lingers on a shared machine.
+      draftBackup.clear();
+      // Surface the TRUE finalize path (Phase 8) — never claim a structured
+      // sign that did not happen.
+      const signedStructured = structuredFinal?.signed === true;
+      const legacyFallback = structuredFinal?.signed === false;
       toast({
-        title: "Report Finalized",
-        description: reportId ? `Report ID: ${reportId}` : "Worklist updated.",
+        title: signedStructured ? "Report Finalized — structured document signed" : "Report Finalized",
+        description: skippedReason
+          ? `Worklist marked final, but NO patient report row was created: ${skippedReason}.`
+          : legacyFallback
+            ? `Signed via LEGACY path: ${typeof structuredFinal?.reason === "string" ? structuredFinal.reason : "structured signing unavailable"}`
+            : reportId ? `Report ID: ${reportId}` : "Worklist updated.",
+        ...(legacyFallback || skippedReason ? { variant: "destructive" as const } : {}),
       });
       void qc.invalidateQueries({ queryKey: ["workspace-entry", studyId] });
       void qc.invalidateQueries({ queryKey: ["radiology-worklist"] });
+      // Lifecycle metadata for the fresh report (Phase 8: refresh
+      // report/version metadata, preserve access to the signed report).
+      void qc.invalidateQueries({ queryKey: ["workspace-final-report"] });
+      void qc.invalidateQueries({ queryKey: ["radiology-existing-draft", studyId] });
     } catch (err) {
       toast({
         title: "Finalize Failed",
@@ -636,6 +1762,155 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     } finally {
       setFinalizing(false);
     }
+  }
+
+  /** M1.4 Phase 9 — countersign via the existing D9 route. UI gating only;
+   *  the server re-enforces role, permission, and verifier≠signer. */
+  async function verifyReport() {
+    if (!finalReport || verifying) return;
+    const targetId = finalReport.id ?? linkedReportId;
+    if (!targetId) return;
+    if (!window.confirm(
+      `Verify (countersign) this report as ${session?.user.name ?? "current user"}?\n\n` +
+      `This records you as the verifying radiologist.`,
+    )) return;
+    setVerifying(true);
+    try {
+      await api.post(`/api/patient-reports/${targetId}/verify`, {
+        verifiedByName: session?.user.name ?? undefined,
+      });
+      toast({ title: "Report verified" });
+      void qc.invalidateQueries({ queryKey: ["workspace-final-report"] });
+      void qc.invalidateQueries({ queryKey: ["workspace-entry", studyId] });
+    } catch (err) {
+      toast({
+        title: "Verify failed",
+        description: err instanceof Error ? err.message : "Error",
+        variant: "destructive",
+      });
+    } finally {
+      setVerifying(false);
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // M1.5 — WORKFLOW TRANSITIONS (next / previous / park / refresh)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /** Central transition gate (Phase 3/7): busy states BLOCK, dirty CONFIRMS.
+   *  Rules are pure (lib/reportingWorkflow.canLeaveStudy). */
+  function guardedLeave(): boolean {
+    const verdict = canLeaveStudy({
+      dirty, saving, finalizing,
+      viewerLaunching: viewerLaunch.busy,
+      transitioning: workflow.transitioning,
+    });
+    if (verdict.kind === "blocked") {
+      toast({ title: "Cannot switch study", description: verdict.reason, variant: "destructive" });
+      return false;
+    }
+    if (verdict.kind === "confirm") return window.confirm(verdict.reason);
+    return true;
+  }
+
+  /** Phase 7: pending requests for the departing study must never land on
+   *  the next patient's screen. Keyed queries already isolate the DATA; this
+   *  aborts the in-flight requests themselves. */
+  function cancelCurrentStudyRequests() {
+    void qc.cancelQueries({ queryKey: ["workspace-entry", studyId] });
+    void qc.cancelQueries({ queryKey: ["radiology-existing-draft", studyId] });
+    void qc.cancelQueries({ queryKey: ["radiology-finding-instances"] });
+    void qc.cancelQueries({ queryKey: ["radiology-validate-draft"] });
+    void qc.cancelQueries({ queryKey: ["workspace-final-report"] });
+  }
+
+  /** Navigate to a queue row: history + navigation lock + expected-patient
+   *  capture happen in the controller; the M1.4 isolation effect resets all
+   *  report state when the :studyId param changes. */
+  function goToStudy(target: QueueStudy) {
+    cancelCurrentStudyRequests();
+    // M1.6A — leaving safely (guards passed) releases our lock; a failed
+    // release is harmless because expiry is authoritative.
+    studyLock.release(studyId);
+    workflow.beginTransition(studyId, target);
+    navigate(`/radiology/report/${target.id}`);
+  }
+
+  /** Phase 3 — Next Study: next eligible (skips completed + parked, wraps);
+   *  when the fresh queue is exhausted, offers the oldest parked study. */
+  function nextStudy() {
+    if (!guardedLeave()) return;
+    const target = workflow.peekNext();
+    if (target) {
+      goToStudy(target);
+      return;
+    }
+    const parkedNext = workflow.peekParked();
+    if (parkedNext) {
+      const label = `${parkedNext.patientName} · ${parkedNext.accessionNumber}`;
+      if (window.confirm(`No unreported studies left in the queue.\n\nReturn to parked study?\n${label}`)) {
+        workflow.unpark(parkedNext.id);
+        goToStudy(parkedNext);
+      }
+      return;
+    }
+    toast({ title: "Queue complete", description: "No more eligible studies to report." });
+  }
+
+  /** Phase 4 — Previous Study: true back-stack of visited studies. */
+  function previousStudy() {
+    if (workflow.historyDepth === 0) {
+      toast({ title: "No previous study", description: "You haven't navigated from another study yet." });
+      return;
+    }
+    if (!guardedLeave()) return;
+    cancelCurrentStudyRequests();
+    studyLock.release(studyId);
+    const targetId = workflow.beginPreviousTransition(studyId);
+    if (targetId == null) return;
+    navigate(`/radiology/report/${targetId}`);
+  }
+
+  /** Phase 5 — Park the current study (optional reason) and advance. */
+  function parkCurrentStudy() {
+    if (studyId == null || !entry) return;
+    if (workflow.isParked(studyId)) {
+      workflow.unpark(studyId);
+      toast({ title: "Study unparked" });
+      return;
+    }
+    if (!guardedLeave()) return;
+    // M1.6B2 — a spoken reason (possibly "") skips the prompt; button/keyboard
+    // parks still prompt exactly as before.
+    const voiceReason = voiceParkReasonRef.current;
+    const reason = voiceReason !== null ? voiceReason : window.prompt("Park this study — reason (optional):", "");
+    if (reason === null) return; // cancelled
+    workflow.park(studyId, reason);
+    const target = workflow.peekNext();
+    if (target) goToStudy(target);
+    else toast({ title: "Study parked", description: "No further eligible studies — staying on this study." });
+  }
+
+  /** Phase 6 — queue refresh; never touches the report being typed. */
+  function refreshQueueAndCurrent() {
+    workflow.refreshQueue();
+    // Re-pull the current study's status/lifecycle additively — hydration is
+    // once-per-study, so a refetch can NEVER rewrite the editor text.
+    void qc.invalidateQueries({ queryKey: ["workspace-entry", studyId] });
+    void qc.invalidateQueries({ queryKey: ["workspace-final-report"] });
+    toast({ title: "Queue refreshed" });
+  }
+
+  /** Phase 6 — full reload of the current study from the server (explicit,
+   *  confirmed when dirty; reuses the study-switch reset + load path). */
+  function reloadCurrentStudy() {
+    if (studyId == null) return;
+    if (dirty && !window.confirm("Reload this study from the server? Unsaved changes will be lost.")) return;
+    resetWorkspaceState(); // also re-arms the once-per-study hydration guards
+    void qc.invalidateQueries({ queryKey: ["workspace-entry", studyId] });
+    void qc.invalidateQueries({ queryKey: ["radiology-existing-draft", studyId] });
+    void qc.invalidateQueries({ queryKey: ["radiology-finding-instances"] });
+    toast({ title: "Study reloaded" });
   }
 
   function printReport() {
@@ -750,7 +2025,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           {filteredTemplates.map((t) => (
             <button
               key={t.id}
-              onClick={() => setSelectedTemplateId(t.id)}
+              onClick={() => {
+                // Explicit user choice → full template apply (M1.4).
+                templateApplySourceRef.current = "manual";
+                setSelectedTemplateId(t.id);
+              }}
               className={`text-left text-xs px-2 py-1.5 rounded border transition-colors ${
                 selectedTemplateId === t.id
                   ? "bg-primary text-primary-foreground border-primary"
@@ -826,7 +2105,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // ══════════════════════════════════════════════════════════════════════════
 
   const RIGHT_TABS = [
+    { id: "quickselect", label: "Quick", icon: <Zap size={11} /> },
     { id: "templates", label: "Templates", icon: <LayoutTemplate size={11} /> },
+    { id: "followup", label: "Follow-up", icon: <RefreshCw size={11} /> },
     { id: "prior", label: "Prior", icon: <ClipboardList size={11} /> },
     { id: "ai", label: "AI", icon: <Sparkles size={11} /> },
     { id: "measurements", label: "Measure", icon: <BarChart3 size={11} /> },
@@ -842,7 +2123,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           variant="ghost"
           size="sm"
           className="h-7 gap-1 text-xs shrink-0"
-          onClick={() => navigate("/radiology/worklist")}
+          onClick={() => {
+            // Explicit exit — release our lock when safe (expiry covers the rest).
+            studyLock.release(studyId);
+            navigate("/radiology/worklist");
+          }}
         >
           <ArrowLeft size={13} /> Worklist
         </Button>
@@ -859,6 +2144,22 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         >
           {STATUS_CONFIG[reportStatus]?.label || reportStatus}
         </Badge>
+        {/* M1.4 — draft-load + dirty state, always truthful */}
+        {!!studyId && isLoadingExistingDraft && (
+          <span className="shrink-0 text-[10px] text-muted-foreground">Loading draft…</span>
+        )}
+        {!!studyId && !isLoadingExistingDraft && !existingDraft && !lastSavedAt && (
+          <span className="shrink-0 text-[10px] text-muted-foreground">No saved draft</span>
+        )}
+        {dirty ? (
+          <Badge variant="outline" className="shrink-0 text-[10px] bg-amber-50 text-amber-800 border-amber-300">
+            Unsaved changes
+          </Badge>
+        ) : lastSavedAt ? (
+          <span className="shrink-0 text-[10px] text-muted-foreground">
+            Saved {lastSavedAt.toLocaleTimeString()}
+          </span>
+        ) : null}
         <div className="flex items-center gap-1.5 shrink-0">
           <Switch
             id="structured"
@@ -871,6 +2172,126 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           </Label>
         </div>
       </div>
+
+      {/* ── M1.5 — workflow status bar (Phase 10) ──────────────────────────── */}
+      <div className="shrink-0 flex items-center gap-2 px-3 py-1 border-b bg-muted/20 text-[11px] flex-wrap" data-testid="workflow-status-bar">
+        <span className="text-muted-foreground" data-testid="queue-position">
+          Study {workflow.position.index >= 0 ? `${workflow.position.index + 1} of ${workflow.position.total}` : `— of ${workflow.position.total}`}
+        </span>
+        <span className="text-green-700">✓ {workflow.completedCount} completed</span>
+        <span className={workflow.parkedCount > 0 ? "text-amber-700" : "text-muted-foreground"}>⏸ {workflow.parkedCount} parked</span>
+        {workflow.isParked(studyId) && (
+          <Badge className="bg-amber-100 text-amber-800 border-amber-300 text-[10px] py-0" data-testid="parked-badge">
+            PARKED{(() => { const r = workflow.parked.find((p) => p.id === studyId)?.reason; return r ? ` — ${r}` : ""; })()}
+          </Badge>
+        )}
+        {dirty && <span className="text-amber-700">● unsaved</span>}
+        {saving && <span className="text-blue-700">Saving…</span>}
+        {finalizing && <span className="text-blue-700">Finalizing…</span>}
+        {workflow.transitioning && <span className="text-blue-700">Switching study…</span>}
+        {/* M1.6A — lock ownership, always visible and truthful */}
+        {studyLock.status !== "idle" && studyLock.status !== "not-found" && studyLock.status !== "completed" && (
+          <span
+            data-testid="lock-status"
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 border text-[10px] font-semibold ${
+              studyLock.status === "mine" ? "bg-green-100 text-green-800 border-green-300"
+              : studyLock.status === "locked-by-other" ? "bg-red-100 text-red-800 border-red-300"
+              : studyLock.status === "claiming" ? "bg-slate-100 text-slate-700 border-slate-300"
+              : "bg-amber-100 text-amber-800 border-amber-300"
+            }`}
+            title={studyLock.expiresAt ? `Lock expires ${new Date(studyLock.expiresAt).toLocaleTimeString()} (heartbeat keeps it alive)` : undefined}
+          >
+            <Lock size={9} /> {lockStatusMessage(studyLock.status, studyLock.ownerName)}
+          </span>
+        )}
+        <span className="text-muted-foreground" data-testid="viewer-status">
+          Viewer:{" "}
+          {viewerLaunch.busy
+            ? "connecting…"
+            : viewerLaunch.lastResult?.success && viewerLaunch.lastResult.selectedNetworkMode
+              ? `connected via ${viewerLaunch.lastResult.selectedNetworkMode}`
+              : viewerLaunch.lastResult && !viewerLaunch.lastResult.success
+                ? "launch failed"
+                : "—"}
+        </span>
+        <div className="ml-auto flex items-center gap-1">
+          {/* M1.6A/M1.6B1 — assignment-aware queue scope (+ By Radiologist) */}
+          <select
+            className="h-6 text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
+            value={queueScope}
+            data-testid="queue-scope"
+            onChange={(e) => changeQueueScope(parseQueueScope(e.target.value))}
+            title="Queue scope: which studies Next/Previous and the queue list cover"
+          >
+            {(Object.keys(QUEUE_SCOPE_LABELS) as Array<keyof typeof QUEUE_SCOPE_LABELS>).map((s) => (
+              <option key={s} value={s}>{QUEUE_SCOPE_LABELS[s]}</option>
+            ))}
+            {radiologists.length > 0 && (
+              <optgroup label="By radiologist">
+                {radiologists.map((r) => (
+                  <option key={r.id} value={`rad:${r.id}`}>{r.name}</option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+          {/* Jump to a specific queue row — →current ✓done ⏸parked 🔒locked */}
+          <select
+            className="h-6 max-w-[260px] text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
+            value=""
+            data-testid="queue-jump"
+            onChange={(e) => {
+              const id = Number(e.target.value);
+              if (!id) return;
+              const row = workflow.queue.find((s) => s.id === id);
+              if (!row || row.id === studyId) return;
+              if (!guardedLeave()) return;
+              goToStudy(row);
+            }}
+            title="Jump to a study in the queue"
+          >
+            <option value="">Queue ({workflow.position.total})…</option>
+            {workflow.queue.map((s) => {
+              const ind = workflow.indicators.find((i) => i.id === s.id);
+              const prefix = ind?.current ? "→ " : ind?.completed ? "✓ " : ind?.parked ? "⏸ " : ind?.lockedByOther ? "🔒 " : "";
+              return (
+                <option key={s.id} value={s.id}>
+                  {prefix}{s.patientName} · {s.modality} · {s.accessionNumber}
+                </option>
+              );
+            })}
+          </select>
+          <Button size="sm" variant="outline" className="h-6 text-[10px] gap-0.5 px-1.5"
+            onClick={() => previousStudy()} disabled={workflow.historyDepth === 0 || workflow.transitioning}
+            title="Previous study (Ctrl+Shift+P)" data-testid="btn-previous-study">
+            <ChevronLeft size={11} /> Prev
+          </Button>
+          <Button size="sm" variant="outline" className="h-6 text-[10px] gap-0.5 px-1.5"
+            onClick={() => nextStudy()} disabled={workflow.transitioning}
+            title="Next eligible study (Ctrl+Shift+N)" data-testid="btn-next-study">
+            Next <ChevronRight size={11} />
+          </Button>
+          <Button size="sm" variant="outline" className="h-6 text-[10px] gap-0.5 px-1.5"
+            onClick={() => parkCurrentStudy()} disabled={!entry || workflow.transitioning}
+            title={workflow.isParked(studyId) ? "Unpark this study" : "Park this study and move on (Ctrl+Shift+K)"}
+            data-testid="btn-park-study">
+            <PauseCircle size={11} /> {workflow.isParked(studyId) ? "Unpark" : "Park"}
+          </Button>
+          <Button size="sm" variant="ghost" className="h-6 text-[10px] gap-0.5 px-1.5"
+            onClick={() => refreshQueueAndCurrent()} disabled={workflow.queueRefreshing}
+            title="Refresh the queue and this study's status" data-testid="btn-refresh-queue">
+            <RefreshCw size={11} className={workflow.queueRefreshing ? "animate-spin" : ""} /> Refresh
+          </Button>
+          <Button size="sm" variant="ghost" className="h-6 text-[10px] px-1.5"
+            onClick={() => reloadCurrentStudy()} disabled={!studyId}
+            title="Reload this study from the server (unsaved changes prompt first)" data-testid="btn-reload-study">
+            Reload
+          </Button>
+        </div>
+      </div>
+
+      {/* ── M1.6B2 — voice command bar (hidden entirely when disabled; the
+          workspace never depends on voice — keyboard/mouse stay canonical) ── */}
+      {voiceSettings.enabled && <VoiceCommandBar voice={voice} />}
 
       {/* ── 3-column body ──────────────────────────────────────────────────── */}
       <div className="flex flex-1 overflow-hidden">
@@ -911,46 +2332,43 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   <span className="truncate">{entry.referringDoctor || "—"}</span>
                   <span className="text-muted-foreground">Date</span>
                   <span>{entry.studyDate || "—"}</span>
+                  <span className="text-muted-foreground">Study UID</span>
+                  <span className="font-mono text-[10px] truncate" title={entry.studyInstanceUID || undefined}>
+                    {entry.studyInstanceUID || "— missing —"}
+                  </span>
+                  {/* M1.6B1 — assignment (organizational ownership, distinct from the lock) */}
+                  <span className="text-muted-foreground">Assigned</span>
+                  <span
+                    className="truncate"
+                    title={entry.assignedAt
+                      ? `Assigned ${new Date(entry.assignedAt).toLocaleString()}${entry.assignedByName ? ` by ${entry.assignedByName}` : ""}`
+                      : undefined}
+                  >
+                    {entry.assignedRadiologist || "— unassigned —"}
+                    {entry.assignedByName ? <span className="text-muted-foreground text-[10px]"> · by {entry.assignedByName}</span> : null}
+                  </span>
                 </div>
-                {/* Viewer launch buttons */}
-                <div className="flex gap-1.5 flex-wrap pt-1">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 text-xs gap-1"
-                    onClick={openWeasis}
-                    disabled={!entry.studyInstanceUID}
-                  >
-                    <MonitorPlay size={12} /> Weasis
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 text-xs gap-1"
-                    onClick={() =>
-                      entry.studyInstanceUID &&
-                      window.open(`/radiology/viewer/${entry.studyInstanceUID}`, "_blank")
-                    }
-                    disabled={!entry.studyInstanceUID}
-                  >
-                    <Monitor size={12} /> OHIF
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 text-xs gap-1"
-                    onClick={() =>
-                      entry.studyInstanceUID &&
-                      window.open(
-                        `/api/radiology/studies/${entry.studyInstanceUID}/weasis-launch-redirect`,
-                        "_blank"
-                      )
-                    }
-                    disabled={!entry.studyInstanceUID}
-                  >
-                    <ExternalLink size={12} /> PACS
-                  </Button>
-                </div>
+                {/* Assigned to another radiologist: warn, never silently steal */}
+                {assignmentCategoryOf(entry, session?.user.name ?? null, session?.user.id ?? null) === "other" && (
+                  <div className="flex items-center gap-1.5 p-1.5 rounded bg-amber-50 border border-amber-200 text-amber-900 text-[11px]">
+                    <AlertTriangle size={12} className="shrink-0" />
+                    <span>Assigned to {entry.assignedRadiologist} — reporting it will NOT change the assignment.</span>
+                  </div>
+                )}
+                {/* M1.2 — the ONE study-launch control (network auto-selection,
+                    forced modes, route badge, diagnostics). URL construction
+                    lives in lib/studyLaunchService, not in this page. */}
+                <OpenStudyPanel
+                  study={{
+                    studyInstanceUID: entry.studyInstanceUID ?? null,
+                    accessionNumber: entry.accessionNumber ?? null,
+                    patientId: entry.patientId ?? null,
+                    worklistId: entry.id ?? null,
+                  }}
+                  isAdmin={isOwnerRole(session)}
+                  onLaunchStateChange={setViewerLaunch}
+                />
+
               </div>
             )}
           </div>
@@ -959,6 +2377,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           <div className="flex-1 overflow-hidden">
             {entry?.studyInstanceUID ? (
               <EmbeddedWadoViewer
+                ref={embeddedViewerRef}
                 studyInstanceUID={entry.studyInstanceUID}
                 accessionNumber={entry.accessionNumber}
               />
@@ -983,22 +2402,208 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
 
             {/* Finalized banner */}
-            {isLocked && (
+            {statusLocked && (
               <div className="flex items-center gap-2 p-2 rounded-md bg-green-50 border border-green-200 text-green-800 text-xs font-medium shrink-0">
                 <CheckCircle2 size={14} /> Report is finalized. Editing is disabled.
               </div>
             )}
 
-            {/* Clinical History */}
-            <div className="flex flex-col gap-1.5">
-              <div className="flex items-center justify-between">
-                <Label className="text-xs font-semibold">Clinical History</Label>
+            {/* M1.6A — locked by another radiologist: read-only view */}
+            {!statusLocked && lockedByOther && (
+              <div className="flex items-center gap-2 p-2 rounded-md bg-red-50 border border-red-200 text-red-800 text-xs font-medium shrink-0">
+                <Lock size={14} className="shrink-0" />
+                <span className="flex-1">
+                  {lockStatusMessage("locked-by-other", studyLock.ownerName)} — read-only view. Editing and finalize are
+                  disabled until the study is released{studyLock.expiresAt ? ` (lock expires ${new Date(studyLock.expiresAt).toLocaleTimeString()})` : ""}.
+                </span>
+                <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={() => void studyLock.claim()}>
+                  Retry claim
+                </Button>
+                {isOwnerRole(session) && (
+                  <Button size="sm" variant="outline" className="h-6 text-[10px] border-red-300 text-red-700"
+                    onClick={() => {
+                      const reason = window.prompt(`Admin override — force-release the lock held by ${studyLock.ownerName ?? "another user"}?\nReason (required for the audit log):`, "");
+                      if (reason === null || !reason.trim()) return;
+                      void studyLock.forceRelease(reason.trim()).then((ok) => {
+                        if (!ok) toast({ title: "Override failed", description: "Admin override required.", variant: "destructive" });
+                      });
+                    }}>
+                    Admin override
+                  </Button>
+                )}
+              </div>
+            )}
+
+            {/* M1.6A — our lock lapsed while editing: text preserved, reclaim to continue */}
+            {!statusLocked && lockLost && (
+              <div className="flex items-center gap-2 p-2 rounded-md bg-amber-50 border border-amber-200 text-amber-900 text-xs font-medium shrink-0">
+                <AlertTriangle size={14} className="shrink-0" />
+                <span className="flex-1">
+                  {lockStatusMessage("expired-lost", null)}. Your text is preserved locally — reclaim before saving or finalizing.
+                </span>
+                <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={() => void studyLock.claim()}>
+                  Reclaim study
+                </Button>
+              </div>
+            )}
+
+            {/* M1.6A — heartbeat unreachable: lock may lapse server-side */}
+            {!statusLocked && studyLock.status === "connection-lost" && (
+              <div className="flex items-center gap-2 p-2 rounded-md bg-amber-50 border border-amber-200 text-amber-900 text-xs font-medium shrink-0">
+                <AlertTriangle size={14} className="shrink-0" />
+                <span className="flex-1">{lockStatusMessage("connection-lost", null)}. Your text is safe locally.</span>
+                <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={() => void studyLock.claim()}>
+                  Reconnect
+                </Button>
+              </div>
+            )}
+
+            {/* M1.4 — truthful "no report row" note for THIS session's finalize */}
+            {reportCreationSkipped && (
+              <div className="flex items-center gap-2 p-2 rounded-md bg-amber-50 border border-amber-200 text-amber-900 text-[11px] shrink-0">
+                <AlertTriangle size={13} className="shrink-0" />
+                <span>
+                  Worklist marked final, but no patient-facing report row was created: {reportCreationSkipped}.
+                </span>
+              </div>
+            )}
+
+            {/* M1.4 — truthful finalize path for THIS session's finalize */}
+            {structuredFinalInfo && (
+              structuredFinalInfo.signed === true ? (
+                <div className="flex items-center gap-2 p-2 rounded-md bg-blue-50 border border-blue-200 text-blue-800 text-[11px] shrink-0">
+                  <CheckCircle2 size={13} className="shrink-0" />
+                  <span>
+                    Structured document signed
+                    {typeof structuredFinalInfo.documentId === "string" ? ` · ${structuredFinalInfo.documentId}` : ""}
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 p-2 rounded-md bg-amber-50 border border-amber-200 text-amber-900 text-[11px] shrink-0">
+                  <AlertTriangle size={13} className="shrink-0" />
+                  <span>
+                    Finalized via the LEGACY path — no structured document was signed
+                    {typeof structuredFinalInfo.reason === "string" ? ` (${structuredFinalInfo.reason})` : ""}.
+                  </span>
+                </div>
+              )
+            )}
+
+            {/* M1.4 — D8/D9 lifecycle, version and amendment state of the
+                linked final report; Verify appears only for permitted users
+                (server re-enforces). */}
+            {(lifecycleBadges.length > 0 || canShowVerify) && (
+              <div className="flex items-center gap-1.5 flex-wrap shrink-0">
+                {lifecycleBadges.map((b) => (
+                  <span
+                    key={b.label}
+                    className={`text-[10px] font-semibold rounded-full px-2 py-0.5 border ${BADGE_TONE_CLASS[b.tone] ?? BADGE_TONE_CLASS.slate}`}
+                  >
+                    {b.label}
+                  </span>
+                ))}
+                {canShowVerify && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 text-[10px] gap-1 border-green-300 text-green-700 hover:bg-green-50"
+                    onClick={verifyReport}
+                    disabled={verifying}
+                    title="Countersign this report as the verifying radiologist (D9)"
+                  >
+                    {verifying ? <RefreshCw size={10} className="animate-spin" /> : <CheckCircle2 size={10} />}
+                    Verify report
+                  </Button>
+                )}
+                {!canShowVerify && verifyGate.reason === "verifier must differ from signer" && (
+                  <span className="text-[10px] text-muted-foreground">Verification requires a second radiologist.</span>
+                )}
+              </div>
+            )}
+
+            {/* Unsaved local backup found — offered ONLY when newer than the
+                server draft AND actually different from it (M1.4 Phase 3). */}
+            {offerBackupRestore && (
+              <div className="flex items-center gap-2 p-2 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-xs font-medium shrink-0">
+                <AlertTriangle size={14} className="shrink-0" />
+                <span className="flex-1">Unsaved report text from a previous session was found on this computer.</span>
+                <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={restoreLocalBackup}>
+                  Restore
+                </Button>
+                <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={draftBackup.discard}>
+                  Discard
+                </Button>
+              </div>
+            )}
+
+            {/* Live quality score + snapshot history + normals filler (Phase 3) */}
+            {!isLocked && (
+              <div className="flex items-center gap-2 flex-wrap shrink-0">
+                <span
+                  className={`text-[10px] font-semibold rounded-full px-2 py-0.5 border ${
+                    quality.score >= 85
+                      ? "bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300"
+                      : quality.score >= 60
+                        ? "bg-amber-50 border-amber-200 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300"
+                        : "bg-red-50 border-red-200 text-red-700 dark:bg-red-950/30 dark:text-red-400"
+                  }`}
+                  title={quality.issues.length ? quality.issues.map((i, n) => `${n + 1}. ${i}`).join("\n") + (checklistRemaining.length ? `\n\nChecklist remaining: ${checklistRemaining.join(", ")}` : "") : "Report is complete and consistent."}
+                >
+                  Quality {quality.score}/100{quality.issues.length > 0 ? ` · ${quality.issues.length} issue${quality.issues.length > 1 ? "s" : ""}` : ""}
+                </span>
+                {draftBackup.listSnapshots().length > 0 && (
+                  <select
+                    className="h-6 text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
+                    value=""
+                    onChange={(e) => {
+                      const ts = Number(e.target.value);
+                      if (!ts) return;
+                      const snap = draftBackup.restoreSnapshot(ts);
+                      if (!snap) return;
+                      if (!window.confirm(`Restore snapshot from ${new Date(ts).toLocaleTimeString()}? Current text will be replaced.`)) return;
+                      setClinicalHistory(snap.clinicalHistory ?? "");
+                      setTechnique(snap.technique ?? "");
+                      setRawFindings(snap.rawFindings ?? "");
+                      setImpression(Array.isArray(snap.impression) ? snap.impression : []);
+                      setRecommendation(snap.recommendation ?? "");
+                      toast({ title: "Snapshot restored" });
+                    }}
+                    title="Auto-saved snapshots (one per minute while you work)"
+                  >
+                    <option value="">Snapshots ({draftBackup.listSnapshots().length})…</option>
+                    {draftBackup.listSnapshots().map((s) => (
+                      <option key={s.ts} value={s.ts}>{new Date(s.ts).toLocaleTimeString()}</option>
+                    ))}
+                  </select>
+                )}
+                {activeProtocol?.normalText && (
+                  <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={handleInsertProtocolNormals}
+                    title={activeProtocol.normalText}>
+                    + {activeProtocol.name} normals
+                  </Button>
+                )}
+                {useStructured && selectedTemplate && (
+                  <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={fillRemainingNormals}
+                    title="Set every section you haven't edited to its normal text — edited sections are never changed">
+                    Fill remaining normals
+                  </Button>
+                )}
+              </div>
+            )}
+
+            {/* Clinical History — collapsible (Phase 3), layout remembered per browser */}
+            <CollapsibleSection
+              layoutKey="radiology_report_layout"
+              id="clinical_history"
+              title="Clinical History"
+              headerExtra={
                 <VoiceDictationButton
                   onInsert={(t) => setClinicalHistory((p) => p + t)}
                   targetField="clinical_history"
                   className="h-6 text-[10px]"
                 />
-              </div>
+              }
+            >
               <Textarea
                 value={clinicalHistory}
                 onChange={(e) => setClinicalHistory(e.target.value)}
@@ -1006,11 +2611,21 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 className="min-h-[56px] text-sm resize-none"
                 disabled={isLocked}
               />
-            </div>
+            </CollapsibleSection>
 
-            {/* Technique */}
-            <div className="flex flex-col gap-1.5">
-              <Label className="text-xs font-semibold">Technique</Label>
+            {/* Technique — collapsible (Phase 3) */}
+            <CollapsibleSection
+              layoutKey="radiology_report_layout"
+              id="technique"
+              title="Technique"
+              headerExtra={
+                <VoiceDictationButton
+                  onInsert={(t) => setTechnique((p) => p + t)}
+                  targetField="technique"
+                  className="h-5 text-[10px]"
+                />
+              }
+            >
               <Textarea
                 value={technique}
                 onChange={(e) => setTechnique(e.target.value)}
@@ -1018,7 +2633,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 className="min-h-[44px] text-sm resize-none"
                 disabled={isLocked}
               />
-            </div>
+            </CollapsibleSection>
 
             {/* Findings */}
             <div className="flex flex-col gap-2">
@@ -1086,6 +2701,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                           placeholder="Describe finding..."
                           className="min-h-[48px] text-xs mt-1 resize-none"
                           disabled={isLocked}
+                          data-editor="findings-section"
                         />
                       )}
                       {item.normal && (
@@ -1113,6 +2729,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   placeholder="Enter free-text findings..."
                   className="min-h-[180px] text-sm font-mono resize-y"
                   disabled={isLocked}
+                  data-editor="findings"
                 />
               )}
             </div>
@@ -1156,13 +2773,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                       placeholder={`Impression point ${i + 1}`}
                       className="min-h-[40px] text-sm flex-1 resize-none"
                       disabled={isLocked}
+                      data-editor="impression"
                     />
                     {!isLocked && (
                       <Button
                         variant="ghost"
                         size="icon"
                         className="h-7 w-7 mt-0.5 shrink-0"
-                        onClick={() => removeImpression(i)}
+                        onClick={() => deleteImpressionLineAt(i)}
                       >
                         <Trash2 size={12} />
                       </Button>
@@ -1213,17 +2831,21 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               )}
             </div>
 
-            {/* Recommendation */}
-            <div className="flex flex-col gap-1.5">
-              <Label className="text-xs font-semibold">Recommendation</Label>
+            {/* Recommendation / Advice — collapsible (Phase 3) */}
+            <CollapsibleSection
+              layoutKey="radiology_report_layout"
+              id="recommendation"
+              title="Recommendation / Advice"
+            >
               <Textarea
                 value={recommendation}
                 onChange={(e) => setRecommendation(e.target.value)}
                 placeholder="Recommendation..."
                 className="min-h-[44px] text-sm resize-none"
                 disabled={isLocked}
+                data-editor="recommendation"
               />
-            </div>
+            </CollapsibleSection>
 
             {/* Critical finding */}
             <div className="flex flex-col gap-2 border rounded-md p-3 bg-red-50/40 border-red-100">
@@ -1292,6 +2914,62 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                     </Button>
                   </div>
                 </div>
+                {/* M1.4 — REAL backend validation of the saved draft (the
+                    D3/D3.5 builder + D1 validator run read-only server-side;
+                    nothing here is recomputed in React). */}
+                <div className="px-3 py-2 border-b text-[11px] space-y-1">
+                  {!draftId ? (
+                    <div className="text-muted-foreground">Save the draft to run structured validation.</div>
+                  ) : validating ? (
+                    <div className="text-muted-foreground">Running structured validation…</div>
+                  ) : !draftValidation ? (
+                    <div className="text-muted-foreground">Structured validation not loaded.</div>
+                  ) : !draftValidation.structured.enabled ? (
+                    <div className="text-muted-foreground">
+                      Structured validation disabled — legacy draft only
+                      {` (findings ${draftValidation.legacy.rawFindings ? "present" : "missing"}, impression ${draftValidation.legacy.impression ? "present" : "missing"}).`}
+                    </div>
+                  ) : draftValidation.structured.built ? (
+                    <>
+                      <div className="text-green-700 font-medium">
+                        ✓ Structured document valid — {draftValidation.structured.findingsCount} finding(s)
+                      </div>
+                      {draftValidation.structured.warnings.map((w, i) => (
+                        <div key={i} className="text-amber-700">⚠ {w}</div>
+                      ))}
+                    </>
+                  ) : draftValidation.structured.errors.length > 0 ? (
+                    <>
+                      <div className="text-red-700 font-semibold">
+                        ✗ Structured validation failed — {draftValidation.structured.errors.length} blocking error(s); finalize would use the legacy path
+                      </div>
+                      {draftValidation.structured.errors.map((err, i) => (
+                        <div key={i} className="text-red-700">{i + 1}. {validationIssueText(err)}</div>
+                      ))}
+                    </>
+                  ) : (
+                    <div className="text-amber-700">
+                      Structured document skipped ({(draftValidation.structured.skipReasons ?? []).join("; ") || "no structured data"}) — legacy fallback.
+                    </div>
+                  )}
+                  {/* Renderer/hash diagnostics — admin-only drawer (Phase 7) */}
+                  {isOwnerRole(session) && draftValidation?.structured.enabled && draftValidation.structured.built && (
+                    <div>
+                      <button
+                        className="underline text-muted-foreground"
+                        onClick={() => setShowDiagnostics((v) => !v)}
+                      >
+                        {showDiagnostics ? "Hide" : "Show"} structured diagnostics
+                      </button>
+                      {showDiagnostics && (
+                        <div className="mt-1 font-mono text-[10px] text-muted-foreground break-all">
+                          <div>document_id: {draftValidation.structured.documentId}</div>
+                          <div>content_sha256: {draftValidation.structured.contentSha256}</div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
                 <div
                   ref={previewRef}
                   className="p-4"
@@ -1308,8 +2986,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 size="sm"
                 variant="outline"
                 className="h-8 text-xs gap-1.5"
-                onClick={saveDraft}
+                onClick={() => void saveDraft()}
                 disabled={saving}
+                title="Save draft (Ctrl+S)"
               >
                 {saving ? <RefreshCw size={12} className="animate-spin" /> : <Save size={12} />}
                 Save Draft
@@ -1319,7 +2998,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               size="sm"
               variant="outline"
               className="h-8 text-xs gap-1.5"
-              onClick={() => setPreviewMode((v) => !v)}
+              onClick={() => {
+                // Opening the preview refreshes the REAL backend validation
+                // of the saved draft (M1.4 Phase 7).
+                if (!previewMode && draftId) void refetchValidation();
+                setPreviewMode(!previewMode);
+              }}
             >
               <Eye size={12} /> {previewMode ? "Hide Preview" : "Preview"}
             </Button>
@@ -1347,8 +3031,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               <Button
                 size="sm"
                 className="h-8 text-xs gap-1.5 bg-green-600 hover:bg-green-700 text-white"
-                onClick={finalizeReport}
+                onClick={() => void finalizeReport()}
                 disabled={finalizing}
+                title="Finalize report (Ctrl+Enter)"
               >
                 {finalizing ? (
                   <RefreshCw size={12} className="animate-spin" />
@@ -1407,7 +3092,42 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           <div className="flex-1 overflow-y-auto">
 
             {/* Tab 1: Templates */}
+            {rightTab === "quickselect" && (
+              <QuickFindingsPanel
+                selectedIds={selectedQuickIds}
+                onToggle={handleQuickToggle}
+                onMeasurement={handleSmartMeasurement}
+                side={quickSide}
+                onSideChange={setQuickSide}
+                instances={quickInstances}
+                onUpdateInstance={handleInstanceUpdate}
+                externalSearch={qsExternalSearch}
+                onAutoTechnique={handleAutoTechnique}
+                onInsertNormals={handleInsertNormals}
+                activeProtocolId={activeProtocol?.id ?? null}
+                onProtocolChange={handleProtocolChange}
+                onChecklistChange={(percent, remaining) => { setChecklistPercent(percent); setChecklistRemaining(remaining); }}
+                onAcceptLearnedSuggestion={(text) => setRecommendation((prev) => mergeBlock(prev, text))}
+                onFindingsLoaded={handleFindingsLoaded}
+                disabled={isLocked}
+                initialStudyHint={`${entry?.modality ?? ""} ${entry?.studyDescription ?? ""}`}
+                isAdmin={isOwnerRole(session)}
+              />
+            )}
             {rightTab === "templates" && <TemplatesTab />}
+            {rightTab === "followup" && (
+              <FollowUpPanel
+                patientId={entry?.patientId ?? null}
+                currentFindings={rawFindings}
+                onCopyFindings={(text) => setRawFindings((prev) => mergeBlock(prev, text))}
+                onCopyImpression={(lines) => setImpression((prev) => {
+                  let next = prev;
+                  for (const line of lines) next = mergeImpression(next, line);
+                  return next;
+                })}
+                disabled={isLocked}
+              />
+            )}
 
             {/* Tab 2: Prior Reports */}
             {rightTab === "prior" && (

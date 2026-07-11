@@ -108,6 +108,7 @@ interface PageData {
   patientAge: string;
   doctorName: string;
   billedByName: string;
+  billedBySignatureUrl: string;
 }
 
 function buildPageData(
@@ -137,17 +138,19 @@ function buildPageData(
   const patientAge = calcAge(bill.patient?.dateOfBirth, bill.patient?.ageValue, bill.patient?.ageUnit);
   const doctorName = bill.order?.doctor?.name || "";
 
-  const billedByName = (() => {
+  const designerSession = (() => {
     const s = typeof window !== "undefined" ? window.localStorage.getItem("erp_session") : null;
-    if (!s) return "";
-    try { return JSON.parse(s).user?.name ?? ""; } catch { return ""; }
+    if (!s) return null;
+    try { return JSON.parse(s); } catch { return null; }
   })();
+  const billedByName: string = designerSession?.user?.name ?? "";
+  const billedBySignatureUrl: string = designerSession?.user?.signatureDataUrl ?? "";
 
   return {
     bill, clinic, paperSize, isA4, qrDataUrl, copyLabel, opts,
     tests, cancelled, payments,
     cashAmt, upiAmt, cardAmt, insAmt, chqAmt, onlineAmt,
-    isUnconfirmedQr, patientName, patientAge, doctorName, billedByName,
+    isUnconfirmedQr, patientName, patientAge, doctorName, billedByName, billedBySignatureUrl,
   };
 }
 
@@ -302,7 +305,9 @@ function renderLayoutA(d: PageData): string {
     <div style="border-top:1px solid #e0e0e0;padding-top:${isA4 ? "12px" : "8px"};display:flex;justify-content:space-between;align-items:flex-end">
       <div style="flex:1">
         ${opts.showSignatureLine !== false ? `
-        <div style="border-bottom:1px solid #ccc;width:${isA4 ? "120px" : "90px"};margin-bottom:2px"></div>
+        ${d.billedBySignatureUrl
+          ? `<img src="${d.billedBySignatureUrl}" alt="Signature" style="max-height:28px;max-width:${isA4 ? "120px" : "90px"};object-fit:contain;display:block;margin-bottom:2px"/>`
+          : `<div style="border-bottom:1px solid #ccc;width:${isA4 ? "120px" : "90px"};margin-bottom:2px"></div>`}
         <div style="font-size:${tinySize};color:#aaa">Authorised Signature</div>` : ""}
         ${opts.showComputerGenerated !== false ? `<div style="font-size:${tinySize};color:#bbb;margin-top:${isA4 ? "10px" : "6px"}">Computer Generated Invoice · No Signature Required</div>` : ""}
         <div style="font-size:${tinySize};color:#bbb;margin-top:1px;font-style:italic">Touching Lives With Care</div>
@@ -453,7 +458,9 @@ function renderLayoutB(d: PageData): string {
     <div style="border-top:1.5px solid #1a1a1a;padding-top:${isA4 ? "10px" : "7px"};margin-top:${gap};display:flex;justify-content:space-between;align-items:flex-end">
       <div style="flex:1">
         ${opts.showSignatureLine !== false ? `
-        <div style="border-bottom:1px solid #ccc;width:${isA4 ? "110px" : "80px"};margin-bottom:2px"></div>
+        ${d.billedBySignatureUrl
+          ? `<img src="${d.billedBySignatureUrl}" alt="Signature" style="max-height:26px;max-width:${isA4 ? "110px" : "80px"};object-fit:contain;display:block;margin-bottom:2px"/>`
+          : `<div style="border-bottom:1px solid #ccc;width:${isA4 ? "110px" : "80px"};margin-bottom:2px"></div>`}
         <div style="font-size:${tinyPx};color:#999">Authorised Signature</div>` : ""}
         <div style="margin-top:${isA4 ? "8px" : "5px"}">
           ${opts.showComputerGenerated !== false ? `<div style="font-size:${tinyPx};color:#bbb">Computer Generated Invoice</div>` : ""}
@@ -646,7 +653,9 @@ function renderLayoutC(d: PageData): string {
         <div style="display:flex;justify-content:space-between;align-items:flex-end">
           <div>
             ${opts.showSignatureLine !== false ? `
-            <div style="border-bottom:1px solid #ccc;width:${isA4 ? "110px" : "80px"};margin-bottom:2px"></div>
+            ${d.billedBySignatureUrl
+              ? `<img src="${d.billedBySignatureUrl}" alt="Signature" style="max-height:26px;max-width:${isA4 ? "110px" : "80px"};object-fit:contain;display:block;margin-bottom:2px"/>`
+              : `<div style="border-bottom:1px solid #ccc;width:${isA4 ? "110px" : "80px"};margin-bottom:2px"></div>`}
             <div style="font-size:${tinyPx};color:#aaa">Authorised Signature</div>` : ""}
           </div>
           <div style="text-align:right">
@@ -667,7 +676,7 @@ function renderLayoutC(d: PageData): string {
 export function buildDesignerBillPrintHtml(
   opts: BuildPrintHtmlOpts & { layout: "designer-a" | "designer-b" | "designer-c" },
 ): string {
-  const { bill, clinic, qrDataUrl, isBW } = opts;
+  const { bill, clinic, qrDataUrl } = opts;
 
   // Map paperSize
   const paperSizeStr = opts.paperSize; // "A4" | "A5"
@@ -696,8 +705,6 @@ export function buildDesignerBillPrintHtml(
     `<div style="page-break-before:always"></div>`,
   );
 
-  const bwFilter = isBW ? "filter:grayscale(1) contrast(1.3);" : "";
-
   return `<!doctype html>
 <html>
 <head>
@@ -713,7 +720,6 @@ export function buildDesignerBillPrintHtml(
       font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
-      ${bwFilter}
     }
     section { page-break-inside: avoid; }
     @media print {

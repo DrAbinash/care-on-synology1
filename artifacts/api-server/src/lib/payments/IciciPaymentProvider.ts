@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { PaymentProvider, InitiatePaymentParams, InitiatePaymentResult, VerifyPaymentParams, VerifyPaymentResult, CheckStatusParams, CheckStatusResult, RefundPaymentParams, RefundPaymentResult } from "./PaymentProvider";
 import { logger } from "../logger";
+import { recordPaymentDiagnostic } from "./paymentDiagnostics";
 
 const ICICI_UAT_BASE = "https://pgpayuat.icicibank.com";
 const ICICI_PROD_BASE = "https://pgpay.icicibank.com";
@@ -145,6 +146,27 @@ export class IciciPaymentProvider implements PaymentProvider {
       }, "Received initiateSale response from ICICI PG");
 
       if (!res.ok || !iciciData.tranCtx || iciciData.responseCode !== "R1000") {
+        recordPaymentDiagnostic({
+          gateway: "icici",
+          stage: "initiate",
+          merchantTxnNo: params.bookingRef,
+          bookingRef: params.bookingRef,
+          success: false,
+          httpStatus: res.status,
+          responseCode: iciciData.responseCode,
+          responseMessage: iciciData.respDescription,
+          requestUrl: iciciUrl,
+          requestPayload: payload,
+          requestHeaders: params.reqHeaders || null,
+          responseBody: Object.keys(iciciData).length > 0 ? iciciData : { rawText: resText },
+          tranCtx: iciciData.tranCtx,
+          secureHash,
+          amount: amountStr,
+          merchantId: this.config.merchantId,
+          aggregatorId: this.config.aggregatorId,
+          returnUrl: params.returnUrl,
+        }).catch(() => {});
+
         return {
           success: false,
           rawResponse: iciciData && Object.keys(iciciData).length > 0 ? iciciData : { rawText: resText },
@@ -161,6 +183,28 @@ export class IciciPaymentProvider implements PaymentProvider {
         redirectToUrl: redirectTo,
       }, "Final ICICI browser redirect URL assembled");
 
+      recordPaymentDiagnostic({
+        gateway: "icici",
+        stage: "initiate",
+        merchantTxnNo: params.bookingRef,
+        bookingRef: params.bookingRef,
+        success: true,
+        httpStatus: res.status,
+        responseCode: iciciData.responseCode,
+        responseMessage: iciciData.respDescription,
+        requestUrl: iciciUrl,
+        requestPayload: payload,
+        requestHeaders: params.reqHeaders || null,
+        responseBody: iciciData,
+        redirectUri: iciciData.redirectURI,
+        tranCtx: iciciData.tranCtx,
+        secureHash,
+        amount: amountStr,
+        merchantId: this.config.merchantId,
+        aggregatorId: this.config.aggregatorId,
+        returnUrl: params.returnUrl,
+      }).catch(() => {});
+
       return {
         success: true,
         gatewayTxnId: params.bookingRef,
@@ -169,6 +213,22 @@ export class IciciPaymentProvider implements PaymentProvider {
       };
     } catch (err: any) {
       logger.error({ err, bookingRef: params.bookingRef, iciciUrl }, "ICICI initiateSale HTTP exception");
+      recordPaymentDiagnostic({
+        gateway: "icici",
+        stage: "initiate",
+        merchantTxnNo: params.bookingRef,
+        bookingRef: params.bookingRef,
+        success: false,
+        responseMessage: err.message || "Failed to connect to ICICI PG",
+        requestUrl: iciciUrl,
+        requestPayload: payload,
+        requestHeaders: params.reqHeaders || null,
+        secureHash,
+        amount: amountStr,
+        merchantId: this.config.merchantId,
+        aggregatorId: this.config.aggregatorId,
+        returnUrl: params.returnUrl,
+      }).catch(() => {});
       return {
         success: false,
         rawResponse: null,

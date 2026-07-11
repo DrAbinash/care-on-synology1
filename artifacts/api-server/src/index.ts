@@ -30,6 +30,7 @@ import { pool } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { validateRadiologyConfig } from "./lib/pacs/pacsConfig.js";
+import { shouldForceBootstrapReset } from "./lib/bootstrapAdmin.js";
 
 // Bootstrap admin account for fresh production databases.
 //
@@ -49,9 +50,31 @@ import { validateRadiologyConfig } from "./lib/pacs/pacsConfig.js";
 // BOOTSTRAP_ADMIN_NAME / BOOTSTRAP_ADMIN_PIN / BOOTSTRAP_ADMIN_ROLE.
 // "super_admin" is the initial privileged account used to bootstrap the
 // super-admin portal; it can then create or manage additional accounts.
+/**
+ * Pure decision function, extracted so it can be unit tested without
+ * mocking the rest of index.ts's startup side effects. See
+ * lib/bootstrapAdmin.ts for the implementation and full explanation.
+ */
+
 async function seedBootstrapAdminIfNeeded(): Promise<void> {
   try {
-    const force = true;
+    // FIXED: this was hardcoded to `true`, which silently ignored
+    // BOOTSTRAP_ADMIN_FORCE entirely and reset the bootstrap admin's PIN
+    // back to the default on EVERY container restart — including normal
+    // Synology Container Manager rebuilds — even after the doctor had
+    // already changed it through the UI. Now correctly reads the env var
+    // and defaults to false (safe) when unset, matching the documented
+    // behavior in the comment block above and in .env.example.
+    const force = shouldForceBootstrapReset(process.env);
+
+    if (force) {
+      logger.warn(
+        "BOOTSTRAP_ADMIN_FORCE is enabled. The bootstrap admin account will be reset to its " +
+        "default PIN/role on this startup. Disable this in production after logging in — " +
+        "remove BOOTSTRAP_ADMIN_FORCE from .env and redeploy, or the PIN will keep resetting " +
+        "on every restart.",
+      );
+    }
 
     const anyUser = await db.select({ id: usersTable.id }).from(usersTable).limit(1);
     if (anyUser.length > 0 && !force) return; // already populated, no force flag
@@ -116,9 +139,73 @@ async function seedBootstrapAdminIfNeeded(): Promise<void> {
 // Idempotent ALTER TABLE / CREATE TABLE IF NOT EXISTS statements that extend
 // the schema without requiring a full Drizzle migration pipeline. Safe to run
 // on every startup because every clause uses IF NOT EXISTS / ADD COLUMN IF.
+// ─────────────────────────────────────────────────────────────────────────────
+// SINGLE SOURCE OF TRUTH FOR SCHEMA — POLICY FOR THIS FUNCTION
+// ─────────────────────────────────────────────────────────────────────────────
+// care-db-patch-v2 (docker/db-patch-entrypoint.sh) is the single official
+// migration container — it's the only normal-path component that applies
+// tracked, versioned migrations/*.sql and lib/db/drizzle/*.sql files.
+//
+// This function is a secondary, best-effort safety net, NOT a migration
+// system. It only exists to keep old/long-running deployments compatible
+// while a proper migrations/*.sql file catches up on the next redeploy.
+// Going forward:
+//   ✅ ALLOWED here:  CREATE TABLE IF NOT EXISTS, ALTER TABLE ADD COLUMN IF
+//                     NOT EXISTS, CREATE INDEX IF NOT EXISTS — additive,
+//                     idempotent, safe to run on every single boot.
+//   ❌ NOT ALLOWED:   new RENAME COLUMN / DROP COLUMN / RENAME TABLE logic.
+//                     Write a migrations/*.sql file instead and let
+//                     care-db-patch-v2 apply it once, in a tracked way.
+// (The existing dicom_nodes rename/drop block below predates this policy
+// and is being left in place as a self-healing guard against the exact
+// schema-verify --repair bug it was written for — but it is a read-mostly
+// check that only performs DDL when it detects actual drift, not an
+// unconditional mutation on every boot. No new blocks like it should be
+// added; see docs/DEPLOYMENT.md.)
 async function runStartupMigrations(): Promise<void> {
   const client = await pool.connect();
   try {
+    // ── DB IDENTITY CHECK (read-only) ───────────────────────────────────────
+    // Mirrors the same check in docker/db-patch-entrypoint.sh and
+    // db-schema-verify.cjs. care-api never creates or seeds
+    // system_database_identity — that's care-db-patch-v2's job — so a
+    // missing table just means db-patch-v2 hasn't run yet (informational).
+    // A row that exists with a DIFFERENT app_name means this API instance
+    // might be pointed at the wrong database entirely (bad DATABASE_URL,
+    // wrong DB_HOST, a restored backup from another project/environment) —
+    // in that case we must not run any of the compatibility patches below.
+    const expectedAppName = process.env.APP_NAME || "care-erp";
+    try {
+      const identityRes = await client.query(
+        "SELECT app_name, environment FROM public.system_database_identity WHERE id = 1;"
+      );
+      const identityRow = identityRes.rows[0];
+      if (identityRow && identityRow.app_name !== expectedAppName) {
+        throw new Error(
+          `DB IDENTITY MISMATCH: this database is stamped as app_name='${identityRow.app_name}' ` +
+          `(environment=${identityRow.environment}), but this care-api instance expects ` +
+          `app_name='${expectedAppName}'. Refusing to run any startup schema patches — this looks ` +
+          `like the wrong database. Check DATABASE_URL / DB_HOST / DB_NAME in .env.`
+        );
+      }
+    } catch (identityErr: any) {
+      if (identityErr?.message?.startsWith("DB IDENTITY MISMATCH")) throw identityErr;
+      // system_database_identity table doesn't exist yet — informational
+      // only (e.g. care-db-patch-v2 hasn't run on this DB yet). Continue;
+      // the compatibility patches below are still safe to apply.
+      logger.warn("system_database_identity not found — continuing (db-patch-v2 may not have run yet)");
+    }
+
+    // ── MIGRATION LOCK (advisory, session-scoped) ───────────────────────────
+    // This function holds a single dedicated connection for its whole
+    // duration (see `pool.connect()` above and `client.release()` below), so
+    // a real session-scoped pg_advisory_lock works correctly here — unlike
+    // docker/db-patch-entrypoint.sh, which uses a lock TABLE because it opens
+    // many short-lived connections instead of one long-lived session.
+    // Prevents this function from racing a concurrent care-db-patch-v2 run
+    // or another care-api replica's startup migrations.
+    await client.query("SELECT pg_advisory_lock(hashtext('care_erp_schema_migration'));");
+
     await client.query(`
       ALTER TABLE order_tests ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
       ALTER TABLE order_tests ADD COLUMN IF NOT EXISTS cancelled_by_name TEXT;
@@ -166,6 +253,7 @@ async function runStartupMigrations(): Promise<void> {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       ALTER TABLE clinic_settings ADD COLUMN IF NOT EXISTS kiosk_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE clinic_settings ADD COLUMN IF NOT EXISTS quick_doctor_ids TEXT NOT NULL DEFAULT '[null,null,null,null,null,null,null,null]';
       ALTER TABLE clinic_settings ADD COLUMN IF NOT EXISTS kiosk_payment_gateway TEXT NOT NULL DEFAULT 'upi';
       ALTER TABLE clinic_settings ADD COLUMN IF NOT EXISTS kiosk_upi_vpa TEXT NOT NULL DEFAULT '';
       ALTER TABLE clinic_settings ADD COLUMN IF NOT EXISTS kiosk_upi_name TEXT NOT NULL DEFAULT '';
@@ -234,6 +322,15 @@ async function runStartupMigrations(): Promise<void> {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
 
+      -- ── Backfill safety net: on any deployment where payment_logs was ──
+      -- created by an older version of this CREATE TABLE (before amount /
+      -- error_message existed), CREATE TABLE IF NOT EXISTS above is a
+      -- no-op and the columns never get added. These ALTER statements are
+      -- idempotent (IF NOT EXISTS) and guarantee both columns always exist,
+      -- regardless of when the table was first created.
+      ALTER TABLE payment_logs ADD COLUMN IF NOT EXISTS amount NUMERIC(10, 2) NOT NULL DEFAULT 0;
+      ALTER TABLE payment_logs ADD COLUMN IF NOT EXISTS error_message TEXT;
+
       CREATE INDEX IF NOT EXISTS idx_payment_logs_booking_ref
         ON payment_logs (booking_ref);
 
@@ -255,8 +352,24 @@ async function runStartupMigrations(): Promise<void> {
         form_f_address_required, form_f_guardian_required, registered_address, online_booking_allowed_package_ids,
         upi_qr_image_url, upi_vpa, upi_qr_enabled, icici_enabled, icici_merchant_id, icici_aggregator_id
       )
-      SELECT 1, 'Care Diagnostics', 'Diagnostic & Pathology Services', 'CARE DIAGNOSTICS Subhash Chowk Castair Town Near Bajla Mahila College Deoghar 814112', 'CARE.DEOGHAR@GMAIL.COM', '9973497200', 'www.carediagnostics.in', 'GSTIN_NOT_SET', null, 'Thank you for choosing our diagnostic services.', NOW(), '[]', '[null null null null null null]', false, false, 'Welcome', 'Welcome to our portal', true, true, false, 1, true, false, 'RZP_KEY_NOT_SET', 1, false, false, 'NA', 'NA', 'Welcome to Kiosk', '[]', 'navy', 'A5', true, true, false, 'NA', true, 'none', false, '[]', false, false, 'NA', false, 'NA', false, 'NA', '[]', 30, 3, 5, 30, false, true, true, 'Jayshankar Bhawan Bilasi Town Deoghar Ward No 27 Hiralal Pal Road Deoghar Jharkhand 814112', '[]', 'NA', 'NA', false, false, 'NA', 'NA'
+      SELECT 1, 'Care Diagnostics', 'Diagnostic & Pathology Services', 'CARE DIAGNOSTICS Subhash Chowk Castair Town Near Bajla Mahila College Deoghar 814112', 'CARE.DEOGHAR@GMAIL.COM', '9973497200', 'www.carediagnostics.in', '', null, 'Thank you for choosing our diagnostic services.', NOW(), '[]', '[null null null null null null]', false, false, 'Welcome', 'Welcome to our portal', true, true, false, 1, true, false, '', 1, false, false, 'NA', 'NA', 'Welcome to Kiosk', '[]', 'navy', 'A5', true, true, false, 'NA', true, 'none', false, '[]', false, false, 'NA', false, 'NA', false, 'NA', '[]', 30, 3, 5, 30, false, true, true, 'Jayshankar Bhawan Bilasi Town Deoghar Ward No 27 Hiralal Pal Road Deoghar Jharkhand 814112', '[]', 'NA', 'NA', false, false, 'NA', 'NA'
       WHERE NOT EXISTS (SELECT 1 FROM clinic_settings LIMIT 1);
+
+      -- ── One-time correction: earlier seeds above stored the literal
+      -- placeholder text 'GSTIN_NOT_SET' / 'RZP_KEY_NOT_SET' instead of NULL
+      -- for "not configured" fields. Since these are non-empty strings, bill
+      -- print templates (which check "if gstin is set, print it") treated
+      -- them as real values and printed "GSTIN: GSTIN_NOT_SET" on every
+      -- invoice. Safe to run every startup — only touches rows that still
+      -- have the exact placeholder text, a no-op once corrected.
+      UPDATE clinic_settings SET gstin = NULL WHERE gstin = 'GSTIN_NOT_SET';
+      UPDATE clinic_settings SET razorpay_key_id = NULL WHERE razorpay_key_id = 'RZP_KEY_NOT_SET';
+      -- These columns were originally created NOT NULL, but the app stores
+      -- NULL to mean "not configured" (see the two UPDATEs above). Relax
+      -- the constraint so settings saves with GST/Razorpay left blank
+      -- don't crash with a not-null violation.
+      ALTER TABLE clinic_settings ALTER COLUMN gstin DROP NOT NULL;
+      ALTER TABLE clinic_settings ALTER COLUMN razorpay_key_id DROP NOT NULL;
       CREATE TABLE IF NOT EXISTS day_closures (
         id SERIAL PRIMARY KEY,
         closure_date TEXT NOT NULL,
@@ -336,17 +449,60 @@ async function runStartupMigrations(): Promise<void> {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       -- Rename old dicom_nodes columns for databases created before May 2026
+      -- Idempotent: safe to run repeatedly regardless of which columns already exist.
       DO $$
+      DECLARE
+        has_minutes BOOLEAN;
+        has_seconds BOOLEAN;
+        has_pull_query_days BOOLEAN;
+        has_lookback_hours BOOLEAN;
       BEGIN
-        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'dicom_nodes' AND column_name = 'pull_interval_minutes') THEN
+        SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'dicom_nodes' AND column_name = 'pull_interval_minutes') INTO has_minutes;
+        SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'dicom_nodes' AND column_name = 'pull_interval_seconds') INTO has_seconds;
+
+        IF has_minutes AND NOT has_seconds THEN
+          -- Clean case: only the old column exists, rename and convert minutes -> seconds
           ALTER TABLE dicom_nodes RENAME COLUMN pull_interval_minutes TO pull_interval_seconds;
           UPDATE dicom_nodes SET pull_interval_seconds = COALESCE(pull_interval_seconds * 60, 300) WHERE pull_interval_seconds IS NOT NULL;
+        ELSIF has_minutes AND has_seconds THEN
+          -- Both exist (e.g. a prior partial migration ran): keep pull_interval_seconds,
+          -- drop the stale legacy column rather than crashing on a duplicate-column rename.
+          RAISE WARNING 'dicom_nodes has both pull_interval_minutes and pull_interval_seconds; dropping legacy pull_interval_minutes and keeping pull_interval_seconds';
+          ALTER TABLE dicom_nodes DROP COLUMN pull_interval_minutes;
+        ELSIF has_seconds THEN
+          -- Already migrated, nothing to do.
+          NULL;
+        ELSE
+          -- Neither exists yet; CREATE TABLE IF NOT EXISTS above already defines
+          -- pull_interval_seconds for fresh installs, so this should not happen.
+          RAISE WARNING 'dicom_nodes has neither pull_interval_minutes nor pull_interval_seconds';
         END IF;
-        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'dicom_nodes' AND column_name = 'pull_query_days') THEN
+
+        SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'dicom_nodes' AND column_name = 'pull_query_days') INTO has_pull_query_days;
+        SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'dicom_nodes' AND column_name = 'query_lookback_hours') INTO has_lookback_hours;
+
+        IF has_pull_query_days AND NOT has_lookback_hours THEN
           ALTER TABLE dicom_nodes RENAME COLUMN pull_query_days TO query_lookback_hours;
           UPDATE dicom_nodes SET query_lookback_hours = COALESCE(query_lookback_hours * 24, 24) WHERE query_lookback_hours IS NOT NULL;
+        ELSIF has_pull_query_days AND has_lookback_hours THEN
+          RAISE WARNING 'dicom_nodes has both pull_query_days and query_lookback_hours; dropping legacy pull_query_days and keeping query_lookback_hours';
+          ALTER TABLE dicom_nodes DROP COLUMN pull_query_days;
         END IF;
       END $$;
+      -- Safety net for the "neither old nor new column exists" edge case (e.g. a
+      -- manual drop, or a table created by a partial/older migration path). The
+      -- DO block above only warns in that case; these two statements guarantee
+      -- the current column names always end up present, with sane defaults,
+      -- regardless of which of the 4 possible states the table was in above.
+      -- No-ops (IF NOT EXISTS) in every other case, so safe on every redeploy.
+      ALTER TABLE dicom_nodes ADD COLUMN IF NOT EXISTS pull_interval_seconds INTEGER NOT NULL DEFAULT 300;
+      ALTER TABLE dicom_nodes ADD COLUMN IF NOT EXISTS query_lookback_hours INTEGER NOT NULL DEFAULT 24;
+      -- Legacy columns must never linger: if a bad repair step (e.g. an old
+      -- schema-verifier bug) re-adds pull_interval_minutes / pull_query_days
+      -- after they were already renamed away, drop them again here so they
+      -- can never accumulate stale/unused data or confuse future migrations.
+      ALTER TABLE dicom_nodes DROP COLUMN IF EXISTS pull_interval_minutes;
+      ALTER TABLE dicom_nodes DROP COLUMN IF EXISTS pull_query_days;
       ALTER TABLE dicom_nodes ADD COLUMN IF NOT EXISTS preferred_retrieve_method TEXT NOT NULL DEFAULT 'C_MOVE';
 
       -- Default Voluson USG entry (idempotent)
@@ -377,6 +533,41 @@ async function runStartupMigrations(): Promise<void> {
       ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS match_approved_by TEXT;
       ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS match_approved_at TIMESTAMPTZ;
       ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS match_override_reason TEXT;
+
+      -- ── Fix: bad/duplicate DICOM accession numbers crashing intake ──────
+      -- radiology_worklist.accession_number was NOT NULL + globally UNIQUE.
+      -- Real-world DICOM data from misconfigured modalities sometimes pushes
+      -- non-unique junk into AccessionNumber (e.g. a referring doctor's name
+      -- instead of a real accession), which made POST
+      -- /api/internal/radiology/studies fail with
+      -- "duplicate key value violates unique constraint
+      -- radiology_worklist_accession_uq" and reject genuinely new studies.
+      --
+      -- study_instance_uid is the actual globally-unique DICOM identifier,
+      -- so that's what should be enforced at the DB level instead.
+      -- Accession number becomes an optional, non-unique display/reference
+      -- field. Schema-only change — no rows are deleted or modified.
+      ALTER TABLE radiology_worklist ALTER COLUMN accession_number DROP NOT NULL;
+      DROP INDEX IF EXISTS radiology_worklist_accession_uq;
+      CREATE INDEX IF NOT EXISTS radiology_worklist_accession_idx
+        ON radiology_worklist (accession_number);
+
+      -- Enforce true uniqueness on study_instance_uid (nulls excluded, so
+      -- older/incomplete rows without a UID are unaffected). Wrapped in a
+      -- guard: if any pre-existing rows already have duplicate non-null
+      -- UIDs (which the DB never prevented before today), creating the
+      -- index would fail — that must not abort the rest of startup. If it
+      -- is skipped, re-run after resolving duplicates
+      -- (SELECT study_instance_uid, COUNT(*) FROM radiology_worklist WHERE
+      -- study_instance_uid IS NOT NULL GROUP BY 1 HAVING COUNT(*) > 1).
+      DO $$
+      BEGIN
+        CREATE UNIQUE INDEX IF NOT EXISTS radiology_worklist_uid_uq
+          ON radiology_worklist (study_instance_uid)
+          WHERE study_instance_uid IS NOT NULL;
+      EXCEPTION WHEN unique_violation THEN
+        RAISE NOTICE 'radiology_worklist_uid_uq: skipped — existing duplicate study_instance_uid values found, resolve manually then re-deploy';
+      END $$;
 
       ALTER TABLE patient_reports ADD COLUMN IF NOT EXISTS style_preset_used TEXT;
 
@@ -2477,6 +2668,10 @@ async function runStartupMigrations(): Promise<void> {
   } catch (err) {
     logger.error({ err }, "Startup migration failed — partial-cancel / outsourced-labs features may not work");
   } finally {
+    // pg_advisory_unlock() on a lock this session never took simply returns
+    // false, never throws — safe to call unconditionally here even if the
+    // identity check failed before the lock was ever acquired.
+    await client.query("SELECT pg_advisory_unlock(hashtext('care_erp_schema_migration'));").catch(() => {});
     client.release();
   }
 }

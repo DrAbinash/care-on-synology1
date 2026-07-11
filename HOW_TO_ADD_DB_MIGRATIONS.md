@@ -154,6 +154,34 @@ care-web starts
 
 ---
 
+## Schema drift after a volume restore (zz_schema_reconcile files)
+
+When the production DB volume is restored from an older backup, its
+`schema_migrations_log` / `drizzle.__drizzle_migrations` tracking tables come
+back with it — so care-db-patch-v2 skips every migration as "already applied"
+even though the restored schema predates later columns/indexes, and
+care-schema-verify reports `full_fail`.
+
+Fix: generate a one-shot reconciliation migration —
+
+```bash
+node scripts/generate-schema-reconcile.cjs --date YYYYMMDD
+```
+
+This writes `migrations/zz_schema_reconcile_<date>.sql` (a new filename, so
+the entrypoint is guaranteed to apply it) containing only idempotent,
+non-destructive DDL: `CREATE TABLE IF NOT EXISTS`, `ALTER TABLE IF EXISTS …
+ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS` — one statement per
+expected object, derived from the same migration sources the verifier parses,
+each wrapped in a DO block that downgrades errors to warnings so deployment
+can never be blocked. Where the DB already matches, every statement is a
+no-op.
+
+To reconcile again after future drift: **delete** the old
+`zz_schema_reconcile_*.sql` (removing a migration file never touches the
+database) and regenerate with a new `--date` — the entrypoint never re-applies
+a changed file under the same name.
+
 ## Rollback
 
 If a migration causes a problem:

@@ -6,6 +6,7 @@ export default defineConfig({
       "artifacts/*/src/**/*.test.ts",
       "bridge-service/src/**/*.test.js",
       "lib/**/*.test.ts",
+      "scripts/**/*.test.cjs",
     ],
     environment: "node",
   },

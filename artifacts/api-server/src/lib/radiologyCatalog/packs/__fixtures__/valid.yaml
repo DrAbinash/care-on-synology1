@@ -1,0 +1,12 @@
+schema_version: "1.0.0"
+pack:
+  id: fixture.valid
+  version: "1.0.0"
+categories:
+  - { key: demo, display_name: Demo }
+findings:
+  - id_key: demo.thing
+    display_name: Thing
+    category: demo
+    default_sentence: "A thing."
+    impression_fragment: "Thing."

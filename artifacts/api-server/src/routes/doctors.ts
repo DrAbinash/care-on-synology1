@@ -9,6 +9,9 @@ import {
   DeleteDoctorParams,
 } from "@workspace/api-zod";
 import { logger } from "../lib/logger";
+import { getCached, setCached, invalidateCachedPrefix, TTL } from "../lib/ttlCache";
+
+const DOCTORS_LIST_CACHE_KEY = "doctors:list:all";
 
 export const doctorsRouter = Router();
 
@@ -19,6 +22,18 @@ doctorsRouter.get("/", async (req, res) => {
     return;
   }
   const { search } = parsed.data;
+
+  // The unfiltered "list all doctors" call (no search term) is what every
+  // dropdown/select across the ERP fires on page load — cache it for 5 min.
+  // Filtered/search calls always hit the DB live (they're not the hot path
+  // and caching every distinct search string isn't worth it here).
+  if (!search) {
+    const cached = getCached<{ doctors: unknown[]; total: number }>(DOCTORS_LIST_CACHE_KEY);
+    if (cached) {
+      res.json(cached);
+      return;
+    }
+  }
 
   let query = db
     .select({
@@ -57,7 +72,9 @@ doctorsRouter.get("/", async (req, res) => {
     .groupBy(doctorsTable.id)
     .orderBy(desc(sql`COALESCE(count(${billsTable.id}), 0)`), desc(doctorsTable.createdAt));
 
-  res.json({ doctors, total: doctors.length });
+  const payload = { doctors, total: doctors.length };
+  if (!search) setCached(DOCTORS_LIST_CACHE_KEY, payload, TTL.SHORT);
+  res.json(payload);
 });
 
 doctorsRouter.post("/", async (req, res) => {
@@ -70,6 +87,7 @@ doctorsRouter.post("/", async (req, res) => {
     ? Number(req.body.ledgerId)
     : null;
   const [doctor] = await db.insert(doctorsTable).values({ ...parsed.data, ledgerId }).returning();
+  invalidateCachedPrefix(DOCTORS_LIST_CACHE_KEY);
   res.status(201).json(doctor);
 });
 
@@ -113,6 +131,7 @@ doctorsRouter.patch("/:id", async (req, res) => {
     res.status(404).json({ error: "Doctor not found" });
     return;
   }
+  invalidateCachedPrefix(DOCTORS_LIST_CACHE_KEY);
   res.json(doctor);
 });
 
@@ -193,6 +212,7 @@ doctorsRouter.post("/import", async (req, res) => {
     }
   }
 
+  invalidateCachedPrefix(DOCTORS_LIST_CACHE_KEY);
   res.json({ inserted, updated, skipped, errors: errors.slice(0, 50) });
 });
 
@@ -231,6 +251,7 @@ doctorsRouter.delete("/:id", async (req, res) => {
     // Delete the doctor
     await db.delete(doctorsTable).where(eq(doctorsTable.id, id));
 
+    invalidateCachedPrefix(DOCTORS_LIST_CACHE_KEY);
     res.json({ success: true });
   } catch (err) {
     logger.error({ err, doctorId: id }, "Failed to delete doctor");

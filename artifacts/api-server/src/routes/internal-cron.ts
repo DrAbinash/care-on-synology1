@@ -1,5 +1,5 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
-import { runDailySummary, runMonthEndCommission, fireBankingAutoSync } from "../cron";
+import { runDailySummary, runMonthEndCommission, fireBankingAutoSync, runWhatsappAppointmentReminders, runWhatsappDuesReminders } from "../cron";
 import { logger } from "../lib/logger";
 
 const router = Router();
@@ -48,6 +48,26 @@ router.post("/banking-auto-sync", async (_req, res) => {
   } catch (err) {
     logger.error({ err }, "internal-cron banking-auto-sync failed");
     res.status(500).json({ error: "banking-auto-sync failed" });
+  }
+});
+
+router.post("/whatsapp-appointment-reminders", async (_req, res) => {
+  try {
+    const result = await runWhatsappAppointmentReminders();
+    res.json({ ok: true, fired: "whatsapp-appointment-reminders", result, at: new Date().toISOString() });
+  } catch (err) {
+    logger.error({ err }, "internal-cron whatsapp-appointment-reminders failed");
+    res.status(500).json({ error: "whatsapp-appointment-reminders failed" });
+  }
+});
+
+router.post("/whatsapp-dues-reminders", async (_req, res) => {
+  try {
+    const result = await runWhatsappDuesReminders();
+    res.json({ ok: true, fired: "whatsapp-dues-reminders", result, at: new Date().toISOString() });
+  } catch (err) {
+    logger.error({ err }, "internal-cron whatsapp-dues-reminders failed");
+    res.status(500).json({ error: "whatsapp-dues-reminders failed" });
   }
 });
 

@@ -1,7 +1,11 @@
 /* ── Kiosk root ─────────────────────────────────────────────────────────── */
 .kiosk-root {
   min-height: 100dvh;
-  background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 60%, #0f172a 100%);
+  background: linear-gradient(135deg, rgba(15,23,42,0.94) 0%, rgba(30,58,95,0.9) 60%, rgba(15,23,42,0.94) 100%),
+              url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 800'%3E%3Cdefs%3E%3Cpattern id='grid' width='40' height='40' patternUnits='userSpaceOnUse'%3E%3Cpath d='M 40 0 L 0 0 0 40' fill='none' stroke='%2393c5fd' stroke-width='0.5' opacity='0.18'/%3E%3C/pattern%3E%3CradialGradient id='pulse1' cx='20%25' cy='30%25'%3E%3Cstop offset='0%25' style='stop-color:%2338bdf8;stop-opacity:0.28'/%3E%3Cstop offset='100%25' style='stop-color:%2338bdf8;stop-opacity:0'/%3E%3C/radialGradient%3E%3CradialGradient id='pulse2' cx='80%25' cy='70%25'%3E%3Cstop offset='0%25' style='stop-color:%2322d3ee;stop-opacity:0.22'/%3E%3Cstop offset='100%25' style='stop-color:%2322d3ee;stop-opacity:0'/%3E%3C/radialGradient%3E%3C/defs%3E%3Crect width='1200' height='800' fill='%230f172a'/%3E%3Crect width='1200' height='800' fill='url(%23grid)'/%3E%3Ccircle cx='240' cy='240' r='240' fill='url(%23pulse1)'/%3E%3Ccircle cx='1000' cy='600' r='290' fill='url(%23pulse2)'/%3E%3Ccircle cx='100' cy='700' r='190' fill='url(%23pulse1)' opacity='0.6'/%3E%3Ccircle cx='1100' cy='150' r='220' fill='url(%23pulse2)' opacity='0.5'/%3E%3C/svg%3E");
+  background-size: cover;
+  background-attachment: fixed;
+  background-position: center;
   color: #f1f5f9;
   font-family: "Inter", "Segoe UI", sans-serif;
   display: flex;
@@ -169,6 +173,29 @@
 .kiosk-input::placeholder { color: #475569; }
 .kiosk-input-lg { font-size: 1.25rem; padding: 16px 20px; }
 
+/* Enhanced select dropdown styling for age unit and other dropdowns */
+.kiosk-input[type="select"],
+.kiosk-input:is(select) {
+  appearance: auto;
+  cursor: pointer;
+  padding-right: 12px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 18px;
+  padding-right: 44px;
+}
+/* The <select> box itself is styled white-on-transparent to match the dark
+   kiosk theme, but that color is inherited by <option> elements too. Native
+   dropdown popups render on a browser-controlled (usually white) background,
+   so without this rule "Months"/"Days" render as white text on white —
+   invisible except for whichever option the browser highlights. Force dark
+   text + white background on the options list explicitly. */
+.kiosk-input:is(select) option {
+  color: #0f172a;
+  background: #fff;
+}
+
 .kiosk-gender-row { display: flex; gap: 12px; flex-wrap: wrap; }
 .kiosk-gender-btn {
   flex: 1;
@@ -191,6 +218,64 @@
 }
 
 /* ── Test selection ─────────────────────────────────────────────────────── */
+.kiosk-search-row {
+  position: relative;
+  padding: 16px 20px 0;
+  flex-shrink: 0;
+}
+.kiosk-search-input {
+  width: 100%;
+  font-size: 1.05rem;
+}
+.kiosk-search-clear {
+  position: absolute;
+  top: 30px;
+  right: 32px;
+  background: rgba(255,255,255,0.1);
+  border: none;
+  color: #cbd5e1;
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.kiosk-search-clear:hover { background: rgba(255,255,255,0.2); }
+
+/* Quick-select tests — bigger & brighter than category tabs; these are the
+   fastest path through the kiosk for the clinic's most frequently-run tests. */
+.kiosk-quick-tests {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  padding: 16px 20px 4px;
+  flex-shrink: 0;
+}
+.kiosk-quick-test-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 16px 18px;
+  border-radius: 16px;
+  border: 2px solid #fbbf24;
+  background: linear-gradient(135deg, rgba(251,191,36,0.22), rgba(251,146,60,0.14));
+  cursor: pointer;
+  text-align: left;
+  touch-action: manipulation;
+  transition: all 0.18s;
+  box-shadow: 0 0 0 0 rgba(251,191,36,0);
+}
+.kiosk-quick-test-tile:hover { box-shadow: 0 0 18px 0 rgba(251,191,36,0.35); background: linear-gradient(135deg, rgba(251,191,36,0.32), rgba(251,146,60,0.2)); }
+.kiosk-quick-test-selected { border-color: #22c55e; background: rgba(34,197,94,0.16); }
+.kiosk-quick-test-name { font-size: 1.05rem; font-weight: 800; color: #fff; line-height: 1.25; }
+.kiosk-quick-test-price { font-size: 1rem; font-weight: 800; color: #fde68a; }
+.kiosk-quick-test-selected .kiosk-quick-test-price { color: #86efac; }
+
 .kiosk-cat-tabs {
   display: flex;
   gap: 8px;
@@ -313,6 +398,14 @@
   flex-direction: column;
   gap: 20px;
   align-items: center;
+}
+.kiosk-payment-banner {
+  width: 100%;
+  max-width: 500px;
+  height: auto;
+  border-radius: 14px;
+  display: block;
+  object-fit: cover;
 }
 .kiosk-amount-display {
   display: flex;
@@ -457,19 +550,6 @@
 .kiosk-confirm-actions { padding-bottom: 24px; }
 .kiosk-error-msg { color: #f87171; font-size: 0.95rem; margin: 0; }
 
-/* ── Print styles ───────────────────────────────────────────────────────── */
-.kiosk-print-only { display: none; }
-
-@media print {
-  .kiosk-no-print { display: none !important; }
-  .kiosk-print-only { display: block !important; }
-  .kiosk-receipt {
-    font-family: "Courier New", monospace;
-    font-size: 13px;
-    color: #000;
-    padding: 16px;
-    max-width: 300px;
-  }
-  .kiosk-receipt hr { border: none; border-top: 1px dashed #000; margin: 8px 0; }
-  .kiosk-receipt p { margin: 4px 0; }
-}
+/* Printing is handled by buildBillPrintHtml() (see src/lib/printBill.ts) via
+   an off-screen iframe — the receipt is never rendered in the kiosk's own
+   DOM, so no @media print rules are needed here. */

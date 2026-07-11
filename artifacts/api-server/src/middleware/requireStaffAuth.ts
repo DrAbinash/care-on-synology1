@@ -182,3 +182,23 @@ export function requireStaffSubPermission(modulePath: string, action: string) {
     res.status(403).json({ error: `Access denied: you do not have permission to perform '${action}' on this resource.` });
   };
 }
+
+/**
+ * Strict admin/super_admin-only gate — unlike requireStaffPermission, this
+ * is NOT toggleable via the per-user permissions array in Settings → Users.
+ * Used for tools that should never be exposed to non-admin staff regardless
+ * of permission configuration, e.g. the request-diagnostics dashboard which
+ * shows internal endpoint performance data.
+ */
+export function requireAdminRole(req: StaffAuthRequest, res: Response, next: NextFunction): void {
+  const session = req.staffSession;
+  if (!session) {
+    res.status(401).json({ error: "Staff authentication required" });
+    return;
+  }
+  if (!FULL_ACCESS_ROLES.has(session.role)) {
+    res.status(403).json({ error: "Admin access required" });
+    return;
+  }
+  next();
+}

@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Layout from "@/components/Layout";
+import { ModuleErrorBoundary } from "@/components/ModuleErrorBoundary";
 import { readStaffSession, canAccess, firstPermissionedPath, firstAllowedPath, longestMatchingNavPath, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 
 /**
@@ -54,6 +55,7 @@ function OwnerOnlyPreserved({ children }: { children: React.ReactNode }) {
 
 const BillingDesk     = lazy(() => import("@/pages/BillingDesk"));
 const Dashboard       = lazy(() => import("@/pages/Dashboard"));
+const Diagnostics     = lazy(() => import("@/pages/Diagnostics"));
 const Patients        = lazy(() => import("@/pages/Patients"));
 const PatientDetail   = lazy(() => import("@/pages/PatientDetail"));
 const Tests           = lazy(() => import("@/pages/Tests"));
@@ -90,12 +92,12 @@ const RadiologyLegacy = lazy(() => import("@/pages/RadiologyLegacy"));
 const RadiologyWorklist = lazy(() => import("@/pages/RadiologyWorklist"));
 const RadiologistCockpit = lazy(() => import("@/pages/RadiologistCockpit"));
 const RadiologyReportEditor = lazy(() => import("@/pages/RadiologyReportEditor"));
-const RadiologyReportUnified = lazy(() => import("@/pages/RadiologyReportUnified"));
 const RadiologyReportGen = lazy(() => import("@/pages/RadiologyReportGenerator"));
 const RadiologyReportingWorkspace = lazy(() => import("@/pages/RadiologyReportingWorkspace"));
 const PacsDashboard         = lazy(() => import("@/pages/PacsDashboard"));
 const RadiologySettings     = lazy(() => import("@/pages/RadiologySettings"));
 const RadiologySettingsCenter = lazy(() => import("@/pages/RadiologySettingsCenter"));
+const RadiologyQuickSelectSettings = lazy(() => import("@/pages/RadiologyQuickSelectSettings"));
 const RadiologyOperationsDashboard = lazy(() => import("@/pages/RadiologyOperationsDashboard"));
 const MyReportingAnalytics         = lazy(() => import("@/pages/MyReportingAnalytics"));
 const AiPromptTemplates     = lazy(() => import("@/pages/AiPromptTemplates"));
@@ -171,6 +173,8 @@ const WhatsAppChatbot = lazy(() => import("@/pages/WhatsAppChatbot"));
 const Portal          = lazy(() => import("@/pages/Portal"));
 const VerifyReceipt   = lazy(() => import("@/pages/VerifyReceipt"));
 const Display         = lazy(() => import("@/pages/Display"));
+const QueueDisplay     = lazy(() => import("@/pages/QueueDisplay"));
+const PaymentQrDisplay = lazy(() => import("@/pages/PaymentQrDisplay"));
 const OnlineBookings  = lazy(() => import("@/pages/OnlineBookings"));
 const DicomStudyWorklist    = lazy(() => import("@/pages/DicomStudyWorklist"));
 const RadiologistQueue      = lazy(() => import("@/pages/RadiologistQueue"));
@@ -257,7 +261,7 @@ function PermissionGuard() {
     }
     // Owner Dashboard is admin/super_admin only — redirect others to My Daily Summary.
     const normalizedRole = normalizeRole(session.user.role);
-    if (location === "/dashboard" && !FULL_ACCESS_ROLES.has(normalizedRole)) {
+    if ((location === "/dashboard" || location === "/diagnostics") && !FULL_ACCESS_ROLES.has(normalizedRole)) {
       navigate("/my-daily-summary", { replace: true });
       return;
     }
@@ -287,6 +291,7 @@ function PermissionGuard() {
 }
 
 function Router() {
+  const [location] = useLocation();
   const [portalLoaded, setPortalLoaded] = useState(() => typeof window !== "undefined" && !!(window as any).SuperAdminPortal);
 
   useEffect(() => {
@@ -326,13 +331,21 @@ function Router() {
         <Route path="/teleradiology/:rest*" component={TeleradiologyPortal} />
         <Route path="/verify-receipt/:billId" component={VerifyReceipt} />
         <Route path="/display" component={Display} />
+        <Route path="/display/payment-qr" component={PaymentQrDisplay} />
+        {/* Primary URL per spec: caredeoghar.com/queue/usg, /queue/mri, etc. */}
+        <Route path="/queue/:roomKey" component={QueueDisplay} />
+        {/* Kept for backward compatibility with any already-configured TVs */}
+        <Route path="/display/:roomKey" component={QueueDisplay} />
         <Route path="/kiosk" component={Kiosk} />
         <Route>
           <PermissionGuard />
           <Layout>
+            <ModuleErrorBoundary resetKey={location}>
             <Switch>
+              <Route path="/home" component={BillingDesk} />
               <Route path="/" component={BillingDesk} />
               <Route path="/dashboard" component={Dashboard} />
+              <Route path="/diagnostics" component={Diagnostics} />
               <Route path="/patients" component={Patients} />
               <Route path="/patients/:id">
                 {(params) => <PatientDetail id={Number(params.id)} />}
@@ -375,6 +388,21 @@ function Router() {
               <Route path="/radiology/report-generator/:studyId">
                 {(params) => <RadiologyReportGen studyId={Number(params.studyId)} />}
               </Route>
+              {/* Phase D (Radiology V2) supersedes the earlier M1.1 canonical-
+                  workspace consolidation: RadiologistCockpit is now THE single
+                  Reading Room. Route map:
+                    /radiology/cockpit                    → canonical (primary)
+                    /radiology/report/:studyId            → redirect to canonical
+                    /radiology/reporting-workspace(/:id)  → redirect to canonical
+                    /radiology/unified-report/:worklistId → redirect to canonical
+                    /radiology/command-center(/:id)       → owner-only (preserved)
+                    /radiology/legacy                     → owner-only (preserved)
+                    /radiology/report-generator(/:id)     → RadiologyReportGenerator
+                                                            (still active; unique macro/
+                                                            key-image admin UI)
+                  RadiologyReportingWorkspace, RadiologyReportEditor and
+                  RadiologyReportUnified are no longer routed — kept as
+                  unrouted lazy imports for rollback/reference only. */}
               <Route path="/radiology/report/:studyId">
                 {(params) => <RedirectToCockpit studyId={Number(params.studyId)} />}
               </Route>
@@ -516,9 +544,14 @@ function Router() {
               <Route path="/samples" component={Samples} />
               <Route path="/scan-station" component={ScanStation} />
               <Route path="/report-delivery" component={ReportDelivery} />
+              {/* Phase E (Radiology V2): RadiologySettingsCenter is the one
+                  owner/admin-only Radiology Settings hub. All legacy settings
+                  URLs render it; RadiologySettings (old page) is kept as an
+                  unrouted lazy import for rollback/reference only. */}
               <Route path="/settings/radiology">
                 {() => <AdminOnlySettings><RadiologySettingsCenter /></AdminOnlySettings>}
               </Route>
+              <Route path="/settings/radiology-quick-select" component={RadiologyQuickSelectSettings} />
               <Route path="/radiology/settings">
                 {() => <AdminOnlySettings><RadiologySettingsCenter /></AdminOnlySettings>}
               </Route>
@@ -538,6 +571,7 @@ function Router() {
               )}
               <Route component={NotFound} />
             </Switch>
+            </ModuleErrorBoundary>
           </Layout>
         </Route>
       </Switch>

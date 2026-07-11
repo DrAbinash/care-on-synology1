@@ -12,7 +12,7 @@ import { promisify } from "node:util";
 import { db } from "@workspace/db";
 import { tcpProbe } from "../lib/pacs/providers.js";
 import { testNodeConnection } from "../services/dicom-pull-agent/dimse-agent";
-import { getRadiologyConfig, validateRadiologyConfig } from "../lib/pacs/pacsConfig.js";
+import { getRadiologyConfig, validateRadiologyConfig, isDockerBridgeIp } from "../lib/pacs/pacsConfig.js";
 import { NETWORK_LAN_HOST, DEFAULT_OHIF_BASE_URL, DEFAULT_WADO_URL, OHIF_HTTP_PORT } from "../lib/networkDefaults";
 import {
   dicomRoutingRulesTable,
@@ -657,6 +657,94 @@ router.get("/studies/:studyInstanceUID/ohif-launch", async (req, res) => {
     dicomWebBaseUrl: dicomWebUrl,
     pacsType,
   });
+});
+
+// ─── M1.2 — READ-ONLY LAUNCH DIAGNOSTICS ─────────────────────────────────────
+// The browser cannot ask the PACS whether a StudyInstanceUID exists (QIDO is
+// cross-origin), so the workspace's permission-gated diagnostics drawer asks
+// this endpoint instead. Read-only; staff-auth + "/radiology" permission are
+// enforced at the router mount. Endpoint hosts are MASKED — diagnostics must
+// not enumerate internal topology — and there is no credential exposure and
+// no patient-name search (exact StudyInstanceUID only).
+
+/** Mask a URL's host: keep scheme, first 3 chars of host, port and path. */
+export function maskEndpointForDiagnostics(raw: string): string {
+  try {
+    const u = new URL(raw);
+    const host = u.hostname.length <= 3 ? "***" : `${u.hostname.slice(0, 3)}***`;
+    return `${u.protocol}//${host}${u.port ? `:${u.port}` : ""}${u.pathname !== "/" ? u.pathname : ""}`;
+  } catch {
+    return "***";
+  }
+}
+
+router.get("/studies/:studyInstanceUID/launch-diagnostics", async (req, res) => {
+  const { studyInstanceUID } = req.params;
+  if (!/^[0-9.]{1,128}$/.test(studyInstanceUID)) {
+    res.status(400).json({ error: "invalid StudyInstanceUID" });
+    return;
+  }
+
+  // Which network modes have viewer endpoints configured (masked).
+  const settings = await db.select().from(pacsSettingsTable);
+  const val = (key: string) => settings.find((s) => s.key === key)?.value?.trim() ?? "";
+  const modeKeys: Record<string, string> = {
+    LAN: "ohif_base_url",
+    TAILSCALE: "ohif_base_url_tailscale",
+    CLOUDFLARE: "ohif_base_url_cloudflare",
+    PUBLIC: "ohif_base_url_public",
+  };
+  const endpoints: Record<string, string> = {};
+  const configuredModes: string[] = [];
+  for (const [mode, key] of Object.entries(modeKeys)) {
+    const url = val(key);
+    if (url) {
+      configuredModes.push(mode);
+      endpoints[mode] = maskEndpointForDiagnostics(url);
+    }
+  }
+
+  // Server-side PACS existence check by EXACT StudyInstanceUID (never by
+  // patient name). Uses the server's own Orthanc reachability, bounded.
+  let pacsLookup: "FOUND" | "NOT_FOUND" | "UNAVAILABLE" = "UNAVAILABLE";
+  let pacsDetail: string | undefined;
+  try {
+    const cfg = await getRadiologyConfig();
+    const orthancBase =
+      process.env.ORTHANC_INTERNAL_URL?.replace(/\/$/, "") ||
+      cfg.orthanc.dicomWebUrl?.replace(/\/dicom-web\/?$/, "") ||
+      "";
+    if (!orthancBase) {
+      pacsDetail = "no Orthanc endpoint configured on the server";
+    } else {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 3000);
+      try {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        const user = process.env.ORTHANC_USERNAME || "";
+        const pass = process.env.ORTHANC_PASSWORD || "";
+        if (user && pass) headers["Authorization"] = "Basic " + Buffer.from(`${user}:${pass}`).toString("base64");
+        const r = await fetch(`${orthancBase}/tools/find`, {
+          method: "POST",
+          headers,
+          signal: controller.signal,
+          body: JSON.stringify({ Level: "Study", Query: { StudyInstanceUID: studyInstanceUID } }),
+        });
+        if (r.ok) {
+          const found = (await r.json()) as unknown[];
+          pacsLookup = Array.isArray(found) && found.length > 0 ? "FOUND" : "NOT_FOUND";
+        } else {
+          pacsDetail = `PACS answered HTTP ${r.status}`;
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  } catch (err) {
+    pacsDetail = err instanceof Error && err.name === "AbortError" ? "PACS lookup timed out (3s)" : "PACS lookup failed";
+  }
+
+  res.json({ studyInstanceUID, pacsLookup, ...(pacsDetail ? { pacsDetail } : {}), configuredModes, endpoints });
 });
 
 // ─── MWL PROCEDURES (STAFF DASHBOARD) ────────────────────────────────────────
@@ -2472,11 +2560,11 @@ router.get("/network/health", async (req, res) => {
     const internalOrthancBase = (process.env.ORTHANC_INTERNAL_URL || "http://care-orthanc:8042").replace(/\/$/, "");
     const externalOrthancBase = cfg.orthanc.dicomWebUrl.replace(/\/dicom-web$/, "");
 
-    // ── Bridge IP detection: a 172.x.x.x URL stored in DB means the seed
-    // ran with wrong defaultHost. Treat it as unconfigured rather than failing.
-    const isBridgeIp = (url: string) => /172\.\d+\.\d+\.\d+/.test(url);
-    const ohifConfigured = !!cfg.ohif.baseUrl && !isBridgeIp(cfg.ohif.baseUrl);
-    const weasisConfigured = !!cfg.weasis.wadoUrl && !isBridgeIp(cfg.weasis.wadoUrl);
+    // ── Bridge IP detection: shared, corrected helper (see pacsConfig.ts) —
+    // deliberately excludes the clinic's real LAN subnet 172.16.1.x so a
+    // working OHIF/Weasis URL on that subnet is never mistaken for "unconfigured".
+    const ohifConfigured = !!cfg.ohif.baseUrl && !isDockerBridgeIp(cfg.ohif.baseUrl);
+    const weasisConfigured = !!cfg.weasis.wadoUrl && !isDockerBridgeIp(cfg.weasis.wadoUrl);
 
     // OHIF probe target: same Docker-bridge-isolation problem Orthanc had —
     // the container often cannot reach the NAS's own external LAN IP. If an
@@ -2583,20 +2671,19 @@ router.get("/network/warnings", async (req, res) => {
     const cfg = await getRadiologyConfig();
     const warnings: string[] = [];
 
-    // Check for Docker Bridge IP leaks
-    const isBridgeIp = (ip: string) => ip.startsWith("172.16.1.") || ip.startsWith("172.");
-    
-    if (isBridgeIp(cfg.orthanc.ip)) {
-      warnings.push("Orthanc IP uses Docker bridge network (172.x.x.x) which is unreachable by LAN workstations.");
+    // Check for Docker Bridge IP leaks (shared, corrected helper — see
+    // pacsConfig.ts; deliberately excludes the real clinic LAN 172.16.1.x)
+    if (isDockerBridgeIp(cfg.orthanc.ip)) {
+      warnings.push("Orthanc IP uses a Docker bridge network address, unreachable by LAN workstations. Set ORTHANC_IP or ORTHANC_URL to the clinic's real LAN IP (e.g. 192.168.1.137) in .env.");
     }
-    if (isBridgeIp(cfg.conquest.ip)) {
-      warnings.push("Conquest IP uses Docker bridge network (172.x.x.x) which is unreachable by LAN workstations.");
+    if (isDockerBridgeIp(cfg.conquest.ip)) {
+      warnings.push("Conquest IP uses a Docker bridge network address, unreachable by LAN workstations. Set CONQUEST_HOST to the clinic's real LAN IP in .env.");
     }
-    if (cfg.ohif.baseUrl.includes("172.16.1.")) {
-      warnings.push("OHIF Base URL uses Docker bridge IP (172.x.x.x) - browser clients will fail to launch OHIF.");
+    if (isDockerBridgeIp(cfg.ohif.baseUrl)) {
+      warnings.push("OHIF Base URL uses a Docker bridge IP — browser clients will fail to launch OHIF. Set OHIF_URL in .env (or the OHIF Base URL field in PACS Settings) to a LAN IP, Tailscale IP, or public domain.");
     }
-    if (cfg.weasis.wadoUrl.includes("172.16.1.")) {
-      warnings.push("Weasis WADO endpoint uses Docker bridge IP (172.x.x.x) - local Weasis installations cannot read scans.");
+    if (isDockerBridgeIp(cfg.weasis.wadoUrl)) {
+      warnings.push("Weasis WADO endpoint uses a Docker bridge IP — local Weasis installations cannot read scans. Set WEASIS_WADO_PUBLIC_URL in .env (or the Weasis WADO field in PACS Settings) to a LAN IP, Tailscale IP, or public domain.");
     }
 
     // Check missing settings
@@ -2748,11 +2835,13 @@ router.get("/network/health-monitor", async (req, res) => {
       }
     };
 
-    // ── Health-monitor probes: same dual-URL strategy as /network/health
+    // ── Health-monitor probes: same dual-URL strategy as /network/health.
+    // Uses the shared, corrected isDockerBridgeIp (see pacsConfig.ts) so a
+    // working OHIF/Weasis URL on the real clinic LAN (172.16.1.x) is never
+    // mistaken for an unreachable Docker bridge address.
     const internalOrthancBase2 = (process.env.ORTHANC_INTERNAL_URL || "http://care-orthanc:8042").replace(/\/$/, "");
-    const bridgeRe = /172\.\d+\.\d+\.\d+/;
-    const ohifUrlOk  = !!cfg.ohif.baseUrl   && !bridgeRe.test(cfg.ohif.baseUrl);
-    const wadoUrlOk  = !!cfg.weasis.wadoUrl && !bridgeRe.test(cfg.weasis.wadoUrl);
+    const ohifUrlOk  = !!cfg.ohif.baseUrl   && !isDockerBridgeIp(cfg.ohif.baseUrl);
+    const wadoUrlOk  = !!cfg.weasis.wadoUrl && !isDockerBridgeIp(cfg.weasis.wadoUrl);
 
     const [orthancOk, orthancPortOk, ohifOk, weasisOk, conquestOk] = await Promise.all([
       // Orthanc HTTP via internal Docker name

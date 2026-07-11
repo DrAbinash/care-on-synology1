@@ -21,7 +21,7 @@ ARG BUILD_DATE=unknown
 # -----------------------------------------------------------------------------
 FROM node:22-bookworm-slim AS base
 RUN corepack enable \
- && corepack prepare pnpm@9.15.4 --activate
+ && corepack prepare pnpm@10.33.0 --activate
 WORKDIR /repo
 
 # Copy the full repo
@@ -42,7 +42,7 @@ RUN pnpm config set strict-dep-builds false && \
 # -----------------------------------------------------------------------------
 FROM base AS api-build
 RUN pnpm --filter @workspace/api-server run build \
- && pnpm --filter @workspace/api-server --prod --ignore-scripts deploy /api-deploy
+ && pnpm --filter @workspace/api-server --prod --ignore-scripts deploy --legacy /api-deploy
 
 
 # -----------------------------------------------------------------------------

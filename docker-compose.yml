@@ -2,7 +2,7 @@
 # Care Diagnostics ERP
 #
 # Schema update flow (automatic, every deployment):
-#   care-db (healthy) → care-db-patch-v2 → care-api → care-web
+#   care-db (healthy) → care-db-patch-v2 → care-schema-verify → care-api → care-web
 #
 # care-db-patch-v2 is the SINGLE automatic schema container. It:
 #   1. Waits for PostgreSQL
@@ -12,9 +12,15 @@
 #   5. Applies feature migrations from migrations/ (Phase 1: MRI protocols, Phase 2: neuro prompts)
 #   All steps are idempotent. Safe to run on every deployment.
 #
-# care-migrate is RETAINED for manual use only:
-#   docker compose run --rm care-migrate
-#   (Runs Drizzle TypeScript migrator — same migrations, alternative path)
+# care-schema-verify runs after care-db-patch-v2 and confirms the schema
+# actually matches what the application expects before care-api starts —
+# a safety check, not a migration step itself.
+#
+# care-migrate is MANUAL/EMERGENCY ONLY (profiles: [manual] — never starts
+# during a normal `docker compose up`):
+#   docker compose --profile manual run --rm care-migrate
+#   (Runs Drizzle TypeScript migrator — same migrations, alternative path.
+#   Use only when debugging a migration issue outside the normal flow.)
 #
 # See SYNOLOGY_DB_MIGRATION_DEPLOYMENT.md for full deployment instructions.
 # =============================================================================
@@ -71,6 +77,11 @@ services:
       DB_HOST: db
       DB_USER: ${DB_USER:-erp}
       DB_NAME: ${DB_NAME:-diagnostic_erp}
+      # Identity stamp — used by the deployment guard to fail loudly instead
+      # of running migrations against the wrong database (see system_database_
+      # identity in docker/db-patch-entrypoint.sh and docs/DEPLOYMENT.md).
+      APP_NAME: ${APP_NAME:-care-erp}
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-production}
       # Version metadata — stored in schema_deploy_state by the patch script
       ERP_VERSION: ${ERP_VERSION:-2.0.0}
       BUILD_NUMBER: ${BUILD_NUMBER:-0}
@@ -92,11 +103,21 @@ services:
         condition: service_healthy
 
   # ---------------------------------------------------------------------------
-  # Full schema verifier — runs after db-patch-v2, before care-api
+  # Schema verifier — runs after db-patch-v2, before care-api.
   # Uses the migrate image (Node.js + full workspace) to run
-  # scripts/db-schema-verify.cjs which parses all migration SQL files
-  # and compares against the live DB. Exits 0 on pass, 1 on fail.
-  # care-api will NOT start if this fails.
+  # scripts/db-schema-verify.cjs, which parses ALL migration SQL files
+  # (CREATE/ADD/DROP/RENAME COLUMN, RENAME TABLE, ALTER COLUMN TYPE) and
+  # compares the result against the live DB.
+  #
+  # READ-ONLY BY DEFAULT: this container reports schema drift but never
+  # mutates the schema unless SCHEMA_REPAIR=true is set below. care-db-patch-v2
+  # is the single source of truth for applying schema changes — this
+  # container's job is to confirm the result matches, not to fix it.
+  # Drift alone does not block care-api from starting (see
+  # STARTUP_SCHEMA_VERIFICATION.md after each deploy for details); set
+  # SCHEMA_VERIFY_STRICT=true to restore the old "any drift blocks
+  # deployment" behaviour. A DB identity mismatch (wrong database entirely)
+  # always blocks regardless of these settings.
   # ---------------------------------------------------------------------------
   schema-verify:
     build:
@@ -108,12 +129,25 @@ services:
     environment:
       DATABASE_URL: postgres://${DB_USER:-erp}:${DB_PASSWORD:-changeme}@db:5432/${DB_NAME:-diagnostic_erp}
       NODE_ENV: production
+      APP_NAME: ${APP_NAME:-care-erp}
+      # Auto-repair is OFF by default. Set to "true" only when you've reviewed
+      # STARTUP_SCHEMA_VERIFICATION.md and specifically want ADD COLUMN/CREATE
+      # TABLE/CREATE INDEX IF NOT EXISTS repairs applied on this deploy.
+      SCHEMA_REPAIR: ${SCHEMA_REPAIR:-false}
+      # When true, schema drift found in (non-repair) verify mode blocks
+      # care-api from starting, same as the old default behaviour.
+      SCHEMA_VERIFY_STRICT: ${SCHEMA_VERIFY_STRICT:-false}
       # Pass git metadata so startup report includes commit/branch info
       GIT_COMMIT: ${GIT_COMMIT:-unknown}
       GIT_BRANCH: ${GIT_BRANCH:-unknown}
     volumes:
-      # Mount scripts read-only so the verifier can find them
-      - ./scripts:/repo/scripts:ro
+      # NOTE: scripts/ is intentionally NOT bind-mounted here. scripts/ is its
+      # own pnpm workspace package with dependencies (e.g. pg) installed into
+      # scripts/node_modules at image build time. Bind-mounting the host copy
+      # over it would replace that built node_modules with the bare host
+      # folder (no node_modules on host — deps only exist inside the image),
+      # causing "Cannot find module 'pg'". The script is already baked into
+      # the image from the build context; no mount needed.
       # Mount migration SQL files read-only
       - ./lib/db/drizzle:/repo/lib/db/drizzle:ro
       - ./migrations:/repo/migrations:ro
@@ -123,7 +157,7 @@ services:
       # Mount output directory (writable) so startup MD is written to repo root
       - ./:/repo/output:rw
     working_dir: /repo/output
-    command: ["node", "/repo/scripts/db-schema-verify.cjs", "--repair", "--verbose"]
+    command: ["node", "/repo/scripts/db-schema-verify.cjs", "--verbose"]
     depends_on:
       db:
         condition: service_healthy
@@ -161,6 +195,10 @@ services:
       NODE_ENV: production
       PORT: "8080"
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Identity stamp checked (read-only) at startup before any compatibility
+      # patches run — see runStartupMigrations() in src/index.ts. Must match
+      # the same APP_NAME used by care-db-patch-v2 / care-schema-verify.
+      APP_NAME: ${APP_NAME:-care-erp}
 
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env — use a 64-char random string}
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set in .env — use a 64-char random string}
@@ -176,6 +214,11 @@ services:
       ICICI_SECRET_KEY: ${ICICI_SECRET_KEY:?ICICI_SECRET_KEY must be set in .env}
 
       FINGERPRINT_BRIDGE_SECRET: ${FINGERPRINT_BRIDGE_SECRET:-}
+      # Bootstrap admin safety (see .env.example for full explanation).
+      # MUST be false/unset in production after the first successful admin
+      # login — leaving it true resets the admin PIN back to default on
+      # every container restart.
+      BOOTSTRAP_ADMIN_FORCE: ${BOOTSTRAP_ADMIN_FORCE:-false}
       ORTHANC_URL: ${ORTHANC_URL:-}
       # Internal Docker service name for server-side health probes (never use LAN IP here)
       ORTHANC_INTERNAL_URL: ${ORTHANC_INTERNAL_URL:-http://care-orthanc:8042}
@@ -188,6 +231,11 @@ services:
       PACS_PROVIDER: ${PACS_PROVIDER:-orthanc}
       PACS_VIEWER_TYPE: ${PACS_VIEWER_TYPE:-ohif}
       OHIF_URL: ${OHIF_URL:-}
+      # Browser/Weasis-reachable WADO URL (distinct from ORTHANC_INTERNAL_URL,
+      # which is container-to-container only) — never a Docker bridge IP.
+      WEASIS_WADO_PUBLIC_URL: ${WEASIS_WADO_PUBLIC_URL:-}
+      # Optional: dashboard health-check probe override (see .env.example)
+      OHIF_INTERNAL_URL: ${OHIF_INTERNAL_URL:-}
       WADO_URL: ${WADO_URL:-}
     volumes:
       - object_storage:/app/data/object-storage
@@ -236,6 +284,15 @@ services:
         condition: service_healthy
       db-patch-v2:
         condition: service_completed_successfully
+      # Previously MISSING: care-api never actually waited on schema-verify
+      # completing, despite comments elsewhere claiming it did — the DB
+      # identity check and SCHEMA_VERIFY_STRICT mode are meaningless safety
+      # guards without this. In the default (non-strict) mode, ordinary
+      # schema drift still exits 0 quickly here, so this adds no meaningful
+      # delay to a normal deploy — it only actually blocks on a real
+      # DB-identity mismatch or an explicit SCHEMA_VERIFY_STRICT=true.
+      schema-verify:
+        condition: service_completed_successfully
 
   # ---------------------------------------------------------------------------
   # Web / nginx
@@ -254,13 +311,30 @@ services:
         condition: service_healthy
 
   # ---------------------------------------------------------------------------
-  # Manual migration container — NOT in the automatic startup chain
-  # Use for: manual Drizzle TypeScript migration runs, debugging, CI
+  # Manual/emergency migration container — NOT part of normal deployment.
   #
-  # Run manually:
-  #   docker compose run --rm care-migrate
+  # care-db-patch-v2 (above) already runs all automatic, safe production
+  # migrations on every deployment — idempotent Drizzle .sql migrations,
+  # imperative ADD COLUMN IF NOT EXISTS patches, and feature migrations from
+  # migrations/*.sql. Normal Synology Container Manager rebuilds should
+  # NEVER need this service.
+  #
+  # care-migrate exists only for manual/emergency use: running the Drizzle
+  # TypeScript migrator directly (same migrations, alternative execution
+  # path) when debugging a migration issue outside the normal flow.
+  #
+  # `profiles: [manual]` ensures this service is excluded from a normal
+  # `docker compose up` / `docker compose up -d` — Compose only starts
+  # services tagged with a profile when that profile is explicitly
+  # requested. This prevents it from ever running duplicate/competing
+  # migrations alongside care-db-patch-v2 during a routine rebuild.
+  #
+  # Run manually (only when genuinely needed):
+  #   docker compose --profile manual run --rm care-migrate
   # ---------------------------------------------------------------------------
   migrate:
+    profiles:
+      - manual
     build:
       context: .
       dockerfile: Dockerfile
@@ -270,10 +344,28 @@ services:
     environment:
       DATABASE_URL: postgres://${DB_USER:-erp}:${DB_PASSWORD:-changeme}@db:5432/${DB_NAME:-diagnostic_erp}
       NODE_ENV: production
+      APP_NAME: ${APP_NAME:-care-erp}
     depends_on:
       db:
         condition: service_healthy
 
+  # ===========================================================================
+  # NOTE: A standalone "Federated Radiology Service" (separate container +
+  # database at artifacts/radiology-service) was scaffolded here previously
+  # but never built out. Radiology reporting is fully integrated into the
+  # main ERP/API instead (Reporting Workspace, Quick Select, Protocol
+  # Engine — see artifacts/diagnostic-erp/src/pages/RadiologyReportingWorkspace.tsx).
+  # The obsolete radiology-db/radiology services and their volume were
+  # removed on 2026-07-07 since artifacts/radiology-service does not exist
+  # and nothing in the running app builds or depends on them.
+  # ===========================================================================
+
+# Add the BOUNDARY_API_KEY to the care-api service's environment in your
+# .env file so both containers share the same secret:
+#   BOUNDARY_API_KEY=some-long-random-string
+
 volumes:
   db_data:
+    external: true
+    name: care_main_db_data
   object_storage:

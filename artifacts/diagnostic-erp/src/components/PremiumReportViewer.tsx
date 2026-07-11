@@ -4,8 +4,8 @@
  * PremiumReportViewer.tsx
  * Premium publication-quality report viewer + image selector.
  *
- * HOW TO USE — drop this into RadiologyReportGenerator.tsx or
- * RadiologyReportUnified.tsx wherever the "Preview" panel appears:
+ * HOW TO USE — drop this into RadiologyReportGenerator.tsx
+ * wherever the "Preview" panel appears:
  *
  *   import PremiumReportViewer from "@/components/PremiumReportViewer";
  *   <PremiumReportViewer

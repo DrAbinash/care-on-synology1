@@ -1,0 +1,336 @@
+# CARE Radiology — CT Brain (NCCT Head) Content Pack (production v1)
+# Binds to _shared_libraries.yaml by key. Governed by CARE_RADIOLOGY_MASTER_DESIGN_SPEC.md.
+# Fastest escalation path in the product — number-anchored severity.
+
+pack:
+  pack_id: ct_brain
+  version: 1.0.0
+  locale: en-IN
+  status: active
+
+study:
+  key: ct_brain
+  display_name: CT Brain (NCCT Head)
+  modality: CT
+  aliases: [NCCT head, CT head plain, plain CT brain, NCCT brain]
+  default_report_sections: [Clinical details, Technique, Findings, Impression, Advice]
+  normal_template: tpl.normal.ct_brain
+  quick_select_groups:
+    - {name: Pinned, tiles: [ctbr.normal_trauma, ctbr.sdh, ctbr.ich, ctbr.acute_infarct, ctbr.mls]}
+    - {name: Hemorrhage, tiles: [ctbr.ich, ctbr.sdh, ctbr.edh, ctbr.sah, ctbr.contusions]}
+    - {name: Trauma, tiles: [ctbr.skull_fracture, ctbr.contusions]}
+    - {name: Infarct, tiles: [ctbr.acute_infarct, ctbr.chronic_infarct]}
+    - {name: Pressure, tiles: [ctbr.diffuse_edema, ctbr.mls, ctbr.hydrocephalus]}
+    - {name: Chronic/Incidental, tiles: [ctbr.atrophy_svid, ctbr.granuloma, ctbr.sinus_mastoid]}
+
+findings:
+  - id_key: ctbr.normal_trauma
+    display_name: Normal NCCT head (trauma-negative)
+    category: Normal
+    synonyms: [normal CT head, NAD head]
+    default_sentence: "{{tpl.normal.ct_brain}}"
+    impression_fragment: "No evidence of intracranial hemorrhage, mass effect or midline shift. No fracture of the skull vault."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: []
+    keyboard_alias: [nct]
+    combo_tiles: [combo.ctbr.trauma_neg]
+    criticality: none
+    normal_variant: true
+    ai_contradiction_rules:
+      - {id: ctbr.normal_trauma.c1, severity: block, glyph: "X", rule: "any hemorrhage/fracture/edema finding present in report AND trauma-negative impression used", message: "Trauma-negative impression contradicts a positive finding in the report."}
+    ai_completeness_rules: []
+
+  - id_key: ctbr.ich
+    display_name: Intraparenchymal hemorrhage
+    category: Hemorrhage
+    synonyms: [ICH, hypertensive bleed, hematoma]
+    default_sentence: "Acute intraparenchymal hemorrhage in the {location} ({size}), volume ~{abc2_volume}, with intraventricular extension, with {midline_shift} midline shift."
+    impression_fragment: "Acute intraparenchymal hemorrhage in the {location} (~{abc2_volume})."
+    recommendation_code: [rec.urgent]
+    parameters: [param.size]
+    severity: null
+    laterality: lat.rlb
+    location_options: [loc.brain_sites]
+    measurements: [meas.abc2_volume, meas.midline_shift]
+    keyboard_alias: [ich]
+    combo_tiles: []
+    criticality: {critical: crit.ich}
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: ctbr.ich.c1, severity: block, glyph: "X", rule: "meas.midline_shift >= 5 AND escalation not started", message: "Midline shift >= 5 mm — start critical-results escalation before signing."}
+      - {id: ctbr.ich.c2, severity: warn, glyph: "triangle", rule: "hemorrhage density not described as hyperdense", message: "Acute blood is expected to be hyperdense — confirm density."}
+    ai_completeness_rules:
+      - {id: ctbr.ich.k1, glyph: "circle", rule: "3 diameters entered AND ABC/2 volume not computed", message: "Compute ABC/2 volume from the entered diameters."}
+      - {id: ctbr.ich.k2, glyph: "circle", rule: "hemorrhage present AND basal cisterns status not stated", message: "State basal cistern status when any hemorrhage is present."}
+
+  - id_key: ctbr.sdh
+    display_name: Subdural hematoma
+    category: Hemorrhage
+    synonyms: [SDH, subdural bleed, acute on chronic SDH]
+    default_sentence: "{course} subdural hematoma along the {laterality} convexity, maximum thickness {sdh_thickness}, with {midline_shift} midline shift."
+    impression_fragment: "{course} {laterality} SDH ({sdh_thickness}) with midline shift."
+    recommendation_code: [rec.urgent, rec.repeat_ncct24h]
+    parameters: [param.course]
+    severity: null
+    laterality: lat.rlb
+    location_options: [loc.brain_sites]
+    measurements: [meas.sdh_thickness, meas.midline_shift]
+    keyboard_alias: [sdh]
+    combo_tiles: [combo.ctbr.sdh_emergency]
+    criticality: {critical: crit.sdh_edh}
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: ctbr.sdh.c1, severity: block, glyph: "X", rule: "meas.midline_shift >= 5 AND escalation not started", message: "Midline shift >= 5 mm — start critical-results escalation before signing."}
+      - {id: ctbr.sdh.c2, severity: warn, glyph: "triangle", rule: "sdh_thickness value in text differs from measurement field", message: "SDH thickness in text differs from the measurement field."}
+    ai_completeness_rules:
+      - {id: ctbr.sdh.k1, glyph: "circle", rule: "cisterns status not stated", message: "State basal cistern status."}
+
+  - id_key: ctbr.edh
+    display_name: Extradural hematoma
+    category: Hemorrhage
+    synonyms: [EDH, epidural hematoma]
+    default_sentence: "Biconvex extradural hematoma in the {laterality} {location} region, maximum thickness {sdh_thickness}, with adjacent fracture, with {midline_shift} midline shift."
+    impression_fragment: "{laterality} EDH ({sdh_thickness}) — neurosurgical emergency."
+    recommendation_code: [rec.urgent]
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location_options: [loc.brain_sites]
+    measurements: [meas.sdh_thickness, meas.midline_shift]
+    keyboard_alias: [edh]
+    combo_tiles: []
+    criticality: {critical: crit.sdh_edh}
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: ctbr.edh.c1, severity: block, glyph: "X", rule: "meas.midline_shift >= 5 AND escalation not started", message: "Midline shift >= 5 mm — start critical-results escalation before signing."}
+    ai_completeness_rules:
+      - {id: ctbr.edh.k1, glyph: "circle", rule: "EDH present AND overlying fracture not commented", message: "Comment on the overlying skull fracture with an EDH."}
+
+  - id_key: ctbr.sah
+    display_name: Subarachnoid hemorrhage
+    category: Hemorrhage
+    synonyms: [SAH]
+    default_sentence: "Hyperdensity in the {location} — subarachnoid hemorrhage."
+    impression_fragment: "Subarachnoid hemorrhage — CT angiography advised to rule out aneurysm."
+    recommendation_code: [rec.urgent, rec.cta]
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: [["sulci", "basal cisterns", "sylvian fissures", "interhemispheric fissure"]]
+    measurements: []
+    keyboard_alias: [sah]
+    combo_tiles: []
+    criticality: {critical: crit.ich}
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules:
+      - {id: ctbr.sah.k1, glyph: "circle", rule: "SAH present AND rec.cta absent", message: "SAH — CT angiography recommendation expected to exclude aneurysm."}
+
+  - id_key: ctbr.contusions
+    display_name: Hemorrhagic contusions
+    category: Trauma
+    synonyms: [contusion, contre-coup]
+    default_sentence: "{count} hemorrhagic contusion(s) in the {location}, with {edema}."
+    impression_fragment: "Hemorrhagic contusions as described."
+    recommendation_code: [rec.urgent, rec.repeat_ncct24h]
+    parameters: [param.count, param.edema]
+    severity: null
+    laterality: lat.rlb
+    location_options: [loc.brain_sites]
+    measurements: [meas.midline_shift]
+    keyboard_alias: [con]
+    combo_tiles: [combo.ctbr.contusion_set]
+    criticality: {critical: crit.ich}
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: ctbr.contusions.c1, severity: block, glyph: "X", rule: "meas.midline_shift >= 5 AND escalation not started", message: "Midline shift >= 5 mm — start critical-results escalation before signing."}
+    ai_completeness_rules: []
+
+  - id_key: ctbr.skull_fracture
+    display_name: Skull fracture
+    category: Trauma
+    synonyms: [vault fracture, fracture skull, depressed fracture]
+    default_sentence: "Undisplaced fracture of the {location}, with overlying scalp hematoma."
+    impression_fragment: "Fracture of the {location}."
+    recommendation_code: [rec.spec_nsx]
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location_options: [loc.skull_bones]
+    measurements: []
+    keyboard_alias: [fx]
+    combo_tiles: [combo.ctbr.contusion_set]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules:
+      - {id: ctbr.skull_fracture.k1, glyph: "circle", rule: "fracture present AND no comment on underlying extra-axial collection", message: "Comment on underlying EDH/SDH beneath a fracture."}
+
+  - id_key: ctbr.acute_infarct
+    display_name: Acute infarct (hypodensity)
+    category: Infarct
+    synonyms: [early infarct, dense MCA sign, loss of grey-white differentiation]
+    default_sentence: "Hypodensity with loss of grey-white differentiation in the {territory} territory, with hyperdense vessel sign — acute/subacute infarct."
+    impression_fragment: "Acute/subacute infarct in the {laterality} {territory} territory."
+    recommendation_code: [rec.cemri, rec.spec_neuro]
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location_options: [loc.vascular_territory]
+    measurements: []
+    keyboard_alias: [inf]
+    combo_tiles: [combo.ctbr.stroke_ct]
+    criticality: {critical_if: "large territory", registry: crit.large_infarct}
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: ctbr.acute_infarct.c1, severity: warn, glyph: "triangle", rule: "'acute infarct' AND density described as hyperdense at same site", message: "Acute infarct is hypodense — reconcile density description."}
+    ai_completeness_rules: []
+
+  - id_key: ctbr.chronic_infarct
+    display_name: Chronic infarct / lacunes
+    category: Infarct
+    synonyms: [old infarct, gliosis, lacunes]
+    default_sentence: "Well-defined hypodensity in the {location} — chronic infarct/gliosis."
+    impression_fragment: "Chronic infarct in the {location}."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: lat.rlb
+    location_options: [loc.brain_sites, loc.vascular_territory]
+    measurements: []
+    keyboard_alias: [cinf]
+    combo_tiles: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: ctbr.diffuse_edema
+    display_name: Diffuse cerebral edema
+    category: Pressure
+    synonyms: [brain edema, effaced cisterns]
+    default_sentence: "Diffuse effacement of sulci and basal cisterns with loss of grey-white differentiation — diffuse cerebral edema."
+    impression_fragment: "Diffuse cerebral edema — urgent neurosurgical attention advised."
+    recommendation_code: [rec.urgent]
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: []
+    keyboard_alias: [ede]
+    combo_tiles: []
+    criticality: {critical: crit.diffuse_edema}
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: ctbr.mls
+    display_name: Midline shift
+    category: Pressure
+    synonyms: [MLS, mass effect]
+    default_sentence: "Midline shift of {midline_shift} to the {laterality}."
+    impression_fragment: "Midline shift {midline_shift}."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    measurements: [meas.midline_shift]
+    keyboard_alias: [mls]
+    combo_tiles: [combo.ctbr.sdh_emergency]
+    criticality: {critical_if: ">= 5 mm", registry: crit.midline_shift}
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: ctbr.mls.c1, severity: block, glyph: "X", rule: "meas.midline_shift >= 5 AND escalation not started", message: "Midline shift >= 5 mm — start critical-results escalation before signing."}
+    ai_completeness_rules: []
+
+  - id_key: ctbr.hydrocephalus
+    display_name: Hydrocephalus (CT)
+    category: Pressure
+    synonyms: [ventriculomegaly]
+    default_sentence: "Dilated ventricular system ({severity}), with periventricular ooze."
+    impression_fragment: "Hydrocephalus, {severity}."
+    recommendation_code: [rec.spec_nsx]
+    parameters: []
+    severity: sev.hydro
+    laterality: null
+    measurements: [meas.evans_index]
+    keyboard_alias: [hcp]
+    combo_tiles: []
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: ctbr.atrophy_svid
+    display_name: Atrophy + chronic small-vessel changes
+    category: Chronic
+    synonyms: [age-related changes, involutional changes]
+    default_sentence: "Prominent sulci and ventricles with periventricular white-matter hypodensities — age-related atrophy with chronic small-vessel ischemic changes."
+    impression_fragment: "Age-related cerebral atrophy with chronic small-vessel changes. No acute abnormality."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: null
+    measurements: []
+    keyboard_alias: [atr]
+    combo_tiles: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: ctbr.granuloma
+    display_name: Calcified granuloma (CT)
+    category: Chronic
+    synonyms: [old NCC, calcified lesion]
+    default_sentence: "{count} punctate calcified granuloma(s) in the {location}."
+    impression_fragment: "Calcified granuloma — sequelae of old infection."
+    recommendation_code: []
+    parameters: [param.count]
+    severity: null
+    laterality: null
+    location_options: [loc.brain_sites]
+    measurements: []
+    keyboard_alias: [gran]
+    combo_tiles: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: ctbr.sinus_mastoid
+    display_name: Sinusitis / mastoiditis
+    category: Incidentals
+    synonyms: [mucosal thickening, mastoiditis]
+    default_sentence: "Mucosal thickening/opacification of the {location}; mastoid air cells show {laterality} opacification."
+    impression_fragment: "Paranasal sinusitis / mastoiditis as described."
+    recommendation_code: []
+    parameters: []
+    severity: null
+    laterality: lat.rlb
+    location_options: [loc.pns_sinuses]
+    measurements: []
+    keyboard_alias: [mast]
+    combo_tiles: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+combo_tiles:
+  - {id: combo.ctbr.trauma_neg, label: "Trauma negative", members: [ctbr.normal_trauma]}
+  - {id: combo.ctbr.sdh_emergency, label: "SDH emergency", members: [ctbr.sdh, ctbr.mls], recommendations: [rec.urgent, rec.spec_nsx]}
+  - {id: combo.ctbr.stroke_ct, label: "CT stroke positive", members: [ctbr.acute_infarct], recommendations: [rec.cemri]}
+  - {id: combo.ctbr.contusion_set, label: "Contusion set", members: [ctbr.contusions, {ref: ctbr.skull_fracture, optional: true}], recommendations: [rec.repeat_ncct24h]}
+
+study_ai_rules:
+  completeness:
+    - {id: ctbr.study.k1, glyph: "circle", rule: "trauma indication AND vault/base/facial-bones/scalp not all addressed", message: "Trauma checklist incomplete — vault, skull base, facial bones, scalp."}
+    - {id: ctbr.study.k2, glyph: "circle", rule: "scalp hematoma described AND underlying fracture not commented", message: "Look for and comment on an underlying fracture beneath a scalp hematoma."}
+  contradiction:
+    - {id: ctbr.study.c1, severity: block, glyph: "X", rule: "any hemorrhage present AND trauma-negative impression line used", message: "Positive finding contradicts trauma-negative impression."}
+  impression_suggestions:
+    - "Auto-assemble hemorrhage + volume + midline shift into a single emergency line."
+    - "Ghost ABC/2 volume when three diameters are present."

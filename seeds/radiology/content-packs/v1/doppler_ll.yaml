@@ -1,0 +1,319 @@
+# CARE Radiology — Lower Limb Doppler Content Pack (production v1)
+# Binds to _shared_libraries.yaml (+ v1_2). Flat ai_* format. Venous + arterial sub-studies.
+
+pack:
+  pack_id: doppler_ll
+  version: 1.0.0
+  locale: en-IN
+  status: active
+
+study:
+  study: Lower Limb Doppler
+  modality: US
+  aliases: [lower limb Doppler, venous Doppler, arterial Doppler, DVT scan, varicose vein Doppler]
+  default_report_sections: [Clinical details, Grey-scale & compressibility, Doppler findings (segment-wise), Measurements, Impression, Advice]
+  normal_template: tpl.normal.doppler_ll_venous
+  sub_studies: [venous_dvt, venous_varicose, arterial]
+  quick_select_groups:
+    - {name: Pinned, tiles: [dopll.normal_venous, dopll.acute_dvt, dopll.sfj_incompetence, dopll.normal_arterial, dopll.perforator]}
+    - {name: DVT, tiles: [dopll.acute_dvt, dopll.chronic_dvt, dopll.calf_dvt]}
+    - {name: Varicose, tiles: [dopll.sfj_incompetence, dopll.spj_incompetence, dopll.perforator, dopll.varicosities]}
+    - {name: Arterial, tiles: [dopll.normal_arterial, dopll.monophasic, dopll.stenosis, dopll.occlusion, dopll.abi]}
+    - {name: Soft tissue, tiles: [dopll.baker, dopll.cellulitis]}
+
+findings:
+  - id_key: dopll.normal_venous
+    display_name: Normal venous Doppler (no DVT)
+    category: DVT
+    synonyms: [no DVT, DVT negative]
+    keyboard_aliases: [ndvt]
+    default_sentence: "{{tpl.normal.doppler_ll_venous}}"
+    parameters: []
+    severity: null
+    laterality: lat.rlb
+    location_options: []
+    measurements: []
+    impression_fragment: "No evidence of deep venous thrombosis in the {laterality} lower limb."
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai_contradiction_rules:
+      - {id: dopll.normal_venous.c1, severity: block, glyph: "X", rule: "any thrombosed segment present AND no-DVT impression used", message: "No-DVT impression contradicts a thrombosed segment."}
+    ai_completeness_rules:
+      - {id: dopll.normal_venous.k1, glyph: "circle", rule: "every deep-vein segment not addressed", message: "Address every deep-vein segment on a DVT study (segment-map completeness)."}
+
+  - id_key: dopll.acute_dvt
+    display_name: Acute DVT
+    category: DVT
+    synonyms: [deep vein thrombosis, venous thrombosis]
+    keyboard_aliases: [dvt]
+    default_sentence: "{location} are distended, non-compressible and filled with {thrombus_age} echogenic thrombus with absent color flow."
+    parameters: [param.thrombus_age]
+    severity: null
+    laterality: lat.rl
+    location_options: [loc.venous_ll]
+    measurements: [meas.vein_diameter]
+    impression_fragment: "Acute DVT involving {location} of the {laterality} lower limb — URGENT physician attention; findings communicated."
+    recommendation_code: [rec.urgent]
+    criticality: {critical_if: "femoro-popliteal segments", registry: crit.acute_prox_dvt}
+    normal_variant: false
+    combo_tiles: [combo.dopll.dvt_emergency]
+    ai_contradiction_rules:
+      - {id: dopll.acute_dvt.c1, severity: block, glyph: "X", rule: "femoro-popliteal DVT AND escalation not started", message: "Acute proximal DVT — start escalation before signing."}
+    ai_completeness_rules:
+      - {id: dopll.acute_dvt.k1, glyph: "circle", rule: "DVT reported AND extent (proximal vs calf) not stated", message: "State the proximal extent of the thrombus."}
+
+  - id_key: dopll.chronic_dvt
+    display_name: Chronic DVT / post-thrombotic changes
+    category: DVT
+    synonyms: [recanalized thrombus, post-thrombotic syndrome]
+    keyboard_aliases: [cdvt]
+    default_sentence: "{location} show wall-adherent echogenic thrombus with partial recanalization and reduced compressibility — chronic DVT."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location_options: [loc.venous_ll]
+    measurements: []
+    impression_fragment: "Chronic (partially recanalized) DVT {location} — continue physician follow-up."
+    recommendation_code: [rec.clincorr]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: dopll.calf_dvt
+    display_name: Calf-vein DVT
+    category: DVT
+    synonyms: [distal DVT, PTV thrombosis]
+    keyboard_aliases: [cfdvt]
+    default_sentence: "Non-compressible {location} with echogenic thrombus — calf-vein DVT."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location_options: [loc.venous_ll]
+    measurements: []
+    impression_fragment: "Isolated calf-vein DVT {laterality} — physician correlation for anticoagulation decision."
+    recommendation_code: [rec.clincorr]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: dopll.sfj_incompetence
+    display_name: SFJ incompetence with GSV reflux
+    category: Varicose
+    synonyms: [saphenofemoral incompetence, GSV reflux]
+    keyboard_aliases: [sfji]
+    default_sentence: "Saphenofemoral junction is incompetent with reflux of {reflux_duration} on Valsalva/augmentation. GSV is dilated ({vein_diameter}) with reflux."
+    parameters: []
+    severity: null
+    laterality: lat.rlb
+    location_options: []
+    measurements: [meas.reflux_duration, meas.vein_diameter]
+    impression_fragment: "{laterality} SFJ incompetence with significant GSV reflux — vascular surgical opinion advised."
+    recommendation_code: [rec.spec_vasc]
+    criticality: none
+    normal_variant: false
+    combo_tiles: [combo.dopll.varicose_map]
+    ai_contradiction_rules:
+      - {id: dopll.sfj_incompetence.c1, severity: warn, glyph: "triangle", rule: "reflux labelled significant AND meas.reflux_duration <= 0.5 s (superficial)", message: "Reflux below the significance threshold (>0.5 s superficial)."}
+    ai_completeness_rules: []
+
+  - id_key: dopll.spj_incompetence
+    display_name: SPJ/SSV incompetence
+    category: Varicose
+    synonyms: [saphenopopliteal incompetence, SSV reflux]
+    keyboard_aliases: [spji]
+    default_sentence: "Saphenopopliteal junction is incompetent with SSV reflux of {reflux_duration}; SSV measures {vein_diameter}."
+    parameters: []
+    severity: null
+    laterality: lat.rlb
+    location_options: []
+    measurements: [meas.reflux_duration, meas.vein_diameter]
+    impression_fragment: "{laterality} SPJ/SSV incompetence."
+    recommendation_code: [rec.spec_vasc]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: dopll.perforator
+    display_name: Incompetent perforator(s)
+    category: Varicose
+    synonyms: [perforator incompetence]
+    keyboard_aliases: [perf]
+    default_sentence: "Incompetent perforator(s) ({vein_diameter}) in the {laterality} leg."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location_options: []
+    measurements: [meas.vein_diameter]
+    impression_fragment: "Incompetent perforators — marked for surgery."
+    recommendation_code: [rec.spec_vasc]
+    criticality: none
+    normal_variant: false
+    combo_tiles: [combo.dopll.varicose_map]
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: dopll.varicosities
+    display_name: Superficial varicosities
+    category: Varicose
+    synonyms: [varicose veins, dilated superficial veins]
+    keyboard_aliases: [varx]
+    default_sentence: "Multiple dilated tortuous superficial varicosities noted in the {laterality} leg/thigh."
+    parameters: []
+    severity: null
+    laterality: lat.rlb
+    location_options: []
+    measurements: []
+    impression_fragment: "Superficial varicosities as described."
+    recommendation_code: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: dopll.normal_arterial
+    display_name: Normal arterial Doppler
+    category: Arterial
+    synonyms: [triphasic flow, arterial normal]
+    keyboard_aliases: [nart]
+    default_sentence: "{{tpl.normal.doppler_ll_arterial}}"
+    parameters: []
+    severity: null
+    laterality: lat.rlb
+    location_options: []
+    measurements: [meas.abi]
+    impression_fragment: "Normal arterial study of the {laterality} lower limb. ABI {abi}."
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai_contradiction_rules: []
+    ai_completeness_rules:
+      - {id: dopll.normal_arterial.k1, glyph: "circle", rule: "arterial study AND ABI not recorded", message: "Record ABI on every arterial study."}
+
+  - id_key: dopll.monophasic
+    display_name: Monophasic/dampened flow
+    category: Arterial
+    synonyms: [dampened waveform, parvus tardus]
+    keyboard_aliases: [mono]
+    default_sentence: "{location} show {waveform} dampened flow suggesting significant proximal disease."
+    parameters: [param.waveform]
+    severity: null
+    laterality: lat.rl
+    location_options: [loc.arterial_ll]
+    measurements: [meas.psv, meas.abi]
+    impression_fragment: "Dampened distal flow — significant proximal arterial disease."
+    recommendation_code: [rec.spec_vasc, rec.cta]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: dopll.stenosis
+    display_name: Arterial stenosis
+    category: Arterial
+    synonyms: [plaque with stenosis, PAD]
+    keyboard_aliases: [sten]
+    default_sentence: "Calcified/soft plaque in the {location} causing {severity} stenosis (PSV {psv})."
+    parameters: []
+    severity: sev.stenosis_pct
+    laterality: lat.rl
+    location_options: [loc.arterial_ll]
+    measurements: [meas.psv]
+    impression_fragment: "{severity} stenosis of {location}."
+    recommendation_code: [rec.spec_vasc, rec.cta]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: dopll.occlusion
+    display_name: Arterial occlusion
+    category: Arterial
+    synonyms: [blocked artery, no flow]
+    keyboard_aliases: [occl]
+    default_sentence: "No color flow or Doppler signal in the {location} — occlusion, with distal reformation via collaterals."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location_options: [loc.arterial_ll]
+    measurements: [meas.abi]
+    impression_fragment: "Occlusion of {location} — vascular surgery referral advised."
+    recommendation_code: [rec.spec_vasc, rec.cta, rec.urgent]
+    criticality: {critical_if: "ABI < 0.5 or acute presentation", registry: crit.critical_ischemia}
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: dopll.abi
+    display_name: ABI record
+    category: Arterial
+    synonyms: [ankle brachial index]
+    keyboard_aliases: [abi]
+    default_sentence: "ABI: right {abi}, left {abi}."
+    parameters: []
+    severity: sev.abi
+    laterality: null
+    location_options: []
+    measurements: [meas.abi]
+    impression_fragment: "ABI {abi} ({severity})."
+    recommendation_code: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: dopll.abi.c1, severity: warn, glyph: "triangle", rule: "ABI value vs band wording mismatch", message: "ABI value does not match the stated band."}
+    ai_completeness_rules: []
+
+  - id_key: dopll.baker
+    display_name: Baker's cyst
+    category: Soft tissue
+    synonyms: [popliteal cyst, Bakers cyst]
+    keyboard_aliases: [baker]
+    default_sentence: "Well-defined cystic lesion ({size}) in the popliteal fossa communicating with the joint — Baker's cyst, with rupture tracking into the calf."
+    parameters: [param.size]
+    severity: null
+    laterality: lat.rl
+    location_options: []
+    measurements: []
+    impression_fragment: "{laterality} Baker's cyst (ruptured) — can mimic DVT clinically."
+    recommendation_code: []
+    criticality: none
+    normal_variant: false
+    combo_tiles: [combo.dopll.swelling_neg]
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: dopll.cellulitis
+    display_name: Cellulitis / subcutaneous edema
+    category: Soft tissue
+    synonyms: [subcutaneous edema, cobblestone appearance]
+    keyboard_aliases: [cell]
+    default_sentence: "Diffuse subcutaneous edema with cobblestone appearance in the {laterality} leg — cellulitis pattern. No drainable collection."
+    parameters: []
+    severity: null
+    laterality: lat.rl
+    location_options: []
+    measurements: []
+    impression_fragment: "Cellulitis {laterality} — no DVT, no collection."
+    recommendation_code: [rec.clincorr]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+combo_tiles:
+  - {id: combo.dopll.varicose_map, label: "Varicose full map", members: [dopll.sfj_incompetence, dopll.perforator, dopll.varicosities], recommendations: [rec.spec_vasc]}
+  - {id: combo.dopll.dvt_emergency, label: "DVT emergency", members: [dopll.acute_dvt], recommendations: [rec.urgent]}
+  - {id: combo.dopll.swelling_neg, label: "Swelling, DVT-negative", members: [dopll.normal_venous, {ref: dopll.baker, alt: dopll.cellulitis}]}
+
+critical_findings:
+  - crit.acute_prox_dvt
+  - crit.critical_ischemia
+
+implementation_notes:
+  - "Segment-map completeness: every deep-vein segment must be addressed on a DVT study."
+  - "Proximal (femoro-popliteal) DVT blocks unstarted sign-off; reflux < 0.5 s (superficial) labelled significant is a warn."
+  - "ABI mandatory on every arterial study; value must match the band."
+  - "Indian terms: DVT; SFJ/SPJ; GSV/SSV (long/short saphenous); ABI = ankle-brachial index; EVLT."

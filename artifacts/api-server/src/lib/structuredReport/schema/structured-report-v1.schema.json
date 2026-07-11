@@ -1,0 +1,456 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://care.local/schemas/structured-report/v1.json",
+  "title": "CARE Radiology Canonical Structured Report (D1 v1.0.0)",
+  "description": "Normative JSON Schema per docs/STRUCTURED_REPORT_JSON_SPEC_v1.md (D1, revision 2). Governs radiology_report_drafts.structured_json and patient_reports.structured_json (D1 header, §13).",
+  "type": "object",
+  "required": ["schema_version", "kind", "document_id", "catalog_snapshot", "study_context", "findings", "measurements", "recommendations", "critical_flags", "provenance", "ai", "audit"],
+  "patternProperties": { "^x_": true },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+    "kind": { "const": "radiology.structured_report" },
+    "document_id": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+    "catalog_snapshot": { "$ref": "#/$defs/catalogSnapshot" },
+    "study_context": { "$ref": "#/$defs/studyContext" },
+    "sections": { "type": "array", "items": { "$ref": "#/$defs/section" } },
+    "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+    "measurements": { "type": "array", "items": { "$ref": "#/$defs/measurement" } },
+    "impression": { "$ref": "#/$defs/impression" },
+    "recommendations": { "type": "array", "items": { "$ref": "#/$defs/recommendation" } },
+    "critical_flags": { "type": "array", "items": { "$ref": "#/$defs/criticalFlag" } },
+    "provenance": { "$ref": "#/$defs/documentProvenance" },
+    "ai": { "$ref": "#/$defs/aiBlock" },
+    "audit": { "$ref": "#/$defs/auditBlock" },
+    "extensions": { "type": "object" }
+  },
+  "$defs": {
+    "ref": { "type": "string", "minLength": 3, "pattern": "^[a-z_]+\\..+$" },
+    "latRef": { "type": "string", "enum": ["lat.left", "lat.right", "lat.bilateral", "lat.midline", "lat.na", "lat.none"] },
+    "systemValueRef": {
+      "type": "object",
+      "required": ["system", "value"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": { "system": { "type": "string" }, "value": { "type": "string" } }
+    },
+    "catalogSnapshot": {
+      "type": "object",
+      "required": ["content_pack_versions", "catalog_schema_version", "ai_rules_version"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "content_pack_versions": { "type": "object", "additionalProperties": { "type": "string" } },
+        "catalog_schema_version": { "type": "string" },
+        "ai_rules_version": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "studyComparison": {
+      "type": "object",
+      "required": ["has_prior", "prior_study_ref", "interval_note"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "has_prior": { "type": "boolean" },
+        "prior_study_ref": { "type": ["string", "null"] },
+        "interval_note": { "type": ["string", "null"] }
+      }
+    },
+    "studyIdentifiers": {
+      "type": "object",
+      "required": ["study_instance_uid", "accession_number", "patient_ref", "study_datetime", "referring_physician_ref", "performing_physician_ref"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "study_instance_uid": { "type": "string" },
+        "accession_number": { "type": "string" },
+        "patient_ref": { "$ref": "#/$defs/systemValueRef" },
+        "study_datetime": { "type": "string", "format": "date-time" },
+        "referring_physician_ref": { "$ref": "#/$defs/systemValueRef" },
+        "performing_physician_ref": { "$ref": "#/$defs/systemValueRef" }
+      }
+    },
+    "studyContext": {
+      "type": "object",
+      "required": ["modality", "body_region", "study_type", "template_ref", "laterality_default", "comparison", "identifiers"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "modality": { "type": "string" },
+        "body_region": { "type": "string" },
+        "study_type": { "type": "string" },
+        "template_ref": { "$ref": "#/$defs/ref" },
+        "laterality_default": { "anyOf": [{ "$ref": "#/$defs/latRef" }, { "type": "null" }] },
+        "comparison": { "$ref": "#/$defs/studyComparison" },
+        "identifiers": { "$ref": "#/$defs/studyIdentifiers" }
+      }
+    },
+    "section": {
+      "type": "object",
+      "required": ["lid", "kind", "rendered"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "lid": { "type": "string" },
+        "kind": { "enum": ["clinical_history", "technique", "comparison", "findings", "impression", "recommendation", "advice"] },
+        "title": { "type": "string" },
+        "finding_refs": { "type": "array", "items": { "type": "string" } },
+        "measurement_refs": { "type": "array", "items": { "type": "string" } },
+        "rendered": { "type": "string" }
+      }
+    },
+    "instanceProvenance": {
+      "type": "object",
+      "required": ["origin", "actor", "created_at", "edited"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "origin": { "type": "string", "minLength": 1 },
+        "actor": { "type": "string" },
+        "source_ref": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "edited": { "type": "boolean" },
+        "edited_by": { "type": ["string", "null"] },
+        "edited_at": { "type": ["string", "null"] }
+      }
+    },
+    "instanceAiBlock": {
+      "type": "object",
+      "required": ["suggested", "run_id", "accepted_verbatim", "confidence", "model_ref", "prompt_ref", "prompt_version"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "suggested": { "const": true },
+        "run_id": { "type": "string" },
+        "accepted_verbatim": { "type": "boolean" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "model_ref": { "type": "string" },
+        "prompt_ref": { "$ref": "#/$defs/ref" },
+        "prompt_version": { "type": "integer" }
+      }
+    },
+    "statusFlags": {
+      "type": "object",
+      "required": ["is_significant", "is_critical", "is_incidental"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "is_significant": { "type": "boolean" },
+        "is_critical": { "type": "boolean" },
+        "is_incidental": { "type": "boolean" }
+      }
+    },
+    "includedFrom": {
+      "type": "object",
+      "required": ["kind", "ref"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["included_findings_ref", "combo"] },
+        "ref": { "$ref": "#/$defs/ref" },
+        "tile_lid": { "type": "string" }
+      }
+    },
+    "parameterEntry": {
+      "type": "object",
+      "required": ["param", "kind", "label"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "param": { "$ref": "#/$defs/ref" },
+        "kind": { "enum": ["option", "numeric", "boolean", "text"] },
+        "label": { "type": "string" },
+        "option": { "type": "string" },
+        "value": { "type": ["number", "boolean", "string"] },
+        "unit": { "type": "string" }
+      },
+      "allOf": [
+        { "if": { "properties": { "kind": { "const": "option" } } }, "then": { "required": ["option"] } },
+        { "if": { "properties": { "kind": { "const": "numeric" } } }, "then": { "required": ["value"], "properties": { "value": { "type": "number" } } } },
+        { "if": { "properties": { "kind": { "const": "boolean" } } }, "then": { "required": ["value"], "properties": { "value": { "type": "boolean" } } } },
+        { "if": { "properties": { "kind": { "const": "text" } } }, "then": { "required": ["value"], "properties": { "value": { "type": "string" } } } }
+      ]
+    },
+    "finding": {
+      "type": "object",
+      "required": [
+        "lid", "definition_ref", "presence", "certainty", "laterality", "locations", "severity",
+        "interval_change", "parameters", "measurement_refs", "sentence", "impression_fragment",
+        "sentence_source", "status_flags", "included_from", "provenance", "ai", "order"
+      ],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "lid": { "type": "string" },
+        "definition_ref": { "$ref": "#/$defs/ref" },
+        "presence": { "enum": ["present", "absent", "normal", "indeterminate"] },
+        "certainty": { "enum": ["definite", "probable", "possible", "cannot_exclude"] },
+        "laterality": { "anyOf": [{ "$ref": "#/$defs/latRef" }, { "type": "null" }] },
+        "locations": { "type": "array", "items": { "$ref": "#/$defs/ref" } },
+        "severity": { "anyOf": [{ "$ref": "#/$defs/ref" }, { "type": "null" }] },
+        "interval_change": { "anyOf": [{ "enum": ["new", "stable", "increased", "decreased", "resolved"] }, { "type": "null" }] },
+        "parameters": { "type": "array", "items": { "$ref": "#/$defs/parameterEntry" } },
+        "measurement_refs": { "type": "array", "items": { "type": "string" } },
+        "sentence": { "type": "string" },
+        "impression_fragment": { "type": "string" },
+        "sentence_source": { "enum": ["content_pack_default", "rule", "edited", "manual"] },
+        "status_flags": { "$ref": "#/$defs/statusFlags" },
+        "included_from": { "anyOf": [{ "$ref": "#/$defs/includedFrom" }, { "type": "null" }] },
+        "provenance": { "$ref": "#/$defs/instanceProvenance" },
+        "ai": { "anyOf": [{ "$ref": "#/$defs/instanceAiBlock" }, { "type": "null" }] },
+        "order": { "type": "number" }
+      }
+    },
+    "measurementComponent": {
+      "type": "object",
+      "required": ["measurement_ref", "value", "unit"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "measurement_ref": { "$ref": "#/$defs/ref" },
+        "value": { "type": "number" },
+        "unit": { "type": "string" }
+      }
+    },
+    "measurementRange": {
+      "type": "object",
+      "required": ["low", "high"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": { "low": { "type": "number" }, "high": { "type": "number" } }
+    },
+    "normalRange": {
+      "type": "object",
+      "required": ["low", "high", "unit", "source"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "low": { "type": "number" }, "high": { "type": "number" },
+        "unit": { "type": "string" }, "source": { "type": "string" }
+      }
+    },
+    "measurementProvenance": {
+      "type": "object",
+      "required": ["origin", "source", "confidence", "edited"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "origin": { "type": "string", "minLength": 1 },
+        "source": { "enum": ["manual", "dicom_sr", "ocr", "ai", "calculated"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "sop_instance_uid": { "type": "string" },
+        "frame_number": { "type": "integer" },
+        "captured_at": { "type": "string", "format": "date-time" },
+        "actor": { "type": "string" },
+        "edited": { "type": "boolean" }
+      }
+    },
+    "measurement": {
+      "type": "object",
+      "required": [
+        "lid", "measurement_ref", "finding_ref", "value", "unit", "value_kind", "value_iso",
+        "range", "components", "normal_range", "abnormal", "prior_value",
+        "prior_measurement_ref_document", "change_pct", "provenance", "display"
+      ],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "lid": { "type": "string" },
+        "measurement_ref": { "$ref": "#/$defs/ref" },
+        "finding_ref": { "type": "string", "minLength": 1 },
+        "site": { "anyOf": [{ "$ref": "#/$defs/ref" }, { "type": "null" }] },
+        "laterality": { "anyOf": [{ "$ref": "#/$defs/latRef" }, { "type": "null" }] },
+        "value": { "type": ["number", "null"] },
+        "unit": { "type": ["string", "null"] },
+        "value_kind": { "enum": ["scalar", "ratio", "range", "derived", "index", "date"] },
+        "value_iso": { "type": ["string", "null"] },
+        "range": { "anyOf": [{ "$ref": "#/$defs/measurementRange" }, { "type": "null" }] },
+        "components": { "anyOf": [{ "type": "array", "items": { "$ref": "#/$defs/measurementComponent" } }, { "type": "null" }] },
+        "normal_range": { "anyOf": [{ "$ref": "#/$defs/normalRange" }, { "type": "null" }] },
+        "abnormal": { "type": "boolean" },
+        "prior_value": { "type": ["number", "null"] },
+        "prior_measurement_ref_document": { "type": ["string", "null"] },
+        "change_pct": { "type": ["number", "null"] },
+        "provenance": { "$ref": "#/$defs/measurementProvenance" },
+        "display": { "type": "string" }
+      },
+      "allOf": [
+        { "if": { "properties": { "value_kind": { "const": "derived" } } }, "then": { "properties": { "components": { "type": "array", "minItems": 1 } } } },
+        { "if": { "properties": { "value_kind": { "const": "date" } } }, "then": { "properties": { "value_iso": { "type": "string" } } } }
+      ]
+    },
+    "recommendation": {
+      "type": "object",
+      "required": ["lid", "recommendation_ref", "finding_refs", "text", "priority", "provenance", "ai"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "lid": { "type": "string" },
+        "recommendation_ref": { "anyOf": [{ "$ref": "#/$defs/ref" }, { "type": "null" }] },
+        "finding_refs": { "type": "array", "items": { "type": "string" } },
+        "text": { "type": "string" },
+        "priority": { "enum": ["routine", "urgent", "critical"] },
+        "provenance": { "$ref": "#/$defs/instanceProvenance" },
+        "ai": { "anyOf": [{ "$ref": "#/$defs/instanceAiBlock" }, { "type": "null" }] }
+      }
+    },
+    "criticalFlag": {
+      "type": "object",
+      "required": ["lid", "critical_ref", "finding_ref", "status", "raised_at", "raised_by", "provenance"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "lid": { "type": "string" },
+        "critical_ref": { "$ref": "#/$defs/ref" },
+        "finding_ref": { "type": "string" },
+        "status": { "enum": ["raised", "acknowledged", "communicated"] },
+        "raised_at": { "type": "string", "format": "date-time" },
+        "raised_by": { "type": "string" },
+        "provenance": { "$ref": "#/$defs/instanceProvenance" }
+      }
+    },
+    "impressionFragment": {
+      "type": "object",
+      "required": ["lid", "finding_ref", "text", "source", "rank", "provenance", "ai"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "lid": { "type": "string" },
+        "finding_ref": { "type": ["string", "null"] },
+        "text": { "type": "string" },
+        "source": { "enum": ["finding_fragment", "rule", "manual", "ai_suggestion"] },
+        "rank": { "type": "number" },
+        "provenance": { "$ref": "#/$defs/instanceProvenance" },
+        "ai": { "anyOf": [{ "$ref": "#/$defs/instanceAiBlock" }, { "type": "null" }] }
+      },
+      "allOf": [
+        { "if": { "properties": { "source": { "const": "ai_suggestion" } } }, "then": { "properties": { "ai": { "$ref": "#/$defs/instanceAiBlock" } }, "required": ["ai"] } }
+      ]
+    },
+    "impressionItem": {
+      "type": "object",
+      "required": ["lid", "fragment_refs", "text"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "lid": { "type": "string" },
+        "fragment_refs": { "type": "array", "items": { "type": "string" } },
+        "text": { "type": "string" }
+      }
+    },
+    "impression": {
+      "type": "object",
+      "required": ["fragments", "items", "rendered"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "fragments": { "type": "array", "items": { "$ref": "#/$defs/impressionFragment" } },
+        "items": { "type": "array", "items": { "$ref": "#/$defs/impressionItem" } },
+        "rendered": { "type": "string" }
+      }
+    },
+    "documentProvenance": {
+      "type": "object",
+      "required": ["created_by", "created_at", "authoring_app", "authoring_app_version", "input_methods", "content_pack_versions", "template_ref", "revision"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "created_by": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "authoring_app": { "type": "string" },
+        "authoring_app_version": { "type": "string" },
+        "input_methods": { "type": "array", "items": { "type": "string" } },
+        "content_pack_versions": { "type": "object", "additionalProperties": { "type": "string" } },
+        "template_ref": { "$ref": "#/$defs/ref" },
+        "revision": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "aiRun": {
+      "type": "object",
+      "required": [
+        "run_id", "purpose", "provider", "model_ref", "prompt_ref", "prompt_version",
+        "prompt_digest", "input_digest", "output_lids", "started_at", "human_review"
+      ],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "run_id": { "type": "string" },
+        "purpose": { "enum": ["finding_suggestion", "impression_suggestion", "measurement_extraction", "qc", "completeness", "contradiction"] },
+        "provider": { "type": "string" },
+        "model_ref": { "type": "string" },
+        "model_digest": { "type": "string" },
+        "prompt_ref": { "$ref": "#/$defs/ref" },
+        "prompt_version": { "type": "integer" },
+        "prompt_digest": { "type": "string" },
+        "params": { "type": "object" },
+        "input_digest": { "type": "string" },
+        "input_refs": { "type": "object" },
+        "output_lids": { "type": "array", "items": { "type": "string" } },
+        "started_at": { "type": "string", "format": "date-time" },
+        "latency_ms": { "type": "number" },
+        "output_digest": { "type": "string" },
+        "human_review": { "enum": ["accepted_verbatim", "accepted_edited", "rejected", "pending"] }
+      }
+    },
+    "aiGuarding": {
+      "type": "object",
+      "required": ["auto_sign"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": { "auto_sign": { "const": false } }
+    },
+    "aiBlock": {
+      "type": "object",
+      "required": ["runs", "guarding"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "runs": { "type": "array", "items": { "$ref": "#/$defs/aiRun" } },
+        "guarding": { "$ref": "#/$defs/aiGuarding" }
+      }
+    },
+    "auditRevisionEntry": {
+      "type": "object",
+      "required": ["revision", "at", "by", "action"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "revision": { "type": "integer" },
+        "at": { "type": "string", "format": "date-time" },
+        "by": { "type": "string" },
+        "action": { "type": "string" }
+      }
+    },
+    "auditSignature": {
+      "type": "object",
+      "required": ["state", "signed_by", "signed_role", "signed_at", "signed_content_sha256", "amends_document_id"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "state": { "enum": ["draft", "preliminary", "final", "addendum", "amended"] },
+        "signed_by": { "type": ["string", "null"] },
+        "signed_role": { "type": ["string", "null"] },
+        "signed_at": { "type": ["string", "null"] },
+        "signed_content_sha256": { "type": ["string", "null"] },
+        "amends_document_id": { "type": ["string", "null"] }
+      }
+    },
+    "auditBlock": {
+      "type": "object",
+      "required": ["schema_version", "hash_algorithm", "created_at", "last_modified_at", "revision", "revisions", "content_sha256", "audit_log_ref", "signature"],
+      "patternProperties": { "^x_": true },
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+        "hash_algorithm": { "enum": ["jcs-sha256/1"] },
+        "created_at": { "type": "string", "format": "date-time" },
+        "last_modified_at": { "type": "string", "format": "date-time" },
+        "revision": { "type": "integer", "minimum": 1 },
+        "revisions": { "type": "array", "items": { "$ref": "#/$defs/auditRevisionEntry" } },
+        "content_sha256": { "type": "string" },
+        "audit_log_ref": { "type": ["integer", "null"] },
+        "signature": { "$ref": "#/$defs/auditSignature" }
+      }
+    }
+  }
+}

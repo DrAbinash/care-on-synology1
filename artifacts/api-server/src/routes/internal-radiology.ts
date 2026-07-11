@@ -35,12 +35,15 @@ import {
 } from "@workspace/db/schema";
 import { and, eq, or, sql, inArray, gte, lte, desc, gt } from "drizzle-orm";
 import { logger } from "../lib/logger";
+import { normalizeRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { checkWriteLock } from "../lib/studyLocks";
 import { todayIST } from "../lib/istDate";
 import { createOrLinkPatientFromDicom, type DicomDemographics } from "../lib/dicomPatientCreator";
 import { computeStudyPriority, applyPriorityToStudy } from "../lib/studyPriorityEngine";
 import { assignRadiologistToStudy } from "../lib/radiologistAssignment";
 import { runUsgExtraction, getUsgAdminSettings } from "../lib/usgExtractor";
 import { calculateMatchScore, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
+import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
 
 export async function runMatchingEngineForWorklist(worklistId: number): Promise<void> {
   const [row] = await db
@@ -267,7 +270,7 @@ async function requireStaffOrInternalAuth(
     }
 
     const [user] = await db
-      .select({ id: usersTable.id, isActive: usersTable.isActive })
+      .select({ id: usersTable.id, isActive: usersTable.isActive, role: usersTable.role, permissions: usersTable.permissions })
       .from(usersTable)
       .where(eq(usersTable.id, session.subjectId))
       .limit(1);
@@ -282,6 +285,24 @@ async function requireStaffOrInternalAuth(
       .update(portalSessionsTable)
       .set({ lastActivityAt: new Date() })
       .where(eq(portalSessionsTable.id, session.id));
+
+    // M1.6A — attach the validated staff identity (same shape/parsing as
+    // requireStaffAuth) so handlers can enforce study-lock ownership. The
+    // INTERNAL_API_KEY path above deliberately attaches nothing: server-to-
+    // server automation is identity-less and never lock-gated.
+    let permissions: string[] = [];
+    try {
+      const parsed = user.permissions ? JSON.parse(user.permissions) : [];
+      if (Array.isArray(parsed)) permissions = parsed.filter((p): p is string => typeof p === "string");
+    } catch { /* leave permissions empty */ }
+    (req as StaffAuthRequest).staffSession = {
+      id: session.id,
+      subjectId: session.subjectId,
+      subjectName: session.subjectName,
+      role: normalizeRole(user.role),
+      permissions,
+      maxDiscount: null,
+    };
 
     next();
   } catch (err) {
@@ -390,7 +411,14 @@ router.post("/radiology/studies", async (req, res) => {
     const modality = typeof b.modality === "string" ? b.modality.trim() || "OT" : (typeof b.ModalitiesInStudy === "string" ? b.ModalitiesInStudy.trim() || "OT" : "OT");
     const studyDescription = typeof b.studyDescription === "string" ? b.studyDescription.trim() || null : (typeof b.StudyDescription === "string" ? b.StudyDescription.trim() || null : null);
     const studyDate = typeof b.studyDate === "string" ? b.studyDate.trim() || null : (typeof b.StudyDate === "string" ? b.StudyDate.trim() || null : null);
-    const accessionNumber = typeof b.accessionNumber === "string" ? b.accessionNumber.trim() : (typeof b.AccessionNumber === "string" ? b.AccessionNumber.trim() : "");
+    const accessionNumberRaw = typeof b.accessionNumber === "string" ? b.accessionNumber.trim() : (typeof b.AccessionNumber === "string" ? b.AccessionNumber.trim() : "");
+    // accession_number is external DICOM data and is frequently missing or
+    // bad (some modalities push non-identifier text like a referring
+    // doctor's name into this field). It's stored as null rather than an
+    // empty string / rejected outright — study_instance_uid is the
+    // identifier this intake relies on for correctness; accession_number
+    // is kept as an optional, non-unique reference field only.
+    const accessionNumber: string | null = accessionNumberRaw || null;
     const studyInstanceUID = typeof b.studyInstanceUID === "string" ? b.studyInstanceUID.trim() || null : (typeof b.StudyInstanceUID === "string" ? b.StudyInstanceUID.trim() || null : null);
     const aeTitle = typeof b.aeTitle === "string" ? b.aeTitle.trim() || null : null;
     const ipAddress = typeof b.ipAddress === "string" ? b.ipAddress.trim() || null : null;
@@ -401,9 +429,11 @@ router.post("/radiology/studies", async (req, res) => {
     const sourceAeTitle = typeof b.sourceAeTitle === "string" ? b.sourceAeTitle.trim() || null : null;
     const dicomMetadata = typeof b.dicomMetadata === "string" ? b.dicomMetadata.trim() || null : null;
 
-    if (!accessionNumber) {
-      logger.warn("Missing accessionNumber");
-      res.status(400).json({ success: false, error: "accessionNumber is required" });
+    // At least one real identifier is still required — we can't file a
+    // study with neither a UID nor an accession number to reference it by.
+    if (!accessionNumber && !studyInstanceUID) {
+      logger.warn("Missing both accessionNumber and studyInstanceUID");
+      res.status(400).json({ success: false, error: "accessionNumber or studyInstanceUID is required" });
       return;
     }
     if (!patientName) {
@@ -609,7 +639,17 @@ router.post("/radiology/studies", async (req, res) => {
       });
     }
 
-    // Worklist deduplication logic
+    // Worklist deduplication logic.
+    //
+    // study_instance_uid is the authoritative identifier (DB-enforced
+    // unique via radiology_worklist_uid_uq). accession_number is NOT
+    // unique — real DICOM data from misconfigured modalities can push the
+    // same bogus accession text for genuinely different studies. So the
+    // accession-based lookup is only used as a fallback when the incoming
+    // study has no studyInstanceUID at all (older/incomplete PACS data);
+    // it must never be used to "find" a match for a study that does have
+    // a UID, or two unrelated studies sharing a bad accession would get
+    // merged into one worklist row and silently overwrite each other.
     let existing: typeof radiologyWorklistTable.$inferSelect | undefined;
     if (studyInstanceUID) {
       const [row] = await db
@@ -618,12 +658,11 @@ router.post("/radiology/studies", async (req, res) => {
         .where(eq(radiologyWorklistTable.studyInstanceUID, studyInstanceUID))
         .limit(1);
       existing = row;
-    }
-    if (!existing && accessionNumber) {
+    } else if (shouldFallbackToAccessionLookup(studyInstanceUID, accessionNumber)) {
       const [row] = await db
         .select()
         .from(radiologyWorklistTable)
-        .where(eq(radiologyWorklistTable.accessionNumber, accessionNumber))
+        .where(eq(radiologyWorklistTable.accessionNumber, accessionNumber as string))
         .limit(1);
       existing = row;
     }
@@ -673,19 +712,52 @@ router.post("/radiology/studies", async (req, res) => {
         details: { event: "updated", modality, studyDescription, sourcePacs, sourceAeTitle },
       });
     } else {
-      const [inserted] = await db
-        .insert(radiologyWorklistTable)
-        .values({ ...values, status: "STUDY_RECEIVED" })
-        .returning();
-      row = inserted;
-      logger.info({ worklistId: row.id, event: "created" }, "Worklist entry created");
-      await audit({
-        worklistId: row.id,
-        accessionNumber,
-        action: "STUDY_RECEIVED",
-        actor: "pacs",
-        details: { event: "created", modality, studyDescription, sourcePacs, sourceAeTitle },
-      });
+      try {
+        const [inserted] = await db
+          .insert(radiologyWorklistTable)
+          .values({ ...values, status: "STUDY_RECEIVED" })
+          .returning();
+        row = inserted;
+        logger.info({ worklistId: row.id, event: "created" }, "Worklist entry created");
+        await audit({
+          worklistId: row.id,
+          accessionNumber,
+          action: "STUDY_RECEIVED",
+          actor: "pacs",
+          details: { event: "created", modality, studyDescription, sourcePacs, sourceAeTitle },
+        });
+      } catch (insertErr: any) {
+        // Race condition: two concurrent pushes for the same
+        // studyInstanceUID both missed the SELECT above and both tried to
+        // INSERT. Postgres's radiology_worklist_uid_uq index rejects the
+        // loser with a 23505 — treat that as "someone else just created
+        // it", re-fetch, and update instead of returning a 500. This is
+        // the update-on-conflict behavior for repeated StudyInstanceUID.
+        if (!isWorklistUidRaceViolation(insertErr, studyInstanceUID)) throw insertErr;
+
+        logger.warn({ studyInstanceUID }, "Worklist insert race on studyInstanceUID — retrying as update");
+        const [race] = await db
+          .select()
+          .from(radiologyWorklistTable)
+          .where(eq(radiologyWorklistTable.studyInstanceUID, studyInstanceUID as string))
+          .limit(1);
+        if (!race) throw insertErr; // shouldn't happen, but don't swallow a real error
+
+        const [updated] = await db
+          .update(radiologyWorklistTable)
+          .set({ ...values, updatedAt: new Date() })
+          .where(eq(radiologyWorklistTable.id, race.id))
+          .returning();
+        row = updated;
+        logger.info({ worklistId: row.id, event: "updated-after-race" }, "Worklist entry updated (race retry)");
+        await audit({
+          worklistId: row.id,
+          accessionNumber,
+          action: "STUDY_RECEIVED",
+          actor: "pacs",
+          details: { event: "updated-after-race", modality, studyDescription, sourcePacs, sourceAeTitle },
+        });
+      }
     }
 
     if (row.studyId) {
@@ -786,6 +858,23 @@ router.post("/radiology/report-status", async (req, res) => {
     return;
   }
 
+  // M1.6A — a status flip (finalize) by a STAFF session is refused while
+  // another user actively holds the study lock: two radiologists must never
+  // finalize the same study over each other. The INTERNAL_API_KEY automation
+  // path carries no session and is never lock-gated.
+  const staffSession = (req as StaffAuthRequest).staffSession;
+  if (staffSession) {
+    const gate = await checkWriteLock(existing.id, staffSession.subjectId);
+    if (gate.blocked) {
+      res.status(409).json({
+        error: "LOCKED_BY_OTHER",
+        lockedBy: gate.lockedBy,
+        message: `This study is currently being reported by ${gate.lockedBy}.`,
+      });
+      return;
+    }
+  }
+
   const VALID_STATUSES = ["STUDY_RECEIVED", "AI_DRAFT_READY", "REPORT_IN_PROGRESS", "REPORT_FINAL", "DELIVERED"];
   const VALID_DELIVERY = ["READY_TO_SEND", "SENT"];
 
@@ -793,6 +882,16 @@ router.post("/radiology/report-status", async (req, res) => {
   if (b.status && VALID_STATUSES.includes(b.status)) updates.status = b.status;
   if (b.deliveryStatus && VALID_DELIVERY.includes(b.deliveryStatus)) updates.deliveryStatus = b.deliveryStatus;
   if (b.reportId) updates.reportId = b.reportId;
+  // Completed studies hold no locks (M1.6A): the flip to REPORT_FINAL /
+  // DELIVERED clears the lock server-side — release-on-finalize is
+  // authoritative here, never a client courtesy call.
+  if (b.status === "REPORT_FINAL" || b.status === "DELIVERED") {
+    updates.lockUserId = null;
+    updates.lockUserName = null;
+    updates.lockTime = null;
+    updates.lockLastActivityAt = null;
+    updates.lockWorkstation = null;
+  }
 
   const [updated] = await db
     .update(radiologyWorklistTable)

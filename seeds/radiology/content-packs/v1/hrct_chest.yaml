@@ -1,0 +1,375 @@
+# CARE Radiology — HRCT Chest Content Pack (production v1)
+# Binds to _shared_libraries.yaml (+ v1_2). Flat ai_* format.
+
+pack:
+  pack_id: hrct_chest
+  version: 1.0.0
+  locale: en-IN
+  status: active
+
+study:
+  study: HRCT Chest
+  modality: CT
+  aliases: [HRCT chest, HRCT thorax, CT chest plain, HRCT lungs]
+  default_report_sections: [Clinical details, Technique, Lungs & airways, Pleura, Mediastinum & nodes, Bones/soft tissue, Impression, Advice]
+  normal_template: tpl.normal.hrct_chest
+  quick_select_groups:
+    - {name: Pinned, tiles: [hrct.normal_study, hrct.tib_active, hrct.sequelae, hrct.uip, hrct.bronchiectasis]}
+    - {name: Pattern wall, tiles: [hrct.ggo, hrct.consolidation, hrct.tib_active, hrct.crazy_paving, hrct.mosaic]}
+    - {name: TB set, tiles: [hrct.tib_active, hrct.miliary, hrct.sequelae, hrct.lymphadenopathy]}
+    - {name: Fibrosis, tiles: [hrct.uip, hrct.nsip]}
+    - {name: Airways, tiles: [hrct.bronchiectasis, hrct.mosaic, hrct.emphysema]}
+    - {name: Nodule/Mass, tiles: [hrct.nodule, hrct.mass, hrct.cavity]}
+    - {name: Pleura/other, tiles: [hrct.effusion, hrct.ctss]}
+
+findings:
+  - id_key: hrct.normal_study
+    display_name: Normal HRCT chest
+    category: Normal
+    synonyms: [normal HRCT, NAD chest CT]
+    keyboard_aliases: [nhr]
+    default_sentence: "{{tpl.normal.hrct_chest}}"
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: []
+    measurements: []
+    impression_fragment: "No significant abnormality in the lung parenchyma, airways, pleura or mediastinum."
+    recommendation_code: []
+    criticality: none
+    normal_variant: true
+    ai_contradiction_rules:
+      - {id: hrct.normal_study.c1, severity: block, glyph: "X", rule: "any parenchymal/pleural/nodal finding present AND normal impression used", message: "Normal impression contradicts a positive finding."}
+    ai_completeness_rules:
+      - {id: hrct.normal_study.k1, glyph: "circle", rule: "each lobe not addressed or 'rest of the lungs clear' line absent", message: "Address each lobe or state the remaining lungs are clear."}
+
+  - id_key: hrct.tib_active
+    display_name: Tree-in-bud / active infective (Koch's) pattern
+    category: Infective/TB
+    synonyms: [TIB, centrilobular nodules, active Koch's, endobronchial spread]
+    keyboard_aliases: [tib]
+    default_sentence: "Clustered centrilobular nodules with tree-in-bud configuration in {location}, with patchy consolidation and a thick-walled cavity ({cavity_wall})."
+    parameters: [param.lung_distribution]
+    severity: null
+    laterality: null
+    location_options: [loc.lung_lobes]
+    measurements: [meas.cavity_wall]
+    impression_fragment: "Active infective etiology, likely Koch's — sputum CBNAAT advised."
+    recommendation_code: [rec.lab_sputum, rec.spec_pulmo]
+    criticality: significant
+    normal_variant: false
+    combo_tiles: [combo.hrct.active_tb]
+    ai_contradiction_rules:
+      - {id: hrct.tib_active.c1, severity: warn, glyph: "triangle", rule: "'active' and 'sequelae' applied to the same lobe without qualifier", message: "Active and sequelae labelled for the same lobe — clarify activity."}
+    ai_completeness_rules:
+      - {id: hrct.tib_active.k1, glyph: "circle", rule: "active TB pattern AND mediastinal nodes not commented", message: "Comment on mediastinal nodes with an active TB pattern."}
+
+  - id_key: hrct.consolidation
+    category: Infective
+    display_name: Consolidation (CT)
+    synonyms: [air-space opacity, pneumonic consolidation]
+    keyboard_aliases: [cons]
+    default_sentence: "Consolidation with air bronchograms in {location}."
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: [loc.lung_lobes]
+    measurements: []
+    impression_fragment: "Consolidation {location} — infective etiology likely."
+    recommendation_code: [rec.clincorr, rec.fup_cxr2w]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: hrct.miliary
+    display_name: Miliary nodules
+    category: Infective/TB
+    synonyms: [miliary TB, random micronodules]
+    keyboard_aliases: [mil]
+    default_sentence: "Innumerable discrete random micronodules distributed uniformly throughout both lungs — miliary pattern."
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: []
+    measurements: []
+    impression_fragment: "Miliary pattern — disseminated Koch's to be excluded; urgent physician correlation advised."
+    recommendation_code: [rec.lab_sputum, rec.spec_pulmo, rec.urgent]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: hrct.sequelae
+    display_name: Post-infective sequelae (fibrocalcific)
+    category: Infective/TB
+    synonyms: [old Koch's, post-TB sequelae, fibrocalcific changes]
+    keyboard_aliases: [seq]
+    default_sentence: "Fibrocalcific and fibro-atelectatic changes with traction bronchiectasis in {location} — sequelae of old infection. No active lesion."
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: [loc.lung_lobes]
+    measurements: []
+    impression_fragment: "Post-infective (old Koch's) sequelae {location}. No active lesion."
+    recommendation_code: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: hrct.ggo
+    display_name: Ground-glass opacities
+    category: GGO family
+    synonyms: [GGO, ground glass haze]
+    keyboard_aliases: [ggo]
+    default_sentence: "Patchy ground-glass opacities in {location} ({lung_distribution}), involving approximately {extent} of the lung parenchyma."
+    parameters: [param.lung_distribution]
+    severity: sev.extent_lung
+    laterality: null
+    location_options: [loc.lung_lobes]
+    measurements: [meas.ctss]
+    impression_fragment: "Ground-glass opacities ({severity}) — viral/atypical infective etiology likely."
+    recommendation_code: [rec.clincorr]
+    criticality: none
+    normal_variant: false
+    combo_tiles: [combo.hrct.viral_screen]
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: hrct.crazy_paving
+    display_name: Crazy-paving pattern
+    category: GGO family
+    synonyms: [crazy paving, septal thickening on GGO]
+    keyboard_aliases: [czp]
+    default_sentence: "Ground-glass opacities with superimposed interlobular septal thickening — crazy-paving pattern, in {location}."
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: [loc.lung_lobes]
+    measurements: []
+    impression_fragment: "Crazy-paving pattern as described."
+    recommendation_code: [rec.clincorr]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: hrct.uip
+    display_name: UIP pattern fibrosis
+    category: Fibrosis
+    synonyms: [UIP, honeycombing, IPF pattern]
+    keyboard_aliases: [uip]
+    default_sentence: "Subpleural basal-predominant reticulation with honeycombing and traction bronchiectasis — UIP pattern ({severity})."
+    parameters: []
+    severity: sev.extent_lung
+    laterality: null
+    location_options: []
+    measurements: []
+    impression_fragment: "UIP pattern of fibrosing ILD — pulmonology referral and PFT advised."
+    recommendation_code: [rec.spec_pulmo, rec.pft]
+    criticality: significant
+    normal_variant: false
+    combo_tiles: [combo.hrct.ild_workup]
+    ai_contradiction_rules:
+      - {id: hrct.uip.c1, severity: warn, glyph: "triangle", rule: "UIP labelled AND basal/subpleural predominance not described", message: "UIP requires basal + subpleural predominance — confirm distribution."}
+    ai_completeness_rules: []
+
+  - id_key: hrct.nsip
+    display_name: NSIP pattern
+    category: Fibrosis
+    synonyms: [NSIP, GGO-predominant fibrosis]
+    keyboard_aliases: [nsip]
+    default_sentence: "Basal-predominant ground-glass opacities with fine reticulation and subpleural sparing — NSIP pattern ({severity})."
+    parameters: []
+    severity: sev.extent_lung
+    laterality: null
+    location_options: []
+    measurements: []
+    impression_fragment: "NSIP pattern ILD — pulmonology referral; connective-tissue workup as advised."
+    recommendation_code: [rec.spec_pulmo, rec.pft]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: hrct.bronchiectasis
+    display_name: Bronchiectasis
+    category: Airways
+    synonyms: [dilated bronchi, traction bronchiectasis]
+    keyboard_aliases: [bx]
+    default_sentence: "{bronchiectasis_type} bronchiectasis in {location}, with mucus plugging."
+    parameters: [param.bronchiectasis_type]
+    severity: null
+    laterality: null
+    location_options: [loc.lung_lobes]
+    measurements: []
+    impression_fragment: "{bronchiectasis_type} bronchiectasis {location}."
+    recommendation_code: [rec.spec_pulmo]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: hrct.mosaic
+    display_name: Mosaic attenuation / air-trapping
+    category: Airways
+    synonyms: [mosaic attenuation, air trapping, small-airway disease]
+    keyboard_aliases: [mos]
+    default_sentence: "Mosaic attenuation with lobular air-trapping on expiratory sections — small-airway disease."
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: []
+    measurements: []
+    impression_fragment: "Small-airway disease (air-trapping)."
+    recommendation_code: [rec.pft]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules:
+      - {id: hrct.mosaic.k1, glyph: "circle", rule: "mosaic pattern AND expiratory comment absent", message: "Comment on expiratory air-trapping to confirm mosaic attenuation."}
+
+  - id_key: hrct.emphysema
+    display_name: Emphysema
+    category: Airways
+    synonyms: [centrilobular emphysema, bullae, paraseptal emphysema]
+    keyboard_aliases: [emp]
+    default_sentence: "Centrilobular emphysematous changes, {severity}, predominantly in the upper lobes, with bullae."
+    parameters: []
+    severity: sev.extent_lung
+    laterality: null
+    location_options: []
+    measurements: []
+    impression_fragment: "Emphysematous changes, {severity}."
+    recommendation_code: [rec.pft]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: hrct.nodule
+    display_name: Pulmonary nodule (Fleischner track)
+    category: Nodule/Mass
+    synonyms: [lung nodule, SPN, GGN]
+    keyboard_aliases: [nod]
+    default_sentence: "{nodule_character} nodule ({nodule_avg} average diameter) in the {location}, {margin}."
+    parameters: [param.nodule_character, param.margin]
+    severity: null
+    laterality: null
+    location_options: [loc.lung_lobes]
+    measurements: [meas.nodule_avg]
+    impression_fragment: "{nodule_character} pulmonary nodule ({nodule_avg}, {location}) — Fleischner-based follow-up as advised."
+    recommendation_code: [rec.fleischner]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules:
+      - {id: hrct.nodule.c1, severity: warn, glyph: "triangle", rule: "nodule size in text differs from meas.nodule_avg", message: "Nodule size in text differs from the measurement field."}
+    ai_completeness_rules:
+      - {id: hrct.nodule.k1, glyph: "circle", rule: "nodule present AND Fleischner interval not slotted", message: "Slot the Fleischner follow-up interval from nodule size + risk."}
+
+  - id_key: hrct.mass
+    display_name: Lung mass (suspicious)
+    category: Nodule/Mass
+    synonyms: [lung mass, bronchogenic mass, spiculated mass]
+    keyboard_aliases: [mass]
+    default_sentence: "Spiculated soft-tissue mass ({mass_size_2d}) in the {location}, abutting the pleura, with mediastinal/hilar lymphadenopathy as below."
+    parameters: [param.margin]
+    severity: null
+    laterality: null
+    location_options: [loc.lung_lobes]
+    measurements: [meas.mass_size_2d, meas.node_short_axis]
+    impression_fragment: "Suspicious {location} mass — CT-guided biopsy / PET-CT and oncology referral advised."
+    recommendation_code: [rec.biopsy, rec.petct, rec.spec_onc]
+    criticality: significant
+    normal_variant: false
+    combo_tiles: [combo.hrct.mass_workup]
+    ai_contradiction_rules: []
+    ai_completeness_rules:
+      - {id: hrct.mass.k1, glyph: "circle", rule: "mass present AND mediastinal/hilar nodes not commented", message: "Comment on mediastinal/hilar nodes with any lung mass (staging)."}
+
+  - id_key: hrct.cavity
+    display_name: Cavitary lesion
+    category: Nodule/Mass
+    synonyms: [cavity, cavitating lesion]
+    keyboard_aliases: [cav]
+    default_sentence: "A thick-walled cavity ({size}, wall {cavity_wall}) in the {location}, with surrounding nodules/consolidation."
+    parameters: [param.size]
+    severity: null
+    laterality: null
+    location_options: [loc.lung_lobes]
+    measurements: [meas.cavity_wall]
+    impression_fragment: "Cavitary lesion {location} — infective (Koch's) vs neoplastic; sputum and further workup advised."
+    recommendation_code: [rec.lab_sputum, rec.spec_pulmo]
+    criticality: significant
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: hrct.lymphadenopathy
+    display_name: Mediastinal/hilar lymphadenopathy
+    category: Mediastinum
+    synonyms: [LAP, mediastinal nodes, necrotic nodes]
+    keyboard_aliases: [lap]
+    default_sentence: "Enlarged {location} lymph nodes (largest {node_short_axis} short axis), with central necrosis and calcification."
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: [loc.node_stations]
+    measurements: [meas.node_short_axis]
+    impression_fragment: "Mediastinal lymphadenopathy as described — necrotic nodes favour Koch's."
+    recommendation_code: [rec.clincorr]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: hrct.effusion
+    display_name: Pleural effusion (CT)
+    category: Pleura
+    synonyms: [pleural effusion, pleural fluid]
+    keyboard_aliases: [eff]
+    default_sentence: "{laterality} pleural effusion ({severity}, depth {effusion_depth}), with underlying collapse/consolidation."
+    parameters: []
+    severity: sev.effusion
+    laterality: lat.rlb
+    location_options: []
+    measurements: [meas.effusion_depth]
+    impression_fragment: "{laterality} pleural effusion, {severity}."
+    recommendation_code: [rec.clincorr]
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+  - id_key: hrct.ctss
+    display_name: CT severity score
+    category: Scoring
+    synonyms: [CTSS, lobe-wise score]
+    keyboard_aliases: [ctss]
+    default_sentence: "CT severity score: {ctss} (lobe-wise scoring)."
+    parameters: []
+    severity: null
+    laterality: null
+    location_options: []
+    measurements: [meas.ctss]
+    impression_fragment: "CT severity score {ctss}."
+    recommendation_code: []
+    criticality: none
+    normal_variant: false
+    ai_contradiction_rules: []
+    ai_completeness_rules: []
+
+combo_tiles:
+  - {id: combo.hrct.active_tb, label: "Active Koch's HRCT", members: [hrct.tib_active, {ref: hrct.cavity, optional: true}, hrct.lymphadenopathy], recommendations: [rec.lab_sputum, rec.spec_pulmo]}
+  - {id: combo.hrct.viral_screen, label: "Viral pneumonia + score", members: [hrct.ggo, hrct.ctss]}
+  - {id: combo.hrct.ild_workup, label: "ILD workup", members: [{ref: hrct.uip, alt: hrct.nsip}], recommendations: [rec.spec_pulmo, rec.pft]}
+  - {id: combo.hrct.mass_workup, label: "Mass workup", members: [hrct.mass, hrct.lymphadenopathy], recommendations: [rec.biopsy, rec.petct, rec.spec_onc]}
+
+critical_findings: []
+
+implementation_notes:
+  - "Pattern-first study: pattern + distribution feeds a differential card (basal subpleural honeycombing -> UIP-first)."
+  - "TB-activity guard: 'active' and 'sequelae' on the same lobe without a qualifier is a warn."
+  - "Nodule size feeds Fleischner interval slotting; state mediastinal/hilar nodes with any mass."
+  - "Indian terms: TIB = tree-in-bud; Koch's = pulmonary TB; CTSS = CT severity score; CBNAAT = cartridge-based nucleic acid amplification test."

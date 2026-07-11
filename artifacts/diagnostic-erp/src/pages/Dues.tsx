@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import PageHeader from "@/components/PageHeader";
 import StatusBadge from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
@@ -61,6 +62,7 @@ export default function Dues() {
     queryKey: ["dues", dateFrom, dateTo, page],
     queryFn: () => api.get(`/api/bills?${queryParams}`),
     placeholderData: (prev) => prev,
+    ...FINANCIAL_QUERY_OPTIONS,
   });
 
   const formatCurrency = (n: number) =>

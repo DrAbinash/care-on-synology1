@@ -12,6 +12,7 @@
     "generate:erp-doc-md": "echo 'See scripts/src/generate-erp-documentation.ts for docx generator'",
     "import:referral-doctors": "tsx ./src/import-referral-doctors.ts",
     "import:test-catalog": "tsx ./src/import-test-catalog.ts",
+    "validate:radiology-content": "tsx ./src/validate-radiology-content-packs.ts",
     "test:preinstall-guard": "node ./src/test-preinstall-guard.cjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
