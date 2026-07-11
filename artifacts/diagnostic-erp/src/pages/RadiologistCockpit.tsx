@@ -5,6 +5,8 @@ import { api } from "@/lib/fetchApi";
 import { readStaffSession } from "@/lib/staffSession";
 import { useToast } from "@/hooks/use-toast";
 import { launchViewer } from "@/lib/viewerService";
+import { finalizeRadiologyReport, saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
+import DeprecatedSurfaceBanner from "@/components/radiology/DeprecatedSurfaceBanner";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -159,9 +161,22 @@ function safeParseAiDraft(json: string | null | undefined): { findings?: string;
 // Top-level cockpit wrapper — renders the cockpit inside a fault-tolerant boundary.
 // If the cockpit itself crashes (React error), this shows a recovery screen
 // instead of a blank page or portal redirect.
+/**
+ * @deprecated M1.1 consolidation — RadiologyReportingWorkspace
+ * (/radiology/report/:studyId) is the canonical radiology reporting page.
+ * The Cockpit remains routed at /radiology/cockpit with no functional
+ * regression, but new features land in the canonical workspace only; the
+ * Cockpit-unique pieces still worth merging there (voice dictation, /macro
+ * expansion, worklist sidebar) are tracked for M1.2. Its duplicate
+ * save/finalize logic already delegates to lib/radiologyReportLifecycle.
+ */
 export default function RadiologistCockpitPage() {
   return (
     <ErrorBoundary>
+      <DeprecatedSurfaceBanner
+        surface="Radiologist Cockpit"
+        note="opens the same worklist studies — use Open Report from the worklist"
+      />
       <RadiologistCockpit />
     </ErrorBoundary>
   );
@@ -1326,11 +1341,11 @@ function RadiologistCockpit() {
   // ACTIONS / MUTATIONS
   // ══════════════════════════════════════════════════════════════════════════
 
-  // Save Draft Mutation
+  // Save Draft Mutation (M1.1: canonical shared transport)
   const saveDraftMutation = useMutation({
     mutationFn: async () => {
       if (!study) return;
-      return api.post("/api/radiology/report-generator/save-draft", {
+      return saveRadiologyDraft({
         studyId: study.studyId,
         worklistId: study.id,
         patientId: study.patientId,
@@ -1370,32 +1385,19 @@ function RadiologistCockpit() {
         </div>
       `;
 
-      let reportId = null;
-      if (study.patientId) {
-        const report = await api.post<{ id: number }>("/api/patient-reports", {
-          patientId: study.patientId,
-          testId: null,
-          studyId: study.studyId,
-          type: "radiology",
-          title: finalTitle,
-          body: htmlBody.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(),
-          impression: impression.join("\n"),
-          recommendation,
-          technique,
-          clinicalHistory,
-          findings: rawFindings,
-          accessionNumber: study.accessionNumber,
-          isCritical,
-          criticalNote: isCritical ? criticalNote : null,
-        });
-        reportId = report.id;
-      }
-
-      return api.post("/api/internal/radiology/report-status", {
-        accessionNumber: study.accessionNumber,
-        studyInstanceUID: study.studyInstanceUID,
-        status: "REPORT_FINAL",
-        reportId,
+      // M1.1 — canonical finalize path shared with the Reporting Workspace.
+      // Consolidation note: this page's previous inline copy never set
+      // deliveryStatus (finalized reports silently skipped READY_TO_SEND)
+      // and dropped createdBy + the modality parameters blob; the shared
+      // service aligns it with the canonical behavior. The AI-inspector
+      // audit summary rides through auditDetails unchanged.
+      return finalizeRadiologyReport(study, {
+        title: finalTitle,
+        htmlBody,
+        impression,
+        isCritical,
+        criticalNote,
+        createdBy: session?.user?.name || "Radiologist",
         actor: session?.user?.name || "Radiologist",
         auditDetails: {
           inspectorScore: aiInspectorResults.score,

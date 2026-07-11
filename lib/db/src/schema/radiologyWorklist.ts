@@ -35,6 +35,30 @@ export const radiologyWorklistTable = pgTable(
     // Worklist lifecycle status
     status: text("status").notNull().default("STUDY_RECEIVED"),
     assignedRadiologist: text("assigned_radiologist"),
+    // ── Assignment (Ticket M1.6B1) ────────────────────────────────────────
+    // Organizational ownership — DISTINCT from the lock below (active
+    // reporting ownership). Stable staff ids are canonical; the legacy
+    // assigned_radiologist NAME column above stays mirrored for every
+    // pre-existing reader (M1.6A scope filters, seeds). All writes go
+    // through lib/studyAssignments.ts (transactional, audited).
+    assignedRadiologistId: integer("assigned_radiologist_id"),
+    assignedAt: timestamp("assigned_at", { withTimezone: true }),
+    assignedById: integer("assigned_by_id"),
+    assignedByName: text("assigned_by_name"),
+    // ── Study lock / claim (Ticket M1.6A) ─────────────────────────────────
+    // One active lock per study so two radiologists never unknowingly report
+    // the same study. Column names deliberately match the lockUserId /
+    // lockUserName / lockTime / lockLastActivityAt / lockWorkstation keys the
+    // pacs-worklist API and the worklist page's LockBadge already carried as
+    // dormant placeholders. Expiry is DERIVED (lock_last_activity_at + TTL,
+    // pacs_settings key radiology_lock_ttl_seconds) — no expires_at column,
+    // so a TTL change applies to existing locks immediately. All writes go
+    // through lib/studyLocks.ts (transactional, server-derived identity).
+    lockUserId: integer("lock_user_id"),
+    lockUserName: text("lock_user_name"),
+    lockTime: timestamp("lock_time", { withTimezone: true }),
+    lockLastActivityAt: timestamp("lock_last_activity_at", { withTimezone: true }),
+    lockWorkstation: text("lock_workstation"),
     // AI draft state: NONE | PENDING | READY | ERROR
     aiDraftStatus: text("ai_draft_status").notNull().default("NONE"),
     aiDraftJson: text("ai_draft_json"),        // JSON of last AI draft payload

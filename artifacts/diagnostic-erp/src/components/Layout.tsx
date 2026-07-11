@@ -153,10 +153,13 @@ const navItems: NavEntry[] = [
     children: [
       { path: "/radiology/operations-dashboard", icon: Gauge,          label: "Operations Dashboard" },
       { path: "/radiology/my-analytics",         icon: BarChart3,      label: "My Analytics" },
-      { path: "/radiology/cockpit",            icon: Stethoscope,    label: "Radiologist Cockpit" },
-      { path: "/radiology/my-collection",       icon: ShieldAlert,    label: "DICOM Match Center" },
+      // M1.1 — the Reporting Workspace is the canonical reporting page; it is
+      // listed directly above the worklist that feeds it. The Cockpit stays
+      // reachable but is explicitly marked legacy.
       { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist Hub" },
       { path: "/radiology/reporting-workspace", icon: FilePen,        label: "Reporting Workspace" },
+      { path: "/radiology/cockpit",            icon: Stethoscope,    label: "Radiologist Cockpit (legacy)" },
+      { path: "/radiology/my-collection",       icon: ShieldAlert,    label: "DICOM Match Center" },
       { path: "/pacs",                        icon: Monitor,        label: "PACS Viewer" },
       { path: "/radiology/normal-templates",   icon: ClipboardCheck, label: "Normal Templates" },
       { path: "/radiology/critical-findings",   icon: AlertCircle,    label: "Critical Findings" },

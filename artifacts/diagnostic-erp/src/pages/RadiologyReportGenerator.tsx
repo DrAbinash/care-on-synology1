@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import PageHeader from "@/components/PageHeader";
 import VoiceDictationButton from "@/components/VoiceDictationButton";
+import { saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
+import DeprecatedSurfaceBanner from "@/components/radiology/DeprecatedSurfaceBanner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -171,6 +173,15 @@ function useLocalStorage<T>(key: string, initial: T) {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
+/**
+ * @deprecated M1.1 consolidation — RadiologyReportingWorkspace
+ * (/radiology/report/:studyId) is the canonical radiology reporting page.
+ * This page stays routed at /radiology/report-generator (nothing regresses;
+ * no in-app navigation targets it) because it is still the only UI for text
+ * macros / smart-macros CRUD, key-image upload, report preferences, and the
+ * patient-less "manual mode" — all M1.2 merge candidates. Its draft saves
+ * go through the shared lib/radiologyReportLifecycle transport.
+ */
 export default function RadiologyReportGenerator({ studyId }: { studyId?: number }) {
   const [, navigate] = useLocation();
   const { toast } = useToast();
@@ -645,8 +656,7 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
         .split("\n")
         .map((s) => s.trim())
         .filter(Boolean);
-      const r = await api.post<{ success: boolean; draft: { id: number } }>(
-        "/api/radiology/report-generator/save-draft",
+      const r = await saveRadiologyDraft<{ success: boolean; draft: { id: number } }>(
         {
           id: draftId ?? undefined,
           studyId: studyId ?? undefined,
@@ -713,7 +723,7 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
         .map((s) => s.trim())
         .filter(Boolean);
 
-      await api.post("/api/radiology/report-generator/save-draft", {
+      await saveRadiologyDraft({
         id: draftId ?? undefined,
         studyId: studyId ?? undefined,
         patientId: demog.patientId,
@@ -1651,6 +1661,10 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
 
   return (
     <div className="flex flex-col h-full">
+      <DeprecatedSurfaceBanner
+        surface="Radiology Report Generator"
+        note="unique here: text/smart macros, key images, manual mode — merging into the canonical workspace is tracked for M1.2"
+      />
       {/* Print-only style */}
       <style>{`
         @media print {

@@ -26,6 +26,9 @@ let instanceRows: Record<string, unknown>[];
 let linkageQueryScript: unknown[][];
 /** FIFO script for JOINED patient_reports selects (GET /:id). */
 let joinedQueryScript: unknown[][];
+/** FIFO script for PLAIN patient_reports selects (D8 resolver + helpers);
+ *  empty → default [parentRow]. */
+let plainReportQueryScript: unknown[][];
 let failLinkageInsert: boolean;
 
 interface WriteRecord { table: string; kind: "insert" | "update"; values: unknown }
@@ -76,6 +79,7 @@ function makeSelect(tbl: { __name?: string }, staged?: WriteRecord[]) {
   const rowsFor = (joined: boolean): unknown[] => {
     if (name === "patient_reports") {
       if (joined) return joinedQueryScript.length > 0 ? (joinedQueryScript.shift() as unknown[]) : [];
+      if (plainReportQueryScript.length > 0) return plainReportQueryScript.shift() as unknown[];
       return parentRow ? [parentRow] : [];
     }
     if (name === "patient_report_amendments") {
@@ -278,6 +282,7 @@ beforeEach(() => {
   instanceRows = [{ id: 1, draftId: 700, findingId: 1, anatomicZoneId: null, structureId: null, category: "", modality: "MRI", structuredJson: { side: "right" }, catalogVersion: "0", source: "quickselect", confirmed: false, confirmedBy: null, confirmedAt: null }];
   linkageQueryScript = [[], []]; // amend tx default: not-already-amended, parent-not-an-amendment
   joinedQueryScript = [];
+  plainReportQueryScript = [];
   failLinkageInsert = false;
   committedWrites = [];
   capturedReadPorts = undefined;
@@ -466,51 +471,9 @@ function joinedRowFor(id: number) {
   }];
 }
 
-describe("D7 — GET /:id amendment history (read path)", () => {
-  test("un-amended report → NO amendment key (response shape unchanged)", async () => {
-    linkageQueryScript = [[], []]; // both chain lookups empty
-    joinedQueryScript = [joinedRowFor(900)];
-    const res = await getById("900");
-    expect(res.statusCode).toBe(200);
-    expect(res.body.amendment).toBeUndefined();
-  });
-
-  test("superseded ROOT report → amendment {root, latest, superseded:true, chain} attached; content untouched", async () => {
-    linkageQueryScript = [[], [LINK_1], [LINK_1]]; // asAmendment(900)=∅, asOriginal(900)=L1, chainByRoot=[L1]
-    joinedQueryScript = [joinedRowFor(900)];
-    const res = await getById("900");
-    expect(res.body.amendment).toMatchObject({ rootReportId: 900, latestReportId: 909, superseded: true });
-    expect(res.body.amendment.chain).toHaveLength(1);
-    expect(res.body.amendment.chain[0].reason).toBe("laterality corrected");
-    expect(res.body.body).toBe("ROOT SIGNED BODY"); // history is never mutated
-  });
-
-  test("deep chain traversal: middle version lists the whole chain in order", async () => {
-    linkageQueryScript = [[LINK_1], [LINK_2], [LINK_1, LINK_2]]; // 909 is both an amendment and amended
-    joinedQueryScript = [joinedRowFor(909)];
-    const res = await getById("909");
-    expect(res.body.amendment).toMatchObject({ rootReportId: 900, latestReportId: 915, superseded: true });
-    expect(res.body.amendment.chain.map((c: { sequenceNumber: number }) => c.sequenceNumber)).toEqual([1, 2]);
-  });
-
-  test("?resolve=latest serves the NEWEST version while the old id stays retrievable", async () => {
-    // 1st loadAmendmentChain (for requested id 900): superseded → id becomes 909
-    // 2nd loadAmendmentChain (for served id 909): tip of chain
-    linkageQueryScript = [[], [LINK_1], [LINK_1], [LINK_1], [], [LINK_1]];
-    joinedQueryScript = [joinedRowFor(909)];
-    const res = await getById("900", { resolve: "latest" });
-    expect(res.statusCode).toBe(200);
-    expect(res.body.id).toBe(909); // the latest row was served
-    expect(res.body.amendment).toMatchObject({ latestReportId: 909, superseded: false });
-  });
-
-  test("the tip of the chain reads as NOT superseded", async () => {
-    linkageQueryScript = [[LINK_1], [], [LINK_1]];
-    joinedQueryScript = [joinedRowFor(909)];
-    const res = await getById("909");
-    expect(res.body.amendment).toMatchObject({ rootReportId: 900, latestReportId: 909, superseded: false });
-  });
-});
+// The GET /:id amendment-chain read-path coverage moved to
+// patient-reports.d8.test.ts when Ticket D8 made the canonical resolver
+// (resolveReportVersion) the single chain implementation behind that route.
 
 // ── applyStructuredRead R14c lookup (D7 read side) ───────────────────────────
 // An amendment document carries amends_document_id, so the D6 read pipeline
@@ -519,9 +482,16 @@ describe("D7 — GET /:id amendment history (read path)", () => {
 // the very document being read (linear chain, not a self-fork).
 
 describe("D7 — applyStructuredRead resolves the amendment parent for R14c", () => {
+  const ROW_900 = { id: 900, patientId: 12, status: "verified", reportNumber: "RPT-ROOT", signedByName: "Dr. Rao", signedAt: new Date("2026-07-10T10:00:00Z"), createdAt: new Date("2026-07-10T10:00:00Z") };
+  const ROW_909 = { id: 909, patientId: 12, status: "verified", reportNumber: "RPT-A1", signedByName: "Dr. Sen", signedAt: new Date("2026-07-11T09:00:00Z"), createdAt: new Date("2026-07-11T09:00:00Z") };
+
   async function captured() {
     flags.ff_radiology_structured_read = true;
-    // Serve the AMENDMENT row (id 909) so the closure's self-id is AMENDED_DOC.
+    // Serve the AMENDMENT row (id 909, tip of the chain) so the closure's
+    // self-id is AMENDED_DOC. D8 resolver order: plain requested-row select,
+    // linkage (asAmendment, asOriginal, chainByRoot), plain version-rows
+    // select, then the joined display select.
+    plainReportQueryScript = [[ROW_909], [ROW_900, ROW_909]];
     linkageQueryScript = [[LINK_1], [], [LINK_1]];
     joinedQueryScript = [[{ ...joinedRowFor(909)[0], r: { ...parentRow!, id: 909, structuredJson: AMENDED_DOC } }]];
     await getById("909");

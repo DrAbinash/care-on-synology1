@@ -25,6 +25,12 @@ export interface RadiologyDraftRow {
   formattedReportText: string | null;
   status: string;
   updatedAt: string;
+  // M1.4 — additive columns GET /drafts already returns (full-row select):
+  // the canonical D1 draft document written by D3 (selection-restore
+  // fallback source) and the patient_reports row a D5 structured finalize
+  // promoted this draft into (lifecycle-metadata lookup key).
+  structuredJsonD1?: unknown;
+  finalReportId?: number | null;
 }
 
 /**

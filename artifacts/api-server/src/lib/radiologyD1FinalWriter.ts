@@ -71,8 +71,9 @@ export interface SignAuthority {
 
 /** Roles that may NEVER produce a structured signature, regardless of any
  *  permission grant. Typists transcribe; they do not sign. Automation/AI
- *  identities never hold a staff session, but are listed for defense in depth. */
-const SIGN_DENY_ROLES = new Set(["typist", "ai", "system", "bot"]);
+ *  identities never hold a staff session, but are listed for defense in depth.
+ *  Exported for D9's legacy-sign hardening (same deny list, same rationale). */
+export const SIGN_DENY_ROLES = new Set(["typist", "ai", "system", "bot"]);
 
 /**
  * Whether this authenticated session may produce a STRUCTURED SIGNATURE.
@@ -93,6 +94,30 @@ export function canStructuredSign(session: SignerSession | null | undefined): Si
   if (FULL_ACCESS_ROLES.has(role)) return { allowed: true, reason: null };
   if (session.permissions.includes("/reports:sign")) return { allowed: true, reason: null };
   return { allowed: false, reason: "missing_sign_permission:/reports:sign" };
+}
+
+/**
+ * Ticket D9 — whether this session may COUNTERSIGN (verify) a structured-
+ * signed report. Same deny list as signing; allowed for full-access roles,
+ * an explicit "/reports:verify" grant, or a "/reports:sign" grant (a doctor
+ * authorized to sign reports is authorized to countersign a colleague's —
+ * signer/verifier DISTINCTNESS is enforced separately by the route against
+ * the report being verified, never here). Pure; session comes from the
+ * authenticated server session only.
+ */
+export function canStructuredVerify(session: SignerSession | null | undefined): SignAuthority {
+  if (!session || !session.subjectName?.trim()) {
+    return { allowed: false, reason: "no_authenticated_session" };
+  }
+  const role = (session.role ?? "").toLowerCase();
+  if (SIGN_DENY_ROLES.has(role)) {
+    return { allowed: false, reason: `role_cannot_verify:${role}` };
+  }
+  if (FULL_ACCESS_ROLES.has(role)) return { allowed: true, reason: null };
+  if (session.permissions.includes("/reports:verify") || session.permissions.includes("/reports:sign")) {
+    return { allowed: true, reason: null };
+  }
+  return { allowed: false, reason: "missing_verify_permission:/reports:verify" };
 }
 
 // ── Legacy equivalence (Phase 4) ─────────────────────────────────────────────

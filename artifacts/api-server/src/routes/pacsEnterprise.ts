@@ -658,6 +658,94 @@ router.get("/studies/:studyInstanceUID/ohif-launch", async (req, res) => {
   });
 });
 
+// ─── M1.2 — READ-ONLY LAUNCH DIAGNOSTICS ─────────────────────────────────────
+// The browser cannot ask the PACS whether a StudyInstanceUID exists (QIDO is
+// cross-origin), so the workspace's permission-gated diagnostics drawer asks
+// this endpoint instead. Read-only; staff-auth + "/radiology" permission are
+// enforced at the router mount. Endpoint hosts are MASKED — diagnostics must
+// not enumerate internal topology — and there is no credential exposure and
+// no patient-name search (exact StudyInstanceUID only).
+
+/** Mask a URL's host: keep scheme, first 3 chars of host, port and path. */
+export function maskEndpointForDiagnostics(raw: string): string {
+  try {
+    const u = new URL(raw);
+    const host = u.hostname.length <= 3 ? "***" : `${u.hostname.slice(0, 3)}***`;
+    return `${u.protocol}//${host}${u.port ? `:${u.port}` : ""}${u.pathname !== "/" ? u.pathname : ""}`;
+  } catch {
+    return "***";
+  }
+}
+
+router.get("/studies/:studyInstanceUID/launch-diagnostics", async (req, res) => {
+  const { studyInstanceUID } = req.params;
+  if (!/^[0-9.]{1,128}$/.test(studyInstanceUID)) {
+    res.status(400).json({ error: "invalid StudyInstanceUID" });
+    return;
+  }
+
+  // Which network modes have viewer endpoints configured (masked).
+  const settings = await db.select().from(pacsSettingsTable);
+  const val = (key: string) => settings.find((s) => s.key === key)?.value?.trim() ?? "";
+  const modeKeys: Record<string, string> = {
+    LAN: "ohif_base_url",
+    TAILSCALE: "ohif_base_url_tailscale",
+    CLOUDFLARE: "ohif_base_url_cloudflare",
+    PUBLIC: "ohif_base_url_public",
+  };
+  const endpoints: Record<string, string> = {};
+  const configuredModes: string[] = [];
+  for (const [mode, key] of Object.entries(modeKeys)) {
+    const url = val(key);
+    if (url) {
+      configuredModes.push(mode);
+      endpoints[mode] = maskEndpointForDiagnostics(url);
+    }
+  }
+
+  // Server-side PACS existence check by EXACT StudyInstanceUID (never by
+  // patient name). Uses the server's own Orthanc reachability, bounded.
+  let pacsLookup: "FOUND" | "NOT_FOUND" | "UNAVAILABLE" = "UNAVAILABLE";
+  let pacsDetail: string | undefined;
+  try {
+    const cfg = await getRadiologyConfig();
+    const orthancBase =
+      process.env.ORTHANC_INTERNAL_URL?.replace(/\/$/, "") ||
+      cfg.orthanc.dicomWebUrl?.replace(/\/dicom-web\/?$/, "") ||
+      "";
+    if (!orthancBase) {
+      pacsDetail = "no Orthanc endpoint configured on the server";
+    } else {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 3000);
+      try {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        const user = process.env.ORTHANC_USERNAME || "";
+        const pass = process.env.ORTHANC_PASSWORD || "";
+        if (user && pass) headers["Authorization"] = "Basic " + Buffer.from(`${user}:${pass}`).toString("base64");
+        const r = await fetch(`${orthancBase}/tools/find`, {
+          method: "POST",
+          headers,
+          signal: controller.signal,
+          body: JSON.stringify({ Level: "Study", Query: { StudyInstanceUID: studyInstanceUID } }),
+        });
+        if (r.ok) {
+          const found = (await r.json()) as unknown[];
+          pacsLookup = Array.isArray(found) && found.length > 0 ? "FOUND" : "NOT_FOUND";
+        } else {
+          pacsDetail = `PACS answered HTTP ${r.status}`;
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  } catch (err) {
+    pacsDetail = err instanceof Error && err.name === "AbortError" ? "PACS lookup timed out (3s)" : "PACS lookup failed";
+  }
+
+  res.json({ studyInstanceUID, pacsLookup, ...(pacsDetail ? { pacsDetail } : {}), configuredModes, endpoints });
+});
+
 // ─── MWL PROCEDURES (STAFF DASHBOARD) ────────────────────────────────────────
 
 router.get("/mwl-procedures", async (req, res) => {
