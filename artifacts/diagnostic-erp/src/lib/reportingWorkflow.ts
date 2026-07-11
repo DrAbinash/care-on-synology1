@@ -29,6 +29,9 @@ export interface QueueStudy {
   lockUserId?: number | null;
   lockUserName?: string | null;
   lockExpiresAt?: string | null;
+  // M1.6B1 — canonical id-based assignment (name above stays the mirror).
+  assignedRadiologistId?: number | null;
+  assignedAt?: string | null;
 }
 
 export interface ParkedStudy {
@@ -120,8 +123,15 @@ export function nextEligibleStudy(snapshot: WorkflowSnapshot): QueueStudy | null
     if (isStudyCompleted(candidate, snapshot.completedIds)) continue;
     if (isStudyParked(candidate.id, snapshot.parked)) continue;
     if (isQueueRowLockedByOther(candidate, snapshot.myUserId, snapshot.nowMs)) continue;
-    const assigned = (candidate.assignedRadiologist ?? "").trim().toLowerCase();
-    const tier = assigned && myName && assigned === myName ? 0 : !assigned ? 1 : 2;
+    // Preference tier — the stable staff id is canonical (M1.6B1); the name
+    // mirror covers legacy rows.
+    let tier: number;
+    if (candidate.assignedRadiologistId != null) {
+      tier = snapshot.myUserId != null && candidate.assignedRadiologistId === snapshot.myUserId ? 0 : 2;
+    } else {
+      const assigned = (candidate.assignedRadiologist ?? "").trim().toLowerCase();
+      tier = assigned && myName && assigned === myName ? 0 : !assigned ? 1 : 2;
+    }
     if (!best || tier < best.tier) best = { candidate, tier };
     if (best.tier === 0) break; // nothing can beat an assigned-to-me study
   }

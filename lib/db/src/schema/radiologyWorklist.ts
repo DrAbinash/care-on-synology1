@@ -35,6 +35,16 @@ export const radiologyWorklistTable = pgTable(
     // Worklist lifecycle status
     status: text("status").notNull().default("STUDY_RECEIVED"),
     assignedRadiologist: text("assigned_radiologist"),
+    // ── Assignment (Ticket M1.6B1) ────────────────────────────────────────
+    // Organizational ownership — DISTINCT from the lock below (active
+    // reporting ownership). Stable staff ids are canonical; the legacy
+    // assigned_radiologist NAME column above stays mirrored for every
+    // pre-existing reader (M1.6A scope filters, seeds). All writes go
+    // through lib/studyAssignments.ts (transactional, audited).
+    assignedRadiologistId: integer("assigned_radiologist_id"),
+    assignedAt: timestamp("assigned_at", { withTimezone: true }),
+    assignedById: integer("assigned_by_id"),
+    assignedByName: text("assigned_by_name"),
     // ── Study lock / claim (Ticket M1.6A) ─────────────────────────────────
     // One active lock per study so two radiologists never unknowingly report
     // the same study. Column names deliberately match the lockUserId /

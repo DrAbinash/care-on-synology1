@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   lockStateFor, isRowLockedByOther, lockStatusMessage,
   assignmentCategoryOf, rowInScope, filterQueueByScope, assignmentPreferenceTier,
+  parseQueueScope, scopeRadiologistId,
   type LockInfo, type QueueScope,
 } from "./studyLockState";
 
@@ -68,5 +69,33 @@ describe("assignment categories + scopes (Phase 6)", () => {
     expect(assignmentPreferenceTier(rows[0], ME)).toBe(0);
     expect(assignmentPreferenceTier(rows[1], ME)).toBe(1);
     expect(assignmentPreferenceTier(rows[2], ME)).toBe(2);
+  });
+});
+
+describe("M1.6B1 — id-based assignment + By-Radiologist scope", () => {
+  it("the stable staff ID is canonical when present; the name mirror covers legacy rows", () => {
+    // id disagreeing with the name: the ID wins.
+    expect(assignmentCategoryOf({ assignedRadiologistId: 7, assignedRadiologist: "Dr. Asha Rao" }, "Dr. Asha Rao", 1)).toBe("other");
+    expect(assignmentCategoryOf({ assignedRadiologistId: 1, assignedRadiologist: "someone else" }, "Dr. Asha Rao", 1)).toBe("mine");
+    // legacy name-only row still matches by name.
+    expect(assignmentCategoryOf({ assignedRadiologist: "dr. asha rao" }, "Dr. Asha Rao", 1)).toBe("mine");
+  });
+
+  it("parseQueueScope accepts the static scopes and rad:<id>, rejecting junk", () => {
+    expect(parseQueueScope("mine")).toBe("mine");
+    expect(parseQueueScope("rad:42")).toBe("rad:42");
+    expect(parseQueueScope("rad:abc")).toBe("all");
+    expect(parseQueueScope(null)).toBe("all");
+    expect(scopeRadiologistId("rad:42" as QueueScope)).toBe(42);
+    expect(scopeRadiologistId("mine")).toBeNull();
+  });
+
+  it("By-Radiologist scope filters by the assignment ID only", () => {
+    const rows = [
+      { id: 1, assignedRadiologistId: 42, assignedRadiologist: "Dr. X" },
+      { id: 2, assignedRadiologistId: 7, assignedRadiologist: "Dr. Y" },
+      { id: 3, assignedRadiologist: "Dr. X" }, // legacy row, no id → not matched
+    ];
+    expect(filterQueueByScope(rows, "rad:42" as QueueScope, null, null).map((r) => r.id)).toEqual([1]);
   });
 });

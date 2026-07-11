@@ -52,7 +52,7 @@ import { canLeaveStudy, type QueueStudy } from "@/lib/reportingWorkflow";
 import { createCommandDispatcher } from "@/lib/workspaceCommands";
 import { useReportingWorkflow } from "@/hooks/useReportingWorkflow";
 import { useStudyLock } from "@/hooks/useStudyLock";
-import { lockStatusMessage, QUEUE_SCOPE_LABELS, type QueueScope } from "@/lib/studyLockState";
+import { lockStatusMessage, QUEUE_SCOPE_LABELS, parseQueueScope, assignmentCategoryOf, type QueueScope } from "@/lib/studyLockState";
 import type { StudyLaunchResult } from "@/lib/studyLaunchService";
 import { ChevronLeft, ChevronRight, PauseCircle, Lock } from "lucide-react";
 
@@ -79,6 +79,10 @@ type WorklistEntry = {
   weasisUrl: string | null;
   status: string;
   assignedRadiologist: string | null;
+  // M1.6B1 — id-based assignment (full-row select serves these)
+  assignedRadiologistId?: number | null;
+  assignedAt?: string | null;
+  assignedByName?: string | null;
   aiDraftStatus: string;
   aiDraftJson: string | null;
   reportId: number | null;
@@ -404,10 +408,17 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // ── M1.6A — assignment-aware queue scope + study lock ────────────────────
   const [queueScope, setQueueScope] = useState<QueueScope>(() => {
     try {
-      const stored = window.localStorage.getItem("radiology_queue_scope");
-      return stored === "mine" || stored === "unassigned" || stored === "pool" ? stored : "all";
+      return parseQueueScope(window.localStorage.getItem("radiology_queue_scope"));
     } catch { return "all"; }
   });
+
+  // M1.6B1 — assignable radiologists (By-Radiologist scope + display names).
+  const { data: radiologistsData } = useQuery<{ success: boolean; radiologists: Array<{ id: number; name: string; role: string }> }>({
+    queryKey: ["radiology-radiologists"],
+    queryFn: () => api.get("/api/radiology/radiologists"),
+    staleTime: 5 * 60_000,
+  });
+  const radiologists = radiologistsData?.radiologists ?? [];
   function changeQueueScope(next: QueueScope) {
     setQueueScope(next);
     try { window.localStorage.setItem("radiology_queue_scope", next); } catch { /* private mode */ }
@@ -1957,17 +1968,24 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 : "—"}
         </span>
         <div className="ml-auto flex items-center gap-1">
-          {/* M1.6A — assignment-aware queue scope */}
+          {/* M1.6A/M1.6B1 — assignment-aware queue scope (+ By Radiologist) */}
           <select
             className="h-6 text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
             value={queueScope}
             data-testid="queue-scope"
-            onChange={(e) => changeQueueScope(e.target.value as QueueScope)}
+            onChange={(e) => changeQueueScope(parseQueueScope(e.target.value))}
             title="Queue scope: which studies Next/Previous and the queue list cover"
           >
-            {(Object.keys(QUEUE_SCOPE_LABELS) as QueueScope[]).map((s) => (
+            {(Object.keys(QUEUE_SCOPE_LABELS) as Array<keyof typeof QUEUE_SCOPE_LABELS>).map((s) => (
               <option key={s} value={s}>{QUEUE_SCOPE_LABELS[s]}</option>
             ))}
+            {radiologists.length > 0 && (
+              <optgroup label="By radiologist">
+                {radiologists.map((r) => (
+                  <option key={r.id} value={`rad:${r.id}`}>{r.name}</option>
+                ))}
+              </optgroup>
+            )}
           </select>
           {/* Jump to a specific queue row — →current ✓done ⏸parked 🔒locked */}
           <select
@@ -2067,7 +2085,25 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   <span className="font-mono text-[10px] truncate" title={entry.studyInstanceUID || undefined}>
                     {entry.studyInstanceUID || "— missing —"}
                   </span>
+                  {/* M1.6B1 — assignment (organizational ownership, distinct from the lock) */}
+                  <span className="text-muted-foreground">Assigned</span>
+                  <span
+                    className="truncate"
+                    title={entry.assignedAt
+                      ? `Assigned ${new Date(entry.assignedAt).toLocaleString()}${entry.assignedByName ? ` by ${entry.assignedByName}` : ""}`
+                      : undefined}
+                  >
+                    {entry.assignedRadiologist || "— unassigned —"}
+                    {entry.assignedByName ? <span className="text-muted-foreground text-[10px]"> · by {entry.assignedByName}</span> : null}
+                  </span>
                 </div>
+                {/* Assigned to another radiologist: warn, never silently steal */}
+                {assignmentCategoryOf(entry, session?.user.name ?? null, session?.user.id ?? null) === "other" && (
+                  <div className="flex items-center gap-1.5 p-1.5 rounded bg-amber-50 border border-amber-200 text-amber-900 text-[11px]">
+                    <AlertTriangle size={12} className="shrink-0" />
+                    <span>Assigned to {entry.assignedRadiologist} — reporting it will NOT change the assignment.</span>
+                  </div>
+                )}
                 {/* M1.2 — the ONE study-launch control (network auto-selection,
                     forced modes, route badge, diagnostics). URL construction
                     lives in lib/studyLaunchService, not in this page. */}

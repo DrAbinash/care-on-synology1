@@ -190,6 +190,20 @@ describe("M1.6A — lock-aware eligibility + assignment precedence", () => {
     expect(nextEligibleStudy(s3)?.id).toBe(3);
   });
 
+  it("M1.6B1: the assignment ID outranks the legacy name in the preference tier", () => {
+    const s = snap({
+      queue: [
+        study(1),
+        // name says mine but the ID says someone else — the ID wins (tier 2)
+        study(2, { assignedRadiologist: "Dr. Asha Rao", assignedRadiologistId: 99 }),
+        // ID says mine even though the name is stale
+        study(3, { assignedRadiologist: "old name", assignedRadiologistId: 1 }),
+      ],
+      currentId: 1, myUserId: 1, myName: "Dr. Asha Rao", nowMs: NOW,
+    });
+    expect(nextEligibleStudy(s)?.id).toBe(3);
+  });
+
   it("return-to-parked skips a parked study someone else claimed meanwhile", () => {
     const s = snap({
       queue: [study(1), activeLockRow(2, 99), study(3)],

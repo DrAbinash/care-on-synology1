@@ -374,6 +374,8 @@ export default function RadiologyWorklist() {
   const [showSentinel, setShowSentinel] = useState(false);
   const [showRawJson, setShowRawJson] = useState(false);
   const [draftViewer, setDraftViewer] = useState<{ id: number; draft: Record<string, unknown> | null } | null>(null);
+  // M1.6B1 — assignment management + live workload
+  const [showWorkload, setShowWorkload] = useState(false);
   const [feedbackEntry, setFeedbackEntry] = useState<number | null>(null);
   const [feedbackText, setFeedbackText] = useState("");
   const prevEntriesLen = useRef(-1);
@@ -415,6 +417,46 @@ export default function RadiologyWorklist() {
     },
     staleTime: 0,
     refetchInterval: 60_000,
+  });
+
+  // M1.6B1 — assignable radiologists + assignment writes + live workload.
+  const { data: radiologistsData } = useQuery<{ success: boolean; radiologists: Array<{ id: number; name: string; role: string }> }>({
+    queryKey: ["radiology-radiologists"],
+    queryFn: () => api.get("/api/radiology/radiologists"),
+    staleTime: 5 * 60_000,
+  });
+  const radiologists = radiologistsData?.radiologists ?? [];
+
+  const assignMutation = useMutation({
+    mutationFn: async ({ worklistId, radiologistId }: { worklistId: number; radiologistId: number | null }) => {
+      const path = radiologistId === null
+        ? `/api/radiology/worklist-assignment/${worklistId}/unassign`
+        : `/api/radiology/worklist-assignment/${worklistId}/assign`;
+      return api.post<{ success: boolean; outcome: string; assignment?: { assignedRadiologistName?: string | null } }>(
+        path, radiologistId === null ? {} : { radiologistId },
+      );
+    },
+    onSuccess: (res) => {
+      if (!res.success) {
+        toast({ title: "Assignment not changed", description: res.outcome.replaceAll("_", " ").toLowerCase(), variant: "destructive" });
+      }
+      void qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
+      void qc.invalidateQueries({ queryKey: ["radiology-workload"] });
+    },
+    onError: (err) => {
+      toast({ title: "Assignment failed", description: err instanceof Error ? err.message : "Error", variant: "destructive" });
+    },
+  });
+
+  const { data: workload } = useQuery<{
+    success: boolean;
+    radiologists: Array<{ radiologistId: number; radiologistName: string; assignedPending: number; lockedNow: number; completedToday: number; avgPendingAgeHours: number | null }>;
+    unassignedPending: number;
+  }>({
+    queryKey: ["radiology-workload"],
+    queryFn: () => api.get("/api/radiology/workload"),
+    enabled: showWorkload,
+    refetchInterval: showWorkload ? 60_000 : false,
   });
 
   const { data: pacsViewerSettings = {} as Record<string, string> } = useQuery<Record<string, string>>({
@@ -696,6 +738,55 @@ export default function RadiologyWorklist() {
               })}
             </div>
 
+            {/* M1.6B1 — live radiologist workload (reuses worklist data only) */}
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setShowWorkload((v) => !v)} data-testid="btn-workload">
+                {showWorkload ? "Hide workload" : "Workload"}
+              </Button>
+            </div>
+            {showWorkload && (
+              <div className="rounded-lg border p-3 bg-muted/10" data-testid="workload-panel">
+                <div className="text-xs font-semibold mb-2">
+                  Radiologist workload
+                  <span className="text-muted-foreground font-normal ml-2">
+                    {workload ? `${workload.unassignedPending} unassigned pending` : "loading…"}
+                  </span>
+                </div>
+                {workload && (
+                  <table className="text-xs w-full max-w-2xl">
+                    <thead>
+                      <tr className="text-left text-muted-foreground">
+                        <th className="pr-4 py-0.5 font-medium">Radiologist</th>
+                        <th className="pr-4 py-0.5 font-medium">Assigned</th>
+                        <th className="pr-4 py-0.5 font-medium">Locked now</th>
+                        <th className="pr-4 py-0.5 font-medium">Done today</th>
+                        <th className="pr-4 py-0.5 font-medium">Avg pending age</th>
+                        <th className="pr-4 py-0.5 font-medium">Parked</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {workload.radiologists.map((r) => (
+                        <tr key={r.radiologistId}>
+                          <td className="pr-4 py-0.5">{r.radiologistName}</td>
+                          <td className="pr-4 py-0.5">{r.assignedPending}</td>
+                          <td className="pr-4 py-0.5">{r.lockedNow}</td>
+                          <td className="pr-4 py-0.5">{r.completedToday}</td>
+                          <td className="pr-4 py-0.5">{r.avgPendingAgeHours != null ? `${r.avgPendingAgeHours} h` : "—"}</td>
+                          <td className="pr-4 py-0.5 text-muted-foreground">
+                            {/* Parked state is browser-local (M1.5) — only this
+                                workstation's own count is truthfully knowable. */}
+                            {r.radiologistId === session?.user?.id
+                              ? (() => { try { return (JSON.parse(localStorage.getItem("radiology_parked_studies_v1") ?? "[]") as unknown[]).length; } catch { return 0; } })()
+                              : "n/a"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            )}
+
             {/* Table */}
             {isLoading ? (
               <div className="flex items-center justify-center py-16">
@@ -784,7 +875,41 @@ export default function RadiologyWorklist() {
                           <StatusBadge status={entry.status} />
                         </td>
                         <td className="px-3 py-2.5 whitespace-nowrap">
-                          <LockBadge entry={entry} currentUserId={session?.user?.id} />
+                          <div className="flex flex-col gap-1">
+                            <LockBadge entry={entry} currentUserId={session?.user?.id} />
+                            {/* M1.6B1 — assignment control: organizational
+                                ownership, distinct from the lock above. The
+                                server enforces who may assign/reassign. */}
+                            {entry.id !== -1 && (
+                              <select
+                                className="h-6 max-w-[150px] text-[10px] border rounded px-1 bg-background text-muted-foreground"
+                                value={(entry as { assignedRadiologistId?: number | null }).assignedRadiologistId ?? ""}
+                                disabled={assignMutation.isPending || entry.status === "REPORT_FINAL" || entry.status === "DELIVERED"}
+                                title={(() => {
+                                  const e = entry as { assignedAt?: string | null; assignedByName?: string | null };
+                                  return e.assignedAt
+                                    ? `Assigned ${new Date(e.assignedAt).toLocaleString()}${e.assignedByName ? ` by ${e.assignedByName}` : ""}`
+                                    : entry.assignedRadiologist
+                                      ? `Assigned to ${entry.assignedRadiologist} (legacy, no timestamp)`
+                                      : "Unassigned — pick a radiologist to assign";
+                                })()}
+                                onChange={(ev) => {
+                                  const v = ev.target.value;
+                                  assignMutation.mutate({ worklistId: entry.id, radiologistId: v === "" ? null : Number(v) });
+                                }}
+                                data-testid={`assign-select-${entry.id}`}
+                              >
+                                <option value="">
+                                  {(entry as { assignedRadiologistId?: number | null }).assignedRadiologistId == null && entry.assignedRadiologist
+                                    ? `Unassigned (was: ${entry.assignedRadiologist})`
+                                    : "Unassigned"}
+                                </option>
+                                {radiologists.map((r) => (
+                                  <option key={r.id} value={r.id}>{r.name}</option>
+                                ))}
+                              </select>
+                            )}
+                          </div>
                         </td>
                         <td className="px-3 py-2.5 whitespace-nowrap">
                           {entry.id === -1 ? (

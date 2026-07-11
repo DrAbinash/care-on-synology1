@@ -354,6 +354,10 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         dicomMetadata: radiologyWorklistTable.dicomMetadata,
         status: radiologyWorklistTable.status,
         assignedRadiologist: radiologyWorklistTable.assignedRadiologist,
+        // M1.6B1 — id-based assignment (organizational ownership)
+        assignedRadiologistId: radiologyWorklistTable.assignedRadiologistId,
+        assignedAt: radiologyWorklistTable.assignedAt,
+        assignedByName: radiologyWorklistTable.assignedByName,
         aiDraftStatus: radiologyWorklistTable.aiDraftStatus,
         aiDraftJson: radiologyWorklistTable.aiDraftJson,
         aiFeedback: radiologyWorklistTable.aiFeedback,

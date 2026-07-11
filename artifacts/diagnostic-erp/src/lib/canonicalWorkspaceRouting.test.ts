@@ -240,3 +240,20 @@ describe("M1.6A — study locking stays canonical", () => {
     expect(hook).toContain("filterQueueByScope");
   });
 });
+
+describe("M1.6B1 — assignment management stays canonical", () => {
+  it("assignment writes go ONLY through the worklist-assignment endpoints", () => {
+    const worklist = read("pages/RadiologyWorklist.tsx");
+    expect(worklist).toContain("/worklist-assignment/");
+    // No page writes assignment columns through any other transport.
+    const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+    expect(workspace).not.toContain("/worklist-assignment/"); // workspace displays; the worklist manages
+    expect(workspace).toContain("assignmentCategoryOf"); // display + warning rules from the lib
+  });
+
+  it("the By-Radiologist scope parses through the ONE scope parser", () => {
+    const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+    expect(workspace).toContain("parseQueueScope");
+    expect(workspace).toContain('optgroup label="By radiologist"');
+  });
+});

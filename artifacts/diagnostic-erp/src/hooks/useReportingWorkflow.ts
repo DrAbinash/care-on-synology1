@@ -66,8 +66,8 @@ export function useReportingWorkflow(currentStudyId: number | undefined, options
   // uses the FULL queue so switching scopes never discards parked markers
   // for studies that merely fell outside the current filter.
   const queue = useMemo(
-    () => filterQueueByScope(fullQueue, scope, myName),
-    [fullQueue, scope, myName],
+    () => filterQueueByScope(fullQueue, scope, myName, myUserId),
+    [fullQueue, scope, myName, myUserId],
   );
 
   const [parked, setParked] = useState<ParkedStudy[]>(readParked);

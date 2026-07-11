@@ -30,6 +30,7 @@ import { tokensRouter } from "./tokens";
 import { testTokensRouter } from "./test-tokens";
 import { radiologyRouter } from "./radiology";
 import { radiologyWorklistLocksRouter } from "./radiology-worklist-locks";
+import { radiologyWorklistAssignmentsRouter } from "./radiology-worklist-assignments";
 import { pacsEnterpriseRouter } from "./pacsEnterprise";
 import displayRouter from "./display";
 import queueDisplaySettingsRouter from "./queueDisplaySettings";
@@ -532,6 +533,10 @@ router.use("/radiology-workflow", requireStaffAuth, requireStaffPermission("/rad
 // so two radiologists never unknowingly report the same study. Mounted before
 // radiologyRouter; the /worklist-lock/* subpaths are unique to this router.
 router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), radiologyWorklistLocksRouter);
+
+// Assignment management (Ticket M1.6B1) — organizational ownership, distinct
+// from the lock above. /worklist-assignment/*, /radiologists, /workload.
+router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), radiologyWorklistAssignmentsRouter);
 
 // Radiology studies — open to all authenticated staff (doctors, radiologists, etc.)
 router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), radiologyRouter);

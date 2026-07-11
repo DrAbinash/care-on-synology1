@@ -51,19 +51,33 @@ export function lockStatusMessage(
   }
 }
 
-// ─── Assignment-aware queue (Phase 6) ────────────────────────────────────────
+// ─── Assignment-aware queue (Phase 6 / M1.6B1) ───────────────────────────────
 
-export type QueueScope = "all" | "mine" | "unassigned" | "pool";
+/** Static scopes + the dynamic "By Radiologist" scope (`rad:<staffId>`). */
+export type QueueScope = "all" | "mine" | "unassigned" | "pool" | `rad:${number}`;
 
-export const QUEUE_SCOPE_LABELS: Record<QueueScope, string> = {
+export const QUEUE_SCOPE_LABELS: Record<"all" | "mine" | "unassigned" | "pool", string> = {
   all: "All permitted",
   mine: "My Studies",
   unassigned: "Unassigned",
   pool: "Department Pool",
 };
 
+export function parseQueueScope(raw: string | null | undefined): QueueScope {
+  if (raw === "mine" || raw === "unassigned" || raw === "pool" || raw === "all") return raw;
+  if (raw && /^rad:\d+$/.test(raw)) return raw as QueueScope;
+  return "all";
+}
+
+export function scopeRadiologistId(scope: QueueScope): number | null {
+  const m = /^rad:(\d+)$/.exec(scope);
+  return m ? Number(m[1]) : null;
+}
+
 export interface AssignableRow {
   assignedRadiologist?: string | null;
+  /** M1.6B1 — canonical id-based assignment; the name stays the legacy mirror. */
+  assignedRadiologistId?: number | null;
 }
 
 function normalizeName(name: string | null | undefined): string {
@@ -72,10 +86,13 @@ function normalizeName(name: string | null | undefined): string {
 
 export type AssignmentCategory = "mine" | "unassigned" | "other";
 
-/** Assignment semantics: the worklist's live assigned_radiologist column is a
- *  NAME string — matched against the session's subject name (trimmed,
- *  case-insensitive). Never patient-name based; this is the RADIOLOGIST. */
-export function assignmentCategoryOf(row: AssignableRow, myName: string | null): AssignmentCategory {
+/** Assignment semantics: the stable staff ID is canonical when both sides
+ *  have one; the legacy NAME mirror (trimmed, case-insensitive) covers
+ *  pre-M1.6B1 rows. Never patient-name based; this is the RADIOLOGIST. */
+export function assignmentCategoryOf(row: AssignableRow, myName: string | null, myUserId?: number | null): AssignmentCategory {
+  if (row.assignedRadiologistId != null) {
+    return myUserId != null && row.assignedRadiologistId === myUserId ? "mine" : "other";
+  }
   const assigned = normalizeName(row.assignedRadiologist);
   if (!assigned) return "unassigned";
   return myName != null && assigned === normalizeName(myName) ? "mine" : "other";
@@ -87,10 +104,13 @@ export function assignmentCategoryOf(row: AssignableRow, myName: string | null):
  *   unassigned — no assigned radiologist
  *   pool       — the department pot I could pick from (unassigned + assigned
  *                to others); my own assignments live under "mine"
+ *   rad:<id>   — assigned to that specific radiologist (id-based only)
  *   all        — everything this account is permitted to see
  */
-export function rowInScope(row: AssignableRow, scope: QueueScope, myName: string | null): boolean {
-  const category = assignmentCategoryOf(row, myName);
+export function rowInScope(row: AssignableRow, scope: QueueScope, myName: string | null, myUserId?: number | null): boolean {
+  const byRad = scopeRadiologistId(scope);
+  if (byRad != null) return row.assignedRadiologistId === byRad;
+  const category = assignmentCategoryOf(row, myName, myUserId);
   switch (scope) {
     case "mine": return category === "mine";
     case "unassigned": return category === "unassigned";
@@ -99,14 +119,14 @@ export function rowInScope(row: AssignableRow, scope: QueueScope, myName: string
   }
 }
 
-export function filterQueueByScope<T extends AssignableRow>(queue: T[], scope: QueueScope, myName: string | null): T[] {
+export function filterQueueByScope<T extends AssignableRow>(queue: T[], scope: QueueScope, myName: string | null, myUserId?: number | null): T[] {
   if (scope === "all") return queue;
-  return queue.filter((row) => rowInScope(row, scope, myName));
+  return queue.filter((row) => rowInScope(row, scope, myName, myUserId));
 }
 
 /** Next-study preference tiers (Phase 6): assigned-to-me first, then
  *  unassigned/claimable, then other-assigned pool studies. */
-export function assignmentPreferenceTier(row: AssignableRow, myName: string | null): 0 | 1 | 2 {
-  const category = assignmentCategoryOf(row, myName);
+export function assignmentPreferenceTier(row: AssignableRow, myName: string | null, myUserId?: number | null): 0 | 1 | 2 {
+  const category = assignmentCategoryOf(row, myName, myUserId);
   return category === "mine" ? 0 : category === "unassigned" ? 1 : 2;
 }
