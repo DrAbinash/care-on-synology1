@@ -106,6 +106,7 @@ export * from "./fetalUsgLevel4";
 export * from "./dicomStudies";
 export * from "./smartRadiology";
 export * from "./risMonitoring";
+export * from "./radiologyOps";
 export * from "./radiologyWorkflow";
 export * from "./auditLogs";
 export * from "./paymentGatewayDiagnostics";

@@ -58,6 +58,12 @@ import { validateStructuredReport } from "../lib/structuredReport/validator";
 import { noFindingsCatalogPort } from "../lib/radiologyD1DraftWriter";
 import { UnavailableAiRulesRegistryPort } from "../lib/structuredReport/aiRulesRegistry";
 import { canonicalHashPayload, computeChainHash, auditLog } from "../lib/audit";
+// BEND-1 — durable D10 re-delivery obligations + shared recipient masking.
+import { maskRecipient } from "../lib/redeliveryRules";
+import { createObligationsForAmendment, completeObligationsForDelivery, isRedeliveryAutoSendEnabled } from "../lib/redeliveryObligations";
+import { enqueueRadiologyJob } from "../lib/radiologyJobs";
+import { REDELIVERY_SEND_JOB } from "../lib/radiologyJobHandlers";
+import { radiologyRedeliveryObligationsTable } from "@workspace/db/schema";
 // ── Ticket D6 — structured read path (flag-gated, legacy display default) ───
 import { readStructuredReport, type StructuredReadResult } from "../lib/radiologyStructuredRead";
 // ── Ticket D8 — canonical amendment-chain resolution (read-only) ─────────────
@@ -628,19 +634,8 @@ async function performStructuredVerify(
   }
 }
 
-/** Masked recipient string — enough for staff to recognize the destination,
- *  never the full address (recipient privacy in lifecycle metadata). */
-function maskRecipient(recipient: string | null): string | null {
-  if (!recipient) return null;
-  if (recipient === "public-link") return "public-link";
-  if (recipient.includes("@")) {
-    const [user, domain] = recipient.split("@");
-    return `${user.slice(0, 1)}***@${domain}`;
-  }
-  const digits = recipient.replace(/\D/g, "");
-  if (digits.length >= 4) return `${digits.slice(0, 2)}${"*".repeat(Math.max(0, digits.length - 4))}${digits.slice(-2)}`;
-  return "***";
-}
+// Masked recipient display — moved to lib/redeliveryRules (BEND-1) so the
+// durable obligation store and this read path share ONE masking rule.
 
 /** D9 Phase 4/6 — additive lifecycle metadata for the read API. Computed
  *  only (no durable notification store yet — explicitly deferred); read-only.
@@ -1702,14 +1697,51 @@ patientReportsRouter.post("/:id/amend", async (req, res) => {
       return { newRow, amendment: prepared.amendment };
     });
 
-    // 12) Downstream jobs after commit only — the amend endpoint itself
-    // triggers none (parity with create; clients drive worklist updates).
+    // 12) Downstream state after commit — BEND-1 (D10 closure): persist the
+    // re-delivery obligations this amendment creates (recipients of older
+    // revisions are owed the new one) and the per-revision PACS re-archive
+    // duty. Creation only — NOTHING is sent unless the default-OFF auto-send
+    // policy was explicitly enabled, in which case durable jobs are queued.
+    let redeliverySummary: { created: number; skipped: number; pacsPending: boolean } | null = null;
+    try {
+      redeliverySummary = await createObligationsForAmendment(outcome.newRow.id, {
+        userId: session!.subjectId,
+        userName: session!.subjectName,
+        role: session!.role,
+      });
+      if (redeliverySummary.created > 0 && await isRedeliveryAutoSendEnabled()) {
+        const open = await db
+          .select({ id: radiologyRedeliveryObligationsTable.id, status: radiologyRedeliveryObligationsTable.status })
+          .from(radiologyRedeliveryObligationsTable)
+          .where(eq(radiologyRedeliveryObligationsTable.reportId, outcome.newRow.id));
+        for (const o of open) {
+          if (o.status !== "pending") continue;
+          await db.update(radiologyRedeliveryObligationsTable)
+            .set({ status: "queued", actedBy: "auto-send-policy", actedAt: new Date(), updatedAt: new Date() })
+            .where(eq(radiologyRedeliveryObligationsTable.id, o.id));
+          await enqueueRadiologyJob({
+            operationType: REDELIVERY_SEND_JOB,
+            entityType: "report",
+            entityId: outcome.newRow.id,
+            payload: { obligationId: o.id },
+            idempotencyKey: `${REDELIVERY_SEND_JOB}:${o.id}`,
+          });
+        }
+      }
+    } catch (err) {
+      // Obligation creation must never fail the committed amendment; the
+      // reconcile repair action recovers any missed creation from the
+      // immutable amendment + share history.
+      req.log?.error({ err }, "BEND-1 obligation creation after amendment failed");
+    }
+
     res.status(201).json({
       report: outcome.newRow,
       amendment: {
         ...outcome.amendment,
         amendedReportId: outcome.newRow.id,
       },
+      redelivery: redeliverySummary,
     });
   } catch (err) {
     if (err instanceof AmendError) {
@@ -2713,6 +2745,18 @@ patientReportsRouter.post("/:id/share", async (req, res) => {
   if (status === "sent") await markDeliveredIfVerified(id);
   const session = (req as StaffAuthRequest).staffSession;
   await auditDeliveryResolution(`share_${channel}`, shareVersion, { userId: session?.subjectId, userName: session?.subjectName ?? sharedBy ?? "system", role: session?.role }, { recipient });
+  // BEND-1 (D10) — a sent share of the chain's LATEST revision completes any
+  // matching open re-delivery obligation; old-revision shares complete none.
+  if (status === "sent") {
+    await completeObligationsForDelivery({
+      deliveredReportId: id,
+      latestReportId: shareVersion.latestReportId,
+      rootReportId: shareVersion.rootReportId,
+      channel,
+      recipient,
+      actor: { userId: session?.subjectId, userName: session?.subjectName ?? sharedBy ?? "system", role: session?.role },
+    }).catch((err) => req.log?.error({ err }, "BEND-1 obligation completion failed"));
+  }
 
   res.json({ ok: status === "sent", share, error: errorMessage });
 });

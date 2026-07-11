@@ -30,6 +30,7 @@ import { eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { validateRadiologyConfig } from "./lib/pacs/pacsConfig.js";
 import { shouldForceBootstrapReset } from "./lib/bootstrapAdmin.js";
+import { markStartupMigrationsSettled } from "./lib/startupState";
 
 // Bootstrap admin account for fresh production databases.
 //
@@ -2732,12 +2733,18 @@ const server = app.listen({ port, exclusive: true }, () => {
     });
   }
 
-  runStartupMigrations().catch((e) => {
+  runStartupMigrations().then(() => {
+    // BEND-1 — record truthful readiness: /api/healthz reports STARTING until
+    // this settles, and a failure is RECORDED (health DEGRADED) instead of
+    // being visible only in logs.
+    markStartupMigrationsSettled(true);
+  }).catch((e) => {
     // runStartupMigrations runs ADD COLUMN IF NOT EXISTS patches that are also
     // done by db-patch-v2, so failures here are non-fatal (db-patch-v2 already
     // guaranteed the schema). Log and continue — do NOT crash the API server
     // because the migrations here are belt-and-suspenders, not the primary path.
     logger.error({ err: e }, "Startup migration warning (non-fatal — schema was verified by db-patch-v2)");
+    markStartupMigrationsSettled(false, e instanceof Error ? e.message : String(e));
   });
   ensureDefaultLedger().catch((e) => logger.error({ err: e }, "Failed to seed default ledger"));
   backfillExpirePublicTokens().catch((e) => logger.error({ err: e }, "Failed to backfill public token expiry"));
