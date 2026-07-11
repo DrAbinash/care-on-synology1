@@ -437,7 +437,11 @@ export default function MyCollection() {
                   {/* OHIF Link */}
                   {selectedItem.studyInstanceUID && (
                     <Button
-                      onClick={() => window.open(`/pacs?studyInstanceUid=${selectedItem.studyInstanceUID}`, "_blank")}
+                      // Must include the app's own base path — in production
+                      // diagnostic-erp is served under /erp/, and a bare /pacs
+                      // falls through to the public website's SPA (no matching
+                      // nginx route) instead of opening the PACS viewer.
+                      onClick={() => window.open(`${import.meta.env.BASE_URL.replace(/\/$/, "")}/pacs?studyInstanceUid=${selectedItem.studyInstanceUID}`, "_blank")}
                       variant="outline"
                       className="gap-1.5"
                     >

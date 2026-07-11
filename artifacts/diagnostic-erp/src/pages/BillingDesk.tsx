@@ -2842,7 +2842,13 @@ export default function BillingDesk() {
                           txnRef: gatewayPaymentInfo.txnRef,
                           patientName: selectedPatient ? `${selectedPatient.firstName} ${selectedPatient.lastName ?? ""}`.trim() : "",
                         });
-                        void openOnSecondMonitor(`/display/payment-qr?${params.toString()}`, "paymentQrDisplay");
+                        // Must include this app's own base path — in production
+                        // diagnostic-erp is served under /erp/ (nginx has no route
+                        // for a bare /display/payment-qr, so an un-prefixed path
+                        // falls through to the public website's SPA and renders
+                        // its "Page not found" screen instead of the QR display).
+                        const erpBase = import.meta.env.BASE_URL.replace(/\/$/, "");
+                        void openOnSecondMonitor(`${erpBase}/display/payment-qr?${params.toString()}`, "paymentQrDisplay");
                       }}
                       className="mt-2 text-xs font-semibold text-[#2563eb] hover:underline flex items-center gap-1 mx-auto"
                     >

@@ -613,8 +613,8 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
   return (
     <div style={{
       minHeight: "100vh",
-      background: `linear-gradient(135deg, rgba(255,255,255,0.82) 0%, rgba(255,255,255,0.78) 100%),
-                   url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800"><defs><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="%23cbd5e1" stroke-width="0.75"/></pattern><radialGradient id="pulse1" cx="20%" cy="30%"><stop offset="0%" style="stop-color:%230369a1;stop-opacity:0.22"/><stop offset="100%" style="stop-color:%230369a1;stop-opacity:0"/></radialGradient><radialGradient id="pulse2" cx="80%" cy="70%"><stop offset="0%" style="stop-color:%2306b6d4;stop-opacity:0.18"/><stop offset="100%" style="stop-color:%2306b6d4;stop-opacity:0"/></radialGradient></defs><rect width="1200" height="800" fill="white"/><rect width="1200" height="800" fill="url(%23grid)"/><circle cx="240" cy="240" r="220" fill="url(%23pulse1)"/><circle cx="1000" cy="600" r="270" fill="url(%23pulse2)"/><circle cx="100" cy="700" r="170" fill="url(%23pulse1)" opacity="0.6"/><circle cx="1100" cy="150" r="200" fill="url(%23pulse2)" opacity="0.5"/></svg>')`,
+      background: `linear-gradient(135deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.5) 100%),
+                   url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800"><defs><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="%2394a3b8" stroke-width="1"/></pattern><radialGradient id="pulse1" cx="20%" cy="30%"><stop offset="0%" style="stop-color:%230369a1;stop-opacity:0.45"/><stop offset="100%" style="stop-color:%230369a1;stop-opacity:0"/></radialGradient><radialGradient id="pulse2" cx="80%" cy="70%"><stop offset="0%" style="stop-color:%2306b6d4;stop-opacity:0.38"/><stop offset="100%" style="stop-color:%2306b6d4;stop-opacity:0"/></radialGradient></defs><rect width="1200" height="800" fill="white"/><rect width="1200" height="800" fill="url(%23grid)"/><circle cx="240" cy="240" r="260" fill="url(%23pulse1)"/><circle cx="1000" cy="600" r="320" fill="url(%23pulse2)"/><circle cx="100" cy="700" r="200" fill="url(%23pulse1)" opacity="0.7"/><circle cx="1100" cy="150" r="230" fill="url(%23pulse2)" opacity="0.6"/></svg>')`,
       backgroundSize: "cover",
       backgroundAttachment: "fixed",
       backgroundPosition: "center",
@@ -1163,7 +1163,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                       tokenNo,
                     };
                     const clinic: PrintClinic = clinicPrint ?? { name: settings.siteTitle, address: settings.address, logoDataUrl: settings.logoUrl };
-                    const html = buildBillPrintHtml({ bill, clinic, paperSize: "A5", isBW: false, qrDataUrl, format: "classic" });
+                    const html = buildBillPrintHtml({ bill, clinic, paperSize: "A5", isBW: false, qrDataUrl, format: "classic", compactFooterGap: true });
                     writeAndPrint(win, html);
                   }}
                 >
