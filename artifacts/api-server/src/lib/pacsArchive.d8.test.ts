@@ -8,6 +8,7 @@ let studyRow: Record<string, unknown> | null;
 let reportRow: Record<string, unknown> | null;
 let auditInserts: Record<string, unknown>[];
 let studyUpdates: Record<string, unknown>[];
+let revisionInserts: Record<string, unknown>[];
 let fetchCalls: { url: string; body: Record<string, unknown> }[];
 
 vi.mock("@workspace/db/schema", () => ({
@@ -15,6 +16,8 @@ vi.mock("@workspace/db/schema", () => ({
   patientsTable: { __name: "patients" },
   patientReportsTable: { __name: "patient_reports" },
   radiologyAuditLogTable: { __name: "radiology_audit_log" },
+  // BEND-1 — per-revision archive records written alongside the study columns.
+  radiologyPacsArchiveRevisionsTable: { __name: "radiology_pacs_archive_revisions", reportId: "report_id" },
 }));
 
 vi.mock("@workspace/db", () => ({
@@ -34,10 +37,17 @@ vi.mock("@workspace/db", () => ({
     insert: (tbl: { __name?: string }) => ({
       values: (v: Record<string, unknown>) => {
         if (tbl?.__name === "radiology_audit_log") auditInserts.push(v);
-        return { catch: () => undefined, then: (r: (x: unknown) => void) => r(undefined) };
+        if (tbl?.__name === "radiology_pacs_archive_revisions") revisionInserts.push(v);
+        const thenable = { catch: () => undefined, then: (r: (x: unknown) => void) => r(undefined) };
+        // BEND-1 — the revisions upsert chains onConflictDoUpdate/DoNothing.
+        return { ...thenable, onConflictDoUpdate: () => thenable, onConflictDoNothing: () => thenable };
       },
     }),
-    update: () => ({ set: (v: Record<string, unknown>) => ({ where: async () => { studyUpdates.push(v); } }) }),
+    update: (tbl: { __name?: string }) => ({
+      set: (v: Record<string, unknown>) => ({
+        where: async () => { if (tbl?.__name !== "radiology_pacs_archive_revisions") studyUpdates.push(v); },
+      }),
+    }),
   },
 }));
 
@@ -89,6 +99,7 @@ beforeEach(() => {
   reportRow = { id: 900, reportNumber: "RPT-ROOT" };
   auditInserts = [];
   studyUpdates = [];
+  revisionInserts = [];
   fetchCalls = [];
   buildReportArtifactMock.mockReset();
   global.fetch = (async (url: string, init: { body: string }) => {

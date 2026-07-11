@@ -25,7 +25,7 @@ import {
 import { isStaleVoiceResult, type VoiceCaptureBinding } from "@/lib/voiceSessionState";
 import {
   createVoiceProvider, resolveProviderChoice, isWebSpeechSupported, isInjectedProviderPresent,
-  type TranscriptionSession, type VoiceProviderKind, type VoiceSettings,
+  type TranscriptionSession, type VoiceProviderKind, type VoiceSettings, type TranscribeCapabilities,
 } from "@/lib/voiceTranscription";
 
 export type VoiceAuditOutcome = "executed" | "cancelled" | "rejected";
@@ -49,7 +49,7 @@ export interface VoicePending {
 export interface UseVoiceSessionOptions {
   studyId: number | undefined;
   settings: VoiceSettings;
-  serverAvailable: boolean;
+  capabilities: TranscribeCapabilities;
   /** Fresh workspace context — consulted at parse time AND again at execute
    *  time (context can change while a preview is open). */
   getContext: () => VoiceContext;
@@ -68,17 +68,22 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
   const optsRef = useRef(options);
   optsRef.current = options;
 
-  const { settings, serverAvailable, studyId } = options;
+  const { settings, capabilities, studyId } = options;
 
   const providerKind: VoiceProviderKind | null = useMemo(
     () => resolveProviderChoice(settings.provider, {
-      serverAvailable,
+      localAvailable: capabilities.local,
+      serverAvailable: capabilities.server,
       webSpeechSupported: isWebSpeechSupported(),
       injectedPresent: isInjectedProviderPresent(),
     }),
-    [settings.provider, serverAvailable],
+    [settings.provider, capabilities.local, capabilities.server],
   );
   const enabled = settings.enabled && providerKind != null;
+  /** Hands-free needs a provider that can stream utterances (webspeech and
+   *  injected always can; recorder providers only with live segments on). */
+  const handsFreeCapable = enabled && providerKind != null &&
+    createVoiceProvider(providerKind).supportsContinuous(settings);
 
   const [phase, setPhase] = useState<VoicePhase>("idle");
   const [trouble, setTrouble] = useState<VoiceTrouble>(null);
@@ -90,6 +95,14 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
   const [dictationTarget, setDictationTarget] = useState<DictationTarget>("findings");
   const [captureTrigger, setCaptureTrigger] = useState<"ptt" | "toggle" | null>(null);
   const [lastUndo, setLastUndo] = useState<{ label: string; run: () => void } | null>(null);
+  // M1.6B3 — hands-free continuous session: utterances stream through the
+  // same parse→safety→preview pipeline; "go to sleep"/"wake up" pause and
+  // resume, "cancel" exits, spoken "confirm" applies NON-high-risk previews.
+  const [handsFree, setHandsFree] = useState(false);
+  const [asleep, setAsleep] = useState(false);
+  const asleepRef = useRef(false);
+  const pendingRef = useRef<VoicePending | null>(null);
+  pendingRef.current = pending;
 
   const sessionRef = useRef<TranscriptionSession | null>(null);
   const nonceRef = useRef(0);
@@ -119,8 +132,43 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
     auditIfNeeded(parse, result.ok ? "executed" : "rejected");
   }, [auditIfNeeded]);
 
+  const confirmPending = useCallback((via: "click" | "enter" | "voice") => {
+    setPending((prev) => {
+      if (!prev) return null;
+      if (prev.verdict.blocked || !prev.parse.intent) return prev; // blocked previews only dismiss
+      // Enter AND spoken "confirm" share the same gate — never HIGH_RISK.
+      if (via !== "click" && !prev.verdict.confirmViaEnterAllowed) return prev;
+      let parse = prev.parse;
+      if (prev.editableText != null && parse.intent?.type === "dictate") {
+        parse = {
+          ...parse,
+          intent: { ...parse.intent, text: prev.editableText },
+          parameters: { ...parse.parameters, text: prev.editableText },
+        };
+      }
+      // Execute after the state update settles — executeNow re-gates anyway.
+      window.setTimeout(() => executeNow(parse), 0);
+      return null;
+    });
+  }, [executeNow]);
+
   /** Route a parse: blocked/ambiguous/confirm → preview; safe → execute. */
   const handleParsed = useCallback((parse: ParsedVoiceCommand) => {
+    // Session-level control intents never reach the workspace adapter.
+    if (parse.intent?.type === "confirm") {
+      const p = pendingRef.current;
+      if (!p) { setFeedback("Nothing to confirm"); return; }
+      if (!p.verdict.confirmViaEnterAllowed || p.verdict.blocked) {
+        setFeedback("✗ This command cannot be confirmed by voice — use the Confirm button");
+        return;
+      }
+      confirmPending("voice");
+      return;
+    }
+    if (parse.intent?.type === "handsfree") {
+      setFeedback("Hands-free mode is off — use the Hands-free button first");
+      return;
+    }
     const ctx = optsRef.current.getContext();
     const verdict = evaluateVoiceCommand(parse, ctx);
     const isDictate = parse.intent?.type === "dictate";
@@ -133,7 +181,7 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
       return;
     }
     executeNow(parse);
-  }, [executeNow, auditIfNeeded]);
+  }, [executeNow, auditIfNeeded, confirmPending]);
 
   const handleFinalTranscript = useCallback((transcript: string, providerConfidence: number | null, bound: VoiceCaptureBinding) => {
     setPhase("idle");
@@ -185,7 +233,12 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
     setCaptureTrigger(trigger);
     const provider = createVoiceProvider(providerKind);
     sessionRef.current = provider.start(
-      { lang: optsRef.current.settings.language, deviceId: optsRef.current.settings.inputDeviceId },
+      {
+        lang: optsRef.current.settings.language,
+        deviceId: optsRef.current.settings.inputDeviceId,
+        // Live segmented interim text for recorder providers (M1.6B3).
+        segmentSeconds: optsRef.current.settings.segmentSeconds,
+      },
       {
         onInterim: (text) => setInterim(text),
         onStatus: (s) => {
@@ -212,11 +265,126 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
   }, []);
 
   const toggleListening = useCallback(() => {
-    if (sessionRef.current) stopListening();
-    else startListening("toggle");
-  }, [startListening, stopListening]);
+    if (sessionRef.current && !handsFree) stopListening();
+    else if (!sessionRef.current) startListening("toggle");
+  }, [startListening, stopListening, handsFree]);
 
-  /** Cancel everything: abort capture, drop preview — nothing executes. */
+  // ── M1.6B3 — hands-free continuous session ────────────────────────────────
+
+  /** One utterance from the continuous stream: session-control intents are
+   *  handled here; everything else runs the normal pipeline. While a preview
+   *  is pending, only confirm / cancel / sleep / wake are honored. */
+  const handleUtterance = useCallback((transcript: string, providerConfidence: number | null, bound: VoiceCaptureBinding) => {
+    const current = optsRef.current;
+    if (isStaleVoiceResult(bound, current.studyId ?? null, nonceRef.current)) return;
+    if (!transcript.trim()) return;
+    setLastTranscript(transcript);
+    const parse = parseVoiceTranscript(transcript, { providerConfidence });
+    const intent = parse.intent;
+    if (intent?.type === "handsfree") {
+      asleepRef.current = intent.action === "sleep";
+      setAsleep(asleepRef.current);
+      setFeedback(asleepRef.current ? "Asleep — say “wake up” to resume" : "✓ Awake — listening for commands");
+      return;
+    }
+    if (asleepRef.current) {
+      setFeedback(`Asleep — ignored “${transcript}” (say “wake up” to resume)`);
+      return;
+    }
+    if (intent?.type === "cancel") {
+      // Exit hands-free AND drop any pending preview (audited as cancelled) —
+      // spoken cancel must behave exactly like Escape.
+      setPending((prev) => {
+        if (prev) auditIfNeeded(prev.parse, "cancelled");
+        return null;
+      });
+      stopHandsFreeRef.current();
+      return;
+    }
+    if (intent?.type === "confirm") {
+      const p = pendingRef.current;
+      if (!p) { setFeedback("Nothing to confirm"); return; }
+      if (!p.verdict.confirmViaEnterAllowed || p.verdict.blocked) {
+        setFeedback("✗ This command cannot be confirmed by voice — click Confirm");
+        return;
+      }
+      confirmPending("voice");
+      return;
+    }
+    if (pendingRef.current) {
+      setFeedback(`Confirm or cancel the pending command first (heard: “${transcript}”)`);
+      return;
+    }
+    if (mode === "dictation") {
+      const text = normalizeDictationText(transcript, { autoPunctuation: current.settings.autoPunctuation });
+      const dictParse: ParsedVoiceCommand = {
+        rawTranscript: transcript, normalizedTranscript: transcript,
+        intent: { type: "dictate", target: dictationTarget, mode: "append", text },
+        parameters: { text }, confidenceBand: "CLEAR", alternatives: [], parseErrors: [],
+      };
+      setPending({ parse: dictParse, verdict: evaluateVoiceCommand(dictParse, current.getContext()), editableText: text });
+      return;
+    }
+    handleParsed(parse);
+  }, [mode, dictationTarget, handleParsed, confirmPending, auditIfNeeded]);
+
+  const startHandsFree = useCallback(() => {
+    if (!handsFreeCapable || !providerKind || sessionRef.current) return;
+    setPending(null);
+    setTrouble(null);
+    setFeedback("✓ Hands-free on — say “go to sleep” to pause, “cancel” to exit");
+    setLastTranscript("");
+    nonceRef.current += 1;
+    const bound: VoiceCaptureBinding = { studyId: optsRef.current.studyId ?? null, nonce: nonceRef.current };
+    bindingRef.current = bound;
+    asleepRef.current = false;
+    setAsleep(false);
+    setHandsFree(true);
+    const provider = createVoiceProvider(providerKind);
+    sessionRef.current = provider.start(
+      {
+        lang: optsRef.current.settings.language,
+        deviceId: optsRef.current.settings.inputDeviceId,
+        segmentSeconds: optsRef.current.settings.segmentSeconds,
+        continuous: true,
+      },
+      {
+        onInterim: (text) => setInterim(text),
+        onStatus: (s) => { if (s === "listening") setPhase("listening"); },
+        onResult: (r) => handleUtterance(r.transcript, r.providerConfidence, bound),
+        onError: (message, opts) => {
+          sessionRef.current = null;
+          setHandsFree(false);
+          setAsleep(false);
+          setPhase("idle");
+          setInterim("");
+          setTrouble({ kind: opts?.permission ? "permission" : opts?.offline ? "offline" : "error", message });
+        },
+      },
+    );
+  }, [handsFreeCapable, providerKind, handleUtterance]);
+
+  const stopHandsFree = useCallback(() => {
+    sessionRef.current?.stop();
+    sessionRef.current = null;
+    nonceRef.current += 1;
+    setHandsFree(false);
+    setAsleep(false);
+    asleepRef.current = false;
+    setPhase("idle");
+    setInterim("");
+    setFeedback("Hands-free off");
+  }, []);
+  const stopHandsFreeRef = useRef(stopHandsFree);
+  stopHandsFreeRef.current = stopHandsFree;
+
+  const toggleHandsFree = useCallback(() => {
+    if (handsFree) stopHandsFree();
+    else startHandsFree();
+  }, [handsFree, startHandsFree, stopHandsFree]);
+
+  /** Cancel everything: abort capture (incl. hands-free), drop preview —
+   *  nothing executes. */
   const cancel = useCallback(() => {
     sessionRef.current?.abort();
     sessionRef.current = null;
@@ -224,30 +392,14 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
     setPhase("idle");
     setInterim("");
     setCaptureTrigger(null);
+    setHandsFree(false);
+    setAsleep(false);
+    asleepRef.current = false;
     setPending((prev) => {
       if (prev) auditIfNeeded(prev.parse, "cancelled");
       return null;
     });
   }, [auditIfNeeded]);
-
-  const confirmPending = useCallback((via: "click" | "enter") => {
-    setPending((prev) => {
-      if (!prev) return null;
-      if (prev.verdict.blocked || !prev.parse.intent) return prev; // blocked previews only dismiss
-      if (via === "enter" && !prev.verdict.confirmViaEnterAllowed) return prev;
-      let parse = prev.parse;
-      if (prev.editableText != null && parse.intent?.type === "dictate") {
-        parse = {
-          ...parse,
-          intent: { ...parse.intent, text: prev.editableText },
-          parameters: { ...parse.parameters, text: prev.editableText },
-        };
-      }
-      // Execute after the state update settles — executeNow re-gates anyway.
-      window.setTimeout(() => executeNow(parse), 0);
-      return null;
-    });
-  }, [executeNow]);
 
   const updatePendingText = useCallback((text: string) => {
     setPending((prev) => (prev ? { ...prev, editableText: text } : prev));
@@ -282,6 +434,9 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
     setInterim("");
     setLastTranscript("");
     setCaptureTrigger(null);
+    setHandsFree(false);
+    setAsleep(false);
+    asleepRef.current = false;
     setPending(null);
     setFeedback(null);
     setLastUndo(null);
@@ -311,6 +466,13 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
     startListening,
     stopListening,
     toggleListening,
+    // M1.6B3 — hands-free continuous mode
+    handsFree,
+    asleep,
+    handsFreeCapable,
+    startHandsFree,
+    stopHandsFree,
+    toggleHandsFree,
     cancel,
     confirmPending,
     updatePendingText,

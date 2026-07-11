@@ -59,6 +59,7 @@ const NETWORK_ONLY_PREFIXES = [
   "/api/users/me/",                                 // DICOM Q/R saved search presets
   "/api/radiology/report-generator/preferences",     // report formatting preferences
   "/api/radiology/report-generator/style-preferences", // impression/terminology style
+  "/api/radiology/report-generator/voice-preferences",  // per-radiologist voice-layer overrides (M1.6B3)
   "/api/radiology-memory/",                          // every GET here is staffId-scoped (impressions/analytics/search/patterns/measurements/classifications)
   "/api/radiology/quick-select/favorites",           // per-radiologist Quick Select favorites
   "/api/radiology/quick-select/learned-patterns",    // per-radiologist learning engine patterns

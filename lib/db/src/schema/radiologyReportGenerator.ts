@@ -233,6 +233,30 @@ export const radiologistStylePreferencesTable = pgTable(
   },
 );
 
+// radiologist_voice_preferences — per-radiologist voice-layer overrides
+// (M1.6B3). Layered over the clinic-wide pacs_settings "voice" category by
+// the frontend's mergeVoiceSettings: user values may only TIGHTEN policy
+// (disable voice for self, raise strictness) or pick personal ergonomics
+// (push-to-talk key, mode, language, punctuation, input device). "inherit" /
+// "" means the clinic default applies. Provider/local-STT config stays
+// clinic-owned and has no per-user override on purpose.
+export const radiologistVoicePreferencesTable = pgTable(
+  "radiologist_voice_preferences",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id").notNull().unique(),
+    enabledOverride: text("enabled_override").notNull().default("inherit"), // inherit | off
+    pttKey: text("ptt_key").notNull().default("inherit"),                   // inherit | Space | off
+    defaultMode: text("default_mode").notNull().default("inherit"),         // inherit | command | dictation
+    confirmationPolicy: text("confirmation_policy").notNull().default("inherit"), // inherit | strict
+    language: text("language").notNull().default(""),                       // "" = inherit
+    autoPunctuation: text("auto_punctuation").notNull().default("inherit"), // inherit | on | off
+    inputDevice: text("input_device").notNull().default(""),                // "" = inherit
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+  },
+);
+
 // radiology_report_lifecycle_log — audit trail for report edits/amendments/reprints
 export const radiologyReportLifecycleLogTable = pgTable(
   "radiology_report_lifecycle_log",

@@ -66,6 +66,20 @@ describe("workflow commands — every command + synonyms", () => {
       expect(intentOf(phrase)).toEqual({ type: "cancel" });
     }
   });
+
+  it("M1.6B3 — hands-free wake/sleep + spoken confirm", () => {
+    for (const phrase of ["go to sleep", "pause listening"]) {
+      expect(intentOf(phrase)).toEqual({ type: "handsfree", action: "sleep" });
+    }
+    for (const phrase of ["wake up", "resume listening"]) {
+      expect(intentOf(phrase)).toEqual({ type: "handsfree", action: "wake" });
+    }
+    for (const phrase of ["confirm", "yes confirm", "confirm command", "go ahead"]) {
+      expect(intentOf(phrase)).toEqual({ type: "confirm" });
+    }
+    // "stop listening" stays CANCEL (exit), distinct from sleep (pause)
+    expect(intentOf("stop listening")).toEqual({ type: "cancel" });
+  });
 });
 
 describe("text-entry commands", () => {

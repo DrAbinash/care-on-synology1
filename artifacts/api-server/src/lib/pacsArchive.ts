@@ -4,8 +4,9 @@ import {
   patientsTable,
   patientReportsTable,
   radiologyAuditLogTable,
+  radiologyPacsArchiveRevisionsTable,
 } from "@workspace/db/schema";
-import { eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { chromium } from "playwright";
 import { buildReportArtifact, type ReportArtifact } from "../routes/patient-reports.js";
 import { logger } from "./logger.js";
@@ -63,6 +64,10 @@ export async function archiveReportToPacs(
     actor: "system",
     details: JSON.stringify({ message: "PACS archive triggered, rendering PDF" }),
   }).catch(() => undefined);
+
+  // BEND-1 — which revision this run is archiving, visible to the catch
+  // block so per-revision failures are attributable.
+  let archivedRevision: { resolvedReportId: number; rootReportId: number; sequenceNumber: number } | null = null;
 
   try {
     // 2. Fetch patient demographics
@@ -179,6 +184,7 @@ export async function archiveReportToPacs(
     // D8 — the DICOM series states which revision was archived; a superseded
     // historical export is labeled as such (never presented as current).
     const v = artifact?.version;
+    if (v) archivedRevision = { resolvedReportId: v.resolvedReportId, rootReportId: v.rootReportId, sequenceNumber: v.sequenceNumber };
     const versionLabel = v && v.totalVersions > 1
       ? ` v${v.sequenceNumber}/${v.totalVersions}${v.resolvedSuperseded ? " SUPERSEDED" : " (amended)"}`
       : "";
@@ -223,6 +229,37 @@ export async function archiveReportToPacs(
       })
       .where(eq(radiologyStudiesTable.id, studyId));
 
+    // BEND-1 — per-REVISION archive record: the study columns above keep only
+    // the latest attempt and overwrite pacsInstanceId; this preserves each
+    // revision's Orthanc instance and flags older archived revisions as
+    // superseded instead of silently losing their references.
+    if (v) {
+      await db.insert(radiologyPacsArchiveRevisionsTable)
+        .values({
+          studyId,
+          reportId: v.resolvedReportId,
+          rootReportId: v.rootReportId,
+          sequenceNumber: v.sequenceNumber,
+          status: "success",
+          orthancInstanceId: instanceId,
+          detail: JSON.stringify({ path: result.Path ?? null }),
+          attemptedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: radiologyPacsArchiveRevisionsTable.reportId,
+          set: { status: "success", orthancInstanceId: instanceId, attemptedAt: new Date(), updatedAt: new Date() },
+        })
+        .catch(() => undefined);
+      await db.update(radiologyPacsArchiveRevisionsTable)
+        .set({ status: "superseded", updatedAt: new Date() })
+        .where(and(
+          eq(radiologyPacsArchiveRevisionsTable.studyId, studyId),
+          ne(radiologyPacsArchiveRevisionsTable.reportId, v.resolvedReportId),
+          eq(radiologyPacsArchiveRevisionsTable.status, "success"),
+        ))
+        .catch(() => undefined);
+    }
+
     await db.insert(radiologyAuditLogTable).values({
       accessionNumber: study.accessionNumber,
       action: "ORTHANC_UPLOAD_SUCCESS",
@@ -255,6 +292,26 @@ export async function archiveReportToPacs(
         pacsArchiveResponse: JSON.stringify({ error: errorMsg }),
       })
       .where(eq(radiologyStudiesTable.id, studyId));
+
+    // BEND-1 — per-revision failure record (only when the version resolved;
+    // pre-resolution failures have no revision to attribute).
+    if (archivedRevision) {
+      await db.insert(radiologyPacsArchiveRevisionsTable)
+        .values({
+          studyId,
+          reportId: archivedRevision.resolvedReportId,
+          rootReportId: archivedRevision.rootReportId,
+          sequenceNumber: archivedRevision.sequenceNumber,
+          status: "failed",
+          detail: JSON.stringify({ error: errorMsg.slice(0, 500) }),
+          attemptedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: radiologyPacsArchiveRevisionsTable.reportId,
+          set: { status: "failed", detail: JSON.stringify({ error: errorMsg.slice(0, 500) }), attemptedAt: new Date(), updatedAt: new Date() },
+        })
+        .catch(() => undefined);
+    }
 
     await db.insert(radiologyAuditLogTable).values({
       accessionNumber: study.accessionNumber,

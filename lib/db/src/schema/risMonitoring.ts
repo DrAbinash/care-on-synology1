@@ -23,10 +23,18 @@ export const dicomRetryQueueTable = pgTable(
     retryCount: integer("retry_count").notNull().default(0),
     maxRetries: integer("max_retries").notNull().default(5),
     status: text("status").notNull().default("pending"),
-    // pending | retrying | success | failed | abandoned
+    // pending | retrying | running | success | failed | abandoned
     nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
     lastAttemptedAt: timestamp("last_attempted_at", { withTimezone: true }),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    // BEND-1 — durable job-execution columns (this table previously had retry
+    // fields but NO worker; the radiology job runner now drains it).
+    payload: jsonb("payload"),
+    idempotencyKey: text("idempotency_key"),
+    lockedBy: text("locked_by"),
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },

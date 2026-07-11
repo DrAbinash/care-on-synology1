@@ -768,13 +768,22 @@ backupReplicationRouter.post("/import-db", requireAdmin as any, async (req, res)
   }
 
   try {
-    // 1. Pre-restore backup
+    // 1. Pre-restore backup. BEND-1: a failed pre-backup ABORTS the restore —
+    // previously it fail-opened and the destructive restore proceeded without
+    // a way back. allowWithoutPreBackup=true is the explicit override.
+    const { allowWithoutPreBackup } = req.body as { allowWithoutPreBackup?: boolean };
     let preBackupFile: string | null = null;
     try {
       const pre = await exportDatabaseSql();
       preBackupFile = pre.filePath;
     } catch (preErr) {
       logger.error({ preErr }, "Pre-restore backup failed");
+      if (!allowWithoutPreBackup) {
+        res.status(409).json({
+          error: "Pre-restore backup FAILED — restore aborted. Fix the backup path (pg_dump/disk) or pass allowWithoutPreBackup=true to explicitly proceed without a safety copy.",
+        });
+        return;
+      }
     }
 
     // 2. Restore
@@ -824,13 +833,21 @@ backupReplicationRouter.post("/import-snapshot", requireAdmin as any, async (req
   }
 
   try {
-    // 1. Pre-restore backup
+    // 1. Pre-restore backup. BEND-1: failure ABORTS unless explicitly
+    // overridden (same rule as /import-db).
+    const { allowWithoutPreBackup } = req.body as { allowWithoutPreBackup?: boolean };
     let preBackupFile: string | null = null;
     try {
       const pre = await exportDatabaseSql();
       preBackupFile = pre.filePath;
     } catch (preErr) {
       logger.error({ preErr }, "Pre-restore backup failed");
+      if (!allowWithoutPreBackup) {
+        res.status(409).json({
+          error: "Pre-restore backup FAILED — restore aborted. Fix the backup path (pg_dump/disk) or pass allowWithoutPreBackup=true to explicitly proceed without a safety copy.",
+        });
+        return;
+      }
     }
 
     // 2. Read and extract snapshot

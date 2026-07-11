@@ -68,6 +68,7 @@ const KNOWN_PERSONAL_ENDPOINTS: KnownPersonalEndpoint[] = [
   { file: "userPreferences.ts", localPath: "/me/dicom-presets", fullPath: "/api/users/me/dicom-presets" },
   { file: "radiology-report-generator.ts", localPath: "/preferences", fullPath: "/api/radiology/report-generator/preferences" },
   { file: "radiology-report-generator.ts", localPath: "/style-preferences", fullPath: "/api/radiology/report-generator/style-preferences" },
+  { file: "radiology-report-generator.ts", localPath: "/voice-preferences", fullPath: "/api/radiology/report-generator/voice-preferences" },
   { file: "radiologyMemory.ts", localPath: "/impressions", fullPath: "/api/radiology-memory/impressions" },
   { file: "radiologyMemory.ts", localPath: "/analytics", fullPath: "/api/radiology-memory/analytics" },
   { file: "radiologyMemory.ts", localPath: "/search", fullPath: "/api/radiology-memory/search" },

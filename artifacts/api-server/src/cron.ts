@@ -16,6 +16,9 @@ import {
   stopDimsePullAgent,
   isDimsePullAgentRunning,
 } from "./services/dicom-pull-agent/dimse-agent";
+import { runRadiologyJobTick } from "./lib/radiologyJobs";
+import { RADIOLOGY_JOB_HANDLERS } from "./lib/radiologyJobHandlers";
+import { runScheduledAuditChainVerification } from "./lib/auditVerification";
 
 let currentTask: ReturnType<typeof cron.schedule> | null = null;
 // Track already-fired events per day to avoid double-firing
@@ -33,6 +36,8 @@ export function startCronScheduler() {
   scheduleAuditLogPurge();
   schedulePacsPullerWatchdog();
   scheduleWhatsappReminders();
+  scheduleRadiologyJobs();
+  scheduleAuditChainVerify();
 
   // Start the in-process DIMSE pull agent if enabled.
   // When ENABLE_DICOM_PULL_AGENT is set, the agent polls for pull jobs and
@@ -44,6 +49,37 @@ export function startCronScheduler() {
     startDimsePullAgent();
     console.log("[cron] In-process DIMSE pull agent started");
   }
+}
+
+// ── BEND-1: durable radiology job runner ─────────────────────────────────────
+// Every minute: requeue stale running claims (worker-restart safety), then
+// run up to 5 due jobs. Bounded retries + dead-letter live in radiologyJobs;
+// handlers are idempotent, so a crash between attempts never double-sends.
+function scheduleRadiologyJobs() {
+  cron.schedule("* * * * *", async () => {
+    try {
+      const result = await runRadiologyJobTick(RADIOLOGY_JOB_HANDLERS, { maxJobs: 5 });
+      if (result.ran.length > 0 || result.requeuedStale > 0) {
+        console.log("[cron] radiology jobs:", JSON.stringify(result));
+      }
+    } catch (err) {
+      console.error("[cron] radiology job tick failed:", err);
+    }
+  });
+}
+
+// ── BEND-1: scheduled audit-chain verification (safe default cadence) ────────
+// Daily windowed verification of the most recent slice; the result persists
+// to radiology_ops_checks so health reports last-verified time + outcome.
+// Detection only — a broken chain is NEVER resealed.
+function scheduleAuditChainVerify() {
+  cron.schedule("15 4 * * *", async () => {
+    try {
+      await runScheduledAuditChainVerification();
+    } catch (err) {
+      console.error("[cron] audit-chain verification failed:", err);
+    }
+  });
 }
 
 // ── Automated Backup Scheduler ────────────────────────────────────────────────────────

@@ -32,6 +32,7 @@ import { radiologyRouter } from "./radiology";
 import { radiologyWorklistLocksRouter } from "./radiology-worklist-locks";
 import { radiologyWorklistAssignmentsRouter } from "./radiology-worklist-assignments";
 import { radiologyVoiceRouter } from "./radiology-voice";
+import { radiologyOpsRouter } from "./radiology-ops";
 import { pacsEnterpriseRouter } from "./pacsEnterprise";
 import displayRouter from "./display";
 import queueDisplaySettingsRouter from "./queueDisplaySettings";
@@ -552,6 +553,11 @@ router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"),
 // Voice-command audit (Ticket M1.6B2) — high-risk voice attempts/outcomes
 // into the hash-chained audit log. /voice-command-audit only.
 router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), radiologyVoiceRouter);
+
+// Backend v1 operational surface (Ticket BEND-1): health, consistency,
+// re-delivery obligations, durable jobs, audit verification, restore proof,
+// safe repairs. GET /health is staff-readable (masked); the rest is admin.
+router.use("/radiology-ops", requireStaffAuth, requireStaffPermission("/radiology"), radiologyOpsRouter);
 
 // Radiology studies — open to all authenticated staff (doctors, radiologists, etc.)
 router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), radiologyRouter);

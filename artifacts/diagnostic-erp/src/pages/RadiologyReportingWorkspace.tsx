@@ -63,7 +63,10 @@ import { useVoiceSession, type VoiceExecutionResult } from "@/hooks/useVoiceSess
 import VoiceCommandBar from "@/components/radiology/VoiceCommandBar";
 import { normalizeDictationText, describeIntent, type ParsedVoiceCommand, type ViewerOp } from "@/lib/voiceCommandGrammar";
 import { voiceKeyAction } from "@/lib/voiceSessionState";
-import { parseVoiceSettings, fetchServerTranscribeAvailable } from "@/lib/voiceTranscription";
+import {
+  parseVoiceSettings, parseVoiceUserPrefs, mergeVoiceSettings, fetchTranscribeCapabilities,
+  type TranscribeCapabilities,
+} from "@/lib/voiceTranscription";
 import type { EmbeddedViewerHandle } from "@/components/EmbeddedWadoViewer";
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -470,10 +473,22 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     queryFn: () => api.get("/api/radiology/pacs-settings"),
     staleTime: 5 * 60_000,
   });
-  const voiceSettings = useMemo(() => parseVoiceSettings(pacsSettingsRows), [pacsSettingsRows]);
-  const { data: voiceServerAvailable = false } = useQuery<boolean>({
+  const clinicVoiceSettings = useMemo(() => parseVoiceSettings(pacsSettingsRows), [pacsSettingsRows]);
+  // M1.6B3 — the caller's own overrides layered over the clinic defaults
+  // (tighten-only merge rules live in lib/voiceTranscription).
+  const { data: voiceUserPrefsRaw } = useQuery<unknown>({
+    queryKey: ["voice-user-preferences"],
+    queryFn: () => api.get("/api/radiology/report-generator/voice-preferences"),
+    enabled: clinicVoiceSettings.enabled,
+    staleTime: 5 * 60_000,
+  });
+  const voiceSettings = useMemo(
+    () => mergeVoiceSettings(clinicVoiceSettings, voiceUserPrefsRaw ? parseVoiceUserPrefs(voiceUserPrefsRaw) : null),
+    [clinicVoiceSettings, voiceUserPrefsRaw],
+  );
+  const { data: voiceCapabilities = { server: false, local: false } } = useQuery<TranscribeCapabilities>({
     queryKey: ["voice-transcribe-status"],
-    queryFn: fetchServerTranscribeAvailable,
+    queryFn: fetchTranscribeCapabilities,
     enabled: voiceSettings.enabled,
     staleTime: 5 * 60_000,
   });
@@ -1202,13 +1217,17 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       case "quick-modifier": return voiceQuickModifier(intent.property, intent.value);
       case "viewer": return voiceViewer(intent.op);
       case "viewer-unsupported": return { ok: false, message: `The embedded viewer does not support ${intent.capability}` };
+      // Session-control intents (M1.6B3) are handled inside useVoiceSession
+      // and never dispatched here — defensive no-ops only.
+      case "confirm": return { ok: false, message: "Nothing to confirm" };
+      case "handsfree": return { ok: false, message: "Hands-free is controlled from the voice bar" };
     }
   }
 
   const voice = useVoiceSession({
     studyId,
     settings: voiceSettings,
-    serverAvailable: voiceServerAvailable,
+    capabilities: voiceCapabilities,
     getContext: () => ({
       studyId: studyId ?? null,
       dirty,

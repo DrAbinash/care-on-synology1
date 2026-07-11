@@ -51,6 +51,8 @@ export interface VoiceSafetyVerdict {
 function classify(intent: VoiceIntent, ctx: VoiceContext): VoiceSafetyClass {
   switch (intent.type) {
     case "cancel":
+    case "confirm":   // applies an ALREADY-classified pending preview; the
+    case "handsfree": // session refuses it for HIGH_RISK — control-only here
       return "SAFE_IMMEDIATE";
     case "viewer":
     case "viewer-unsupported":
@@ -124,6 +126,8 @@ function contextBlock(intent: VoiceIntent, ctx: VoiceContext): string | null {
           return null;
       }
     case "cancel":
+    case "confirm":
+    case "handsfree":
       return null;
   }
 }
