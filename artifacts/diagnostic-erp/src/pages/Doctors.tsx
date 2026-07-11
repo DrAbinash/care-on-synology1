@@ -65,7 +65,7 @@ export default function Doctors() {
   const [deletingDoctor, setDeletingDoctor] = useState<Doctor | null>(null);
   const queryClient = useQueryClient();
 
-  const { data, isLoading } = useListDoctors({ search: search || undefined });
+  const { data, isLoading, isError, refetch } = useListDoctors({ search: search || undefined });
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: getListDoctorsQueryKey() });
 
@@ -217,6 +217,11 @@ export default function Doctors() {
         {isLoading ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {[...Array(6)].map((_, i) => <div key={i} className="h-28 bg-muted rounded-xl animate-pulse" />)}
+          </div>
+        ) : isError ? (
+          <div className="text-center py-12 text-destructive space-y-2">
+            <p>Couldn't load doctors — check your connection and try again.</p>
+            <Button size="sm" variant="outline" onClick={() => refetch()}>Retry</Button>
           </div>
         ) : data?.doctors?.length === 0 ? (
           <div className="text-center py-12 text-muted-foreground">No doctors found</div>

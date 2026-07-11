@@ -961,7 +961,12 @@ export default function BillingDesk() {
   const [quickDoctorPickerSearch, setQuickDoctorPickerSearch] = useState("");
   // (Register New Patient form is now always visible — no toggle state needed)
 
-  const { data: doctors = [] } = useQuery<Doctor[]>({
+  // isError/refetch are surfaced in the doctor-search dropdown and the Quick
+  // Doctor slot picker below — without them, a failed /api/doctors request
+  // (network blip, backend down) renders as an empty list, which is visually
+  // identical to "no doctors registered yet" and gives staff no way to tell
+  // a real outage apart from a genuinely empty roster.
+  const { data: doctors = [], isError: doctorsError, refetch: refetchDoctors } = useQuery<Doctor[]>({
     queryKey: ["doctors-list"],
     queryFn: () => api.get<{ doctors: Doctor[] }>("/api/doctors").then((d) => d.doctors ?? []),
     staleTime: Infinity,
@@ -2068,7 +2073,12 @@ export default function BillingDesk() {
                             {d.specialization && <span className="ml-auto text-[11px] text-[#94a3b8]">{d.specialization}</span>}
                           </button>
                         ))}
-                      {doctors.filter((d) => d.name.toLowerCase().includes(doctorSearch.toLowerCase())).length === 0 && (
+                      {doctorsError ? (
+                        <div className="px-3 py-2 text-sm text-red-600 flex items-center justify-between gap-2">
+                          <span>Couldn't load doctors — check your connection.</span>
+                          <button type="button" onClick={() => refetchDoctors()} className="underline shrink-0">Retry</button>
+                        </div>
+                      ) : doctors.filter((d) => d.name.toLowerCase().includes(doctorSearch.toLowerCase())).length === 0 && (
                         <div className="px-3 py-2 text-sm text-[#94a3b8]">No doctor found</div>
                       )}
                     </div>
@@ -2752,7 +2762,12 @@ export default function BillingDesk() {
                     {d.specialization && <span className="text-[11px] text-[#94a3b8]">{d.specialization}</span>}
                   </button>
                 ))}
-              {doctors.filter((d) => !quickDoctorPickerSearch || d.name.toLowerCase().includes(quickDoctorPickerSearch.toLowerCase())).length === 0 && (
+              {doctorsError ? (
+                <div className="px-3 py-2 text-sm text-red-600 flex items-center justify-between gap-2">
+                  <span>Couldn't load doctors — check your connection.</span>
+                  <button type="button" onClick={() => refetchDoctors()} className="underline shrink-0">Retry</button>
+                </div>
+              ) : doctors.filter((d) => !quickDoctorPickerSearch || d.name.toLowerCase().includes(quickDoctorPickerSearch.toLowerCase())).length === 0 && (
                 <div className="px-3 py-2 text-sm text-[#94a3b8]">No doctor found</div>
               )}
             </div>
