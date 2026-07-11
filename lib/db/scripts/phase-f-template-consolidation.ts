@@ -17,17 +17,21 @@
  *     existing rows are skipped, re-running is harmless (idempotent).
  *   • No schema change — reuses existing tables and columns only.
  *
- * USAGE (from repo root, DATABASE_URL comes from .env — on the Synology run
- * it inside the api container or with the NAS DATABASE_URL exported):
+ * USAGE — simplest path, run from the Synology (reuses the existing
+ * care-migrate container — same DB connection, same rails, no new
+ * infrastructure). DATABASE_URL comes from your .env automatically:
  *
  *   ASSESS (read-only, always do this first):
- *     pnpm --filter @workspace/db exec tsx scripts/phase-f-template-consolidation.ts assess
+ *     docker compose run --rm care-migrate pnpm --filter @workspace/db run phase-f:assess
  *
- *   EXECUTE (after owner approval of the assess output):
- *     pnpm --filter @workspace/db exec tsx scripts/phase-f-template-consolidation.ts execute
+ *   EXECUTE (after reviewing the assess output):
+ *     docker compose run --rm care-migrate pnpm --filter @workspace/db run phase-f:execute
  *
  *   ROLLBACK (removes ONLY the copied rows; sources untouched):
- *     pnpm --filter @workspace/db exec tsx scripts/phase-f-template-consolidation.ts rollback
+ *     docker compose run --rm care-migrate pnpm --filter @workspace/db run phase-f:rollback
+ *
+ * Alternative (same effect, spelled out):
+ *   pnpm --filter @workspace/db exec tsx scripts/phase-f-template-consolidation.ts assess|execute|rollback
  */
 
 import dotenv from "dotenv";
