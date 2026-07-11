@@ -172,3 +172,116 @@ describe("escapeHtml", () => {
     expect(escapeHtml(undefined)).toBe("");
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Ticket R1.2 — template-engine capabilities of the ONE renderer + strict
+// compatibility guarantees for the R1.1 templates.
+// ═════════════════════════════════════════════════════════════════════════════
+
+import { compileTemplate } from "./presentationTemplateModel";
+import { PRESENTATION_TEMPLATE_SEEDS, seedByKey } from "./presentationTemplateSeeds";
+
+describe("R1.2 — CARE Classic/Premium byte compatibility", () => {
+  it("rendering with a compiled seed is BYTE-IDENTICAL to the legacy R1.1 template object", () => {
+    const model = baseModel({
+      keyImages: [{ src: "data:image/jpeg;base64,AAA", caption: "T2", displayOrder: 0 }],
+      isCritical: true, criticalNote: "call referrer",
+      parameters: [{ name: "P", result: "1", unit: "u", refRange: "0-2", flag: "high" }],
+    });
+    for (const legacy of PRESENTATION_TEMPLATES) {
+      const legacyHtml = renderReportDocument(model, legacy);
+      const compiledHtml = renderReportDocument(model, compileTemplate(seedByKey(legacy.id)!));
+      expect(compiledHtml, legacy.id).toBe(legacyHtml);
+    }
+  });
+
+  it("no-image render is also byte-identical (full-width layout path)", () => {
+    const model = baseModel({ keyImages: [] });
+    for (const legacy of PRESENTATION_TEMPLATES) {
+      expect(renderReportDocument(model, compileTemplate(seedByKey(legacy.id)!)), legacy.id)
+        .toBe(renderReportDocument(model, legacy));
+    }
+  });
+});
+
+describe("R1.2 — template capabilities", () => {
+  it("page size/orientation and margins flow into @page", () => {
+    const gov = compileTemplate(seedByKey("government")!);
+    const html = renderReportDocument(baseModel(), gov);
+    expect(html).toContain("@page { size: A4 portrait; margin: 18mm 16mm; }");
+    const landscape = compileTemplate({
+      ...seedByKey("government")!,
+      definition: { ...seedByKey("government")!.definition, page: { size: "A5", orientation: "landscape", margins: "8mm" } },
+    });
+    expect(renderReportDocument(baseModel(), landscape)).toContain("@page { size: A5 landscape; margin: 8mm; }");
+  });
+
+  it("template watermark renders escaped; disabled watermark emits nothing", () => {
+    const gov = compileTemplate(seedByKey("government")!);
+    const html = renderReportDocument(baseModel(), gov);
+    expect(html).toContain(">GOVERNMENT COPY</div>");
+    expect(html).toContain("template-watermark");
+    const classic = compileTemplate(seedByKey("care-classic")!);
+    expect(renderReportDocument(baseModel(), classic)).not.toContain('class="template-watermark" aria-hidden="true">');
+  });
+
+  it("image panel width is template-driven (grid + print rail)", () => {
+    const referrer = compileTemplate(seedByKey("referrer-copy")!);
+    const html = renderReportDocument(baseModel({
+      keyImages: [{ src: "data:image/jpeg;base64,AAA", caption: "X", displayOrder: 0 }],
+    }), referrer);
+    expect(html).toContain("grid-template-columns: 1fr 55mm");
+    expect(html).toContain("float: right; width: 53mm");
+  });
+
+  it("header visibility toggles: government hides the logo; hidden header emits no .hdr div", () => {
+    const gov = compileTemplate(seedByKey("government")!);
+    const withLogo = baseModel();
+    withLogo.clinic.logoDataUrl = "data:image/png;base64,AAA";
+    expect(renderReportDocument(withLogo, gov)).not.toContain('class="logo"');
+    const noHeader = compileTemplate({
+      ...seedByKey("care-classic")!,
+      definition: { ...seedByKey("care-classic")!.definition, header: { show: false, showLogo: true, showTagline: true, showContact: true, style: "underlined" } },
+    });
+    expect(renderReportDocument(withLogo, noHeader)).not.toContain('<div class="hdr">');
+  });
+
+  it("QR/footer/signature toggles suppress their blocks", () => {
+    const base = seedByKey("care-classic")!;
+    const noExtras = compileTemplate({
+      ...base,
+      definition: {
+        ...base.definition,
+        qr: { show: false },
+        footer: { show: false },
+        signature: { show: false, showImage: false },
+      },
+    });
+    const html = renderReportDocument(baseModel({ showQrPlaceholder: true }), noExtras);
+    expect(html).not.toContain('<div class="qr-block">');
+    expect(html).not.toContain('<div class="ftr">');
+    expect(html).not.toContain('<div class="sigs">');
+  });
+
+  it("page-break rules are template-driven (government uses orphans/widows 4)", () => {
+    const gov = compileTemplate(seedByKey("government")!);
+    expect(renderReportDocument(baseModel(), gov)).toContain("orphans: 4; widows: 4");
+  });
+
+  it("impression slot typography styles the impression box", () => {
+    const base = seedByKey("care-v2")!;
+    const html = renderReportDocument(baseModel({ impression: "sample impression" }), compileTemplate(base));
+    expect(html).toMatch(/\.impression \{\s*font-weight:600;/);
+  });
+
+  it("every seed renders the same clinical content (presentation only)", () => {
+    const model = baseModel({ impression: "No acute abnormality." });
+    for (const s of PRESENTATION_TEMPLATE_SEEDS) {
+      const html = renderReportDocument(model, compileTemplate(s));
+      expect(html, s.templateKey).toContain("FINDINGS: Normal study.");
+      expect(html, s.templateKey).toContain("No acute abnormality.");
+      expect(html, s.templateKey).toContain("Sunita Sharma");
+      expect(html, s.templateKey).toContain("RPT-20260711-001");
+    }
+  });
+});

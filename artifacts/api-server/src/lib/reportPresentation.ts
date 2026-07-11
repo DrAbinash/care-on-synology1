@@ -237,10 +237,10 @@ function parametersHtml(params: ReportParameterRow[] | undefined): string {
       </table>`;
 }
 
-function signaturesHtml(signatures: ReportSignatureModel[]): string {
+function signaturesHtml(signatures: ReportSignatureModel[], showImage = true): string {
   const blocks = signatures.filter((s) => s.name || s.imageDataUrl).map((sig) => `
       <div class="sigbox">
-        <div class="sigimg">${sig.imageDataUrl ? `<img src="${sig.imageDataUrl}" alt="signature"/>` : ""}</div>
+        <div class="sigimg">${sig.imageDataUrl && showImage ? `<img src="${sig.imageDataUrl}" alt="signature"/>` : ""}</div>
         <div class="sigline"></div>
         <div class="signame">${escapeHtml(sig.name)}</div>
         <div class="sigmeta">${escapeHtml(sig.qualification ?? "")}${sig.qualification && sig.role ? " • " : ""}${escapeHtml(sig.role ?? "")}</div>
@@ -267,6 +267,33 @@ function keyImagesHtml(images: ReportKeyImageModel[], placement: "inline" | "sid
       </div>`;
 }
 
+// ── R1.2 — template render extensions ────────────────────────────────────────
+// The versioned template engine (presentationTemplateModel.compileTemplate)
+// resolves definitions into PresentationTemplate PLUS these optional fields.
+// Every default reproduces the R1.1 hard-coded behavior byte-for-byte, so
+// legacy PRESENTATION_TEMPLATES objects and compiled seeds render identically.
+
+export interface TemplateRenderExtensions {
+  templateKey?: string;
+  templateVersion?: number;
+  copyType?: string;
+  page?: { size: "A4" | "A5" | "Letter"; orientation: "portrait" | "landscape"; margins: string };
+  headerCfg?: { show: boolean; showLogo: boolean; showTagline: boolean; showContact: boolean; style: "banded" | "underlined" };
+  studyTitleCfg?: { style: "bar" | "plain" };
+  signatureCfg?: { show: boolean; showImage: boolean };
+  footerCfg?: { show: boolean };
+  imagePanelCfg?: { placement: "inline" | "side-panel"; panelWidthMm: number };
+  watermarkCfg?: { enabled: boolean; text: string };
+  qrCfg?: { show: boolean };
+  pageBreaks?: { orphans: number; widows: number };
+  spacingCfg?: { lineHeight?: string; sectionGap?: string };
+  impressionTypography?: SlotTypography;
+  bodyLineHeight?: string;
+  bodyTextAlign?: string;
+}
+
+export type RenderableTemplate = PresentationTemplate & TemplateRenderExtensions;
+
 // ── The ONE renderer ─────────────────────────────────────────────────────────
 
 export interface RenderDocumentOptions {
@@ -277,7 +304,7 @@ export interface RenderDocumentOptions {
 
 export function renderReportDocument(
   model: ReportDocumentModel,
-  template: PresentationTemplate,
+  template: RenderableTemplate,
   opts: RenderDocumentOptions = {},
 ): string {
   const ty = template.typography;
@@ -285,6 +312,23 @@ export function renderReportDocument(
   const images = model.keyImages ?? [];
   const hasImages = images.length > 0;
   const sidePanel = template.layout.imagePlacement === "side-panel" && hasImages;
+
+  // R1.2 template capabilities — every default reproduces R1.1 behavior.
+  const banded = template.headerCfg ? template.headerCfg.style === "banded" : pal.headerBg !== "#ffffff";
+  const titleBar = template.studyTitleCfg ? template.studyTitleCfg.style === "bar" : banded;
+  const headerCfg = template.headerCfg ?? { show: true, showLogo: true, showTagline: true, showContact: true, style: banded ? "banded" as const : "underlined" as const };
+  const signatureCfg = template.signatureCfg ?? { show: true, showImage: true };
+  const footerCfg = template.footerCfg ?? { show: true };
+  const panelWidthMm = template.imagePanelCfg?.panelWidthMm ?? 64;
+  const orphans = template.pageBreaks?.orphans ?? 3;
+  const widows = template.pageBreaks?.widows ?? 3;
+  const bodyLineHeight = template.bodyLineHeight ?? "1.55";
+  const sectionGap = template.spacingCfg?.sectionGap ?? "12px";
+  const pageSize = template.page ? `${template.page.size} ${template.page.orientation}` : "A4 portrait";
+  const qrVisible = Boolean(model.showQrPlaceholder) && template.qrCfg?.show !== false;
+  const templateWatermark = template.watermarkCfg?.enabled && template.watermarkCfg.text
+    ? `<div class="template-watermark" aria-hidden="true">${escapeHtml(template.watermarkCfg.text)}</div>`
+    : "";
 
   const visibleRows = model.patientRows.filter((r) => r.value);
   const patientBlockHtml = template.layout.patientBlockStyle === "grid"
@@ -307,7 +351,7 @@ export function renderReportDocument(
       ? `<div class="body">${escapeHtml(model.bodyText)}</div>`
       : "";
 
-  const qrHtml = model.showQrPlaceholder ? `
+  const qrHtml = qrVisible ? `
       <div class="qr-block">
         <div class="qr-box"><span>QR Verification</span><div class="qr-mark">SECURE</div></div>
       </div>` : "";
@@ -327,7 +371,7 @@ export function renderReportDocument(
     body {
       ${slotCss(ty.body)}
       background: #ffffff;
-      line-height: 1.55;
+      line-height: ${bodyLineHeight};
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
@@ -337,20 +381,20 @@ export function renderReportDocument(
     .hdr {
       background: ${pal.headerBg};
       display: flex; align-items: center; gap: 14px;
-      padding: ${pal.headerBg === "#ffffff" ? "0 0 10px" : "14px 20px 10px"};
-      ${pal.headerBg === "#ffffff" ? `border-bottom: 3px solid ${pal.accent};` : ""}
-      margin-bottom: ${pal.headerBg === "#ffffff" ? "12px" : "0"};
+      padding: ${!banded ? "0 0 10px" : "14px 20px 10px"};
+      ${!banded ? `border-bottom: 3px solid ${pal.accent};` : ""}
+      margin-bottom: ${!banded ? "12px" : "0"};
       break-inside: avoid;
     }
     .hdr img.logo { width: 60px; height: 60px; object-fit: contain; }
     .hdr .name { ${slotCss(ty.header)} line-height: 1.1; }
-    .hdr .tagline { font-size: 10px; color: ${pal.headerBg === "#ffffff" ? "#475569" : pal.accent}; margin-top: 2px; letter-spacing: 0.06em; }
-    .hdr .contact { margin-left: auto; text-align: right; font-size: 10px; color: ${pal.headerBg === "#ffffff" ? "#475569" : pal.headerText + "cc"}; line-height: 1.4; }
+    .hdr .tagline { font-size: 10px; color: ${!banded ? "#475569" : pal.accent}; margin-top: 2px; letter-spacing: 0.06em; }
+    .hdr .contact { margin-left: auto; text-align: right; font-size: 10px; color: ${!banded ? "#475569" : pal.headerText + "cc"}; line-height: 1.4; }
 
     /* ── Study title slot ── */
     .study-title-bar {
       ${slotCss(ty.studyTitle)}
-      ${pal.headerBg === "#ffffff"
+      ${!titleBar
         ? `padding: 2px 0 6px;`
         : `background: ${pal.accent}; text-align: center; padding: 8px 20px;`}
       break-inside: avoid; break-after: avoid-page;
@@ -362,7 +406,7 @@ export function renderReportDocument(
       ${slotCss(ty.patientBlock)}
       background: ${pal.sectionBg};
       border: 1.5px solid ${pal.sectionBorder};
-      border-radius: ${pal.headerBg === "#ffffff" ? "6px" : "0"};
+      border-radius: ${!banded ? "6px" : "0"};
       padding: 10px 14px; margin-bottom: 12px;
       break-inside: avoid;
     }
@@ -376,16 +420,16 @@ export function renderReportDocument(
     .patient-grid div strong { font-size: 12px; color: ${pal.valueColor}; }
 
     /* ── Content area: report column + optional image side panel ── */
-    .content-area { padding: ${pal.headerBg === "#ffffff" ? "0" : "0 20px"}; }
+    .content-area { padding: ${!banded ? "0" : "0 20px"}; }
     ${sidePanel ? `
     /* Desktop: two columns — clinical report left, selected images right.
        Print: floated right rail so text wraps and page breaks stay natural. */
     @media screen and (min-width: 1024px) {
-      .content-area { display: grid; grid-template-columns: 1fr 64mm; gap: 8mm; align-items: start; }
+      .content-area { display: grid; grid-template-columns: 1fr ${panelWidthMm}mm; gap: 8mm; align-items: start; }
       .image-panel-side { position: sticky; top: 8px; }
     }
     @media print {
-      .image-panel-side { float: right; width: 62mm; margin: 0 0 4mm 5mm; }
+      .image-panel-side { float: right; width: ${panelWidthMm - 2}mm; margin: 0 0 4mm 5mm; }
     }` : ""}
 
     /* ── Section headings + body slots ── */
@@ -393,15 +437,16 @@ export function renderReportDocument(
       ${slotCss(ty.sectionHeading)}
       color: ${pal.accent};
       border-bottom: 1.5px solid ${pal.sectionBorder};
-      padding-bottom: 3px; margin: 12px 0 6px;
+      padding-bottom: 3px; margin: ${sectionGap} 0 6px;
       break-after: avoid-page;
     }
-    .body { white-space: pre-wrap; line-height: 1.55; margin: 0 0 12px; }
-    .body p, .body div { orphans: 3; widows: 3; }
-    p { orphans: 3; widows: 3; }
+    .body { white-space: pre-wrap; line-height: ${bodyLineHeight}; margin: 0 0 12px;${template.bodyTextAlign ? ` text-align: ${template.bodyTextAlign};` : ""} }
+    .body p, .body div { orphans: ${orphans}; widows: ${widows}; }
+    p { orphans: ${orphans}; widows: ${widows}; }
 
     /* ── Impression ── */
     .impression {
+      ${slotCss(template.impressionTypography ?? {})}
       background: ${pal.impressionBg};
       border-left: 4px solid ${pal.accent};
       border-radius: 4px; padding: 8px 12px; margin: 0 0 12px;
@@ -410,7 +455,7 @@ export function renderReportDocument(
 
     /* ── Parameters table ── */
     .params { width: 100%; border-collapse: collapse; margin: 10px 0 16px; font-size: 11px; }
-    .params th { background: ${pal.headerBg === "#ffffff" ? "#1e1b4b" : pal.headerBg}; color: #fff; padding: 6px 8px; text-align: left; }
+    .params th { background: ${!banded ? "#1e1b4b" : pal.headerBg}; color: #fff; padding: 6px 8px; text-align: left; }
     .params td { padding: 5px 8px; border-bottom: 1px solid ${pal.sectionBorder}; }
     .params tr.abnormal td { background: #fef2f2; }
     .params tr { break-inside: avoid; }
@@ -429,6 +474,7 @@ export function renderReportDocument(
     .amended-banner { background: #eff6ff; color: #1e3a8a; border: 1.5px solid #3b82f6; padding: 8px 12px; font-weight: 700; font-size: 12px; margin: 0 0 12px; border-radius: 4px; }
     .version-warning { background: #fef3c7; color: #92400e; border: 1.5px solid #f59e0b; padding: 8px 12px; font-weight: 700; font-size: 12px; margin: 0 0 12px; border-radius: 4px; }
     .superseded-watermark { position: fixed; top: 38%; left: 0; right: 0; text-align: center; transform: rotate(-28deg); font-size: 104px; font-weight: 900; color: rgba(185,28,28,0.14); letter-spacing: 10px; z-index: 9999; pointer-events: none; }
+    .template-watermark { position: fixed; top: 46%; left: 0; right: 0; text-align: center; transform: rotate(-28deg); font-size: 56px; font-weight: 900; color: rgba(71,85,105,0.10); letter-spacing: 8px; z-index: 9997; pointer-events: none; }
     .draft-watermark { position: fixed; top: 42%; left: 0; right: 0; text-align: center; transform: rotate(-28deg); font-size: 64px; font-weight: 900; color: rgba(30,64,175,0.12); letter-spacing: 6px; z-index: 9998; pointer-events: none; }
 
     /* ── Image panel slot ── */
@@ -469,30 +515,31 @@ export function renderReportDocument(
 
     /* ── Print rules (Phase 7: widows/orphans, no split images, no blank pages) ── */
     @media print {
-      @page { size: A4 portrait; margin: ${template.layout.pageMargins}; }
+      @page { size: ${pageSize}; margin: ${template.layout.pageMargins}; }
       .report-wrapper { max-width: 100%; }
       .no-print { display: none !important; }
       .image-cell, .sigs, .impression, .patient-section, .hdr { page-break-inside: avoid; }
       .section-heading, .image-panel-heading { page-break-after: avoid; }
-      body { orphans: 3; widows: 3; }
+      body { orphans: ${orphans}; widows: ${widows}; }
     }
     ${opts.customCss ?? ""}
   </style></head><body>
   <div class="report-wrapper">
     ${model.safeguardWatermarkHtml ?? ""}
     ${draftWatermark}
-    <div class="hdr">
-      ${model.clinic.logoDataUrl ? `<img class="logo" src="${model.clinic.logoDataUrl}" alt="logo"/>` : ""}
+    ${templateWatermark}
+    ${headerCfg.show ? `<div class="hdr">
+      ${model.clinic.logoDataUrl && headerCfg.showLogo ? `<img class="logo" src="${model.clinic.logoDataUrl}" alt="logo"/>` : ""}
       <div>
         <div class="name">${escapeHtml(model.clinic.name)}</div>
-        ${model.clinic.tagline ? `<div class="tagline">${escapeHtml(model.clinic.tagline)}</div>` : ""}
+        ${model.clinic.tagline && headerCfg.showTagline ? `<div class="tagline">${escapeHtml(model.clinic.tagline)}</div>` : ""}
       </div>
-      <div class="contact">
+      ${headerCfg.showContact ? `<div class="contact">
         ${escapeHtml(model.clinic.address ?? "")}<br/>
         ${escapeHtml(model.clinic.phone ?? "")}${model.clinic.email ? ` • ${escapeHtml(model.clinic.email)}` : ""}<br/>
         ${escapeHtml(model.clinic.website ?? "")}
-      </div>
-    </div>
+      </div>` : ""}
+    </div>` : ""}
     <span class="reportno">Report #: ${escapeHtml(model.reportNumber)}</span>
     <div class="study-title-bar">${escapeHtml(model.studyTitle)}</div>
     <div class="patient-section">
@@ -510,9 +557,9 @@ export function renderReportDocument(
       </div>
       ${sidePanel ? imagesBlock : ""}
     </div>
-    <div class="sigs">${signaturesHtml(model.signatures)}</div>
+    ${signatureCfg.show ? `<div class="sigs">${signaturesHtml(model.signatures, signatureCfg.showImage)}</div>` : ""}
     ${qrHtml}
-    <div class="ftr">${escapeHtml(model.footerNote ?? "")} • ${escapeHtml(model.typeLabel)} • ${escapeHtml(model.statusLabel)} • Generated ${escapeHtml(model.generatedAtLabel)}</div>
+    ${footerCfg.show ? `<div class="ftr">${escapeHtml(model.footerNote ?? "")} • ${escapeHtml(model.typeLabel)} • ${escapeHtml(model.statusLabel)} • Generated ${escapeHtml(model.generatedAtLabel)}</div>` : ""}
   </div>
   ${model.autoPrint ? `<script>window.onload=()=>{setTimeout(()=>window.print(),250);}</script>` : ""}
   </body></html>`;

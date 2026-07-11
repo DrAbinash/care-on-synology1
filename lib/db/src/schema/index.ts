@@ -50,6 +50,7 @@ export * from "./onlineBookings";
 export * from "./outsourcedLabs";
 export * from "./radiologyWorklist";
 export * from "./radiologyReportGenerator";
+export * from "./presentationTemplates";
 export {
   radiologyTextMacrosTable,
   radiologyReportPreferencesTable,

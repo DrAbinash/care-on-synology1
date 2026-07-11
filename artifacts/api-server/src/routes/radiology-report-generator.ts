@@ -52,10 +52,10 @@ import {
 import { eq, and, desc, isNull, asc, ilike, or } from "drizzle-orm";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import {
-  escapeHtml, renderReportDocument, resolvePresentationTemplate,
+  escapeHtml, renderReportDocument,
   type ReportDocumentModel, type ReportKeyImageModel,
 } from "../lib/reportPresentation";
-import { selectedPresentationTemplateId } from "../lib/reportPresentationConfig";
+import { resolveTemplateForRender } from "../lib/presentationTemplateStore";
 import { resolveDraftKeyImages } from "../lib/reportImages";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import { checkWriteLock } from "../lib/studyLocks";
@@ -1858,9 +1858,12 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     autoPrint: req.query.autoPrint === "true",
   };
 
-  const template = resolvePresentationTemplate(await selectedPresentationTemplateId(
-    typeof req.query.template === "string" ? req.query.template : undefined,
-  ));
+  // R1.2 — drafts follow the LATEST ACTIVE version (no freeze until signed);
+  // ?template=key[@version] previews any template against the draft.
+  const template = await resolveTemplateForRender({
+    explicit: typeof req.query.template === "string" ? req.query.template : null,
+    copyType: "standard",
+  });
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
   res.send(renderReportDocument(model, template));

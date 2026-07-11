@@ -12,7 +12,11 @@ import {
   radiologyInstitutionalStylesTable,
 } from "@workspace/db/schema";
 import { eq, and, desc, sql, ilike, or, isNull, isNotNull, inArray } from "drizzle-orm";
-import { selectedPresentationTemplateId } from "../lib/reportPresentationConfig";
+import {
+  freezeReportPresentation, parseExplicitTemplateParam, resolveTemplateForRender,
+  resolveTemplateRecordForRender,
+} from "../lib/presentationTemplateStore";
+import type { CopyType } from "../lib/presentationTemplateModel";
 import { sendReportWhatsapp, sendReportDelivery } from "./whatsapp";
 import crypto from "node:crypto";
 import {
@@ -49,7 +53,7 @@ import {
 } from "../lib/radiologyD1FinalWriter";
 import { verifyContentSha256 } from "../lib/structuredReport/hash";
 import {
-  PRESENTATION_TEMPLATES, renderReportDocument, resolvePresentationTemplate,
+  renderReportDocument,
   type ReportDocumentModel, type ReportKeyImageModel, type ReportParameterRow, type ReportSignatureModel,
 } from "../lib/reportPresentation";
 import { resolveReportKeyImages } from "../lib/reportImages";
@@ -1741,6 +1745,7 @@ patientReportsRouter.post("/:id/amend", async (req, res) => {
       req.log?.error({ err }, "BEND-1 obligation creation after amendment failed");
     }
 
+    void freezeSignedReportPresentation(outcome.newRow.id);
     res.status(201).json({
       report: outcome.newRow,
       amendment: {
@@ -1831,6 +1836,7 @@ patientReportsRouter.post("/", async (req, res) => {
             presetUsed,
           });
           if (outcome.kind === "signed") {
+            void freezeSignedReportPresentation(outcome.row.id);
             res.status(201).json({ ...outcome.row, structuredFinal: outcome.diagnostics });
             return;
           }
@@ -2014,6 +2020,7 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
     signedAt: new Date(),
     status: "pending_verification",
   }).where(eq(patientReportsTable.id, id)).returning();
+  if (row) void freezeSignedReportPresentation(row.id);
   res.json(row);
 });
 
@@ -2231,10 +2238,12 @@ export interface ReportArtifactOptions {
   /** Patient-facing surfaces pass ["verified","delivered"] so "latest" never
    *  resolves to a version that surface is not allowed to deliver. */
   deliverableStatuses?: string[];
-  /** R1.1 — presentation template override (staff print/PDF only); when
-   *  absent, the admin-selected pacs_settings report_presentation_template
-   *  applies, defaulting to the classic look. */
+  /** R1.1/R1.2 — presentation template override "key" or "key@version"
+   *  (staff print/PDF only). When absent, precedence applies: frozen signed
+   *  identity → copy-type active selection → standard active → care-classic. */
   templateId?: string;
+  /** R1.2 — copy type demanded by the surface (public delivery → patient). */
+  copyType?: CopyType;
 }
 
 export interface ReportArtifact {
@@ -2254,9 +2263,21 @@ export async function buildReportArtifact(
   });
   if (!version) return null;
   logVersionResolution(opts.surface ?? "artifact", version);
-  const html = await renderReportVersionHtml(version.resolvedReportId, opts.autoPrint === true, opts.useUpdatedStyle, version, opts.templateId);
+  const html = await renderReportVersionHtml(version.resolvedReportId, opts.autoPrint === true, opts.useUpdatedStyle, version, opts.templateId, opts.copyType);
   if (html == null) return null;
   return { html, version };
+}
+
+// R1.2 Phase 3 — record the presentation template a report was SIGNED
+// under. Best-effort: signing must never fail because of presentation
+// bookkeeping; unique(report_id) makes it idempotent and never-rewriting.
+async function freezeSignedReportPresentation(reportId: number): Promise<void> {
+  try {
+    // Freeze the STANDARD (clinical) identity WITH its full definition, so the
+    // finalized report re-renders exactly even if the version row is later lost.
+    const record = await resolveTemplateRecordForRender({ copyType: "standard" });
+    await freezeReportPresentation(reportId, record);
+  } catch { /* the freeze-less report falls back to the active selection */ }
 }
 
 /** Pre-D8 surface kept verbatim for existing callers: default version policy,
@@ -2289,7 +2310,7 @@ function versionSafeguardHtml(version: ResolvedReportVersion): { banner: string;
   return { banner: parts.join("\n      "), watermark };
 }
 
-async function renderReportVersionHtml(reportId: number, autoPrint: boolean, useUpdatedStyle?: boolean, version?: ResolvedReportVersion, templateId?: string): Promise<string | null> {
+async function renderReportVersionHtml(reportId: number, autoPrint: boolean, useUpdatedStyle?: boolean, version?: ResolvedReportVersion, templateId?: string, copyType?: CopyType): Promise<string | null> {
   const [row] = await db
     .select({
       r: patientReportsTable,
@@ -2520,7 +2541,11 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
     autoPrint,
   };
 
-  const template = resolvePresentationTemplate(await selectedPresentationTemplateId(templateId));
+  // R1.2 — deterministic template resolution: explicit staff override →
+  // frozen signed identity of THIS revision → copy-type active selection →
+  // standard active selection → care-classic. Never throws; a resolution
+  // problem can never stop a report from printing.
+  const template = await resolveTemplateForRender({ explicit: templateId, reportId, copyType });
   return renderReportDocument(model, template, { customCss: customStyles });
 }
 
@@ -2530,7 +2555,7 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
 // stamp, audit) always target the row actually served.
 function explicitTemplateParam(req: Request): string | undefined {
   const t = typeof req.query.template === "string" ? req.query.template.trim() : "";
-  return PRESENTATION_TEMPLATES.some((x) => x.id === t) ? t : undefined;
+  return parseExplicitTemplateParam(t) ? t : undefined;
 }
 
 function explicitVersionParam(req: Request): ResolveMode | undefined {
@@ -2619,6 +2644,7 @@ publicReportsRouter.get("/:token/pdf", async (req, res) => {
   const artifact = await buildReportArtifact(row.id, {
     useUpdatedStyle, surface: "public_pdf",
     deliverableStatuses: ["verified", "delivered"],
+    copyType: "patient",
   });
   if (!artifact) { res.status(404).send("Not found"); return; }
   const servedId = artifact.version.resolvedReportId;

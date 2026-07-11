@@ -34,6 +34,7 @@ import { radiologyWorklistAssignmentsRouter } from "./radiology-worklist-assignm
 import { radiologyVoiceRouter } from "./radiology-voice";
 import { radiologyOpsRouter } from "./radiology-ops";
 import { radiologyDiagnosticsRouter } from "./radiology-diagnostics";
+import { presentationTemplatesRouter } from "./presentation-templates";
 import { pacsEnterpriseRouter } from "./pacsEnterprise";
 import displayRouter from "./display";
 import queueDisplaySettingsRouter from "./queueDisplaySettings";
@@ -554,6 +555,11 @@ router.use("/radiology-ops", requireStaffAuth, requireStaffPermission("/radiolog
 // read-only deployment/viewer/network/study/workflow/settings diagnostics.
 // Admin-only end to end (exposes unmasked endpoint topology).
 router.use("/radiology-diagnostics", requireStaffAuth, requireStaffPermission("/radiology"), radiologyDiagnosticsRouter);
+
+// Enterprise report template engine (Ticket R1.2): versioned presentation
+// templates. Reads/previews are staff-visible; mutations are admin-only,
+// audited, and version-creating only (published versions are immutable).
+router.use("/radiology/presentation-templates", requireStaffAuth, requireStaffPermission("/radiology"), presentationTemplatesRouter);
 
 // Radiology studies — open to all authenticated staff (doctors, radiologists, etc.)
 router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), radiologyRouter);
