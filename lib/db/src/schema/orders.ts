@@ -16,6 +16,11 @@ export const ordersTable = pgTable("orders", {
   ledgerId: integer("ledger_id"),
   collectedAt: timestamp("collected_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),
+  // Idempotency key for POST /api/orders retries (see
+  // migrations/add_bill_order_idempotency.sql). Previously missing from this
+  // schema — see the matching comment on billsTable.clientRef in bills.ts for
+  // why that silently broke retry deduplication for both tables.
+  clientRef: text("client_ref"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

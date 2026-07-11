@@ -27,6 +27,15 @@ export const billsTable = pgTable("bills", {
   refundAmount: numeric("refund_amount", { precision: 10, scale: 2 }).notNull().default("0"),
   originalTotal: numeric("original_total", { precision: 10, scale: 2 }).notNull().default("0"),
 
+  // Idempotency key for POST /api/bills retries (see migrations/add_bill_order_idempotency.sql).
+  // Was previously missing from this schema, so Drizzle's insert builder —
+  // which only writes columns it knows about — silently dropped every
+  // clientRef passed via the `as any` value spread in bills.ts, leaving
+  // this column permanently NULL. That made the idempotency check
+  // ("WHERE client_ref = ...") always a no-op: a genuine network-retried
+  // bill creation was never recognized as a retry.
+  clientRef: text("client_ref"),
+
   // ── V3: Analytics counters (future dashboard) ──
   qrScanCount: integer("qr_scan_count").notNull().default(0),
   receiptVerificationCount: integer("receipt_verification_count").notNull().default(0),

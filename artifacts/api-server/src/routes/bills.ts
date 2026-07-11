@@ -90,14 +90,24 @@ async function resolveLedgerForOrder(orderId: number): Promise<number> {
  * `parseBillNumberParts` handles both shapes so the renumber logic keeps
  * working across the migration.
  */
-export async function generateBillNumber(_ledgerId: number): Promise<string> {
+export async function generateBillNumber(_ledgerId: number, dbHandle: typeof db = db): Promise<string> {
   const date = new Date();
   const yyyymm = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}`;
   // Use the global MAX across ALL numeric bills, not a per-ledger count.
   // COUNT per ledger breaks when multiple ledgers share the same bill_number
   // unique space — ledger A and B independently arrive at the same sequence
   // number and collide on the UNIQUE constraint.
-  const [row] = await db
+  //
+  // Callers that hold the care_erp_bill_number advisory lock (see call sites
+  // in this file and self-registration.ts) MUST pass their `tx` handle here,
+  // not the pooled `db`. The lock only serializes concurrent callers against
+  // each other if this SELECT runs on the same connection/transaction that
+  // holds the lock — using a separate pooled connection here would also
+  // reintroduce a connection-pool deadlock under load (every concurrent
+  // transaction blocked on the lock holds a pool connection; the lock
+  // holder's own generateBillNumber call would then have no free connection
+  // left to borrow, since the pool has a fixed max size).
+  const [row] = await dbHandle
     .select({ maxBill: sql<string | null>`MAX(bill_number)` })
     .from(billsTable)
     .where(sql`bill_number ~ '^[0-9]+$'`);
@@ -432,15 +442,25 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
       .from(billsTable)
       .where(and(eq(billsTable.orderId, orderId), ne(billsTable.status, "cancelled")))
       .limit(1),
-    db
-      .select({ id: billsTable.id, billNumber: billsTable.billNumber })
-      .from(billsTable)
-      .where(and(
-        eq(billsTable.patientId, order.patientId),
-        ne(billsTable.status, "cancelled"),
-        gt(billsTable.createdAt, tenSecondsAgo),
-      ))
-      .limit(1),
+    // Skipped entirely when the caller sent a clientRef: the idempotency
+    // check above (lines ~376-395) already matches THIS exact submission
+    // precisely by UUID, which is what this guard exists to catch ("network
+    // retries" per the comment below). Without this skip, a billing-desk
+    // user who legitimately bills the same patient twice in quick succession
+    // (e.g. a forgotten test added as a second order) gets falsely blocked
+    // for up to 60s even though clientRef proves this is a brand-new,
+    // distinct submission, not a retry of the first one.
+    clientRef
+      ? Promise.resolve([] as { id: number; billNumber: string }[])
+      : db
+          .select({ id: billsTable.id, billNumber: billsTable.billNumber })
+          .from(billsTable)
+          .where(and(
+            eq(billsTable.patientId, order.patientId),
+            ne(billsTable.status, "cancelled"),
+            gt(billsTable.createdAt, tenSecondsAgo),
+          ))
+          .limit(1),
     db
       .select({ testId: orderTestsTable.testId, isActive: testsTable.isActive, name: testsTable.name })
       .from(orderTestsTable)
@@ -462,10 +482,10 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
 
   // Guard against double-billing:
   // 1) Same order — prevents re-billing an order that already has a bill.
-  // 2) Same patient within 60s — catches rapid double-clicks that create two
-  //    separate orders. The frontend also has a synchronous generatingRef
-  //    guard, but this backend fence defends against network retries,
-  //    multi-tab races, and keyboard+click races.
+  // 2) Same patient within 60s, clientRef-less requests only — a fallback
+  //    fence for callers that don't send an idempotency key (multi-tab
+  //    races, keyboard+click races). Callers that do send a clientRef are
+  //    already deduplicated precisely above, so this is skipped for them.
   const [existingBill] = existingBillRows;
   if (existingBill) {
     res.status(409).json({
@@ -529,7 +549,20 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
   // collision on billNumber) would leave the order/patient mutated with no
   // matching bill row.
   const { bill, pat, validPayments: txPayments } = await db.transaction(async (tx) => {
-    const billNumber = await generateBillNumber(ledgerId);
+    // Serialize bill-number allocation across concurrent requests. Without
+    // this, two overlapping POST /api/bills calls (two billing counters
+    // saving within the same instant, a busy clinic's normal case) can both
+    // read the same MAX(bill_number) via generateBillNumber() before either
+    // commits, then both try to INSERT the same bill_number — one succeeds,
+    // the other throws a raw 23505 unique-violation that surfaces to the
+    // billing desk as an opaque "Internal server error" (bill not saved, no
+    // indication a retry would work). pg_advisory_xact_lock serializes the
+    // read-then-insert critical section per Postgres session and releases
+    // automatically on commit/rollback — same pattern already used for
+    // patient_id generation (see generatePatientId in patients.ts) and the
+    // audit hash chain (see AUDIT_CHAIN_XACT_LOCK in lib/audit.ts).
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('care_erp_bill_number'))`);
+    const billNumber = await generateBillNumber(ledgerId, tx);
 
     if (!order.ledgerId) {
       await tx.update(ordersTable).set({ ledgerId }).where(eq(ordersTable.id, orderId));
@@ -563,8 +596,8 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
       dueDate: dueDate ?? null,
       createdByName: actorName || null,
       // Store idempotency key so retries return this bill, not a duplicate
-      ...(clientRef ? { clientRef } as Record<string, unknown> : {}),
-    } as any).returning();
+      clientRef: clientRef ?? null,
+    }).returning();
 
     // Record each payment split atomically with the bill
     for (const p of validPayments) {
