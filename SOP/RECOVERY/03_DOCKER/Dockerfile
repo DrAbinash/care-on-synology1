@@ -11,7 +11,7 @@
 # -----------------------------------------------------------------------------
 FROM node:22-bookworm-slim AS base
 RUN corepack enable \
- && corepack prepare pnpm@9.15.4 --activate
+ && corepack prepare pnpm@10.33.0 --activate
 WORKDIR /repo
 
 # Copy the full repo
