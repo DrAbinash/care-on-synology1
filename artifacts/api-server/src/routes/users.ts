@@ -69,7 +69,11 @@ const DEFAULT_PERMISSIONS: Record<string, string[]> = {
   // or every save 403s at step one before the bill is ever attempted.
   billing: ["/", "/patients", "/orders", "/billing", "/payments", "/register", "/discounts"],
   lab: ["/orders", "/tests", "/report-generator", "/inventory"],
-  receptionist: ["/", "/patients", "/orders", "/register"],
+  // Mirror of the billing-role fix above: receptionist could create an
+  // order (has /orders) but then 403'd on the bill step of the same
+  // Billing Desk save flow (missing /billing). Front-desk/reception staff
+  // are the other role that routinely runs that combined save action.
+  receptionist: ["/", "/patients", "/orders", "/billing", "/register"],
 };
 
 const BCRYPT_ROUNDS = 12;
