@@ -101,6 +101,14 @@ export interface ReportDocumentModel {
   keyImages?: ReportKeyImageModel[];
   stamp: { kind: "verified" | "pending" | "draft"; label: string };
   signatures: ReportSignatureModel[];
+  /** R1.4 — a real, scannable QR code (PNG data: URL) encoding the report's
+   *  public verification link, generated server-side by the caller (never a
+   *  public PACS/internal URL — the same publicToken infra the patient PDF
+   *  link already uses). When absent, no QR block is emitted at all — a
+   *  static "QR Verification / SECURE" placeholder with nothing encoded in
+   *  it used to render unconditionally here, which is not an honest stand-in
+   *  for a real verification feature. */
+  qrDataUrl?: string | null;
   showQrPlaceholder?: boolean;
   footerNote?: string | null;
   generatedAtLabel: string;
@@ -330,7 +338,11 @@ export function renderReportDocument(
   const bodyLineHeight = template.bodyLineHeight ?? "1.55";
   const sectionGap = template.spacingCfg?.sectionGap ?? "12px";
   const pageSize = template.page ? `${template.page.size} ${template.page.orientation}` : "A4 portrait";
-  const qrVisible = Boolean(model.showQrPlaceholder) && template.qrCfg?.show !== false;
+  // R1.4 — a QR block is only ever emitted when a REAL, scannable code was
+  // generated server-side (model.qrDataUrl). showQrPlaceholder alone used to
+  // be sufficient and rendered a static "SECURE" box that encoded nothing —
+  // silently misleading on a document a patient may try to scan.
+  const qrVisible = Boolean(model.showQrPlaceholder) && Boolean(model.qrDataUrl) && template.qrCfg?.show !== false;
   const templateWatermark = template.watermarkCfg?.enabled && template.watermarkCfg.text
     ? `<div class="template-watermark" aria-hidden="true">${escapeHtml(template.watermarkCfg.text)}</div>`
     : "";
@@ -358,7 +370,7 @@ export function renderReportDocument(
 
   const qrHtml = qrVisible ? `
       <div class="qr-block">
-        <div class="qr-box"><span>QR Verification</span><div class="qr-mark">SECURE</div></div>
+        <div class="qr-box"><span>Scan to verify</span><img class="qr-mark" src="${model.qrDataUrl}" alt="QR verification code" width="50" height="50" /></div>
       </div>` : "";
 
   const draftWatermark = model.draftWatermark
@@ -396,12 +408,21 @@ export function renderReportDocument(
     .hdr .tagline { font-size: 10px; color: ${!banded ? "#475569" : pal.accent}; margin-top: 2px; letter-spacing: 0.06em; }
     .hdr .contact { margin-left: auto; text-align: right; font-size: 10px; color: ${!banded ? "#475569" : pal.headerText + "cc"}; line-height: 1.4; }
 
-    /* ── Study title slot ── */
+    /* ── Study title slot ──
+       R1.4 — the banded/titleBar branch below adds clear:both so the
+       preceding floated .reportno span (which sits before this element in
+       the DOM) cannot paint underneath/on top of this bar's solid
+       background — a float's box paints above a following block's
+       background in CSS painting order, so without this the report number
+       rendered as low-contrast text stacked illegibly on the colored bar in
+       every banded/titleBar template (premium and any other banded seed).
+       Classic (the !titleBar branch, no background) is unaffected either
+       way and keeps its existing "Report #" beside the title layout. */
     .study-title-bar {
       ${slotCss(ty.studyTitle)}
       ${!titleBar
         ? `padding: 2px 0 6px;`
-        : `background: ${pal.accent}; text-align: center; padding: 8px 20px;`}
+        : `background: ${pal.accent}; text-align: center; padding: 8px 20px; clear: both;`}
       break-inside: avoid; break-after: avoid-page;
     }
     .reportno { float: right; font-family: monospace; color: ${pal.labelColor}; font-size: 10px; }
@@ -427,14 +448,32 @@ export function renderReportDocument(
     /* ── Content area: report column + optional image side panel ── */
     .content-area { padding: ${!banded ? "0" : "0 20px"}; }
     ${sidePanel ? `
-    /* Desktop: two columns — clinical report left, selected images right.
-       Print: floated right rail so text wraps and page breaks stay natural. */
+    /* Desktop: two columns — clinical report left, selected images right. */
     @media screen and (min-width: 1024px) {
       .content-area { display: grid; grid-template-columns: 1fr ${panelWidthMm}mm; gap: 8mm; align-items: start; }
       .image-panel-side { position: sticky; top: 8px; }
     }
+    /* R1.4 — print/PDF does NOT float the image panel. A floated column
+       runs independently of the main text's page-break flow: once the
+       float outgrows the (often much shorter) report text beside it,
+       Chromium's print engine keeps emitting pages whose main column is
+       empty while only the float continues — reproduced with real
+       Chromium print-to-PDF: a 24-image care-premium report grew from 6
+       pages (classic, no float) to 10 pages, most of them blank, and a
+       100-image report reached 26 pages. Printing the images in normal
+       document flow after the report text, 2-up, paginates exactly like
+       every other section on the page (break-inside:avoid per image cell,
+       already set below) and can never desynchronize from the text. */
     @media print {
-      .image-panel-side { float: right; width: ${panelWidthMm - 2}mm; margin: 0 0 4mm 5mm; }
+      .image-panel-side { width: 100%; }
+      /* Specificity must beat the unconditional (screen-sidebar) single-column
+         rule below (.image-panel-side .image-grid), which has no media
+         qualifier and so also matches print — an equal-specificity print rule
+         placed earlier in the stylesheet loses to it by source order. Scoping
+         through the real .content-area ancestor (image-panel-side is always
+         its direct child — see the content-area markup below) adds a class
+         to the selector without resorting to !important. */
+      .content-area .image-panel-side .image-grid { grid-template-columns: repeat(2, 1fr); }
     }` : ""}
 
     /* ── Section headings + body slots ── */
@@ -521,8 +560,8 @@ export function renderReportDocument(
     .sigmeta { font-size: 10px; color: ${pal.labelColor}; line-height: 1.3; }
     .sigwhen { margin-top: 3px; font-style: italic; }
     .qr-block { float: left; margin-top: 10px; }
-    .qr-box { display: inline-block; padding: 4px; border: 1px solid #ccc; background: #fff; border-radius: 4px; font-size: 8px; color: #666; font-weight: bold; }
-    .qr-mark { width: 50px; height: 50px; background: #000; color: #fff; font-size: 7px; display: flex; align-items: center; justify-content: center; font-weight: bold; }
+    .qr-box { display: inline-block; padding: 4px; border: 1px solid #ccc; background: #fff; border-radius: 4px; font-size: 8px; color: #666; font-weight: bold; text-align: center; }
+    .qr-mark { width: 50px; height: 50px; display: block; margin: 2px auto 0; }
     .ftr { ${slotCss(ty.footer)} margin-top: 18px; text-align: center; border-top: 1px solid ${pal.sectionBorder}; padding-top: 6px; clear: both; break-inside: avoid; }
 
     /* ── Print rules (Phase 7: widows/orphans, no split images, no blank pages) ── */
@@ -548,7 +587,7 @@ export function renderReportDocument(
       </div>
       ${headerCfg.showContact ? `<div class="contact">
         ${escapeHtml(model.clinic.address ?? "")}<br/>
-        ${escapeHtml(model.clinic.phone ?? "")}${model.clinic.email ? ` • ${escapeHtml(model.clinic.email)}` : ""}<br/>
+        ${[model.clinic.phone, model.clinic.email].filter(Boolean).map((v) => escapeHtml(v!)).join(" • ")}<br/>
         ${escapeHtml(model.clinic.website ?? "")}
       </div>` : ""}
     </div>` : ""}

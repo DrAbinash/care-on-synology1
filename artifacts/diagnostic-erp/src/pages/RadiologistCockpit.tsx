@@ -209,6 +209,32 @@ function RadiologistCockpit() {
   const qc = useQueryClient();
   const session = readStaffSession();
 
+  // R1.4 — /api/patient-reports/:id/print requires the staff Bearer token
+  // (never a cookie); a raw window.open() browser navigation never attaches
+  // it and used to open a blank tab showing the 401 JSON body instead of the
+  // report. Fetch via api.get() (attaches the token) into a window opened
+  // SYNCHRONOUSLY first, before the await, so popup blockers don't swallow
+  // the click — the same pattern the canonical Workspace's Print button uses.
+  async function printSavedReport(reportId: number) {
+    const w = window.open("", "_blank", "noopener,noreferrer");
+    // R1.4 review finding: GET /:id/print unconditionally records a share-log
+    // entry, flips a verified report to "delivered", and writes an audit
+    // entry — checking `!w` AFTER the fetch let a blocked popup still leave a
+    // false "delivered" record behind with nothing ever shown to the user.
+    // Bail out before the authenticated fetch runs, matching the Workspace's
+    // printReport().
+    if (!w) { toast({ title: "Popup blocked", description: "Allow popups for this site to print.", variant: "destructive" }); return; }
+    try {
+      const html = await api.get<string>(`/api/patient-reports/${reportId}/print`);
+      w.document.write(html);
+      w.document.close();
+      w.focus();
+    } catch (err) {
+      w.close();
+      toast({ title: "Could not open print view", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    }
+  }
+
   // Active study state
   const [activeStudyId, setActiveStudyId] = useState<number | null>(null);
 
@@ -1459,18 +1485,25 @@ function RadiologistCockpit() {
     mutationFn: async () => {
       if (!study) return;
       const finalTitle = generateCombinedTitle(selectedBuilders);
+      // R1.4 — this HTML is now stored verbatim as the signed report's body
+      // (radiologyReportLifecycle.ts no longer strips tags) and rendered as
+      // TRUSTED, unescaped HTML by reportPresentation.ts. Every field below
+      // is user-entered text, not markup, so it MUST be escaped here — this
+      // was previously masked only by the stripping this ticket removes.
+      const esc = (v: string) => String(v ?? "")
+        .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
       const htmlBody = `
         <div style="font-family: sans-serif; padding: 20px;">
-          <h3>Radiology Report: ${finalTitle}</h3>
-          <p><strong>Patient Name:</strong> ${study.patientName}</p>
-          <p><strong>Clinical History:</strong> ${clinicalHistory}</p>
-          <p><strong>Technique:</strong> ${technique}</p>
+          <h3 style="break-after:avoid-page;page-break-after:avoid;">Radiology Report: ${esc(finalTitle)}</h3>
+          <p><strong>Patient Name:</strong> ${esc(study.patientName)}</p>
+          <p><strong>Clinical History:</strong> ${esc(clinicalHistory).replaceAll("\n", "<br/>")}</p>
+          <p><strong>Technique:</strong> ${esc(technique).replaceAll("\n", "<br/>")}</p>
           <hr />
-          <h4>Findings</h4>
-          <p style="white-space: pre-line;">${rawFindings}</p>
-          <h4>Impression</h4>
-          <ol>${impression.map((imp) => `<li>${imp}</li>`).join("")}</ol>
-          <p><strong>Recommendation:</strong> ${recommendation}</p>
+          <h4 style="break-after:avoid-page;page-break-after:avoid;">Findings</h4>
+          <p style="white-space: pre-line;">${esc(rawFindings)}</p>
+          <h4 style="break-after:avoid-page;page-break-after:avoid;">Impression</h4>
+          <ol>${impression.map((imp) => `<li>${esc(imp)}</li>`).join("")}</ol>
+          <p><strong>Recommendation:</strong> ${esc(recommendation).replaceAll("\n", "<br/>")}</p>
         </div>
       `;
 
@@ -1499,8 +1532,22 @@ function RadiologistCockpit() {
         }
       });
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
+      // R1.4 — never claim "Finalized" as a complete, deliverable document
+      // unless it was actually signed (see radiologyReportLifecycle.ts);
+      // otherwise the report silently stays undeliverable at status=draft.
+      // R1.4 review finding: a study with no patient linked at all (e.g. an
+      // unmatched DICOM study) never gets a report row or a sign attempt —
+      // reportCreationSkipped must be checked BEFORE the generic
+      // signing-failed message, or the toast falsely tells the radiologist
+      // to "sign it from Report Hub" a report that was never created.
+      const skippedReason = result?.reportCreationSkipped ?? null;
+      const signedOk = result?.signed !== false;
+      const title = skippedReason ? "Report saved but NOT created" : signedOk ? "Report Finalized" : "Report saved but NOT signed";
+      const signNote = skippedReason
+        ? ` No patient report row was created: ${skippedReason}.`
+        : signedOk ? "" : ` ${result?.signError ?? "Signing failed"} — sign it from Report Hub.`;
       // Usability: auto-advance to the next pending study so the radiologist
       // doesn't have to return to the Worklist and click in again for every
       // report. Never silent — always a visible toast; if there's nothing
@@ -1508,13 +1555,18 @@ function RadiologistCockpit() {
       const next = queueContext.next;
       if (next) {
         toast({
-          title: "Report Finalized",
-          description: `Moving to next patient: ${next.patientName} (${next.modality})`,
+          title,
+          description: `Moving to next patient: ${next.patientName} (${next.modality}).${signNote}`,
+          ...(signedOk ? {} : { variant: "destructive" as const }),
         });
         setActiveStudyId(next.id);
         window.history.replaceState(null, "", `${window.location.pathname}?studyId=${next.id}`);
       } else {
-        toast({ title: "Report Finalized", description: "Worklist is clear — no more pending studies." });
+        toast({
+          title,
+          description: `Worklist is clear — no more pending studies.${signNote}`,
+          ...(signedOk ? {} : { variant: "destructive" as const }),
+        });
       }
     },
     onError: (e: any) => toast({ title: "Finalization Failed", description: e.message, variant: "destructive" }),
@@ -2115,7 +2167,7 @@ function RadiologistCockpit() {
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => window.open(`/api/patient-reports/${study.reportId}/print`, "_blank", "noopener,noreferrer")}
+                      onClick={() => void printSavedReport(study.reportId!)}
                       className="border-slate-700 text-slate-200 hover:bg-slate-900 text-xs h-8 flex items-center gap-1"
                       title="Print / Share report"
                     >

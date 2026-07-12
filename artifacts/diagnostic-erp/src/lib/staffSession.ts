@@ -125,6 +125,25 @@ const PERMISSION_ALIASES: Readonly<Record<string, string>> = {
   "/teaching-analytics": "/radiology",
   "/teaching-presentation": "/radiology",
   "/radiology/worklist": "/radiology",
+  // R1.4 — every sibling radiology route here is aliased to the bare
+  // "/radiology" permission bucket except this one, which App.tsx registers
+  // as an EXACT ERP_NAV_ORDER entry — wouter's longestMatchingNavPath picks
+  // the exact, unaliased match over the shorter "/radiology" prefix
+  // fallback, so canAccess() treated it as unrestricted (any signed-in
+  // staff member, not just radiology-permissioned ones) while every other
+  // radiology page was correctly gated. The data calls the Cockpit makes
+  // are still permission-gated server-side either way.
+  "/radiology/cockpit": "/radiology",
+  // R1.4 review finding: RadiologyWorklist's "Report" button gates its
+  // visibility with may("/radiology/report") — without this alias, the
+  // bare literal "/radiology/report" is in neither PERMISSION_ALIASES nor
+  // PERMISSIONED_PATHS, so canAccess() falls through its "path isn't part
+  // of the permission system → always allowed" branch and the button-level
+  // check silently becomes a no-op for every signed-in staff member. Actual
+  // navigation to /radiology/report/:studyId stays correctly gated via
+  // App.tsx's prefix-match fallback to "/radiology" — this alias closes the
+  // matching button-level gap, mirroring every sibling radiology route.
+  "/radiology/report": "/radiology",
   "/radiology/pacs-settings": "/radiology",
   "/radiology/network-control-center": "/radiology",
   "/radiology/pacs-logs": "/radiology",

@@ -131,6 +131,47 @@ async function ensurePublicToken(reportId: number): Promise<string | null> {
   return updated?.publicToken ?? token;
 }
 
+/** Public base URL for report links built without an HTTP request to derive
+ *  them from (matches the identical pattern in radiologyJobHandlers.ts's
+ *  publicBaseUrl(), used for the WhatsApp/email delivery links this report's
+ *  QR now points at the same way). */
+function qrPublicBaseUrl(): string | null {
+  const raw = process.env.PUBLIC_BASE_URL || process.env.APP_PUBLIC_URL || "";
+  return raw ? raw.replace(/\/+$/, "") : null;
+}
+
+/**
+ * R1.4 — a REAL, scannable QR code (PNG data: URL) encoding the report's
+ * own public verification link — the same tokenized /api/p/r/:token/pdf
+ * link WhatsApp/email delivery already sends, generated server-side with the
+ * `qrcode` package (already used elsewhere in this codebase for bills/kiosk/
+ * UPI QR codes). Replaces a static placeholder box that encoded nothing.
+ *
+ * Only ever generated for a report that is actually publicly downloadable
+ * (verified/delivered — the same statuses the public pdf route itself
+ * requires) so a scan can never land on a 403 "not yet finalized" page; a
+ * draft/pending report renders with no QR block at all rather than a QR
+ * pointing at a link that doesn't work yet. Failure-tolerant like every
+ * other optional presentation element (key images, logo): a QR generation
+ * or token-mint problem must never block printing.
+ */
+async function generateReportQrDataUrl(reportId: number, status: string): Promise<string | null> {
+  if (status !== "verified" && status !== "delivered") return null;
+  const base = qrPublicBaseUrl();
+  if (!base) return null;
+  try {
+    const token = await ensurePublicToken(reportId);
+    if (!token) return null;
+    const QRCode = await import("qrcode");
+    return await QRCode.toDataURL(`${base}/api/p/r/${token}/pdf`, {
+      errorCorrectionLevel: "M", margin: 1, width: 200,
+      color: { dark: "#000000", light: "#ffffff" },
+    });
+  } catch {
+    return null;
+  }
+}
+
 // rotatePublicToken — always issues a fresh token with a new expiry.
 // Called by the explicit POST /patient-reports/:id/public-link endpoint so
 // that every share request invalidates the previous link.
@@ -2463,13 +2504,14 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
       .body p, .body div { margin-bottom: ${spacingVal} !important; }
     `;
 
-    if (instStyle.printLayout === "screen_only") {
-      customStyles += `
-        @media print {
-          body { display: none !important; }
-        }
-      `;
-    }
+    // R1.4 — "Screen-only Preview" USED to add `@media print { display:none }`
+    // here, which silently rendered a BLANK PAGE on every real Print/Save-as-
+    // PDF click for any draft/pending report (or any report requested with
+    // ?useUpdatedStyle=true) — invisible on screen (the on-screen preview
+    // looked completely normal), only discovered the moment someone actually
+    // printed. Printing and PDF export are a hard requirement of the
+    // production workflow, so this layout option no longer blanks output;
+    // it now prints like every other layout.
     if (instStyle.printLayout === "half_page") {
       customStyles += `
         body { height: 50% !important; border: 1px dashed #ccc !important; padding: 10px !important; }
@@ -2495,6 +2537,13 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
       ]);
     } catch { keyImages = []; }
   }
+
+  // R1.4 — a real scannable QR (see generateReportQrDataUrl); null for any
+  // report not yet verified/delivered, or when showQrVerification is off —
+  // renderReportDocument then emits no QR block at all rather than a stub.
+  const qrDataUrl = showQrVerification && r.type === "radiology"
+    ? await generateReportQrDataUrl(version?.resolvedReportId ?? reportId, r.status)
+    : null;
 
   const model: ReportDocumentModel = {
     reportNumber: r.reportNumber,
@@ -2536,8 +2585,20 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
       sigModel(sigVerifier, r.verifiedByName, "Verified:", r.verifiedAt as Date | null),
     ].filter((s): s is ReportSignatureModel => s != null),
     showQrPlaceholder: showQrVerification && r.type === "radiology",
+    qrDataUrl,
     footerNote: clinic?.footerNote ?? "",
-    generatedAtLabel: new Date().toLocaleString("en-IN"),
+    // R1.4 — a signed/verified/delivered report is a fixed historical
+    // document: its footer should show WHEN IT WAS ISSUED, not the instant
+    // of this particular render. Previously this was new Date() on every
+    // single call, so re-printing or re-downloading the exact same signed
+    // report minutes apart produced different bytes and a different visible
+    // timestamp each time. Drafts/pending reports (still actively being
+    // worked on, no stable issue time yet) keep showing the render instant.
+    generatedAtLabel: (
+      (r.status === "verified" || r.status === "delivered")
+        ? (r.verifiedAt as Date | null) ?? (r.signedAt as Date | null) ?? (r.createdAt as Date | null)
+        : null
+    )?.toLocaleString("en-IN") ?? new Date().toLocaleString("en-IN"),
     autoPrint,
   };
 
