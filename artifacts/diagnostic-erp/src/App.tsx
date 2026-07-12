@@ -390,32 +390,43 @@ function Router() {
               <Route path="/radiology/report-generator/:studyId">
                 {(params) => <RadiologyReportGen studyId={Number(params.studyId)} />}
               </Route>
-              {/* Phase D (Radiology V2) supersedes the earlier M1.1 canonical-
-                  workspace consolidation: RadiologistCockpit is now THE single
-                  Reading Room. Route map:
-                    /radiology/cockpit                    → canonical (primary)
-                    /radiology/report/:studyId            → redirect to canonical
-                    /radiology/reporting-workspace(/:id)  → redirect to canonical
-                    /radiology/unified-report/:worklistId → redirect to canonical
-                    /radiology/command-center(/:id)       → owner-only (preserved)
-                    /radiology/legacy                     → owner-only (preserved)
+              {/* M1.1 canonical workspace consolidation (July 2026), RESTORED
+                  after the Radiology V2 merge briefly rerouted these to the
+                  cockpit (which lacked draft identity — every save created a
+                  new draft row and reopening a study dropped the draft).
+                  RadiologyReportingWorkspace is THE canonical radiology
+                  reporting page: it owns draft load/track/update-by-id
+                  (useRadiologyDraftId), M1.4 validation, the M1.2 launch
+                  pipeline, R1.1–R1.3 presentation/template/image-panel.
+                  Route map:
+                    /radiology/report/:studyId            → canonical (primary)
+                    /radiology/reporting-workspace(/:id)  → canonical (named alias)
+                    /radiology/unified-report/:worklistId → canonical (old URL kept)
+                    /radiology/report-legacy/:studyId     → redirect to canonical
+                    /radiology/cockpit                    → RadiologistCockpit (deprecated,
+                                                            fully functional; save bug fixed)
+                    /radiology/command-center(/:id)       → owner-only (preserved, V2)
+                    /radiology/legacy                     → owner-only (preserved, V2)
                     /radiology/report-generator(/:id)     → RadiologyReportGenerator
-                                                            (still active; unique macro/
+                                                            (deprecated; unique macro/
                                                             key-image admin UI)
-                  RadiologyReportingWorkspace, RadiologyReportEditor and
-                  RadiologyReportUnified are no longer routed — kept as
-                  unrouted lazy imports for rollback/reference only. */}
+                  The V2 worklist/settings consolidations (RedirectToUnifiedWorklist,
+                  AdminOnlySettings) are kept. The dead RadiologyReportUnified page
+                  (resurrected by the V2 merge) was removed again. */}
               <Route path="/radiology/report/:studyId">
-                {(params) => <RedirectToCockpit studyId={Number(params.studyId)} />}
+                {(params) => <RadiologyReportingWorkspace studyId={Number(params.studyId)} />}
+              </Route>
+              <Route path="/radiology/report-legacy/:studyId">
+                {(params) => <RadiologyReportEditor studyId={Number(params.studyId)} />}
               </Route>
               <Route path="/radiology/reporting-workspace">
-                {() => <RedirectToCockpit />}
+                {() => <RadiologyReportingWorkspace />}
               </Route>
               <Route path="/radiology/reporting-workspace/:studyId">
-                {(params) => <RedirectToCockpit studyId={Number(params.studyId)} />}
+                {(params) => <RadiologyReportingWorkspace studyId={Number(params.studyId)} />}
               </Route>
               <Route path="/radiology/unified-report/:worklistId">
-                {(params) => <RedirectToCockpit studyId={Number(params.worklistId)} />}
+                {(params) => <RadiologyReportingWorkspace studyId={Number(params.worklistId)} />}
               </Route>
               <Route path="/radiology/pacs-dashboard" component={PacsDashboard} />
               <Route path="/radiology/operations-dashboard" component={RadiologyOperationsDashboard} />

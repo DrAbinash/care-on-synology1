@@ -600,8 +600,71 @@ router.get("/studies/:studyInstanceUID/weasis-launch-redirect", async (req, res)
 
 // ─── OHIF VIEWER LAUNCH ───────────────────────────────────────────────────────
 
+// R1.3 — the launch URL is built SERVER-SIDE from the admin-configured
+// template, optionally narrowed to a series / SOP instance for report-image
+// deep links. Every UID is validated; malformed identifiers are rejected.
+// Precision degrades explicitly (SOP → series → study) when the configured
+// viewer URL cannot express the requested level, and the response reports
+// both the requested and the achieved level. Never patient-name matching,
+// never a public PACS URL.
+const LAUNCH_UID = /^[0-9.]{1,128}$/;
+
+/** Pure R1.3 helper (exported for tests): builds the most specific OHIF URL
+ *  the configured template can express. */
+export function buildOhifLaunchUrl(opts: {
+  ohifBase: string;
+  studyTemplate: string | null | undefined;
+  studyInstanceUID: string;
+  seriesInstanceUID?: string | null;
+  sopInstanceUID?: string | null;
+}): { ohifUrl: string; launchLevel: "study" | "series" | "sop" } {
+  const { ohifBase, studyTemplate, studyInstanceUID } = opts;
+  const series = opts.seriesInstanceUID || null;
+  const sop = opts.sopInstanceUID || null;
+  let url = studyTemplate
+    ? studyTemplate
+        .replace(/\{OHIF_BASE_URL\}/g, ohifBase.replace(/\/$/, ""))
+        .replace(/\{studyInstanceUID\}/g, encodeURIComponent(studyInstanceUID))
+    : `${ohifBase.replace(/\/$/, "")}/viewer?StudyInstanceUIDs=${encodeURIComponent(studyInstanceUID)}`;
+  let launchLevel: "study" | "series" | "sop" = "study";
+  // A custom template may carry explicit placeholders for deeper levels.
+  const hasSeriesSlot = !!studyTemplate && studyTemplate.includes("{seriesInstanceUID}");
+  const hasSopSlot = !!studyTemplate && studyTemplate.includes("{sopInstanceUID}");
+  if (hasSeriesSlot) url = url.replace(/\{seriesInstanceUID\}/g, series ? encodeURIComponent(series) : "");
+  if (hasSopSlot) url = url.replace(/\{sopInstanceUID\}/g, sop ? encodeURIComponent(sop) : "");
+  if (series && hasSeriesSlot) launchLevel = "series";
+  if (sop && hasSopSlot) launchLevel = "sop";
+  // Standard OHIF viewer URLs (the default and the shipped template) accept
+  // SeriesInstanceUIDs as a query filter; SOP-level addressing is not a
+  // stable OHIF URL parameter, so a SOP request degrades to its series.
+  if (series && launchLevel === "study" && /[?&]StudyInstanceUIDs=/.test(url)) {
+    url += `&SeriesInstanceUIDs=${encodeURIComponent(series)}`;
+    launchLevel = "series";
+  }
+  return { ohifUrl: url, launchLevel };
+}
+
 router.get("/studies/:studyInstanceUID/ohif-launch", async (req, res) => {
   const { studyInstanceUID } = req.params;
+  if (!LAUNCH_UID.test(studyInstanceUID)) {
+    res.status(400).json({ error: "invalid StudyInstanceUID" });
+    return;
+  }
+  const seriesInstanceUID = typeof req.query.seriesInstanceUID === "string" ? req.query.seriesInstanceUID : "";
+  const sopInstanceUID = typeof req.query.sopInstanceUID === "string" ? req.query.sopInstanceUID : "";
+  if (seriesInstanceUID && !LAUNCH_UID.test(seriesInstanceUID)) {
+    res.status(400).json({ error: "invalid SeriesInstanceUID" });
+    return;
+  }
+  if (sopInstanceUID && !LAUNCH_UID.test(sopInstanceUID)) {
+    res.status(400).json({ error: "invalid SOPInstanceUID" });
+    return;
+  }
+  if (sopInstanceUID && !seriesInstanceUID) {
+    res.status(400).json({ error: "seriesInstanceUID is required with sopInstanceUID" });
+    return;
+  }
+  const requestedLevel: "study" | "series" | "sop" = sopInstanceUID ? "sop" : seriesInstanceUID ? "series" : "study";
   const cfg = await getRadiologyConfig();
 
   const ohifBase = cfg.ohif.baseUrl;
@@ -617,15 +680,17 @@ router.get("/studies/:studyInstanceUID/ohif-launch", async (req, res) => {
       ohifUrl: null,
       dicomWebBaseUrl: dicomWebUrl || null,
       pacsType,
+      requestedLevel,
+      launchLevel: null,
     });
     return;
   }
 
-  const ohifUrl = studyTemplate
-    ? studyTemplate
-        .replace(/\{OHIF_BASE_URL\}/g, ohifBase.replace(/\/$/, ""))
-        .replace(/\{studyInstanceUID\}/g, encodeURIComponent(studyInstanceUID))
-    : `${ohifBase.replace(/\/$/, "")}/viewer?StudyInstanceUIDs=${encodeURIComponent(studyInstanceUID)}`;
+  const { ohifUrl, launchLevel } = buildOhifLaunchUrl({
+    ohifBase, studyTemplate, studyInstanceUID,
+    seriesInstanceUID: seriesInstanceUID || null,
+    sopInstanceUID: sopInstanceUID || null,
+  });
 
   const [[worklist], [pulled]] = await Promise.all([
     db
@@ -643,7 +708,7 @@ router.get("/studies/:studyInstanceUID/ohif-launch", async (req, res) => {
   const patientName = worklist?.patientName ?? pulled?.patientName ?? null;
   const accessionNumber = worklist?.accessionNumber ?? pulled?.accessionNumber ?? null;
 
-  void logPacsEvent("OHIF_VIEWER_LAUNCH", "VIEWER_LAUNCHED", `OHIF viewer launched for study ${studyInstanceUID}`, {
+  void logPacsEvent("OHIF_VIEWER_LAUNCH", "VIEWER_LAUNCHED", `OHIF viewer launched for study ${studyInstanceUID} (${launchLevel} level)`, {
     studyInstanceUID,
     accessionNumber,
   });
@@ -656,6 +721,8 @@ router.get("/studies/:studyInstanceUID/ohif-launch", async (req, res) => {
     ohifUrl,
     dicomWebBaseUrl: dicomWebUrl,
     pacsType,
+    requestedLevel,
+    launchLevel,
   });
 });
 

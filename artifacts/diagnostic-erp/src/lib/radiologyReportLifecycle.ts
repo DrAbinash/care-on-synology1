@@ -1,4 +1,4 @@
-import { api } from "@/lib/fetchApi";
+import { api } from "./fetchApi";
 
 /**
  * Ticket M1.1 — the ONE shared draft-save/finalize service for radiology
@@ -43,8 +43,12 @@ export interface FinalizeStudyContext {
 
 export interface FinalizeReportContent {
   title: string;
-  /** Rendered HTML body — tags are stripped for the patient_reports row,
-   *  exactly as every pre-consolidation copy did. */
+  /** Rendered HTML body — stored VERBATIM on the patient_reports row and
+   *  rendered as TRUSTED, unescaped HTML by reportPresentation.ts. This
+   *  module does no sanitization: every caller is solely responsible for
+   *  HTML-escaping its own interpolated values (e.g. patient name, clinical
+   *  history) before building this string, exactly as buildPreviewHtml()'s
+   *  escHtml() does in RadiologyReportingWorkspace.tsx. */
   htmlBody: string;
   impression: string[];
   isCritical: boolean;
@@ -73,6 +77,20 @@ export interface FinalizeResult {
    *  attach). The worklist status flip below still happens. null = a report
    *  row was created, or the study has no patient to report against. */
   reportCreationSkipped: string | null;
+  /** R1.4 — whether the legacy (non-D5) report row was actually signed via
+   *  POST /:id/sign as part of THIS finalize call. When D5 already signed
+   *  the row (structuredFinal.signed === true) this is false — the row is
+   *  already a signed structured document and calling the legacy /sign route
+   *  on it would be rejected (structured_signed_report, D9 Phase 2). Callers
+   *  must never say "Report Finalized" implying a completed, signed,
+   *  deliverable document unless this is true OR structuredFinal.signed is
+   *  true. */
+  signed: boolean;
+  /** Truthful reason signing did not happen, for surfacing to the user
+   *  instead of silently claiming success (e.g. "no active signature is
+   *  configured", "role_cannot_sign", or the server's error message). null
+   *  when signed is true, or when no report row exists to sign. */
+  signError: string | null;
 }
 
 /** GET /api/patient-reports/from-study/:studyId prefill shape (subset). */
@@ -82,6 +100,54 @@ interface FromStudyPrefill {
   orderTestId: number | null;
   orderId: number | null;
   billId: number | null;
+}
+
+interface SignatureRow {
+  id: number;
+  name: string;
+  isActive: boolean;
+}
+
+/**
+ * R1.4 — auto-sign a freshly created legacy report row as part of the SAME
+ * deliberate action the radiologist already confirmed ("Finalize this
+ * report? ... After finalizing, editing is disabled."). Before this fix,
+ * finalize created the row and flipped the worklist status but NEVER called
+ * POST /:id/sign, so every default-configuration (ff_radiology_structured_final
+ * off) report stayed at its schema-default status="draft" forever — the
+ * patient PDF link 403'd, Share 404'd, and Verify was hidden — while the UI
+ * told the radiologist "Report Finalized". This mirrors ReportHub's own
+ * SignDialog default (the sole ACTIVE signature on file — the
+ * single-radiologist clinic this ticket targets) so the auto-sign identity
+ * matches what a manual Sign click would have chosen. When the signer
+ * identity is AMBIGUOUS (2+ active signatures), auto-sign deliberately
+ * declines rather than guessing — see autoSignReport() below. Never throws:
+ * a failure here must not undo the report row that was already created or
+ * block the worklist flip; the caller surfaces `signed`/`signError`
+ * truthfully instead.
+ */
+async function autoSignReport(reportId: number): Promise<{ signed: boolean; signError: string | null }> {
+  try {
+    const signatures = await api.get<SignatureRow[]>("/api/signatures");
+    const activeSignatures = signatures.filter((s) => s.isActive);
+    if (activeSignatures.length === 0) {
+      return { signed: false, signError: "No active signature is configured — sign this report from Report Hub." };
+    }
+    // R1.4 review finding: with 2+ active signatures on file (a locum
+    // covering the solo radiologist, or a second radiologist joining the
+    // practice), silently picking the alphabetically-first one would
+    // misattribute authorship of a signed clinical document with no warning.
+    // That identity choice is safe to automate ONLY while it is unambiguous
+    // (the single-radiologist baseline this ticket targets); once ambiguous,
+    // require the deliberate, visible signer picker in Report Hub instead.
+    if (activeSignatures.length > 1) {
+      return { signed: false, signError: "More than one active signature is on file — choose the signer from Report Hub." };
+    }
+    await api.post(`/api/patient-reports/${reportId}/sign`, { signatureId: activeSignatures[0].id });
+    return { signed: true, signError: null };
+  } catch (err) {
+    return { signed: false, signError: err instanceof Error ? err.message : "Could not sign the report" };
+  }
 }
 
 /**
@@ -132,7 +198,17 @@ export async function finalizeRadiologyReport(
         studyId: draftStudyKey,
         type: "radiology",
         title: content.title,
-        body: content.htmlBody.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(),
+        // R1.4 — store the real, structured HTML (section headings, line
+        // breaks, lists) exactly as the D5/structured path already does for
+        // its `body` column (both feed `bodyHtml`, rendered as TRUSTED HTML
+        // by reportPresentation.ts — never escaped). Previously this
+        // stripped every tag AND collapsed every newline into a single
+        // space, so the delivered/signed/printed document was one run-on
+        // paragraph with no section structure — different from, and far
+        // worse than, the well-formatted draft preview the radiologist had
+        // just reviewed and approved. User-entered text within htmlBody is
+        // already HTML-escaped by escHtml() in buildPreviewHtml().
+        body: content.htmlBody,
         impression: content.impression.join("\n"),
         parameters: JSON.stringify({
           modality: study.modality,
@@ -147,6 +223,30 @@ export async function finalizeRadiologyReport(
       reportId = report.id;
       reportRow = report;
     }
+  } else {
+    // R1.4 review finding: leaving this unset made the 3 callers' generic
+    // `!signed` fallback claim "Signing failed" for a study that was never
+    // eligible for signing in the first place (no patient linked at all —
+    // e.g. an unmatched DICOM study) — sending the radiologist to "sign it
+    // from Report Hub" for a report row that was never created.
+    reportCreationSkipped = "no patient is linked to this study";
+  }
+
+  // R1.4 — sign the legacy row now, as part of this same already-confirmed
+  // finalize action. Skip when D5 already produced a SIGNED structured
+  // document (structuredFinal.signed === true) — that row is not eligible
+  // for the legacy /sign route (D9 Phase 2 refuses to overwrite a structured
+  // signature) and is already a completed, signed document.
+  let signed = false;
+  let signError: string | null = null;
+  const alreadySignedByD5 = Boolean(
+    reportRow && typeof reportRow.structuredFinal === "object" && reportRow.structuredFinal !== null &&
+    (reportRow.structuredFinal as Record<string, unknown>).signed === true,
+  );
+  if (reportId && !alreadySignedByD5) {
+    const outcome = await autoSignReport(reportId);
+    signed = outcome.signed;
+    signError = outcome.signError;
   }
 
   await api.post("/api/internal/radiology/report-status", {
@@ -167,6 +267,8 @@ export async function finalizeRadiologyReport(
         ? (reportRow.structuredFinal as Record<string, unknown>)
         : null,
     reportCreationSkipped,
+    signed: signed || alreadySignedByD5,
+    signError,
   };
 }
 

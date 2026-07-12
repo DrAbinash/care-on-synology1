@@ -826,23 +826,32 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
 
       const finalTitle = generateCombinedTitle(activeBuilderTypes);
 
+      // R1.4 — this HTML is stored verbatim as the signed report's body
+      // (radiologyReportLifecycle.ts no longer strips tags) and rendered as
+      // TRUSTED, unescaped HTML by reportPresentation.ts. Every field below
+      // is user-entered text, not markup, so it MUST be escaped here — this
+      // was previously masked only by the stripping this ticket removes.
+      // break-after:avoid-page on headings prevents an orphaned heading at
+      // a page boundary now that this structure actually reaches print/PDF.
+      const esc = (v: string) => String(v ?? "")
+        .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
       const htmlBody = `
         <div style="font-family: sans-serif; padding: 20px;">
-          <h3>Radiology Report: ${finalTitle}</h3>
-          <p><strong>Patient Name:</strong> ${study.patientName}</p>
-          <p><strong>Clinical History:</strong> ${clinicalHistory}</p>
-          <p><strong>Technique:</strong> ${technique}</p>
+          <h3 style="break-after:avoid-page;page-break-after:avoid;">Radiology Report: ${esc(finalTitle)}</h3>
+          <p><strong>Patient Name:</strong> ${esc(study.patientName)}</p>
+          <p><strong>Clinical History:</strong> ${esc(clinicalHistory).replaceAll("\n", "<br/>")}</p>
+          <p><strong>Technique:</strong> ${esc(technique).replaceAll("\n", "<br/>")}</p>
           <hr />
-          <h4>Findings</h4>
-          <p style="white-space: pre-line;">${findingsText}</p>
-          <h4>Impression</h4>
-          <ol>${impression.map((imp) => `<li>${imp}</li>`).join("")}</ol>
-          <p><strong>Recommendation:</strong> ${recommendation}</p>
+          <h4 style="break-after:avoid-page;page-break-after:avoid;">Findings</h4>
+          <p style="white-space: pre-line;">${esc(findingsText)}</p>
+          <h4 style="break-after:avoid-page;page-break-after:avoid;">Impression</h4>
+          <ol>${impression.map((imp) => `<li>${esc(imp)}</li>`).join("")}</ol>
+          <p><strong>Recommendation:</strong> ${esc(recommendation).replaceAll("\n", "<br/>")}</p>
         </div>
       `;
 
       // M1.1 — canonical finalize path shared with the Reporting Workspace.
-      await finalizeRadiologyReport(study, {
+      const result = await finalizeRadiologyReport(study, {
         title: finalTitle,
         htmlBody,
         impression,
@@ -853,9 +862,26 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
       });
 
       setReportStatus("FINAL");
+      return result;
     },
-    onSuccess: () => {
-      toast({ title: "Report Finalized", description: "The finalized report has been registered." });
+    onSuccess: (result) => {
+      // R1.4 — never claim "Finalized" as a complete, deliverable document
+      // unless it was actually signed (see radiologyReportLifecycle.ts).
+      // reportCreationSkipped must be checked first: a study with no patient
+      // linked at all never gets a report row or a sign attempt, so the
+      // generic signing-failed message would falsely send the radiologist to
+      // "sign it from Report Hub" a report that was never created.
+      const skippedReason = result?.reportCreationSkipped ?? null;
+      const signedOk = result?.signed !== false;
+      toast({
+        title: skippedReason ? "Report saved but NOT created" : signedOk ? "Report Finalized" : "Report saved but NOT signed",
+        description: skippedReason
+          ? `No patient report row was created: ${skippedReason}.`
+          : signedOk
+            ? "The finalized report has been registered."
+            : `${result?.signError ?? "Signing failed"} — sign it from Report Hub.`,
+        ...(signedOk && !skippedReason ? {} : { variant: "destructive" as const }),
+      });
       qc.invalidateQueries({ queryKey: ["workspace-entry", activeStudyId] });
       qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
     },

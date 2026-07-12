@@ -224,13 +224,49 @@ export default function ReportHub() {
   function openSign(r: ReportRow) { setSelected(r); setSignOpen(true); }
   function openVerify(r: ReportRow) { setSelected(r); setVerifyOpen(true); }
   function openShare(r: ReportRow) { setSelected(r); setShareOpen(true); }
-  function openPrint(r: ReportRow) {
-    window.open(`/api/patient-reports/${r.id}/print`, "_blank", "noopener,noreferrer");
-    setTimeout(refresh, 1500);
+  // R1.4 — these routes require the staff Bearer token (requireStaffAuth
+  // only accepts it via the Authorization header, never a cookie); a raw
+  // window.open() browser navigation never attaches it, so every click used
+  // to open a blank tab showing the 401 JSON body instead of the report.
+  // Fetch via api.get() (which attaches the token) and write the HTML into a
+  // window opened SYNCHRONOUSLY first, before the await — the same
+  // popup-blocker-safe pattern the canonical Workspace's Print button uses.
+  async function openPrint(r: ReportRow) {
+    const w = window.open("", "_blank", "noopener,noreferrer");
+    // R1.4 review finding: GET /:id/print unconditionally records a
+    // share-log entry, flips a verified report to "delivered", and writes an
+    // audit entry — checking `!w` AFTER the fetch let a blocked popup still
+    // leave a false "delivered" record behind with nothing ever shown to the
+    // user. Bail out before the authenticated fetch runs.
+    if (!w) { toast({ title: "Popup blocked", description: "Allow popups for this site to print.", variant: "destructive" }); return; }
+    try {
+      const html = await api.get<string>(`/api/patient-reports/${r.id}/print`);
+      w.document.write(html);
+      w.document.close();
+      w.focus();
+    } catch (err) {
+      w.close();
+      toast({ title: "Could not open print view", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    } finally {
+      setTimeout(refresh, 1500);
+    }
   }
-  function openPdf(r: ReportRow) {
-    window.open(`/api/patient-reports/${r.id}/pdf`, "_blank", "noopener,noreferrer");
-    setTimeout(refresh, 1500);
+  async function openPdf(r: ReportRow) {
+    const w = window.open("", "_blank", "noopener,noreferrer");
+    // R1.4 review finding: same false-delivery-record risk as openPrint()
+    // above — bail out before the authenticated fetch runs.
+    if (!w) { toast({ title: "Popup blocked", description: "Allow popups for this site to download the PDF.", variant: "destructive" }); return; }
+    try {
+      const html = await api.get<string>(`/api/patient-reports/${r.id}/pdf`);
+      w.document.write(html);
+      w.document.close();
+      w.focus();
+    } catch (err) {
+      w.close();
+      toast({ title: "Could not open PDF view", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    } finally {
+      setTimeout(refresh, 1500);
+    }
   }
 
   async function ackCritical(r: ReportRow) {

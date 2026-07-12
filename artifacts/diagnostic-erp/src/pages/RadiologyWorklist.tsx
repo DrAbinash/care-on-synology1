@@ -1072,12 +1072,20 @@ export default function RadiologyWorklist() {
                               </Button>
                             )}
 
-                            {entry.id !== -1 && isRadView && may("/radiology/cockpit") && (
+                            {/* R1.4 — the primary "Report" action now opens the
+                                CANONICAL Reporting Workspace (/radiology/report/:studyId),
+                                not the deprecated Cockpit. Previously this was the
+                                ONLY "start reporting" entry point on the whole
+                                Worklist, and it sent every radiologist to a page
+                                carrying zero R1.3 image-panel/R1.2 template/M1.4
+                                validation support — that work was reachable only
+                                by typing the canonical URL by hand. */}
+                            {entry.id !== -1 && isRadView && may("/radiology/report") && (
                               <Button
                                 size="sm"
                                 className="h-7 px-2 text-xs bg-indigo-600 hover:bg-indigo-700 text-white"
-                                onClick={() => navigate(`/radiology/cockpit?studyId=${entry.id}`)}
-                                title="Open in Radiologist Cockpit"
+                                onClick={() => navigate(`/radiology/report/${entry.id}`)}
+                                title="Open in the Reporting Workspace"
                               >
                                 <Stethoscope className="h-3 w-3 mr-1" />
                                 Report

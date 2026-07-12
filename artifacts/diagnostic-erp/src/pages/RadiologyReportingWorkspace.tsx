@@ -1,5 +1,3 @@
-// PHASE D (Radiology V2): PRESERVED. RadiologistCockpit is the single Reading Room.
-// This page is redirected or owner-only. Do not delete — kept for rollback/reference.
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -271,7 +269,12 @@ function buildPreviewHtml(opts: {
     findingsHtml = Object.entries(opts.findingsMap)
       .map(([label, item]) => {
         const status = item.normal ? "Normal" : item.text.trim() || "—";
-        return `<p style="margin:${sp} 0;"><strong><u>${escHtml(fmtHeading(label, hc))}</u></strong><br/>${escHtml(status).replaceAll("\n", "<br/>")}</p>`;
+        // R1.4 — break-after:avoid-page on the heading itself (not the full
+        // .section-heading class, which carries template color/border/font
+        // styling this handwritten preview does not use) so a heading can
+        // never print as the last line on a page with its content starting
+        // on the next.
+        return `<p style="margin:${sp} 0;break-after:avoid-page;page-break-after:avoid;"><strong><u>${escHtml(fmtHeading(label, hc))}</u></strong><br/>${escHtml(status).replaceAll("\n", "<br/>")}</p>`;
       })
       .join("\n");
   } else {
@@ -293,25 +296,33 @@ function buildPreviewHtml(opts: {
     impressionHtml = `<p style="margin:4px 0;color:#aaa;"><em>Draft impression — not verified.</em></p>`;
   }
 
+  // R1.4 — break-after:avoid-page on every section heading below so a
+  // heading can never print as the last line on a page with its content
+  // starting on the next (this HTML is now stored verbatim as the signed
+  // report's body — see radiologyReportLifecycle.ts — instead of being
+  // stripped to a structureless paragraph, so these rules now actually
+  // reach the printed/PDF/delivered document).
+  const hStyle = (margin: string) => `margin:${margin};break-after:avoid-page;page-break-after:avoid;`;
+
   const imagesHtml = opts.imageRefs.length > 0
-    ? `<h3 style="margin:${sp2} 0 ${sp};"><u>${fmtHeading("Key Images", hc)}</u></h3>
+    ? `<h3 style="${hStyle(`${sp2} 0 ${sp}`)}"><u>${fmtHeading("Key Images", hc)}</u></h3>
     <ul style="margin:4px 0 0 18px;padding:0;">${opts.imageRefs.map((img) => `<li>Series ${escHtml(img.seriesNumber)} Image ${escHtml(img.imageNumber)}: ${escHtml(img.description)}</li>`).join("")}</ul>`
     : "";
 
   return `<div style="font-family:Arial,sans-serif;font-size:13px;line-height:1.45;color:#111;max-width:720px;margin:0 auto;">
     ${headerHtml}
     <hr style="border:none;border-top:2px solid #000;margin:6px 0;" />
-    <h2 style="text-align:center;text-decoration:underline;font-size:15px;margin:8px 0;"><strong>${escHtml(opts.studyName)}</strong></h2>
-    <h3 style="margin:${sp} 0 ${sp};"><u>${fmtHeading("Technique", hc)}</u></h3>
+    <h2 style="text-align:center;text-decoration:underline;font-size:15px;margin:8px 0;break-after:avoid-page;page-break-after:avoid;"><strong>${escHtml(opts.studyName)}</strong></h2>
+    <h3 style="${hStyle(`${sp} 0 ${sp}`)}"><u>${fmtHeading("Technique", hc)}</u></h3>
     <p style="margin:0 0 ${sp};">${escHtml(opts.technique)}</p>
-    ${opts.clinicalHistory ? `<h3 style="margin:${sp} 0 ${sp};"><u>${fmtHeading("Clinical History", hc)}</u></h3><p style="margin:0 0 ${sp};">${escHtml(opts.clinicalHistory)}</p>` : ""}
+    ${opts.clinicalHistory ? `<h3 style="${hStyle(`${sp} 0 ${sp}`)}"><u>${fmtHeading("Clinical History", hc)}</u></h3><p style="margin:0 0 ${sp};">${escHtml(opts.clinicalHistory)}</p>` : ""}
     <hr style="border:none;border-top:2px solid #000;margin:6px 0;" />
-    <h3 style="margin:${sp} 0 ${sp};"><u>${fmtHeading("Findings / Observation", hc)}</u></h3>
+    <h3 style="${hStyle(`${sp} 0 ${sp}`)}"><u>${fmtHeading("Findings / Observation", hc)}</u></h3>
     ${findingsHtml}
     ${imagesHtml}
-    <h3 style="margin:${sp2} 0 ${sp};"><u>${fmtHeading("Impression", hc)}</u></h3>
+    <h3 style="${hStyle(`${sp2} 0 ${sp}`)}"><u>${fmtHeading("Impression", hc)}</u></h3>
     ${impressionHtml}
-    <h3 style="margin:${sp2} 0 ${sp};"><u>${fmtHeading("Recommendation", hc)}</u></h3>
+    <h3 style="${hStyle(`${sp2} 0 ${sp}`)}"><u>${fmtHeading("Recommendation", hc)}</u></h3>
     <p style="margin:0 0 ${sp};">${escHtml(opts.recommendation || "Please correlate with clinical findings.")}</p>
     <hr style="border:none;border-top:1px solid #999;margin:${sp2} 0 4px;" />
     <p style="font-size:11px;color:#666;font-style:italic;margin:0;">Please correlate with clinical history and findings. Report issued by authorized radiologist only.</p>
@@ -342,6 +353,16 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // presentation layer) whenever a saved draft/report exists; the client-side
   // assembly remains only as the unsaved-draft fallback.
   const [serverPreviewHtml, setServerPreviewHtml] = useState<string | null>(null);
+  // R1.4 — bumped on every successful save so the preview effect below
+  // refetches even when draftId/linkedReportId are unchanged (the normal
+  // case after the FIRST save: draftId stays the same stable number on
+  // every subsequent save, so it alone never re-triggers the effect).
+  // Previously the preview iframe silently froze on whatever HTML was
+  // fetched at the last previewMode toggle, showing older content than the
+  // draft the radiologist kept editing and re-saving — Print/PDF, which
+  // fetch fresh on every click, would then show something the on-screen
+  // preview never displayed.
+  const [previewRefreshToken, setPreviewRefreshToken] = useState(0);
 
   // ── Template selection ────────────────────────────────────────────────────
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
@@ -1337,7 +1358,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       .then((html) => { if (!cancelled) setServerPreviewHtml(typeof html === "string" ? html : null); })
       .catch(() => { if (!cancelled) setServerPreviewHtml(null); });
     return () => { cancelled = true; };
-  }, [previewMode, draftId, linkedReportId]);
+  }, [previewMode, draftId, linkedReportId, previewRefreshToken]);
 
   const { data: finalReport } = useQuery<FinalReportMeta & { id?: number; signedByName?: string | null }>({
     queryKey: ["workspace-final-report", linkedReportId],
@@ -1554,6 +1575,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         },
       );
       captureSavedDraftId(res.draft.id);
+      // R1.4 — force the preview effect to refetch even though draftId is
+      // unchanged on every save after the first (see previewRefreshToken).
+      setPreviewRefreshToken((n) => n + 1);
       // The server now holds exactly the selections we sent — the restore
       // effect must not re-apply them over the editor after this save.
       selectionsRestoredForDraftRef.current = res.draft.id;
@@ -1670,7 +1694,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         ? "\nNote: no billed test is linked to this study — the worklist will be marked final, but no patient-facing report row can be created.\n"
         : "";
       confirmed = window.confirm(
-        `Finalize this report?\n\n${identity}\n\n${validationSummary}\n${warningBlock}${unbilledNote}\nAfter finalizing, editing is disabled.`,
+        `Finalize and sign this report?\n\n${identity}\n\n${validationSummary}\n${warningBlock}${unbilledNote}\nAfter finalizing, editing is disabled.`,
       );
       if (!confirmed) return;
     } finally {
@@ -1727,7 +1751,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       // document server-side with SESSION-derived authorship and reports the
       // TRUE outcome in structuredFinal; createdBy below only labels the
       // legacy row path.
-      const { reportId, structuredFinal, reportCreationSkipped: skippedReason } = await finalizeRadiologyReport(
+      const { reportId, structuredFinal, reportCreationSkipped: skippedReason, signed, signError } = await finalizeRadiologyReport(
         {
           patientId: entry.patientId,
           studyId: entry.studyId,
@@ -1776,17 +1800,28 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       // backup so patient report text never lingers on a shared machine.
       draftBackup.clear();
       // Surface the TRUE finalize path (Phase 8) — never claim a structured
-      // sign that did not happen.
+      // sign that did not happen. R1.4 — never claim "Finalized" as a
+      // completed, deliverable document unless it is actually signed: an
+      // unsigned report cannot be verified, shared, or downloaded by the
+      // patient, so a false "Finalized" claim used to leave reports silently
+      // stuck at status=draft with no indication anything further was needed.
       const signedStructured = structuredFinal?.signed === true;
       const legacyFallback = structuredFinal?.signed === false;
+      const needsAttention = !signed || legacyFallback || !!skippedReason;
       toast({
-        title: signedStructured ? "Report Finalized — structured document signed" : "Report Finalized",
+        title: signedStructured
+          ? "Report Finalized — structured document signed"
+          : signed
+            ? "Report Finalized and Signed"
+            : "Report saved but NOT signed",
         description: skippedReason
           ? `Worklist marked final, but NO patient report row was created: ${skippedReason}.`
-          : legacyFallback
-            ? `Signed via LEGACY path: ${typeof structuredFinal?.reason === "string" ? structuredFinal.reason : "structured signing unavailable"}`
-            : reportId ? `Report ID: ${reportId}` : "Worklist updated.",
-        ...(legacyFallback || skippedReason ? { variant: "destructive" as const } : {}),
+          : !signed
+            ? `${signError ?? "Signing failed"} — the report will not be deliverable until it is signed from Report Hub.`
+            : legacyFallback
+              ? `Signed via LEGACY path: ${typeof structuredFinal?.reason === "string" ? structuredFinal.reason : "structured signing unavailable"}`
+              : reportId ? `Report ID: ${reportId}` : "Worklist updated.",
+        ...(needsAttention ? { variant: "destructive" as const } : {}),
       });
       void qc.invalidateQueries({ queryKey: ["workspace-entry", studyId] });
       void qc.invalidateQueries({ queryKey: ["radiology-worklist"] });
@@ -1959,7 +1994,20 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // finalized report prints its patient-reports artifact; a draft prints the
   // shared-layer draft preview (DRAFT watermark). Falls back to the local
   // preview only when nothing is saved yet.
+  //
+  // R1.4 — the popup window is now opened SYNCHRONOUSLY, before any await:
+  // opening it only after `await api.get(...)` resolves put the call outside
+  // the click handler's synchronous call stack, so browsers that require a
+  // fresh user gesture for window.open (Safari in particular, and Chrome
+  // once the post-gesture window elapses on a slow request) silently
+  // blocked the popup with no error shown — clicking Print did nothing
+  // visible at all. A blocked popup is now a visible toast, not silence.
   async function printReport() {
+    const w = window.open("", "_blank");
+    if (!w) {
+      toast({ title: "Popup blocked", description: "Allow popups for this site to print.", variant: "destructive" });
+      return;
+    }
     const url = linkedReportId
       ? `/api/patient-reports/${linkedReportId}/print`
       : draftId
@@ -1968,8 +2016,6 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     if (url) {
       try {
         const html = await api.get<string>(url);
-        const w = window.open("", "_blank");
-        if (!w) return;
         w.document.write(html); // artifact carries its own auto-print script
         w.document.close();
         w.focus();
@@ -1978,9 +2024,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         toast({ title: "Server print failed — using local preview", variant: "destructive" });
       }
     }
-    if (!previewRef.current) return;
-    const w = window.open("", "_blank");
-    if (!w) return;
+    if (!previewRef.current) { w.close(); return; }
     w.document.write(
       `<html><head><title>Radiology Report</title></head><body>${previewRef.current.innerHTML}</body></html>`
     );
@@ -3062,11 +3106,26 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                     data-testid="server-report-preview"
                   />
                 ) : (
-                  <div
-                    ref={previewRef}
-                    className="p-4"
-                    dangerouslySetInnerHTML={{ __html: previewHtml }}
-                  />
+                  // R1.4 — this fallback is a DIFFERENT, hand-rolled renderer
+                  // (no clinic letterhead/logo, no signature block, no QR,
+                  // none of the canonical page-break CSS) used only when the
+                  // server preview call failed or nothing has been saved
+                  // yet. It used to swap in silently, with nothing on
+                  // screen distinguishing it from the real preview — a
+                  // radiologist could mistake it for the final formatted
+                  // report. The banner makes the substitution honest; Print
+                  // and PDF always use the canonical renderer regardless.
+                  <div>
+                    <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 border-b border-amber-200 text-amber-800 text-xs font-medium">
+                      <AlertTriangle size={13} className="shrink-0" />
+                      <span>Preview temporarily unavailable — showing a simplified draft view, not the final formatted report. Print and PDF are unaffected.</span>
+                    </div>
+                    <div
+                      ref={previewRef}
+                      className="p-4"
+                      dangerouslySetInnerHTML={{ __html: previewHtml }}
+                    />
+                  </div>
                 )}
               </div>
             )}
