@@ -960,8 +960,16 @@ export default function RadiologyWorklist() {
                         <td className="px-3 py-2.5 whitespace-nowrap text-center">
                           {entry.id !== -1 && isUltrasoundModality(entry.modality) ? (() => {
                             const count = entry.usgMeasurementCount ?? 0;
-                            const target = entry.studyId != null
-                              ? `/radiology/report/${entry.studyId}`
+                            // entry.id is the worklist row's own id — the same
+                            // id the "Report" button below uses and the same
+                            // id RadiologyReportingWorkspace's studyId prop
+                            // expects (GET /api/internal/radiology/worklist/:id).
+                            // entry.studyId is a DIFFERENT, often-null id
+                            // (radiology_studies.id, the RIS billing-side FK) —
+                            // using it here opened the wrong study or a blank
+                            // workspace whenever it happened to be set.
+                            const target = entry.id != null
+                              ? `/radiology/report/${entry.id}`
                               : entry.studyInstanceUID
                                 ? `/radiology/usg-measurements/${entry.studyInstanceUID}`
                                 : null;

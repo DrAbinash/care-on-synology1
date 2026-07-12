@@ -312,13 +312,19 @@ export function matchWorkspaceShortcut(e: {
   if (mod && !shift && key === "s") return "save";
   if (mod && !shift && key === "enter") return "finalize";
   if (mod && !shift && key === "k") return "quickselect";
-  // R2.0 — Ctrl+1..6: digit keys are otherwise unused by this matrix, so
-  // this is safe to add unconditionally (handlers no-op outside USG mode).
-  // NOTE: some browsers reserve Ctrl+1..8/9 for tab-switching at the OS/
-  // chrome level and may never deliver this keydown to the page at all —
-  // see R2_0_CANONICAL_ULTRASOUND_IMPLEMENTATION.md for the observed
-  // behavior and fallback guidance.
-  if (mod && !shift && /^[1-6]$/.test(key)) return (`select-template-${key}` as WorkspaceShortcut);
+  // R2.0 — Ctrl+1..6: digit keys are otherwise unused by this matrix. The
+  // handler overwrites rawFindings wholesale (applyUsgTemplate), so — same
+  // as "/" below — it must NOT fire while the user is typing in the
+  // findings/impression editor, only while the browser default (Ctrl+1..8
+  // often reserved for tab-switching at the OS/chrome level, so this may
+  // never even reach the page — see
+  // R2_0_CANONICAL_ULTRASOUND_IMPLEMENTATION.md) doesn't already intercept it.
+  {
+    const tag = e.target?.tagName?.toUpperCase() ?? "";
+    if (mod && !shift && /^[1-6]$/.test(key) && tag !== "INPUT" && tag !== "TEXTAREA") {
+      return (`select-template-${key}` as WorkspaceShortcut);
+    }
+  }
   if (e.altKey && !mod && key === "o") return "open-study";
   if (key === "escape") return "escape";
   // "/" focuses quick-select search ONLY outside text inputs — typing a

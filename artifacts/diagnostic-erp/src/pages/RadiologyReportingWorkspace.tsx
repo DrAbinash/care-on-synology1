@@ -43,7 +43,7 @@ import {
 import { deriveQuickSelectFindings } from "@/lib/quickSelectFindingsPayload";
 import { validateReport, computeQualityScore } from "@/lib/reportValidator";
 import { isLearnableAddition } from "@/lib/learningEngine";
-import { upsertMeasurement } from "@/lib/measurementVars";
+import { upsertMeasurement, upsertLabeledLine } from "@/lib/measurementVars";
 import CollapsibleSection from "@/components/radiology/CollapsibleSection";
 import FollowUpPanel from "@/components/radiology/FollowUpPanel";
 import { useLocalDraftBackup } from "@/hooks/useLocalDraftBackup";
@@ -641,10 +641,15 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // same upsert-by-label pattern as handleSmartMeasurement above, just keyed
   // by (label, value, unit) instead of a "{value}" template string.
   function handleUsgMeasurementInsert(label: string, value: string, unit?: string) {
-    const templateText = `${label}: {value}`;
+    // R2.0 — USG panel values are often non-numeric free text (Placenta
+    // Position, Uterus Size with descriptors, Fetal Presentation, ...) and
+    // always form one whole "Label: value" line, so this upserts by label
+    // prefix (upsertLabeledLine) rather than the numeric-only linked-
+    // variable matcher handleSmartMeasurement/upsertMeasurement uses for
+    // Quick Select's embedded-in-sentence measurements.
     const filledValue = unit ? `${value} ${unit}` : value;
     setRawFindings((prev) => {
-      const { text, updated } = upsertMeasurement(prev, templateText, filledValue);
+      const { text, updated } = upsertLabeledLine(prev, label, filledValue);
       if (updated) toast({ title: "Measurement updated", description: "Existing value replaced in the report." });
       return text;
     });
@@ -715,8 +720,23 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         toast({ title: "No obstetric measurements to map", description: "This study has no OB/fetal measurement values.", variant: "destructive" });
         return;
       }
+      // usg_measurements (the row fetched above) has no fetalUsgStudyId
+      // column at all — that id only exists on the separate FetalUsgLevel4
+      // pipeline's fetal_usg_studies table. Look it up the same way
+      // ObDashboardStrip does, via the existing /strip/:studyId endpoint —
+      // best-effort: a missing link here still lets the biometry summary
+      // through, it just won't carry the Form F <-> fetal-study cross-link.
+      let fetalUsgStudyId: number | null = null;
+      if (entry.studyId != null) {
+        try {
+          const strip = await api.get<{ found: boolean; fetalStudyId?: number }>(
+            `/api/fetal-usg-dashboard/strip/${entry.studyId}`,
+          );
+          if (strip.found && strip.fetalStudyId) fetalUsgStudyId = strip.fetalStudyId;
+        } catch { /* best-effort only — proceed without the link */ }
+      }
       const params = new URLSearchParams({ prefillUsgSummary: parts.join(", ") });
-      if (m.fetalUsgStudyId) params.set("prefillFetalUsgStudyId", String(m.fetalUsgStudyId));
+      if (fetalUsgStudyId != null) params.set("prefillFetalUsgStudyId", String(fetalUsgStudyId));
       window.open(`/form-f?${params.toString()}`, "_blank", "noopener");
     } catch {
       toast({ title: "Failed to load measurements for Form F review", variant: "destructive" });
@@ -1005,6 +1025,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     queryKey: ["usg-report-templates"],
     queryFn: () => api.get("/api/usg-reports/templates"),
     enabled: isUltrasound,
+    // Server returns a hardcoded, in-memory catalog (usgReportTemplates.ts)
+    // that cannot change without a redeploy — no need for the app's default
+    // 60s refetchInterval to hit it repeatedly per open USG report.
+    staleTime: 5 * 60_000,
+    refetchInterval: false,
   });
 
   const { data: normalSnippets = [] } = useQuery<NormalSnippet[]>({

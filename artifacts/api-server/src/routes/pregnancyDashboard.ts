@@ -291,7 +291,16 @@ router.get("/strip/:studyId", async (req, res) => {
       fetalStudyId: sourceStudy.id,
       requestedStudyId: studyId,
       isFallback: sourceStudy.id !== current.id,
-      measurementDate: sourceStudy.createdAt ? new Date(sourceStudy.createdAt).toLocaleDateString() : null,
+      // R2.0 fix: was `.toLocaleDateString()` with no locale/timezone args
+      // on the SERVER (not the browser) — Node's default locale/TZ depend
+      // on the deployment environment, so this could render en-US M/D/YYYY
+      // next to the en-IN DD-Mon-YYYY dates used everywhere else in the
+      // app, and drift by a calendar day across a TZ boundary. Match the
+      // same explicit en-IN formatting the rest of the app uses (e.g.
+      // FormF.tsx's formatDate).
+      measurementDate: sourceStudy.createdAt
+        ? new Date(sourceStudy.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Kolkata" })
+        : null,
       ga: {
         weeks: sourceStudy.gaWeeks ?? null,
         days: sourceStudy.gaDays ?? null,

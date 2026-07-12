@@ -592,7 +592,22 @@ export default function FormF() {
 
   function applyPrefillSummary() {
     if (!prefillSummary) return;
+    // The workspace hand-off (RadiologyReportingWorkspace.tsx's
+    // reviewAndMapToFormF) deliberately sends a plain biometry summary
+    // ("GA: 12w4d, CRL: 65 mm, ...") with NO "Normal"/"Abnormal" prefix —
+    // categorizeUsgResult() can only recognize that prefix (the OTHER
+    // producer, fetchFromBilling's legacy auto-populate text, always has
+    // one). So `category` is normally null here by design: the radiologist
+    // must still choose Normal/Abnormal themselves. What IS safe to lift
+    // automatically is the objective Gestational Age figure (not a
+    // diagnosis) — everything else stays exactly as typed by the user.
     const category = categorizeUsgResult(prefillSummary.text);
+    const gaMatch = prefillSummary.text.match(/GA:\s*(\d+)\s*w\s*(\d+)\s*d/i);
+    const appliedFields: string[] = [];
+    if (category) appliedFields.push("Ultrasound Result");
+    if (gaMatch) appliedFields.push("Gestational Age");
+    if (prefillSummary.fetalUsgStudyId) appliedFields.push("Study link");
+
     setForm((prev) => ({
       ...prev,
       ultrasoundResult: category ?? prev.ultrasoundResult,
@@ -602,10 +617,28 @@ export default function FormF() {
           : category === "normal"
             ? ""
             : prev.abnormality,
+      gestationalAgeWeeks: gaMatch ? gaMatch[1] : prev.gestationalAgeWeeks,
+      gestationalAgeDays: gaMatch ? gaMatch[2] : prev.gestationalAgeDays,
       fetalUsgStudyId: prefillSummary.fetalUsgStudyId ?? prev.fetalUsgStudyId,
     }));
-    toast({ title: "Applied to Ultrasound Result", description: "Review the populated fields before saving." });
-    setPrefillSummary(null);
+
+    if (appliedFields.length > 0) {
+      toast({
+        title: `Applied: ${appliedFields.join(", ")}`,
+        description: "Review the populated fields — you still need to select Normal/Abnormal and fill the rest before saving.",
+      });
+      setPrefillSummary(null);
+    } else {
+      // Nothing could be safely auto-extracted from this text (e.g. no GA
+      // present) — say so honestly instead of a false "Applied" toast, and
+      // keep the reference banner open so the text stays visible for
+      // manual transcription.
+      toast({
+        title: "Nothing could be auto-filled from this summary",
+        description: "Use the reference text above to fill in the Result and other fields manually, then dismiss the banner.",
+        variant: "destructive",
+      });
+    }
   }
 
   // ── Feature 2: ID Card Upload + AI OCR + Camera Scanner ──

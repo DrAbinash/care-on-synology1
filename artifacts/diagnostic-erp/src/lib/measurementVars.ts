@@ -47,3 +47,31 @@ export function readMeasurement(text: string, templateText: string): string | nu
   const m = filledTemplateRegex(templateText).exec(text);
   return m ? m[1] : null;
 }
+
+/**
+ * R2.0 — Inserts (or updates) a "Label: value" line in `text`, matched by
+ * the LABEL prefix rather than a numeric pattern. Unlike upsertMeasurement
+ * above (whose {value} capture group is strictly numeric/dimension text —
+ * correct for its own Quick Select "sentence with an embedded number" use
+ * case), this is for the USG measurement review panel's insert action,
+ * where the value is often non-numeric free text ("Placenta Position:
+ * Anterior", "Uterus Size: 8.1 x 4.2 x 4.5 cm, bulky") and always forms its
+ * OWN whole line rather than being embedded mid-sentence. Matching a
+ * numeric-only capture group against those left either no match at all
+ * (silent duplicate line on every re-insert) or a partial match that only
+ * replaced a numeric prefix, leaving old trailing text stuck on the new
+ * value. Matches case-insensitively on "^<label>:" at the start of a line.
+ */
+export function upsertLabeledLine(
+  text: string,
+  label: string,
+  value: string,
+): { text: string; updated: boolean } {
+  const line = `${label}: ${value}`.trim();
+  const lineRe = new RegExp(`^${escapeRegex(label)}:.*$`, "im");
+  if (lineRe.test(text)) {
+    return { text: text.replace(lineRe, line), updated: true };
+  }
+  const base = text.trimEnd();
+  return { text: base ? `${base}\n${line}` : line, updated: false };
+}
