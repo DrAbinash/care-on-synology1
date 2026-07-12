@@ -14,7 +14,6 @@ import {
   X,
   Moon,
   Sun,
-  Activity,
   FilePen,
   Package,
   BookOpen,
