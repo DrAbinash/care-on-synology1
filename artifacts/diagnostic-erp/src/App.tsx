@@ -331,8 +331,9 @@ function Router() {
         <Route path="/teleradiology" component={TeleradiologyPortal} />
         <Route path="/teleradiology/:rest*" component={TeleradiologyPortal} />
         <Route path="/verify-receipt/:billId" component={VerifyReceipt} />
-        <Route path="/display" component={Display} />
+        {/* Specific display routes must come BEFORE generic :roomKey pattern */}
         <Route path="/display/payment-qr" component={PaymentQrDisplay} />
+        <Route path="/display" component={Display} />
         {/* Primary URL per spec: caredeoghar.com/queue/usg, /queue/mri, etc. */}
         <Route path="/queue/:roomKey" component={QueueDisplay} />
         {/* Kept for backward compatibility with any already-configured TVs */}
