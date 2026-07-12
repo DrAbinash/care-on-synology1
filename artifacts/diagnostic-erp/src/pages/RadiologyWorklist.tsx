@@ -5,6 +5,7 @@ import { api } from "@/lib/fetchApi";
 import { readStaffSession, ERP_SESSION_KEY, canAccess, normalizeRole } from "@/lib/staffSession";
 import { toUnifiedStatus, worklistRoleView, priorityInfo, type WorklistRoleView } from "@/lib/radiologyStatus";
 import { launchViewer } from "@/lib/viewerService";
+import { normalizeModality, isUltrasoundModality } from "@/lib/usgModality";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -54,6 +55,13 @@ type WorklistEntry = {
   uhid?: string | null;        // Phase C: ERP UHID via patients join
   billNumber?: string | null;  // Phase C: bill number via study→bill join
   priority?: string | null;    // Phase C: reuses radiology_studies.priority
+  // R2.0 — canonical ultrasound integration: USG/Doppler measurement +
+  // key-image counts and latest report-draft status, scalar-subqueried by
+  // worklistId in GET /api/radiology/pacs-worklist. Present for every row;
+  // 0/null for non-ultrasound studies with no USG data.
+  usgMeasurementCount?: number;
+  usgKeyImageCount?: number;
+  usgReportStatus?: "draft" | "pending_review" | "verified" | "finalized" | "amended" | "archived" | null;
   createdAt: string;
   updatedAt: string;
   lockUserId?: number | null;
@@ -135,6 +143,41 @@ const AI_DRAFT_STATUS_CONFIG: Record<string, { label: string; color: string }> =
   READY:   { label: "Ready",   color: "bg-purple-50 text-purple-700 border-purple-200" },
   ERROR:   { label: "Error",   color: "bg-red-50 text-red-700 border-red-200" },
 };
+
+// R2.0 — USG/Doppler report-draft lifecycle status badge, styled consistently
+// with STATUS_CONFIG/AI_DRAFT_STATUS_CONFIG's Record<label,color> + rounded
+// pill convention above.
+const USG_REPORT_STATUS_CONFIG: Record<string, { label: string; color: string }> = {
+  draft:          { label: "Draft",          color: "bg-gray-100 text-gray-600 border-gray-200" },
+  pending_review: { label: "Pending Review", color: "bg-yellow-50 text-yellow-700 border-yellow-200" },
+  verified:       { label: "Verified",       color: "bg-blue-50 text-blue-700 border-blue-200" },
+  finalized:      { label: "Finalized",      color: "bg-green-100 text-green-800 border-green-200" },
+  amended:        { label: "Amended",        color: "bg-purple-50 text-purple-700 border-purple-200" },
+  archived:       { label: "Archived",       color: "bg-gray-100 text-gray-500 border-gray-200" },
+};
+
+function UsgReportStatusBadge({ status }: { status?: string | null }) {
+  if (!status) return <span className="text-xs text-muted-foreground">—</span>;
+  const cfg = USG_REPORT_STATUS_CONFIG[status] ?? { label: status, color: "bg-gray-100 text-gray-600 border-gray-200" };
+  return (
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium border ${cfg.color}`}>
+      {cfg.label}
+    </span>
+  );
+}
+
+// R2.0 — small count badge for the Measurements/Images columns. Zero renders
+// as a muted em-dash (matching the file's existing empty-cell convention,
+// e.g. fmtDate/entry.studyDescription above), matching counts render as a
+// colored pill.
+function UsgCountBadge({ count, color }: { count: number; color: string }) {
+  if (!count) return <span className="text-xs text-muted-foreground">—</span>;
+  return (
+    <span className={`inline-flex items-center justify-center min-w-[22px] px-1.5 py-0.5 rounded-full text-[10px] font-semibold border ${color}`}>
+      {count}
+    </span>
+  );
+}
 
 /**
  * Usability: hours a non-final study has been waiting, computed purely from
@@ -554,8 +597,10 @@ export default function RadiologyWorklist() {
   const filtered = entries.filter((e) => {
     // Client-side status filter
     if (statusFilter !== "all" && e.status !== statusFilter) return false;
-    // Client-side modality filter
-    if (modalityFilter !== "all" && e.modality !== modalityFilter) return false;
+    // Client-side modality filter — normalize both sides so raw PACS
+    // spellings ("USG", "Doppler", "OB US", ...) fold into the one "US"
+    // filter chip instead of silently failing exact-string equality (R2.0).
+    if (modalityFilter !== "all" && normalizeModality(e.modality) !== normalizeModality(modalityFilter)) return false;
 
     // Client-side lock filter — server-computed expiry first (M1.6A)
     const lastAct = e.lockLastActivityAt || e.lockTime;
@@ -865,6 +910,10 @@ export default function RadiologyWorklist() {
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">UHID</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Bill No</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Modality</th>
+                      {/* R2.0 — canonical ultrasound integration: USG/Doppler measurement + key-image counts and report-draft status, folded into the ONE worklist. */}
+                      <th className="px-3 py-2.5 font-medium whitespace-nowrap text-center">Measurements</th>
+                      <th className="px-3 py-2.5 font-medium whitespace-nowrap text-center">Images</th>
+                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">USG Report</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Priority</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Study Description</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Ref. Doctor</th>

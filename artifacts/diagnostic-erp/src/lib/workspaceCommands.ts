@@ -29,6 +29,15 @@ export const WORKSPACE_COMMANDS = [
   "focus-findings",
   "focus-impression",
   "close-panel",
+  // R2.0 — Ctrl+1..6 USG practical-template quick-select (Whole Abdomen, KUB,
+  // Pregnancy, Doppler, Breast, Thyroid). No-op outside the workspace's
+  // ultrasound mode; handlers own that guard, same as every other command.
+  "select-template-1",
+  "select-template-2",
+  "select-template-3",
+  "select-template-4",
+  "select-template-5",
+  "select-template-6",
 ] as const;
 
 export type WorkspaceCommand = (typeof WORKSPACE_COMMANDS)[number];
