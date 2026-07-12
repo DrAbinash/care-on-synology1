@@ -25,6 +25,12 @@ import ReportImagePicker from "@/components/radiology/ReportImagePicker";
 import RadiologyCopilotPanel from "@/components/RadiologyCopilotPanel";
 import RadiologyMemoryPanel from "@/components/RadiologyMemoryPanel";
 import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
+// R2.0 — canonical ultrasound integration: USG mode inside the ONE
+// canonical workspace (no separate USG reporting workflow).
+import UsgMeasurementReviewPanel from "@/components/radiology/UsgMeasurementReviewPanel";
+import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
+import PreferencesPanel from "@/components/PreferencesPanel";
+import { isUltrasoundModality } from "@/lib/usgModality";
 import QuickFindingsPanel, {
   type QuickFinding, type QuickProtocol,
 } from "@/components/radiology/QuickFindingsPanel";
@@ -631,6 +637,94 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     });
   }
 
+  // R2.0 — USG measurement review panel "Insert" / "Approve & Insert": the
+  // same upsert-by-label pattern as handleSmartMeasurement above, just keyed
+  // by (label, value, unit) instead of a "{value}" template string.
+  function handleUsgMeasurementInsert(label: string, value: string, unit?: string) {
+    const templateText = `${label}: {value}`;
+    const filledValue = unit ? `${value} ${unit}` : value;
+    setRawFindings((prev) => {
+      const { text, updated } = upsertMeasurement(prev, templateText, filledValue);
+      if (updated) toast({ title: "Measurement updated", description: "Existing value replaced in the report." });
+      return text;
+    });
+  }
+
+  // R2.0 — apply a practical USG template (Whole Abdomen/KUB/Pregnancy/
+  // Doppler/Breast/Thyroid/...): calls the existing confidence-gated
+  // auto-generate endpoint (fills ONLY from approved measurements; low-
+  // confidence values become an explicit "[___ low confidence – verify]"
+  // placeholder; unmeasured fields stay blank for manual entry — see
+  // usgReportTemplates.ts) and applies the result as a full manual apply,
+  // same semantics as picking a structured template by hand.
+  const [applyingUsgTemplateId, setApplyingUsgTemplateId] = useState<string | null>(null);
+  async function applyUsgTemplate(templateId: string) {
+    if (!entry?.studyInstanceUID || isLocked) return;
+    setApplyingUsgTemplateId(templateId);
+    try {
+      const out = await api.post<{
+        content: string; filledFieldCount: number; skippedLowConfidenceCount: number; hasApprovedMeasurements: boolean;
+      }>("/api/usg-reports/auto-generate", { templateId, studyInstanceUID: entry.studyInstanceUID });
+      templateApplySourceRef.current = "manual";
+      setSelectedTemplateId(null);
+      setRawFindings(out.content);
+      toast({
+        title: "USG template applied",
+        description: out.hasApprovedMeasurements
+          ? `${out.filledFieldCount} field(s) filled from approved measurements${out.skippedLowConfidenceCount ? `, ${out.skippedLowConfidenceCount} flagged low-confidence for review` : ""}.`
+          : "No approved measurements yet — template inserted blank for manual entry.",
+      });
+    } catch {
+      toast({ title: "Failed to apply USG template", variant: "destructive" });
+    } finally {
+      setApplyingUsgTemplateId(null);
+    }
+  }
+
+  // R2.0 PCPNDT — "Review & Map to Form F": Form F must NEVER be auto-filled.
+  // This reads the current APPROVED usg_measurements row (never a
+  // pending_review/rejected one) and hands its raw biometry values to Form F
+  // as plain reference text via a query param — deliberately with no
+  // "Normal"/"Abnormal" categorization guessed on this end, so the
+  // radiologist must still explicitly choose the result category and type
+  // any abnormality detail themselves on the Form F page before saving.
+  const [mappingToFormF, setMappingToFormF] = useState(false);
+  async function reviewAndMapToFormF() {
+    if (!entry?.studyInstanceUID) return;
+    setMappingToFormF(true);
+    try {
+      const rows = await api.get<Array<Record<string, unknown>>>(
+        `/api/usg-extraction/study/${encodeURIComponent(entry.studyInstanceUID)}`,
+      );
+      const m = rows?.[0];
+      if (!m || m.status !== "approved") {
+        toast({
+          title: "No approved measurements yet",
+          description: "Approve the extracted measurements in the Measure tab before mapping to Form F.",
+          variant: "destructive",
+        });
+        return;
+      }
+      const parts: string[] = [];
+      const add = (label: string, v: unknown) => { if (v) parts.push(`${label}: ${v}`); };
+      add("GA", m.ga); add("CRL", m.crl); add("EDD", m.edd); add("FHR", m.fhr);
+      add("BPD", m.bpd); add("HC", m.hc); add("AC", m.ac); add("FL", m.fl); add("EFW", m.efw);
+      add("Placenta", m.placentaPosition); add("Liquor/AFI", m.liquorAfi);
+      add("Presentation", m.fetalPresentation);
+      if (parts.length === 0) {
+        toast({ title: "No obstetric measurements to map", description: "This study has no OB/fetal measurement values.", variant: "destructive" });
+        return;
+      }
+      const params = new URLSearchParams({ prefillUsgSummary: parts.join(", ") });
+      if (m.fetalUsgStudyId) params.set("prefillFetalUsgStudyId", String(m.fetalUsgStudyId));
+      window.open(`/form-f?${params.toString()}`, "_blank", "noopener");
+    } catch {
+      toast({ title: "Failed to load measurements for Form F review", variant: "destructive" });
+    } finally {
+      setMappingToFormF(false);
+    }
+  }
+
   // Live Report Quality Score (Phase 3) — recomputed as the radiologist
   // types; purely informational, never blocks anything.
   const quality = useMemo(
@@ -896,6 +990,23 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     queryFn: () => api.get<StructuredTemplate[]>("/api/radiology/structured-report-templates"),
   });
 
+  // R2.0 — canonical ultrasound integration. `entry.modality` is whatever
+  // the PACS/DICOM source sent verbatim (US/USG/Doppler/OB US/...); fold it
+  // through the ONE normalizer so USG mode reliably turns on regardless of
+  // spelling (see lib/usgModality.ts).
+  const isUltrasound = useMemo(() => isUltrasoundModality(entry?.modality), [entry?.modality]);
+
+  // Practical USG template catalog (Whole Abdomen/KUB/Pelvis/OB/Doppler/
+  // Prostate/Scrotum/Thyroid/Breast) — a separate, confidence-gated-autofill
+  // catalog from `templates` above; only fetched in USG mode.
+  const { data: usgTemplates = [] } = useQuery<
+    Array<{ id: string; label: string; category: string; description: string }>
+  >({
+    queryKey: ["usg-report-templates"],
+    queryFn: () => api.get("/api/usg-reports/templates"),
+    enabled: isUltrasound,
+  });
+
   const { data: normalSnippets = [] } = useQuery<NormalSnippet[]>({
     queryKey: ["normal-snippets", entry?.modality, entry?.studyDescription],
     queryFn: () =>
@@ -1118,6 +1229,21 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     workflow.unpark(parkedNext.id);
     goToStudy(parkedNext);
   }
+  // R2.0 — Ctrl+1..6 USG practical-template quick-select. No-op outside USG
+  // mode or once the report is locked, same guard style as every other
+  // command; picks the first catalog entry with this id (skips silently if
+  // the catalog hasn't loaded / doesn't contain it — never throws).
+  const USG_QUICK_TEMPLATE_BY_DIGIT: Record<string, string> = {
+    "1": "WHOLE_ABDOMEN", "2": "KUB", "3": "OB_GROWTH",
+    "4": "ARTERIAL_DOPPLER", "5": "BREAST", "6": "THYROID",
+  };
+  function selectUsgQuickTemplate(digit: string) {
+    if (!isUltrasound || isLocked) return;
+    const templateId = USG_QUICK_TEMPLATE_BY_DIGIT[digit];
+    if (!templateId || !usgTemplates.some((t) => t.id === templateId)) return;
+    void applyUsgTemplate(templateId);
+  }
+
   const commandDispatcher = createCommandDispatcher({
     save: () => { if (!isLocked && !saving) void saveDraft(); },
     finalize: () => { if (!isLocked && !finalizing) void finalizeReport(); },
@@ -1134,6 +1260,13 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     "focus-findings": () => focusEditor("findings"),
     "focus-impression": () => focusEditor("impression"),
     "close-panel": () => closeTopPanel(),
+    // R2.0
+    "select-template-1": () => selectUsgQuickTemplate("1"),
+    "select-template-2": () => selectUsgQuickTemplate("2"),
+    "select-template-3": () => selectUsgQuickTemplate("3"),
+    "select-template-4": () => selectUsgQuickTemplate("4"),
+    "select-template-5": () => selectUsgQuickTemplate("5"),
+    "select-template-6": () => selectUsgQuickTemplate("6"),
   });
 
   // ── M1.6B2 — the voice execution adapter ──────────────────────────────────
@@ -2128,6 +2261,33 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           className="h-7 text-xs"
         />
 
+        {/* R2.0 — practical USG templates (Whole Abdomen/KUB/Pregnancy/
+            Doppler/Prostate/Scrotum/Thyroid/Breast/Soft Tissue/...), a
+            separate confidence-gated-autofill catalog from the structured
+            templates above. Shown ONLY in USG mode. */}
+        {isUltrasound && usgTemplates.length > 0 && (
+          <>
+            <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide pt-1">
+              USG Templates
+            </div>
+            <div className="flex flex-col gap-1 max-h-[160px] overflow-y-auto">
+              {usgTemplates.map((t) => (
+                <Button
+                  key={t.id}
+                  size="sm"
+                  variant="outline"
+                  className="h-auto py-1.5 text-left justify-start px-2 flex-col items-start gap-0"
+                  onClick={() => applyUsgTemplate(t.id)}
+                  disabled={isLocked || applyingUsgTemplateId === t.id}
+                >
+                  <span className="text-xs font-medium">{t.label}</span>
+                  <span className="text-[10px] opacity-70">{t.category}</span>
+                </Button>
+              ))}
+            </div>
+          </>
+        )}
+
         {/* Template list */}
         <div className="flex flex-col gap-1 max-h-[200px] overflow-y-auto">
           {filteredTemplates.map((t) => (
@@ -2204,6 +2364,27 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             </div>
           </>
         )}
+
+        {/* Favourite + recently-used templates/findings/macros — already
+            DB-backed (user_report_preferences + usage-frequency log);
+            surfacing it here gives every modality (USG included) "favourite
+            and recently used templates first" without inventing new state. */}
+        <div className="pt-1 border-t">
+          <PreferencesPanel
+            currentUserId={session?.user.id ?? null}
+            onApplyTemplate={(templateName) => {
+              const usgMatch = usgTemplates.find((t) => t.label === templateName);
+              if (usgMatch) { void applyUsgTemplate(usgMatch.id); return; }
+              const structuredMatch = templates.find((t) => t.templateName === templateName);
+              if (structuredMatch) {
+                templateApplySourceRef.current = "manual";
+                setSelectedTemplateId(structuredMatch.id);
+              }
+            }}
+            onInsertFindingText={(text) => setRawFindings((prev) => mergeBlock(prev, text))}
+            onInsertImpressionPoint={(text) => setImpression((prev) => mergeImpression(prev, text))}
+          />
+        </div>
       </div>
     );
   }
@@ -2519,6 +2700,15 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
           {/* Scrollable editor area */}
           <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
+
+            {/* R2.0 — Pregnancy Dashboard strip: silent (renders nothing) for
+                every non-obstetric study; only fetches when isUltrasound. */}
+            {isUltrasound && (
+              <ObDashboardStrip
+                studyId={entry?.studyId}
+                onApplyToReport={(text) => setRawFindings((prev) => mergeBlock(prev, text))}
+              />
+            )}
 
             {/* Finalized banner */}
             {statusLocked && (
@@ -3346,6 +3536,35 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             {/* Tab 4: Measurements */}
             {rightTab === "measurements" && (
               <div className="flex flex-col">
+                {/* R2.0 — USG measurement review (DICOM SR → GE tags → OCR →
+                    Manual, provenance, approve/insert, PCPNDT Form F review)
+                    only for ultrasound studies; MeasurementAssistantPanel
+                    below stays the generic manual measurement/calculator
+                    widget for every modality including USG. */}
+                {isUltrasound && entry?.studyInstanceUID && (
+                  <div className="border-b">
+                    <UsgMeasurementReviewPanel
+                      studyInstanceUID={entry.studyInstanceUID}
+                      draftId={draftId}
+                      onInsertMeasurement={handleUsgMeasurementInsert}
+                    />
+                    <div className="p-2 border-t">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-full h-7 text-[11px]"
+                        onClick={() => void reviewAndMapToFormF()}
+                        disabled={mappingToFormF}
+                      >
+                        <ClipboardList size={11} className="mr-1.5" />
+                        {mappingToFormF ? "Loading…" : "Review & Map to Form F"}
+                      </Button>
+                      <p className="text-[10px] text-muted-foreground mt-1">
+                        Opens Form F with approved values shown for reference only — nothing is saved until you review and click Save there.
+                      </p>
+                    </div>
+                  </div>
+                )}
                 <MeasurementAssistantPanel
                   patientId={entry?.patientId ?? undefined}
                   studyId={entry?.studyId ?? undefined}

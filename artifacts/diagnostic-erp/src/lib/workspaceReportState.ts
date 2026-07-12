@@ -286,7 +286,10 @@ export function canVerifyReport(
 
 export type WorkspaceShortcut =
   | "save" | "finalize" | "quickselect" | "open-study" | "escape"
-  | "next-study" | "previous-study" | "park-study";
+  | "next-study" | "previous-study" | "park-study"
+  // R2.0 — USG practical-template quick-select (Ctrl+1..6).
+  | "select-template-1" | "select-template-2" | "select-template-3"
+  | "select-template-4" | "select-template-5" | "select-template-6";
 
 export function matchWorkspaceShortcut(e: {
   key: string;
@@ -309,6 +312,13 @@ export function matchWorkspaceShortcut(e: {
   if (mod && !shift && key === "s") return "save";
   if (mod && !shift && key === "enter") return "finalize";
   if (mod && !shift && key === "k") return "quickselect";
+  // R2.0 — Ctrl+1..6: digit keys are otherwise unused by this matrix, so
+  // this is safe to add unconditionally (handlers no-op outside USG mode).
+  // NOTE: some browsers reserve Ctrl+1..8/9 for tab-switching at the OS/
+  // chrome level and may never deliver this keydown to the page at all —
+  // see R2_0_CANONICAL_ULTRASOUND_IMPLEMENTATION.md for the observed
+  // behavior and fallback guidance.
+  if (mod && !shift && /^[1-6]$/.test(key)) return (`select-template-${key}` as WorkspaceShortcut);
   if (e.altKey && !mod && key === "o") return "open-study";
   if (key === "escape") return "escape";
   // "/" focuses quick-select search ONLY outside text inputs — typing a
