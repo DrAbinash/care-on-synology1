@@ -57,6 +57,14 @@ const router = Router();
 // usgAnalytics.ts and usgCriticalAlerts.ts.
 type ReqWithStaff = Request & { staffSession?: { subjectId?: number; subjectName?: string; role?: string } };
 
+// R2.0: was a hardcoded `modality IN ('US', 'USG')` in /stats and
+// /push-monitor below — undercounted PACS sources sending "Doppler"/
+// "OB US"/etc. that RadiologyWorklist.tsx/RadiologyReportingWorkspace.tsx
+// now recognize via isUltrasoundModality(). Mirrors the same substring/
+// prefix rule as ULTRASOUND_MODALITY_ALIASES in lib/usgModality.ts,
+// applied case-insensitively in SQL via `~*` instead of an exact IN-list.
+const ULTRASOUND_MODALITY_REGEX = "(ultrasound|doppler|usg|^us([^a-z]|$))";
+
 // ── GET /stats ────────────────────────────────────────────────────────────────
 // Returns counts for the USG/DOPPLER dashboard cards.
 
@@ -89,7 +97,7 @@ router.get("/stats", async (_req, res) => {
     const [worklistCount] = await db
       .select({ total: sql<number>`count(*)` })
       .from(radiologyWorklistTable)
-      .where(sql`modality IN ('US', 'USG') AND status IN ('pending', 'in_progress')`);
+      .where(sql`modality ~* ${ULTRASOUND_MODALITY_REGEX} AND status IN ('pending', 'in_progress')`);
 
     const [lastPush] = await db
       .select({ createdAt: radiologyWorklistTable.createdAt })
@@ -100,7 +108,7 @@ router.get("/stats", async (_req, res) => {
     const [lastUsStudy] = await db
       .select({ createdAt: radiologyWorklistTable.createdAt })
       .from(radiologyWorklistTable)
-      .where(sql`modality IN ('US', 'USG')`)
+      .where(sql`modality ~* ${ULTRASOUND_MODALITY_REGEX}`)
       .orderBy(desc(radiologyWorklistTable.createdAt))
       .limit(1);
 
@@ -137,7 +145,7 @@ router.get("/push-monitor", async (_req, res) => {
         receivedTime: radiologyWorklistTable.createdAt,
       })
       .from(radiologyWorklistTable)
-      .where(sql`modality IN ('US', 'USG')`)
+      .where(sql`modality ~* ${ULTRASOUND_MODALITY_REGEX}`)
       .orderBy(desc(radiologyWorklistTable.createdAt))
       .limit(30);
 

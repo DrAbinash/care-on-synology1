@@ -5,10 +5,12 @@ import { WORKSPACE_COMMANDS, isWorkspaceCommand, createCommandDispatcher } from 
 // backend). Routing only; guards live in the handlers.
 
 describe("command vocabulary", () => {
-  it("exposes exactly the M1.5 command set plus the M1.6B2 voice additions", () => {
+  it("exposes exactly the M1.5 command set plus the M1.6B2 voice additions and R2.0 USG template quick-select", () => {
     expect([...WORKSPACE_COMMANDS]).toEqual([
       "save", "finalize", "next", "previous", "park", "refresh", "open-viewer", "focus-quick-search",
       "verify", "unpark", "reload-current", "focus-findings", "focus-impression", "close-panel",
+      "select-template-1", "select-template-2", "select-template-3",
+      "select-template-4", "select-template-5", "select-template-6",
     ]);
     expect(isWorkspaceCommand("next")).toBe(true);
     expect(isWorkspaceCommand("verify")).toBe(true);

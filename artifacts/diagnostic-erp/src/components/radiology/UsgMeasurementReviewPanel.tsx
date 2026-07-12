@@ -399,7 +399,12 @@ function getConfidenceBadge(confidence: string) {
 
 // ── 5-step timeline indicator ───────────────────────────────────────────────
 
-const TIMELINE_LABELS = ["Extracted", "Reviewed", "Approved", "Inserted", "Mapped → Form F"];
+// R2.0 fix: dropped the earlier 5th "Mapped -> Form F" stage — this panel
+// has no way to know whether a value was later mapped on the separate Form F
+// page (that happens on a different page after "Review & Map to Form F" is
+// clicked), so that dot was permanently unlit and misleading. Only track
+// what this component actually knows.
+const TIMELINE_LABELS = ["Extracted", "Reviewed", "Approved", "Inserted"];
 
 function TimelineDots({ steps }: { steps: boolean[] }) {
   const title = TIMELINE_LABELS.map((l, i) => `${l}: ${steps[i] ? "done" : "pending"}`).join(" · ");
@@ -419,11 +424,15 @@ function capitalize(s: string): string {
 // ── Row ───────────────────────────────────────────────────────────────────────
 
 function MeasurementEntryRow({
-  entry, inserted, canPin, onInsert, onApproveInsert, onTrace, onOpenImage, onPin, onKeyDown,
+  entry, inserted, canPin, canInsert, onInsert, onApproveInsert, onTrace, onOpenImage, onPin, onKeyDown,
 }: {
   entry: MeasurementEntry;
   inserted: boolean;
   canPin: boolean;
+  /** False on the standalone review page (no report/draft context) — Insert
+   *  and Approve+Insert would otherwise be active buttons that silently do
+   *  nothing there. */
+  canInsert: boolean;
   onInsert: () => void;
   onApproveInsert: () => void;
   onTrace: () => void;
@@ -432,15 +441,16 @@ function MeasurementEntryRow({
   onKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => void;
 }) {
   const pending = entry.parent.status === "pending_review";
-  const steps = [true, entry.parent.status !== "pending_review", entry.parent.status === "approved", inserted, false];
+  const rejected = entry.parent.status === "rejected";
+  const steps = [true, entry.parent.status !== "pending_review", entry.parent.status === "approved", inserted];
 
   return (
     <div
       tabIndex={0}
-      onDoubleClick={onInsert}
+      onDoubleClick={canInsert && !rejected ? onInsert : undefined}
       onKeyDown={onKeyDown}
       className="rounded border px-1.5 py-1 text-[11px] hover:bg-muted/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 cursor-pointer"
-      title="Double-click to insert · Ctrl+Enter to approve"
+      title={canInsert ? "Double-click to insert · Ctrl+Enter to approve" : "Ctrl+Enter to approve"}
       data-testid={`usg-entry-${entry.key}`}
     >
       <div className="flex items-center justify-between gap-1">
@@ -454,20 +464,27 @@ function MeasurementEntryRow({
         <SourceBadgeCell sourceType={entry.source} />
       </div>
       <div className="flex items-center gap-1 mt-1 flex-wrap">
-        <Button
-          variant="outline" size="sm" className="h-5 px-1.5 text-[9px]"
-          onClick={(e) => { e.stopPropagation(); onInsert(); }}
-          title="Insert into report"
-        >
-          <ArrowDownToLine className="h-2.5 w-2.5 mr-0.5" /> Insert
-        </Button>
-        <Button
-          variant="outline" size="sm" className="h-5 px-1.5 text-[9px]"
-          onClick={(e) => { e.stopPropagation(); onApproveInsert(); }}
-          title={pending ? "Approve & insert" : "Insert"}
-        >
-          <CheckCheck className="h-2.5 w-2.5 mr-0.5" /> {pending ? "Approve+Ins" : "Insert"}
-        </Button>
+        {canInsert && !rejected && (
+          <>
+            <Button
+              variant="outline" size="sm" className="h-5 px-1.5 text-[9px]"
+              onClick={(e) => { e.stopPropagation(); onInsert(); }}
+              title="Insert into report"
+            >
+              <ArrowDownToLine className="h-2.5 w-2.5 mr-0.5" /> Insert
+            </Button>
+            <Button
+              variant="outline" size="sm" className="h-5 px-1.5 text-[9px]"
+              onClick={(e) => { e.stopPropagation(); onApproveInsert(); }}
+              title={pending ? "Approve & insert" : "Insert"}
+            >
+              <CheckCheck className="h-2.5 w-2.5 mr-0.5" /> {pending ? "Approve+Ins" : "Insert"}
+            </Button>
+          </>
+        )}
+        {canInsert && rejected && (
+          <span className="text-[9px] text-red-700 italic px-0.5">Rejected — not inserted</span>
+        )}
         <Button
           variant="ghost" size="sm" className="h-5 px-1.5 text-[9px] font-mono text-muted-foreground border border-muted hover:border-foreground"
           onClick={(e) => { e.stopPropagation(); onTrace(); }}
@@ -480,7 +497,7 @@ function MeasurementEntryRow({
         >
           <ImageIcon className="h-3 w-3" />
         </Button>
-        {canPin && (
+        {canPin && !rejected && (
           <Button
             variant="ghost" size="sm" className="h-5 w-5 p-0" title="Pin as key image"
             onClick={(e) => { e.stopPropagation(); onPin(); }}
@@ -501,13 +518,24 @@ export default function UsgMeasurementReviewPanel({
   const { toast } = useToast();
   const qc = useQueryClient();
 
+  // R2.0 fix: without a real onInsertMeasurement (the standalone review page
+  // mounts this panel with none), Insert/Approve+Insert don't write into any
+  // report — they were previously still shown as live buttons, and their
+  // "inserted" state was tracked in a localStorage key shared by ALL mounts
+  // of this panel for the same study. A radiologist could click "Insert" on
+  // the standalone page (a no-op) and later find the SAME study's row
+  // already marked "Inserted" (green dot) inside the workspace, wrongly
+  // trusting that the value was already in the report and skip re-inserting
+  // it. Gate both the UI and the tracking on whether the callback exists.
+  const canInsert = !!onInsertMeasurement;
+
   const [reviewNotes, setReviewNotes] = useState("");
   const [traceEntry, setTraceEntry] = useState<MeasurementEntry | null>(null);
-  const [insertedKeys, setInsertedKeys] = useState<Set<string>>(() => loadInsertedKeys(studyInstanceUID));
+  const [insertedKeys, setInsertedKeys] = useState<Set<string>>(() => (canInsert ? loadInsertedKeys(studyInstanceUID) : new Set()));
 
   useEffect(() => {
-    setInsertedKeys(loadInsertedKeys(studyInstanceUID));
-  }, [studyInstanceUID]);
+    setInsertedKeys(canInsert ? loadInsertedKeys(studyInstanceUID) : new Set());
+  }, [studyInstanceUID, canInsert]);
 
   const pacsSettingsQuery = useQuery<{ key: string; value: string; category: string }[]>({
     queryKey: ["pacs-settings"],
@@ -536,6 +564,12 @@ export default function UsgMeasurementReviewPanel({
   const refetch = () => {
     void qc.invalidateQueries({ queryKey: ["usg-measurements", studyInstanceUID] });
     void qc.invalidateQueries({ queryKey: ["usg-doppler", studyInstanceUID] });
+    // R2.0 fix: the standalone UsgMeasurementReview.tsx wrapper's Extraction
+    // History section (["usg-logs", studyUID]) has no Re-Extract button of
+    // its own anymore — extraction is fully delegated to this panel's
+    // Re-Extract, so its onSuccess must invalidate that key too or the
+    // history list never shows the run that just happened.
+    void qc.invalidateQueries({ queryKey: ["usg-logs", studyInstanceUID] });
   };
 
   const extractMutation = useMutation({
@@ -587,13 +621,25 @@ export default function UsgMeasurementReviewPanel({
       if (Number.isFinite(frame) && frame >= 1) body.frameNumber = Math.floor(frame);
       return api.post("/api/radiology/report-generator/image-references", body);
     },
-    onSuccess: () => toast({ title: "Pinned as key image" }),
+    onSuccess: () => {
+      toast({ title: "Pinned as key image" });
+      // R2.0 fix: ReportImagePicker (mounted in the workspace's left panel,
+      // same draftId) reads ["report-image-references", draftId] — without
+      // this the just-pinned image doesn't show there until the next
+      // background refetch/window refocus.
+      if (draftId != null) void qc.invalidateQueries({ queryKey: ["report-image-references", draftId] });
+    },
     onError: (e: Error) => toast({ title: "Could not pin image", description: e.message, variant: "destructive" }),
   });
 
   // ── Insert / approve actions ─────────────────────────────────────────────
+  // Rejected measurements are never inserted or pinned — there is no inline
+  // correction UI here, so "rejected" means the radiologist has said this
+  // value is wrong; the row-render layer already hides these actions for a
+  // rejected entry, this is the second (defense-in-depth) gate.
 
   function handleInsert(entry: MeasurementEntry) {
+    if (entry.parent.status === "rejected") return;
     onInsertMeasurement?.(entry.label, entry.value, entry.unit || undefined);
     setInsertedKeys((prev) => {
       const next = new Set(prev);
@@ -604,6 +650,7 @@ export default function UsgMeasurementReviewPanel({
   }
 
   function handleApproveAndInsert(entry: MeasurementEntry) {
+    if (entry.parent.status === "rejected") return;
     if (entry.parent.status === "pending_review") {
       if (entry.parent.kind === "measurement") {
         approveMutation.mutate(entry.parent.id, { onSuccess: () => handleInsert(entry) });
@@ -686,6 +733,7 @@ export default function UsgMeasurementReviewPanel({
         entry={entry}
         inserted={insertedKeys.has(entry.key)}
         canPin={canPin}
+        canInsert={canInsert}
         onInsert={() => handleInsert(entry)}
         onApproveInsert={() => handleApproveAndInsert(entry)}
         onTrace={() => setTraceEntry(entry)}
@@ -861,19 +909,27 @@ export default function UsgMeasurementReviewPanel({
             };
 
             const handleCopy = () => {
-              if (!item) {
-                void navigator.clipboard.writeText(JSON.stringify({
-                  studyInstanceUID: studyUid, seriesInstanceUID: seriesUid, sopInstanceUID: sopUid,
-                  frameNumber: frameNum, sourceType, sourceLabel: traceEntry.label.toUpperCase(),
-                  sourceConfidence: confidence, sourcePath: "Default Trace fallback",
-                  rawExtractedValue: rawVal, normalizedValue: normVal, unit,
-                  extractedAt: traceEntry.createdAt || new Date().toISOString(), extractedByEngineVersion: engineVer,
-                }, null, 2));
-                toast({ title: "No trace JSON available to copy", description: "Defaulting to fallback metadata" });
-                return;
-              }
-              void navigator.clipboard.writeText(JSON.stringify(item, null, 2));
-              toast({ title: "Trace JSON copied to clipboard" });
+              const payload = item ?? {
+                studyInstanceUID: studyUid, seriesInstanceUID: seriesUid, sopInstanceUID: sopUid,
+                frameNumber: frameNum, sourceType, sourceLabel: traceEntry.label.toUpperCase(),
+                sourceConfidence: confidence, sourcePath: "Default Trace fallback",
+                rawExtractedValue: rawVal, normalizedValue: normVal, unit,
+                extractedAt: traceEntry.createdAt || new Date().toISOString(), extractedByEngineVersion: engineVer,
+              };
+              // R2.0 fix: writeText() can reject (document not focused right
+              // after a dialog opens/closes, denied permission, non-secure
+              // context) — always catch it and only claim success when the
+              // write actually resolved, instead of an unconditional toast.
+              navigator.clipboard.writeText(JSON.stringify(payload, null, 2)).then(
+                () => toast({
+                  title: item ? "Trace JSON copied to clipboard" : "No trace JSON available — copied fallback metadata",
+                }),
+                (err: unknown) => toast({
+                  title: "Could not copy to clipboard",
+                  description: err instanceof Error ? err.message : "Clipboard write failed",
+                  variant: "destructive",
+                }),
+              );
             };
 
             return (

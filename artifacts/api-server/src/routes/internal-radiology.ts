@@ -42,6 +42,7 @@ import { createOrLinkPatientFromDicom, type DicomDemographics } from "../lib/dic
 import { computeStudyPriority, applyPriorityToStudy } from "../lib/studyPriorityEngine";
 import { assignRadiologistToStudy } from "../lib/radiologistAssignment";
 import { runUsgExtraction, getUsgAdminSettings } from "../lib/usgExtractor";
+import { isUltrasoundModality } from "../lib/usgModality";
 import { calculateMatchScore, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
 import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
 
@@ -780,9 +781,14 @@ router.post("/radiology/studies", async (req, res) => {
       }
     }
 
-    // Auto-trigger USG measurement extraction for US modality studies.
+    // Auto-trigger USG measurement extraction for ultrasound modality
+    // studies. R2.0: was an exact `=== "US"` check — a PACS source sending
+    // "USG"/"Doppler"/"OB US" etc. (anything RadiologyWorklist.tsx and
+    // RadiologyReportingWorkspace.tsx now recognize via isUltrasoundModality)
+    // never triggered auto-extraction, so those studies sat with no
+    // measurements until someone manually clicked "Extract".
     // Fire-and-forget: never blocks the intake response.
-    if (modality === "US" && studyInstanceUID) {
+    if (isUltrasoundModality(modality) && studyInstanceUID) {
       runUsgExtraction({
         worklistId: row.id,
         studyId: row.studyId ?? undefined,

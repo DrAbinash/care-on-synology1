@@ -72,15 +72,25 @@ function capitalize(s: string): string {
 
 function formatGa(ga?: { weeks: number | null; days: number | null; label: string | null }): string | null {
   if (!ga || ga.weeks == null) return null;
-  return `${ga.weeks}w${ga.days ?? 0}d`;
+  // R2.0 fix: prefer the server's own label (pregnancyDashboard.ts's
+  // /strip endpoint already computes "22w 3d") instead of re-deriving a
+  // differently-formatted string here — the two had already drifted
+  // ("22w 3d" vs "22w3d", no space) within this same feature.
+  return ga.label ?? `${ga.weeks}w${ga.days ?? 0}d`;
 }
 
 function formatEdd(edd?: string | null): string | null {
   if (!edd) return null;
+  // R2.0 fix: `edd` is a date-ONLY string ("2026-03-15"), which the ISO-8601
+  // spec parses as UTC midnight. Reading it back with local getters
+  // (getDate/getMonth/getFullYear) shifts the displayed date by one day for
+  // any browser timezone west of UTC. Use the UTC getters so the displayed
+  // calendar date always matches the stored string, independent of the
+  // viewer's timezone.
   const d = new Date(edd);
   if (isNaN(d.getTime())) return edd;
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  return `${String(d.getDate()).padStart(2, "0")}-${months[d.getMonth()]}-${d.getFullYear()}`;
+  return `${String(d.getUTCDate()).padStart(2, "0")}-${months[d.getUTCMonth()]}-${d.getUTCFullYear()}`;
 }
 
 function formatPlacenta(location?: string | null, grade?: string | null): string | null {
