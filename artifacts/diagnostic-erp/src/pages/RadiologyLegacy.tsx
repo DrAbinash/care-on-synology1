@@ -1,7 +1,10 @@
+// PHASE D (Radiology V2): PRESERVED. RadiologistCockpit is the single Reading Room.
+// This page is redirected or owner-only. Do not delete — kept for rollback/reference.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { readStaffSession } from "@/lib/staffSession";
+import DeprecatedSurfaceBanner from "@/components/radiology/DeprecatedSurfaceBanner";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -220,6 +223,15 @@ function fmtTime(iso: string | null): string {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+/**
+ * @deprecated M1.1 consolidation — RadiologyReportingWorkspace
+ * (/radiology/report/:studyId) is the canonical radiology reporting page and
+ * RadiologyWorklist (/radiology/worklist) the canonical worklist. This page
+ * stays routed at /radiology/legacy (nothing regresses) because it is still
+ * the only page-level UI for film/CD issuance tracking and its report modal
+ * writes a distinct legacy pipeline (POST /api/radiology/:id/report) that
+ * some historical rows depend on. Both are M1.2+ migration candidates.
+ */
 export default function RadiologyLegacy() {
   const qc = useQueryClient();
   const { toast } = useToast();
@@ -370,6 +382,10 @@ export default function RadiologyLegacy() {
 
   return (
     <div className="space-y-4">
+      <DeprecatedSurfaceBanner
+        surface="Radiology Legacy Hub"
+        note="film/CD issuance remains unique to this page for now"
+      />
       <PageHeader
         title="Radiology"
         subtitle="Modality worklist, technician assignment, reporting & film/CD tracking"

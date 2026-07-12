@@ -44,6 +44,21 @@ function formatDate(d: string) {
   return dt.toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
+// The live editing form only ever stores the literal category "normal" | "abnormal"
+// in `ultrasoundResult` (see FormFData below) — the descriptive wire-format strings
+// ("Normal (CRL: 65mm, ...)" / "Abnormal: <finding> (...)") only exist in API
+// payloads (fetch-billing response, saved records, workspace prefill text). This
+// parses one of those wire-format strings back into the category, the same way
+// loadRecord() already does for saved records. Returns null when the text doesn't
+// unambiguously start with "normal" or "abnormal" — callers must NOT default an
+// unparseable result to "normal", since this is PCPNDT compliance data.
+function categorizeUsgResult(text: string | null | undefined): "normal" | "abnormal" | null {
+  const t = (text ?? "").trim().toLowerCase();
+  if (t.startsWith("abnormal")) return "abnormal";
+  if (t.startsWith("normal")) return "normal";
+  return null;
+}
+
 type FormFData = {
   centreName: string;
   registrationNo: string;
@@ -558,6 +573,74 @@ export default function FormF() {
   const [lastSaved, setLastSaved] = useState<string | null>(null);
   const [form, setForm] = useState<FormFData>(defaultForm());
 
+  // ── Explicit "prefill from Reporting Workspace" entry point ──
+  // PCPNDT requirement: do NOT auto-fill Form F. A `?prefillUsgSummary=` (and
+  // optional `?prefillFetalUsgStudyId=`) query param only stages the incoming
+  // text here for radiologist review; nothing is written into `form` until
+  // they explicitly click "Apply to Ultrasound Result" below.
+  const [prefillSummary, setPrefillSummary] = useState<{ text: string; fetalUsgStudyId: number | null } | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const summary = params.get("prefillUsgSummary");
+    if (!summary) return;
+    const studyIdRaw = params.get("prefillFetalUsgStudyId");
+    const fetalUsgStudyId = studyIdRaw && /^\d+$/.test(studyIdRaw) ? Number(studyIdRaw) : null;
+    setPrefillSummary({ text: summary, fetalUsgStudyId });
+    setActiveTab("form");
+  }, []);
+
+  function applyPrefillSummary() {
+    if (!prefillSummary) return;
+    // The workspace hand-off (RadiologyReportingWorkspace.tsx's
+    // reviewAndMapToFormF) deliberately sends a plain biometry summary
+    // ("GA: 12w4d, CRL: 65 mm, ...") with NO "Normal"/"Abnormal" prefix —
+    // categorizeUsgResult() can only recognize that prefix (the OTHER
+    // producer, fetchFromBilling's legacy auto-populate text, always has
+    // one). So `category` is normally null here by design: the radiologist
+    // must still choose Normal/Abnormal themselves. What IS safe to lift
+    // automatically is the objective Gestational Age figure (not a
+    // diagnosis) — everything else stays exactly as typed by the user.
+    const category = categorizeUsgResult(prefillSummary.text);
+    const gaMatch = prefillSummary.text.match(/GA:\s*(\d+)\s*w\s*(\d+)\s*d/i);
+    const appliedFields: string[] = [];
+    if (category) appliedFields.push("Ultrasound Result");
+    if (gaMatch) appliedFields.push("Gestational Age");
+    if (prefillSummary.fetalUsgStudyId) appliedFields.push("Study link");
+
+    setForm((prev) => ({
+      ...prev,
+      ultrasoundResult: category ?? prev.ultrasoundResult,
+      abnormality:
+        category === "abnormal"
+          ? prefillSummary.text.replace(/^abnormal:?\s*/i, "").trim() || prev.abnormality
+          : category === "normal"
+            ? ""
+            : prev.abnormality,
+      gestationalAgeWeeks: gaMatch ? gaMatch[1] : prev.gestationalAgeWeeks,
+      gestationalAgeDays: gaMatch ? gaMatch[2] : prev.gestationalAgeDays,
+      fetalUsgStudyId: prefillSummary.fetalUsgStudyId ?? prev.fetalUsgStudyId,
+    }));
+
+    if (appliedFields.length > 0) {
+      toast({
+        title: `Applied: ${appliedFields.join(", ")}`,
+        description: "Review the populated fields — you still need to select Normal/Abnormal and fill the rest before saving.",
+      });
+      setPrefillSummary(null);
+    } else {
+      // Nothing could be safely auto-extracted from this text (e.g. no GA
+      // present) — say so honestly instead of a false "Applied" toast, and
+      // keep the reference banner open so the text stays visible for
+      // manual transcription.
+      toast({
+        title: "Nothing could be auto-filled from this summary",
+        description: "Use the reference text above to fill in the Result and other fields manually, then dismiss the banner.",
+        variant: "destructive",
+      });
+    }
+  }
+
   // ── Feature 2: ID Card Upload + AI OCR + Camera Scanner ──
   const [idCardFrontUrl, setIdCardFrontUrl] = useState("");
   const [idCardBackUrl, setIdCardBackUrl] = useState("");
@@ -583,7 +666,8 @@ export default function FormF() {
   const [portalOpen, setPortalOpen] = useState(false);
 
   // ── Document scanner bridge state (physical flatbed/ADF scanner) ──
-  const SCAN_BRIDGE_URL = "http://127.0.0.1:8766";
+  const SCAN_BRIDGE_URL =
+    (import.meta as any).env?.VITE_SCAN_BRIDGE_URL || "http://127.0.0.1:8766"; // local per-workstation scanner bridge; override per PC if ever needed
   const [scanBridgeOk, setScanBridgeOk] = useState(false);
   const [scanning, setScanning] = useState(false);
   async function triggerScanBridge() {
@@ -806,7 +890,13 @@ export default function FormF() {
         referredByName: data.referredByName ?? prev.referredByName,
         procedureDate: data.billDate ?? prev.procedureDate,
         date: data.billDate ?? prev.date,
-        ultrasoundResult: data.ultrasoundResult ?? prev.ultrasoundResult,
+        // data.ultrasoundResult is a descriptive wire-format string (e.g.
+        // "Normal (CRL: 65mm, FHR: 140bpm)" or "Abnormal: <finding> (...)"),
+        // never the literal "normal"/"abnormal" the radios below compare
+        // against. Normalize it the same way loadRecord() does, so a
+        // genuinely normal auto-populated scan can't silently save as
+        // "Abnormal: " with an empty detail (see categorizeUsgResult above).
+        ultrasoundResult: categorizeUsgResult(data.ultrasoundResult) ?? prev.ultrasoundResult,
         procedurePurpose: data.procedurePurpose ?? prev.procedurePurpose,
         lmpWeeks: data.lmpWeeks ?? prev.lmpWeeks,
         gestationalAgeWeeks: data.gestationalAgeWeeks ?? prev.gestationalAgeWeeks,
@@ -1566,6 +1656,35 @@ export default function FormF() {
       )}
 
       {activeTab === "form" && <div className="flex-1 overflow-y-auto p-4">
+        {prefillSummary && (
+          <div className="mb-4 bg-blue-50 border border-blue-200 rounded-xl p-4 shadow-sm flex flex-col gap-3 max-w-full">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2">
+                <FileText size={16} className="text-blue-600 mt-0.5 flex-shrink-0" />
+                <div>
+                  <div className="text-sm font-bold text-blue-900">Measurement summary from Reporting Workspace</div>
+                  <div className="text-xs text-blue-700">A measurement summary was passed from the Reporting Workspace. Review and apply it below before saving.</div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPrefillSummary(null)}
+                className="text-blue-400 hover:text-blue-700 flex-shrink-0"
+                aria-label="Dismiss"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="bg-white border border-blue-100 rounded-lg px-3 py-2 text-xs text-gray-700 whitespace-pre-wrap">
+              {prefillSummary.text}
+            </div>
+            <div>
+              <Button size="sm" onClick={applyPrefillSummary} className="h-8 text-xs bg-blue-600 hover:bg-blue-700">
+                Apply to Ultrasound Result
+              </Button>
+            </div>
+          </div>
+        )}
         <div className="flex gap-4 max-w-full">
 
           {/* ── LEFT: Edit Form (two sections) ── */}

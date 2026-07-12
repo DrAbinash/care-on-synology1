@@ -12,6 +12,8 @@ import {
   type ExpenseSummaryRow,
 } from "@workspace/api-client-react";
 import PageHeader from "@/components/PageHeader";
+import DocumentScanCapture from "@/components/DocumentScanCapture";
+import BillReceiptScannerPanel from "@/components/BillReceiptScannerPanel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -40,6 +42,7 @@ import {
   Filter,
   PieChart,
   X,
+  ScanLine,
 } from "lucide-react";
 
 const inr = (n: number) =>
@@ -58,6 +61,26 @@ const CATEGORIES = [
 ];
 
 const PAYMENT_MODES = ["cash", "bank-transfer", "cheque", "upi", "card"];
+
+// Recovered feature (Phase: Document Platform): maps the AI bill-scanner's
+// category/payment vocabulary onto this form's existing option lists.
+// Unrecognized values fall back to the form's current defaults — never
+// silently invents a new category or payment mode.
+const AI_CATEGORY_MAP: Record<string, string> = {
+  Salaries: "salaries", Rent: "rent", Utilities: "utilities",
+  "Office Supplies": "supplies", "Medical Supplies": "supplies",
+  "Lab Reagents": "supplies", Equipment: "equipment", Maintenance: "maintenance",
+  Travel: "travel", Food: "miscellaneous", Marketing: "marketing",
+  "Professional Fees": "miscellaneous", Taxes: "miscellaneous",
+  Insurance: "miscellaneous", Miscellaneous: "miscellaneous",
+};
+const AI_PAYMENT_MODE_MAP: Record<string, string> = {
+  cash: "cash", card: "card", upi: "upi", cheque: "cheque",
+};
+type ScanBillResult = {
+  vendor: string; date: string; amount: number; gstAmount: number;
+  category: string; description: string; paymentMode: string; confidence: string;
+};
 
 const CATEGORY_COLORS: Record<string, string> = {
   rent: "bg-blue-100 text-blue-700",
@@ -94,7 +117,7 @@ export default function Expenses() {
   const [showForm, setShowForm] = useState(false);
   const [editExp, setEditExp] = useState<Expense | null>(null);
   const [form, setForm] = useState({ ...EMPTY_FORM });
-  const [activeTab, setActiveTab] = useState<"list" | "summary">("list");
+  const [activeTab, setActiveTab] = useState<"list" | "summary" | "scanner">("list");
 
   const listParams = {
     category: categoryFilter !== "all" ? categoryFilter : undefined,
@@ -218,10 +241,11 @@ export default function Expenses() {
         {[
           { key: "list", label: "Expense List", icon: Wallet },
           { key: "summary", label: "Category Summary", icon: PieChart },
+          { key: "scanner", label: "Bill/Receipt Scanner", icon: ScanLine },
         ].map(({ key, label, icon: Icon }) => (
           <button
             key={key}
-            onClick={() => setActiveTab(key as "list" | "summary")}
+            onClick={() => setActiveTab(key as "list" | "summary" | "scanner")}
             className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
               activeTab === key
                 ? "border-primary text-primary"
@@ -235,6 +259,7 @@ export default function Expenses() {
       </div>
 
       {/* Filters */}
+      {activeTab !== "scanner" && (
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative">
           <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -298,6 +323,7 @@ export default function Expenses() {
           </Button>
         )}
       </div>
+      )}
 
       {/* LIST TAB */}
       {activeTab === "list" && (
@@ -437,6 +463,17 @@ export default function Expenses() {
         </div>
       )}
 
+      {/* SCANNER TAB */}
+      {activeTab === "scanner" && (
+        <div className="space-y-4">
+          <div className="bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-indigo-950/30 dark:to-blue-950/30 border border-indigo-200 dark:border-indigo-800 rounded-xl p-5">
+            <h2 className="font-bold text-lg flex items-center gap-2"><ScanLine size={18} className="text-indigo-600" /> AI-Powered Bill / Receipt Scanner</h2>
+            <p className="text-sm text-muted-foreground mt-1">Scan physical bills with your phone camera or upload an image to auto-capture expense details.</p>
+          </div>
+          <BillReceiptScannerPanel />
+        </div>
+      )}
+
       {/* Add / Edit Dialog */}
       <Dialog
         open={showForm || !!editExp}
@@ -448,6 +485,33 @@ export default function Expenses() {
           <DialogHeader>
             <DialogTitle>{editExp ? "Edit Expense" : "Record Expense"}</DialogTitle>
           </DialogHeader>
+          {/* Recovered feature: AI bill scanner. Backend already existed
+              (/api/expenses/scan-bill via geminiOcrBill) but had no UI —
+              this wires the existing endpoint, no new OCR engine added. */}
+          {!editExp && (
+            <div className="pb-1">
+              <DocumentScanCapture<ScanBillResult>
+                endpoint="/api/expenses/scan-bill"
+                triggerLabel="Scan Bill / Receipt with AI"
+                helperText="Photograph or upload the bill — fields below will be auto-filled. Please review before saving."
+                onResult={(result) => {
+                  setForm({
+                    ...form,
+                    category: AI_CATEGORY_MAP[result.category] ?? form.category,
+                    description: result.description || form.description,
+                    amount: result.amount ? String(result.amount) : form.amount,
+                    expenseDate: result.date || form.expenseDate,
+                    paymentMode: AI_PAYMENT_MODE_MAP[result.paymentMode] ?? form.paymentMode,
+                    paidTo: result.vendor || form.paidTo,
+                  });
+                  toast({
+                    title: "Bill scanned",
+                    description: `Confidence: ${result.confidence}. Please verify all fields before saving.`,
+                  });
+                }}
+              />
+            </div>
+          )}
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">

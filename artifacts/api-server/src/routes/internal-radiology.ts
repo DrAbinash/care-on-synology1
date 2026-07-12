@@ -35,11 +35,14 @@ import {
 } from "@workspace/db/schema";
 import { and, eq, or, sql, inArray, gte, lte, desc, gt } from "drizzle-orm";
 import { logger } from "../lib/logger";
+import { normalizeRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { checkWriteLock } from "../lib/studyLocks";
 import { todayIST } from "../lib/istDate";
 import { createOrLinkPatientFromDicom, type DicomDemographics } from "../lib/dicomPatientCreator";
 import { computeStudyPriority, applyPriorityToStudy } from "../lib/studyPriorityEngine";
 import { assignRadiologistToStudy } from "../lib/radiologistAssignment";
 import { runUsgExtraction, getUsgAdminSettings } from "../lib/usgExtractor";
+import { isUltrasoundModality } from "../lib/usgModality";
 import { calculateMatchScore, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
 import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
 
@@ -268,7 +271,7 @@ async function requireStaffOrInternalAuth(
     }
 
     const [user] = await db
-      .select({ id: usersTable.id, isActive: usersTable.isActive })
+      .select({ id: usersTable.id, isActive: usersTable.isActive, role: usersTable.role, permissions: usersTable.permissions })
       .from(usersTable)
       .where(eq(usersTable.id, session.subjectId))
       .limit(1);
@@ -283,6 +286,24 @@ async function requireStaffOrInternalAuth(
       .update(portalSessionsTable)
       .set({ lastActivityAt: new Date() })
       .where(eq(portalSessionsTable.id, session.id));
+
+    // M1.6A — attach the validated staff identity (same shape/parsing as
+    // requireStaffAuth) so handlers can enforce study-lock ownership. The
+    // INTERNAL_API_KEY path above deliberately attaches nothing: server-to-
+    // server automation is identity-less and never lock-gated.
+    let permissions: string[] = [];
+    try {
+      const parsed = user.permissions ? JSON.parse(user.permissions) : [];
+      if (Array.isArray(parsed)) permissions = parsed.filter((p): p is string => typeof p === "string");
+    } catch { /* leave permissions empty */ }
+    (req as StaffAuthRequest).staffSession = {
+      id: session.id,
+      subjectId: session.subjectId,
+      subjectName: session.subjectName,
+      role: normalizeRole(user.role),
+      permissions,
+      maxDiscount: null,
+    };
 
     next();
   } catch (err) {
@@ -760,9 +781,14 @@ router.post("/radiology/studies", async (req, res) => {
       }
     }
 
-    // Auto-trigger USG measurement extraction for US modality studies.
+    // Auto-trigger USG measurement extraction for ultrasound modality
+    // studies. R2.0: was an exact `=== "US"` check — a PACS source sending
+    // "USG"/"Doppler"/"OB US" etc. (anything RadiologyWorklist.tsx and
+    // RadiologyReportingWorkspace.tsx now recognize via isUltrasoundModality)
+    // never triggered auto-extraction, so those studies sat with no
+    // measurements until someone manually clicked "Extract".
     // Fire-and-forget: never blocks the intake response.
-    if (modality === "US" && studyInstanceUID) {
+    if (isUltrasoundModality(modality) && studyInstanceUID) {
       runUsgExtraction({
         worklistId: row.id,
         studyId: row.studyId ?? undefined,
@@ -838,6 +864,23 @@ router.post("/radiology/report-status", async (req, res) => {
     return;
   }
 
+  // M1.6A — a status flip (finalize) by a STAFF session is refused while
+  // another user actively holds the study lock: two radiologists must never
+  // finalize the same study over each other. The INTERNAL_API_KEY automation
+  // path carries no session and is never lock-gated.
+  const staffSession = (req as StaffAuthRequest).staffSession;
+  if (staffSession) {
+    const gate = await checkWriteLock(existing.id, staffSession.subjectId);
+    if (gate.blocked) {
+      res.status(409).json({
+        error: "LOCKED_BY_OTHER",
+        lockedBy: gate.lockedBy,
+        message: `This study is currently being reported by ${gate.lockedBy}.`,
+      });
+      return;
+    }
+  }
+
   const VALID_STATUSES = ["STUDY_RECEIVED", "AI_DRAFT_READY", "REPORT_IN_PROGRESS", "REPORT_FINAL", "DELIVERED"];
   const VALID_DELIVERY = ["READY_TO_SEND", "SENT"];
 
@@ -845,6 +888,16 @@ router.post("/radiology/report-status", async (req, res) => {
   if (b.status && VALID_STATUSES.includes(b.status)) updates.status = b.status;
   if (b.deliveryStatus && VALID_DELIVERY.includes(b.deliveryStatus)) updates.deliveryStatus = b.deliveryStatus;
   if (b.reportId) updates.reportId = b.reportId;
+  // Completed studies hold no locks (M1.6A): the flip to REPORT_FINAL /
+  // DELIVERED clears the lock server-side — release-on-finalize is
+  // authoritative here, never a client courtesy call.
+  if (b.status === "REPORT_FINAL" || b.status === "DELIVERED") {
+    updates.lockUserId = null;
+    updates.lockUserName = null;
+    updates.lockTime = null;
+    updates.lockLastActivityAt = null;
+    updates.lockWorkstation = null;
+  }
 
   const [updated] = await db
     .update(radiologyWorklistTable)
@@ -1345,6 +1398,9 @@ router.get("/radiology/worklist/:id", async (req, res) => {
   let pacsArchiveStatus = "none";
   let pacsArchiveResponse = null;
   let pacsInstanceId = null;
+  let priority: string | null = null;
+  let billNumber: string | null = null;
+  let uhid: string | null = null;
 
   if (row.studyId) {
     const [study] = await db
@@ -1352,6 +1408,9 @@ router.get("/radiology/worklist/:id", async (req, res) => {
         pacsArchiveStatus: radiologyStudiesTable.pacsArchiveStatus,
         pacsArchiveResponse: radiologyStudiesTable.pacsArchiveResponse,
         pacsInstanceId: radiologyStudiesTable.pacsInstanceId,
+        // Phase D (Reading Room) — reuse existing columns, no schema change
+        priority: radiologyStudiesTable.priority,
+        billId: radiologyStudiesTable.billId,
       })
       .from(radiologyStudiesTable)
       .where(eq(radiologyStudiesTable.id, row.studyId));
@@ -1360,7 +1419,23 @@ router.get("/radiology/worklist/:id", async (req, res) => {
       pacsArchiveStatus = study.pacsArchiveStatus || "none";
       pacsArchiveResponse = study.pacsArchiveResponse;
       pacsInstanceId = study.pacsInstanceId;
+      priority = study.priority ?? null;
+      if (study.billId) {
+        const [bill] = await db
+          .select({ billNumber: billsTable.billNumber })
+          .from(billsTable)
+          .where(eq(billsTable.id, study.billId));
+        billNumber = bill?.billNumber ?? null;
+      }
     }
+  }
+
+  if (row.patientId) {
+    const [pat] = await db
+      .select({ uhid: patientsTable.patientId })
+      .from(patientsTable)
+      .where(eq(patientsTable.id, row.patientId));
+    uhid = pat?.uhid ?? null;
   }
 
   res.json({
@@ -1368,6 +1443,10 @@ router.get("/radiology/worklist/:id", async (req, res) => {
     pacsArchiveStatus,
     pacsArchiveResponse,
     pacsInstanceId,
+    // Phase D additive fields (safe for old clients — extra keys ignored)
+    priority,
+    billNumber,
+    uhid,
   });
 });
 

@@ -174,7 +174,11 @@ export const radiologyReportKeyImagesTable = pgTable(
   }),
 );
 
-// radiology_image_references — structured key image references attached to a report draft
+// radiology_image_references — structured key image references attached to a report draft.
+// R1.1: extended additively with the DICOM identifier triple + frame + display
+// order so selected images persist as REFERENCES (StudyInstanceUID /
+// SeriesInstanceUID / SOPInstanceUID / frame / caption / order) — never
+// browser blob URLs. `description` doubles as the caption.
 export const radiologyImageReferencesTable = pgTable(
   "radiology_image_references",
   {
@@ -184,6 +188,17 @@ export const radiologyImageReferencesTable = pgTable(
     seriesNumber: text("series_number"),
     imageNumber: text("image_number"),
     description: text("description").notNull(),
+    studyInstanceUid: text("study_instance_uid"),
+    seriesInstanceUid: text("series_instance_uid"),
+    sopInstanceUid: text("sop_instance_uid"),
+    frameNumber: integer("frame_number"),
+    displayOrder: integer("display_order").notNull().default(0),
+    // R1.3: key-image flag + author. A partial unique index
+    // (draft_id, sop_instance_uid, COALESCE(frame_number, -1)) WHERE
+    // sop_instance_uid IS NOT NULL lives in the SQL migration — Drizzle can't
+    // express the COALESCE, so the DB enforces duplicate prevention.
+    isKeyImage: boolean("is_key_image").notNull().default(false),
+    createdBy: text("created_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },
@@ -228,6 +243,30 @@ export const radiologistStylePreferencesTable = pgTable(
     autoNumberImpressions: boolean("auto_number_impressions").notNull().default(true),
     includeDifferential: boolean("include_differential").notNull().default(false),
     includeMeasurements: boolean("include_measurements").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+  },
+);
+
+// radiologist_voice_preferences — per-radiologist voice-layer overrides
+// (M1.6B3). Layered over the clinic-wide pacs_settings "voice" category by
+// the frontend's mergeVoiceSettings: user values may only TIGHTEN policy
+// (disable voice for self, raise strictness) or pick personal ergonomics
+// (push-to-talk key, mode, language, punctuation, input device). "inherit" /
+// "" means the clinic default applies. Provider/local-STT config stays
+// clinic-owned and has no per-user override on purpose.
+export const radiologistVoicePreferencesTable = pgTable(
+  "radiologist_voice_preferences",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id").notNull().unique(),
+    enabledOverride: text("enabled_override").notNull().default("inherit"), // inherit | off
+    pttKey: text("ptt_key").notNull().default("inherit"),                   // inherit | Space | off
+    defaultMode: text("default_mode").notNull().default("inherit"),         // inherit | command | dictation
+    confirmationPolicy: text("confirmation_policy").notNull().default("inherit"), // inherit | strict
+    language: text("language").notNull().default(""),                       // "" = inherit
+    autoPunctuation: text("auto_punctuation").notNull().default("inherit"), // inherit | on | off
+    inputDevice: text("input_device").notNull().default(""),                // "" = inherit
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },

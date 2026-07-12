@@ -1,3 +1,5 @@
+// PHASE C (Radiology V2): PRESERVED, route redirects to the unified /radiology/worklist.
+// Do not delete — kept for rollback and reference. See RadiologyWorklist.tsx (winner).
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";

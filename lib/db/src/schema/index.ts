@@ -50,6 +50,7 @@ export * from "./onlineBookings";
 export * from "./outsourcedLabs";
 export * from "./radiologyWorklist";
 export * from "./radiologyReportGenerator";
+export * from "./presentationTemplates";
 export {
   radiologyTextMacrosTable,
   radiologyReportPreferencesTable,
@@ -106,6 +107,7 @@ export * from "./fetalUsgLevel4";
 export * from "./dicomStudies";
 export * from "./smartRadiology";
 export * from "./risMonitoring";
+export * from "./radiologyOps";
 export * from "./radiologyWorkflow";
 export * from "./auditLogs";
 export * from "./paymentGatewayDiagnostics";

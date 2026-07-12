@@ -2,8 +2,10 @@ import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { api } from "@/lib/fetchApi";
-import { readStaffSession, ERP_SESSION_KEY } from "@/lib/staffSession";
+import { readStaffSession, ERP_SESSION_KEY, canAccess, normalizeRole } from "@/lib/staffSession";
+import { toUnifiedStatus, worklistRoleView, priorityInfo, type WorklistRoleView } from "@/lib/radiologyStatus";
 import { launchViewer } from "@/lib/viewerService";
+import { normalizeModality, isUltrasoundModality } from "@/lib/usgModality";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -17,7 +19,7 @@ import {
   Search, Filter, Clock, CheckCheck, AlertCircle, MonitorPlay, Tv2,
   ClipboardList, CalendarDays, ShieldCheck, ShieldOff, Database,
   ChevronDown, ChevronUp, Eye, MessageSquare, ThumbsUp, ThumbsDown, Trash2,
-  X, Activity, Stethoscope,
+  X, Activity, Stethoscope, Printer, Gem,
 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
@@ -50,6 +52,16 @@ type WorklistEntry = {
   aiDraftStatus: string;
   reportId: number | null;
   deliveryStatus: string | null;
+  uhid?: string | null;        // Phase C: ERP UHID via patients join
+  billNumber?: string | null;  // Phase C: bill number via study→bill join
+  priority?: string | null;    // Phase C: reuses radiology_studies.priority
+  // R2.0 — canonical ultrasound integration: USG/Doppler measurement +
+  // key-image counts and latest report-draft status, scalar-subqueried by
+  // worklistId in GET /api/radiology/pacs-worklist. Present for every row;
+  // 0/null for non-ultrasound studies with no USG data.
+  usgMeasurementCount?: number;
+  usgKeyImageCount?: number;
+  usgReportStatus?: "draft" | "pending_review" | "verified" | "finalized" | "amended" | "archived" | null;
   createdAt: string;
   updatedAt: string;
   lockUserId?: number | null;
@@ -67,19 +79,31 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; icon: React.
   DELIVERED: { label: "Delivered", color: "bg-gray-100 text-gray-700 border-gray-200", icon: <CheckCheck className="h-3 w-3" /> },
 };
 
-function StatusBadge({ status }: { status: string }) {
-  const cfg = STATUS_CONFIG[status] ?? { label: status, color: "bg-gray-100 text-gray-700 border-gray-200", icon: null };
+function StatusBadge({ status, deliveryStatus }: { status: string; deliveryStatus?: string | null }) {
+  // Phase C: staff always see the unified 7-step vocabulary. The raw
+  // internal status stays visible in the tooltip for troubleshooting.
+  const u = toUnifiedStatus(status, deliveryStatus);
+  const icon = STATUS_CONFIG[status]?.icon ?? null;
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${cfg.color}`}>
-      {cfg.icon}
-      {cfg.label}
+    <span
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${u.color}`}
+      title={`Internal status: ${status}${deliveryStatus ? ` · delivery: ${deliveryStatus}` : ""}`}
+    >
+      {icon}
+      {u.label}
     </span>
   );
 }
 
 function LockBadge({ entry, currentUserId }: { entry: any; currentUserId?: number | null }) {
   const lastAct = entry.lockLastActivityAt || entry.lockTime;
-  const isLocked = entry.lockUserId && lastAct && (Date.now() - new Date(lastAct).getTime()) <= 30 * 60 * 1000;
+  // M1.6A — prefer the SERVER-computed expiry (lock_last_activity_at + the
+  // configured TTL); the 30-minute window is only the pre-lock-era fallback.
+  const isLocked = entry.lockUserId && (
+    entry.lockExpiresAt
+      ? new Date(entry.lockExpiresAt).getTime() > Date.now()
+      : lastAct && (Date.now() - new Date(lastAct).getTime()) <= 30 * 60 * 1000
+  );
   
   if (!isLocked) {
     return (
@@ -119,6 +143,53 @@ const AI_DRAFT_STATUS_CONFIG: Record<string, { label: string; color: string }> =
   READY:   { label: "Ready",   color: "bg-purple-50 text-purple-700 border-purple-200" },
   ERROR:   { label: "Error",   color: "bg-red-50 text-red-700 border-red-200" },
 };
+
+// R2.0 — USG/Doppler report-draft lifecycle status badge, styled consistently
+// with STATUS_CONFIG/AI_DRAFT_STATUS_CONFIG's Record<label,color> + rounded
+// pill convention above.
+const USG_REPORT_STATUS_CONFIG: Record<string, { label: string; color: string }> = {
+  draft:          { label: "Draft",          color: "bg-gray-100 text-gray-600 border-gray-200" },
+  pending_review: { label: "Pending Review", color: "bg-yellow-50 text-yellow-700 border-yellow-200" },
+  verified:       { label: "Verified",       color: "bg-blue-50 text-blue-700 border-blue-200" },
+  finalized:      { label: "Finalized",      color: "bg-green-100 text-green-800 border-green-200" },
+  amended:        { label: "Amended",        color: "bg-purple-50 text-purple-700 border-purple-200" },
+  archived:       { label: "Archived",       color: "bg-gray-100 text-gray-500 border-gray-200" },
+};
+
+function UsgReportStatusBadge({ status }: { status?: string | null }) {
+  if (!status) return <span className="text-xs text-muted-foreground">—</span>;
+  const cfg = USG_REPORT_STATUS_CONFIG[status] ?? { label: status, color: "bg-gray-100 text-gray-600 border-gray-200" };
+  return (
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium border ${cfg.color}`}>
+      {cfg.label}
+    </span>
+  );
+}
+
+// R2.0 — small count badge for the Measurements/Images columns. Zero renders
+// as a muted em-dash (matching the file's existing empty-cell convention,
+// e.g. fmtDate/entry.studyDescription above), matching counts render as a
+// colored pill.
+function UsgCountBadge({ count, color }: { count: number; color: string }) {
+  if (!count) return <span className="text-xs text-muted-foreground">—</span>;
+  return (
+    <span className={`inline-flex items-center justify-center min-w-[22px] px-1.5 py-0.5 rounded-full text-[10px] font-semibold border ${color}`}>
+      {count}
+    </span>
+  );
+}
+
+/**
+ * Usability: hours a non-final study has been waiting, computed purely from
+ * the existing createdAt timestamp already returned by the API. No new
+ * column, no DB change. Threshold is configurable (see Settings → General
+ * → Radiology → "Aging alert after (hours)"), default 4h.
+ */
+function agingHours(createdAt: string): number {
+  const created = new Date(createdAt).getTime();
+  if (Number.isNaN(created)) return 0;
+  return (Date.now() - created) / (1000 * 60 * 60);
+}
 
 function fmtDate(iso: string | null): string {
   if (!iso) return "\u2014";
@@ -362,12 +433,23 @@ export default function RadiologyWorklist() {
   const session = readStaffSession();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+
+  // ── Phase C: role-based view. Page ACCESS is still governed solely by the
+  // existing permission system; this only decides which action buttons render.
+  const viewRole: WorklistRoleView = worklistRoleView(normalizeRole(session?.user?.role || ""));
+  const isOwnerView = viewRole === "owner";
+  const isRadView = viewRole === "radiologist" || isOwnerView;
+  const isTechView = viewRole === "technician";
+  const isReceptionView = viewRole === "reception";
+  const may = (path: string) => canAccess(session, path);
   const [modalityFilter, setModalityFilter] = useState("all");
   const [lockFilter, setLockFilter] = useState("all");
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [showSentinel, setShowSentinel] = useState(false);
   const [showRawJson, setShowRawJson] = useState(false);
   const [draftViewer, setDraftViewer] = useState<{ id: number; draft: Record<string, unknown> | null } | null>(null);
+  // M1.6B1 — assignment management + live workload
+  const [showWorkload, setShowWorkload] = useState(false);
   const [feedbackEntry, setFeedbackEntry] = useState<number | null>(null);
   const [feedbackText, setFeedbackText] = useState("");
   const prevEntriesLen = useRef(-1);
@@ -411,16 +493,59 @@ export default function RadiologyWorklist() {
     refetchInterval: 60_000,
   });
 
+  // M1.6B1 — assignable radiologists + assignment writes + live workload.
+  const { data: radiologistsData } = useQuery<{ success: boolean; radiologists: Array<{ id: number; name: string; role: string }> }>({
+    queryKey: ["radiology-radiologists"],
+    queryFn: () => api.get("/api/radiology/radiologists"),
+    staleTime: 5 * 60_000,
+  });
+  const radiologists = radiologistsData?.radiologists ?? [];
+
+  const assignMutation = useMutation({
+    mutationFn: async ({ worklistId, radiologistId }: { worklistId: number; radiologistId: number | null }) => {
+      const path = radiologistId === null
+        ? `/api/radiology/worklist-assignment/${worklistId}/unassign`
+        : `/api/radiology/worklist-assignment/${worklistId}/assign`;
+      return api.post<{ success: boolean; outcome: string; assignment?: { assignedRadiologistName?: string | null } }>(
+        path, radiologistId === null ? {} : { radiologistId },
+      );
+    },
+    onSuccess: (res) => {
+      if (!res.success) {
+        toast({ title: "Assignment not changed", description: res.outcome.replaceAll("_", " ").toLowerCase(), variant: "destructive" });
+      }
+      void qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
+      void qc.invalidateQueries({ queryKey: ["radiology-workload"] });
+    },
+    onError: (err) => {
+      toast({ title: "Assignment failed", description: err instanceof Error ? err.message : "Error", variant: "destructive" });
+    },
+  });
+
+  const { data: workload } = useQuery<{
+    success: boolean;
+    radiologists: Array<{ radiologistId: number; radiologistName: string; assignedPending: number; lockedNow: number; completedToday: number; avgPendingAgeHours: number | null }>;
+    unassignedPending: number;
+  }>({
+    queryKey: ["radiology-workload"],
+    queryFn: () => api.get("/api/radiology/workload"),
+    enabled: showWorkload,
+    refetchInterval: showWorkload ? 60_000 : false,
+  });
+
   const { data: pacsViewerSettings = {} as Record<string, string> } = useQuery<Record<string, string>>({
     queryKey: ["pacs-viewer-settings"],
     queryFn: async () => {
       const rows = await api.get<{ key: string; value: string; category: string }[]>("/api/radiology/pacs-settings");
       const map: Record<string, string> = {};
-      for (const r of rows) if (r.category === "viewer") map[r.key] = r.value;
+      for (const r of rows) if (r.category === "viewer" || r.category === "radiology") map[r.key] = r.value;
       return map;
     },
     staleTime: 120_000,
   });
+
+  // Phase E "Highlight Urgent / VIP studies" toggle (default ON when unset)
+  const urgentHighlightOn = (pacsViewerSettings["urgent_highlight_enabled"] ?? "true") !== "false";
 
   useEffect(() => {
     if (!isLoading && prevEntriesLen.current !== entries.length) {
@@ -472,12 +597,18 @@ export default function RadiologyWorklist() {
   const filtered = entries.filter((e) => {
     // Client-side status filter
     if (statusFilter !== "all" && e.status !== statusFilter) return false;
-    // Client-side modality filter
-    if (modalityFilter !== "all" && e.modality !== modalityFilter) return false;
+    // Client-side modality filter — normalize both sides so raw PACS
+    // spellings ("USG", "Doppler", "OB US", ...) fold into the one "US"
+    // filter chip instead of silently failing exact-string equality (R2.0).
+    if (modalityFilter !== "all" && normalizeModality(e.modality) !== normalizeModality(modalityFilter)) return false;
 
-    // Client-side lock filter
+    // Client-side lock filter — server-computed expiry first (M1.6A)
     const lastAct = e.lockLastActivityAt || e.lockTime;
-    const isLocked = e.lockUserId && lastAct && (Date.now() - new Date(lastAct).getTime()) <= 30 * 60 * 1000;
+    const isLocked = e.lockUserId && (
+      (e as { lockExpiresAt?: string | null }).lockExpiresAt
+        ? new Date((e as { lockExpiresAt?: string | null }).lockExpiresAt as string).getTime() > Date.now()
+        : lastAct && (Date.now() - new Date(lastAct).getTime()) <= 30 * 60 * 1000
+    );
     const isMine = isLocked && e.lockUserId === session?.user?.id;
 
     if (lockFilter === "available" && isLocked) return false;
@@ -632,7 +763,7 @@ export default function RadiologyWorklist() {
                 </SelectTrigger>
                 <SelectContent>
                   {STATUS_OPTIONS.map((s) => (
-                    <SelectItem key={s} value={s}>{s === "all" ? "All Statuses" : (STATUS_CONFIG[s]?.label ?? s)}</SelectItem>
+                    <SelectItem key={s} value={s}>{s === "all" ? "All Statuses" : toUnifiedStatus(s).label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -686,6 +817,55 @@ export default function RadiologyWorklist() {
               })}
             </div>
 
+            {/* M1.6B1 — live radiologist workload (reuses worklist data only) */}
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setShowWorkload((v) => !v)} data-testid="btn-workload">
+                {showWorkload ? "Hide workload" : "Workload"}
+              </Button>
+            </div>
+            {showWorkload && (
+              <div className="rounded-lg border p-3 bg-muted/10" data-testid="workload-panel">
+                <div className="text-xs font-semibold mb-2">
+                  Radiologist workload
+                  <span className="text-muted-foreground font-normal ml-2">
+                    {workload ? `${workload.unassignedPending} unassigned pending` : "loading…"}
+                  </span>
+                </div>
+                {workload && (
+                  <table className="text-xs w-full max-w-2xl">
+                    <thead>
+                      <tr className="text-left text-muted-foreground">
+                        <th className="pr-4 py-0.5 font-medium">Radiologist</th>
+                        <th className="pr-4 py-0.5 font-medium">Assigned</th>
+                        <th className="pr-4 py-0.5 font-medium">Locked now</th>
+                        <th className="pr-4 py-0.5 font-medium">Done today</th>
+                        <th className="pr-4 py-0.5 font-medium">Avg pending age</th>
+                        <th className="pr-4 py-0.5 font-medium">Parked</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {workload.radiologists.map((r) => (
+                        <tr key={r.radiologistId}>
+                          <td className="pr-4 py-0.5">{r.radiologistName}</td>
+                          <td className="pr-4 py-0.5">{r.assignedPending}</td>
+                          <td className="pr-4 py-0.5">{r.lockedNow}</td>
+                          <td className="pr-4 py-0.5">{r.completedToday}</td>
+                          <td className="pr-4 py-0.5">{r.avgPendingAgeHours != null ? `${r.avgPendingAgeHours} h` : "—"}</td>
+                          <td className="pr-4 py-0.5 text-muted-foreground">
+                            {/* Parked state is browser-local (M1.5) — only this
+                                workstation's own count is truthfully knowable. */}
+                            {r.radiologistId === session?.user?.id
+                              ? (() => { try { return (JSON.parse(localStorage.getItem("radiology_parked_studies_v1") ?? "[]") as unknown[]).length; } catch { return 0; } })()
+                              : "n/a"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            )}
+
             {/* Table */}
             {isLoading ? (
               <div className="flex items-center justify-center py-16">
@@ -726,14 +906,23 @@ export default function RadiologyWorklist() {
                     <tr className="bg-muted/50 text-left">
                       {showSentinel && <th className="px-3 py-2.5 font-medium whitespace-nowrap text-orange-600">⚠ Debug</th>}
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Patient Name</th>
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Patient ID</th>
+                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Age/Sex</th>
+                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">UHID</th>
+                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Bill No</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Modality</th>
+                      {/* R2.0 — canonical ultrasound integration: USG/Doppler measurement + key-image counts and report-draft status, folded into the ONE worklist. */}
+                      <th className="px-3 py-2.5 font-medium whitespace-nowrap text-center">Measurements</th>
+                      <th className="px-3 py-2.5 font-medium whitespace-nowrap text-center">Images</th>
+                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">USG Report</th>
+                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Priority</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Study Description</th>
+                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Ref. Doctor</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Accession No</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Study Date</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Source AE</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Created At</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Status</th>
+                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Radiologist</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Lock Status</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">AI Draft</th>
                       <th className="px-3 py-2.5 font-medium text-right whitespace-nowrap">Actions</th>
@@ -743,7 +932,7 @@ export default function RadiologyWorklist() {
                     {tableRows.map((entry) => (
                       <tr
                         key={entry.id}
-                        className={`hover:bg-muted/30 transition-colors ${entry.id === -1 ? "bg-orange-50 dark:bg-orange-950/20" : ""}`}
+                        className={`hover:bg-muted/30 transition-colors ${entry.id === -1 ? "bg-orange-50 dark:bg-orange-950/20" : (urgentHighlightOn && priorityInfo(entry.priority).highlight) ? "bg-red-50/50 dark:bg-red-950/10" : ""}`}
                       >
                         {showSentinel && (
                           <td className="px-3 py-2.5 text-xs text-orange-600 font-mono">
@@ -751,14 +940,91 @@ export default function RadiologyWorklist() {
                           </td>
                         )}
                         <td className="px-3 py-2.5 font-medium whitespace-nowrap">{entry.patientName}</td>
-                        <td className="px-3 py-2.5 font-mono text-xs text-muted-foreground whitespace-nowrap">
-                          {entry.dicomPatientId ?? entry.patientId ?? "\u2014"}
+                        <td className="px-3 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                          {[entry.age, entry.sex].filter(Boolean).join(" / ") || "\u2014"}
+                        </td>
+                        <td className="px-3 py-2.5 font-mono text-xs text-muted-foreground whitespace-nowrap" title={entry.dicomPatientId ?? undefined}>
+                          {entry.uhid ?? entry.dicomPatientId ?? "\u2014"}
+                        </td>
+                        <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap">
+                          {entry.billNumber ?? "\u2014"}
                         </td>
                         <td className="px-3 py-2.5 whitespace-nowrap">
                           <Badge variant="outline" className="font-mono text-xs">{entry.modality}</Badge>
                         </td>
+                        {/* R2.0 — Measurements: clickable count badge → canonical Reporting
+                            Workspace (preferred) or the standalone USG measurements review
+                            page as a fallback when the study isn't linked yet. Non-US rows
+                            (and the sentinel row) keep the column but show an em-dash so the
+                            table doesn't shift. */}
+                        <td className="px-3 py-2.5 whitespace-nowrap text-center">
+                          {entry.id !== -1 && isUltrasoundModality(entry.modality) ? (() => {
+                            const count = entry.usgMeasurementCount ?? 0;
+                            // entry.id is the worklist row's own id — the same
+                            // id the "Report" button below uses and the same
+                            // id RadiologyReportingWorkspace's studyId prop
+                            // expects (GET /api/internal/radiology/worklist/:id).
+                            // entry.studyId is a DIFFERENT, often-null id
+                            // (radiology_studies.id, the RIS billing-side FK) —
+                            // using it here opened the wrong study or a blank
+                            // workspace whenever it happened to be set.
+                            const target = entry.id != null
+                              ? `/radiology/report/${entry.id}`
+                              : entry.studyInstanceUID
+                                ? `/radiology/usg-measurements/${entry.studyInstanceUID}`
+                                : null;
+                            const badge = (
+                              <UsgCountBadge
+                                count={count}
+                                color="bg-teal-50 text-teal-700 border-teal-200 dark:bg-teal-950/30 dark:text-teal-400 dark:border-teal-900"
+                              />
+                            );
+                            if (!target) return badge;
+                            return (
+                              <button
+                                type="button"
+                                className="inline-flex hover:opacity-80 transition-opacity"
+                                onClick={() => navigate(target)}
+                                title="Open USG measurements"
+                              >
+                                {badge}
+                              </button>
+                            );
+                          })() : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </td>
+                        {/* R2.0 — Images: USG key-image count. */}
+                        <td className="px-3 py-2.5 whitespace-nowrap text-center">
+                          {entry.id !== -1 && isUltrasoundModality(entry.modality) ? (
+                            <UsgCountBadge
+                              count={entry.usgKeyImageCount ?? 0}
+                              color="bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-900/40 dark:text-slate-300 dark:border-slate-700"
+                            />
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </td>
+                        {/* R2.0 — USG Report: latest usg_report_drafts status for this worklist row. */}
+                        <td className="px-3 py-2.5 whitespace-nowrap">
+                          {entry.id !== -1 && isUltrasoundModality(entry.modality) ? (
+                            <UsgReportStatusBadge status={entry.usgReportStatus} />
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5 whitespace-nowrap">
+                          {(() => { const pr = priorityInfo(entry.priority); return (
+                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-semibold ${pr.color}`}>
+                              {pr.label}
+                            </span>
+                          ); })()}
+                        </td>
                         <td className="px-3 py-2.5 max-w-[200px] truncate" title={entry.studyDescription ?? ""}>
                           {entry.studyDescription || "\u2014"}
+                        </td>
+                        <td className="px-3 py-2.5 text-xs whitespace-nowrap max-w-[140px] truncate" title={entry.referringDoctor ?? ""}>
+                          {entry.referringDoctor ?? "\u2014"}
                         </td>
                         <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap">{entry.accessionNumber}</td>
                         <td className="px-3 py-2.5 text-muted-foreground whitespace-nowrap">
@@ -771,10 +1037,60 @@ export default function RadiologyWorklist() {
                           {fmtDate(entry.createdAt)}
                         </td>
                         <td className="px-3 py-2.5 whitespace-nowrap">
-                          <StatusBadge status={entry.status} />
+                          <StatusBadge status={entry.status} deliveryStatus={entry.deliveryStatus} />
+                          {entry.status !== "REPORT_FINAL" && entry.status !== "DELIVERED" && (() => {
+                            const threshold = Number(pacsViewerSettings["radiology_aging_alert_hours"] ?? "4") || 4;
+                            const hrs = agingHours(entry.createdAt);
+                            if (hrs < threshold) return null;
+                            return (
+                              <span
+                                title={`Waiting ${hrs.toFixed(1)}h since received — configurable in Radiology Settings`}
+                                className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-semibold bg-red-50 text-red-700 border-red-200 dark:bg-red-950/30 dark:text-red-400 dark:border-red-900"
+                              >
+                                {hrs >= 24 ? `${Math.floor(hrs / 24)}d` : `${Math.floor(hrs)}h`} waiting
+                              </span>
+                            );
+                          })()}
+                        </td>
+                        <td className="px-3 py-2.5 text-xs whitespace-nowrap max-w-[120px] truncate" title={entry.assignedRadiologist ?? ""}>
+                          {entry.assignedRadiologist ?? "\u2014"}
                         </td>
                         <td className="px-3 py-2.5 whitespace-nowrap">
-                          <LockBadge entry={entry} currentUserId={session?.user?.id} />
+                          <div className="flex flex-col gap-1">
+                            <LockBadge entry={entry} currentUserId={session?.user?.id} />
+                            {/* M1.6B1 — assignment control: organizational
+                                ownership, distinct from the lock above. The
+                                server enforces who may assign/reassign. */}
+                            {entry.id !== -1 && (
+                              <select
+                                className="h-6 max-w-[150px] text-[10px] border rounded px-1 bg-background text-muted-foreground"
+                                value={(entry as { assignedRadiologistId?: number | null }).assignedRadiologistId ?? ""}
+                                disabled={assignMutation.isPending || entry.status === "REPORT_FINAL" || entry.status === "DELIVERED"}
+                                title={(() => {
+                                  const e = entry as { assignedAt?: string | null; assignedByName?: string | null };
+                                  return e.assignedAt
+                                    ? `Assigned ${new Date(e.assignedAt).toLocaleString()}${e.assignedByName ? ` by ${e.assignedByName}` : ""}`
+                                    : entry.assignedRadiologist
+                                      ? `Assigned to ${entry.assignedRadiologist} (legacy, no timestamp)`
+                                      : "Unassigned — pick a radiologist to assign";
+                                })()}
+                                onChange={(ev) => {
+                                  const v = ev.target.value;
+                                  assignMutation.mutate({ worklistId: entry.id, radiologistId: v === "" ? null : Number(v) });
+                                }}
+                                data-testid={`assign-select-${entry.id}`}
+                              >
+                                <option value="">
+                                  {(entry as { assignedRadiologistId?: number | null }).assignedRadiologistId == null && entry.assignedRadiologist
+                                    ? `Unassigned (was: ${entry.assignedRadiologist})`
+                                    : "Unassigned"}
+                                </option>
+                                {radiologists.map((r) => (
+                                  <option key={r.id} value={r.id}>{r.name}</option>
+                                ))}
+                              </select>
+                            )}
+                          </div>
                         </td>
                         <td className="px-3 py-2.5 whitespace-nowrap">
                           {entry.id === -1 ? (
@@ -813,7 +1129,7 @@ export default function RadiologyWorklist() {
                         </td>
                         <td className="px-3 py-2.5">
                           <div className="flex items-center justify-end gap-1 flex-wrap">
-                            {entry.id !== -1 && (
+                            {entry.id !== -1 && !isReceptionView && (
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -826,7 +1142,7 @@ export default function RadiologyWorklist() {
                               </Button>
                             )}
 
-                            {entry.id !== -1 && (
+                            {entry.id !== -1 && !isReceptionView && (
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -839,7 +1155,7 @@ export default function RadiologyWorklist() {
                               </Button>
                             )}
 
-                            {entry.status !== "REPORT_FINAL" && entry.status !== "DELIVERED" && entry.id !== -1 && (
+                            {entry.status !== "REPORT_FINAL" && entry.status !== "DELIVERED" && entry.id !== -1 && isRadView && (
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -853,7 +1169,7 @@ export default function RadiologyWorklist() {
                               </Button>
                             )}
 
-                            {entry.id !== -1 && (
+                            {entry.id !== -1 && isOwnerView && (
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -866,31 +1182,27 @@ export default function RadiologyWorklist() {
                               </Button>
                             )}
 
-                            {entry.id !== -1 && (
+                            {/* R1.4 — the primary "Report" action now opens the
+                                CANONICAL Reporting Workspace (/radiology/report/:studyId),
+                                not the deprecated Cockpit. Previously this was the
+                                ONLY "start reporting" entry point on the whole
+                                Worklist, and it sent every radiologist to a page
+                                carrying zero R1.3 image-panel/R1.2 template/M1.4
+                                validation support — that work was reachable only
+                                by typing the canonical URL by hand. */}
+                            {entry.id !== -1 && isRadView && may("/radiology/report") && (
                               <Button
                                 size="sm"
                                 className="h-7 px-2 text-xs bg-indigo-600 hover:bg-indigo-700 text-white"
-                                onClick={() => navigate(`/radiology/cockpit?studyId=${entry.id}`)}
-                                title="Open in Radiologist Cockpit"
+                                onClick={() => navigate(`/radiology/report/${entry.id}`)}
+                                title="Open in the Reporting Workspace"
                               >
                                 <Stethoscope className="h-3 w-3 mr-1" />
-                                Cockpit
+                                Report
                               </Button>
                             )}
 
-                            {entry.id !== -1 && (
-                              <Button
-                                size="sm"
-                                className="h-7 px-2 text-xs"
-                                onClick={() => navigate(`/radiology/report/${entry.id}`)}
-                                title="Open the unified Reporting Workspace (primary reporting page)"
-                              >
-                                <FileEdit className="h-3 w-3 mr-1" />
-                                Open Report
-                              </Button>
-                            )}
-
-                            {(entry.status === "REPORT_IN_PROGRESS" || entry.status === "AI_DRAFT_READY") && entry.id !== -1 && (
+                            {(entry.status === "REPORT_IN_PROGRESS" || entry.status === "AI_DRAFT_READY") && entry.id !== -1 && isRadView && (
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -912,6 +1224,35 @@ export default function RadiologyWorklist() {
                               <span className="text-xs text-green-700 font-medium flex items-center gap-1">
                                 <CheckCircle2 className="h-3 w-3" /> Finalized
                               </span>
+                            )}
+
+                            {/* Phase C: Premium Report entry point (preview lives in Report Generator — not expanded here) */}
+                            {entry.id !== -1 && isRadView && may("/radiology/report-generator") &&
+                              (entry.reportId != null || entry.status === "REPORT_IN_PROGRESS" || entry.status === "REPORT_FINAL") && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 px-2 text-xs border-amber-500 text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950/20"
+                                onClick={() => navigate(`/radiology/report-generator/${entry.id}?premium=1`)}
+                                title="Open Premium Report Preview"
+                              >
+                                <Gem className="h-3 w-3 mr-1" />
+                                Premium
+                              </Button>
+                            )}
+
+                            {/* Phase C: one-click print of the saved report (all roles incl. reception) */}
+                            {entry.id !== -1 && entry.reportId != null && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 px-2 text-xs"
+                                onClick={() => window.open(`/api/patient-reports/${entry.reportId}/print`, "_blank", "noopener,noreferrer")}
+                                title="Print / Share report"
+                              >
+                                <Printer className="h-3 w-3 mr-1" />
+                                Print
+                              </Button>
                             )}
                           </div>
                         </td>

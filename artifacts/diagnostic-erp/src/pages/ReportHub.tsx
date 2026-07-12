@@ -55,6 +55,57 @@ type ReportRow = {
   patientEmail?: string | null;
   testName?: string;
   testCode?: string;
+  version?: ReportVersionMeta;
+  lifecycle?: ReportLifecycleMeta;
+  structuredJson?: { audit?: { signature?: { state?: string } } } | null;
+};
+
+// D9 — additive lifecycle metadata GET /:id returns.
+type ReportLifecycleMeta = {
+  state: string;
+  structuredSigned: boolean;
+  amendmentPendingVerification: boolean;
+  pendingVerification: boolean;
+  deliverable: boolean;
+  superseded: boolean;
+  latestVersion: boolean;
+  verifiedAt: string | null;
+  verifiedBy: string | null;
+  recipientNotificationPending: boolean;
+  priorDeliveries: Array<{ channel: string; recipient: string | null; reportId: number; at: string | null }>;
+};
+
+// D9 — a structured-signed row in draft status is awaiting COUNTERSIGN, not a
+// legacy sign (the server refuses legacy sign for these rows). List rows
+// carry structuredJson, so this is derivable without extra requests.
+function isPendingStructuredVerify(r: ReportRow): boolean {
+  return r.status === "draft" && r.structuredJson?.audit?.signature?.state === "final";
+}
+
+// D8 — amendment-chain metadata GET /:id returns additively.
+type ReportVersionMeta = {
+  requestedReportId: number;
+  resolvedReportId: number;
+  rootReportId: number;
+  latestReportId: number;
+  sequenceNumber: number;
+  totalVersions: number;
+  superseded: boolean;
+  requestedSuperseded: boolean;
+  amendmentReason: string | null;
+  latestAmendmentReason: string | null;
+  resolutionReason: string;
+  warnings: string[];
+  chain?: Array<{
+    sequenceNumber: number;
+    reportId: number;
+    reportNumber: string | null;
+    status: string | null;
+    isLatest: boolean;
+    amendedByName: string | null;
+    amendedAt: string | null;
+    reason: string | null;
+  }>;
 };
 
 type ReportShare = {
@@ -173,13 +224,49 @@ export default function ReportHub() {
   function openSign(r: ReportRow) { setSelected(r); setSignOpen(true); }
   function openVerify(r: ReportRow) { setSelected(r); setVerifyOpen(true); }
   function openShare(r: ReportRow) { setSelected(r); setShareOpen(true); }
-  function openPrint(r: ReportRow) {
-    window.open(`/api/patient-reports/${r.id}/print`, "_blank", "noopener,noreferrer");
-    setTimeout(refresh, 1500);
+  // R1.4 — these routes require the staff Bearer token (requireStaffAuth
+  // only accepts it via the Authorization header, never a cookie); a raw
+  // window.open() browser navigation never attaches it, so every click used
+  // to open a blank tab showing the 401 JSON body instead of the report.
+  // Fetch via api.get() (which attaches the token) and write the HTML into a
+  // window opened SYNCHRONOUSLY first, before the await — the same
+  // popup-blocker-safe pattern the canonical Workspace's Print button uses.
+  async function openPrint(r: ReportRow) {
+    const w = window.open("", "_blank", "noopener,noreferrer");
+    // R1.4 review finding: GET /:id/print unconditionally records a
+    // share-log entry, flips a verified report to "delivered", and writes an
+    // audit entry — checking `!w` AFTER the fetch let a blocked popup still
+    // leave a false "delivered" record behind with nothing ever shown to the
+    // user. Bail out before the authenticated fetch runs.
+    if (!w) { toast({ title: "Popup blocked", description: "Allow popups for this site to print.", variant: "destructive" }); return; }
+    try {
+      const html = await api.get<string>(`/api/patient-reports/${r.id}/print`);
+      w.document.write(html);
+      w.document.close();
+      w.focus();
+    } catch (err) {
+      w.close();
+      toast({ title: "Could not open print view", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    } finally {
+      setTimeout(refresh, 1500);
+    }
   }
-  function openPdf(r: ReportRow) {
-    window.open(`/api/patient-reports/${r.id}/pdf`, "_blank", "noopener,noreferrer");
-    setTimeout(refresh, 1500);
+  async function openPdf(r: ReportRow) {
+    const w = window.open("", "_blank", "noopener,noreferrer");
+    // R1.4 review finding: same false-delivery-record risk as openPrint()
+    // above — bail out before the authenticated fetch runs.
+    if (!w) { toast({ title: "Popup blocked", description: "Allow popups for this site to download the PDF.", variant: "destructive" }); return; }
+    try {
+      const html = await api.get<string>(`/api/patient-reports/${r.id}/pdf`);
+      w.document.write(html);
+      w.document.close();
+      w.focus();
+    } catch (err) {
+      w.close();
+      toast({ title: "Could not open PDF view", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    } finally {
+      setTimeout(refresh, 1500);
+    }
   }
 
   async function ackCritical(r: ReportRow) {
@@ -291,7 +378,12 @@ export default function ReportHub() {
                       <div className="text-[11px] text-muted-foreground">{r.testCode ?? ""}</div>
                     </td>
                     <td className="px-3 py-2 uppercase text-xs">{r.type}</td>
-                    <td className="px-3 py-2"><StatusPill status={r.status} /></td>
+                    <td className="px-3 py-2">
+                      <StatusPill status={r.status} />
+                      {isPendingStructuredVerify(r) && (
+                        <span className="ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-100 text-amber-800">Pending Verify</span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-[11px] leading-tight">
                       {r.signedByName ? <div>✍ {r.signedByName}</div> : <span className="text-muted-foreground">—</span>}
                       {r.verifiedByName ? <div className="text-blue-700">✓ {r.verifiedByName}</div> : null}
@@ -299,8 +391,8 @@ export default function ReportHub() {
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap gap-1">
                         <Button size="sm" variant="outline" onClick={() => openEditor(r)} data-testid={`btn-edit-${r.id}`}><Eye className="h-3.5 w-3.5 mr-1" /> Open</Button>
-                        {r.status === "draft" && <Button size="sm" onClick={() => openSign(r)}><ShieldCheck className="h-3.5 w-3.5 mr-1" /> Sign</Button>}
-                        {r.status === "pending_verification" && <Button size="sm" onClick={() => openVerify(r)}><CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Verify</Button>}
+                        {r.status === "draft" && !isPendingStructuredVerify(r) && <Button size="sm" onClick={() => openSign(r)}><ShieldCheck className="h-3.5 w-3.5 mr-1" /> Sign</Button>}
+                        {(r.status === "pending_verification" || isPendingStructuredVerify(r)) && <Button size="sm" onClick={() => openVerify(r)}><CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Verify</Button>}
                         {(r.status === "verified" || r.status === "delivered") && (
                           <>
                             <Button size="sm" variant="outline" onClick={() => openPrint(r)}><Printer className="h-3.5 w-3.5 mr-1" /> Print</Button>
@@ -437,6 +529,138 @@ function CreateReportDialog({ open, onOpenChange, onCreated }: { open: boolean; 
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// D8 — amendment-version safeguards: a superseded report never displays as if
+// it is current; the latest amendment announces its version and reason.
+// ────────────────────────────────────────────────────────────────────────────
+function VersionBanner({ report, onOpenVersion }: {
+  report: ReportRow;
+  onOpenVersion: (id: number, historical: boolean) => void;
+}) {
+  const [showHistory, setShowHistory] = useState(false);
+  const v = report.version;
+  if (!v) return null;
+
+  const warning = v.warnings.length > 0 ? (
+    <div className="rounded-md border border-amber-400 bg-amber-50 text-amber-900 px-3 py-2 text-xs font-semibold">
+      ⚠ Amendment history warning — the version chain for this report could not be fully verified. Showing the requested version.
+    </div>
+  ) : null;
+
+  if (v.totalVersions <= 1) return warning;
+
+  const history = showHistory && v.chain && v.chain.length > 0 && (
+    <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs space-y-1">
+      {v.chain.map((c) => (
+        <div key={c.reportId} className="flex items-center gap-2">
+          <span className="font-semibold">V{c.sequenceNumber}</span>
+          <span className="font-mono">{c.reportNumber ?? `#${c.reportId}`}</span>
+          {c.isLatest && <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">LATEST</span>}
+          {c.reason && <span className="text-muted-foreground truncate" title={c.reason}>— {c.reason}</span>}
+          {c.amendedByName && <span className="text-muted-foreground">by {c.amendedByName}{c.amendedAt ? ` on ${new Date(c.amendedAt).toLocaleDateString("en-IN")}` : ""}</span>}
+          {c.reportId !== report.id && (
+            <Button size="sm" variant="ghost" className="h-5 px-2 text-[11px] ml-auto" onClick={() => onOpenVersion(c.reportId, !c.isLatest)}>Open</Button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+
+  if (v.superseded) {
+    return (
+      <div className="space-y-2">
+        {warning}
+        <div className="rounded-md border-2 border-red-800 bg-red-700 text-white px-3 py-2 text-sm font-bold">
+          SUPERSEDED — A newer signed amendment exists
+          <div className="text-xs font-medium mt-1">
+            This is Version {v.sequenceNumber} of {v.totalVersions}. Do not use for clinical decisions.
+            {v.latestAmendmentReason && <> Latest amendment reason: {v.latestAmendmentReason}</>}
+          </div>
+          <div className="mt-2 flex gap-2">
+            <Button size="sm" variant="secondary" onClick={() => onOpenVersion(v.latestReportId, false)}>Open latest version</Button>
+            <Button size="sm" variant="ghost" className="text-white" onClick={() => setShowHistory((s) => !s)}>History</Button>
+          </div>
+        </div>
+        {history}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {warning}
+      <div className="rounded-md border border-blue-500 bg-blue-50 text-blue-900 px-3 py-2 text-xs font-semibold">
+        Amended report — Version {v.sequenceNumber} of {v.totalVersions}
+        {v.amendmentReason && <> • Reason: {v.amendmentReason}</>}
+        {v.resolvedReportId !== v.requestedReportId && (
+          <span className="font-normal"> (requested version was superseded — showing the latest signed version)</span>
+        )}
+        <div className="mt-1 flex gap-2">
+          <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => setShowHistory((s) => !s)}>History</Button>
+          {v.resolvedReportId !== v.requestedReportId && (
+            <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={() => onOpenVersion(v.requestedReportId, true)}>View original as requested</Button>
+          )}
+        </div>
+      </div>
+      {history}
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// D9 — amendment lifecycle: pending-verification banner (with Verify action)
+// and the re-delivery prompt when a verified amendment supersedes a report
+// that was already delivered. Additive; the D8 VersionBanner stays as-is.
+// ────────────────────────────────────────────────────────────────────────────
+function LifecycleBanner({ report, onVerify, onShare }: {
+  report: ReportRow;
+  onVerify: (r: ReportRow) => void;
+  onShare: (r: ReportRow) => void;
+}) {
+  const [dismissed, setDismissed] = useState(false); // session-local only; durable ack state is deferred
+  const lc = report.lifecycle;
+  if (!lc) return null;
+  const v = report.version;
+
+  if (lc.pendingVerification && lc.structuredSigned) {
+    return (
+      <div className="rounded-md border border-amber-500 bg-amber-50 text-amber-900 px-3 py-2 text-xs font-semibold">
+        {lc.amendmentPendingVerification
+          ? <>Amendment pending verification — Version {v?.sequenceNumber ?? "?"} of {v?.totalVersions ?? "?"}</>
+          : <>Signed structured report — pending verification</>}
+        {v?.amendmentReason && <span className="font-normal"> • Reason: {v.amendmentReason}</span>}
+        <div className="font-normal mt-0.5">
+          Signed by {report.signedByName ?? "—"} • Created {new Date(report.createdAt).toLocaleString("en-IN")}.
+          A different authorized doctor must countersign before delivery.
+        </div>
+        <div className="mt-2">
+          <Button size="sm" onClick={() => onVerify(report)}><CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Verify (countersign)</Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (lc.deliverable && lc.recipientNotificationPending && !dismissed) {
+    return (
+      <div className="rounded-md border border-emerald-500 bg-emerald-50 text-emerald-900 px-3 py-2 text-xs font-semibold">
+        Verified amendment — Revision {v?.sequenceNumber ?? "?"}. Earlier version(s) were already delivered:
+        <div className="font-normal mt-1 space-y-0.5">
+          {lc.priorDeliveries.map((d, i) => (
+            <div key={i}>• {d.channel}{d.recipient ? ` → ${d.recipient}` : ""}{d.at ? ` (${new Date(d.at).toLocaleDateString("en-IN")})` : ""}</div>
+          ))}
+        </div>
+        <div className="font-normal mt-1">Recommend re-sharing the amended report so recipients are not left with the superseded version.</div>
+        <div className="mt-2 flex gap-2">
+          <Button size="sm" onClick={() => onShare(report)}><Send className="h-3.5 w-3.5 mr-1" /> Share amended report</Button>
+          <Button size="sm" variant="ghost" onClick={() => setDismissed(true)}>Dismiss</Button>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Editor — body + parameters + impression + critical + template
 // ────────────────────────────────────────────────────────────────────────────
 type Template = { id: number; testId: number; name: string; content: string; format: string };
@@ -456,9 +680,15 @@ function EditorDialog({
   const [criticalNote, setCriticalNote] = useState("");
   const [templates, setTemplates] = useState<Template[]>([]);
   const [busy, setBusy] = useState(false);
+  // D8 — which version this dialog is looking at. The server resolves the
+  // default view to the latest signed version; explicit historical views pin
+  // the exact row with ?version=specific.
+  const [viewVersion, setViewVersion] = useState<{ id: number; historical: boolean }>({ id: reportId, historical: false });
+
+  useEffect(() => { setViewVersion({ id: reportId, historical: false }); }, [reportId]);
 
   useEffect(() => {
-    api.get<ReportRow & { shares: ReportShare[] }>(`/api/patient-reports/${reportId}`).then((r) => {
+    api.get<ReportRow & { shares: ReportShare[] }>(`/api/patient-reports/${viewVersion.id}${viewVersion.historical ? "?version=specific" : ""}`).then((r) => {
       setReport(r);
       setBody(r.body || "");
       setImpression(r.impression ?? "");
@@ -467,7 +697,7 @@ function EditorDialog({
       try { setParams(r.parameters ? JSON.parse(r.parameters) : []); } catch { setParams([]); }
       api.get<Template[]>(`/api/patient-reports/templates/${r.testId}`).then(setTemplates).catch(() => setTemplates([]));
     }).catch((err) => toast({ title: "Load failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }));
-  }, [reportId, toast]);
+  }, [viewVersion, toast]);
 
   const editable = report ? report.status === "draft" : false;
 
@@ -509,6 +739,9 @@ function EditorDialog({
             {report.patientName} ({report.patientCode}) • {report.testName} • Created {new Date(report.createdAt).toLocaleString("en-IN")}
           </DialogDescription>
         </DialogHeader>
+
+        <VersionBanner report={report} onOpenVersion={(id, historical) => setViewVersion({ id, historical })} />
+        <LifecycleBanner report={report} onVerify={onVerify} onShare={onShare} />
 
         <div className="grid grid-cols-3 gap-4">
           <div className="col-span-2 space-y-3">
@@ -622,8 +855,8 @@ function EditorDialog({
             <div className="border rounded-md p-3 text-xs space-y-2">
               <div className="font-semibold">Actions</div>
               {editable && <Button onClick={save} disabled={busy} className="w-full">{busy ? "Saving…" : "Save Draft"}</Button>}
-              {report.status === "draft" && <Button onClick={() => onSign(report)} className="w-full" variant="default" data-testid="btn-sidebar-sign"><ShieldCheck className="h-4 w-4 mr-1" /> Sign</Button>}
-              {report.status === "pending_verification" && <Button onClick={() => onVerify(report)} className="w-full"><CheckCircle2 className="h-4 w-4 mr-1" /> Verify</Button>}
+              {report.status === "draft" && !report.lifecycle?.structuredSigned && <Button onClick={() => onSign(report)} className="w-full" variant="default" data-testid="btn-sidebar-sign"><ShieldCheck className="h-4 w-4 mr-1" /> Sign</Button>}
+              {(report.status === "pending_verification" || (report.lifecycle?.pendingVerification && report.lifecycle?.structuredSigned)) && <Button onClick={() => onVerify(report)} className="w-full"><CheckCircle2 className="h-4 w-4 mr-1" /> Verify</Button>}
               {(report.status === "verified" || report.status === "delivered") && (
                 <>
                   <Button onClick={() => onPrint(report)} variant="outline" className="w-full"><Printer className="h-4 w-4 mr-1" /> Print</Button>

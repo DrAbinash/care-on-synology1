@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import "@/styles/billingDeskModern.css"; // Modern Pro skin (presentation only)
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
 import { api } from "@/lib/fetchApi";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import { incrementPendingSyncCount } from "@/hooks/useSyncStatus";
-import { readStaffSession, isFeatureEnabled } from "@/lib/staffSession";
+import { readStaffSession, isFeatureEnabled, isOwnerRole } from "@/lib/staffSession";
 import { genUUID } from "@/lib/utils";
 import { getBillPaperSize } from "@/lib/billPrintLayout";
 import { getAutoBillPaperSize } from "@/lib/billPrintSettings";
@@ -450,14 +451,14 @@ export default function BillingDesk() {
 
   // ── New patient form visibility ──────────────────────
   // ── Layout mode (unified / stepped) ─────────────────
-  const [layoutMode, setLayoutMode] = useState<"unified" | "stepped" | "compact" | "classic" | "modern-pro">(() => {
+  const [layoutMode, setLayoutMode] = useState<"unified" | "stepped" | "compact" | "classic" | "modern">(() => {
     const stored = typeof window !== "undefined" ? localStorage.getItem("billingDeskLayout") : null;
-    return (stored as "unified" | "stepped" | "compact") || "unified";
+    return (stored as "unified" | "stepped" | "compact" | "classic" | "modern") || "unified";
   });
   useEffect(() => {
     const handler = () => {
       const stored = typeof window !== "undefined" ? localStorage.getItem("billingDeskLayout") : null;
-      setLayoutMode((stored as "unified" | "stepped" | "compact") || "unified");
+      setLayoutMode((stored as "unified" | "stepped" | "compact" | "classic" | "modern") || "unified");
     };
     window.addEventListener("storage", handler);
     window.addEventListener("billingDeskLayoutChanged", handler);
@@ -468,7 +469,6 @@ export default function BillingDesk() {
   }, []);
   const isStepped = layoutMode === "stepped";
   const isCompact = layoutMode === "compact";
-  const isModernPro = layoutMode === "modern-pro";
 
   // ── Reactive feature flags ────────────────────────────────────────────────
   // These were previously plain derived values (isFeatureEnabled() called once
@@ -589,6 +589,14 @@ export default function BillingDesk() {
   }
 
   // ── Billing ────────────────────────────────────────
+  // The server enforces the actual discount cap (see the maxDiscount check in
+  // POST /api/bills) — this is read-only, staff-facing context so a non-admin
+  // user knows their limit BEFORE typing a discount and hitting a save error,
+  // instead of only finding out from the 403 after the fact.
+  const myStaffSession = useMemo(() => readStaffSession(), []);
+  const myIsFullAccess = isOwnerRole(myStaffSession);
+  const myMaxDiscountPct = myStaffSession?.user.maxDiscount ?? 0;
+
   const [discountType, setDiscountType]   = useState<"amount" | "pct">("amount");
   const [discountValue, setDiscountValue] = useState<number>(0);
   const [discountReason, setDiscountReason] = useState<string>("");
@@ -998,7 +1006,12 @@ export default function BillingDesk() {
   const [quickDoctorPickerSearch, setQuickDoctorPickerSearch] = useState("");
   // (Register New Patient form is now always visible — no toggle state needed)
 
-  const { data: doctors = [] } = useQuery<Doctor[]>({
+  // isError/refetch are surfaced in the doctor-search dropdown and the Quick
+  // Doctor slot picker below — without them, a failed /api/doctors request
+  // (network blip, backend down) renders as an empty list, which is visually
+  // identical to "no doctors registered yet" and gives staff no way to tell
+  // a real outage apart from a genuinely empty roster.
+  const { data: doctors = [], isError: doctorsError, refetch: refetchDoctors } = useQuery<Doctor[]>({
     queryKey: ["doctors-list"],
     queryFn: () => api.get<{ doctors: Doctor[] }>("/api/doctors").then((d) => d.doctors ?? []),
     staleTime: Infinity,
@@ -1682,7 +1695,6 @@ export default function BillingDesk() {
     denseTestList  ? "billing-dense"     : "",
     largeFont      ? "billing-large-font": "",
     isCompact      ? "billing-compact"   : "",
-    isModernPro    ? "billing-modern-pro": "",
   ].filter(Boolean).join(" ");
 
   // Bright per-section header accents — purely presentational. Each section
@@ -1738,7 +1750,7 @@ export default function BillingDesk() {
   const cardClsNoClip = "bg-white dark:bg-slate-800 border border-[#dde3ec] dark:border-slate-700 rounded-xl shadow-md shadow-slate-200/60 dark:shadow-none [&>*:first-child]:rounded-t-xl";
 
   return (
-    <div className={deskClass}>
+    <div className={deskClass} data-desk={layoutMode}>
 
       {/* ═══════════════════════════════════════════════════════
           TOP BAR — date · title · search · recent · new
@@ -2106,7 +2118,12 @@ export default function BillingDesk() {
                             {d.specialization && <span className="ml-auto text-[11px] text-[#94a3b8]">{d.specialization}</span>}
                           </button>
                         ))}
-                      {doctors.filter((d) => d.name.toLowerCase().includes(doctorSearch.toLowerCase())).length === 0 && (
+                      {doctorsError ? (
+                        <div className="px-3 py-2 text-sm text-red-600 flex items-center justify-between gap-2">
+                          <span>Couldn't load doctors — check your connection.</span>
+                          <button type="button" onClick={() => refetchDoctors()} className="underline shrink-0">Retry</button>
+                        </div>
+                      ) : doctors.filter((d) => d.name.toLowerCase().includes(doctorSearch.toLowerCase())).length === 0 && (
                         <div className="px-3 py-2 text-sm text-[#94a3b8]">No doctor found</div>
                       )}
                     </div>
@@ -2387,6 +2404,13 @@ export default function BillingDesk() {
                       )}
                     </div>
                   </div>
+                  {!myIsFullAccess && (
+                    <p className="text-[10px] text-[#94a3b8]">
+                      {myMaxDiscountPct > 0
+                        ? `Your limit: up to ${myMaxDiscountPct}% on this bill.`
+                        : "You're not authorized to apply a discount — ask an admin."}
+                    </p>
+                  )}
                   <div className="flex items-center gap-1.5">
                     <div className="flex border border-[#dde3ec] rounded-md overflow-hidden flex-shrink-0">
                       <button
@@ -2570,14 +2594,19 @@ export default function BillingDesk() {
                     )}
 
                     {/* FOURTH: Payment mode selector — compact single row, split in half.
-                        Left half: CASH + UPI (larger — these cover the vast majority of
-                        collections). Right half: CARD / GATEWAY / INSURANCE (smaller —
-                        rarely used), so the whole clinic-relevant row stays one line.
-                        Cheque was removed — this clinic no longer accepts cheque payments. */}
+                        Left half: CASH + UPI + ONLINE (larger — cover the vast majority
+                        of collections, including QR/gateway payment shown on the
+                        customer-facing second screen). Right half: CARD / INSURANCE
+                        (smaller — rarely used), so the whole clinic-relevant row stays
+                        one line. Same PAYMENT_MODES list, same onClick handler as every
+                        other mode — selecting "online" here is what makes /api/bills
+                        return needsOnlinePayment, which is what opens the existing
+                        Online Payment / second-screen QR dialog below. Cheque was
+                        removed — this clinic no longer accepts cheque payments. */}
                     <div className="flex gap-1.5">
-                      <div className="flex-1 grid grid-cols-2 gap-1">
-                        {PAYMENT_MODES.filter((m) => m === "cash" || m === "upi").map((m) => {
-                          const icons: Record<string, string> = { cash: "💵", upi: "📱" };
+                      <div className="flex-1 grid grid-cols-3 gap-1">
+                        {PAYMENT_MODES.filter((m) => m === "cash" || m === "upi" || m === "online").map((m) => {
+                          const icons: Record<string, string> = { cash: "💵", upi: "📱", online: "🔳" };
                           const isActive = paymentSplits[0]?.mode === m;
                           return (
                             <button
@@ -2596,10 +2625,9 @@ export default function BillingDesk() {
                           );
                         })}
                       </div>
-                      <div className="flex-1 grid grid-cols-3 gap-1">
-                        {PAYMENT_MODES.filter((m) => m === "card" || m === "online" || m === "insurance").map((m) => {
-                          const icons: Record<string, string> = { card: "💳", online: "🌐", insurance: "🏥" };
-                          const labels: Record<string, string> = { online: "GATEWAY" };
+                      <div className="flex-1 grid grid-cols-2 gap-1">
+                        {PAYMENT_MODES.filter((m) => m === "card" || m === "insurance").map((m) => {
+                          const icons: Record<string, string> = { card: "💳", insurance: "🏥" };
                           const isActive = paymentSplits[0]?.mode === m;
                           return (
                             <button
@@ -2613,7 +2641,7 @@ export default function BillingDesk() {
                               }`}
                             >
                               <span className="text-[10px]">{icons[m]}</span>
-                              <span className="text-[6.5px] font-bold uppercase leading-tight">{labels[m] ?? m}</span>
+                              <span className="text-[6.5px] font-bold uppercase leading-tight">{m}</span>
                             </button>
                           );
                         })}
@@ -2792,7 +2820,12 @@ export default function BillingDesk() {
                     {d.specialization && <span className="text-[11px] text-[#94a3b8]">{d.specialization}</span>}
                   </button>
                 ))}
-              {doctors.filter((d) => !quickDoctorPickerSearch || d.name.toLowerCase().includes(quickDoctorPickerSearch.toLowerCase())).length === 0 && (
+              {doctorsError ? (
+                <div className="px-3 py-2 text-sm text-red-600 flex items-center justify-between gap-2">
+                  <span>Couldn't load doctors — check your connection.</span>
+                  <button type="button" onClick={() => refetchDoctors()} className="underline shrink-0">Retry</button>
+                </div>
+              ) : doctors.filter((d) => !quickDoctorPickerSearch || d.name.toLowerCase().includes(quickDoctorPickerSearch.toLowerCase())).length === 0 && (
                 <div className="px-3 py-2 text-sm text-[#94a3b8]">No doctor found</div>
               )}
             </div>

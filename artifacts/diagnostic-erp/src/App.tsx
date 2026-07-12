@@ -7,6 +7,51 @@ import Layout from "@/components/Layout";
 import { ModuleErrorBoundary } from "@/components/ModuleErrorBoundary";
 import { readStaffSession, canAccess, firstPermissionedPath, firstAllowedPath, longestMatchingNavPath, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 
+/**
+ * Phase C (Radiology V2): the unified Radiology Worklist at /radiology/worklist
+ * is the single staff-facing worklist. Old worklist routes redirect here.
+ * The old page components are PRESERVED in the codebase (not deleted).
+ */
+function RedirectToUnifiedWorklist() {
+  const [, navigate] = useLocation();
+  useEffect(() => { navigate("/radiology/worklist", { replace: true }); }, [navigate]);
+  return null;
+}
+
+/**
+ * Phase D (Radiology V2): RadiologistCockpit is the single Reading Room.
+ * Old editor routes redirect here (components PRESERVED, not deleted).
+ */
+function RedirectToCockpit({ studyId }: { studyId?: number }) {
+  const [, navigate] = useLocation();
+  useEffect(() => {
+    navigate(studyId && Number.isFinite(studyId) ? `/radiology/cockpit?studyId=${studyId}` : "/radiology/cockpit", { replace: true });
+  }, [navigate, studyId]);
+  return null;
+}
+
+/**
+ * Phase D: owner-only wrapper for preserved/deprecated pages.
+ * Normal staff are sent to the Reading Room; owners can still open the page.
+ */
+/**
+ * Phase E: admin/owner-only guard for the unified Radiology Settings page.
+ * Non-admin staff are sent to the Worklist.
+ */
+function AdminOnlySettings({ children }: { children: React.ReactNode }) {
+  const session = readStaffSession();
+  const role = normalizeRole(session?.user?.role || "");
+  if (role === "admin" || role === "super_admin") return <>{children}</>;
+  return <RedirectToUnifiedWorklist />;
+}
+
+function OwnerOnlyPreserved({ children }: { children: React.ReactNode }) {
+  const session = readStaffSession();
+  const role = normalizeRole(session?.user?.role || "");
+  if (role === "admin" || role === "super_admin") return <>{children}</>;
+  return <RedirectToCockpit />;
+}
+
 
 const BillingDesk     = lazy(() => import("@/pages/BillingDesk"));
 const Dashboard       = lazy(() => import("@/pages/Dashboard"));
@@ -47,12 +92,12 @@ const RadiologyLegacy = lazy(() => import("@/pages/RadiologyLegacy"));
 const RadiologyWorklist = lazy(() => import("@/pages/RadiologyWorklist"));
 const RadiologistCockpit = lazy(() => import("@/pages/RadiologistCockpit"));
 const RadiologyReportEditor = lazy(() => import("@/pages/RadiologyReportEditor"));
-const RadiologyReportUnified = lazy(() => import("@/pages/RadiologyReportUnified"));
 const RadiologyReportGen = lazy(() => import("@/pages/RadiologyReportGenerator"));
 const RadiologyReportingWorkspace = lazy(() => import("@/pages/RadiologyReportingWorkspace"));
 const PacsDashboard         = lazy(() => import("@/pages/PacsDashboard"));
 const RadiologySettings     = lazy(() => import("@/pages/RadiologySettings"));
 const RadiologySettingsCenter = lazy(() => import("@/pages/RadiologySettingsCenter"));
+const RadiologyFlightDeck = lazy(() => import("@/pages/RadiologyFlightDeck"));
 const RadiologyQuickSelectSettings = lazy(() => import("@/pages/RadiologyQuickSelectSettings"));
 const RadiologyOperationsDashboard = lazy(() => import("@/pages/RadiologyOperationsDashboard"));
 const MyReportingAnalytics         = lazy(() => import("@/pages/MyReportingAnalytics"));
@@ -286,8 +331,9 @@ function Router() {
         <Route path="/teleradiology" component={TeleradiologyPortal} />
         <Route path="/teleradiology/:rest*" component={TeleradiologyPortal} />
         <Route path="/verify-receipt/:billId" component={VerifyReceipt} />
-        <Route path="/display" component={Display} />
+        {/* Specific display routes must come BEFORE generic :roomKey pattern */}
         <Route path="/display/payment-qr" component={PaymentQrDisplay} />
+        <Route path="/display" component={Display} />
         {/* Primary URL per spec: caredeoghar.com/queue/usg, /queue/mri, etc. */}
         <Route path="/queue/:roomKey" component={QueueDisplay} />
         {/* Kept for backward compatibility with any already-configured TVs */}
@@ -344,14 +390,29 @@ function Router() {
               <Route path="/radiology/report-generator/:studyId">
                 {(params) => <RadiologyReportGen studyId={Number(params.studyId)} />}
               </Route>
-              {/* Cockpit unification (July 2026): /radiology/report/:studyId is
-                  now the single radiologist working page, served by the full
-                  Reporting Workspace (viewer buttons, dictation, templates,
-                  quick-select, prior reports, finalize, print). Both pages
-                  fetch the same /api/internal/radiology/worklist/:id entry,
-                  so the swap is data-compatible. The older simple editor
-                  stays reachable at /radiology/report-legacy/:studyId for
-                  one release in case of muscle-memory bookmarks. */}
+              {/* M1.1 canonical workspace consolidation (July 2026), RESTORED
+                  after the Radiology V2 merge briefly rerouted these to the
+                  cockpit (which lacked draft identity — every save created a
+                  new draft row and reopening a study dropped the draft).
+                  RadiologyReportingWorkspace is THE canonical radiology
+                  reporting page: it owns draft load/track/update-by-id
+                  (useRadiologyDraftId), M1.4 validation, the M1.2 launch
+                  pipeline, R1.1–R1.3 presentation/template/image-panel.
+                  Route map:
+                    /radiology/report/:studyId            → canonical (primary)
+                    /radiology/reporting-workspace(/:id)  → canonical (named alias)
+                    /radiology/unified-report/:worklistId → canonical (old URL kept)
+                    /radiology/report-legacy/:studyId     → redirect to canonical
+                    /radiology/cockpit                    → RadiologistCockpit (deprecated,
+                                                            fully functional; save bug fixed)
+                    /radiology/command-center(/:id)       → owner-only (preserved, V2)
+                    /radiology/legacy                     → owner-only (preserved, V2)
+                    /radiology/report-generator(/:id)     → RadiologyReportGenerator
+                                                            (deprecated; unique macro/
+                                                            key-image admin UI)
+                  The V2 worklist/settings consolidations (RedirectToUnifiedWorklist,
+                  AdminOnlySettings) are kept. The dead RadiologyReportUnified page
+                  (resurrected by the V2 merge) was removed again. */}
               <Route path="/radiology/report/:studyId">
                 {(params) => <RadiologyReportingWorkspace studyId={Number(params.studyId)} />}
               </Route>
@@ -426,12 +487,14 @@ function Router() {
               <Route path="/radiology/hl7-settings" component={Hl7Settings} />
               {/* Phase 12: Real Radiology Workflow & DICOM Operations */}
               <Route path="/radiology/command-center/:studyId">
-                {(params) => <RadiologyCommandCenter studyId={Number(params.studyId)} />}
+                {(params) => <OwnerOnlyPreserved><RadiologyCommandCenter studyId={Number(params.studyId)} /></OwnerOnlyPreserved>}
               </Route>
               <Route path="/radiology/command-center">
-                {() => <RadiologyCommandCenter />}
+                {() => <OwnerOnlyPreserved><RadiologyCommandCenter /></OwnerOnlyPreserved>}
               </Route>
-              <Route path="/radiology/legacy" component={RadiologyLegacy} />
+              <Route path="/radiology/legacy">
+                {() => <OwnerOnlyPreserved><RadiologyLegacy /></OwnerOnlyPreserved>}
+              </Route>
               <Route path="/radiology/advanced-tools" component={RadiologyAdvancedTools} />
               <Route path="/radiology/acquisition-gateway" component={AcquisitionGateway} />
               <Route path="/radiology/mwl-manager" component={MwlManager} />
@@ -444,7 +507,7 @@ function Router() {
               <Route path="/radiology/usg-admin-settings" component={UsgAdminSettings} />
               {/* USG / DOPPLER module */}
               <Route path="/usg" component={UsgDoppler} />
-              <Route path="/usg/worklist" component={UsgWorklist} />
+              <Route path="/usg/worklist" component={RedirectToUnifiedWorklist} />
               <Route path="/usg/measurements/:studyInstanceUID" component={UsgMeasurementReview} />
               <Route path="/usg/measurements" component={UsgMeasurementReview} />
               <Route path="/usg/reporting" component={UsgReporting} />
@@ -456,8 +519,8 @@ function Router() {
               <Route path="/usg/pregnancy-dashboard" component={PregnancyDashboard} />
               <Route path="/backup-replication" component={BackupReplication} />
               {/* Phase 10 RIS/PACS Foundation */}
-              <Route path="/radiology/dicom-study-worklist" component={DicomStudyWorklist} />
-              <Route path="/radiology/radiologist-queue" component={RadiologistQueue} />
+              <Route path="/radiology/dicom-study-worklist" component={RedirectToUnifiedWorklist} />
+              <Route path="/radiology/radiologist-queue" component={RedirectToUnifiedWorklist} />
               <Route path="/radiology/technician-workflow/:studyId">
                 {(params) => <TechnicianWorkflow studyId={Number(params.studyId)} />}
               </Route>
@@ -494,15 +557,22 @@ function Router() {
               <Route path="/samples" component={Samples} />
               <Route path="/scan-station" component={ScanStation} />
               <Route path="/report-delivery" component={ReportDelivery} />
-              {/* /settings/radiology is now the primary radiology settings
-                  page (Task 1 consolidation) — renders RadiologySettingsCenter.
-                  /radiology/settings-center is kept as a working redirect so
-                  existing bookmarks/links (Layout.tsx sidebar, cross-links in
-                  NetworkControlCenter.tsx, DicomNodes.tsx, PacsSettings.tsx,
-                  ModalityManagement.tsx) continue to work without edits. */}
-              <Route path="/settings/radiology" component={RadiologySettingsCenter} />
+              {/* Phase E (Radiology V2): RadiologySettingsCenter is the one
+                  owner/admin-only Radiology Settings hub. All legacy settings
+                  URLs render it; RadiologySettings (old page) is kept as an
+                  unrouted lazy import for rollback/reference only. */}
+              <Route path="/settings/radiology">
+                {() => <AdminOnlySettings><RadiologySettingsCenter /></AdminOnlySettings>}
+              </Route>
+              {/* M1.3 — the ONE admin diagnostics page (Flight Deck). */}
+              <Route path="/radiology/flight-deck" component={RadiologyFlightDeck} />
               <Route path="/settings/radiology-quick-select" component={RadiologyQuickSelectSettings} />
-              <Route path="/radiology/settings-center" component={RadiologySettings} />
+              <Route path="/radiology/settings">
+                {() => <AdminOnlySettings><RadiologySettingsCenter /></AdminOnlySettings>}
+              </Route>
+              <Route path="/radiology/settings-center">
+                {() => <AdminOnlySettings><RadiologySettingsCenter /></AdminOnlySettings>}
+              </Route>
               <Route path="/settings" component={Settings} />
               <Route path="/whatsapp-chatbot" component={WhatsAppChatbot} />
               <Route path="/system-update" component={SystemUpdate} />

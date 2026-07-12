@@ -1,7 +1,8 @@
 import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 // Emergency Ticket E0.1 (CRIT-1) regression coverage.
@@ -138,5 +139,67 @@ describe("exportDatabaseSql — false-success race fix (Ticket E0.1 / CRIT-1)", 
     await promise;
 
     expect(spawnCalls[0]!.args).not.toContain("--table");
+  });
+});
+
+// Ticket E0.1d coverage — integrity verification for scheduled backups.
+// computeSha256/verifyBackupChecksum operate on real files under
+// TEST_BACKUP_DIR (same convention as the tests above), not mocked fs, so
+// "corrupted file" can be reproduced by literally overwriting bytes on disk.
+
+describe("computeSha256 / verifyBackupChecksum (Ticket E0.1d)", () => {
+  test("checksum generated: matches a hex SHA-256 computed independently over the same bytes", async () => {
+    const { computeSha256 } = await import("./backupReplication");
+    const content = "-- encrypted backup content --\nSELECT 1;\n";
+
+    const expected = createHash("sha256").update(content).digest("hex");
+    expect(computeSha256(content)).toBe(expected);
+    expect(computeSha256(content)).toHaveLength(64); // hex-encoded SHA-256
+  });
+
+  test("checksum verified: an unmodified file on disk verifies against its recorded checksum", async () => {
+    const { computeSha256, verifyBackupChecksum } = await import("./backupReplication");
+    const filePath = path.join(TEST_BACKUP_DIR, "good-backup.sql.enc");
+    const content = "encrypted-envelope-bytes-abc123";
+    writeFileSync(filePath, content);
+
+    const checksum = computeSha256(content);
+    await expect(verifyBackupChecksum(filePath, checksum)).resolves.toBe(true);
+  });
+
+  test("corrupted encrypted backup fails verification: a file altered after the checksum was recorded no longer matches", async () => {
+    const { computeSha256, verifyBackupChecksum } = await import("./backupReplication");
+    const filePath = path.join(TEST_BACKUP_DIR, "corrupted-backup.sql.enc");
+    const originalContent = "encrypted-envelope-bytes-abc123";
+    writeFileSync(filePath, originalContent);
+    const checksum = computeSha256(originalContent);
+
+    // Simulate corruption: the file on disk changes after the checksum was recorded.
+    writeFileSync(filePath, "encrypted-envelope-bytes-ABC123-CORRUPTED");
+
+    await expect(verifyBackupChecksum(filePath, checksum)).resolves.toBe(false);
+  });
+
+  test("normal backups still pass: several distinct, untouched backups each verify independently and correctly", async () => {
+    const { computeSha256, verifyBackupChecksum } = await import("./backupReplication");
+    const backups = ["backup-a.sql.enc", "backup-b.sql.enc", "backup-c.sql.enc"].map((name, i) => {
+      const filePath = path.join(TEST_BACKUP_DIR, name);
+      const content = `encrypted content for backup ${i}`;
+      writeFileSync(filePath, content);
+      return { filePath, checksum: computeSha256(content) };
+    });
+
+    for (const { filePath, checksum } of backups) {
+      await expect(verifyBackupChecksum(filePath, checksum)).resolves.toBe(true);
+    }
+    // Cross-checking one backup's content against a different backup's
+    // checksum must fail — proves this isn't a vacuously-true check.
+    await expect(verifyBackupChecksum(backups[0]!.filePath, backups[1]!.checksum)).resolves.toBe(false);
+  });
+
+  test("verifyBackupChecksum returns false (not a throw) for a missing file", async () => {
+    const { verifyBackupChecksum } = await import("./backupReplication");
+    const missingPath = path.join(TEST_BACKUP_DIR, "does-not-exist.sql.enc");
+    await expect(verifyBackupChecksum(missingPath, "any-checksum")).resolves.toBe(false);
   });
 });

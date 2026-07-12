@@ -14,7 +14,6 @@ import {
   X,
   Moon,
   Sun,
-  Activity,
   FilePen,
   Package,
   BookOpen,
@@ -153,10 +152,7 @@ const navItems: NavEntry[] = [
     children: [
       { path: "/radiology/operations-dashboard", icon: Gauge,          label: "Operations Dashboard" },
       { path: "/radiology/my-analytics",         icon: BarChart3,      label: "My Analytics" },
-      { path: "/radiology/cockpit",            icon: Stethoscope,    label: "Radiologist Cockpit" },
-      { path: "/radiology/my-collection",       icon: ShieldAlert,    label: "DICOM Match Center" },
       { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist Hub" },
-      { path: "/radiology/reporting-workspace", icon: FilePen,        label: "Reporting Workspace" },
       { path: "/pacs",                        icon: Monitor,        label: "PACS Viewer" },
       { path: "/radiology/normal-templates",   icon: ClipboardCheck, label: "Normal Templates" },
       { path: "/radiology/critical-findings",   icon: AlertCircle,    label: "Critical Findings" },
@@ -167,14 +163,14 @@ const navItems: NavEntry[] = [
       { path: "/radiology/voice-dictation",   icon: Mic,            label: "Voice Dictation" },
       { path: "/radiology/advanced-tools",    icon: Cpu,            label: "Advanced Tools",        ownerOnly: true },
       // Hidden items kept for gradual rollout / bookmark preservation
-      { path: "/radiology/ai-reporting-settings", icon: BrainCircuit, label: "AI Reporting",          featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/ai-prompt-manager",   icon: BookOpen,       label: "AI Prompt Manager",     featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/ai-comparison",       icon: Terminal,       label: "AI Comparison",         featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/missed-finding-detector", icon: AlertTriangle, label: "Missed Finding Detector", featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/image-review",            icon: Eye,            label: "Image Review Assistant",  featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/provider-fallback",          icon: ShieldCheck,    label: "Provider Fallback",       featureFlag: "hideDeprecatedNav" },
-      { path: "/teaching-cases",                   icon: GraduationCap,    label: "Teaching Files",          featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/ai-extraction-review",  icon: Microscope,   label: "AI Extraction Review",  featureFlag: "hideDeprecatedNav" },
+      { path: "/radiology/ai-reporting-settings", icon: BrainCircuit, label: "AI Reporting",          ownerOnly: true, featureFlag: "hideDeprecatedNav" },
+      { path: "/radiology/ai-prompt-manager",   icon: BookOpen,       label: "AI Prompt Manager",     ownerOnly: true, featureFlag: "hideDeprecatedNav" },
+      { path: "/radiology/ai-comparison",       icon: Terminal,       label: "AI Comparison",         ownerOnly: true, featureFlag: "hideDeprecatedNav" },
+      { path: "/radiology/missed-finding-detector", icon: AlertTriangle, label: "Missed Finding Detector", ownerOnly: true, featureFlag: "hideDeprecatedNav" },
+      { path: "/radiology/image-review",            icon: Eye,            label: "Image Review Assistant",  ownerOnly: true, featureFlag: "hideDeprecatedNav" },
+      { path: "/radiology/provider-fallback",          icon: ShieldCheck,    label: "Provider Fallback",       ownerOnly: true, featureFlag: "hideDeprecatedNav" },
+      { path: "/teaching-cases",                   icon: GraduationCap,    label: "Teaching Files",          ownerOnly: true, featureFlag: "hideDeprecatedNav" },
+      { path: "/radiology/ai-extraction-review",  icon: Microscope,   label: "AI Extraction Review",  ownerOnly: true, featureFlag: "hideDeprecatedNav" },
       { path: "/radiology/pacs-settings",         icon: Settings2,    label: "PACS Settings",         ownerOnly: true, featureFlag: "hideDeprecatedNav" },
       { path: "/radiology/modality-management",   icon: Monitor,      label: "Modality Management",   ownerOnly: true, featureFlag: "hideDeprecatedNav" },
       { path: "/radiology/dicom-agent-dashboard", icon: Server,       label: "DICOM Agent",           ownerOnly: true, featureFlag: "hideDeprecatedNav" },
@@ -242,7 +238,7 @@ const navItems: NavEntry[] = [
       { path: "/settings",                  icon: Settings2,      label: "General Settings" },
       { path: "/knowledge-base",            icon: BookOpen,       label: "Knowledge Base" },
       { path: "/ai-caller-credentials",     icon: KeyRound,       label: "AI Caller Credentials", ownerOnly: true },
-      { path: "/settings/radiology", icon: Radio,          label: "Radiology Settings" },
+      { path: "/settings/radiology", icon: Radio,          label: "Radiology Settings", ownerOnly: true },
       { path: "/settings/radiology-quick-select", icon: Zap, label: "Quick Select Buttons", ownerOnly: true },
       { path: "/tests",                     icon: FlaskConical,   label: "Test Catalog" },
       { path: "/outsourced-labs",           icon: Building2,      label: "Outsourced Labs" },
@@ -758,26 +754,27 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </button>
         </div>
 
-        {/* Open Radiology Cockpit (federated service) — external link with SSO */}
-        {(() => {
-          const session = readStaffSession();
-          const radUrl = (process.env.NEXT_PUBLIC_RADIOLOGY_URL || (typeof window !== "undefined" ? `${window.location.protocol}//${window.location.hostname}:3002` : "")) + (session?.token ? `/?sso=${encodeURIComponent(session.token)}` : "");
-          return radUrl ? (
-            <a
-              href={radUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              title="Open the standalone Radiology Cockpit (MRI/CT reporting)"
-              className={cn(
-                "flex items-center rounded-lg text-sm font-medium transition-all cursor-pointer bg-primary/15 text-primary hover:bg-primary/25 border border-primary/30",
-                sidebarCollapsed ? "justify-center px-0 py-2.5 mx-1" : "gap-2 px-3 py-2.5 mx-2",
-              )}
-            >
-              <BrainCircuit size={16} />
-              {!sidebarCollapsed && <span>Radiology Cockpit</span>}
-            </a>
-          ) : null;
-        })()}
+        {/* R1.4 — this used to be an external link (with an SSO token) to a
+            standalone "Federated Radiology Service" on port 3002. That
+            service was scaffolded but never built and was explicitly
+            removed from docker-compose (2026-07-07); the link itself was
+            never cleaned up, so it was always visible and always failed to
+            connect — the first "Radiology Cockpit" button a radiologist
+            would find. It now opens the real, in-app Radiology Worklist
+            (from which every study's canonical Reporting Workspace is one
+            click away), reusing the same prominent shortcut placement. */}
+        <Link
+          href="/radiology/worklist"
+          onClick={() => { setSidebarOpen(false); if (autoMinimise) setSidebarCollapsed(true); }}
+          title="Open the Radiology Worklist"
+          className={cn(
+            "flex items-center rounded-lg text-sm font-medium transition-all cursor-pointer bg-primary/15 text-primary hover:bg-primary/25 border border-primary/30",
+            sidebarCollapsed ? "justify-center px-0 py-2.5 mx-1" : "gap-2 px-3 py-2.5 mx-2",
+          )}
+        >
+          <BrainCircuit size={16} />
+          {!sidebarCollapsed && <span>Radiology Worklist</span>}
+        </Link>
 
         {/* Nav */}
         <nav className={cn("flex-1 py-4 space-y-0.5 overflow-y-auto relative z-10", sidebarCollapsed ? "px-1" : "px-3")}>

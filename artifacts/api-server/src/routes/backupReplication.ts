@@ -5,6 +5,7 @@ import { eq, desc } from "drizzle-orm";
 import { spawn } from "node:child_process";
 import { promises as fs, createWriteStream, createReadStream } from "node:fs";
 import { mkdirSync, existsSync, statSync, readdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { promisify } from "node:util";
 import { pipeline } from "node:stream";
@@ -280,6 +281,29 @@ export async function exportDatabaseSqlFallback(
     return { filePath, sizeBytes: stats.size, rowCount: totalRows };
   } finally {
     client.release();
+  }
+}
+
+// Ticket E0.1d — integrity verification for scheduled backups.
+//
+// computeSha256 hashes exactly the bytes that get written to disk for a
+// completed backup (the encrypted .sql.enc content), so a later mismatch
+// means the file was altered or corrupted after the backup ran — not a
+// hash of the pre-encryption SQL, which wouldn't catch corruption of the
+// at-rest artifact itself. verifyBackupChecksum re-reads the file and
+// confirms it still matches. Detection only — no auto-repair, and neither
+// function touches restore logic (restoreDatabaseFromSql, /import-db,
+// /import-snapshot are all unchanged).
+export function computeSha256(data: Buffer | string): string {
+  return createHash("sha256").update(data).digest("hex");
+}
+
+export async function verifyBackupChecksum(filePath: string, expectedChecksumHex: string): Promise<boolean> {
+  try {
+    const data = await fs.readFile(filePath);
+    return computeSha256(data) === expectedChecksumHex;
+  } catch {
+    return false;
   }
 }
 
@@ -744,13 +768,22 @@ backupReplicationRouter.post("/import-db", requireAdmin as any, async (req, res)
   }
 
   try {
-    // 1. Pre-restore backup
+    // 1. Pre-restore backup. BEND-1: a failed pre-backup ABORTS the restore —
+    // previously it fail-opened and the destructive restore proceeded without
+    // a way back. allowWithoutPreBackup=true is the explicit override.
+    const { allowWithoutPreBackup } = req.body as { allowWithoutPreBackup?: boolean };
     let preBackupFile: string | null = null;
     try {
       const pre = await exportDatabaseSql();
       preBackupFile = pre.filePath;
     } catch (preErr) {
       logger.error({ preErr }, "Pre-restore backup failed");
+      if (!allowWithoutPreBackup) {
+        res.status(409).json({
+          error: "Pre-restore backup FAILED — restore aborted. Fix the backup path (pg_dump/disk) or pass allowWithoutPreBackup=true to explicitly proceed without a safety copy.",
+        });
+        return;
+      }
     }
 
     // 2. Restore
@@ -800,13 +833,21 @@ backupReplicationRouter.post("/import-snapshot", requireAdmin as any, async (req
   }
 
   try {
-    // 1. Pre-restore backup
+    // 1. Pre-restore backup. BEND-1: failure ABORTS unless explicitly
+    // overridden (same rule as /import-db).
+    const { allowWithoutPreBackup } = req.body as { allowWithoutPreBackup?: boolean };
     let preBackupFile: string | null = null;
     try {
       const pre = await exportDatabaseSql();
       preBackupFile = pre.filePath;
     } catch (preErr) {
       logger.error({ preErr }, "Pre-restore backup failed");
+      if (!allowWithoutPreBackup) {
+        res.status(409).json({
+          error: "Pre-restore backup FAILED — restore aborted. Fix the backup path (pg_dump/disk) or pass allowWithoutPreBackup=true to explicitly proceed without a safety copy.",
+        });
+        return;
+      }
     }
 
     // 2. Read and extract snapshot

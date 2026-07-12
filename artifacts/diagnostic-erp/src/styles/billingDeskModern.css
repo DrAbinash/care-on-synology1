@@ -1,0 +1,120 @@
+/**
+ * billingDeskModern.css — "Modern Pro" skin for the Billing Desk (5th layout).
+ *
+ * PRESENTATION ONLY. This file restyles the EXISTING Billing Desk DOM when
+ * the root carries data-desk="modern". No logic, calculation, formula, field,
+ * or workflow is touched — switching skins cannot change any number.
+ * Selected from Settings → Appearance → Billing Desk Layout.
+ */
+
+/* ── Canvas ── */
+[data-desk="modern"] {
+  background:
+    radial-gradient(1100px 500px at 85% -10%, rgba(56, 130, 246, 0.10), transparent 60%),
+    radial-gradient(900px 420px at -10% 110%, rgba(16, 185, 129, 0.07), transparent 55%),
+    hsl(var(--background));
+}
+
+/* ── Top bar: enterprise gradient with subtle glow ── */
+[data-desk="modern"] > div:first-of-type {
+  background: linear-gradient(90deg, #0b2a4a 0%, #143d6b 55%, #0f4c81 100%) !important;
+  border-bottom: 1px solid rgba(126, 184, 247, 0.25);
+  box-shadow: 0 2px 14px rgba(15, 60, 110, 0.35);
+}
+
+/* ── Cards: soft glass, crisper radius, gentle elevation ── */
+[data-desk="modern"] .bg-card,
+[data-desk="modern"] [class*="rounded-lg"][class*="border"],
+[data-desk="modern"] [class*="rounded-xl"][class*="border"] {
+  border-radius: 14px;
+  border-color: color-mix(in oklab, hsl(var(--border)) 70%, transparent) !important;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.05),
+    0 8px 22px -14px rgba(15, 60, 110, 0.25);
+  transition: box-shadow 160ms ease, transform 160ms ease;
+}
+[data-desk="modern"] .bg-card:hover {
+  box-shadow:
+    0 2px 4px rgba(15, 23, 42, 0.06),
+    0 14px 30px -16px rgba(15, 60, 110, 0.32);
+}
+
+/* ── Section headings: slim accent bar ── */
+[data-desk="modern"] h2,
+[data-desk="modern"] h3 {
+  position: relative;
+  letter-spacing: 0.01em;
+}
+
+/* ── Inputs: calm, rounded, focus ring in brand blue ── */
+[data-desk="modern"] input,
+[data-desk="modern"] select,
+[data-desk="modern"] textarea {
+  border-radius: 10px !important;
+  transition: box-shadow 120ms ease, border-color 120ms ease;
+}
+[data-desk="modern"] input:focus-visible,
+[data-desk="modern"] select:focus-visible,
+[data-desk="modern"] textarea:focus-visible {
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18) !important;
+  border-color: rgba(37, 99, 235, 0.55) !important;
+}
+
+/* ── Primary buttons: gradient + press feedback ── */
+[data-desk="modern"] button[class*="bg-primary"],
+[data-desk="modern"] button[class*="bg-indigo-6"],
+[data-desk="modern"] button[class*="bg-blue-6"],
+[data-desk="modern"] button[class*="bg-emerald-6"] {
+  border-radius: 10px;
+  box-shadow: 0 6px 16px -8px rgba(37, 99, 235, 0.45);
+  transition: transform 100ms ease, box-shadow 120ms ease, filter 120ms ease;
+}
+[data-desk="modern"] button[class*="bg-primary"]:hover { filter: brightness(1.06); }
+[data-desk="modern"] button:active { transform: translateY(1px) scale(0.995); }
+
+/* ── Tables / lists: airy rows, hover wash ── */
+[data-desk="modern"] table th {
+  text-transform: uppercase;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: hsl(var(--muted-foreground));
+}
+[data-desk="modern"] table tbody tr { transition: background 100ms ease; }
+[data-desk="modern"] table tbody tr:hover { background: rgba(37, 99, 235, 0.05); }
+
+/* ── Badges: pill polish ── */
+[data-desk="modern"] [class*="rounded-full"][class*="border"] {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+}
+
+/* ── Payment / summary emphasis: amount figures pop slightly ── */
+[data-desk="modern"] [class*="font-mono"][class*="font-bold"],
+[data-desk="modern"] [class*="text-2xl"][class*="font-bold"] {
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+/* ── Scrollbars: slim, unobtrusive ── */
+[data-desk="modern"] ::-webkit-scrollbar { width: 8px; height: 8px; }
+[data-desk="modern"] ::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, hsl(var(--muted-foreground)) 35%, transparent);
+  border-radius: 8px;
+}
+[data-desk="modern"] ::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, hsl(var(--muted-foreground)) 55%, transparent);
+}
+
+/* ── Dark mode tuning ── */
+.dark [data-desk="modern"] {
+  background:
+    radial-gradient(1100px 500px at 85% -10%, rgba(56, 130, 246, 0.10), transparent 60%),
+    hsl(var(--background));
+}
+.dark [data-desk="modern"] .bg-card {
+  box-shadow: 0 10px 26px -18px rgba(0, 0, 0, 0.6);
+}
+
+/* ── Reduced motion respect ── */
+@media (prefers-reduced-motion: reduce) {
+  [data-desk="modern"] *, [data-desk="modern"] { transition: none !important; }
+}

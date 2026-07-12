@@ -2,9 +2,13 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { api } from "@/lib/fetchApi";
-import { readStaffSession } from "@/lib/staffSession";
+import { readStaffSession, normalizeRole } from "@/lib/staffSession";
+import { toUnifiedStatus, priorityInfo, worklistRoleView } from "@/lib/radiologyStatus";
 import { useToast } from "@/hooks/use-toast";
 import { launchViewer } from "@/lib/viewerService";
+import { finalizeRadiologyReport, saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
+import { useRadiologyDraftId } from "@/hooks/useRadiologyDraftId";
+import DeprecatedSurfaceBanner from "@/components/radiology/DeprecatedSurfaceBanner";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,7 +32,7 @@ import {
   Ruler, GitCompare, History as HistoryIcon, BrainCircuit, WandSparkles,
   Pencil, SpellCheck, Repeat2, FileDown, Mic, Heart, Baby, Stethoscope, X, Plus,
   TrendingUp, TrendingDown, Minus
-} from "lucide-react";
+, Printer, Gem } from "lucide-react";
 import VoiceDictationButton from "@/components/VoiceDictationButton";
 import ChocolateBoxPanel, { type ChocolateFinding } from "@/components/ChocolateBoxPanel";
 import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
@@ -64,6 +68,9 @@ type WorklistEntry = {
   weasisUrl: string | null;
   status: string;
   assignedRadiologist: string | null;
+  priority?: string | null;    // Phase D: reuses radiology_studies.priority
+  billNumber?: string | null;  // Phase D: via study→bill (single endpoint)
+  uhid?: string | null;        // Phase D: ERP UHID
   aiDraftStatus: string;
   aiDraftJson?: string | null;
   reportId: number | null;
@@ -74,6 +81,21 @@ type WorklistEntry = {
   lockUserName?: string | null;
   lockTime?: string | null;
   lockLastActivityAt?: string | null;
+};
+
+// Phase F: winner template system (radiology_master_templates), including
+// rows migrated from the four legacy systems (MIGRATED_* groups).
+type MasterTemplate = {
+  id: number;
+  groupName: string;
+  templateName: string;
+  modality: string;
+  studyType: string | null;
+  bodyPart: string | null;
+  findings: string;
+  impression: string;
+  recommendations: string | null;
+  isActive: boolean;
 };
 
 type StructuredTemplate = {
@@ -159,9 +181,22 @@ function safeParseAiDraft(json: string | null | undefined): { findings?: string;
 // Top-level cockpit wrapper — renders the cockpit inside a fault-tolerant boundary.
 // If the cockpit itself crashes (React error), this shows a recovery screen
 // instead of a blank page or portal redirect.
+/**
+ * @deprecated M1.1 consolidation — RadiologyReportingWorkspace
+ * (/radiology/report/:studyId) is the canonical radiology reporting page.
+ * The Cockpit remains routed at /radiology/cockpit with no functional
+ * regression, but new features land in the canonical workspace only; the
+ * Cockpit-unique pieces still worth merging there (voice dictation, /macro
+ * expansion, worklist sidebar) are tracked for M1.2. Its duplicate
+ * save/finalize logic already delegates to lib/radiologyReportLifecycle.
+ */
 export default function RadiologistCockpitPage() {
   return (
     <ErrorBoundary>
+      <DeprecatedSurfaceBanner
+        surface="Radiologist Cockpit"
+        note="opens the same worklist studies — use Open Report from the worklist"
+      />
       <RadiologistCockpit />
     </ErrorBoundary>
   );
@@ -174,8 +209,48 @@ function RadiologistCockpit() {
   const qc = useQueryClient();
   const session = readStaffSession();
 
+  // R1.4 — /api/patient-reports/:id/print requires the staff Bearer token
+  // (never a cookie); a raw window.open() browser navigation never attaches
+  // it and used to open a blank tab showing the 401 JSON body instead of the
+  // report. Fetch via api.get() (attaches the token) into a window opened
+  // SYNCHRONOUSLY first, before the await, so popup blockers don't swallow
+  // the click — the same pattern the canonical Workspace's Print button uses.
+  async function printSavedReport(reportId: number) {
+    const w = window.open("", "_blank", "noopener,noreferrer");
+    // R1.4 review finding: GET /:id/print unconditionally records a share-log
+    // entry, flips a verified report to "delivered", and writes an audit
+    // entry — checking `!w` AFTER the fetch let a blocked popup still leave a
+    // false "delivered" record behind with nothing ever shown to the user.
+    // Bail out before the authenticated fetch runs, matching the Workspace's
+    // printReport().
+    if (!w) { toast({ title: "Popup blocked", description: "Allow popups for this site to print.", variant: "destructive" }); return; }
+    try {
+      const html = await api.get<string>(`/api/patient-reports/${reportId}/print`);
+      w.document.write(html);
+      w.document.close();
+      w.focus();
+    } catch (err) {
+      w.close();
+      toast({ title: "Could not open print view", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    }
+  }
+
   // Active study state
   const [activeStudyId, setActiveStudyId] = useState<number | null>(null);
+
+  // Draft identity (SAVE-BUG FIX): the same load/track/update-by-id hook the
+  // canonical workspace and the report generator share. Without it every
+  // "Save Draft" here POSTed with NO id — the server's insert-vs-update
+  // branch is by id, so each save created a brand-new draft row, and
+  // reopening a study never found the previous draft (the payload also keyed
+  // studyId to the radiology_studies id instead of the worklist row id the
+  // reload query uses — the exact M1.4 broken link the workspace fixed).
+  const { draftId, existingDraft, captureSavedDraftId, isLoadingExistingDraft } = useRadiologyDraftId(activeStudyId);
+
+  // Phase D: role-based Reading Room behavior. Page access remains governed
+  // by the existing permission system; this only gates in-page actions.
+  const cockpitRole = worklistRoleView(normalizeRole(readStaffSession()?.user?.role || ""));
+  const canSign = cockpitRole === "radiologist" || cockpitRole === "owner";
 
   // Pagination for worklist
   const [visibleWorklistCount, setVisibleWorklistCount] = useState(30);
@@ -315,6 +390,16 @@ function RadiologistCockpit() {
     queryFn: () => api.get<StructuredTemplate[]>("/api/radiology/structured-report-templates"),
     staleTime: 300000,
   });
+
+  // 3b. Phase F: Master Template Library (winner system — includes templates
+  // consolidated from the legacy systems). Additive: the structured-template
+  // list above is untouched; both appear in the picker.
+  const { data: masterTemplatesResp } = useQuery<{ templates: MasterTemplate[]; count: number }>({
+    queryKey: ["master-templates"],
+    queryFn: () => api.get("/api/radiology/master-templates"),
+    staleTime: 300000,
+  });
+  const masterTemplates = masterTemplatesResp?.templates ?? [];
 
   // 4. Viewer Configuration Settings
   const { data: pacsViewerSettings = {} } = useQuery<Record<string, string>>({
@@ -1297,7 +1382,7 @@ function RadiologistCockpit() {
     return 5; // Step 5: Finalize
   }, [study, viewerLaunched, priorReports, priorsCompared, completenessDetails.pct, rawFindings]);
 
-  // Auto-switch tabs and load default templates
+  // Auto-switch tabs on study change
   useEffect(() => {
     if (!study) return;
     setViewerLaunched(false);
@@ -1311,27 +1396,70 @@ function RadiologistCockpit() {
     } else {
       setActiveRightTab("chocolate");
     }
+  }, [study]);
 
-    // Auto-load template if available
+  // SAVE-BUG FIX: an existing draft WINS over the template auto-apply.
+  // Previously the template was applied unconditionally on study open, so a
+  // radiologist reopening a half-written study saw template boilerplate
+  // instead of the saved draft (which the missing draft identity above also
+  // made unfindable). The template now auto-applies at most once per study
+  // and only after the draft lookup came back empty.
+  const templateAppliedForStudyRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!study || isLoadingExistingDraft || existingDraft) return;
+    if (templateAppliedForStudyRef.current === study.id) return;
     const modalityMap: Record<string, string> = { "X-RAY": "X-RAY", USG: "USG", MRI: "MRI", CT: "CT" };
     const mod = modalityMap[study.modality] || study.modality;
     const bodyPart = (study.studyDescription || "").toUpperCase();
     const match = templates.find((t) => t.modality === mod && (bodyPart.includes(t.bodyPart.toUpperCase()) || t.bodyPart.toUpperCase().includes(bodyPart)));
     if (match) {
+      templateAppliedForStudyRef.current = study.id;
       handleApplyTemplate(match);
     }
-  }, [study, templates]);
+  }, [study, templates, existingDraft, isLoadingExistingDraft]);
+
+  // SAVE-BUG FIX: hydrate the editor from the saved draft, once per study —
+  // same rules as the canonical workspace (never merge two patients' drafts).
+  const hydratedDraftForStudyRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!existingDraft || !study) return;
+    if (hydratedDraftForStudyRef.current === study.id) return;
+    hydratedDraftForStudyRef.current = study.id;
+    if (existingDraft.patientId != null && study.patientId != null && existingDraft.patientId !== study.patientId) {
+      console.warn(
+        `[cockpit] draft ${existingDraft.id} belongs to patient ${existingDraft.patientId} ` +
+        `but study ${study.id} belongs to patient ${study.patientId} — draft NOT loaded`,
+      );
+      return;
+    }
+    if (existingDraft.clinicalHistory) setClinicalHistory(existingDraft.clinicalHistory);
+    if (existingDraft.rawFindings) setRawFindings(existingDraft.rawFindings);
+    if (existingDraft.impression) {
+      try {
+        const arr = JSON.parse(existingDraft.impression) as string[];
+        if (Array.isArray(arr) && arr.length > 0) setImpression(arr);
+      } catch { /* malformed JSON — keep whatever is in the editor */ }
+    }
+    if (existingDraft.recommendation) setRecommendation(existingDraft.recommendation);
+  }, [existingDraft, study]);
 
   // ══════════════════════════════════════════════════════════════════════════
   // ACTIONS / MUTATIONS
   // ══════════════════════════════════════════════════════════════════════════
 
-  // Save Draft Mutation
+  // Save Draft Mutation (M1.1: canonical shared transport).
+  // SAVE-BUG FIX: `id` is omitted on the first save (server creates the row)
+  // and included on every save after (server updates that same row), and
+  // `studyId` is the WORKLIST row id — the key useRadiologyDraftId reloads
+  // by — exactly as in the canonical workspace. Previously id was never sent
+  // (every save = a new row) and studyId was the radiology_studies id (the
+  // saved draft could never be found again on reload).
   const saveDraftMutation = useMutation({
     mutationFn: async () => {
-      if (!study) return;
-      return api.post("/api/radiology/report-generator/save-draft", {
-        studyId: study.studyId,
+      if (!study) return null;
+      return saveRadiologyDraft<{ success: boolean; draft: { id: number } }>({
+        id: draftId ?? undefined,
+        studyId: study.id,
         worklistId: study.id,
         patientId: study.patientId,
         templateId: selectedTemplateId ? String(selectedTemplateId) : null,
@@ -1343,9 +1471,11 @@ function RadiologistCockpit() {
         recommendation,
       });
     },
-    onSuccess: () => {
+    onSuccess: (res) => {
+      if (res?.draft?.id) captureSavedDraftId(res.draft.id);
       toast({ title: "Draft Saved", description: "Report draft updated successfully." });
       qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
+      qc.invalidateQueries({ queryKey: ["radiology-existing-draft", activeStudyId] });
     },
     onError: (e: any) => toast({ title: "Save Failed", description: e.message, variant: "destructive" }),
   });
@@ -1355,47 +1485,41 @@ function RadiologistCockpit() {
     mutationFn: async () => {
       if (!study) return;
       const finalTitle = generateCombinedTitle(selectedBuilders);
+      // R1.4 — this HTML is now stored verbatim as the signed report's body
+      // (radiologyReportLifecycle.ts no longer strips tags) and rendered as
+      // TRUSTED, unescaped HTML by reportPresentation.ts. Every field below
+      // is user-entered text, not markup, so it MUST be escaped here — this
+      // was previously masked only by the stripping this ticket removes.
+      const esc = (v: string) => String(v ?? "")
+        .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
       const htmlBody = `
         <div style="font-family: sans-serif; padding: 20px;">
-          <h3>Radiology Report: ${finalTitle}</h3>
-          <p><strong>Patient Name:</strong> ${study.patientName}</p>
-          <p><strong>Clinical History:</strong> ${clinicalHistory}</p>
-          <p><strong>Technique:</strong> ${technique}</p>
+          <h3 style="break-after:avoid-page;page-break-after:avoid;">Radiology Report: ${esc(finalTitle)}</h3>
+          <p><strong>Patient Name:</strong> ${esc(study.patientName)}</p>
+          <p><strong>Clinical History:</strong> ${esc(clinicalHistory).replaceAll("\n", "<br/>")}</p>
+          <p><strong>Technique:</strong> ${esc(technique).replaceAll("\n", "<br/>")}</p>
           <hr />
-          <h4>Findings</h4>
-          <p style="white-space: pre-line;">${rawFindings}</p>
-          <h4>Impression</h4>
-          <ol>${impression.map((imp) => `<li>${imp}</li>`).join("")}</ol>
-          <p><strong>Recommendation:</strong> ${recommendation}</p>
+          <h4 style="break-after:avoid-page;page-break-after:avoid;">Findings</h4>
+          <p style="white-space: pre-line;">${esc(rawFindings)}</p>
+          <h4 style="break-after:avoid-page;page-break-after:avoid;">Impression</h4>
+          <ol>${impression.map((imp) => `<li>${esc(imp)}</li>`).join("")}</ol>
+          <p><strong>Recommendation:</strong> ${esc(recommendation).replaceAll("\n", "<br/>")}</p>
         </div>
       `;
 
-      let reportId = null;
-      if (study.patientId) {
-        const report = await api.post<{ id: number }>("/api/patient-reports", {
-          patientId: study.patientId,
-          testId: null,
-          studyId: study.studyId,
-          type: "radiology",
-          title: finalTitle,
-          body: htmlBody.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(),
-          impression: impression.join("\n"),
-          recommendation,
-          technique,
-          clinicalHistory,
-          findings: rawFindings,
-          accessionNumber: study.accessionNumber,
-          isCritical,
-          criticalNote: isCritical ? criticalNote : null,
-        });
-        reportId = report.id;
-      }
-
-      return api.post("/api/internal/radiology/report-status", {
-        accessionNumber: study.accessionNumber,
-        studyInstanceUID: study.studyInstanceUID,
-        status: "REPORT_FINAL",
-        reportId,
+      // M1.1 — canonical finalize path shared with the Reporting Workspace.
+      // Consolidation note: this page's previous inline copy never set
+      // deliveryStatus (finalized reports silently skipped READY_TO_SEND)
+      // and dropped createdBy + the modality parameters blob; the shared
+      // service aligns it with the canonical behavior. The AI-inspector
+      // audit summary rides through auditDetails unchanged.
+      return finalizeRadiologyReport(study, {
+        title: finalTitle,
+        htmlBody,
+        impression,
+        isCritical,
+        criticalNote,
+        createdBy: session?.user?.name || "Radiologist",
         actor: session?.user?.name || "Radiologist",
         auditDetails: {
           inspectorScore: aiInspectorResults.score,
@@ -1408,9 +1532,42 @@ function RadiologistCockpit() {
         }
       });
     },
-    onSuccess: () => {
-      toast({ title: "Report Finalized", description: "Report signed and finalized." });
+    onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
+      // R1.4 — never claim "Finalized" as a complete, deliverable document
+      // unless it was actually signed (see radiologyReportLifecycle.ts);
+      // otherwise the report silently stays undeliverable at status=draft.
+      // R1.4 review finding: a study with no patient linked at all (e.g. an
+      // unmatched DICOM study) never gets a report row or a sign attempt —
+      // reportCreationSkipped must be checked BEFORE the generic
+      // signing-failed message, or the toast falsely tells the radiologist
+      // to "sign it from Report Hub" a report that was never created.
+      const skippedReason = result?.reportCreationSkipped ?? null;
+      const signedOk = result?.signed !== false;
+      const title = skippedReason ? "Report saved but NOT created" : signedOk ? "Report Finalized" : "Report saved but NOT signed";
+      const signNote = skippedReason
+        ? ` No patient report row was created: ${skippedReason}.`
+        : signedOk ? "" : ` ${result?.signError ?? "Signing failed"} — sign it from Report Hub.`;
+      // Usability: auto-advance to the next pending study so the radiologist
+      // doesn't have to return to the Worklist and click in again for every
+      // report. Never silent — always a visible toast; if there's nothing
+      // left, say so instead of leaving the toast generic.
+      const next = queueContext.next;
+      if (next) {
+        toast({
+          title,
+          description: `Moving to next patient: ${next.patientName} (${next.modality}).${signNote}`,
+          ...(signedOk ? {} : { variant: "destructive" as const }),
+        });
+        setActiveStudyId(next.id);
+        window.history.replaceState(null, "", `${window.location.pathname}?studyId=${next.id}`);
+      } else {
+        toast({
+          title,
+          description: `Worklist is clear — no more pending studies.${signNote}`,
+          ...(signedOk ? {} : { variant: "destructive" as const }),
+        });
+      }
     },
     onError: (e: any) => toast({ title: "Finalization Failed", description: e.message, variant: "destructive" }),
   });
@@ -1423,6 +1580,20 @@ function RadiologistCockpit() {
       finalizeMutation.mutate();
     }
   };
+
+  // Usability: Ctrl/Cmd+Enter to Finalize & Sign — used dozens of times a
+  // day by a busy radiologist. Disabled while typing in a select/menu to
+  // avoid accidental triggers; safe no-op if no study is loaded.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && study && study.status !== "REPORT_FINAL" && !finalizeMutation.isPending) {
+        e.preventDefault();
+        handleFinalizeClick();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [study, finalizeMutation.isPending, completenessDetails.pct, qualityCheckIssues.length]);
 
   // AI Draft Generation
   const generateAiDraftMutation = useMutation({
@@ -1538,6 +1709,15 @@ function RadiologistCockpit() {
     });
   }, [worklist, modalityFilter, searchQuery]);
 
+  // Usability: queue position + "next pending study" — reuses the worklist
+  // array already loaded for the sidebar, no new API calls, no DB changes.
+  const queueContext = useMemo(() => {
+    const pending = filteredWorklist.filter((w) => w.status !== "REPORT_FINAL");
+    const idx = activeStudyId ? pending.findIndex((w) => w.id === activeStudyId) : -1;
+    const next = idx >= 0 && idx < pending.length - 1 ? pending[idx + 1] : pending.find((w) => w.id !== activeStudyId) || null;
+    return { pendingTotal: pending.length, position: idx >= 0 ? idx + 1 : null, next };
+  }, [filteredWorklist, activeStudyId]);
+
   // Productivity Metrics
   const productivityStats = useMemo(() => {
     const todayStr = new Date().toISOString().split("T")[0];
@@ -1622,6 +1802,17 @@ function RadiologistCockpit() {
     }
   };
 
+  // Phase F: apply a Master Library template. Deliberately leaves
+  // selectedTemplateId alone — that field (and the draft's templateId)
+  // references the structured_report_templates id namespace; reusing it for
+  // master ids would misattribute drafts. Master apply fills content only.
+  const handleApplyMasterTemplate = (tpl: MasterTemplate) => {
+    setSelectedTemplateId(null);
+    setRawFindings(tpl.findings || "");
+    if (tpl.impression) setImpression([tpl.impression]);
+    toast({ title: "Master Template Applied", description: `${tpl.templateName} (${tpl.groupName.replace(/_/g, " ")})` });
+  };
+
   // Append Structured Builder Findings
   const handleAppendBuilderFindings = () => {
     if (selectedBuilders.length === 0) return;
@@ -1687,6 +1878,9 @@ function RadiologistCockpit() {
           <div>Today finalized: <span className="text-emerald-400 font-bold">{productivityStats.finalizedToday}</span></div>
           <div>Avg TAT: <span className="text-indigo-400 font-bold">{productivityStats.avgTurnaround}</span></div>
           <div>Pending queue: <span className="text-amber-400 font-bold">{productivityStats.pendingCount}</span></div>
+          {queueContext.position !== null && (
+            <div>Viewing: <span className="text-slate-200 font-bold">{queueContext.position} of {queueContext.pendingTotal}</span></div>
+          )}
         </div>
       </div>
 
@@ -1867,7 +2061,7 @@ function RadiologistCockpit() {
                   {currentStep === 4 && (
                     <span className="text-amber-500 text-[10px] font-bold">Suggested Action: Fill missing report fields</span>
                   )}
-                  {currentStep === 5 && (
+                  {currentStep === 5 && canSign && (
                     <Button size="sm" onClick={handleFinalizeClick} className="bg-emerald-600 hover:bg-emerald-700 h-6 text-[10px] text-white font-bold">
                       Suggested Action: Finalize & Sign
                     </Button>
@@ -1935,6 +2129,18 @@ function RadiologistCockpit() {
                   <div className="text-[11px] text-slate-400">
                     Accession: <span className="font-mono text-slate-300">{study.accessionNumber}</span> &bull; Modality: <span className="text-slate-300">{study.modality}</span> &bull; Description: <span className="text-slate-300">{study.studyDescription}</span>
                   </div>
+                  <div className="text-[11px] text-slate-400 flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <span>UHID: <span className="font-mono text-slate-300">{study.uhid ?? "\u2014"}</span></span>
+                    <span>Bill: <span className="font-mono text-slate-300">{study.billNumber ?? "\u2014"}</span></span>
+                    <span>Ref: <span className="text-slate-300">{study.referringDoctor ?? "\u2014"}</span></span>
+                    {study.assignedRadiologist && <span>Radiologist: <span className="text-slate-300">{study.assignedRadiologist}</span></span>}
+                    {(() => { const u = toUnifiedStatus(study.status, study.deliveryStatus); return (
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-semibold ${u.color}`} title={`Internal: ${study.status}`}>{u.label}</span>
+                    ); })()}
+                    {(() => { const pr = priorityInfo(study.priority); return pr.highlight ? (
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-bold ${pr.color}`}>{pr.label}</span>
+                    ) : null; })()}
+                  </div>
                 </div>
 
                 {/* Viewer Launcher buttons */}
@@ -1945,6 +2151,29 @@ function RadiologistCockpit() {
                   <Button size="sm" onClick={handleLaunchWeasis} className="bg-indigo-600 hover:bg-indigo-700 text-xs h-8 flex items-center gap-1 text-white">
                     <Tv2 className="h-3.5 w-3.5" /> Launch Weasis
                   </Button>
+                  {/* Phase D: entry point to the preserved Premium Reporting module */}
+                  {canSign && (study.reportId != null || study.status === "REPORT_IN_PROGRESS" || study.status === "REPORT_FINAL") && (
+                    <Button
+                      size="sm"
+                      onClick={() => navigate(`/radiology/report-generator/${study.id}?premium=1`)}
+                      className="bg-amber-600 hover:bg-amber-700 text-xs h-8 flex items-center gap-1 text-white"
+                      title="Open Premium Report Preview"
+                    >
+                      <Gem className="h-3.5 w-3.5" /> Premium Preview
+                    </Button>
+                  )}
+                  {/* Phase D: one-click print of the saved report */}
+                  {study.reportId != null && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void printSavedReport(study.reportId!)}
+                      className="border-slate-700 text-slate-200 hover:bg-slate-900 text-xs h-8 flex items-center gap-1"
+                      title="Print / Share report"
+                    >
+                      <Printer className="h-3.5 w-3.5" /> Print
+                    </Button>
+                  )}
                 </div>
               </div>
 
@@ -1999,6 +2228,31 @@ function RadiologistCockpit() {
                     </Button>
                   ))}
                 </div>
+                {/* Phase F: unified picker — Master Template Library (winner
+                    system incl. consolidated legacy templates), filtered to
+                    the current study's modality when known. Additive only. */}
+                {masterTemplates.length > 0 && (
+                  <div className="pt-1.5 space-y-1">
+                    <Label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Master Library</Label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {masterTemplates
+                        .filter((m) => !study?.modality || m.modality === study.modality || m.modality === (study.modality === "X-RAY" ? "XR" : study.modality))
+                        .slice(0, 8)
+                        .map((m) => (
+                          <Button
+                            key={`master-${m.id}`}
+                            size="sm"
+                            variant="outline"
+                            title={`${m.groupName.replace(/_/g, " ")}${m.bodyPart ? " · " + m.bodyPart : ""}`}
+                            onClick={() => handleApplyMasterTemplate(m)}
+                            className="h-7 text-[10px] bg-slate-950 border-emerald-900/60 text-emerald-300 hover:bg-emerald-950/30"
+                          >
+                            {m.templateName}
+                          </Button>
+                        ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Main Report Editor Input Form */}
@@ -2168,6 +2422,7 @@ function RadiologistCockpit() {
                     <Save className="h-4 w-4 mr-1.5" /> Save Draft
                   </Button>
 
+                  {canSign ? (
                   <Button
                     onClick={handleFinalizeClick}
                     disabled={finalizeMutation.isPending || study.status === "REPORT_FINAL"}
@@ -2175,6 +2430,11 @@ function RadiologistCockpit() {
                   >
                     <CheckCircle2 className="h-4 w-4 mr-1.5" /> Finalize & Sign
                   </Button>
+                  ) : (
+                  <span className="text-[11px] text-slate-500 self-center px-2" title="Only a radiologist can sign the final report">
+                    Final sign-off: radiologist only
+                  </span>
+                  )}
                 </div>
               </div>
             </div>

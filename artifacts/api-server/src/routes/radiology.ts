@@ -29,11 +29,16 @@ import {
   radiologyUserReportPreferencesTable,
   radiologyUserItemUsageLogsTable,
   radiologyInstitutionalStylesTable,
+  usgMeasurementsTable,
+  usgKeyImagesTable,
+  usgReportDraftsTable,
 } from "@workspace/db/schema";
 import { and, asc, desc, eq, gte, ilike, isNull, lte, or, sql } from "drizzle-orm";
 import crypto from "node:crypto";
 import { FULL_ACCESS_ROLES, type StaffAuthRequest } from "../middleware/requireStaffAuth.js";
 import { computeStudyPriority, applyPriorityToStudy } from "../lib/studyPriorityEngine";
+import { getLockTtlSeconds } from "../lib/studyLocks";
+import { lockExpiresAt } from "../lib/studyLockRules";
 import { assignRadiologistToStudy } from "../lib/radiologistAssignment";
 import { createVerificationRecord, recordPrelimReport, recordPeerReview, verifyReport, finalizeReport, getVerificationQueue } from "../lib/peerReview";
 import { flagCriticalFinding, scanForCriticalFindings, getCriticalFindingsForStudy, acknowledgeFinding } from "../lib/criticalFindingsAlert";
@@ -352,6 +357,10 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         dicomMetadata: radiologyWorklistTable.dicomMetadata,
         status: radiologyWorklistTable.status,
         assignedRadiologist: radiologyWorklistTable.assignedRadiologist,
+        // M1.6B1 — id-based assignment (organizational ownership)
+        assignedRadiologistId: radiologyWorklistTable.assignedRadiologistId,
+        assignedAt: radiologyWorklistTable.assignedAt,
+        assignedByName: radiologyWorklistTable.assignedByName,
         aiDraftStatus: radiologyWorklistTable.aiDraftStatus,
         aiDraftJson: radiologyWorklistTable.aiDraftJson,
         aiFeedback: radiologyWorklistTable.aiFeedback,
@@ -360,25 +369,72 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         deliveryStatus: radiologyWorklistTable.deliveryStatus,
         createdAt: radiologyWorklistTable.createdAt,
         updatedAt: radiologyWorklistTable.updatedAt,
-        lockUserId: sql<number | null>`NULL::integer`,
-        lockUserName: sql<string | null>`NULL::text`,
-        lockTime: sql<Date | null>`NULL::timestamp with time zone`,
-        lockLastActivityAt: sql<Date | null>`NULL::timestamp with time zone`,
-        lockWorkstation: sql<string | null>`NULL::text`,
+        // M1.6A — real lock columns.
+        lockUserId: radiologyWorklistTable.lockUserId,
+        lockUserName: radiologyWorklistTable.lockUserName,
+        lockTime: radiologyWorklistTable.lockTime,
+        lockLastActivityAt: radiologyWorklistTable.lockLastActivityAt,
+        lockWorkstation: radiologyWorklistTable.lockWorkstation,
+        // Phase C (unified worklist) — ADDITIVE fields only, no schema change.
+        // UHID from the matched ERP patient; bill number resolved via the
+        // linked study (radiology_studies.bill_id → bills.bill_number).
+        uhid: patientsTable.patientId,
+        billNumber: billsTable.billNumber,
+        // Priority REUSES the existing radiology_studies.priority column
+        // (stat | emergency | urgent | routine | vip) via the same join —
+        // no new table or column created (schema-growth minimization).
+        priority: radiologyStudiesTable.priority,
+        // R2.0 — canonical ultrasound integration: fold USG/Doppler
+        // measurement + key-image counts and the latest report-draft status
+        // into the ONE PACS worklist row, so USG studies never need a
+        // separate worklist. Scalar subqueries (not a GROUP BY) to keep this
+        // additive and avoid touching the existing filter/sort/pagination
+        // logic above — each of the three tables already carries an index
+        // on worklist_id (see usgMeasurements.ts), so this is cheap even
+        // computed unconditionally for every row.
+        usgMeasurementCount: sql<number>`(
+          select count(*) from ${usgMeasurementsTable}
+          where ${usgMeasurementsTable.worklistId} = ${radiologyWorklistTable.id}
+        )`.mapWith(Number),
+        usgKeyImageCount: sql<number>`(
+          select count(*) from ${usgKeyImagesTable}
+          where ${usgKeyImagesTable.worklistId} = ${radiologyWorklistTable.id}
+        )`.mapWith(Number),
+        usgReportStatus: sql<string | null>`(
+          select ${usgReportDraftsTable.status} from ${usgReportDraftsTable}
+          where ${usgReportDraftsTable.worklistId} = ${radiologyWorklistTable.id}
+          order by ${usgReportDraftsTable.updatedAt} desc
+          limit 1
+        )`,
       })
       .from(radiologyWorklistTable)
+      .leftJoin(patientsTable, eq(radiologyWorklistTable.patientId, patientsTable.id))
+      .leftJoin(radiologyStudiesTable, eq(radiologyWorklistTable.studyId, radiologyStudiesTable.id))
+      .leftJoin(billsTable, eq(radiologyStudiesTable.billId, billsTable.id))
       .where(conds.length > 0 ? and(...conds) : undefined)
       .orderBy(desc(radiologyWorklistTable.createdAt))
       .limit(500);
 
-    let filtered = rows;
+    // M1.6A — serve lock expiry SERVER-computed (lock_last_activity_at +
+    // configured TTL), so no client derives it from its own clock or a
+    // guessed TTL window.
+    const lockTtlSeconds = await getLockTtlSeconds();
+    const rowsWithExpiry = rows.map((r) => ({
+      ...r,
+      lockTtlSeconds,
+      lockExpiresAt: lockExpiresAt(r, lockTtlSeconds)?.toISOString() ?? null,
+    }));
+
+    let filtered = rowsWithExpiry;
     if (search) {
       const s = search.toLowerCase();
-      filtered = rows.filter((r) =>
+      filtered = rowsWithExpiry.filter((r) =>
         (r.patientName ?? "").toLowerCase().includes(s) ||
         (r.accessionNumber ?? "").toLowerCase().includes(s) ||
         (r.studyDescription ?? "").toLowerCase().includes(s) ||
-        (r.referringDoctor ?? "").toLowerCase().includes(s)
+        (r.referringDoctor ?? "").toLowerCase().includes(s) ||
+        ((r as any).uhid ?? "").toLowerCase().includes(s) ||
+        ((r as any).billNumber ?? "").toLowerCase().includes(s)
       );
     }
 

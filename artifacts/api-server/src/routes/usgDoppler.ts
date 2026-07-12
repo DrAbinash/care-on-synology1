@@ -10,13 +10,22 @@
  * DELETE /:id                     — delete a Doppler measurement
  */
 
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { db } from "@workspace/db";
 import { usgDopplerMeasurementsTable } from "@workspace/db/schema";
 import { eq, desc } from "drizzle-orm";
 import { logger } from "../lib/logger";
 
 const router = Router();
+
+// R2.0 fix: req.staffSession is `{ id, subjectId, subjectName, role, ... }`
+// (see StaffAuthRequest in middleware/requireStaffAuth.ts) — no nested
+// `.user` object. The POST / handler below previously cast it to a
+// `{ user: {...} }` shape it never used (dead code, harmless), but the same
+// wrong shape is the exact bug that 500'd usgExtraction.ts's approve/reject
+// on every real request — fixed here too so nothing here regresses the
+// same way if this session value is used later.
+type ReqWithStaff = Request & { staffSession?: { subjectId?: number; subjectName?: string; role?: string } };
 
 // ── GET / ─────────────────────────────────────────────────────────────────────
 
@@ -35,7 +44,6 @@ router.get("/", async (req, res) => {
 // ── POST / ────────────────────────────────────────────────────────────────────
 
 router.post("/", async (req, res) => {
-  const session = (req as unknown as Record<string, unknown>).staffSession as { user: { id?: number; name?: string } } | undefined;
   const b = (req.body ?? {}) as {
     worklistId?: number;
     studyInstanceUID?: string;
@@ -86,7 +94,7 @@ router.post("/", async (req, res) => {
 
 // ── PATCH /:id/approve ────────────────────────────────────────────────────────
 
-router.patch("/:id/approve", async (req, res) => {
+router.patch("/:id/approve", async (req: ReqWithStaff, res) => {
   const id = Number(req.params.id);
   const b = (req.body ?? {}) as { reviewedBy?: string; reviewNotes?: string };
 
@@ -94,7 +102,7 @@ router.patch("/:id/approve", async (req, res) => {
     .update(usgDopplerMeasurementsTable)
     .set({
       status:     "approved",
-      reviewedBy: b.reviewedBy ?? null,
+      reviewedBy: b.reviewedBy ?? req.staffSession?.subjectName ?? null,
       reviewNotes: b.reviewNotes ?? null,
       reviewedAt: new Date(),
       updatedAt:  new Date(),
@@ -108,7 +116,7 @@ router.patch("/:id/approve", async (req, res) => {
 
 // ── PATCH /:id/reject ─────────────────────────────────────────────────────────
 
-router.patch("/:id/reject", async (req, res) => {
+router.patch("/:id/reject", async (req: ReqWithStaff, res) => {
   const id = Number(req.params.id);
   const b = (req.body ?? {}) as { reviewedBy?: string; reviewNotes?: string };
 
@@ -116,7 +124,7 @@ router.patch("/:id/reject", async (req, res) => {
     .update(usgDopplerMeasurementsTable)
     .set({
       status:      "rejected",
-      reviewedBy:  b.reviewedBy ?? null,
+      reviewedBy:  b.reviewedBy ?? req.staffSession?.subjectName ?? null,
       reviewNotes: b.reviewNotes ?? null,
       reviewedAt:  new Date(),
       updatedAt:   new Date(),

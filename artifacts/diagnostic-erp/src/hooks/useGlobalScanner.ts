@@ -32,6 +32,20 @@ const OWN_SCANNER_PATHS = new Set([
   "/usg/doppler",
 ]);
 
+// R1.4 — every real URL for these pages carries a :studyId/:id segment
+// (e.g. /radiology/report/42), so a bare Set.has() exact-match against the
+// CURRENT location never matched on the pages it names — the exemption
+// never actually fired, and the global scanner stayed live and able to
+// hijack a scanned barcode into a full SPA navigation away from an
+// in-progress report. Matches the same exact-or-prefix convention already
+// used for sidebar active-link highlighting in Layout.tsx.
+function isOwnScannerPath(location: string): boolean {
+  for (const path of OWN_SCANNER_PATHS) {
+    if (location === path || location.startsWith(path + "/")) return true;
+  }
+  return false;
+}
+
 // Default route mapping for QR prefixes
 const DEFAULT_ROUTES: Record<string, (value: string) => string> = {
   PATIENT: (v) => `/patients/${encodeURIComponent(v)}`,
@@ -155,7 +169,7 @@ export function useGlobalScanner(options: UseGlobalScannerOptions = {}) {
 
     const onKeyDown = (e: KeyboardEvent) => {
       // Skip if on a page with its own scanner
-      if (OWN_SCANNER_PATHS.has(location)) return;
+      if (isOwnScannerPath(location)) return;
 
       // Ignore when user is typing in a field
       if (isEditableTarget(e.target)) {
@@ -232,7 +246,7 @@ export function useGlobalScanner(options: UseGlobalScannerOptions = {}) {
   }, [enabled, location, speedThresholdMs, debounceMs, performNavigation]);
 
   return {
-    isActive: enabled && !OWN_SCANNER_PATHS.has(location),
+    isActive: enabled && !isOwnScannerPath(location),
     currentPath: location,
   };
 }

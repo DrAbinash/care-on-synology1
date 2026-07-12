@@ -13,6 +13,7 @@
 import { hostname } from "node:os";
 import { networkInterfaces } from "node:os";
 import { db } from "@workspace/db";
+import { NETWORK_LAN_HOST } from "../../lib/networkDefaults";
 import {
   dicomPullJobsTable,
   dicomNodesTable,
@@ -485,7 +486,7 @@ async function processNextJob(): Promise<void> {
     // ── Determine destination (Conquest PACS) ──────────────────────────
     const cfg = await getRadiologyConfig();
     const destAeTitle = node.conquestAeTitle || cfg.conquest.aeTitle || "CONQUESTPACS";
-    const destHost = node.conquestHost || cfg.conquest.ip || "192.168.1.137";
+    const destHost = node.conquestHost || cfg.conquest.ip || NETWORK_LAN_HOST;
     const destPort = node.conquestPort || cfg.conquest.dicomPort || 5678;
 
     // ── C-MOVE each study ────────────────────────────────────────────────

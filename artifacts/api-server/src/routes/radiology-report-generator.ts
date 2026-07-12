@@ -39,6 +39,7 @@ import {
   radiologyImageReferencesTable,
   radiologyNormalSnippetsTable,
   radiologistStylePreferencesTable,
+  radiologistVoicePreferencesTable,
   radiologyReportLifecycleLogTable,
   clinicSettingsTable,
   spinalMeasurementsTable,
@@ -48,9 +49,16 @@ import {
   mriProtocolQualityResultsTable,
   reportFindingInstancesTable,
 } from "@workspace/db/schema";
-import { eq, and, desc, isNull, asc, ilike, or } from "drizzle-orm";
+import { eq, and, desc, isNull, asc, ilike, or, inArray, sql } from "drizzle-orm";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
+import {
+  escapeHtml, renderReportDocument,
+  type ReportDocumentModel, type ReportKeyImageModel,
+} from "../lib/reportPresentation";
+import { resolveTemplateForRender } from "../lib/presentationTemplateStore";
+import { resolveDraftKeyImages } from "../lib/reportImages";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
+import { checkWriteLock } from "../lib/studyLocks";
 import { regenerateDraftStructuredJson } from "../lib/radiologyStructuredJsonCache";
 import {
   checkDraftStructuredJsonDrift,
@@ -1336,28 +1344,44 @@ function buildD1DraftSource(
   };
 }
 
+// Ticket M1.4 — this schema previously rejected the canonical workspace's
+// actual payload two ways (verified empirically before the fix):
+//   1. every empty field is sent as `null` (`clinicalHistory: clinicalHistory
+//      || null`, `patientId: entry?.patientId ?? null`, …) and `.optional()`
+//      does not accept null → 400 "Invalid request";
+//   2. the workspace's structured sections are `{ [label]: { normal, text } }`
+//      objects, not the legacy generator's `{ [label]: string }` → 400.
+// So "Save Draft" from RadiologyReportingWorkspace could never succeed. The
+// fields are now nullish and findingsSections accepts BOTH section shapes
+// (each page round-trips its own shape through the same JSON text column —
+// nothing server-side reads inside it).
 const SaveDraftBody = z.object({
-  id: z.number().int().optional(),
-  studyId: z.number().int().optional(),
-  worklistId: z.number().int().optional(),
-  patientId: z.number().int().optional(),
-  templateId: z.string().optional(),
-  modality: z.string().optional(),
-  studyName: z.string().optional(),
-  clinicalHistory: z.string().optional(),
-  rawFindings: z.string().optional(),
-  findingsSections: z.record(z.string()).optional(),
-  impression: z.array(z.string()).optional(),
-  recommendation: z.string().optional(),
-  formattedReportHtml: z.string().optional(),
-  formattedReportText: z.string().optional(),
-  aiContributionPct: z.number().min(0).max(100).optional(),
+  id: z.number().int().nullish(),
+  studyId: z.number().int().nullish(),
+  worklistId: z.number().int().nullish(),
+  patientId: z.number().int().nullish(),
+  templateId: z.string().nullish(),
+  modality: z.string().nullish(),
+  studyName: z.string().nullish(),
+  clinicalHistory: z.string().nullish(),
+  rawFindings: z.string().nullish(),
+  findingsSections: z.record(
+    z.union([
+      z.string(),
+      z.object({ normal: z.boolean(), text: z.string() }).passthrough(),
+    ]),
+  ).nullish(),
+  impression: z.array(z.string()).nullish(),
+  recommendation: z.string().nullish(),
+  formattedReportHtml: z.string().nullish(),
+  formattedReportText: z.string().nullish(),
+  aiContributionPct: z.number().min(0).max(100).nullish(),
   findings: z.array(
     z.object({
       findingId: z.number().int(),
       params: z.record(z.unknown()).optional(),
     }).passthrough(),
-  ).optional(),
+  ).nullish(),
 });
 
 radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest, res: Response) => {
@@ -1369,6 +1393,23 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
 
   const { id, ...rest } = parsed.data;
   const author = req.staffSession?.subjectName ?? null;
+
+  // M1.6A — respect active study locks: a draft save against a worklist row
+  // that ANOTHER user actively holds is refused, so two radiologists can
+  // never silently overwrite each other's in-progress report. Unlocked, own,
+  // or expired locks never block (pre-lock flows keep working unchanged).
+  if (rest.worklistId != null && req.staffSession) {
+    const gate = await checkWriteLock(rest.worklistId, req.staffSession.subjectId);
+    if (gate.blocked) {
+      res.status(409).json({
+        success: false,
+        error: "LOCKED_BY_OTHER",
+        lockedBy: gate.lockedBy,
+        message: `This study is currently being reported by ${gate.lockedBy}. Your text was not saved to the shared draft.`,
+      });
+      return;
+    }
+  }
 
   // `rest.findings` (A3.1) is intentionally not read anywhere below —
   // accepted by the schema above, ignored by this handler until A3.2.
@@ -1423,13 +1464,14 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
   // report_finding_instances has no readers yet, so a swallowed failure here
   // has no observable effect beyond a stale/missing structured snapshot.
   //
-  // Guarded on `rest.findings !== undefined` (not `.length > 0`): an old
-  // client that never sends the key must leave existing rows untouched, but
-  // a current client that sends `findings: []` (user deselected every Quick
-  // Select finding) is a real signal that the replace should still run and
-  // clear this draft's rows — treating an empty array like "no signal" would
-  // silently leave stale rows behind after a legitimate deselect-all save.
-  if (draft?.id && rest.findings !== undefined) {
+  // Guarded on `rest.findings != null` (not `.length > 0`): an old client
+  // that never sends the key — or sends an explicit null — must leave
+  // existing rows untouched, but a current client that sends `findings: []`
+  // (user deselected every Quick Select finding) is a real signal that the
+  // replace should still run and clear this draft's rows — treating an empty
+  // array like "no signal" would silently leave stale rows behind after a
+  // legitimate deselect-all save.
+  if (draft?.id && rest.findings != null) {
     const draftId = draft.id;
     const findings = rest.findings;
     try {
@@ -1598,6 +1640,127 @@ radiologyReportGeneratorRouter.get("/drafts", async (req: Request, res: Response
   res.json({ success: true, drafts: rows });
 });
 
+// ─── Ticket M1.4 — read-only workflow endpoints ──────────────────────────────
+
+// GET /finding-instances?draftId=N — the Quick Select selections persisted by
+// A3.2 for one draft, exactly what the canonical workspace needs to RESTORE
+// its structured click state after a reload. Read-only; only the fields the
+// UI hydrates from.
+radiologyReportGeneratorRouter.get("/finding-instances", async (req: Request, res: Response) => {
+  const draftId = Number(req.query.draftId);
+  if (!Number.isInteger(draftId) || draftId <= 0) {
+    res.status(400).json({ success: false, error: "Invalid draftId" });
+    return;
+  }
+  const rows = await db
+    .select({
+      findingId: reportFindingInstancesTable.findingId,
+      structuredJson: reportFindingInstancesTable.structuredJson,
+      source: reportFindingInstancesTable.source,
+    })
+    .from(reportFindingInstancesTable)
+    .where(eq(reportFindingInstancesTable.draftId, draftId));
+  res.json({ success: true, instances: rows });
+});
+
+// POST /validate-draft {draftId} — run the EXISTING D3/D3.5 builder + D1
+// validator over a saved draft, read-only (never persists anything), so the
+// workspace can show real blocking errors / warnings before finalize instead
+// of client-side guesses. Mirrors the save-draft D3 block's inputs exactly;
+// no validation logic is reimplemented here or in the frontend.
+radiologyReportGeneratorRouter.post("/validate-draft", async (req: Request, res: Response) => {
+  const draftId = Number((req.body as { draftId?: unknown })?.draftId);
+  if (!Number.isInteger(draftId) || draftId <= 0) {
+    res.status(400).json({ success: false, error: "Invalid draftId" });
+    return;
+  }
+  const [draft] = await db
+    .select()
+    .from(radiologyReportDraftsTable)
+    .where(eq(radiologyReportDraftsTable.id, draftId))
+    .limit(1);
+  if (!draft) {
+    res.status(404).json({ success: false, error: "Draft not found" });
+    return;
+  }
+
+  const structuredEnabled =
+    (await isFeatureEnabledServer("ff_radiology_structured_d1_draft")) &&
+    (await isFeatureEnabledServer("ff_radiology_structured_core"));
+  if (!structuredEnabled) {
+    res.json({
+      success: true,
+      structured: { enabled: false, attempted: false },
+      legacy: { rawFindings: Boolean(draft.rawFindings?.trim()), impression: Boolean(draft.impression) },
+    });
+    return;
+  }
+
+  const instanceRows = await db
+    .select({ findingId: reportFindingInstancesTable.findingId, structuredJson: reportFindingInstancesTable.structuredJson })
+    .from(reportFindingInstancesTable)
+    .where(eq(reportFindingInstancesTable.draftId, draftId));
+  const findings = instanceRows.map((r) => ({
+    findingId: r.findingId,
+    params: (r.structuredJson ?? {}) as Record<string, unknown>,
+  }));
+
+  let worklist: D3WorklistRow | null = null;
+  if (draft.worklistId != null) {
+    const [row] = await db
+      .select()
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, draft.worklistId))
+      .limit(1);
+    worklist = (row as D3WorklistRow | undefined) ?? null;
+  }
+
+  const source = buildD1DraftSource(draft as D3DraftRow, findings, worklist);
+  const catalogStore = (await isFeatureEnabledServer("ff_radiology_catalog"))
+    ? new DrizzleCatalogStore()
+    : null;
+  const built = await buildAndValidateDraftD1Document(
+    source,
+    catalogStore
+      ? {
+          resolver: new CatalogStoreFindingResolver(catalogStore, async (qfId) => {
+            const [row] = await db
+              .select({ label: radiologyQuickFindingsTable.label })
+              .from(radiologyQuickFindingsTable)
+              .where(eq(radiologyQuickFindingsTable.id, qfId))
+              .limit(1);
+            return row?.label ? { label: row.label } : null;
+          }),
+          catalogPort: new DrizzleStructuredReportCatalogPort(catalogStore),
+        }
+      : {},
+  );
+
+  res.json({
+    success: true,
+    structured: built.ok
+      ? {
+          enabled: true,
+          attempted: true,
+          built: true,
+          documentId: built.document.document_id,
+          contentSha256: built.contentSha256,
+          findingsCount: Array.isArray(built.document.findings) ? built.document.findings.length : 0,
+          errors: [],
+          warnings: built.warnings,
+        }
+      : {
+          enabled: true,
+          attempted: true,
+          built: false,
+          skipReasons: built.skipReasons,
+          errors: built.validationErrors ?? [],
+          warnings: [],
+        },
+    legacy: { rawFindings: Boolean(draft.rawFindings?.trim()), impression: Boolean(draft.impression) },
+  });
+});
+
 // GET /drafts/:id
 radiologyReportGeneratorRouter.get("/drafts/:id", async (req: Request, res: Response) => {
   const id = Number(req.params.id);
@@ -1610,6 +1773,100 @@ radiologyReportGeneratorRouter.get("/drafts/:id", async (req: Request, res: Resp
 
   if (!draft) { res.status(404).json({ success: false, error: "Draft not found" }); return; }
   res.json({ success: true, draft });
+});
+
+// ── R1.1 — server-rendered DRAFT preview through THE shared presentation
+// layer. The workspace's on-screen preview and its Print button both show
+// this exact document, so what the radiologist sees is what every delivery
+// surface produces (one render pipeline, no duplicated HTML). Read-only;
+// drafts render with a DRAFT watermark and can never pass as final.
+radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!id) { res.status(400).json({ success: false, error: "Invalid id" }); return; }
+  const [draft] = await db.select().from(radiologyReportDraftsTable).where(eq(radiologyReportDraftsTable.id, id));
+  if (!draft) { res.status(404).send("Draft not found"); return; }
+
+  const [worklist] = draft.worklistId
+    ? await db.select().from(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, draft.worklistId)).limit(1)
+    : [undefined];
+  const [clinic] = await db.select().from(clinicSettingsTable).limit(1);
+
+  // Body: findings sections + impression + recommendation from the draft row
+  // (presentation of existing content only — no clinical wording is altered).
+  const esc = (s: string | null | undefined) => escapeHtml(s ?? "");
+  let sectionsHtml = "";
+  try {
+    const sections = draft.findingsSections ? (JSON.parse(draft.findingsSections) as Record<string, string>) : {};
+    sectionsHtml = Object.entries(sections)
+      .filter(([, content]) => (content ?? "").trim())
+      .map(([name, content]) => `<div class="section-heading">${esc(name)}</div><p>${esc(content).replaceAll("\n", "<br/>")}</p>`)
+      .join("\n");
+  } catch { /* malformed sections JSON → fall through to raw findings */ }
+  if (!sectionsHtml && draft.rawFindings?.trim()) {
+    sectionsHtml = `<div class="section-heading">Findings</div><p>${esc(draft.rawFindings).replaceAll("\n", "<br/>")}</p>`;
+  }
+  let impressionList = "";
+  try {
+    const bullets = draft.impression ? (JSON.parse(draft.impression) as string[]) : [];
+    if (Array.isArray(bullets) && bullets.filter(Boolean).length > 0) {
+      impressionList = `<div class="section-heading">Impression</div><ol>${bullets.filter(Boolean).map((b) => `<li>${esc(b)}</li>`).join("")}</ol>`;
+    }
+  } catch {
+    if (draft.impression?.trim()) impressionList = `<div class="section-heading">Impression</div><p>${esc(draft.impression)}</p>`;
+  }
+  const bodyHtml = [
+    draft.clinicalHistory?.trim() ? `<div class="section-heading">Clinical History</div><p>${esc(draft.clinicalHistory)}</p>` : "",
+    sectionsHtml,
+    impressionList,
+    draft.recommendation?.trim() ? `<div class="section-heading">Recommendation</div><p>${esc(draft.recommendation)}</p>` : "",
+  ].filter(Boolean).join("\n");
+
+  let keyImages: ReportKeyImageModel[] = [];
+  try { keyImages = await resolveDraftKeyImages(id); } catch { keyImages = []; }
+
+  const model: ReportDocumentModel = {
+    reportNumber: `DRAFT-${draft.id}`,
+    studyTitle: draft.studyName || worklist?.studyDescription || `${draft.modality ?? ""} Study`.trim(),
+    typeLabel: "RADIOLOGY",
+    statusLabel: (draft.status ?? "DRAFT").toUpperCase(),
+    clinic: {
+      name: clinic?.name ?? "Care Diagnostics",
+      tagline: clinic?.tagline ?? "",
+      address: clinic?.address ?? "",
+      phone: clinic?.phone ?? "",
+      email: clinic?.email ?? "",
+      website: clinic?.website ?? "",
+      logoDataUrl: clinic?.logoDataUrl ?? null,
+    },
+    patientRows: [
+      { label: "Patient", value: worklist?.patientName ?? "" },
+      { label: "Age / Sex", value: [worklist?.age, worklist?.sex].filter(Boolean).join(" / ") },
+      { label: "Accession No.", value: worklist?.accessionNumber ?? "" },
+      { label: "Study Date", value: worklist?.studyDate ?? "" },
+      { label: "Modality", value: draft.modality ?? worklist?.modality ?? "" },
+      { label: "Referring Doctor", value: worklist?.referringDoctor ?? "" },
+      { label: "Status", value: "DRAFT — NOT SIGNED" },
+    ],
+    bodyHtml,
+    keyImages,
+    stamp: { kind: "draft", label: "DRAFT (not signed)" },
+    signatures: [],
+    showQrPlaceholder: false,
+    footerNote: clinic?.footerNote ?? "",
+    generatedAtLabel: new Date().toLocaleString("en-IN"),
+    draftWatermark: true,
+    autoPrint: req.query.autoPrint === "true",
+  };
+
+  // R1.2 — drafts follow the LATEST ACTIVE version (no freeze until signed);
+  // ?template=key[@version] previews any template against the draft.
+  const template = await resolveTemplateForRender({
+    explicit: typeof req.query.template === "string" ? req.query.template : null,
+    copyType: "standard",
+  });
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
+  res.send(renderReportDocument(model, template));
 });
 
 // POST /key-images — multipart upload
@@ -1960,34 +2217,200 @@ radiologyReportGeneratorRouter.get("/image-references", async (req: Request, res
   const conds = [];
   if (draftId) conds.push(eq(radiologyImageReferencesTable.draftId, draftId));
   if (studyId) conds.push(eq(radiologyImageReferencesTable.studyId, studyId));
-  const rows = await db.select().from(radiologyImageReferencesTable).where(conds.length ? and(...conds) : undefined).orderBy(asc(radiologyImageReferencesTable.createdAt));
+  const rows = await db.select().from(radiologyImageReferencesTable).where(conds.length ? and(...conds) : undefined)
+    .orderBy(asc(radiologyImageReferencesTable.displayOrder), asc(radiologyImageReferencesTable.createdAt));
   res.json(rows);
 });
 
+// R1.1 — image references persist the DICOM identifier triple + frame +
+// display order (StudyInstanceUID / SeriesInstanceUID / SOPInstanceUID /
+// FrameNumber / caption / order). NEVER pixel data or browser blob URLs;
+// pixels resolve server-side at render time (lib/reportImages.ts).
+const UID = /^[0-9.]{1,128}$/;
+// R1.3 — a report supports up to 100 selected images (rendering adapts).
+const MAX_REFS_PER_DRAFT = 100;
 const ImageRefSchema = z.object({
   draftId: z.number().int(),
   studyId: z.number().int().optional(),
   seriesNumber: z.string().max(20).optional(),
   imageNumber: z.string().max(20).optional(),
   description: z.string().min(1).max(500),
+  studyInstanceUid: z.string().regex(UID).optional(),
+  seriesInstanceUid: z.string().regex(UID).optional(),
+  sopInstanceUid: z.string().regex(UID).optional(),
+  frameNumber: z.number().int().min(1).max(10_000).optional(),
+  displayOrder: z.number().int().min(0).max(1_000).optional(),
+  isKeyImage: z.boolean().optional(),
 });
+
+/** R1.3 — the partial unique index (draft, SOP, frame) raised a duplicate. */
+function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: string; cause?: { code?: string } } | null;
+  return e?.code === "23505" || e?.cause?.code === "23505";
+}
+
+/** R1.3 — image mutations are DRAFT-time presentation edits. Once the draft
+ *  has been promoted to a final report, the delivered document's image set
+ *  is part of what was signed: reject further mutation (the workspace panel
+ *  is already read-only at that point; this closes the API path too). */
+async function imageRefsLocked(draftId: number): Promise<boolean> {
+  const [draft] = await db
+    .select({ finalReportId: radiologyReportDraftsTable.finalReportId, status: radiologyReportDraftsTable.status })
+    .from(radiologyReportDraftsTable)
+    .where(eq(radiologyReportDraftsTable.id, draftId))
+    .limit(1);
+  if (!draft) return false; // unknown draft: legacy behavior (no new gate)
+  return draft.finalReportId != null || draft.status === "FINAL";
+}
+const LOCKED_MSG = "Report finalized — its images can no longer be modified";
 
 radiologyReportGeneratorRouter.post("/image-references", async (req: StaffAuthRequest, res: Response) => {
   const parsed = ImageRefSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: "Invalid body" }); return; }
-  const [row] = await db.insert(radiologyImageReferencesTable).values({
-    draftId: parsed.data.draftId,
-    studyId: parsed.data.studyId ?? null,
-    seriesNumber: parsed.data.seriesNumber ?? null,
-    imageNumber: parsed.data.imageNumber ?? null,
-    description: parsed.data.description,
-  }).returning();
-  res.status(201).json(row);
+  if (await imageRefsLocked(parsed.data.draftId)) { res.status(409).json({ error: LOCKED_MSG }); return; }
+  try {
+    // Cap check + duplicate pre-check + insert run atomically under the same
+    // per-draft advisory lock the reorder route takes, so concurrent POSTs
+    // can neither exceed the cap nor race past the duplicate check — even on
+    // a legacy DB where the partial unique index could not be built (pre-R1.3
+    // duplicates on finalized drafts). The index, where present, is a second
+    // backstop (unique violation → 409 below).
+    const row = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"imgreorder:" + parsed.data.draftId}))`);
+      const existing = await tx.select({
+        id: radiologyImageReferencesTable.id,
+        sopInstanceUid: radiologyImageReferencesTable.sopInstanceUid,
+        frameNumber: radiologyImageReferencesTable.frameNumber,
+      })
+        .from(radiologyImageReferencesTable)
+        .where(eq(radiologyImageReferencesTable.draftId, parsed.data.draftId));
+      if (existing.length >= MAX_REFS_PER_DRAFT) return { error: 400 as const };
+      const wantSop = parsed.data.sopInstanceUid ?? null;
+      const wantFrame = parsed.data.frameNumber ?? null;
+      if (wantSop && existing.some((r) => r.sopInstanceUid === wantSop && (r.frameNumber ?? null) === wantFrame)) {
+        return { error: 409 as const };
+      }
+      const [inserted] = await tx.insert(radiologyImageReferencesTable).values({
+        draftId: parsed.data.draftId,
+        studyId: parsed.data.studyId ?? null,
+        seriesNumber: parsed.data.seriesNumber ?? null,
+        imageNumber: parsed.data.imageNumber ?? null,
+        description: parsed.data.description,
+        studyInstanceUid: parsed.data.studyInstanceUid ?? null,
+        seriesInstanceUid: parsed.data.seriesInstanceUid ?? null,
+        sopInstanceUid: parsed.data.sopInstanceUid ?? null,
+        frameNumber: parsed.data.frameNumber ?? null,
+        displayOrder: parsed.data.displayOrder ?? 0,
+        isKeyImage: parsed.data.isKeyImage ?? false,
+        createdBy: req.staffSession?.subjectName ?? null,
+      }).returning();
+      return { inserted };
+    });
+    if ("error" in row) {
+      if (row.error === 400) res.status(400).json({ error: `Maximum ${MAX_REFS_PER_DRAFT} images per report` });
+      else res.status(409).json({ error: "This image is already attached to the report" });
+      return;
+    }
+    res.status(201).json(row.inserted);
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      res.status(409).json({ error: "This image is already attached to the report" });
+      return;
+    }
+    throw err;
+  }
+});
+
+// R1.1 — caption/order edits for a persisted reference (presentation only).
+// R1.3 adds the key-image flag. Never touches clinical text and never
+// regenerates the report — the reference row is presentation state only.
+const ImageRefPatchSchema = z.object({
+  description: z.string().min(1).max(500).optional(),
+  displayOrder: z.number().int().min(0).max(1_000).optional(),
+  isKeyImage: z.boolean().optional(),
+});
+
+radiologyReportGeneratorRouter.patch("/image-references/:id", async (req: StaffAuthRequest, res: Response) => {
+  const id = Number(req.params.id);
+  if (!id) { res.status(400).json({ error: "Invalid id" }); return; }
+  const parsed = ImageRefPatchSchema.safeParse(req.body);
+  if (!parsed.success || (parsed.data.description === undefined && parsed.data.displayOrder === undefined && parsed.data.isKeyImage === undefined)) {
+    res.status(400).json({ error: "description, displayOrder or isKeyImage required" });
+    return;
+  }
+  const [target] = await db.select({ draftId: radiologyImageReferencesTable.draftId })
+    .from(radiologyImageReferencesTable).where(eq(radiologyImageReferencesTable.id, id)).limit(1);
+  if (!target) { res.status(404).json({ error: "Not found" }); return; }
+  if (await imageRefsLocked(target.draftId)) { res.status(409).json({ error: LOCKED_MSG }); return; }
+  const [row] = await db.update(radiologyImageReferencesTable)
+    .set({
+      ...(parsed.data.description !== undefined ? { description: parsed.data.description } : {}),
+      ...(parsed.data.displayOrder !== undefined ? { displayOrder: parsed.data.displayOrder } : {}),
+      ...(parsed.data.isKeyImage !== undefined ? { isKeyImage: parsed.data.isKeyImage } : {}),
+    })
+    .where(eq(radiologyImageReferencesTable.id, id))
+    .returning();
+  if (!row) { res.status(404).json({ error: "Not found" }); return; }
+  res.json(row);
+});
+
+// R1.3 — atomic drag-reorder: the client sends the draft's reference ids in
+// the desired order; each gets displayOrder = its index. Ids that belong to
+// the draft but are missing from the list (concurrent add) keep their
+// relative order after the reordered ones. Ids that do NOT belong to the
+// draft are rejected — a reorder can never move another report's images.
+const ImageRefReorderSchema = z.object({
+  draftId: z.number().int(),
+  orderedIds: z.array(z.number().int().positive()).min(1).max(MAX_REFS_PER_DRAFT),
+});
+
+radiologyReportGeneratorRouter.post("/image-references/reorder", async (req: StaffAuthRequest, res: Response) => {
+  const parsed = ImageRefReorderSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "Invalid body" }); return; }
+  const { draftId, orderedIds } = parsed.data;
+  if (new Set(orderedIds).size !== orderedIds.length) {
+    res.status(400).json({ error: "orderedIds contains duplicates" });
+    return;
+  }
+  const rows = await db.select({ id: radiologyImageReferencesTable.id })
+    .from(radiologyImageReferencesTable)
+    .where(eq(radiologyImageReferencesTable.draftId, draftId))
+    .orderBy(asc(radiologyImageReferencesTable.displayOrder), asc(radiologyImageReferencesTable.createdAt));
+  const draftIdSet = new Set(rows.map((r) => r.id));
+  const foreign = orderedIds.filter((id) => !draftIdSet.has(id));
+  if (foreign.length > 0) {
+    res.status(400).json({ error: "orderedIds must reference this draft's images only" });
+    return;
+  }
+  if (await imageRefsLocked(draftId)) { res.status(409).json({ error: LOCKED_MSG }); return; }
+  const mentioned = new Set(orderedIds);
+  const finalOrder = [...orderedIds, ...rows.map((r) => r.id).filter((id) => !mentioned.has(id))];
+  await db.transaction(async (tx) => {
+    // Serialize concurrent reorders of the same draft — the per-row UPDATEs
+    // follow the client-supplied order, so without this two interleaved
+    // reorders could deadlock or produce a mixed ordering.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"imgreorder:" + draftId}))`);
+    for (let i = 0; i < finalOrder.length; i++) {
+      await tx.update(radiologyImageReferencesTable)
+        .set({ displayOrder: i })
+        .where(and(
+          eq(radiologyImageReferencesTable.id, finalOrder[i]),
+          eq(radiologyImageReferencesTable.draftId, draftId),
+        ));
+    }
+  });
+  const fresh = await db.select().from(radiologyImageReferencesTable)
+    .where(eq(radiologyImageReferencesTable.draftId, draftId))
+    .orderBy(asc(radiologyImageReferencesTable.displayOrder), asc(radiologyImageReferencesTable.createdAt));
+  res.json(fresh);
 });
 
 radiologyReportGeneratorRouter.delete("/image-references/:id", async (req: StaffAuthRequest, res: Response) => {
   const id = Number(req.params.id);
   if (!id) { res.status(400).json({ error: "Invalid id" }); return; }
+  const [target] = await db.select({ draftId: radiologyImageReferencesTable.draftId })
+    .from(radiologyImageReferencesTable).where(eq(radiologyImageReferencesTable.id, id)).limit(1);
+  if (target && await imageRefsLocked(target.draftId)) { res.status(409).json({ error: LOCKED_MSG }); return; }
   await db.delete(radiologyImageReferencesTable).where(eq(radiologyImageReferencesTable.id, id));
   res.json({ success: true });
 });
@@ -2031,6 +2454,53 @@ radiologyReportGeneratorRouter.put("/style-preferences", async (req: StaffAuthRe
     return;
   }
   const [row] = await db.update(radiologistStylePreferencesTable).set(data).where(eq(radiologistStylePreferencesTable.userId, Number(userId))).returning();
+  res.json(row);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// RADIOLOGIST VOICE PREFERENCES — M1.6B3 per-user voice-layer overrides.
+// Self-scoped (same pattern as style-preferences above; registered in the
+// personal-endpoint cache guard + sw.js network-only list). Values may only
+// tighten clinic policy or pick personal ergonomics — the merge rules live in
+// the frontend's mergeVoiceSettings and are enforced there by construction
+// (enabled can only be turned OFF, confirmation only raised to strict).
+// ════════════════════════════════════════════════════════════════════════════
+
+const VoicePreferencesSchema = z.object({
+  enabledOverride: z.enum(["inherit", "off"]),
+  pttKey: z.enum(["inherit", "Space", "off"]),
+  defaultMode: z.enum(["inherit", "command", "dictation"]),
+  confirmationPolicy: z.enum(["inherit", "strict"]),
+  language: z.string().max(20),
+  autoPunctuation: z.enum(["inherit", "on", "off"]),
+  inputDevice: z.string().max(200),
+});
+
+const VOICE_PREF_DEFAULTS = {
+  enabledOverride: "inherit", pttKey: "inherit", defaultMode: "inherit",
+  confirmationPolicy: "inherit", language: "", autoPunctuation: "inherit", inputDevice: "",
+} as const;
+
+radiologyReportGeneratorRouter.get("/voice-preferences", async (req: StaffAuthRequest, res: Response) => {
+  const userId = req.staffSession?.subjectId;
+  if (!userId) { res.status(401).json({ error: "Unauthorized" }); return; }
+  const rows = await db.select().from(radiologistVoicePreferencesTable).where(eq(radiologistVoicePreferencesTable.userId, Number(userId)));
+  res.json(rows.length === 0 ? VOICE_PREF_DEFAULTS : rows[0]);
+});
+
+radiologyReportGeneratorRouter.put("/voice-preferences", async (req: StaffAuthRequest, res: Response) => {
+  const userId = req.staffSession?.subjectId;
+  if (!userId) { res.status(401).json({ error: "Unauthorized" }); return; }
+  const parsed = VoicePreferencesSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "Invalid body" }); return; }
+  const data = parsed.data;
+  const existing = await db.select().from(radiologistVoicePreferencesTable).where(eq(radiologistVoicePreferencesTable.userId, Number(userId)));
+  if (existing.length === 0) {
+    const [row] = await db.insert(radiologistVoicePreferencesTable).values({ userId: Number(userId), ...data }).returning();
+    res.status(201).json(row);
+    return;
+  }
+  const [row] = await db.update(radiologistVoicePreferencesTable).set(data).where(eq(radiologistVoicePreferencesTable.userId, Number(userId))).returning();
   res.json(row);
 });
 

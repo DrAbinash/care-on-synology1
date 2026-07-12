@@ -186,9 +186,13 @@ async function run() {
     }
 
     // 3f. Run Drizzle file-based migrator — applies any pending .sql files
+    // CRITICAL FIX (2026-06-30): Execute migrations with autocommit (no transaction wrapper).
+    // If any migration contains CREATE INDEX CONCURRENTLY, it MUST run outside a transaction.
+    // Drizzle's migrate() wraps all migrations in BEGIN...COMMIT by default, which breaks CONCURRENTLY.
+    // Setting `disableTransactions: true` forces each migration to execute separately with autocommit.
     console.log("🚀  Running Drizzle migrator for pending changes...");
     const db = drizzle(client);
-    await migrate(db, { migrationsFolder });
+    await migrate(db, { migrationsFolder, disableTransactions: true });
 
     console.log("\n==========================================");
     console.log("✅  DATABASE DEPLOYMENT COMPLETE");

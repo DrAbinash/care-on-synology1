@@ -109,6 +109,14 @@ interface Props {
   /** Phase 5: called when the radiologist accepts a learned suggestion —
    *  parent decides where the text goes (Recommendation, by convention). */
   onAcceptLearnedSuggestion?: (text: string) => void;
+  /** M1.4 — fired once when the quick-select dataset loads, so the parent
+   *  can rehydrate persisted selections (needs the finding templates to seed
+   *  exact-match removal state). Read-only exposure; no behavior change. */
+  onFindingsLoaded?: (findings: QuickFinding[]) => void;
+  /** M1.6B2 — voice "search finding <term>": the parent bumps seq with a new
+   *  term and the panel adopts it as the search text. Display-only control of
+   *  the SAME search state the keyboard uses — no second search path. */
+  externalSearch?: { seq: number; term: string } | null;
 }
 
 const SIDES: Array<{ value: Side; label: string }> = [
@@ -121,16 +129,34 @@ export default function QuickFindingsPanel({
   selectedIds, onToggle, onMeasurement, side, onSideChange, disabled, initialStudyHint, isAdmin,
   instances, onUpdateInstance, onAutoTechnique, onInsertNormals,
   activeProtocolId, onProtocolChange, onChecklistChange, onAcceptLearnedSuggestion,
+  onFindingsLoaded, externalSearch,
 }: Props) {
   const qc = useQueryClient();
   const searchRef = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState("");
+
+  // M1.6B2 — adopt a voice-driven search term (one adoption per seq bump).
+  const externalSearchSeqRef = useRef(0);
+  useEffect(() => {
+    if (!externalSearch || externalSearch.seq === externalSearchSeqRef.current) return;
+    externalSearchSeqRef.current = externalSearch.seq;
+    setSearch(externalSearch.term);
+  }, [externalSearch]);
 
   const { data, isLoading } = useQuery<QuickSelectData>({
     queryKey: ["radiology-quick-select"],
     queryFn: () => api.get("/api/radiology/quick-select"),
     staleTime: 5 * 60_000,
   });
+
+  // M1.4 — expose the loaded finding templates once per dataset so the
+  // workspace can rehydrate persisted Quick Select selections.
+  const findingsLoadedRef = useRef(false);
+  useEffect(() => {
+    if (findingsLoadedRef.current || !data?.findings?.length || !onFindingsLoaded) return;
+    findingsLoadedRef.current = true;
+    onFindingsLoaded(data.findings);
+  }, [data, onFindingsLoaded]);
 
   // Per-radiologist favorites — separate, uncached, user-specific endpoint.
   const { data: favoriteRows = [] } = useQuery<FavoriteRow[]>({
@@ -328,6 +354,36 @@ export default function QuickFindingsPanel({
     return () => window.removeEventListener("keydown", onKey);
   });
 
+  // Learning Engine (Phase 5): fetch this radiologist's learned patterns for
+  // each currently selected finding's label; only patterns that have
+  // crossed the usage threshold are shown, and only as a click-to-add chip
+  // — nothing is ever inserted automatically.
+  //
+  // M1.4 — these two hooks MUST stay above the early returns below. They
+  // previously sat after them, so the panel's very first data render (cold
+  // cache: loading render returns early with fewer hooks, then data arrives
+  // and renders MORE hooks) violated the Rules of Hooks — React error #310 —
+  // and unmounted the entire workspace the first time the Quick tab was
+  // opened. Reproduced in the M1.4 real-browser verification.
+  const selectedLabels = useMemo(
+    () => [...selectedIds].map((id) => findingsById.get(id)?.label).filter((l): l is string => !!l),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selectedIds, findingsById],
+  );
+  const { data: learnedPatterns = [] } = useQuery<LearnedPattern[]>({
+    queryKey: ["radiology-learned-patterns", selectedLabels.join("|")],
+    queryFn: async () => {
+      const results = await Promise.all(
+        selectedLabels.map((label) =>
+          api.get<LearnedPattern[]>(`/api/radiology/quick-select/learned-patterns?trigger=${encodeURIComponent(label)}`),
+        ),
+      );
+      return results.flat();
+    },
+    enabled: selectedLabels.length > 0 && !!onAcceptLearnedSuggestion,
+    staleTime: 30_000,
+  });
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   if (isLoading) {
@@ -396,29 +452,6 @@ export default function QuickFindingsPanel({
     );
   }
 
-  // Learning Engine (Phase 5): fetch this radiologist's learned patterns for
-  // each currently selected finding's label; only patterns that have
-  // crossed the usage threshold are shown, and only as a click-to-add chip
-  // — nothing is ever inserted automatically.
-  const selectedLabels = useMemo(
-    () => [...selectedIds].map((id) => findingsById.get(id)?.label).filter((l): l is string => !!l),
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedIds, findingsById],
-  );
-  const { data: learnedPatterns = [] } = useQuery<LearnedPattern[]>({
-    queryKey: ["radiology-learned-patterns", selectedLabels.join("|")],
-    queryFn: async () => {
-      const results = await Promise.all(
-        selectedLabels.map((label) =>
-          api.get<LearnedPattern[]>(`/api/radiology/quick-select/learned-patterns?trigger=${encodeURIComponent(label)}`),
-        ),
-      );
-      return results.flat();
-    },
-    enabled: selectedLabels.length > 0 && !!onAcceptLearnedSuggestion,
-    staleTime: 30_000,
-  });
-
   function FindingButton({ f, index }: { f: QuickFinding; index?: number }) {
     const selected = selectedIds.has(f.id);
     const isFav = favoriteIds.has(f.id);
@@ -475,6 +508,7 @@ export default function QuickFindingsPanel({
           onChange={(e) => setSearch(e.target.value)}
           placeholder='Search buttons & measurements…  ( / )'
           className="h-7 pl-7 text-[11px]"
+          data-qs-search
         />
       </div>
 

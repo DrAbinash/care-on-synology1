@@ -197,6 +197,11 @@ router.get("/growth-charts/:patientId", async (req, res) => {
         fhr: row.meas.fetalHeartRate ? Number(row.meas.fetalHeartRate) : null,
         placentalGrade: row.meas.placentaGrade || null,
         cervicalLength: row.meas.cervicalLength ? Number(row.meas.cervicalLength) : null,
+        // R2.0 — additive fields for the OB dashboard strip; the SELECT above
+        // already pulls the full fetalUsgMeasurementsTable row, so these were
+        // already available, just not surfaced on the response yet.
+        presentation: row.meas.presentation || null,
+        placentaLocation: row.meas.placentaLocation || null,
       };
     });
 
@@ -204,6 +209,119 @@ router.get("/growth-charts/:patientId", async (req, res) => {
   } catch (err) {
     logger.error({ err }, "GET /growth-charts failed");
     res.status(500).json({ error: "Failed to load growth chart data" });
+  }
+});
+
+// ── GET /strip/:studyId ────────────────────────────────────────────────────────
+// R2.0 — compact OB dashboard snapshot for the canonical RadiologyReportingWorkspace.
+// :studyId is the CANONICAL radiology studyId (radiologyStudiesTable.id / entry.studyId
+// in RadiologyReportingWorkspace), i.e. fetalUsgStudiesTable.studyId — NOT the
+// fetal_usg_studies internal id used by /key-images and /comparison above.
+//
+// Auth: inherited from the router-level mount in routes/index.ts
+// (`requireStaffAuth, requireStaffPermission("/radiology")`), identical to every
+// other endpoint in this file — no per-route auth needed here.
+router.get("/strip/:studyId", async (req, res) => {
+  const studyId = Number(req.params.studyId);
+  try {
+    const [fetalStudy] = await db
+      .select()
+      .from(fetalUsgStudiesTable)
+      .where(eq(fetalUsgStudiesTable.studyId, studyId))
+      .orderBy(desc(fetalUsgStudiesTable.createdAt))
+      .limit(1);
+
+    if (!fetalStudy) {
+      // Normal case for non-OB studies, or OB studies where FetalUsgLevel4
+      // hasn't been used yet — not an error.
+      res.json({ found: false });
+      return;
+    }
+
+    // Keep pregnancy-episode grouping current, same as /timeline does, so the
+    // "same pregnancy episode" fallback below is scoped correctly.
+    await ensurePregnancyEpisodes(fetalStudy.patientId);
+
+    const [current] = await db
+      .select()
+      .from(fetalUsgStudiesTable)
+      .where(eq(fetalUsgStudiesTable.id, fetalStudy.id))
+      .limit(1);
+
+    let sourceStudy = current;
+    let sourceMeas = (
+      await db
+        .select()
+        .from(fetalUsgMeasurementsTable)
+        .where(eq(fetalUsgMeasurementsTable.studyId, current.id))
+        .limit(1)
+    )[0];
+
+    if (!sourceMeas) {
+      // This exact study has no measurements yet — fall back to the most
+      // recent study (with measurements) in the same pregnancy episode,
+      // mirroring the chronological createdAt ordering /growth-charts uses.
+      const fallback = await db
+        .select({ fetalStudy: fetalUsgStudiesTable, meas: fetalUsgMeasurementsTable })
+        .from(fetalUsgStudiesTable)
+        .innerJoin(fetalUsgMeasurementsTable, eq(fetalUsgMeasurementsTable.studyId, fetalUsgStudiesTable.id))
+        .where(
+          current.pregnancyEpisodeId
+            ? eq(fetalUsgStudiesTable.pregnancyEpisodeId, current.pregnancyEpisodeId)
+            : eq(fetalUsgStudiesTable.patientId, current.patientId)
+        )
+        .orderBy(desc(fetalUsgStudiesTable.createdAt))
+        .limit(1);
+
+      if (fallback.length > 0) {
+        sourceStudy = fallback[0].fetalStudy;
+        sourceMeas = fallback[0].meas;
+      }
+    }
+
+    const afi = sourceMeas?.afi ? Number(sourceMeas.afi) : null;
+    // afiInterpretation is normally already computed & stored by
+    // calcAfiInterpretation() in fetalUsgLevel4.ts at measurement-save time;
+    // this tiny fallback only covers rows saved before that field existed.
+    const afiInterpretation =
+      sourceMeas?.afiInterpretation || (afi !== null ? (afi < 5 ? "oligohydramnios" : afi > 24 ? "polyhydramnios" : "normal") : null);
+
+    res.json({
+      found: true,
+      fetalStudyId: sourceStudy.id,
+      requestedStudyId: studyId,
+      isFallback: sourceStudy.id !== current.id,
+      // R2.0 fix: was `.toLocaleDateString()` with no locale/timezone args
+      // on the SERVER (not the browser) — Node's default locale/TZ depend
+      // on the deployment environment, so this could render en-US M/D/YYYY
+      // next to the en-IN DD-Mon-YYYY dates used everywhere else in the
+      // app, and drift by a calendar day across a TZ boundary. Match the
+      // same explicit en-IN formatting the rest of the app uses (e.g.
+      // FormF.tsx's formatDate).
+      measurementDate: sourceStudy.createdAt
+        ? new Date(sourceStudy.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Kolkata" })
+        : null,
+      ga: {
+        weeks: sourceStudy.gaWeeks ?? null,
+        days: sourceStudy.gaDays ?? null,
+        label: sourceStudy.gaWeeks != null ? `${sourceStudy.gaWeeks}w ${sourceStudy.gaDays ?? 0}d` : null,
+      },
+      edd: sourceStudy.edd || null,
+      bpd: sourceMeas?.bpd ? Number(sourceMeas.bpd) : null,
+      hc: sourceMeas?.hc ? Number(sourceMeas.hc) : null,
+      ac: sourceMeas?.ac ? Number(sourceMeas.ac) : null,
+      fl: sourceMeas?.fl ? Number(sourceMeas.fl) : null,
+      efw: sourceMeas?.efw ? Number(sourceMeas.efw) : null,
+      afi,
+      afiInterpretation,
+      fhr: sourceMeas?.fetalHeartRate ?? null,
+      placentaLocation: sourceMeas?.placentaLocation || null,
+      placentaGrade: sourceMeas?.placentaGrade || null,
+      presentation: sourceMeas?.presentation || null,
+    });
+  } catch (err) {
+    logger.error({ err }, "GET /strip failed");
+    res.status(500).json({ error: "Failed to load OB dashboard strip" });
   }
 });
 

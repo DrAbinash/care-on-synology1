@@ -1,6 +1,18 @@
+// PHASE D (Radiology V2): PRESERVED. RadiologistCockpit is the single Reading Room.
+// This page is redirected or owner-only. Do not delete — kept for rollback/reference.
 /**
  * Radiology Command Center
- * Unified radiologist workspace for reading studies, viewing images, and reporting.
+ * Radiologist workspace for reading studies, viewing images, and reporting.
+ *
+ * @deprecated M1.1 consolidation — RadiologyReportingWorkspace
+ * (/radiology/report/:studyId) is the canonical radiology reporting page;
+ * this page's earlier "unified workspace" claim (and its header labeling the
+ * workspace "Legacy") predated that decision and was inverted here. The
+ * Command Center stays routed at /radiology/command-center with no
+ * functional regression, but new features land in the canonical workspace
+ * only. Its duplicate save/finalize logic delegates to
+ * lib/radiologyReportLifecycle; remaining unique pieces (worklist sidebar,
+ * prior-study merge, local-AI tab) are M1.2 merge candidates.
  */
 
 import { useState, useEffect, useMemo } from "react";
@@ -8,6 +20,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
 import { api } from "@/lib/fetchApi";
 import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
+import { finalizeRadiologyReport, saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
+import DeprecatedSurfaceBanner from "@/components/radiology/DeprecatedSurfaceBanner";
 import {
   registerDraftRescueSaver, deregisterDraftRescueSaver,
   writeRescueDraft, readRescueDraft, clearRescueDraft,
@@ -775,7 +789,7 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
       // Compute AI contribution % — chars inserted by AI / total chars in findings+impression
       const totalChars = (rawFindings.length + impression.filter(Boolean).join("").length) || 1;
       const aiPct = Math.min(100, Math.round((aiCharsInserted / totalChars) * 100));
-      return api.post("/api/radiology/report-generator/save-draft", {
+      return saveRadiologyDraft({
         studyId: study.studyId,
         worklistId: study.id,
         patientId: study.patientId,
@@ -812,57 +826,62 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
 
       const finalTitle = generateCombinedTitle(activeBuilderTypes);
 
+      // R1.4 — this HTML is stored verbatim as the signed report's body
+      // (radiologyReportLifecycle.ts no longer strips tags) and rendered as
+      // TRUSTED, unescaped HTML by reportPresentation.ts. Every field below
+      // is user-entered text, not markup, so it MUST be escaped here — this
+      // was previously masked only by the stripping this ticket removes.
+      // break-after:avoid-page on headings prevents an orphaned heading at
+      // a page boundary now that this structure actually reaches print/PDF.
+      const esc = (v: string) => String(v ?? "")
+        .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
       const htmlBody = `
         <div style="font-family: sans-serif; padding: 20px;">
-          <h3>Radiology Report: ${finalTitle}</h3>
-          <p><strong>Patient Name:</strong> ${study.patientName}</p>
-          <p><strong>Clinical History:</strong> ${clinicalHistory}</p>
-          <p><strong>Technique:</strong> ${technique}</p>
+          <h3 style="break-after:avoid-page;page-break-after:avoid;">Radiology Report: ${esc(finalTitle)}</h3>
+          <p><strong>Patient Name:</strong> ${esc(study.patientName)}</p>
+          <p><strong>Clinical History:</strong> ${esc(clinicalHistory).replaceAll("\n", "<br/>")}</p>
+          <p><strong>Technique:</strong> ${esc(technique).replaceAll("\n", "<br/>")}</p>
           <hr />
-          <h4>Findings</h4>
-          <p style="white-space: pre-line;">${findingsText}</p>
-          <h4>Impression</h4>
-          <ol>${impression.map((imp) => `<li>${imp}</li>`).join("")}</ol>
-          <p><strong>Recommendation:</strong> ${recommendation}</p>
+          <h4 style="break-after:avoid-page;page-break-after:avoid;">Findings</h4>
+          <p style="white-space: pre-line;">${esc(findingsText)}</p>
+          <h4 style="break-after:avoid-page;page-break-after:avoid;">Impression</h4>
+          <ol>${impression.map((imp) => `<li>${esc(imp)}</li>`).join("")}</ol>
+          <p><strong>Recommendation:</strong> ${esc(recommendation).replaceAll("\n", "<br/>")}</p>
         </div>
       `;
 
-      let reportId = null;
-      if (study.patientId) {
-        const report = await api.post<{ id: number }>("/api/patient-reports", {
-          patientId: study.patientId,
-          testId: null,
-          studyId: study.studyId,
-          type: "radiology",
-          title: finalTitle,
-          body: htmlBody.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(),
-          impression: impression.join("\n"),
-          parameters: JSON.stringify({
-            modality: study.modality,
-            studyDescription: study.studyDescription,
-            accessionNumber: study.accessionNumber,
-            studyInstanceUID: study.studyInstanceUID,
-          }),
-          isCritical,
-          criticalNote: isCritical ? criticalNote : null,
-          createdBy: session?.user.name ?? "Radiologist",
-        });
-        reportId = report.id;
-      }
-
-      await api.post("/api/internal/radiology/report-status", {
-        accessionNumber: study.accessionNumber,
-        studyInstanceUID: study.studyInstanceUID,
-        status: "REPORT_FINAL",
-        deliveryStatus: "READY_TO_SEND",
-        reportId: reportId ?? undefined,
+      // M1.1 — canonical finalize path shared with the Reporting Workspace.
+      const result = await finalizeRadiologyReport(study, {
+        title: finalTitle,
+        htmlBody,
+        impression,
+        isCritical,
+        criticalNote,
+        createdBy: session?.user.name ?? "Radiologist",
         actor: session?.user.name ?? "staff",
       });
 
       setReportStatus("FINAL");
+      return result;
     },
-    onSuccess: () => {
-      toast({ title: "Report Finalized", description: "The finalized report has been registered." });
+    onSuccess: (result) => {
+      // R1.4 — never claim "Finalized" as a complete, deliverable document
+      // unless it was actually signed (see radiologyReportLifecycle.ts).
+      // reportCreationSkipped must be checked first: a study with no patient
+      // linked at all never gets a report row or a sign attempt, so the
+      // generic signing-failed message would falsely send the radiologist to
+      // "sign it from Report Hub" a report that was never created.
+      const skippedReason = result?.reportCreationSkipped ?? null;
+      const signedOk = result?.signed !== false;
+      toast({
+        title: skippedReason ? "Report saved but NOT created" : signedOk ? "Report Finalized" : "Report saved but NOT signed",
+        description: skippedReason
+          ? `No patient report row was created: ${skippedReason}.`
+          : signedOk
+            ? "The finalized report has been registered."
+            : `${result?.signError ?? "Signing failed"} — sign it from Report Hub.`,
+        ...(signedOk && !skippedReason ? {} : { variant: "destructive" as const }),
+      });
       qc.invalidateQueries({ queryKey: ["workspace-entry", activeStudyId] });
       qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
     },
@@ -1038,7 +1057,11 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
 
   return (
     <div className="min-h-[calc(100vh-3rem)] bg-slate-950 text-slate-100 flex flex-col font-sans select-none">
-      
+      <DeprecatedSurfaceBanner
+        surface="Radiology Command Center"
+        note="reports finalized here now follow the canonical READY_TO_SEND flow"
+      />
+
       {/* Header bar */}
       <div className="h-14 border-b border-slate-800 bg-slate-900/90 flex items-center justify-between px-4 shrink-0 z-10">
         <div className="flex items-center gap-3">
@@ -1072,10 +1095,12 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
           </div>
         </div>
 
-        {/* Legacy routing links */}
+        {/* M1.1: the Reporting Workspace is the CANONICAL page (this header
+            used to mislabel it "Legacy Workspace"); the template pages keep
+            their legacy labels. */}
         <div className="flex items-center gap-2">
-          <Button variant="link" onClick={() => navigate("/radiology/reporting-workspace")} className="text-xs text-slate-400 hover:text-slate-200 p-1">
-            Legacy Workspace
+          <Button variant="link" onClick={() => navigate("/radiology/reporting-workspace")} className="text-xs text-emerald-400 hover:text-emerald-300 p-1">
+            Reporting Workspace (canonical)
           </Button>
           <span className="text-slate-700">|</span>
           <Button variant="link" onClick={() => navigate("/radiology/structured-report-templates")} className="text-xs text-slate-400 hover:text-slate-200 p-1">

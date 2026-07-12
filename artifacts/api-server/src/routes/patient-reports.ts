@@ -11,7 +11,12 @@ import {
   radiologyStudiesTable,
   radiologyInstitutionalStylesTable,
 } from "@workspace/db/schema";
-import { eq, and, desc, sql, ilike, or, isNull, isNotNull } from "drizzle-orm";
+import { eq, and, desc, sql, ilike, or, isNull, isNotNull, inArray } from "drizzle-orm";
+import {
+  freezeReportPresentation, parseExplicitTemplateParam, resolveTemplateForRender,
+  resolveTemplateRecordForRender,
+} from "../lib/presentationTemplateStore";
+import type { CopyType } from "../lib/presentationTemplateModel";
 import { sendReportWhatsapp, sendReportDelivery } from "./whatsapp";
 import crypto from "node:crypto";
 import {
@@ -38,12 +43,20 @@ import { asc } from "drizzle-orm";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import {
   canStructuredSign,
+  canStructuredVerify,
+  SIGN_DENY_ROLES,
   prepareStructuredFinalReport,
   buildFinalD1Source,
   parseDraftImpression,
   STRUCTURED_RENDERER_VERSION,
   type FinalWorklistRow,
 } from "../lib/radiologyD1FinalWriter";
+import { verifyContentSha256 } from "../lib/structuredReport/hash";
+import {
+  renderReportDocument,
+  type ReportDocumentModel, type ReportKeyImageModel, type ReportParameterRow, type ReportSignatureModel,
+} from "../lib/reportPresentation";
+import { resolveReportKeyImages } from "../lib/reportImages";
 import {
   materializeFindings,
   CatalogStoreFindingResolver,
@@ -54,9 +67,21 @@ import { DrizzleStructuredReportCatalogPort } from "../lib/structuredReport/cata
 import { validateStructuredReport } from "../lib/structuredReport/validator";
 import { noFindingsCatalogPort } from "../lib/radiologyD1DraftWriter";
 import { UnavailableAiRulesRegistryPort } from "../lib/structuredReport/aiRulesRegistry";
-import { canonicalHashPayload, computeChainHash } from "../lib/audit";
+import { canonicalHashPayload, computeChainHash, auditLog } from "../lib/audit";
+// BEND-1 — durable D10 re-delivery obligations + shared recipient masking.
+import { maskRecipient } from "../lib/redeliveryRules";
+import { createObligationsForAmendment, completeObligationsForDelivery, isRedeliveryAutoSendEnabled } from "../lib/redeliveryObligations";
+import { enqueueRadiologyJob } from "../lib/radiologyJobs";
+import { REDELIVERY_SEND_JOB } from "../lib/radiologyJobHandlers";
+import { radiologyRedeliveryObligationsTable } from "@workspace/db/schema";
 // ── Ticket D6 — structured read path (flag-gated, legacy display default) ───
 import { readStructuredReport, type StructuredReadResult } from "../lib/radiologyStructuredRead";
+// ── Ticket D8 — canonical amendment-chain resolution (read-only) ─────────────
+import {
+  resolveReportVersion,
+  type ResolvedReportVersion,
+  type ResolveMode,
+} from "../lib/radiologyReportVersion";
 
 export const patientReportsRouter: IRouter = Router();
 export const signaturesRouter: IRouter = Router();
@@ -104,6 +129,47 @@ async function ensurePublicToken(reportId: number): Promise<string | null> {
     .where(eq(patientReportsTable.id, reportId))
     .returning();
   return updated?.publicToken ?? token;
+}
+
+/** Public base URL for report links built without an HTTP request to derive
+ *  them from (matches the identical pattern in radiologyJobHandlers.ts's
+ *  publicBaseUrl(), used for the WhatsApp/email delivery links this report's
+ *  QR now points at the same way). */
+function qrPublicBaseUrl(): string | null {
+  const raw = process.env.PUBLIC_BASE_URL || process.env.APP_PUBLIC_URL || "";
+  return raw ? raw.replace(/\/+$/, "") : null;
+}
+
+/**
+ * R1.4 — a REAL, scannable QR code (PNG data: URL) encoding the report's
+ * own public verification link — the same tokenized /api/p/r/:token/pdf
+ * link WhatsApp/email delivery already sends, generated server-side with the
+ * `qrcode` package (already used elsewhere in this codebase for bills/kiosk/
+ * UPI QR codes). Replaces a static placeholder box that encoded nothing.
+ *
+ * Only ever generated for a report that is actually publicly downloadable
+ * (verified/delivered — the same statuses the public pdf route itself
+ * requires) so a scan can never land on a 403 "not yet finalized" page; a
+ * draft/pending report renders with no QR block at all rather than a QR
+ * pointing at a link that doesn't work yet. Failure-tolerant like every
+ * other optional presentation element (key images, logo): a QR generation
+ * or token-mint problem must never block printing.
+ */
+async function generateReportQrDataUrl(reportId: number, status: string): Promise<string | null> {
+  if (status !== "verified" && status !== "delivered") return null;
+  const base = qrPublicBaseUrl();
+  if (!base) return null;
+  try {
+    const token = await ensurePublicToken(reportId);
+    if (!token) return null;
+    const QRCode = await import("qrcode");
+    return await QRCode.toDataURL(`${base}/api/p/r/${token}/pdf`, {
+      errorCorrectionLevel: "M", margin: 1, width: 200,
+      color: { dark: "#000000", light: "#ffffff" },
+    });
+  } catch {
+    return null;
+  }
 }
 
 // rotatePublicToken — always issues a fresh token with a new expiry.
@@ -242,35 +308,18 @@ export interface AmendmentChainInfo {
 }
 
 /**
- * Resolve the amendment chain a report participates in (as root, middle, or
- * tip). Returns null for reports with no amendments — the common case, two
- * cheap indexed lookups. Read-only; history is never mutated.
+ * Ticket D8 — the D7-shaped `amendment` response key, now derived from the
+ * canonical resolver's output (one chain implementation, zero duplicate
+ * queries). Shape is unchanged for existing clients; null when the served
+ * row has no amendment chain. `superseded` describes the row being SERVED.
  */
-async function loadAmendmentChain(reportId: number): Promise<AmendmentChainInfo | null> {
-  const [asAmendment] = await db
-    .select()
-    .from(patientReportAmendmentsTable)
-    .where(eq(patientReportAmendmentsTable.amendedReportId, reportId))
-    .limit(1);
-  const [asOriginal] = await db
-    .select()
-    .from(patientReportAmendmentsTable)
-    .where(eq(patientReportAmendmentsTable.originalReportId, reportId))
-    .limit(1);
-  const anyLink = asAmendment ?? asOriginal;
-  if (!anyLink) return null;
-
-  const chain = await db
-    .select()
-    .from(patientReportAmendmentsTable)
-    .where(eq(patientReportAmendmentsTable.rootReportId, anyLink.rootReportId))
-    .orderBy(asc(patientReportAmendmentsTable.sequenceNumber));
-  const latestReportId = chain.length > 0 ? chain[chain.length - 1].amendedReportId : reportId;
+function amendmentKeyFromVersion(version: ResolvedReportVersion): AmendmentChainInfo | null {
+  if (version.resolutionReason === "no_chain" || !version.links || version.links.length === 0) return null;
   return {
-    rootReportId: anyLink.rootReportId,
-    latestReportId,
-    superseded: latestReportId !== reportId,
-    chain: chain.map((l) => ({
+    rootReportId: version.rootReportId,
+    latestReportId: version.latestReportId,
+    superseded: version.resolvedSuperseded,
+    chain: version.links.map((l) => ({
       sequenceNumber: l.sequenceNumber,
       originalReportId: l.originalReportId,
       amendedReportId: l.amendedReportId,
@@ -279,6 +328,458 @@ async function loadAmendmentChain(reportId: number): Promise<AmendmentChainInfo 
       amendedByName: l.amendedByName,
       createdAt: l.createdAt,
     })),
+  };
+}
+
+/** D8 — the additive `version` metadata object every read/delivery surface
+ *  reports. Never includes full rows; ids + banner facts only. */
+function versionMetadata(version: ResolvedReportVersion) {
+  return {
+    requestedReportId: version.requestedReportId,
+    resolvedReportId: version.resolvedReportId,
+    rootReportId: version.rootReportId,
+    latestReportId: version.latestReportId,
+    sequenceNumber: version.sequenceNumber,
+    totalVersions: version.totalVersions,
+    superseded: version.resolvedSuperseded,
+    requestedSuperseded: version.superseded,
+    amendmentReason: version.amendmentReason,
+    latestAmendmentReason: version.latestAmendmentReason,
+    resolutionReason: version.resolutionReason,
+    warnings: version.warnings,
+    ...(version.chain ? { chain: version.chain } : {}),
+  };
+}
+
+/** D8 Phase 7 — one structured diagnostic line per resolution that matters:
+ *  a redirect, a superseded serve, or a chain-integrity warning. Read paths
+ *  stay write-free; this is log-only. */
+function logVersionResolution(surface: string, version: ResolvedReportVersion, context?: Record<string, unknown>) {
+  if (
+    version.resolvedReportId === version.requestedReportId &&
+    !version.resolvedSuperseded &&
+    version.warnings.length === 0
+  ) return;
+  console.warn("[patient-reports] D8 version resolution:", JSON.stringify({
+    surface,
+    requestedReportId: version.requestedReportId,
+    deliveredReportId: version.resolvedReportId,
+    rootReportId: version.rootReportId,
+    latestReportId: version.latestReportId,
+    sequenceNumber: version.sequenceNumber,
+    totalVersions: version.totalVersions,
+    superseded: version.resolvedSuperseded,
+    historicalOverride: version.resolutionReason === "explicit_specific" || version.resolutionReason === "explicit_root",
+    resolutionReason: version.resolutionReason,
+    warnings: version.warnings,
+    ...context,
+  }));
+}
+
+/** D8 — pick the effective resolve mode for a surface: explicit query wins;
+ *  otherwise default to LATEST only when the structured-final flag (the only
+ *  mechanism that creates amendments) is on. Flag OFF ⇒ "specific", i.e. the
+ *  exact pre-D8 behavior. A flag-read failure degrades to "specific". */
+async function effectiveResolveMode(explicit: string | undefined): Promise<ResolveMode> {
+  if (explicit === "latest" || explicit === "specific" || explicit === "root") return explicit;
+  try {
+    return (await isFeatureEnabledServer("ff_radiology_structured_final")) ? "latest" : "specific";
+  } catch {
+    return "specific";
+  }
+}
+
+/** D8 Phase 5 — response metadata stating exactly which revision was
+ *  delivered (also what file-naming keys off). Additive headers only. */
+function setVersionHeaders(res: { setHeader(name: string, value: string): unknown }, version: ResolvedReportVersion) {
+  res.setHeader("X-Report-Requested-Id", String(version.requestedReportId));
+  res.setHeader("X-Report-Delivered-Id", String(version.resolvedReportId));
+  res.setHeader("X-Report-Version", `${version.sequenceNumber}/${version.totalVersions}`);
+  if (version.resolvedSuperseded) res.setHeader("X-Report-Superseded", "true");
+}
+
+/** D8 Phase 6/7 — the auditable requested-vs-delivered record for delivery
+ *  surfaces. Written to the hash-chained audit log ONLY when the resolution
+ *  is noteworthy (redirect, superseded serve, historical override, or chain
+ *  warning); an ordinary same-id delivery stays exactly as cheap as before.
+ *  auditLog never throws (fire-and-forget contract), so deliveries cannot be
+ *  broken by audit failures. Signed report bytes are never touched. */
+async function auditDeliveryResolution(
+  surface: string,
+  version: ResolvedReportVersion,
+  actor: { userId?: number | null; userName?: string; role?: string },
+  context?: Record<string, unknown>,
+) {
+  const historicalOverride =
+    version.resolutionReason === "explicit_specific" || version.resolutionReason === "explicit_root";
+  if (
+    version.resolvedReportId === version.requestedReportId &&
+    !version.resolvedSuperseded &&
+    !historicalOverride &&
+    version.warnings.length === 0
+  ) return;
+  await auditLog({
+    userId: actor.userId ?? null,
+    userName: actor.userName ?? "system",
+    role: actor.role ?? "system",
+    action: "deliver_version",
+    module: "radiology",
+    entityType: "patient_report",
+    entityId: String(version.resolvedReportId),
+    newValue: JSON.stringify({
+      surface,
+      requestedReportId: version.requestedReportId,
+      deliveredReportId: version.resolvedReportId,
+      rootReportId: version.rootReportId,
+      latestReportId: version.latestReportId,
+      sequenceNumber: version.sequenceNumber,
+      totalVersions: version.totalVersions,
+      superseded: version.resolvedSuperseded,
+      historicalOverride,
+      warnings: version.warnings,
+      ...context,
+    }),
+    reason: version.resolutionReason,
+  });
+}
+
+/** D8 — version-suffixed filename for saved PDFs/HTML ("where practical":
+ *  only when the report actually has multiple versions). */
+function versionedFilename(version: ResolvedReportVersion): string {
+  const base = (version.resolvedReport.reportNumber || `report-${version.resolvedReportId}`).replace(/[^A-Za-z0-9._-]+/g, "_");
+  const suffix = version.totalVersions > 1 ? `-v${version.sequenceNumber}of${version.totalVersions}${version.resolvedSuperseded ? "-SUPERSEDED" : ""}` : "";
+  return `${base}${suffix}.html`;
+}
+
+// ── Ticket D9 — amendment verify-path hardening ──────────────────────────────
+
+interface StructuredSignedDocShape {
+  document_id: string;
+  audit: {
+    revision?: number;
+    signature: {
+      state?: string;
+      signed_by?: string;
+      signed_at?: string;
+      signed_content_sha256?: string;
+      amends_document_id?: string;
+    };
+  };
+}
+
+/** The row carries a signed-FINAL structured document (shape gate only —
+ *  full D1 validation is D6's job; this decides which lifecycle the sign/
+ *  verify routes apply). */
+function structuredSignedDocOf(structuredJson: unknown): StructuredSignedDocShape | null {
+  const doc = structuredJson as StructuredSignedDocShape | null;
+  if (
+    doc && typeof doc === "object" && !Array.isArray(doc) &&
+    typeof doc.document_id === "string" &&
+    doc.audit?.signature?.state === "final"
+  ) return doc;
+  return null;
+}
+
+/** D9 Phase 7 — hash-chained lifecycle audit record (attempts, rejections,
+ *  legacy-sign refusals). Success events are written INSIDE the verify
+ *  transaction instead, so they roll back with it. auditLog never throws. */
+async function auditLifecycleEvent(
+  action: "verify_attempt" | "verify_rejected" | "legacy_sign_rejected",
+  actor: { userId?: number | null; userName?: string; role?: string },
+  entityId: string,
+  payload: Record<string, unknown>,
+  reason: string,
+) {
+  await auditLog({
+    userId: actor.userId ?? null,
+    userName: actor.userName ?? "system",
+    role: actor.role ?? "system",
+    action,
+    module: "radiology",
+    entityType: "patient_report",
+    entityId,
+    newValue: JSON.stringify(payload),
+    reason,
+  });
+}
+
+/**
+ * D9 Phase 3 — structured countersign. Verifies a structured-SIGNED root or
+ * amendment directly from its current lifecycle state (draft — legacy sign
+ * is refused for these rows, the D1 signature IS the sign step).
+ *
+ * Guarantees:
+ *  - verifier identity comes exclusively from the authenticated session;
+ *  - verifier must differ from the original signer (row AND document);
+ *  - content_sha256 must verify BEFORE verification — tampered documents are
+ *    never countersigned;
+ *  - superseded historical versions are never verified (no policy override
+ *    in D9) and a corrupt chain blocks verification outright;
+ *  - the signed structured document bytes are NEVER touched — only row-level
+ *    verification fields + status are stamped;
+ *  - row update and the hash-chained "verify" audit record commit in ONE
+ *    transaction; any failure rolls both back.
+ *
+ * Returns {status, body} for the route to send.
+ */
+async function performStructuredVerify(
+  session: NonNullable<StaffAuthRequest["staffSession"]>,
+  existing: { id: number; status: string; signedByName: string | null; signatureId: number | null; structuredJson: unknown },
+  doc: StructuredSignedDocShape,
+  verifierSigId: number | null,
+  verifierNotes: string | null,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const actor = { userId: session.subjectId, userName: session.subjectName, role: session.role };
+  const revision = doc.audit.revision ?? null;
+  await auditLifecycleEvent("verify_attempt", actor, doc.document_id, { reportId: existing.id, revision }, "structured_countersign");
+
+  const authority = canStructuredVerify(session);
+  if (!authority.allowed) {
+    await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision }, authority.reason ?? "verify_authority_required");
+    return { status: 403, body: { error: "verify_authority_required", detail: authority.reason } };
+  }
+
+  if (existing.status === "verified" || existing.status === "delivered") {
+    return { status: 409, body: { error: "Report already verified" } };
+  }
+
+  // Signer/verifier distinctness — against BOTH the row-level signer and the
+  // document's cryptographic signer. Session identity only; client strings
+  // never participate.
+  const sessionName = session.subjectName.trim().toLowerCase();
+  const rowSigner = (existing.signedByName ?? "").trim().toLowerCase();
+  const docSigner = (doc.audit.signature.signed_by ?? "").trim().toLowerCase();
+  if (sessionName === rowSigner || sessionName === docSigner) {
+    await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision, signer: existing.signedByName }, "verifier_must_differ_from_signer");
+    return { status: 409, body: { error: "verifier_must_differ", message: "Verifier must be a different person from the signer" } };
+  }
+
+  // Integrity gate: the stored document must hash-verify before anyone
+  // countersigns it.
+  const hashCheck = verifyContentSha256(existing.structuredJson as Parameters<typeof verifyContentSha256>[0]);
+  if (!hashCheck.ok) {
+    await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision }, "content_hash_verification_failed");
+    return { status: 409, body: { error: "structured_hash_verification_failed", message: "The stored structured document does not verify against its content hash. Verification refused; investigate before countersigning." } };
+  }
+
+  // Chain position: only the version that is (still) the newest may normally
+  // become deliverable. Corrupt chains block verification outright.
+  const version = await resolveReportVersion(existing.id, { mode: "specific", includeChain: true });
+  if (version && version.warnings.length > 0) {
+    await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision, warnings: version.warnings }, "chain_integrity_warning");
+    return { status: 409, body: { error: "chain_integrity_warning", detail: version.warnings } };
+  }
+  if (version && version.superseded) {
+    await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision, latestReportId: version.latestReportId }, "superseded_version_cannot_be_verified");
+    return { status: 409, body: { error: "superseded_version_cannot_be_verified", message: "A newer signed amendment exists; verify the latest version instead.", latestReportId: version.latestReportId } };
+  }
+
+  // Optional verifier signature image — validated like the legacy path, and
+  // still bound by distinctness on the signature id.
+  if (verifierSigId != null) {
+    const [sig] = await db.select().from(signaturesTable).where(eq(signaturesTable.id, verifierSigId));
+    if (!sig) return { status: 404, body: { error: "Verifier signature not found" } };
+    if (existing.signatureId && existing.signatureId === verifierSigId) {
+      await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision }, "verifier_signature_matches_signer");
+      return { status: 409, body: { error: "verifier_must_differ", message: "Verifier must be a different person from the signer" } };
+    }
+  }
+
+  try {
+    const updated = await db.transaction(async (tx) => {
+      // Re-read inside the transaction — the pre-checks above are advisory;
+      // these are authoritative.
+      const [row] = await tx.select().from(patientReportsTable).where(eq(patientReportsTable.id, existing.id)).limit(1);
+      if (!row) throw new AmendError(404, "report_not_found");
+      if (row.status === "verified" || row.status === "delivered") throw new AmendError(409, "already_verified");
+      const [link] = await tx
+        .select()
+        .from(patientReportAmendmentsTable)
+        .where(eq(patientReportAmendmentsTable.originalReportId, existing.id))
+        .limit(1);
+      if (link) throw new AmendError(409, "superseded_version_cannot_be_verified", { amendedReportId: link.amendedReportId });
+
+      const [updatedRow] = await tx.update(patientReportsTable).set({
+        verifiedBySignatureId: verifierSigId,
+        verifiedByName: session.subjectName, // session identity, never client input
+        verifiedAt: new Date(),
+        verifierNotes,
+        status: "verified",
+      }).where(eq(patientReportsTable.id, existing.id)).returning();
+
+      // Hash-chained success record, same chain protocol as D5/D7 finalize.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('care_erp_audit_chain'))`);
+      const [prevAudit] = await tx
+        .select({ chainHash: auditLogsTable.chainHash })
+        .from(auditLogsTable)
+        .orderBy(desc(auditLogsTable.id))
+        .limit(1);
+      const previousHash = prevAudit?.chainHash ?? "";
+      const createdAt = new Date();
+      const newValue = JSON.stringify({
+        report_id: existing.id,
+        document_id: doc.document_id,
+        signed_content_sha256: doc.audit.signature.signed_content_sha256 ?? null,
+        verified_by: session.subjectName,
+        verified_by_id: session.subjectId,
+        revision,
+        root_report_id: version?.rootReportId ?? existing.id,
+        latest_report_id: version?.latestReportId ?? existing.id,
+        sequence_number: version?.sequenceNumber ?? 1,
+      });
+      const canonical = canonicalHashPayload({
+        userId: session.subjectId,
+        userName: session.subjectName,
+        role: session.role,
+        action: "verify",
+        module: "radiology",
+        entityType: "structured_report",
+        entityId: doc.document_id,
+        oldValue: null,
+        newValue,
+        reason: "structured_countersign",
+        ipAddress: "",
+        userAgent: "",
+        createdAt: createdAt.toISOString(),
+        previousHash,
+      });
+      await tx.insert(auditLogsTable).values({
+        userId: session.subjectId,
+        userName: session.subjectName,
+        role: session.role,
+        action: "verify",
+        module: "radiology",
+        entityType: "structured_report",
+        entityId: doc.document_id,
+        oldValue: null,
+        newValue,
+        ipAddress: "",
+        userAgent: "",
+        reason: "structured_countersign",
+        previousHash,
+        chainHash: computeChainHash(canonical),
+        createdAt,
+      });
+
+      return updatedRow;
+    });
+    return {
+      status: 200,
+      body: {
+        ...updated,
+        structuredVerify: {
+          documentId: doc.document_id,
+          revision,
+          contentSha256Verified: true,
+          verifiedBy: session.subjectName,
+        },
+      },
+    };
+  } catch (err) {
+    if (err instanceof AmendError) {
+      await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision, detail: err.detail }, err.code);
+      return { status: err.httpStatus, body: { error: err.code, detail: err.detail } };
+    }
+    await auditLifecycleEvent("verify_rejected", actor, doc.document_id, { reportId: existing.id, revision }, "verify_transaction_failed");
+    return { status: 500, body: { error: "verify_transaction_failed" } };
+  }
+}
+
+// Masked recipient display — moved to lib/redeliveryRules (BEND-1) so the
+// durable obligation store and this read path share ONE masking rule.
+
+/** D9 Phase 4/6 — additive lifecycle metadata for the read API. Computed
+ *  only (no durable notification store yet — explicitly deferred); read-only.
+ *  `version` is the D8 resolution for the row actually being served. */
+async function buildLifecycleMetadata(
+  row: {
+    id: number;
+    type: string;
+    status: string;
+    structuredJson: unknown;
+    verifiedAt: Date | null;
+    verifiedByName: string | null;
+    signedByName: string | null;
+    createdAt: Date;
+  },
+  version: ResolvedReportVersion,
+) {
+  const doc = structuredSignedDocOf(row.structuredJson);
+  const superseded = version.resolvedSuperseded;
+  const deliverable = row.status === "verified" || row.status === "delivered";
+  const isAmendment = version.sequenceNumber > 1;
+  const pendingVerification = !!doc && !deliverable && !superseded;
+  const state = superseded
+    ? "superseded"
+    : row.status === "delivered"
+      ? "delivered"
+      : row.status === "verified"
+        ? "verified"
+        : pendingVerification
+          ? "pending_verification"
+          : isAmendment
+            ? "amendment_created"
+            : row.status;
+
+  // Phase 6 — prior recipients on OLDER versions of a verified latest
+  // amendment. One IN query, only when it can matter; deduped by
+  // channel+recipient; recipients masked. "Completed" is inferred from a
+  // sent share row on THIS latest version (the only durable mechanism that
+  // exists today); acknowledged/dismissed durable state is deferred.
+  let priorDeliveries: Array<{ channel: string; recipient: string | null; reportId: number; at: string | null }> = [];
+  let recipientNotificationPending = false;
+  if (doc && isAmendment && deliverable && !superseded && version.totalVersions > 1) {
+    const olderIds = (version.chain ?? [])
+      .filter((c) => c.sequenceNumber < version.sequenceNumber)
+      .map((c) => c.reportId);
+    if (olderIds.length > 0) {
+      const shareRows = await db
+        .select()
+        .from(reportSharesTable)
+        .where(and(
+          inArray(reportSharesTable.reportId, [...olderIds, row.id]),
+          eq(reportSharesTable.status, "sent"),
+        ));
+      const seen = new Set<string>();
+      let redelivered = false;
+      for (const s of shareRows) {
+        if (s.reportId === row.id) { redelivered = true; continue; }
+        const key = `${s.channel}:${s.recipient ?? ""}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        priorDeliveries.push({
+          channel: s.channel,
+          recipient: maskRecipient(s.recipient),
+          reportId: s.reportId,
+          at: s.createdAt ? new Date(s.createdAt).toISOString() : null,
+        });
+      }
+      recipientNotificationPending = priorDeliveries.length > 0 && !redelivered;
+      if (recipientNotificationPending) {
+        // Phase 7 — prompt creation is observable server-side. Log-only: the
+        // read path stays write-free; durable prompt state is deferred.
+        console.warn("[patient-reports] D9 re-delivery prompt:", JSON.stringify({
+          reportId: row.id,
+          rootReportId: version.rootReportId,
+          revision: version.sequenceNumber,
+          priorChannels: priorDeliveries.map((p) => p.channel),
+        }));
+      }
+    }
+  }
+
+  return {
+    state,
+    structuredSigned: !!doc,
+    amendmentPendingVerification: !!doc && isAmendment && pendingVerification,
+    pendingVerification,
+    deliverable,
+    superseded,
+    latestVersion: !superseded,
+    verifiedAt: row.verifiedAt ? new Date(row.verifiedAt).toISOString() : null,
+    verifiedBy: row.verifiedByName,
+    recipientNotificationPending,
+    priorDeliveries,
   };
 }
 
@@ -769,14 +1270,24 @@ patientReportsRouter.get("/stats", async (_req, res) => {
 });
 
 patientReportsRouter.get("/:id", async (req, res) => {
-  let id = Number(req.params.id);
-  // Ticket D7 — ?resolve=latest serves the newest version of the amendment
-  // chain this report belongs to (read-only; every historical version stays
-  // retrievable by its own id). Without the param, behavior is unchanged.
-  const chainInfoForRequested = await loadAmendmentChain(id);
-  if (req.query.resolve === "latest" && chainInfoForRequested && chainInfoForRequested.superseded) {
-    id = chainInfoForRequested.latestReportId;
+  const requestedId = Number(req.params.id);
+  // Ticket D8 — canonical version resolution. Explicit ?version=latest|
+  // specific|root wins (D7's ?resolve=latest is kept as an alias for
+  // "latest"); otherwise clinical display defaults to the LATEST signed
+  // version when ff_radiology_structured_final is on, and to the exact
+  // requested row (pre-D8 behavior) when it is off. Read-only — this route
+  // performs no writes regardless of resolution outcome.
+  const explicitMode = typeof req.query.version === "string"
+    ? req.query.version.toLowerCase()
+    : req.query.resolve === "latest" ? "latest" : undefined;
+  const mode = await effectiveResolveMode(explicitMode);
+  const version = await resolveReportVersion(requestedId, { mode, includeChain: true });
+  if (!version) {
+    res.status(404).json({ error: "Report not found" });
+    return;
   }
+  const id = version.resolvedReportId;
+  logVersionResolution("viewer_get", version);
   const [row] = await db
     .select({
       r: patientReportsTable,
@@ -813,10 +1324,12 @@ patientReportsRouter.get("/:id", async (req, res) => {
   // still available additively as `displayBody`.
   const structuredRead = await applyStructuredRead(row.r);
   const bodyImmutable = row.r.status === "verified" || row.r.status === "delivered";
-  // D7 — amendment chain for the row actually being served (recomputed when
-  // ?resolve=latest redirected to a different row). Additive; null when the
-  // report has never been amended.
-  const amendment = id === Number(req.params.id) ? chainInfoForRequested : await loadAmendmentChain(id);
+  // D7 back-compat `amendment` key + D8 additive `version` metadata, both
+  // describing the row actually being SERVED — derived from one resolution.
+  const amendment = amendmentKeyFromVersion(version);
+  // D9 — additive lifecycle metadata (pending verification, deliverability,
+  // recipient re-delivery prompt). Computed only; GET stays write-free.
+  const lifecycle = await buildLifecycleMetadata(row.r, version);
   res.json({
     ...row.r,
     ...(structuredRead
@@ -826,6 +1339,8 @@ patientReportsRouter.get("/:id", async (req, res) => {
         }
       : {}),
     ...(amendment ? { amendment } : {}),
+    version: versionMetadata(version),
+    lifecycle,
     patientName: [row.patientFirstName, row.patientLastName].filter(Boolean).join(" "),
     patientCode: row.patientCode,
     patientPhone: row.patientPhone,
@@ -1233,14 +1748,52 @@ patientReportsRouter.post("/:id/amend", async (req, res) => {
       return { newRow, amendment: prepared.amendment };
     });
 
-    // 12) Downstream jobs after commit only — the amend endpoint itself
-    // triggers none (parity with create; clients drive worklist updates).
+    // 12) Downstream state after commit — BEND-1 (D10 closure): persist the
+    // re-delivery obligations this amendment creates (recipients of older
+    // revisions are owed the new one) and the per-revision PACS re-archive
+    // duty. Creation only — NOTHING is sent unless the default-OFF auto-send
+    // policy was explicitly enabled, in which case durable jobs are queued.
+    let redeliverySummary: { created: number; skipped: number; pacsPending: boolean } | null = null;
+    try {
+      redeliverySummary = await createObligationsForAmendment(outcome.newRow.id, {
+        userId: session!.subjectId,
+        userName: session!.subjectName,
+        role: session!.role,
+      });
+      if (redeliverySummary.created > 0 && await isRedeliveryAutoSendEnabled()) {
+        const open = await db
+          .select({ id: radiologyRedeliveryObligationsTable.id, status: radiologyRedeliveryObligationsTable.status })
+          .from(radiologyRedeliveryObligationsTable)
+          .where(eq(radiologyRedeliveryObligationsTable.reportId, outcome.newRow.id));
+        for (const o of open) {
+          if (o.status !== "pending") continue;
+          await db.update(radiologyRedeliveryObligationsTable)
+            .set({ status: "queued", actedBy: "auto-send-policy", actedAt: new Date(), updatedAt: new Date() })
+            .where(eq(radiologyRedeliveryObligationsTable.id, o.id));
+          await enqueueRadiologyJob({
+            operationType: REDELIVERY_SEND_JOB,
+            entityType: "report",
+            entityId: outcome.newRow.id,
+            payload: { obligationId: o.id },
+            idempotencyKey: `${REDELIVERY_SEND_JOB}:${o.id}`,
+          });
+        }
+      }
+    } catch (err) {
+      // Obligation creation must never fail the committed amendment; the
+      // reconcile repair action recovers any missed creation from the
+      // immutable amendment + share history.
+      req.log?.error({ err }, "BEND-1 obligation creation after amendment failed");
+    }
+
+    void freezeSignedReportPresentation(outcome.newRow.id);
     res.status(201).json({
       report: outcome.newRow,
       amendment: {
         ...outcome.amendment,
         amendedReportId: outcome.newRow.id,
       },
+      redelivery: redeliverySummary,
     });
   } catch (err) {
     if (err instanceof AmendError) {
@@ -1324,6 +1877,7 @@ patientReportsRouter.post("/", async (req, res) => {
             presetUsed,
           });
           if (outcome.kind === "signed") {
+            void freezeSignedReportPresentation(outcome.row.id);
             res.status(201).json({ ...outcome.row, structuredFinal: outcome.diagnostics });
             return;
           }
@@ -1449,6 +2003,15 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
   const id = Number(req.params.id);
   const b = (req.body ?? {}) as Record<string, unknown>;
   const signatureId = b.signatureId ? Number(b.signatureId) : null;
+  // D9 defense in depth: roles that may never sign are refused up front,
+  // even on the legacy path and even if the UI already hides the action.
+  const session = (req as StaffAuthRequest).staffSession;
+  const sessionRole = (session?.role ?? "").toLowerCase();
+  if (SIGN_DENY_ROLES.has(sessionRole)) {
+    await auditLifecycleEvent("legacy_sign_rejected", { userId: session?.subjectId, userName: session?.subjectName, role: session?.role }, String(id), { reportId: id }, `role_cannot_sign:${sessionRole}`);
+    res.status(403).json({ error: "role_cannot_sign", message: "This role is not authorized to sign reports." });
+    return;
+  }
   const [existing] = await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, id));
   if (!existing) {
     res.status(404).json({ error: "Report not found" });
@@ -1456,6 +2019,27 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
   }
   if (existing.status === "verified" || existing.status === "delivered") {
     res.status(409).json({ error: "Report already verified" });
+    return;
+  }
+  // D9 Phase 2 — a report carrying a signed-FINAL structured document is
+  // already cryptographically signed (D5/D7 stamped row authorship from the
+  // server session). Legacy sign would overwrite signedByName/signedAt/
+  // signatureId with client-supplied values and misrepresent lifecycle
+  // state; it is refused, and the caller is pointed at the structured
+  // countersign workflow. Legacy unstructured reports are untouched.
+  const signedDoc = structuredSignedDocOf(existing.structuredJson);
+  if (signedDoc) {
+    await auditLifecycleEvent(
+      "legacy_sign_rejected",
+      { userId: session?.subjectId, userName: session?.subjectName, role: session?.role },
+      signedDoc.document_id,
+      { reportId: id, documentId: signedDoc.document_id, signedBy: existing.signedByName },
+      "structured_signed_report",
+    );
+    res.status(409).json({
+      error: "structured_signed_report",
+      message: "This report carries a signed structured document; its signature cannot be overwritten. Use POST /:id/verify to countersign it.",
+    });
     return;
   }
   let signedByName = typeof b.signedByName === "string" ? b.signedByName.trim() : "";
@@ -1477,6 +2061,7 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
     signedAt: new Date(),
     status: "pending_verification",
   }).where(eq(patientReportsTable.id, id)).returning();
+  if (row) void freezeSignedReportPresentation(row.id);
   res.json(row);
 });
 
@@ -1490,6 +2075,27 @@ patientReportsRouter.post("/:id/verify", async (req, res) => {
   const [existing] = await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, id));
   if (!existing) {
     res.status(404).json({ error: "Report not found" });
+    return;
+  }
+  // D9 Phase 3 — structured countersign. A row carrying a signed-FINAL
+  // structured document is verifiable directly from its current lifecycle
+  // state (the D1 signature IS the sign step; legacy sign is refused for
+  // these rows). Flag OFF falls through to the exact pre-D9 legacy guards.
+  const structuredDoc = structuredSignedDocOf(existing.structuredJson);
+  if (structuredDoc && (await isFeatureEnabledServer("ff_radiology_structured_final"))) {
+    const session = (req as StaffAuthRequest).staffSession;
+    if (!session) {
+      res.status(401).json({ error: "Staff authentication required" });
+      return;
+    }
+    const result = await performStructuredVerify(
+      session,
+      existing,
+      structuredDoc,
+      verifierSigId,
+      typeof b.verifierNotes === "string" ? b.verifierNotes : null,
+    );
+    res.status(result.status).json(result.body);
     return;
   }
   if (existing.status === "draft") {
@@ -1656,7 +2262,96 @@ function escapeHtml(s: string | null | undefined): string {
 
 type Param = { name: string; result?: string; value?: string; unit?: string; refRange?: string; flag?: string };
 
+// ── Ticket D8 — version-aware artifact builder ───────────────────────────────
+// Every server-rendered delivery surface (print, PDF, public-token PDF, email
+// share, PACS archive) flows through here. Resolution to the LATEST signed
+// version is the default (flag-gated via effectiveResolveMode); explicit
+// historical access renders the exact requested row WITH a superseded
+// watermark. Read-only with respect to report rows.
+
+export interface ReportArtifactOptions {
+  autoPrint?: boolean;
+  useUpdatedStyle?: boolean;
+  /** Diagnostic label for Phase 7 logging: print|pdf|public_pdf|email|pacs. */
+  surface?: string;
+  /** Explicit resolve mode; undefined → flag-gated default. */
+  versionMode?: ResolveMode;
+  /** Patient-facing surfaces pass ["verified","delivered"] so "latest" never
+   *  resolves to a version that surface is not allowed to deliver. */
+  deliverableStatuses?: string[];
+  /** R1.1/R1.2 — presentation template override "key" or "key@version"
+   *  (staff print/PDF only). When absent, precedence applies: frozen signed
+   *  identity → copy-type active selection → standard active → care-classic. */
+  templateId?: string;
+  /** R1.2 — copy type demanded by the surface (public delivery → patient). */
+  copyType?: CopyType;
+}
+
+export interface ReportArtifact {
+  html: string;
+  version: ResolvedReportVersion;
+}
+
+export async function buildReportArtifact(
+  reportId: number,
+  opts: ReportArtifactOptions = {},
+): Promise<ReportArtifact | null> {
+  const mode = await effectiveResolveMode(opts.versionMode);
+  const version = await resolveReportVersion(reportId, {
+    mode,
+    includeChain: true,
+    deliverableStatuses: opts.deliverableStatuses,
+  });
+  if (!version) return null;
+  logVersionResolution(opts.surface ?? "artifact", version);
+  const html = await renderReportVersionHtml(version.resolvedReportId, opts.autoPrint === true, opts.useUpdatedStyle, version, opts.templateId, opts.copyType);
+  if (html == null) return null;
+  return { html, version };
+}
+
+// R1.2 Phase 3 — record the presentation template a report was SIGNED
+// under. Best-effort: signing must never fail because of presentation
+// bookkeeping; unique(report_id) makes it idempotent and never-rewriting.
+async function freezeSignedReportPresentation(reportId: number): Promise<void> {
+  try {
+    // Freeze the STANDARD (clinical) identity WITH its full definition, so the
+    // finalized report re-renders exactly even if the version row is later lost.
+    const record = await resolveTemplateRecordForRender({ copyType: "standard" });
+    await freezeReportPresentation(reportId, record);
+  } catch { /* the freeze-less report falls back to the active selection */ }
+}
+
+/** Pre-D8 surface kept verbatim for existing callers: default version policy,
+ *  html-only result. */
 export async function buildReportHtml(reportId: number, autoPrint: boolean, useUpdatedStyle?: boolean): Promise<string | null> {
+  const artifact = await buildReportArtifact(reportId, { autoPrint, useUpdatedStyle });
+  return artifact ? artifact.html : null;
+}
+
+/** D8 Phase 4 — the visual safeguards. A superseded row NEVER renders without
+ *  the banner + diagonal watermark; the latest amendment announces itself with
+ *  version number and reason; a corrupt chain surfaces an integrity warning.
+ *  Pure string building — no queries, no writes. */
+function versionSafeguardHtml(version: ResolvedReportVersion): { banner: string; watermark: string } {
+  const parts: string[] = [];
+  let watermark = "";
+  if (version.warnings.length > 0) {
+    parts.push(`<div class="version-warning">⚠ AMENDMENT HISTORY WARNING — the amendment chain for this report could not be verified (${escapeHtml(version.warnings[0])}). Showing the exact requested version.</div>`);
+  }
+  if (version.resolvedSuperseded) {
+    const superseding = version.chain?.find((c) => c.sequenceNumber === version.sequenceNumber + 1) ?? null;
+    const supersedingInfo = superseding
+      ? `<br/>Amended${superseding.amendedAt ? ` on ${new Date(superseding.amendedAt).toLocaleString("en-IN")}` : ""}${superseding.amendedByName ? ` by ${escapeHtml(superseding.amendedByName)}` : ""}${superseding.reason ? ` — Reason: ${escapeHtml(superseding.reason)}` : ""}`
+      : "";
+    parts.push(`<div class="superseded-banner">SUPERSEDED — A NEWER SIGNED AMENDMENT EXISTS<br/>This document is Version ${version.sequenceNumber} of ${version.totalVersions} and must not be used for clinical decisions. Latest version: ${escapeHtml(version.latestReport?.reportNumber ?? `#${version.latestReportId}`)}.${supersedingInfo}</div>`);
+    watermark = `<div class="superseded-watermark" aria-hidden="true">SUPERSEDED</div>`;
+  } else if (version.sequenceNumber > 1) {
+    parts.push(`<div class="amended-banner">AMENDED REPORT — Version ${version.sequenceNumber} of ${version.totalVersions}${version.amendmentReason ? ` • Reason: ${escapeHtml(version.amendmentReason)}` : ""}<br/>This version supersedes all earlier versions. Previous versions remain on file.</div>`);
+  }
+  return { banner: parts.join("\n      "), watermark };
+}
+
+async function renderReportVersionHtml(reportId: number, autoPrint: boolean, useUpdatedStyle?: boolean, version?: ResolvedReportVersion, templateId?: string, copyType?: CopyType): Promise<string | null> {
   const [row] = await db
     .select({
       r: patientReportsTable,
@@ -1755,59 +2450,44 @@ export async function buildReportHtml(reportId: number, autoPrint: boolean, useU
     return `${yrs}y`;
   })();
 
-  let parametersHtml = "";
+  // R1.1 — parameters, stamp, banners and signatures are now MODELED and the
+  // shared presentation layer renders them (one pipeline, no duplicated HTML).
+  let parameterRows: ReportParameterRow[] = [];
   if (r.parameters) {
     try {
       const arr = JSON.parse(r.parameters) as Param[];
-      if (Array.isArray(arr) && arr.length > 0) {
-        parametersHtml = `
-          <table class="params">
-            <thead><tr><th>Parameter</th><th>Result</th><th>Unit</th><th>Reference Range</th></tr></thead>
-            <tbody>
-              ${arr.map((p) => {
-                const result = String(p.result ?? p.value ?? "");
-                const flag = String(p.flag ?? "normal").toLowerCase();
-                // Restrict flag to a safe CSS class suffix: only lowercase letters,
-                // digits, and hyphens. This prevents attribute injection.
-                const safeFlag = flag.replace(/[^a-z0-9-]/g, "");
-                const flagged = safeFlag !== "normal" && safeFlag !== "";
-                return `<tr class="${flagged ? "abnormal" : ""}">
-                  <td>${escapeHtml(p.name)}</td>
-                  <td><strong>${escapeHtml(result)}</strong>${flagged ? ` <span class="flag flag-${safeFlag}">${escapeHtml(safeFlag.toUpperCase())}</span>` : ""}</td>
-                  <td>${escapeHtml(p.unit ?? "")}</td>
-                  <td>${escapeHtml(p.refRange ?? "")}</td>
-                </tr>`;
-              }).join("")}
-            </tbody>
-          </table>`;
+      if (Array.isArray(arr)) {
+        parameterRows = arr.map((p) => {
+          const flag = String(p.flag ?? "normal").toLowerCase().replace(/[^a-z0-9-]/g, "");
+          return {
+            name: p.name,
+            result: String(p.result ?? p.value ?? ""),
+            unit: p.unit ?? "",
+            refRange: p.refRange ?? "",
+            flag: flag === "normal" ? "" : flag,
+          };
+        });
       }
     } catch { /* ignore parse errors */ }
   }
 
-  const verifiedBlock = r.verifiedAt
-    ? `<div class="stamp verified">VERIFIED on ${new Date(r.verifiedAt).toLocaleString("en-IN")}</div>`
-    : (r.signedAt ? `<div class="stamp pending">PRELIMINARY — pending verification</div>` : `<div class="stamp draft">DRAFT (not signed)</div>`);
-  const criticalBanner = r.isCritical
-    ? `<div class="critical">⚠ CRITICAL VALUE — IMMEDIATE ATTENTION REQUIRED${r.criticalNote ? `: ${escapeHtml(r.criticalNote)}` : ""}</div>`
-    : "";
+  const stamp: ReportDocumentModel["stamp"] = r.verifiedAt
+    ? { kind: "verified", label: `VERIFIED on ${new Date(r.verifiedAt).toLocaleString("en-IN")}` }
+    : r.signedAt
+      ? { kind: "pending", label: "PRELIMINARY — pending verification" }
+      : { kind: "draft", label: "DRAFT (not signed)" };
 
-  function sigBlock(sig: typeof sigPrimary, fallbackName: string | null, label: string, when: Date | null) {
-    if (!sig && !fallbackName) return "";
-    const img = (sig?.imageDataUrl && showDigitalSignature) ? `<img src="${sig.imageDataUrl}" alt="signature"/>` : "";
-    const name = showRadiologistName ? (sig?.name ?? fallbackName ?? "") : "";
-    const reg = (sig?.registrationNo && showRegNumber) ? `Reg. No: ${escapeHtml(sig.registrationNo)}` : "";
-    const qual = (sig?.qualification && showDegree) ? escapeHtml(sig.qualification) : "";
-    const role = sig?.role ? escapeHtml(sig.role) : "";
-    const timeStr = (when && showTimestamp) ? ` ${new Date(when).toLocaleString("en-IN")}` : "";
-    return `
-      <div class="sigbox">
-        <div class="sigimg">${img}</div>
-        <div class="sigline"></div>
-        <div class="signame">${escapeHtml(name)}</div>
-        <div class="sigmeta">${qual}${qual && role ? " • " : ""}${role}</div>
-        <div class="sigmeta">${reg}</div>
-        <div class="sigmeta sigwhen">${label}${timeStr}</div>
-      </div>`;
+  function sigModel(sig: typeof sigPrimary, fallbackName: string | null, label: string, when: Date | null): ReportSignatureModel | null {
+    if (!sig && !fallbackName) return null;
+    return {
+      imageDataUrl: showDigitalSignature ? sig?.imageDataUrl ?? null : null,
+      name: showRadiologistName ? (sig?.name ?? fallbackName ?? "") : "",
+      qualification: showDegree ? sig?.qualification ?? null : null,
+      role: sig?.role ?? null,
+      registrationNo: showRegNumber ? sig?.registrationNo ?? null : null,
+      label,
+      whenLabel: when && showTimestamp ? ` ${new Date(when).toLocaleString("en-IN")}` : "",
+    };
   }
 
   // Build style overrides
@@ -1824,13 +2504,14 @@ export async function buildReportHtml(reportId: number, autoPrint: boolean, useU
       .body p, .body div { margin-bottom: ${spacingVal} !important; }
     `;
 
-    if (instStyle.printLayout === "screen_only") {
-      customStyles += `
-        @media print {
-          body { display: none !important; }
-        }
-      `;
-    }
+    // R1.4 — "Screen-only Preview" USED to add `@media print { display:none }`
+    // here, which silently rendered a BLANK PAGE on every real Print/Save-as-
+    // PDF click for any draft/pending report (or any report requested with
+    // ?useUpdatedStyle=true) — invisible on screen (the on-screen preview
+    // looked completely normal), only discovered the moment someone actually
+    // printed. Printing and PDF export are a hard requirement of the
+    // production workflow, so this layout option no longer blanks output;
+    // it now prints like every other layout.
     if (instStyle.printLayout === "half_page") {
       customStyles += `
         body { height: 50% !important; border: 1px dashed #ccc !important; padding: 10px !important; }
@@ -1838,123 +2519,165 @@ export async function buildReportHtml(reportId: number, autoPrint: boolean, useU
     }
   }
 
-  const qrHtml = (showQrVerification && r.type === "radiology") ? `
-    <div style="float:left;margin-top:10px;text-align:left;">
-      <div style="display:inline-block;padding:4px;border:1px solid #ccc;background:#fff;border-radius:4px;">
-        <span style="font-size:8px;display:block;color:#666;font-weight:bold;">QR Verification</span>
-        <div style="width:50px;height:50px;background:#000;color:#fff;font-size:7px;display:flex;align-items:center;justify-content:center;font-weight:bold;">SECURE</div>
-      </div>
-    </div>
-  ` : "";
+  // D8 — visual safeguards for the served version (empty strings when the
+  // report has no amendment chain). Semantics are FROZEN — the fragments pass
+  // through the presentation layer unchanged.
+  const safeguards = version ? versionSafeguardHtml(version) : { banner: "", watermark: "" };
 
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(r.reportNumber)} — ${escapeHtml(r.title)}</title>
-    <style>
-      @page { size: A4; margin: 14mm; }
-      body { font-family: 'Segoe UI', Arial, sans-serif; color:#111; margin:0; font-size:12px; }
-      .hdr { display:flex; align-items:center; gap:14px; border-bottom:3px solid #4338ca; padding-bottom:10px; margin-bottom:12px; }
-      .hdr img { width:60px; height:60px; object-fit:contain; }
-      .hdr .name { font-size:20px; font-weight:800; color:#1e1b4b; line-height:1.1; }
-      .hdr .tagline { color:#475569; font-size:11px; }
-      .hdr .contact { margin-left:auto; text-align:right; font-size:10px; color:#475569; line-height:1.4; }
-      .meta { display:grid; grid-template-columns:repeat(4, 1fr); gap:6px 14px; padding:10px 12px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; font-size:11px; margin-bottom:14px; }
-      .meta div span { color:#64748b; display:block; font-size:9px; text-transform:uppercase; letter-spacing:0.5px; }
-      .meta div strong { font-size:12px; }
-      h1.title { font-size:16px; margin:0 0 6px; color:#1e1b4b; }
-      .impression { background:#fef9c3; border-left:3px solid #ca8a04; padding:8px 12px; margin:0 0 12px; font-size:12px; }
-      .body { white-space:pre-wrap; line-height:1.5; margin:0 0 14px; }
-      .params { width:100%; border-collapse:collapse; margin:10px 0 16px; font-size:11px; }
-      .params th { background:#1e1b4b; color:#fff; padding:6px 8px; text-align:left; }
-      .params td { padding:5px 8px; border-bottom:1px solid #e2e8f0; }
-      .params tr.abnormal td { background:#fef2f2; }
-      .flag { font-size:9px; padding:1px 5px; border-radius:3px; font-weight:700; }
-      .flag-low { background:#dbeafe; color:#1e40af; }
-      .flag-high { background:#fee2e2; color:#b91c1c; }
-      .flag-critical { background:#7f1d1d; color:#fff; }
-      .stamp { display:inline-block; padding:4px 12px; border-radius:4px; font-weight:700; font-size:11px; margin:8px 0; }
-      .stamp.verified { background:#dcfce7; color:#166534; border:1px solid #86efac; }
-      .stamp.pending { background:#fef3c7; color:#92400e; border:1px solid #fcd34d; }
-      .stamp.draft { background:#fee2e2; color:#991b1b; border:1px solid #fca5a5; }
-      .critical { background:#7f1d1d; color:#fff; padding:8px 12px; font-weight:800; font-size:13px; margin:0 0 12px; border-radius:4px; letter-spacing:0.3px; }
-      .sigs { display:flex; gap:30px; justify-content:flex-end; margin-top:30px; }
-      .sigbox { width:200px; text-align:center; }
-      .sigbox .sigimg { height:50px; display:flex; align-items:flex-end; justify-content:center; }
-      .sigbox .sigimg img { max-height:50px; max-width:180px; object-fit:contain; }
-      .sigline { border-top:1.5px solid #111; margin:2px 0 4px; }
-      .signame { font-weight:700; font-size:12px; }
-      .sigmeta { font-size:10px; color:#475569; line-height:1.3; }
-      .sigwhen { margin-top:3px; font-style:italic; }
-      .ftr { margin-top:18px; font-size:9px; color:#64748b; text-align:center; border-top:1px solid #cbd5e1; padding-top:6px; clear: both; }
-      .reportno { float:right; font-family:monospace; color:#475569; font-size:10px; }
-      ${customStyles}
-    </style></head><body>
-      <div class="hdr">
-        ${clinic?.logoDataUrl ? `<img src="${clinic.logoDataUrl}" alt="logo"/>` : ""}
-        <div>
-          <div class="name">${escapeHtml(clinic?.name ?? "Care Diagnostics")}</div>
-          <div class="tagline">${escapeHtml(clinic?.tagline ?? "")}</div>
-        </div>
-        <div class="contact">
-          ${escapeHtml(clinic?.address ?? "")}<br/>
-          ${escapeHtml(clinic?.phone ?? "")} ${clinic?.email ? `• ${escapeHtml(clinic.email)}` : ""}<br/>
-          ${clinic?.website ? escapeHtml(clinic.website) : ""}
-        </div>
-      </div>
-      <span class="reportno">Report #: ${escapeHtml(r.reportNumber)}</span>
-      <h1 class="title">${escapeHtml(r.title)}</h1>
-      <div class="meta">
-        <div><span>Patient</span><strong>${escapeHtml(patientName)}</strong></div>
-        <div><span>Patient ID</span><strong>${escapeHtml(row.patientCode ?? "—")}</strong></div>
-        <div><span>Age / Sex</span><strong>${ageStr}${ageStr && row.patientGender ? " / " : ""}${escapeHtml(row.patientGender ?? "")}</strong></div>
-        <div><span>Date</span><strong>${new Date(r.createdAt).toLocaleDateString("en-IN")}</strong></div>
-        <div><span>Test</span><strong>${escapeHtml(row.testName ?? "—")}</strong></div>
-        <div><span>Test Code</span><strong>${escapeHtml(row.testCode ?? "—")}</strong></div>
-        <div><span>Type</span><strong>${escapeHtml(r.type.toUpperCase())}</strong></div>
-        <div><span>Status</span><strong>${escapeHtml(r.status.replace(/_/g, " ").toUpperCase())}</strong></div>
-      </div>
-      ${criticalBanner}
-      ${r.impression ? `<div class="impression"><strong>Impression:</strong> ${escapeHtml(r.impression)}</div>` : ""}
-      ${parametersHtml}
-      ${displayBody ? `<div class="body">${r.type === "radiology" ? displayBody : escapeHtml(displayBody)}</div>` : ""}
-      ${verifiedBlock}
-      <div class="sigs">
-        ${sigBlock(sigPrimary, r.signedByName, "Signed:", r.signedAt as Date | null)}
-        ${sigBlock(sigVerifier, r.verifiedByName, "Verified:", r.verifiedAt as Date | null)}
-      </div>
-      ${qrHtml}
-      <div class="ftr">${escapeHtml(clinic?.footerNote ?? "")} • Generated ${new Date().toLocaleString("en-IN")}</div>
-      ${autoPrint ? `<script>window.onload=()=>{setTimeout(()=>window.print(),250);}</script>` : ""}
-    </body></html>`;
+  // R1.1 — selected key images resolve from persisted DICOM references
+  // (draft → final_report_id linkage; amendments share the root's draft).
+  // Failure-tolerant: a slow/absent PACS never blocks printing.
+  let keyImages: ReportKeyImageModel[] = [];
+  if (r.type === "radiology") {
+    try {
+      keyImages = await resolveReportKeyImages([
+        version?.rootReportId ?? reportId,
+        version?.resolvedReportId ?? reportId,
+        reportId,
+      ]);
+    } catch { keyImages = []; }
+  }
+
+  // R1.4 — a real scannable QR (see generateReportQrDataUrl); null for any
+  // report not yet verified/delivered, or when showQrVerification is off —
+  // renderReportDocument then emits no QR block at all rather than a stub.
+  const qrDataUrl = showQrVerification && r.type === "radiology"
+    ? await generateReportQrDataUrl(version?.resolvedReportId ?? reportId, r.status)
+    : null;
+
+  const model: ReportDocumentModel = {
+    reportNumber: r.reportNumber,
+    studyTitle: r.title,
+    typeLabel: r.type.toUpperCase(),
+    statusLabel: r.status.replace(/_/g, " ").toUpperCase(),
+    clinic: {
+      name: clinic?.name ?? "Care Diagnostics",
+      tagline: clinic?.tagline ?? "",
+      address: clinic?.address ?? "",
+      phone: clinic?.phone ?? "",
+      email: clinic?.email ?? "",
+      website: clinic?.website ?? "",
+      logoDataUrl: clinic?.logoDataUrl ?? null,
+    },
+    patientRows: [
+      { label: "Patient", value: patientName },
+      { label: "Patient ID", value: row.patientCode ?? "\u2014" },
+      { label: "Age / Sex", value: `${ageStr}${ageStr && row.patientGender ? " / " : ""}${row.patientGender ?? ""}` },
+      { label: "Date", value: new Date(r.createdAt).toLocaleDateString("en-IN") },
+      { label: "Test", value: row.testName ?? "\u2014" },
+      { label: "Test Code", value: row.testCode ?? "\u2014" },
+      { label: "Type", value: r.type.toUpperCase() },
+      { label: "Status", value: r.status.replace(/_/g, " ").toUpperCase() },
+    ],
+    safeguardBannerHtml: safeguards.banner,
+    safeguardWatermarkHtml: safeguards.watermark,
+    isCritical: r.isCritical,
+    criticalNote: r.criticalNote,
+    impression: r.impression,
+    parameters: parameterRows,
+    // Radiology bodies are trusted HTML from the frozen render pipeline;
+    // everything else is escaped plain text (unchanged behavior).
+    ...(r.type === "radiology" ? { bodyHtml: displayBody ?? "" } : { bodyText: displayBody ?? "" }),
+    keyImages,
+    stamp,
+    signatures: [
+      sigModel(sigPrimary, r.signedByName, "Signed:", r.signedAt as Date | null),
+      sigModel(sigVerifier, r.verifiedByName, "Verified:", r.verifiedAt as Date | null),
+    ].filter((s): s is ReportSignatureModel => s != null),
+    showQrPlaceholder: showQrVerification && r.type === "radiology",
+    qrDataUrl,
+    footerNote: clinic?.footerNote ?? "",
+    // R1.4 — a signed/verified/delivered report is a fixed historical
+    // document: its footer should show WHEN IT WAS ISSUED, not the instant
+    // of this particular render. Previously this was new Date() on every
+    // single call, so re-printing or re-downloading the exact same signed
+    // report minutes apart produced different bytes and a different visible
+    // timestamp each time. Drafts/pending reports (still actively being
+    // worked on, no stable issue time yet) keep showing the render instant.
+    generatedAtLabel: (
+      (r.status === "verified" || r.status === "delivered")
+        ? (r.verifiedAt as Date | null) ?? (r.signedAt as Date | null) ?? (r.createdAt as Date | null)
+        : null
+    )?.toLocaleString("en-IN") ?? new Date().toLocaleString("en-IN"),
+    autoPrint,
+  };
+
+  // R1.2 — deterministic template resolution: explicit staff override →
+  // frozen signed identity of THIS revision → copy-type active selection →
+  // standard active selection → care-classic. Never throws; a resolution
+  // problem can never stop a report from printing.
+  const template = await resolveTemplateForRender({ explicit: templateId, reportId, copyType });
+  return renderReportDocument(model, template, { customCss: customStyles });
+}
+
+// D8 — print/PDF default to the LATEST signed version (flag-gated); explicit
+// ?version=specific|root keeps exact historical access, rendered WITH the
+// superseded banner + watermark. Delivery side effects (share log, delivered
+// stamp, audit) always target the row actually served.
+function explicitTemplateParam(req: Request): string | undefined {
+  const t = typeof req.query.template === "string" ? req.query.template.trim() : "";
+  return parseExplicitTemplateParam(t) ? t : undefined;
+}
+
+function explicitVersionParam(req: Request): ResolveMode | undefined {
+  const v = typeof req.query.version === "string" ? req.query.version.toLowerCase() : "";
+  return v === "latest" || v === "specific" || v === "root" ? v : undefined;
 }
 
 patientReportsRouter.get("/:id/print", async (req, res) => {
   const id = Number(req.params.id);
   const useUpdatedStyle = req.query.useUpdatedStyle === "true";
-  const html = await buildReportHtml(id, true, useUpdatedStyle);
-  if (!html) {
+  // R1.1 — ?preview=true renders the SAME artifact for on-screen preview
+  // WITHOUT delivery bookkeeping (no share log, no delivered stamp, no
+  // delivery audit) and without the auto-print script. Presentation only.
+  const previewOnly = req.query.preview === "true";
+  const artifact = await buildReportArtifact(id, {
+    autoPrint: !previewOnly, useUpdatedStyle, surface: previewOnly ? "print_preview" : "print", versionMode: explicitVersionParam(req),
+    templateId: explicitTemplateParam(req),
+  });
+  if (!artifact) {
     res.status(404).send("Report not found");
     return;
   }
-  // Log a "print" share entry (best-effort).
-  await db.insert(reportSharesTable).values({ reportId: id, channel: "print", sharedBy: (req.query.by as string) || null }).catch(() => {});
-  // If the report was verified, mark as delivered on first print.
-  await markDeliveredIfVerified(id).catch(() => {});
+  const servedId = artifact.version.resolvedReportId;
+  if (!previewOnly) {
+    // Log a "print" share entry (best-effort).
+    await db.insert(reportSharesTable).values({ reportId: servedId, channel: "print", sharedBy: (req.query.by as string) || null }).catch(() => {});
+    // If the served report was verified, mark as delivered on first print.
+    await markDeliveredIfVerified(servedId).catch(() => {});
+    const session = (req as StaffAuthRequest).staffSession;
+    await auditDeliveryResolution("print", artifact.version, { userId: session?.subjectId, userName: session?.subjectName, role: session?.role });
+  }
   res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.send(html);
+  // R1.3 — patient data (incl. inlined DICOM key images) is never cacheable.
+  res.setHeader("Cache-Control", "no-store");
+  setVersionHeaders(res, artifact.version);
+  res.send(artifact.html);
 });
 
 // PDF endpoint = same HTML but without auto-print (browser/user can save as PDF).
 patientReportsRouter.get("/:id/pdf", async (req, res) => {
   const id = Number(req.params.id);
   const useUpdatedStyle = req.query.useUpdatedStyle === "true";
-  const html = await buildReportHtml(id, false, useUpdatedStyle);
-  if (!html) {
+  const artifact = await buildReportArtifact(id, {
+    useUpdatedStyle, surface: "pdf", versionMode: explicitVersionParam(req),
+    templateId: explicitTemplateParam(req),
+  });
+  if (!artifact) {
     res.status(404).send("Report not found");
     return;
   }
-  await db.insert(reportSharesTable).values({ reportId: id, channel: "pdf", sharedBy: (req.query.by as string) || null }).catch(() => {});
-  await markDeliveredIfVerified(id).catch(() => {});
+  const servedId = artifact.version.resolvedReportId;
+  await db.insert(reportSharesTable).values({ reportId: servedId, channel: "pdf", sharedBy: (req.query.by as string) || null }).catch(() => {});
+  await markDeliveredIfVerified(servedId).catch(() => {});
+  const session = (req as StaffAuthRequest).staffSession;
+  await auditDeliveryResolution("pdf", artifact.version, { userId: session?.subjectId, userName: session?.subjectName, role: session?.role });
   res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.send(html);
+  // R1.3 — patient data (incl. inlined DICOM key images) is never cacheable.
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Content-Disposition", `inline; filename="${versionedFilename(artifact.version)}"`);
+  setVersionHeaders(res, artifact.version);
+  res.send(artifact.html);
 });
 
 // PUBLIC tokenized PDF — no staff auth. Looked up by random token, only
@@ -1975,16 +2698,32 @@ publicReportsRouter.get("/:token/pdf", async (req, res) => {
     res.status(403).send("Report not yet finalized"); return;
   }
   const useUpdatedStyle = req.query.useUpdatedStyle === "true";
-  const html = await buildReportHtml(row.id, false, useUpdatedStyle);
-  if (!html) { res.status(404).send("Not found"); return; }
+  // D8 Phase 6 — a token minted for a now-superseded report resolves to the
+  // latest signed amendment by default, but ONLY to a version this surface is
+  // allowed to deliver (verified/delivered — drafts never leak to patients).
+  // If no newer version qualifies yet, the token's own row is served WITH the
+  // superseded banner + watermark — never presented as current. Access
+  // control is unchanged: the token was validated against its row above, no
+  // new token is minted, no internal ids appear in the URL, and there is no
+  // patient-controllable version parameter.
+  const artifact = await buildReportArtifact(row.id, {
+    useUpdatedStyle, surface: "public_pdf",
+    deliverableStatuses: ["verified", "delivered"],
+    copyType: "patient",
+  });
+  if (!artifact) { res.status(404).send("Not found"); return; }
+  const servedId = artifact.version.resolvedReportId;
   await db.insert(reportSharesTable).values({
-    reportId: row.id, channel: "pdf", recipient: "public-link",
+    reportId: servedId, channel: "pdf", recipient: "public-link",
     sharedBy: "patient-link", status: "sent",
   }).catch(() => undefined);
-  await markDeliveredIfVerified(row.id).catch(() => undefined);
+  await markDeliveredIfVerified(servedId).catch(() => undefined);
+  await auditDeliveryResolution("public_pdf", artifact.version, { userName: "patient-link", role: "public" }, { tokenReportId: row.id });
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
-  res.send(html);
+  res.setHeader("Content-Disposition", `inline; filename="${versionedFilename(artifact.version)}"`);
+  setVersionHeaders(res, artifact.version);
+  res.send(artifact.html);
 });
 
 async function markDeliveredIfVerified(id: number) {
@@ -2007,13 +2746,26 @@ function reportPublicUrl(req: Request, reportId: number): string {
 }
 
 patientReportsRouter.post("/:id/share", async (req, res) => {
-  const id = Number(req.params.id);
+  const requestedId = Number(req.params.id);
   const b = (req.body ?? {}) as Record<string, unknown>;
   const channel = String(b.channel ?? "").toLowerCase();
   if (!["whatsapp", "email", "pdf", "print"].includes(channel)) {
     res.status(400).json({ error: "channel must be whatsapp|email|pdf|print" });
     return;
   }
+
+  // D8 — sharing targets the LATEST deliverable version by default
+  // (flag-gated; never resolves to a draft). The share log, delivery stamp,
+  // WhatsApp link, and email HTML all reference the row actually shared.
+  const shareVersion = await resolveReportVersion(requestedId, {
+    mode: await effectiveResolveMode(undefined),
+    deliverableStatuses: ["verified", "delivered"],
+  });
+  if (!shareVersion) {
+    res.status(404).json({ error: "Report not found" });
+    return;
+  }
+  const id = shareVersion.resolvedReportId;
 
   const [row] = await db
     .select({ r: patientReportsTable, patientPhone: patientsTable.phone, patientEmail: patientsTable.email, patientFirstName: patientsTable.firstName, patientLastName: patientsTable.lastName, testName: testsTable.name })
@@ -2051,13 +2803,29 @@ patientReportsRouter.post("/:id/share", async (req, res) => {
       res.status(400).json({ error: "No email on file. Provide recipient." });
       return;
     }
-    const html = await buildReportHtml(id, false);
-    const result = await sendReportEmail({ to: recipient, subject: `Your Report: ${row.r.reportNumber}`, html: html ?? "", patientName, reportNumber: row.r.reportNumber });
+    // `id` is already the resolved version; "specific" renders exactly that
+    // row (its banner still reflects its own chain position).
+    const emailArtifact = await buildReportArtifact(id, { surface: "email", versionMode: "specific" });
+    const result = await sendReportEmail({ to: recipient, subject: `Your Report: ${row.r.reportNumber}`, html: emailArtifact?.html ?? "", patientName, reportNumber: row.r.reportNumber });
     if (!result.ok) { status = "failed"; errorMessage = result.error ?? "Email send failed"; }
   }
 
   const [share] = await db.insert(reportSharesTable).values({ reportId: id, channel, recipient, sharedBy, status, errorMessage }).returning();
   if (status === "sent") await markDeliveredIfVerified(id);
+  const session = (req as StaffAuthRequest).staffSession;
+  await auditDeliveryResolution(`share_${channel}`, shareVersion, { userId: session?.subjectId, userName: session?.subjectName ?? sharedBy ?? "system", role: session?.role }, { recipient });
+  // BEND-1 (D10) — a sent share of the chain's LATEST revision completes any
+  // matching open re-delivery obligation; old-revision shares complete none.
+  if (status === "sent") {
+    await completeObligationsForDelivery({
+      deliveredReportId: id,
+      latestReportId: shareVersion.latestReportId,
+      rootReportId: shareVersion.rootReportId,
+      channel,
+      recipient,
+      actor: { userId: session?.subjectId, userName: session?.subjectName ?? sharedBy ?? "system", role: session?.role },
+    }).catch((err) => req.log?.error({ err }, "BEND-1 obligation completion failed"));
+  }
 
   res.json({ ok: status === "sent", share, error: errorMessage });
 });

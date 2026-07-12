@@ -236,8 +236,8 @@ ordersRouter.post("/", async (req, res) => {
     status: "pending",
     ledgerId,
     // Store clientRef so subsequent retries return this same order
-    ...(clientRef ? { clientRef } as Record<string, unknown> : {}),
-  } as any).returning();
+    clientRef: clientRef ?? null,
+  }).returning();
 
   if (lineItems.length > 0) {
     // Resolve outsource cost for each test to store in order_tests — reuses

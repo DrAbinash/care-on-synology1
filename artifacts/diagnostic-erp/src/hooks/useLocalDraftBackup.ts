@@ -25,12 +25,18 @@ export function useLocalDraftBackup<T extends object>(opts: {
   const { storageKey, snapshot, enabled, debounceMs = 2000 } = opts;
   const [restoreAvailable, setRestoreAvailable] = useState(false);
   const backupRef = useRef<T | null>(null);
-  const checkedRef = useRef(false);
+  const checkedForKeyRef = useRef<string | null>(null);
 
-  // On first mount: check once whether a backup exists for this study.
+  // Check once PER KEY whether a backup exists for this study. Re-checking on
+  // key change matters (M1.4): switching studies in a mounted workspace must
+  // load the NEW study's backup — the old once-per-mount check left the
+  // previous study's snapshot in backupRef, so restore()/peek() on study B
+  // could hand back study A's report text (cross-patient restore).
   useEffect(() => {
-    if (checkedRef.current) return;
-    checkedRef.current = true;
+    if (checkedForKeyRef.current === storageKey) return;
+    checkedForKeyRef.current = storageKey;
+    backupRef.current = null;
+    setRestoreAvailable(false);
     try {
       const raw = localStorage.getItem(storageKey);
       if (raw) {
@@ -57,6 +63,13 @@ export function useLocalDraftBackup<T extends object>(opts: {
 
   function restore(): T | null {
     setRestoreAvailable(false);
+    return backupRef.current;
+  }
+
+  /** M1.4 — non-consuming look at the stored backup so callers can decide
+   *  whether it is actually NEWER than the server draft before offering the
+   *  restore banner. Does not change restoreAvailable. */
+  function peek(): T | null {
     return backupRef.current;
   }
 
@@ -118,5 +131,5 @@ export function useLocalDraftBackup<T extends object>(opts: {
     }
   }
 
-  return { restoreAvailable, restore, discard, clear, listSnapshots, restoreSnapshot };
+  return { restoreAvailable, restore, peek, discard, clear, listSnapshots, restoreSnapshot };
 }

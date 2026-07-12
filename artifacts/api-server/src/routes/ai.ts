@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { patientsTable, ordersTable } from "@workspace/db";
-import { orderTestsTable, testsTable, billsTable, paymentsTable } from "@workspace/db";
+import { orderTestsTable, testsTable, billsTable, paymentsTable, pacsSettingsTable } from "@workspace/db";
 import { eq, desc, gte, lte, and } from "drizzle-orm";
 import { requireStaffAuth, requireStaffPermission } from "../middleware/requireStaffAuth";
 import {
@@ -198,6 +198,83 @@ router.post("/radiology-impression", requireStaffAuth, async (req, res) => {
   } catch (err: unknown) {
     req.log?.error({ err }, "ai radiology-impression failed");
     res.status(502).json({ error: "AI service unavailable. Please try again or write the impression manually." });
+  }
+});
+
+// ─── M1.6B3 — self-hosted (local network) STT proxy ─────────────────────────
+// The clinic can point voice transcription at its OWN speech server (e.g. a
+// whisper.cpp / faster-whisper container on the NAS) via pacs_settings —
+// audio then never leaves the clinic network. This proxy exists because the
+// browser cannot call the STT box directly (CORS + keeping its address out of
+// client config). The target URL is ADMIN-CONFIGURED ONLY (pacs_settings POST
+// is admin-gated), which bounds the SSRF surface to deliberate clinic config.
+
+const LOCAL_STT_SETTINGS = { url: "voice_local_stt_url", kind: "voice_local_stt_kind", model: "voice_local_stt_model" } as const;
+
+async function readLocalSttConfig(): Promise<{ url: string; kind: "openai" | "whispercpp"; model: string } | null> {
+  const rows = await db
+    .select({ key: pacsSettingsTable.key, value: pacsSettingsTable.value })
+    .from(pacsSettingsTable)
+    .where(eq(pacsSettingsTable.category, "voice"));
+  const get = (k: string) => rows.find((r) => r.key === k)?.value?.trim() ?? "";
+  const url = get(LOCAL_STT_SETTINGS.url);
+  if (!url || !/^https?:\/\//i.test(url)) return null;
+  return {
+    url: url.replace(/\/+$/, ""),
+    kind: get(LOCAL_STT_SETTINGS.kind) === "whispercpp" ? "whispercpp" : "openai",
+    model: get(LOCAL_STT_SETTINGS.model),
+  };
+}
+
+// M1.6B2/B3 — capability probe for the voice layer's provider selection.
+// Reports ONLY booleans; never key material or the local STT address.
+router.get("/transcribe/status", requireStaffAuth, async (_req, res) => {
+  const server = Boolean(process.env.AI_INTEGRATIONS_GEMINI_API_KEY && process.env.AI_INTEGRATIONS_GEMINI_BASE_URL);
+  let local = false;
+  try { local = (await readLocalSttConfig()) !== null; } catch { /* settings unreadable → false */ }
+  res.json({ available: server, server, local });
+});
+
+// Transcribe against the clinic's own STT server. Body: { audioBase64, mimeType }.
+// Supports the two common self-hosted protocols: OpenAI-compatible
+// /v1/audio/transcriptions (faster-whisper-server, LocalAI, speaches) and
+// whisper.cpp's /inference. Response: { text }.
+router.post("/transcribe/local", requireStaffAuth, async (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const audioBase64 = typeof b.audioBase64 === "string" ? b.audioBase64 : "";
+  const mimeType = typeof b.mimeType === "string" && b.mimeType ? b.mimeType : "audio/webm";
+  if (!audioBase64) { res.status(400).json({ error: "audioBase64 required" }); return; }
+  const approxBytes = Math.floor((audioBase64.length * 3) / 4);
+  if (approxBytes > 25_000_000) { res.status(413).json({ error: "Audio too large (max ~25 MB)" }); return; }
+  const config = await readLocalSttConfig().catch(() => null);
+  if (!config) {
+    res.status(503).json({ error: "Local transcription is not configured. Set the STT server URL in Radiology Settings → Voice." });
+    return;
+  }
+  try {
+    const form = new FormData();
+    form.append("file", new Blob([Buffer.from(audioBase64, "base64")], { type: mimeType }), "audio.webm");
+    let endpoint: string;
+    if (config.kind === "whispercpp") {
+      endpoint = `${config.url}/inference`;
+      form.append("response_format", "json");
+    } else {
+      endpoint = `${config.url}/v1/audio/transcriptions`;
+      form.append("model", config.model || "whisper-1");
+      form.append("response_format", "json");
+    }
+    const upstream = await fetch(endpoint, { method: "POST", body: form, signal: AbortSignal.timeout(60_000) });
+    if (!upstream.ok) {
+      req.log?.warn({ status: upstream.status }, "local stt upstream error");
+      res.status(502).json({ error: `Local STT server responded ${upstream.status}. Check the server and its protocol setting.` });
+      return;
+    }
+    const data = (await upstream.json().catch(() => null)) as { text?: unknown } | null;
+    const text = typeof data?.text === "string" ? data.text.trim() : "";
+    res.json({ text });
+  } catch (err: unknown) {
+    req.log?.error({ err }, "local stt transcription failed");
+    res.status(502).json({ error: "Local STT server unreachable. Check the URL in Radiology Settings → Voice." });
   }
 });
 

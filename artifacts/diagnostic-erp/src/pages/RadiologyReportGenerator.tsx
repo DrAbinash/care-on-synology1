@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import PageHeader from "@/components/PageHeader";
 import VoiceDictationButton from "@/components/VoiceDictationButton";
+import { saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
+import DeprecatedSurfaceBanner from "@/components/radiology/DeprecatedSurfaceBanner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -22,7 +24,19 @@ import { readStaffSession } from "@/lib/staffSession";
 import { api } from "@/lib/fetchApi";
 import SpinalMeasurementPanel from "@/components/SpinalMeasurementPanel";
 import ReportPrintSettingsDialog from "@/components/ReportPrintSettingsDialog";
-import PremiumReportViewer from "@/components/PremiumReportViewer";
+import { useQuery as usePremiumPreviewQuery } from "@tanstack/react-query";
+
+/** R1.1 — premium preview through the shared server presentation layer
+ *  (replaces the retired client-only PremiumReportViewer). */
+function PremiumServerPreview({ draftId }: { draftId: number }) {
+  const { data: html } = usePremiumPreviewQuery<string>({
+    queryKey: ["draft-print-preview", draftId, "care-premium"],
+    queryFn: () => api.get<string>(`/api/radiology/report-generator/drafts/${draftId}/print-preview?template=care-premium`),
+  });
+  return html
+    ? <iframe title="Premium report preview" srcDoc={html} className="w-full h-full border-none" sandbox="allow-same-origin" />
+    : <div className="h-full flex items-center justify-center text-xs text-muted-foreground">Rendering premium preview…</div>;
+}
 import {
   generateReportPDF, loadPrintSettings, savePrintSettings, type PrintSettings,
 } from "@/lib/reportPdfGenerator";
@@ -171,6 +185,15 @@ function useLocalStorage<T>(key: string, initial: T) {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
+/**
+ * @deprecated M1.1 consolidation — RadiologyReportingWorkspace
+ * (/radiology/report/:studyId) is the canonical radiology reporting page.
+ * This page stays routed at /radiology/report-generator (nothing regresses;
+ * no in-app navigation targets it) because it is still the only UI for text
+ * macros / smart-macros CRUD, key-image upload, report preferences, and the
+ * patient-less "manual mode" — all M1.2 merge candidates. Its draft saves
+ * go through the shared lib/radiologyReportLifecycle transport.
+ */
 export default function RadiologyReportGenerator({ studyId }: { studyId?: number }) {
   const [, navigate] = useLocation();
   const { toast } = useToast();
@@ -197,7 +220,10 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
 
   // Preview & draft
   const [previewHtml, setPreviewHtml] = useState("");
-  const [premiumMode, setPremiumMode] = useState(false);
+  const [premiumMode, setPremiumMode] = useState<boolean>(() => {
+    // Phase C: unified worklist "Premium" button deep-links with ?premium=1.
+    try { return new URLSearchParams(window.location.search).get("premium") === "1"; } catch { return false; }
+  });
   // Draft identity (Radiology Roadmap Ticket A3.0) — extracted into a shared
   // hook so this page and RadiologyReportingWorkspace.tsx share one
   // load/track/update-by-id implementation instead of each re-deriving it.
@@ -645,8 +671,7 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
         .split("\n")
         .map((s) => s.trim())
         .filter(Boolean);
-      const r = await api.post<{ success: boolean; draft: { id: number } }>(
-        "/api/radiology/report-generator/save-draft",
+      const r = await saveRadiologyDraft<{ success: boolean; draft: { id: number } }>(
         {
           id: draftId ?? undefined,
           studyId: studyId ?? undefined,
@@ -713,7 +738,7 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
         .map((s) => s.trim())
         .filter(Boolean);
 
-      await api.post("/api/radiology/report-generator/save-draft", {
+      await saveRadiologyDraft({
         id: draftId ?? undefined,
         studyId: studyId ?? undefined,
         patientId: demog.patientId,
@@ -1651,6 +1676,10 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
 
   return (
     <div className="flex flex-col h-full">
+      <DeprecatedSurfaceBanner
+        surface="Radiology Report Generator"
+        note="unique here: text/smart macros, key images, manual mode — merging into the canonical workspace is tracked for M1.2"
+      />
       {/* Print-only style */}
       <style>{`
         @media print {
@@ -2079,28 +2108,18 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
             </div>
 
             {premiumMode ? (
-              /* PREMIUM MODE */
-              <div style={{ height: "680px" }}>
-                <PremiumReportViewer
-                  data={{
-                    patientName: demog.patientName,
-                    age: demog.age ?? null,
-                    sex: demog.sex ?? null,
-                    uhid: demog.uhid ?? null,
-                    accessionNumber: demog.accessionNumber,
-                    studyDate: demog.studyDate ?? null,
-                    referringDoctor: demog.referringDoctor ?? null,
-                    reportingDoctor: session?.user?.name ?? null,
-                    modality: demog.modality || template?.modality || "MRI",
-                    studyDescription: demog.studyDescription ?? template?.studyName ?? null,
-                    clinicalHistory: clinicalHistory,
-                    technique: template?.technique ?? null,
-                    findings: Object.values(findingsSections).filter(Boolean).join("\n\n"),
-                    impression: impressionRaw,
-                    recommendation: recommendation,
-                  }}
-                  studyInstanceUID={null}
-                />
+              /* PREMIUM MODE — R1.1: the former client-only PremiumReportViewer
+                 (browser-direct Orthanc, never wired to delivery) is merged
+                 into the ONE server presentation layer. This iframe shows the
+                 exact premium document every delivery surface can produce. */
+              <div style={{ height: "680px" }} className="rounded-lg border overflow-hidden bg-white">
+                {draftId ? (
+                  <PremiumServerPreview draftId={draftId} />
+                ) : (
+                  <div className="h-full flex items-center justify-center text-xs text-muted-foreground p-6 text-center">
+                    Save the draft once to render the premium preview (server-side, identical to print/PDF).
+                  </div>
+                )}
               </div>
             ) : (
               /* STANDARD MODE */

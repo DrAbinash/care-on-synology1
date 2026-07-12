@@ -1,6 +1,9 @@
 import { useState, useEffect } from "react";
+import { useLocation } from "wouter";
+import PresentationTemplateManager from "@/components/radiology/PresentationTemplateManager";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { hostForProfile, orthancBaseForProfile, ohifBaseForProfile, publicBaseUrl } from "@/lib/networkProfiles";
 import PageHeader from "@/components/PageHeader";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -13,8 +16,16 @@ import {
   Network, Server, MonitorPlay, Radio, BrainCircuit,
   Wrench, Activity, ShieldAlert, Laptop, CheckCircle2,
   XCircle, AlertTriangle, RefreshCw, Plus, Save, Trash2,
-  Tv2, Zap, ShieldCheck, PlayCircle, Info, Palette
+  Tv2, Zap, ShieldCheck, PlayCircle, Info, Palette, Mic
 } from "lucide-react";
+import type { UseMutationResult } from "@tanstack/react-query";
+// M1.6B2/B3 — voice layer settings (same pacs_settings persistence as this
+// page) + per-radiologist overrides (radiologist_voice_preferences)
+import {
+  parseVoiceSettings, parseVoiceUserPrefs, resolveProviderChoice, createVoiceProvider,
+  isWebSpeechSupported, fetchTranscribeCapabilities,
+  type TranscriptionSession, type TranscribeCapabilities, type VoiceUserPrefs,
+} from "@/lib/voiceTranscription";
 import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 
 // Sub-panels imported or reconstructed for unified look
@@ -31,6 +42,7 @@ import {
   AmendmentManagerCard, SonographerModeCard, DicomSrExportCard,
 } from "@/components/smartRadiology/SmartRadiologyCards";
 import { RisMonitorCommandGrid } from "@/components/risMonitoring/RisMonitorCards";
+import ViewerNetworkRoutesCard from "@/components/radiology/ViewerNetworkRoutesCard";
 
 type Setting = { id: number; key: string; value: string | null; category: string; isSecret: boolean };
 type ServiceHealth = { name: string; endpoint: string; status: "green" | "yellow" | "red"; details: string };
@@ -65,6 +77,7 @@ function isDockerBridgeIpLike(value: string): boolean {
 export default function RadiologySettingsCenter() {
   const { toast } = useToast();
   const qc = useQueryClient();
+  const [, navigate] = useLocation();
   const isAdmin = FULL_ACCESS_ROLES.has(normalizeRole(readStaffSession()?.user.role ?? ""));
 
   const [activeTab, setActiveTab] = useState("network");
@@ -153,6 +166,14 @@ export default function RadiologySettingsCenter() {
 
 
   // Mutation to update pacs settings
+  // Phase E helper: read a saved setting value by key ("" when unset)
+  const sv = (key: string, fallback = "") =>
+    settings.find((x) => x.key === key)?.value ?? fallback;
+  const svOn = (key: string, defaultOn = true) => {
+    const v = sv(key);
+    return v === "" ? defaultOn : v === "true";
+  };
+
   const upsertSetting = useMutation({
     mutationFn: (body: object) => api.post("/api/radiology/pacs-settings", body),
     onSuccess: () => {
@@ -181,37 +202,32 @@ export default function RadiologySettingsCenter() {
   useEffect(() => {
     if (settings.length === 0) return; // wait for settings to load first
     const probeNetwork = async () => {
-      const orthancUrl = settings.find(s => s.key === "orthanc_url" || s.key === "ohif_base_url")?.value;
-      const tailscaleHost = settings.find(s => s.key === "tailscale_host" && s.category === "network")?.value;
-
-      // 1. Probe the clinic's configured LAN Orthanc URL first (fastest)
-      if (orthancUrl) {
-        try {
-          const start = Date.now();
-          await fetch(orthancUrl.replace(/\/$/, "") + "/", { method: "HEAD", mode: "no-cors" });
-          setDetectedProfile("LAN");
-          setDetectionReason(`LAN reached successfully in ${Date.now() - start}ms.`);
-          return;
-        } catch {
-          // LAN failed, try Tailscale next
-        }
+      // 1. Probe LAN Orthanc first (fastest)
+      try {
+        const start = Date.now();
+        await fetch(`${orthancBaseForProfile("LAN")}/`, { method: "HEAD", mode: "no-cors" });
+        const latency = Date.now() - start;
+        setDetectedProfile("LAN");
+        setDetectionReason(`LAN reached successfully in ${latency}ms.`);
+        return;
+      } catch (e) {
+        // LAN failed, try Tailscale next
       }
 
-      // 2. Probe the configured Tailscale host, if set
-      if (tailscaleHost) {
-        try {
-          const start = Date.now();
-          await fetch(`http://${tailscaleHost}:8042/`, { method: "HEAD", mode: "no-cors" });
-          setDetectedProfile("TAILSCALE");
-          setDetectionReason(`Tailscale reached successfully in ${Date.now() - start}ms. LAN unreachable.`);
-          return;
-        } catch {
-          // Tailscale failed too, fall through to public
-        }
+      // 2. Probe Tailscale IP
+      try {
+        const start = Date.now();
+        await fetch(`${orthancBaseForProfile("TAILSCALE")}/`, { method: "HEAD", mode: "no-cors" });
+        const latency = Date.now() - start;
+        setDetectedProfile("TAILSCALE");
+        setDetectionReason(`Tailscale reached successfully in ${latency}ms. LAN unreachable.`);
+        return;
+      } catch (e) {
+        // Both private networks unreachable, fallback to Public
       }
 
       setDetectedProfile("PUBLIC");
-      setDetectionReason(orthancUrl ? "LAN and Tailscale unreachable. Defaulted to cloud/public gateway." : "No Orthanc/OHIF URL configured yet — set one in the Viewers tab below.");
+      setDetectionReason("LAN and Tailscale unreachable. Defaulted to cloud/public gateway.");
     };
 
     probeNetwork();
@@ -279,6 +295,7 @@ export default function RadiologySettingsCenter() {
       {/* Navigation tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList className="flex flex-wrap h-auto gap-1 bg-muted p-1 rounded-lg">
+          <TabsTrigger value="general"><ShieldCheck size={14} className="mr-1.5" />General</TabsTrigger>
           <TabsTrigger value="network"><Network size={14} className="mr-1.5" />Profiles</TabsTrigger>
           <TabsTrigger value="modalities"><Server size={14} className="mr-1.5" />Modalities</TabsTrigger>
           <TabsTrigger value="pacs"><Radio size={14} className="mr-1.5" />PACS Servers</TabsTrigger>
@@ -286,13 +303,85 @@ export default function RadiologySettingsCenter() {
           <TabsTrigger value="mwl"><Wrench size={14} className="mr-1.5" />DICOM &amp; MWL</TabsTrigger>
           <TabsTrigger value="reporting"><BrainCircuit size={14} className="mr-1.5" />AI &amp; Templates</TabsTrigger>
           <TabsTrigger value="style"><Palette size={14} className="mr-1.5" />Report Style</TabsTrigger>
+          <TabsTrigger value="premium"><Zap size={14} className="mr-1.5" />Premium Report</TabsTrigger>
+          <TabsTrigger value="voice"><Mic size={14} className="mr-1.5" />Voice</TabsTrigger>
           <TabsTrigger value="diagnostics"><Activity size={14} className="mr-1.5" />Diagnostics</TabsTrigger>
           <TabsTrigger value="history"><Info size={14} className="mr-1.5" />History</TabsTrigger>
           <TabsTrigger value="advanced"><ShieldAlert size={14} className="mr-1.5" />Advanced</TabsTrigger>
         </TabsList>
 
         {/* Tab content 1: Network Profiles */}
+        {/* ── Phase E: GENERAL — plain-language everyday options ── */}
+        <TabsContent value="general" className="space-y-4">
+          <div className="rounded-xl border bg-card p-5 space-y-4 max-w-2xl">
+            <h3 className="text-sm font-bold">General Radiology Options</h3>
+            <p className="text-xs text-muted-foreground">Everyday behavior of the Radiology module. Safe to change; takes effect immediately for new page loads.</p>
+            <div className="space-y-1">
+              <Label className="text-xs">Default Radiologist</Label>
+              <Input
+                className="h-8 text-sm"
+                placeholder="e.g. Dr. Abinash"
+                defaultValue={sv("default_radiologist")}
+                onBlur={(e) => upsertSetting.mutate({ key: "default_radiologist", value: e.target.value, category: "radiology" })}
+                disabled={!isAdmin}
+              />
+              <p className="text-[11px] text-muted-foreground">Shown as the pre-selected radiologist on new studies when none is assigned.</p>
+            </div>
+            <div className="flex items-center justify-between border rounded-lg p-3">
+              <div>
+                <Label className="text-xs font-semibold">Highlight Urgent / VIP studies</Label>
+                <p className="text-[11px] text-muted-foreground">Tints STAT / EMERGENCY / URGENT / VIP rows in the Worklist and Reading Room.</p>
+              </div>
+              <Switch checked={svOn("urgent_highlight_enabled")} disabled={!isAdmin}
+                onCheckedChange={(v) => upsertSetting.mutate({ key: "urgent_highlight_enabled", value: String(v), category: "radiology" })} />
+            </div>
+            <div className="flex items-center justify-between border rounded-lg p-3">
+              <div>
+                <Label className="text-xs font-semibold">Lock report after Final sign-off</Label>
+                <p className="text-[11px] text-muted-foreground">Finalized reports are locked in the Reading Room (Save/Finalize disabled after sign-off). Keep ON; owner amendments go through preserved owner tools.</p>
+              </div>
+              <Switch checked={svOn("report_final_lock")} disabled={!isAdmin}
+                onCheckedChange={(v) => upsertSetting.mutate({ key: "report_final_lock", value: String(v), category: "radiology" })} />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Aging alert after (hours)</Label>
+              <Input
+                type="number" min={1} max={72} className="h-8 text-sm w-32"
+                placeholder="4"
+                defaultValue={sv("radiology_aging_alert_hours", "4")}
+                onBlur={(e) => upsertSetting.mutate({ key: "radiology_aging_alert_hours", value: e.target.value.trim() || "4", category: "radiology" })}
+                disabled={!isAdmin}
+              />
+              <p className="text-[11px] text-muted-foreground">A red "waiting" badge appears on Worklist studies that haven't been finalized within this many hours — helps reception spot studies stuck in the queue.</p>
+            </div>
+          </div>
+        </TabsContent>
+
         <TabsContent value="network" className="space-y-4">
+          {/* Phase E: runtime overrides for the Phase B central network config.
+              Saved to admin settings (category "viewer") — hydrated by
+              applyNetworkSettings() at runtime, NO rebuild or restart needed. */}
+          <div className="rounded-xl border bg-card p-5 space-y-3">
+            <h3 className="text-sm font-bold flex items-center gap-2"><Network size={14} /> Network Hosts (advanced — leave blank to use system defaults)</h3>
+            <p className="text-xs text-muted-foreground">
+              If the clinic network ever changes, update these here — the whole system (viewers, probes, health checks) follows immediately. Current defaults: LAN {hostForProfile("LAN")}, Tailscale {hostForProfile("TAILSCALE")}, Public {hostForProfile("PUBLIC")}.
+            </p>
+            <div className="grid md:grid-cols-3 gap-3">
+              {([
+                ["network_lan_host", "LAN Host (clinic)", hostForProfile("LAN")],
+                ["network_tailscale_host", "Tailscale Host (remote)", hostForProfile("TAILSCALE")],
+                ["network_public_domain", "Public Domain", hostForProfile("PUBLIC")],
+                ["orthanc_http_port", "Orthanc HTTP Port", "8042"],
+                ["ohif_http_port", "OHIF Port", "3010"],
+              ] as const).map(([key, label, ph]) => (
+                <div key={key} className="space-y-1">
+                  <Label className="text-xs">{label}</Label>
+                  <Input className="h-8 text-sm font-mono" placeholder={ph} defaultValue={sv(key)} disabled={!isAdmin}
+                    onBlur={(e) => upsertSetting.mutate({ key, value: e.target.value.trim(), category: "viewer" })} />
+                </div>
+              ))}
+            </div>
+          </div>
           <div className="grid md:grid-cols-3 gap-4">
             <div className="rounded-xl border bg-card p-5 space-y-3">
               <div className="flex justify-between items-start">
@@ -301,12 +390,12 @@ export default function RadiologySettingsCenter() {
               </div>
               <h3 className="font-semibold text-base">LAN Profile (Local Network)</h3>
               <p className="text-xs text-muted-foreground">
-                Uses local IP addresses (`192.168.1.137`). High speed, secure, zero latency.
+                Uses local IP addresses ({hostForProfile("LAN")}). High speed, secure, zero latency.
                 Modality acquisition pushes (GE Voluson, CT, MRI) should strictly prefer this.
               </p>
               <div className="pt-2 text-xs font-mono text-muted-foreground space-y-1">
-                <p>OHIF Base: http://192.168.1.137:3010</p>
-                <p>Orthanc REST: http://192.168.1.137:8042</p>
+                <p>OHIF Base: {ohifBaseForProfile("LAN")}</p>
+                <p>Orthanc REST: {orthancBaseForProfile("LAN")}</p>
               </div>
             </div>
 
@@ -317,12 +406,12 @@ export default function RadiologySettingsCenter() {
               </div>
               <h3 className="font-semibold text-base">Tailscale VPN Profile</h3>
               <p className="text-xs text-muted-foreground">
-                Connects through Tailscale network (`100.65.255.115`). Allows radiologist/owner to review
+                Connects through Tailscale network ({hostForProfile("TAILSCALE")}). Allows radiologist/owner to review
                 studies and launch OHIF/Weasis outside the clinic network securely.
               </p>
               <div className="pt-2 text-xs font-mono text-muted-foreground space-y-1">
-                <p>OHIF Base: http://100.65.255.115:3010</p>
-                <p>Orthanc REST: http://100.65.255.115:8042</p>
+                <p>OHIF Base: {ohifBaseForProfile("TAILSCALE")}</p>
+                <p>Orthanc REST: {orthancBaseForProfile("TAILSCALE")}</p>
               </div>
             </div>
 
@@ -333,11 +422,11 @@ export default function RadiologySettingsCenter() {
               </div>
               <h3 className="font-semibold text-base">Public Cloud Profile</h3>
               <p className="text-xs text-muted-foreground">
-                Uses Cloudflare domain (`caredeoghar.com`) for secure patient booking, report delivery,
+                Uses Cloudflare domain ({hostForProfile("PUBLIC")}) for secure patient booking, report delivery,
                 and online billing desk tasks. Viewer access is disabled for speed &amp; transport privacy.
               </p>
               <div className="pt-2 text-xs font-mono text-muted-foreground space-y-1">
-                <p>ERP URL: https://caredeoghar.com</p>
+                <p>ERP URL: {publicBaseUrl()}</p>
                 <p>Ingestion port: Closed on WAN</p>
               </div>
             </div>
@@ -458,7 +547,7 @@ export default function RadiologySettingsCenter() {
                   value={settings.find(s => s.key === "ohif_base_url")?.value ?? ""}
                   onChange={(e) => upsertSetting.mutate({ key: "ohif_base_url", value: e.target.value, category: "viewer" })}
                   className="h-9 text-sm"
-                  placeholder="http://<your-lan-ip>:3010"
+                  placeholder={ohifBaseForProfile("LAN")}
                 />
                 {isDockerBridgeIpLike(settings.find(s => s.key === "ohif_base_url")?.value ?? "") && (
                   <p className="text-[11px] text-red-600 font-medium">⚠ This looks like a Docker bridge IP (172.17.x.x-172.31.x.x) — browsers cannot reach it. Use your clinic LAN IP, Tailscale IP, or public domain instead.</p>
@@ -475,7 +564,7 @@ export default function RadiologySettingsCenter() {
                     upsertSetting.mutate({ key: "wado_uri_base_url", value: e.target.value, category: "viewer" });
                   }}
                   className="h-9 text-sm"
-                  placeholder="http://<your-lan-ip>:8042/wado"
+                  placeholder={`${orthancBaseForProfile("LAN")}/wado`}
                 />
                 {isDockerBridgeIpLike(settings.find(s => s.key === "weasis_wado_url")?.value ?? "") && (
                   <p className="text-[11px] text-red-600 font-medium">⚠ This looks like a Docker bridge IP — local Weasis installs cannot reach it. Use your clinic LAN IP, Tailscale IP, or public domain instead.</p>
@@ -499,6 +588,14 @@ export default function RadiologySettingsCenter() {
               </div>
             </div>
           </div>
+
+          {/* M1.2 — network routes for reliable study launch (AUTO/LAN/
+              Tailscale/Cloudflare/Public). One owner section; LAN reuses the
+              existing keys above. */}
+          <ViewerNetworkRoutesCard
+            getSetting={(key) => settings.find((s) => s.key === key)?.value ?? ""}
+            setSetting={(key, value) => upsertSetting.mutate({ key, value, category: "viewer" })}
+          />
         </TabsContent>
 
         {/* Tab content 5: DICOM & MWL */}
@@ -633,6 +730,28 @@ export default function RadiologySettingsCenter() {
 
         {/* Tab content 7: Diagnostics */}
         <TabsContent value="diagnostics" className="space-y-4">
+          {/* M1.3 — deep diagnostics live on the ONE admin Flight Deck page. */}
+          <div className="rounded-xl border bg-card p-4 flex items-center justify-between gap-3 text-sm">
+            <span className="text-muted-foreground">
+              Full deployment diagnostics (viewer, DICOMweb, network routes, workflow simulation, settings verification) live on the Flight Deck.
+            </span>
+            <Button size="sm" variant="outline" onClick={() => navigate("/radiology/flight-deck")} data-testid="link-flight-deck">
+              Open Flight Deck
+            </Button>
+          </div>
+          {/* Phase E: owner-only deep diagnostic pages (preserved, linked here) —
+              the Flight Deck above covers connectivity/workflow diagnostics but
+              does not link out to these standalone admin pages, so they still
+              need their own shortcuts here. */}
+          {isAdmin && (
+            <div className="rounded-xl border bg-card p-4 flex flex-wrap items-center gap-2">
+              <span className="text-xs font-semibold mr-2">Debug / Logs (owner only):</span>
+              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => (window.location.href = "/radiology/pacs-logs")}>PACS Logs</Button>
+              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => (window.location.href = "/radiology/watchdog")}>Watchdog</Button>
+              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => (window.location.href = "/radiology/dicom-agent-dashboard")}>DICOM Agent</Button>
+              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => (window.location.href = "/radiology/network-control-center")}>Network Control Center</Button>
+            </div>
+          )}
           <div className="grid lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 rounded-xl border bg-card p-5 space-y-4">
               <h3 className="font-semibold text-sm flex items-center gap-2">
@@ -787,8 +906,48 @@ export default function RadiologySettingsCenter() {
         </TabsContent>
 
         {/* Tab content 8.5: Institutional Report Style */}
+        {/* ── Phase E: PREMIUM REPORT — admin toggles (module itself preserved) ── */}
+        <TabsContent value="premium" className="space-y-4">
+          <div className="rounded-xl border bg-card p-5 space-y-3 max-w-3xl">
+            <h3 className="text-sm font-bold">Premium Report Presentation</h3>
+            <p className="text-xs text-muted-foreground">
+              Owner configuration for the preserved Premium Report module (opened via the "Premium Preview" button in the Reading Room and Worklist). These switches are stored as admin settings and applied by the Premium Report module.
+            </p>
+            <div className="grid md:grid-cols-2 gap-2">
+              {([
+                ["premium_layout_enabled", "Premium Report Layout", "Master switch for the premium presentation layer."],
+                ["premium_image_panel", "Image Panel", "Right-side representative DICOM images from Orthanc."],
+                ["premium_qr_verification", "QR Verification", "Printed QR code for report authenticity checks."],
+                ["premium_digital_signature", "Digital Signature", "Radiologist signature block on the final report."],
+                ["premium_journal_style", "Journal Style", "Academic journal-style typography."],
+                ["premium_structured_reports", "Structured Reports", "Section-structured findings layout."],
+                ["premium_multipage", "Multi-page Reports", "Allow reports to span multiple printed pages."],
+                ["premium_hospital_branding", "Hospital Branding", "Clinic logo and letterhead on premium reports."],
+                ["premium_themes", "Report Themes", "Allow selecting alternative premium themes."],
+              ] as const).map(([key, label, help]) => (
+                <div key={key} className="flex items-center justify-between border rounded-lg p-3">
+                  <div className="pr-3">
+                    <Label className="text-xs font-semibold">{label}</Label>
+                    <p className="text-[11px] text-muted-foreground">{help}</p>
+                  </div>
+                  <Switch checked={svOn(key)} disabled={!isAdmin}
+                    onCheckedChange={(v) => upsertSetting.mutate({ key, value: String(v), category: "premium" })} />
+                </div>
+              ))}
+            </div>
+          </div>
+        </TabsContent>
+
         <TabsContent value="style" className="space-y-4">
+          {/* R1.2 — versioned enterprise template engine. Admins manage
+              versions/activation/import/export; radiologists can preview. */}
+          <PresentationTemplateManager isAdmin={isAdmin} />
           <RadiologyStylePanel />
+        </TabsContent>
+
+        {/* Tab content 8.6: Voice commands & dictation (M1.6B2) */}
+        <TabsContent value="voice" className="space-y-4">
+          <VoiceSettingsPanel settings={settings} upsertSetting={upsertSetting} isAdmin={isAdmin} />
         </TabsContent>
 
         {/* Tab content 9: Advanced */}
@@ -828,6 +987,323 @@ export default function RadiologySettingsCenter() {
           </div>
         </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// M1.6B2 — Voice commands & dictation settings (pacs_settings, category
+// "voice"; consumed by the Reporting Workspace's voice layer). POST is
+// admin-gated server-side, so controls are disabled for non-admins.
+// ════════════════════════════════════════════════════════════════════════════
+
+function VoiceSettingsPanel({ settings, upsertSetting, isAdmin }: {
+  settings: Setting[];
+  upsertSetting: UseMutationResult<unknown, Error, object>;
+  isAdmin: boolean;
+}) {
+  const voice = parseVoiceSettings(settings);
+  const set = (key: string, value: string) => upsertSetting.mutate({ key, value, category: "voice" });
+  const getRaw = (key: string) => settings.find((s) => s.key === key)?.value ?? "";
+
+  const { data: capabilities = { server: false, local: false } } = useQuery<TranscribeCapabilities>({
+    queryKey: ["voice-transcribe-status"],
+    queryFn: fetchTranscribeCapabilities,
+    staleTime: 60_000,
+  });
+  const webSpeech = isWebSpeechSupported();
+  const effectiveProvider = resolveProviderChoice(voice.provider, {
+    localAvailable: capabilities.local, serverAvailable: capabilities.server,
+    webSpeechSupported: webSpeech, injectedPresent: false,
+  });
+
+  const [micTest, setMicTest] = useState<string | null>(null);
+  const [micDevices, setMicDevices] = useState<Array<{ deviceId: string; label: string }>>([]);
+  const [sttTest, setSttTest] = useState<string | null>(null);
+  const [sttTesting, setSttTesting] = useState(false);
+
+  async function testMicrophone() {
+    setMicTest("Requesting microphone…");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const label = stream.getAudioTracks()[0]?.label || "unnamed device";
+      stream.getTracks().forEach((t) => t.stop());
+      setMicTest(`✓ Microphone OK: ${label}`);
+      // After permission, labels become readable — refresh the device list.
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      setMicDevices(devices.filter((d) => d.kind === "audioinput").map((d) => ({ deviceId: d.deviceId, label: d.label || d.deviceId })));
+    } catch (err) {
+      const name = err instanceof DOMException ? err.name : "";
+      setMicTest(name === "NotAllowedError"
+        ? "✗ Permission denied — allow the microphone in the browser's site settings, then retry"
+        : `✗ Microphone test failed${name ? ` (${name})` : ""}`);
+    }
+  }
+
+  function testTranscription() {
+    if (!effectiveProvider) { setSttTest("✗ No transcription provider available"); return; }
+    setSttTesting(true);
+    setSttTest("Listening for ~4 seconds — say a short phrase…");
+    const provider = createVoiceProvider(effectiveProvider);
+    let session: TranscriptionSession | null = null;
+    session = provider.start(
+      { lang: voice.language, deviceId: voice.inputDeviceId },
+      {
+        onInterim: (t) => { if (t) setSttTest(`… ${t}`); },
+        onStatus: () => undefined,
+        onResult: (r) => {
+          setSttTesting(false);
+          setSttTest(r.transcript ? `✓ Heard: “${r.transcript}”` : "✗ Heard nothing — check the microphone and try again");
+        },
+        onError: (message) => { setSttTesting(false); setSttTest(`✗ ${message}`); },
+      },
+    );
+    window.setTimeout(() => session?.stop(), 4000);
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border bg-card p-5 space-y-4">
+        <h3 className="font-semibold text-sm flex items-center gap-2">
+          <Mic size={16} className="text-primary" /> Voice Commands &amp; Dictation
+        </h3>
+        <p className="text-xs text-muted-foreground">
+          Voice drives the Reporting Workspace's existing command dispatcher — it never bypasses locks,
+          permissions, or the finalize confirmation. When voice is off or unavailable, keyboard and mouse
+          work exactly as before.
+        </p>
+        {!isAdmin && (
+          <p className="text-xs text-amber-700">Only administrators can change these settings.</p>
+        )}
+
+        <div className="grid sm:grid-cols-2 gap-4">
+          <div className="flex items-center gap-2">
+            <Switch id="voice-enabled" checked={voice.enabled} disabled={!isAdmin}
+              onCheckedChange={(v) => set("voice_enabled", v ? "true" : "false")} />
+            <Label htmlFor="voice-enabled" className="text-xs cursor-pointer">Voice enabled</Label>
+          </div>
+          <div className="flex items-center gap-2">
+            <Switch id="voice-punct" checked={voice.autoPunctuation} disabled={!isAdmin}
+              onCheckedChange={(v) => set("voice_auto_punctuation", v ? "true" : "false")} />
+            <Label htmlFor="voice-punct" className="text-xs cursor-pointer">Auto punctuation (capitalize + terminal period, spoken “full stop/comma/new line”)</Label>
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Transcription provider</Label>
+            <select className="w-full h-9 text-sm border rounded-md px-2 bg-background" disabled={!isAdmin}
+              value={voice.provider} onChange={(e) => set("voice_provider", e.target.value)}>
+              <option value="auto">Auto (local → server → browser)</option>
+              <option value="local">Local STT server (clinic network)</option>
+              <option value="server">Server (clinic AI provider)</option>
+              <option value="browser">Browser (Web Speech API)</option>
+            </select>
+            <p className="text-[11px] text-muted-foreground">
+              Local STT: {capabilities.local ? "configured ✓" : "not configured"} ·
+              Server transcription: {capabilities.server ? "configured ✓" : "not configured (AI provider key missing)"} ·
+              Browser Web Speech: {webSpeech ? "supported ✓" : "not supported"} ·
+              Effective: <strong>{effectiveProvider ?? "none — voice will show as unavailable"}</strong>
+            </p>
+          </div>
+
+          {/* M1.6B3 — self-hosted STT server (audio stays on the clinic network) */}
+          <div className="space-y-1">
+            <Label className="text-xs">Local STT server URL (whisper.cpp / faster-whisper on the clinic network)</Label>
+            <Input className="h-9 text-sm font-mono" disabled={!isAdmin} defaultValue={getRaw("voice_local_stt_url")}
+              key={`lsu-${getRaw("voice_local_stt_url")}`}
+              onBlur={(e) => { if (e.target.value.trim() !== getRaw("voice_local_stt_url")) set("voice_local_stt_url", e.target.value.trim()); }}
+              placeholder="http://192.168.1.137:9000 (empty = off)" />
+            <div className="flex gap-2">
+              <select className="h-8 text-xs border rounded-md px-2 bg-background" disabled={!isAdmin}
+                value={getRaw("voice_local_stt_kind") === "whispercpp" ? "whispercpp" : "openai"}
+                onChange={(e) => set("voice_local_stt_kind", e.target.value)}
+                title="Protocol the local server speaks">
+                <option value="openai">OpenAI-compatible (/v1/audio/transcriptions)</option>
+                <option value="whispercpp">whisper.cpp (/inference)</option>
+              </select>
+              <Input className="h-8 text-xs flex-1" disabled={!isAdmin} defaultValue={getRaw("voice_local_stt_model")}
+                key={`lsm-${getRaw("voice_local_stt_model")}`}
+                onBlur={(e) => { if (e.target.value.trim() !== getRaw("voice_local_stt_model")) set("voice_local_stt_model", e.target.value.trim()); }}
+                placeholder="model (optional, e.g. whisper-1)" />
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Audio is proxied through this clinic's API server — the STT address never reaches the browser.
+            </p>
+          </div>
+
+          {/* M1.6B3 — live segmented transcription for server/local providers */}
+          <div className="space-y-1">
+            <Label className="text-xs">Live segmented transcription (server/local providers)</Label>
+            <select className="w-full h-9 text-sm border rounded-md px-2 bg-background" disabled={!isAdmin}
+              value={String(voice.segmentSeconds)} onChange={(e) => set("voice_segment_seconds", e.target.value)}>
+              <option value="0">Off — one upload when you release the mic</option>
+              <option value="3">Every 3 seconds</option>
+              <option value="5">Every 5 seconds</option>
+              <option value="8">Every 8 seconds</option>
+            </select>
+            <p className="text-[11px] text-muted-foreground">
+              Streams self-contained audio segments while you speak (live interim text; enables hands-free on
+              server/local providers). Words split across a segment boundary can transcribe imperfectly.
+            </p>
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Recognition language</Label>
+            <Input className="h-9 text-sm" disabled={!isAdmin} defaultValue={voice.language}
+              key={voice.language} onBlur={(e) => { if (e.target.value.trim() && e.target.value.trim() !== voice.language) set("voice_language", e.target.value.trim()); }}
+              placeholder="en-IN" />
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Push-to-talk key</Label>
+            <select className="w-full h-9 text-sm border rounded-md px-2 bg-background" disabled={!isAdmin}
+              value={voice.pttKey} onChange={(e) => set("voice_ptt_key", e.target.value)}>
+              <option value="Space">Space (held, outside text fields)</option>
+              <option value="off">Off (buttons / Ctrl+Space only)</option>
+            </select>
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Default mode</Label>
+            <select className="w-full h-9 text-sm border rounded-md px-2 bg-background" disabled={!isAdmin}
+              value={voice.defaultMode} onChange={(e) => set("voice_default_mode", e.target.value)}>
+              <option value="command">Command mode (parse spoken commands)</option>
+              <option value="dictation">Dictation mode (insert utterances as text, previewed)</option>
+            </select>
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Confirmation policy</Label>
+            <select className="w-full h-9 text-sm border rounded-md px-2 bg-background" disabled={!isAdmin}
+              value={voice.confirmationPolicy} onChange={(e) => set("voice_confirmation_policy", e.target.value)}>
+              <option value="standard">Standard (confirm replace/verify/finalize and dirty transitions)</option>
+              <option value="strict">Strict (confirm every edit too)</option>
+            </select>
+            <p className="text-[11px] text-muted-foreground">Finalize ALWAYS requires a click plus the standard finalize confirmation — no policy relaxes that.</p>
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Microphone device (server transcription only)</Label>
+            <select className="w-full h-9 text-sm border rounded-md px-2 bg-background" disabled={!isAdmin || micDevices.length === 0}
+              value={voice.inputDeviceId ?? ""} onChange={(e) => set("voice_input_device", e.target.value)}>
+              <option value="">System default</option>
+              {micDevices.map((d) => <option key={d.deviceId} value={d.deviceId}>{d.label}</option>)}
+            </select>
+            <p className="text-[11px] text-muted-foreground">
+              Run “Test microphone” to list devices. Browser Web Speech always uses the system default microphone —
+              the browser API offers no device selection.
+            </p>
+          </div>
+        </div>
+
+        {/* Local vs cloud — truthful privacy note (Phase 11) */}
+        <div className="rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-950/20 p-3 text-[11px] text-amber-900 dark:text-amber-200">
+          <strong>Where audio goes:</strong> Server transcription sends recorded audio to this clinic's API server,
+          which forwards it to the configured AI provider (Gemini) using a server-side key — no keys or direct external
+          calls in the browser. Browser Web Speech (Chrome/Edge) sends audio to the browser vendor's speech service.
+          No local/offline engine is installed. Raw audio is never logged; the workspace audits only high-risk voice
+          commands (finalize/verify) with command type, user, study and outcome — never the dictated text.
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <Button variant="outline" size="sm" onClick={() => void testMicrophone()}>
+            <Mic size={13} className="mr-1.5" /> Test microphone
+          </Button>
+          {micTest && <span className="text-xs">{micTest}</span>}
+          <Button variant="outline" size="sm" onClick={testTranscription} disabled={sttTesting || !effectiveProvider}>
+            <PlayCircle size={13} className="mr-1.5" /> Test transcription
+          </Button>
+          {sttTest && <span className="text-xs">{sttTest}</span>}
+        </div>
+      </div>
+
+      <MyVoicePreferencesCard />
+    </div>
+  );
+}
+
+/** M1.6B3 — the CALLER'S own voice overrides (radiologist_voice_preferences).
+ *  Self-scoped endpoints; any staff member can tune their own ergonomics.
+ *  Overrides can only tighten clinic policy: voice off for yourself, stricter
+ *  confirmations — never the reverse (merge rules in lib/voiceTranscription). */
+function MyVoicePreferencesCard() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { data: raw } = useQuery<unknown>({
+    queryKey: ["voice-user-preferences"],
+    queryFn: () => api.get("/api/radiology/report-generator/voice-preferences"),
+  });
+  const prefs = parseVoiceUserPrefs(raw);
+  const save = useMutation({
+    mutationFn: (next: VoiceUserPrefs) => api.put("/api/radiology/report-generator/voice-preferences", next),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["voice-user-preferences"] });
+      toast({ title: "Your voice preferences were saved" });
+    },
+    onError: (err: Error) => toast({ title: "Could not save preferences", description: err.message, variant: "destructive" }),
+  });
+  const patch = (p: Partial<VoiceUserPrefs>) => save.mutate({ ...prefs, ...p });
+
+  return (
+    <div className="rounded-xl border bg-card p-5 space-y-4" data-testid="my-voice-prefs">
+      <h3 className="font-semibold text-sm flex items-center gap-2">
+        <Mic size={16} className="text-primary" /> My Voice Preferences
+      </h3>
+      <p className="text-xs text-muted-foreground">
+        Personal overrides for YOUR account, layered over the clinic defaults above. You can disable voice for
+        yourself or make confirmations stricter — never the reverse. Provider and local-STT configuration stay
+        clinic-wide.
+      </p>
+      <div className="grid sm:grid-cols-2 gap-4">
+        <div className="space-y-1">
+          <Label className="text-xs">Voice for me</Label>
+          <select className="w-full h-9 text-sm border rounded-md px-2 bg-background"
+            value={prefs.enabledOverride} onChange={(e) => patch({ enabledOverride: e.target.value as VoiceUserPrefs["enabledOverride"] })}>
+            <option value="inherit">Clinic default</option>
+            <option value="off">Off for me</option>
+          </select>
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">My push-to-talk key</Label>
+          <select className="w-full h-9 text-sm border rounded-md px-2 bg-background"
+            value={prefs.pttKey} onChange={(e) => patch({ pttKey: e.target.value as VoiceUserPrefs["pttKey"] })}>
+            <option value="inherit">Clinic default</option>
+            <option value="Space">Space (held, outside text fields)</option>
+            <option value="off">Off (buttons / Ctrl+Space only)</option>
+          </select>
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">My default mode</Label>
+          <select className="w-full h-9 text-sm border rounded-md px-2 bg-background"
+            value={prefs.defaultMode} onChange={(e) => patch({ defaultMode: e.target.value as VoiceUserPrefs["defaultMode"] })}>
+            <option value="inherit">Clinic default</option>
+            <option value="command">Command mode</option>
+            <option value="dictation">Dictation mode</option>
+          </select>
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">My confirmation policy</Label>
+          <select className="w-full h-9 text-sm border rounded-md px-2 bg-background"
+            value={prefs.confirmationPolicy} onChange={(e) => patch({ confirmationPolicy: e.target.value as VoiceUserPrefs["confirmationPolicy"] })}>
+            <option value="inherit">Clinic default</option>
+            <option value="strict">Strict (confirm every edit) — stricter only</option>
+          </select>
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">My recognition language</Label>
+          <Input className="h-9 text-sm" defaultValue={prefs.language} key={`ul-${prefs.language}`}
+            onBlur={(e) => { if (e.target.value.trim() !== prefs.language) patch({ language: e.target.value.trim() }); }}
+            placeholder="empty = clinic default" />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">My auto punctuation</Label>
+          <select className="w-full h-9 text-sm border rounded-md px-2 bg-background"
+            value={prefs.autoPunctuation} onChange={(e) => patch({ autoPunctuation: e.target.value as VoiceUserPrefs["autoPunctuation"] })}>
+            <option value="inherit">Clinic default</option>
+            <option value="on">On</option>
+            <option value="off">Off</option>
+          </select>
+        </div>
+      </div>
     </div>
   );
 }

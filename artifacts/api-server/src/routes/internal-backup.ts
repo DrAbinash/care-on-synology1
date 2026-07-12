@@ -104,27 +104,50 @@ router.get("/download", async (req, res) => {
       }
     });
 
+    // BEND-1 — TRUTHFUL stream termination. Previously the pipe auto-ended
+    // the response even when pg_dump failed mid-stream, so the puller saw a
+    // clean HTTP 200 and archived a TRUNCATED dump. The response now ends
+    // cleanly ONLY when pg_dump exited 0 (and gzip finished); any failure
+    // destroys the socket so the client sees a transfer error (curl exits
+    // non-zero and the Synology script keeps its previous good backup).
+    let pgExitCode: number | null = null;
+    let compressorDone = !isGzip; // no gzip stage → nothing extra to wait for
+    const finalize = () => {
+      if (pgExitCode === null || !compressorDone) return; // not settled yet
+      if (res.writableEnded || res.destroyed) return;
+      if (pgExitCode === 0) {
+        res.end();
+      } else {
+        logger.error({ code: pgExitCode, errorOutput }, "pg_dump exited with error — destroying response stream");
+        res.destroy(new Error(`pg_dump exited with code ${pgExitCode}`));
+      }
+    };
+
     pgDump.on("close", (code) => {
-      if (code !== 0) {
+      pgExitCode = code ?? 1;
+      if (pgExitCode !== 0) {
         logger.error({ code, errorOutput }, "pg_dump exited with error");
       }
-      if (!res.writableEnded) {
-        res.end();
-      }
+      finalize();
     });
 
     if (isGzip) {
       const gzip = spawn("gzip", ["-c"], { stdio: ["pipe", "pipe", "pipe"] });
       pgDump.stdout.pipe(gzip.stdin);
-      gzip.stdout.pipe(res);
+      gzip.stdout.pipe(res, { end: false });
       gzip.stderr.on("data", (chunk) => {
         logger.error({ chunk: String(chunk) }, "gzip error");
       });
       gzip.on("error", (err) => {
         logger.error({ err }, "gzip spawn failed");
       });
+      gzip.on("close", () => {
+        compressorDone = true;
+        finalize();
+      });
     } else {
-      pgDump.stdout.pipe(res);
+      pgDump.stdout.pipe(res, { end: false });
+      pgDump.stdout.on("end", finalize);
     }
   } catch (err) {
     logger.error({ err }, "Backup download failed");

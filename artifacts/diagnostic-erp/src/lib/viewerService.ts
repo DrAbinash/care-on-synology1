@@ -7,6 +7,15 @@
 
 import { api } from "./fetchApi";
 import { readStaffSession, writeStaffSession } from "./staffSession";
+import {
+  applyNetworkSettings,
+  hostForProfile,
+  orthancBaseForProfile,
+  orthancBaseForHost,
+  publicBaseUrl,
+  rewriteUrlToProfile,
+  type NetworkProfile,
+} from "./networkProfiles";
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -36,51 +45,8 @@ export interface NetworkDiagnostics {
 
 // ─── NETWORK PROFILE HELPERS ──────────────────────────────────────────────────
 
-/**
- * Extracts the host (hostname or IP) from a URL string, e.g.
- * "http://172.16.1.139:3000/viewer" -> "172.16.1.139"
- */
-function extractHost(url: string | undefined): string {
-  if (!url) return "";
-  try {
-    return new URL(url).hostname;
-  } catch {
-    // Not a full URL (e.g. bare IP or malformed) — fall back to a regex grab.
-    const m = url.match(/(?:^|\/\/)([^/:]+)/);
-    return m?.[1] ?? "";
-  }
-}
-
-/**
- * Resolves the LAN and Tailscale hosts from admin-configured settings rather
- * than hardcoded placeholder IPs, so this works regardless of the clinic's
- * actual LAN subnet (e.g. 172.16.1.139) instead of an assumed 192.168.x.x.
- *
- * - LAN host      = hostname already embedded in the configured `ohif_base_url`
- *                    (this is always set for LAN mode to work at all today).
- * - Tailscale host = new `ohif_base_url_tailscale` setting if configured,
- *                    else falls back to the previous default so nothing
- *                    breaks for clinics that haven't set it yet.
- */
-function resolveProfileHosts(settings: Record<string, string>): { lan: string; tailscale: string; publicHost: string } {
-  const lan = extractHost(settings["ohif_base_url"]) || "172.16.1.139";
-  const tailscale = extractHost(settings["ohif_base_url_tailscale"]) || "100.65.255.115";
-  const publicHost = settings["public_pacs_host"]?.trim() || "caredeoghar.com";
-  return { lan, tailscale, publicHost };
-}
-
-export function adaptUrlToProfile(url: string, profile: "LAN" | "TAILSCALE" | "PUBLIC", settings: Record<string, string> = {}): string {
-  if (!url) return "";
-  const { lan, tailscale, publicHost } = resolveProfileHosts(settings);
-  const targetHost = profile === "LAN" ? lan : profile === "TAILSCALE" ? tailscale : publicHost;
-  // Replace whichever known host currently appears in the URL with the target.
-  // Escape each host for safe regex use (IPs contain literal dots).
-  const escape = (h: string) => h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  let result = url;
-  for (const host of [lan, tailscale, publicHost]) {
-    if (host) result = result.replace(new RegExp(escape(host), "g"), targetHost);
-  }
-  return result;
+export function adaptUrlToProfile(url: string, profile: "LAN" | "TAILSCALE" | "PUBLIC"): string {
+  return rewriteUrlToProfile(url, profile as NetworkProfile);
 }
 
 /**
@@ -110,6 +76,9 @@ export async function resolveActiveProfile(
     return { profile: "PUBLIC", reason: "Server-side render fallback", latencyMs: 0 };
   }
 
+  // Hydrate central network config from admin settings (env defaults otherwise)
+  applyNetworkSettings(settings);
+
   // 1. Check database session preference first, then localStorage fallback
   const session = readStaffSession();
   const dbProfile = session?.user?.pacsNetworkProfile;
@@ -117,9 +86,8 @@ export async function resolveActiveProfile(
   const activeOverride = dbProfile || localOverride || "auto";
 
   if (activeOverride && activeOverride !== "auto") {
-    const { lan, tailscale, publicHost } = resolveProfileHosts(settings);
-    const targetHost = activeOverride === "LAN" ? lan : activeOverride === "TAILSCALE" ? tailscale : publicHost;
-    return { 
+    const targetHost = hostForProfile(activeOverride as NetworkProfile);
+    return {
       profile: activeOverride as "LAN" | "TAILSCALE" | "PUBLIC", 
       reason: `Manual override saved in ${dbProfile ? "User Database Profile" : "Local Browser Settings"} (${targetHost})`, 
       latencyMs: 0 
@@ -138,11 +106,9 @@ export async function resolveActiveProfile(
     };
   }
 
-  const { lan: lanHost, tailscale: tailscaleHost } = resolveProfileHosts(settings);
-
   // 3. Probing Order: Clinic LAN first (preferred)
   const startLan = Date.now();
-  const lanReachable = await probeEndpoint(`http://${lanHost}:8042/system`, 1000);
+  const lanReachable = await probeEndpoint(`${orthancBaseForProfile("LAN")}/system`, 1000);
   if (lanReachable) {
     const lat = Date.now() - startLan;
     saveDetectedProfile("LAN", lat);
@@ -153,7 +119,7 @@ export async function resolveActiveProfile(
   const lastGood = localStorage.getItem("pacs_last_good_profile") as "LAN" | "TAILSCALE" | "PUBLIC" | null;
   if (lastGood === "TAILSCALE") {
     const startTs = Date.now();
-    const tsReachable = await probeEndpoint(`http://${tailscaleHost}:8042/system`, 1000);
+    const tsReachable = await probeEndpoint(`${orthancBaseForProfile("TAILSCALE")}/system`, 1000);
     if (tsReachable) {
       const lat = Date.now() - startTs;
       saveDetectedProfile("TAILSCALE", lat);
@@ -163,7 +129,7 @@ export async function resolveActiveProfile(
 
   // 5. Try Tailscale next (standard fallback)
   const startTs = Date.now();
-  const tsReachable = await probeEndpoint(`http://${tailscaleHost}:8042/system`, 1000);
+  const tsReachable = await probeEndpoint(`${orthancBaseForProfile("TAILSCALE")}/system`, 1000);
   if (tsReachable) {
     const lat = Date.now() - startTs;
     saveDetectedProfile("TAILSCALE", lat);
@@ -174,7 +140,7 @@ export async function resolveActiveProfile(
   const publicEnabled = settings["public_pacs_enabled"] === "true";
   if (publicEnabled) {
     const startPub = Date.now();
-    const pubReachable = await probeEndpoint("https://caredeoghar.com", 1200);
+    const pubReachable = await probeEndpoint(publicBaseUrl(), 1200);
     if (pubReachable) {
       const lat = Date.now() - startPub;
       saveDetectedProfile("PUBLIC", lat);
@@ -232,7 +198,8 @@ export async function checkViewerServices(
   host: string,
   settings: Record<string, string>
 ): Promise<Record<string, ServiceHealthState>> {
-  const erpBase = typeof window !== "undefined" ? window.location.origin : "https://caredeoghar.com";
+  applyNetworkSettings(settings);
+  const erpBase = typeof window !== "undefined" ? window.location.origin : publicBaseUrl();
   
   const check = async (name: string, url: string, method: "GET" | "HEAD" = "GET"): Promise<ServiceHealthState> => {
     const start = Date.now();
@@ -254,10 +221,10 @@ export async function checkViewerServices(
 
   return {
     erp: await check("ERP Portal Server", erpBase + "/api/health"),
-    orthancHttp: await check("Orthanc HTTP REST", `http://${host}:8042/system`),
-    dicomWeb: await check("DICOMweb Metadata Retrieve", `http://${host}:8042/dicom-web/studies/${studyInstanceUID}`),
-    wado: await check("WADO Image Retrieval", `http://${host}:8042/wado?requestType=WADO&studyUID=${studyInstanceUID}`),
-    ohif: await check("OHIF Base Endpoint", adaptUrlToProfile(settings["ohif_base_url"] || "", profile, settings)),
+    orthancHttp: await check("Orthanc HTTP REST", `${orthancBaseForHost(host)}/system`),
+    dicomWeb: await check("DICOMweb Metadata Retrieve", `${orthancBaseForHost(host)}/dicom-web/studies/${studyInstanceUID}`),
+    wado: await check("WADO Image Retrieval", `${orthancBaseForHost(host)}/wado?requestType=WADO&studyUID=${studyInstanceUID}`),
+    ohif: await check("OHIF Base Endpoint", adaptUrlToProfile(settings["ohif_base_url"] || "", profile)),
     weasis: { name: "Weasis Native Launcher", status: "green", details: "Protocol Handler ready (weasis://)", endpoint: "weasis://$dicom" },
     conquest: { name: "Conquest PACS Server", status: "green", details: "DICOM SCP active", endpoint: `http://${host}:5678` },
     internalApi: await check("ERP Internal API Bridge", erpBase + "/api/internal/radiology/ai-draft", "HEAD")
@@ -290,13 +257,31 @@ export function recordFailedLaunch(stage: string, url: string, status: string) {
 
 // ─── LAUNCH LOGIC ─────────────────────────────────────────────────────────────
 
+/**
+ * M1.1 consolidation — the two redirect-style launches the canonical
+ * Reporting Workspace uses. Previously inlined (window.open with hand-built
+ * URLs) in RadiologyReportingWorkspace and RadiologyReportEditor; shared here
+ * so every reporting surface launches viewers through this one module.
+ * The server-side redirect endpoint handles profile adaptation itself, so
+ * these need no settings — use launchViewer() below when client-side
+ * LAN/Tailscale URL adaptation is required.
+ */
+export function openWeasisLaunchRedirect(studyInstanceUID: string): void {
+  window.open(`/api/radiology/studies/${encodeURIComponent(studyInstanceUID)}/weasis-launch-redirect`, "_blank");
+}
+
+/** Opens the in-app OHIF viewer page (/radiology/viewer/:uid) in a new tab. */
+export function openOhifViewerPage(studyInstanceUID: string): void {
+  window.open(`/radiology/viewer/${encodeURIComponent(studyInstanceUID)}`, "_blank");
+}
+
 export function getOhifUrl(studyInstanceUID: string, settings: Record<string, string>, profile: "LAN" | "TAILSCALE" | "PUBLIC" = "LAN"): string {
   const rawBaseUrl = settings["ohif_base_url"]?.trim();
-  const ohifBase = adaptUrlToProfile(rawBaseUrl || "", profile, settings);
+  const ohifBase = adaptUrlToProfile(rawBaseUrl || "", profile);
   const normalizedBase = ohifBase.replace(/\/$/, "");
 
   const template = settings["ohif_study_url_template"]?.trim() || "{OHIF_BASE_URL}/viewer?StudyInstanceUIDs={studyInstanceUID}";
-  const adaptedTemplate = adaptUrlToProfile(template, profile, settings);
+  const adaptedTemplate = adaptUrlToProfile(template, profile);
   
   return adaptedTemplate
     .replace(/\{OHIF_BASE_URL\}/g, normalizedBase)
@@ -306,7 +291,7 @@ export function getOhifUrl(studyInstanceUID: string, settings: Record<string, st
 export function getWeasisUrl(studyInstanceUID: string, settings: Record<string, string>, profile: "LAN" | "TAILSCALE" | "PUBLIC" = "LAN"): string {
   const template = settings["weasis_manifest_url_template"]?.trim();
   if (template) {
-    return adaptUrlToProfile(template, profile, settings).replace(/\{studyInstanceUID\}/g, studyInstanceUID);
+    return adaptUrlToProfile(template, profile).replace(/\{studyInstanceUID\}/g, studyInstanceUID);
   }
 
   const rawWadoUrl =
@@ -316,7 +301,7 @@ export function getWeasisUrl(studyInstanceUID: string, settings: Record<string, 
     settings["conquest_wado_base_url"]?.trim() ||
     "";
   
-  const wadoUrl = adaptUrlToProfile(rawWadoUrl, profile, settings);
+  const wadoUrl = adaptUrlToProfile(rawWadoUrl, profile);
   return `weasis://$dicom:get -w "${wadoUrl}" -r "studyUID=${studyInstanceUID}"`;
 }
 
@@ -333,8 +318,7 @@ export async function launchViewer(
 
   const startTime = Date.now();
   const { profile, reason } = await resolveActiveProfile(settings);
-  const { lan, tailscale, publicHost } = resolveProfileHosts(settings);
-  const host = profile === "LAN" ? lan : profile === "TAILSCALE" ? tailscale : publicHost;
+  const host = hostForProfile(profile as NetworkProfile);
 
   // Perform per-service check
   const services = await checkViewerServices(studyInstanceUID, host, settings);
@@ -492,8 +476,8 @@ function showDiagnosticOverlay(opts: {
 
   document.getElementById("pacs-copy-wado")?.addEventListener("click", () => {
     const isTs = opts.profile === "TAILSCALE";
-    const host = isTs ? "100.65.255.115" : "192.168.1.137";
-    navigator.clipboard.writeText(`http://${host}:8042/wado?requestType=WADO&studyUID=${opts.studyInstanceUID}&contentType=application/dicom`);
+    const host = hostForProfile(isTs ? "TAILSCALE" : "LAN");
+    navigator.clipboard.writeText(`${orthancBaseForHost(host)}/wado?requestType=WADO&studyUID=${opts.studyInstanceUID}&contentType=application/dicom`);
     opts.toast({ title: "Copied WADO URL to clipboard" });
   });
 }

@@ -21,6 +21,7 @@ import { initializePluginLoader } from "./plugin-loader";
 initializePluginLoader(app);
 
 import { logger } from "./lib/logger";
+import { NETWORK_LAN_HOST } from "./lib/networkDefaults";
 import { startCronScheduler } from "./cron";
 import { ensureDefaultLedger } from "./routes/ledgers";
 import { backfillExpirePublicTokens } from "./routes/patient-reports";
@@ -30,6 +31,7 @@ import { eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { validateRadiologyConfig } from "./lib/pacs/pacsConfig.js";
 import { shouldForceBootstrapReset } from "./lib/bootstrapAdmin.js";
+import { markStartupMigrationsSettled } from "./lib/startupState";
 
 // Bootstrap admin account for fresh production databases.
 //
@@ -134,6 +136,25 @@ async function seedBootstrapAdminIfNeeded(): Promise<void> {
   }
 }
 
+// Helper: Execute multi-statement SQL with auto-commit between statements.
+// CRITICAL: PostgreSQL wraps multi-statement query() calls in implicit transactions.
+// This helper splits SQL and executes each statement via pool.query() for autocommit.
+async function executeStartupSQL(sql: string): Promise<void> {
+  // Split on semicolon, filter empty statements, trim whitespace
+  const statements = sql
+    .split(';')
+    .map(stmt => stmt.trim())
+    .filter(stmt => stmt.length > 0 && !stmt.startsWith('--'));
+
+  for (const stmt of statements) {
+    // Drizzle breakpoint comments are safe to strip
+    const cleanStmt = stmt.replace(/--> statement-breakpoint/g, '').trim();
+    if (cleanStmt) {
+      await pool.query(cleanStmt);
+    }
+  }
+}
+
 // ── Startup schema migrations ──────────────────────────────────────────────────
 // Idempotent ALTER TABLE / CREATE TABLE IF NOT EXISTS statements that extend
 // the schema without requiring a full Drizzle migration pipeline. Safe to run
@@ -161,6 +182,15 @@ async function seedBootstrapAdminIfNeeded(): Promise<void> {
 // check that only performs DDL when it detects actual drift, not an
 // unconditional mutation on every boot. No new blocks like it should be
 // added; see docs/DEPLOYMENT.md.)
+//
+// CRITICAL FIX (2026-06-30): the DDL block below runs via executeStartupSQL()
+// (each statement through pool.query(), autocommit) instead of a single
+// client.query() call. client.query() with multi-statement SQL wraps all
+// statements in ONE implicit transaction, which caused lock timeouts in
+// production. This is independent of the identity-check + advisory-lock
+// section immediately below, which still uses the single dedicated `client`
+// connection — the lock only needs to serialize concurrent calls to this
+// function, not the individual statements inside it.
 async function runStartupMigrations(): Promise<void> {
   const client = await pool.connect();
   try {
@@ -205,7 +235,7 @@ async function runStartupMigrations(): Promise<void> {
     // or another care-api replica's startup migrations.
     await client.query("SELECT pg_advisory_lock(hashtext('care_erp_schema_migration'));");
 
-    await client.query(`
+    await executeStartupSQL(`
       ALTER TABLE order_tests ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
       ALTER TABLE order_tests ADD COLUMN IF NOT EXISTS cancelled_by_name TEXT;
       ALTER TABLE order_tests ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
@@ -355,27 +385,20 @@ async function runStartupMigrations(): Promise<void> {
       WHERE NOT EXISTS (SELECT 1 FROM clinic_settings LIMIT 1);
 
       -- ── One-time correction: earlier seeds above stored the literal
-      -- placeholder text 'GSTIN_NOT_SET' / 'RZP_KEY_NOT_SET' instead of an
-      -- empty string for "not configured" fields. Since these are
-      -- non-empty strings, bill print templates (which check "if gstin is
-      -- set, print it") treated them as real values and printed
-      -- "GSTIN: GSTIN_NOT_SET" on every invoice.
-      --
-      -- Both columns are TEXT NOT NULL DEFAULT '' (see
-      -- lib/db/src/schema/clinicSettings.ts), so the fix must use '' here,
-      -- not NULL — an earlier version of this migration used NULL and
-      -- violated the NOT NULL constraint on every startup, which aborted
-      -- this entire migration batch (including unrelated statements like
-      -- outsourced_labs setup that run later in the same transaction).
-      -- Empty string is safe: all read paths already treat '' the same as
-      -- "not configured" (row.gstin ?? "", clinic?.gstin ? ... : ""),
-      -- since both are falsy.
-      --
-      -- Safe to run every startup — only touches rows still holding the
-      -- exact placeholder text or a leftover NULL from a prior failed run;
-      -- a no-op once corrected. Idempotent, non-destructive.
-      UPDATE clinic_settings SET gstin = '' WHERE gstin = 'GSTIN_NOT_SET' OR gstin IS NULL;
-      UPDATE clinic_settings SET razorpay_key_id = '' WHERE razorpay_key_id = 'RZP_KEY_NOT_SET' OR razorpay_key_id IS NULL;
+      -- placeholder text 'GSTIN_NOT_SET' / 'RZP_KEY_NOT_SET' instead of NULL
+      -- for "not configured" fields. Since these are non-empty strings, bill
+      -- print templates (which check "if gstin is set, print it") treated
+      -- them as real values and printed "GSTIN: GSTIN_NOT_SET" on every
+      -- invoice. Safe to run every startup — only touches rows that still
+      -- have the exact placeholder text, a no-op once corrected.
+      UPDATE clinic_settings SET gstin = NULL WHERE gstin = 'GSTIN_NOT_SET';
+      UPDATE clinic_settings SET razorpay_key_id = NULL WHERE razorpay_key_id = 'RZP_KEY_NOT_SET';
+      -- These columns were originally created NOT NULL, but the app stores
+      -- NULL to mean "not configured" (see the two UPDATEs above). Relax
+      -- the constraint so settings saves with GST/Razorpay left blank
+      -- don't crash with a not-null violation.
+      ALTER TABLE clinic_settings ALTER COLUMN gstin DROP NOT NULL;
+      ALTER TABLE clinic_settings ALTER COLUMN razorpay_key_id DROP NOT NULL;
       CREATE TABLE IF NOT EXISTS day_closures (
         id SERIAL PRIMARY KEY,
         closure_date TEXT NOT NULL,
@@ -2732,12 +2755,18 @@ const server = app.listen({ port, exclusive: true }, () => {
     });
   }
 
-  runStartupMigrations().catch((e) => {
+  runStartupMigrations().then(() => {
+    // BEND-1 — record truthful readiness: /api/healthz reports STARTING until
+    // this settles, and a failure is RECORDED (health DEGRADED) instead of
+    // being visible only in logs.
+    markStartupMigrationsSettled(true);
+  }).catch((e) => {
     // runStartupMigrations runs ADD COLUMN IF NOT EXISTS patches that are also
     // done by db-patch-v2, so failures here are non-fatal (db-patch-v2 already
     // guaranteed the schema). Log and continue — do NOT crash the API server
     // because the migrations here are belt-and-suspenders, not the primary path.
     logger.error({ err: e }, "Startup migration warning (non-fatal — schema was verified by db-patch-v2)");
+    markStartupMigrationsSettled(false, e instanceof Error ? e.message : String(e));
   });
   ensureDefaultLedger().catch((e) => logger.error({ err: e }, "Failed to seed default ledger"));
   backfillExpirePublicTokens().catch((e) => logger.error({ err: e }, "Failed to backfill public token expiry"));
@@ -2756,7 +2785,7 @@ const server = app.listen({ port, exclusive: true }, () => {
     try {
       const defaultHost = process.env.ORTHANC_URL 
         ? new URL(process.env.ORTHANC_URL).hostname 
-        : "192.168.1.137";
+        : NETWORK_LAN_HOST;
       const erpBase = process.env["PUBLIC_BASE_URL"] || `http://${defaultHost}:8888`;
 
       const pairs: Array<{ key: string; value: string | undefined; category: string }> = [

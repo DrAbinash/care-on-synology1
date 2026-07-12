@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
+import { isUltrasoundModality } from "@/lib/usgModality";
 import {
   Ruler, AlertTriangle, TrendingUp, TrendingDown, Minus, Check,
   ChevronDown, RotateCcw, Save, History, Sparkles, Volume2
@@ -216,9 +217,14 @@ export default function MeasurementAssistantPanel({
       key = "CT";
     } else if (mod === "MG" || bp.includes("BREAST") || bp.includes("MAMMOGRAPHY")) {
       key = "MAMMOGRAPHY";
-    } else if (mod === "US" || mod === "USG") {
-      if (bp.includes("OBSTETRIC") || bp.includes("PREGNANCY") || bp.includes("FETAL")) key = "OBSTETRIC";
-      else if (bp.includes("DOPPLER")) key = "DOPPLER";
+    } else if (isUltrasoundModality(mod)) {
+      // R2.0 — same normalizer RadiologyWorklist.tsx/RadiologyReportingWorkspace.tsx
+      // use, so an aliased modality string ("Doppler", "OB US", "Fetal US", ...)
+      // lands in the right OB/Doppler bucket here too instead of silently
+      // falling through to the generic "USG" default (the exact-match
+      // `mod === "US" || mod === "USG"` this replaces would miss all of them).
+      if (bp.includes("OBSTETRIC") || bp.includes("PREGNANCY") || bp.includes("FETAL") || mod.includes("OB") || mod.includes("FETAL")) key = "OBSTETRIC";
+      else if (bp.includes("DOPPLER") || mod.includes("DOPPLER")) key = "DOPPLER";
       else key = "USG";
     }
 

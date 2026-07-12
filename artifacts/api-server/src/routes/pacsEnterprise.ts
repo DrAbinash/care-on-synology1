@@ -13,6 +13,7 @@ import { db } from "@workspace/db";
 import { tcpProbe } from "../lib/pacs/providers.js";
 import { testNodeConnection } from "../services/dicom-pull-agent/dimse-agent";
 import { getRadiologyConfig, validateRadiologyConfig, isDockerBridgeIp } from "../lib/pacs/pacsConfig.js";
+import { NETWORK_LAN_HOST, DEFAULT_OHIF_BASE_URL, DEFAULT_WADO_URL, OHIF_HTTP_PORT } from "../lib/networkDefaults";
 import {
   dicomRoutingRulesTable,
   dicomPulledStudiesTable,
@@ -282,13 +283,13 @@ router.post("/test-modality", async (req, res) => {
 
 const DEFAULT_VIEWER_SETTINGS: Record<string, string> = {
   // OHIF viewer — same-origin nginx proxy (port 3010 proxies /dicom-web → care-orthanc:8042)
-  ohif_base_url: "http://192.168.1.137:3010",
-  dicom_web_base_url: "http://192.168.1.137:3010/dicom-web",
+  ohif_base_url: DEFAULT_OHIF_BASE_URL,
+  dicom_web_base_url: `${DEFAULT_OHIF_BASE_URL}/dicom-web`,
   ohif_study_url_template: "{OHIF_BASE_URL}/viewer?StudyInstanceUIDs={studyInstanceUID}",
   // Weasis — uses Orthanc's own WADO-URI endpoint directly (not via OHIF proxy)
-  wado_uri_base_url: "http://192.168.1.137:8042/wado",
-  weasis_manifest_url_template: 'weasis://$dicom:get -w "http://192.168.1.137:8042/wado?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"',
-  pacs_ip: "192.168.1.137",
+  wado_uri_base_url: DEFAULT_WADO_URL,
+  weasis_manifest_url_template: `weasis://$dicom:get -w "${DEFAULT_WADO_URL}?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"`,
+  pacs_ip: NETWORK_LAN_HOST,
   pacs_port: "4242",
   pacs_ae_title: "ORTHANC2",
   viewer_mode: "BOTH",
@@ -599,8 +600,71 @@ router.get("/studies/:studyInstanceUID/weasis-launch-redirect", async (req, res)
 
 // ─── OHIF VIEWER LAUNCH ───────────────────────────────────────────────────────
 
+// R1.3 — the launch URL is built SERVER-SIDE from the admin-configured
+// template, optionally narrowed to a series / SOP instance for report-image
+// deep links. Every UID is validated; malformed identifiers are rejected.
+// Precision degrades explicitly (SOP → series → study) when the configured
+// viewer URL cannot express the requested level, and the response reports
+// both the requested and the achieved level. Never patient-name matching,
+// never a public PACS URL.
+const LAUNCH_UID = /^[0-9.]{1,128}$/;
+
+/** Pure R1.3 helper (exported for tests): builds the most specific OHIF URL
+ *  the configured template can express. */
+export function buildOhifLaunchUrl(opts: {
+  ohifBase: string;
+  studyTemplate: string | null | undefined;
+  studyInstanceUID: string;
+  seriesInstanceUID?: string | null;
+  sopInstanceUID?: string | null;
+}): { ohifUrl: string; launchLevel: "study" | "series" | "sop" } {
+  const { ohifBase, studyTemplate, studyInstanceUID } = opts;
+  const series = opts.seriesInstanceUID || null;
+  const sop = opts.sopInstanceUID || null;
+  let url = studyTemplate
+    ? studyTemplate
+        .replace(/\{OHIF_BASE_URL\}/g, ohifBase.replace(/\/$/, ""))
+        .replace(/\{studyInstanceUID\}/g, encodeURIComponent(studyInstanceUID))
+    : `${ohifBase.replace(/\/$/, "")}/viewer?StudyInstanceUIDs=${encodeURIComponent(studyInstanceUID)}`;
+  let launchLevel: "study" | "series" | "sop" = "study";
+  // A custom template may carry explicit placeholders for deeper levels.
+  const hasSeriesSlot = !!studyTemplate && studyTemplate.includes("{seriesInstanceUID}");
+  const hasSopSlot = !!studyTemplate && studyTemplate.includes("{sopInstanceUID}");
+  if (hasSeriesSlot) url = url.replace(/\{seriesInstanceUID\}/g, series ? encodeURIComponent(series) : "");
+  if (hasSopSlot) url = url.replace(/\{sopInstanceUID\}/g, sop ? encodeURIComponent(sop) : "");
+  if (series && hasSeriesSlot) launchLevel = "series";
+  if (sop && hasSopSlot) launchLevel = "sop";
+  // Standard OHIF viewer URLs (the default and the shipped template) accept
+  // SeriesInstanceUIDs as a query filter; SOP-level addressing is not a
+  // stable OHIF URL parameter, so a SOP request degrades to its series.
+  if (series && launchLevel === "study" && /[?&]StudyInstanceUIDs=/.test(url)) {
+    url += `&SeriesInstanceUIDs=${encodeURIComponent(series)}`;
+    launchLevel = "series";
+  }
+  return { ohifUrl: url, launchLevel };
+}
+
 router.get("/studies/:studyInstanceUID/ohif-launch", async (req, res) => {
   const { studyInstanceUID } = req.params;
+  if (!LAUNCH_UID.test(studyInstanceUID)) {
+    res.status(400).json({ error: "invalid StudyInstanceUID" });
+    return;
+  }
+  const seriesInstanceUID = typeof req.query.seriesInstanceUID === "string" ? req.query.seriesInstanceUID : "";
+  const sopInstanceUID = typeof req.query.sopInstanceUID === "string" ? req.query.sopInstanceUID : "";
+  if (seriesInstanceUID && !LAUNCH_UID.test(seriesInstanceUID)) {
+    res.status(400).json({ error: "invalid SeriesInstanceUID" });
+    return;
+  }
+  if (sopInstanceUID && !LAUNCH_UID.test(sopInstanceUID)) {
+    res.status(400).json({ error: "invalid SOPInstanceUID" });
+    return;
+  }
+  if (sopInstanceUID && !seriesInstanceUID) {
+    res.status(400).json({ error: "seriesInstanceUID is required with sopInstanceUID" });
+    return;
+  }
+  const requestedLevel: "study" | "series" | "sop" = sopInstanceUID ? "sop" : seriesInstanceUID ? "series" : "study";
   const cfg = await getRadiologyConfig();
 
   const ohifBase = cfg.ohif.baseUrl;
@@ -616,15 +680,17 @@ router.get("/studies/:studyInstanceUID/ohif-launch", async (req, res) => {
       ohifUrl: null,
       dicomWebBaseUrl: dicomWebUrl || null,
       pacsType,
+      requestedLevel,
+      launchLevel: null,
     });
     return;
   }
 
-  const ohifUrl = studyTemplate
-    ? studyTemplate
-        .replace(/\{OHIF_BASE_URL\}/g, ohifBase.replace(/\/$/, ""))
-        .replace(/\{studyInstanceUID\}/g, encodeURIComponent(studyInstanceUID))
-    : `${ohifBase.replace(/\/$/, "")}/viewer?StudyInstanceUIDs=${encodeURIComponent(studyInstanceUID)}`;
+  const { ohifUrl, launchLevel } = buildOhifLaunchUrl({
+    ohifBase, studyTemplate, studyInstanceUID,
+    seriesInstanceUID: seriesInstanceUID || null,
+    sopInstanceUID: sopInstanceUID || null,
+  });
 
   const [[worklist], [pulled]] = await Promise.all([
     db
@@ -642,7 +708,7 @@ router.get("/studies/:studyInstanceUID/ohif-launch", async (req, res) => {
   const patientName = worklist?.patientName ?? pulled?.patientName ?? null;
   const accessionNumber = worklist?.accessionNumber ?? pulled?.accessionNumber ?? null;
 
-  void logPacsEvent("OHIF_VIEWER_LAUNCH", "VIEWER_LAUNCHED", `OHIF viewer launched for study ${studyInstanceUID}`, {
+  void logPacsEvent("OHIF_VIEWER_LAUNCH", "VIEWER_LAUNCHED", `OHIF viewer launched for study ${studyInstanceUID} (${launchLevel} level)`, {
     studyInstanceUID,
     accessionNumber,
   });
@@ -655,7 +721,97 @@ router.get("/studies/:studyInstanceUID/ohif-launch", async (req, res) => {
     ohifUrl,
     dicomWebBaseUrl: dicomWebUrl,
     pacsType,
+    requestedLevel,
+    launchLevel,
   });
+});
+
+// ─── M1.2 — READ-ONLY LAUNCH DIAGNOSTICS ─────────────────────────────────────
+// The browser cannot ask the PACS whether a StudyInstanceUID exists (QIDO is
+// cross-origin), so the workspace's permission-gated diagnostics drawer asks
+// this endpoint instead. Read-only; staff-auth + "/radiology" permission are
+// enforced at the router mount. Endpoint hosts are MASKED — diagnostics must
+// not enumerate internal topology — and there is no credential exposure and
+// no patient-name search (exact StudyInstanceUID only).
+
+/** Mask a URL's host: keep scheme, first 3 chars of host, port and path. */
+export function maskEndpointForDiagnostics(raw: string): string {
+  try {
+    const u = new URL(raw);
+    const host = u.hostname.length <= 3 ? "***" : `${u.hostname.slice(0, 3)}***`;
+    return `${u.protocol}//${host}${u.port ? `:${u.port}` : ""}${u.pathname !== "/" ? u.pathname : ""}`;
+  } catch {
+    return "***";
+  }
+}
+
+router.get("/studies/:studyInstanceUID/launch-diagnostics", async (req, res) => {
+  const { studyInstanceUID } = req.params;
+  if (!/^[0-9.]{1,128}$/.test(studyInstanceUID)) {
+    res.status(400).json({ error: "invalid StudyInstanceUID" });
+    return;
+  }
+
+  // Which network modes have viewer endpoints configured (masked).
+  const settings = await db.select().from(pacsSettingsTable);
+  const val = (key: string) => settings.find((s) => s.key === key)?.value?.trim() ?? "";
+  const modeKeys: Record<string, string> = {
+    LAN: "ohif_base_url",
+    TAILSCALE: "ohif_base_url_tailscale",
+    CLOUDFLARE: "ohif_base_url_cloudflare",
+    PUBLIC: "ohif_base_url_public",
+  };
+  const endpoints: Record<string, string> = {};
+  const configuredModes: string[] = [];
+  for (const [mode, key] of Object.entries(modeKeys)) {
+    const url = val(key);
+    if (url) {
+      configuredModes.push(mode);
+      endpoints[mode] = maskEndpointForDiagnostics(url);
+    }
+  }
+
+  // Server-side PACS existence check by EXACT StudyInstanceUID (never by
+  // patient name). Uses the server's own Orthanc reachability, bounded.
+  let pacsLookup: "FOUND" | "NOT_FOUND" | "UNAVAILABLE" = "UNAVAILABLE";
+  let pacsDetail: string | undefined;
+  try {
+    const cfg = await getRadiologyConfig();
+    const orthancBase =
+      process.env.ORTHANC_INTERNAL_URL?.replace(/\/$/, "") ||
+      cfg.orthanc.dicomWebUrl?.replace(/\/dicom-web\/?$/, "") ||
+      "";
+    if (!orthancBase) {
+      pacsDetail = "no Orthanc endpoint configured on the server";
+    } else {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 3000);
+      try {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        const user = process.env.ORTHANC_USERNAME || "";
+        const pass = process.env.ORTHANC_PASSWORD || "";
+        if (user && pass) headers["Authorization"] = "Basic " + Buffer.from(`${user}:${pass}`).toString("base64");
+        const r = await fetch(`${orthancBase}/tools/find`, {
+          method: "POST",
+          headers,
+          signal: controller.signal,
+          body: JSON.stringify({ Level: "Study", Query: { StudyInstanceUID: studyInstanceUID } }),
+        });
+        if (r.ok) {
+          const found = (await r.json()) as unknown[];
+          pacsLookup = Array.isArray(found) && found.length > 0 ? "FOUND" : "NOT_FOUND";
+        } else {
+          pacsDetail = `PACS answered HTTP ${r.status}`;
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  } catch (err) {
+    pacsDetail = err instanceof Error && err.name === "AbortError" ? "PACS lookup timed out (3s)" : "PACS lookup failed";
+  }
+
+  res.json({ studyInstanceUID, pacsLookup, ...(pacsDetail ? { pacsDetail } : {}), configuredModes, endpoints });
 });
 
 // ─── MWL PROCEDURES (STAFF DASHBOARD) ────────────────────────────────────────
@@ -2514,7 +2670,7 @@ router.get("/network/health", async (req, res) => {
     // Derive nuanced status: distinguish "not configured" from "failing"
     const ohifStatus  = !ohifConfigured ? "yellow" : ohifHttp.ok  ? "green" : "red";
     const ohifDetails = !ohifConfigured
-      ? "Not configured — enter OHIF URL in PACS Settings (use 192.168.1.137:3010)"
+      ? `Not configured — enter OHIF URL in PACS Settings (use ${NETWORK_LAN_HOST}:${OHIF_HTTP_PORT})`
       : ohifHttp.ok ? "Reachable" : "Unreachable from server — check OHIF is running, or set OHIF_INTERNAL_URL if the container can't reach its own external LAN IP";
 
     const weasisStatus  = weasisWado.ok ? "green" : "yellow";

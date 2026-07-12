@@ -29,6 +29,12 @@ import { ledgersRouter } from "./ledgers";
 import { tokensRouter } from "./tokens";
 import { testTokensRouter } from "./test-tokens";
 import { radiologyRouter } from "./radiology";
+import { radiologyWorklistLocksRouter } from "./radiology-worklist-locks";
+import { radiologyWorklistAssignmentsRouter } from "./radiology-worklist-assignments";
+import { radiologyVoiceRouter } from "./radiology-voice";
+import { radiologyOpsRouter } from "./radiology-ops";
+import { radiologyDiagnosticsRouter } from "./radiology-diagnostics";
+import { presentationTemplatesRouter } from "./presentation-templates";
 import { pacsEnterpriseRouter } from "./pacsEnterprise";
 import displayRouter from "./display";
 import queueDisplaySettingsRouter from "./queueDisplaySettings";
@@ -245,8 +251,18 @@ router.use("/website", websiteRouter);
 // Patient data — /patients permission
 router.use("/patients", requireStaffAuth, requireStaffPermission("/patients"), patientsRouter);
 
-// Doctor management — /doctors permission
-router.use("/doctors", requireStaffAuth, requireStaffPermission("/doctors"), doctorsRouter);
+// Doctor catalogue: any authenticated staff can READ (Billing Desk's
+// referring-doctor picker and Register.tsx both need the doctor list, same
+// as /tests). Mutations (create/update/delete/import) stay /doctors-gated.
+router.use(
+  "/doctors",
+  requireStaffAuth,
+  (req, res, next) => {
+    if (req.method === "GET") return next();
+    return requireStaffPermission("/doctors")(req, res, next);
+  },
+  doctorsRouter,
+);
 
 // Test catalogue — /tests permission
 // Tests catalog: any authenticated staff can READ (Billing Desk, Packages,
@@ -526,6 +542,34 @@ router.use("/ris-monitor", requireStaffAuth, requireStaffPermission("/radiology"
 
 // Phase 12: Real Radiology Workflow & DICOM Operations
 router.use("/radiology-workflow", requireStaffAuth, requireStaffPermission("/radiology"), radiologyWorkflowRouter);
+
+// Study locks / claiming (Ticket M1.6A) — one active lock per worklist study
+// so two radiologists never unknowingly report the same study. Mounted before
+// radiologyRouter; the /worklist-lock/* subpaths are unique to this router.
+router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), radiologyWorklistLocksRouter);
+
+// Assignment management (Ticket M1.6B1) — organizational ownership, distinct
+// from the lock above. /worklist-assignment/*, /radiologists, /workload.
+router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), radiologyWorklistAssignmentsRouter);
+
+// Voice-command audit (Ticket M1.6B2) — high-risk voice attempts/outcomes
+// into the hash-chained audit log. /voice-command-audit only.
+router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), radiologyVoiceRouter);
+
+// Backend v1 operational surface (Ticket BEND-1): health, consistency,
+// re-delivery obligations, durable jobs, audit verification, restore proof,
+// safe repairs. GET /health is staff-readable (masked); the rest is admin.
+router.use("/radiology-ops", requireStaffAuth, requireStaffPermission("/radiology"), radiologyOpsRouter);
+
+// Clinical-activation diagnostics toolkit (Ticket M1.3 "Flight Deck") —
+// read-only deployment/viewer/network/study/workflow/settings diagnostics.
+// Admin-only end to end (exposes unmasked endpoint topology).
+router.use("/radiology-diagnostics", requireStaffAuth, requireStaffPermission("/radiology"), radiologyDiagnosticsRouter);
+
+// Enterprise report template engine (Ticket R1.2): versioned presentation
+// templates. Reads/previews are staff-visible; mutations are admin-only,
+// audited, and version-creating only (published versions are immutable).
+router.use("/radiology/presentation-templates", requireStaffAuth, requireStaffPermission("/radiology"), presentationTemplatesRouter);
 
 // Radiology studies — open to all authenticated staff (doctors, radiologists, etc.)
 router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), radiologyRouter);

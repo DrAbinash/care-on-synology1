@@ -7,7 +7,7 @@ import {
 } from "@workspace/db/schema";
 import { sendDailySummaryEmail, sendCommissionMonthEndEmail, sendMonthlyAuditEmail } from "./email";
 import { runBooksSanity } from "./routes/books-sanity";
-import { exportDatabaseSql, exportDatabaseSqlFallback } from "./routes/backupReplication";
+import { exportDatabaseSql, exportDatabaseSqlFallback, computeSha256 } from "./routes/backupReplication";
 import { auditRunsTable, watchdogStatusTable } from "@workspace/db/schema";
 import { gte, and, lte, eq, inArray, isNull, or, lt } from "drizzle-orm";
 import { encryptBackup } from "@workspace/crypto";
@@ -16,6 +16,9 @@ import {
   stopDimsePullAgent,
   isDimsePullAgentRunning,
 } from "./services/dicom-pull-agent/dimse-agent";
+import { runRadiologyJobTick } from "./lib/radiologyJobs";
+import { RADIOLOGY_JOB_HANDLERS } from "./lib/radiologyJobHandlers";
+import { runScheduledAuditChainVerification } from "./lib/auditVerification";
 
 let currentTask: ReturnType<typeof cron.schedule> | null = null;
 // Track already-fired events per day to avoid double-firing
@@ -33,6 +36,8 @@ export function startCronScheduler() {
   scheduleAuditLogPurge();
   schedulePacsPullerWatchdog();
   scheduleWhatsappReminders();
+  scheduleRadiologyJobs();
+  scheduleAuditChainVerify();
 
   // Start the in-process DIMSE pull agent if enabled.
   // When ENABLE_DICOM_PULL_AGENT is set, the agent polls for pull jobs and
@@ -44,6 +49,37 @@ export function startCronScheduler() {
     startDimsePullAgent();
     console.log("[cron] In-process DIMSE pull agent started");
   }
+}
+
+// ── BEND-1: durable radiology job runner ─────────────────────────────────────
+// Every minute: requeue stale running claims (worker-restart safety), then
+// run up to 5 due jobs. Bounded retries + dead-letter live in radiologyJobs;
+// handlers are idempotent, so a crash between attempts never double-sends.
+function scheduleRadiologyJobs() {
+  cron.schedule("* * * * *", async () => {
+    try {
+      const result = await runRadiologyJobTick(RADIOLOGY_JOB_HANDLERS, { maxJobs: 5 });
+      if (result.ran.length > 0 || result.requeuedStale > 0) {
+        console.log("[cron] radiology jobs:", JSON.stringify(result));
+      }
+    } catch (err) {
+      console.error("[cron] radiology job tick failed:", err);
+    }
+  });
+}
+
+// ── BEND-1: scheduled audit-chain verification (safe default cadence) ────────
+// Daily windowed verification of the most recent slice; the result persists
+// to radiology_ops_checks so health reports last-verified time + outcome.
+// Detection only — a broken chain is NEVER resealed.
+function scheduleAuditChainVerify() {
+  cron.schedule("15 4 * * *", async () => {
+    try {
+      await runScheduledAuditChainVerification();
+    } catch (err) {
+      console.error("[cron] audit-chain verification failed:", err);
+    }
+  });
 }
 
 // ── Automated Backup Scheduler ────────────────────────────────────────────────────────
@@ -118,6 +154,7 @@ export async function fireScheduledBackups() {
     let sizeBytes = 0;
     let filePath: string | null = null;
     let notes = "";
+    let checksum: string | null = null;
 
     try {
       if (job.backupType === "DB" || job.backupType === "FULL" || job.backupType === "CONFIG") {
@@ -155,21 +192,27 @@ export async function fireScheduledBackups() {
         rowCount = dump.rowCount;
         const sql = require("fs").readFileSync(dump.filePath, "utf-8");
 
+        // Ticket E0.1d — SHA-256 over the encrypted content, exactly as it
+        // will be written to disk, so a later verifyBackupChecksum() call
+        // against the file on disk detects any corruption of the at-rest
+        // artifact (not just of the pre-encryption SQL).
+        const enc = encryptBackup(sql);
+        checksum = computeSha256(enc);
+
         // Write to disk if destinationPath provided
         if (job.destinationPath) {
           try {
             const dir = require("path").dirname(job.destinationPath);
             require("fs").mkdirSync(dir, { recursive: true });
-            const enc = encryptBackup(sql);
             const dest = `${job.destinationPath}/backup_${job.jobName}_${new Date().toISOString().replace(/[:.]/g, "-")}.sql.enc`;
             require("fs").writeFileSync(dest, enc);
             filePath = dest;
-            notes = `Backup saved to ${dest} (${(sizeBytes / 1024 / 1024).toFixed(2)} MB)`;
+            notes = `Backup saved to ${dest} (${(sizeBytes / 1024 / 1024).toFixed(2)} MB, SHA-256: ${checksum})`;
           } catch (e: unknown) {
             notes = `In-memory backup; disk write failed: ${e instanceof Error ? e.message : String(e)}`;
           }
         } else {
-          notes = `In-memory ${job.backupType} backup (${(sizeBytes / 1024 / 1024).toFixed(2)} MB)`;
+          notes = `In-memory ${job.backupType} backup (${(sizeBytes / 1024 / 1024).toFixed(2)} MB, SHA-256: ${checksum})`;
         }
 
         // The unencrypted intermediate dump must not linger on disk.
@@ -205,6 +248,7 @@ export async function fireScheduledBackups() {
         filePath,
         notes,
         encrypted: true,
+        checksum,
       }).where(eq(backupJobLogsTable.id, logRow?.id ?? 0));
 
       await db.update(backupJobsTable).set({

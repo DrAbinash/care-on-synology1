@@ -63,9 +63,17 @@ const DEFAULT_PERMISSIONS: Record<string, string[]> = {
   admin: ["/", "/patients", "/orders", "/tests", "/billing", "/payments", "/doctors", "/reports", "/report-generator", "/inventory", "/referrals", "/accounting", "/discounts", "/settings", "/register", "/pacs", "/dicom-nodes"],
   manager: ["/", "/patients", "/orders", "/billing", "/payments", "/doctors", "/reports", "/referrals", "/accounting", "/discounts", "/register", "/pacs", "/dicom-nodes"],
   accountant: ["/", "/accounting", "/reports", "/billing", "/payments"],
-  billing: ["/", "/patients", "/billing", "/payments", "/register", "/discounts"],
+  // Billing Desk's save flow always does POST /api/orders then POST
+  // /api/bills as one action (there's no separate "create order only" step
+  // in the UI) — so a role literally named "billing" must include /orders
+  // or every save 403s at step one before the bill is ever attempted.
+  billing: ["/", "/patients", "/orders", "/billing", "/payments", "/register", "/discounts"],
   lab: ["/orders", "/tests", "/report-generator", "/inventory"],
-  receptionist: ["/", "/patients", "/orders", "/register"],
+  // Mirror of the billing-role fix above: receptionist could create an
+  // order (has /orders) but then 403'd on the bill step of the same
+  // Billing Desk save flow (missing /billing). Front-desk/reception staff
+  // are the other role that routinely runs that combined save action.
+  receptionist: ["/", "/patients", "/orders", "/billing", "/register"],
 };
 
 const BCRYPT_ROUNDS = 12;

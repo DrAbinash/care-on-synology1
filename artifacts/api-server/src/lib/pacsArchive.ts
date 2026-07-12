@@ -4,10 +4,11 @@ import {
   patientsTable,
   patientReportsTable,
   radiologyAuditLogTable,
+  radiologyPacsArchiveRevisionsTable,
 } from "@workspace/db/schema";
-import { eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { chromium } from "playwright";
-import { buildReportHtml } from "../routes/patient-reports.js";
+import { buildReportArtifact, type ReportArtifact } from "../routes/patient-reports.js";
 import { logger } from "./logger.js";
 
 import { getRadiologyConfig } from "./pacs/pacsConfig";
@@ -28,7 +29,15 @@ function orthancHeaders(user: string, pass: string): Record<string, string> {
   return headers;
 }
 
-export async function archiveReportToPacs(studyId: number): Promise<{ success: boolean; instanceId?: string; error?: string }> {
+export async function archiveReportToPacs(
+  studyId: number,
+  opts: {
+    /** D8 — PACS archives the LATEST signed version by default; pass
+     *  "specific" to explicitly archive the historical row as-is (it renders
+     *  with the superseded watermark). */
+    versionMode?: "latest" | "specific";
+  } = {},
+): Promise<{ success: boolean; instanceId?: string; error?: string }> {
   logger.info({ studyId }, "[pacs-archive] Starting report archival to Orthanc");
 
   // 1. Fetch study
@@ -56,6 +65,10 @@ export async function archiveReportToPacs(studyId: number): Promise<{ success: b
     details: JSON.stringify({ message: "PACS archive triggered, rendering PDF" }),
   }).catch(() => undefined);
 
+  // BEND-1 — which revision this run is archiving, visible to the catch
+  // block so per-revision failures are attributable.
+  let archivedRevision: { resolvedReportId: number; rootReportId: number; sequenceNumber: number } | null = null;
+
   try {
     // 2. Fetch patient demographics
     const [patient] = await db
@@ -80,8 +93,13 @@ export async function archiveReportToPacs(studyId: number): Promise<{ success: b
     }
     const sexStr = patient?.gender || "O";
 
-    // 3. Resolve report HTML
+    // 3. Resolve report HTML. D8: amendments share the parent's studyId, so
+    // whichever row this unordered pick lands on, buildReportArtifact resolves
+    // the chain to the latest signed version (default) — the archived PDF can
+    // never silently be a superseded report, and an explicitly historical
+    // archive carries the superseded watermark baked into its HTML.
     let htmlContent = "";
+    let artifact: ReportArtifact | null = null;
     const [report] = await db
       .select()
       .from(patientReportsTable)
@@ -89,18 +107,26 @@ export async function archiveReportToPacs(studyId: number): Promise<{ success: b
       .limit(1);
 
     if (report) {
-      htmlContent = await buildReportHtml(report.id, false) || "";
+      artifact = await buildReportArtifact(report.id, { surface: "pacs", versionMode: opts.versionMode });
+      htmlContent = artifact?.html || "";
     }
 
     if (!htmlContent) {
-      // Fallback HTML layout using study + patient data
+      // Fallback HTML layout for a study with no patient_reports row (legacy
+      // free-text-only studies using radiology_studies.finalReport/
+      // prelimReport directly, never promoted through the modern report
+      // pipeline) — an edge case distinct from the primary buildReportArtifact
+      // path above. R1.4: every field here is patient/study data, not
+      // markup, and MUST be escaped — it previously was not.
+      const esc = (v: unknown) => String(v ?? "")
+        .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
       const finalReportText = study.finalReport || study.prelimReport || "No report body text entered.";
       htmlContent = `
         <!doctype html>
         <html>
         <head>
           <meta charset="utf-8">
-          <title>Radiology Report — ${study.accessionNumber}</title>
+          <title>Radiology Report — ${esc(study.accessionNumber)}</title>
           <style>
             body { font-family: 'Segoe UI', Arial, sans-serif; color: #111; padding: 20px; font-size: 13px; line-height: 1.6; }
             .header { border-bottom: 3px solid #4338ca; padding-bottom: 10px; margin-bottom: 15px; }
@@ -117,16 +143,16 @@ export async function archiveReportToPacs(studyId: number): Promise<{ success: b
             <div class="title">Care Diagnostics — Radiology Report</div>
           </div>
           <div class="meta">
-            <div><span>Patient Name</span><strong>${patientName}</strong></div>
-            <div><span>Patient ID</span><strong>${patientIdStr}</strong></div>
-            <div><span>Age / Sex</span><strong>${ageStr} / ${sexStr}</strong></div>
-            <div><span>Accession Number</span><strong>${study.accessionNumber}</strong></div>
-            <div><span>Study Date</span><strong>${study.studyDate || ""}</strong></div>
-            <div><span>Modality</span><strong>${study.modality}</strong></div>
-            <div><span>Referring Doctor</span><strong>${study.referringDoctor || "Self"}</strong></div>
+            <div><span>Patient Name</span><strong>${esc(patientName)}</strong></div>
+            <div><span>Patient ID</span><strong>${esc(patientIdStr)}</strong></div>
+            <div><span>Age / Sex</span><strong>${esc(ageStr)} / ${esc(sexStr)}</strong></div>
+            <div><span>Accession Number</span><strong>${esc(study.accessionNumber)}</strong></div>
+            <div><span>Study Date</span><strong>${esc(study.studyDate || "")}</strong></div>
+            <div><span>Modality</span><strong>${esc(study.modality)}</strong></div>
+            <div><span>Referring Doctor</span><strong>${esc(study.referringDoctor || "Self")}</strong></div>
           </div>
           <h2>Report Findings</h2>
-          <div class="body">${finalReportText}</div>
+          <div class="body">${esc(finalReportText)}</div>
           <div class="footer">Please correlate clinically. Generated by internal archive server.</div>
         </body>
         </html>
@@ -162,6 +188,13 @@ export async function archiveReportToPacs(studyId: number): Promise<{ success: b
     const studyDateRaw = study.studyDate ? String(study.studyDate).replace(/-/g, "") : "";
     const referringDoctor = study.referringDoctor || "";
 
+    // D8 — the DICOM series states which revision was archived; a superseded
+    // historical export is labeled as such (never presented as current).
+    const v = artifact?.version;
+    if (v) archivedRevision = { resolvedReportId: v.resolvedReportId, rootReportId: v.rootReportId, sequenceNumber: v.sequenceNumber };
+    const versionLabel = v && v.totalVersions > 1
+      ? ` v${v.sequenceNumber}/${v.totalVersions}${v.resolvedSuperseded ? " SUPERSEDED" : " (amended)"}`
+      : "";
     const tags = {
       PatientName: patientName.replace(/\^/g, " "), // Clean caret character if any
       PatientID: patientIdStr,
@@ -171,7 +204,7 @@ export async function archiveReportToPacs(studyId: number): Promise<{ success: b
       ReferringPhysicianName: referringDoctor,
       SOPClassUID: "1.2.840.10008.5.1.4.1.1.104.1", // Encapsulated PDF Storage
       Modality: "OT",
-      SeriesDescription: "Radiology Report PDF",
+      SeriesDescription: `Radiology Report PDF${versionLabel}`.slice(0, 64),
     };
 
     logger.info({ studyId, url }, "[pacs-archive] Uploading encapsulated PDF DICOM to Orthanc");
@@ -203,11 +236,53 @@ export async function archiveReportToPacs(studyId: number): Promise<{ success: b
       })
       .where(eq(radiologyStudiesTable.id, studyId));
 
+    // BEND-1 — per-REVISION archive record: the study columns above keep only
+    // the latest attempt and overwrite pacsInstanceId; this preserves each
+    // revision's Orthanc instance and flags older archived revisions as
+    // superseded instead of silently losing their references.
+    if (v) {
+      await db.insert(radiologyPacsArchiveRevisionsTable)
+        .values({
+          studyId,
+          reportId: v.resolvedReportId,
+          rootReportId: v.rootReportId,
+          sequenceNumber: v.sequenceNumber,
+          status: "success",
+          orthancInstanceId: instanceId,
+          detail: JSON.stringify({ path: result.Path ?? null }),
+          attemptedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: radiologyPacsArchiveRevisionsTable.reportId,
+          set: { status: "success", orthancInstanceId: instanceId, attemptedAt: new Date(), updatedAt: new Date() },
+        })
+        .catch(() => undefined);
+      await db.update(radiologyPacsArchiveRevisionsTable)
+        .set({ status: "superseded", updatedAt: new Date() })
+        .where(and(
+          eq(radiologyPacsArchiveRevisionsTable.studyId, studyId),
+          ne(radiologyPacsArchiveRevisionsTable.reportId, v.resolvedReportId),
+          eq(radiologyPacsArchiveRevisionsTable.status, "success"),
+        ))
+        .catch(() => undefined);
+    }
+
     await db.insert(radiologyAuditLogTable).values({
       accessionNumber: study.accessionNumber,
       action: "ORTHANC_UPLOAD_SUCCESS",
       actor: "system",
-      details: JSON.stringify({ instanceId, path: result.Path }),
+      details: JSON.stringify({
+        instanceId,
+        path: result.Path,
+        // D8 — auditable requested-vs-delivered record for the PACS surface.
+        ...(v ? {
+          requestedReportId: v.requestedReportId,
+          deliveredReportId: v.resolvedReportId,
+          reportVersion: `${v.sequenceNumber}/${v.totalVersions}`,
+          superseded: v.resolvedSuperseded,
+          chainWarnings: v.warnings,
+        } : {}),
+      }),
     }).catch(() => undefined);
 
     logger.info({ studyId, instanceId }, "[pacs-archive] Report archived successfully");
@@ -224,6 +299,26 @@ export async function archiveReportToPacs(studyId: number): Promise<{ success: b
         pacsArchiveResponse: JSON.stringify({ error: errorMsg }),
       })
       .where(eq(radiologyStudiesTable.id, studyId));
+
+    // BEND-1 — per-revision failure record (only when the version resolved;
+    // pre-resolution failures have no revision to attribute).
+    if (archivedRevision) {
+      await db.insert(radiologyPacsArchiveRevisionsTable)
+        .values({
+          studyId,
+          reportId: archivedRevision.resolvedReportId,
+          rootReportId: archivedRevision.rootReportId,
+          sequenceNumber: archivedRevision.sequenceNumber,
+          status: "failed",
+          detail: JSON.stringify({ error: errorMsg.slice(0, 500) }),
+          attemptedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: radiologyPacsArchiveRevisionsTable.reportId,
+          set: { status: "failed", detail: JSON.stringify({ error: errorMsg.slice(0, 500) }), attemptedAt: new Date(), updatedAt: new Date() },
+        })
+        .catch(() => undefined);
+    }
 
     await db.insert(radiologyAuditLogTable).values({
       accessionNumber: study.accessionNumber,
