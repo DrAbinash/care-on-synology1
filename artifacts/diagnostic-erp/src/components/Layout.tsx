@@ -12,8 +12,6 @@ import {
   Stethoscope,
   Menu,
   X,
-  Moon,
-  Sun,
   FilePen,
   Package,
   BookOpen,
@@ -104,6 +102,7 @@ import { Button } from "@/components/ui/button";
 import { SyncPanel, SyncBadge } from "@/components/SyncPanel";
 import { readStaffSession, clearStaffSession, canAccess, FULL_ACCESS_ROLES, isFeatureEnabled, normalizeRole } from "@/lib/staffSession";
 import { useUserTheme, clearUserTheme } from "@/lib/userTheme";
+import { ThemeSelector } from "@/components/ThemeSelector";
 import {
   getStoredUsbKey,
   storeUsbKey,
@@ -272,19 +271,6 @@ const navItems: NavEntry[] = [
 // Flat list of every leaf path (used for the mobile header label lookup).
 const flatNavLeaves = (items: NavEntry[]): NavLeaf[] =>
   items.flatMap((n) => (isGroup(n) ? n.children : [n]));
-
-function ThemeToggle() {
-  const [dark, setDark] = useState(() => document.documentElement.classList.contains("dark"));
-  const toggle = () => {
-    document.documentElement.classList.toggle("dark");
-    setDark(!dark);
-  };
-  return (
-    <button onClick={toggle} className="p-2 rounded-md text-sidebar-foreground hover:bg-sidebar-accent transition-colors" title="Toggle theme">
-      {dark ? <Sun size={16} /> : <Moon size={16} />}
-    </button>
-  );
-}
 
 function FullscreenToggle() {
   const [isFs, setIsFs] = useState(() => typeof document !== "undefined" && !!document.fullscreenElement);
@@ -1198,7 +1184,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             {/* Right controls */}
             <div className="flex items-center gap-0.5 shrink-0">
               <FullscreenToggle />
-              <ThemeToggle />
+              <ThemeSelector />
             </div>
           </header>
         )}
@@ -1207,7 +1193,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         {!isMobile && (
           <div className="flex items-center justify-end gap-1 px-3 py-0.5 border-b border-border/40 bg-card/50">
             <FullscreenToggle />
-            <ThemeToggle />
+            <ThemeSelector />
           </div>
         )}
 
