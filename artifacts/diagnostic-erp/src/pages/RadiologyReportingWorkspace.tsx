@@ -18,11 +18,14 @@ import {
   ArrowLeft, ExternalLink, Sparkles, Save, CheckCircle2, AlertTriangle,
   Printer, RefreshCw, Star, ClipboardList, Plus, Trash2, Eye,
   Share2, AlertCircle, X, Send, Zap, BookOpen, MonitorPlay,
-  LayoutTemplate, BarChart3, Monitor,
+  LayoutTemplate, BarChart3, Monitor, PanelLeftClose, PanelLeftOpen,
 } from "lucide-react";
 import EmbeddedWadoViewer from "@/components/EmbeddedWadoViewer";
 import ReportImagePicker from "@/components/radiology/ReportImagePicker";
 import RadiologyCopilotPanel from "@/components/RadiologyCopilotPanel";
+import { ThemeSelector } from "@/components/ThemeSelector";
+import { FindingsHighlightEditor, type FindingsHighlightEditorHandle } from "@/components/FindingsHighlightEditor";
+import { chocolateBoxSetFor, insertAtCursor } from "@/lib/findingsMacros";
 import RadiologyMemoryPanel from "@/components/RadiologyMemoryPanel";
 import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
 // R2.0 — canonical ultrasound integration: USG mode inside the ONE
@@ -384,6 +387,20 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const [rawFindings, setRawFindings] = useState("");
   const [useStructured, setUseStructured] = useState(true);
   const [imageRefs] = useState<ImageReference[]>([]);
+
+  // ── Chocolate Box quick-macro engine (freeform findings only) ───────────
+  const findingsTextareaRef = useRef<FindingsHighlightEditorHandle>(null);
+
+  // ── Left viewer panel collapse — frees width for the report editor without
+  // duplicating the DICOM viewer elsewhere (it already lives here, not the
+  // center column). Persisted per-browser like the sidebar auto-minimise
+  // pattern in Layout.tsx.
+  const [isLeftPanelCollapsed, setIsLeftPanelCollapsed] = useState(
+    () => localStorage.getItem("radiologyWorkspaceLeftPanelCollapsed") === "1"
+  );
+  useEffect(() => {
+    localStorage.setItem("radiologyWorkspaceLeftPanelCollapsed", isLeftPanelCollapsed ? "1" : "0");
+  }, [isLeftPanelCollapsed]);
 
   // ── Report meta ───────────────────────────────────────────────────────────
   const [isCritical, setIsCritical] = useState(false);
@@ -812,6 +829,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     queryFn: () => api.get<WorklistEntry>(`/api/internal/radiology/worklist/${studyId}`),
     enabled: !!studyId,
   });
+
+  // Chocolate Box macro set — depends on `entry`, so must be declared after it.
+  const chocolateBoxSet = useMemo(
+    () => chocolateBoxSetFor(entry?.modality, entry?.studyDescription),
+    [entry?.modality, entry?.studyDescription],
+  );
 
   // ── Draft identity (Radiology Roadmap Ticket A3.0) ────────────────────────
   // Loads any existing radiology_report_drafts row for this study and tracks
@@ -2445,11 +2468,21 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         >
           <ArrowLeft size={13} /> Worklist
         </Button>
-        <div className="flex-1 min-w-0">
-          <span className="font-semibold text-sm">Radiology Reporting Workspace</span>
+        {/* Always-visible patient banner — this header sits outside the
+            editor's scrollable region (see the CENTER column below), so it
+            and the bottom action bar are both effectively "sticky" without
+            needing position:sticky — the same guarantee requested for a
+            pinned patient banner + Sign/Finalize control while scrolling
+            through long Findings/Impression text. */}
+        <div className="flex-1 min-w-0 flex items-baseline gap-2">
+          <span className="font-semibold text-sm shrink-0">Radiology Reporting Workspace</span>
           {entry && (
-            <span className="text-xs text-muted-foreground ml-2">
-              {entry.patientName} · {entry.accessionNumber}
+            <span className="text-xs text-muted-foreground truncate">
+              {entry.patientName}
+              {(entry.age || entry.sex) && ` · ${[entry.age, entry.sex].filter(Boolean).join("/")}`}
+              {" · "}
+              {entry.accessionNumber}
+              {entry.modality && ` · ${entry.modality}`}
             </span>
           )}
         </div>
@@ -2485,6 +2518,15 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             Structured
           </Label>
         </div>
+        <button
+          type="button"
+          title={isLeftPanelCollapsed ? "Expand viewer panel" : "Collapse viewer panel"}
+          onClick={() => setIsLeftPanelCollapsed((v) => !v)}
+          className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:bg-muted transition-colors"
+        >
+          {isLeftPanelCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+        </button>
+        <ThemeSelector className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:bg-muted transition-colors" />
       </div>
 
       {/* ── M1.5 — workflow status bar (Phase 10) ──────────────────────────── */}
@@ -2610,11 +2652,31 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       {/* ── 3-column body ──────────────────────────────────────────────────── */}
       <div className="flex flex-1 overflow-hidden">
 
-        {/* ── LEFT 35%: Study info + DICOM viewer ───────────────────────── */}
+        {/* ── LEFT 35%: Study info + DICOM viewer (collapsible to an icon
+            strip via isLeftPanelCollapsed — frees width for the editor
+            without duplicating the viewer into the center column) ──── */}
         <div
-          className="flex flex-col border-r bg-muted/5 overflow-hidden shrink-0"
-          style={{ width: "35%", minWidth: 280, maxWidth: 460 }}
+          className="flex flex-col border-r bg-muted/5 overflow-hidden shrink-0 transition-[width] duration-200"
+          style={isLeftPanelCollapsed
+            ? { width: 44, minWidth: 44, maxWidth: 44 }
+            : { width: "35%", minWidth: 280, maxWidth: 460 }}
         >
+        {isLeftPanelCollapsed ? (
+          <button
+            type="button"
+            onClick={() => setIsLeftPanelCollapsed(false)}
+            title={entry ? `${entry.patientName} · ${entry.modality} — expand viewer` : "Expand viewer panel"}
+            className="flex flex-col items-center gap-2 pt-3 h-full hover:bg-muted/40 transition-colors"
+          >
+            <PanelLeftOpen size={16} className="text-muted-foreground" />
+            {entry?.modality && (
+              <Badge variant="outline" className="text-[9px] py-0 h-4 px-1 rotate-90 mt-4">
+                {entry.modality}
+              </Badge>
+            )}
+          </button>
+        ) : (
+        <>
           {/* Study info */}
           <div className="shrink-0 p-3 border-b">
             {entryLoading && (
@@ -2718,6 +2780,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               disabled={isLocked}
             />
           </div>
+        </>
+        )}
         </div>
 
         {/* ── CENTER 45%: Report editor + action bar ────────────────────── */}
@@ -2997,6 +3061,35 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 </div>
               </div>
 
+              {/* Chocolate Box — context-aware quick-macro tiles, only
+                  meaningful for the freeform editor (structured mode's
+                  findingsMap already has its own per-item text boxes). Each
+                  tile splices its narrative at the live cursor position and
+                  auto-selects the first [bracketed] variable for immediate
+                  overwrite (see insertAtCursor in lib/findingsMacros.ts). */}
+              {!useStructured && chocolateBoxSet && (
+                <div className="flex flex-wrap gap-1 p-1.5 rounded-md border bg-muted/20">
+                  <span className="text-[9px] font-semibold uppercase text-muted-foreground self-center px-1">
+                    {chocolateBoxSet.label} quick tiles
+                  </span>
+                  {chocolateBoxSet.tiles.map((tile) => (
+                    <Button
+                      key={tile.label}
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-5 text-[10px] px-1.5"
+                      disabled={isLocked}
+                      onClick={() =>
+                        insertAtCursor(findingsTextareaRef.current?.el ?? null, rawFindings, tile.text, setRawFindings)
+                      }
+                    >
+                      {tile.label}
+                    </Button>
+                  ))}
+                </div>
+              )}
+
               {useStructured ? (
                 <div className="flex flex-col gap-2">
                   {Object.entries(findingsMap).map(([label, item]) => (
@@ -3057,13 +3150,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   )}
                 </div>
               ) : (
-                <Textarea
+                <FindingsHighlightEditor
+                  ref={findingsTextareaRef}
                   value={rawFindings}
-                  onChange={(e) => setRawFindings(e.target.value)}
+                  onChange={setRawFindings}
                   placeholder="Enter free-text findings..."
                   className="min-h-[180px] text-sm font-mono resize-y"
                   disabled={isLocked}
-                  data-editor="findings"
+                  dataEditor="findings"
                 />
               )}
             </div>

@@ -4,6 +4,18 @@ import App from "./App";
 import { ERP_SESSION_KEY, type StaffSession } from "./lib/staffSession";
 import "./index.css";
 
+// Apply the persisted color scheme synchronously, before the first paint —
+// ColorSchemeProvider (src/lib/colorScheme.ts) re-derives and owns this
+// state once React mounts, but doing it here first avoids a flash of the
+// wrong theme on load (e.g. dark-mode users briefly seeing a light flash).
+(function applyInitialColorScheme() {
+  try {
+    const stored = localStorage.getItem("care-color-scheme");
+    const isDark = stored === "dark" || (stored !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    document.documentElement.classList.toggle("dark", isDark);
+  } catch { /* ignore — private browsing / storage disabled, default light */ }
+})();
+
 setAuthTokenGetter(() => {
   try {
     const raw = typeof window !== "undefined" ? window.localStorage.getItem(ERP_SESSION_KEY) : null;
