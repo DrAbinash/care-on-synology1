@@ -128,6 +128,11 @@ export type BuildPrintHtmlOpts = {
   bill: PrintBillData;
   clinic: PrintClinic;
   paperSize: "A4" | "A5";
+  // A5 sheets can be fed to the printer either way — most B&W desktop/thermal
+  // printers used at billing counters default to landscape A5. Optional and
+  // defaults to "portrait" so every existing caller keeps its current output
+  // unchanged unless it explicitly opts in.
+  orientation?: "portrait" | "landscape";
   isBW: boolean;
   qrDataUrl: string;
   reprintBy?: string;
@@ -180,7 +185,7 @@ export type BuildPrintHtmlOpts = {
 };
 
 export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
-  const { bill, clinic, paperSize, isBW, qrDataUrl, reprintBy, reprintReason, compactFooterGap = false } = opts;
+  const { bill, clinic, paperSize, orientation = "portrait", isBW, qrDataUrl, reprintBy, reprintReason, compactFooterGap = false } = opts;
   const copies = Math.max(1, Math.min(2, Number(clinic?.billPrintCopies ?? 1) || 1));
   const showCode = clinic?.billShowCode !== false;
   const showCategory = clinic?.billShowCategory !== false;
@@ -434,7 +439,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 
   return `<!doctype html><html><head><meta charset="utf-8"><title>Bill ${esc(bill.billNumber)}</title>
 <style>
-  @page { size: ${isA5 ? "A5" : "A4"} portrait; margin: ${pageMargin}; }
+  @page { size: ${isA5 ? "A5" : "A4"} ${isA5 ? orientation : "portrait"}; margin: ${pageMargin}; }
   *, *::before, *::after { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; height: 100%; }
   body { background: #fff; color: #000; font-family: Arial, Helvetica, sans-serif; font-size: ${bodyPx}; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -454,8 +459,9 @@ export function buildBillPrintHtml(opts: BuildPrintHtmlOpts): string {
     return buildDesignerBillPrintHtml({ ...opts, layout: format });
   }
   if (format === "premium-a5") {
-    // Map old paperSize to new BillPaperSize
-    const paperSize: BillPaperSize = opts.paperSize === "A5" ? "A5-portrait" : "A4";
+    // Map old paperSize to new BillPaperSize, honoring landscape when requested.
+    const paperSize: BillPaperSize =
+      opts.paperSize === "A5" ? (opts.orientation === "landscape" ? "A5-landscape" : "A5-portrait") : "A4";
     return buildPremiumBillPrintHtml({
       bill: opts.bill,
       clinic: opts.clinic,

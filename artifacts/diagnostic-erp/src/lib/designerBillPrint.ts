@@ -680,11 +680,12 @@ export function buildDesignerBillPrintHtml(
 
   // Map paperSize
   const paperSizeStr = opts.paperSize; // "A4" | "A5"
-  const paperSize: BillPaperSize = paperSizeStr === "A4" ? "A4" : "A5-portrait";
   const isA4 = paperSizeStr === "A4";
-  const pageSize = isA4 ? "A4 portrait" : "A5 portrait";
-  const pageWidth = isA4 ? "210mm" : "148mm";
-  const pageHeight = isA4 ? "297mm" : "210mm";
+  const isLandscape = !isA4 && opts.orientation === "landscape";
+  const paperSize: BillPaperSize = isA4 ? "A4" : (isLandscape ? "A5-landscape" : "A5-portrait");
+  const pageSize = isA4 ? "A4 portrait" : (isLandscape ? "A5 landscape" : "A5 portrait");
+  const pageWidth = isA4 ? "210mm" : (isLandscape ? "210mm" : "148mm");
+  const pageHeight = isA4 ? "297mm" : (isLandscape ? "148mm" : "210mm");
   const pageMargin = isA4 ? "10mm" : "6mm";
 
   const copies = Math.max(1, Math.min(3, Number(clinic?.billPrintCopies ?? 1) || 1));
