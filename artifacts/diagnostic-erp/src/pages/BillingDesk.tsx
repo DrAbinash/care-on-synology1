@@ -2557,13 +2557,18 @@ export default function BillingDesk() {
                     )}
 
                     {/* FOURTH: Payment mode selector — compact single row, split in half.
-                        Left half: CASH + UPI (larger — these cover the vast majority of
-                        collections). Right half: CARD / CHEQUE / INSURANCE (smaller —
-                        rarely used), so the whole clinic-relevant row stays one line. */}
+                        Left half: CASH + UPI + ONLINE (larger — cover the vast majority
+                        of collections, including QR/gateway payment shown on the
+                        customer-facing second screen). Right half: CARD / CHEQUE /
+                        INSURANCE (smaller — rarely used), so the whole clinic-relevant
+                        row stays one line. Same PAYMENT_MODES list, same onClick
+                        handler as every other mode — selecting "online" here is what
+                        makes /api/bills return needsOnlinePayment, which is what opens
+                        the existing Online Payment / second-screen QR dialog below. */}
                     <div className="flex gap-1.5">
-                      <div className="flex-1 grid grid-cols-2 gap-1">
-                        {PAYMENT_MODES.filter((m) => m === "cash" || m === "upi").map((m) => {
-                          const icons: Record<string, string> = { cash: "💵", upi: "📱" };
+                      <div className="flex-1 grid grid-cols-3 gap-1">
+                        {PAYMENT_MODES.filter((m) => m === "cash" || m === "upi" || m === "online").map((m) => {
+                          const icons: Record<string, string> = { cash: "💵", upi: "📱", online: "🔳" };
                           const isActive = paymentSplits[0]?.mode === m;
                           return (
                             <button
