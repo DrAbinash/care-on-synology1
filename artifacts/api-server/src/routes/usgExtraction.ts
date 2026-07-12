@@ -19,7 +19,7 @@
  * POST  /sample-test                     — test extraction with sample DICOM metadata
  */
 
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { db } from "@workspace/db";
 import {
   usgMeasurementsTable,
@@ -45,6 +45,17 @@ import { logger } from "../lib/logger";
 import { normalizeAndCalculate } from "../lib/usgMeasurementEngine";
 
 const router = Router();
+
+// R2.0 fix: req.staffSession is `{ id, subjectId, subjectName, role,
+// permissions, maxDiscount }` (see StaffAuthRequest in
+// middleware/requireStaffAuth.ts) — there is no nested `.user` object. Every
+// handler below previously read `session?.user.name`/`.id`/`.role`, which
+// threw "Cannot read properties of undefined (reading '...')" the instant
+// `staffSession` was actually populated (i.e. on every real authenticated
+// request), 500-ing Approve/Reject/Extract/field-edit/key-image/settings.
+// Matches the same ReqWithStaff pattern already used in usgReports.ts,
+// usgAnalytics.ts and usgCriticalAlerts.ts.
+type ReqWithStaff = Request & { staffSession?: { subjectId?: number; subjectName?: string; role?: string } };
 
 // ── GET /stats ────────────────────────────────────────────────────────────────
 // Returns counts for the USG/DOPPLER dashboard cards.
@@ -169,8 +180,8 @@ router.get("/key-images/all", async (_req, res) => {
 // Trigger an extraction for a study. Idempotent — re-runs create a new log
 // but always returns the LATEST measurement row.
 
-router.post("/extract", async (req, res) => {
-  const session = (req as unknown as Record<string, unknown>).staffSession as { user: { id: number; role: string } } | undefined;
+router.post("/extract", async (req: ReqWithStaff, res) => {
+  const session = req.staffSession;
   const b = (req.body ?? {}) as {
     studyInstanceUID?: string;
     accessionNumber?: string;
@@ -209,7 +220,7 @@ router.post("/extract", async (req, res) => {
       patientId:         b.patientId ?? wlRow?.patientId ?? undefined,
       dicomMetadataJson: wlRow?.dicomMetadata ?? undefined,
       triggeredBy: "manual",
-      triggeredByUserId: session?.user.id,
+      triggeredByUserId: session?.subjectId,
     });
 
     res.json(result);
@@ -251,9 +262,9 @@ router.get("/worklist/:worklistId", async (req, res) => {
 // SAFETY: This is the ONLY path that transitions a measurement to `approved`.
 // It must be called explicitly by a radiologist. The system never auto-approves.
 
-router.patch("/measurements/:id/approve", async (req, res) => {
+router.patch("/measurements/:id/approve", async (req: ReqWithStaff, res) => {
   const id = Number(req.params.id);
-  const session = (req as unknown as Record<string, unknown>).staffSession as { user: { name?: string; username?: string } } | undefined;
+  const session = req.staffSession;
   const b = (req.body ?? {}) as { reviewNotes?: string };
 
   const [existing] = await db
@@ -270,7 +281,7 @@ router.patch("/measurements/:id/approve", async (req, res) => {
     .set({
       ...normalizedFields,
       status: "approved",
-      reviewedBy: session?.user.name ?? session?.user.username ?? "radiologist",
+      reviewedBy: session?.subjectName ?? "radiologist",
       reviewedAt: new Date(),
       reviewNotes: b.reviewNotes ?? null,
       updatedAt: new Date(),
@@ -283,16 +294,16 @@ router.patch("/measurements/:id/approve", async (req, res) => {
 
 // ── PATCH /measurements/:id/reject ───────────────────────────────────────────
 
-router.patch("/measurements/:id/reject", async (req, res) => {
+router.patch("/measurements/:id/reject", async (req: ReqWithStaff, res) => {
   const id = Number(req.params.id);
-  const session = (req as unknown as Record<string, unknown>).staffSession as { user: { name?: string; username?: string } } | undefined;
+  const session = req.staffSession;
   const b = (req.body ?? {}) as { reviewNotes?: string };
 
   const [row] = await db
     .update(usgMeasurementsTable)
     .set({
       status: "rejected",
-      reviewedBy: session?.user.name ?? session?.user.username ?? "radiologist",
+      reviewedBy: session?.subjectName ?? "radiologist",
       reviewedAt: new Date(),
       reviewNotes: b.reviewNotes ?? null,
       updatedAt: new Date(),
@@ -314,12 +325,12 @@ const ALLOWED_FIELDS = new Set([
   "liverSize","spleenSize","rightKidney","leftKidney","cbd","gbWall","prostateVolume",
 ]);
 
-router.patch("/measurements/:id/field", async (req, res) => {
+router.patch("/measurements/:id/field", async (req: ReqWithStaff, res) => {
   const id = Number(req.params.id);
   const b = (req.body ?? {}) as Record<string, string>;
-  const session = (req as unknown as Record<string, unknown>).staffSession as { user: { id: number; role: string; username?: string } } | undefined;
-  const userId = session?.user.id || 0;
-  const username = session?.user.username || "unknown";
+  const session = req.staffSession;
+  const userId = session?.subjectId || 0;
+  const username = session?.subjectName || "unknown";
 
   const updates: Record<string, string> = {};
   for (const [k, v] of Object.entries(b)) {
@@ -420,7 +431,7 @@ router.get("/study/:studyInstanceUID/key-images", async (req, res) => {
 
 router.post("/study/:studyInstanceUID/key-images", async (req, res) => {
   const { studyInstanceUID } = req.params;
-  const session = (req as unknown as Record<string, unknown>).staffSession as { user: { id?: number; name?: string } } | undefined;
+  const session = (req as ReqWithStaff).staffSession;
   const b = (req.body ?? {}) as {
     seriesInstanceUID?: string;
     sopInstanceUID?: string;
@@ -452,8 +463,8 @@ router.post("/study/:studyInstanceUID/key-images", async (req, res) => {
       wadoUrl: b.wadoUrl ?? null,
       thumbnailBase64: b.thumbnailBase64 ?? null,
       sortOrder: b.sortOrder ?? 0,
-      addedBy: session?.user.name ?? null,
-      addedByUserId: session?.user.id ?? null,
+      addedBy: session?.subjectName ?? null,
+      addedByUserId: session?.subjectId ?? null,
     })
     .returning();
 
@@ -477,9 +488,9 @@ router.get("/settings", async (_req, res) => {
   res.json(s);
 });
 
-router.put("/settings", requireStaffPermission("/settings"), async (req, res) => {
-  const session = (req as unknown as Record<string, unknown>).staffSession as { user: { role: string } } | undefined;
-  if (!FULL_ACCESS_ROLES.has(session?.user.role ?? "")) {
+router.put("/settings", requireStaffPermission("/settings"), async (req: ReqWithStaff, res) => {
+  const session = req.staffSession;
+  if (!FULL_ACCESS_ROLES.has(session?.role ?? "")) {
     res.status(403).json({ error: "Admin or super-admin role required to change USG extraction settings" });
     return;
   }

@@ -194,6 +194,20 @@ const DOPPLER_FIELD_LABELS: Record<string, string> = {
   psv: "PSV", edv: "EDV", ri: "RI", pi: "PI", sdRatio: "S/D Ratio",
 };
 
+// usg_measurements/usg_doppler_measurements store each field as a
+// human-readable string that already carries its unit (e.g. "138 mm",
+// "104 x 42 mm") — provenance_json separately records the unit as raw
+// extraction metadata. Concatenating both verbatim doubles the unit
+// ("138 mm" + " mm" -> "138 mm mm") in both the Unit badge and any inserted
+// report text, so drop the provenance unit whenever it's already present at
+// the end of the stored value.
+function dedupeUnit(value: string, unit: string): string {
+  if (!unit) return "";
+  const v = value.trim().toLowerCase();
+  const u = unit.trim().toLowerCase();
+  return v.endsWith(u) ? "" : unit;
+}
+
 function parseProvenance(json: string | null | undefined): Record<string, ProvenanceItem> {
   if (!json) return {};
   try {
@@ -218,7 +232,7 @@ function buildMeasurementSections(
     if (!raw) return null;
     const confidence = def.hasConfidence ? row[`${def.field}Confidence`] : null;
     const item = provenance[def.field] ?? null;
-    const unit = item?.unit && item.unit !== "N/A" ? item.unit : "";
+    const unit = dedupeUnit(raw, item?.unit && item.unit !== "N/A" ? item.unit : "");
     return {
       key: `m:${measurement.id}:${def.field}`,
       label: def.label,
@@ -246,7 +260,7 @@ function buildMeasurementSections(
       .filter(([, v]) => !!v)
       .map(([k, v]) => {
         const item = provenance[k] ?? null;
-        const unit = item?.unit && item.unit !== "N/A" ? item.unit : "";
+        const unit = dedupeUnit(v, item?.unit && item.unit !== "N/A" ? item.unit : "");
         return {
           key: `m:${measurement.id}:extra:${k}`,
           label: k,
@@ -276,7 +290,7 @@ function buildDopplerEntries(row: UsgDopplerMeasurement, studyInstanceUID: strin
     const raw = rec[field];
     if (!raw) continue;
     const item = provenance[field] ?? null;
-    const unit = item?.unit && item.unit !== "N/A" ? item.unit : "";
+    const unit = dedupeUnit(raw, item?.unit && item.unit !== "N/A" ? item.unit : "");
     entries.push({
       key: `d:${row.id}:${field}`,
       label: DOPPLER_FIELD_LABELS[field],
