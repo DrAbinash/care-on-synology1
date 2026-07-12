@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import QRCode from "qrcode";
+import { buildBillPrintHtml, type PrintBillData, type PrintClinic } from "@/lib/printBill";
 import { api, fetchApi, getStaffToken } from "@/lib/fetchApi";
 import { useSuperAdmin, getSuperAdminToken } from "@/hooks/useSuperAdmin";
 import PageHeader from "@/components/PageHeader";
@@ -1432,24 +1434,13 @@ function ClinicInfoTab() {
             <h2 className="font-bold text-lg flex items-center gap-2">📄 Bill Print Format</h2>
             <p className="text-sm text-muted-foreground">Control what appears on the printed bill receipt — paper size, columns, and layout.</p>
           </div>
-          {/* Default paper size */}
-          <div>
-            <p className="text-sm font-medium mb-2">Default Paper Size</p>
-            <div className="grid grid-cols-2 gap-3">
-              {(["A5", "A4"] as const).map((sz) => {
-                const active = (current.billDefaultPaperSize ?? "A5") === sz;
-                return (
-                  <button
-                    key={sz}
-                    type="button"
-                    onClick={() => setForm({ ...current, billDefaultPaperSize: sz })}
-                    className={`px-4 py-3 rounded-lg border text-sm font-medium transition-colors ${active ? "bg-blue-50 border-blue-400 text-blue-700 dark:bg-blue-950/30 dark:border-blue-700 dark:text-blue-300" : "bg-muted/30 border-card-border text-muted-foreground hover:bg-muted/50"}`}
-                  >
-                    {sz} {sz === "A5" ? "(recommended)" : ""}
-                  </button>
-                );
-              })}
-            </div>
+          {/* Paper size / orientation is configured in Settings → Billing Print
+              (with a live preview) — that is the setting the printed bill
+              actually uses. Nothing here controls paper size; this card only
+              deals with columns/requirements below. */}
+          <div className="rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 px-4 py-3 text-sm text-blue-800 dark:text-blue-300">
+            Paper size &amp; orientation (A5 portrait/landscape, half A4, A4) now live under{" "}
+            <strong>Settings → Billing Print → Paper &amp; Copy</strong>, with a live preview. Set it there.
           </div>
           {/* Show test code */}
           <div>
@@ -3824,11 +3815,110 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
   );
 }
 
+// Fixed sample bill used only for the live preview panel below — never
+// sent anywhere, never saved. Two tests + a discount so the preview shows
+// a realistic-looking receipt regardless of which format is selected.
+const BILL_PREVIEW_SAMPLE: PrintBillData = {
+  billNumber: "2026070042",
+  subtotal: 1100,
+  discount: 100,
+  taxAmount: 0,
+  totalAmount: 1000,
+  paidAmount: 1000,
+  balanceAmount: 0,
+  status: "paid",
+  createdAt: new Date().toISOString(),
+  patient: {
+    firstName: "Ramesh",
+    lastName: "Kumar",
+    patientId: "CD-2026-0123",
+    phone: "+91 98765 43210",
+    gender: "male",
+    dateOfBirth: "1985-03-15",
+  },
+  order: {
+    doctor: { name: "Dr. S. Sharma" },
+    tests: [
+      { price: 700, status: "active", test: { code: "USG001", name: "Whole Abdomen USG", category: "Radiology" } },
+      { price: 400, status: "active", test: { code: "CBC001", name: "Complete Blood Count", category: "Pathology" } },
+    ],
+  },
+  payments: [{ method: "upi", amount: 1000, referenceNumber: "UPI-1234567890" }],
+  tokenNo: 42,
+};
+
+const BILL_PREVIEW_FALLBACK_CLINIC: PrintClinic = {
+  name: "Your Clinic Name",
+  tagline: "Diagnostic & Pathology Services",
+  address: "123 Health Street, Your City",
+  phone: "+91 90000 00000",
+  billPrintCopies: 1,
+  billShowCode: true,
+  billShowCategory: true,
+  qrOnBillEnabled: true,
+};
+
 function BillingPrintTab() {
   const [settings, setSettings] = useState<import("@/lib/billPrintSettings").BillPrintSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [saved, setSaved] = useState(false);
   const { toast } = useToast();
+
+  // ── Live preview ──
+  const [previewVisible, setPreviewVisible] = useState(true);
+  const [previewBW, setPreviewBW] = useState<boolean | null>(null); // null = follow the real Printers-tab setting
+  const [previewQrUrl, setPreviewQrUrl] = useState("");
+
+  const { data: previewClinic } = useQuery<PrintClinic>({
+    queryKey: ["clinic-settings"],
+    queryFn: () => api.get("/api/clinic-settings"),
+    staleTime: 5 * 60_000,
+  });
+  const { data: previewPrinterCfg } = useQuery<{ billPrinterType?: string }>({
+    queryKey: ["printer-settings"],
+    queryFn: () => api.get("/api/printers/settings"),
+    staleTime: 5 * 60_000,
+  });
+  const effectivePreviewIsBW = previewBW ?? (previewPrinterCfg?.billPrinterType === "bw");
+
+  useEffect(() => {
+    let cancelled = false;
+    QRCode.toDataURL("https://example.com/verify/bill/PREVIEW-0001", {
+      errorCorrectionLevel: "M",
+      margin: 1,
+      width: 200,
+      color: { dark: "#000000", light: "#ffffff" },
+    })
+      .then((url) => { if (!cancelled) setPreviewQrUrl(url); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  const previewHtml = useMemo(() => {
+    if (!settings) return "";
+    const orientation: "portrait" | "landscape" = settings.defaultPaperSize === "A5-landscape" ? "landscape" : "portrait";
+    const paperSize: "A4" | "A5" = settings.defaultPaperSize === "A4" ? "A4" : "A5";
+    return buildBillPrintHtml({
+      bill: BILL_PREVIEW_SAMPLE,
+      clinic: previewClinic ?? BILL_PREVIEW_FALLBACK_CLINIC,
+      paperSize,
+      orientation,
+      isBW: effectivePreviewIsBW,
+      qrDataUrl: previewQrUrl,
+      format: settings.defaultFormat,
+      showQr: settings.showQrCode,
+      showAmountInWords: settings.showAmountInWords,
+      showSignatureLine: settings.showSignatureLine,
+      showComputerGenerated: settings.showComputerGenerated,
+      showReportMessage: settings.showReportMessage,
+      showServiceFooter: settings.showServiceFooter,
+      showBrandingFooter: settings.showBrandingFooter,
+      showBarcode: settings.showBarcode,
+      showWatermark: settings.showWatermark,
+      showPatientInstructions: settings.showPatientInstructions,
+      showSystemInfo: settings.showSystemInfo,
+    });
+  }, [settings, previewClinic, previewQrUrl, effectivePreviewIsBW]);
 
   useEffect(() => {
     import("@/lib/billPrintSettings").then((m) => {
@@ -3930,7 +4020,22 @@ function BillingPrintTab() {
     { id: "save-only", label: "Save Only" },
   ];
 
+  // Approximate mm→px (96dpi) natural size per paper option, so the preview
+  // shows the true page proportions (and doesn't clip content) before being
+  // scaled down to fit a small on-screen box.
+  const PAPER_PX: Record<string, { w: number; h: number }> = {
+    "A5-portrait": { w: 559, h: 794 },
+    "A5-landscape": { w: 794, h: 559 },
+    "half-a4": { w: 559, h: 794 },
+    "A4": { w: 794, h: 1123 },
+  };
+  const previewNatural = PAPER_PX[settings.defaultPaperSize] ?? PAPER_PX["A5-portrait"];
+  const previewBoxWidth = 300;
+  const previewScale = previewBoxWidth / previewNatural.w;
+  const previewBoxHeight = Math.round(previewNatural.h * previewScale);
+
   return (
+    <div className={`grid gap-4 items-start ${previewVisible ? "xl:grid-cols-[1fr_360px]" : "grid-cols-1"}`}>
     <div className="space-y-4">
       <SectionCard title="Bill Format" subtitle="Choose the default bill layout and enable/disable formats.">
         <SelectCard
@@ -4025,6 +4130,66 @@ function BillingPrintTab() {
           )}
         </Button>
       </div>
+    </div>
+
+    {previewVisible ? (
+      <div className="bg-card border border-card-border rounded-xl p-4 space-y-3 sticky top-4">
+        <div className="flex items-center justify-between">
+          <h3 className="font-bold text-sm flex items-center gap-1.5"><Eye size={14} /> Live Preview</h3>
+          <button type="button" onClick={() => setPreviewVisible(false)} className="text-xs text-muted-foreground hover:text-foreground">Hide</button>
+        </div>
+        <p className="text-[11px] text-muted-foreground leading-relaxed">
+          Updates instantly as you change format, paper size/orientation, or display options on the left — using sample data, not a real bill.
+        </p>
+        <label className="flex items-center gap-2 text-xs font-medium">
+          <input
+            type="checkbox"
+            checked={effectivePreviewIsBW}
+            onChange={(e) => setPreviewBW(e.target.checked)}
+          />
+          Preview as Black &amp; White printer
+          {previewBW === null && (
+            <span className="text-muted-foreground font-normal">
+              (currently: {previewPrinterCfg?.billPrinterType === "bw" ? "B&W" : "Color"}, from Printers settings)
+            </span>
+          )}
+        </label>
+        <div className="flex items-center justify-center bg-muted/30 rounded-lg p-3" style={{ minHeight: 440 }}>
+          {/* Render the iframe at the paper's true pixel size (so nothing
+              inside reflows/wraps differently than on a real printer), then
+              scale the whole thing down to fit a small preview box — avoids
+              clipping the receipt instead of squeezing it into a fixed box. */}
+          <div style={{ width: previewBoxWidth, height: previewBoxHeight, overflow: "hidden", border: "1px solid #cbd5e1", background: "#fff" }} className="shadow-sm">
+            <iframe
+              title="Bill print preview"
+              srcDoc={previewHtml}
+              style={{
+                width: previewNatural.w,
+                height: previewNatural.h,
+                border: "none",
+                transform: `scale(${previewScale})`,
+                transformOrigin: "top left",
+              }}
+            />
+          </div>
+        </div>
+        <p className="text-[11px] text-center text-muted-foreground">
+          {billFormats.find((f) => f.id === settings.defaultFormat)?.label ?? settings.defaultFormat}
+          {" · "}
+          {billPaperSizes.find((p) => p.id === settings.defaultPaperSize)?.label ?? settings.defaultPaperSize}
+        </p>
+      </div>
+    ) : (
+      <div className="hidden xl:block">
+        <button
+          type="button"
+          onClick={() => setPreviewVisible(true)}
+          className="w-full flex items-center justify-center gap-1.5 text-sm font-medium text-blue-600 hover:underline py-3"
+        >
+          <Eye size={14} /> Show Live Preview
+        </button>
+      </div>
+    )}
     </div>
   );
 }

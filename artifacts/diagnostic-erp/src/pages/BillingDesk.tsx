@@ -851,11 +851,20 @@ export default function BillingDesk() {
               })
                 .catch(() => "")
                 .then((qrUrl) => {
-                  const paperSize = (getAutoBillPaperSize(updatedBill.order?.tests?.length || 1, undefined, (settings as any).autoA4Threshold ?? 5) === "A4" ? "A4" : "A5") as "A4" | "A5";
+                  // Honor the paper size/orientation chosen in Settings →
+                  // Billing Print (e.g. A5 landscape for a B&W printer)
+                  // instead of always forcing A5 portrait — the auto
+                  // A4-switch by test count still applies unless the user
+                  // explicitly forced A4/half-A4.
+                  const forcedPaperSize = settings.defaultPaperSize === "A4" || settings.defaultPaperSize === "half-a4" ? settings.defaultPaperSize : undefined;
+                  const effectivePaperSize = getAutoBillPaperSize(updatedBill.order?.tests?.length || 1, forcedPaperSize, settings.autoA4Threshold ?? 5);
+                  const paperSize = (effectivePaperSize === "A4" ? "A4" : "A5") as "A4" | "A5";
+                  const orientation = paperSize === "A5" && settings.defaultPaperSize === "A5-landscape" ? "landscape" : "portrait";
                   const html = buildBillPrintHtml({
                     bill: billForPrint,
                     clinic: cachedClinic,
                     paperSize,
+                    orientation,
                     isBW,
                     qrDataUrl: qrUrl as string,
                     format: settings.defaultFormat,
@@ -1319,11 +1328,15 @@ export default function BillingDesk() {
               tokenNo: lastBillLocal.tokenNo ?? null,
               testTokens: lastBillLocal.testTokens ?? null,
             };
-            const paperSize = (getAutoBillPaperSize(lastBillLocal.tests.length, undefined, (settings as any).autoA4Threshold ?? 5) === "A4" ? "A4" : "A5") as "A4" | "A5";
+            const forcedPaperSize = settings.defaultPaperSize === "A4" || settings.defaultPaperSize === "half-a4" ? settings.defaultPaperSize : undefined;
+            const effectivePaperSize = getAutoBillPaperSize(lastBillLocal.tests.length, forcedPaperSize, settings.autoA4Threshold ?? 5);
+            const paperSize = (effectivePaperSize === "A4" ? "A4" : "A5") as "A4" | "A5";
+            const orientation = paperSize === "A5" && settings.defaultPaperSize === "A5-landscape" ? "landscape" : "portrait";
             const html = buildBillPrintHtml({
               bill: billForPrint,
               clinic: clinicForPrint,
               paperSize,
+              orientation,
               isBW,
               qrDataUrl: qrUrl as string,
               format: settings.defaultFormat,
