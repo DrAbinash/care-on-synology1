@@ -130,7 +130,8 @@ type LastBill = {
 // ──────────────────────────────────────────────────────
 // Constants
 // ──────────────────────────────────────────────────────
-const PAYMENT_MODES  = ["cash", "card", "upi", "cheque", "insurance", "online"];
+// "cheque" was removed — this clinic no longer accepts cheque payments.
+const PAYMENT_MODES  = ["cash", "card", "upi", "insurance", "online"];
 const BLOOD_GROUPS   = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"];
 const GENDERS        = ["male", "female", "other"];
 
@@ -140,6 +141,16 @@ const inr = (n: number) =>
 const today = () => new Date().toLocaleDateString("en-IN", {
   weekday: "short", year: "numeric", month: "short", day: "numeric",
 });
+
+// This ERP SPA is mounted under a base path in production (BASE_URL="/erp/",
+// see main.tsx/App.tsx) but the API server also serves a completely separate
+// public clinic-website SPA at "/". A root-relative path like
+// "/display/payment-qr" therefore does NOT resolve inside this app — it gets
+// swallowed by the clinic-website's catch-all route (its own generic 404
+// page) instead of this app's Display/PaymentQrDisplay routes. Every
+// in-app-relative URL opened in a new window/tab must go through this.
+const erpPath = (path: string) =>
+  `${(import.meta as { env: { BASE_URL: string } }).env.BASE_URL.replace(/\/$/, "")}${path}`;
 
 // ── Second-monitor auto-placement ──────────────────────────────────────────
 // Opens `url` positioned on the second monitor automatically, with no manual
@@ -746,6 +757,32 @@ export default function BillingDesk() {
       .catch(() => { if (!cancelled) setGatewayQrUrl(""); });
     return () => { cancelled = true; };
   }, [gatewayPaymentInfo]);
+
+  const openGatewayQrOnSecondScreen = () => {
+    if (!gatewayPaymentInfo) return;
+    const qrData = gatewayPaymentInfo.tranCtx || gatewayPaymentInfo.redirectUrl;
+    const params = new URLSearchParams({
+      qrData,
+      amount: String(gatewayPaymentInfo.amount),
+      txnRef: gatewayPaymentInfo.txnRef,
+      patientName: selectedPatient ? `${selectedPatient.firstName} ${selectedPatient.lastName ?? ""}`.trim() : "",
+    });
+    void openOnSecondMonitor(erpPath(`/display/payment-qr?${params.toString()}`), "paymentQrDisplay");
+  };
+
+  // Auto-open the QR on the second screen/tablet the moment it's ready — no
+  // manual click required when Payment Gateway is the selected method (the
+  // "Open on Second Screen" button below still works too, e.g. to re-open a
+  // window the cashier accidentally closed). Guarded by txnRef so this fires
+  // exactly once per gateway payment, not on every re-render/status poll.
+  const autoOpenedTxnRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!gatewayPaymentInfo || !gatewayQrUrl || gatewayPaymentStatus !== "pending") return;
+    if (autoOpenedTxnRef.current === gatewayPaymentInfo.txnRef) return;
+    autoOpenedTxnRef.current = gatewayPaymentInfo.txnRef;
+    openGatewayQrOnSecondScreen();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gatewayPaymentInfo, gatewayQrUrl, gatewayPaymentStatus]);
 
   useEffect(() => {
     if (!gatewayModalOpen || !gatewayPaymentInfo || gatewayPaymentStatus !== "pending") return;
@@ -2559,12 +2596,13 @@ export default function BillingDesk() {
                     {/* FOURTH: Payment mode selector — compact single row, split in half.
                         Left half: CASH + UPI + ONLINE (larger — cover the vast majority
                         of collections, including QR/gateway payment shown on the
-                        customer-facing second screen). Right half: CARD / CHEQUE /
-                        INSURANCE (smaller — rarely used), so the whole clinic-relevant
-                        row stays one line. Same PAYMENT_MODES list, same onClick
-                        handler as every other mode — selecting "online" here is what
-                        makes /api/bills return needsOnlinePayment, which is what opens
-                        the existing Online Payment / second-screen QR dialog below. */}
+                        customer-facing second screen). Right half: CARD / INSURANCE
+                        (smaller — rarely used), so the whole clinic-relevant row stays
+                        one line. Same PAYMENT_MODES list, same onClick handler as every
+                        other mode — selecting "online" here is what makes /api/bills
+                        return needsOnlinePayment, which is what opens the existing
+                        Online Payment / second-screen QR dialog below. Cheque was
+                        removed — this clinic no longer accepts cheque payments. */}
                     <div className="flex gap-1.5">
                       <div className="flex-1 grid grid-cols-3 gap-1">
                         {PAYMENT_MODES.filter((m) => m === "cash" || m === "upi" || m === "online").map((m) => {
@@ -2587,9 +2625,9 @@ export default function BillingDesk() {
                           );
                         })}
                       </div>
-                      <div className="flex-1 grid grid-cols-3 gap-1">
-                        {PAYMENT_MODES.filter((m) => m === "card" || m === "cheque" || m === "insurance").map((m) => {
-                          const icons: Record<string, string> = { card: "💳", cheque: "📝", insurance: "🏥" };
+                      <div className="flex-1 grid grid-cols-2 gap-1">
+                        {PAYMENT_MODES.filter((m) => m === "card" || m === "insurance").map((m) => {
+                          const icons: Record<string, string> = { card: "💳", insurance: "🏥" };
                           const isActive = paymentSplits[0]?.mode === m;
                           return (
                             <button
@@ -2868,25 +2906,10 @@ export default function BillingDesk() {
                     <img src={gatewayQrUrl} alt="Payment QR" className="w-40 h-40 mx-auto rounded-lg border" />
                     <button
                       type="button"
-                      onClick={() => {
-                        const qrData = gatewayPaymentInfo.tranCtx || gatewayPaymentInfo.redirectUrl;
-                        const params = new URLSearchParams({
-                          qrData,
-                          amount: String(gatewayPaymentInfo.amount),
-                          txnRef: gatewayPaymentInfo.txnRef,
-                          patientName: selectedPatient ? `${selectedPatient.firstName} ${selectedPatient.lastName ?? ""}`.trim() : "",
-                        });
-                        // Must include this app's own base path — in production
-                        // diagnostic-erp is served under /erp/ (nginx has no route
-                        // for a bare /display/payment-qr, so an un-prefixed path
-                        // falls through to the public website's SPA and renders
-                        // its "Page not found" screen instead of the QR display).
-                        const erpBase = import.meta.env.BASE_URL.replace(/\/$/, "");
-                        void openOnSecondMonitor(`${erpBase}/display/payment-qr?${params.toString()}`, "paymentQrDisplay");
-                      }}
+                      onClick={openGatewayQrOnSecondScreen}
                       className="mt-2 text-xs font-semibold text-[#2563eb] hover:underline flex items-center gap-1 mx-auto"
                     >
-                      <Monitor size={13} /> Open on Second Screen
+                      <Monitor size={13} /> Re-open on Second Screen
                     </button>
                   </>
                 ) : (
