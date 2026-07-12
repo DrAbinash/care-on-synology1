@@ -952,6 +952,59 @@ export default function RadiologyWorklist() {
                         <td className="px-3 py-2.5 whitespace-nowrap">
                           <Badge variant="outline" className="font-mono text-xs">{entry.modality}</Badge>
                         </td>
+                        {/* R2.0 — Measurements: clickable count badge → canonical Reporting
+                            Workspace (preferred) or the standalone USG measurements review
+                            page as a fallback when the study isn't linked yet. Non-US rows
+                            (and the sentinel row) keep the column but show an em-dash so the
+                            table doesn't shift. */}
+                        <td className="px-3 py-2.5 whitespace-nowrap text-center">
+                          {entry.id !== -1 && isUltrasoundModality(entry.modality) ? (() => {
+                            const count = entry.usgMeasurementCount ?? 0;
+                            const target = entry.studyId != null
+                              ? `/radiology/report/${entry.studyId}`
+                              : entry.studyInstanceUID
+                                ? `/radiology/usg-measurements/${entry.studyInstanceUID}`
+                                : null;
+                            const badge = (
+                              <UsgCountBadge
+                                count={count}
+                                color="bg-teal-50 text-teal-700 border-teal-200 dark:bg-teal-950/30 dark:text-teal-400 dark:border-teal-900"
+                              />
+                            );
+                            if (!target) return badge;
+                            return (
+                              <button
+                                type="button"
+                                className="inline-flex hover:opacity-80 transition-opacity"
+                                onClick={() => navigate(target)}
+                                title="Open USG measurements"
+                              >
+                                {badge}
+                              </button>
+                            );
+                          })() : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </td>
+                        {/* R2.0 — Images: USG key-image count. */}
+                        <td className="px-3 py-2.5 whitespace-nowrap text-center">
+                          {entry.id !== -1 && isUltrasoundModality(entry.modality) ? (
+                            <UsgCountBadge
+                              count={entry.usgKeyImageCount ?? 0}
+                              color="bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-900/40 dark:text-slate-300 dark:border-slate-700"
+                            />
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </td>
+                        {/* R2.0 — USG Report: latest usg_report_drafts status for this worklist row. */}
+                        <td className="px-3 py-2.5 whitespace-nowrap">
+                          {entry.id !== -1 && isUltrasoundModality(entry.modality) ? (
+                            <UsgReportStatusBadge status={entry.usgReportStatus} />
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </td>
                         <td className="px-3 py-2.5 whitespace-nowrap">
                           {(() => { const pr = priorityInfo(entry.priority); return (
                             <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-semibold ${pr.color}`}>

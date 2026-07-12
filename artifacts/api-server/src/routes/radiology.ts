@@ -29,6 +29,9 @@ import {
   radiologyUserReportPreferencesTable,
   radiologyUserItemUsageLogsTable,
   radiologyInstitutionalStylesTable,
+  usgMeasurementsTable,
+  usgKeyImagesTable,
+  usgReportDraftsTable,
 } from "@workspace/db/schema";
 import { and, asc, desc, eq, gte, ilike, isNull, lte, or, sql } from "drizzle-orm";
 import crypto from "node:crypto";
@@ -381,6 +384,28 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         // (stat | emergency | urgent | routine | vip) via the same join —
         // no new table or column created (schema-growth minimization).
         priority: radiologyStudiesTable.priority,
+        // R2.0 — canonical ultrasound integration: fold USG/Doppler
+        // measurement + key-image counts and the latest report-draft status
+        // into the ONE PACS worklist row, so USG studies never need a
+        // separate worklist. Scalar subqueries (not a GROUP BY) to keep this
+        // additive and avoid touching the existing filter/sort/pagination
+        // logic above — each of the three tables already carries an index
+        // on worklist_id (see usgMeasurements.ts), so this is cheap even
+        // computed unconditionally for every row.
+        usgMeasurementCount: sql<number>`(
+          select count(*) from ${usgMeasurementsTable}
+          where ${usgMeasurementsTable.worklistId} = ${radiologyWorklistTable.id}
+        )`.mapWith(Number),
+        usgKeyImageCount: sql<number>`(
+          select count(*) from ${usgKeyImagesTable}
+          where ${usgKeyImagesTable.worklistId} = ${radiologyWorklistTable.id}
+        )`.mapWith(Number),
+        usgReportStatus: sql<string | null>`(
+          select ${usgReportDraftsTable.status} from ${usgReportDraftsTable}
+          where ${usgReportDraftsTable.worklistId} = ${radiologyWorklistTable.id}
+          order by ${usgReportDraftsTable.updatedAt} desc
+          limit 1
+        )`,
       })
       .from(radiologyWorklistTable)
       .leftJoin(patientsTable, eq(radiologyWorklistTable.patientId, patientsTable.id))
