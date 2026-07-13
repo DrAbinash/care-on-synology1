@@ -8,6 +8,27 @@
 ALTER TABLE IF EXISTS radiology_image_references ADD COLUMN IF NOT EXISTS is_key_image BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE IF EXISTS radiology_image_references ADD COLUMN IF NOT EXISTS created_by TEXT;
 
+-- sop_instance_uid/frame_number are declared by add_report_presentation_r11.sql
+-- (R1.1), which this file's DELETE and index below depend on. Feature
+-- migrations run in plain alphabetical filename order (see
+-- loadAllMigrationSql() in scripts/db-schema-verify.cjs and
+-- db-patch-entrypoint.sh) — "add_report_image_panel_r13.sql" sorts BEFORE
+-- "add_report_presentation_r11.sql" ("image_panel" < "presentation"
+-- lexicographically) despite the r13/r11 release numbers implying the
+-- opposite order. On any database where r11 has not yet run, that made this
+-- file's DELETE fail with "column a.sop_instance_uid does not exist" and,
+-- since the migration runner treats a feature-migration failure as fatal
+-- (set -e in db-patch-entrypoint.sh), everything alphabetically after this
+-- file — including r11 itself — was silently skipped for the rest of that
+-- deploy. Declaring the same columns here too (IF NOT EXISTS, matching
+-- r11's exact types) makes this file self-sufficient regardless of
+-- execution order, consistent with the "Additive and idempotent" promise
+-- already stated above.
+ALTER TABLE IF EXISTS radiology_image_references ADD COLUMN IF NOT EXISTS study_instance_uid TEXT;
+ALTER TABLE IF EXISTS radiology_image_references ADD COLUMN IF NOT EXISTS series_instance_uid TEXT;
+ALTER TABLE IF EXISTS radiology_image_references ADD COLUMN IF NOT EXISTS sop_instance_uid TEXT;
+ALTER TABLE IF EXISTS radiology_image_references ADD COLUMN IF NOT EXISTS frame_number INTEGER;
+
 -- Duplicates could exist from before the server-side guard (the R1.1 picker
 -- only prevented them client-side). Dedupe ONLY drafts that are not yet
 -- finalized — a signed/delivered report's rendered image set must never be
