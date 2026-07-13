@@ -28,6 +28,8 @@ type MyDailySummarySummary = {
   outstanding: number;
   refundsAndCancellations: number;
   refundAmount: number;
+  refundsWithoutCancellationAmount: number;
+  refundsWithoutCancellationCount: number;
   cancelledAmount: number;
   cashExpenses: number;
   digitalExpenses: number;
@@ -1573,11 +1575,23 @@ export default function MyDailySummary() {
 
   // Post-closure activity — always fetch so the admin can see yesterday's
   // post-closure bills even when today's drawer is open.
+  //
+  // Scoped to whichever staff member this page is currently showing: when a
+  // super-admin has a specific staff selected via staffFilter, fetch THAT
+  // staff's post-closure activity, not the logged-in admin's own (which was
+  // the bug — the box always queried "my-post-closure-activity" regardless
+  // of staffFilter, so it silently showed the admin's own empty data instead
+  // of the selected staff's). "All Staff / Total" has no single staff to
+  // scope to, so the box is skipped in that mode.
   const isDrawerClosed = drawerQ.data && drawerQ.data.drawerStatus !== "open" && drawerQ.data.drawerStatus !== "reopened";
+  const postClosureStaffName = isSuperAdmin && staffFilter.trim() ? staffFilter.trim() : myName;
   const postClosureQ = useQuery<PostClosureActivity>({
-    queryKey: ["my-post-closure-activity"],
-    queryFn: () => api.get<PostClosureActivity>("/api/day-close/my-post-closure-activity"),
-    enabled: true,
+    queryKey: ["post-closure-activity", postClosureStaffName],
+    queryFn: () =>
+      isSuperAdmin && staffFilter.trim()
+        ? api.get<PostClosureActivity>(`/api/day-close/staff-post-closure-activity/${encodeURIComponent(postClosureStaffName)}`)
+        : api.get<PostClosureActivity>("/api/day-close/my-post-closure-activity"),
+    enabled: !isSuperAdmin || !!staffFilter.trim(),
     ...FINANCIAL_QUERY_OPTIONS,
   });
 
@@ -2005,9 +2019,10 @@ export default function MyDailySummary() {
 
                 {/* Row 2 — supplementary metrics, evenly filled, no empty cells.
                     CSS Grid with equal columns — same guarantee as Row 1. */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 items-stretch">
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 items-stretch">
                   <MiniKpi icon={CheckCircle2} label="Total Received" value={fmt(s.totalReceived)} sub="All payments collected" theme="green" onClick={() => setDrilldownType("totalReceived")} />
                   <MiniKpi icon={Tag} label="Discounts Given" value={fmt(s.discountsGiven)} sub={s.grossBilling > 0 ? `${((s.discountsGiven / s.grossBilling) * 100).toFixed(1)}% of billing` : ""} theme="purple" onClick={() => setDrilldownType("discountsGiven")} />
+                  <MiniKpi icon={RefreshCw} label="Refunds (No Cancellation)" value={fmt(s.refundsWithoutCancellationAmount)} sub={s.refundsWithoutCancellationCount > 0 ? `${s.refundsWithoutCancellationCount} refund${s.refundsWithoutCancellationCount !== 1 ? "s" : ""}, no test cancelled` : "None"} theme="orange" />
                   <MiniKpi icon={XCircle} label="Cancellation Count" value={String(s.cancellationCount)} sub={s.cancellationCount > 0 ? `₹${s.cancelledAmount.toFixed(0)} written off` : "None"} theme="pink" onClick={() => setDrilldownType("cancellationCount")} />
                   <MiniKpi icon={IndianRupee} label="Average Bill Value" value={fmt(avgBillValue)} sub={`Across ${totalBillsCount} bill${totalBillsCount !== 1 ? "s" : ""}`} theme="slate" onClick={() => setDrilldownType("averageBillValue")} />
                 </div>
