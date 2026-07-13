@@ -36,6 +36,7 @@ export type SiteSettings = {
   socialLinks: string;
   serviceImagesEnabled: boolean;
   serviceImages: string; // JSON string: { "opd": "url", "usg": "url", etc. }
+  bookHeroImageUrl: string; // admin-uploaded background photo for the /book page hero
   isPublished: boolean;
   publishedRevision: number;
   lastPublishedAt: string | null;

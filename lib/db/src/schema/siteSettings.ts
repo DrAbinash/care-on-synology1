@@ -56,6 +56,9 @@ export const siteSettingsTable = pgTable("site_settings", {
   serviceImagesEnabled: boolean("service_images_enabled").notNull().default(false),
   serviceImages: text("service_images").notNull().default("{}"), // { "opd": "url", "usg": "url", etc. }
 
+  // Booking page ("/book") hero background photo, admin-uploaded via Website Builder
+  bookHeroImageUrl: text("book_hero_image_url").notNull().default(""),
+
   // Site history / audit JSON array
   siteHistory: text("site_history").notNull().default("[]"),
 

@@ -257,14 +257,14 @@ websiteRouter.patch("/settings", requireStaffAuth, requireStaffPermission("/webs
     "googleAnalyticsId", "googleTagManagerId", "googleAdsenseId",
     "metaPixelId", "facebookMetaTag", "pinterestMetaTag",
     "socialLinks",
-    "serviceImagesEnabled", "serviceImages",
+    "serviceImagesEnabled", "serviceImages", "bookHeroImageUrl",
   ];
 
   if (isAdminRole(req)) {
     allowed.push("customHeadHtml");
   }
 
-  const URL_FIELDS = new Set<string>(["faviconUrl", "logoUrl", "seoOgImage"]);
+  const URL_FIELDS = new Set<string>(["faviconUrl", "logoUrl", "seoOgImage", "bookHeroImageUrl"]);
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   for (const k of allowed) {
     if (req.body[k] === undefined) continue;
