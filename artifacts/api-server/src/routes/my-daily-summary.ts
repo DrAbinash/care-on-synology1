@@ -139,6 +139,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       recordedByName: paymentsTable.recordedByName,
       createdAt: paymentsTable.createdAt,
       billCreatedAt: billsTable.createdAt,
+      billStatus: billsTable.status,
     })
     .from(paymentsTable)
     .innerJoin(billsTable, eq(paymentsTable.billId, billsTable.id))
@@ -412,6 +413,15 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
   const totalExpenses = cashExpenses + digitalExpenses;
   const totalReceived = paymentItems.reduce((s, p) => s + Number(p.amount), 0);
   const refundAmount = refundItems.reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
+  // Refunds issued today whose bill is NOT cancelled — e.g. a staff member
+  // refunds money to a patient (partial refund, overcharge correction, test
+  // swap) without cancelling any test on the bill. These are invisible in
+  // both "Discounts Given" and "Cancellation Count" today, so flagged here
+  // as their own metric.
+  const refundsWithoutCancellationAmount = refundItems
+    .filter((p) => p.billStatus !== "cancelled")
+    .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
+  const refundsWithoutCancellationCount = refundItems.filter((p) => p.billStatus !== "cancelled").length;
   // Bills CANCELLED BY this staff (informational — accountability of canceller)
   const cancelledAmount = cancelledByMe.reduce((s, r) => s + Number(r.totalAmount), 0);
   // FIXED: cashCollection now subtracts cash refunds (was previously gross cash in)
@@ -562,6 +572,8 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       outstanding,
       refundsAndCancellations,
       refundAmount,
+      refundsWithoutCancellationAmount,
+      refundsWithoutCancellationCount,
       cancelledAmount,
       cashExpenses,
       digitalExpenses,

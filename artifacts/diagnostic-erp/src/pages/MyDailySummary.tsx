@@ -28,6 +28,8 @@ type MyDailySummarySummary = {
   outstanding: number;
   refundsAndCancellations: number;
   refundAmount: number;
+  refundsWithoutCancellationAmount: number;
+  refundsWithoutCancellationCount: number;
   cancelledAmount: number;
   cashExpenses: number;
   digitalExpenses: number;
@@ -740,11 +742,11 @@ function ASectionDivider({ color }: { color: "emerald" | "slate" | "red" | "blue
 // Replaces: DailyFinancialReconciliation + "My Billing" card + "My Cashbox" card
 //           + DailyReconciliationAndCashFlow table.
 //
-// FORMULA (verified algebraically):
+// FORMULA:
 //   Gross Bills Generated (post-discount)
 //   + Old Dues Collected
 //   = Total Revenue Activity
-//   − Cancelled Bills
+//   − Cancelled Bills (of bills created in THIS window — see note below)
 //   − Today's Refunds (cash + digital)
 //   − Outstanding Dues
 //   = Collectible Amount
@@ -752,7 +754,23 @@ function ASectionDivider({ color }: { color: "emerald" | "slate" | "red" | "blue
 //   − Cash Expenses (approved by this staff)         → physically paid out
 //   = Expected Physical Cash in Counter
 //
-//   Verification: expectedPhysicalCash ≡ physicalCashInHand = cashIn − cashRefunded − cashExpenses
+//   Target: expectedCash should equal physicalCashInHand = cashIn − cashRefunded − cashExpenses
+//   (the backend's authoritative, always-correct figure — same value shown by the
+//   "Expected Physical Cash" KPI card). Everything above it is a from-billing
+//   cross-check, not a second source of truth; if it ever disagrees with
+//   physicalCashInHand, that's a bug in this cross-check, not a real cash
+//   shortage — treat physicalCashInHand as correct.
+//
+//   FIXED BUG (this cross-check previously disagreed with physicalCashInHand):
+//   "Cancelled Bills" must use cancelledOnMyBills (bills created in this
+//   window that were also cancelled), NOT cancelledAmount (bills cancelled in
+//   this window regardless of creation date). Every other term here
+//   (grossBilledIncludingCancelled, duesCollectedTotal) is scoped by bill
+//   CREATION date, so subtracting cancelledAmount double-subtracted a bill
+//   created on an earlier day and cancelled today: never added into this
+//   window's billing, yet still subtracted as both a "cancellation" and
+//   (via its auto-generated refund) a "refund" — producing a false "Short"
+//   mismatch alert for an old bill cancelled today.
 //
 // ATTRIBUTION RULE (confirmed correct in backend):
 //   cashIn          = SUM(payments.amount > 0) WHERE recordedByName = thisStaff
@@ -778,10 +796,19 @@ function UnifiedReconciliationPanel({
   const [discountExpanded, setDiscountExpanded] = useState(false);
 
   // ── Formula (all arithmetic verified against backend physicalCashInHand) ──
+  // Uses cancelledOnMyBills (bills created in this window that were also
+  // cancelled), NOT cancelledAmount (bills cancelled in this window
+  // regardless of when created) — the rest of this formula is entirely
+  // creation-date scoped (grossBilledIncludingCancelled, duesCollectedTotal),
+  // so subtracting cancelledAmount double-counted a bill created on an
+  // earlier day and cancelled today: it was never added into this
+  // window's billing, yet was still subtracted as both a "cancellation"
+  // and (via its auto-generated refund) a "refund" — a real incident that
+  // produced a false "Short" mismatch alert for an old bill cancelled today.
   const totalRefunds   = s.cashRefunded + s.digitalRefunded;
   const collectible    = s.grossBilledIncludingCancelled
                         + s.duesCollectedTotal
-                        - s.cancelledAmount
+                        - s.cancelledOnMyBills
                         - totalRefunds
                         - s.outstanding;
   const netDigital     = s.digitalIn - s.digitalRefunded;
@@ -974,7 +1001,7 @@ function UnifiedReconciliationPanel({
           </span>
         </div>
 
-        <ARow label="Cancelled Bills" value={s.cancelledAmount} sign="−" indent highlight="red" />
+        <ARow label="Cancelled Bills" value={s.cancelledOnMyBills} sign="−" indent highlight="red" />
         <ARow label="Refunds" value={totalRefunds} sign="−" indent highlight="red"
               note={`Cash ${fmt(s.cashRefunded)} · Digital ${fmt(s.digitalRefunded)}`} />
         <ARow label="Outstanding Dues" value={s.outstanding} sign="−" indent highlight="red" note="balance on today's bills" />
@@ -1548,11 +1575,23 @@ export default function MyDailySummary() {
 
   // Post-closure activity — always fetch so the admin can see yesterday's
   // post-closure bills even when today's drawer is open.
+  //
+  // Scoped to whichever staff member this page is currently showing: when a
+  // super-admin has a specific staff selected via staffFilter, fetch THAT
+  // staff's post-closure activity, not the logged-in admin's own (which was
+  // the bug — the box always queried "my-post-closure-activity" regardless
+  // of staffFilter, so it silently showed the admin's own empty data instead
+  // of the selected staff's). "All Staff / Total" has no single staff to
+  // scope to, so the box is skipped in that mode.
   const isDrawerClosed = drawerQ.data && drawerQ.data.drawerStatus !== "open" && drawerQ.data.drawerStatus !== "reopened";
+  const postClosureStaffName = isSuperAdmin && staffFilter.trim() ? staffFilter.trim() : myName;
   const postClosureQ = useQuery<PostClosureActivity>({
-    queryKey: ["my-post-closure-activity"],
-    queryFn: () => api.get<PostClosureActivity>("/api/day-close/my-post-closure-activity"),
-    enabled: true,
+    queryKey: ["post-closure-activity", postClosureStaffName],
+    queryFn: () =>
+      isSuperAdmin && staffFilter.trim()
+        ? api.get<PostClosureActivity>(`/api/day-close/staff-post-closure-activity/${encodeURIComponent(postClosureStaffName)}`)
+        : api.get<PostClosureActivity>("/api/day-close/my-post-closure-activity"),
+    enabled: !isSuperAdmin || !!staffFilter.trim(),
     ...FINANCIAL_QUERY_OPTIONS,
   });
 
@@ -1603,11 +1642,13 @@ export default function MyDailySummary() {
   const exportConfig = useMemo<ExportConfig | null>(() => {
     if (!s || !data) return null;
 
-    // Use the SAME formula as UnifiedReconciliationPanel — must match exactly
+    // Use the SAME formula as UnifiedReconciliationPanel — must match exactly.
+    // cancelledOnMyBills (not cancelledAmount) — see the comment on the
+    // matching calculation in UnifiedReconciliationPanel above.
     const totalRefunds     = s.cashRefunded + s.digitalRefunded;
     const collectible      = s.grossBilledIncludingCancelled
                            + s.duesCollectedTotal
-                           - s.cancelledAmount
+                           - s.cancelledOnMyBills
                            - totalRefunds
                            - s.outstanding;
     const netDigital       = s.digitalIn - s.digitalRefunded;
@@ -1632,7 +1673,7 @@ export default function MyDailySummary() {
           ["Total Revenue Activity",   inr(s.grossBilledIncludingCancelled + s.duesCollectedTotal)],
           ["", ""],
           ["── DEDUCTIONS ───────────────────", ""],
-          ["Cancelled Bills",          inr(s.cancelledAmount)],
+          ["Cancelled Bills",          inr(s.cancelledOnMyBills)],
           ["Refunds (Cash)",           inr(s.cashRefunded)],
           ["Refunds (Digital)",        inr(s.digitalRefunded)],
           ["Total Refunds",            inr(totalRefunds)],
@@ -1943,8 +1984,9 @@ export default function MyDailySummary() {
         <>
           {(() => {
             const totalRefunds = s.cashRefunded + s.digitalRefunded;
+            // cancelledOnMyBills, not cancelledAmount — see UnifiedReconciliationPanel.
             const collectible = s.grossBilledIncludingCancelled + s.duesCollectedTotal
-              - s.cancelledAmount - totalRefunds - s.outstanding;
+              - s.cancelledOnMyBills - totalRefunds - s.outstanding;
             const totalBillsCount = (s.billCount ?? 0) + (s.cancelledByOthersCount ?? 0) + (s.cancelledBySelfCount ?? 0);
             const avgBillValue = totalBillsCount > 0 ? s.grossBilledIncludingCancelled / totalBillsCount : 0;
             return (
@@ -1962,7 +2004,7 @@ export default function MyDailySummary() {
                   <FormulaOp op="+" />
                   <MiniKpi icon={Receipt} label="Dues Collected" value={fmt(s.duesCollectedTotal)} sub={`${s.duesBillsCount} old bill${s.duesBillsCount !== 1 ? "s" : ""} settled`} theme="green" onClick={() => setDrilldownType("duesCollected")} />
                   <FormulaOp op="−" />
-                  <MiniKpi icon={RotateCcw} label="Cancellations" value={fmt(s.cancelledAmount)} sub={`${s.cancellationCount} bill${s.cancellationCount !== 1 ? "s" : ""} cancelled`} theme="pink" onClick={() => setDrilldownType("cancellations")} />
+                  <MiniKpi icon={RotateCcw} label="Cancellations" value={fmt(s.cancelledOnMyBills)} sub={`${s.cancellationCount} bill${s.cancellationCount !== 1 ? "s" : ""} cancelled`} theme="pink" onClick={() => setDrilldownType("cancellations")} />
                   <FormulaOp op="−" />
                   <MiniKpi icon={Wallet} label="Outstanding / Dues" value={fmt(s.outstanding)} sub="Unpaid balance" theme="orange" onClick={() => setDrilldownType("outstandingDues")} />
                   <FormulaOp op="=" />
@@ -1977,9 +2019,10 @@ export default function MyDailySummary() {
 
                 {/* Row 2 — supplementary metrics, evenly filled, no empty cells.
                     CSS Grid with equal columns — same guarantee as Row 1. */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 items-stretch">
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 items-stretch">
                   <MiniKpi icon={CheckCircle2} label="Total Received" value={fmt(s.totalReceived)} sub="All payments collected" theme="green" onClick={() => setDrilldownType("totalReceived")} />
                   <MiniKpi icon={Tag} label="Discounts Given" value={fmt(s.discountsGiven)} sub={s.grossBilling > 0 ? `${((s.discountsGiven / s.grossBilling) * 100).toFixed(1)}% of billing` : ""} theme="purple" onClick={() => setDrilldownType("discountsGiven")} />
+                  <MiniKpi icon={RefreshCw} label="Refunds (No Cancellation)" value={fmt(s.refundsWithoutCancellationAmount)} sub={s.refundsWithoutCancellationCount > 0 ? `${s.refundsWithoutCancellationCount} refund${s.refundsWithoutCancellationCount !== 1 ? "s" : ""}, no test cancelled` : "None"} theme="orange" />
                   <MiniKpi icon={XCircle} label="Cancellation Count" value={String(s.cancellationCount)} sub={s.cancellationCount > 0 ? `₹${s.cancelledAmount.toFixed(0)} written off` : "None"} theme="pink" onClick={() => setDrilldownType("cancellationCount")} />
                   <MiniKpi icon={IndianRupee} label="Average Bill Value" value={fmt(avgBillValue)} sub={`Across ${totalBillsCount} bill${totalBillsCount !== 1 ? "s" : ""}`} theme="slate" onClick={() => setDrilldownType("averageBillValue")} />
                 </div>
