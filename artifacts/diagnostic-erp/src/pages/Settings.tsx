@@ -2107,6 +2107,77 @@ function OnlineBookingCatalogSelector({
   );
 }
 
+function BookingPageBackgroundCard() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { data: siteSettings, isLoading } = useQuery<{ bookHeroImageUrl?: string }>({
+    queryKey: ["website", "settings"],
+    queryFn: () => api.get("/api/website/settings"),
+  });
+  const [uploading, setUploading] = useState(false);
+
+  const save = useMutation({
+    mutationFn: (bookHeroImageUrl: string) => api.patch("/api/website/settings", { bookHeroImageUrl }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["website", "settings"] });
+      toast({ title: "Booking page background updated" });
+    },
+    onError: (err: any) => toast({ title: "Save failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
+  });
+
+  async function onUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("photo", file);
+      fd.append("category", "book_hero");
+      const token = getStaffToken();
+      const r = await fetch("/api/website/photos", {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        body: fd,
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const photo = await r.json();
+      save.mutate(photo.url);
+    } catch (err) {
+      toast({ title: "Upload failed", description: (err as Error).message, variant: "destructive" });
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  const current = siteSettings?.bookHeroImageUrl || "";
+
+  return (
+    <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
+      <h3 className="font-bold flex items-center gap-2"><ImageIcon size={16} /> Booking Page Background Photo</h3>
+      <p className="text-xs text-muted-foreground">Sets the hero background photo shown on the public "Book a Test" page. Leave unset to use the default pattern.</p>
+      {!isLoading && (
+        <div className="flex items-center gap-4">
+          <div className="h-20 w-32 rounded-lg border border-card-border bg-muted overflow-hidden flex items-center justify-center shrink-0">
+            {current ? <img src={current} className="h-full w-full object-cover" alt="" /> : <ImageIcon size={20} className="opacity-30" />}
+          </div>
+          <div className="space-y-2">
+            <label className="inline-flex items-center gap-2 text-sm font-medium border border-card-border rounded-lg px-3 py-2 cursor-pointer hover:bg-muted/40">
+              <Upload size={14} /> {uploading ? "Uploading…" : "Upload photo"}
+              <input type="file" accept="image/*" className="hidden" onChange={onUpload} disabled={uploading} />
+            </label>
+            {current && (
+              <button type="button" className="block text-xs text-muted-foreground hover:text-foreground underline" onClick={() => save.mutate("")}>
+                Remove photo
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function OnlineBookingTab() {
   const qc = useQueryClient();
   const { toast } = useToast();
@@ -2322,6 +2393,8 @@ function OnlineBookingTab() {
           <Button onClick={() => save.mutate(form)} disabled={save.isPending}>{save.isPending ? "Saving…" : "Save"}</Button>
         </div>
       </div>
+
+      <BookingPageBackgroundCard />
 
       {/* Phase 6: VIP Percentage Surcharge */}
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
