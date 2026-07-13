@@ -27,6 +27,7 @@ import { ensureDefaultLedger } from "./routes/ledgers";
 import { backfillExpirePublicTokens } from "./routes/patient-reports";
 import { db, usersTable } from "@workspace/db";
 import { pool } from "@workspace/db";
+import { prepareSqlStatements } from "./lib/sqlStatementSplitter";
 import { eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { validateRadiologyConfig } from "./lib/pacs/pacsConfig.js";
@@ -136,15 +137,12 @@ async function seedBootstrapAdminIfNeeded(): Promise<void> {
   }
 }
 
-// Helper: Execute multi-statement SQL with auto-commit between statements.
 // CRITICAL: PostgreSQL wraps multi-statement query() calls in implicit transactions.
-// This helper splits SQL and executes each statement via pool.query() for autocommit.
+// This helper splits SQL (via prepareSqlStatements — dollar-quote- and
+// comment-aware, see lib/sqlStatementSplitter.ts) and executes each
+// statement via pool.query() for autocommit.
 async function executeStartupSQL(sql: string): Promise<void> {
-  // Split on semicolon, filter empty statements, trim whitespace
-  const statements = sql
-    .split(';')
-    .map(stmt => stmt.trim())
-    .filter(stmt => stmt.length > 0 && !stmt.startsWith('--'));
+  const statements = prepareSqlStatements(sql);
 
   for (const stmt of statements) {
     // Drizzle breakpoint comments are safe to strip
