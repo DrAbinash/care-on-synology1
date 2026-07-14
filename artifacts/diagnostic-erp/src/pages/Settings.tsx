@@ -2107,6 +2107,77 @@ function OnlineBookingCatalogSelector({
   );
 }
 
+function WebsiteLogoCard() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { data: siteSettings, isLoading } = useQuery<{ logoUrl?: string }>({
+    queryKey: ["website", "settings"],
+    queryFn: () => api.get("/api/website/settings"),
+  });
+  const [uploading, setUploading] = useState(false);
+
+  const save = useMutation({
+    mutationFn: (logoUrl: string) => api.patch("/api/website/settings", { logoUrl }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["website", "settings"] });
+      toast({ title: "Website logo updated" });
+    },
+    onError: (err: any) => toast({ title: "Save failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
+  });
+
+  async function onUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("photo", file);
+      fd.append("category", "logo");
+      const token = getStaffToken();
+      const r = await fetch("/api/website/photos", {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        body: fd,
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const photo = await r.json();
+      save.mutate(photo.url);
+    } catch (err) {
+      toast({ title: "Upload failed", description: (err as Error).message, variant: "destructive" });
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  const current = siteSettings?.logoUrl || "";
+
+  return (
+    <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
+      <h3 className="font-bold flex items-center gap-2"><ImageIcon size={16} /> Clinic Logo</h3>
+      <p className="text-xs text-muted-foreground">Clinic logo displayed in the "Book a Test" page topbar and hero section. Recommended: square or landscape PNG/SVG, max 500 KB.</p>
+      {!isLoading && (
+        <div className="flex items-center gap-4">
+          <div className="h-20 w-20 rounded-lg border border-card-border bg-muted overflow-hidden flex items-center justify-center shrink-0">
+            {current ? <img src={current} className="h-full w-full object-contain p-1" alt="" /> : <ImageIcon size={20} className="opacity-30" />}
+          </div>
+          <div className="space-y-2">
+            <label className="inline-flex items-center gap-2 text-sm font-medium border border-card-border rounded-lg px-3 py-2 cursor-pointer hover:bg-muted/40">
+              <Upload size={14} /> {uploading ? "Uploading…" : "Upload logo"}
+              <input type="file" accept="image/*" className="hidden" onChange={onUpload} disabled={uploading} />
+            </label>
+            {current && (
+              <button type="button" className="block text-xs text-muted-foreground hover:text-foreground underline" onClick={() => save.mutate("")}>
+                Remove logo
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BookingPageBackgroundCard() {
   const qc = useQueryClient();
   const { toast } = useToast();
@@ -2393,6 +2464,8 @@ function OnlineBookingTab() {
           <Button onClick={() => save.mutate(form)} disabled={save.isPending}>{save.isPending ? "Saving…" : "Save"}</Button>
         </div>
       </div>
+
+      <WebsiteLogoCard />
 
       <BookingPageBackgroundCard />
 

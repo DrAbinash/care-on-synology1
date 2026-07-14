@@ -611,15 +611,11 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
   const isKioskMode = mode === "kiosk";
 
   const fallbackGridBg = `url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800"><defs><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="%2394a3b8" stroke-width="1"/></pattern><radialGradient id="pulse1" cx="20%" cy="30%"><stop offset="0%" style="stop-color:%230369a1;stop-opacity:0.45"/><stop offset="100%" style="stop-color:%230369a1;stop-opacity:0"/></radialGradient><radialGradient id="pulse2" cx="80%" cy="70%"><stop offset="0%" style="stop-color:%2306b6d4;stop-opacity:0.38"/><stop offset="100%" style="stop-color:%2306b6d4;stop-opacity:0"/></radialGradient></defs><rect width="1200" height="800" fill="white"/><rect width="1200" height="800" fill="url(%23grid)"/><circle cx="240" cy="240" r="260" fill="url(%23pulse1)"/><circle cx="1000" cy="600" r="320" fill="url(%23pulse2)"/><circle cx="100" cy="700" r="200" fill="url(%23pulse1)" opacity="0.7"/><circle cx="1100" cy="150" r="230" fill="url(%23pulse2)" opacity="0.6"/></svg>')`;
-  const heroBgImage = settings.bookHeroImageUrl ? `url('${settings.bookHeroImageUrl}')` : fallbackGridBg;
 
   return (
     <div style={{
       minHeight: "100vh",
-      background: `linear-gradient(135deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.5) 100%), ${heroBgImage}`,
-      backgroundSize: "cover",
-      backgroundAttachment: "fixed",
-      backgroundPosition: "center",
+      background: "hsl(var(--cd-scan-white))",
       color: "hsl(var(--cd-slate))"
     }}>
       {!isKioskMode && (
@@ -629,6 +625,13 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
               <ChevronLeft size={18} /> Back to Home
             </a>
             <div className="cd-book-topbar-title">
+              {settings.logoUrl && (
+                <img
+                  src={settings.logoUrl}
+                  alt="Clinic Logo"
+                  style={{ height: 32, width: "auto", marginRight: ".5rem", objectFit: "contain" }}
+                />
+              )}
               <CalendarCheck size={16} /> Book a Test
             </div>
           </div>
@@ -636,8 +639,23 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
       )}
 
       {!isKioskMode && (
-        <div className="cd-book-hero cd-scan-panel">
+        <div className="cd-book-hero cd-scan-panel" style={{
+          backgroundImage: settings.bookHeroImageUrl
+            ? `linear-gradient(135deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.5) 100%), url('${settings.bookHeroImageUrl}')`
+            : `linear-gradient(135deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.5) 100%), ${fallbackGridBg}`,
+          backgroundSize: "cover",
+          backgroundAttachment: "fixed",
+          backgroundPosition: "center",
+          backgroundRepeat: "no-repeat",
+        }}>
           <div className="container-narrow" style={{ textAlign: "center", position: "relative", zIndex: 2 }}>
+            {settings.logoUrl && (
+              <img
+                src={settings.logoUrl}
+                alt="Clinic Logo"
+                style={{ height: 60, width: "auto", marginBottom: "1rem", objectFit: "contain" }}
+              />
+            )}
             <h1 className="cd-display cd-book-hero-title">Book your diagnostic test</h1>
             <p className="cd-book-hero-sub">
               MRI, CT Scan, Ultrasound, Digital X-Ray, Pathology &amp; Health Packages at Care Diagnostics, Deoghar.
