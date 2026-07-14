@@ -29,12 +29,19 @@ echo -e "${BOLD}============================================================${NC
 echo ""
 
 # ── Step 1: Pull latest code ─────────────────────────────────────────────────
+# Always deploy from feature/website-login-redirection, regardless of
+# whatever branch happens to already be checked out on this machine (a
+# leftover topic-branch checkout — e.g. from testing a PR before it merged —
+# used to silently "succeed" a plain `git pull` with nothing new to fetch,
+# permanently deploying stale code with no visible error).
 info "Pulling latest updates from GitHub..."
-git pull --ff-only 2>/dev/null || {
-  warn "Could not auto-pull. Trying full fetch..."
-  git fetch origin
-  git reset --hard origin/feature/website-login-redirection
-}
+CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
+if [ "$CURRENT_BRANCH" != "feature/website-login-redirection" ]; then
+  warn "On branch '${CURRENT_BRANCH:-detached HEAD}', not feature/website-login-redirection — switching."
+fi
+git fetch origin feature/website-login-redirection
+git checkout feature/website-login-redirection 2>/dev/null || git checkout -B feature/website-login-redirection origin/feature/website-login-redirection
+git reset --hard origin/feature/website-login-redirection
 ok "Code updated: $(git log -1 --format='%h — %s')"
 
 # ── Step 2: Set version metadata ─────────────────────────────────────────────
