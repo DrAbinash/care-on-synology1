@@ -263,10 +263,8 @@ export async function sendDailySummaryEmail(params: {
 
   const rows: Array<[string, string]> = [
     ["Date", params.date],
-    ["Bills Created", String(params.totalBills)],
     ["Bills Paid", String(params.paidBills)],
     ["Bills Pending / Partial", String(params.pendingBills)],
-    ["Payments Received", inr(params.totalPayments)],
     ["Bills Edited", String(params.billsEdited)],
     ["Discounts Given", inr(params.discountsGiven)],
     ["Refunds & Cancellations", inr(params.refundsAndCancellations)],
@@ -276,6 +274,10 @@ export async function sendDailySummaryEmail(params: {
   if (params.unclassifiedCollected > 0) {
     rows.push(["Unclassified Payments (needs review)", inr(params.unclassifiedCollected)]);
   }
+  rows.push(
+    ["Bills Created", String(params.totalBills)],
+    ["Payments Received", inr(params.totalPayments)]
+  );
 
   const rowHtml = rows.map(([label, value]) => `
     <tr>
