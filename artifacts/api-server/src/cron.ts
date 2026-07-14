@@ -4,12 +4,13 @@ import {
   emailSettingsTable, billsTable, billAuditsTable, paymentsTable,
   doctorsTable, commissionRulesTable, orderTestsTable, ordersTable, testsTable,
   dicomNodesTable, dicomPullJobsTable, whatsappSettingsTable,
+  expensesTable, patientsTable,
 } from "@workspace/db/schema";
 import { sendDailySummaryEmail, sendCommissionMonthEndEmail, sendMonthlyAuditEmail } from "./email";
 import { runBooksSanity } from "./routes/books-sanity";
 import { exportDatabaseSql, exportDatabaseSqlFallback, computeSha256 } from "./routes/backupReplication";
 import { auditRunsTable, watchdogStatusTable } from "@workspace/db/schema";
-import { gte, and, lte, eq, inArray, isNull, or, lt } from "drizzle-orm";
+import { gte, and, lte, eq, inArray, isNull, or, lt, sql, ne } from "drizzle-orm";
 import { encryptBackup } from "@workspace/crypto";
 import {
   startDimsePullAgent,
@@ -19,6 +20,8 @@ import {
 import { runRadiologyJobTick } from "./lib/radiologyJobs";
 import { RADIOLOGY_JOB_HANDLERS } from "./lib/radiologyJobHandlers";
 import { runScheduledAuditChainVerification } from "./lib/auditVerification";
+import { todayIST } from "./lib/istDate";
+import { classifyPaymentMethod, isDigitalSettlement, isPhysicalCash } from "./lib/paymentMethodClassifier";
 
 let currentTask: ReturnType<typeof cron.schedule> | null = null;
 // Track already-fired events per day to avoid double-firing
@@ -540,6 +543,15 @@ async function fireDicomAutoPull() {
   }
 }
 
+// Catch-up safe: fires as soon as the configured time has passed on any day
+// the container happens to be up, as long as today (IST) isn't already the
+// persisted dailySummaryLastSentDate. Unlike the old exact-minute-match +
+// in-memory Set approach, a redeploy/crash during the configured minute no
+// longer permanently skips that day's email — the very next tick after
+// restart catches up. dailySummaryLastSentDate is only stamped by a
+// successful SCHEDULED send (inside fireDailySummary), never by the manual
+// "Send Summary Now" button, so a manual test-send never blocks the real
+// scheduled send later that day.
 function scheduleDaily() {
   cron.schedule("* * * * *", async () => {
     try {
@@ -548,18 +560,19 @@ function scheduleDaily() {
 
       const now = new Date();
       const [hour, minute] = settings.dailySummaryTime.split(":").map(Number);
-      const key = `daily-${now.toISOString().split("T")[0]}`;
+      const todayStr = todayIST(now);
+      const scheduledTimePassed =
+        now.getHours() > hour || (now.getHours() === hour && now.getMinutes() >= minute);
 
-      if (now.getHours() === hour && now.getMinutes() === minute && !firedToday.has(key)) {
-        firedToday.add(key);
-        await fireDailySummary();
+      if (scheduledTimePassed && settings.dailySummaryLastSentDate !== todayStr) {
+        await fireDailySummary({ scheduled: true });
       }
     } catch (err) {
       console.error("[cron] daily summary check failed:", err);
     }
   });
 
-  console.log("[cron] Daily summary scheduler started (checks every minute)");
+  console.log("[cron] Daily summary scheduler started (checks every minute, catch-up safe)");
 }
 
 // ── WhatsApp reminder scheduler ───────────────────────────────────────────────
@@ -646,41 +659,101 @@ function scheduleMonthEndCommission() {
   console.log("[cron] Month-end commission scheduler started (fires at 20:00 on last day of month)");
 }
 
-export async function runDailySummary() {
-  return fireDailySummary();
+// force=true bypasses the dailySummaryEnabled toggle, used by the manual
+// "Send Summary Now" admin button — it never stamps dailySummaryLastSentDate
+// (scheduled stays false), so a manual preview never blocks the real
+// scheduled send later that day.
+export async function runDailySummary(force = false) {
+  return fireDailySummary({ scheduled: false, force });
 }
 
 export async function runMonthEndCommission(now: Date = new Date()) {
   return fireMonthEndCommission(now);
 }
 
-async function fireDailySummary() {
+async function fireDailySummary(opts: { scheduled: boolean; force?: boolean }) {
   try {
+    const now = new Date();
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
     const todayEnd = new Date();
     todayEnd.setHours(23, 59, 59, 999);
+    const inToday = (col: any) => and(gte(col, todayStart), lte(col, todayEnd));
 
-    const [bills, payments, audits] = await Promise.all([
-      db.select().from(billsTable).where(
-        and(gte(billsTable.createdAt, todayStart), lte(billsTable.createdAt, todayEnd))
-      ),
-      db.select().from(paymentsTable).where(
-        and(gte(paymentsTable.createdAt, todayStart), lte(paymentsTable.createdAt, todayEnd))
-      ),
-      db.select().from(billAuditsTable).where(
-        and(gte(billAuditsTable.createdAt, todayStart), lte(billAuditsTable.createdAt, todayEnd))
-      ),
+    const [bills, payments, audits, expenses, newPatients, orderTestRows] = await Promise.all([
+      db.select().from(billsTable).where(inToday(billsTable.createdAt)),
+      db.select().from(paymentsTable).where(inToday(paymentsTable.createdAt)),
+      db.select().from(billAuditsTable).where(inToday(billAuditsTable.createdAt)),
+      db.select().from(expensesTable).where(inToday(expensesTable.createdAt)),
+      db.select().from(patientsTable).where(inToday(patientsTable.createdAt)),
+      db
+        .select({ testName: testsTable.name })
+        .from(orderTestsTable)
+        .innerJoin(ordersTable, eq(orderTestsTable.orderId, ordersTable.id))
+        .innerJoin(testsTable, eq(orderTestsTable.testId, testsTable.id))
+        .where(and(inToday(ordersTable.createdAt), ne(orderTestsTable.status, "cancelled"))),
     ]);
 
     const totalRevenue = payments.reduce((s, p) => s + Number(p.amount), 0);
     const totalBills = bills.length;
     const paidBills = bills.filter(b => b.status === "paid").length;
     const pendingBills = bills.filter(b => b.status === "pending" || b.status === "partial").length;
-    const totalPayments = payments.reduce((s, p) => s + Number(p.amount), 0);
+    const totalPayments = totalRevenue;
     const billsEdited = new Set(audits.map(a => a.billId)).size;
 
-    const today = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+    // Cash vs. digital vs. unclassified/suspense — same locked business rule
+    // (never silently fold an unrecognized method into cash or digital) used
+    // by daily-summary.ts, reused here via the shared classifier lib.
+    let cashCollected = 0, digitalCollected = 0, unclassifiedCollected = 0;
+    for (const p of payments) {
+      const amt = Number(p.amount);
+      if (isPhysicalCash(p.method)) cashCollected += amt;
+      else if (isDigitalSettlement(p.method)) digitalCollected += amt;
+      else unclassifiedCollected += amt;
+    }
+
+    const nonCancelledBills = bills.filter(b => b.status !== "cancelled");
+    const discountsGiven = bills.reduce((s, b) => s + Number(b.discount || 0), 0);
+    const refundsAndCancellations =
+      bills.filter(b => b.status === "cancelled").reduce((s, b) => s + Number(b.refundAmount || 0), 0);
+    const averageBillValue = nonCancelledBills.length > 0
+      ? nonCancelledBills.reduce((s, b) => s + Number(b.totalAmount), 0) / nonCancelledBills.length
+      : 0;
+
+    let cashExpenses = 0, digitalExpenses = 0;
+    for (const e of expenses) {
+      const amt = Number(e.amount);
+      if (isPhysicalCash(e.paymentMode)) cashExpenses += amt;
+      else digitalExpenses += amt;
+    }
+
+    const outstandingResult = await db.execute<{ total: string }>(
+      sql`SELECT COALESCE(SUM(balance_amount::numeric), 0)::text AS total FROM bills WHERE status IN ('pending','partial') AND balance_amount::numeric > 0`
+    );
+    const outstandingRows = (outstandingResult as unknown as { rows?: Array<{ total: string }> }).rows
+      ?? (outstandingResult as unknown as Array<{ total: string }>);
+    const totalOutstandingDues = outstandingRows[0]?.total ?? "0";
+
+    const staffTotals = new Map<string, number>();
+    for (const p of payments) {
+      const name = p.recordedByName || "Unknown";
+      staffTotals.set(name, (staffTotals.get(name) || 0) + Number(p.amount));
+    }
+    const staffWise = [...staffTotals.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name, amount]) => ({ name, amount }));
+
+    const testCounts = new Map<string, number>();
+    for (const row of orderTestRows) {
+      testCounts.set(row.testName, (testCounts.get(row.testName) || 0) + 1);
+    }
+    const topTests = [...testCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name, count]) => ({ name, count }));
+
+    const today = now.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 
     await sendDailySummaryEmail({
       date: today,
@@ -690,7 +763,29 @@ async function fireDailySummary() {
       pendingBills,
       totalPayments,
       billsEdited,
-    });
+      cashCollected,
+      digitalCollected,
+      unclassifiedCollected,
+      discountsGiven,
+      refundsAndCancellations,
+      averageBillValue,
+      newPatients: newPatients.length,
+      totalOutstandingDues: Number(totalOutstandingDues || 0),
+      cashExpenses,
+      digitalExpenses,
+      staffWise,
+      topTests,
+    }, { force: opts.force });
+
+    if (opts.scheduled) {
+      const [settingsRow] = await db.select({ id: emailSettingsTable.id }).from(emailSettingsTable).limit(1);
+      if (settingsRow) {
+        await db
+          .update(emailSettingsTable)
+          .set({ dailySummaryLastSentDate: todayIST(now) })
+          .where(eq(emailSettingsTable.id, settingsRow.id));
+      }
+    }
 
     console.log(`[cron] Daily summary sent for ${today}`);
   } catch (err) {
