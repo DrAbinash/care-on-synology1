@@ -221,6 +221,21 @@ export async function sendDailySummaryEmail(params: {
   pendingBills: number;
   totalPayments: number;
   billsEdited: number;
+  cashCollected: number;
+  digitalCollected: number;
+  unclassifiedCollected: number;
+  discountsGiven: number;
+  refundsAndCancellations: number;
+  averageBillValue: number;
+  newPatients: number;
+  totalOutstandingDues: number;
+  cashExpenses: number;
+  digitalExpenses: number;
+  staffWise: Array<{ name: string; amount: number }>;
+  topTests: Array<{ name: string; count: number }>;
+  activityLogs: Array<{ billNumber: string; editor: string; action: string }>;
+  outstandingBills: Array<{ status: string; count: string; amount: number }>;
+  discountDetails: Array<{ reason: string; amount: number }>;
 }, opts?: { force?: boolean }) {
   const s = await getEmailSettings();
   // `force` is used by the manual "Send Summary Now" button so an admin can
@@ -235,15 +250,37 @@ export async function sendDailySummaryEmail(params: {
 
   const inr = (n: number) => `₹${n.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
 
-  const rows = [
-    ["Date", params.date],
+  const cards = [
     ["Total Revenue Collected", inr(params.totalRevenue)],
-    ["Bills Created", String(params.totalBills)],
+    ["Total Outstanding Dues", inr(params.totalOutstandingDues)],
+    ["Cash Collected", inr(params.cashCollected)],
+    ["Digital Collected", inr(params.digitalCollected)],
+    ["Average Bill Value", inr(params.averageBillValue)],
+    ["New Patients Today", String(params.newPatients)],
+  ];
+  const cardHtml = cards.map(([label, value]) => `
+    <div style="flex:1;min-width:150px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px">
+      <div style="font-size:11px;color:#6b7280">${label}</div>
+      <div style="font-size:16px;font-weight:700;color:#065f46;margin-top:2px">${value}</div>
+    </div>`).join("");
+
+  const rows: Array<[string, string]> = [
+    ["Date", params.date],
     ["Bills Paid", String(params.paidBills)],
     ["Bills Pending / Partial", String(params.pendingBills)],
-    ["Payments Received", inr(params.totalPayments)],
     ["Bills Edited", String(params.billsEdited)],
+    ["Discounts Given", inr(params.discountsGiven)],
+    ["Refunds & Cancellations", inr(params.refundsAndCancellations)],
+    ["Expenses (Cash)", inr(params.cashExpenses)],
+    ["Expenses (Digital)", inr(params.digitalExpenses)],
   ];
+  if (params.unclassifiedCollected > 0) {
+    rows.push(["Unclassified Payments (needs review)", inr(params.unclassifiedCollected)]);
+  }
+  rows.push(
+    ["Bills Created", String(params.totalBills)],
+    ["Payments Received", inr(params.totalPayments)]
+  );
 
   const rowHtml = rows.map(([label, value]) => `
     <tr>
@@ -251,14 +288,82 @@ export async function sendDailySummaryEmail(params: {
       <td style="padding:8px 12px;border-bottom:1px solid #f1f5f9;font-weight:600;font-size:13px">${value}</td>
     </tr>`).join("");
 
+  const staffRowHtml = params.staffWise.map(({ name, amount }) => `
+    <tr>
+      <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-size:13px">${name}</td>
+      <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-weight:600;font-size:13px">${inr(amount)}</td>
+    </tr>`).join("");
+
+  const testRowHtml = params.topTests.map(({ name, count }) => `
+    <tr>
+      <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-size:13px">${name}</td>
+      <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-weight:600;font-size:13px">${count}</td>
+    </tr>`).join("");
+
+  const activityRowHtml = params.activityLogs.map(({ billNumber, editor, action }) => `
+    <tr>
+      <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-size:13px">${billNumber}</td>
+      <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-size:13px">${editor}</td>
+      <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-size:12px;color:#6b7280">${action}</td>
+    </tr>`).join("");
+
+  const outstandingRowHtml = params.outstandingBills.map(({ status, count, amount }) => `
+    <tr>
+      <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-size:13px">${status}</td>
+      <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-weight:600;font-size:13px">${count}</td>
+      <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-weight:600;font-size:13px">${inr(amount)}</td>
+    </tr>`).join("");
+
+  const discountRowHtml = params.discountDetails.map(({ reason, amount }) => `
+    <tr>
+      <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-size:13px">${reason}</td>
+      <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-weight:600;font-size:13px">${inr(amount)}</td>
+    </tr>`).join("");
+
   const html = `
-    <div style="font-family:sans-serif;max-width:560px;margin:0 auto;background:#f8fafc;padding:24px;border-radius:12px">
+    <div style="font-family:sans-serif;max-width:600px;margin:0 auto;background:#f8fafc;padding:24px;border-radius:12px">
       <div style="background:#059669;color:white;padding:16px 20px;border-radius:8px 8px 0 0">
         <h2 style="margin:0;font-size:18px">Daily Summary Report</h2>
         <p style="margin:4px 0 0;opacity:0.85;font-size:13px">${params.date}</p>
       </div>
       <div style="background:white;padding:20px;border-radius:0 0 8px 8px;border:1px solid #e2e8f0">
+        <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px">${cardHtml}</div>
         <table style="width:100%;border-collapse:collapse">${rowHtml}</table>
+        ${staffRowHtml ? `
+        <h3 style="font-size:13px;color:#374151;margin:20px 0 8px">Staff-wise Collections</h3>
+        <table style="width:100%;border-collapse:collapse">${staffRowHtml}</table>` : ""}
+        ${testRowHtml ? `
+        <h3 style="font-size:13px;color:#374151;margin:20px 0 8px">Top Tests Ordered</h3>
+        <table style="width:100%;border-collapse:collapse">${testRowHtml}</table>` : ""}
+        ${activityRowHtml ? `
+        <h3 style="font-size:13px;color:#374151;margin:20px 0 8px">My Activity Logs</h3>
+        <table style="width:100%;border-collapse:collapse">
+          <tr style="background:#f9fafb">
+            <td style="padding:6px 12px;border-bottom:1px solid #e5e7eb;font-weight:600;font-size:12px">Bill #</td>
+            <td style="padding:6px 12px;border-bottom:1px solid #e5e7eb;font-weight:600;font-size:12px">Editor</td>
+            <td style="padding:6px 12px;border-bottom:1px solid #e5e7eb;font-weight:600;font-size:12px">Action</td>
+          </tr>
+          ${activityRowHtml}
+        </table>` : ""}
+        ${outstandingRowHtml ? `
+        <h3 style="font-size:13px;color:#374151;margin:20px 0 8px">Outstanding Bills</h3>
+        <table style="width:100%;border-collapse:collapse">
+          <tr style="background:#f9fafb">
+            <td style="padding:6px 12px;border-bottom:1px solid #e5e7eb;font-weight:600;font-size:12px">Status</td>
+            <td style="padding:6px 12px;border-bottom:1px solid #e5e7eb;font-weight:600;font-size:12px">Count</td>
+            <td style="padding:6px 12px;border-bottom:1px solid #e5e7eb;font-weight:600;font-size:12px">Amount</td>
+          </tr>
+          ${outstandingRowHtml}
+        </table>` : ""}
+        ${discountRowHtml ? `
+        <h3 style="font-size:13px;color:#374151;margin:20px 0 8px">Discount Given</h3>
+        <table style="width:100%;border-collapse:collapse">
+          <tr style="background:#f9fafb">
+            <td style="padding:6px 12px;border-bottom:1px solid #e5e7eb;font-weight:600;font-size:12px">Reason</td>
+            <td style="padding:6px 12px;border-bottom:1px solid #e5e7eb;font-weight:600;font-size:12px">Amount</td>
+          </tr>
+          ${discountRowHtml}
+        </table>` : ""}
         <p style="margin:16px 0 0;font-size:11px;color:#94a3b8">Care Diagnostics ERP — Automated Daily Report</p>
       </div>
     </div>`;
