@@ -8,7 +8,9 @@ import {
   UpdateExpenseParams,
 } from "@workspace/api-zod";
 import { geminiOcrBill } from "@workspace/integrations-gemini-ai";
+import { getProviderApiKey } from "@workspace/ai-providers";
 import { autoVoucherForExpense } from "../lib/auto-voucher";
+import { preprocessScanImage } from "../lib/ocr/idCardPipeline";
 
 const router = Router();
 
@@ -186,8 +188,19 @@ router.post("/scan-bill", async (req, res) => {
     return res.status(400).json({ error: "Image too large. Maximum 8 MB." });
   }
   try {
-    const result = await geminiOcrBill(imageBase64, mimeType);
-    return res.json(result);
+    // Same shared pre-processing (auto-orient/trim/normalize + blur score)
+    // used by Form F's ID-card OCR — wraps, does not replace, geminiOcrBill.
+    // Resolve the Gemini key from DB-backed AI Provider Settings first, env
+    // var fallback second — same fix applied to Form F's OCR in an earlier
+    // phase, applied here too so a key configured in Settings isn't ignored.
+    const pre = await preprocessScanImage(imageBase64, mimeType);
+    const dbApiKey = await getProviderApiKey("gemini").catch(() => null);
+    const result = await geminiOcrBill(
+      pre.buffer.toString("base64"),
+      pre.mimeType,
+      dbApiKey ? { apiKey: dbApiKey } : {},
+    );
+    return res.json({ ...result, blurScore: pre.blurScore, isBlurred: pre.isBlurred });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     return res.status(502).json({ error: "AI extraction failed: " + msg });
