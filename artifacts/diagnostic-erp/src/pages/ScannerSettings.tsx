@@ -12,14 +12,14 @@
  * browser uses to reach whichever bridge is running locally, and a way to
  * verify it's actually working without digging through browser devtools.
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { CheckCircle2, XCircle, Loader2, RefreshCcw, ShieldCheck } from "lucide-react";
+import { CheckCircle2, XCircle, Loader2, RefreshCcw, ShieldCheck, Camera } from "lucide-react";
 import {
   checkScanBridgeHealth,
   getScanBridgeSecret,
@@ -28,6 +28,13 @@ import {
   setScanBridgeUrl,
   type ScanBridgeHealth,
 } from "@/lib/scanBridgeClient";
+import {
+  clearPreferredTvsDevice,
+  getPreferredTvsDeviceId,
+  getPreferredTvsDeviceLabel,
+  guessTvsDevice,
+  setPreferredTvsDevice,
+} from "@/lib/tvsDeviceProfile";
 
 export default function ScannerSettings() {
   const { toast } = useToast();
@@ -51,6 +58,70 @@ export default function ScannerSettings() {
     setScanBridgeSecret(bridgeSecret.trim());
     toast({ title: "Scanner settings saved", description: "Applies to this workstation only." });
     void runTest();
+  }
+
+  // ── TVS PDS 8M device binding ──
+  // See tvsDeviceProfile.ts: the TVS PDS 8M is expected to appear as a plain
+  // UVC webcam device (no vendor driver), so binding it is just "point a
+  // live preview at each connected camera and let the admin confirm which
+  // one is the TVS" — no automatic hardware detection is claimed here.
+  const [tvsDevices, setTvsDevices] = useState<MediaDeviceInfo[]>([]);
+  const [tvsPreviewId, setTvsPreviewId] = useState<string>("");
+  const [tvsBoundId, setTvsBoundId] = useState(getPreferredTvsDeviceId());
+  const [tvsBoundLabel, setTvsBoundLabel] = useState(getPreferredTvsDeviceLabel());
+  const tvsVideoRef = useRef<HTMLVideoElement>(null);
+  const tvsStreamRef = useRef<MediaStream | null>(null);
+  const isSecureCameraContext = typeof window !== "undefined" && window.isSecureContext && !!navigator.mediaDevices;
+
+  useEffect(() => {
+    if (!isSecureCameraContext) return;
+    navigator.mediaDevices.enumerateDevices()
+      .then((devices) => {
+        const cams = devices.filter((d) => d.kind === "videoinput");
+        setTvsDevices(cams);
+        const guess = guessTvsDevice(cams);
+        if (guess && !tvsPreviewId) setTvsPreviewId(guess.deviceId);
+      })
+      .catch(() => setTvsDevices([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSecureCameraContext]);
+
+  useEffect(() => {
+    if (!tvsPreviewId) return;
+    let cancelled = false;
+    navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: tvsPreviewId } } })
+      .then((stream) => {
+        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
+        tvsStreamRef.current?.getTracks().forEach((t) => t.stop());
+        tvsStreamRef.current = stream;
+        if (tvsVideoRef.current) {
+          tvsVideoRef.current.srcObject = stream;
+          void tvsVideoRef.current.play();
+        }
+      })
+      .catch(() => { /* preview failure — leave the picker usable, just no live preview */ });
+    return () => {
+      cancelled = true;
+      tvsStreamRef.current?.getTracks().forEach((t) => t.stop());
+      tvsStreamRef.current = null;
+    };
+  }, [tvsPreviewId]);
+
+  function confirmTvsDevice() {
+    const device = tvsDevices.find((d) => d.deviceId === tvsPreviewId);
+    if (!device) return;
+    const label = device.label || "TVS PDS 8M";
+    setPreferredTvsDevice(device.deviceId, label);
+    setTvsBoundId(device.deviceId);
+    setTvsBoundLabel(label);
+    toast({ title: "TVS PDS 8M bound", description: `"Scan with TVS PDS 8M" will now use: ${label}` });
+  }
+
+  function unbindTvsDevice() {
+    clearPreferredTvsDevice();
+    setTvsBoundId("");
+    setTvsBoundLabel("");
+    toast({ title: "TVS PDS 8M binding removed" });
   }
 
   return (
@@ -114,14 +185,65 @@ export default function ScannerSettings() {
         )}
       </div>
 
+      <div className="border rounded-xl p-5 space-y-4 bg-card">
+        <div>
+          <h3 className="text-sm font-semibold mb-1">TVS PDS 8M</h3>
+          <p className="text-xs text-muted-foreground">
+            The TVS PDS 8M connects as a USB camera, not a traditional scanner — the browser can already see it once
+            plugged in. This binding has <strong>not yet been physically verified</strong> against a real TVS PDS 8M;
+            preview each camera below and confirm which one is actually the TVS before binding it.
+          </p>
+        </div>
+
+        {!isSecureCameraContext && (
+          <p className="text-xs text-amber-700">Camera preview requires HTTPS (or localhost) on this page.</p>
+        )}
+
+        {isSecureCameraContext && (
+          <>
+            {tvsBoundId && (
+              <div className="rounded-lg border border-green-200 bg-green-50/40 p-3 text-xs flex items-center justify-between">
+                <span className="flex items-center gap-1.5"><CheckCircle2 size={14} className="text-green-600" /> Bound: {tvsBoundLabel}</span>
+                <Button variant="ghost" size="sm" className="h-6 text-[11px] text-destructive" onClick={unbindTvsDevice}>Unbind</Button>
+              </div>
+            )}
+
+            {tvsDevices.length === 0 && (
+              <p className="text-xs text-muted-foreground">No cameras detected. Plug in the TVS PDS 8M and reload this page.</p>
+            )}
+
+            {tvsDevices.length > 0 && (
+              <div className="space-y-2">
+                <Label>Select camera to preview</Label>
+                <select
+                  className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm"
+                  value={tvsPreviewId}
+                  onChange={(e) => setTvsPreviewId(e.target.value)}
+                >
+                  {tvsDevices.map((d, i) => (
+                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Camera ${i + 1}`}</option>
+                  ))}
+                </select>
+                <div className="rounded-lg overflow-hidden bg-black aspect-video">
+                  <video ref={tvsVideoRef} className="w-full h-full object-contain" playsInline muted />
+                </div>
+                <Button size="sm" onClick={confirmTvsDevice} className="gap-1.5">
+                  <Camera size={14} /> This is the TVS PDS 8M
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
       <div className="border rounded-xl p-5 space-y-2 bg-card">
         <h3 className="text-sm font-semibold">Reception scan options</h3>
         <p className="text-xs text-muted-foreground">
-          Reception staff see a simplified 4-option scan dialog (Existing Scanner, Upload, Mobile Scan, Webcam).
-          Advanced bridge diagnostics live only on this page — reception never sees bridge URLs, ports, or vendor
-          adapter names.
+          Reception staff see a simplified scan dialog (TVS PDS 8M once bound above, Existing Scanner, Upload,
+          Mobile Scan, Webcam). Advanced bridge/device diagnostics live only on this page — reception never sees
+          bridge URLs, ports, or vendor adapter names.
         </p>
-        <Badge variant="outline" className="text-[10px]">TVS PDS 8M dedicated capture — arriving once verified on the reception workstation</Badge>
+        <Badge variant="outline" className="text-[10px]">TVS PDS 8M capture — code-complete, awaiting physical hardware validation</Badge>
       </div>
     </div>
   );

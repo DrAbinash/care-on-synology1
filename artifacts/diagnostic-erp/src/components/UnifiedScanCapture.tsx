@@ -4,18 +4,22 @@
  * Banking. This is a UI-unification layer over already-working mechanisms —
  * it introduces no new scanning logic:
  *
+ *   - "Scan with TVS PDS 8M" -> getUserMedia against an admin-confirmed
+ *                              preferred deviceId (tvsDeviceProfile.ts),
+ *                              with a fixed-focus placement guide + live
+ *                              blur check. Only shown once an admin has
+ *                              bound a device in Scanner Settings — see the
+ *                              hardware-status note in tvsDeviceProfile.ts:
+ *                              this path has NOT been physically verified
+ *                              against a real TVS PDS 8M yet.
  *   - "Existing Scanner"  -> scanBridgeClient.ts -> workstation Scanner Bridge
+ *                            (Canon / WIA / SANE flatbed — untouched, unaffected)
  *   - "Upload Image or PDF" -> the same file-picker/drag-drop pattern used by
  *                              DocumentScanCapture.tsx and ScanIdButton.tsx
  *   - "Mobile Scan"        -> the existing /api/scan-sessions QR/phone flow
- *   - "Webcam"             -> getUserMedia, shown only when a camera is
- *                              actually available (secure-context checked)
- *
- * A 5th option, "Scan with TVS PDS 8M", is intentionally NOT included yet —
- * it lands in a later phase once real-device behavior has been verified on
- * the reception workstation, per the "don't claim hardware support before
- * it's been tested" rule. Until then, "Webcam" already covers any UVC
- * camera-class device plugged into the workstation, including the TVS.
+ *   - "Webcam"             -> getUserMedia, generic device list, shown only
+ *                              when a camera is actually available (secure-
+ *                              context checked)
  *
  * Capture-only: resolves to raw bytes + light metadata, never OCR results.
  * Each caller keeps calling its own existing OCR/save endpoint with the
@@ -28,12 +32,14 @@ import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Camera, Scan, Smartphone, Upload, X, RefreshCcw, Loader2 } from "lucide-react";
+import { Camera, Scan, Smartphone, Upload, X, RefreshCcw, Loader2, ScanLine } from "lucide-react";
 import { checkScanBridgeHealth, scanBridgeCapture, type ScanBridgeState } from "@/lib/scanBridgeClient";
+import PlacementGuideOverlay from "@/components/PlacementGuideOverlay";
+import { computeBlurScore, getPreferredTvsDeviceId, getPreferredTvsDeviceLabel, BLUR_WARNING_THRESHOLD } from "@/lib/tvsDeviceProfile";
 
 export type ScanModule = "form-f" | "patients" | "expenses" | "banking";
 export type ScanDocType = "id-card" | "bill" | "bank-statement" | "photo" | "other";
-export type ScanSource = "bridge" | "upload" | "mobile" | "webcam";
+export type ScanSource = "bridge" | "upload" | "mobile" | "webcam" | "tvs";
 
 export interface ScanCaptureResult {
   file: Blob;
@@ -70,7 +76,7 @@ export default function UnifiedScanCapture({
 }: UnifiedScanCaptureProps) {
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
-  const [mode, setMode] = useState<"select" | "webcam" | "mobile">("select");
+  const [mode, setMode] = useState<"select" | "webcam" | "tvs" | "mobile">("select");
 
   // ── Scanner Bridge health ──
   const [bridgeState, setBridgeState] = useState<ScanBridgeState>("not-running");
@@ -125,6 +131,13 @@ export default function UnifiedScanCapture({
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
   const isSecureCameraContext = typeof window !== "undefined" && window.isSecureContext && !!navigator.mediaDevices;
 
+  // TVS PDS 8M — see tvsDeviceProfile.ts for the hardware-status caveat.
+  // Only shown once an admin has bound a deviceId in Scanner Settings.
+  const [tvsDeviceId] = useState(() => getPreferredTvsDeviceId());
+  const [tvsDeviceLabel] = useState(() => getPreferredTvsDeviceLabel());
+  const [blurScore, setBlurScore] = useState<number | null>(null);
+  const blurIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   useEffect(() => {
     if (!open || !isSecureCameraContext) return;
     navigator.mediaDevices.enumerateDevices()
@@ -135,17 +148,44 @@ export default function UnifiedScanCapture({
   function stopWebcam() {
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
+    if (blurIntervalRef.current) {
+      clearInterval(blurIntervalRef.current);
+      blurIntervalRef.current = null;
+    }
+    setBlurScore(null);
   }
   useEffect(() => () => stopWebcam(), []);
 
-  async function startWebcam() {
-    setMode("webcam");
+  async function startCameraStream(target: "webcam" | "tvs", deviceId?: string) {
+    setMode(target);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+      const constraints: MediaStreamConstraints = {
+        video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: "environment" },
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
+      }
+      // TVS is fixed-focus — sample a live blur score so staff can reposition
+      // before capturing instead of discovering a blurry image afterward.
+      if (target === "tvs" && videoRef.current && canvasRef.current) {
+        blurIntervalRef.current = setInterval(() => {
+          const video = videoRef.current;
+          const canvas = canvasRef.current;
+          if (!video || !canvas || video.videoWidth === 0) return;
+          // Downsample for speed — blur estimation doesn't need full resolution.
+          const sampleWidth = 240;
+          const scale = sampleWidth / video.videoWidth;
+          canvas.width = sampleWidth;
+          canvas.height = Math.round(video.videoHeight * scale);
+          const ctx = canvas.getContext("2d");
+          if (!ctx) return;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          setBlurScore(computeBlurScore(frame));
+        }, 400);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Could not start camera";
@@ -155,19 +195,21 @@ export default function UnifiedScanCapture({
     }
   }
 
-  function captureWebcamFrame() {
-    if (!videoRef.current || !canvasRef.current) return;
+  function captureFrame(source: "webcam" | "tvs", deviceLabel?: string) {
+    if (!videoRef.current) return;
     const video = videoRef.current;
-    const canvas = canvasRef.current;
+    const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     canvas.getContext("2d")?.drawImage(video, 0, 0);
-    const deviceLabel = cameras.find((c) => streamRef.current?.getVideoTracks()[0]?.label === c.label)?.label || "Webcam";
+    const label =
+      deviceLabel ||
+      (source === "tvs" ? tvsDeviceLabel || "TVS PDS 8M" : cameras.find((c) => streamRef.current?.getVideoTracks()[0]?.label === c.label)?.label || "Webcam");
     stopWebcam();
     canvas.toBlob(
       (blob) => {
         if (!blob) return;
-        onCapture({ file: blob, mimeType: "image/jpeg", source: "webcam", deviceLabel, filename: "webcam-capture.jpg" });
+        onCapture({ file: blob, mimeType: "image/jpeg", source, deviceLabel: label, filename: `${source}-capture.jpg` });
         setOpen(false);
       },
       "image/jpeg",
@@ -255,6 +297,25 @@ export default function UnifiedScanCapture({
 
           {mode === "select" && (
             <div className="grid grid-cols-1 gap-2.5 pt-2">
+              {tvsDeviceId ? (
+                <Button
+                  variant="outline"
+                  onClick={() => startCameraStream("tvs", tvsDeviceId)}
+                  className="h-14 justify-start gap-3 border-primary/30 bg-primary/5 hover:bg-primary/10"
+                >
+                  <ScanLine size={20} className="text-primary shrink-0" />
+                  <div className="text-left">
+                    <div className="font-semibold text-sm">Scan with TVS PDS 8M</div>
+                    <div className="text-[10px] text-muted-foreground">Preferred device — {tvsDeviceLabel || "configured"}</div>
+                  </div>
+                </Button>
+              ) : (
+                <div className="rounded-lg border border-dashed p-3 text-[11px] text-muted-foreground">
+                  TVS PDS 8M not configured on this workstation yet. An admin can bind it in{" "}
+                  <a href="/settings/scanner" className="text-primary underline">Scanner Settings</a>.
+                </div>
+              )}
+
               <Button
                 variant="outline"
                 onClick={handleBridgeCapture}
@@ -297,7 +358,7 @@ export default function UnifiedScanCapture({
               </Button>
 
               {isSecureCameraContext && cameras.length > 0 && (
-                <Button variant="outline" onClick={startWebcam} className="h-14 justify-start gap-3 hover:bg-muted/40">
+                <Button variant="outline" onClick={() => startCameraStream("webcam")} className="h-14 justify-start gap-3 hover:bg-muted/40">
                   <Camera size={20} className="text-muted-foreground shrink-0" />
                   <div className="text-left">
                     <div className="font-semibold text-sm">Webcam</div>
@@ -316,13 +377,32 @@ export default function UnifiedScanCapture({
               <video ref={videoRef} className="w-full rounded-lg bg-black" playsInline muted />
               <canvas ref={canvasRef} className="hidden" />
               <div className="flex gap-2">
-                <Button type="button" onClick={captureWebcamFrame} className="flex-1 gap-1.5">
+                <Button type="button" onClick={() => captureFrame("webcam")} className="flex-1 gap-1.5">
                   <Camera size={15} /> Capture
                 </Button>
                 <Button type="button" variant="outline" onClick={() => { stopWebcam(); setMode("select"); }}>
                   <X size={15} />
                 </Button>
               </div>
+            </div>
+          )}
+
+          {mode === "tvs" && (
+            <div className="space-y-2 pt-2">
+              <div className="relative rounded-lg overflow-hidden bg-black">
+                <video ref={videoRef} className="w-full" playsInline muted />
+                <PlacementGuideOverlay shape={docType === "bill" || docType === "bank-statement" ? "a4" : "id-card"} blurScore={blurScore} />
+              </div>
+              <canvas ref={canvasRef} className="hidden" />
+              <div className="flex gap-2">
+                <Button type="button" onClick={() => captureFrame("tvs")} className="flex-1 gap-1.5">
+                  <Camera size={15} /> Capture{blurScore !== null && blurScore < BLUR_WARNING_THRESHOLD ? " anyway" : ""}
+                </Button>
+                <Button type="button" variant="outline" onClick={() => { stopWebcam(); setMode("select"); }}>
+                  <X size={15} />
+                </Button>
+              </div>
+              <p className="text-[10px] text-muted-foreground text-center">Fixed-focus camera — hold steady until the guide turns green.</p>
             </div>
           )}
 
