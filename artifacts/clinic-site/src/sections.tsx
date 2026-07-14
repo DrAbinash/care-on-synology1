@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type CSSProperties } from "react";
 import { Link, useLocation } from "wouter";
 import {
   Star, Facebook, Instagram, Twitter, Youtube, Linkedin, Menu, X as XIcon,
@@ -30,6 +30,9 @@ function get(c: Record<string, unknown>, k: string, fb = ""): string {
 }
 function getBool(c: Record<string, unknown>, k: string, fb = true): boolean {
   return typeof c[k] === "boolean" ? (c[k] as boolean) : fb;
+}
+function getNum(c: Record<string, unknown>, k: string, fb = 0): number {
+  return typeof c[k] === "number" ? (c[k] as number) : fb;
 }
 
 const LazyAppointmentSection = lazy(() => import("./sections/AppointmentSection"));
@@ -187,6 +190,23 @@ export function HeroSection({ section, settings, basePath }: { section: Section;
   const subheading = get(c, "subheading", "3T MRI, CT, Ultrasound, Digital X-Ray, Mammography and Pathology — read by specialists, delivered fast, at Care Diagnostics, Deoghar.");
   const ctaLabel   = get(c, "ctaLabel", "Book a Test");
   const ctaUrl     = get(c, "ctaUrl",   "book");
+  // Admin-uploadable background photo (Website Builder → hero section →
+  // Background Photo). Was previously an unused "imageUrl" config field —
+  // this component never read it, so setting it silently did nothing. A
+  // dark overlay is ALWAYS composited behind the photo (never a light/white
+  // one) since every hero text element below is hardcoded white — this
+  // guarantees the low-contrast "invisible hero text" bug that recurred on
+  // /book can't happen here regardless of which photo is uploaded.
+  const heroImageUrl = get(c, "imageUrl", "");
+  const overlayOpacity = Math.max(0, Math.min(100, getNum(c, "overlayOpacity", 55))) / 100;
+  const heroPanelStyle: CSSProperties | undefined = heroImageUrl
+    ? {
+        backgroundImage: `linear-gradient(155deg, hsl(var(--cd-navy) / ${overlayOpacity}), hsl(213 60% 10% / ${overlayOpacity}) 60%, hsl(187 55% 12% / ${overlayOpacity})), url('${heroImageUrl}')`,
+        backgroundSize: "cover",
+        backgroundPosition: "center",
+        backgroundRepeat: "no-repeat",
+      }
+    : undefined;
   const phone      = settings.contactPhone || "9973497200";
   const waNum      = (settings.whatsappNumber || phone).replace(/[^0-9]/g, "");
 
@@ -240,7 +260,7 @@ export function HeroSection({ section, settings, basePath }: { section: Section;
 
   return (
     <section className="cd-hero">
-      <div className="cd-hero-panel cd-scan-panel">
+      <div className="cd-hero-panel cd-scan-panel" style={heroPanelStyle}>
         <div className="cd-hero-mesh" aria-hidden="true" />
         <div className="cd-hero-inner">
           <div className="cd-hero-text anim-left">

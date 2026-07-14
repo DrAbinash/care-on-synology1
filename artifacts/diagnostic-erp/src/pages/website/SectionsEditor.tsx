@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/fetchApi";
+import { api, getStaffToken } from "@/lib/fetchApi";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -354,10 +354,67 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   return <div><Label className="text-xs">{label}</Label><div className="mt-1">{children}</div></div>;
 }
 
+// Hero background photo — upload (same /api/website/photos flow used by the
+// Photo Library and the /book page hero) with a manual URL field as a
+// fallback for admins who already have an external image URL.
+function HeroImageField({ value, onChange }: { value: string; onChange: (url: string) => void }) {
+  const { toast } = useToast();
+  const [uploading, setUploading] = useState(false);
+
+  async function onUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("photo", file);
+      fd.append("category", "hero");
+      const token = getStaffToken();
+      const r = await fetch("/api/website/photos", {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        body: fd,
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const photo = await r.json();
+      onChange(photo.url);
+    } catch (err) {
+      toast({ title: "Upload failed", description: (err as Error).message, variant: "destructive" });
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  return (
+    <Field label="Background Photo">
+      <div className="flex items-center gap-2">
+        {value && <img src={value} alt="" className="h-9 w-14 rounded object-cover border border-card-border shrink-0" />}
+        <label className="inline-flex items-center gap-1.5 text-xs font-medium border border-card-border rounded-md px-2.5 py-1.5 cursor-pointer hover:bg-muted/40 shrink-0">
+          {uploading ? "Uploading…" : value ? "Replace" : "Upload"}
+          <input type="file" accept="image/*" className="hidden" onChange={onUpload} disabled={uploading} />
+        </label>
+        {value && (
+          <button type="button" className="text-xs text-muted-foreground hover:text-foreground underline shrink-0" onClick={() => onChange("")}>
+            Remove
+          </button>
+        )}
+      </div>
+      <Input
+        className="mt-1.5 text-xs"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Or paste an image URL"
+      />
+    </Field>
+  );
+}
+
 function SectionConfigEditor({ section, onConfigChange }: { section: Section; onConfigChange: (k: string, v: unknown) => void }) {
   const c = section.config as Record<string, unknown>;
   const get = (k: string, fb = ""): string => (typeof c[k] === "string" ? (c[k] as string) : fb);
   const getBool = (k: string, fb = false): boolean => (typeof c[k] === "boolean" ? (c[k] as boolean) : fb);
+  const getNum = (k: string, fb = 0): number => (typeof c[k] === "number" ? (c[k] as number) : fb);
 
   switch (section.type) {
     case "header":
@@ -373,8 +430,25 @@ function SectionConfigEditor({ section, onConfigChange }: { section: Section; on
       return (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <Field label="Heading"><Input value={get("heading")} onChange={(e) => onConfigChange("heading", e.target.value)} /></Field>
-          <Field label="Background Image URL"><Input value={get("imageUrl")} onChange={(e) => onConfigChange("imageUrl", e.target.value)} placeholder="/uploads/site/hero.jpg" /></Field>
+          <HeroImageField
+            value={get("imageUrl")}
+            onChange={(url) => onConfigChange("imageUrl", url)}
+          />
           <div className="md:col-span-2"><Field label="Subheading"><Textarea value={get("subheading")} onChange={(e) => onConfigChange("subheading", e.target.value)} /></Field></div>
+          {get("imageUrl") && (
+            <div className="md:col-span-2">
+              <Label className="text-xs">Overlay intensity</Label>
+              <p className="text-[11px] text-muted-foreground mb-1">
+                A dark overlay is always composited behind the photo so the heading (white text) stays readable. Raise this to darken the photo more, lower it to show more of the photo through. {getNum("overlayOpacity", 55)}%
+              </p>
+              <input
+                type="range" min={20} max={100} step={5}
+                value={getNum("overlayOpacity", 55)}
+                onChange={(e) => onConfigChange("overlayOpacity", Number(e.target.value))}
+                className="w-full"
+              />
+            </div>
+          )}
           <Field label="CTA Label"><Input value={get("ctaLabel")} onChange={(e) => onConfigChange("ctaLabel", e.target.value)} /></Field>
           <Field label="CTA URL"><Input value={get("ctaUrl")} onChange={(e) => onConfigChange("ctaUrl", e.target.value)} /></Field>
         </div>
