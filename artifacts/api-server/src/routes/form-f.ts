@@ -5,6 +5,7 @@ import { ordersTable, orderTestsTable, testsTable, doctorsTable } from "@workspa
 import { whatsappConversationsTable, whatsappSettingsTable, usgMeasurementsTable, radiologyStudiesTable, fetalUsgStudiesTable, fetalUsgMeasurementsTable, fetalUsgReportsTable, fetalUsgChecklistsTable } from "@workspace/db/schema";
 import { dateToISTString } from "../lib/istDate";
 import { geminiOcrIdCard, type IdCardOcrResult } from "@workspace/integrations-gemini-ai";
+import { getProviderApiKey } from "@workspace/ai-providers";
 import { requireStaffPermission } from "../middleware/requireStaffAuth";
 import { sendTextMessageRaw, resolveNumber, normalizePhone } from "./whatsapp";
 
@@ -12,7 +13,6 @@ const formFRouter = Router();
 
 // ── Duplicate protection cache for latest-scan imports ──
 const importedScanCache = new Map<string, number>(); // key -> timestamp
-const SCAN_BRIDGE_URL = "http://127.0.0.1:8766";
 
 formFRouter.get("/fetch-billing/:search", async (req, res) => {
   try {
@@ -711,16 +711,29 @@ formFRouter.post("/upload-id", requireStaffPermission("/form-f"), async (req, re
       ocrLog.push({ stage: "validate", status: "ok", message: "Image data received", detail: `${base64.length} chars, ${mimeType}` });
     }
 
-    // Run Gemini OCR
+    // Run Gemini OCR. Resolve the API key from the DB-backed AI Provider
+    // Settings first (the primary configuration path — see AI Reporting
+    // Settings in the ERP) and only fall back to the raw
+    // AI_INTEGRATIONS_GEMINI_API_KEY env var when no key is configured there.
+    // Without this, an admin who configures a key in Settings would still see
+    // OCR silently fail if the env var was never also set — this was root
+    // cause of "Upload ID succeeds but OCR is unavailable" reports.
     let ocrResult: IdCardOcrResult | null = null;
+    let ocrError: string | null = null;
     ocrLog.push({ stage: "gemini", status: "info", message: "Starting Gemini OCR...", detail: "Calling geminiOcrIdCard()" });
-    try {
-      ocrResult = await geminiOcrIdCard(base64, mimeType);
-      ocrLog.push({ stage: "gemini", status: "ok", message: "Gemini OCR completed", detail: `documentType: ${ocrResult.documentType}, confidence: ${ocrResult.confidence}, guardianName: ${ocrResult.guardianName ? "found" : "empty"}, address: ${ocrResult.address ? "found" : "empty"}, extras: ${ocrResult.fullName ? "name" : ""}${ocrResult.dob ? " dob" : ""}${ocrResult.gender ? " gender" : ""}` });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Gemini OCR failed";
-      ocrLog.push({ stage: "gemini", status: "error", message: "Gemini OCR failed", detail: msg });
-      // Still return a structured response so the frontend can use Tesseract fallback
+    const dbApiKey = await getProviderApiKey("gemini").catch(() => null);
+    if (!dbApiKey && !process.env.AI_INTEGRATIONS_GEMINI_API_KEY) {
+      ocrError = "OCR is not configured: no Gemini API key found in AI Provider Settings or AI_INTEGRATIONS_GEMINI_API_KEY. Configure a key in Settings → AI Reporting, or use manual entry.";
+      ocrLog.push({ stage: "gemini", status: "error", message: "No Gemini API key configured", detail: ocrError });
+    } else {
+      try {
+        ocrResult = await geminiOcrIdCard(base64, mimeType, dbApiKey ? { apiKey: dbApiKey } : {});
+        ocrLog.push({ stage: "gemini", status: "ok", message: "Gemini OCR completed", detail: `documentType: ${ocrResult.documentType}, confidence: ${ocrResult.confidence}, guardianName: ${ocrResult.guardianName ? "found" : "empty"}, address: ${ocrResult.address ? "found" : "empty"}, extras: ${ocrResult.fullName ? "name" : ""}${ocrResult.dob ? " dob" : ""}${ocrResult.gender ? " gender" : ""}` });
+      } catch (e) {
+        ocrError = e instanceof Error ? e.message : "Gemini OCR failed";
+        ocrLog.push({ stage: "gemini", status: "error", message: "Gemini OCR failed", detail: ocrError });
+        // Still return a structured response so the frontend can use Tesseract fallback
+      }
     }
 
     // If formFId is valid, update the record with extracted data and image reference
@@ -740,6 +753,7 @@ formFRouter.post("/upload-id", requireStaffPermission("/form-f"), async (req, re
           ok: true,
           formF: updated,
           ocr: ocrResult ?? null,
+          ocrError,
           ocrLog,
           ocrStage: ocrResult ? "gemini_success" : "gemini_failed",
           suggestedAction: ocrResult ? "accept_or_verify" : "try_tesseract_fallback",
@@ -752,6 +766,7 @@ formFRouter.post("/upload-id", requireStaffPermission("/form-f"), async (req, re
     res.json({
       ok: true,
       ocr: ocrResult ?? null,
+      ocrError,
       ocrLog,
       ocrStage: ocrResult ? "gemini_success" : "gemini_failed",
       suggestedAction: ocrResult ? "accept_or_verify" : "try_tesseract_fallback",
@@ -867,38 +882,55 @@ Thank you!`;
 });
 
 // ────────────────────────────────────────────────────────────────────
-// Export Form F data for PCPNDT portal bookmarklet (staff-authenticated)
-// Returns all fields needed to pre-fill the government portal form.
+// Deprecated: this endpoint used to fetch(SCAN_BRIDGE_URL) from the SERVER,
+// which is architecturally broken — 127.0.0.1 from the API server's own
+// process is the API container's loopback, never the reception workstation's
+// loopback where the Scanner Bridge actually runs. It could only ever have
+// worked if the API server and the bridge happened to run on the same
+// machine, which is not this deployment's topology (Synology/Docker server,
+// Windows reception workstation). This was the root cause of "Capture ID /
+// Direct Scan: fetch failed" and "Import Latest Scan: fetch failed".
+//
+// The frontend now fetches the bridge directly from the browser (see
+// artifacts/diagnostic-erp/src/lib/scanBridgeClient.ts) and posts the raw
+// bytes to POST /optimize-scan below for the same dedup + resize step this
+// endpoint used to do inline. Kept as a 410 stub (not deleted) for one
+// release so any not-yet-updated client gets a clear error instead of a
+// silent hang against a route that can never succeed.
 // ────────────────────────────────────────────────────────────────────
-formFRouter.post("/latest-scan-proxy", requireStaffPermission("/form-f"), async (req, res) => {
+formFRouter.post("/latest-scan-proxy", requireStaffPermission("/form-f"), async (_req, res) => {
+  res.status(410).json({
+    ok: false,
+    error: "This endpoint has been retired: the API server can never reach a workstation-local scanner bridge over its own loopback address. The ERP frontend now calls the bridge directly from the browser and sends the captured image to POST /api/form-f/optimize-scan instead. Update your client.",
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// Optimize + dedupe an already-captured scan image. The browser fetches the
+// image bytes directly from the local Scanner Bridge (127.0.0.1:8766) and
+// posts them here — this endpoint never talks to the bridge itself, only to
+// bytes it's handed, so it works regardless of where the API server happens
+// to be deployed relative to the reception workstation.
+// ────────────────────────────────────────────────────────────────────
+formFRouter.post("/optimize-scan", requireStaffPermission("/form-f"), async (req, res) => {
   try {
     const body = req.body ?? {};
-    const bridgeUrl = String(body.bridgeUrl ?? SCAN_BRIDGE_URL).trim();
-    const mode = String(body.mode ?? "watch").trim(); // "watch" or "direct"
-    const useSharp = typeof req.app?.get === "function" ? req.app.get("useSharp") !== false : true;
-
-    // 1) Fetch from bridge (either /latest-scan or /scan)
-    const endpoint = mode === "direct" ? "scan" : "latest-scan";
-    const r = await fetch(`${bridgeUrl}/${endpoint}`, { method: "POST", mode: "cors" });
-    const j = await r.json().catch(() => ({})) as Record<string, unknown>;
-    if (!r.ok || !j.ok) {
-      res.status(r.status === 404 ? 404 : 502).json({
-        ok: false,
-        error: String(j.error || "Bridge failed"),
-        code: j.code ? String(j.code) : null,
-        fallback: j.fallback ? String(j.fallback) : null,
-      });
+    const imageBase64 = String(body.imageBase64 ?? "");
+    const mimeType = String(body.mimeType ?? "image/jpeg");
+    const filename = String(body.filename ?? "scan");
+    if (!imageBase64) {
+      res.status(400).json({ ok: false, error: "imageBase64 is required" });
       return;
     }
+    const useSharp = typeof req.app?.get === "function" ? req.app.get("useSharp") !== false : true;
 
-    const imageBase64 = String(j.imageBase64 ?? "");
-    const mimeType = String(j.mimeType ?? "image/jpeg");
-    const filename = String(j.filename ?? "scan");
-    const mtimeMs = Number(j.mtimeMs ?? 0);
-    const cacheKey = `${filename}:${mtimeMs}`;
-
-    // 2) Duplicate protection — reject same file/mtime within last 5 minutes
+    // Duplicate protection — reject the identical image content within the
+    // last 5 minutes (keyed by filename, since no bridge-provided mtime is
+    // available for a bytes-in request; a content hash would be stronger but
+    // this preserves the existing behavior's intent without adding a new
+    // dependency).
     const now = Date.now();
+    const cacheKey = `${filename}:${imageBase64.length}`;
     const lastSeen = importedScanCache.get(cacheKey);
     if (lastSeen && now - lastSeen < 5 * 60 * 1000) {
       res.status(409).json({
@@ -915,7 +947,7 @@ formFRouter.post("/latest-scan-proxy", requireStaffPermission("/form-f"), async 
       if (now - t > 10 * 60 * 1000) importedScanCache.delete(k);
     }
 
-    // 3) Image optimization using Sharp if available
+    // Image optimization using Sharp if available
     let optimizedBase64 = imageBase64;
     let optimizedMime = mimeType;
     const maxWidth = Number(body.maxWidth ?? 1200);
@@ -946,7 +978,7 @@ formFRouter.post("/latest-scan-proxy", requireStaffPermission("/form-f"), async 
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Internal server error";
-    req.log?.warn?.({ err }, "latest-scan-proxy error");
+    req.log?.warn?.({ err }, "optimize-scan error");
     res.status(500).json({ ok: false, error: msg });
   }
 });

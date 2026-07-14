@@ -13,6 +13,13 @@
 //   WIA_DEVICE_INDEX        1-based index for multiple WIA devices (default 1)
 //   WIA_DPI                 Resolution for WIA scans (default 300)
 //   SANE_DPI                Resolution for SANE scans (default 300)
+//   ERP_BRIDGE_SECRET       shared secret; if set and BRIDGE_REQUIRE_AUTH=true,
+//                           required on every request (except /health) via the
+//                           X-Bridge-Secret header.
+//   BRIDGE_REQUIRE_AUTH     "true" to enforce ERP_BRIDGE_SECRET (default false,
+//                           so existing workstations upgrading the bridge are
+//                           not locked out until every PC has the secret set —
+//                           flip to true once rollout is complete).
 //
 // Endpoints:
 //   GET  /health    → { ok: true, deviceConnected: true, vendor: "wia", ... }
@@ -22,7 +29,12 @@
 //
 // Security:
 //   The bridge binds to 127.0.0.1 only. CORS allows the ERP origin derived
-//   from ERP_BASE_URL or explicitly via BRIDGE_ALLOW_ORIGINS.
+//   from ERP_BASE_URL or explicitly via BRIDGE_ALLOW_ORIGINS. Since the ERP is
+//   typically served over HTTPS while this bridge is plain HTTP on loopback,
+//   modern browsers additionally require a Private Network Access preflight
+//   response (see the Access-Control-Allow-Private-Network header below) —
+//   without it, an HTTPS-origin page's fetch to 127.0.0.1 is blocked even
+//   though CORS itself would otherwise allow it.
 
 import express from "express";
 import cors from "cors";
@@ -57,17 +69,64 @@ if (_rawAllow.trim()) {
   ALLOW = [];
 }
 
+const REQUIRE_AUTH = (process.env.BRIDGE_REQUIRE_AUTH ?? "false").trim().toLowerCase() === "true";
+const ERP_SECRET = process.env.ERP_BRIDGE_SECRET ?? "";
+if (REQUIRE_AUTH && !ERP_SECRET) {
+  console.error("[scan-bridge] FATAL: BRIDGE_REQUIRE_AUTH=true but ERP_BRIDGE_SECRET is not set. Set ERP_BRIDGE_SECRET or disable BRIDGE_REQUIRE_AUTH.");
+  process.exit(1);
+}
+
 let adapter;
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 app.use(cors({ origin: ALLOW.length > 0 ? ALLOW : false, credentials: false }));
 
+// Private Network Access preflight: without this header, a browser page
+// served over HTTPS (or any non-private origin) that fetches a loopback/
+// private-network address like 127.0.0.1 gets its preflight silently
+// rejected in Chromium-based browsers, independent of the CORS allow-list
+// above. This is the fix for "Local Workstation Scanner: Offline" reports
+// where the bridge is actually running and CORS-allowed but PNA still blocks
+// the request.
+app.use((req, res, next) => {
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Private-Network", "true");
+  }
+  next();
+});
+
+// Shared-secret auth (opt-in via BRIDGE_REQUIRE_AUTH). /health stays
+// unauthenticated always, so the "is the bridge even running" poller in the
+// ERP frontend keeps working before a secret has been provisioned on a new
+// install.
+app.use((req, res, next) => {
+  if (!REQUIRE_AUTH || req.path === "/health") {
+    next();
+    return;
+  }
+  const provided = req.get("X-Bridge-Secret") ?? "";
+  if (provided !== ERP_SECRET) {
+    res.status(401).json({ ok: false, error: "Missing or invalid X-Bridge-Secret header" });
+    return;
+  }
+  next();
+});
+
 // ── Health / device status ───────────────────────────────────────────────────────
 app.get("/health", async (_req, res) => {
   try {
     const status = await adapter.status();
-    res.json({ ok: true, vendor: VENDOR, adapter: adapter.name, version: "1.0.0", ...status });
+    res.json({
+      ok: true,
+      vendor: VENDOR,
+      adapter: adapter.name,
+      version: "1.0.0",
+      authRequired: REQUIRE_AUTH,
+      corsConfigured: ALLOW.length > 0,
+      allowedOrigins: ALLOW,
+      ...status,
+    });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message, vendor: VENDOR, adapter: adapter.name });
   }
@@ -99,7 +158,12 @@ app.post("/scan", async (_req, res) => {
 });
 
 // ── Latest-scan pickup: grab the newest image from a watched folder ───────────
-const SCAN_WATCH_FOLDER = process.env.SCAN_WATCH_FOLDER ?? (process.platform === "win32" ? "C:\\Scans" : join(tmpdir(), "care-scans"));
+// Must match adapters/folder-watch.js's default exactly — otherwise POST /scan
+// (via the folder-watch adapter) and POST /latest-scan (this handler) silently
+// look in two different folders, and "Import Latest Scan" never finds what a
+// prior "Scan" call just picked up. Neither handler special-cases win32; if
+// you configure a Windows-specific path, set SCAN_WATCH_FOLDER explicitly.
+const SCAN_WATCH_FOLDER = process.env.SCAN_WATCH_FOLDER ?? join(tmpdir(), "care-scans");
 const SCAN_PROCESSED_FOLDER = process.env.SCAN_PROCESSED_FOLDER ?? join(SCAN_WATCH_FOLDER, "processed");
 
 const SCAN_EXTS = new Set(["jpg", "jpeg", "png", "pdf", "tiff", "tif", "bmp"]);
@@ -225,7 +289,10 @@ app.post("/open-scanner-app", async (_req, res) => {
       }
     }
 
-    res.status(404).json({ ok: false, error: "No scanner application found on this workstation. Please scan using your scanner software and save to the watch folder, then click Import Latest Scan." });
+    res.status(404).json({
+      ok: false,
+      error: "No scanner application found on this workstation. If you're using a TVS PDS 8M or another USB document camera, use the \"Scan with TVS PDS 8M\" or \"Webcam\" option instead — those devices are camera-class hardware and don't have a Windows scanner app to open. Otherwise, scan using your scanner software and save to the watch folder, then click Import Latest Scan.",
+    });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }

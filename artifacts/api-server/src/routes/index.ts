@@ -748,9 +748,14 @@ router.use("/sync", requireStaffAuth, syncRouter);
 // Standard uploads — JSON base64, validated, size-limited, metadata tracked
 router.use("/uploads", requireStaffAuth, standardUploadLimiter, uploadsRouter);
 
-// Wireless scan sessions & phone pairing — staff auth required (phone pairs with
-// a logged-in session; unauthenticated access would allow rogue devices to inject
-// scan data into any active session).
-router.use("/scan-sessions", requireStaffAuth, scanSessionsRouter);
+// Wireless scan sessions & phone pairing. Staff-initiated routes (POST /create,
+// GET /paired-phone) enforce requireStaffAuth themselves inside scan-sessions.ts.
+// The remaining routes (GET /status/:token, POST /upload/:token, POST /pair,
+// GET /mobile-poll/:deviceId) are deliberately token/device-scoped, not staff-
+// session-scoped — a phone browser scanning the QR never carries a staff cookie,
+// only the short-lived session token embedded in the QR URL, which *is* its auth.
+// A blanket requireStaffAuth at the mount level here would 401 every one of those
+// phone-facing calls (this previously broke Wireless Smart Scan end-to-end).
+router.use("/scan-sessions", scanSessionsRouter);
 
 export default router;
