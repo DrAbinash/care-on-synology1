@@ -39,9 +39,25 @@ export interface PreprocessResult {
 // treat as a starting point.
 export const SERVER_BLUR_WARNING_THRESHOLD = 60;
 
-export async function preprocessScanImage(imageBase64: string, mimeType: string): Promise<PreprocessResult> {
+export interface PreprocessOptions {
+  /** Downscale-if-larger-than, in pixels (width). Default 2000 — prevents an
+   * unnecessarily huge phone/camera capture (e.g. 12MP+) from bloating
+   * storage and slowing OCR/page-load; never enlarges a smaller image. */
+  maxWidth?: number;
+  /** JPEG re-encode quality, 1-100. Default 88 — a reasonable balance of
+   * file size vs. OCR-relevant detail; tune per deployment if needed. */
+  jpegQuality?: number;
+}
+
+export async function preprocessScanImage(
+  imageBase64: string,
+  mimeType: string,
+  options: PreprocessOptions = {},
+): Promise<PreprocessResult> {
   const inputBuffer = Buffer.from(imageBase64, "base64");
   const appliedSteps: string[] = [];
+  const maxWidth = options.maxWidth ?? 2000;
+  const jpegQuality = options.jpegQuality ?? 88;
 
   if (mimeType.includes("pdf")) {
     // Sharp cannot process PDFs; return as-is with a neutral (non-blurred)
@@ -57,8 +73,10 @@ export async function preprocessScanImage(imageBase64: string, mimeType: string)
     appliedSteps.push("trim");
     pipeline = pipeline.normalize();
     appliedSteps.push("normalize");
+    pipeline = pipeline.resize({ width: maxWidth, withoutEnlargement: true });
+    appliedSteps.push(`downscale-max-${maxWidth}px`);
 
-    const processed = await pipeline.jpeg({ quality: 92 }).toBuffer();
+    const processed = await pipeline.jpeg({ quality: jpegQuality, mozjpeg: true }).toBuffer();
 
     // Blur score on a downsampled grayscale copy of the PROCESSED image —
     // same Laplacian-variance approach as the client-side check, computed

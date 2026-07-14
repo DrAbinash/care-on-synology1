@@ -21,9 +21,24 @@ export const scannedDocumentsTable = pgTable("scanned_documents", {
   entityId: integer("entity_id"), // nullable: unlinked temp scans have no entity yet
   docType: text("doc_type").notNull(), // 'id-card' | 'bill' | 'bank-statement' | 'photo' | 'other'
   filename: text("filename").notNull(),
+  // Original bytes, byte-for-byte as captured — never recompressed or
+  // re-encoded, kept as the legal-evidence copy. May be a format browsers
+  // can't render inline (e.g. HEIC) — see processedStoragePath for a
+  // browser-viewable copy.
   storagePath: text("storage_path").notNull(), // relative path under data/uploads/
   mimeType: text("mime_type").notNull(),
   sizeBytes: integer("size_bytes"),
+  // Auto-orient/trim/normalize + downscale-if-huge, always re-encoded as
+  // JPEG — better OCR input and always browser-viewable. Null if
+  // preprocessing failed for this file's format (e.g. HEIC decode
+  // unavailable in this deployment's sharp/libvips build — see
+  // docs/IMAGE_NORMALIZATION.md) rather than blocking the whole upload.
+  processedStoragePath: text("processed_storage_path"),
+  processedSizeBytes: integer("processed_size_bytes"),
+  // Small JPEG (~300px wide) for fast list/grid rendering in the ERP UI.
+  // Same null-on-failure behavior as processedStoragePath.
+  thumbnailStoragePath: text("thumbnail_storage_path"),
+  thumbnailSizeBytes: integer("thumbnail_size_bytes"),
   scanSource: text("scan_source").notNull(), // 'tvs' | 'bridge' | 'upload' | 'mobile' | 'webcam'
   deviceLabel: text("device_label"),
   userId: integer("user_id"),
