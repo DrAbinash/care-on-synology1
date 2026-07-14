@@ -285,6 +285,11 @@ export interface BillOcrResult {
   description: string;    // concise line-item summary
   paymentMode: string;    // cash | card | upi | cheque | other
   confidence: "high" | "medium" | "low";
+  /** Numeric 0-100 self-assessed confidence, same tiering convention as
+   * IdCardOcrResult.confidencePercent — always populated (falls back to a
+   * fixed mapping from the qualitative confidence band if the model didn't
+   * return a valid number). */
+  confidencePercent: number;
 }
 
 /**
@@ -311,7 +316,8 @@ JSON schema:
   "category": "string — one of: Salaries, Rent, Utilities, Office Supplies, Medical Supplies, Lab Reagents, Equipment, Maintenance, Travel, Food, Marketing, Professional Fees, Taxes, Insurance, Miscellaneous",
   "description": "string — brief 1-line description of what was purchased",
   "paymentMode": "string — one of: cash, card, upi, cheque, other",
-  "confidence": "string — one of: high, medium, low — your confidence in the extracted data"
+  "confidence": "string — one of: high, medium, low — your confidence in the extracted data",
+  "confidencePercent": "number — your own 0-100 numeric confidence self-assessment: 95-100 if every field is clearly legible, 80-94 if mostly legible with minor uncertainty, below 80 if you had to guess significant portions"
 }
 
 Return ONLY the JSON object.`;
@@ -349,6 +355,13 @@ Return ONLY the JSON object.`;
     parsed = JSON.parse(clean) as Partial<BillOcrResult>;
   } catch { /* fall through to defaults */ }
 
+  const billConfidence = parsed.confidence ?? "low";
+  const billFallback: Record<BillOcrResult["confidence"], number> = { high: 97, medium: 87, low: 55 };
+  const billRawPercent = Number(parsed.confidencePercent);
+  const billConfidencePercent = Number.isFinite(billRawPercent)
+    ? Math.max(0, Math.min(100, Math.round(billRawPercent)))
+    : billFallback[billConfidence];
+
   return {
     vendor: parsed.vendor ?? "",
     date: parsed.date ?? "",
@@ -357,7 +370,8 @@ Return ONLY the JSON object.`;
     category: parsed.category ?? "Miscellaneous",
     description: parsed.description ?? "",
     paymentMode: parsed.paymentMode ?? "cash",
-    confidence: parsed.confidence ?? "low",
+    confidence: billConfidence,
+    confidencePercent: billConfidencePercent,
   };
 }
 

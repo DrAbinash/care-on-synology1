@@ -80,6 +80,7 @@ const AI_PAYMENT_MODE_MAP: Record<string, string> = {
 type ScanBillResult = {
   vendor: string; date: string; amount: number; gstAmount: number;
   category: string; description: string; paymentMode: string; confidence: string;
+  confidencePercent?: number;
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -495,18 +496,39 @@ export default function Expenses() {
                 triggerLabel="Scan Bill / Receipt with AI"
                 helperText="Photograph or upload the bill — fields below will be auto-filled. Please review before saving."
                 onResult={(result) => {
+                  // Below 80% confidence, don't auto-fill the form at all —
+                  // just tell staff to type it in manually from the bill.
+                  // Same tiering convention as Form F's OCR (see
+                  // ocrConfidenceTier in pages/FormF.tsx) and
+                  // BillReceiptScannerPanel.tsx's billConfidenceTier.
+                  const pct = result.confidencePercent ?? 0;
+                  if (pct < 80) {
+                    toast({
+                      title: "Bill scanned — low confidence",
+                      description: `${result.confidencePercent ?? "?"}% confidence. Fields were NOT auto-filled — please enter them manually from the bill.`,
+                      variant: "destructive",
+                    });
+                    return;
+                  }
+                  // Fields already typed/changed by staff are never
+                  // overwritten. category/paymentMode/expenseDate default to
+                  // non-empty placeholders ("miscellaneous"/"cash"/today), so
+                  // plain truthiness can't tell "still at default" apart from
+                  // "user explicitly chose this" — compare against EMPTY_FORM
+                  // instead. description/amount/paidTo default to "", so a
+                  // simple truthy check is correct for those.
                   setForm({
                     ...form,
-                    category: AI_CATEGORY_MAP[result.category] ?? form.category,
-                    description: result.description || form.description,
-                    amount: result.amount ? String(result.amount) : form.amount,
-                    expenseDate: result.date || form.expenseDate,
-                    paymentMode: AI_PAYMENT_MODE_MAP[result.paymentMode] ?? form.paymentMode,
-                    paidTo: result.vendor || form.paidTo,
+                    category: form.category === EMPTY_FORM.category ? (AI_CATEGORY_MAP[result.category] || form.category) : form.category,
+                    description: form.description || result.description || form.description,
+                    amount: form.amount || (result.amount ? String(result.amount) : form.amount),
+                    expenseDate: form.expenseDate === EMPTY_FORM.expenseDate ? (result.date || form.expenseDate) : form.expenseDate,
+                    paymentMode: form.paymentMode === EMPTY_FORM.paymentMode ? (AI_PAYMENT_MODE_MAP[result.paymentMode] || form.paymentMode) : form.paymentMode,
+                    paidTo: form.paidTo || result.vendor || form.paidTo,
                   });
                   toast({
                     title: "Bill scanned",
-                    description: `Confidence: ${result.confidence}. Please verify all fields before saving.`,
+                    description: `${result.confidencePercent != null ? `${result.confidencePercent}%` : result.confidence} confidence. Please verify all fields before saving.`,
                   });
                 }}
               />

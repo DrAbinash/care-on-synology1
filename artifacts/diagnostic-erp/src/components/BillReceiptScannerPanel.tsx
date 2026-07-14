@@ -10,7 +10,21 @@ type BillOcrResult = {
   vendor: string; date: string; amount: number; gstAmount: number;
   category: string; description: string; paymentMode: string;
   confidence: "high" | "medium" | "low";
+  confidencePercent?: number;
 };
+
+// Same tiering convention as Form F's ID-card OCR (ocrConfidenceTier in
+// pages/FormF.tsx): >=95% high-trust, 80-94% needs a closer look, <80%
+// should be treated as a starting point only. Unlike Form F, every field
+// here already requires an explicit "Save to Expense Ledger" click before
+// touching the actual ledger — nothing auto-commits at any tier — so this
+// tiering only drives the visual warning, not a separate auto-fill gate.
+function billConfidenceTier(confidencePercent: number | undefined): "auto" | "confirm" | "manual" {
+  const pct = confidencePercent ?? 0;
+  if (pct >= 95) return "auto";
+  if (pct >= 80) return "confirm";
+  return "manual";
+}
 
 const EXPENSE_CATEGORIES = [
   "Salaries", "Rent", "Utilities", "Office Supplies", "Medical Supplies",
@@ -173,10 +187,15 @@ export default function BillReceiptScannerPanel() {
             <div className="flex items-center justify-between">
               <h3 className="font-semibold flex items-center gap-2"><CheckCircle2 size={15} className="text-green-500" /> Extracted Data</h3>
               <span className={`text-xs font-semibold ${confidenceColor(draft.confidence)}`}>
-                {draft.confidence.toUpperCase()} confidence
+                {draft.confidencePercent != null ? `${draft.confidencePercent}%` : draft.confidence.toUpperCase()} confidence
               </span>
             </div>
             <p className="text-xs text-muted-foreground">Review and edit the extracted fields before saving to expenses.</p>
+            {billConfidenceTier(draft.confidencePercent) === "manual" && (
+              <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">
+                Low OCR confidence — verify every field against the original bill before saving, don't rely on this extraction as-is.
+              </p>
+            )}
 
             <div className="grid gap-3">
               <div>
