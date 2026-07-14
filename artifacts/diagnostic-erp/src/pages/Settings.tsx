@@ -2181,14 +2181,25 @@ function WebsiteLogoCard() {
 function BookingPageBackgroundCard() {
   const qc = useQueryClient();
   const { toast } = useToast();
-  const { data: siteSettings, isLoading } = useQuery<{ bookHeroImageUrl?: string }>({
+  const { data: siteSettings, isLoading } = useQuery<{ bookHeroImageUrl?: string; bookHeroOverlayOpacity?: number; bookHeroTextColor?: "light" | "dark" }>({
     queryKey: ["website", "settings"],
     queryFn: () => api.get("/api/website/settings"),
   });
   const [uploading, setUploading] = useState(false);
+  // Local slider/toggle state so dragging the slider doesn't fire a save on
+  // every pixel of movement — committed onValueCommit / onChange instead.
+  const [overlayOpacity, setOverlayOpacity] = useState(55);
+  const [textColor, setTextColor] = useState<"light" | "dark">("light");
+
+  useEffect(() => {
+    if (siteSettings) {
+      setOverlayOpacity(siteSettings.bookHeroOverlayOpacity ?? 55);
+      setTextColor(siteSettings.bookHeroTextColor ?? "light");
+    }
+  }, [siteSettings]);
 
   const save = useMutation({
-    mutationFn: (bookHeroImageUrl: string) => api.patch("/api/website/settings", { bookHeroImageUrl }),
+    mutationFn: (patch: { bookHeroImageUrl?: string; bookHeroOverlayOpacity?: number; bookHeroTextColor?: "light" | "dark" }) => api.patch("/api/website/settings", patch),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["website", "settings"] });
       toast({ title: "Booking page background updated" });
@@ -2213,7 +2224,7 @@ function BookingPageBackgroundCard() {
       });
       if (!r.ok) throw new Error(await r.text());
       const photo = await r.json();
-      save.mutate(photo.url);
+      save.mutate({ bookHeroImageUrl: photo.url });
     } catch (err) {
       toast({ title: "Upload failed", description: (err as Error).message, variant: "destructive" });
     } finally {
@@ -2222,28 +2233,76 @@ function BookingPageBackgroundCard() {
   }
 
   const current = siteSettings?.bookHeroImageUrl || "";
+  const overlayAlpha = overlayOpacity / 100;
+  const previewTextColor = textColor === "dark" ? "#0f172a" : "#fff";
 
   return (
     <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
       <h3 className="font-bold flex items-center gap-2"><ImageIcon size={16} /> Booking Page Background Photo</h3>
       <p className="text-xs text-muted-foreground">Sets the hero background photo shown on the public "Book a Test" page. Leave unset to use the default pattern.</p>
       {!isLoading && (
-        <div className="flex items-center gap-4">
-          <div className="h-20 w-32 rounded-lg border border-card-border bg-muted overflow-hidden flex items-center justify-center shrink-0">
-            {current ? <img src={current} className="h-full w-full object-cover" alt="" /> : <ImageIcon size={20} className="opacity-30" />}
+        <>
+          <div className="flex items-center gap-4">
+            <div className="h-20 w-32 rounded-lg border border-card-border bg-muted overflow-hidden flex items-center justify-center shrink-0">
+              {current ? <img src={current} className="h-full w-full object-cover" alt="" /> : <ImageIcon size={20} className="opacity-30" />}
+            </div>
+            <div className="space-y-2">
+              <label className="inline-flex items-center gap-2 text-sm font-medium border border-card-border rounded-lg px-3 py-2 cursor-pointer hover:bg-muted/40">
+                <Upload size={14} /> {uploading ? "Uploading…" : "Upload photo"}
+                <input type="file" accept="image/*" className="hidden" onChange={onUpload} disabled={uploading} />
+              </label>
+              {current && (
+                <button type="button" className="block text-xs text-muted-foreground hover:text-foreground underline" onClick={() => save.mutate({ bookHeroImageUrl: "" })}>
+                  Remove photo
+                </button>
+              )}
+            </div>
           </div>
-          <div className="space-y-2">
-            <label className="inline-flex items-center gap-2 text-sm font-medium border border-card-border rounded-lg px-3 py-2 cursor-pointer hover:bg-muted/40">
-              <Upload size={14} /> {uploading ? "Uploading…" : "Upload photo"}
-              <input type="file" accept="image/*" className="hidden" onChange={onUpload} disabled={uploading} />
-            </label>
-            {current && (
-              <button type="button" className="block text-xs text-muted-foreground hover:text-foreground underline" onClick={() => save.mutate("")}>
-                Remove photo
-              </button>
-            )}
+
+          <div className="border-t border-card-border pt-4 space-y-3">
+            <div>
+              <p className="text-sm font-medium mb-1">Overlay intensity</p>
+              <p className="text-[11px] text-muted-foreground mb-2">
+                If the heading text is hard to read against the photo, raise this to wash the photo out more (or lower it to show more of the photo through). {overlayOpacity}%
+              </p>
+              <input
+                type="range" min={0} max={100} step={5}
+                value={overlayOpacity}
+                onChange={(e) => setOverlayOpacity(Number(e.target.value))}
+                onMouseUp={() => save.mutate({ bookHeroOverlayOpacity: overlayOpacity })}
+                onTouchEnd={() => save.mutate({ bookHeroOverlayOpacity: overlayOpacity })}
+                className="w-full"
+              />
+            </div>
+            <div>
+              <p className="text-sm font-medium mb-1">Heading text color</p>
+              <div className="grid grid-cols-2 gap-3">
+                {(["light", "dark"] as const).map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => { setTextColor(c); save.mutate({ bookHeroTextColor: c }); }}
+                    className={`px-4 py-2 rounded-lg border text-sm font-medium transition-colors ${textColor === c ? "bg-blue-50 border-blue-400 text-blue-700 dark:bg-blue-950/30 dark:border-blue-700 dark:text-blue-300" : "bg-muted/30 border-card-border text-muted-foreground hover:bg-muted/50"}`}
+                  >
+                    {c === "light" ? "Light (white)" : "Dark (near-black)"}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div
+              className="rounded-lg p-6 text-center"
+              style={{
+                backgroundImage: current
+                  ? `linear-gradient(135deg, rgba(255,255,255,${overlayAlpha}) 0%, rgba(255,255,255,${Math.max(0, overlayAlpha - 0.05)}) 100%), url('${current}')`
+                  : `linear-gradient(135deg, rgba(148,163,184,${overlayAlpha}) 0%, rgba(148,163,184,${Math.max(0, overlayAlpha - 0.05)}) 100%), linear-gradient(135deg, #0369a1, #06b6d4)`,
+                backgroundSize: "cover", backgroundPosition: "center",
+              }}
+            >
+              <p className="text-lg font-extrabold" style={{ color: previewTextColor }}>Book your diagnostic test</p>
+              <p className="text-xs" style={{ color: previewTextColor }}>Live preview of hero contrast</p>
+            </div>
           </div>
-        </div>
+        </>
       )}
     </div>
   );

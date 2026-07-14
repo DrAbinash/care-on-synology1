@@ -258,6 +258,7 @@ websiteRouter.patch("/settings", requireStaffAuth, requireStaffPermission("/webs
     "metaPixelId", "facebookMetaTag", "pinterestMetaTag",
     "socialLinks",
     "serviceImagesEnabled", "serviceImages", "bookHeroImageUrl",
+    "bookHeroOverlayOpacity", "bookHeroTextColor",
   ];
 
   if (isAdminRole(req)) {
@@ -272,6 +273,11 @@ websiteRouter.patch("/settings", requireStaffAuth, requireStaffPermission("/webs
       updates[k] = sanitizeUrl(req.body[k]);
     } else if (k === "socialLinks") {
       updates[k] = sanitizeSocialLinks(req.body[k]);
+    } else if (k === "bookHeroOverlayOpacity") {
+      const n = Number(req.body[k]);
+      updates[k] = Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : 55;
+    } else if (k === "bookHeroTextColor") {
+      updates[k] = req.body[k] === "dark" ? "dark" : "light";
     } else {
       updates[k] = req.body[k];
     }
