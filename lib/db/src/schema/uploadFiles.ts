@@ -39,6 +39,8 @@ export const SAFE_MIME_TYPES = new Set([
   "image/jpeg",
   "image/png",
   "image/webp",
+  "image/heic",
+  "image/heif",
   "image/svg+xml",
   "application/pdf",
   "text/plain",

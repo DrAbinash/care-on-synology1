@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod/v4";
 import { db, scannedDocumentsTable, clinicSettingsTable } from "@workspace/db";
+import { SAFE_MIME_TYPES, MAX_UPLOAD_SIZE_BYTES } from "@workspace/db/schema";
 import { eq, and, lt, desc, sql } from "drizzle-orm";
 import { requireStaffAuth, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { logger } from "../lib/logger";
@@ -8,6 +9,7 @@ import { mkdirSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import crypto from "node:crypto";
 import type { Response } from "express";
+import { generateImageVariants } from "../lib/ocr/imageVariants";
 
 /**
  * Shared document-scan persistence service. Reuses the SAME storage
@@ -48,6 +50,10 @@ const CreateScanBody = z.object({
   base64Data: z.string().min(1).max(35 * 1024 * 1024),
   scanSource: z.enum(SCAN_SOURCES),
   deviceLabel: z.string().max(200).optional(),
+  /** Downscale-if-larger-than (processed variant only). Default 2000px — see imageVariants.ts. */
+  maxWidth: z.number().int().positive().max(6000).optional(),
+  /** JPEG re-encode quality 1-100 (processed + thumbnail variants). Default 88. */
+  jpegQuality: z.number().int().min(1).max(100).optional(),
 });
 
 /**
@@ -61,7 +67,12 @@ scansRouter.post("/", requireStaffAuth, async (req: StaffAuthRequest, res: Respo
     res.status(400).json({ error: "Invalid scan body", details: parsed.error.issues });
     return;
   }
-  const { module, entityType, entityId, docType, fileName, mimeType, base64Data, scanSource, deviceLabel } = parsed.data;
+  const { module, entityType, entityId, docType, fileName, mimeType, base64Data, scanSource, deviceLabel, maxWidth, jpegQuality } = parsed.data;
+
+  if (!SAFE_MIME_TYPES.has(mimeType)) {
+    res.status(400).json({ error: `MIME type "${mimeType}" is not supported. Use JPG, PNG, WEBP, HEIC, or PDF.` });
+    return;
+  }
 
   let buffer: Buffer;
   try {
@@ -70,8 +81,8 @@ scansRouter.post("/", requireStaffAuth, async (req: StaffAuthRequest, res: Respo
     res.status(400).json({ error: "Invalid base64 data" });
     return;
   }
-  if (buffer.byteLength > 25 * 1024 * 1024) {
-    res.status(413).json({ error: "File too large. Max allowed is 25 MB." });
+  if (buffer.byteLength > MAX_UPLOAD_SIZE_BYTES) {
+    res.status(413).json({ error: `File too large. Max allowed is ${Math.round(MAX_UPLOAD_SIZE_BYTES / (1024 * 1024))} MB.` });
     return;
   }
 
@@ -80,14 +91,42 @@ scansRouter.post("/", requireStaffAuth, async (req: StaffAuthRequest, res: Respo
   ensureDir(targetDir);
 
   const safeName = sanitiseFilename(fileName);
-  const storedName = `${crypto.randomBytes(8).toString("hex")}_${safeName}`;
-  const storagePath = join(subDir, storedName);
-  const fullPath = join(UPLOAD_BASE_DIR, storagePath);
+  const uniquePrefix = crypto.randomBytes(8).toString("hex");
+
+  // ── Generate the three stored variants ──
+  // Original is stored byte-for-byte (legal-evidence copy). Processed +
+  // thumbnail are derived JPEGs — see imageVariants.ts for exactly what
+  // preprocessing is applied and when a variant can legitimately be null
+  // (PDFs, or an image format sharp can't decode in this deployment).
+  const variants = await generateImageVariants(base64Data, mimeType, { maxWidth, jpegQuality });
+  if (variants.variantsError) {
+    logger.warn({ variantsError: variants.variantsError, mimeType }, "scanned-document variant generation incomplete");
+  }
+
+  const originalStoredName = `${uniquePrefix}_${safeName}`;
+  const originalStoragePath = join(subDir, originalStoredName);
+  const originalFullPath = join(UPLOAD_BASE_DIR, originalStoragePath);
+
+  let processedStoragePath: string | null = null;
+  let processedFullPath: string | null = null;
+  let thumbnailStoragePath: string | null = null;
+  let thumbnailFullPath: string | null = null;
 
   try {
-    writeFileSync(fullPath, buffer);
+    writeFileSync(originalFullPath, variants.original.buffer);
+
+    if (variants.processed) {
+      processedStoragePath = join(subDir, `${uniquePrefix}_processed.jpg`);
+      processedFullPath = join(UPLOAD_BASE_DIR, processedStoragePath);
+      writeFileSync(processedFullPath, variants.processed.buffer);
+    }
+    if (variants.thumbnail) {
+      thumbnailStoragePath = join(subDir, `${uniquePrefix}_thumb.jpg`);
+      thumbnailFullPath = join(UPLOAD_BASE_DIR, thumbnailStoragePath);
+      writeFileSync(thumbnailFullPath, variants.thumbnail.buffer);
+    }
   } catch (err) {
-    logger.error({ err, path: fullPath }, "Failed to write scanned document");
+    logger.error({ err, path: originalFullPath }, "Failed to write scanned document");
     res.status(500).json({ error: "Failed to store scanned document" });
     return;
   }
@@ -101,9 +140,13 @@ scansRouter.post("/", requireStaffAuth, async (req: StaffAuthRequest, res: Respo
         entityId: entityId ?? null,
         docType,
         filename: safeName,
-        storagePath,
+        storagePath: originalStoragePath,
         mimeType,
         sizeBytes: buffer.byteLength,
+        processedStoragePath,
+        processedSizeBytes: variants.processed ? variants.processed.buffer.byteLength : null,
+        thumbnailStoragePath,
+        thumbnailSizeBytes: variants.thumbnail ? variants.thumbnail.buffer.byteLength : null,
         scanSource,
         deviceLabel: deviceLabel ?? null,
         userId: req.staffSession?.id ?? null,
@@ -118,11 +161,18 @@ scansRouter.post("/", requireStaffAuth, async (req: StaffAuthRequest, res: Respo
       url: `/uploads/${record.storagePath}`,
       mimeType: record.mimeType,
       sizeBytes: record.sizeBytes,
+      processedUrl: record.processedStoragePath ? `/uploads/${record.processedStoragePath}` : null,
+      thumbnailUrl: record.thumbnailStoragePath ? `/uploads/${record.thumbnailStoragePath}` : null,
+      blurScore: variants.processed?.blurScore ?? null,
+      isBlurred: variants.processed?.isBlurred ?? null,
+      variantsError: variants.variantsError ?? null,
       isLinked: record.isLinked === "true",
       createdAt: record.createdAt,
     });
   } catch (err) {
-    try { unlinkSync(fullPath); } catch { /* ignore */ }
+    try { unlinkSync(originalFullPath); } catch { /* ignore */ }
+    try { if (processedFullPath) unlinkSync(processedFullPath); } catch { /* ignore */ }
+    try { if (thumbnailFullPath) unlinkSync(thumbnailFullPath); } catch { /* ignore */ }
     logger.error({ err }, "Failed to record scanned document metadata");
     res.status(500).json({ error: "Failed to save scan metadata" });
   }
@@ -136,7 +186,13 @@ scansRouter.get("/:id", requireStaffAuth, async (req, res) => {
   const [record] = await db.select().from(scannedDocumentsTable).where(eq(scannedDocumentsTable.id, id)).limit(1);
   if (!record) { res.status(404).json({ error: "Scan not found" }); return; }
 
-  res.json({ ...record, url: `/uploads/${record.storagePath}`, isLinked: record.isLinked === "true" });
+  res.json({
+    ...record,
+    url: `/uploads/${record.storagePath}`,
+    processedUrl: record.processedStoragePath ? `/uploads/${record.processedStoragePath}` : null,
+    thumbnailUrl: record.thumbnailStoragePath ? `/uploads/${record.thumbnailStoragePath}` : null,
+    isLinked: record.isLinked === "true",
+  });
 });
 
 const LinkBody = z.object({ entityId: z.number().int().positive() });
@@ -195,11 +251,14 @@ scansRouter.post("/purge-unlinked", requireStaffAuth, async (req: StaffAuthReque
   let deletedFiles = 0;
   let deletedRows = 0;
   for (const row of stale) {
-    const fullPath = join(UPLOAD_BASE_DIR, row.storagePath);
-    try {
-      if (existsSync(fullPath)) { unlinkSync(fullPath); deletedFiles++; }
-    } catch (err) {
-      logger.warn({ err, storagePath: row.storagePath }, "Failed to delete stale scan file");
+    const paths = [row.storagePath, row.processedStoragePath, row.thumbnailStoragePath].filter((p): p is string => !!p);
+    for (const p of paths) {
+      const fullPath = join(UPLOAD_BASE_DIR, p);
+      try {
+        if (existsSync(fullPath)) { unlinkSync(fullPath); deletedFiles++; }
+      } catch (err) {
+        logger.warn({ err, storagePath: p }, "Failed to delete stale scan file");
+      }
     }
     await db.delete(scannedDocumentsTable).where(eq(scannedDocumentsTable.id, row.id));
     deletedRows++;
@@ -233,7 +292,13 @@ scansRouter.get("/", requireStaffAuth, async (req, res) => {
   ]);
 
   res.json({
-    data: rows.map((r: typeof scannedDocumentsTable.$inferSelect) => ({ ...r, url: `/uploads/${r.storagePath}`, isLinked: r.isLinked === "true" })),
+    data: rows.map((r: typeof scannedDocumentsTable.$inferSelect) => ({
+      ...r,
+      url: `/uploads/${r.storagePath}`,
+      processedUrl: r.processedStoragePath ? `/uploads/${r.processedStoragePath}` : null,
+      thumbnailUrl: r.thumbnailStoragePath ? `/uploads/${r.thumbnailStoragePath}` : null,
+      isLinked: r.isLinked === "true",
+    })),
     pagination: { page: q.page, pageSize: q.pageSize, total: total[0]?.count ?? 0 },
   });
 });

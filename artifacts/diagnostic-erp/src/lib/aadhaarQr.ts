@@ -1,8 +1,20 @@
 /**
- * Aadhaar QR decode/parse for ID-card capture, with a strict fallback chain:
- * 1. Aadhaar QR data (this module)
+ * Aadhaar QR decode/parse for ID-card capture.
+ *
+ * CURRENT STATUS (do not represent this as more than it is):
+ *   Legacy plain-XML QR  → decoded here, fully implemented.
+ *   UIDAI Secure QR      → NOT decoded. Detected-but-unsupported, then
+ *                           falls through to OCR — never silently fails.
+ *                           Implementing the binary Secure QR format is a
+ *                           FUTURE ENHANCEMENT, not done.
+ *
+ * Full fallback chain used by the caller (FormF.tsx's processIdImage):
+ * 1. Aadhaar QR data (this module — legacy format only)
  * 2. OCR (geminiOcrIdCard via /api/form-f/upload-id — unchanged, existing)
  * 3. Manual entry (existing editable form fields)
+ * A QR detected in the "unsupported" state surfaces a visible toast to the
+ * user ("QR code detected but not readable... falling back to OCR") before
+ * OCR runs — this is a deliberate signal, not a silent skip.
  *
  * ─────────────────────────────────────────────────────────────────────────
  * HONEST SCOPE — read before wiring this into anything:

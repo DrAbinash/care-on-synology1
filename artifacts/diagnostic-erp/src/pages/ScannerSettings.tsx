@@ -35,6 +35,7 @@ import {
   guessTvsDevice,
   setPreferredTvsDevice,
 } from "@/lib/tvsDeviceProfile";
+import { classifyCameraError } from "@/lib/cameraDiagnostics";
 
 export default function ScannerSettings() {
   const { toast } = useToast();
@@ -67,6 +68,7 @@ export default function ScannerSettings() {
   // one is the TVS" — no automatic hardware detection is claimed here.
   const [tvsDevices, setTvsDevices] = useState<MediaDeviceInfo[]>([]);
   const [tvsPreviewId, setTvsPreviewId] = useState<string>("");
+  const [tvsPreviewError, setTvsPreviewError] = useState<string | null>(null);
   const [tvsBoundId, setTvsBoundId] = useState(getPreferredTvsDeviceId());
   const [tvsBoundLabel, setTvsBoundLabel] = useState(getPreferredTvsDeviceLabel());
   const tvsVideoRef = useRef<HTMLVideoElement>(null);
@@ -89,6 +91,7 @@ export default function ScannerSettings() {
   useEffect(() => {
     if (!tvsPreviewId) return;
     let cancelled = false;
+    setTvsPreviewError(null);
     navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: tvsPreviewId } } })
       .then((stream) => {
         if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
@@ -99,7 +102,7 @@ export default function ScannerSettings() {
           void tvsVideoRef.current.play();
         }
       })
-      .catch(() => { /* preview failure — leave the picker usable, just no live preview */ });
+      .catch((e) => { if (!cancelled) setTvsPreviewError(classifyCameraError(e).message); });
     return () => {
       cancelled = true;
       tvsStreamRef.current?.getTracks().forEach((t) => t.stop());
@@ -227,6 +230,9 @@ export default function ScannerSettings() {
                 <div className="rounded-lg overflow-hidden bg-black aspect-video">
                   <video ref={tvsVideoRef} className="w-full h-full object-contain" playsInline muted />
                 </div>
+                {tvsPreviewError && (
+                  <p className="text-xs text-amber-700">{tvsPreviewError}</p>
+                )}
                 <Button size="sm" onClick={confirmTvsDevice} className="gap-1.5">
                   <Camera size={14} /> This is the TVS PDS 8M
                 </Button>
