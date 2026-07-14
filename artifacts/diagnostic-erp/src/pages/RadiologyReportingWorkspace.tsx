@@ -10,8 +10,11 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
-import { readStaffSession } from "@/lib/staffSession";
+import { readStaffSession, normalizeRole } from "@/lib/staffSession";
 import { api } from "@/lib/fetchApi";
+// Cockpit→Workspace merge: shared status/priority/role helpers (already used by
+// RadiologyWorklist and the deprecated Cockpit) — reused, not duplicated.
+import { toUnifiedStatus, priorityInfo, worklistRoleView } from "@/lib/radiologyStatus";
 import { finalizeRadiologyReport, saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
 import OpenStudyPanel from "@/components/radiology/OpenStudyPanel";
 import {
@@ -108,6 +111,13 @@ type WorklistEntry = {
   aiDraftJson: string | null;
   reportId: number | null;
   deliveryStatus: string | null;
+  // Cockpit→Workspace merge (B1): billing/triage banner fields. Already served
+  // by GET /api/radiology/pacs-worklist (uhid = matched ERP patient id,
+  // billNumber via study→bill, priority = radiology_studies.priority) — no
+  // backend change, additive display only.
+  uhid?: string | null;
+  billNumber?: string | null;
+  priority?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -401,6 +411,71 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   useEffect(() => {
     localStorage.setItem("radiologyWorkspaceLeftPanelCollapsed", isLeftPanelCollapsed ? "1" : "0");
   }, [isLeftPanelCollapsed]);
+
+  // ── Cockpit→Workspace merge ────────────────────────────────────────────────
+  // G1: client-side role gate on the Sign action (defense-in-depth + clearer
+  // UX than a live button that only fails server-side). Reuses worklistRoleView
+  // (same shared helper the Cockpit and Worklist already use).
+  const canSign = useMemo(() => {
+    const view = worklistRoleView(normalizeRole(session?.user?.role ?? ""));
+    return view === "radiologist" || view === "owner";
+  }, [session]);
+
+  // E3: personal macro live "/shortcut" expansion in the Findings text. Reuses
+  // the SAME user-report-preferences source PreferencesPanel already reads — no
+  // new backend surface, complements (does not duplicate) click-to-insert.
+  const { data: userReportPrefs } = useQuery<any>({
+    queryKey: ["user-report-preferences"],
+    queryFn: () => api.get<any>("/api/radiology/user-report-preferences"),
+    enabled: !!session?.user?.id,
+    staleTime: 300_000,
+  });
+  const personalMacros = useMemo<{ name: string; content: string }[]>(() => {
+    if (!userReportPrefs?.personalMacros) return [];
+    try {
+      const parsed = JSON.parse(userReportPrefs.personalMacros);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }, [userReportPrefs]);
+  const expandFindingsMacros = (val: string): string => {
+    let replaced = val;
+    for (const m of personalMacros) {
+      if (m?.name && replaced.includes(`/${m.name}`)) {
+        replaced = replaced.replaceAll(`/${m.name}`, m.content);
+        toast({ title: "Macro applied", description: `Expanded /${m.name}` });
+      }
+    }
+    return replaced;
+  };
+
+  // D3: last dictated phrase, fed to MeasurementAssistantPanel so its existing
+  // regex parser (midline shift, tumor axes, BPD/AC/FL…) can autofill fields.
+  const [lastVoiceCommand, setLastVoiceCommand] = useState("");
+
+  // D2: auto-bridge calculated measurements into Findings/Impression (the
+  // MeasurementAssistantPanel is already mounted here; only the optional
+  // onMeasurementsChange callback was unused). Ported from the Cockpit.
+  const handleMeasurementsApplied = (text: string, calcs: Record<string, any>) => {
+    setRawFindings((prev) => {
+      const base = prev.split("MEASUREMENTS LOG:")[0].trim();
+      return base ? `${base}\n\n${text}` : text;
+    });
+    setImpression((prev) => {
+      const next = [...prev.filter(Boolean)];
+      const pushUnique = (item: string) => { if (!next.includes(item)) next.push(item); };
+      if (calcs.tumorVolume && calcs.tumorVolume > 10)
+        pushUnique(`Large space-occupying lesion with volume of ${calcs.tumorVolume} cc.`);
+      if (calcs.evansIndex && calcs.evansIndex > 0.3)
+        pushUnique(`Evans Index is ${calcs.evansIndex}, consistent with ventriculomegaly/hydrocephalus.`);
+      if (calcs.slipPct && calcs.slipPct > 25)
+        pushUnique(`Spondylolisthesis (${calcs.slipGrade}).`);
+      if (calcs.efw)
+        pushUnique(`Estimated Fetal Weight is ${calcs.efw} g.`);
+      return next;
+    });
+  };
 
   // ── Report meta ───────────────────────────────────────────────────────────
   const [isCritical, setIsCritical] = useState(false);
@@ -2690,7 +2765,17 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             {entry && (
               <div className="flex flex-col gap-2">
                 <div>
-                  <div className="font-semibold text-sm">{entry.patientName}</div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="font-semibold text-sm">{entry.patientName}</div>
+                    {/* B1: STAT/URGENT/VIP triage chip (hidden for routine) */}
+                    {(() => { const pr = priorityInfo(entry.priority); return pr.highlight ? (
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-bold ${pr.color}`}>{pr.label}</span>
+                    ) : null; })()}
+                    {/* B1: unified lifecycle status pill */}
+                    {(() => { const u = toUnifiedStatus(entry.status, entry.deliveryStatus); return (
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-semibold ${u.color}`} title={`Internal: ${entry.status}`}>{u.label}</span>
+                    ); })()}
+                  </div>
                   <div className="text-xs text-muted-foreground">
                     {[entry.age, entry.sex].filter(Boolean).join(" / ")}
                   </div>
@@ -2706,6 +2791,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   <span className="truncate">{entry.studyDescription || "—"}</span>
                   <span className="text-muted-foreground">Ref. Dr</span>
                   <span className="truncate">{entry.referringDoctor || "—"}</span>
+                  {/* B1: billing/patient cross-reference identifiers */}
+                  <span className="text-muted-foreground">UHID</span>
+                  <span className="font-mono truncate">{entry.uhid || "—"}</span>
+                  <span className="text-muted-foreground">Bill</span>
+                  <span className="font-mono truncate">{entry.billNumber || "—"}</span>
                   <span className="text-muted-foreground">Date</span>
                   <span>{entry.studyDate || "—"}</span>
                   <span className="text-muted-foreground">Study UID</span>
@@ -3054,7 +3144,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                         </Button>
                       ))}
                   <VoiceDictationButton
-                    onInsert={(t) => setRawFindings((p) => p + t)}
+                    onInsert={(t) => {
+                      setLastVoiceCommand(t); // D3: feed the measurement parser
+                      setRawFindings((p) => expandFindingsMacros(p + t)); // E3: expand any dictated /shortcut
+                    }}
                     targetField="findings"
                     className="h-5 text-[10px]"
                   />
@@ -3153,8 +3246,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 <FindingsHighlightEditor
                   ref={findingsTextareaRef}
                   value={rawFindings}
-                  onChange={setRawFindings}
-                  placeholder="Enter free-text findings..."
+                  onChange={(v) => setRawFindings(expandFindingsMacros(v))}
+                  placeholder="Enter free-text findings…  (type /shortcut to expand a saved macro)"
                   className="min-h-[180px] text-sm font-mono resize-y"
                   disabled={isLocked}
                   dataEditor="findings"
@@ -3488,7 +3581,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             >
               <Sparkles size={12} /> AI Review
             </Button>
-            {!isLocked && (
+            {!isLocked && canSign && (
               <Button
                 size="sm"
                 className="h-8 text-xs gap-1.5 bg-green-600 hover:bg-green-700 text-white"
@@ -3503,6 +3596,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 )}{" "}
                 Finalize
               </Button>
+            )}
+            {/* G1: non-signing roles see why, not a live button that only 500s server-side */}
+            {!isLocked && !canSign && (
+              <span className="text-[11px] text-muted-foreground self-center px-2" title="Only a radiologist can sign the final report">
+                Final sign-off: radiologist only
+              </span>
             )}
             <Button
               size="sm"
@@ -3690,6 +3789,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   orderId={entry?.id ?? undefined}
                   modality={entry?.modality ?? undefined}
                   bodyPart={entry?.studyDescription ?? undefined}
+                  onMeasurementsChange={handleMeasurementsApplied} // D2: auto-bridge calcs → Findings/Impression
+                  voiceTextCommand={lastVoiceCommand} // D3: autofill fields from dictated numbers
                 />
                 {entry?.patientId && (
                   <div className="border-t">
