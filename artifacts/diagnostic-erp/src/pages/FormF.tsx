@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import IdCardScanPanel from "@/components/IdCardScanPanel";
 import UnifiedScanCapture from "@/components/UnifiedScanCapture";
-import { decodeQrFromBlob } from "@/lib/aadhaarSecureQr";
+import { decodeQrFromBlob } from "@/lib/aadhaarQr";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
@@ -826,6 +826,19 @@ export default function FormF() {
         };
         reader.readAsDataURL(file);
         return;
+      }
+
+      // A QR was detected but doesn't match the supported legacy-XML shape —
+      // this is expected for UIDAI's newer "Secure QR" (compressed/signed
+      // binary format, not yet implemented — see aadhaarSecureQr.ts). Tell
+      // the user explicitly rather than silently proceeding to OCR, so
+      // "why didn't the QR work?" has a visible answer instead of no signal
+      // at all.
+      if (qr.format === "unsupported") {
+        toast({
+          title: "QR code detected but not readable",
+          description: "This looks like a newer Aadhaar Secure QR format, which isn't decoded yet — falling back to OCR text extraction instead.",
+        });
       }
 
       const reader = new FileReader();

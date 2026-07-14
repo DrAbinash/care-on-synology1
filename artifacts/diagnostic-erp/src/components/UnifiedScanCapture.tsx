@@ -36,6 +36,7 @@ import { Camera, Scan, Smartphone, Upload, X, RefreshCcw, Loader2, ScanLine } fr
 import { checkScanBridgeHealth, scanBridgeCapture, type ScanBridgeState } from "@/lib/scanBridgeClient";
 import PlacementGuideOverlay from "@/components/PlacementGuideOverlay";
 import { computeBlurScore, getPreferredTvsDeviceId, getPreferredTvsDeviceLabel, BLUR_WARNING_THRESHOLD } from "@/lib/tvsDeviceProfile";
+import { classifyCameraError, isSecureCameraContext as checkSecureCameraContext, watchForDeviceDisconnect, type CameraDiagnostic } from "@/lib/cameraDiagnostics";
 
 export type ScanModule = "form-f" | "patients" | "expenses" | "banking";
 export type ScanDocType = "id-card" | "bill" | "bank-statement" | "photo" | "other";
@@ -129,7 +130,7 @@ export default function UnifiedScanCapture({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
-  const isSecureCameraContext = typeof window !== "undefined" && window.isSecureContext && !!navigator.mediaDevices;
+  const isSecureCameraContext = checkSecureCameraContext();
 
   // TVS PDS 8M — see tvsDeviceProfile.ts for the hardware-status caveat.
   // Only shown once an admin has bound a deviceId in Scanner Settings.
@@ -137,6 +138,8 @@ export default function UnifiedScanCapture({
   const [tvsDeviceLabel] = useState(() => getPreferredTvsDeviceLabel());
   const [blurScore, setBlurScore] = useState<number | null>(null);
   const blurIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [cameraDiagnostic, setCameraDiagnostic] = useState<CameraDiagnostic | null>(null);
+  const stopDisconnectWatchRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (!open || !isSecureCameraContext) return;
@@ -152,15 +155,26 @@ export default function UnifiedScanCapture({
       clearInterval(blurIntervalRef.current);
       blurIntervalRef.current = null;
     }
+    stopDisconnectWatchRef.current?.();
+    stopDisconnectWatchRef.current = null;
     setBlurScore(null);
   }
   useEffect(() => () => stopWebcam(), []);
 
   async function startCameraStream(target: "webcam" | "tvs", deviceId?: string) {
     setMode(target);
+    setCameraDiagnostic(null);
     try {
+      // `ideal` (not `exact`) for resolution — the browser picks the closest
+      // mode the device actually supports rather than failing outright.
+      // Without this, getUserMedia() commonly defaults to a low resolution
+      // (often 640x480) even on an 8MP-capable device like the TVS PDS 8M.
+      // See docs/TVS_PDS_8M_VALIDATION.md — actual supported resolutions on
+      // the real device still need confirming via getCapabilities().
       const constraints: MediaStreamConstraints = {
-        video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: "environment" },
+        video: deviceId
+          ? { deviceId: { exact: deviceId }, width: { ideal: 3264 }, height: { ideal: 2448 } }
+          : { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } },
       };
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = stream;
@@ -168,6 +182,14 @@ export default function UnifiedScanCapture({
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
+      // Surface a mid-session USB unplug — getUserMedia() itself doesn't
+      // reject in this case, the stream just goes quiet, which otherwise
+      // looks like a frozen preview with no explanation.
+      stopDisconnectWatchRef.current = watchForDeviceDisconnect(stream, (diag) => {
+        setCameraDiagnostic(diag);
+        toast({ title: "Camera disconnected", description: diag.message, variant: "destructive" });
+        setMode("select");
+      });
       // TVS is fixed-focus — sample a live blur score so staff can reposition
       // before capturing instead of discovering a blurry image afterward.
       if (target === "tvs" && videoRef.current && canvasRef.current) {
@@ -188,9 +210,10 @@ export default function UnifiedScanCapture({
         }, 400);
       }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Could not start camera";
-      onError?.(msg);
-      toast({ title: "Camera failed", description: msg, variant: "destructive" });
+      const diag = classifyCameraError(e);
+      setCameraDiagnostic(diag);
+      onError?.(diag.message);
+      toast({ title: "Camera failed", description: diag.message, variant: "destructive" });
       setMode("select");
     }
   }
@@ -297,6 +320,11 @@ export default function UnifiedScanCapture({
 
           {mode === "select" && (
             <div className="grid grid-cols-1 gap-2.5 pt-2">
+              {cameraDiagnostic && (
+                <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  {cameraDiagnostic.message}
+                </div>
+              )}
               {tvsDeviceId ? (
                 <Button
                   variant="outline"
