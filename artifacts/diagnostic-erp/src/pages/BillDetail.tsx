@@ -275,6 +275,7 @@ export default function BillDetail({ id }: { id: number }) {
       showWatermark: settings.showWatermark,
       showPatientInstructions: settings.showPatientInstructions,
       showSystemInfo: settings.showSystemInfo,
+      showQueueToken: settings.showQueueTokenOnBill,
     });
   };
 

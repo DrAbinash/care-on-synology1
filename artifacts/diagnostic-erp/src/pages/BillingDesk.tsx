@@ -879,6 +879,7 @@ export default function BillingDesk() {
                     showWatermark: settings.showWatermark,
                     showPatientInstructions: settings.showPatientInstructions,
                     showSystemInfo: settings.showSystemInfo,
+                    showQueueToken: settings.showQueueTokenOnBill,
                   });
                   if (settings.enablePreview) {
                     setPrintPreviewHtml(html);
@@ -1351,6 +1352,7 @@ export default function BillingDesk() {
               showWatermark: settings.showWatermark,
               showPatientInstructions: settings.showPatientInstructions,
               showSystemInfo: settings.showSystemInfo,
+              showQueueToken: settings.showQueueTokenOnBill,
             });
             if (settings.enablePreview) {
               setPrintPreviewHtml(html);

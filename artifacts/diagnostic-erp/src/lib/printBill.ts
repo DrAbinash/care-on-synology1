@@ -151,6 +151,9 @@ export type BuildPrintHtmlOpts = {
   showWatermark?: boolean;
   showPatientInstructions?: boolean;
   showSystemInfo?: boolean;
+  // Big "QUEUE TOKEN #NN" box (classic format only) — see BillPrintSettings.
+  // Undefined defaults to false (caller opts in explicitly, e.g. Kiosk.tsx).
+  showQueueToken?: boolean;
   // V3 toggles
   showReceiptThankYou?: boolean;
   showReceiptCollection?: boolean;
@@ -338,8 +341,10 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 
       <!-- QUEUE TOKEN(S) — shown when this bill produced a daily queue token
            (self-registration via kiosk / online booking, or a walk-in bill
-           routed through a department queue). -->
-      ${bill.tokenNo ? `
+           routed through a department queue). Gated on showQueueToken so
+           billing-counter receipts don't show a redundant big token box on
+           top of the per-test department token list below. -->
+      ${opts.showQueueToken && bill.tokenNo ? `
       <div style="text-align:center;background:#eff6ff;border:2px dashed #0284c7;border-radius:6px;padding:4px 8px;margin-bottom:6px">
         <div style="font-size:${tinyPx};font-weight:800;color:#0c4a6e;letter-spacing:0.5px">QUEUE TOKEN</div>
         <div style="font-size:${parseInt(titleSize, 10) + 10}px;font-weight:900;color:#082f49;line-height:1.1">#${esc(String(bill.tokenNo))}</div>
