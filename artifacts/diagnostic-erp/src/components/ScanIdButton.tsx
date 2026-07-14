@@ -11,6 +11,7 @@ import {
   ArrowLeft
 } from "lucide-react";
 import QRCode from "qrcode";
+import { checkScanBridgeHealth, scanBridgeCapture, scanBridgeLatestScan } from "@/lib/scanBridgeClient";
 
 interface ScanIdButtonProps {
   onScanComplete: (data: {
@@ -24,9 +25,6 @@ interface ScanIdButtonProps {
   buttonLabel?: string;
   className?: string;
 }
-
-const SCAN_BRIDGE_URL =
-  (import.meta as any).env?.VITE_SCAN_BRIDGE_URL || "http://127.0.0.1:8766"; // local per-workstation scanner bridge; override per PC if ever needed
 
 export default function ScanIdButton({
   onScanComplete,
@@ -79,13 +77,8 @@ export default function ScanIdButton({
     if (!open) return;
     
     async function checkBridge() {
-      try {
-        const res = await fetch(`${SCAN_BRIDGE_URL}/health`, { method: "GET", mode: "cors" });
-        const data = await res.json().catch(() => ({}));
-        setScanBridgeOk(res.ok && data.ok === true);
-      } catch {
-        setScanBridgeOk(false);
-      }
+      const health = await checkScanBridgeHealth();
+      setScanBridgeOk(health.state === "ok");
     }
     
     checkBridge();
@@ -195,14 +188,19 @@ export default function ScanIdButton({
     }
   }
 
-  // Direct Scan Bridge
+  // Direct Scan Bridge — fetched directly from the browser (never proxied
+  // through the API server, whose own loopback is not the workstation's).
   async function handleBridgeScan(mode: "direct" | "watch") {
     setScanning(true);
     setBridgeAction(mode);
     try {
-      const res = await api.post<any>("/api/form-f/latest-scan-proxy", {
-        bridgeUrl: SCAN_BRIDGE_URL,
-        mode,
+      const raw = mode === "direct" ? await scanBridgeCapture() : await scanBridgeLatestScan();
+      if (!raw.ok) throw new Error(raw.error || "Bridge returned error.");
+
+      const res = await api.post<any>("/api/form-f/optimize-scan", {
+        imageBase64: raw.imageBase64,
+        mimeType: raw.mimeType ?? "image/jpeg",
+        filename: raw.filename ?? "scan",
         maxWidth: clinicSettings?.maxScanWidth ?? 1200,
         jpegQuality: clinicSettings?.jpegQuality ?? 85,
       });
@@ -218,8 +216,15 @@ export default function ScanIdButton({
           patientId,
         });
 
+        // onScanComplete's frontUrl/backUrl contract is a BARE storage path
+        // (no /uploads/ prefix) — see acceptSessionResult() below, which
+        // strips the prefix before calling this same callback. Every caller
+        // of onScanComplete (e.g. FormF.tsx) re-adds the /uploads/ prefix
+        // itself; passing a pre-prefixed URL here previously produced
+        // "/uploads//uploads/<path>" (404) for scans captured via the
+        // workstation bridge specifically.
         onScanComplete({
-          frontUrl: `/uploads/${uploadRes.storagePath}`,
+          frontUrl: uploadRes.storagePath,
         });
         
         toast({ title: "Document Scanned", description: "Attached successfully." });

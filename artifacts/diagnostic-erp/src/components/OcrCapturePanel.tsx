@@ -65,7 +65,18 @@ export default function OcrCapturePanel({
   const SCAN_BRIDGE_URL = scanBridgeUrl;
 
   // ── 1. Auto camera detection ──
+  // `navigator.mediaDevices` is entirely `undefined` in a non-secure context
+  // (any origin that isn't HTTPS or localhost) — enumerateDevices() throwing
+  // in that case was previously indistinguishable from "no camera hardware",
+  // producing a misleading "No cameras detected" message instead of the
+  // actual, actionable "this page needs HTTPS" cause.
+  const isSecureCameraContext = typeof window !== "undefined" && window.isSecureContext && !!navigator.mediaDevices;
+
   async function detectCameras() {
+    if (!isSecureCameraContext) {
+      setCameras([]);
+      return [];
+    }
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const videoDevices = devices.filter((d) => d.kind === "videoinput");
@@ -117,6 +128,14 @@ export default function OcrCapturePanel({
 
   // ── 3. Start/stop camera preview ──
   async function startPreview(deviceId?: string) {
+    if (!isSecureCameraContext) {
+      toast({
+        title: "Camera requires HTTPS",
+        description: "This page must be loaded over HTTPS (or localhost) for the browser to allow camera access. Use File Upload instead, or access the ERP via its HTTPS address.",
+        variant: "destructive",
+      });
+      return;
+    }
     const id = deviceId || selectedCamera;
     if (!id) {
       toast({ title: "No camera selected", description: "Try refreshing the list or use File Upload instead", variant: "destructive" });
@@ -435,7 +454,10 @@ export default function OcrCapturePanel({
             <div className="flex items-center gap-2">
               <span className="font-semibold text-gray-700">Cameras found:</span>
               <span className="text-gray-600">{cameras.length} device{cameras.length !== 1 ? "s" : ""}</span>
-              {cameras.length === 0 && (
+              {cameras.length === 0 && !isSecureCameraContext && (
+                <span className="text-red-600">— Camera requires HTTPS (or localhost). This page is loaded over plain HTTP, so the browser hides all cameras. Use File Upload or Scanner Bridge instead.</span>
+              )}
+              {cameras.length === 0 && isSecureCameraContext && (
                 <span className="text-red-600">— No cameras detected. Use File Upload or Scanner Bridge instead.</span>
               )}
             </div>

@@ -10,13 +10,25 @@ The browser cannot talk to USB document scanners directly. This bridge:
 3. The ERP frontend receives the image and sends it to the AI OCR endpoint
    (`/api/form-f/upload-id`) for Aadhaar/ID card data extraction.
 
+> **`ERP_BASE_URL` (or `BRIDGE_ALLOW_ORIGINS`) is mandatory, not optional.**
+> Without one of them set to your real ERP origin, CORS defaults *closed* —
+> every browser request from the ERP will be silently blocked and the ERP UI
+> will show the bridge as "Offline" even though the process is running and
+> healthy. This is the #1 cause of "Local Workstation Scanner: Offline"
+> reports. Every example below sets `ERP_BASE_URL` for this reason — do not
+> omit it, even while testing with the mock adapter.
+
 ## Quick start (mock adapter — no hardware needed)
 
 ```bash
 cd scan-bridge
 npm install
-BRIDGE_SCAN_VENDOR=mock npm start
+ERP_BASE_URL=https://erp.yourdomain.com BRIDGE_SCAN_VENDOR=mock npm start
 ```
+
+For local development against the ERP dev server, use
+`ERP_BASE_URL=http://localhost:5173` (or whatever port the diagnostic-erp
+dev server actually runs on) instead.
 
 Then in the ERP on the workstation, click **Scanner** on the Form F ID card
 section. The browser auto-detects the bridge at `http://127.0.0.1:8766`.
@@ -26,7 +38,7 @@ section. The browser auto-detects the bridge at `http://127.0.0.1:8766`.
 ```bash
 cd scan-bridge
 npm install
-ERP_BASE_URL=https://your-erp.example.com BRIDGE_SCAN_VENDOR=wia npm start
+ERP_BASE_URL=https://erp.yourdomain.com BRIDGE_SCAN_VENDOR=wia npm start
 ```
 
 ## Quick start (folder-watch — any scanner that saves to disk)
@@ -37,13 +49,38 @@ If your scanner comes with its own software that saves files to a folder:
 # Configure the scanner software to save scans to a folder
 cd scan-bridge
 npm install
-ERP_BASE_URL=https://your-erp.example.com \
+ERP_BASE_URL=https://erp.yourdomain.com \
   BRIDGE_SCAN_VENDOR=folder-watch \
   SCAN_WATCH_FOLDER="C:\\Scans" \
   npm start
 ```
 
 Clicking **Scanner** in the ERP returns the newest file from that folder.
+**The same `SCAN_WATCH_FOLDER` value must be used for every run** — the bridge's
+built-in `/latest-scan` endpoint and the `folder-watch` adapter's own `/scan`
+endpoint both read this one env var, so leaving it unset for one but not the
+other (or changing it between runs) makes "Import Latest Scan" look in the
+wrong place.
+
+## Optional: workstation-pairing secret
+
+Once every reception workstation's bridge is upgraded and configured with
+`ERP_BASE_URL`/`BRIDGE_ALLOW_ORIGINS`, you can additionally require a shared
+secret on every request (except `/health`, which always stays open so the
+ERP's "is the bridge running" check keeps working):
+
+```bash
+ERP_BRIDGE_SECRET=some-long-random-string \
+  BRIDGE_REQUIRE_AUTH=true \
+  ERP_BASE_URL=https://erp.yourdomain.com \
+  BRIDGE_SCAN_VENDOR=wia \
+  npm start
+```
+
+Set the same value in the ERP's Admin → Scanner Settings page for this
+workstation. Leave `BRIDGE_REQUIRE_AUTH` unset (default `false`) until every
+workstation has the secret configured — flipping it on before that will lock
+out any bridge that hasn't been updated yet.
 
 ## Configuration (env vars)
 
@@ -57,6 +94,8 @@ Clicking **Scanner** in the ERP returns the newest file from that folder.
 | `WIA_DEVICE_INDEX`     | `1`                            | 1-based index if multiple WIA scanners are connected. Call /devices to see the list.             |
 | `WIA_DPI`              | `300`                          | Scan resolution (DPI) for WIA.                                                                   |
 | `SANE_DPI`             | `300`                          | Scan resolution (DPI) for SANE.                                                                  |
+| `ERP_BRIDGE_SECRET`    | _(none)_                       | Shared secret checked via the `X-Bridge-Secret` header when `BRIDGE_REQUIRE_AUTH=true`.          |
+| `BRIDGE_REQUIRE_AUTH`  | `false`                        | Set `true` to require `ERP_BRIDGE_SECRET` on every endpoint except `/health`.                     |
 
 ## Endpoints (consumed by the ERP frontend)
 

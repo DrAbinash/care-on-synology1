@@ -13,6 +13,7 @@ import {
 import OcrCapturePanel from "@/components/OcrCapturePanel";
 import IdCardScanPanel from "@/components/IdCardScanPanel";
 import ScanIdButton from "@/components/ScanIdButton";
+import { checkScanBridgeHealth, getScanBridgeUrl, scanBridgeCapture, scanBridgeLatestScan, scanBridgeOpenApp } from "@/lib/scanBridgeClient";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
@@ -666,26 +667,43 @@ export default function FormF() {
   const [portalOpen, setPortalOpen] = useState(false);
 
   // ── Document scanner bridge state (physical flatbed/ADF scanner) ──
-  const SCAN_BRIDGE_URL =
-    (import.meta as any).env?.VITE_SCAN_BRIDGE_URL || "http://127.0.0.1:8766"; // local per-workstation scanner bridge; override per PC if ever needed
+  // The bridge itself is always reached directly from the browser via
+  // scanBridgeClient — never proxied through the API server, whose own
+  // loopback is not the reception workstation's loopback.
   const [scanBridgeOk, setScanBridgeOk] = useState(false);
   const [scanning, setScanning] = useState(false);
+
+  async function optimizeAndOpenScan(raw: { imageBase64?: string; mimeType?: string; filename?: string }, successTitle: string) {
+    const r = await api.post<{
+      ok: boolean; imageBase64: string; mimeType: string; filename: string;
+      cacheKey: string; optimized: boolean; error?: string; duplicate?: boolean;
+    }>("/api/form-f/optimize-scan", {
+      imageBase64: raw.imageBase64,
+      mimeType: raw.mimeType ?? "image/jpeg",
+      filename: raw.filename ?? "scan",
+      maxWidth: fSettings?.maxScanWidth ?? 1200,
+      jpegQuality: fSettings?.jpegQuality ?? 85,
+    });
+    if (!r.ok) {
+      if (r.duplicate) {
+        toast({ title: "Duplicate scan", description: r.error || "Already imported", variant: "destructive" });
+        return;
+      }
+      throw new Error(r.error || "Could not process scan");
+    }
+    setScanPanelBase64(r.imageBase64);
+    setScanPanelMime(r.mimeType ?? "image/jpeg");
+    setScanPanelOpen(true);
+    toast({ title: successTitle, description: r.optimized ? "Image optimized" : undefined });
+  }
+
   async function triggerScanBridge() {
     setScanning(true);
     try {
-      const r = await api.post<{
-        ok: boolean; imageBase64: string; mimeType: string; filename: string;
-        cacheKey: string; optimized: boolean; error?: string; duplicate?: boolean;
-        code?: string; fallback?: string;
-      }>("/api/form-f/latest-scan-proxy", {
-        bridgeUrl: SCAN_BRIDGE_URL,
-        mode: "direct",
-        maxWidth: fSettings?.maxScanWidth ?? 1200,
-        jpegQuality: fSettings?.jpegQuality ?? 85,
-      });
-      if (!r.ok) {
+      const raw = await scanBridgeCapture();
+      if (!raw.ok) {
         // Auto-fallback to folder-watch on busy/unsupported/no-device
-        if (r.code === "WIA_DEVICE_BUSY" || r.fallback === "folder-watch") {
+        if (raw.code === "WIA_DEVICE_BUSY" || raw.fallback === "folder-watch") {
           toast({
             title: "Scanner is busy",
             description: "WIA device is in use. Switching to folder-watch import.",
@@ -693,25 +711,17 @@ export default function FormF() {
           await importLatestScan();
           return;
         }
-        if (r.code === "WIA_UNSUPPORTED_DRIVER" || r.code === "WIA_NO_DEVICE") {
+        if (raw.code === "WIA_UNSUPPORTED_DRIVER" || raw.code === "WIA_NO_DEVICE") {
           toast({
-            title: r.code === "WIA_NO_DEVICE" ? "No scanner found" : "Driver not supported",
-            description: r.error || "Check USB connection or switch to folder-watch mode.",
+            title: raw.code === "WIA_NO_DEVICE" ? "No scanner found" : "Driver not supported",
+            description: raw.error || "Check USB connection or switch to folder-watch mode.",
             variant: "destructive",
           });
           return;
         }
-        if (r.duplicate) {
-          toast({ title: "Duplicate scan", description: r.error || "Already imported", variant: "destructive" });
-          return;
-        }
-        throw new Error(r.error || "Scan failed");
+        throw new Error(raw.error || "Scan failed");
       }
-      // Open the crop panel
-      setScanPanelBase64(r.imageBase64);
-      setScanPanelMime(r.mimeType ?? "image/jpeg");
-      setScanPanelOpen(true);
-      toast({ title: "ID scanned successfully", description: r.optimized ? "Image optimized" : undefined });
+      await optimizeAndOpenScan(raw, "ID scanned successfully");
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Could not scan";
       toast({
@@ -729,28 +739,9 @@ export default function FormF() {
   async function importLatestScan() {
     setIdCardUploading(true);
     try {
-      const r = await api.post<{
-        ok: boolean; imageBase64: string; mimeType: string; filename: string;
-        cacheKey: string; optimized: boolean; error?: string; duplicate?: boolean;
-      }>("/api/form-f/latest-scan-proxy", {
-        bridgeUrl: SCAN_BRIDGE_URL,
-        mode: "watch",
-        maxWidth: fSettings?.maxScanWidth ?? 1200,
-        jpegQuality: fSettings?.jpegQuality ?? 85,
-      });
-      if (!r.ok) {
-        if (r.duplicate) {
-          toast({ title: "Duplicate scan", description: r.error || "Already imported", variant: "destructive" });
-        } else {
-          throw new Error(r.error || "No latest scan found");
-        }
-        return;
-      }
-      // Open the crop panel instead of immediately setting
-      setScanPanelBase64(r.imageBase64);
-      setScanPanelMime(r.mimeType ?? "image/jpeg");
-      setScanPanelOpen(true);
-      toast({ title: `Imported: ${r.filename || "latest scan"}`, description: r.optimized ? "Image optimized" : undefined });
+      const raw = await scanBridgeLatestScan();
+      if (!raw.ok) throw new Error(raw.error || "No latest scan found");
+      await optimizeAndOpenScan(raw, `Imported: ${raw.filename || "latest scan"}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Could not import";
       toast({
@@ -765,9 +756,8 @@ export default function FormF() {
 
   async function openScannerApp() {
     try {
-      const r = await fetch(`${SCAN_BRIDGE_URL}/open-scanner-app`, { method: "POST", mode: "cors" });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j.ok) throw new Error(j.error || "Could not open scanner app");
+      const j = await scanBridgeOpenApp();
+      if (!j.ok) throw new Error(j.error || "Could not open scanner app");
       toast({
         title: j.message || "Scanner app opened",
         description: "After the scan completes, click Import Latest Scan to pull the image into Form F.",
@@ -789,6 +779,7 @@ export default function FormF() {
           guardianName?: string; address?: string; documentType?: string; confidence?: string;
           fullName?: string; dob?: string; gender?: string; aadhaarNumber?: string; rawText?: string;
         } | null;
+        ocrError?: string | null;
         recordId?: number;
       }>("/api/form-f/upload-id", {
         formFId: 0,
@@ -803,18 +794,16 @@ export default function FormF() {
         husbandFatherName: prev.husbandFatherName || resp.ocr?.guardianName || prev.husbandFatherName,
         address: prev.address || resp.ocr?.address || prev.address,
       }));
+      if (!resp.ocr && resp.ocrError) {
+        toast({ title: "OCR unavailable", description: resp.ocrError, variant: "destructive" });
+      }
     } catch {
       // OCR is optional; don't block the scan if it fails
     }
   }
   async function pingScanBridge() {
-    try {
-      const r = await fetch(`${SCAN_BRIDGE_URL}/health`, { method: "GET", mode: "cors" });
-      const j = await r.json().catch(() => ({}));
-      setScanBridgeOk(r.ok && j.ok === true);
-    } catch {
-      setScanBridgeOk(false);
-    }
+    const health = await checkScanBridgeHealth();
+    setScanBridgeOk(health.state === "ok");
   }
   useEffect(() => {
     pingScanBridge();
@@ -946,6 +935,7 @@ export default function FormF() {
             aadhaarNumber?: string;
             rawText?: string;
           } | null;
+          ocrError?: string | null;
           recordId?: number;
         }>("/api/form-f/upload-id", {
           formFId: 0,
@@ -961,7 +951,15 @@ export default function FormF() {
           husbandFatherName: prev.husbandFatherName || resp.ocr?.guardianName || prev.husbandFatherName,
           address: prev.address || resp.ocr?.address || prev.address,
         }));
-        toast({ title: resp.ocr ? `ID scanned: ${resp.ocr.documentType}` : "ID scanned (OCR unavailable)" });
+        if (resp.ocr) {
+          toast({ title: `ID scanned: ${resp.ocr.documentType}` });
+        } else {
+          toast({
+            title: "ID scanned — OCR unavailable",
+            description: resp.ocrError || "OCR could not process this image. Enter details manually.",
+            variant: "destructive",
+          });
+        }
         setIdCardUploading(false);
       };
       reader.readAsDataURL(file);
@@ -2271,7 +2269,7 @@ export default function FormF() {
           }}
           onClose={() => setOcrPanelOpen(false)}
           scanBridgeOk={scanBridgeOk}
-          scanBridgeUrl={SCAN_BRIDGE_URL}
+          scanBridgeUrl={getScanBridgeUrl()}
           onScanBridgeTrigger={triggerScanBridge}
           scanning={scanning}
         />
