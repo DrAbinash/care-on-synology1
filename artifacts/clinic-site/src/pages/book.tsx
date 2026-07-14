@@ -629,6 +629,13 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
               <ChevronLeft size={18} /> Back to Home
             </a>
             <div className="cd-book-topbar-title">
+              {settings.logoUrl && (
+                <img
+                  src={settings.logoUrl}
+                  alt="Clinic Logo"
+                  style={{ height: 32, width: "auto", marginRight: ".5rem", objectFit: "contain" }}
+                />
+              )}
               <CalendarCheck size={16} /> Book a Test
             </div>
           </div>
@@ -638,6 +645,13 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
       {!isKioskMode && (
         <div className="cd-book-hero cd-scan-panel">
           <div className="container-narrow" style={{ textAlign: "center", position: "relative", zIndex: 2 }}>
+            {settings.logoUrl && (
+              <img
+                src={settings.logoUrl}
+                alt="Clinic Logo"
+                style={{ height: 60, width: "auto", marginBottom: "1rem", objectFit: "contain" }}
+              />
+            )}
             <h1 className="cd-display cd-book-hero-title">Book your diagnostic test</h1>
             <p className="cd-book-hero-sub">
               MRI, CT Scan, Ultrasound, Digital X-Ray, Pathology &amp; Health Packages at Care Diagnostics, Deoghar.
