@@ -36,6 +36,13 @@ interface ViewerLaunchData {
 
 const TOUCH_THRESHOLD = 10;
 
+/** Which renderer fills the in-page view box. OHIF is the full viewer in an
+ *  iframe; FRAMES is the lightweight WADO frame-by-frame renderer. Weasis is
+ *  a desktop application (weasis:// protocol) and can only be launched, never
+ *  embedded in a web page. */
+type EmbeddedViewMode = "OHIF" | "FRAMES";
+const VIEW_MODE_KEY = "embedded_viewer_mode";
+
 function useGestureZoom(onZoom: (delta: number) => void) {
   const lastDist = useRef(0);
   const handleTouchMove = useCallback((e: React.TouchEvent) => {
@@ -98,6 +105,11 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef }: {
   const [instances, setInstances] = useState<Instance[]>([]);
   const [frameUrl, setFrameUrl] = useState<string | null>(null);
   const [loadingFrames, setLoadingFrames] = useState(false);
+  // null = no explicit choice yet → default to OHIF whenever it is configured.
+  const [chosenMode, setChosenMode] = useState<EmbeddedViewMode | null>(() => {
+    const stored = typeof window !== "undefined" ? localStorage.getItem(VIEW_MODE_KEY) : null;
+    return stored === "OHIF" || stored === "FRAMES" ? stored : null;
+  });
 
   const dragRef = useRef({ dragging: false, startX: 0, startY: 0, startPanX: 0, startPanY: 0 });
   const imgRef = useRef<HTMLImageElement>(null);
@@ -196,23 +208,93 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef }: {
   const imageTransform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
   const imageFilter = `brightness(${brightness}%) contrast(${contrast}%)`;
 
+  // OHIF is the default whenever the launch endpoint produced a URL; the
+  // frames renderer is the fallback (and stays available as an explicit tab).
+  const viewMode: EmbeddedViewMode = chosenMode ?? (launchData?.ohifUrl ? "OHIF" : "FRAMES");
+  const chooseMode = (m: EmbeddedViewMode) => {
+    setChosenMode(m);
+    try { localStorage.setItem(VIEW_MODE_KEY, m); } catch { /* private mode */ }
+  };
+
   return (
-    <div className={`flex flex-col gap-2 rounded-lg border overflow-hidden ${isExpanded ? "fixed inset-4 z-50 bg-background" : "relative"}`}>
+    <div className={`flex flex-col rounded-lg border overflow-hidden ${isExpanded ? "fixed inset-4 z-50 bg-background" : "relative h-full"}`}>
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 bg-muted/50 border-b">
-        <div className="flex items-center gap-2 text-xs">
-          <Layers className="h-3.5 w-3.5" />
-          <span className="font-semibold">Embedded DICOM Viewer</span>
+      <div className="flex items-center justify-between gap-2 px-3 py-2 bg-muted/50 border-b flex-wrap">
+        <div className="flex items-center gap-2 text-xs min-w-0">
+          <Layers className="h-3.5 w-3.5 shrink-0" />
+          <span className="font-semibold shrink-0">DICOM Viewer</span>
           {accessionNumber && <Badge variant="outline" className="text-[10px]">{accessionNumber}</Badge>}
-          <Badge variant="outline" className="text-[10px] font-mono">{studyInstanceUID.slice(0, 20)}...</Badge>
+          <Badge variant="outline" className="text-[10px] font-mono truncate">{studyInstanceUID.slice(0, 20)}...</Badge>
         </div>
         <div className="flex items-center gap-1">
+          {/* OHIF ⇄ Frames toggle — Weasis is a desktop app and launches via
+              the Open Study panel, it cannot render inside the page. */}
+          <div className="flex items-center rounded-md border overflow-hidden text-[11px]" data-testid="viewer-mode-toggle">
+            <button
+              type="button"
+              onClick={() => chooseMode("OHIF")}
+              className={`px-2 py-1 transition-colors ${viewMode === "OHIF" ? "bg-primary text-primary-foreground font-medium" : "hover:bg-muted"}`}
+              data-testid="viewer-mode-ohif"
+            >
+              OHIF
+            </button>
+            <button
+              type="button"
+              onClick={() => chooseMode("FRAMES")}
+              className={`px-2 py-1 transition-colors border-l ${viewMode === "FRAMES" ? "bg-primary text-primary-foreground font-medium" : "hover:bg-muted"}`}
+              data-testid="viewer-mode-frames"
+            >
+              Frames
+            </button>
+          </div>
+          {viewMode === "OHIF" && launchData?.ohifUrl && (
+            <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title="Open OHIF in a new tab"
+              onClick={() => window.open(launchData.ohifUrl!, "_blank")}>
+              <ExternalLink className="h-3.5 w-3.5" />
+            </Button>
+          )}
           <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => setIsExpanded((v) => !v)} title={isExpanded ? "Collapse" : "Expand"}>
             {isExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
           </Button>
         </div>
       </div>
 
+      {viewMode === "OHIF" ? (
+        /* ── In-page OHIF view box ─────────────────────────────────────── */
+        launchData?.ohifUrl && window.location.protocol === "https:" && launchData.ohifUrl.startsWith("http:") ? (
+          /* Mixed content: the browser refuses to frame an HTTP viewer inside
+             an HTTPS page and shows nothing — say so instead of a blank box. */
+          <div className="flex-1 min-h-[420px] flex flex-col items-center justify-center gap-2 p-4 text-center bg-black text-white/60 text-sm">
+            <AlertTriangle className="h-8 w-8" />
+            <p className="font-medium">OHIF cannot be embedded here</p>
+            <p className="text-xs text-white/40 max-w-xs">
+              This page is HTTPS but the configured OHIF URL is HTTP — the browser blocks embedding it.
+              Use an HTTPS OHIF URL in PACS / DICOM Settings, or open it in a new tab.
+            </p>
+            <Button size="sm" variant="outline" className="h-7 text-xs mt-1"
+              onClick={() => window.open(launchData.ohifUrl!, "_blank")}>
+              <ExternalLink className="h-3.5 w-3.5 mr-1" /> Open OHIF in new tab
+            </Button>
+          </div>
+        ) : launchData?.ohifUrl ? (
+          <iframe
+            title="OHIF viewer"
+            src={launchData.ohifUrl}
+            className="flex-1 w-full min-h-[420px] border-0 bg-black"
+            allow="fullscreen"
+            data-testid="ohif-embed"
+          />
+        ) : (
+          <div className="flex-1 min-h-[420px] flex flex-col items-center justify-center gap-2 p-4 text-center bg-black text-white/60 text-sm">
+            <AlertTriangle className="h-8 w-8" />
+            <p className="font-medium">OHIF viewer is not configured</p>
+            <p className="text-xs text-white/40 max-w-xs">
+              {launchData?.error
+                ?? "Go to PACS / DICOM Settings → Viewer Settings and click Load Clinic Viewer Defaults, then reload this page."}
+            </p>
+          </div>
+        )
+      ) : (
       <div className="flex flex-1 min-h-0">
         {/* Series panel */}
         <div className="w-48 border-r flex flex-col bg-muted/20">
@@ -298,6 +380,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef }: {
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }
