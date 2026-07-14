@@ -4,8 +4,9 @@ import { eq, or, ilike, inArray, isNotNull, desc, and, gte, lt } from "drizzle-o
 import { ordersTable, orderTestsTable, testsTable, doctorsTable } from "@workspace/db";
 import { whatsappConversationsTable, whatsappSettingsTable, usgMeasurementsTable, radiologyStudiesTable, fetalUsgStudiesTable, fetalUsgMeasurementsTable, fetalUsgReportsTable, fetalUsgChecklistsTable } from "@workspace/db/schema";
 import { dateToISTString } from "../lib/istDate";
-import { geminiOcrIdCard, type IdCardOcrResult } from "@workspace/integrations-gemini-ai";
+import { type IdCardOcrResult } from "@workspace/integrations-gemini-ai";
 import { getProviderApiKey } from "@workspace/ai-providers";
+import { runIdCardOcrPipeline, SERVER_BLUR_WARNING_THRESHOLD } from "../lib/ocr/idCardPipeline";
 import { requireStaffPermission } from "../middleware/requireStaffAuth";
 import { sendTextMessageRaw, resolveNumber, normalizePhone } from "./whatsapp";
 
@@ -720,15 +721,23 @@ formFRouter.post("/upload-id", requireStaffPermission("/form-f"), async (req, re
     // cause of "Upload ID succeeds but OCR is unavailable" reports.
     let ocrResult: IdCardOcrResult | null = null;
     let ocrError: string | null = null;
-    ocrLog.push({ stage: "gemini", status: "info", message: "Starting Gemini OCR...", detail: "Calling geminiOcrIdCard()" });
+    let blurScore: number | null = null;
+    let isBlurred = false;
+    ocrLog.push({ stage: "gemini", status: "info", message: "Starting Gemini OCR...", detail: "Pre-processing then calling geminiOcrIdCard()" });
     const dbApiKey = await getProviderApiKey("gemini").catch(() => null);
     if (!dbApiKey && !process.env.AI_INTEGRATIONS_GEMINI_API_KEY) {
       ocrError = "OCR is not configured: no Gemini API key found in AI Provider Settings or AI_INTEGRATIONS_GEMINI_API_KEY. Configure a key in Settings → AI Reporting, or use manual entry.";
       ocrLog.push({ stage: "gemini", status: "error", message: "No Gemini API key configured", detail: ocrError });
     } else {
       try {
-        ocrResult = await geminiOcrIdCard(base64, mimeType, dbApiKey ? { apiKey: dbApiKey } : {});
-        ocrLog.push({ stage: "gemini", status: "ok", message: "Gemini OCR completed", detail: `documentType: ${ocrResult.documentType}, confidence: ${ocrResult.confidence}, guardianName: ${ocrResult.guardianName ? "found" : "empty"}, address: ${ocrResult.address ? "found" : "empty"}, extras: ${ocrResult.fullName ? "name" : ""}${ocrResult.dob ? " dob" : ""}${ocrResult.gender ? " gender" : ""}` });
+        const pipeline = await runIdCardOcrPipeline(base64, mimeType, dbApiKey ?? undefined);
+        ocrResult = pipeline.ocrResult;
+        blurScore = pipeline.blurScore;
+        isBlurred = pipeline.isBlurred;
+        if (isBlurred) {
+          ocrLog.push({ stage: "preprocess", status: "warn", message: "Image looks blurred", detail: `blurScore=${blurScore.toFixed(1)} (below ${SERVER_BLUR_WARNING_THRESHOLD}) — consider retaking the photo` });
+        }
+        ocrLog.push({ stage: "gemini", status: "ok", message: "Gemini OCR completed", detail: `documentType: ${ocrResult?.documentType}, confidence: ${ocrResult?.confidence}, guardianName: ${ocrResult?.guardianName ? "found" : "empty"}, address: ${ocrResult?.address ? "found" : "empty"}, extras: ${ocrResult?.fullName ? "name" : ""}${ocrResult?.dob ? " dob" : ""}${ocrResult?.gender ? " gender" : ""}` });
       } catch (e) {
         ocrError = e instanceof Error ? e.message : "Gemini OCR failed";
         ocrLog.push({ stage: "gemini", status: "error", message: "Gemini OCR failed", detail: ocrError });
@@ -757,6 +766,8 @@ formFRouter.post("/upload-id", requireStaffPermission("/form-f"), async (req, re
           ocrLog,
           ocrStage: ocrResult ? "gemini_success" : "gemini_failed",
           suggestedAction: ocrResult ? "accept_or_verify" : "try_tesseract_fallback",
+          blurScore,
+          isBlurred,
         });
         return;
       }
@@ -770,6 +781,8 @@ formFRouter.post("/upload-id", requireStaffPermission("/form-f"), async (req, re
       ocrLog,
       ocrStage: ocrResult ? "gemini_success" : "gemini_failed",
       suggestedAction: ocrResult ? "accept_or_verify" : "try_tesseract_fallback",
+      blurScore,
+      isBlurred,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Internal server error";

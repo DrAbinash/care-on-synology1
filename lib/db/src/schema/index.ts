@@ -126,6 +126,7 @@ export * from "./radiologyAiReviewAudits";
 export * from "./scanSessions";
 export * from "./pairedDevices";
 export * from "./scanAuditLogs";
+export * from "./scannedDocuments";
 export * from "./paymentLogs";
 export * from "./voiceDictationLogs";
 export * from "./pregnancyEpisodes";
