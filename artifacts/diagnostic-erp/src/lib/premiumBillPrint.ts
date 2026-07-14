@@ -191,7 +191,6 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
   const isA5 = paperSize === "A5-portrait" || paperSize === "A5-landscape";
   const paperSizeCss = getPaperSizeCss(paperSize);
   const pageSizeStr = paperSizeCss.pageSize;
-  const pageWidth = paperSizeCss.width;
 
   // ── Billed-by name, their uploaded signature, & system info ──
   const premiumSession = (() => {
@@ -454,7 +453,7 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
     display: flex;
     flex-direction: column;
     min-height: 100vh;
-    width: ${pageWidth};
+    width: 100%;
     padding: 2mm 3mm;
     box-sizing: border-box;
     position: relative;
