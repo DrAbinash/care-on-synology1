@@ -246,6 +246,7 @@ services:
       WADO_URL: ${WADO_URL:-}
     volumes:
       - object_storage:/app/data/object-storage
+      - uploads_data:/app/data/uploads
     healthcheck:
       # ── Liveness probe (process alive + port responding) ───────────────────
       # Hits GET /health — registered on the Express app with no auth, no
@@ -376,3 +377,4 @@ volumes:
     external: true
     name: care_main_db_data
   object_storage:
+  uploads_data:
