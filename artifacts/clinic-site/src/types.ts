@@ -37,6 +37,8 @@ export type SiteSettings = {
   serviceImagesEnabled: boolean;
   serviceImages: string; // JSON string: { "opd": "url", "usg": "url", etc. }
   bookHeroImageUrl: string; // admin-uploaded background photo for the /book page hero
+  bookHeroOverlayOpacity: number; // 0-100, how much the white overlay washes out the hero photo
+  bookHeroTextColor: "light" | "dark"; // hero heading/subtext color
   isPublished: boolean;
   publishedRevision: number;
   lastPublishedAt: string | null;

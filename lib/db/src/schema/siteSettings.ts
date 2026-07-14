@@ -58,6 +58,18 @@ export const siteSettingsTable = pgTable("site_settings", {
 
   // Booking page ("/book") hero background photo, admin-uploaded via Website Builder
   bookHeroImageUrl: text("book_hero_image_url").notNull().default(""),
+  // How strongly the white gradient overlay washes out the hero background
+  // image (0 = image shows fully, 100 = fully white). Lets the admin fix
+  // low-contrast text-on-image combinations themselves instead of needing a
+  // code change every time a new hero photo is uploaded. Default 55 matches
+  // the previously-hardcoded overlay so existing sites don't change until
+  // an admin adjusts it.
+  bookHeroOverlayOpacity: integer("book_hero_overlay_opacity").notNull().default(55),
+  // Hero heading/subtext color — "light" (white, for dark photos) or "dark"
+  // (near-black, for light/washed-out photos). Was previously hardcoded to
+  // white regardless of the overlay/image, which is the root cause of the
+  // recurring "text invisible on hero" reports.
+  bookHeroTextColor: text("book_hero_text_color").notNull().default("light"),
 
   // Site history / audit JSON array
   siteHistory: text("site_history").notNull().default("[]"),

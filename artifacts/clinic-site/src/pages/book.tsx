@@ -638,15 +638,26 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
         </div>
       )}
 
-      {!isKioskMode && (
+      {!isKioskMode && (() => {
+        // Admin-controlled overlay intensity/text color (Settings → Website
+        // Builder → Booking Page Background). Both values are derived from
+        // the SAME setting so the overlay and the text always stay in sync —
+        // previously the overlay opacity was hardcoded in this inline style
+        // while the text color was hardcoded separately in index.css, which
+        // is why past fixes to one didn't fix the other.
+        const overlayPct = Math.max(0, Math.min(100, settings.bookHeroOverlayOpacity ?? 55));
+        const overlayAlpha = overlayPct / 100;
+        const textColor = settings.bookHeroTextColor === "dark" ? "hsl(var(--cd-slate))" : "#fff";
+        return (
         <div className="cd-book-hero cd-scan-panel" style={{
           backgroundImage: settings.bookHeroImageUrl
-            ? `linear-gradient(135deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.5) 100%), url('${settings.bookHeroImageUrl}')`
-            : `linear-gradient(135deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.5) 100%), ${fallbackGridBg}`,
+            ? `linear-gradient(135deg, rgba(255,255,255,${overlayAlpha}) 0%, rgba(255,255,255,${Math.max(0, overlayAlpha - 0.05)}) 100%), url('${settings.bookHeroImageUrl}')`
+            : `linear-gradient(135deg, rgba(255,255,255,${overlayAlpha}) 0%, rgba(255,255,255,${Math.max(0, overlayAlpha - 0.05)}) 100%), ${fallbackGridBg}`,
           backgroundSize: "cover",
           backgroundAttachment: "fixed",
           backgroundPosition: "center",
           backgroundRepeat: "no-repeat",
+          color: textColor,
         }}>
           <div className="container-narrow" style={{ textAlign: "center", position: "relative", zIndex: 2 }}>
             {settings.logoUrl && (
@@ -656,14 +667,15 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                 style={{ height: 60, width: "auto", marginBottom: "1rem", objectFit: "contain" }}
               />
             )}
-            <h1 className="cd-display cd-book-hero-title">Book your diagnostic test</h1>
-            <p className="cd-book-hero-sub">
+            <h1 className="cd-display cd-book-hero-title" style={{ color: textColor }}>Book your diagnostic test</h1>
+            <p className="cd-book-hero-sub" style={{ color: textColor }}>
               MRI, CT Scan, Ultrasound, Digital X-Ray, Pathology &amp; Health Packages at Care Diagnostics, Deoghar.
             </p>
             <TrustBadges />
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* Main content */}
       <div className="container-narrow" style={{ padding: "2.5rem 1rem 4.5rem", maxWidth: 920 }}>
