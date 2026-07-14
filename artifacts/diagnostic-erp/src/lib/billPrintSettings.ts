@@ -66,6 +66,12 @@ export type BillPrintSettings = {
   showWatermark: boolean;
   showPatientInstructions: boolean;
   showSystemInfo: boolean;
+  // Big "QUEUE TOKEN #NN" box on the printed bill (separate from the
+  // per-test department token list, which always prints when present).
+  // Off by default — most billing-counter receipts don't need it since the
+  // per-test tokens already cover queue routing; kiosk self-registration
+  // receipts show it unconditionally since that IS the kiosk's purpose.
+  showQueueTokenOnBill: boolean;
 
   // Print action
   defaultPrintAction: PrintAction;
@@ -103,6 +109,7 @@ export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
   showWatermark: false,
   showPatientInstructions: false,
   showSystemInfo: false,
+  showQueueTokenOnBill: false,
   defaultPrintAction: "save-print",
   enablePreview: false,
   directPrintAfterSave: true,

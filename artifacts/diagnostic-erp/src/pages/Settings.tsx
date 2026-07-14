@@ -4063,6 +4063,7 @@ function BillingPrintTab() {
       showWatermark: settings.showWatermark,
       showPatientInstructions: settings.showPatientInstructions,
       showSystemInfo: settings.showSystemInfo,
+      showQueueToken: settings.showQueueTokenOnBill,
     });
   }, [settings, previewClinic, previewQrUrl, effectivePreviewIsBW]);
 
@@ -4224,6 +4225,15 @@ function BillingPrintTab() {
           value={settings.defaultCopyType}
           onChange={(v) => update({ defaultCopyType: v as any })}
         />
+        <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-4 py-3 text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
+          <strong>If the printout has large blank margins on 3 sides:</strong> this setting controls
+          the page size the bill is <em>designed</em> for, but your browser's print dialog still needs to
+          be told to use the same size — a website can't change that automatically. In the print dialog,
+          set <strong>Paper size</strong> to match what you picked above (e.g. A5) and set{" "}
+          <strong>Scale</strong> to <strong>&quot;Actual size&quot;</strong> / <strong>100%</strong> (not
+          &quot;Fit to page&quot;). If your printer tray is loaded with A4, either switch the tray to A5
+          or select A4 here instead.
+        </div>
       </SectionCard>
 
       <SectionCard title="Bill Display" subtitle="Control what appears on the printed bill.">
@@ -4239,7 +4249,11 @@ function BillingPrintTab() {
           <ToggleRow label="Show Watermark" value={settings.showWatermark} onChange={(v) => update({ showWatermark: v })} />
           <ToggleRow label="Show Patient Instructions" value={settings.showPatientInstructions} onChange={(v) => update({ showPatientInstructions: v })} />
           <ToggleRow label="Show System Information" value={settings.showSystemInfo} onChange={(v) => update({ showSystemInfo: v })} />
+          <ToggleRow label="Show Queue Token Box" value={settings.showQueueTokenOnBill} onChange={(v) => update({ showQueueTokenOnBill: v })} />
         </div>
+        <p className="text-[11px] text-muted-foreground leading-relaxed mt-1">
+          Adds a large "QUEUE TOKEN #NN" box near the top of the bill, separate from the per-test department token list (which always prints when present). Off by default to avoid a redundant box on billing-counter receipts.
+        </p>
       </SectionCard>
 
       <SectionCard title="Print Action" subtitle="Default action when saving a bill.">

@@ -406,7 +406,10 @@ export default function Kiosk() {
       tokenNo: result.tokenNo,
     };
     const clinic: PrintClinic = config?.printClinic ?? { name: config?.clinicName, tagline: config?.tagline, address: config?.address, phone: config?.phone, logoDataUrl: config?.logoDataUrl };
-    const html = buildBillPrintHtml({ bill, clinic, paperSize: "A5", isBW: false, qrDataUrl: receiptQrDataUrl, format: "classic", compactFooterGap: true });
+    // Kiosk self-registration receipts always show the queue token box —
+    // that's the entire point of a kiosk print (unlike billing-counter
+    // receipts, where it's an opt-in setting; see showQueueTokenOnBill).
+    const html = buildBillPrintHtml({ bill, clinic, paperSize: "A5", isBW: false, qrDataUrl: receiptQrDataUrl, format: "classic", compactFooterGap: true, showQueueToken: true });
     printViaIframe(html);
   }
 
