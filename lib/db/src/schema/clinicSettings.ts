@@ -228,6 +228,9 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   queuePrivacyMode: text("queue_privacy_mode").notNull().default("masked"),
   queueEstimatedWaitPerPatient: integer("queue_estimated_wait_per_patient").notNull().default(15),
 
+  // Scanner overhaul: retention period (days) for unlinked/temp scanned_documents rows.
+  scanRetentionDays: integer("scan_retention_days").notNull().default(30),
+
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

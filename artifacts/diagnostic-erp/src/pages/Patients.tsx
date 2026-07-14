@@ -31,6 +31,8 @@ import { Plus, Search, ChevronRight, Upload, X, User, Pencil, Download, Users } 
 import { useForm } from "react-hook-form";
 import { useMutation } from "@tanstack/react-query";
 import { readStaffSession, FULL_ACCESS_ROLES, hasSubPermission } from "@/lib/staffSession";
+import UnifiedScanCapture from "@/components/UnifiedScanCapture";
+import { useDocumentScan } from "@/hooks/useDocumentScan";
 
 type PatientForm = {
   firstName: string;
@@ -54,6 +56,7 @@ export default function Patients() {
   const [open, setOpen] = useState(false);
   const [photoDataUrl, setPhotoDataUrl] = useState<string | null>(null);
   const [photoErr, setPhotoErr] = useState("");
+  const patientScan = useDocumentScan();
   const [editPatient, setEditPatient] = useState<{ id: number; firstName: string; lastName: string; dateOfBirth: string; ageValue?: number | null; ageUnit?: string | null; gender: string; phone: string; email: string | null; address: string | null; bloodGroup: string | null } | null>(null);
   const queryClient = useQueryClient();
 
@@ -477,6 +480,18 @@ export default function Patients() {
                         <Upload size={13} className="mr-1.5" />
                         {photoDataUrl ? "Change" : "Upload Photo"}
                       </Button>
+                      <UnifiedScanCapture
+                        module="patients"
+                        docType="photo"
+                        triggerLabel="Scan / Capture"
+                        className="h-8 px-3 text-xs"
+                        onCapture={async (result) => {
+                          const scanned = await patientScan.handleCapture(result);
+                          setPhotoErr("");
+                          setPhotoDataUrl(scanned.dataUrl);
+                        }}
+                        onError={(msg) => setPhotoErr(msg)}
+                      />
                       {photoDataUrl && (
                         <Button
                           type="button"

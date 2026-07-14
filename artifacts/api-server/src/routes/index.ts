@@ -89,6 +89,7 @@ import { activePluginRouter } from "../plugin-loader";
 import userPreferencesRouter from "./userPreferences";
 import barcodeResolverRouter from "./barcode-resolver";
 import { uploadsRouter } from "./uploads";
+import { scansRouter } from "./scans";
 import { radiologyReportGeneratorRouter } from "./radiology-report-generator";
 import { structuredReportTemplatesRouter } from "./structuredReportTemplates";
 import { floorsRouter, roomsRouter, modalitiesRouter } from "./locations";
@@ -747,6 +748,12 @@ router.use("/sync", requireStaffAuth, syncRouter);
 
 // Standard uploads — JSON base64, validated, size-limited, metadata tracked
 router.use("/uploads", requireStaffAuth, standardUploadLimiter, uploadsRouter);
+
+// Shared document-scan metadata service (scanned_documents table) — reused
+// by Form F, Patient Registration, Expenses, and Banking's UnifiedScanCapture
+// flows. Auth is enforced per-route inside scans.ts (all routes require
+// staff auth today; unlike scan-sessions, nothing here is phone-facing).
+router.use("/scans", standardUploadLimiter, scansRouter);
 
 // Wireless scan sessions & phone pairing. Staff-initiated routes (POST /create,
 // GET /paired-phone) enforce requireStaffAuth themselves inside scan-sessions.ts.

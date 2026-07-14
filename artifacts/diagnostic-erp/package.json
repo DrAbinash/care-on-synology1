@@ -84,6 +84,7 @@
     "jsbarcode": "^3.12.3",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.7",
+    "jsqr": "^1.4.0",
     "qrcode": "^1.5.4",
     "tesseract.js": "^7.0.0",
     "xlsx": "^0.18.5"

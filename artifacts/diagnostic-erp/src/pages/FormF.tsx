@@ -14,6 +14,7 @@ import OcrCapturePanel from "@/components/OcrCapturePanel";
 import IdCardScanPanel from "@/components/IdCardScanPanel";
 import ScanIdButton from "@/components/ScanIdButton";
 import { checkScanBridgeHealth, getScanBridgeUrl, scanBridgeCapture, scanBridgeLatestScan, scanBridgeOpenApp } from "@/lib/scanBridgeClient";
+import { decodeQrFromBlob } from "@/lib/aadhaarSecureQr";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
@@ -917,6 +918,34 @@ export default function FormF() {
   async function processIdImage(file: File) {
     setIdCardUploading(true);
     try {
+      // Preferred extraction order: Aadhaar QR data first (no server round
+      // trip, no OCR cost), then OCR, then manual entry (existing editable
+      // fields below are always available regardless of which path fires).
+      const qr = await decodeQrFromBlob(file).catch(() => ({ format: "none" as const }));
+      if (qr.format === "legacy-xml") {
+        setIdCardExtractedName(qr.fields.name || "");
+        setIdCardExtractedAddress(qr.fields.address || "");
+        setForm((prev) => ({
+          ...prev,
+          husbandFatherName: prev.husbandFatherName || qr.fields.name || prev.husbandFatherName,
+          address: prev.address || qr.fields.address || prev.address,
+        }));
+        setIdCardOcrResult({
+          guardianName: qr.fields.name,
+          address: qr.fields.address,
+          documentType: "Aadhaar (QR)",
+          confidence: "high",
+        });
+        const reader = new FileReader();
+        reader.onload = () => {
+          setIdCardFrontUrl(String(reader.result ?? ""));
+          setIdCardUploading(false);
+          toast({ title: "Aadhaar QR read successfully", description: `${qr.fields.name || "Details"} extracted from QR code — no OCR needed.` });
+        };
+        reader.readAsDataURL(file);
+        return;
+      }
+
       const reader = new FileReader();
       reader.onload = async () => {
         const dataUrl = String(reader.result ?? "");
