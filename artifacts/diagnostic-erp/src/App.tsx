@@ -99,6 +99,7 @@ const PacsDashboard         = lazy(() => import("@/pages/PacsDashboard"));
 const RadiologySettings     = lazy(() => import("@/pages/RadiologySettings"));
 const RadiologySettingsCenter = lazy(() => import("@/pages/RadiologySettingsCenter"));
 const RadiologyFlightDeck = lazy(() => import("@/pages/RadiologyFlightDeck"));
+const ScannerSettings = lazy(() => import("@/pages/ScannerSettings"));
 const RadiologyQuickSelectSettings = lazy(() => import("@/pages/RadiologyQuickSelectSettings"));
 const RadiologyOperationsDashboard = lazy(() => import("@/pages/RadiologyOperationsDashboard"));
 const MyReportingAnalytics         = lazy(() => import("@/pages/MyReportingAnalytics"));
@@ -575,6 +576,9 @@ function Router() {
                 {() => <AdminOnlySettings><RadiologySettingsCenter /></AdminOnlySettings>}
               </Route>
               <Route path="/settings" component={Settings} />
+              <Route path="/settings/scanner">
+                {() => <AdminOnlySettings><ScannerSettings /></AdminOnlySettings>}
+              </Route>
               <Route path="/whatsapp-chatbot" component={WhatsAppChatbot} />
               <Route path="/system-update" component={SystemUpdate} />
               {portalLoaded && (window as any).SuperAdminPortal && (
