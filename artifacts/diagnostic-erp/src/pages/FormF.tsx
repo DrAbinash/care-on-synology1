@@ -8,12 +8,10 @@ import { useToast } from "@/hooks/use-toast";
 import {
   Search, Printer, RefreshCcw, FileText, List, User, Phone, Users, BookOpen,
   Upload, Camera, CheckCircle2, AlertTriangle, MessageCircle, Stethoscope, X,
-  ChevronDown, Scan, ExternalLink
+  ChevronDown, ExternalLink
 } from "lucide-react";
-import OcrCapturePanel from "@/components/OcrCapturePanel";
 import IdCardScanPanel from "@/components/IdCardScanPanel";
-import ScanIdButton from "@/components/ScanIdButton";
-import { checkScanBridgeHealth, getScanBridgeUrl, scanBridgeCapture, scanBridgeLatestScan, scanBridgeOpenApp } from "@/lib/scanBridgeClient";
+import UnifiedScanCapture from "@/components/UnifiedScanCapture";
 import { decodeQrFromBlob } from "@/lib/aadhaarSecureQr";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
@@ -667,112 +665,6 @@ export default function FormF() {
   // ── PCPNDT Portal bookmarklet dialog ──
   const [portalOpen, setPortalOpen] = useState(false);
 
-  // ── Document scanner bridge state (physical flatbed/ADF scanner) ──
-  // The bridge itself is always reached directly from the browser via
-  // scanBridgeClient — never proxied through the API server, whose own
-  // loopback is not the reception workstation's loopback.
-  const [scanBridgeOk, setScanBridgeOk] = useState(false);
-  const [scanning, setScanning] = useState(false);
-
-  async function optimizeAndOpenScan(raw: { imageBase64?: string; mimeType?: string; filename?: string }, successTitle: string) {
-    const r = await api.post<{
-      ok: boolean; imageBase64: string; mimeType: string; filename: string;
-      cacheKey: string; optimized: boolean; error?: string; duplicate?: boolean;
-    }>("/api/form-f/optimize-scan", {
-      imageBase64: raw.imageBase64,
-      mimeType: raw.mimeType ?? "image/jpeg",
-      filename: raw.filename ?? "scan",
-      maxWidth: fSettings?.maxScanWidth ?? 1200,
-      jpegQuality: fSettings?.jpegQuality ?? 85,
-    });
-    if (!r.ok) {
-      if (r.duplicate) {
-        toast({ title: "Duplicate scan", description: r.error || "Already imported", variant: "destructive" });
-        return;
-      }
-      throw new Error(r.error || "Could not process scan");
-    }
-    setScanPanelBase64(r.imageBase64);
-    setScanPanelMime(r.mimeType ?? "image/jpeg");
-    setScanPanelOpen(true);
-    toast({ title: successTitle, description: r.optimized ? "Image optimized" : undefined });
-  }
-
-  async function triggerScanBridge() {
-    setScanning(true);
-    try {
-      const raw = await scanBridgeCapture();
-      if (!raw.ok) {
-        // Auto-fallback to folder-watch on busy/unsupported/no-device
-        if (raw.code === "WIA_DEVICE_BUSY" || raw.fallback === "folder-watch") {
-          toast({
-            title: "Scanner is busy",
-            description: "WIA device is in use. Switching to folder-watch import.",
-          });
-          await importLatestScan();
-          return;
-        }
-        if (raw.code === "WIA_UNSUPPORTED_DRIVER" || raw.code === "WIA_NO_DEVICE") {
-          toast({
-            title: raw.code === "WIA_NO_DEVICE" ? "No scanner found" : "Driver not supported",
-            description: raw.error || "Check USB connection or switch to folder-watch mode.",
-            variant: "destructive",
-          });
-          return;
-        }
-        throw new Error(raw.error || "Scan failed");
-      }
-      await optimizeAndOpenScan(raw, "ID scanned successfully");
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Could not scan";
-      toast({
-        title: "Scanner error",
-        description: msg === "Scan failed" || msg === "Internal server error"
-          ? "Scanner bridge responded with an error. Check that the scanner is powered on and the desktop bridge app is running. Try the Camera button as an alternative."
-          : msg,
-        variant: "destructive",
-      });
-    } finally {
-      setScanning(false);
-    }
-  }
-
-  async function importLatestScan() {
-    setIdCardUploading(true);
-    try {
-      const raw = await scanBridgeLatestScan();
-      if (!raw.ok) throw new Error(raw.error || "No latest scan found");
-      await optimizeAndOpenScan(raw, `Imported: ${raw.filename || "latest scan"}`);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Could not import";
-      toast({
-        title: "Import failed",
-        description: msg,
-        variant: "destructive",
-      });
-    } finally {
-      setIdCardUploading(false);
-    }
-  }
-
-  async function openScannerApp() {
-    try {
-      const j = await scanBridgeOpenApp();
-      if (!j.ok) throw new Error(j.error || "Could not open scanner app");
-      toast({
-        title: j.message || "Scanner app opened",
-        description: "After the scan completes, click Import Latest Scan to pull the image into Form F.",
-      });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Could not open scanner app";
-      toast({
-        title: "Scanner app error",
-        description: msg,
-        variant: "destructive",
-      });
-    }
-  }
-
   async function runOcrOnImage(imageBase64: string, mimeType: string) {
     try {
       const resp = await api.post<{
@@ -802,16 +694,6 @@ export default function FormF() {
       // OCR is optional; don't block the scan if it fails
     }
   }
-  async function pingScanBridge() {
-    const health = await checkScanBridgeHealth();
-    setScanBridgeOk(health.state === "ok");
-  }
-  useEffect(() => {
-    pingScanBridge();
-    const t = setInterval(pingScanBridge, 5000);
-    return () => clearInterval(t);
-  }, []);
-
   // ── Feature 5: Send WhatsApp to patient requesting ID card ──
   const [waSending, setWaSending] = useState(false);
 
@@ -914,8 +796,8 @@ export default function FormF() {
     };
   }
 
-  // ── ID card image processing (shared by upload + camera) ──
-  async function processIdImage(file: File) {
+  // ── ID card image processing (shared by upload, UnifiedScanCapture, camera) ──
+  async function processIdImage(file: Blob) {
     setIdCardUploading(true);
     try {
       // Preferred extraction order: Aadhaar QR data first (no server round
@@ -1760,48 +1642,21 @@ export default function FormF() {
                       placeholder={guardianRequired ? "Required for PCPNDT" : "Optional — enter if available"}
                       className="w-full text-base h-11"
                     />
-                    {/* Row 2: ID-capture buttons — flex-wrap so they stay visible */}
-                    <div className="flex flex-wrap gap-2">
-                      {/* ── Wireless Scanner / Scan ID Button ── */}
-                      <ScanIdButton
-                        patientId={undefined}
-                        buttonLabel="Wireless / Smart Scan"
-                        onScanComplete={({ frontUrl, backUrl, qrData, ocrResult }) => {
-                          setIdCardFrontUrl(frontUrl ? `/uploads/${frontUrl}` : "");
-                          setIdCardBackUrl(backUrl ? `/uploads/${backUrl}` : "");
-                          const data = qrData || ocrResult;
-                          if (data) {
-                            if (data.guardianName || data.name) {
-                              setIdCardExtractedName(data.guardianName || data.name);
-                              setForm(prev => ({ ...prev, husbandFatherName: data.guardianName || data.name }));
-                            }
-                            if (data.address) {
-                              setIdCardExtractedAddress(data.address);
-                              setForm(prev => ({ ...prev, address: data.address }));
-                            }
-                            if (ocrResult) {
-                              setIdCardOcrResult(ocrResult);
-                            }
-                          }
-                          toast({ title: "Document Scanned", description: "Scans attached to Form F." });
-                        }}
+                    {/* Row 2: ID-capture — unified scan dialog (TVS PDS 8M / Existing
+                        Scanner / Upload / Mobile Scan / Webcam) replaces the old
+                        6-button menu (Wireless/Smart Scan, Upload ID, Capture ID
+                        Direct Scan, Webcam, Import Latest Scan, Open Scanner App).
+                        Back-side capture stays a plain upload — it has no OCR and
+                        never needed the full option set. */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <UnifiedScanCapture
+                        module="form-f"
+                        docType="id-card"
+                        triggerLabel={idCardUploading ? "Scanning…" : "Scan ID Front"}
+                        onCapture={async (result) => { await processIdImage(result.file); }}
+                        onError={(msg) => toast({ title: "Scan failed", description: msg, variant: "destructive" })}
                       />
-                      {/* ── Upload ID Front (file picker) ── */}
-                      <label className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-dashed border-orange-300 bg-orange-50 cursor-pointer text-sm font-medium transition-colors ${idCardUploading ? "opacity-60 cursor-wait" : "hover:bg-orange-100 text-orange-700"}`}>
-                        <Upload size={14} className={idCardUploading ? "animate-pulse" : ""} />
-                        <span>{idCardUploading ? "Scanning…" : "Upload ID"}</span>
-                        <input
-                          type="file"
-                          accept="image/*"
-                          className="hidden"
-                          onChange={async (e) => {
-                            const file = e.target.files?.[0];
-                            if (!file) return;
-                            await processIdImage(file);
-                          }}
-                        />
-                      </label>
-                      {/* ── Upload ID Back (file picker) ── */}
+                      {/* ── Upload ID Back (file picker) — back side has no OCR ── */}
                       <label className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-dashed border-orange-300 bg-orange-50 cursor-pointer text-sm font-medium transition-colors ${idCardUploading ? "opacity-60 cursor-wait" : "hover:bg-orange-100 text-orange-700"} ${idCardBackUrl ? "border-orange-400 bg-orange-100" : ""}`}>
                         <Upload size={14} className={idCardUploading ? "animate-pulse" : ""} />
                         <span>{idCardBackUrl ? "Back ✓" : idCardUploading ? "Scanning…" : "Upload Back"}</span>
@@ -1816,45 +1671,6 @@ export default function FormF() {
                           }}
                         />
                       </label>
-                      {/* ── Capture ID (triggers WIA scan directly) ── */}
-                      <button
-                        type="button"
-                        onClick={triggerScanBridge}
-                        disabled={scanning || idCardUploading}
-                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-dashed border-blue-300 bg-blue-50 hover:bg-blue-100 text-blue-700 text-sm font-medium transition-colors"
-                        title="Trigger direct WIA scan from scanner"
-                      >
-                        <Scan size={14} /> Capture ID (Direct Scan)
-                      </button>
-                      {/* ── Webcam / Camera ── */}
-                      <button
-                        type="button"
-                        onClick={() => setOcrPanelOpen(true)}
-                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-dashed border-gray-300 bg-gray-50 hover:bg-gray-100 text-gray-600 text-sm font-medium transition-colors"
-                        title="Open webcam capture panel"
-                      >
-                        <Camera size={14} /> Webcam
-                      </button>
-                      {/* ── Import latest scan from watch folder ── */}
-                      <button
-                        type="button"
-                        onClick={importLatestScan}
-                        disabled={scanning || idCardUploading}
-                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-dashed border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-700 text-sm font-medium transition-colors"
-                        title="Import the most recent scan saved to the watch folder (e.g., C:\Scans)"
-                      >
-                        <Upload size={14} /> {idCardUploading ? "Importing…" : "Import Latest Scan"}
-                      </button>
-                      {/* ── Open scanner app (Windows Fax and Scan / any vendor) ── */}
-                      <button
-                        type="button"
-                        onClick={openScannerApp}
-                        disabled={scanning || idCardUploading}
-                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-dashed border-teal-300 bg-teal-50 hover:bg-teal-100 text-teal-700 text-sm font-medium transition-colors"
-                        title="Open Windows Fax and Scan or vendor scanner app on this PC"
-                      >
-                        <ExternalLink size={14} /> Open Scanner App
-                      </button>
                     </div>
                   </div>
                 </BigLabelRow>
@@ -2275,33 +2091,6 @@ export default function FormF() {
             <p className="text-xs text-muted-foreground mt-2 text-center">Position the ID card in front of the camera and click Capture. For physical scanners, use the Scanner button above.</p>
           </div>
         </div>
-      )}
-
-      {/* ── New Comprehensive OCR Capture Panel ── */}
-      {ocrPanelOpen && (
-        <OcrCapturePanel
-          onCapture={(result) => {
-            setIdCardFrontUrl(result.imageUrl);
-            setIdCardOcrResult(result.ocr ?? null);
-            if (result.ocr?.guardianName) setIdCardExtractedName(result.ocr.guardianName);
-            if (result.ocr?.address) setIdCardExtractedAddress(result.ocr.address);
-            setForm((prev) => ({
-              ...prev,
-              husbandFatherName: prev.husbandFatherName || result.ocr?.guardianName || prev.husbandFatherName,
-              address: prev.address || result.ocr?.address || prev.address,
-            }));
-            toast({
-              title: result.ocr ? `ID captured: ${result.ocr.documentType}` : "ID captured (OCR unavailable)",
-              description: result.ocr?.confidence ? `Confidence: ${result.ocr.confidence}` : undefined,
-            });
-            setOcrPanelOpen(false);
-          }}
-          onClose={() => setOcrPanelOpen(false)}
-          scanBridgeOk={scanBridgeOk}
-          scanBridgeUrl={getScanBridgeUrl()}
-          onScanBridgeTrigger={triggerScanBridge}
-          scanning={scanning}
-        />
       )}
 
       {/* ── ID Card Scan Editor (crop, rotate, adjust) ── */}
