@@ -205,6 +205,14 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef }: {
   // M1.6B2 — same setters the toolbar buttons call, nothing more.
   useImperativeHandle(controlRef, () => ({ nextFrame, prevFrame, zoomIn, zoomOut, resetView }));
 
+  // Escape closes the enlarged view (matches every dialog in the app).
+  useEffect(() => {
+    if (!isExpanded) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setIsExpanded(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isExpanded]);
+
   const imageTransform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
   const imageFilter = `brightness(${brightness}%) contrast(${contrast}%)`;
 
@@ -217,9 +225,16 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef }: {
   };
 
   return (
-    <div className={`flex flex-col rounded-lg border overflow-hidden ${isExpanded ? "fixed inset-4 z-50 bg-background" : "relative h-full"}`}>
-      {/* Header */}
-      <div className="flex items-center justify-between gap-2 px-3 py-2 bg-muted/50 border-b flex-wrap">
+    <div className={`flex flex-col rounded-lg border overflow-hidden ${isExpanded ? "fixed inset-4 z-50 bg-background shadow-2xl" : "relative h-full"}`}>
+      {/* Header — double-click anywhere on the bar toggles the enlarged view.
+          (Double-clicks INSIDE the OHIF iframe belong to OHIF itself — it
+          uses them to maximize its own viewports — and cannot reach us.) */}
+      <div
+        className="flex items-center justify-between gap-2 px-3 py-2 bg-muted/50 border-b flex-wrap cursor-pointer select-none"
+        onDoubleClick={() => setIsExpanded((v) => !v)}
+        title={isExpanded ? "Double-click to restore" : "Double-click to enlarge"}
+        data-testid="viewer-header"
+      >
         <div className="flex items-center gap-2 text-xs min-w-0">
           <Layers className="h-3.5 w-3.5 shrink-0" />
           <span className="font-semibold shrink-0">DICOM Viewer</span>
@@ -349,6 +364,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef }: {
           {/* Canvas */}
           <div
             className="flex-1 relative overflow-hidden bg-black flex items-center justify-center cursor-grab active:cursor-grabbing"
+            onDoubleClick={() => setIsExpanded((v) => !v)}
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
