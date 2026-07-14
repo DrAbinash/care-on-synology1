@@ -19,6 +19,21 @@ import {
 
 type DoctorOption = { id: number; name: string; registrationNumber: string | null };
 
+// ── OCR confidence tiering ──
+// 95-100%: auto-populate form fields (still never overwrites a value the
+//          user already typed — see the `prev.field ||` guard at call sites).
+// 80-94%:  populate the review panel only; staff must click "Use this" to
+//          apply it — no silent auto-fill.
+// <80%:    OCR result stays visible for reference, but is never offered as
+//          a one-click apply; staff is expected to type the field manually.
+type OcrConfidenceTier = "auto" | "confirm" | "manual";
+function ocrConfidenceTier(confidencePercent: number | undefined): OcrConfidenceTier {
+  const pct = confidencePercent ?? 0;
+  if (pct >= 95) return "auto";
+  if (pct >= 80) return "confirm";
+  return "manual";
+}
+
 // ── Draggable bookmarklet link (raw HTML so React doesn't strip javascript: href) ──
 function BookmarkletLink({ billNumber }: { billNumber: string }) {
   const erpUrl = window.location.origin;
@@ -649,7 +664,7 @@ export default function FormF() {
   const [idCardVerified, setIdCardVerified] = useState(false);
   const [idCardUploading, setIdCardUploading] = useState(false);
   const [idCardOcrResult, setIdCardOcrResult] = useState<{
-    guardianName?: string; address?: string; documentType?: string; confidence?: string;
+    guardianName?: string; address?: string; documentType?: string; confidence?: string; confidencePercent?: number;
   } | null>(null);
   // Camera capture state (webcam only)
   const [cameraOpen, setCameraOpen] = useState(false);
@@ -669,7 +684,7 @@ export default function FormF() {
     try {
       const resp = await api.post<{
         ocr?: {
-          guardianName?: string; address?: string; documentType?: string; confidence?: string;
+          guardianName?: string; address?: string; documentType?: string; confidence?: string; confidencePercent?: number;
           fullName?: string; dob?: string; gender?: string; aadhaarNumber?: string; rawText?: string;
         } | null;
         ocrError?: string | null;
@@ -682,11 +697,17 @@ export default function FormF() {
       setIdCardOcrResult(resp.ocr ?? null);
       if (resp.ocr?.guardianName) setIdCardExtractedName(resp.ocr.guardianName);
       if (resp.ocr?.address) setIdCardExtractedAddress(resp.ocr.address);
-      setForm((prev) => ({
-        ...prev,
-        husbandFatherName: prev.husbandFatherName || resp.ocr?.guardianName || prev.husbandFatherName,
-        address: prev.address || resp.ocr?.address || prev.address,
-      }));
+      // Auto-apply to the form only at the "auto" confidence tier (>=95%) —
+      // 80-94% requires the explicit "Use this" click below; <80% is shown
+      // for reference only. The `prev.field ||` guard additionally ensures
+      // this never overwrites a value staff already typed, at any tier.
+      if (ocrConfidenceTier(resp.ocr?.confidencePercent) === "auto") {
+        setForm((prev) => ({
+          ...prev,
+          husbandFatherName: prev.husbandFatherName || resp.ocr?.guardianName || prev.husbandFatherName,
+          address: prev.address || resp.ocr?.address || prev.address,
+        }));
+      }
       if (!resp.ocr && resp.ocrError) {
         toast({ title: "OCR unavailable", description: resp.ocrError, variant: "destructive" });
       }
@@ -817,6 +838,7 @@ export default function FormF() {
           address: qr.fields.address,
           documentType: "Aadhaar (QR)",
           confidence: "high",
+          confidencePercent: 100, // deterministic QR decode, not a probabilistic OCR guess
         });
         const reader = new FileReader();
         reader.onload = () => {
@@ -853,6 +875,7 @@ export default function FormF() {
             address?: string;
             documentType?: string;
             confidence?: string;
+            confidencePercent?: number;
             fullName?: string;
             dob?: string;
             gender?: string;
@@ -869,12 +892,17 @@ export default function FormF() {
         setIdCardOcrResult(resp.ocr ?? null);
         if (resp.ocr?.guardianName) setIdCardExtractedName(resp.ocr.guardianName);
         if (resp.ocr?.address) setIdCardExtractedAddress(resp.ocr.address);
-        // Auto-fill empty form fields from OCR so staff doesn't have to click "Use this"
-        setForm((prev) => ({
-          ...prev,
-          husbandFatherName: prev.husbandFatherName || resp.ocr?.guardianName || prev.husbandFatherName,
-          address: prev.address || resp.ocr?.address || prev.address,
-        }));
+        // Auto-fill empty form fields from OCR only at the "auto" confidence
+        // tier (>=95%) — see ocrConfidenceTier(). Below that, staff must
+        // click "Use this" in the review panel; the `prev.field ||` guard
+        // still ensures we never overwrite anything already typed.
+        if (ocrConfidenceTier(resp.ocr?.confidencePercent) === "auto") {
+          setForm((prev) => ({
+            ...prev,
+            husbandFatherName: prev.husbandFatherName || resp.ocr?.guardianName || prev.husbandFatherName,
+            address: prev.address || resp.ocr?.address || prev.address,
+          }));
+        }
         if (resp.ocr) {
           toast({ title: `ID scanned: ${resp.ocr.documentType}` });
         } else {
@@ -1695,11 +1723,25 @@ export default function FormF() {
                       <AlertTriangle size={14} className="text-blue-600" />
                       <span className="text-sm font-semibold text-blue-800">AI-extracted ID card data — please verify</span>
                       {idCardOcrResult && (
-                        <Badge variant="outline" className="text-xs h-5 ml-auto">
-                          {idCardOcrResult.confidence} confidence
+                        <Badge
+                          variant="outline"
+                          className={`text-xs h-5 ml-auto ${
+                            ocrConfidenceTier(idCardOcrResult.confidencePercent) === "auto"
+                              ? "border-green-300 text-green-700 bg-green-50"
+                              : ocrConfidenceTier(idCardOcrResult.confidencePercent) === "confirm"
+                                ? "border-amber-300 text-amber-700 bg-amber-50"
+                                : "border-red-300 text-red-700 bg-red-50"
+                          }`}
+                        >
+                          {idCardOcrResult.confidencePercent != null ? `${idCardOcrResult.confidencePercent}% confidence` : `${idCardOcrResult.confidence} confidence`}
                         </Badge>
                       )}
                     </div>
+                    {ocrConfidenceTier(idCardOcrResult?.confidencePercent) === "manual" && (
+                      <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">
+                        Low OCR confidence — please verify against the physical card and enter details manually rather than relying on this extraction.
+                      </p>
+                    )}
                     {idCardExtractedName && (
                       <div className="flex items-center gap-2">
                         <span className="text-sm text-blue-700 flex-1 truncate">

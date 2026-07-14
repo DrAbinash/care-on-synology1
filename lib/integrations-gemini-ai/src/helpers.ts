@@ -664,6 +664,11 @@ export interface IdCardOcrResult {
   address: string;
   documentType: string;
   confidence: "high" | "medium" | "low";
+  /** Numeric 0-100 self-assessed confidence — see the confidence-tiering
+   * doc comment on runIdCardOcrPipeline in artifacts/api-server/src/lib/ocr/idCardPipeline.ts.
+   * Always populated (normalized from the qualitative `confidence` field if
+   * the model doesn't return a number), so callers can rely on it existing. */
+  confidencePercent: number;
   /** Optional extras extracted when the model finds them. */
   fullName?: string;
   dob?: string;
@@ -684,6 +689,7 @@ Rules:
 - For guardianName: return the husband's name, father's name, or head of family name — whichever is explicitly shown. Use the field labeled "Father's Name", "Husband's Name", "S/O", "D/O", "W/O", or "C/O".
 - For address: return the COMPLETE residential address as one comma-separated line. Do NOT truncate.
 - For confidence: use "high" if text is fully legible, "medium" if some text is blurry or partially obscured, "low" if most text is unreadable.
+- For confidencePercent: give your own numeric self-assessment 0-100 of how confident you are in the extracted fields overall — roughly: 95-100 if every field you extracted is clearly, unambiguously legible; 80-94 if mostly legible with minor uncertainty on one or two fields; below 80 if you had to guess at significant portions of the text. This should be consistent with (but more granular than) the "confidence" field above.
 
 Return ONLY valid JSON — no markdown fences, no explanation, no extra text.
 
@@ -693,6 +699,7 @@ JSON schema:
   "address": "string — complete residential address, comma-separated, one line. Empty string if not found.",
   "documentType": "string — one of: Aadhaar, VoterID, Passport, RationCard, PAN, DrivingLicense, Other",
   "confidence": "string — one of: high, medium, low",
+  "confidencePercent": "number — your own 0-100 numeric confidence self-assessment, see the rule above",
   "fullName": "string — the card holder's own name if visible. Empty string if not found.",
   "dob": "string — date of birth if shown. Empty string if not found.",
   "gender": "string — M/F/Other if shown. Empty string if not found.",
@@ -767,11 +774,27 @@ export async function geminiOcrIdCard(
     aadhaarNumber = digits.slice(-4);
   }
 
+  const confidence = (parsed.confidence as IdCardOcrResult["confidence"]) ?? "low";
+
+  // Numeric confidence is never left unset — if the model didn't return a
+  // valid confidencePercent (older prompt version, malformed JSON, or a
+  // non-numeric value), fall back to a fixed mapping from the qualitative
+  // confidence band so the caller's tiering logic always has a number to
+  // compare against. These fallback values intentionally sit mid-band, not
+  // at the boundary, so a model that DOES return a number isn't silently
+  // overridden — only used when confidencePercent is genuinely absent/invalid.
+  const QUALITATIVE_FALLBACK: Record<IdCardOcrResult["confidence"], number> = { high: 97, medium: 87, low: 55 };
+  const rawPercent = Number(parsed.confidencePercent);
+  const confidencePercent = Number.isFinite(rawPercent)
+    ? Math.max(0, Math.min(100, Math.round(rawPercent)))
+    : QUALITATIVE_FALLBACK[confidence];
+
   return {
     guardianName,
     address,
     documentType: parsed.documentType ?? "Other",
-    confidence: (parsed.confidence as IdCardOcrResult["confidence"]) ?? "low",
+    confidence,
+    confidencePercent,
     fullName: (parsed.fullName ?? "").trim() || undefined,
     dob: (parsed.dob ?? "").trim() || undefined,
     gender: (parsed.gender ?? "").trim() || undefined,
