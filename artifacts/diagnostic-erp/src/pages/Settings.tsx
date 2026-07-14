@@ -6127,6 +6127,7 @@ function FloorsSubTab() {
         <span className="text-sm font-medium">{rows.length} floor{rows.length !== 1 ? "s" : ""}</span>
         <Button size="sm" onClick={() => { reset(); setOpen(true); }}><Plus size={13} className="mr-1" /> Add Floor</Button>
       </div>
+      <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead className="bg-muted/40 text-xs text-left">
           <tr><th className="px-3 py-2">Name</th><th className="px-3 py-2">Code</th><th className="px-3 py-2 text-right">Rooms</th><th className="px-3 py-2">Status</th><th className="px-3 py-2 text-right">Actions</th></tr>
@@ -6145,6 +6146,7 @@ function FloorsSubTab() {
             ))}
         </tbody>
       </table>
+      </div>
       <Dialog open={open} onOpenChange={o => { setOpen(o); if (!o) reset(); }}>
         <DialogContent>
           <DialogHeader><DialogTitle>{editing ? "Edit Floor" : "Add Floor"}</DialogTitle></DialogHeader>
@@ -6185,6 +6187,7 @@ function RoomsSubTab() {
         <span className="text-sm font-medium">{rows.length} room{rows.length !== 1 ? "s" : ""}</span>
         <Button size="sm" onClick={() => { reset(); setOpen(true); }}><Plus size={13} className="mr-1" /> Add Room</Button>
       </div>
+      <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead className="bg-muted/40 text-xs text-left">
           <tr><th className="px-3 py-2">Name</th><th className="px-3 py-2">Floor</th><th className="px-3 py-2 text-right">Tests</th><th className="px-3 py-2">Status</th><th className="px-3 py-2 text-right">Actions</th></tr>
@@ -6203,6 +6206,7 @@ function RoomsSubTab() {
             ))}
         </tbody>
       </table>
+      </div>
       <Dialog open={open} onOpenChange={o => { setOpen(o); if (!o) reset(); }}>
         <DialogContent>
           <DialogHeader><DialogTitle>{editing ? "Edit Room" : "Add Room / Counter"}</DialogTitle></DialogHeader>
@@ -6249,6 +6253,7 @@ function ModalitiesSubTab() {
         <span className="text-sm font-medium">{rows.length} modalit{rows.length !== 1 ? "ies" : "y"}</span>
         <Button size="sm" onClick={() => { reset(); setOpen(true); }}><Plus size={13} className="mr-1" /> Add Modality</Button>
       </div>
+      <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead className="bg-muted/40 text-xs text-left">
           <tr><th className="px-3 py-2">Name</th><th className="px-3 py-2">Code</th><th className="px-3 py-2 text-right">Tests</th><th className="px-3 py-2">Status</th><th className="px-3 py-2 text-right">Actions</th></tr>
@@ -6267,6 +6272,7 @@ function ModalitiesSubTab() {
             ))}
         </tbody>
       </table>
+      </div>
       <Dialog open={open} onOpenChange={o => { setOpen(o); if (!o) reset(); }}>
         <DialogContent>
           <DialogHeader><DialogTitle>{editing ? "Edit Modality" : "Add Modality"}</DialogTitle></DialogHeader>
