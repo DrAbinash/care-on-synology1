@@ -753,6 +753,41 @@ async function fireDailySummary(opts: { scheduled: boolean; force?: boolean }) {
       .slice(0, 5)
       .map(([name, count]) => ({ name, count }));
 
+    // My Activity Logs: recent bill edits/audits today (max 10 most recent)
+    const billMap = new Map(bills.map(b => [b.id, b.billNumber]));
+    const activityLogs = audits
+      .sort((a, b) => (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0))
+      .slice(0, 10)
+      .map(a => ({
+        billNumber: billMap.get(a.billId) || `Bill ${a.billId}`,
+        editor: a.editedBy || "Unknown",
+        action: a.changeType || "edited",
+      }));
+
+    // Outstanding Bills: breakdown by status (clinic-wide, not just today's)
+    const outstandingBreakdownResult = await db.execute<{ status: string; count: string; total: string }>(
+      sql`SELECT status, COUNT(*)::text AS count, COALESCE(SUM(balance_amount::numeric), 0)::text AS total FROM bills WHERE status IN ('pending','partial') AND balance_amount::numeric > 0 GROUP BY status ORDER BY status`
+    );
+    const outstandingBreakdownRows = (outstandingBreakdownResult as unknown as { rows?: Array<{ status: string; count: string; total: string }> }).rows
+      ?? (outstandingBreakdownResult as unknown as Array<{ status: string; count: string; total: string }>);
+    const outstandingBills = outstandingBreakdownRows.map(r => ({
+      status: r.status.charAt(0).toUpperCase() + r.status.slice(1),
+      count: r.count,
+      amount: Number(r.total),
+    }));
+
+    // Discount Given: breakdown of discounts by reason (today's bills only)
+    const discountBreakdown = new Map<string, number>();
+    for (const b of bills) {
+      if (Number(b.discount || 0) > 0) {
+        const reason = b.discountReason || "No reason specified";
+        discountBreakdown.set(reason, (discountBreakdown.get(reason) || 0) + Number(b.discount));
+      }
+    }
+    const discountDetails = [...discountBreakdown.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([reason, amount]) => ({ reason, amount }));
+
     const today = now.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 
     await sendDailySummaryEmail({
@@ -775,6 +810,9 @@ async function fireDailySummary(opts: { scheduled: boolean; force?: boolean }) {
       digitalExpenses,
       staffWise,
       topTests,
+      activityLogs,
+      outstandingBills,
+      discountDetails,
     }, { force: opts.force });
 
     if (opts.scheduled) {

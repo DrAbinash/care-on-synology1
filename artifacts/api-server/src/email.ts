@@ -233,6 +233,9 @@ export async function sendDailySummaryEmail(params: {
   digitalExpenses: number;
   staffWise: Array<{ name: string; amount: number }>;
   topTests: Array<{ name: string; count: number }>;
+  activityLogs: Array<{ billNumber: string; editor: string; action: string }>;
+  outstandingBills: Array<{ status: string; count: string; amount: number }>;
+  discountDetails: Array<{ reason: string; amount: number }>;
 }, opts?: { force?: boolean }) {
   const s = await getEmailSettings();
   // `force` is used by the manual "Send Summary Now" button so an admin can
@@ -297,6 +300,26 @@ export async function sendDailySummaryEmail(params: {
       <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-weight:600;font-size:13px">${count}</td>
     </tr>`).join("");
 
+  const activityRowHtml = params.activityLogs.map(({ billNumber, editor, action }) => `
+    <tr>
+      <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-size:13px">${billNumber}</td>
+      <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-size:13px">${editor}</td>
+      <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-size:12px;color:#6b7280">${action}</td>
+    </tr>`).join("");
+
+  const outstandingRowHtml = params.outstandingBills.map(({ status, count, amount }) => `
+    <tr>
+      <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-size:13px">${status}</td>
+      <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-weight:600;font-size:13px">${count}</td>
+      <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-weight:600;font-size:13px">${inr(amount)}</td>
+    </tr>`).join("");
+
+  const discountRowHtml = params.discountDetails.map(({ reason, amount }) => `
+    <tr>
+      <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-size:13px">${reason}</td>
+      <td style="padding:6px 12px;border-bottom:1px solid #f1f5f9;font-weight:600;font-size:13px">${inr(amount)}</td>
+    </tr>`).join("");
+
   const html = `
     <div style="font-family:sans-serif;max-width:600px;margin:0 auto;background:#f8fafc;padding:24px;border-radius:12px">
       <div style="background:#059669;color:white;padding:16px 20px;border-radius:8px 8px 0 0">
@@ -312,6 +335,35 @@ export async function sendDailySummaryEmail(params: {
         ${testRowHtml ? `
         <h3 style="font-size:13px;color:#374151;margin:20px 0 8px">Top Tests Ordered</h3>
         <table style="width:100%;border-collapse:collapse">${testRowHtml}</table>` : ""}
+        ${activityRowHtml ? `
+        <h3 style="font-size:13px;color:#374151;margin:20px 0 8px">My Activity Logs</h3>
+        <table style="width:100%;border-collapse:collapse">
+          <tr style="background:#f9fafb">
+            <td style="padding:6px 12px;border-bottom:1px solid #e5e7eb;font-weight:600;font-size:12px">Bill #</td>
+            <td style="padding:6px 12px;border-bottom:1px solid #e5e7eb;font-weight:600;font-size:12px">Editor</td>
+            <td style="padding:6px 12px;border-bottom:1px solid #e5e7eb;font-weight:600;font-size:12px">Action</td>
+          </tr>
+          ${activityRowHtml}
+        </table>` : ""}
+        ${outstandingRowHtml ? `
+        <h3 style="font-size:13px;color:#374151;margin:20px 0 8px">Outstanding Bills</h3>
+        <table style="width:100%;border-collapse:collapse">
+          <tr style="background:#f9fafb">
+            <td style="padding:6px 12px;border-bottom:1px solid #e5e7eb;font-weight:600;font-size:12px">Status</td>
+            <td style="padding:6px 12px;border-bottom:1px solid #e5e7eb;font-weight:600;font-size:12px">Count</td>
+            <td style="padding:6px 12px;border-bottom:1px solid #e5e7eb;font-weight:600;font-size:12px">Amount</td>
+          </tr>
+          ${outstandingRowHtml}
+        </table>` : ""}
+        ${discountRowHtml ? `
+        <h3 style="font-size:13px;color:#374151;margin:20px 0 8px">Discount Given</h3>
+        <table style="width:100%;border-collapse:collapse">
+          <tr style="background:#f9fafb">
+            <td style="padding:6px 12px;border-bottom:1px solid #e5e7eb;font-weight:600;font-size:12px">Reason</td>
+            <td style="padding:6px 12px;border-bottom:1px solid #e5e7eb;font-weight:600;font-size:12px">Amount</td>
+          </tr>
+          ${discountRowHtml}
+        </table>` : ""}
         <p style="margin:16px 0 0;font-size:11px;color:#94a3b8">Care Diagnostics ERP — Automated Daily Report</p>
       </div>
     </div>`;
