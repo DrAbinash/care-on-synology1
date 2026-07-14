@@ -223,6 +223,11 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   // ── Sizing tuned for A5 thermal receipt ──
   // A5: flex column layout pushes footer to bottom so short bills fill the page
   const pageMargin = isA5 ? "10mm" : "8mm";
+  // Content-area height = page height minus top+bottom margin. Must track `orientation`,
+  // since A5 landscape's page height (148mm) is far shorter than portrait's (210mm) —
+  // using a fixed portrait-sized min-height here overflows the printable area on landscape
+  // and forces the browser into "shrink to fit", which rasterizes/blurs the whole receipt.
+  const receiptMinHeight = orientation === "landscape" ? "128mm" : "190mm";
   const titleSize = isA5 ? "15px" : "16px";
   const patientNameSize = isA5 ? "14px" : "18px";    // compact patient / ref / date block
   const bodyPx = isA5 ? "14px" : "13px";             // tagline under logo
@@ -277,7 +282,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const billedBySignatureUrl: string = session?.user?.signatureDataUrl ?? "";
 
   const page = (copyIdx: number) => `
-    <section class="receipt" style="${copyIdx > 0 ? "page-break-before:always;" : ""}${isA5 && !compactFooterGap ? "display:flex;flex-direction:column;min-height:148mm;" : ""}">
+    <section class="receipt" style="${copyIdx > 0 ? "page-break-before:always;" : ""}${isA5 && !compactFooterGap ? `display:flex;flex-direction:column;min-height:${receiptMinHeight};` : ""}">
 
       ${reprintBy || reprintReason ? `<div style="text-align:center;font-size:${tinyPx};color:#a16207;border:1px dashed #d97706;padding:2px 4px;margin-bottom:4px;text-transform:uppercase;font-weight:700">DUPLICATE / RE-PRINT${reprintBy ? ` · BY ${esc(reprintBy)}` : ""}${reprintReason ? ` · ${esc(reprintReason)}` : ""}</div>` : ""}
 
