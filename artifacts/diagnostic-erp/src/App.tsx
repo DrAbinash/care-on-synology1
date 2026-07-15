@@ -20,20 +20,20 @@ function RedirectToUnifiedWorklist() {
 }
 
 /**
- * Phase D (Radiology V2): RadiologistCockpit is the single Reading Room.
- * Old editor routes redirect here (components PRESERVED, not deleted).
+ * Cockpit→Workspace merge cleanup: RadiologistCockpit has been removed — its
+ * useful features were merged into the canonical RadiologyReportingWorkspace
+ * (route /radiology/reporting-workspace). Non-admin staff who hit a
+ * preserved/owner-only page now land there instead.
  */
-function RedirectToCockpit({ studyId }: { studyId?: number }) {
+function RedirectToWorkspace() {
   const [, navigate] = useLocation();
-  useEffect(() => {
-    navigate(studyId && Number.isFinite(studyId) ? `/radiology/cockpit?studyId=${studyId}` : "/radiology/cockpit", { replace: true });
-  }, [navigate, studyId]);
+  useEffect(() => { navigate("/radiology/reporting-workspace", { replace: true }); }, [navigate]);
   return null;
 }
 
 /**
  * Phase D: owner-only wrapper for preserved/deprecated pages.
- * Normal staff are sent to the Reading Room; owners can still open the page.
+ * Normal staff are sent to the canonical Workspace; owners can still open the page.
  */
 /**
  * Phase E: admin/owner-only guard for the unified Radiology Settings page.
@@ -50,7 +50,7 @@ function OwnerOnlyPreserved({ children }: { children: React.ReactNode }) {
   const session = readStaffSession();
   const role = normalizeRole(session?.user?.role || "");
   if (role === "admin" || role === "super_admin") return <>{children}</>;
-  return <RedirectToCockpit />;
+  return <RedirectToWorkspace />;
 }
 
 
@@ -91,7 +91,6 @@ const QueuePage       = lazy(() => import("@/pages/Queue"));
 const Radiology       = lazy(() => import("@/pages/Radiology"));
 const RadiologyLegacy = lazy(() => import("@/pages/RadiologyLegacy"));
 const RadiologyWorklist = lazy(() => import("@/pages/RadiologyWorklist"));
-const RadiologistCockpit = lazy(() => import("@/pages/RadiologistCockpit"));
 const RadiologyReportEditor = lazy(() => import("@/pages/RadiologyReportEditor"));
 const RadiologyReportGen = lazy(() => import("@/pages/RadiologyReportGenerator"));
 const RadiologyReportingWorkspace = lazy(() => import("@/pages/RadiologyReportingWorkspace"));
@@ -237,7 +236,7 @@ const queryClient = new QueryClient({
 
 const ERP_NAV_ORDER = [
   "/", "/dashboard", "/my-daily-summary", "/reception-command-center", "/daily-summary", "/patients", "/appointments", "/queue", "/online-bookings",
-  "/radiology", "/radiology/cockpit", "/radiology/legacy", "/radiology/worklist", "/radiology/report-generator", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/pacs-settings", "/radiology/network-control-center", "/radiology/pacs-logs",
+  "/radiology", "/radiology/legacy", "/radiology/worklist", "/radiology/report-generator", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/pacs-settings", "/radiology/network-control-center", "/radiology/pacs-logs",
   "/radiology/dicom-agent-dashboard", "/radiology/modality-management",
   "/radiology/agent-setup", "/radiology/ai-reporting-settings", "/radiology/ai-prompt-templates", "/radiology/ai-model-routing", "/radiology/structured-report-templates", "/radiology/ai-audit-log",
   "/radiology/viewer", "/radiology/archive-lifecycle", "/radiology/watchdog", "/radiology/ai-inference-settings", "/radiology/hl7-settings", "/teleradiology",
@@ -383,7 +382,10 @@ function Router() {
               <Route path="/online-bookings" component={OnlineBookings} />
               <Route path="/queue" component={QueuePage} />
               <Route path="/radiology" component={Radiology} />
-              <Route path="/radiology/cockpit" component={RadiologistCockpit} />
+              {/* RadiologistCockpit removed (Cockpit→Workspace merge) — its
+                  useful features were ported into the canonical
+                  RadiologyReportingWorkspace. Old links keep working. */}
+              <Route path="/radiology/cockpit" component={RedirectToWorkspace} />
               <Route path="/radiology/my-collection" component={MyCollection} />
               <Route path="/radiology/worklist" component={RadiologyWorklist} />
               <Route path="/radiology/report-generator">
@@ -405,8 +407,9 @@ function Router() {
                     /radiology/reporting-workspace(/:id)  → canonical (named alias)
                     /radiology/unified-report/:worklistId → canonical (old URL kept)
                     /radiology/report-legacy/:studyId     → redirect to canonical
-                    /radiology/cockpit                    → RadiologistCockpit (deprecated,
-                                                            fully functional; save bug fixed)
+                    /radiology/cockpit                    → redirect to canonical
+                                                            (RadiologistCockpit removed;
+                                                            features merged into Workspace)
                     /radiology/command-center(/:id)       → owner-only (preserved, V2)
                     /radiology/legacy                     → owner-only (preserved, V2)
                     /radiology/report-generator(/:id)     → RadiologyReportGenerator

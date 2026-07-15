@@ -12,6 +12,15 @@ export interface ReportForValidation {
   findings: string;
   impression: string[]; // one line per impression point
   recommendation?: string;
+  // Cockpit→Workspace merge (F2/F8): optional context for the medical-
+  // consistency checks below. Every check that reads one of these fields is a
+  // no-op when it's absent, so existing callers are unaffected.
+  technique?: string;
+  clinicalHistory?: string;
+  sex?: string | null;
+  age?: string | null;
+  modality?: string | null;
+  studyDescription?: string | null;
 }
 
 // Sentence split good enough for report prose (period/newline boundaries).
@@ -97,6 +106,153 @@ export function validateReport(report: ReportForValidation): string[] {
     warnings.push("An un-filled measurement placeholder {value} is still present in the report.");
   }
 
+  warnings.push(...medicalConsistencyWarnings(report));
+  warnings.push(...repeatedWordWarnings(findings));
+
+  return warnings;
+}
+
+// ── Medical consistency (Cockpit→Workspace merge, F2) ───────────────────────
+// Ported from the Cockpit's Inspector engine, adapted where the port
+// exposed a real gap. Checks that key on sex/age/modality/studyDescription
+// are no-ops when that field is absent; the text-only checks (anterior/
+// posterior mismatch, findings-vs-impression contradiction) run whenever
+// there's report text, same as the file's other pre-existing rules.
+
+function medicalConsistencyWarnings(report: ReportForValidation): string[] {
+  const warnings: string[] = [];
+  const textFindings = report.findings || "";
+  const textImpression = (report.impression || []).join("\n");
+  const fullText = [report.clinicalHistory, report.technique, textFindings, textImpression, report.recommendation]
+    .filter(Boolean).join(" ");
+  const fullTextLower = fullText.toLowerCase();
+  const studyDesc = (report.studyDescription || "").toUpperCase();
+
+  // Laterality vs. study description. Word-boundary matched — plain
+  // .includes("right")/.includes("left") false-positives on ordinary words
+  // that contain those letters as a substring ("bright" signal on MRI,
+  // "cleft" lip/palate on pediatric studies).
+  const mentionsRight = /\bright\b/i.test(fullText);
+  const mentionsLeft = /\bleft\b/i.test(fullText);
+  if (studyDesc.includes("LEFT") && mentionsRight && !mentionsLeft) {
+    warnings.push("Laterality contradiction: study description specifies LEFT, but the report only mentions RIGHT.");
+  }
+  if (studyDesc.includes("RIGHT") && mentionsLeft && !mentionsRight) {
+    warnings.push("Laterality contradiction: study description specifies RIGHT, but the report only mentions LEFT.");
+  }
+
+  // NOTE: a per-structure "both left and right mentioned" check was
+  // considered and deliberately dropped — for any paired organ (kidneys,
+  // lungs, breasts...) documenting BOTH sides is the normal, correct way to
+  // write a bilateral study, so this fired on nearly every routine report
+  // and violated this file's own "few false positives beat many" design
+  // goal. Genuine copy-paste laterality errors are still caught by the
+  // study-description check above.
+
+  // Anterior/posterior mismatch (common in spine reports)
+  if (fullTextLower.includes("anterior protrusion") && fullTextLower.includes("posterior protrusion")) {
+    warnings.push("Report mentions both anterior and posterior protrusions — verify the primary direction.");
+  }
+
+  // Gender vs. anatomy contradiction. `sex` arrives as the raw patients.gender
+  // value ("female"/"male"/"other"), NOT the single-letter DICOM code — a
+  // strict `=== "F"`/`=== "M"` check never matches a real patient and this
+  // whole rule was silently dead. startsWith covers both "F"/"FEMALE" and
+  // "M"/"MALE" (any caller passing a plain DICOM letter still matches too).
+  const sex = (report.sex || "").toUpperCase();
+  if (sex.startsWith("F") && (fullTextLower.includes("prostate") || fullTextLower.includes("seminal vesicle"))) {
+    warnings.push("Gender contradiction: report for a female patient mentions male anatomy (prostate/seminal vesicle).");
+  }
+  if (sex.startsWith("M") && ["uterus", "ovary", "ovarian", "endometrium", "cervix", "uterine"].some((w) => fullTextLower.includes(w))) {
+    warnings.push("Gender contradiction: report for a male patient mentions female anatomy (uterus/ovary/endometrium/cervix).");
+  }
+
+  // Age-inappropriate wording
+  const ageMatch = (report.age || "").match(/(\d+)/);
+  const ageVal = ageMatch ? parseInt(ageMatch[1], 10) : null;
+  if (ageVal !== null && ageVal < 18 && ["degenerative changes", "senile", "osteoarthritis"].some((w) => fullTextLower.includes(w))) {
+    warnings.push(`Age-inappropriate wording: pediatric patient (${report.age}) described using adult degenerative terms.`);
+  }
+  if (ageVal !== null && ageVal > 18 && ["growth plates open", "physes open"].some((w) => fullTextLower.includes(w))) {
+    warnings.push(`Age-inappropriate wording: adult patient (${report.age}) described with pediatric phrasing (open growth plates).`);
+  }
+
+  // Cross-modality terminology contamination. `modality` arrives as the raw
+  // DICOM/PACS code — this codebase's convention is "MR", not "MRI" (see the
+  // queue modality filter a few hundred lines up in RadiologyReportingWorkspace.tsx,
+  // and radiologyMeasurementLibrary.ts/radiologyMasterTemplates.ts) — an
+  // exact `=== "MRI"` check never matches a real MR study and silently never
+  // fires. startsWith("MR") covers both "MR" and "MRI".
+  const modality = (report.modality || "").toUpperCase();
+  const isCT = modality.startsWith("CT");
+  const isMR = modality.startsWith("MR");
+  if (isCT && ["magnetic resonance", "flair", "t1-weighted", "t2-weighted", "signal intensity"].some((w) => fullTextLower.includes(w))) {
+    warnings.push("Modality terminology mismatch: MRI wording (FLAIR/T1/T2/signal intensity) found inside a CT report.");
+  }
+  if (isMR && (/\bhu\b/.test(fullTextLower) || ["hounsfield", "computed tomography", "radiation dose"].some((w) => fullTextLower.includes(w)))) {
+    warnings.push("Modality terminology mismatch: CT wording (HU/Hounsfield/computed tomography) found inside an MRI report.");
+  }
+  if ((isCT || isMR) && ["hyperechoic", "anechoic", "acoustic shadowing", "transducer"].some((w) => fullTextLower.includes(w))) {
+    warnings.push("Modality terminology mismatch: ultrasound wording (hyperechoic/acoustic shadowing) found inside a cross-sectional report.");
+  }
+
+  // Contrast contradiction. isNonContrastStudy must be checked FIRST and
+  // isContrastStudy excludes it — "WITHOUT CONTRAST"/"NON-CONTRAST" both
+  // contain the substring "CONTRAST", so a naive independent check made
+  // every routine non-contrast study (the most common study type) match
+  // BOTH conditions at once, firing a false contradiction warning whenever
+  // the technique correctly stated no contrast was given.
+  const isNonContrastStudy = studyDesc.includes("WITHOUT CONTRAST") || studyDesc.includes("NCCT") || studyDesc.includes("NON-CONTRAST");
+  const isContrastStudy = !isNonContrastStudy &&
+    (studyDesc.includes("CONTRAST") || studyDesc.includes("CECT") || studyDesc.includes("CEMRI"));
+  if (isNonContrastStudy && ["gadolinium", "contrast enhancement", "post-contrast"].some((w) => fullTextLower.includes(w))) {
+    warnings.push("Contrast contradiction: a non-contrast study mentions contrast enhancement or gadolinium.");
+  }
+  if (isContrastStudy && ["no contrast was administered", "non-contrast study"].some((w) => fullTextLower.includes(w))) {
+    warnings.push("Contrast contradiction: a contrast study mentions that no contrast was administered.");
+  }
+
+  // Findings vs. Impression contradiction, both directions
+  const findingsLower = textFindings.toLowerCase();
+  const impressionLower2 = textImpression.toLowerCase();
+  const hasNormalFindings = ["no abnormality", "within normal limits", "unremarkable"].some((w) => findingsLower.includes(w));
+  // "mass" checked as a whole word — a plain substring match also fires on
+  // ordinary normal phrasing like "normal muscle mass and bulk".
+  const hasAbnormalImpression =
+    ["acute infarct", "fracture", "hemorrhage", "stenosis", "lesion", "metastasis"].some((w) => impressionLower2.includes(w)) ||
+    /\bmass\b/.test(impressionLower2);
+  if (hasNormalFindings && hasAbnormalImpression) {
+    warnings.push("Findings/Impression contradiction: Findings show a normal/unremarkable status, but Impression lists an abnormal diagnosis.");
+  }
+  const hasAbnormalFindings = ["herniation", "fracture", "hemorrhage", "lesion", "infarct", "stenosis"].some((w) => findingsLower.includes(w));
+  const hasNormalImpression = ["no significant abnormality", "normal study", "unremarkable exam"].some((w) => impressionLower2.includes(w));
+  if (hasAbnormalFindings && hasNormalImpression) {
+    warnings.push("Findings/Impression contradiction: Findings mention abnormalities, but Impression describes the study as normal/unremarkable.");
+  }
+
+  return warnings;
+}
+
+// ── Dictation quality (Cockpit→Workspace merge, F8) ─────────────────────────
+// Catches a common voice-dictation artifact: an accidentally repeated word
+// ("the the liver"). Pure client-side heuristic, no API dependency.
+
+function repeatedWordWarnings(findings: string): string[] {
+  const words = findings.split(/\s+/);
+  const seen = new Set<string>();
+  const warnings: string[] = [];
+  for (let i = 0; i < words.length - 1; i++) {
+    // A sentence boundary between the pair (e.g. "...appears normal. Normal
+    // spleen...") isn't a dictation artifact — skip when the first word ends
+    // a sentence, in its ORIGINAL form before punctuation is stripped below.
+    if (/[.!?]$/.test(words[i])) continue;
+    const w1 = words[i].toLowerCase().replace(/[^a-z]/g, "");
+    const w2 = words[i + 1].toLowerCase().replace(/[^a-z]/g, "");
+    if (w1 && w1 === w2 && w1.length > 2 && !seen.has(w1)) {
+      warnings.push(`Repeated word "${words[i]}" in Findings — likely a dictation artifact.`);
+      seen.add(w1); // one warning per distinct repeated word, not per occurrence
+    }
+  }
   return warnings;
 }
 

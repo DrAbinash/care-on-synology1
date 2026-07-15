@@ -63,7 +63,6 @@ describe("M1.1 — canonical routing", () => {
 
 describe("M1.1 — deprecated surfaces stay marked", () => {
   it.each([
-    "pages/RadiologistCockpit.tsx",
     "pages/RadiologyCommandCenter.tsx",
     "pages/RadiologyReportGenerator.tsx",
     "pages/RadiologyLegacy.tsx",
@@ -85,7 +84,6 @@ describe("M1.1 — no duplicate state/service copies reactivate", () => {
     const workspace = read("pages/RadiologyReportingWorkspace.tsx");
     expect(workspace).toContain('from "@/components/radiology/QuickFindingsPanel"');
     for (const rel of [
-      "pages/RadiologistCockpit.tsx",
       "pages/RadiologyCommandCenter.tsx",
       "pages/RadiologyReportGenerator.tsx",
       "pages/RadiologyLegacy.tsx",
@@ -101,7 +99,6 @@ describe("M1.1 — no duplicate state/service copies reactivate", () => {
     // two-step finalize or the save-draft POST.
     for (const rel of [
       "pages/RadiologyReportingWorkspace.tsx",
-      "pages/RadiologistCockpit.tsx",
       "pages/RadiologyCommandCenter.tsx",
       "pages/RadiologyReportGenerator.tsx",
     ]) {
@@ -112,7 +109,6 @@ describe("M1.1 — no duplicate state/service copies reactivate", () => {
     }
     for (const rel of [
       "pages/RadiologyReportingWorkspace.tsx",
-      "pages/RadiologistCockpit.tsx",
       "pages/RadiologyCommandCenter.tsx",
     ]) {
       const src = read(rel);

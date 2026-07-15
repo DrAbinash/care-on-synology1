@@ -463,21 +463,21 @@ export default function QuickFindingsPanel({
           variant={selected ? "default" : "outline"}
           disabled={disabled}
           onClick={() => onToggle(f, !selected)}
-          className="h-7 justify-start text-[11px] font-normal flex-1 min-w-0"
+          className="h-10 justify-start text-sm font-medium flex-1 min-w-0 px-3 gap-2"
           title={`${f.findingText || f.impressionText}${index !== undefined && index < 9 ? `  (Alt+${index + 1})` : ""}`}
         >
-          <Zap size={10} className={selected ? "" : "text-muted-foreground"} />
+          <Zap size={14} className={selected ? "" : "text-muted-foreground"} />
           <span className="truncate">{f.label}</span>
           {(effectiveTabs.size > 1 || searchLower) && (
-            <span className="ml-auto text-[9px] text-muted-foreground shrink-0">{f.studyType}</span>
+            <span className="ml-auto text-[10px] text-muted-foreground shrink-0">{f.studyType}</span>
           )}
         </Button>
         <button
           onClick={() => toggleFavorite.mutate({ findingId: f.id, add: !isFav })}
-          className={`shrink-0 p-0.5 ${isFav ? "text-amber-500" : "text-muted-foreground/40 hover:text-amber-500"}`}
+          className={`shrink-0 p-1 ${isFav ? "text-amber-500" : "text-muted-foreground/40 hover:text-amber-500"}`}
           title={isFav ? "Remove from favorites" : "Pin to favorites"}
         >
-          <Star size={11} fill={isFav ? "currentColor" : "none"} />
+          <Star size={15} fill={isFav ? "currentColor" : "none"} />
         </button>
       </div>
       {selected && <PropertyChips f={f} />}

@@ -201,7 +201,7 @@ const DOPPLER_FIELD_LABELS: Record<string, string> = {
 // ("138 mm" + " mm" -> "138 mm mm") in both the Unit badge and any inserted
 // report text, so drop the provenance unit whenever it's already present at
 // the end of the stored value.
-function dedupeUnit(value: string, unit: string): string {
+export function dedupeUnit(value: string, unit: string): string {
   if (!unit) return "";
   const v = value.trim().toLowerCase();
   const u = unit.trim().toLowerCase();

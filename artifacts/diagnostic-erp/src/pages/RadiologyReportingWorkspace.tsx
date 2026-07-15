@@ -26,7 +26,7 @@ import {
 import EmbeddedWadoViewer from "@/components/EmbeddedWadoViewer";
 import ReportImagePicker from "@/components/radiology/ReportImagePicker";
 import RadiologyCopilotPanel from "@/components/RadiologyCopilotPanel";
-import { ThemeSelector } from "@/components/ThemeSelector";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { FindingsHighlightEditor, type FindingsHighlightEditorHandle } from "@/components/FindingsHighlightEditor";
 import { chocolateBoxSetFor, insertAtCursor } from "@/lib/findingsMacros";
 import RadiologyMemoryPanel from "@/components/RadiologyMemoryPanel";
@@ -35,6 +35,9 @@ import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
 // canonical workspace (no separate USG reporting workflow).
 import UsgMeasurementReviewPanel from "@/components/radiology/UsgMeasurementReviewPanel";
 import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
+// Cockpit→Workspace merge (D1): external-viewer (OHIF/Weasis/DICOM-SR)
+// measurement import queue — self-hides when the study has none.
+import ViewerMeasurementsPanel, { useViewerMeasurements } from "@/components/radiology/ViewerMeasurementsPanel";
 import PreferencesPanel from "@/components/PreferencesPanel";
 import { isUltrasoundModality } from "@/lib/usgModality";
 import QuickFindingsPanel, {
@@ -48,6 +51,9 @@ import {
 } from "@/lib/renderEngine";
 import { deriveQuickSelectFindings } from "@/lib/quickSelectFindingsPayload";
 import { validateReport, computeQualityScore } from "@/lib/reportValidator";
+// F3 (Cockpit→Workspace merge): real-time missed-finding text-pattern nudges.
+// This lib was otherwise dead (imported only by the deprecated Cockpit).
+import { observeReportText, type CoPilotSuggestion } from "@/lib/radiologyCoPilotEngine";
 import { isLearnableAddition } from "@/lib/learningEngine";
 import { upsertMeasurement, upsertLabeledLine } from "@/lib/measurementVars";
 import CollapsibleSection from "@/components/radiology/CollapsibleSection";
@@ -67,7 +73,7 @@ import { useReportingWorkflow } from "@/hooks/useReportingWorkflow";
 import { useStudyLock } from "@/hooks/useStudyLock";
 import { lockStatusMessage, QUEUE_SCOPE_LABELS, parseQueueScope, assignmentCategoryOf, type QueueScope } from "@/lib/studyLockState";
 import type { StudyLaunchResult } from "@/lib/studyLaunchService";
-import { ChevronLeft, ChevronRight, PauseCircle, Lock } from "lucide-react";
+import { ChevronLeft, ChevronRight, PauseCircle, Lock, TrendingUp, TrendingDown, Minus, GitCompare } from "lucide-react";
 // M1.6B2 — the ONE voice pipeline (providers/grammar/safety live in libs; the
 // hook executes through THIS page's adapter → the M1.5 command dispatcher).
 import { useVoiceSession, type VoiceExecutionResult } from "@/hooks/useVoiceSession";
@@ -136,6 +142,23 @@ type StructuredTemplate = {
   isPreset: boolean;
 };
 
+// Cockpit→Workspace merge (E1): Phase-F "winner" master template catalog
+// (radiology_master_templates), consolidated from the four legacy systems.
+// A different table/endpoint from StructuredTemplate above — surfaced here so
+// radiologists keep the catalog they used in the Cockpit. Content-only apply.
+type MasterTemplate = {
+  id: number;
+  groupName: string;
+  templateName: string;
+  modality: string;
+  studyType: string | null;
+  bodyPart: string | null;
+  findings: string;
+  impression: string;
+  recommendations: string | null;
+  isActive: boolean;
+};
+
 type TemplateSections = {
   technique: string;
   findingsItems: Array<{ label: string; normal: string }>;
@@ -170,6 +193,35 @@ type StylePreferences = {
 };
 
 type RightTab = "quickselect" | "templates" | "followup" | "prior" | "ai" | "measurements" | "teaching";
+
+// F3 (Cockpit→Workspace merge): rules superseded by MeasurementAssistantPanel,
+// which computes real ADC/Evans-Index values rather than just reminding the
+// radiologist to mention them — excluded from the ported nudge list.
+const COPILOT_SUPERSEDED_IDS = new Set(["brain-adc", "hydrocephalus-evans"]);
+
+// C1/F6 (Cockpit→Workspace merge): viewer_measurements.measurementType is the
+// caliper KIND, not an anatomical label — see the schema comment in
+// lib/db/src/schema/radiologyLesions.ts. Real OHIF/Weasis/DICOM-SR imports
+// will almost always populate one of these four generic values, so matching
+// or deduping on measurementType alone would collide across unrelated
+// measurements. Skip the relevant checks whenever the type is this generic.
+const GENERIC_CALIPER_TYPES = new Set(["linear", "area", "volume", "ellipse"]);
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Cockpit→Workspace merge (E2): tolerant parse of a stored AI draft blob so a
+// malformed aiDraftJson can never throw in render.
+function safeParseAiDraft(json: string | null | undefined): { findings?: string; impression?: string } {
+  if (!json) return {};
+  try {
+    const parsed = JSON.parse(json);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
 
 /** M1.4 — POST /api/radiology/report-generator/validate-draft response: the
  *  backend runs the REAL D3/D3.5 builder + D1 validator read-only; nothing
@@ -401,13 +453,21 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // ── Chocolate Box quick-macro engine (freeform findings only) ───────────
   const findingsTextareaRef = useRef<FindingsHighlightEditorHandle>(null);
 
+  const isMobile = useIsMobile();
+
   // ── Left viewer panel collapse — frees width for the report editor without
   // duplicating the DICOM viewer elsewhere (it already lives here, not the
   // center column). Persisted per-browser like the sidebar auto-minimise
-  // pattern in Layout.tsx.
-  const [isLeftPanelCollapsed, setIsLeftPanelCollapsed] = useState(
-    () => localStorage.getItem("radiologyWorkspaceLeftPanelCollapsed") === "1"
-  );
+  // pattern in Layout.tsx. On a phone-width screen with no stored preference
+  // yet, default to collapsed — the left panel's 280px min-width otherwise
+  // squeezes the report editor column (flex-1 min-w-0) down to ~0px, which is
+  // the root cause of the mobile "cut view" report: the editor never got any
+  // width to render into.
+  const [isLeftPanelCollapsed, setIsLeftPanelCollapsed] = useState(() => {
+    const stored = localStorage.getItem("radiologyWorkspaceLeftPanelCollapsed");
+    if (stored != null) return stored === "1";
+    return typeof window !== "undefined" && window.innerWidth < 768;
+  });
   useEffect(() => {
     localStorage.setItem("radiologyWorkspaceLeftPanelCollapsed", isLeftPanelCollapsed ? "1" : "0");
   }, [isLeftPanelCollapsed]);
@@ -481,6 +541,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const [isCritical, setIsCritical] = useState(false);
   const [criticalNote, setCriticalNote] = useState("");
   const [reportStatus, setReportStatus] = useState<string>("DRAFT");
+  // F5 (Cockpit→Workspace merge): critical-result communication checklist —
+  // ACR-style documentation that an actionable/critical finding was actually
+  // communicated to the referring clinician. Unlike the Cockpit (where this
+  // state was never sent to the server), it's persisted via the finalize
+  // auditDetails payload — see F7 below.
+  const [checklistComm, setChecklistComm] = useState({ phoned: false, annotated: false, dispatched: false });
 
   // ── AI ────────────────────────────────────────────────────────────────────
   const [aiLoading, setAiLoading] = useState(false);
@@ -567,6 +633,33 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     myUserId: session?.user.id ?? null,
     myName: session?.user.name ?? null,
   });
+
+  // ── A1 (Cockpit→Workspace merge): free-text + modality filter over the JUMP
+  // dropdown only. Deliberately NOT applied to Next/Previous/park — those stay
+  // scope-based so the CURRENT study never drops out of the queue (which would
+  // corrupt position/history). This just lets a radiologist find-and-jump to a
+  // study by patient/accession/modality without leaving the report. State is
+  // distinct from the template `modalityFilter` (which filters the picker).
+  const [queueFilterText, setQueueFilterText] = useState("");
+  const [queueModalityFilter, setQueueModalityFilter] = useState("all");
+  const jumpQueue = useMemo(() => {
+    const q = queueFilterText.trim().toLowerCase();
+    const mod = queueModalityFilter;
+    return workflow.queue.filter((s) => {
+      if (mod !== "all") {
+        const m = (s.modality ?? "").toUpperCase();
+        const matchesModality = mod === "US"
+          ? isUltrasoundModality(s.modality)
+          : m.startsWith(mod);
+        if (!matchesModality) return false;
+      }
+      if (q) {
+        const hay = `${s.patientName ?? ""} ${s.modality ?? ""} ${s.accessionNumber ?? ""}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [workflow.queue, queueFilterText, queueModalityFilter]);
 
   // Claim the current study on entry (visible in the status bar — never
   // silent), heartbeat while held, stop after finalize. Server expiry stays
@@ -837,17 +930,6 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     }
   }
 
-  // Live Report Quality Score (Phase 3) — recomputed as the radiologist
-  // types; purely informational, never blocks anything.
-  const quality = useMemo(
-    () => computeQualityScore({
-      findings: rawFindings, impression, recommendation, technique, clinicalHistory,
-      checklistPercent: activeProtocol ? checklistPercent : undefined,
-      missingRequiredMeasurements,
-    }),
-    [rawFindings, impression, recommendation, technique, clinicalHistory, activeProtocol, checklistPercent, missingRequiredMeasurements],
-  );
-
   // Intelligent Normal Generator (Phase 3, structured mode): sets every
   // section the radiologist has NOT touched back to its template-normal
   // text. "Touched" = text differs from the template normal — those are
@@ -911,6 +993,183 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     [entry?.modality, entry?.studyDescription],
   );
 
+  // Live Report Quality Score (Phase 3) — recomputed as the radiologist
+  // types; purely informational, never blocks anything.
+  const quality = useMemo(
+    () => computeQualityScore({
+      findings: rawFindings, impression, recommendation, technique, clinicalHistory,
+      checklistPercent: activeProtocol ? checklistPercent : undefined,
+      missingRequiredMeasurements,
+      // F2: medical-consistency context (Cockpit→Workspace merge) — each
+      // check is a no-op when its field is absent, so this is additive.
+      sex: entry?.sex, age: entry?.age, modality: entry?.modality, studyDescription: entry?.studyDescription,
+    }),
+    [rawFindings, impression, recommendation, technique, clinicalHistory, activeProtocol, checklistPercent, missingRequiredMeasurements,
+      entry?.sex, entry?.age, entry?.modality, entry?.studyDescription],
+  );
+
+  // F6 (Cockpit→Workspace merge): imported-viewer-measurement safety checks.
+  // Reads the SAME cache entry ViewerMeasurementsPanel populates (shared
+  // queryKey via useViewerMeasurements) rather than re-fetching. Ported from
+  // the Cockpit's Inspector engine — a measurement the radiologist marked
+  // "Imported" but never actually mentioned in the report text is a real
+  // missed-finding risk, distinct from the text-insertion helpers (which only
+  // guard against re-typing, not against forgetting entirely).
+  const viewerMeasurementsForSafety = useViewerMeasurements(entry?.studyInstanceUID);
+  const measurementSafetyIssues = useMemo(() => {
+    const imported = (viewerMeasurementsForSafety.data ?? []).filter((m) => m.status === "imported");
+    if (imported.length === 0) return [] as Array<{ id: string; severity: "critical" | "important"; message: string }>;
+    const fullTextLower = [clinicalHistory, technique, rawFindings, impression.join(" "), recommendation]
+      .join(" ").toLowerCase();
+    const issues: Array<{ id: string; severity: "critical" | "important"; message: string }> = [];
+    const seen = new Set<string>();
+    for (const m of imported) {
+      const valLower = (m.value ?? "").trim().toLowerCase();
+      if (!valLower) continue;
+      // Word-boundary matched, not a plain substring search — a raw
+      // indexOf() on a short numeric value like "5" or "45" almost always
+      // finds a coincidental match elsewhere in the report (ages, vertebral
+      // levels, dates), silently suppressing this critical check for
+      // exactly the short values most likely to be forgotten.
+      const valueRegex = new RegExp(`(?<![\\w.])${escapeRegExp(valLower)}(?![\\w.])`);
+      const match = valueRegex.exec(fullTextLower);
+      if (!match) {
+        issues.push({
+          id: `meas-ref-${m.id}`,
+          severity: "critical",
+          message: `Imported measurement (${m.measurementType}: ${m.value} ${m.unit}) isn't mentioned anywhere in the report.`,
+        });
+      } else if (m.unit) {
+        const idx = match.index;
+        const nearby = fullTextLower.substring(Math.max(0, idx - 20), idx + valLower.length + 20);
+        if (!nearby.includes(m.unit.trim().toLowerCase())) {
+          issues.push({
+            id: `meas-unit-${m.id}`,
+            severity: "important",
+            message: `Imported measurement's unit '${m.unit}' doesn't appear near its value in the report text — verify unit consistency.`,
+          });
+        }
+      }
+      // Dedup key includes the source location (series/slice), not just
+      // type+value+unit — measurementType is usually a generic caliper kind
+      // ("linear"), so two DIFFERENT lesions that happen to be the same size
+      // would otherwise collide and produce a false "duplicate" warning.
+      // Same series+slice+value+unit is what actually indicates the same
+      // caliper got imported twice.
+      const dupKey = `${m.seriesInstanceUID ?? ""}-${m.sliceNumber ?? ""}-${m.value}-${m.unit}`;
+      if (seen.has(dupKey)) {
+        issues.push({
+          id: `meas-dup-${m.id}`,
+          severity: "important",
+          message: `${m.value} ${m.unit} for '${m.measurementType}' appears to be imported more than once from the same location — verify it isn't a duplicate acquisition.`,
+        });
+      }
+      seen.add(dupKey);
+    }
+    return issues;
+  }, [viewerMeasurementsForSafety.data, clinicalHistory, technique, rawFindings, impression, recommendation]);
+
+  // C1 (Cockpit→Workspace merge): quantitative interval-change vs the same
+  // patient's prior measurements — distinct from C2's narrative structured
+  // comparison, and distinct from just listing old numbers (RadiologyMemoryPanel
+  // already does that): this computes an actual %-change per matched parameter.
+  // Reuses the same viewer-measurements cache F6 reads (via useViewerMeasurements
+  // above) rather than a second parallel query.
+  const { data: historicalMeasurementsForCompare = [] } = useQuery<
+    Array<{ studyId: number | null; measurementType: string; label: string; value: string; unit: string | null }>
+  >({
+    queryKey: ["historical-measurements", entry?.patientId],
+    queryFn: () =>
+      entry?.patientId
+        ? api
+            .get<{ measurements: Array<{ studyId: number | null; measurementType: string; label: string; value: string; unit: string | null }> }>(
+              `/api/radiology-lesions/measurements?patientId=${entry.patientId}`,
+            )
+            .then((res) => res.measurements ?? [])
+        : Promise.resolve([]),
+    enabled: !!entry?.patientId,
+    staleTime: 300_000,
+  });
+  const priorComparisonMetrics = useMemo(() => {
+    type Metric = { label: string; current: string; previous: string; changePercent: number; direction: "growth" | "regression" | "stable" };
+    const imported = (viewerMeasurementsForSafety.data ?? []).filter((m) => m.status === "imported");
+    if (imported.length === 0 || historicalMeasurementsForCompare.length === 0) return [] as Metric[];
+    const priorMeasures = historicalMeasurementsForCompare.filter((p) => p.studyId !== entry?.studyId);
+    const list: Metric[] = [];
+    for (const curr of imported) {
+      const currType = (curr.measurementType || "").toLowerCase();
+      // viewer_measurements.measurementType is the CALIPER KIND ("linear" |
+      // "area" | "volume" | "ellipse"), not a descriptive label — there is
+      // no anatomical-name field on that table. Matching on a generic kind
+      // would silently pair unrelated measurements (e.g. a liver-span
+      // caliper against an unrelated midline-shift value, both "linear")
+      // and show a misleading growth/regression trend. Only compare when
+      // the type string is itself descriptive enough to be a real match key.
+      if (GENERIC_CALIPER_TYPES.has(currType)) continue;
+      const prior = priorMeasures.find(
+        (p) => p.label.toLowerCase() === currType || p.measurementType.toLowerCase() === currType,
+      );
+      if (!prior) continue;
+      const currVal = parseFloat(curr.value);
+      const priorVal = parseFloat(prior.value);
+      if (isNaN(currVal) || isNaN(priorVal) || priorVal <= 0) continue;
+      const diff = currVal - priorVal;
+      const pct = Math.round((diff / priorVal) * 100);
+      list.push({
+        label: curr.measurementType,
+        current: `${currVal} ${curr.unit}`,
+        previous: `${priorVal} ${prior.unit || curr.unit}`,
+        changePercent: pct,
+        direction: pct > 0 ? "growth" : pct < 0 ? "regression" : "stable",
+      });
+    }
+    return list;
+  }, [viewerMeasurementsForSafety.data, historicalMeasurementsForCompare, entry?.studyId]);
+
+  // F3 (Cockpit→Workspace merge): real-time missed-finding nudges. Excludes
+  // the engine's "brain-adc" and "hydrocephalus-evans" rules — those are
+  // superseded by MeasurementAssistantPanel, which computes real ADC/Evans
+  // Index values rather than just reminding the radiologist to mention them.
+  const [dismissedCoPilotIds, setDismissedCoPilotIds] = useState<Set<string>>(new Set());
+  const coPilotSuggestions = useMemo(() => {
+    if (!rawFindings.trim()) return [] as CoPilotSuggestion[];
+    return observeReportText(entry?.modality ?? "", entry?.studyDescription ?? "", rawFindings)
+      .filter((s) => !COPILOT_SUPERSEDED_IDS.has(s.id) && !dismissedCoPilotIds.has(s.id));
+  }, [rawFindings, entry?.modality, entry?.studyDescription, dismissedCoPilotIds]);
+
+  // F4 (Cockpit→Workspace merge): institution-mandated "Comparison" section
+  // enforcement — the one genuinely novel required-section rule (Clinical
+  // History/Recommendation are already covered by computeQualityScore's
+  // existing completeness deductions; the cosmetic formatting sub-rules from
+  // the same institutional-style settings are intentionally NOT ported — the
+  // Workspace already gives direct manual heading-case/spacing controls,
+  // which serves that intent more directly than an AI nag would).
+  const { data: institutionalStyle } = useQuery<{ showComparison: boolean }>({
+    queryKey: ["institutional-style"],
+    queryFn: () => api.get("/api/radiology/institutional-style"),
+    staleTime: 300_000,
+  });
+  const { data: priorReportsTotal = 0 } = useQuery<number>({
+    queryKey: ["patient-prior-reports-count", entry?.patientId],
+    queryFn: () =>
+      entry?.patientId
+        ? api.get<{ total: number }>(`/api/patient-reports/patient/${entry.patientId}?type=radiology&limit=1`).then((r) => r.total ?? 0)
+        : Promise.resolve(0),
+    enabled: !!entry?.patientId,
+    staleTime: 300_000,
+  });
+  const COMPARISON_KEYWORDS = ["comparison", "prior", "compared", "previously", "previous study", "interval"];
+  const comparisonSectionMissing = useMemo(() => {
+    if (!institutionalStyle?.showComparison || priorReportsTotal === 0) return false;
+    // Deliberately excludes clinicalHistory — that field routinely contains
+    // unrelated phrases like "h/o prior appendectomy", which would otherwise
+    // satisfy the "prior" keyword and silently suppress this check even when
+    // no actual imaging-comparison wording was ever written in the report.
+    const fullTextLower = [technique, rawFindings, impression.join(" "), recommendation]
+      .join(" ").toLowerCase();
+    return !COMPARISON_KEYWORDS.some((kw) => fullTextLower.includes(kw));
+  }, [institutionalStyle, priorReportsTotal, technique, rawFindings, impression, recommendation]);
+
   // ── Draft identity (Radiology Roadmap Ticket A3.0) ────────────────────────
   // Loads any existing radiology_report_drafts row for this study and tracks
   // its id, so "Save Draft" updates that same row instead of inserting a new
@@ -936,6 +1195,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     insertedTextRef.current = new Map();
     lastToggledFindingRef.current = null;
     setIsCritical(false); setCriticalNote("");
+    // F5 fix: without this, switching studies carried the PREVIOUS study's
+    // communication checklist forward — a new critical finding on the next
+    // study could silently inherit "Telephoned Doctor: true" from a call that
+    // was never made for this patient, suppressing the safety gate and
+    // falsely recording it in the finalize audit trail.
+    setChecklistComm({ phoned: false, annotated: false, dispatched: false });
     setReportStatus("DRAFT");
     setSelectedTemplateId(null);
     setAiOutput("");
@@ -1107,6 +1372,68 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     queryKey: ["structured-templates"],
     queryFn: () => api.get<StructuredTemplate[]>("/api/radiology/structured-report-templates"),
   });
+
+  // E1: Phase-F master template catalog (additive alongside the structured
+  // templates above — both surfaces coexist in the picker). Fetched the same
+  // way the Cockpit did; the section renders only when non-empty, so a doctor
+  // with the feature off (empty catalog) sees no change.
+  const { data: masterTemplatesResp } = useQuery<{ templates: MasterTemplate[]; count: number }>({
+    queryKey: ["radiology-master-templates-v2"],
+    queryFn: () => api.get("/api/radiology/knowledge/master-templates"),
+    staleTime: 300_000,
+  });
+  const masterTemplates = masterTemplatesResp?.templates ?? [];
+  // Apply a master template: content-only. Deliberately clears
+  // selectedTemplateId (that field references the structured_report_templates
+  // id namespace; reusing it for master ids would misattribute the draft).
+  const handleApplyMasterTemplate = (tpl: MasterTemplate) => {
+    // Guarded like E2's importAiDraft — unlike the structured-template picker
+    // (fill-empty-only), this content-only apply used to overwrite typed
+    // Findings/Impression unconditionally with no way to undo.
+    const hasTyped = rawFindings.trim().length > 0 || impression.filter(Boolean).length > 0;
+    if (hasTyped && !window.confirm(`Replace the current Findings and Impression with "${tpl.templateName}"?`)) return;
+    setSelectedTemplateId(null);
+    setRawFindings(tpl.findings || "");
+    if (tpl.impression) setImpression([tpl.impression]);
+    toast({ title: "Master template applied", description: `${tpl.templateName} (${tpl.groupName.replace(/_/g, " ")})` });
+  };
+
+  // E2: on-demand full AI draft from study metadata (distinct from the
+  // impression-only aiImpressionMutation and from the passive fill-empty-only
+  // effect below). Lets a radiologist (re)request a draft and review it before
+  // importing — the import is guarded so it never silently clobbers typed text.
+  const generateAiDraftMutation = useMutation({
+    mutationFn: async () => {
+      if (!entry) return;
+      return api.post(`/api/internal/radiology/ai-draft`, {
+        studyId: entry.studyId,
+        modality: entry.modality,
+        studyDescription: entry.studyDescription ?? entry.modality,
+        patientName: entry.patientName,
+        age: entry.age ?? "",
+        sex: entry.sex ?? "",
+        accessionNumber: entry.accessionNumber,
+        studyDate: entry.studyDate ?? "",
+      });
+    },
+    onSuccess: () => {
+      toast({ title: "AI draft ready", description: "AI-generated draft retrieved." });
+      qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
+      if (studyId) qc.invalidateQueries({ queryKey: ["workspace-entry", studyId] });
+    },
+    onError: () => {
+      toast({ title: "AI draft failed", description: "Could not generate a draft for this study.", variant: "destructive" });
+    },
+  });
+  const importAiDraft = () => {
+    const draft = safeParseAiDraft(entry?.aiDraftJson);
+    if (!draft.findings && !draft.impression) return;
+    const hasTyped = rawFindings.trim().length > 0 || impression.filter(Boolean).length > 0;
+    if (hasTyped && !window.confirm("Replace the current Findings and Impression with the AI draft?")) return;
+    if (draft.findings) setRawFindings(draft.findings);
+    if (draft.impression) setImpression([draft.impression]);
+    toast({ title: "Draft applied", description: "Editor fields replaced with AI observations." });
+  };
 
   // R2.0 — canonical ultrasound integration. `entry.modality` is whatever
   // the PACS/DICOM source sent verbatim (US/USG/Doppler/OB US/...); fold it
@@ -1931,7 +2258,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       }
 
       // 3) Client-side rule warnings (existing validator — warn only).
-      const warnings = validateReport({ findings: rawFindings, impression, recommendation });
+      const warnings = validateReport({
+        findings: rawFindings, impression, recommendation, technique, clinicalHistory,
+        sex: entry?.sex, age: entry?.age, modality: entry?.modality, studyDescription: entry?.studyDescription,
+      });
 
       // 4) ONE explicit confirmation carrying the exact identity being
       //    signed (Phase 7/8): patient, study, modality, accession +
@@ -2027,6 +2357,16 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           criticalNote,
           createdBy: session?.user.name ?? "Radiologist",
           actor: session?.user.name ?? "staff",
+          // F7 (Cockpit→Workspace merge): durable record of the quality
+          // warnings that existed and how the critical finding (if any) was
+          // communicated at the moment of signing. `auditDetails` is already
+          // forwarded verbatim by finalizeRadiologyReport — no new transport.
+          auditDetails: {
+            qualityScore: quality.score,
+            qualityIssues: quality.issues,
+            measurementSafetyIssues: measurementSafetyIssues.map((i) => ({ severity: i.severity, message: i.message })),
+            criticalFinding: isCritical ? { note: criticalNote, communication: checklistComm } : null,
+          },
         },
       );
 
@@ -2411,6 +2751,43 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           </>
         )}
 
+        {/* E1: Master Library (Phase-F winner catalog) — additive, filtered to
+            the current study's modality, content-only apply. Renders only when
+            the catalog is non-empty. */}
+        {masterTemplates.length > 0 && (
+          <>
+            <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide pt-1">
+              Master Library
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {masterTemplates
+                .filter((m) => {
+                  if (!entry?.modality) return true;
+                  const em = entry.modality.toUpperCase();
+                  const mm = (m.modality || "").toUpperCase();
+                  if (mm === em) return true;
+                  if (em === "X-RAY" && mm === "XR") return true;
+                  if (isUltrasoundModality(entry.modality) && isUltrasoundModality(m.modality)) return true;
+                  return false;
+                })
+                .slice(0, 12)
+                .map((m) => (
+                  <Button
+                    key={`master-${m.id}`}
+                    size="sm"
+                    variant="outline"
+                    title={`${m.groupName.replace(/_/g, " ")}${m.bodyPart ? " · " + m.bodyPart : ""}`}
+                    onClick={() => handleApplyMasterTemplate(m)}
+                    disabled={isLocked}
+                    className="h-7 text-[10px]"
+                  >
+                    {m.templateName}
+                  </Button>
+                ))}
+            </div>
+          </>
+        )}
+
         {/* Template list */}
         <div className="flex flex-col gap-1 max-h-[200px] overflow-y-auto">
           {filteredTemplates.map((t) => (
@@ -2530,7 +2907,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     <div className="flex flex-col" style={{ height: "calc(100vh - 48px)" }}>
 
       {/* ── Compact header ─────────────────────────────────────────────────── */}
-      <div className="shrink-0 flex items-center gap-3 px-3 py-2 border-b bg-white">
+      <div className="shrink-0 flex items-center flex-wrap gap-x-3 gap-y-1 px-3 py-2 border-b bg-white">
         <Button
           variant="ghost"
           size="sm"
@@ -2601,7 +2978,6 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         >
           {isLeftPanelCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
         </button>
-        <ThemeSelector className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:bg-muted transition-colors" />
       </div>
 
       {/* ── M1.5 — workflow status bar (Phase 10) ──────────────────────────── */}
@@ -2665,6 +3041,29 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               </optgroup>
             )}
           </select>
+          {/* A1: find-and-jump filters (search + modality) over the jump list */}
+          <Input
+            value={queueFilterText}
+            onChange={(e) => setQueueFilterText(e.target.value)}
+            placeholder="Find in queue…"
+            className="h-6 w-[120px] text-[10px] px-1.5"
+            data-testid="queue-filter-text"
+            title="Filter the queue jump list by patient / accession / modality"
+          />
+          <select
+            className="h-6 text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
+            value={queueModalityFilter}
+            data-testid="queue-filter-modality"
+            onChange={(e) => setQueueModalityFilter(e.target.value)}
+            title="Filter the queue jump list by modality"
+          >
+            <option value="all">All</option>
+            <option value="US">US</option>
+            <option value="CT">CT</option>
+            <option value="MR">MR</option>
+            <option value="CR">CR</option>
+            <option value="DX">DX</option>
+          </select>
           {/* Jump to a specific queue row — →current ✓done ⏸parked 🔒locked */}
           <select
             className="h-6 max-w-[260px] text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
@@ -2680,8 +3079,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             }}
             title="Jump to a study in the queue"
           >
-            <option value="">Queue ({workflow.position.total})…</option>
-            {workflow.queue.map((s) => {
+            <option value="">
+              Queue ({jumpQueue.length === workflow.position.total
+                ? workflow.position.total
+                : `${jumpQueue.length}/${workflow.position.total}`})…
+            </option>
+            {jumpQueue.map((s) => {
               const ind = workflow.indicators.find((i) => i.id === s.id);
               const prefix = ind?.current ? "→ " : ind?.completed ? "✓ " : ind?.parked ? "⏸ " : ind?.lockedByOther ? "🔒 " : "";
               return (
@@ -2734,7 +3137,13 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           className="flex flex-col border-r bg-muted/5 overflow-hidden shrink-0 transition-[width] duration-200"
           style={isLeftPanelCollapsed
             ? { width: 44, minWidth: 44, maxWidth: 44 }
-            : { width: "35%", minWidth: 280, maxWidth: 460 }}
+            : isMobile
+              // Kept low enough that left + right (below, 32% on mobile)
+              // never combine past 100% of viewport width — if they did, the
+              // center report editor (flex-1, no floor) would be forced back
+              // to ~0px, reproducing the exact bug this mobile fix exists for.
+              ? { width: "45%", minWidth: 160, maxWidth: 240 }
+              : { width: "35%", minWidth: 280, maxWidth: 460 }}
         >
         {isLeftPanelCollapsed ? (
           <button
@@ -3385,13 +3794,34 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 </Label>
               </div>
               {isCritical && (
-                <Textarea
-                  value={criticalNote}
-                  onChange={(e) => setCriticalNote(e.target.value)}
-                  placeholder="Describe critical finding (e.g. acute infarct, cord compression, tension pneumothorax)..."
-                  className="min-h-[50px] text-sm resize-none"
-                  disabled={isLocked}
-                />
+                <>
+                  <Textarea
+                    value={criticalNote}
+                    onChange={(e) => setCriticalNote(e.target.value)}
+                    placeholder="Describe critical finding (e.g. acute infarct, cord compression, tension pneumothorax)..."
+                    className="min-h-[50px] text-sm resize-none"
+                    disabled={isLocked}
+                  />
+                  {/* F5: communication checklist — documents that the critical
+                      finding was actually relayed, not just flagged. */}
+                  <div className="flex flex-col gap-1.5 pt-1 border-t border-red-100">
+                    <span className="text-[10px] font-semibold text-red-700 uppercase tracking-wide">Communication Checklist</span>
+                    {([
+                      ["phoned", "Telephoned Doctor"],
+                      ["annotated", "Annotated in PACS"],
+                      ["dispatched", "Dispatched Alert"],
+                    ] as const).map(([key, label]) => (
+                      <label key={key} className="flex items-center gap-2 text-xs cursor-pointer">
+                        <Checkbox
+                          checked={checklistComm[key]}
+                          onCheckedChange={(v) => setChecklistComm((prev) => ({ ...prev, [key]: !!v }))}
+                          disabled={isLocked}
+                        />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                </>
               )}
             </div>
 
@@ -3533,8 +3963,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             )}
           </div>
 
-          {/* ── Sticky bottom action bar ─────────────────────────────────── */}
-          <div className="shrink-0 border-t bg-white px-3 py-2 flex items-center gap-2 flex-wrap">
+          {/* ── Sticky bottom action bar. On a narrow mobile column each
+              labeled button no longer fits side by side, so flex-wrap used
+              to stack all six into ~6 rows (~250px tall) and crowd out the
+              editor above it — scroll horizontally instead, a single
+              predictable-height row. ──────────────────────────────────── */}
+          <div className={`shrink-0 border-t bg-white px-3 py-2 flex items-center gap-2 ${
+            isMobile ? "overflow-x-auto flex-nowrap [&>*]:shrink-0" : "flex-wrap"
+          }`}>
             {!isLocked && (
               <Button
                 size="sm"
@@ -3625,10 +4061,17 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           </div>
         </div>
 
-        {/* ── RIGHT 20%: 5-tab assistant panel ──────────────────────────── */}
+        {/* ── RIGHT 20%: 5-tab assistant panel (narrower floor on phone-width
+            screens, alongside the left-panel default-collapse above, so the
+            center report editor keeps real width instead of being squeezed
+            to ~0px) ──────────────────────────────────────────────────── */}
         <div
           className="flex flex-col border-l overflow-hidden shrink-0"
-          style={{ width: "20%", minWidth: 200, maxWidth: 280 }}
+          style={isMobile
+            // 45% (left) + 32% (right) = 77%, always leaving real width for
+            // the center column even when both side panels are at their max.
+            ? { width: "32%", minWidth: 110, maxWidth: 170 }
+            : { width: "20%", minWidth: 200, maxWidth: 280 }}
         >
           {/* Tab header */}
           <div className="shrink-0 flex border-b bg-muted/10">
@@ -3703,6 +4146,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   setImpression([text]);
                   toast({ title: "Prior impression applied" });
                 }}
+                onInsertComparisonText={(text) => setRawFindings((prev) => mergeBlock(prev, text))}
                 initialTab="prior"
               />
             )}
@@ -3710,6 +4154,93 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             {/* Tab 3: AI Review */}
             {rightTab === "ai" && (
               <div className="flex flex-col">
+                {/* E2: on-demand full AI draft from study metadata. Distinct
+                    from the impression-only "AI Review" and from the passive
+                    fill-empty autofill — this lets the radiologist (re)request
+                    and review a complete draft, then import it (guarded). */}
+                <div className="mx-2 mt-2 border rounded-md p-2 bg-muted/30 shrink-0">
+                  <div className="text-[10px] font-semibold flex items-center gap-1 mb-1.5">
+                    <Sparkles size={10} className="text-indigo-500" /> AI Draft Assistant
+                  </div>
+                  <Button
+                    size="sm"
+                    className="w-full h-7 text-[11px] gap-1.5"
+                    onClick={() => generateAiDraftMutation.mutate()}
+                    disabled={generateAiDraftMutation.isPending || !entry || isLocked}
+                  >
+                    <RefreshCw size={11} className={generateAiDraftMutation.isPending ? "animate-spin" : ""} />
+                    {generateAiDraftMutation.isPending ? "Generating…" : "Query AI Draft"}
+                  </Button>
+                  {entry?.aiDraftJson && (
+                    <div className="mt-2 space-y-1.5">
+                      <div className="text-[10px] font-medium text-muted-foreground">Draft findings preview</div>
+                      <div className="bg-background border rounded p-1.5 text-[10px] max-h-32 overflow-y-auto font-mono whitespace-pre-line leading-normal">
+                        {safeParseAiDraft(entry.aiDraftJson).findings || "No findings text"}
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-full h-7 text-[10px]"
+                        onClick={importAiDraft}
+                        disabled={isLocked}
+                      >
+                        Import Draft into Findings/Impression
+                      </Button>
+                    </div>
+                  )}
+                </div>
+                {/* F3 (Cockpit→Workspace merge): real-time missed-finding nudges */}
+                {coPilotSuggestions.length > 0 && (
+                  <div className="mx-2 mt-2 space-y-1.5 shrink-0">
+                    {coPilotSuggestions.map((s) => (
+                      <div
+                        key={s.id}
+                        className={`p-2 rounded-md border text-[11px] space-y-1 ${
+                          s.severity === "critical" ? "bg-red-50 border-red-200"
+                          : s.severity === "warning" ? "bg-amber-50 border-amber-200"
+                          : "bg-muted/30 border-border"
+                        }`}
+                      >
+                        <div className="flex justify-between items-start gap-2">
+                          <span className="font-semibold">{s.title}</span>
+                          <Badge variant="outline" className="text-[8px] uppercase px-1 py-0 shrink-0">{s.severity}</Badge>
+                        </div>
+                        <p className="text-[10px] text-muted-foreground">{s.message}</p>
+                        <div className="flex gap-2 justify-end pt-1 border-t border-border/60">
+                          {s.actionableText && (
+                            <Button
+                              size="sm"
+                              className="h-6 text-[9px] px-2"
+                              disabled={isLocked}
+                              onClick={() => {
+                                if (s.actionMacro === "insertForaminalPlaceholder") {
+                                  setRawFindings((prev) => prev + "\n\nNEURAL FORAMINA:\n- Exiting nerve roots show no significant foraminal narrowing.");
+                                } else if (s.actionMacro === "addSpectroscopyRecommendation") {
+                                  setRecommendation((prev) => prev + " Recommend advanced MR Spectroscopy correlation.");
+                                } else if (s.actionMacro === "addAngioRecommendation") {
+                                  setRecommendation((prev) => prev + " Recommend MRA or CTA evaluation of intracranial circulation.");
+                                } else {
+                                  setRawFindings((prev) => (prev ? prev + " " + s.actionableText : s.actionableText!));
+                                }
+                                setDismissedCoPilotIds((prev) => new Set(prev).add(s.id));
+                              }}
+                            >
+                              Apply Advice
+                            </Button>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 text-[9px] px-2 text-muted-foreground"
+                            onClick={() => setDismissedCoPilotIds((prev) => new Set(prev).add(s.id))}
+                          >
+                            Dismiss
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <RadiologyCopilotPanel
                   key="ai"
                   patientId={entry?.patientId ?? undefined}
@@ -3722,6 +4253,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                     setImpression([text]);
                     toast({ title: "AI impression applied" });
                   }}
+                  onInsertComparisonText={(text) => setRawFindings((prev) => mergeBlock(prev, text))}
                   initialTab="impression"
                 />
                 {/* QA panel */}
@@ -3746,6 +4278,20 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                       <div className="text-green-600">✓ Clinical history present</div>
                     )}
                     <div className="text-green-600">✓ No left-right conflict detected</div>
+                    {/* F5: critical-finding communication gate */}
+                    {isCritical && !checklistComm.phoned && (
+                      <div className="text-red-500">⚠ Critical finding flagged but "Telephoned Doctor" not yet checked in the Communication Checklist.</div>
+                    )}
+                    {/* F4: institution-mandated Comparison section */}
+                    {comparisonSectionMissing && (
+                      <div className="text-amber-600">⚠ This patient has prior report(s) but no Comparison section/wording was found.</div>
+                    )}
+                    {/* F6: imported-viewer-measurement safety checks */}
+                    {measurementSafetyIssues.map((issue) => (
+                      <div key={issue.id} className={issue.severity === "critical" ? "text-red-500" : "text-amber-600"}>
+                        ⚠ {issue.message}
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>
@@ -3792,6 +4338,40 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   onMeasurementsChange={handleMeasurementsApplied} // D2: auto-bridge calcs → Findings/Impression
                   voiceTextCommand={lastVoiceCommand} // D3: autofill fields from dictated numbers
                 />
+                {/* D1: external-viewer measurement import queue (self-hides when empty) */}
+                <div className="border-t">
+                  <ViewerMeasurementsPanel
+                    studyInstanceUID={entry?.studyInstanceUID}
+                    onInsertToFindings={(line) => setRawFindings((prev) => mergeBlock(prev, line))}
+                    onInsertToImpression={(line) => setImpression((prev) => mergeImpression(prev, line))}
+                  />
+                </div>
+                {/* C1: quantitative interval-change vs this patient's prior
+                    measurements — self-hides when there's no matching pair. */}
+                {priorComparisonMetrics.length > 0 && (
+                  <div className="border-t p-2 space-y-1.5">
+                    <div className="flex items-center gap-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                      <GitCompare size={11} /> Prior Comparisons
+                    </div>
+                    {priorComparisonMetrics.map((c, idx) => (
+                      <div key={idx} className="flex flex-col text-[11px] bg-muted/20 p-2 rounded border">
+                        <div className="flex items-center justify-between font-medium">
+                          <span>{c.label}</span>
+                          <span className={`flex items-center gap-0.5 font-bold ${
+                            c.direction === "growth" ? "text-red-600" : c.direction === "regression" ? "text-emerald-600" : "text-muted-foreground"
+                          }`}>
+                            {c.direction === "growth" ? <TrendingUp size={13} /> : c.direction === "regression" ? <TrendingDown size={13} /> : <Minus size={13} />}
+                            {c.changePercent > 0 ? `+${c.changePercent}%` : `${c.changePercent}%`}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-[10px] text-muted-foreground mt-0.5">
+                          <span>Prior: {c.previous}</span>
+                          <span>Current: {c.current}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {entry?.patientId && (
                   <div className="border-t">
                     <RadiologyMemoryPanel
