@@ -22,6 +22,7 @@ import { appointmentsRouter } from "./appointments";
 import { packagesRouter } from "./packages";
 import { expensesRouter } from "./expenses";
 import discountReasonsRouter from "./discountReasons";
+import reprintReasonsRouter from "./reprintReasons";
 import testCategoriesRouter from "./testCategories";
 import clinicSettingsRouter from "./clinicSettings";
 import staffQuickDoctorsRouter from "./staffQuickDoctors";
@@ -319,6 +320,20 @@ router.use(
     return requireStaffPermission("/discounts")(req, res, next);
   },
   discountReasonsRouter,
+);
+
+// Reprint reasons — /billing permission (configuration for the bill re-print
+// dialog). Same read-open/write-gated shape as discount-reasons above: any
+// authenticated staff can READ (the re-print dialog dropdown needs the
+// active reasons), mutations require /billing.
+router.use(
+  "/reprint-reasons",
+  requireStaffAuth,
+  (req, res, next) => {
+    if (req.method === "GET") return next();
+    return requireStaffPermission("/billing")(req, res, next);
+  },
+  reprintReasonsRouter,
 );
 
 // Expenses — /accounting permission (financial records)

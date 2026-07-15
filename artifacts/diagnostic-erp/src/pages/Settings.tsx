@@ -174,6 +174,7 @@ const TABS = [
   { id: "footer-services", label: "Footer Services", icon: Layers },
   { id: "promotional-footer", label: "Promotional Footer", icon: Tag },
   { id: "discount-reasons", label: "Discount Reasons", icon: Tag },
+  { id: "reprint-reasons", label: "Reprint Reasons", icon: Printer },
   { id: "backup", label: "Backup", icon: Database },
   { id: "radiology", label: "Radiology", icon: ScanLine },
   { id: "manual", label: "User Manual", icon: FileDown },
@@ -251,7 +252,7 @@ export default function Settings() {
       let action = t.id;
       if (t.id === "email" || t.id === "whatsapp") action = "notifications";
       else if (t.id === "audit-log" || t.id === "feature-flags") action = "security";
-      else if (t.id === "billing-print" || t.id === "discount-reasons" || t.id === "receipt-messages" || t.id === "footer-services" || t.id === "promotional-footer") action = "billing";
+      else if (t.id === "billing-print" || t.id === "discount-reasons" || t.id === "reprint-reasons" || t.id === "receipt-messages" || t.id === "footer-services" || t.id === "promotional-footer") action = "billing";
       else if (t.id === "printers" || t.id === "scanner") action = "devices";
       else if (t.id === "departments" || t.id === "locations" || t.id === "branches" || t.id === "report-templates") action = "infrastructure";
       else if (t.id === "portal" || t.id === "online-booking" || t.id === "kiosk") action = "portals";
@@ -268,7 +269,7 @@ export default function Settings() {
       let action = t.id;
       if (t.id === "email" || t.id === "whatsapp") action = "notifications";
       else if (t.id === "audit-log" || t.id === "feature-flags") action = "security";
-      else if (t.id === "billing-print" || t.id === "discount-reasons" || t.id === "receipt-messages" || t.id === "footer-services" || t.id === "promotional-footer") action = "billing";
+      else if (t.id === "billing-print" || t.id === "discount-reasons" || t.id === "reprint-reasons" || t.id === "receipt-messages" || t.id === "footer-services" || t.id === "promotional-footer") action = "billing";
       else if (t.id === "printers" || t.id === "scanner") action = "devices";
       else if (t.id === "departments" || t.id === "locations" || t.id === "branches" || t.id === "report-templates") action = "infrastructure";
       else if (t.id === "portal" || t.id === "online-booking" || t.id === "kiosk" || t.id === "queue-settings") action = "portals";
@@ -310,6 +311,7 @@ export default function Settings() {
         {tab === "footer-services" && <FooterServicesTab />}
         {tab === "promotional-footer" && <PromotionalFooterTab />}
         {tab === "discount-reasons" && <DiscountReasonsTab />}
+        {tab === "reprint-reasons" && <ReprintReasonsTab />}
         {tab === "backup" && <BackupTab />}
         {tab === "radiology" && <RadiologySettingsTab />}
         {tab === "manual" && <ManualTab />}
@@ -5575,6 +5577,125 @@ function DiscountReasonsTab() {
           value={newLabel}
           onChange={(e) => setNewLabel(e.target.value)}
           placeholder="New reason (e.g. Weekend Promo)"
+          className="flex-1"
+        />
+        <Button type="submit" disabled={!newLabel.trim() || addReason.isPending}>
+          <Plus size={14} className="mr-1" /> Add
+        </Button>
+      </form>
+
+      <div className="bg-card border border-card-border rounded-xl overflow-hidden">
+        {isLoading ? (
+          <div className="p-6 text-sm text-muted-foreground">Loading…</div>
+        ) : reasons.length === 0 ? (
+          <div className="p-6 text-sm text-muted-foreground text-center">No reasons configured.</div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50 border-b border-card-border">
+              <tr>
+                <th className="text-left px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground w-12">#</th>
+                <th className="text-left px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">Label</th>
+                <th className="text-left px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground w-28">Status</th>
+                <th className="px-4 py-2.5 w-24" />
+              </tr>
+            </thead>
+            <tbody>
+              {reasons.map((r) => (
+                <tr key={r.id} className="border-b border-card-border last:border-0 hover:bg-muted/20">
+                  <td className="px-4 py-2 font-mono text-xs text-muted-foreground">{r.id}</td>
+                  <td className="px-4 py-2">
+                    {editId === r.id ? (
+                      <Input
+                        value={editLabel}
+                        onChange={(e) => setEditLabel(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") updateReason.mutate({ id: r.id, data: { label: editLabel } });
+                          if (e.key === "Escape") setEditId(null);
+                        }}
+                        autoFocus
+                        className="h-8"
+                      />
+                    ) : (
+                      <span className="font-medium">{r.label}</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2">
+                    <button
+                      onClick={() => updateReason.mutate({ id: r.id, data: { isActive: !r.isActive } })}
+                      className={`text-xs px-2 py-1 rounded font-medium ${r.isActive ? "bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400" : "bg-muted text-muted-foreground"}`}
+                    >
+                      {r.isActive ? "Active" : "Inactive"}
+                    </button>
+                  </td>
+                  <td className="px-4 py-2">
+                    <div className="flex items-center justify-end gap-1">
+                      {editId === r.id ? (
+                        <>
+                          <Button size="sm" variant="ghost" onClick={() => updateReason.mutate({ id: r.id, data: { label: editLabel } })}>Save</Button>
+                          <Button size="sm" variant="ghost" onClick={() => setEditId(null)}>✕</Button>
+                        </>
+                      ) : (
+                        <>
+                          <button onClick={() => { setEditId(r.id); setEditLabel(r.label); }} className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground"><Pencil size={13} /></button>
+                          <button
+                            onClick={() => { if (confirm(`Delete reason "${r.label}"?`)) deleteReason.mutate(r.id); }}
+                            className="p-1.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive"
+                          ><Trash2 size={13} /></button>
+                        </>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+type ReprintReason = { id: number; label: string; isActive: boolean };
+
+function ReprintReasonsTab() {
+  const qc = useQueryClient();
+  const { data: reasons = [], isLoading } = useQuery<ReprintReason[]>({
+    queryKey: ["reprint-reasons"],
+    queryFn: () => api.get("/api/reprint-reasons"),
+  });
+  const [newLabel, setNewLabel] = useState("");
+  const [editId, setEditId] = useState<number | null>(null);
+  const [editLabel, setEditLabel] = useState("");
+
+  const addReason = useMutation({
+    mutationFn: (label: string) => api.post("/api/reprint-reasons", { label }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["reprint-reasons"] }); setNewLabel(""); },
+  });
+  const updateReason = useMutation({
+    mutationFn: (body: { id: number; data: Partial<ReprintReason> }) => api.patch(`/api/reprint-reasons/${body.id}`, body.data),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["reprint-reasons"] }); setEditId(null); },
+  });
+  const deleteReason = useMutation({
+    mutationFn: (id: number) => api.delete(`/api/reprint-reasons/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["reprint-reasons"] }),
+  });
+
+  return (
+    <div className="max-w-2xl space-y-4">
+      <div className="bg-card border border-card-border rounded-xl p-5">
+        <p className="text-sm text-muted-foreground">
+          Manage the list of preset reasons available in the Bill Detail re-print dialog. Inactive reasons are hidden from re-printing but kept for historical bills.
+        </p>
+      </div>
+
+      <form
+        onSubmit={(e) => { e.preventDefault(); if (newLabel.trim()) addReason.mutate(newLabel.trim()); }}
+        className="bg-card border border-card-border rounded-xl p-4 flex gap-2"
+      >
+        <Input
+          value={newLabel}
+          onChange={(e) => setNewLabel(e.target.value)}
+          placeholder="New reason (e.g. Patient lost original copy)"
           className="flex-1"
         />
         <Button type="submit" disabled={!newLabel.trim() || addReason.isPending}>
