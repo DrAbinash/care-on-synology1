@@ -65,6 +65,8 @@ import { validateReport, computeQualityScore } from "@/lib/reportValidator";
 // F3 (Cockpit→Workspace merge): real-time missed-finding text-pattern nudges.
 // This lib was otherwise dead (imported only by the deprecated Cockpit).
 import { observeReportText, type CoPilotSuggestion } from "@/lib/radiologyCoPilotEngine";
+import CareCopilotPanel, { type CopilotAction } from "@/components/radiology/CareCopilotPanel";
+import { analyzeCopilot, type CopilotItem } from "@/lib/copilotOrchestrator";
 import { isLearnableAddition } from "@/lib/learningEngine";
 import { upsertMeasurement, upsertLabeledLine } from "@/lib/measurementVars";
 import CollapsibleSection from "@/components/radiology/CollapsibleSection";
@@ -203,7 +205,7 @@ type StylePreferences = {
   includeMeasurements: boolean;
 };
 
-type RightTab = "quickselect" | "templates" | "followup" | "prior" | "ai" | "measurements" | "teaching";
+type RightTab = "copilot" | "quickselect" | "templates" | "followup" | "prior" | "ai" | "measurements" | "teaching";
 
 // F3 (Cockpit→Workspace merge): rules superseded by MeasurementAssistantPanel,
 // which computes real ADC/Evans-Index values rather than just reminding the
@@ -1518,6 +1520,72 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     return observeReportText(entry?.modality ?? "", entry?.studyDescription ?? "", rawFindings)
       .filter((s) => !COPILOT_SUPERSEDED_IDS.has(s.id) && !dismissedCoPilotIds.has(s.id));
   }, [rawFindings, entry?.modality, entry?.studyDescription, dismissedCoPilotIds]);
+
+  // ── CARE Copilot (PR #80) ───────────────────────────────────────────────────
+  // Unified, always-on advisory panel. The analysis is LOCAL and deterministic
+  // (analyzeCopilot composes the EXISTING observer engine + validator + quality
+  // score — no new engine, no per-keystroke AI call), so it can run on every
+  // render. Nothing here mutates the report; the panel's Insert routes back
+  // through the same setters the rest of the workspace uses (Part 17 safety).
+  const [copilotDismissed, setCopilotDismissed] = useState<Set<string>>(new Set());
+  const [copilotRecent, setCopilotRecent] = useState<CopilotAction[]>([]);
+  const copilotUndoRef = useRef<(() => void) | null>(null);
+  const copilotReport = useMemo(() => analyzeCopilot({
+    modality: entry?.modality ?? "",
+    studyDescription: entry?.studyDescription ?? "",
+    clinicalHistory,
+    findings: useStructured ? findingsAsText() : rawFindings,
+    impression: impression.filter(Boolean),
+    recommendation,
+    technique,
+    selectedFindingLabels: [...selectedQuickIds]
+      .map((id) => findingById.get(id)?.label)
+      .filter((l): l is string => !!l),
+    checklistPercent,
+  }), [entry?.modality, entry?.studyDescription, clinicalHistory, useStructured, findingsMap, rawFindings, impression, recommendation, technique, selectedQuickIds, findingById, checklistPercent]);
+
+  function copilotAudit(item: CopilotItem, outcome: "accepted" | "ignored") {
+    // Advisory audit trail (Part 22) — reuses the EXISTING copilot log endpoint
+    // + table (radiology_copilot_logs), no duplicate store. Fire-and-forget;
+    // records category, provider, confidence and the (non-sensitive) title only
+    // — never report text. Provider is "local" for these on-device rules.
+    void api.post("/api/radiology-copilot/log", {
+      studyInstanceUID: entry?.studyInstanceUID ?? undefined,
+      suggestionType: item.category,
+      suggestionContent: `provider=local confidence=${item.confidence} — ${item.title}`,
+      action: outcome === "accepted" ? "accepted" : "dismissed",
+    }).catch(() => {});
+  }
+
+  function copilotInsert(item: CopilotItem) {
+    if (isLocked || !item.insertText) return;
+    const text = item.insertText;
+    const target = item.insertTarget ?? "findings";
+    if (target === "recommendation") { const prev = recommendation; copilotUndoRef.current = () => setRecommendation(prev); setRecommendation((p) => mergeBlock(p, text)); }
+    else if (target === "impression") { const prev = impression; copilotUndoRef.current = () => setImpression(prev); setImpression((p) => [...p, text]); }
+    else if (smartModeActive()) { const prev = findingsMap; copilotUndoRef.current = () => setFindingsMap(prev); setFindingsMap((m) => ({ ...m, [OTHER_SECTION]: { normal: false, text: mergeBlock(m[OTHER_SECTION]?.text ?? "", text) } })); }
+    else { const prev = rawFindings; copilotUndoRef.current = () => setRawFindings(prev); setRawFindings((p) => mergeBlock(p, text)); }
+    setCopilotDismissed((d) => new Set(d).add(item.id));
+    setCopilotRecent((r) => [{ id: item.id, title: item.title, category: item.category, outcome: "accepted" as const }, ...r].slice(0, 20));
+    copilotAudit(item, "accepted");
+    toast({ title: "Copilot suggestion inserted", description: "Undo it from Recent AI Actions in the Copilot panel." });
+  }
+
+  function copilotDismiss(item: CopilotItem) {
+    setCopilotDismissed((d) => new Set(d).add(item.id));
+    setCopilotRecent((r) => [{ id: item.id, title: item.title, category: item.category, outcome: "ignored" as const }, ...r].slice(0, 20));
+    copilotAudit(item, "ignored");
+  }
+
+  function copilotUndoLast() {
+    copilotUndoRef.current?.();
+    copilotUndoRef.current = null;
+    toast({ title: "Reverted last Copilot insertion" });
+  }
+
+  function copilotGoToConflict(_matchText: string) {
+    focusEditor("findings");
+  }
 
   // F4 (Cockpit→Workspace merge): institution-mandated "Comparison" section
   // enforcement — the one genuinely novel required-section rule (Clinical
@@ -3439,7 +3507,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // RENDER
   // ══════════════════════════════════════════════════════════════════════════
 
+  const copilotAlerts = copilotReport.items.filter(
+    (i) => !copilotDismissed.has(i.id) && (i.severity === "critical" || i.severity === "warning"),
+  ).length;
   const RIGHT_TABS = [
+    { id: "copilot", label: "Copilot", icon: <Sparkles size={11} />, badge: copilotAlerts },
     { id: "quickselect", label: "Quick", icon: <Zap size={11} /> },
     { id: "templates", label: "Templates", icon: <LayoutTemplate size={11} /> },
     { id: "followup", label: "Follow-up", icon: <RefreshCw size={11} /> },
@@ -4723,7 +4795,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                     : "border-transparent text-muted-foreground hover:text-foreground hover:bg-white/50"
                 }`}
               >
-                {tab.icon}
+                <span className="relative">
+                  {tab.icon}
+                  {"badge" in tab && tab.badge ? (
+                    <span className="absolute -right-2 -top-1.5 min-w-[13px] rounded-full bg-rose-500 px-0.5 text-center text-[8px] font-bold leading-[13px] text-white">
+                      {tab.badge}
+                    </span>
+                  ) : null}
+                </span>
                 {tab.label}
               </button>
             ))}
@@ -4731,6 +4810,20 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
           {/* Tab content */}
           <div className="flex-1 overflow-y-auto">
+
+            {/* CARE Copilot (PR #80) — always-on advisory assistant */}
+            {rightTab === "copilot" && (
+              <CareCopilotPanel
+                report={copilotReport}
+                dismissed={copilotDismissed}
+                onInsert={copilotInsert}
+                onDismiss={copilotDismiss}
+                onGoToConflict={copilotGoToConflict}
+                recentActions={copilotRecent}
+                onUndoLast={copilotUndoLast}
+                provider="local"
+              />
+            )}
 
             {/* Tab 1: Templates */}
             {rightTab === "quickselect" && (
