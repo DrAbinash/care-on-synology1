@@ -4311,6 +4311,15 @@ function BillingPrintTab() {
       showPatientInstructions: settings.showPatientInstructions,
       showSystemInfo: settings.showSystemInfo,
       showQueueToken: settings.showQueueTokenOnBill,
+      printMarginMm: settings.printMarginMm,
+      printTitleFontPx: settings.printTitleFontPx,
+      printPatientNameFontPx: settings.printPatientNameFontPx,
+      printBodyFontPx: settings.printBodyFontPx,
+      printHeaderFontPx: settings.printHeaderFontPx,
+      printTableFontPx: settings.printTableFontPx,
+      printTotalFontPx: settings.printTotalFontPx,
+      printFooterFontPx: settings.printFooterFontPx,
+      printTinyFontPx: settings.printTinyFontPx,
     });
   }, [settings, previewClinic, previewQrUrl, effectivePreviewIsBW]);
 
@@ -4388,6 +4397,39 @@ function BillingPrintTab() {
         <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${value ? "translate-x-5" : "translate-x-1"}`} />
       </span>
     </button>
+  );
+
+  // A numeric override field for print layout/typography. `value` is
+  // null when unset (falls back to the built-in tuned default shown as
+  // placeholder text). Typing a number applies a fixed override regardless
+  // of paper size; "Reset" clears back to null (built-in default).
+  const NumberOverrideField = ({ label, value, defaultLabel, unit, min, max, onChange }: {
+    label: string; value: number | null; defaultLabel: string; unit: string;
+    min: number; max: number; onChange: (v: number | null) => void;
+  }) => (
+    <div>
+      <p className="text-xs font-medium mb-1">{label}</p>
+      <div className="flex items-center gap-2">
+        <input
+          type="number" min={min} max={max}
+          value={value ?? ""}
+          placeholder={`Default: ${defaultLabel}`}
+          onChange={(e) => {
+            const raw = e.target.value;
+            if (raw === "") { onChange(null); return; }
+            const n = Number(raw);
+            if (Number.isFinite(n)) onChange(Math.max(min, Math.min(max, n)));
+          }}
+          className="w-full h-8 text-sm border border-input rounded-md px-2 bg-background"
+        />
+        <span className="text-xs text-muted-foreground shrink-0">{unit}</span>
+        {value != null && (
+          <button type="button" onClick={() => onChange(null)} className="text-xs text-muted-foreground hover:text-foreground underline shrink-0">
+            Reset
+          </button>
+        )}
+      </div>
+    </div>
   );
 
   const billFormats: { id: string; label: string }[] = [
@@ -4501,6 +4543,71 @@ function BillingPrintTab() {
         <p className="text-[11px] text-muted-foreground leading-relaxed mt-1">
           Adds a large "QUEUE TOKEN #NN" box near the top of the bill, separate from the per-test department token list (which always prints when present). Off by default to avoid a redundant box on billing-counter receipts.
         </p>
+      </SectionCard>
+
+      <SectionCard title="Layout &amp; Typography" subtitle="Fine-tune the printed bill's page margin and font sizes (Classic format). Leave blank to use the built-in size — it's already tuned separately for A5 vs A4 paper.">
+        <NumberOverrideField
+          label="Page Margin" unit="mm" min={2} max={25}
+          value={settings.printMarginMm} defaultLabel="10mm (A5) / 8mm (A4)"
+          onChange={(v) => update({ printMarginMm: v })}
+        />
+        <div className="grid grid-cols-2 gap-3">
+          <NumberOverrideField
+            label="Title Font Size (INVOICE/RECEIPT)" unit="px" min={8} max={40}
+            value={settings.printTitleFontPx} defaultLabel="19px (A5) / 20px (A4)"
+            onChange={(v) => update({ printTitleFontPx: v })}
+          />
+          <NumberOverrideField
+            label="Patient/Date Font Size" unit="px" min={8} max={32}
+            value={settings.printPatientNameFontPx} defaultLabel="14px (A5) / 18px (A4)"
+            onChange={(v) => update({ printPatientNameFontPx: v })}
+          />
+          <NumberOverrideField
+            label="Tagline Font Size" unit="px" min={8} max={28}
+            value={settings.printBodyFontPx} defaultLabel="14px (A5) / 13px (A4)"
+            onChange={(v) => update({ printBodyFontPx: v })}
+          />
+          <NumberOverrideField
+            label="Clinic Contact Info Font Size" unit="px" min={6} max={24}
+            value={settings.printHeaderFontPx} defaultLabel="11px (A5) / 10px (A4)"
+            onChange={(v) => update({ printHeaderFontPx: v })}
+          />
+          <NumberOverrideField
+            label="Test Table Font Size" unit="px" min={8} max={24}
+            value={settings.printTableFontPx} defaultLabel="12px"
+            onChange={(v) => update({ printTableFontPx: v })}
+          />
+          <NumberOverrideField
+            label="Totals Font Size" unit="px" min={8} max={24}
+            value={settings.printTotalFontPx} defaultLabel="13px"
+            onChange={(v) => update({ printTotalFontPx: v })}
+          />
+          <NumberOverrideField
+            label="Footer Message Font Size" unit="px" min={6} max={20}
+            value={settings.printFooterFontPx} defaultLabel="11px"
+            onChange={(v) => update({ printFooterFontPx: v })}
+          />
+          <NumberOverrideField
+            label="Fine Print Font Size" unit="px" min={6} max={18}
+            value={settings.printTinyFontPx} defaultLabel="10px"
+            onChange={(v) => update({ printTinyFontPx: v })}
+          />
+        </div>
+        {(settings.printMarginMm != null || settings.printTitleFontPx != null || settings.printPatientNameFontPx != null
+          || settings.printBodyFontPx != null || settings.printHeaderFontPx != null || settings.printTableFontPx != null
+          || settings.printTotalFontPx != null || settings.printFooterFontPx != null || settings.printTinyFontPx != null) && (
+          <button
+            type="button"
+            onClick={() => update({
+              printMarginMm: null, printTitleFontPx: null, printPatientNameFontPx: null,
+              printBodyFontPx: null, printHeaderFontPx: null, printTableFontPx: null,
+              printTotalFontPx: null, printFooterFontPx: null, printTinyFontPx: null,
+            })}
+            className="text-xs text-muted-foreground hover:text-foreground underline"
+          >
+            Reset all layout overrides to defaults
+          </button>
+        )}
       </SectionCard>
 
       <SectionCard title="Print Action" subtitle="Default action when saving a bill.">

@@ -185,6 +185,19 @@ export type BuildPrintHtmlOpts = {
   // callers opt into the compact gap instead. Defaults to false so Billing
   // Desk's existing print output is unaffected.
   compactFooterGap?: boolean;
+  // Layout & typography overrides (Classic format only) — see
+  // BillPrintSettings's matching print*Px/printMarginMm fields. Each is
+  // undefined/null-safe: omit or pass null to fall back to the built-in
+  // A5/A4-tuned default for that element.
+  printMarginMm?: number | null;
+  printTitleFontPx?: number | null;
+  printPatientNameFontPx?: number | null;
+  printBodyFontPx?: number | null;
+  printHeaderFontPx?: number | null;
+  printTableFontPx?: number | null;
+  printTotalFontPx?: number | null;
+  printFooterFontPx?: number | null;
+  printTinyFontPx?: number | null;
 };
 
 export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
@@ -222,23 +235,41 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   // page-wide filter would also desaturate the clinic logo, which should
   // always print in its native color regardless of printer mode.
   const statusColor = (semantic: string): string => (isBW ? "#000" : semantic);
+  // Separate helper for BACKGROUND fills using the same semantic colors —
+  // must NEVER resolve to the same "#000" as statusColor's text color, or
+  // B&W mode would render black text on a black background (invisible).
+  // Falls back to a neutral light gray callout instead.
+  const statusBg = (semantic: string): string => (isBW ? "#eee" : semantic);
 
-  // ── Sizing tuned for A5 thermal receipt ──
+  // ── Sizing tuned for A5 thermal receipt, admin-overridable per-field via
+  // Settings → Billing Print → Layout & Typography (BillPrintSettings'
+  // print*Px/printMarginMm). null/undefined = built-in tuned default, which
+  // still varies by A5 vs A4 paper size; a non-null override applies fixed
+  // regardless of paper size. ──
   // A5: flex column layout pushes footer to bottom so short bills fill the page
-  const pageMargin = isA5 ? "10mm" : "8mm";
-  // Content-area height = page height minus top+bottom margin. Must track `orientation`,
-  // since A5 landscape's page height (148mm) is far shorter than portrait's (210mm) —
-  // using a fixed portrait-sized min-height here overflows the printable area on landscape
-  // and forces the browser into "shrink to fit", which rasterizes/blurs the whole receipt.
-  const receiptMinHeight = orientation === "landscape" ? "128mm" : "190mm";
-  const titleSize = isA5 ? "15px" : "16px";
-  const patientNameSize = isA5 ? "14px" : "18px";    // compact patient / ref / date block
-  const bodyPx = isA5 ? "14px" : "13px";             // tagline under logo
-  const headerPx = isA5 ? "16px" : "14px";           // clinic address / phone / email (prominent)
-  const tablePx = isA5 ? "12px" : "12px";
-  const totalPx = isA5 ? "13px" : "13px";
-  const footerPx = isA5 ? "11px" : "11px";
-  const tinyPx = isA5 ? "10px" : "10px";
+  const marginMm = opts.printMarginMm ?? (isA5 ? 10 : 8);
+  const pageMargin = `${marginMm}mm`;
+  // Content-area height = page height minus top+bottom margin. Must track
+  // `orientation` AND the actual configured margin — since A5 landscape's
+  // page height (148mm) is far shorter than portrait's (210mm), and a
+  // larger admin-configured margin shrinks the usable area further. Using a
+  // stale/mismatched min-height here overflows the printable area and
+  // forces the browser into "shrink to fit" (blurs the receipt) or spills
+  // content onto a silent extra page — see the max-height-free single-
+  // source-of-truth note below on why this is inline-only, never duplicated
+  // in the <style> block.
+  const receiptMinHeight = `${(isA5 ? (orientation === "landscape" ? 148 : 210) : 297) - marginMm * 2}mm`;
+  // Title ("INVOICE/RECEIPT") is the page's real anchor and must read as the
+  // largest header element; clinic contact info (headerPx) is secondary and
+  // was previously LARGER than the title, inverting the hierarchy.
+  const titleSize = `${opts.printTitleFontPx ?? (isA5 ? 19 : 20)}px`;
+  const patientNameSize = `${opts.printPatientNameFontPx ?? (isA5 ? 14 : 18)}px`;    // compact patient / ref / date block
+  const bodyPx = `${opts.printBodyFontPx ?? (isA5 ? 14 : 13)}px`;                     // tagline under logo
+  const headerPx = `${opts.printHeaderFontPx ?? (isA5 ? 11 : 10)}px`;                 // clinic address / phone / email (caption weight)
+  const tablePx = `${opts.printTableFontPx ?? 12}px`;
+  const totalPx = `${opts.printTotalFontPx ?? 13}px`;
+  const footerPx = `${opts.printFooterFontPx ?? 11}px`;
+  const tinyPx = `${opts.printTinyFontPx ?? 10}px`;
 
   const colCount = 3 + (showCode ? 1 : 0) + (showCategory ? 1 : 0);
 
@@ -249,16 +280,16 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
     const cat = t.test?.category ?? "";
     const codeFontSize = `${Math.round(parseInt(tablePx, 10) * 0.9)}px`;
     return `<tr>
-      <td style="padding:4px 5px;border:1px solid #888;font-size:${tablePx};text-align:center">${i + 1}</td>
-      ${showCode ? `<td style="padding:4px 5px;border:1px solid #888;font-family:monospace;font-size:${codeFontSize}">${esc(code)}</td>` : ""}
-      <td style="padding:4px 5px;border:1px solid #888;font-size:${tablePx}">${esc(name)}</td>
-      ${showCategory ? `<td style="padding:4px 5px;border:1px solid #888;font-size:${tablePx};color:#333">${esc(cat)}</td>` : ""}
-      <td style="padding:4px 5px;border:1px solid #888;text-align:right;font-weight:700;font-size:${tablePx}">₹${fmt(t.price)}</td>
+      <td style="padding:6px 8px;border:1px solid #000;font-size:${tablePx};text-align:center">${i + 1}</td>
+      ${showCode ? `<td style="padding:6px 8px;border:1px solid #000;font-family:monospace;font-size:${codeFontSize}">${esc(code)}</td>` : ""}
+      <td style="padding:6px 8px;border:1px solid #000;font-size:${tablePx}">${esc(name)}</td>
+      ${showCategory ? `<td style="padding:6px 8px;border:1px solid #000;font-size:${tablePx};color:#555">${esc(cat)}</td>` : ""}
+      <td style="padding:6px 8px;border:1px solid #000;text-align:right;font-weight:700;font-size:${tablePx}">₹${fmt(t.price)}</td>
     </tr>`;
   }).join("");
 
   const cancelledRow = cancelled.length === 0 ? "" : `
-    <div style="margin-top:4px;font-size:${tinyPx};color:#999">
+    <div style="margin-top:4px;font-size:${tinyPx};color:#888">
       <em>Cancelled: ${esc(cancelled.map((t) => t.displayName ?? t.test?.name ?? "").join(", "))}</em>
     </div>`;
 
@@ -266,8 +297,8 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const payRows = (bill.payments ?? []).map((p) => {
     const ref = p.referenceNumber ? ` (${esc(p.referenceNumber)})` : "";
     return `<tr>
-      <td style="padding:1px 0;font-size:${tinyPx};text-transform:capitalize">${esc(p.method)}${ref ? `<span style="color:#777;font-size:${Math.round(parseInt(tinyPx, 10) * 0.85)}px">${ref}</span>` : ""}</td>
-      <td style="padding:1px 0;text-align:right;font-weight:600;font-size:${tinyPx}">₹${fmt(p.amount)}</td>
+      <td style="padding:3px 6px 3px 0;font-size:${tinyPx};text-transform:capitalize">${esc(p.method)}${ref ? `<span style="color:#888;font-size:${Math.round(parseInt(tinyPx, 10) * 0.85)}px">${ref}</span>` : ""}</td>
+      <td style="padding:3px 0;text-align:right;font-weight:600;font-size:${tinyPx}">₹${fmt(p.amount)}</td>
     </tr>`;
   }).join("");
 
@@ -287,16 +318,15 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const page = (copyIdx: number) => `
     <section class="receipt" style="${copyIdx > 0 ? "page-break-before:always;" : ""}${isA5 && !compactFooterGap ? `display:flex;flex-direction:column;min-height:${receiptMinHeight};` : ""}">
 
-      ${reprintBy || reprintReason ? `<div style="text-align:center;font-size:${tinyPx};color:#a16207;border:1px dashed #d97706;padding:2px 4px;margin-bottom:4px;text-transform:uppercase;font-weight:700">DUPLICATE / RE-PRINT${reprintBy ? ` · BY ${esc(reprintBy)}` : ""}${reprintReason ? ` · ${esc(reprintReason)}` : ""}</div>` : ""}
-
-      <!-- HEADER: logo + tagline left, clinic info right (bold, bigger) -->
-      <table style="width:100%;border-collapse:collapse;margin-bottom:4px">
+      <!-- HEADER: logo + tagline left, clinic info right, vertically centered
+           against each other so the shorter block doesn't visually float. -->
+      <table style="width:100%;border-collapse:collapse;margin-bottom:8px">
         <tr>
-          <td style="vertical-align:top;padding:0;width:45%">
+          <td style="vertical-align:middle;padding:0;width:45%">
             ${clinic?.logoDataUrl ? `<img src="${clinic.logoDataUrl}" alt="logo" style="max-height:78px;max-width:160px;object-fit:contain;display:block;margin-bottom:3px"/>` : ""}
             <div style="font-size:${bodyPx};color:#333;font-weight:700;line-height:1.2">${esc(clinic?.tagline || "DIAGNOSTIC & PATHOLOGY SERVICES")}</div>
           </td>
-          <td style="vertical-align:top;text-align:right;padding:0;font-size:${headerPx};line-height:1.45;color:#000;font-weight:700">
+          <td style="vertical-align:middle;text-align:right;padding:0;font-size:${headerPx};line-height:1.45;color:#555;font-weight:600">
             ${clinic?.address ? `<div>${esc(clinic.address.replace(/\s*\n\s*/g, ", ").trim())}</div>` : ""}
             <div>PH: ${esc(clinic?.phone ?? "")}</div>
             <div>EMAIL: ${esc(clinic?.email ?? "")}</div>
@@ -307,7 +337,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
       </table>
 
       <!-- TITLE LINE with bill number on the right -->
-      <div style="border-top:2px solid #000;border-bottom:2px solid #000;padding:4px 0;margin-bottom:6px">
+      <div style="border-top:2px solid #000;border-bottom:2px solid #000;padding:4px 0;margin-bottom:8px">
         <table style="width:100%;border-collapse:collapse">
           <tr>
             <td style="padding:0;vertical-align:middle">
@@ -319,6 +349,11 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
           </tr>
         </table>
       </div>
+
+      <!-- Reprint marker — a flat, muted badge (not a rotated/dashed
+           "stamp") stating who reprinted this copy and why, placed under
+           the bill number rather than crowding the logo/header. -->
+      ${reprintBy || reprintReason ? `<div style="display:inline-block;background:#f3f4f6;color:#4b5563;border:1px solid #d1d5db;border-radius:3px;padding:2px 8px;font-size:${tinyPx};font-weight:600;letter-spacing:0.02em;margin-bottom:8px">REPRINT${reprintBy ? ` &nbsp;&middot;&nbsp; ${esc(reprintBy)}` : ""}${reprintReason ? ` &nbsp;&middot;&nbsp; ${esc(reprintReason)}` : ""} &nbsp;&middot;&nbsp; ${esc(new Date().toLocaleDateString("en-IN"))}</div>` : ""}
 
       <!-- PATIENT + DATE (uniform font size) -->
       <table style="width:100%;border-collapse:collapse;margin-bottom:4px">
@@ -345,9 +380,9 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
            billing-counter receipts don't show a redundant big token box on
            top of the per-test department token list below. -->
       ${opts.showQueueToken && bill.tokenNo ? `
-      <div style="text-align:center;background:#eff6ff;border:2px dashed #0284c7;border-radius:6px;padding:4px 8px;margin-bottom:6px">
+      <div style="text-align:center;background:#eff6ff;border:2px dashed #0c4a6e;border-radius:6px;padding:4px 8px;margin-bottom:6px">
         <div style="font-size:${tinyPx};font-weight:800;color:#0c4a6e;letter-spacing:0.5px">QUEUE TOKEN</div>
-        <div style="font-size:${parseInt(titleSize, 10) + 10}px;font-weight:900;color:#082f49;line-height:1.1">#${esc(String(bill.tokenNo))}</div>
+        <div style="font-size:${parseInt(titleSize, 10) + 10}px;font-weight:900;color:#0c4a6e;line-height:1.1">#${esc(String(bill.tokenNo))}</div>
       </div>` : ""}
       ${bill.testTokens && bill.testTokens.length > 0 ? `
       <div style="font-size:${tinyPx};margin-bottom:6px">
@@ -355,18 +390,18 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
       </div>` : ""}
 
       <!-- TEST TABLE with borders -->
-      <table style="width:100%;border-collapse:collapse;font-size:${tablePx};margin-bottom:6px">
+      <table class="test-table" style="width:100%;border-collapse:collapse;font-size:${tablePx};margin-bottom:8px">
         <thead>
           <tr>
-            <th style="padding:4px 5px;border:1px solid #888;text-align:center;font-weight:800">#</th>
-            ${showCode ? `<th style="padding:4px 5px;border:1px solid #888;text-align:left;font-weight:800">CODE</th>` : ""}
-            <th style="padding:4px 5px;border:1px solid #888;text-align:left;font-weight:800">TEST NAME</th>
-            ${showCategory ? `<th style="padding:4px 5px;border:1px solid #888;text-align:left;font-weight:800">CATEGORY</th>` : ""}
-            <th style="padding:4px 5px;border:1px solid #888;text-align:right;font-weight:800">AMOUNT (₹)</th>
+            <th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:center;font-weight:800">#</th>
+            ${showCode ? `<th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">CODE</th>` : ""}
+            <th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">TEST NAME</th>
+            ${showCategory ? `<th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">CATEGORY</th>` : ""}
+            <th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:right;font-weight:800">AMOUNT (₹)</th>
           </tr>
         </thead>
         <tbody>
-          ${testRows || `<tr><td colspan="${colCount}" style="padding:8px;text-align:center;color:#999;border:1px solid #888">No tests on this bill</td></tr>`}
+          ${testRows || `<tr><td colspan="${colCount}" style="padding:8px;text-align:center;color:#888;border:1px solid #000">No tests on this bill</td></tr>`}
         </tbody>
       </table>
       ${cancelledRow}
@@ -382,33 +417,34 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
           <tr>
             <!-- QR (left) -->
             <td style="vertical-align:bottom;padding:0">
-              ${qrEnabled && qrDataUrl ? `<img src="${qrDataUrl}" alt="QR" style="width:70px;height:70px;display:block"/><div style="font-size:${tinyPx};color:#666;margin-top:1px">Scan to verify</div>` : ""}
+              ${qrEnabled && qrDataUrl ? `<img src="${qrDataUrl}" alt="QR" style="width:70px;height:70px;display:block"/><div style="font-size:${tinyPx};color:#555;margin-top:1px">Scan to verify</div>` : ""}
             </td>
             <!-- Payment details (middle, if present) -->
             <td style="vertical-align:top;padding:0 8px 0 0;font-size:${tinyPx}">
-              ${hasPayDetail ? `<div style="font-weight:800;border-bottom:1px solid #999;padding-bottom:1px;margin-bottom:2px;font-size:${Math.round(parseInt(tinyPx, 10) * 1.1)}px">PAYMENT DETAILS</div>
+              ${hasPayDetail ? `<div style="font-weight:800;border-bottom:1px solid #000;padding-bottom:2px;margin-bottom:3px;text-transform:uppercase;letter-spacing:0.3px;font-size:${Math.round(parseInt(tinyPx, 10) * 1.3)}px">PAYMENT DETAILS</div>
                 <table style="width:100%;border-collapse:collapse"><tbody>${payRows}</tbody></table>` : ""}
             </td>
             <!-- Totals -->
             <td style="vertical-align:top;padding:0">
               <table style="width:100%;border-collapse:collapse;font-size:${totalPx};table-layout:fixed">
+                <colgroup><col style="width:58%"/><col style="width:42%"/></colgroup>
                 <tbody>
-                  <tr><td style="padding:2px 3px">SUBTOTAL</td><td style="padding:2px 3px;text-align:right;white-space:nowrap">₹${fmt(bill.subtotal)}</td></tr>
-                  ${Number(bill.discount) > 0 ? `<tr><td style="padding:2px 3px">DISCOUNT</td><td style="padding:2px 3px;text-align:right;white-space:nowrap">₹${fmt(bill.discount)}</td></tr>` : ""}
+                  <tr><td style="padding:4px 6px">SUBTOTAL</td><td style="padding:4px 6px;text-align:right;white-space:nowrap">₹${fmt(bill.subtotal)}</td></tr>
+                  ${Number(bill.discount) > 0 ? `<tr><td style="padding:4px 6px">DISCOUNT</td><td style="padding:4px 6px;text-align:right;white-space:nowrap">₹${fmt(bill.discount)}</td></tr>` : ""}
                   <tr>
-                    <td style="padding:3px 3px;border-top:2px solid #000;font-weight:900">TOTAL</td>
-                    <td style="padding:3px 3px;border-top:2px solid #000;text-align:right;font-weight:900;white-space:nowrap">₹${fmt(bill.totalAmount)}</td>
+                    <td style="padding:4px 6px;border-top:2px solid #000;font-weight:900">TOTAL</td>
+                    <td style="padding:4px 6px;border-top:2px solid #000;text-align:right;font-weight:900;white-space:nowrap">₹${fmt(bill.totalAmount)}</td>
                   </tr>
-                  <tr><td style="padding:2px 3px;border-top:1px solid #000;font-weight:800">PAID</td><td style="padding:2px 3px;border-top:1px solid #000;text-align:right;font-weight:800;white-space:nowrap;color:${statusColor(isUnconfirmedQr ? "orange" : "green")}">${isUnconfirmedQr ? `${fmt(bill.totalAmount)} (To Be Confirmed)` : `₹${fmt(bill.paidAmount)}`}</td></tr>
+                  <tr><td style="padding:4px 6px;border-top:1px solid #000;font-weight:800">PAID</td><td style="padding:4px 6px;border-top:1px solid #000;text-align:right;font-weight:800;white-space:nowrap;color:${statusColor(isUnconfirmedQr ? "#b45309" : "#15803d")}">${isUnconfirmedQr ? `${fmt(bill.totalAmount)} (To Be Confirmed)` : `₹${fmt(bill.paidAmount)}`}</td></tr>
                   <tr>
-                    <td style="padding:3px 3px;border-top:2px solid #000;font-weight:900;font-size:${parseInt(totalPx, 10) + 2}px">BALANCE DUE</td>
-                    <td style="padding:3px 3px;border-top:2px solid #000;text-align:right;font-weight:900;white-space:nowrap;color:${statusColor(isUnconfirmedQr ? "orange" : Number(bill.balanceAmount) > 0 ? "#c62828" : "green")};font-size:${parseInt(totalPx, 10) + 2}px">${isUnconfirmedQr ? "To Be Confirmed" : `₹${fmt(bill.balanceAmount)}`}</td>
+                    <td style="padding:6px;border-top:2px solid #000;font-weight:900;font-size:${parseInt(totalPx, 10) + 7}px;background:${statusBg(isUnconfirmedQr ? "#fef3c7" : Number(bill.balanceAmount) > 0 ? "#fee2e2" : "#dcfce7")}">BALANCE DUE</td>
+                    <td style="padding:6px;border-top:2px solid #000;text-align:right;font-weight:900;white-space:nowrap;color:${statusColor(isUnconfirmedQr ? "#b45309" : Number(bill.balanceAmount) > 0 ? "#b91c1c" : "#15803d")};font-size:${parseInt(totalPx, 10) + 7}px;background:${statusBg(isUnconfirmedQr ? "#fef3c7" : Number(bill.balanceAmount) > 0 ? "#fee2e2" : "#dcfce7")}">${isUnconfirmedQr ? "To Be Confirmed" : `₹${fmt(bill.balanceAmount)}`}</td>
                   </tr>
-                  ${cashAmt > 0 ? `<tr><td style="padding:1px 3px;color:#444;font-size:${tinyPx}">Cash</td><td style="padding:1px 3px;text-align:right;white-space:nowrap;color:#444;font-size:${tinyPx}">₹${fmt(cashAmt)}</td></tr>` : ""}
-                  ${upiAmt > 0 ? `<tr><td style="padding:1px 3px;color:#444;font-size:${tinyPx}">UPI</td><td style="padding:1px 3px;text-align:right;white-space:nowrap;color:#444;font-size:${tinyPx}">₹${fmt(upiAmt)}</td></tr>` : ""}
-                  ${cardAmt > 0 ? `<tr><td style="padding:1px 3px;color:#444;font-size:${tinyPx}">Card</td><td style="padding:1px 3px;text-align:right;white-space:nowrap;color:#444;font-size:${tinyPx}">₹${fmt(cardAmt)}</td></tr>` : ""}
-                  ${insAmt > 0 ? `<tr><td style="padding:1px 3px;color:#444;font-size:${tinyPx}">Insurance</td><td style="padding:1px 3px;text-align:right;white-space:nowrap;color:#444;font-size:${tinyPx}">₹${fmt(insAmt)}</td></tr>` : ""}
-                  ${chqAmt > 0 ? `<tr><td style="padding:1px 3px;color:#444;font-size:${tinyPx}">Cheque</td><td style="padding:1px 3px;text-align:right;white-space:nowrap;color:#444;font-size:${tinyPx}">₹${fmt(chqAmt)}</td></tr>` : ""}
+                  ${cashAmt > 0 ? `<tr><td style="padding:3px 6px;color:#555;font-size:${tinyPx}">Cash</td><td style="padding:3px 6px;text-align:right;white-space:nowrap;color:#555;font-size:${tinyPx}">₹${fmt(cashAmt)}</td></tr>` : ""}
+                  ${upiAmt > 0 ? `<tr><td style="padding:3px 6px;color:#555;font-size:${tinyPx}">UPI</td><td style="padding:3px 6px;text-align:right;white-space:nowrap;color:#555;font-size:${tinyPx}">₹${fmt(upiAmt)}</td></tr>` : ""}
+                  ${cardAmt > 0 ? `<tr><td style="padding:3px 6px;color:#555;font-size:${tinyPx}">Card</td><td style="padding:3px 6px;text-align:right;white-space:nowrap;color:#555;font-size:${tinyPx}">₹${fmt(cardAmt)}</td></tr>` : ""}
+                  ${insAmt > 0 ? `<tr><td style="padding:3px 6px;color:#555;font-size:${tinyPx}">Insurance</td><td style="padding:3px 6px;text-align:right;white-space:nowrap;color:#555;font-size:${tinyPx}">₹${fmt(insAmt)}</td></tr>` : ""}
+                  ${chqAmt > 0 ? `<tr><td style="padding:3px 6px;color:#555;font-size:${tinyPx}">Cheque</td><td style="padding:3px 6px;text-align:right;white-space:nowrap;color:#555;font-size:${tinyPx}">₹${fmt(chqAmt)}</td></tr>` : ""}
                 </tbody>
               </table>
             </td>
@@ -424,7 +460,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
       ${isA5 ? (compactFooterGap ? `<div style="height:${Math.round(parseInt(footerPx, 10) * 1.4 * 3.5)}px"></div>` : '<div style="flex:1"></div>') : ""}
 
       <!-- FOOTER -->
-      <div style="margin-top:4px;border-top:1px solid #000;padding-top:4px;text-align:center;page-break-inside:avoid">
+      <div style="margin-top:4px;border-top:2px solid #000;padding-top:6px;text-align:center;page-break-inside:avoid">
         <div style="font-size:${footerPx};font-weight:700;color:#000;margin-bottom:1px;text-transform:uppercase">${esc(clinic?.footerNote || bill.reportCollectionNote || "Thank you for choosing our diagnostic services. Please collect your report within 7 days.")}</div>
         <div style="font-size:${tinyPx};color:#555;margin-bottom:3px">THIS IS A COMPUTER-GENERATED INVOICE. NO SIGNATURE REQUIRED.</div>
 
@@ -454,8 +490,8 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   html, body { margin: 0; padding: 0; height: 100%; }
   body { background: #fff; color: #000; font-family: Arial, Helvetica, sans-serif; font-size: ${bodyPx}; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .receipt { width: 100%; padding: 2mm 3mm; box-sizing: border-box; }
-  ${isA5 && !compactFooterGap ? ".receipt { min-height: 100vh; display: flex; flex-direction: column; }" : ""}
   table { width: 100%; }
+  .test-table tbody tr:nth-child(even) td { background: #f7f7f7; }
 </style></head><body>${pages}</body></html>`;
 }
 

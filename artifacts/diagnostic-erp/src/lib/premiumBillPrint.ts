@@ -412,8 +412,10 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
 
   const copyLabelDiv = copyLabel ? `<div style="text-align:right;font-size:${tinyPx};font-weight:800;border:1px dashed #000;display:inline-block;padding:2px 6px;float:right">${esc(copyLabel)}</div>` : "";
 
+  // Flat, muted badge (not a rotated/dashed "stamp") — matches the classic
+  // format's reprint marker (see printBill.ts).
   const reprintNotice = reprintBy || reprintReason
-    ? `<div style="text-align:center;font-size:${tinyPx};border:1px dashed #000;padding:2px 4px;margin-bottom:6px;text-transform:uppercase;font-weight:700">DUPLICATE / RE-PRINT${reprintBy ? ` · BY ${esc(reprintBy)}` : ""}${reprintReason ? ` · ${esc(reprintReason)}` : ""}</div>`
+    ? `<div style="display:inline-block;background:#f3f4f6;color:#4b5563;border:1px solid #d1d5db;border-radius:3px;padding:2px 8px;font-size:${tinyPx};font-weight:600;letter-spacing:0.02em;margin-bottom:6px">REPRINT${reprintBy ? ` &nbsp;&middot;&nbsp; ${esc(reprintBy)}` : ""}${reprintReason ? ` &nbsp;&middot;&nbsp; ${esc(reprintReason)}` : ""} &nbsp;&middot;&nbsp; ${esc(new Date().toLocaleDateString("en-IN"))}</div>`
     : "";
 
   // ── Copy type detection ──
@@ -452,7 +454,12 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
   .receipt {
     display: flex;
     flex-direction: column;
-    min-height: 100vh;
+    /* mm-based, not 100vh: vh in a print/pagination context is undefined-
+       behavior-prone across browser engines (some resolve it against a
+       much taller value than the physical page), which can silently spill
+       the footer onto a near-blank extra sheet — see the same class of bug
+       fixed in printBill.ts's classic format (receiptMinHeight). */
+    min-height: ${paperSizeCss.minHeight};
     width: 100%;
     padding: 2mm 3mm;
     box-sizing: border-box;
