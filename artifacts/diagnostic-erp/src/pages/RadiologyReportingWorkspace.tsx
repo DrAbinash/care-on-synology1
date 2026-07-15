@@ -26,7 +26,7 @@ import {
 import EmbeddedWadoViewer from "@/components/EmbeddedWadoViewer";
 import ReportImagePicker from "@/components/radiology/ReportImagePicker";
 import RadiologyCopilotPanel from "@/components/RadiologyCopilotPanel";
-import { ThemeSelector } from "@/components/ThemeSelector";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { FindingsHighlightEditor, type FindingsHighlightEditorHandle } from "@/components/FindingsHighlightEditor";
 import { chocolateBoxSetFor, insertAtCursor } from "@/lib/findingsMacros";
 import RadiologyMemoryPanel from "@/components/RadiologyMemoryPanel";
@@ -433,13 +433,21 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // ── Chocolate Box quick-macro engine (freeform findings only) ───────────
   const findingsTextareaRef = useRef<FindingsHighlightEditorHandle>(null);
 
+  const isMobile = useIsMobile();
+
   // ── Left viewer panel collapse — frees width for the report editor without
   // duplicating the DICOM viewer elsewhere (it already lives here, not the
   // center column). Persisted per-browser like the sidebar auto-minimise
-  // pattern in Layout.tsx.
-  const [isLeftPanelCollapsed, setIsLeftPanelCollapsed] = useState(
-    () => localStorage.getItem("radiologyWorkspaceLeftPanelCollapsed") === "1"
-  );
+  // pattern in Layout.tsx. On a phone-width screen with no stored preference
+  // yet, default to collapsed — the left panel's 280px min-width otherwise
+  // squeezes the report editor column (flex-1 min-w-0) down to ~0px, which is
+  // the root cause of the mobile "cut view" report: the editor never got any
+  // width to render into.
+  const [isLeftPanelCollapsed, setIsLeftPanelCollapsed] = useState(() => {
+    const stored = localStorage.getItem("radiologyWorkspaceLeftPanelCollapsed");
+    if (stored != null) return stored === "1";
+    return typeof window !== "undefined" && window.innerWidth < 768;
+  });
   useEffect(() => {
     localStorage.setItem("radiologyWorkspaceLeftPanelCollapsed", isLeftPanelCollapsed ? "1" : "0");
   }, [isLeftPanelCollapsed]);
@@ -2683,7 +2691,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     <div className="flex flex-col" style={{ height: "calc(100vh - 48px)" }}>
 
       {/* ── Compact header ─────────────────────────────────────────────────── */}
-      <div className="shrink-0 flex items-center gap-3 px-3 py-2 border-b bg-white">
+      <div className="shrink-0 flex items-center flex-wrap gap-x-3 gap-y-1 px-3 py-2 border-b bg-white">
         <Button
           variant="ghost"
           size="sm"
@@ -2754,7 +2762,6 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         >
           {isLeftPanelCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
         </button>
-        <ThemeSelector className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:bg-muted transition-colors" />
       </div>
 
       {/* ── M1.5 — workflow status bar (Phase 10) ──────────────────────────── */}
@@ -2914,7 +2921,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           className="flex flex-col border-r bg-muted/5 overflow-hidden shrink-0 transition-[width] duration-200"
           style={isLeftPanelCollapsed
             ? { width: 44, minWidth: 44, maxWidth: 44 }
-            : { width: "35%", minWidth: 280, maxWidth: 460 }}
+            : isMobile
+              ? { width: "60%", minWidth: 200, maxWidth: 320 }
+              : { width: "35%", minWidth: 280, maxWidth: 460 }}
         >
         {isLeftPanelCollapsed ? (
           <button
@@ -3713,8 +3722,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             )}
           </div>
 
-          {/* ── Sticky bottom action bar ─────────────────────────────────── */}
-          <div className="shrink-0 border-t bg-white px-3 py-2 flex items-center gap-2 flex-wrap">
+          {/* ── Sticky bottom action bar. On a narrow mobile column each
+              labeled button no longer fits side by side, so flex-wrap used
+              to stack all six into ~6 rows (~250px tall) and crowd out the
+              editor above it — scroll horizontally instead, a single
+              predictable-height row. ──────────────────────────────────── */}
+          <div className={`shrink-0 border-t bg-white px-3 py-2 flex items-center gap-2 ${
+            isMobile ? "overflow-x-auto flex-nowrap [&>*]:shrink-0" : "flex-wrap"
+          }`}>
             {!isLocked && (
               <Button
                 size="sm"
@@ -3805,10 +3820,15 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           </div>
         </div>
 
-        {/* ── RIGHT 20%: 5-tab assistant panel ──────────────────────────── */}
+        {/* ── RIGHT 20%: 5-tab assistant panel (narrower floor on phone-width
+            screens, alongside the left-panel default-collapse above, so the
+            center report editor keeps real width instead of being squeezed
+            to ~0px) ──────────────────────────────────────────────────── */}
         <div
           className="flex flex-col border-l overflow-hidden shrink-0"
-          style={{ width: "20%", minWidth: 200, maxWidth: 280 }}
+          style={isMobile
+            ? { width: "42%", minWidth: 140, maxWidth: 220 }
+            : { width: "20%", minWidth: 200, maxWidth: 280 }}
         >
           {/* Tab header */}
           <div className="shrink-0 flex border-b bg-muted/10">
