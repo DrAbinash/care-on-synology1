@@ -30,8 +30,9 @@ import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireSt
 import { getCached, setCached, invalidateCached, TTL } from "../lib/ttlCache";
 import { CLINICAL_HISTORY_CHIP_DEFAULTS, PROTOCOL_DEFAULTS } from "../lib/radiologyReportingDefaults";
 
-// Max active clinical-history chips per study region (spec: up to 10 chips).
-const MAX_ACTIVE_CLINICAL_HISTORY_CHIPS = 10;
+// Clinical-history quick-select chips are intentionally UNLIMITED per study —
+// they are quick-insert workhorses, and a radiologist may want many (the UI
+// wraps/scrolls). No active-count cap is enforced.
 
 const CACHE_KEY = "radiology-quick-select:v2";
 
@@ -301,19 +302,8 @@ router.delete("/measurements/:id", requireAdminRole, async (req, res) => {
 // ── Clinical History Quick Select chips (admin write, staff read via GET /) ──
 // Study-specific chips shown beside the Clinical History heading. The short
 // displayLabel appears on the chip; the full insertedText is what lands in the
-// Clinical History field. Up to MAX_ACTIVE_CLINICAL_HISTORY_CHIPS active per
-// study region — the reporting workspace shows at most 10 chips.
-
-/** Count active chips for a study, optionally excluding one id (for updates). */
-async function countActiveClinicalHistoryChips(studyType: string, excludeId?: number): Promise<number> {
-  const rows = await db.select({ id: radiologyClinicalHistoryChipsTable.id })
-    .from(radiologyClinicalHistoryChipsTable)
-    .where(and(
-      eq(radiologyClinicalHistoryChipsTable.studyType, studyType),
-      eq(radiologyClinicalHistoryChipsTable.isActive, true),
-    ));
-  return rows.filter((r) => r.id !== excludeId).length;
-}
+// Clinical History field. Unlimited per study — a radiologist may configure as
+// many quick-insert chips as they like; the workspace strip wraps/scrolls.
 
 router.post("/clinical-history", requireAdminRole, async (req, res) => {
   const studyType = String(req.body?.studyType ?? "").trim();
@@ -323,10 +313,6 @@ router.post("/clinical-history", requireAdminRole, async (req, res) => {
     return;
   }
   const isActive = req.body?.isActive !== false;
-  if (isActive && (await countActiveClinicalHistoryChips(studyType)) >= MAX_ACTIVE_CLINICAL_HISTORY_CHIPS) {
-    res.status(400).json({ error: `A study can have at most ${MAX_ACTIVE_CLINICAL_HISTORY_CHIPS} active clinical-history chips. Disable one first.` });
-    return;
-  }
   try {
     const [row] = await db.insert(radiologyClinicalHistoryChipsTable).values({
       studyType,
@@ -359,15 +345,6 @@ router.patch("/clinical-history/:id", requireAdminRole, async (req, res) => {
   if (typeof req.body?.insertedText === "string") updates.insertedText = req.body.insertedText;
   if (req.body?.sortOrder !== undefined) updates.sortOrder = Number(req.body.sortOrder) || 0;
   if (typeof req.body?.isActive === "boolean") updates.isActive = req.body.isActive;
-  // Enabling a chip (or moving it to another study while active) must respect
-  // the per-study active cap.
-  const willBeActive = updates.isActive === undefined ? existing.isActive : updates.isActive === true;
-  const targetStudy = (updates.studyType as string) ?? existing.studyType;
-  const enabling = willBeActive && (!existing.isActive || targetStudy !== existing.studyType);
-  if (enabling && (await countActiveClinicalHistoryChips(targetStudy, id)) >= MAX_ACTIVE_CLINICAL_HISTORY_CHIPS) {
-    res.status(400).json({ error: `A study can have at most ${MAX_ACTIVE_CLINICAL_HISTORY_CHIPS} active clinical-history chips. Disable one first.` });
-    return;
-  }
   try {
     const [row] = await db.update(radiologyClinicalHistoryChipsTable).set(updates).where(eq(radiologyClinicalHistoryChipsTable.id, id)).returning();
     invalidateCached(CACHE_KEY);

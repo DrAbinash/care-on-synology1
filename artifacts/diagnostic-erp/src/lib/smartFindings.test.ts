@@ -1,118 +1,61 @@
 import { describe, it, expect } from "vitest";
-import { rebuildSmartSections, mergeSectionTexts, conflictingSelections, type FindingsMap } from "./smartFindings";
+import { applySectionContribution, conflictingSelections, type SectionState } from "./smartFindings";
 
-// The Smart Findings engine: selecting a finding flips its template section from
-// baseline normal to the finding text (replace, not append), keeps anatomical
-// order, merges multiple findings on one section, and resolves conflicts.
+// The Smart Findings engine's per-finding section transition. A finding's
+// contribution changes from prevText → nextText; the section is updated with
+// exact-remove + dedupe-merge so replacement, merge, restore-to-normal and —
+// critically — manual-edit survival all hold.
 
-const LS_BASELINE = [
-  { label: "Alignment & Curvature", normal: "Normal lumbar lordosis maintained. No scoliosis." },
-  { label: "L3-L4", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
-  { label: "L4-L5", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
-  { label: "L5-S1", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
-  { label: "Vertebral Bodies", normal: "Normal height, signal and morphology throughout." },
-  { label: "Cord / Cauda Equina", normal: "Cord terminates at L1-L2. Normal signal." },
-];
+const NORMAL: SectionState = { normal: true, text: "Normal disc height and signal. No disc herniation. Neural foramina patent." };
 
-/** Seed a findingsMap the way the workspace does from a template (all normal). */
-function seed(baseline: Array<{ label: string; normal: string }>): FindingsMap {
-  const map: FindingsMap = {};
-  for (const b of baseline) map[b.label] = { normal: true, text: b.normal };
-  return map;
-}
+describe("applySectionContribution — replace / restore", () => {
+  it("replaces the baseline normal with the finding text on select", () => {
+    const out = applySectionContribution(NORMAL, NORMAL.text, null, "Diffuse posterior disc bulge at L4-L5.");
+    expect(out).toEqual({ normal: false, text: "Diffuse posterior disc bulge at L4-L5." });
+  });
 
-describe("mergeSectionTexts", () => {
-  it("joins and de-duplicates", () => {
-    expect(mergeSectionTexts(["A.", "B.", "A.", " "])).toBe("A.\nB.");
+  it("restores the baseline normal when the finding is removed", () => {
+    const abnormal: SectionState = { normal: false, text: "Diffuse posterior disc bulge at L4-L5." };
+    const out = applySectionContribution(abnormal, NORMAL.text, "Diffuse posterior disc bulge at L4-L5.", null);
+    expect(out).toEqual({ normal: true, text: NORMAL.text });
+  });
+
+  it("drops a created (non-template) section when it empties", () => {
+    const abnormal: SectionState = { normal: false, text: "Severe canal stenosis at L4-L5." };
+    expect(applySectionContribution(abnormal, undefined, "Severe canal stenosis at L4-L5.", null)).toBeNull();
   });
 });
 
-describe("rebuildSmartSections — LS Spine", () => {
-  it("replaces only the targeted section, leaving the rest normal and in order", () => {
-    const { map, managed } = rebuildSmartSections(
-      seed(LS_BASELINE),
-      LS_BASELINE,
-      [{ section: "L4-L5", text: "Diffuse posterior disc bulge at L4-L5 indenting the thecal sac.", order: 30 }],
-      [],
-    );
-    expect(managed).toEqual(["L4-L5"]);
-    expect(map["L4-L5"]).toEqual({ normal: false, text: "Diffuse posterior disc bulge at L4-L5 indenting the thecal sac." });
-    // Every other section stays normal (conflict resolution: no contradictory text).
-    expect(map["L3-L4"].normal).toBe(true);
-    expect(map["L5-S1"].normal).toBe(true);
-    // Anatomical order preserved (template order).
-    expect(Object.keys(map)).toEqual(LS_BASELINE.map((b) => b.label));
-  });
-
-  it("handles multiple disc bulges, each in its own section", () => {
-    const { map } = rebuildSmartSections(
-      seed(LS_BASELINE),
-      LS_BASELINE,
-      [
-        { section: "L5-S1", text: "Disc bulge at L5-S1.", order: 31 },
-        { section: "L4-L5", text: "Disc bulge at L4-L5.", order: 30 },
-      ],
-      [],
-    );
-    expect(map["L4-L5"]).toEqual({ normal: false, text: "Disc bulge at L4-L5." });
-    expect(map["L5-S1"]).toEqual({ normal: false, text: "Disc bulge at L5-S1." });
-    // Order is still template order regardless of click order.
-    expect(Object.keys(map).indexOf("L4-L5")).toBeLessThan(Object.keys(map).indexOf("L5-S1"));
-  });
-
-  it("restores a section to normal when its finding is removed", () => {
-    const withBulge = rebuildSmartSections(seed(LS_BASELINE), LS_BASELINE,
-      [{ section: "L4-L5", text: "Disc bulge at L4-L5.", order: 30 }], []);
-    expect(withBulge.map["L4-L5"].normal).toBe(false);
-    const removed = rebuildSmartSections(withBulge.map, LS_BASELINE, [], withBulge.managed);
-    expect(removed.map["L4-L5"]).toEqual({ normal: true, text: LS_BASELINE[2].normal });
-    expect(removed.managed).toEqual([]);
-  });
-
-  it("creates an appended section for a finding with no template section", () => {
-    const { map } = rebuildSmartSections(
-      seed(LS_BASELINE),
-      LS_BASELINE,
-      [{ section: "Spinal Canal", text: "Severe canal stenosis at L4-L5.", order: 50 }],
-      [],
-    );
-    expect(map["Spinal Canal"]).toEqual({ normal: false, text: "Severe canal stenosis at L4-L5." });
-    // Created section appears AFTER all template sections (anatomical order kept).
-    expect(Object.keys(map).at(-1)).toBe("Spinal Canal");
-    // Removing it drops the created section entirely.
-    const removed = rebuildSmartSections(map, LS_BASELINE, [], ["Spinal Canal"]);
-    expect("Spinal Canal" in removed.map).toBe(false);
+describe("applySectionContribution — merge multiple findings on one section", () => {
+  it("merges a second finding into the same section (deduped)", () => {
+    const first = applySectionContribution({ normal: true, text: "Normal." }, "Normal.", null, "Disc bulge at C5-C6.")!;
+    const second = applySectionContribution(first, "Normal.", null, "Disc bulge at C6-C7.")!;
+    expect(second).toEqual({ normal: false, text: "Disc bulge at C5-C6.\nDisc bulge at C6-C7." });
+    // Removing one leaves the other.
+    const back = applySectionContribution(second, "Normal.", "Disc bulge at C5-C6.", null)!;
+    expect(back).toEqual({ normal: false, text: "Disc bulge at C6-C7." });
   });
 });
 
-describe("rebuildSmartSections — merge into one section (Cervical C-levels)", () => {
-  const CX = [
-    { label: "Alignment & Curvature", normal: "Normal cervical lordosis." },
-    { label: "C2-C3 to C6-C7", normal: "Normal disc heights. No herniation. No cord compression." },
-    { label: "Spinal Cord", normal: "Normal calibre and signal." },
-  ];
-  it("merges two C-level bulges into the single shared section", () => {
-    const { map } = rebuildSmartSections(
-      seed(CX),
-      CX,
-      [
-        { section: "C2-C3 to C6-C7", text: "Disc bulge at C5-C6.", order: 21 },
-        { section: "C2-C3 to C6-C7", text: "Disc bulge at C6-C7.", order: 22 },
-      ],
-      [],
-    );
-    expect(map["C2-C3 to C6-C7"]).toEqual({ normal: false, text: "Disc bulge at C5-C6.\nDisc bulge at C6-C7." });
-    expect(map["Spinal Cord"].normal).toBe(true);
+describe("applySectionContribution — manual edits survive (the key safety rule)", () => {
+  it("keeps a hand-typed addition when the finding is re-rendered (property change)", () => {
+    // Finding selected → section holds its text.
+    const withFinding = applySectionContribution(NORMAL, NORMAL.text, null, "Disc bulge at L4-L5.")!;
+    // Radiologist appends a manual clause.
+    const edited: SectionState = { normal: false, text: "Disc bulge at L4-L5.\nWith a superimposed annular fissure." };
+    // Property chip changes → prev exact text removed, new render merged; the
+    // manual clause is NOT part of prev, so it survives.
+    const rerendered = applySectionContribution(edited, NORMAL.text, "Disc bulge at L4-L5.", "Moderate disc bulge at L4-L5.")!;
+    expect(rerendered.normal).toBe(false);
+    expect(rerendered.text).toContain("With a superimposed annular fissure.");
+    expect(rerendered.text).toContain("Moderate disc bulge at L4-L5.");
   });
-});
 
-describe("rebuildSmartSections — preserves manual edits elsewhere", () => {
-  it("does not touch a section that has no active finding, even if edited", () => {
-    const current = seed(LS_BASELINE);
-    current["Vertebral Bodies"] = { normal: false, text: "Manually typed marrow note." };
-    const { map } = rebuildSmartSections(current, LS_BASELINE,
-      [{ section: "L4-L5", text: "Disc bulge.", order: 30 }], []);
-    expect(map["Vertebral Bodies"]).toEqual({ normal: false, text: "Manually typed marrow note." });
+  it("never overwrites an inline-edited sentence (exact removal no-ops)", () => {
+    const edited: SectionState = { normal: false, text: "LARGE disc bulge at L4-L5 (edited)." };
+    // The engine tries to remove the original render, which no longer matches → no-op.
+    const out = applySectionContribution(edited, NORMAL.text, "Disc bulge at L4-L5.", "Disc bulge at L4-L5.")!;
+    expect(out.text).toContain("LARGE disc bulge at L4-L5 (edited).");
   });
 });
 

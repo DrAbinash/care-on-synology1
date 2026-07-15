@@ -3,105 +3,54 @@
  *
  * It does NOT introduce a new report model. It reuses the EXISTING structured
  * report (`findingsMap`: an anatomically-ordered `Record<sectionLabel,
- * {normal, text}>` seeded from the auto-loaded template) and the EXISTING
- * abnormality renderer (`renderAbnormality`). All this module adds is the
- * deterministic transition:
+ * {normal, text}>` seeded from the auto-loaded template), the EXISTING
+ * abnormality renderer (`renderAbnormality`), and the EXISTING exact-remove /
+ * dedupe-merge text primitives (`mergeBlock`/`removeBlock`).
  *
- *   "given the currently-selected findings (each already rendered to text and
- *    mapped to a template section), rebuild exactly the sections those findings
- *    drive — flipping their baseline normal to the merged abnormal text, and
- *    restoring released sections to normal — while leaving every other section
- *    (and every manual edit elsewhere) untouched."
+ * A finding drives one section. Selecting it replaces that section's baseline
+ * normal with the finding text; a second finding on the same section merges in;
+ * deselecting removes exactly that finding's contribution and restores the
+ * normal when the section empties. Because the section key already exists in
+ * template order, replacement, conflict-resolution and anatomical ordering all
+ * fall out for free.
  *
- * Because each section key already exists in template (anatomical) order,
- * replacement, conflict-resolution (the normal is replaced, not appended) and
- * anatomical ordering all fall out for free. Multiple findings on one section
- * are merged. Findings whose section is not in the template create a section
- * appended after the template ones.
- *
- * This is instant (no AI) and pure (unit-tested below).
+ * Crucially, the per-finding contribution is applied with the SAME
+ * exact-remove/dedupe-merge used by the free-text engine, so a radiologist's
+ * manual edit to a section is never silently overwritten (removeBlock only
+ * strips an exact previously-inserted sentence; mergeBlock never duplicates).
  */
+
+import { mergeBlock, removeBlock } from "./quickFindingsMerge";
 
 export type SectionState = { normal: boolean; text: string };
 export type FindingsMap = Record<string, SectionState>;
 
-/** One active finding's contribution to the report. */
-export type SmartContribution = {
-  /** Template section label this finding maps to (findingsItems[].label). */
-  section: string;
-  /** The already-rendered abnormal finding text. */
-  text: string;
-  /** Sort key for a stable merge order when several findings share a section. */
-  order: number;
-};
-
-/** Merge several finding texts for one section into one block, de-duplicated. */
-export function mergeSectionTexts(texts: string[]): string {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const raw of texts) {
-    const t = raw.trim();
-    if (t && !seen.has(t)) {
-      seen.add(t);
-      out.push(t);
-    }
-  }
-  return out.join("\n");
-}
-
 /**
- * Recompute the structured findings map from the active smart-finding
- * contributions.
+ * Update one structured section for a single finding whose contribution changes
+ * from `prevText` (what it last put there, or null) to `nextText` (its new
+ * text, or null when deselected).
  *
- * @param current      the current findingsMap (manual edits + order preserved)
- * @param baseline     the loaded template's ordered `{label, normal}` sections
- * @param contributions rendered text of every currently-selected smart finding
- * @param prevManaged  section labels the engine drove on the previous call, so
- *                     sections whose last finding was just removed can be
- *                     restored to their baseline normal (or dropped, if created)
- * @returns the new map (anatomically ordered) and the section labels now managed
+ * @param current       the section's current state (undefined if not present)
+ * @param baselineNormal the template's normal text for this section, or
+ *                       undefined for a created (non-template) section
+ * @returns the new section state, or null to drop a created section that has
+ *          emptied out
  */
-export function rebuildSmartSections(
-  current: FindingsMap,
-  baseline: Array<{ label: string; normal: string }>,
-  contributions: SmartContribution[],
-  prevManaged: string[],
-): { map: FindingsMap; managed: string[] } {
-  const baselineNormal = new Map(baseline.map((b) => [b.label, b.normal]));
-  const baselineOrder = baseline.map((b) => b.label);
-
-  const bySection = new Map<string, SmartContribution[]>();
-  for (const c of contributions) {
-    if (!c.section) continue;
-    const arr = bySection.get(c.section);
-    if (arr) arr.push(c);
-    else bySection.set(c.section, [c]);
-  }
-
-  const result: FindingsMap = { ...current };
-
-  // Release sections that were managed but no longer have any active finding.
-  for (const sec of prevManaged) {
-    if (bySection.has(sec)) continue;
-    if (baselineNormal.has(sec)) result[sec] = { normal: true, text: baselineNormal.get(sec) ?? "" };
-    else delete result[sec];
-  }
-
-  // Write each managed section as abnormal with its merged finding text.
-  for (const [sec, contribs] of bySection) {
-    const text = mergeSectionTexts(
-      contribs.slice().sort((a, b) => a.order - b.order).map((c) => c.text),
-    );
-    result[sec] = { normal: false, text };
-  }
-
-  // Keep anatomical order: template sections in template order first, then any
-  // created (non-template) sections in their existing insertion order.
-  const ordered: FindingsMap = {};
-  for (const label of baselineOrder) if (label in result) ordered[label] = result[label];
-  for (const label of Object.keys(result)) if (!(label in ordered)) ordered[label] = result[label];
-
-  return { map: ordered, managed: [...bySection.keys()] };
+export function applySectionContribution(
+  current: SectionState | undefined,
+  baselineNormal: string | undefined,
+  prevText: string | null,
+  nextText: string | null,
+): SectionState | null {
+  // Start from the current ABNORMAL text (a normal/absent section contributes
+  // no prior text — the finding replaces the normal).
+  let text = current && !current.normal ? current.text : "";
+  if (prevText) text = removeBlock(text, prevText); // exact — manual edits survive
+  const add = (nextText ?? "").trim();
+  if (add) text = mergeBlock(text, add);            // dedupe-merge
+  if (text.trim()) return { normal: false, text };
+  if (baselineNormal !== undefined) return { normal: true, text: baselineNormal };
+  return null; // created section with nothing left → drop it
 }
 
 /**

@@ -51,7 +51,7 @@ import {
   applyRenderedTransition, toggleQuickSelection, setQuickInstance, deleteQuickInstance,
   seedQuickInstance, patchQuickInstance,
 } from "@/lib/renderEngine";
-import { mergeSectionTexts, conflictingSelections } from "@/lib/smartFindings";
+import { applySectionContribution, conflictingSelections } from "@/lib/smartFindings";
 import { deriveQuickSelectFindings } from "@/lib/quickSelectFindingsPayload";
 import { validateReport, computeQualityScore } from "@/lib/reportValidator";
 // F3 (Cockpit→Workspace merge): real-time missed-finding text-pattern nudges.
@@ -768,6 +768,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // rawFindings exactly as before. Reuses findingsMap + renderAbnormality; no
   // second engine.
   const OTHER_SECTION = "Additional Observations";
+  // Per-finding text last contributed to a section, so a change can exact-remove
+  // the old contribution (leaving manual edits intact) and merge the new one.
+  const sectionContribRef = useRef<Map<number, { section: string; text: string }>>(new Map());
 
   /** True while the structured report (with a loaded template) is the active
    *  surface — the only mode where findings drive sections. */
@@ -787,31 +790,45 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     return selectedTemplate ? parseSectionsJson(selectedTemplate.sectionsJson).findingsItems : [];
   }
 
-  /** Recompute ONE structured section from the findings currently targeting it.
-   *  Only this section is rewritten, so manual edits to other sections (and to
-   *  untouched normal sections) survive. Empty → restore the template normal (or
-   *  drop a created catch-all). Order is preserved: template sections already
-   *  exist as keys; a created section appends after them. */
-  function refreshSection(section: string, selected: Set<number>, instances: Map<number, AbnormalityInstance>) {
-    if (!section) return;
+  /** Apply ONE finding's structured contribution to its section: exact-remove
+   *  its previous text (so manual edits survive — removeBlock no-ops on edited
+   *  text) and dedupe-merge its new text; if it moved sections, clear the old
+   *  one. Empty section → restore the template normal, or drop a created
+   *  catch-all. Only the affected section(s) change; every other section (and
+   *  every manual edit elsewhere) is untouched. `selected=false` removes it. */
+  function applySmartFinding(f: QuickFinding, inst: AbnormalityInstance, selected: boolean) {
     const baseline = currentBaseline();
-    const baselineNormal = baseline.find((b) => b.label === section)?.normal;
-    const texts = [...selected]
-      .map((id) => findingById.get(id))
-      .filter((f): f is QuickFinding => !!f && sectionForFinding(f) === section)
-      .sort((a, b) => a.sortOrder - b.sortOrder)
-      .map((f) => renderAbnormality(f, instances.get(f.id) ?? EMPTY_INSTANCE).finding)
-      .filter((t) => t.trim());
-    setFindingsMap((prev) => {
-      const next = { ...prev };
-      if (texts.length === 0) {
-        if (baselineNormal !== undefined) next[section] = { normal: true, text: baselineNormal };
-        else delete next[section];
-      } else {
-        next[section] = { normal: false, text: mergeSectionTexts(texts) };
+    const normalFor = (label: string) => baseline.find((b) => b.label === label)?.normal;
+    const section = sectionForFinding(f);
+    const prev = sectionContribRef.current.get(f.id) ?? null;
+    const nextText = selected ? renderAbnormality(f, inst).finding.trim() : "";
+    if (selected && nextText) sectionContribRef.current.set(f.id, { section, text: nextText });
+    else sectionContribRef.current.delete(f.id);
+    setFindingsMap((map) => {
+      const next = { ...map };
+      const secs = new Set<string>([section]);
+      if (prev && prev.section !== section) secs.add(prev.section);
+      for (const sec of secs) {
+        const prevForSec = prev && prev.section === sec ? prev.text : null;
+        const nextForSec = sec === section && nextText ? nextText : null;
+        const updated = applySectionContribution(next[sec], normalFor(sec), prevForSec, nextForSec);
+        if (updated) next[sec] = updated;
+        else delete next[sec];
       }
       return next;
     });
+  }
+
+  /** Seed sectionContribRef from restored selections so a later deselect can
+   *  exact-remove the finding's section text. Mirrors seedRestoredInsertedText. */
+  function seedRestoredSectionContribs(findings: QuickFinding[], ids: Set<number>, instances: Map<number, AbnormalityInstance>) {
+    const byId = new Map(findings.map((f) => [f.id, f]));
+    for (const id of ids) {
+      const f = byId.get(id);
+      if (!f) continue;
+      const text = renderAbnormality(f, instances.get(id) ?? EMPTY_INSTANCE).finding.trim();
+      if (text) sectionContribRef.current.set(id, { section: sectionForFinding(f), text });
+    }
   }
 
   /** Rendered abnormality for a finding. In smart mode the finding text is
@@ -869,14 +886,13 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     for (const cid of evictIds) changes.push({ id: cid, next: null });
     applyManyRendered(changes);
 
-    // Structured findings: refresh only the affected section(s).
+    // Structured findings: apply each finding's section contribution.
     if (smartModeActive()) {
-      const sections = new Set<string>([sectionForFinding(f)]);
+      applySmartFinding(f, nextInstances.get(f.id) ?? EMPTY_INSTANCE, nowSelected);
       for (const cid of evictIds) {
         const cf = findingById.get(cid);
-        if (cf) sections.add(sectionForFinding(cf));
+        if (cf) applySmartFinding(cf, EMPTY_INSTANCE, false);
       }
-      for (const s of sections) refreshSection(s, nextSelected, nextInstances);
     }
   }
 
@@ -887,7 +903,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     const nextInstances = setQuickInstance(quickInstances, f.id, inst);
     setQuickInstances(nextInstances);
     applyManyRendered([{ id: f.id, next: renderForReport(f, inst) }]);
-    if (smartModeActive()) refreshSection(sectionForFinding(f), selectedQuickIds, nextInstances);
+    if (smartModeActive()) applySmartFinding(f, inst, true);
   }
 
   /** Auto-fill Technique from the study tab — only when Technique is empty,
@@ -1177,11 +1193,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   );
 
   // Up to 10 active clinical-history chips for this study region.
+  // All active clinical-history chips for this study region — no cap; the strip
+  // wraps to as many rows as needed (they are quick-insert workhorses).
   const clinicalHistoryChips = useMemo(
     () => (quickSelectData?.clinicalHistory ?? [])
       .filter((c) => c.isActive && !!studyRegion && c.studyType === studyRegion)
-      .sort((a, b) => a.sortOrder - b.sortOrder || a.displayLabel.localeCompare(b.displayLabel))
-      .slice(0, 10),
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.displayLabel.localeCompare(b.displayLabel)),
     [quickSelectData, studyRegion],
   );
 
@@ -1423,6 +1440,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     setUseStructured(true);
     setSelectedQuickIds(new Set()); setQuickInstances(new Map());
     insertedTextRef.current = new Map();
+    sectionContribRef.current = new Map();
     lastToggledFindingRef.current = null;
     setIsCritical(false); setCriticalNote("");
     // F5 fix: without this, switching studies carried the PREVIOUS study's
@@ -1566,6 +1584,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   function handleFindingsLoaded(findings: QuickFinding[]) {
     quickFindingTemplatesRef.current = findings;
     seedRestoredInsertedText(findings, selectedQuickIds, quickInstances);
+    seedRestoredSectionContribs(findings, selectedQuickIds, quickInstances);
   }
 
   const selectionsRestoredForDraftRef = useRef<number | null>(null);
@@ -1593,6 +1612,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     setQuickInstances(map);
     if (quickFindingTemplatesRef.current) {
       seedRestoredInsertedText(quickFindingTemplatesRef.current, ids, map);
+      seedRestoredSectionContribs(quickFindingTemplatesRef.current, ids, map);
     }
     // Restored selections are saved state — keep the workspace clean.
     requestBaselineRecapture();
