@@ -93,6 +93,10 @@ const KNOWN_PERSONAL_ENDPOINTS: KnownPersonalEndpoint[] = [
   { file: "day-close.ts", localPath: "/my-drawer-status", fullPath: "/api/day-close/my-drawer-status" },
   { file: "day-close.ts", localPath: "/my-list", fullPath: "/api/day-close/my-list" },
   { file: "day-close.ts", localPath: "/my-post-closure-activity", fullPath: "/api/day-close/my-post-closure-activity" },
+  // Missed in the original audit sweep: scopes via session.subjectName, not
+  // the bare "subjectId" token PERSONAL_IDENTITY_MARKERS looks for — found
+  // while diagnosing "My Daily Summary" showing stale data on every visit.
+  { file: "my-daily-summary.ts", localPath: "/", fullPath: "/api/dashboard/my-daily-summary" },
   { file: "radiology.ts", localPath: "/user-item-usage", fullPath: "/api/radiology/user-item-usage" },
   { file: "dicomWorkflow.ts", localPath: "/radiologist-queue", fullPath: "/api/dicom-workflow/radiologist-queue" },
   // M1.3 Flight Deck: the report body is shared deployment truth, not

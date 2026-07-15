@@ -5,12 +5,12 @@ import { dirname, join } from "node:path";
 import vm from "node:vm";
 
 // Regression coverage for a CRITICAL production finding: the service worker's
-// stale-while-revalidate API cache (public/sw.js) keys Cache Storage entries
-// by request URL only — it does not vary by the Authorization header. Any
-// per-staff personal-data GET endpoint (e.g. /api/my/quick-doctors) left out
-// of NETWORK_ONLY_PREFIXES would let a second staff member on a shared
-// hospital workstation be served the FIRST staff member's cached response
-// before the background revalidation fetch completes.
+// API cache (public/sw.js) keys Cache Storage entries by request URL only —
+// it does not vary by the Authorization header. Any per-staff personal-data
+// GET endpoint (e.g. /api/my/quick-doctors) left out of NETWORK_ONLY_PREFIXES
+// would let a second staff member on a shared hospital workstation be served
+// the FIRST staff member's cached response if that endpoint's network
+// request ever failed and the SW fell back to cache.
 //
 // This test evaluates the REAL public/sw.js source (not a reimplementation
 // or a copy of NETWORK_ONLY_PREFIXES) in a minimal sandbox, so a future edit
@@ -105,6 +105,7 @@ describe("public/sw.js — NETWORK_ONLY_PREFIXES excludes /api/my/* (shared-work
       "/api/day-close/my-drawer-status",
       "/api/day-close/my-list",
       "/api/day-close/my-post-closure-activity",
+      "/api/dashboard/my-daily-summary",
       "/api/radiology/user-item-usage",
       "/api/dicom-workflow/radiologist-queue",
     ];
@@ -132,16 +133,16 @@ describe("public/sw.js — NETWORK_ONLY_PREFIXES excludes /api/my/* (shared-work
     expect(sandbox.isNetworkOnly({ pathname: "/api/portal/branding" })).toBe(false);
   });
 
-  it("the fetch listener checks isNetworkOnly() BEFORE the API-GET stale-while-revalidate branch", () => {
+  it("the fetch listener checks isNetworkOnly() BEFORE the API-GET network-first branch", () => {
     // Structural guard: even a correct NETWORK_ONLY_PREFIXES list is useless
     // if a future refactor reorders the fetch handler so isApiGet's
-    // staleWhileRevalidate branch runs first. This asserts the ordering
-    // directly against the real file's source.
+    // networkFirstApi branch runs first. This asserts the ordering directly
+    // against the real file's source.
     const source = readFileSync(SW_PATH, "utf8");
     const networkOnlyCheckIdx = source.indexOf("if (isNetworkOnly(url)) return;");
-    const staleWhileRevalidateCallIdx = source.indexOf("event.respondWith(staleWhileRevalidate(");
+    const networkFirstApiCallIdx = source.indexOf("event.respondWith(networkFirstApi(");
     expect(networkOnlyCheckIdx).toBeGreaterThan(-1);
-    expect(staleWhileRevalidateCallIdx).toBeGreaterThan(-1);
-    expect(networkOnlyCheckIdx).toBeLessThan(staleWhileRevalidateCallIdx);
+    expect(networkFirstApiCallIdx).toBeGreaterThan(-1);
+    expect(networkOnlyCheckIdx).toBeLessThan(networkFirstApiCallIdx);
   });
 });
