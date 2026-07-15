@@ -53,6 +53,11 @@ import {
 } from "@/lib/renderEngine";
 import { applySectionContribution, conflictingSelections } from "@/lib/smartFindings";
 import { deriveQuickSelectFindings } from "@/lib/quickSelectFindingsPayload";
+import {
+  parseQuestions, resolveSection, generateStructuredFinding,
+  initialValues as structuredInitialValues,
+} from "@/lib/structuredFindings";
+import StructuredFindingDialog from "@/components/radiology/StructuredFindingDialog";
 import { validateReport, computeQualityScore } from "@/lib/reportValidator";
 // F3 (Cockpit→Workspace merge): real-time missed-finding text-pattern nudges.
 // This lib was otherwise dead (imported only by the deprecated Cockpit).
@@ -772,6 +777,31 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // the old contribution (leaving manual edits intact) and merge the new one.
   const sectionContribRef = useRef<Map<number, { section: string; text: string }>>(new Map());
 
+  // ── Structured Finding Assistant (Phase 6.2) ────────────────────────────────
+  // A finding with configured questions (questionsJson) opens a compact dialog
+  // to collect only the values it needs; the finding/impression text is then
+  // generated from its {key} / [optional clause] templates and flows through the
+  // SAME Smart Findings Engine (applySectionContribution / applyManyRendered).
+  // No second reporting engine — this only decides WHAT text a finding renders.
+  //
+  // The applied per-finding values live in a ref (read mid-handler like
+  // insertedTextRef / sectionContribRef) and are also persisted inside each
+  // finding's params so a reloaded draft regenerates the exact same text.
+  const structuredValuesRef = useRef<Map<number, Record<string, string>>>(new Map());
+  // Last value chosen per question key this session → the next dialog pre-fills
+  // it ("remember previous selection" + smart defaults). Pre-fill only; always
+  // confirmed/overridable in the dialog, so it is intentionally NOT reset on a
+  // study switch.
+  const sessionMemoryRef = useRef<Record<string, string>>({});
+  // The finding whose compact dialog is open (null = none); `editing` = already
+  // selected (shows a Remove button and pre-fills its current values).
+  const [structuredDialog, setStructuredDialog] = useState<{ finding: QuickFinding; editing: boolean } | null>(null);
+
+  /** A finding is "structured" when it declares questions. */
+  function findingQuestions(f: QuickFinding) {
+    return parseQuestions(f.questionsJson);
+  }
+
   /** True while the structured report (with a loaded template) is the active
    *  surface — the only mode where findings drive sections. */
   function smartModeActive(): boolean {
@@ -779,10 +809,29 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   }
 
   /** The findingsMap section a finding drives: its configured anatomical section
-   *  or a shared catch-all, so an unmapped finding is still shown and ordered
-   *  rather than vanishing into hidden free text. */
+   *  (with {key} resolved from the finding's structured values, so one generic
+   *  "Disc Bulge" maps to the selected level's section) or a shared catch-all,
+   *  so an unmapped finding is still shown and ordered rather than vanishing
+   *  into hidden free text. */
   function sectionForFinding(f: QuickFinding): string {
-    return (f.anatomicalSection ?? "").trim() || OTHER_SECTION;
+    const raw = (f.anatomicalSection ?? "").trim();
+    const values = structuredValuesRef.current.get(f.id);
+    const resolved = values ? resolveSection(raw, values).trim() : raw;
+    return resolved || OTHER_SECTION;
+  }
+
+  /** One finding's rendered report sections. A structured finding (has questions
+   *  AND collected values) generates from its {key}/[clause] templates; every
+   *  other finding renders through the property-chip engine exactly as before.
+   *  Both return the identical RenderedAbnormality shape, so the downstream
+   *  Smart Findings Engine is untouched. */
+  function renderFinding(f: QuickFinding, inst: AbnormalityInstance): RenderedAbnormality {
+    const values = structuredValuesRef.current.get(f.id);
+    if (values && findingQuestions(f).length > 0) {
+      const g = generateStructuredFinding(f, values);
+      return { finding: g.finding, impression: g.impression, technique: g.technique, recommendation: g.recommendation };
+    }
+    return renderAbnormality(f, inst);
   }
 
   /** The loaded template's ordered {label, normal} baseline sections. */
@@ -801,7 +850,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     const normalFor = (label: string) => baseline.find((b) => b.label === label)?.normal;
     const section = sectionForFinding(f);
     const prev = sectionContribRef.current.get(f.id) ?? null;
-    const nextText = selected ? renderAbnormality(f, inst).finding.trim() : "";
+    const nextText = selected ? renderFinding(f, inst).finding.trim() : "";
     if (selected && nextText) sectionContribRef.current.set(f.id, { section, text: nextText });
     else sectionContribRef.current.delete(f.id);
     setFindingsMap((map) => {
@@ -826,7 +875,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     for (const id of ids) {
       const f = byId.get(id);
       if (!f) continue;
-      const text = renderAbnormality(f, instances.get(id) ?? EMPTY_INSTANCE).finding.trim();
+      // renderFinding regenerates the exact structured text when this finding's
+      // values were restored (below), so a later deselect exact-removes it.
+      const text = renderFinding(f, instances.get(id) ?? EMPTY_INSTANCE).finding.trim();
       if (text) sectionContribRef.current.set(id, { section: sectionForFinding(f), text });
     }
   }
@@ -835,7 +886,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
    *  routed to its section (not free text), so blank the `finding` field here
    *  while still letting impression/technique/recommendation merge as usual. */
   function renderForReport(f: QuickFinding, inst: AbnormalityInstance): RenderedAbnormality {
-    const r = renderAbnormality(f, inst);
+    const r = renderFinding(f, inst);
     return smartModeActive() ? { ...r, finding: "" } : r;
   }
 
@@ -856,6 +907,16 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     if (isLocked) return;
     if (nowSelected) lastToggledFindingRef.current = f;
 
+    // Structured findings: guarantee collected values exist before rendering so
+    // ANY selection path (dialog, voice, keyboard) produces real text rather
+    // than raw {key} templates. The dialog sets these first; a direct toggle
+    // falls back to session memory + smart defaults. Deselect clears them.
+    const questions = findingQuestions(f);
+    if (nowSelected && questions.length > 0 && !structuredValuesRef.current.has(f.id)) {
+      structuredValuesRef.current.set(f.id, structuredInitialValues(questions, sessionMemoryRef.current));
+    }
+    if (!nowSelected) structuredValuesRef.current.delete(f.id);
+
     // Conflict groups: selecting a finding deselects any same-group sibling.
     const evictIds = nowSelected
       ? conflictingSelections(
@@ -874,6 +935,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     for (const cid of evictIds) {
       nextSelected = toggleQuickSelection(nextSelected, cid, false);
       nextInstances = deleteQuickInstance(nextInstances, cid);
+      structuredValuesRef.current.delete(cid);
     }
     setSelectedQuickIds(nextSelected);
     setQuickInstances(nextInstances);
@@ -904,6 +966,55 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     setQuickInstances(nextInstances);
     applyManyRendered([{ id: f.id, next: renderForReport(f, inst) }]);
     if (smartModeActive()) applySmartFinding(f, inst, true);
+  }
+
+  // ── Structured Finding Assistant — dialog orchestration ─────────────────────
+  /** Entry point for a Quick Finding click (strip + panel). Fewest clicks: a
+   *  finding with NO questions inserts/removes immediately; a finding WITH
+   *  questions opens the compact dialog to collect only what it needs. */
+  function handleFindingClick(f: QuickFinding) {
+    if (isLocked) return;
+    if (findingQuestions(f).length === 0) {
+      handleQuickToggle(f, !selectedQuickIds.has(f.id));
+      return;
+    }
+    setStructuredDialog({ finding: f, editing: selectedQuickIds.has(f.id) });
+  }
+
+  /** Pre-fill for the open dialog: an already-selected finding shows its current
+   *  values; a fresh one shows session memory + smart defaults. */
+  function structuredDialogInitialValues(dlg: { finding: QuickFinding; editing: boolean }): Record<string, string> {
+    const questions = findingQuestions(dlg.finding);
+    const existing = structuredValuesRef.current.get(dlg.finding.id);
+    const memory = dlg.editing && existing ? existing : sessionMemoryRef.current;
+    return structuredInitialValues(questions, memory);
+  }
+
+  /** Apply the dialog: remember the values for next time, store them for this
+   *  finding, then select it (or re-render in place if already selected) so the
+   *  generated text flows through the EXISTING Smart Findings Engine. */
+  function applyStructuredDialog(values: Record<string, string>) {
+    const dlg = structuredDialog;
+    if (!dlg) return;
+    const f = dlg.finding;
+    sessionMemoryRef.current = { ...sessionMemoryRef.current, ...values };
+    structuredValuesRef.current.set(f.id, values);
+    setStructuredDialog(null);
+    if (!selectedQuickIds.has(f.id)) {
+      handleQuickToggle(f, true); // full select path — renderFinding now uses these values
+    } else {
+      // Already selected: re-render impression + section with the new values.
+      applyManyRendered([{ id: f.id, next: renderForReport(f, EMPTY_INSTANCE) }]);
+      if (smartModeActive()) applySmartFinding(f, EMPTY_INSTANCE, true);
+    }
+  }
+
+  /** Remove a structured finding from the dialog (deselect via the normal path,
+   *  which exact-removes its section + impression text). */
+  function removeStructuredFinding(f: QuickFinding) {
+    setStructuredDialog(null);
+    if (selectedQuickIds.has(f.id)) handleQuickToggle(f, false);
+    else structuredValuesRef.current.delete(f.id);
   }
 
   /** Auto-fill Technique from the study tab — only when Technique is empty,
@@ -1441,6 +1552,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     setSelectedQuickIds(new Set()); setQuickInstances(new Map());
     insertedTextRef.current = new Map();
     sectionContribRef.current = new Map();
+    // Per-report structured values reset with the study; sessionMemoryRef is
+    // deliberately kept (it only pre-fills the next dialog).
+    structuredValuesRef.current = new Map();
+    setStructuredDialog(null);
     lastToggledFindingRef.current = null;
     setIsCritical(false); setCriticalNote("");
     // F5 fix: without this, switching studies carried the PREVIOUS study's
@@ -1577,7 +1692,21 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     for (const f of findings) {
       if (!ids.has(f.id) || insertedTextRef.current.has(f.id)) continue;
       const inst = insts.get(f.id);
-      if (inst) insertedTextRef.current.set(f.id, renderAbnormality(f, inst));
+      // renderFinding regenerates structured findings from their restored values
+      // (seeded below), so deselect exact-removes the impression/technique text.
+      if (inst) insertedTextRef.current.set(f.id, renderFinding(f, inst));
+    }
+  }
+
+  /** Restore each finding's collected structured values from its persisted
+   *  params (piggybacked under `__structured`), so a reloaded draft regenerates
+   *  the identical finding/impression text and remains exact-removable. */
+  function seedRestoredStructuredValues(selections: Array<{ findingId: number; params: Record<string, unknown> }>) {
+    for (const s of selections) {
+      const sv = (s.params as { __structured?: unknown }).__structured;
+      if (sv && typeof sv === "object" && !Array.isArray(sv)) {
+        structuredValuesRef.current.set(s.findingId, sv as Record<string, string>);
+      }
     }
   }
 
@@ -1608,6 +1737,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     const ids = new Set(selections.map((s) => s.findingId));
     const map = new Map<number, AbnormalityInstance>();
     for (const s of selections) map.set(s.findingId, toInstanceParams(s.params));
+    // Structured values first — the two seeds below regenerate exact text from them.
+    seedRestoredStructuredValues(selections);
     setSelectedQuickIds(ids);
     setQuickInstances(map);
     if (quickFindingTemplatesRef.current) {
@@ -2395,7 +2526,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       // findings[] (Ticket A3.1) serializes the current Quick Select
       // selection; A3.2 persists it to report_finding_instances, which is
       // what the selection restore above reads back.
-      const savedFindings = deriveQuickSelectFindings(selectedQuickIds, quickInstances);
+      const savedFindings = deriveQuickSelectFindings(selectedQuickIds, quickInstances, structuredValuesRef.current);
       const res = await saveRadiologyDraft<{ success: boolean; draft: { id: number } & Record<string, unknown> }>(
         {
           id: draftId ?? undefined,
@@ -3883,18 +4014,19 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               {regionFindings.length > 0 && (
                 <div className="flex flex-col gap-1 p-1.5 rounded-md border bg-muted/20" data-testid="quick-findings-strip">
                   <span className="text-[9px] font-semibold uppercase text-muted-foreground px-1">
-                    Quick Findings — click to add / remove from the report
+                    Quick Findings — click to add / remove · ⣿ opens a quick details prompt
                   </span>
                   <div className="flex flex-wrap gap-1">
                     {regionFindings.map((f) => {
                       const selected = selectedQuickIds.has(f.id);
+                      const structured = findingQuestions(f).length > 0;
                       return (
                         <button
                           key={f.id}
                           type="button"
                           disabled={isLocked}
-                          onClick={() => handleQuickToggle(f, !selected)}
-                          title={f.findingText || f.impressionText || f.label}
+                          onClick={() => handleFindingClick(f)}
+                          title={structured ? `${f.label} — set details` : (f.findingText || f.impressionText || f.label)}
                           aria-pressed={selected}
                           className={`text-[10px] font-medium px-2 py-0.5 rounded-full border transition-colors disabled:opacity-50 ${
                             selected
@@ -3902,7 +4034,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                               : "bg-background text-muted-foreground border-border hover:bg-muted/50 hover:text-foreground"
                           }`}
                         >
-                          {f.label}
+                          {f.label}{structured && <span className="ml-1 opacity-70">⣿</span>}
                         </button>
                       );
                     })}
@@ -4446,6 +4578,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               <QuickFindingsPanel
                 selectedIds={selectedQuickIds}
                 onToggle={handleQuickToggle}
+                onFindingClick={handleFindingClick}
                 onMeasurement={handleSmartMeasurement}
                 side={quickSide}
                 onSideChange={setQuickSide}
@@ -4795,6 +4928,21 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           </div>
         </div>
       </div>
+
+      {/* Structured Finding Assistant (Phase 6.2): compact "ask only what's
+          needed" dialog. Opened for a finding that declares questions; on Apply
+          the collected values generate the finding/impression text through the
+          existing Smart Findings Engine. */}
+      {structuredDialog && (
+        <StructuredFindingDialog
+          finding={structuredDialog.finding}
+          initialValues={structuredDialogInitialValues(structuredDialog)}
+          editing={structuredDialog.editing}
+          onApply={applyStructuredDialog}
+          onRemove={() => removeStructuredFinding(structuredDialog.finding)}
+          onCancel={() => setStructuredDialog(null)}
+        />
+      )}
 
       {/* Protocol-replace safety prompt (Phase 8): only shown when selecting a
           protocol would overwrite manually-edited Technique text. Never fires

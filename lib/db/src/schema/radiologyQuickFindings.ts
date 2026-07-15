@@ -62,6 +62,13 @@ export const radiologyQuickFindingsTable = pgTable(
     // free-text mode / fine-grained replacement). In structured mode the whole
     // mapped section's normal is replaced.
     baselineReplaces: text("baseline_replaces").notNull().default(""),
+    // Structured Finding Assistant: JSON array of question definitions
+    // ({key, label, type, options, default, required, sortOrder}). When
+    // non-empty, clicking the finding opens a compact dialog to collect these
+    // values, then generates the finding/impression text from the {key} /
+    // [optional clause] templates in finding_text/impression_text. Empty → the
+    // finding inserts immediately (fewest clicks).
+    questionsJson: text("questions_json").notNull().default("[]"),
     sortOrder: integer("sort_order").notNull().default(0),
     isActive: boolean("is_active").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

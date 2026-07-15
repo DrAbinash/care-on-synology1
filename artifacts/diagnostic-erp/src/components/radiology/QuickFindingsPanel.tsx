@@ -3,10 +3,11 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Zap, Settings2, Star, Ruler, Lightbulb, Search } from "lucide-react";
+import { Zap, Settings2, Star, Ruler, Lightbulb, Search, SlidersHorizontal } from "lucide-react";
 import { Link } from "wouter";
 import type { Side } from "@/lib/sideSwap";
 import { parseProperties, type AbnormalityInstance } from "@/lib/abnormalityEngine";
+import { parseQuestions } from "@/lib/structuredFindings";
 import { computeChecklistStatus, summarizeChecklist, parseChecklist } from "@/lib/checklistEngine";
 import { matchStudyRegion } from "@/lib/studyRegion";
 
@@ -46,6 +47,9 @@ export type QuickFinding = {
   anatomicalSection: string;
   conflictGroup: string;
   baselineReplaces: string;
+  // Phase 6.2 Structured Finding Assistant: JSON question definitions. Non-empty
+  // → clicking opens a dialog to collect values before generating the text.
+  questionsJson: string;
   sortOrder: number;
   isActive: boolean;
 };
@@ -111,6 +115,10 @@ import { rankSuggestions, type LearnedPattern } from "@/lib/learningEngine";
 interface Props {
   selectedIds: Set<number>;
   onToggle: (finding: QuickFinding, nowSelected: boolean) => void;
+  /** Structured Finding Assistant: a finding with configured questions routes
+   *  its click here (to open the compact dialog) instead of toggling directly.
+   *  Findings without questions still toggle immediately (fewest clicks). */
+  onFindingClick?: (finding: QuickFinding) => void;
   onMeasurement?: (templateText: string, value: string) => void;
   side: Side;
   onSideChange: (side: Side) => void;
@@ -150,7 +158,7 @@ const SIDES: Array<{ value: Side; label: string }> = [
 ];
 
 export default function QuickFindingsPanel({
-  selectedIds, onToggle, onMeasurement, side, onSideChange, disabled, initialStudyHint, isAdmin,
+  selectedIds, onToggle, onFindingClick, onMeasurement, side, onSideChange, disabled, initialStudyHint, isAdmin,
   instances, onUpdateInstance, onAutoTechnique, onInsertNormals,
   activeProtocolId, onProtocolChange, onChecklistChange, onAcceptLearnedSuggestion,
   onFindingsLoaded, externalSearch,
@@ -158,6 +166,15 @@ export default function QuickFindingsPanel({
   const qc = useQueryClient();
   const searchRef = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState("");
+
+  /** A finding declaring questions needs details before it renders. */
+  const isStructured = (f: QuickFinding) => parseQuestions(f.questionsJson).length > 0;
+  /** Click intent: open the details dialog for structured findings (fewest
+   *  clicks — only when needed), otherwise toggle immediately. */
+  const activateFinding = (f: QuickFinding) => {
+    if (isStructured(f) && onFindingClick) onFindingClick(f);
+    else onToggle(f, !selectedIds.has(f.id));
+  };
 
   // M1.6B2 — adopt a voice-driven search term (one adoption per seq bump).
   const externalSearchSeqRef = useRef(0);
@@ -372,7 +389,7 @@ export default function QuickFindingsPanel({
         const f = ordered[n - 1];
         if (f && !disabled) {
           e.preventDefault();
-          onToggle(f, !selectedIds.has(f.id));
+          activateFinding(f);
         }
       }
     }
@@ -429,6 +446,9 @@ export default function QuickFindingsPanel({
   }
 
   function PropertyChips({ f }: { f: QuickFinding }) {
+    // Structured findings collect their values in the dialog, not via these
+    // free-standing chips — so the chip row is suppressed for them.
+    if (isStructured(f)) return null;
     const props = parseProperties(f.properties);
     if (props.length === 0 || !onUpdateInstance) return null;
     const inst = instances?.get(f.id) ?? { side: "", severity: "", chronicity: "", level: "", value: "" };
@@ -481,6 +501,7 @@ export default function QuickFindingsPanel({
   function FindingButton({ f, index }: { f: QuickFinding; index?: number }) {
     const selected = selectedIds.has(f.id);
     const isFav = favoriteIds.has(f.id);
+    const structured = isStructured(f);
     return (
       <div className="flex flex-col">
       <div className="flex items-center gap-0.5">
@@ -488,12 +509,17 @@ export default function QuickFindingsPanel({
           size="sm"
           variant={selected ? "default" : "outline"}
           disabled={disabled}
-          onClick={() => onToggle(f, !selected)}
+          onClick={() => activateFinding(f)}
           className="h-10 justify-start text-sm font-medium flex-1 min-w-0 px-3 gap-2"
-          title={`${f.findingText || f.impressionText}${index !== undefined && index < 9 ? `  (Alt+${index + 1})` : ""}`}
+          title={
+            structured
+              ? `${f.label} — set details${selected ? " (click to edit)" : ""}`
+              : `${f.findingText || f.impressionText}${index !== undefined && index < 9 ? `  (Alt+${index + 1})` : ""}`
+          }
         >
           <Zap size={14} className={selected ? "" : "text-muted-foreground"} />
           <span className="truncate">{f.label}</span>
+          {structured && <SlidersHorizontal size={12} className={`shrink-0 ${selected ? "" : "text-muted-foreground"}`} />}
           {(effectiveTabs.size > 1 || searchLower) && (
             <span className="ml-auto text-[10px] text-muted-foreground shrink-0">{f.studyType}</span>
           )}

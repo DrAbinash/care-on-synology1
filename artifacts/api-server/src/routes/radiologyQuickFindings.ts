@@ -180,6 +180,7 @@ router.post("/findings", requireAdminRole, async (req, res) => {
       anatomicalSection: typeof req.body?.anatomicalSection === "string" ? req.body.anatomicalSection : "",
       conflictGroup: typeof req.body?.conflictGroup === "string" ? req.body.conflictGroup : "",
       baselineReplaces: typeof req.body?.baselineReplaces === "string" ? req.body.baselineReplaces : "",
+      questionsJson: typeof req.body?.questionsJson === "string" ? req.body.questionsJson : "[]",
       sortOrder: Number.isFinite(Number(req.body?.sortOrder)) ? Number(req.body.sortOrder) : 0,
       isActive: req.body?.isActive !== false,
     }).returning();
@@ -211,6 +212,7 @@ router.patch("/findings/:id", requireAdminRole, async (req, res) => {
   if (typeof req.body?.anatomicalSection === "string") updates.anatomicalSection = req.body.anatomicalSection;
   if (typeof req.body?.conflictGroup === "string") updates.conflictGroup = req.body.conflictGroup;
   if (typeof req.body?.baselineReplaces === "string") updates.baselineReplaces = req.body.baselineReplaces;
+  if (typeof req.body?.questionsJson === "string") updates.questionsJson = req.body.questionsJson;
   if (req.body?.sortOrder !== undefined) updates.sortOrder = Number(req.body.sortOrder) || 0;
   if (typeof req.body?.isActive === "boolean") updates.isActive = req.body.isActive;
   try {
