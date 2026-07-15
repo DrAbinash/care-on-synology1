@@ -187,6 +187,15 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   serviceImages: text("service_images").notNull().default("{}"),
   serviceImagesEnabled: boolean("service_images_enabled").notNull().default(false),
 
+  // Quick Select Tests background images (/book page, step 2) — JSON string
+  // map of test category (biochemistry, cardiology, radiology, pathology,
+  // hematology, endocrinology, serology, default) to an uploaded image URL.
+  // Categories left unset keep the existing solid-gradient tile look.
+  quickTestCategoryImages: text("quick_test_category_images").notNull().default("{}"),
+  // 0-100, how much the white overlay washes out the tile photo so the test
+  // name stays readable — same idea as bookHeroOverlayOpacity.
+  quickTestOverlayOpacity: integer("quick_test_overlay_opacity").notNull().default(35),
+
   // VIP settings (Phase 6)
   vipPercentage: numeric("vip_percentage", { precision: 5, scale: 2 }).notNull().default("50.00"),
 

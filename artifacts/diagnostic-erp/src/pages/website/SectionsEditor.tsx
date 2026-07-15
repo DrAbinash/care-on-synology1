@@ -357,7 +357,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 // Hero background photo — upload (same /api/website/photos flow used by the
 // Photo Library and the /book page hero) with a manual URL field as a
 // fallback for admins who already have an external image URL.
-function HeroImageField({ value, onChange }: { value: string; onChange: (url: string) => void }) {
+function ImageUploadField({ value, onChange, label = "Background Photo", category = "hero" }: { value: string; onChange: (url: string) => void; label?: string; category?: string }) {
   const { toast } = useToast();
   const [uploading, setUploading] = useState(false);
 
@@ -369,7 +369,7 @@ function HeroImageField({ value, onChange }: { value: string; onChange: (url: st
     try {
       const fd = new FormData();
       fd.append("photo", file);
-      fd.append("category", "hero");
+      fd.append("category", category);
       const token = getStaffToken();
       const r = await fetch("/api/website/photos", {
         method: "POST",
@@ -387,7 +387,7 @@ function HeroImageField({ value, onChange }: { value: string; onChange: (url: st
   }
 
   return (
-    <Field label="Background Photo">
+    <Field label={label}>
       <div className="flex items-center gap-2">
         {value && <img src={value} alt="" className="h-9 w-14 rounded object-cover border border-card-border shrink-0" />}
         <label className="inline-flex items-center gap-1.5 text-xs font-medium border border-card-border rounded-md px-2.5 py-1.5 cursor-pointer hover:bg-muted/40 shrink-0">
@@ -430,7 +430,7 @@ function SectionConfigEditor({ section, onConfigChange }: { section: Section; on
       return (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <Field label="Heading"><Input value={get("heading")} onChange={(e) => onConfigChange("heading", e.target.value)} /></Field>
-          <HeroImageField
+          <ImageUploadField
             value={get("imageUrl")}
             onChange={(url) => onConfigChange("imageUrl", url)}
           />
@@ -574,7 +574,10 @@ function SectionConfigEditor({ section, onConfigChange }: { section: Section; on
         <div className="space-y-3">
           <Field label="Heading"><Input value={get("heading")} onChange={(e) => onConfigChange("heading", e.target.value)} /></Field>
           <Field label="Subheading"><Input value={get("subheading")} onChange={(e) => onConfigChange("subheading", e.target.value)} /></Field>
-          <p className="text-xs text-muted-foreground">Package cards use a fixed built-in set (Basic, Comprehensive, Senior Citizen, etc.).</p>
+          <PackageCardsEditor
+            items={Array.isArray(c.items) ? (c.items as PackageCardItem[]) : []}
+            onChange={(next) => onConfigChange("items", next)}
+          />
         </div>
       );
     case "services":
@@ -653,6 +656,83 @@ function ItemsRepeater<T extends Record<string, unknown>>({
           </div>
         ))}
         <Button size="sm" variant="outline" onClick={addRow}><Plus size={13} className="mr-1" /> Add row</Button>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Health package cards editor (name, price, test count, includes list, badge)
+// ─────────────────────────────────────────────────────────────────────────────
+type PackageCardItem = {
+  name: string; includes: string; featured: boolean; badge: string; image: string;
+  testCount: number | string; price: string; originalPrice: string;
+};
+
+// Discount is derived from price/originalPrice rather than typed in by hand,
+// so it can never drift out of sync with the two numbers it describes.
+function computeDiscountPct(price: string, originalPrice: string): number {
+  const p = Number(String(price).replace(/[^0-9.]/g, ""));
+  const o = Number(String(originalPrice).replace(/[^0-9.]/g, ""));
+  if (!p || !o || o <= p) return 0;
+  return Math.round((1 - p / o) * 100);
+}
+
+function PackageCardsEditor({ items, onChange }: { items: PackageCardItem[]; onChange: (next: PackageCardItem[]) => void }) {
+  function addCard() {
+    onChange([...items, { name: "", includes: "", featured: false, badge: "", image: "", testCount: "", price: "", originalPrice: "" }]);
+  }
+  function removeCard(i: number) { onChange(items.filter((_, idx) => idx !== i)); }
+  function patchCard(i: number, patch: Partial<PackageCardItem>) {
+    onChange(items.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
+  }
+
+  return (
+    <div>
+      <Label className="text-xs">Package cards</Label>
+      <p className="text-[11px] text-muted-foreground mb-1.5">
+        Leave empty to use the built-in default set (Basic, Diabetes Care, Senior Citizen, etc.). Add cards below to override with your own.
+      </p>
+      <div className="space-y-3">
+        {items.map((row, i) => {
+          const discountPct = computeDiscountPct(row.price, row.originalPrice);
+          return (
+            <div key={i} className="rounded-lg border border-border p-3 bg-muted/30 space-y-2">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <Input placeholder="Package name (e.g. Senior Citizen Package)" value={row.name} onChange={(e) => patchCard(i, { name: e.target.value })} />
+                <Input placeholder="Badge (e.g. Best Value)" value={row.badge} onChange={(e) => patchCard(i, { badge: e.target.value })} />
+              </div>
+              <ImageUploadField
+                label="Card image (optional)"
+                category="package"
+                value={row.image}
+                onChange={(url) => patchCard(i, { image: url })}
+              />
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2 items-center">
+                <Input type="number" placeholder="Tests included" value={row.testCount === "" ? "" : String(row.testCount)} onChange={(e) => patchCard(i, { testCount: e.target.value === "" ? "" : Number(e.target.value) })} />
+                <Input placeholder="Price (e.g. 2499)" value={row.price} onChange={(e) => patchCard(i, { price: e.target.value })} />
+                <Input placeholder="Original price (optional)" value={row.originalPrice} onChange={(e) => patchCard(i, { originalPrice: e.target.value })} />
+              </div>
+              {discountPct > 0 && (
+                <p className="text-[11px] text-muted-foreground">Discount shown on the site: <span className="font-semibold text-foreground">{discountPct}% OFF</span> (auto-calculated from price vs. original price)</p>
+              )}
+              <Textarea
+                className="min-h-[70px] text-sm"
+                placeholder={"Included tests, one per line\nCBC (Blood Count)\nFasting Blood Sugar\nLiver Function (LFT)"}
+                value={row.includes}
+                onChange={(e) => patchCard(i, { includes: e.target.value })}
+              />
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Switch checked={row.featured} onCheckedChange={(v) => patchCard(i, { featured: v })} />
+                  <Label className="text-xs">Highlight as featured card</Label>
+                </div>
+                <Button size="sm" variant="ghost" onClick={() => removeCard(i)}><Trash2 size={13} className="mr-1" /> Remove card</Button>
+              </div>
+            </div>
+          );
+        })}
+        <Button size="sm" variant="outline" onClick={addCard}><Plus size={13} className="mr-1" /> Add package card</Button>
       </div>
     </div>
   );
