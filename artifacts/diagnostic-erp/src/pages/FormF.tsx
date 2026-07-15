@@ -13,6 +13,7 @@ import {
 import IdCardScanPanel from "@/components/IdCardScanPanel";
 import UnifiedScanCapture from "@/components/UnifiedScanCapture";
 import { decodeQrFromBlob } from "@/lib/aadhaarQr";
+import { readStaffSession } from "@/lib/staffSession";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
@@ -32,6 +33,99 @@ function ocrConfidenceTier(confidencePercent: number | undefined): OcrConfidence
   if (pct >= 95) return "auto";
   if (pct >= 80) return "confirm";
   return "manual";
+}
+
+// ── ID card OCR response shape (see /api/form-f/upload-id) ──
+type IdCardOcr = {
+  guardianName?: string; address?: string; documentType?: string; confidence?: string; confidencePercent?: number;
+  ocrProvider?: "gemini" | "ollama"; dob?: string; yearOfBirth?: string; age?: number; gender?: string; idNumber?: string;
+};
+type OcrOutcome = "success" | "no_provider_configured" | "ollama_unreachable" | "ollama_model_not_vision_capable" | "ollama_model_not_configured";
+type IdCardUploadResponse = {
+  ocr?: IdCardOcr | null;
+  ocrError?: string | null;
+  ocrOutcome?: OcrOutcome;
+  recordId?: number;
+};
+
+// Context-sensitive OCR messaging — replaces a single large red "OCR
+// unavailable" toast with a message matched to what actually happened. Only
+// genuine failures (couldn't read the uploaded file at all) use the
+// destructive/red styling; every OCR-degraded-gracefully case below uses
+// the neutral default toast, since the upload itself always still succeeds
+// and manual entry always remains available.
+function ocrOutcomeToast(outcome: OcrOutcome | undefined, ocrError: string | null | undefined): { title: string; description?: string; variant?: "default" | "destructive" } {
+  switch (outcome) {
+    case "success":
+      return { title: "ID details extracted", description: "Please verify highlighted fields." };
+    case "ollama_unreachable":
+      return { title: "ID uploaded", description: "The local AI service is unavailable. Enter the details manually or retry." };
+    case "ollama_model_not_vision_capable":
+    case "ollama_model_not_configured":
+      return { title: "ID uploaded", description: "The selected Ollama model does not support image OCR. Select a vision-capable model in AI Provider Settings." };
+    case "no_provider_configured":
+      return { title: "ID uploaded successfully", description: "Automatic OCR is not configured; please enter the details manually." };
+    default:
+      return { title: "ID uploaded", description: ocrError || "OCR could not process this image. Enter details manually.", variant: "destructive" };
+  }
+}
+
+// ── Admin-only OCR provider diagnostics (item 13) — shows which provider ID
+// scans will actually use right now and why, without ever exposing secrets
+// (the backend masks the Ollama endpoint and never returns API keys). Only
+// rendered for admin/super_admin roles since it surfaces infra config. ──
+type OcrStatus = {
+  ok: boolean;
+  selectedProvider?: "ollama" | "gemini" | "none";
+  ollama?: { configured: boolean; enabled: boolean; endpointUrl: string | null; model: string | null; visionSupport: string; reachable: boolean | null; reachabilityError?: string };
+  gemini?: { configured: boolean };
+  unavailableReason?: string | null;
+};
+function OcrDiagnosticsPanel() {
+  const { data, isLoading, refetch, isFetching } = useQuery<OcrStatus>({
+    queryKey: ["form-f-ocr-status"],
+    queryFn: () => api.get("/api/form-f/ocr-status"),
+    staleTime: 15_000,
+  });
+  return (
+    <details className="border border-gray-200 rounded-lg text-xs">
+      <summary className="px-3 py-2 cursor-pointer text-muted-foreground font-medium select-none">
+        OCR provider diagnostics (admin)
+      </summary>
+      <div className="px-3 pb-3 space-y-1.5">
+        {isLoading ? (
+          <p className="text-muted-foreground">Loading…</p>
+        ) : !data?.ok ? (
+          <p className="text-red-600">Failed to load diagnostics.</p>
+        ) : (
+          <>
+            <div className="flex items-center gap-2">
+              <span className="font-medium">Active provider:</span>
+              <Badge variant="outline" className={data.selectedProvider === "none" ? "border-red-300 text-red-700 bg-red-50" : "border-green-300 text-green-700 bg-green-50"}>
+                {data.selectedProvider === "none" ? "None (manual entry)" : data.selectedProvider === "ollama" ? "Ollama (local)" : "Gemini"}
+              </Badge>
+            </div>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 pt-1">
+              <div><span className="text-muted-foreground">Ollama endpoint:</span> {data.ollama?.endpointUrl ?? "not configured"}</div>
+              <div><span className="text-muted-foreground">Ollama model:</span> {data.ollama?.model ?? "not set"}</div>
+              <div><span className="text-muted-foreground">Vision support:</span> {data.ollama?.visionSupport ?? "unknown"}</div>
+              <div><span className="text-muted-foreground">Reachable:</span> {data.ollama?.reachable == null ? "not checked" : data.ollama.reachable ? "yes" : "no"}</div>
+              <div><span className="text-muted-foreground">Gemini configured:</span> {data.gemini?.configured ? "yes" : "no"}</div>
+            </div>
+            {data.ollama?.reachabilityError && (
+              <p className="text-red-600 pt-1">Last Ollama error: {data.ollama.reachabilityError}</p>
+            )}
+            {data.unavailableReason && (
+              <p className="text-amber-700 pt-1">Reason no provider is active: {data.unavailableReason}</p>
+            )}
+          </>
+        )}
+        <Button size="sm" variant="ghost" className="h-6 text-xs px-2 mt-1" onClick={() => refetch()} disabled={isFetching}>
+          <RefreshCcw size={11} className={`mr-1 ${isFetching ? "animate-spin" : ""}`} /> Refresh
+        </Button>
+      </div>
+    </details>
+  );
 }
 
 // ── Draggable bookmarklet link (raw HTML so React doesn't strip javascript: href) ──
@@ -656,6 +750,15 @@ export default function FormF() {
     }
   }
 
+  // Gates the OCR provider diagnostics panel (item 13) — infra config, not
+  // for general staff. readStaffSession() returns null when the ERP was
+  // opened outside the staff-portal login flow, in which case we fail open
+  // (show it) rather than hide diagnostics from an already-authenticated
+  // direct session — requireStaffPermission("/form-f") on the backend route
+  // is the real access control; this is just UI declutter.
+  const staffRole = readStaffSession()?.user.role;
+  const isFormFAdmin = !staffRole || staffRole === "admin" || staffRole === "super_admin";
+
   // ── Feature 2: ID Card Upload + AI OCR + Camera Scanner ──
   const [idCardFrontUrl, setIdCardFrontUrl] = useState("");
   const [idCardBackUrl, setIdCardBackUrl] = useState("");
@@ -665,7 +768,12 @@ export default function FormF() {
   const [idCardUploading, setIdCardUploading] = useState(false);
   const [idCardOcrResult, setIdCardOcrResult] = useState<{
     guardianName?: string; address?: string; documentType?: string; confidence?: string; confidencePercent?: number;
+    ocrProvider?: "gemini" | "ollama"; dob?: string; yearOfBirth?: string; age?: number; gender?: string; idNumber?: string;
   } | null>(null);
+  // Last uploaded ID image, kept so "Retry OCR" can re-run without asking
+  // staff to re-scan/re-upload the physical card.
+  const [lastIdImage, setLastIdImage] = useState<{ base64: string; mimeType: string } | null>(null);
+  const [ocrRetrying, setOcrRetrying] = useState(false);
   // Camera capture state (webcam only)
   const [cameraOpen, setCameraOpen] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -682,35 +790,8 @@ export default function FormF() {
 
   async function runOcrOnImage(imageBase64: string, mimeType: string) {
     try {
-      const resp = await api.post<{
-        ocr?: {
-          guardianName?: string; address?: string; documentType?: string; confidence?: string; confidencePercent?: number;
-          fullName?: string; dob?: string; gender?: string; aadhaarNumber?: string; rawText?: string;
-        } | null;
-        ocrError?: string | null;
-        recordId?: number;
-      }>("/api/form-f/upload-id", {
-        formFId: 0,
-        imageBase64,
-        mimeType,
-      });
-      setIdCardOcrResult(resp.ocr ?? null);
-      if (resp.ocr?.guardianName) setIdCardExtractedName(resp.ocr.guardianName);
-      if (resp.ocr?.address) setIdCardExtractedAddress(resp.ocr.address);
-      // Auto-apply to the form only at the "auto" confidence tier (>=95%) —
-      // 80-94% requires the explicit "Use this" click below; <80% is shown
-      // for reference only. The `prev.field ||` guard additionally ensures
-      // this never overwrites a value staff already typed, at any tier.
-      if (ocrConfidenceTier(resp.ocr?.confidencePercent) === "auto") {
-        setForm((prev) => ({
-          ...prev,
-          husbandFatherName: prev.husbandFatherName || resp.ocr?.guardianName || prev.husbandFatherName,
-          address: prev.address || resp.ocr?.address || prev.address,
-        }));
-      }
-      if (!resp.ocr && resp.ocrError) {
-        toast({ title: "OCR unavailable", description: resp.ocrError, variant: "destructive" });
-      }
+      setLastIdImage({ base64: imageBase64, mimeType });
+      await runIdCardOcr(imageBase64, mimeType);
     } catch {
       // OCR is optional; don't block the scan if it fails
     }
@@ -817,6 +898,34 @@ export default function FormF() {
     };
   }
 
+  // ── Runs OCR on an already-uploaded ID image and applies the result to
+  // the review panel + (at high confidence) the form fields. Shared by the
+  // initial scan/upload and the "Retry OCR" button, so both go through
+  // identical field-population logic. ──
+  async function runIdCardOcr(base64: string, mimeType: string) {
+    const resp = await api.post<IdCardUploadResponse>("/api/form-f/upload-id", {
+      formFId: 0,
+      imageBase64: base64,
+      mimeType,
+    });
+    setIdCardOcrResult(resp.ocr ?? null);
+    if (resp.ocr?.guardianName) setIdCardExtractedName(resp.ocr.guardianName);
+    if (resp.ocr?.address) setIdCardExtractedAddress(resp.ocr.address);
+    // Auto-fill empty form fields from OCR only at the "auto" confidence
+    // tier (>=95%) — see ocrConfidenceTier(). Below that, staff must
+    // click "Use this" in the review panel; the `prev.field ||` guard
+    // still ensures we never overwrite anything already typed.
+    if (ocrConfidenceTier(resp.ocr?.confidencePercent) === "auto") {
+      setForm((prev) => ({
+        ...prev,
+        husbandFatherName: prev.husbandFatherName || resp.ocr?.guardianName || prev.husbandFatherName,
+        address: prev.address || resp.ocr?.address || prev.address,
+      }));
+    }
+    toast(ocrOutcomeToast(resp.ocrOutcome, resp.ocrError));
+    return resp;
+  }
+
   // ── ID card image processing (shared by upload, UnifiedScanCapture, camera) ──
   async function processIdImage(file: Blob) {
     setIdCardUploading(true);
@@ -869,53 +978,25 @@ export default function FormF() {
         const base64 = dataUrl.split(",")[1];
         if (!base64) { toast({ title: "Failed to read image", variant: "destructive" }); setIdCardUploading(false); return; }
         setIdCardFrontUrl(dataUrl);
-        const resp = await api.post<{
-          ocr?: {
-            guardianName?: string;
-            address?: string;
-            documentType?: string;
-            confidence?: string;
-            confidencePercent?: number;
-            fullName?: string;
-            dob?: string;
-            gender?: string;
-            aadhaarNumber?: string;
-            rawText?: string;
-          } | null;
-          ocrError?: string | null;
-          recordId?: number;
-        }>("/api/form-f/upload-id", {
-          formFId: 0,
-          imageBase64: base64,
-          mimeType: file.type,
-        });
-        setIdCardOcrResult(resp.ocr ?? null);
-        if (resp.ocr?.guardianName) setIdCardExtractedName(resp.ocr.guardianName);
-        if (resp.ocr?.address) setIdCardExtractedAddress(resp.ocr.address);
-        // Auto-fill empty form fields from OCR only at the "auto" confidence
-        // tier (>=95%) — see ocrConfidenceTier(). Below that, staff must
-        // click "Use this" in the review panel; the `prev.field ||` guard
-        // still ensures we never overwrite anything already typed.
-        if (ocrConfidenceTier(resp.ocr?.confidencePercent) === "auto") {
-          setForm((prev) => ({
-            ...prev,
-            husbandFatherName: prev.husbandFatherName || resp.ocr?.guardianName || prev.husbandFatherName,
-            address: prev.address || resp.ocr?.address || prev.address,
-          }));
-        }
-        if (resp.ocr) {
-          toast({ title: `ID scanned: ${resp.ocr.documentType}` });
-        } else {
-          toast({
-            title: "ID scanned — OCR unavailable",
-            description: resp.ocrError || "OCR could not process this image. Enter details manually.",
-            variant: "destructive",
-          });
-        }
+        setLastIdImage({ base64, mimeType: file.type });
+        await runIdCardOcr(base64, file.type);
         setIdCardUploading(false);
       };
       reader.readAsDataURL(file);
     } catch { toast({ title: "Upload failed", variant: "destructive" }); setIdCardUploading(false); }
+  }
+
+  // ── Retry OCR — re-runs OCR on the already-uploaded ID image without
+  // requiring staff to re-scan/re-upload the physical card. Useful when the
+  // first attempt hit a transient Ollama-unreachable/timeout condition. ──
+  async function retryOcr() {
+    if (!lastIdImage) return;
+    setOcrRetrying(true);
+    try {
+      await runIdCardOcr(lastIdImage.base64, lastIdImage.mimeType);
+    } finally {
+      setOcrRetrying(false);
+    }
   }
 
   // ── ID card BACK side upload (no OCR, just stores image) ──
@@ -1713,6 +1794,7 @@ export default function FormF() {
                         />
                       </label>
                     </div>
+                    {isFormFAdmin && <OcrDiagnosticsPanel />}
                   </div>
                 </BigLabelRow>
 
@@ -1768,13 +1850,27 @@ export default function FormF() {
                         </Button>
                       </div>
                     )}
+                    {/* Extra fields Form F has no dedicated input for — shown
+                        read-only for staff to cross-check against the
+                        physical card, not applied anywhere automatically. */}
+                    {(idCardOcrResult?.dob || idCardOcrResult?.age != null || idCardOcrResult?.gender || idCardOcrResult?.idNumber) && (
+                      <div className="text-xs text-blue-600 flex flex-wrap gap-x-3 gap-y-0.5 pt-1 border-t border-blue-100">
+                        {idCardOcrResult?.dob && <span>DOB: {idCardOcrResult.dob}</span>}
+                        {idCardOcrResult?.age != null && <span>Age: {idCardOcrResult.age}</span>}
+                        {idCardOcrResult?.gender && <span>Gender: {idCardOcrResult.gender}</span>}
+                        {idCardOcrResult?.idNumber && <span>ID No.: {idCardOcrResult.idNumber}</span>}
+                      </div>
+                    )}
+                    {idCardOcrResult?.ocrProvider && (
+                      <p className="text-[10px] text-blue-500">Extracted via {idCardOcrResult.ocrProvider === "ollama" ? "local AI (Ollama)" : "Gemini"}</p>
+                    )}
                   </div>
                 )}
 
                 {/* ── ID Card Preview (front + back) ── */}
                 {(idCardFrontUrl || idCardBackUrl) && (
                   <BigLabelRow label="Uploaded ID">
-                    <div className="flex gap-3 flex-wrap">
+                    <div className="flex items-start gap-3 flex-wrap">
                       {idCardFrontUrl && (
                         <div className="relative">
                           <div className="text-[11px] text-muted-foreground mb-1">Front</div>
@@ -1802,6 +1898,17 @@ export default function FormF() {
                             ✕
                           </button>
                         </div>
+                      )}
+                      {lastIdImage && (
+                        <Button
+                          type="button" size="sm" variant="outline"
+                          className="h-8 text-xs mt-4"
+                          disabled={ocrRetrying}
+                          onClick={retryOcr}
+                        >
+                          <RefreshCcw size={12} className={`mr-1 ${ocrRetrying ? "animate-spin" : ""}`} />
+                          {ocrRetrying ? "Retrying…" : "Retry OCR"}
+                        </Button>
                       )}
                     </div>
                   </BigLabelRow>

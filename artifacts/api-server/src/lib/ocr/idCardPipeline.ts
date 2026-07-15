@@ -1,4 +1,6 @@
 import { geminiOcrIdCard, type IdCardOcrResult } from "@workspace/integrations-gemini-ai";
+import { ollamaOcrIdCard } from "./idCardOcrOllama";
+import { type OcrProviderChoice } from "./ocrProviderResolver";
 
 /**
  * Shared image pre-processing applied before OCR, reused by both the ID-card
@@ -128,16 +130,20 @@ export interface IdCardPipelineResult {
 }
 
 /**
- * Full ID-card OCR pipeline: pre-process, then call the existing
- * geminiOcrIdCard helper (unchanged — this wraps it, does not replace it).
- * Manual verification of the extracted fields before they're saved remains
- * the caller's responsibility (the Form F / Registration UI already shows
- * OCR output in editable form fields rather than auto-committing it).
+ * Full ID-card OCR pipeline: pre-process, then dispatch to whichever
+ * provider ocrProviderResolver.ts already decided on (Ollama or Gemini —
+ * see resolveOcrProvider()'s Ollama-first/Gemini-fallback policy). This
+ * function no longer picks a provider itself; it only executes against the
+ * one it's handed, so preprocessing (EXIF-orient/trim/normalize/downscale)
+ * is applied identically regardless of which provider runs the actual OCR
+ * call. Manual verification of the extracted fields before they're saved
+ * remains the caller's responsibility (Form F shows OCR output in editable
+ * form fields rather than auto-committing it).
  */
 export async function runIdCardOcrPipeline(
   imageBase64: string,
   mimeType: string,
-  apiKey?: string,
+  provider: OcrProviderChoice,
 ): Promise<IdCardPipelineResult> {
   const pre = await preprocessScanImage(imageBase64, mimeType);
   const processedBase64 = pre.buffer.toString("base64");
@@ -148,7 +154,14 @@ export async function runIdCardOcrPipeline(
     // isBlurred to surface a "too blurred, consider retaking" message.
   }
 
-  const ocrResult = await geminiOcrIdCard(processedBase64, pre.mimeType, apiKey ? { apiKey } : {});
+  if (provider.provider === "none") {
+    throw new Error("No OCR provider available");
+  }
+
+  const ocrResult = provider.provider === "ollama"
+    ? await ollamaOcrIdCard(processedBase64, { endpointUrl: provider.endpointUrl, model: provider.model })
+    : await geminiOcrIdCard(processedBase64, pre.mimeType, { apiKey: provider.apiKey });
+
   return {
     ocrResult,
     blurScore: pre.blurScore,
