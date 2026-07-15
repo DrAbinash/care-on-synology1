@@ -44,7 +44,7 @@ export interface ViewerMeasurementsPanelProps {
 
 // ── Backend row type (viewer_measurements table $inferSelect, serialized) ──────
 
-interface ViewerMeasurement {
+export interface ViewerMeasurement {
   id: number;
   patientId: number;
   studyId: number | null;
@@ -108,17 +108,14 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-// ── Component ───────────────────────────────────────────────────────────────────
+// ── Shared query hook ───────────────────────────────────────────────────────────
+// Exported so other panels (e.g. the Workspace's F6 imported-measurement safety
+// checks) can read the SAME cache entry instead of re-implementing the fetch —
+// same queryKey means TanStack Query dedupes the network call regardless of how
+// many components call this hook for the same study.
 
-export default function ViewerMeasurementsPanel({
-  studyInstanceUID,
-  onInsertToFindings,
-  onInsertToImpression,
-}: ViewerMeasurementsPanelProps) {
-  const { toast } = useToast();
-  const qc = useQueryClient();
-
-  const measurementsQuery = useQuery<ViewerMeasurement[]>({
+export function useViewerMeasurements(studyInstanceUID: string | null | undefined) {
+  return useQuery<ViewerMeasurement[]>({
     queryKey: ["viewer-measurements", studyInstanceUID],
     queryFn: () =>
       studyInstanceUID
@@ -131,6 +128,19 @@ export default function ViewerMeasurementsPanel({
     enabled: !!studyInstanceUID,
     staleTime: 5000,
   });
+}
+
+// ── Component ───────────────────────────────────────────────────────────────────
+
+export default function ViewerMeasurementsPanel({
+  studyInstanceUID,
+  onInsertToFindings,
+  onInsertToImpression,
+}: ViewerMeasurementsPanelProps) {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+
+  const measurementsQuery = useViewerMeasurements(studyInstanceUID);
 
   const invalidate = () =>
     void qc.invalidateQueries({ queryKey: ["viewer-measurements", studyInstanceUID] });

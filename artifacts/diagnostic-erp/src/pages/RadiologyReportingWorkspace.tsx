@@ -37,7 +37,7 @@ import UsgMeasurementReviewPanel from "@/components/radiology/UsgMeasurementRevi
 import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
 // Cockpit→Workspace merge (D1): external-viewer (OHIF/Weasis/DICOM-SR)
 // measurement import queue — self-hides when the study has none.
-import ViewerMeasurementsPanel from "@/components/radiology/ViewerMeasurementsPanel";
+import ViewerMeasurementsPanel, { useViewerMeasurements } from "@/components/radiology/ViewerMeasurementsPanel";
 import PreferencesPanel from "@/components/PreferencesPanel";
 import { isUltrasoundModality } from "@/lib/usgModality";
 import QuickFindingsPanel, {
@@ -977,6 +977,54 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     () => chocolateBoxSetFor(entry?.modality, entry?.studyDescription),
     [entry?.modality, entry?.studyDescription],
   );
+
+  // F6 (Cockpit→Workspace merge): imported-viewer-measurement safety checks.
+  // Reads the SAME cache entry ViewerMeasurementsPanel populates (shared
+  // queryKey via useViewerMeasurements) rather than re-fetching. Ported from
+  // the Cockpit's Inspector engine — a measurement the radiologist marked
+  // "Imported" but never actually mentioned in the report text is a real
+  // missed-finding risk, distinct from the text-insertion helpers (which only
+  // guard against re-typing, not against forgetting entirely).
+  const viewerMeasurementsForSafety = useViewerMeasurements(entry?.studyInstanceUID);
+  const measurementSafetyIssues = useMemo(() => {
+    const imported = (viewerMeasurementsForSafety.data ?? []).filter((m) => m.status === "imported");
+    if (imported.length === 0) return [] as Array<{ id: string; severity: "critical" | "important"; message: string }>;
+    const fullTextLower = [clinicalHistory, technique, rawFindings, impression.join(" "), recommendation]
+      .join(" ").toLowerCase();
+    const issues: Array<{ id: string; severity: "critical" | "important"; message: string }> = [];
+    const seen = new Set<string>();
+    for (const m of imported) {
+      const valLower = (m.value ?? "").trim().toLowerCase();
+      if (!valLower) continue;
+      const idx = fullTextLower.indexOf(valLower);
+      if (idx === -1) {
+        issues.push({
+          id: `meas-ref-${m.id}`,
+          severity: "critical",
+          message: `Imported measurement (${m.measurementType}: ${m.value} ${m.unit}) isn't mentioned anywhere in the report.`,
+        });
+      } else if (m.unit) {
+        const nearby = fullTextLower.substring(Math.max(0, idx - 20), idx + valLower.length + 20);
+        if (!nearby.includes(m.unit.trim().toLowerCase())) {
+          issues.push({
+            id: `meas-unit-${m.id}`,
+            severity: "important",
+            message: `Imported measurement's unit '${m.unit}' doesn't appear near its value in the report text — verify unit consistency.`,
+          });
+        }
+      }
+      const dupKey = `${m.measurementType}-${m.value}-${m.unit}`;
+      if (seen.has(dupKey)) {
+        issues.push({
+          id: `meas-dup-${m.id}`,
+          severity: "important",
+          message: `${m.value} ${m.unit} for '${m.measurementType}' appears to be imported more than once — verify it isn't a duplicate acquisition.`,
+        });
+      }
+      seen.add(dupKey);
+    }
+    return issues;
+  }, [viewerMeasurementsForSafety.data, clinicalHistory, technique, rawFindings, impression, recommendation]);
 
   // ── Draft identity (Radiology Roadmap Ticket A3.0) ────────────────────────
   // Loads any existing radiology_report_drafts row for this study and tracks
@@ -3981,6 +4029,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                       <div className="text-green-600">✓ Clinical history present</div>
                     )}
                     <div className="text-green-600">✓ No left-right conflict detected</div>
+                    {/* F6: imported-viewer-measurement safety checks */}
+                    {measurementSafetyIssues.map((issue) => (
+                      <div key={issue.id} className={issue.severity === "critical" ? "text-red-500" : "text-amber-600"}>
+                        ⚠ {issue.message}
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>
