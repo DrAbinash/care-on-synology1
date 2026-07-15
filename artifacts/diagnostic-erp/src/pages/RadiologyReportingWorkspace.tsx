@@ -568,6 +568,33 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     myName: session?.user.name ?? null,
   });
 
+  // ── A1 (Cockpit→Workspace merge): free-text + modality filter over the JUMP
+  // dropdown only. Deliberately NOT applied to Next/Previous/park — those stay
+  // scope-based so the CURRENT study never drops out of the queue (which would
+  // corrupt position/history). This just lets a radiologist find-and-jump to a
+  // study by patient/accession/modality without leaving the report. State is
+  // distinct from the template `modalityFilter` (which filters the picker).
+  const [queueFilterText, setQueueFilterText] = useState("");
+  const [queueModalityFilter, setQueueModalityFilter] = useState("all");
+  const jumpQueue = useMemo(() => {
+    const q = queueFilterText.trim().toLowerCase();
+    const mod = queueModalityFilter;
+    return workflow.queue.filter((s) => {
+      if (mod !== "all") {
+        const m = (s.modality ?? "").toUpperCase();
+        const matchesModality = mod === "US"
+          ? isUltrasoundModality(s.modality)
+          : m.startsWith(mod);
+        if (!matchesModality) return false;
+      }
+      if (q) {
+        const hay = `${s.patientName ?? ""} ${s.modality ?? ""} ${s.accessionNumber ?? ""}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [workflow.queue, queueFilterText, queueModalityFilter]);
+
   // Claim the current study on entry (visible in the status bar — never
   // silent), heartbeat while held, stop after finalize. Server expiry stays
   // authoritative; losing the lock never touches local text.
@@ -2665,6 +2692,29 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               </optgroup>
             )}
           </select>
+          {/* A1: find-and-jump filters (search + modality) over the jump list */}
+          <Input
+            value={queueFilterText}
+            onChange={(e) => setQueueFilterText(e.target.value)}
+            placeholder="Find in queue…"
+            className="h-6 w-[120px] text-[10px] px-1.5"
+            data-testid="queue-filter-text"
+            title="Filter the queue jump list by patient / accession / modality"
+          />
+          <select
+            className="h-6 text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
+            value={queueModalityFilter}
+            data-testid="queue-filter-modality"
+            onChange={(e) => setQueueModalityFilter(e.target.value)}
+            title="Filter the queue jump list by modality"
+          >
+            <option value="all">All</option>
+            <option value="US">US</option>
+            <option value="CT">CT</option>
+            <option value="MR">MR</option>
+            <option value="CR">CR</option>
+            <option value="DX">DX</option>
+          </select>
           {/* Jump to a specific queue row — →current ✓done ⏸parked 🔒locked */}
           <select
             className="h-6 max-w-[260px] text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
@@ -2680,8 +2730,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             }}
             title="Jump to a study in the queue"
           >
-            <option value="">Queue ({workflow.position.total})…</option>
-            {workflow.queue.map((s) => {
+            <option value="">
+              Queue ({jumpQueue.length === workflow.position.total
+                ? workflow.position.total
+                : `${jumpQueue.length}/${workflow.position.total}`})…
+            </option>
+            {jumpQueue.map((s) => {
               const ind = workflow.indicators.find((i) => i.id === s.id);
               const prefix = ind?.current ? "→ " : ind?.completed ? "✓ " : ind?.parked ? "⏸ " : ind?.lockedByOther ? "🔒 " : "";
               return (
