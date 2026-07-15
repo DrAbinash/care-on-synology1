@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
+import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
 import { buildBillPrintHtml, type PrintBillData, type PrintClinic } from "@/lib/printBill";
@@ -7303,13 +7304,13 @@ function RadiologySettingsTab() {
 
   return (
     <div className="max-w-2xl space-y-6">
-      <a
+      <Link
         href="/settings/radiology"
         className="flex items-center justify-between gap-3 rounded-xl border bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800 p-3 text-sm hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
       >
         <span>Looking for PACS, Orthanc, OHIF, Weasis, DICOM, or worklist settings? Those live on the dedicated <strong>Radiology Settings</strong> page.</span>
         <span className="shrink-0 text-blue-600 dark:text-blue-400 font-medium">Open →</span>
-      </a>
+      </Link>
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
         <div>
           <h2 className="font-bold text-lg flex items-center gap-2"><ScanLine size={16} /> Radiology Productivity Tools</h2>

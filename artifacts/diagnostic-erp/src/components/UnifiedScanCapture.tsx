@@ -27,6 +27,7 @@
  * categories, or any other module-specific shape.
  */
 import { useEffect, useRef, useState } from "react";
+import { Link } from "wouter";
 import QRCode from "qrcode";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
@@ -240,7 +241,21 @@ export default function UnifiedScanCapture({
     );
   }
 
-  // ── Mobile Scan (QR) — reuses the existing scan-sessions flow ──
+  // ── Mobile Scan — reuses the existing scan-sessions flow ──
+  // If a phone is already paired (see ScanIdButton.tsx for the original,
+  // working pattern this mirrors), trigger it directly instead of always
+  // falling back to a fresh QR code the staff member has to re-scan.
+  const [pairedPhone, setPairedPhone] = useState<{ paired: boolean; device?: { deviceName: string } } | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    api
+      .get<{ paired: boolean; device?: { deviceName: string } }>("/api/scan-sessions/paired-phone")
+      .then((data) => { if (active) setPairedPhone(data); })
+      .catch(() => { if (active) setPairedPhone(null); });
+    return () => { active = false; };
+  }, [open]);
+
   const [sessionToken, setSessionToken] = useState("");
   const [mobileQrUrl, setMobileQrUrl] = useState("");
   const [sessionStatus, setSessionStatus] = useState<"pending" | "completed" | "expired" | "">("");
@@ -248,7 +263,8 @@ export default function UnifiedScanCapture({
   async function startMobileSession() {
     setMode("mobile");
     try {
-      const res = await api.post<{ sessionToken: string }>("/api/scan-sessions/create", { method: "qr" });
+      const method = pairedPhone?.paired ? "paired_phone" : "qr";
+      const res = await api.post<{ sessionToken: string }>("/api/scan-sessions/create", { method });
       setSessionToken(res.sessionToken);
       setSessionStatus("pending");
     } catch (e) {
@@ -340,7 +356,7 @@ export default function UnifiedScanCapture({
               ) : (
                 <div className="rounded-lg border border-dashed p-3 text-[11px] text-muted-foreground">
                   TVS PDS 8M not configured on this workstation yet. An admin can bind it in{" "}
-                  <a href="/settings/scanner" className="text-primary underline">Scanner Settings</a>.
+                  <Link href="/settings/scanner" className="text-primary underline">Scanner Settings</Link>.
                 </div>
               )}
 
@@ -380,8 +396,15 @@ export default function UnifiedScanCapture({
               <Button variant="outline" onClick={startMobileSession} className="h-14 justify-start gap-3 border-dashed hover:bg-muted/40">
                 <Smartphone size={20} className="text-muted-foreground shrink-0" />
                 <div className="text-left">
-                  <div className="font-semibold text-sm">Mobile Scan</div>
-                  <div className="text-[10px] text-muted-foreground">Scan QR with your phone to capture a {MOBILE_QR_LABEL[module]}</div>
+                  <div className="font-semibold text-sm flex items-center gap-1.5">
+                    Mobile Scan
+                    {pairedPhone?.paired && <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">
+                    {pairedPhone?.paired
+                      ? `Instant trigger — ${pairedPhone.device?.deviceName || "paired phone"}`
+                      : `Scan QR with your phone to capture a ${MOBILE_QR_LABEL[module]}`}
+                  </div>
                 </div>
               </Button>
 
@@ -436,7 +459,19 @@ export default function UnifiedScanCapture({
 
           {mode === "mobile" && (
             <div className="space-y-3 pt-2 text-center">
-              {sessionStatus === "pending" && mobileQrUrl && (
+              {sessionStatus === "pending" && pairedPhone?.paired && (
+                <>
+                  <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
+                    <Smartphone size={28} className="text-primary" />
+                  </div>
+                  <p className="text-sm font-medium">Scan request sent to {pairedPhone.device?.deviceName || "your paired phone"}.</p>
+                  <p className="text-xs text-muted-foreground">Its camera should open automatically — capture the document there.</p>
+                  <div className="flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
+                    <Loader2 size={12} className="animate-spin" /> Waiting for phone…
+                  </div>
+                </>
+              )}
+              {sessionStatus === "pending" && !pairedPhone?.paired && mobileQrUrl && (
                 <>
                   <img src={mobileQrUrl} alt="Scan QR" className="w-48 h-48 mx-auto rounded-lg border" />
                   <p className="text-xs text-muted-foreground">Scan this code with your phone's camera to open the mobile capture page.</p>
@@ -449,7 +484,7 @@ export default function UnifiedScanCapture({
                 <>
                   <p className="text-sm text-destructive">Session expired.</p>
                   <Button size="sm" onClick={startMobileSession} className="gap-1.5">
-                    <RefreshCcw size={13} /> New QR Code
+                    <RefreshCcw size={13} /> {pairedPhone?.paired ? "Resend to Phone" : "New QR Code"}
                   </Button>
                 </>
               )}
