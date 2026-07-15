@@ -47,10 +47,11 @@ import { matchStudyRegion } from "@/lib/studyRegion";
 import { hasPhrase, appendClinicalPhrase, removeClinicalPhrase } from "@/lib/clinicalHistoryText";
 import {
   renderAbnormality, type AbnormalityInstance, type RenderedAbnormality, type Side,
-  mergeBlock, mergeImpression,
+  mergeBlock, mergeImpression, EMPTY_INSTANCE,
   applyRenderedTransition, toggleQuickSelection, setQuickInstance, deleteQuickInstance,
   seedQuickInstance, patchQuickInstance,
 } from "@/lib/renderEngine";
+import { mergeSectionTexts, conflictingSelections } from "@/lib/smartFindings";
 import { deriveQuickSelectFindings } from "@/lib/quickSelectFindingsPayload";
 import { validateReport, computeQualityScore } from "@/lib/reportValidator";
 // F3 (Cockpit→Workspace merge): real-time missed-finding text-pattern nudges.
@@ -738,40 +739,155 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
    *  this wrapper only owns reading/writing the actual React state and the
    *  insertedTextRef ref, which stay in the component per F1b's scope. */
   function applyRendered(id: number, next: RenderedAbnormality | null) {
-    const prev = insertedTextRef.current.get(id);
-    const result = applyRenderedTransition(
-      { rawFindings, impression, technique, recommendation },
-      prev,
-      next,
-    );
-    if (next) insertedTextRef.current.set(id, next);
-    else insertedTextRef.current.delete(id);
-    setRawFindings(result.rawFindings);
-    setImpression(result.impression);
-    setTechnique(result.technique);
-    setRecommendation(result.recommendation);
+    applyManyRendered([{ id, next }]);
+  }
+
+  /** Apply several rendered-abnormality transitions over a SINGLE report-text
+   *  state, committing once. Needed when one action changes more than one
+   *  finding (conflict-group eviction), because each applyRenderedTransition
+   *  reads the current state — looping the single version would let the last
+   *  write clobber the earlier ones. */
+  function applyManyRendered(changes: Array<{ id: number; next: RenderedAbnormality | null }>) {
+    let state = { rawFindings, impression, technique, recommendation };
+    for (const { id, next } of changes) {
+      const prev = insertedTextRef.current.get(id);
+      state = applyRenderedTransition(state, prev, next);
+      if (next) insertedTextRef.current.set(id, next);
+      else insertedTextRef.current.delete(id);
+    }
+    setRawFindings(state.rawFindings);
+    setImpression(state.impression);
+    setTechnique(state.technique);
+    setRecommendation(state.recommendation);
+  }
+
+  // ── Smart Findings engine (Phase 6) ─────────────────────────────────────────
+  // In structured mode a finding flips its mapped template section from the
+  // baseline normal to the finding text (replace, anatomical order, conflict
+  // resolution — all inherent to findingsMap). In free-text mode it appends to
+  // rawFindings exactly as before. Reuses findingsMap + renderAbnormality; no
+  // second engine.
+  const OTHER_SECTION = "Additional Observations";
+
+  /** True while the structured report (with a loaded template) is the active
+   *  surface — the only mode where findings drive sections. */
+  function smartModeActive(): boolean {
+    return useStructured && !!selectedTemplate;
+  }
+
+  /** The findingsMap section a finding drives: its configured anatomical section
+   *  or a shared catch-all, so an unmapped finding is still shown and ordered
+   *  rather than vanishing into hidden free text. */
+  function sectionForFinding(f: QuickFinding): string {
+    return (f.anatomicalSection ?? "").trim() || OTHER_SECTION;
+  }
+
+  /** The loaded template's ordered {label, normal} baseline sections. */
+  function currentBaseline(): Array<{ label: string; normal: string }> {
+    return selectedTemplate ? parseSectionsJson(selectedTemplate.sectionsJson).findingsItems : [];
+  }
+
+  /** Recompute ONE structured section from the findings currently targeting it.
+   *  Only this section is rewritten, so manual edits to other sections (and to
+   *  untouched normal sections) survive. Empty → restore the template normal (or
+   *  drop a created catch-all). Order is preserved: template sections already
+   *  exist as keys; a created section appends after them. */
+  function refreshSection(section: string, selected: Set<number>, instances: Map<number, AbnormalityInstance>) {
+    if (!section) return;
+    const baseline = currentBaseline();
+    const baselineNormal = baseline.find((b) => b.label === section)?.normal;
+    const texts = [...selected]
+      .map((id) => findingById.get(id))
+      .filter((f): f is QuickFinding => !!f && sectionForFinding(f) === section)
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map((f) => renderAbnormality(f, instances.get(f.id) ?? EMPTY_INSTANCE).finding)
+      .filter((t) => t.trim());
+    setFindingsMap((prev) => {
+      const next = { ...prev };
+      if (texts.length === 0) {
+        if (baselineNormal !== undefined) next[section] = { normal: true, text: baselineNormal };
+        else delete next[section];
+      } else {
+        next[section] = { normal: false, text: mergeSectionTexts(texts) };
+      }
+      return next;
+    });
+  }
+
+  /** Rendered abnormality for a finding. In smart mode the finding text is
+   *  routed to its section (not free text), so blank the `finding` field here
+   *  while still letting impression/technique/recommendation merge as usual. */
+  function renderForReport(f: QuickFinding, inst: AbnormalityInstance): RenderedAbnormality {
+    const r = renderAbnormality(f, inst);
+    return smartModeActive() ? { ...r, finding: "" } : r;
+  }
+
+  /** Current findings as readable text for the AI Impression prompt — the
+   *  abnormal structured sections in anatomical order (or the free text). Keeps
+   *  the AI input clean instead of raw JSON. */
+  function findingsAsText(): string {
+    if (useStructured) {
+      const parts = Object.entries(findingsMap)
+        .filter(([, s]) => !s.normal && s.text.trim())
+        .map(([label, s]) => `${label}: ${s.text.trim()}`);
+      return parts.length ? parts.join("\n") : "All imaged structures are within normal limits.";
+    }
+    return rawFindings;
   }
 
   function handleQuickToggle(f: QuickFinding, nowSelected: boolean) {
+    if (isLocked) return;
     if (nowSelected) lastToggledFindingRef.current = f;
-    setSelectedQuickIds((prev) => toggleQuickSelection(prev, f.id, nowSelected));
-    if (nowSelected) {
-      // New instance seeded from the global side selector.
-      const inst = seedQuickInstance(quickSide);
-      setQuickInstances((prev) => setQuickInstance(prev, f.id, inst));
-      applyRendered(f.id, renderAbnormality(f, inst));
-    } else {
-      setQuickInstances((prev) => deleteQuickInstance(prev, f.id));
-      applyRendered(f.id, null);
+
+    // Conflict groups: selecting a finding deselects any same-group sibling.
+    const evictIds = nowSelected
+      ? conflictingSelections(
+          { id: f.id, studyType: f.studyType, conflictGroup: f.conflictGroup ?? "" },
+          [...selectedQuickIds]
+            .map((id) => findingById.get(id))
+            .filter((x): x is QuickFinding => !!x)
+            .map((x) => ({ id: x.id, studyType: x.studyType, conflictGroup: x.conflictGroup ?? "" })),
+        )
+      : [];
+
+    let nextSelected = toggleQuickSelection(selectedQuickIds, f.id, nowSelected);
+    let nextInstances = nowSelected
+      ? setQuickInstance(quickInstances, f.id, seedQuickInstance(quickSide))
+      : deleteQuickInstance(quickInstances, f.id);
+    for (const cid of evictIds) {
+      nextSelected = toggleQuickSelection(nextSelected, cid, false);
+      nextInstances = deleteQuickInstance(nextInstances, cid);
+    }
+    setSelectedQuickIds(nextSelected);
+    setQuickInstances(nextInstances);
+
+    // Impression / technique / recommendation contributions (+ evictions),
+    // committed over one state so nothing clobbers.
+    const changes: Array<{ id: number; next: RenderedAbnormality | null }> = [
+      { id: f.id, next: nowSelected ? renderForReport(f, nextInstances.get(f.id) ?? EMPTY_INSTANCE) : null },
+    ];
+    for (const cid of evictIds) changes.push({ id: cid, next: null });
+    applyManyRendered(changes);
+
+    // Structured findings: refresh only the affected section(s).
+    if (smartModeActive()) {
+      const sections = new Set<string>([sectionForFinding(f)]);
+      for (const cid of evictIds) {
+        const cf = findingById.get(cid);
+        if (cf) sections.add(sectionForFinding(cf));
+      }
+      for (const s of sections) refreshSection(s, nextSelected, nextInstances);
     }
   }
 
-  /** Phase 4: property chip changed → re-render this abnormality and
-   *  update the entire report instantly (all four sections). */
+  /** Property chip changed → re-render this finding and refresh its section /
+   *  free-text contribution instantly (no AI). */
   function handleInstanceUpdate(f: QuickFinding, patch: Partial<AbnormalityInstance>) {
     const inst = patchQuickInstance(quickInstances.get(f.id), quickSide, patch);
-    setQuickInstances((prev) => setQuickInstance(prev, f.id, inst));
-    applyRendered(f.id, renderAbnormality(f, inst));
+    const nextInstances = setQuickInstance(quickInstances, f.id, inst);
+    setQuickInstances(nextInstances);
+    applyManyRendered([{ id: f.id, next: renderForReport(f, inst) }]);
+    if (smartModeActive()) refreshSection(sectionForFinding(f), selectedQuickIds, nextInstances);
   }
 
   /** Auto-fill Technique from the study tab — only when Technique is empty,
@@ -1036,6 +1152,13 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     staleTime: 5 * 60_000,
   });
 
+  // Finding definitions by id — the Smart Findings engine looks up a selected
+  // finding's anatomical section, conflict group and render templates here.
+  const findingById = useMemo(
+    () => new Map((quickSelectData?.findings ?? []).map((f) => [f.id, f])),
+    [quickSelectData],
+  );
+
   const studyRegion = useMemo(() => {
     const orderedRegions = (quickSelectData?.tabs ?? [])
       .filter((t) => t.isActive)
@@ -1059,6 +1182,15 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       .filter((c) => c.isActive && !!studyRegion && c.studyType === studyRegion)
       .sort((a, b) => a.sortOrder - b.sortOrder || a.displayLabel.localeCompare(b.displayLabel))
       .slice(0, 10),
+    [quickSelectData, studyRegion],
+  );
+
+  // Study-specific findings for the prominent in-column "Quick Findings" strip
+  // (Phase 6). Same list the right Quick panel shows, wired to the same toggle.
+  const regionFindings = useMemo(
+    () => (quickSelectData?.findings ?? [])
+      .filter((f) => f.isActive && !!studyRegion && f.studyType === studyRegion)
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.label.localeCompare(b.label)),
     [quickSelectData, studyRegion],
   );
 
@@ -2175,7 +2307,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       if (!entry) throw new Error("No study loaded");
       setAiLoading(true);
       const res = await api.post<{ aiResponse: string }>("/api/ai-reporting/query", {
-        promptText: `As a radiologist, generate a numbered, clinically relevant impression from these findings. Be concise.\n\nFindings:\n${rawFindings || JSON.stringify(findingsMap)}\n\nClinical History: ${clinicalHistory}\nModality: ${entry.modality}\nStyle: ${stylePrefs.impressionStyle}`,
+        promptText: `As a radiologist, generate a numbered, clinically relevant impression from these findings. Be concise.\n\nFindings:\n${findingsAsText()}\n\nClinical History: ${clinicalHistory}\nModality: ${entry.modality}\nStyle: ${stylePrefs.impressionStyle}`,
         studyInstanceUID: entry.studyInstanceUID,
         accessionNumber: entry.accessionNumber,
         patientId: entry.patientId ?? undefined,
@@ -3722,6 +3854,41 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   />
                 </div>
               </div>
+
+              {/* Quick Findings (Phase 6) — prominent study-specific chips in
+                  the main report column. Clicking a chip flips its anatomical
+                  section from baseline normal to the finding text live (in
+                  structured mode), or appends to free text — the SAME
+                  handleQuickToggle the right Quick panel uses. No AI, instant. */}
+              {regionFindings.length > 0 && (
+                <div className="flex flex-col gap-1 p-1.5 rounded-md border bg-muted/20" data-testid="quick-findings-strip">
+                  <span className="text-[9px] font-semibold uppercase text-muted-foreground px-1">
+                    Quick Findings — click to add / remove from the report
+                  </span>
+                  <div className="flex flex-wrap gap-1">
+                    {regionFindings.map((f) => {
+                      const selected = selectedQuickIds.has(f.id);
+                      return (
+                        <button
+                          key={f.id}
+                          type="button"
+                          disabled={isLocked}
+                          onClick={() => handleQuickToggle(f, !selected)}
+                          title={f.findingText || f.impressionText || f.label}
+                          aria-pressed={selected}
+                          className={`text-[10px] font-medium px-2 py-0.5 rounded-full border transition-colors disabled:opacity-50 ${
+                            selected
+                              ? "bg-primary text-primary-foreground border-primary"
+                              : "bg-background text-muted-foreground border-border hover:bg-muted/50 hover:text-foreground"
+                          }`}
+                        >
+                          {f.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* Chocolate Box — context-aware quick-macro tiles, only
                   meaningful for the freeform editor (structured mode's
