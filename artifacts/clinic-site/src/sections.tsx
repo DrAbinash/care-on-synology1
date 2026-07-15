@@ -658,11 +658,22 @@ type PackageCard = {
   includes: string[];
   featured: boolean;
   badge: string;
+  image: string;
   testCount: number;
   price: string;
   originalPrice: string;
-  discountLabel: string;
 };
+
+// Discount is always derived from price vs. originalPrice (never stored),
+// so the admin can't accidentally save a discount label that doesn't match
+// the actual prices.
+function computeDiscountLabel(price: string, originalPrice: string): string {
+  const p = Number(String(price).replace(/[^0-9.]/g, ""));
+  const o = Number(String(originalPrice).replace(/[^0-9.]/g, ""));
+  if (!p || !o || o <= p) return "";
+  const pct = Math.round((1 - p / o) * 100);
+  return pct > 0 ? `${pct}% OFF` : "";
+}
 
 function normalizePkgItems(raw: unknown): PackageCard[] {
   if (!Array.isArray(raw)) return [];
@@ -675,10 +686,10 @@ function normalizePkgItems(raw: unknown): PackageCard[] {
         : Array.isArray(it.includes) ? (it.includes as unknown[]).map(String).filter(Boolean) : [],
       featured: it.featured === true || it.featured === "yes",
       badge: typeof it.badge === "string" ? it.badge : "",
+      image: resolveAssetUrl(typeof it.image === "string" ? it.image : ""),
       testCount: typeof it.testCount === "number" ? it.testCount : Number(it.testCount) || 0,
       price: typeof it.price === "string" ? it.price : it.price != null ? String(it.price) : "",
       originalPrice: typeof it.originalPrice === "string" ? it.originalPrice : it.originalPrice != null ? String(it.originalPrice) : "",
-      discountLabel: typeof it.discountLabel === "string" ? it.discountLabel : "",
     }))
     .filter((pkg) => pkg.name);
 }
@@ -690,7 +701,7 @@ export function HealthPackagesSection({ section, basePath }: { section: Section;
   const bookHref = `${basePath}book`;
   const customPkgs = normalizePkgItems(c.items);
   const pkgs: PackageCard[] = customPkgs.length > 0 ? customPkgs : DEFAULT_PKGS.map((pkg) => ({
-    ...pkg, testCount: 0, price: "", originalPrice: "", discountLabel: "",
+    ...pkg, image: "", testCount: 0, price: "", originalPrice: "",
   }));
 
   return (
@@ -705,14 +716,20 @@ export function HealthPackagesSection({ section, basePath }: { section: Section;
           {pkgs.map((pkg, i) => (
             <div key={i} className={`cd-card cd-pkg-card${pkg.featured ? " featured" : ""}`}>
               {pkg.badge && <span className="cd-pkg-badge">{pkg.badge}</span>}
-              <span className="cd-pkg-icon" aria-hidden="true"><Package size={20} /></span>
+              {pkg.image ? (
+                <img src={pkg.image} alt="" className="cd-pkg-image" loading="lazy" />
+              ) : (
+                <span className="cd-pkg-icon" aria-hidden="true"><Package size={20} /></span>
+              )}
               <h3 className="cd-pkg-name">{pkg.name}</h3>
               {pkg.testCount > 0 && <p className="cd-pkg-meta">Includes {pkg.testCount} tests</p>}
               {pkg.price && (
                 <p className="cd-pkg-price">
                   <span className="cd-pkg-price-current">₹{pkg.price}</span>
                   {pkg.originalPrice && <span className="cd-pkg-price-original">₹{pkg.originalPrice}</span>}
-                  {pkg.discountLabel && <span className="cd-pkg-discount">{pkg.discountLabel}</span>}
+                  {computeDiscountLabel(pkg.price, pkg.originalPrice) && (
+                    <span className="cd-pkg-discount">{computeDiscountLabel(pkg.price, pkg.originalPrice)}</span>
+                  )}
                 </p>
               )}
               <ul className="cd-pkg-includes">

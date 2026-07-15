@@ -1663,6 +1663,10 @@ a.nav-link.active { color: hsl(var(--site-primary)); }
   width: 40px; height: 40px; border-radius: 10px;
   background: hsl(var(--cd-navy) / .06); color: hsl(var(--cd-navy)); margin-bottom: 1rem;
 }
+.cd-pkg-image {
+  display: block; width: 100%; height: 130px; object-fit: cover;
+  border-radius: 10px; margin: -.25rem 0 1rem; background: hsl(var(--cd-navy) / .06);
+}
 .cd-pkg-name { font-size: 1.0625rem; font-weight: 600; margin-bottom: .4rem; color: hsl(var(--cd-slate)); }
 .cd-pkg-meta { font-size: .8125rem; color: hsl(var(--cd-slate) / .6); margin-bottom: .5rem; }
 .cd-pkg-price { display: flex; align-items: baseline; flex-wrap: wrap; gap: .45rem; margin-bottom: 1rem; }
