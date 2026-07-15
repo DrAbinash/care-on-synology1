@@ -149,10 +149,13 @@ const navItems: NavEntry[] = [
     icon: Radio,
     label: "Radiology & Imaging",
     children: [
-      { path: "/radiology/operations-dashboard", icon: Gauge,          label: "Operations Dashboard" },
-      { path: "/radiology/my-analytics",         icon: BarChart3,      label: "My Analytics" },
+      // Worklist Hub is the default landing for "Radiology & Imaging" — clicking
+      // the group header navigates to the first child (see Layout nav render),
+      // which opens the existing Reporting Worklist / Workspace.
       { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist Hub" },
       { path: "/radiology/reporting-workspace", icon: FilePen,        label: "Reporting Workspace" },
+      { path: "/radiology/operations-dashboard", icon: Gauge,          label: "Operations Dashboard" },
+      { path: "/radiology/my-analytics",         icon: BarChart3,      label: "My Analytics" },
       { path: "/radiology/my-collection",       icon: ShieldAlert,    label: "DICOM Match Center" },
       { path: "/pacs",                        icon: Monitor,        label: "PACS Viewer" },
       { path: "/radiology/normal-templates",   icon: ClipboardCheck, label: "Normal Templates" },

@@ -121,6 +121,11 @@ export const radiologyProtocolsTable = pgTable(
     recommendationText: text("recommendation_text").notNull().default(""),
     requiredMeasurements: text("required_measurements").notNull().default(""), // comma list
     isGoldStandard: boolean("is_gold_standard").notNull().default(false),
+    // The single "default" protocol auto-highlighted for its study region.
+    // At most one per studyType — the write API clears the previous default
+    // when a new one is set. Distinct from isGoldStandard (a quality marker
+    // that may apply to several protocols in a region).
+    isDefault: boolean("is_default").notNull().default(false),
     sortOrder: integer("sort_order").notNull().default(0),
     isActive: boolean("is_active").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -155,3 +160,34 @@ export const radiologyLearnedPatternsTable = pgTable(
 
 export type RadiologyProtocol = typeof radiologyProtocolsTable.$inferSelect;
 export type RadiologyLearnedPattern = typeof radiologyLearnedPatternsTable.$inferSelect;
+
+// ── Clinical History Quick Select ─────────────────────────────────────────────
+// Study-specific quick-select chips shown beside the Clinical History heading
+// in the Reporting Workspace. Clicking a chip inserts its (usually longer)
+// insertedText into the Clinical History field. A short displayLabel appears
+// on the chip. Keyed by studyType (region name, e.g. "Brain", "Cervical Spine",
+// "LS Spine") — by name, not FK, matching the radiology_quick_findings pattern
+// so region renames never cascade-delete a radiologist's configured chips.
+// Created by migrations/z_add_radiology_clinical_history_and_protocol_default.sql
+// (idempotent: CREATE TABLE IF NOT EXISTS + seeded defaults ON CONFLICT DO NOTHING).
+export const radiologyClinicalHistoryChipsTable = pgTable(
+  "radiology_clinical_history_chips",
+  {
+    id: serial("id").primaryKey(),
+    studyType: text("study_type").notNull(),          // region, e.g. "Brain"
+    displayLabel: text("display_label").notNull(),      // "Headache" (chip text)
+    insertedText: text("inserted_text").notNull().default(""), // "Headache." (inserted)
+    sortOrder: integer("sort_order").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    isSystem: boolean("is_system").notNull().default(false), // seeded vs admin-added
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+  },
+  (t) => ({
+    studyLabelUq: uniqueIndex("radiology_clinical_history_chips_study_label_uq").on(t.studyType, t.displayLabel),
+    byStudy: index("radiology_clinical_history_chips_study_idx").on(t.studyType, t.isActive, t.sortOrder),
+  }),
+);
+
+export type RadiologyClinicalHistoryChip = typeof radiologyClinicalHistoryChipsTable.$inferSelect;
+export type NewRadiologyClinicalHistoryChip = typeof radiologyClinicalHistoryChipsTable.$inferInsert;

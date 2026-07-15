@@ -8,6 +8,7 @@ import { Link } from "wouter";
 import type { Side } from "@/lib/sideSwap";
 import { parseProperties, type AbnormalityInstance } from "@/lib/abnormalityEngine";
 import { computeChecklistStatus, summarizeChecklist, parseChecklist } from "@/lib/checklistEngine";
+import { matchStudyRegion } from "@/lib/studyRegion";
 
 /**
  * QuickFindingsPanel — Smart Reporting side panel (Phase 2).
@@ -74,11 +75,29 @@ export type QuickProtocol = {
   recommendationText: string;
   requiredMeasurements: string;
   isGoldStandard: boolean;
+  isDefault: boolean;
   sortOrder: number;
   isActive: boolean;
 };
 
-type QuickSelectData = { tabs: QuickStudyTab[]; findings: QuickFinding[]; measurements: QuickMeasurement[]; protocols: QuickProtocol[] };
+// Clinical History quick-select chip — short label shown on the chip, longer
+// insertedText dropped into the Clinical History field. Study-specific.
+export type QuickClinicalHistoryChip = {
+  id: number;
+  studyType: string;
+  displayLabel: string;
+  insertedText: string;
+  sortOrder: number;
+  isActive: boolean;
+};
+
+export type QuickSelectData = {
+  tabs: QuickStudyTab[];
+  findings: QuickFinding[];
+  measurements: QuickMeasurement[];
+  protocols: QuickProtocol[];
+  clinicalHistory: QuickClinicalHistoryChip[];
+};
 type FavoriteRow = { id: number; findingId: number; sortOrder: number };
 
 export { mergeBlock, removeBlock, mergeImpression, removeImpression } from "@/lib/quickFindingsMerge";
@@ -193,9 +212,11 @@ export default function QuickFindingsPanel({
   const effectiveTabs = useMemo(() => {
     if (selectedTabs) return selectedTabs;
     if (!initialStudyHint || activeTabs.length === 0) return new Set<string>();
-    const hint = initialStudyHint.toLowerCase();
-    const match = activeTabs.find((t) => hint.includes(t.name.toLowerCase()));
-    return match ? new Set([match.name]) : new Set<string>();
+    // Shared region resolver (also used by the workspace) so the panel's
+    // protocol dropdown and the workspace's chips/near-Technique dropdown all
+    // pick the same region for a study.
+    const match = matchStudyRegion(initialStudyHint, activeTabs.map((t) => t.name));
+    return match ? new Set([match]) : new Set<string>();
   }, [selectedTabs, initialStudyHint, activeTabs]);
 
   function toggleTab(name: string) {
@@ -566,7 +587,7 @@ export default function QuickFindingsPanel({
         >
           <option value="">No protocol (generic)</option>
           {availableProtocols.map((p) => (
-            <option key={p.id} value={p.id}>{p.isGoldStandard ? "★ " : ""}{p.name}</option>
+            <option key={p.id} value={p.id}>{p.isGoldStandard ? "★ " : ""}{p.name}{p.isDefault ? " — default" : ""}</option>
           ))}
         </select>
       )}

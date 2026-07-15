@@ -23,10 +23,15 @@ import {
   radiologyQuickFavoritesTable,
   radiologyProtocolsTable,
   radiologyLearnedPatternsTable,
+  radiologyClinicalHistoryChipsTable,
 } from "@workspace/db/schema";
-import { asc, eq, and } from "drizzle-orm";
+import { asc, eq, and, ne } from "drizzle-orm";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { getCached, setCached, invalidateCached, TTL } from "../lib/ttlCache";
+import { CLINICAL_HISTORY_CHIP_DEFAULTS, PROTOCOL_DEFAULTS } from "../lib/radiologyReportingDefaults";
+
+// Max active clinical-history chips per study region (spec: up to 10 chips).
+const MAX_ACTIVE_CLINICAL_HISTORY_CHIPS = 10;
 
 const CACHE_KEY = "radiology-quick-select:v2";
 
@@ -39,13 +44,14 @@ router.get("/", async (_req, res) => {
     res.json(cached);
     return;
   }
-  const [tabs, findings, measurements, protocols] = await Promise.all([
+  const [tabs, findings, measurements, protocols, clinicalHistory] = await Promise.all([
     db.select().from(radiologyStudyTabsTable).orderBy(asc(radiologyStudyTabsTable.sortOrder), asc(radiologyStudyTabsTable.name)),
     db.select().from(radiologyQuickFindingsTable).orderBy(asc(radiologyQuickFindingsTable.sortOrder), asc(radiologyQuickFindingsTable.label)),
     db.select().from(radiologyQuickMeasurementsTable).orderBy(asc(radiologyQuickMeasurementsTable.sortOrder), asc(radiologyQuickMeasurementsTable.label)),
     db.select().from(radiologyProtocolsTable).orderBy(asc(radiologyProtocolsTable.sortOrder), asc(radiologyProtocolsTable.name)),
+    db.select().from(radiologyClinicalHistoryChipsTable).orderBy(asc(radiologyClinicalHistoryChipsTable.sortOrder), asc(radiologyClinicalHistoryChipsTable.displayLabel)),
   ]);
-  const payload = { tabs, findings, measurements, protocols };
+  const payload = { tabs, findings, measurements, protocols, clinicalHistory };
   setCached(CACHE_KEY, payload, TTL.SHORT);
   res.json(payload);
 });
@@ -286,6 +292,114 @@ router.delete("/measurements/:id", requireAdminRole, async (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Clinical History Quick Select chips (admin write, staff read via GET /) ──
+// Study-specific chips shown beside the Clinical History heading. The short
+// displayLabel appears on the chip; the full insertedText is what lands in the
+// Clinical History field. Up to MAX_ACTIVE_CLINICAL_HISTORY_CHIPS active per
+// study region — the reporting workspace shows at most 10 chips.
+
+/** Count active chips for a study, optionally excluding one id (for updates). */
+async function countActiveClinicalHistoryChips(studyType: string, excludeId?: number): Promise<number> {
+  const rows = await db.select({ id: radiologyClinicalHistoryChipsTable.id })
+    .from(radiologyClinicalHistoryChipsTable)
+    .where(and(
+      eq(radiologyClinicalHistoryChipsTable.studyType, studyType),
+      eq(radiologyClinicalHistoryChipsTable.isActive, true),
+    ));
+  return rows.filter((r) => r.id !== excludeId).length;
+}
+
+router.post("/clinical-history", requireAdminRole, async (req, res) => {
+  const studyType = String(req.body?.studyType ?? "").trim();
+  const displayLabel = String(req.body?.displayLabel ?? "").trim();
+  if (!studyType || !displayLabel) {
+    res.status(400).json({ error: "studyType and displayLabel are required" });
+    return;
+  }
+  const isActive = req.body?.isActive !== false;
+  if (isActive && (await countActiveClinicalHistoryChips(studyType)) >= MAX_ACTIVE_CLINICAL_HISTORY_CHIPS) {
+    res.status(400).json({ error: `A study can have at most ${MAX_ACTIVE_CLINICAL_HISTORY_CHIPS} active clinical-history chips. Disable one first.` });
+    return;
+  }
+  try {
+    const [row] = await db.insert(radiologyClinicalHistoryChipsTable).values({
+      studyType,
+      displayLabel,
+      insertedText: typeof req.body?.insertedText === "string" ? req.body.insertedText : "",
+      sortOrder: Number.isFinite(Number(req.body?.sortOrder)) ? Number(req.body.sortOrder) : 0,
+      isActive,
+    }).returning();
+    invalidateCached(CACHE_KEY);
+    res.status(201).json(row);
+  } catch {
+    res.status(409).json({ error: "A clinical-history chip with that label already exists for this study" });
+  }
+});
+
+router.patch("/clinical-history/:id", requireAdminRole, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
+  const [existing] = await db.select().from(radiologyClinicalHistoryChipsTable).where(eq(radiologyClinicalHistoryChipsTable.id, id));
+  if (!existing) {
+    res.status(404).json({ error: "Clinical-history chip not found" });
+    return;
+  }
+  const updates: Record<string, unknown> = { updatedAt: new Date() };
+  if (typeof req.body?.studyType === "string" && req.body.studyType.trim()) updates.studyType = req.body.studyType.trim();
+  if (typeof req.body?.displayLabel === "string" && req.body.displayLabel.trim()) updates.displayLabel = req.body.displayLabel.trim();
+  if (typeof req.body?.insertedText === "string") updates.insertedText = req.body.insertedText;
+  if (req.body?.sortOrder !== undefined) updates.sortOrder = Number(req.body.sortOrder) || 0;
+  if (typeof req.body?.isActive === "boolean") updates.isActive = req.body.isActive;
+  // Enabling a chip (or moving it to another study while active) must respect
+  // the per-study active cap.
+  const willBeActive = updates.isActive === undefined ? existing.isActive : updates.isActive === true;
+  const targetStudy = (updates.studyType as string) ?? existing.studyType;
+  const enabling = willBeActive && (!existing.isActive || targetStudy !== existing.studyType);
+  if (enabling && (await countActiveClinicalHistoryChips(targetStudy, id)) >= MAX_ACTIVE_CLINICAL_HISTORY_CHIPS) {
+    res.status(400).json({ error: `A study can have at most ${MAX_ACTIVE_CLINICAL_HISTORY_CHIPS} active clinical-history chips. Disable one first.` });
+    return;
+  }
+  try {
+    const [row] = await db.update(radiologyClinicalHistoryChipsTable).set(updates).where(eq(radiologyClinicalHistoryChipsTable.id, id)).returning();
+    invalidateCached(CACHE_KEY);
+    res.json(row);
+  } catch {
+    res.status(409).json({ error: "A clinical-history chip with that label already exists for this study" });
+  }
+});
+
+router.delete("/clinical-history/:id", requireAdminRole, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
+  await db.delete(radiologyClinicalHistoryChipsTable).where(eq(radiologyClinicalHistoryChipsTable.id, id));
+  invalidateCached(CACHE_KEY);
+  res.json({ ok: true });
+});
+
+// Restore the default clinical-history chip set. Upserts the factory chips by
+// (study_type, display_label); admin-added custom chips are left untouched.
+// Scope to one study via body.studyType, or restore all when omitted.
+router.post("/clinical-history/restore-defaults", requireAdminRole, async (req, res) => {
+  const studyType = typeof req.body?.studyType === "string" && req.body.studyType.trim() ? req.body.studyType.trim() : null;
+  const defaults = studyType ? CLINICAL_HISTORY_CHIP_DEFAULTS.filter((c) => c.studyType === studyType) : CLINICAL_HISTORY_CHIP_DEFAULTS;
+  for (const c of defaults) {
+    await db.insert(radiologyClinicalHistoryChipsTable)
+      .values({ studyType: c.studyType, displayLabel: c.displayLabel, insertedText: c.insertedText, sortOrder: c.sortOrder, isActive: true, isSystem: true })
+      .onConflictDoUpdate({
+        target: [radiologyClinicalHistoryChipsTable.studyType, radiologyClinicalHistoryChipsTable.displayLabel],
+        set: { insertedText: c.insertedText, sortOrder: c.sortOrder, isActive: true, updatedAt: new Date() },
+      });
+  }
+  invalidateCached(CACHE_KEY);
+  res.json({ ok: true, restored: defaults.length });
+});
+
 export default router;
 
 // ── Protocols (admin write, staff read via the cached GET / above) ──────────
@@ -296,20 +410,32 @@ router.post("/protocols", requireAdminRole, async (req, res) => {
     res.status(400).json({ error: "name and studyType are required" });
     return;
   }
+  const isDefault = req.body?.isDefault === true;
   try {
-    const [row] = await db.insert(radiologyProtocolsTable).values({
-      name,
-      studyType,
-      modality: typeof req.body?.modality === "string" ? req.body.modality : "",
-      checklistJson: typeof req.body?.checklistJson === "string" ? req.body.checklistJson : "[]",
-      techniqueText: typeof req.body?.techniqueText === "string" ? req.body.techniqueText : "",
-      normalText: typeof req.body?.normalText === "string" ? req.body.normalText : "",
-      recommendationText: typeof req.body?.recommendationText === "string" ? req.body.recommendationText : "",
-      requiredMeasurements: typeof req.body?.requiredMeasurements === "string" ? req.body.requiredMeasurements : "",
-      isGoldStandard: req.body?.isGoldStandard === true,
-      sortOrder: Number.isFinite(Number(req.body?.sortOrder)) ? Number(req.body.sortOrder) : 0,
-      isActive: req.body?.isActive !== false,
-    }).returning();
+    const row = await db.transaction(async (tx) => {
+      // Only one default protocol per study region — clear any existing
+      // default in this study before marking the new one.
+      if (isDefault) {
+        await tx.update(radiologyProtocolsTable)
+          .set({ isDefault: false, updatedAt: new Date() })
+          .where(eq(radiologyProtocolsTable.studyType, studyType));
+      }
+      const [r] = await tx.insert(radiologyProtocolsTable).values({
+        name,
+        studyType,
+        modality: typeof req.body?.modality === "string" ? req.body.modality : "",
+        checklistJson: typeof req.body?.checklistJson === "string" ? req.body.checklistJson : "[]",
+        techniqueText: typeof req.body?.techniqueText === "string" ? req.body.techniqueText : "",
+        normalText: typeof req.body?.normalText === "string" ? req.body.normalText : "",
+        recommendationText: typeof req.body?.recommendationText === "string" ? req.body.recommendationText : "",
+        requiredMeasurements: typeof req.body?.requiredMeasurements === "string" ? req.body.requiredMeasurements : "",
+        isGoldStandard: req.body?.isGoldStandard === true,
+        isDefault,
+        sortOrder: Number.isFinite(Number(req.body?.sortOrder)) ? Number(req.body.sortOrder) : 0,
+        isActive: req.body?.isActive !== false,
+      }).returning();
+      return r;
+    });
     invalidateCached(CACHE_KEY);
     res.status(201).json(row);
   } catch {
@@ -333,10 +459,25 @@ router.patch("/protocols/:id", requireAdminRole, async (req, res) => {
   if (typeof req.body?.recommendationText === "string") updates.recommendationText = req.body.recommendationText;
   if (typeof req.body?.requiredMeasurements === "string") updates.requiredMeasurements = req.body.requiredMeasurements;
   if (typeof req.body?.isGoldStandard === "boolean") updates.isGoldStandard = req.body.isGoldStandard;
+  if (typeof req.body?.isDefault === "boolean") updates.isDefault = req.body.isDefault;
   if (req.body?.sortOrder !== undefined) updates.sortOrder = Number(req.body.sortOrder) || 0;
   if (typeof req.body?.isActive === "boolean") updates.isActive = req.body.isActive;
   try {
-    const [row] = await db.update(radiologyProtocolsTable).set(updates).where(eq(radiologyProtocolsTable.id, id)).returning();
+    const row = await db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(radiologyProtocolsTable).where(eq(radiologyProtocolsTable.id, id));
+      if (!existing) return null;
+      // Enforce a single default per study region: if this update marks the
+      // protocol default, clear the flag on every other protocol in the same
+      // study (using the new study_type if it's being changed too).
+      if (updates.isDefault === true) {
+        const studyType = typeof updates.studyType === "string" ? updates.studyType : existing.studyType;
+        await tx.update(radiologyProtocolsTable)
+          .set({ isDefault: false, updatedAt: new Date() })
+          .where(and(eq(radiologyProtocolsTable.studyType, studyType), ne(radiologyProtocolsTable.id, id)));
+      }
+      const [r] = await tx.update(radiologyProtocolsTable).set(updates).where(eq(radiologyProtocolsTable.id, id)).returning();
+      return r;
+    });
     if (!row) {
       res.status(404).json({ error: "Protocol not found" });
       return;
@@ -357,6 +498,76 @@ router.delete("/protocols/:id", requireAdminRole, async (req, res) => {
   await db.delete(radiologyProtocolsTable).where(eq(radiologyProtocolsTable.id, id));
   invalidateCached(CACHE_KEY);
   res.json({ ok: true });
+});
+
+// Duplicate a protocol — copies every field under a new "(copy)" name, never
+// carrying over the default/gold-standard flags so the copy starts neutral.
+router.post("/protocols/:id/duplicate", requireAdminRole, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
+  const [src] = await db.select().from(radiologyProtocolsTable).where(eq(radiologyProtocolsTable.id, id));
+  if (!src) {
+    res.status(404).json({ error: "Protocol not found" });
+    return;
+  }
+  const existingNames = new Set(
+    (await db.select({ name: radiologyProtocolsTable.name }).from(radiologyProtocolsTable)).map((r) => r.name),
+  );
+  let name = `${src.name} (copy)`;
+  for (let n = 2; existingNames.has(name); n++) name = `${src.name} (copy ${n})`;
+  const [row] = await db.insert(radiologyProtocolsTable).values({
+    name,
+    studyType: src.studyType,
+    modality: src.modality,
+    checklistJson: src.checklistJson,
+    techniqueText: src.techniqueText,
+    normalText: src.normalText,
+    recommendationText: src.recommendationText,
+    requiredMeasurements: src.requiredMeasurements,
+    isGoldStandard: false,
+    isDefault: false,
+    sortOrder: src.sortOrder + 1,
+    isActive: src.isActive,
+  }).returning();
+  invalidateCached(CACHE_KEY);
+  res.status(201).json(row);
+});
+
+// Restore system default protocols. Upserts the factory set by name; admin-added
+// protocols are left untouched. Scope to one study via ?studyType=... or restore
+// all when omitted. Never deletes anything.
+router.post("/protocols/restore-defaults", requireAdminRole, async (req, res) => {
+  const studyType = typeof req.body?.studyType === "string" && req.body.studyType.trim() ? req.body.studyType.trim() : null;
+  const defaults = studyType ? PROTOCOL_DEFAULTS.filter((p) => p.studyType === studyType) : PROTOCOL_DEFAULTS;
+  await db.transaction(async (tx) => {
+    for (const p of defaults) {
+      if (p.isDefault) {
+        await tx.update(radiologyProtocolsTable)
+          .set({ isDefault: false, updatedAt: new Date() })
+          .where(eq(radiologyProtocolsTable.studyType, p.studyType));
+      }
+      await tx.insert(radiologyProtocolsTable)
+        .values({
+          name: p.name, studyType: p.studyType, modality: p.modality, checklistJson: p.checklistJson,
+          techniqueText: p.techniqueText, normalText: p.normalText, recommendationText: "",
+          requiredMeasurements: "", isGoldStandard: p.isGoldStandard, isDefault: p.isDefault,
+          sortOrder: p.sortOrder, isActive: true,
+        })
+        .onConflictDoUpdate({
+          target: radiologyProtocolsTable.name,
+          set: {
+            studyType: p.studyType, modality: p.modality, checklistJson: p.checklistJson,
+            techniqueText: p.techniqueText, normalText: p.normalText, isGoldStandard: p.isGoldStandard,
+            isDefault: p.isDefault, isActive: true, updatedAt: new Date(),
+          },
+        });
+    }
+  });
+  invalidateCached(CACHE_KEY);
+  res.json({ ok: true, restored: defaults.length });
 });
 
 // ── Learning Engine (per radiologist — never cached, user-specific) ─────────
