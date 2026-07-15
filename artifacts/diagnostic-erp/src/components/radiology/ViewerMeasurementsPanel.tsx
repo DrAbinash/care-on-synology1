@@ -30,6 +30,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import CollapsibleSection from "@/components/radiology/CollapsibleSection";
+import { dedupeUnit } from "@/components/radiology/UsgMeasurementReviewPanel";
 import { Check, ArrowDownToLine, Ban, RotateCcw } from "lucide-react";
 
 // ── Props ─────────────────────────────────────────────────────────────────────
@@ -69,17 +70,8 @@ export interface ViewerMeasurement {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────────
 
-// Same guard UsgMeasurementReviewPanel uses: the stored value can already carry
-// its unit (e.g. "12 mm"), and concatenating the separate unit column doubles
-// it ("12 mm" + " mm"). Drop the unit whenever the value already ends with it.
-function dedupeUnit(value: string, unit: string): string {
-  if (!unit) return "";
-  const v = value.trim().toLowerCase();
-  const u = unit.trim().toLowerCase();
-  return v.endsWith(u) ? "" : unit;
-}
-
-// "<measurementType>: <value> <unit>" — unit dropped when already present in value.
+// "<measurementType>: <value> <unit>" — unit dropped when already present in value
+// (dedupeUnit is shared with UsgMeasurementReviewPanel, not re-implemented here).
 function formatMeasurementLine(m: ViewerMeasurement): string {
   const type = (m.measurementType || "Measurement").trim();
   const value = (m.value ?? "").trim();

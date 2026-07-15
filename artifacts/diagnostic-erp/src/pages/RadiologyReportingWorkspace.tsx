@@ -199,6 +199,18 @@ type RightTab = "quickselect" | "templates" | "followup" | "prior" | "ai" | "mea
 // radiologist to mention them — excluded from the ported nudge list.
 const COPILOT_SUPERSEDED_IDS = new Set(["brain-adc", "hydrocephalus-evans"]);
 
+// C1/F6 (Cockpit→Workspace merge): viewer_measurements.measurementType is the
+// caliper KIND, not an anatomical label — see the schema comment in
+// lib/db/src/schema/radiologyLesions.ts. Real OHIF/Weasis/DICOM-SR imports
+// will almost always populate one of these four generic values, so matching
+// or deduping on measurementType alone would collide across unrelated
+// measurements. Skip the relevant checks whenever the type is this generic.
+const GENERIC_CALIPER_TYPES = new Set(["linear", "area", "volume", "ellipse"]);
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // Cockpit→Workspace merge (E2): tolerant parse of a stored AI draft blob so a
 // malformed aiDraftJson can never throw in render.
 function safeParseAiDraft(json: string | null | undefined): { findings?: string; impression?: string } {
@@ -1014,14 +1026,21 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     for (const m of imported) {
       const valLower = (m.value ?? "").trim().toLowerCase();
       if (!valLower) continue;
-      const idx = fullTextLower.indexOf(valLower);
-      if (idx === -1) {
+      // Word-boundary matched, not a plain substring search — a raw
+      // indexOf() on a short numeric value like "5" or "45" almost always
+      // finds a coincidental match elsewhere in the report (ages, vertebral
+      // levels, dates), silently suppressing this critical check for
+      // exactly the short values most likely to be forgotten.
+      const valueRegex = new RegExp(`(?<![\\w.])${escapeRegExp(valLower)}(?![\\w.])`);
+      const match = valueRegex.exec(fullTextLower);
+      if (!match) {
         issues.push({
           id: `meas-ref-${m.id}`,
           severity: "critical",
           message: `Imported measurement (${m.measurementType}: ${m.value} ${m.unit}) isn't mentioned anywhere in the report.`,
         });
       } else if (m.unit) {
+        const idx = match.index;
         const nearby = fullTextLower.substring(Math.max(0, idx - 20), idx + valLower.length + 20);
         if (!nearby.includes(m.unit.trim().toLowerCase())) {
           issues.push({
@@ -1031,12 +1050,18 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           });
         }
       }
-      const dupKey = `${m.measurementType}-${m.value}-${m.unit}`;
+      // Dedup key includes the source location (series/slice), not just
+      // type+value+unit — measurementType is usually a generic caliper kind
+      // ("linear"), so two DIFFERENT lesions that happen to be the same size
+      // would otherwise collide and produce a false "duplicate" warning.
+      // Same series+slice+value+unit is what actually indicates the same
+      // caliper got imported twice.
+      const dupKey = `${m.seriesInstanceUID ?? ""}-${m.sliceNumber ?? ""}-${m.value}-${m.unit}`;
       if (seen.has(dupKey)) {
         issues.push({
           id: `meas-dup-${m.id}`,
           severity: "important",
-          message: `${m.value} ${m.unit} for '${m.measurementType}' appears to be imported more than once — verify it isn't a duplicate acquisition.`,
+          message: `${m.value} ${m.unit} for '${m.measurementType}' appears to be imported more than once from the same location — verify it isn't a duplicate acquisition.`,
         });
       }
       seen.add(dupKey);
@@ -1073,6 +1098,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     const list: Metric[] = [];
     for (const curr of imported) {
       const currType = (curr.measurementType || "").toLowerCase();
+      // viewer_measurements.measurementType is the CALIPER KIND ("linear" |
+      // "area" | "volume" | "ellipse"), not a descriptive label — there is
+      // no anatomical-name field on that table. Matching on a generic kind
+      // would silently pair unrelated measurements (e.g. a liver-span
+      // caliper against an unrelated midline-shift value, both "linear")
+      // and show a misleading growth/regression trend. Only compare when
+      // the type string is itself descriptive enough to be a real match key.
+      if (GENERIC_CALIPER_TYPES.has(currType)) continue;
       const prior = priorMeasures.find(
         (p) => p.label.toLowerCase() === currType || p.measurementType.toLowerCase() === currType,
       );
@@ -1128,10 +1161,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const COMPARISON_KEYWORDS = ["comparison", "prior", "compared", "previously", "previous study", "interval"];
   const comparisonSectionMissing = useMemo(() => {
     if (!institutionalStyle?.showComparison || priorReportsTotal === 0) return false;
-    const fullTextLower = [clinicalHistory, technique, rawFindings, impression.join(" "), recommendation]
+    // Deliberately excludes clinicalHistory — that field routinely contains
+    // unrelated phrases like "h/o prior appendectomy", which would otherwise
+    // satisfy the "prior" keyword and silently suppress this check even when
+    // no actual imaging-comparison wording was ever written in the report.
+    const fullTextLower = [technique, rawFindings, impression.join(" "), recommendation]
       .join(" ").toLowerCase();
     return !COMPARISON_KEYWORDS.some((kw) => fullTextLower.includes(kw));
-  }, [institutionalStyle, priorReportsTotal, clinicalHistory, technique, rawFindings, impression, recommendation]);
+  }, [institutionalStyle, priorReportsTotal, technique, rawFindings, impression, recommendation]);
 
   // ── Draft identity (Radiology Roadmap Ticket A3.0) ────────────────────────
   // Loads any existing radiology_report_drafts row for this study and tracks
@@ -1158,6 +1195,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     insertedTextRef.current = new Map();
     lastToggledFindingRef.current = null;
     setIsCritical(false); setCriticalNote("");
+    // F5 fix: without this, switching studies carried the PREVIOUS study's
+    // communication checklist forward — a new critical finding on the next
+    // study could silently inherit "Telephoned Doctor: true" from a call that
+    // was never made for this patient, suppressing the safety gate and
+    // falsely recording it in the finalize audit trail.
+    setChecklistComm({ phoned: false, annotated: false, dispatched: false });
     setReportStatus("DRAFT");
     setSelectedTemplateId(null);
     setAiOutput("");
@@ -1335,7 +1378,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // way the Cockpit did; the section renders only when non-empty, so a doctor
   // with the feature off (empty catalog) sees no change.
   const { data: masterTemplatesResp } = useQuery<{ templates: MasterTemplate[]; count: number }>({
-    queryKey: ["master-templates"],
+    // Deliberately NOT ["master-templates"] — the deprecated (but still
+    // routed) RadiologistCockpit.tsx uses that exact key for its OWN query,
+    // which hits a broken/404 path. Sharing a QueryClient cache means the
+    // two pages would otherwise silently poison each other's result for
+    // whichever was visited more recently within the staleTime window.
+    queryKey: ["radiology-master-templates-v2"],
     // NOTE: the Cockpit's own version of this query used the wrong path
     // (/api/radiology/master-templates, which 404s) — the route is actually
     // mounted under /radiology/knowledge (routes/index.ts), confirmed live
@@ -1348,6 +1396,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // selectedTemplateId (that field references the structured_report_templates
   // id namespace; reusing it for master ids would misattribute the draft).
   const handleApplyMasterTemplate = (tpl: MasterTemplate) => {
+    // Guarded like E2's importAiDraft — unlike the structured-template picker
+    // (fill-empty-only), this content-only apply used to overwrite typed
+    // Findings/Impression unconditionally with no way to undo.
+    const hasTyped = rawFindings.trim().length > 0 || impression.filter(Boolean).length > 0;
+    if (hasTyped && !window.confirm(`Replace the current Findings and Impression with "${tpl.templateName}"?`)) return;
     setSelectedTemplateId(null);
     setRawFindings(tpl.findings || "");
     if (tpl.impression) setImpression([tpl.impression]);
@@ -3094,7 +3147,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           style={isLeftPanelCollapsed
             ? { width: 44, minWidth: 44, maxWidth: 44 }
             : isMobile
-              ? { width: "60%", minWidth: 200, maxWidth: 320 }
+              // Kept low enough that left + right (below, 32% on mobile)
+              // never combine past 100% of viewport width — if they did, the
+              // center report editor (flex-1, no floor) would be forced back
+              // to ~0px, reproducing the exact bug this mobile fix exists for.
+              ? { width: "45%", minWidth: 160, maxWidth: 240 }
               : { width: "35%", minWidth: 280, maxWidth: 460 }}
         >
         {isLeftPanelCollapsed ? (
@@ -4020,7 +4077,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         <div
           className="flex flex-col border-l overflow-hidden shrink-0"
           style={isMobile
-            ? { width: "42%", minWidth: 140, maxWidth: 220 }
+            // 45% (left) + 32% (right) = 77%, always leaving real width for
+            // the center column even when both side panels are at their max.
+            ? { width: "32%", minWidth: 110, maxWidth: 170 }
             : { width: "20%", minWidth: 200, maxWidth: 280 }}
         >
           {/* Tab header */}
