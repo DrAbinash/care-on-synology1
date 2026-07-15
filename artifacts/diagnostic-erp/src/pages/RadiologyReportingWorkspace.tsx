@@ -67,6 +67,8 @@ import { validateReport, computeQualityScore } from "@/lib/reportValidator";
 import { observeReportText, type CoPilotSuggestion } from "@/lib/radiologyCoPilotEngine";
 import CareCopilotPanel, { type CopilotAction } from "@/components/radiology/CareCopilotPanel";
 import { analyzeCopilot, type CopilotItem } from "@/lib/copilotOrchestrator";
+import { suggestCompletion } from "@/lib/copilotCompletion";
+import { useCopilotPrefs } from "@/hooks/useCopilotPrefs";
 import { isLearnableAddition } from "@/lib/learningEngine";
 import { upsertMeasurement, upsertLabeledLine } from "@/lib/measurementVars";
 import CollapsibleSection from "@/components/radiology/CollapsibleSection";
@@ -1587,6 +1589,38 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     focusEditor("findings");
   }
 
+  // ── CARE Copilot — preferences + smart auto-completion (PR #80 Part 12) ─────
+  const { prefs: copilotPrefs, set: setCopilotPref } = useCopilotPrefs();
+
+  // Local, deterministic next-sentence suggestion for the free-text Findings
+  // editor (no AI call). Only while typing free text (structured mode edits
+  // per-section boxes, not rawFindings) and the report is editable.
+  const copilotCompletion = useMemo(
+    () => (copilotPrefs.enabled && copilotPrefs.autoComplete && !useStructured
+      ? suggestCompletion(rawFindings, { studyDescription: entry?.studyDescription ?? "" })
+      : null),
+    [copilotPrefs.enabled, copilotPrefs.autoComplete, useStructured, rawFindings, entry?.studyDescription],
+  );
+
+  /** Accept the suggested completion — append it and place the caret at the end.
+   *  Advisory only: reached solely via Tab / the Accept chip. */
+  function acceptCopilotCompletion() {
+    if (!copilotCompletion || isLocked) return;
+    const el = findingsTextareaRef.current?.el ?? null;
+    const text = copilotCompletion.completion;
+    setRawFindings((prev) => prev + text);
+    requestAnimationFrame(() => {
+      if (!el) return;
+      el.focus();
+      const n = el.value.length;
+      el.setSelectionRange(n, n);
+    });
+    void api.post("/api/radiology-copilot/log", {
+      studyInstanceUID: entry?.studyInstanceUID ?? undefined,
+      suggestionType: "completion", suggestionContent: "provider=local — auto-complete accepted", action: "accepted",
+    }).catch(() => {});
+  }
+
   // F4 (Cockpit→Workspace merge): institution-mandated "Comparison" section
   // enforcement — the one genuinely novel required-section rule (Clinical
   // History/Recommendation are already covered by computeQualityScore's
@@ -2411,6 +2445,17 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         return;
       }
       if (paletteOpen) return;
+
+      // PR #80 Part 12 — Tab accepts the Copilot's inline next-sentence
+      // completion, GitHub-Copilot-style, but ONLY when the Findings editor is
+      // focused and a suggestion is showing. Otherwise Tab keeps its normal
+      // focus-traversal behaviour.
+      if (e.key === "Tab" && !e.shiftKey && copilotCompletion
+        && document.activeElement === (findingsTextareaRef.current?.el ?? null)) {
+        e.preventDefault();
+        acceptCopilotCompletion();
+        return;
+      }
 
       // M1.6B2 — voice keys FIRST (Ctrl+Space toggle, Space push-to-talk
       // outside editors, Enter confirms a non-finalize preview, Escape
@@ -3507,11 +3552,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // RENDER
   // ══════════════════════════════════════════════════════════════════════════
 
-  const copilotAlerts = copilotReport.items.filter(
+  // Live items only count when auto-analyse is on; the whole tab hides when the
+  // radiologist disables the Copilot (Settings in the panel header).
+  const copilotPanelReport = copilotPrefs.autoAnalyze ? copilotReport : { ...copilotReport, items: [] };
+  const copilotAlerts = copilotPanelReport.items.filter(
     (i) => !copilotDismissed.has(i.id) && (i.severity === "critical" || i.severity === "warning"),
   ).length;
   const RIGHT_TABS = [
-    { id: "copilot", label: "Copilot", icon: <Sparkles size={11} />, badge: copilotAlerts },
+    ...(copilotPrefs.enabled ? [{ id: "copilot", label: "Copilot", icon: <Sparkles size={11} />, badge: copilotAlerts }] : []),
     { id: "quickselect", label: "Quick", icon: <Zap size={11} /> },
     { id: "templates", label: "Templates", icon: <LayoutTemplate size={11} /> },
     { id: "followup", label: "Follow-up", icon: <RefreshCw size={11} /> },
@@ -4372,6 +4420,16 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   dataEditor="findings"
                 />
               )}
+              {/* CARE Copilot auto-completion (Part 12) — advisory ghost line;
+                  Tab or Accept inserts, ✕ turns it off. Free-text mode only. */}
+              {copilotCompletion && !isLocked && (
+                <div className="mt-0.5 flex items-center gap-1.5 rounded border border-dashed border-primary/40 bg-primary/5 px-2 py-1 text-[11px]" data-testid="copilot-completion">
+                  <kbd className="rounded border px-1 text-[9px]">Tab</kbd>
+                  <span className="truncate italic text-muted-foreground">{copilotCompletion.completion.trim()}</span>
+                  <button className="ml-auto text-[10px] font-medium text-primary" onClick={acceptCopilotCompletion}>Accept</button>
+                  <button className="text-[10px] text-muted-foreground hover:text-foreground" title="Turn off auto-completion" onClick={() => setCopilotPref({ autoComplete: false })}>✕</button>
+                </div>
+              )}
             </div>
 
             {/* Impression */}
@@ -4814,7 +4872,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             {/* CARE Copilot (PR #80) — always-on advisory assistant */}
             {rightTab === "copilot" && (
               <CareCopilotPanel
-                report={copilotReport}
+                report={copilotPanelReport}
                 dismissed={copilotDismissed}
                 onInsert={copilotInsert}
                 onDismiss={copilotDismiss}
@@ -4822,6 +4880,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 recentActions={copilotRecent}
                 onUndoLast={copilotUndoLast}
                 provider="local"
+                prefs={copilotPrefs}
+                onSetPref={setCopilotPref}
               />
             )}
 
