@@ -66,8 +66,10 @@ import { validateReport, computeQualityScore } from "@/lib/reportValidator";
 // This lib was otherwise dead (imported only by the deprecated Cockpit).
 import { observeReportText, type CoPilotSuggestion } from "@/lib/radiologyCoPilotEngine";
 import CareCopilotPanel, { type CopilotAction } from "@/components/radiology/CareCopilotPanel";
-import { analyzeCopilot, type CopilotItem } from "@/lib/copilotOrchestrator";
+import { analyzeCopilot, type CopilotContext, type CopilotItem } from "@/lib/copilotOrchestrator";
 import { suggestCompletion } from "@/lib/copilotCompletion";
+import { runLocalModules, runAiModules } from "@/lib/copilotModules";
+import "@/lib/copilotAiModule"; // registers the on-demand AI reasoning module (Part 20)
 import { useCopilotPrefs } from "@/hooks/useCopilotPrefs";
 import { isLearnableAddition } from "@/lib/learningEngine";
 import { upsertMeasurement, upsertLabeledLine } from "@/lib/measurementVars";
@@ -1532,7 +1534,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const [copilotDismissed, setCopilotDismissed] = useState<Set<string>>(new Set());
   const [copilotRecent, setCopilotRecent] = useState<CopilotAction[]>([]);
   const copilotUndoRef = useRef<(() => void) | null>(null);
-  const copilotReport = useMemo(() => analyzeCopilot({
+  // Shared analysis context — the SINGLE source both the deterministic engine
+  // and the plug-in modules (local + on-demand AI) read from (Part 20).
+  const copilotContext = useMemo<CopilotContext>(() => ({
     modality: entry?.modality ?? "",
     studyDescription: entry?.studyDescription ?? "",
     clinicalHistory,
@@ -1544,7 +1548,49 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       .map((id) => findingById.get(id)?.label)
       .filter((l): l is string => !!l),
     checklistPercent,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [entry?.modality, entry?.studyDescription, clinicalHistory, useStructured, findingsMap, rawFindings, impression, recommendation, technique, selectedQuickIds, findingById, checklistPercent]);
+
+  // Core deterministic report + any registered LOCAL add-on modules (Part 20).
+  const copilotReport = useMemo(() => {
+    const core = analyzeCopilot(copilotContext);
+    const extra = runLocalModules(copilotContext);
+    return { ...core, items: [...core.items, ...extra] };
+  }, [copilotContext]);
+
+  // On-demand AI reasoning (Parts 6/7/21) — cached per report input (Part 18).
+  const [aiCopilotItems, setAiCopilotItems] = useState<CopilotItem[]>([]);
+  const [aiCopilotBusy, setAiCopilotBusy] = useState(false);
+  const aiCopilotCacheRef = useRef<Map<string, CopilotItem[]>>(new Map());
+
+  async function askCopilotAi() {
+    if (aiCopilotBusy || !entry) return;
+    const key = JSON.stringify([copilotContext.studyDescription, copilotContext.clinicalHistory, copilotContext.findings, copilotContext.impression]);
+    const cached = aiCopilotCacheRef.current.get(key);
+    if (cached) { setAiCopilotItems(cached); return; }
+    setAiCopilotBusy(true);
+    try {
+      const items = await runAiModules(copilotContext, async (promptText) => {
+        // Reuse the EXISTING AI endpoint — provider selection + fallback live there.
+        const res = await api.post<{ aiResponse: string }>("/api/ai-reporting/query", {
+          promptText,
+          studyInstanceUID: entry.studyInstanceUID,
+          accessionNumber: entry.accessionNumber,
+          patientId: entry.patientId ?? undefined,
+          provider: "gemini",
+          maxImages: 0,
+        });
+        return res.aiResponse ?? "";
+      });
+      aiCopilotCacheRef.current.set(key, items);
+      setAiCopilotItems(items);
+      if (items.length === 0) toast({ title: "Copilot AI", description: "No additional suggestions." });
+    } catch {
+      toast({ title: "Copilot AI unavailable", description: "Could not reach the AI provider.", variant: "destructive" });
+    } finally {
+      setAiCopilotBusy(false);
+    }
+  }
 
   function copilotAudit(item: CopilotItem, outcome: "accepted" | "ignored") {
     // Advisory audit trail (Part 22) — reuses the EXISTING copilot log endpoint
@@ -1682,6 +1728,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     // deliberately kept (it only pre-fills the next dialog).
     structuredValuesRef.current = new Map();
     setStructuredDialog(null);
+    // CARE Copilot AI reasoning is per-report — clear it and its cache.
+    setAiCopilotItems([]);
+    aiCopilotCacheRef.current = new Map();
+    setCopilotDismissed(new Set());
     lastToggledFindingRef.current = null;
     setIsCritical(false); setCriticalNote("");
     // F5 fix: without this, switching studies carried the PREVIOUS study's
@@ -3554,7 +3604,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
   // Live items only count when auto-analyse is on; the whole tab hides when the
   // radiologist disables the Copilot (Settings in the panel header).
-  const copilotPanelReport = copilotPrefs.autoAnalyze ? copilotReport : { ...copilotReport, items: [] };
+  // Panel = deterministic items (when live-analyse is on) + any AI items the
+  // radiologist explicitly asked for. Quality always reflects the core engine.
+  const copilotPanelReport = {
+    ...copilotReport,
+    items: [...(copilotPrefs.autoAnalyze ? copilotReport.items : []), ...aiCopilotItems],
+  };
   const copilotAlerts = copilotPanelReport.items.filter(
     (i) => !copilotDismissed.has(i.id) && (i.severity === "critical" || i.severity === "warning"),
   ).length;
@@ -4882,6 +4937,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 provider="local"
                 prefs={copilotPrefs}
                 onSetPref={setCopilotPref}
+                onAskAi={askCopilotAi}
+                aiBusy={aiCopilotBusy}
+                aiCount={aiCopilotItems.length}
               />
             )}
 

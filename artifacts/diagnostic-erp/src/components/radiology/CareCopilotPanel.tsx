@@ -39,6 +39,10 @@ interface Props {
   analyzing?: boolean;
   prefs?: CopilotPrefs;
   onSetPref?: (patch: Partial<CopilotPrefs>) => void;
+  /** On-demand AI reasoning (Part 20 module via the existing provider). */
+  onAskAi?: () => void;
+  aiBusy?: boolean;
+  aiCount?: number;
 }
 
 function Toggle({ label, checked, onChange, hint }: { label: string; checked: boolean; onChange: (v: boolean) => void; hint?: string }) {
@@ -131,6 +135,7 @@ function ItemCard({ item, onInsert, onDismiss, onGoToConflict }: {
 
 export default function CareCopilotPanel({
   report, dismissed, onInsert, onDismiss, onGoToConflict, recentActions, onUndoLast, provider, analyzing, prefs, onSetPref,
+  onAskAi, aiBusy, aiCount,
 }: Props) {
   const visible = useMemo(() => report.items.filter((i) => !dismissed.has(i.id)), [report.items, dismissed]);
   const grouped = useMemo(() => {
@@ -161,6 +166,12 @@ export default function CareCopilotPanel({
             <p className="mt-1 text-[9px] text-muted-foreground">AI provider &amp; fallback are configured in AI Reporting Settings.</p>
           </div>
         </details>
+      )}
+
+      {onAskAi && (
+        <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={onAskAi} disabled={aiBusy}>
+          <Sparkles size={12} /> {aiBusy ? "Asking AI…" : aiCount ? `AI reasoning (${aiCount})` : "Ask Copilot (AI)"}
+        </Button>
       )}
 
       <QualityGauge score={report.quality.score} band={report.quality.band} />
