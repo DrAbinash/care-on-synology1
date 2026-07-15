@@ -29,8 +29,8 @@ setAuthTokenGetter(() => {
 
 // Register the service worker in production builds only.
 // The SW handles:
-//   • Stale-while-revalidate caching of API GET responses → faster data loads
-//     after the first visit / after a page refresh
+//   • Network-first API GET requests → every page visit fetches fresh data;
+//     the cache is only used as a fallback when the network request fails
 //   • Cache-first serving of hashed static assets → near-instant subsequent loads
 //   • Offline fallback so the ERP stays usable when the network drops briefly
 if (import.meta.env.PROD && "serviceWorker" in navigator) {

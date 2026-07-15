@@ -5,7 +5,12 @@
  *   SPA shell (index.html)               → Precache on install, network-first,
  *                                             fallback to cached when offline
  *   Static assets (hashed Vite output)   → Cache-first (immutable hashes)
- *   API GET requests                     → Stale-while-revalidate (24 h max age)
+ *   API GET requests                     → Network-first: every request tries
+ *                                             the network first so a page visit
+ *                                             always shows freshly-fetched data;
+ *                                             falls back to the last cached
+ *                                             response (up to 24 h old) only
+ *                                             when the network request fails
  *   Mutations + auth + version check     → Network-only (never cached)
  *   Per-staff/per-patient personal data  → Network-only (never cached — Cache
  *   (see NETWORK_ONLY_PREFIXES)             Storage keys by URL only, not by
@@ -80,6 +85,12 @@ const NETWORK_ONLY_PREFIXES = [
                                                       // other filter values are shared — excluded whole-path
                                                       // since NETWORK_ONLY_PREFIXES matches pathname only,
                                                       // not query strings, so it can't be split by filter value)
+  "/api/dashboard/my-daily-summary",                 // per-staff daily reconciliation summary — defaults to
+                                                      // the caller's own session identity exactly like the
+                                                      // /api/day-close/my-* family above (missed in the original
+                                                      // audit sweep because the route scopes via
+                                                      // session.subjectName, not the bare "subjectId" token the
+                                                      // guard test's marker scan looks for)
   "/api/radiology-diagnostics/",                     // M1.3 Flight Deck: live deployment diagnostics — a cached
                                                       // "HEALTHY" verdict would be a stale lie; always hit the network
 ];
@@ -181,9 +192,9 @@ self.addEventListener("fetch", (event) => {
   // Explicitly network-only routes
   if (isNetworkOnly(url)) return;
 
-  // API reads → stale-while-revalidate
+  // API reads → network-first (fresh data on every visit; cache is fallback only)
   if (isApiGet(request, url)) {
-    event.respondWith(staleWhileRevalidate(request, API_CACHE, MAX_API_AGE_MS));
+    event.respondWith(networkFirstApi(request, API_CACHE, MAX_API_AGE_MS));
     return;
   }
 
@@ -202,43 +213,40 @@ self.addEventListener("fetch", (event) => {
 
 // ─── Strategies ─────────────────────────────────────────────────────────────────────────────
 
-async function staleWhileRevalidate(request, cacheName, maxAgeMs) {
-  const cache  = await caches.open(cacheName);
-  const cached = await cache.match(request);
+/**
+ * Network-first API strategy: every request tries the real network first, so
+ * visiting or revisiting a page always shows freshly-fetched data rather than
+ * a snapshot from earlier in the day. The cache exists purely as an offline
+ * fallback — it is only ever read when the network request itself fails, and
+ * even then only if the cached copy is under maxAgeMs old.
+ */
+async function networkFirstApi(request, cacheName, maxAgeMs) {
+  const cache = await caches.open(cacheName);
 
-  const fetchAndStore = async () => {
-    try {
-      const response = await fetch(request.clone());
-      if (response.ok) {
-        const body    = await response.clone().arrayBuffer();
-        const headers = new Headers(response.headers);
-        headers.set("x-sw-cached-at", String(Date.now()));
-        const stored = new Response(body, {
-          status:     response.status,
-          statusText: response.statusText,
-          headers,
-        });
-        await cache.put(request, stored);
-      }
-      return response;
-    } catch {
-      return null;
+  try {
+    const response = await fetch(request);
+    if (response.ok) {
+      const body    = await response.clone().arrayBuffer();
+      const headers = new Headers(response.headers);
+      headers.set("x-sw-cached-at", String(Date.now()));
+      const stored = new Response(body, {
+        status:     response.status,
+        statusText: response.statusText,
+        headers,
+      });
+      await cache.put(request, stored);
     }
-  };
+    return response;
+  } catch {
+    // Network failure (offline, DNS, etc.) — fall through to cache below.
+  }
 
+  const cached = await cache.match(request);
   if (cached) {
     const cachedAt = Number(cached.headers.get("x-sw-cached-at") ?? "0");
     const age      = Date.now() - cachedAt;
-
-    if (age < maxAgeMs) {
-      void fetchAndStore();
-      return cached;
-    }
+    if (age < maxAgeMs) return cached;
   }
-
-  const fresh = await fetchAndStore();
-  if (fresh)  return fresh;
-  if (cached) return cached;
 
   return new Response(
     JSON.stringify({ error: "offline", message: "No cached data available." }),
