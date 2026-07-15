@@ -689,6 +689,31 @@ export interface IdCardOcrResult {
   gender?: string;
   aadhaarNumber?: string;
   rawText?: string;
+  /** Which OCR provider actually produced this result — "gemini" or
+   * "ollama". Absent on results from code paths that predate the
+   * provider-abstraction fix (treat as "gemini" for backward compat). */
+  ocrProvider?: "gemini" | "ollama";
+  /** Year of birth, when the model could only read a partial/approximate
+   * DOB (common on worn/blurry cards) or the document only prints a year. */
+  yearOfBirth?: string;
+  /** Age computed server-side from dob/yearOfBirth when possible — never
+   * asked of the model directly, since "today minus DOB" is exact math the
+   * model would otherwise approximate unreliably. */
+  age?: number;
+  /** Generic ID number (Aadhaar/Voter/DL/PAN), already redacted to a
+   * privacy-safe form — see maskIdNumber() in idCardOcrOllama.ts. Prefer
+   * this over the Aadhaar-specific `aadhaarNumber` field for new code. */
+  idNumber?: string;
+  /** Per-field 0-100 self-assessed confidence, when the provider returns
+   * one (currently Ollama only — Gemini's prompt asks for a single overall
+   * confidence instead, see `confidencePercent`). */
+  fieldConfidence?: {
+    name?: number;
+    dateOfBirth?: number;
+    gender?: number;
+    address?: number;
+    idNumber?: number;
+  };
 }
 
 const ID_CARD_OCR_PROMPT = `You are an Indian government ID document reading assistant. Examine this Aadhaar / Voter ID / Passport / Ration card / PAN / Driving License image and extract as many fields as possible.
@@ -809,6 +834,7 @@ export async function geminiOcrIdCard(
     documentType: parsed.documentType ?? "Other",
     confidence,
     confidencePercent,
+    ocrProvider: "gemini",
     fullName: (parsed.fullName ?? "").trim() || undefined,
     dob: (parsed.dob ?? "").trim() || undefined,
     gender: (parsed.gender ?? "").trim() || undefined,

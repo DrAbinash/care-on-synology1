@@ -480,6 +480,18 @@ export const AI_TASK_CATALOG: AiTaskDef[] = [
   // provider (e.g. Ollama) through any screen, only by writing to the
   // database directly. This entry closes that gap.
   { key: "whatsapp_ai_receptionist", label: "WhatsApp AI Receptionist", description: "Knowledge-Base-grounded patient replies on WhatsApp (both the menu bot's free-text fallback and the Meta webhook's AI path).", vision: false },
+  // Form F / PCPNDT ID card OCR — was previously hardwired to call Gemini
+  // directly (bypassing this registry entirely), which meant it required
+  // AI_INTEGRATIONS_GEMINI_API_KEY / a Gemini row in AI Provider Settings
+  // even on installs where Ollama is the clinic's actual configured
+  // provider. Registered here so it participates in the same task-routing
+  // system as everything else (an admin can pin it to a specific provider
+  // via the Model Routing UI); when no explicit route exists the OCR
+  // resolver in artifacts/api-server/src/lib/ocr applies an Ollama-first,
+  // Gemini-fallback policy instead of generateAiForTask's plain
+  // single-provider default, since OCR specifically needs to degrade
+  // gracefully to manual entry rather than hard-fail.
+  { key: "id_card_ocr", label: "ID Card OCR (Form F)", description: "Extract identity fields (name, DOB, gender, address, ID number) from a scanned government ID for PCPNDT Form F.", vision: true },
 ];
 
 export const AI_TASK_KEYS = AI_TASK_CATALOG.map((t) => t.key);
@@ -550,4 +562,94 @@ export async function generateAiForTask(
     model,
     maxTokens: options?.maxTokens,
   });
+}
+
+// ─── Ollama vision-capability & reachability helpers ────────────────────────
+// Ollama has no single API that reliably tells a caller "does this model
+// accept images" across all server versions, so this is intentionally a
+// two-tier check: prefer the real /api/show capabilities field when the
+// server reports one (modern Ollama), fall back to a name-pattern heuristic
+// otherwise. Neither tier is guaranteed exhaustive — an unrecognized model
+// name resolves to "unknown" rather than a false positive/negative, and
+// callers should treat "unknown" as "attempt it, but don't promise vision
+// support in the UI."
+
+const KNOWN_VISION_MODEL_PATTERNS = [
+  /llava/i, /bakllava/i, /moondream/i, /minicpm-v/i, /pixtral/i,
+  /llama3\.2-vision/i, /llama-vision/i, /llama4/i,
+  /qwen2(\.5)?-vl/i, /qwen-vl/i, /granite3\.2-vision/i, /cogvlm/i,
+  /gemma3(?!:1b)/i, // gemma3 family supports vision except the 1b text-only variant
+];
+const KNOWN_TEXT_ONLY_MODEL_PATTERNS = [
+  /gpt-oss/i, /^llama3(\.1)?(?!.*vision)/i, /mistral/i, /mixtral/i,
+  /phi-?3/i, /phi-?4/i, /qwen2(\.5)?(?!.*vl)/i, /deepseek/i, /codellama/i,
+  /starcoder/i, /gemma2/i, /^gemma(?!3)/i, /command-r/i, /gemma3:1b/i,
+];
+
+/** Best-effort, name-based classification — see module doc comment above. */
+export function classifyOllamaModelVisionByName(model: string): "vision" | "text-only" | "unknown" {
+  const name = (model || "").trim();
+  if (!name) return "unknown";
+  if (KNOWN_VISION_MODEL_PATTERNS.some((p) => p.test(name))) return "vision";
+  if (KNOWN_TEXT_ONLY_MODEL_PATTERNS.some((p) => p.test(name))) return "text-only";
+  return "unknown";
+}
+
+/**
+ * Fast reachability probe — a plain GET /api/tags with a short timeout, NOT
+ * a full chat completion (unlike AiProvider.testConnection(), which is
+ * correct for an explicit "Test Connection" button click but too slow to
+ * run on every OCR request). Returns the model list when reachable so
+ * callers can cross-check the configured model is actually pulled.
+ */
+export async function probeOllamaReachable(
+  endpointUrl: string,
+  timeoutMs = 3000,
+): Promise<{ reachable: boolean; models?: string[]; error?: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const url = `${endpointUrl.replace(/\/$/, "")}/api/tags`;
+    const resp = await fetch(url, { method: "GET", signal: controller.signal });
+    if (!resp.ok) return { reachable: false, error: `Ollama server returned ${resp.status}` };
+    const data = (await resp.json()) as { models?: Array<{ name: string }> };
+    return { reachable: true, models: data.models?.map((m) => m.name) ?? [] };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? (err.name === "AbortError" ? `Timed out after ${timeoutMs}ms` : err.message) : "Ollama unreachable";
+    return { reachable: false, error: msg };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Real capability check via Ollama's /api/show, when the server reports a
+ * `capabilities` array (Ollama 0.4+). Returns null (not false) when the
+ * server doesn't report capabilities at all, so callers fall back to the
+ * name-based heuristic instead of concluding "no vision support."
+ */
+export async function probeOllamaModelVision(
+  endpointUrl: string,
+  model: string,
+  timeoutMs = 3000,
+): Promise<boolean | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const url = `${endpointUrl.replace(/\/$/, "")}/api/show`;
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model }),
+      signal: controller.signal,
+    });
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as { capabilities?: string[] };
+    if (!Array.isArray(data.capabilities)) return null;
+    return data.capabilities.includes("vision");
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }

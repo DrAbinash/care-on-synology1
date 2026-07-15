@@ -5,8 +5,8 @@ import { ordersTable, orderTestsTable, testsTable, doctorsTable } from "@workspa
 import { whatsappConversationsTable, whatsappSettingsTable, usgMeasurementsTable, radiologyStudiesTable, fetalUsgStudiesTable, fetalUsgMeasurementsTable, fetalUsgReportsTable, fetalUsgChecklistsTable } from "@workspace/db/schema";
 import { dateToISTString } from "../lib/istDate";
 import { type IdCardOcrResult } from "@workspace/integrations-gemini-ai";
-import { getProviderApiKey } from "@workspace/ai-providers";
 import { runIdCardOcrPipeline, SERVER_BLUR_WARNING_THRESHOLD } from "../lib/ocr/idCardPipeline";
+import { resolveOcrProvider, maskEndpointUrl, type OcrUnavailableReason } from "../lib/ocr/ocrProviderResolver";
 import { requireStaffPermission } from "../middleware/requireStaffAuth";
 import { sendTextMessageRaw, resolveNumber, normalizePhone } from "./whatsapp";
 
@@ -655,21 +655,52 @@ type OcrLogEntry = {
   detail?: string;
 };
 
-// ─── OCR status endpoint (diagnostics) ───────────────────────────────────
-formFRouter.get("/ocr-status", async (_req, res) => {
-  const logs: OcrLogEntry[] = [];
+// Human-readable detail for the admin-facing ocrLog (item 11's short
+// frontend messages are derived separately, client-side, from ocrOutcome —
+// this string is the longer diagnostic version shown in the log/diagnostics
+// panel, not the toast).
+function describeOcrUnavailable(reason: OcrUnavailableReason, resolution: Awaited<ReturnType<typeof resolveOcrProvider>>): string {
+  switch (reason) {
+    case "ollama_unreachable":
+      return `Ollama is configured (${resolution.ollama.model ?? "no model set"}) but not reachable right now${resolution.ollama.reachabilityError ? `: ${resolution.ollama.reachabilityError}` : ""}, and no Gemini fallback is configured.`;
+    case "ollama_model_not_vision_capable":
+      return `The configured Ollama model ("${resolution.ollama.model}") does not appear to support image input. Select a vision-capable model (e.g. llava, gemma3, qwen2.5-vl) in AI Provider Settings, and no Gemini fallback is configured.`;
+    case "ollama_model_not_configured":
+      return "Ollama is enabled but no model is configured in AI Provider Settings, and no Gemini fallback is configured.";
+    case "no_provider_configured":
+    default:
+      return "OCR is not configured: no Ollama endpoint or Gemini API key found in AI Provider Settings. Configure a provider in Settings → AI Reporting, or use manual entry.";
+  }
+}
+
+// ─── OCR status endpoint (admin diagnostics — see FormF.tsx's diagnostics panel) ──
+// Reports which provider ID-card OCR will actually use right now and why,
+// without ever returning secrets: the Ollama endpoint is masked, and no API
+// key is ever included (only a boolean "configured").
+formFRouter.get("/ocr-status", requireStaffPermission("/form-f"), async (_req, res) => {
   try {
-    logs.push({ stage: "config", status: "info", message: "Checking Gemini integration...", detail: `baseUrl: ${process.env.AI_INTEGRATIONS_GEMINI_BASE_URL ? "set" : "missing"}, apiKey: ${process.env.AI_INTEGRATIONS_GEMINI_API_KEY ? "set" : "missing"}` });
-    const configured = !!process.env.AI_INTEGRATIONS_GEMINI_BASE_URL && !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
-    if (configured) {
-      logs.push({ stage: "config", status: "ok", message: "Gemini API credentials configured" });
-    } else {
-      logs.push({ stage: "config", status: "error", message: "Gemini API credentials missing", detail: "Set AI_INTEGRATIONS_GEMINI_BASE_URL and AI_INTEGRATIONS_GEMINI_API_KEY environment variables" });
-    }
-    res.json({ ok: true, geminiConfigured: configured, logs });
+    const resolution = await resolveOcrProvider();
+    res.json({
+      ok: true,
+      selectedProvider: resolution.chosen.provider,
+      explicitRoute: resolution.explicitRoute,
+      ollama: {
+        configured: resolution.ollama.configured,
+        enabled: resolution.ollama.enabled,
+        endpointUrl: maskEndpointUrl(resolution.ollama.endpointUrl),
+        model: resolution.ollama.model,
+        visionSupport: resolution.ollama.visionClassification,
+        reachable: resolution.ollama.reachable,
+        reachabilityError: resolution.ollama.reachabilityError,
+      },
+      gemini: {
+        configured: resolution.gemini.configured,
+      },
+      unavailableReason: resolution.chosen.provider === "none" ? resolution.chosen.reason : null,
+    });
   } catch (err) {
-    logs.push({ stage: "status", status: "error", message: "Status check failed", detail: String(err) });
-    res.status(500).json({ ok: false, geminiConfigured: false, logs });
+    const msg = err instanceof Error ? err.message : "Status check failed";
+    res.status(500).json({ ok: false, error: msg });
   }
 });
 
@@ -712,38 +743,66 @@ formFRouter.post("/upload-id", requireStaffPermission("/form-f"), async (req, re
       ocrLog.push({ stage: "validate", status: "ok", message: "Image data received", detail: `${base64.length} chars, ${mimeType}` });
     }
 
-    // Run Gemini OCR. Resolve the API key from the DB-backed AI Provider
-    // Settings first (the primary configuration path — see AI Reporting
-    // Settings in the ERP) and only fall back to the raw
-    // AI_INTEGRATIONS_GEMINI_API_KEY env var when no key is configured there.
-    // Without this, an admin who configures a key in Settings would still see
-    // OCR silently fail if the env var was never also set — this was root
-    // cause of "Upload ID succeeds but OCR is unavailable" reports.
+    // Resolve which OCR provider to use — Ollama-first, Gemini-fallback (or
+    // whatever an admin explicitly pinned via Model Routing). See
+    // resolveOcrProvider()'s doc comment for the full policy. This replaced
+    // a hardwired "require a Gemini key or fail" check, which was the root
+    // cause of "OCR unavailable" on installs where Ollama is the clinic's
+    // actual configured provider and no Gemini key was ever set.
     let ocrResult: IdCardOcrResult | null = null;
     let ocrError: string | null = null;
+    let ocrOutcome: "success" | OcrUnavailableReason = "no_provider_configured";
     let blurScore: number | null = null;
     let isBlurred = false;
-    ocrLog.push({ stage: "gemini", status: "info", message: "Starting Gemini OCR...", detail: "Pre-processing then calling geminiOcrIdCard()" });
-    const dbApiKey = await getProviderApiKey("gemini").catch(() => null);
-    if (!dbApiKey && !process.env.AI_INTEGRATIONS_GEMINI_API_KEY) {
-      ocrError = "OCR is not configured: no Gemini API key found in AI Provider Settings or AI_INTEGRATIONS_GEMINI_API_KEY. Configure a key in Settings → AI Reporting, or use manual entry.";
-      ocrLog.push({ stage: "gemini", status: "error", message: "No Gemini API key configured", detail: ocrError });
+    ocrLog.push({ stage: "provider", status: "info", message: "Resolving OCR provider...", detail: "Checking AI Provider Settings (Ollama-first, Gemini-fallback)" });
+    const resolution = await resolveOcrProvider();
+    const provider = resolution.chosen;
+
+    if (provider.provider === "none") {
+      ocrOutcome = provider.reason;
+      ocrError = describeOcrUnavailable(provider.reason, resolution);
+      ocrLog.push({ stage: "provider", status: "error", message: "No usable OCR provider", detail: ocrError });
     } else {
+      ocrLog.push({
+        stage: "provider", status: "ok",
+        message: `Using ${provider.provider === "ollama" ? "Ollama" : "Gemini"} for OCR`,
+        detail: provider.provider === "ollama" ? `model: ${provider.model}` : undefined,
+      });
       try {
-        const pipeline = await runIdCardOcrPipeline(base64, mimeType, dbApiKey ?? undefined);
+        const pipeline = await runIdCardOcrPipeline(base64, mimeType, provider);
         ocrResult = pipeline.ocrResult;
         blurScore = pipeline.blurScore;
         isBlurred = pipeline.isBlurred;
+        ocrOutcome = "success";
         if (isBlurred) {
           ocrLog.push({ stage: "preprocess", status: "warn", message: "Image looks blurred", detail: `blurScore=${blurScore.toFixed(1)} (below ${SERVER_BLUR_WARNING_THRESHOLD}) — consider retaking the photo` });
         }
-        ocrLog.push({ stage: "gemini", status: "ok", message: "Gemini OCR completed", detail: `documentType: ${ocrResult?.documentType}, confidence: ${ocrResult?.confidence}, guardianName: ${ocrResult?.guardianName ? "found" : "empty"}, address: ${ocrResult?.address ? "found" : "empty"}, extras: ${ocrResult?.fullName ? "name" : ""}${ocrResult?.dob ? " dob" : ""}${ocrResult?.gender ? " gender" : ""}` });
+        // Privacy: never log full extracted PII (address/idNumber) — only
+        // whether each field was found, matching the existing convention.
+        ocrLog.push({ stage: provider.provider, status: "ok", message: `${provider.provider === "ollama" ? "Ollama" : "Gemini"} OCR completed`, detail: `documentType: ${ocrResult?.documentType}, confidence: ${ocrResult?.confidence}, name: ${ocrResult?.guardianName ? "found" : "empty"}, address: ${ocrResult?.address ? "found" : "empty"}, extras: ${ocrResult?.dob ? "dob " : ""}${ocrResult?.gender ? "gender " : ""}${ocrResult?.idNumber ? "idNumber" : ""}` });
       } catch (e) {
-        ocrError = e instanceof Error ? e.message : "Gemini OCR failed";
-        ocrLog.push({ stage: "gemini", status: "error", message: "Gemini OCR failed", detail: ocrError });
-        // Still return a structured response so the frontend can use Tesseract fallback
+        // The chosen provider failed AT CALL TIME (as opposed to being
+        // disqualified up front by resolveOcrProvider) — e.g. Ollama was
+        // reachable during the probe but the request itself timed out, or
+        // Gemini's API returned an error. Report this distinctly from the
+        // "no provider configured" family since a provider WAS available.
+        ocrOutcome = provider.provider === "ollama" ? "ollama_unreachable" : "no_provider_configured";
+        ocrError = e instanceof Error ? e.message : `${provider.provider} OCR failed`;
+        ocrLog.push({ stage: provider.provider, status: "error", message: `${provider.provider === "ollama" ? "Ollama" : "Gemini"} OCR failed`, detail: ocrError });
       }
     }
+
+    const responsePayload = {
+      ok: true,
+      ocr: ocrResult ?? null,
+      ocrError,
+      ocrOutcome,
+      ocrLog,
+      ocrStage: ocrResult ? `${provider.provider}_success` : `${provider.provider}_failed`,
+      suggestedAction: ocrResult ? "accept_or_verify" : "manual_entry",
+      blurScore,
+      isBlurred,
+    };
 
     // If formFId is valid, update the record with extracted data and image reference
     if (formFId) {
@@ -758,32 +817,13 @@ formFRouter.post("/upload-id", requireStaffPermission("/form-f"), async (req, re
           .set(updateData)
           .where(eq(formFRecordsTable.id, formFId))
           .returning();
-        res.json({
-          ok: true,
-          formF: updated,
-          ocr: ocrResult ?? null,
-          ocrError,
-          ocrLog,
-          ocrStage: ocrResult ? "gemini_success" : "gemini_failed",
-          suggestedAction: ocrResult ? "accept_or_verify" : "try_tesseract_fallback",
-          blurScore,
-          isBlurred,
-        });
+        res.json({ ...responsePayload, formF: updated });
         return;
       }
     }
 
     // No record yet — just return OCR result with detailed log
-    res.json({
-      ok: true,
-      ocr: ocrResult ?? null,
-      ocrError,
-      ocrLog,
-      ocrStage: ocrResult ? "gemini_success" : "gemini_failed",
-      suggestedAction: ocrResult ? "accept_or_verify" : "try_tesseract_fallback",
-      blurScore,
-      isBlurred,
-    });
+    res.json(responsePayload);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Internal server error";
     ocrLog.push({ stage: "server", status: "error", message: "Server error", detail: msg });
