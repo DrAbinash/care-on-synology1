@@ -2,7 +2,7 @@
   "name": "Care Diagnostics Billing ERP",
   "short_name": "CareDiag ERP",
   "description": "Comprehensive diagnostic center management system for billing, reporting, and lab operations.",
-  "start_url": "/erp/",
+  "start_url": "/erp/portal",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#FF3C00",

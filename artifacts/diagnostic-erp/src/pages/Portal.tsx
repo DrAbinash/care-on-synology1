@@ -30,6 +30,7 @@ type PortalSettings = {
   phone: string;
   email: string;
   logoDataUrl: string | null;
+  backgroundImageDataUrl: string | null;
   allowAppointmentBooking: boolean;
   allowProfileEdit: boolean;
 };
@@ -163,8 +164,20 @@ async function authedFetch<T>(token: string, path: string, init?: RequestInit): 
 // =====================================================================
 
 export default function PortalRoot() {
+  // Shared with the per-screen useQuery calls below (same queryKey), so this
+  // doesn't add an extra network round trip — it just lets the background
+  // image apply consistently behind the landing, login and dashboard screens.
+  const { data: settings } = useQuery<PortalSettings>({
+    queryKey: ["portal-settings"],
+    queryFn: () => api.get("/api/portal/settings"),
+  });
+  const bgImage = settings?.backgroundImageDataUrl;
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50 dark:from-slate-950 dark:via-slate-900 dark:to-indigo-950">
+    <div
+      className={`min-h-screen ${bgImage ? "bg-slate-900 bg-cover bg-center bg-fixed" : "bg-gradient-to-br from-blue-50 via-white to-indigo-50 dark:from-slate-950 dark:via-slate-900 dark:to-indigo-950"}`}
+      style={bgImage ? { backgroundImage: `url(${bgImage})` } : undefined}
+    >
       <Switch>
         <Route path="/portal" component={PortalLanding} />
         <Route path="/portal/patient-login" component={PatientLogin} />

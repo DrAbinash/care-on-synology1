@@ -27,6 +27,9 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   portalWelcomeMessage: text("portal_welcome_message").notNull().default(""),
   portalAllowAppointmentBooking: boolean("portal_allow_appointment_booking").notNull().default(true),
   portalAllowProfileEdit: boolean("portal_allow_profile_edit").notNull().default(true),
+  // Optional background image (data URL) shown behind the public portal /
+  // staff login landing page. NULL means "use the default gradient".
+  portalBackgroundImageDataUrl: text("portal_background_image_data_url"),
   // Online booking
   onlineBookingEnabled: boolean("online_booking_enabled").notNull().default(false),
   // Nullable: NULL means "Razorpay not configured yet" (same reasoning as gstin above).
