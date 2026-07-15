@@ -197,7 +197,7 @@ export function HeroSection({ section, settings, basePath }: { section: Section;
   // one) since every hero text element below is hardcoded white — this
   // guarantees the low-contrast "invisible hero text" bug that recurred on
   // /book can't happen here regardless of which photo is uploaded.
-  const heroImageUrl = get(c, "imageUrl", "");
+  const heroImageUrl = resolveAssetUrl(get(c, "imageUrl", ""));
   const overlayOpacity = Math.max(0, Math.min(100, getNum(c, "overlayOpacity", 55))) / 100;
   const heroPanelStyle: CSSProperties | undefined = heroImageUrl
     ? {

@@ -2271,6 +2271,7 @@ function BookingPageBackgroundCard() {
                 onChange={(e) => setOverlayOpacity(Number(e.target.value))}
                 onMouseUp={() => save.mutate({ bookHeroOverlayOpacity: overlayOpacity })}
                 onTouchEnd={() => save.mutate({ bookHeroOverlayOpacity: overlayOpacity })}
+                onKeyUp={() => save.mutate({ bookHeroOverlayOpacity: overlayOpacity })}
                 className="w-full"
               />
             </div>
