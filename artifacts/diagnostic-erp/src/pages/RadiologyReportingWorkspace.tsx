@@ -1336,7 +1336,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // with the feature off (empty catalog) sees no change.
   const { data: masterTemplatesResp } = useQuery<{ templates: MasterTemplate[]; count: number }>({
     queryKey: ["master-templates"],
-    queryFn: () => api.get("/api/radiology/master-templates"),
+    // NOTE: the Cockpit's own version of this query used the wrong path
+    // (/api/radiology/master-templates, which 404s) — the route is actually
+    // mounted under /radiology/knowledge (routes/index.ts), confirmed live
+    // against a real running server during E1 verification.
+    queryFn: () => api.get("/api/radiology/knowledge/master-templates"),
     staleTime: 300_000,
   });
   const masterTemplates = masterTemplatesResp?.templates ?? [];
