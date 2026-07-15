@@ -333,6 +333,9 @@ function Router() {
         <Route path="/teleradiology/:rest*" component={TeleradiologyPortal} />
         <Route path="/verify-receipt/:billId" component={VerifyReceipt} />
         {/* Specific display routes must come BEFORE generic :roomKey pattern */}
+        <Route path="/display/payment-qr/:counterKey" component={PaymentQrDisplay} />
+        {/* Bare URL defaults to counter1 inside the component — kept for
+            any already-configured single-counter setups. */}
         <Route path="/display/payment-qr" component={PaymentQrDisplay} />
         <Route path="/display" component={Display} />
         {/* Primary URL per spec: caredeoghar.com/queue/usg, /queue/mri, etc. */}

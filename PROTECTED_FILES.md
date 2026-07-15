@@ -267,6 +267,10 @@ online-bookings.ts
 receptionCommandCenter.ts
 display.ts
 queueDisplaySettings.ts
+paymentDisplay.ts         # presentation-only relay for the customer-facing
+                           # payment QR screen — does not create, verify, or
+                           # mutate payments; only republishes what bills.ts
+                           # already computed. Same discipline as display.ts.
 
 # Generic AI infrastructure — used by AiBillingSuggestions (billing) AND
 # radiology AI reporting. Do not fork per-module; keep as one shared layer.

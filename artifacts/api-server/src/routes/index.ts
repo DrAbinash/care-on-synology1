@@ -39,6 +39,7 @@ import { presentationTemplatesRouter } from "./presentation-templates";
 import { pacsEnterpriseRouter } from "./pacsEnterprise";
 import displayRouter from "./display";
 import queueDisplaySettingsRouter from "./queueDisplaySettings";
+import paymentDisplayRouter from "./paymentDisplay";
 import { whatsappRouter, whatsappWebhookRouter } from "./whatsapp";
 import { waChatbotRouter, waChatbotWebhookRouter } from "./waChatbot";
 import { printersRouter } from "./printers";
@@ -204,6 +205,10 @@ router.use("/internal", internalRadiologyRouter); // [ZONE: radiology] name is g
 router.use("/portal", portalRouter);
 router.use("/display", displayRouter);
 router.use("/settings/queue-display", queueDisplaySettingsRouter);
+// Auth is enforced per-route inside paymentDisplayRouter itself (staff auth
+// for the POST mutations Bill Desk calls, staff-or-display-token for the GET
+// feed the customer-facing screen reads) — same pattern as displayRouter above.
+router.use("/payment-display", paymentDisplayRouter);
 router.use("/bridge", bridgeRouter);
 // Public tokenized PDF download for patient WhatsApp links — no staff auth.
 router.use("/p/r", publicReportsRouter);
