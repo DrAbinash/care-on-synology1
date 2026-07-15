@@ -174,7 +174,7 @@ const TABS = [
   { id: "footer-services", label: "Footer Services", icon: Layers },
   { id: "promotional-footer", label: "Promotional Footer", icon: Tag },
   { id: "discount-reasons", label: "Discount Reasons", icon: Tag },
-  { id: "reprint-reasons", label: "Reprint Reasons", icon: Printer },
+  { id: "reprint-reasons", label: "Edit/Modify/Reprint Reasons", icon: Printer },
   { id: "backup", label: "Backup", icon: Database },
   { id: "radiology", label: "Radiology", icon: ScanLine },
   { id: "manual", label: "User Manual", icon: FileDown },
@@ -5684,7 +5684,7 @@ function ReprintReasonsTab() {
     <div className="max-w-2xl space-y-4">
       <div className="bg-card border border-card-border rounded-xl p-5">
         <p className="text-sm text-muted-foreground">
-          Manage the list of preset reasons available in the Bill Detail re-print dialog. Inactive reasons are hidden from re-printing but kept for historical bills.
+          Manage the list of preset reasons available in the Bill Detail re-print dialog and the Change Doctor (edit/modify referring doctor) dialog. Inactive reasons are hidden from those dialogs but kept for historical bills.
         </p>
       </div>
 
