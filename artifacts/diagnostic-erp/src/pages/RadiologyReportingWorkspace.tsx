@@ -41,8 +41,10 @@ import ViewerMeasurementsPanel, { useViewerMeasurements } from "@/components/rad
 import PreferencesPanel from "@/components/PreferencesPanel";
 import { isUltrasoundModality } from "@/lib/usgModality";
 import QuickFindingsPanel, {
-  type QuickFinding, type QuickProtocol,
+  type QuickFinding, type QuickProtocol, type QuickClinicalHistoryChip, type QuickSelectData,
 } from "@/components/radiology/QuickFindingsPanel";
+import { matchStudyRegion } from "@/lib/studyRegion";
+import { hasPhrase, appendClinicalPhrase, removeClinicalPhrase } from "@/lib/clinicalHistoryText";
 import {
   renderAbnormality, type AbnormalityInstance, type RenderedAbnormality, type Side,
   mergeBlock, mergeImpression,
@@ -792,12 +794,48 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const [activeProtocol, setActiveProtocol] = useState<QuickProtocol | null>(null);
   const [checklistPercent, setChecklistPercent] = useState(100);
   const [checklistRemaining, setChecklistRemaining] = useState<string[]>([]);
+  // The exact Technique text this workspace last inserted from a protocol.
+  // Lets us tell "unedited protocol text" (safe to replace silently) from
+  // "the radiologist has since edited Technique" (must confirm before we
+  // overwrite it). Never persisted — reset when a protocol replaces it.
+  const lastInsertedTechniqueRef = useRef<string | null>(null);
+  // When a protocol switch would overwrite manually-edited Technique text, we
+  // stash the pending protocol here and show a Replace / Keep / Cancel prompt.
+  const [protocolReplacePrompt, setProtocolReplacePrompt] = useState<QuickProtocol | null>(null);
 
-  function handleProtocolChange(protocol: QuickProtocol | null) {
+  /** Apply a protocol's side effects. `replaceTechnique` gates the (possibly
+   *  destructive) Technique overwrite; Recommendation is always a safe merge. */
+  function applyProtocol(protocol: QuickProtocol | null, replaceTechnique: boolean) {
     setActiveProtocol(protocol);
     if (!protocol) return;
-    if (protocol.techniqueText) setTechnique((prev) => (prev.trim() ? prev : protocol.techniqueText));
     if (protocol.recommendationText) setRecommendation((prev) => mergeBlock(prev, protocol.recommendationText));
+    if (protocol.techniqueText && replaceTechnique) {
+      setTechnique(protocol.techniqueText);
+      lastInsertedTechniqueRef.current = protocol.techniqueText;
+    }
+  }
+
+  /** Shared entry point for BOTH protocol dropdowns (right Quick panel and the
+   *  one beside Technique). They write the SAME activeProtocol state and route
+   *  through the SAME insertion logic — no duplicate selection value, no
+   *  duplicate insertion path. Prompts before replacing manually-edited
+   *  Technique text (Phase 8 safety rule). */
+  function requestProtocolChange(protocol: QuickProtocol | null) {
+    // Clearing the protocol, or one with no technique text, never risks a
+    // manual-edit overwrite — apply immediately.
+    if (!protocol || !protocol.techniqueText) {
+      applyProtocol(protocol, false);
+      return;
+    }
+    const current = technique.trim();
+    const lastInserted = (lastInsertedTechniqueRef.current ?? "").trim();
+    const manuallyEdited = current !== "" && current !== lastInserted;
+    if (manuallyEdited) {
+      setProtocolReplacePrompt(protocol); // ask Replace / Keep Current Text / Cancel
+      return;
+    }
+    // Technique is empty or still exactly the last protocol's text — safe to fill.
+    applyProtocol(protocol, true);
   }
 
   function handleInsertProtocolNormals() {
@@ -986,6 +1024,66 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     queryFn: () => api.get<WorklistEntry>(`/api/internal/radiology/worklist/${studyId}`),
     enabled: !!studyId,
   });
+
+  // ── Quick-select config (shared cache with the right Quick panel) ───────────
+  // Same queryKey as QuickFindingsPanel, so react-query de-dupes — no extra
+  // network. Drives the study-specific Clinical History chips and the
+  // near-Technique protocol dropdown, both resolved to the SAME study region
+  // the panel uses (via matchStudyRegion), so all three stay in agreement.
+  const { data: quickSelectData } = useQuery<QuickSelectData>({
+    queryKey: ["radiology-quick-select"],
+    queryFn: () => api.get("/api/radiology/quick-select"),
+    staleTime: 5 * 60_000,
+  });
+
+  const studyRegion = useMemo(() => {
+    const orderedRegions = (quickSelectData?.tabs ?? [])
+      .filter((t) => t.isActive)
+      .slice()
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
+      .map((t) => t.name);
+    return matchStudyRegion(`${entry?.modality ?? ""} ${entry?.studyDescription ?? ""}`, orderedRegions);
+  }, [quickSelectData, entry?.modality, entry?.studyDescription]);
+
+  // Protocols for this study region — the SAME list the Quick panel shows.
+  const availableProtocols = useMemo(
+    () => (quickSelectData?.protocols ?? [])
+      .filter((p) => p.isActive && !!studyRegion && p.studyType === studyRegion)
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name)),
+    [quickSelectData, studyRegion],
+  );
+
+  // Up to 10 active clinical-history chips for this study region.
+  const clinicalHistoryChips = useMemo(
+    () => (quickSelectData?.clinicalHistory ?? [])
+      .filter((c) => c.isActive && !!studyRegion && c.studyType === studyRegion)
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.displayLabel.localeCompare(b.displayLabel))
+      .slice(0, 10),
+    [quickSelectData, studyRegion],
+  );
+
+  // Options for the near-Technique dropdown. Normally the region's protocols;
+  // if the shared selection points at a protocol outside this region (the Quick
+  // panel allows multi-region selection) we prepend it so the control still
+  // shows the active selection rather than appearing blank.
+  const techniqueProtocolOptions = useMemo(
+    () => (activeProtocol && !availableProtocols.some((p) => p.id === activeProtocol.id)
+      ? [activeProtocol, ...availableProtocols]
+      : availableProtocols),
+    [availableProtocols, activeProtocol],
+  );
+
+  /** Toggle a clinical-history chip's phrase in/out of the Clinical History
+   *  field. Append is duplicate-safe; remove only deletes an exact previously
+   *  inserted phrase, so manually typed history is never clobbered. */
+  function toggleClinicalHistoryChip(chip: QuickClinicalHistoryChip) {
+    if (isLocked) return;
+    setClinicalHistory((cur) =>
+      hasPhrase(cur, chip.insertedText)
+        ? removeClinicalPhrase(cur, chip.insertedText)
+        : appendClinicalPhrase(cur, chip.insertedText),
+    );
+  }
 
   // Chocolate Box macro set — depends on `entry`, so must be declared after it.
   const chocolateBoxSet = useMemo(
@@ -2108,6 +2206,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       .split(/\n/)
       .map((l) => l.replace(/^\d+[.\)]\s*/, "").trim())
       .filter(Boolean);
+    // Never overwrite an impression the radiologist has already written without
+    // confirmation (Phase 9 AI-impression safety rule).
+    if (impression.some((l) => l.trim()) &&
+        !window.confirm("Replace the current impression with the AI-generated impression?")) {
+      return;
+    }
     setImpression(lines);
     setAiOutput("");
     toast({ title: "Inserted into impression" });
@@ -3501,6 +3605,33 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 />
               }
             >
+              {/* Study-specific quick-select chips (up to 10). Clicking inserts
+                  the configured phrase; clicking again removes it. Manually
+                  typed history is never overwritten (see clinicalHistoryText). */}
+              {clinicalHistoryChips.length > 0 && (
+                <div className="flex flex-wrap gap-1" data-testid="clinical-history-chips">
+                  {clinicalHistoryChips.map((chip) => {
+                    const active = hasPhrase(clinicalHistory, chip.insertedText);
+                    return (
+                      <button
+                        key={chip.id}
+                        type="button"
+                        disabled={isLocked}
+                        onClick={() => toggleClinicalHistoryChip(chip)}
+                        title={chip.insertedText}
+                        aria-pressed={active}
+                        className={`text-[10px] font-medium px-2 py-0.5 rounded-full border transition-colors disabled:opacity-50 ${
+                          active
+                            ? "bg-primary text-primary-foreground border-primary"
+                            : "bg-background text-muted-foreground border-border hover:bg-muted/50 hover:text-foreground"
+                        }`}
+                      >
+                        {chip.displayLabel}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
               <Textarea
                 value={clinicalHistory}
                 onChange={(e) => setClinicalHistory(e.target.value)}
@@ -3516,11 +3647,40 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               id="technique"
               title="Technique"
               headerExtra={
-                <VoiceDictationButton
-                  onInsert={(t) => setTechnique((p) => p + t)}
-                  targetField="technique"
-                  className="h-5 text-[10px]"
-                />
+                <div className="flex items-center gap-1">
+                  {/* Protocol control beside Technique — the SAME selection and
+                      insertion path as the right Quick panel's dropdown (one
+                      shared activeProtocol state, one requestProtocolChange
+                      handler). Changing it here updates the panel and vice
+                      versa. */}
+                  {techniqueProtocolOptions.length > 0 && (
+                    <>
+                      <span className="text-[10px] text-muted-foreground shrink-0">Protocol</span>
+                      <select
+                        value={activeProtocol?.id ?? ""}
+                        disabled={isLocked}
+                        onChange={(e) => {
+                          const id = Number(e.target.value) || null;
+                          requestProtocolChange(techniqueProtocolOptions.find((p) => p.id === id) ?? null);
+                        }}
+                        title="Insert the study protocol's Technique text. Same selection as the Quick panel."
+                        className="h-6 text-[10px] border rounded-md px-1 bg-background max-w-[160px]"
+                      >
+                        <option value="">None</option>
+                        {techniqueProtocolOptions.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.isDefault ? "◉ " : p.isGoldStandard ? "★ " : ""}{p.name}
+                          </option>
+                        ))}
+                      </select>
+                    </>
+                  )}
+                  <VoiceDictationButton
+                    onInsert={(t) => setTechnique((p) => p + t)}
+                    targetField="technique"
+                    className="h-5 text-[10px]"
+                  />
+                </div>
               }
             >
               <Textarea
@@ -4108,7 +4268,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 onAutoTechnique={handleAutoTechnique}
                 onInsertNormals={handleInsertNormals}
                 activeProtocolId={activeProtocol?.id ?? null}
-                onProtocolChange={handleProtocolChange}
+                onProtocolChange={requestProtocolChange}
                 onChecklistChange={(percent, remaining) => { setChecklistPercent(percent); setChecklistRemaining(remaining); }}
                 onAcceptLearnedSuggestion={(text) => setRecommendation((prev) => mergeBlock(prev, text))}
                 onFindingsLoaded={handleFindingsLoaded}
@@ -4448,6 +4608,52 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           </div>
         </div>
       </div>
+
+      {/* Protocol-replace safety prompt (Phase 8): only shown when selecting a
+          protocol would overwrite manually-edited Technique text. Never fires
+          when Technique is empty or still holds the last protocol's text. */}
+      {protocolReplacePrompt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true">
+          <div className="w-full max-w-sm rounded-lg border bg-background p-4 shadow-lg">
+            <h3 className="text-sm font-semibold">Replace Technique?</h3>
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              Technique contains manual edits. Replace it with the selected protocol
+              text (&ldquo;{protocolReplacePrompt.name}&rdquo;)?
+            </p>
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <Button
+                size="sm"
+                className="h-8"
+                onClick={() => { applyProtocol(protocolReplacePrompt, true); setProtocolReplacePrompt(null); }}
+              >
+                Replace
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8"
+                onClick={() => {
+                  // Switch the selection but keep the manually-edited text; from
+                  // now on that text is treated as manual (no silent re-fill).
+                  applyProtocol(protocolReplacePrompt, false);
+                  lastInsertedTechniqueRef.current = null;
+                  setProtocolReplacePrompt(null);
+                }}
+              >
+                Keep Current Text
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-8"
+                onClick={() => setProtocolReplacePrompt(null)}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
