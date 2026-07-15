@@ -35,6 +35,9 @@ import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
 // canonical workspace (no separate USG reporting workflow).
 import UsgMeasurementReviewPanel from "@/components/radiology/UsgMeasurementReviewPanel";
 import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
+// Cockpit→Workspace merge (D1): external-viewer (OHIF/Weasis/DICOM-SR)
+// measurement import queue — self-hides when the study has none.
+import ViewerMeasurementsPanel from "@/components/radiology/ViewerMeasurementsPanel";
 import PreferencesPanel from "@/components/PreferencesPanel";
 import { isUltrasoundModality } from "@/lib/usgModality";
 import QuickFindingsPanel, {
@@ -4004,6 +4007,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   onMeasurementsChange={handleMeasurementsApplied} // D2: auto-bridge calcs → Findings/Impression
                   voiceTextCommand={lastVoiceCommand} // D3: autofill fields from dictated numbers
                 />
+                {/* D1: external-viewer measurement import queue (self-hides when empty) */}
+                <div className="border-t">
+                  <ViewerMeasurementsPanel
+                    studyInstanceUID={entry?.studyInstanceUID}
+                    onInsertToFindings={(line) => setRawFindings((prev) => mergeBlock(prev, line))}
+                    onInsertToImpression={(line) => setImpression((prev) => mergeImpression(prev, line))}
+                  />
+                </div>
                 {entry?.patientId && (
                   <div className="border-t">
                     <RadiologyMemoryPanel
