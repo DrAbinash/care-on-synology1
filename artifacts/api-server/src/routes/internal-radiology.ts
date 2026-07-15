@@ -110,7 +110,7 @@ export async function runMatchingEngineForWorklist(worklistId: number): Promise<
     sex: row.sex,
     modality: row.modality,
     studyDescription: row.studyDescription,
-    accessionNumber: row.accessionNumber,
+    accessionNumber: row.accessionNumber ?? "",
     studyDate: row.studyDate,
     studyTime: null,
     studyInstanceUID: row.studyInstanceUID,

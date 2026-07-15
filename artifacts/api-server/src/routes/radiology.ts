@@ -2414,7 +2414,7 @@ radiologyRouter.get("/pacs-worklist/:id/matching-candidates", async (req, res) =
         sex: worklistItem.sex,
         modality: worklistItem.modality,
         studyDescription: worklistItem.studyDescription,
-        accessionNumber: worklistItem.accessionNumber,
+        accessionNumber: worklistItem.accessionNumber ?? "",
         studyDate: worklistItem.studyDate,
         studyTime: null,
         studyInstanceUID: worklistItem.studyInstanceUID,

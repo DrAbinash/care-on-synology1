@@ -670,21 +670,21 @@ clinicSettingsRouter.post("/ollama", async (req, res) => {
 
   // ollamaEnabled
   if (b.ollamaEnabled !== undefined) {
-    if (typeof b.ollamaEnabled !== "boolean") { console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaEnabled must be boolean", "| received body keys:", Object.keys(body));
+    if (typeof b.ollamaEnabled !== "boolean") { console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaEnabled must be boolean", "| received body keys:", Object.keys(b));
  res.status(400).json({ error: "ollamaEnabled must be boolean" }); return; }
     update.ollamaEnabled = b.ollamaEnabled;
   }
 
   // ollamaLocalOnly
   if (b.ollamaLocalOnly !== undefined) {
-    if (typeof b.ollamaLocalOnly !== "boolean") { console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaLocalOnly must be boolean", "| received body keys:", Object.keys(body));
+    if (typeof b.ollamaLocalOnly !== "boolean") { console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaLocalOnly must be boolean", "| received body keys:", Object.keys(b));
  res.status(400).json({ error: "ollamaLocalOnly must be boolean" }); return; }
     update.ollamaLocalOnly = b.ollamaLocalOnly;
   }
 
   // ollamaAuditEnabled
   if (b.ollamaAuditEnabled !== undefined) {
-    if (typeof b.ollamaAuditEnabled !== "boolean") { console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaAuditEnabled must be boolean", "| received body keys:", Object.keys(body));
+    if (typeof b.ollamaAuditEnabled !== "boolean") { console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaAuditEnabled must be boolean", "| received body keys:", Object.keys(b));
  res.status(400).json({ error: "ollamaAuditEnabled must be boolean" }); return; }
     update.ollamaAuditEnabled = b.ollamaAuditEnabled;
   }
@@ -692,7 +692,7 @@ clinicSettingsRouter.post("/ollama", async (req, res) => {
   // ollamaTimeoutSeconds
   if (b.ollamaTimeoutSeconds !== undefined) {
     const n = Number(b.ollamaTimeoutSeconds);
-    if (!Number.isInteger(n) || n < 5 || n > 300) { console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaTimeoutSeconds must be 5–300", "| received body keys:", Object.keys(body));
+    if (!Number.isInteger(n) || n < 5 || n > 300) { console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaTimeoutSeconds must be 5–300", "| received body keys:", Object.keys(b));
  res.status(400).json({ error: "ollamaTimeoutSeconds must be 5–300" }); return; }
     update.ollamaTimeoutSeconds = n;
   }
@@ -715,7 +715,7 @@ clinicSettingsRouter.post("/ollama", async (req, res) => {
   if (b.ollamaBaseUrl !== undefined) {
     const raw = b.ollamaBaseUrl ? String(b.ollamaBaseUrl).trim() : "";
     if (raw && !validateOllamaUrlSimple(raw)) {
-      console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaBaseUrl must be a valid http/https URL", "| received body keys:", Object.keys(body));
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaBaseUrl must be a valid http/https URL", "| received body keys:", Object.keys(b));
       res.status(400).json({ error: "ollamaBaseUrl must be a valid http/https URL" }); return;
     }
     update.ollamaBaseUrl = raw || null;
@@ -725,7 +725,7 @@ clinicSettingsRouter.post("/ollama", async (req, res) => {
   if (b.ollamaFallbackUrl !== undefined) {
     const raw = b.ollamaFallbackUrl ? String(b.ollamaFallbackUrl).trim() : "";
     if (raw && !validateOllamaUrlSimple(raw)) {
-      console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaFallbackUrl must be a valid http/https URL", "| received body keys:", Object.keys(body));
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaFallbackUrl must be a valid http/https URL", "| received body keys:", Object.keys(b));
       res.status(400).json({ error: "ollamaFallbackUrl must be a valid http/https URL" }); return;
     }
     // Store in DB using raw SQL to handle column added by migration (not yet in drizzle schema deploy)
