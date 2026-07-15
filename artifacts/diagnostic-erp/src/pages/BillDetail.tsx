@@ -151,6 +151,7 @@ export default function BillDetail({ id }: { id: number }) {
   const [changeDoctorOpen, setChangeDoctorOpen] = useState(false);
   const [cdDoctorSearch, setCdDoctorSearch] = useState("");
   const [cdDoctorSearchOpen, setCdDoctorSearchOpen] = useState(false);
+  const [cdNote, setCdNote] = useState("");
   const [refundTab, setRefundTab] = useState<"cancel" | "refund" | "cancel-refund">("cancel");
   // ── Bill search (same as Billing page) ──────────────────────────────────
   const [billSearchQuery, setBillSearchQuery] = useState("");
@@ -169,6 +170,14 @@ export default function BillDetail({ id }: { id: number }) {
   });
   const [reprintBy, setReprintBy] = useState<string>(() => readStaffSession()?.user.name || localStorage.getItem("diagnosticErp:lastReprintBy") || "");
   const [reprintReason, setReprintReason] = useState<string>("");
+  const [reprintNote, setReprintNote] = useState<string>("");
+  // Admin-configurable preset list (Settings → Reprint Reasons), same pattern
+  // as Billing Desk's discount-reason dropdown — replaces free-text-only
+  // input that let staff type anything (e.g. "rr").
+  const { data: reprintReasons = [] } = useQuery<{ id: number; label: string; isActive: boolean }[]>({
+    queryKey: ["reprint-reasons"],
+    queryFn: () => api.get("/api/reprint-reasons"),
+  });
   const [paperSize, setPaperSize] = useState<"A4" | "A5">(() => getBillPaperSize());
   const [paperMode, setPaperMode] = useState<"auto" | "manual">("auto");
   const [paymentFilter, setPaymentFilter] = useState("");
@@ -287,8 +296,10 @@ export default function BillDetail({ id }: { id: number }) {
   // we write the final HTML.
   const submitReprint = async () => {
     const by = reprintBy.trim();
-    const why = reprintReason.trim();
-    if (!by || !why) return;
+    const preset = reprintReason.trim();
+    if (!by || !preset) return;
+    const note = reprintNote.trim();
+    const why = note ? `${preset} — ${note}` : preset;
     const win = openBlankPrintWindow();
     localStorage.setItem("diagnosticErp:lastReprintBy", by);
     try {
@@ -299,6 +310,7 @@ export default function BillDetail({ id }: { id: number }) {
     }
     setReprintOpen(false);
     setReprintReason("");
+    setReprintNote("");
     const html = buildHtmlForCurrent({ reprintBy: by, reprintReason: why });
     if (html) writeAndPrint(win, html);
   };
@@ -521,9 +533,11 @@ export default function BillDetail({ id }: { id: number }) {
   });
 
   const onChangeDoctorSubmit = handleCD((d) => {
+    const preset = d.reason.trim();
+    const note = cdNote.trim();
     changeDoctor.mutate({
       newDoctorId: d.newDoctorId === 0 ? 0 : Number(d.newDoctorId),
-      reason: d.reason.trim(),
+      reason: note ? `${preset} — ${note}` : preset,
       performedBy: d.performedBy.trim(),
     });
   });
@@ -670,7 +684,7 @@ export default function BillDetail({ id }: { id: number }) {
               >A5</button>
             </div>
             {canReprint && (
-              <Button size="sm" variant="outline" onClick={() => { setReprintReason(""); setReprintOpen(true); }}>
+              <Button size="sm" variant="outline" onClick={() => { setReprintReason(""); setReprintNote(""); setReprintOpen(true); }}>
                 <Printer size={14} className="mr-1" /> Re-print
               </Button>
             )}
@@ -742,7 +756,7 @@ export default function BillDetail({ id }: { id: number }) {
                 <p className="text-xs text-muted-foreground">Referring Doctor</p>
                 <p className="text-sm font-medium">{bill.order?.doctor?.name ?? <span className="text-muted-foreground">—</span>}</p>
               </div>
-              <Button size="sm" variant="ghost" className="text-xs h-7 px-2 text-teal-600 hover:text-teal-700 hover:bg-teal-50 dark:text-teal-400 dark:hover:bg-teal-950/30" onClick={() => { setCdDoctorSearch(""); setCdDoctorSearchOpen(false); setChangeDoctorOpen(true); }}>
+              <Button size="sm" variant="ghost" className="text-xs h-7 px-2 text-teal-600 hover:text-teal-700 hover:bg-teal-50 dark:text-teal-400 dark:hover:bg-teal-950/30" onClick={() => { setCdDoctorSearch(""); setCdDoctorSearchOpen(false); setCdNote(""); setChangeDoctorOpen(true); }}>
                 <Stethoscope size={12} className="mr-1" /> Change
               </Button>
             </div>
@@ -1002,12 +1016,26 @@ export default function BillDetail({ id }: { id: number }) {
             </div>
             <div>
               <Label>Reason for Re-print *</Label>
-              <Input
+              <select
                 value={reprintReason}
                 onChange={(e) => setReprintReason(e.target.value)}
-                className="mt-1"
-                placeholder="e.g., Patient lost original copy"
+                className={`mt-1 w-full h-9 text-sm border rounded-md px-2 bg-white dark:bg-background ${!reprintReason ? "border-red-400 text-red-600" : "border-input"}`}
+              >
+                <option value="">— Select reason * —</option>
+                {reprintReasons.filter((r) => r.isActive).map((r) => (
+                  <option key={r.id} value={r.label}>{r.label}</option>
+                ))}
+              </select>
+              <Input
+                placeholder="Custom note (optional)…"
+                value={reprintNote}
+                onChange={(e) => setReprintNote(e.target.value)}
+                className="mt-1.5"
+                maxLength={200}
               />
+              <p className="text-[10px] text-muted-foreground mt-1">
+                Manage this preset list in Settings → Reprint Reasons.
+              </p>
             </div>
             <div className="text-xs text-muted-foreground">
             Paper size: <strong>{paperMode === "manual" ? paperSize : `AUTO (${effectivePaperSize})`}</strong> · Change above the Re-print button.
@@ -1561,11 +1589,25 @@ export default function BillDetail({ id }: { id: number }) {
             </div>
             <div>
               <Label>Reason <span className="text-red-500">*</span></Label>
-              <Input
+              <select
                 {...regCD("reason", { required: true })}
-                className="mt-1"
-                placeholder="e.g., Doctor was not available; patient requested Dr. X"
+                className={`mt-1 w-full h-9 text-sm border rounded-md px-2 bg-white dark:bg-background ${!watchCD("reason") ? "border-red-400 text-red-600" : "border-input"}`}
+              >
+                <option value="">— Select reason * —</option>
+                {reprintReasons.filter((r) => r.isActive).map((r) => (
+                  <option key={r.id} value={r.label}>{r.label}</option>
+                ))}
+              </select>
+              <Input
+                placeholder="Custom note (optional)…"
+                value={cdNote}
+                onChange={(e) => setCdNote(e.target.value)}
+                className="mt-1.5"
+                maxLength={200}
               />
+              <p className="text-[10px] text-muted-foreground mt-1">
+                Manage this preset list in Settings → Edit/Modify/Reprint Reasons.
+              </p>
             </div>
             <div>
               <Label>Changed By <span className="text-red-500">*</span></Label>

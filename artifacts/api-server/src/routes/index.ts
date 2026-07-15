@@ -22,6 +22,7 @@ import { appointmentsRouter } from "./appointments";
 import { packagesRouter } from "./packages";
 import { expensesRouter } from "./expenses";
 import discountReasonsRouter from "./discountReasons";
+import reprintReasonsRouter from "./reprintReasons";
 import testCategoriesRouter from "./testCategories";
 import clinicSettingsRouter from "./clinicSettings";
 import staffQuickDoctorsRouter from "./staffQuickDoctors";
@@ -38,6 +39,7 @@ import { presentationTemplatesRouter } from "./presentation-templates";
 import { pacsEnterpriseRouter } from "./pacsEnterprise";
 import displayRouter from "./display";
 import queueDisplaySettingsRouter from "./queueDisplaySettings";
+import paymentDisplayRouter from "./paymentDisplay";
 import { whatsappRouter, whatsappWebhookRouter } from "./whatsapp";
 import { waChatbotRouter, waChatbotWebhookRouter } from "./waChatbot";
 import { printersRouter } from "./printers";
@@ -203,6 +205,10 @@ router.use("/internal", internalRadiologyRouter); // [ZONE: radiology] name is g
 router.use("/portal", portalRouter);
 router.use("/display", displayRouter);
 router.use("/settings/queue-display", queueDisplaySettingsRouter);
+// Auth is enforced per-route inside paymentDisplayRouter itself (staff auth
+// for the POST mutations Bill Desk calls, staff-or-display-token for the GET
+// feed the customer-facing screen reads) — same pattern as displayRouter above.
+router.use("/payment-display", paymentDisplayRouter);
 router.use("/bridge", bridgeRouter);
 // Public tokenized PDF download for patient WhatsApp links — no staff auth.
 router.use("/p/r", publicReportsRouter);
@@ -319,6 +325,20 @@ router.use(
     return requireStaffPermission("/discounts")(req, res, next);
   },
   discountReasonsRouter,
+);
+
+// Reprint reasons — /billing permission (configuration for the bill re-print
+// dialog). Same read-open/write-gated shape as discount-reasons above: any
+// authenticated staff can READ (the re-print dialog dropdown needs the
+// active reasons), mutations require /billing.
+router.use(
+  "/reprint-reasons",
+  requireStaffAuth,
+  (req, res, next) => {
+    if (req.method === "GET") return next();
+    return requireStaffPermission("/billing")(req, res, next);
+  },
+  reprintReasonsRouter,
 );
 
 // Expenses — /accounting permission (financial records)

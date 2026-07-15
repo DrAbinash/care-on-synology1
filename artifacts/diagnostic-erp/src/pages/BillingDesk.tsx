@@ -747,7 +747,12 @@ export default function BillingDesk() {
   useEffect(() => {
     if (!gatewayPaymentInfo) { setGatewayQrUrl(""); return; }
     let cancelled = false;
-    const qrData = gatewayPaymentInfo.tranCtx || gatewayPaymentInfo.redirectUrl;
+    // redirectUrl is the full ICICI hosted-payment-page URL (tranCtx already
+    // embedded as a query param by the backend) — the same value Online
+    // Booking (book.tsx) and Kiosk Mode (Kiosk.tsx) already navigate to
+    // successfully. tranCtx alone is a bare opaque token, not a URL; a QR
+    // encoding it just displays text instead of opening the gateway.
+    const qrData = gatewayPaymentInfo.redirectUrl;
     QRCode.toDataURL(qrData, {
       errorCorrectionLevel: "M",
       margin: 1,
@@ -759,31 +764,64 @@ export default function BillingDesk() {
     return () => { cancelled = true; };
   }, [gatewayPaymentInfo]);
 
-  const openGatewayQrOnSecondScreen = () => {
-    if (!gatewayPaymentInfo) return;
-    const qrData = gatewayPaymentInfo.tranCtx || gatewayPaymentInfo.redirectUrl;
-    const params = new URLSearchParams({
-      qrData,
-      amount: String(gatewayPaymentInfo.amount),
-      txnRef: gatewayPaymentInfo.txnRef,
-      patientName: selectedPatient ? `${selectedPatient.firstName} ${selectedPatient.lastName ?? ""}`.trim() : "",
-    });
-    void openOnSecondMonitor(erpPath(`/display/payment-qr?${params.toString()}`), "paymentQrDisplay");
-  };
-
-  // Auto-open the QR on the second screen/tablet the moment it's ready — no
-  // manual click required when Payment Gateway is the selected method (the
-  // "Open on Second Screen" button below still works too, e.g. to re-open a
-  // window the cashier accidentally closed). Guarded by txnRef so this fires
-  // exactly once per gateway payment, not on every re-render/status poll.
-  const autoOpenedTxnRef = useRef<string | null>(null);
+  // ── Customer-facing payment display (networked device) ────────────────────
+  // A physical screen (Android tablet, standalone monitor) is set up ONCE,
+  // pointed at /display/payment-qr/:counterKey in kiosk/fullscreen mode, and
+  // independently pulls its own live state over SSE — same architecture as
+  // Queue Display (TV). This workstation just PUSHES state to that feed; it
+  // never drives the screen directly. counterKey lets more than one billing
+  // counter each have its own customer-facing display.
+  const [paymentCounterKey, setPaymentCounterKey] = useState<string>(
+    () => localStorage.getItem("diagnosticErp:paymentDisplayCounterKey") || "counter1",
+  );
   useEffect(() => {
-    if (!gatewayPaymentInfo || !gatewayQrUrl || gatewayPaymentStatus !== "pending") return;
-    if (autoOpenedTxnRef.current === gatewayPaymentInfo.txnRef) return;
-    autoOpenedTxnRef.current = gatewayPaymentInfo.txnRef;
-    openGatewayQrOnSecondScreen();
+    localStorage.setItem("diagnosticErp:paymentDisplayCounterKey", paymentCounterKey);
+  }, [paymentCounterKey]);
+
+  const pushedShowTxnRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!gatewayPaymentInfo || !gatewayQrUrl) return;
+    if (pushedShowTxnRef.current === gatewayPaymentInfo.txnRef) return;
+    pushedShowTxnRef.current = gatewayPaymentInfo.txnRef;
+    api.post(`/api/payment-display/${encodeURIComponent(paymentCounterKey)}/show`, {
+      qrData: gatewayPaymentInfo.redirectUrl,
+      amount: gatewayPaymentInfo.amount,
+      txnRef: gatewayPaymentInfo.txnRef,
+      patientName: selectedPatient ? `${selectedPatient.firstName} ${selectedPatient.lastName ?? ""}`.trim() : undefined,
+      billNumber: lastBillLocalRef.current?.billNumber,
+      expiryTime: gatewayPaymentInfo.expiryTime,
+    }).catch(() => { /* customer display push is best-effort — never blocks billing */ });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gatewayPaymentInfo, gatewayQrUrl, gatewayPaymentStatus]);
+  }, [gatewayPaymentInfo, gatewayQrUrl, paymentCounterKey]);
+
+  const pushedStatusKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!gatewayPaymentInfo || gatewayPaymentStatus === "pending") return;
+    const key = `${gatewayPaymentInfo.txnRef}:${gatewayPaymentStatus}`;
+    if (pushedStatusKeyRef.current === key) return;
+    pushedStatusKeyRef.current = key;
+    api.post(`/api/payment-display/${encodeURIComponent(paymentCounterKey)}/status`, {
+      status: gatewayPaymentStatus,
+    }).catch(() => { /* best-effort */ });
+  }, [gatewayPaymentInfo, gatewayPaymentStatus, paymentCounterKey]);
+
+  // Return the customer display to its idle screen once the dialog closes
+  // (success, manual cancel, or auto-close after success) — skips the
+  // spurious clear that would otherwise fire on first mount.
+  const gatewayModalWasOpenRef = useRef(false);
+  useEffect(() => {
+    if (gatewayModalOpen) { gatewayModalWasOpenRef.current = true; return; }
+    if (!gatewayModalWasOpenRef.current) return;
+    api.post(`/api/payment-display/${encodeURIComponent(paymentCounterKey)}/clear`, {}).catch(() => {});
+  }, [gatewayModalOpen, paymentCounterKey]);
+
+  // Same-PC fallback: opens the customer display's durable URL in a window
+  // positioned on a second monitor cable-connected to THIS workstation. For
+  // a separate networked device (tablet, standalone monitor), just point its
+  // browser at that same URL once — no manual re-opening needed there.
+  const openGatewayQrOnSecondScreen = () => {
+    void openOnSecondMonitor(erpPath(`/display/payment-qr/${encodeURIComponent(paymentCounterKey)}`), "paymentQrDisplay");
+  };
 
   useEffect(() => {
     if (!gatewayModalOpen || !gatewayPaymentInfo || gatewayPaymentStatus !== "pending") return;
@@ -2913,6 +2951,17 @@ export default function BillingDesk() {
           <DialogHeader>
             <DialogTitle>Online Payment</DialogTitle>
           </DialogHeader>
+          <div className="flex items-center justify-center gap-1.5 text-[10px] text-[#94a3b8]">
+            <Monitor size={11} />
+            Customer display:
+            <input
+              value={paymentCounterKey}
+              onChange={(e) => setPaymentCounterKey(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
+              className="w-20 h-5 px-1 text-[10px] border border-[#e2e8f0] rounded bg-white text-center"
+              title="Which customer-facing screen shows this QR — set once per workstation, must match the URL used on that screen's tablet/monitor"
+            />
+            <span className="opacity-70">— set up once: point that screen at /display/payment-qr/{paymentCounterKey}</span>
+          </div>
           <div className="space-y-3 py-2 text-center">
             {gatewayPaymentStatus === "pending" && !gatewayPaymentInfo && (
               <div className="text-[#64748b] text-sm">Initialising payment gateway…</div>

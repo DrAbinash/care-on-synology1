@@ -15,6 +15,7 @@ export * from "./appointments";
 export * from "./packages";
 export * from "./expenses";
 export * from "./discountReasons";
+export * from "./reprintReasons";
 export * from "./clinicSettings";
 export * from "./queueDisplaySettings";
 export * from "./ledgers";

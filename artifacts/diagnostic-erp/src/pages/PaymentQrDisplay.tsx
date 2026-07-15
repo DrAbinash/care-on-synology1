@@ -1,28 +1,44 @@
 /**
- * PaymentQrDisplay.tsx — Patient-facing payment QR screen for a second monitor
+ * PaymentQrDisplay.tsx — Patient-facing payment QR screen for a networked
+ * customer display (Android tablet, standalone monitor, or a same-PC second
+ * window — all work, see below).
  *
- * Opened by staff from Billing Desk's "Open on Second Screen" button (in the
- * Online Payment dialog) as a separate browser window/tab that can be dragged
- * onto a second monitor facing the patient. Shows a large, scannable QR code
- * for whichever online payment gateway is active (ICICI Orange Pay, BharatPe,
- * etc. — gateway-agnostic, same as the existing in-app payment dialog),
- * and automatically switches to a "Payment Received" screen once the payment
- * completes, using the same status-polling endpoint Billing Desk already uses.
+ * Architecture mirrors Queue Display (TV) exactly: this page is a durable,
+ * URL-addressable route (/display/payment-qr/:counterKey) that independently
+ * pulls its own live state from the backend over SSE
+ * (GET /api/payment-display/:counterKey/stream), the same way a waiting-room
+ * TV pulls its own queue data. A physical device is pointed at this URL ONCE
+ * (kiosk/fullscreen browser, auto-launch on boot) and never touched again —
+ * Bill Desk pushes state to it via POST /api/payment-display/:counterKey/*
+ * whenever a gateway payment starts/resolves; this page never talks to
+ * bills.ts or any ICICI/payment-provider logic directly.
  *
- * Reads its data from the URL (?qrData=...&amount=...&txnRef=...&billId=...)
- * instead of shared app state, since it runs in a separate browser window/tab
- * that cannot access the opener's React state directly. The QR image itself
- * is regenerated client-side from qrData (the same tranCtx/redirectUrl string
- * Billing Desk already has) rather than passed as a data-URL, keeping the URL
- * short.
+ * counterKey lets a clinic run more than one billing counter, each with its
+ * own customer-facing screen (same idea as Queue Display's :roomKey).
  *
- * No new backend endpoint required — reuses:
- *   GET /api/bills/gateway-payment-status/:txnRef  (already used by BillingDesk.tsx)
+ * Unattended-device auth: same displayToken mechanism as Queue Display — add
+ * ?displayToken=<token> to the URL (staff can fetch the token from
+ * GET /api/display/token). A staff-session browser (e.g. Bill Desk's own
+ * "Open on Second Screen" same-PC fallback) works without it too.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useParams } from "wouter";
 import QRCode from "qrcode";
 import { api } from "@/lib/fetchApi";
 import { CheckCircle2, Loader2, IndianRupee, Maximize2, Minimize2 } from "lucide-react";
+
+type PaymentQrStatus = "pending" | "success" | "failed" | "expired";
+
+interface PaymentQrState {
+  active: boolean;
+  qrData?: string;
+  amount?: number;
+  txnRef?: string;
+  patientName?: string;
+  billNumber?: string;
+  status?: PaymentQrStatus;
+  updatedAt: number;
+}
 
 function useQueryParam(name: string): string {
   if (typeof window === "undefined") return "";
@@ -39,23 +55,78 @@ function useIsFullscreen(): boolean {
   return isFs;
 }
 
-export default function PaymentQrDisplay() {
-  const qrData = useQueryParam("qrData");
-  const amount = useQueryParam("amount");
-  const txnRef = useQueryParam("txnRef");
-  const patientName = useQueryParam("patientName");
+const INACTIVE_STATE: PaymentQrState = { active: false, updatedAt: 0 };
 
+export default function PaymentQrDisplay() {
+  const params = useParams<{ counterKey?: string }>();
+  const counterKey = (params.counterKey || "counter1").toLowerCase();
+  const displayToken = useQueryParam("displayToken");
+
+  const [state, setState] = useState<PaymentQrState>(INACTIVE_STATE);
   const [qrImageUrl, setQrImageUrl] = useState("");
-  const [status, setStatus] = useState<"pending" | "success" | "failed" | "expired" | "error">("pending");
   const isFullscreen = useIsFullscreen();
 
-  // Generate the scannable QR client-side (same qrcode library + settings
-  // Billing Desk already uses) so the URL only needs to carry the short
-  // qrData string, not a full data-URL image.
+  // Subscribe to this counter's live feed via SSE — falls back to polling if
+  // the connection ever drops (e.g. proxy hiccup, device Wi-Fi blip) instead
+  // of leaving the screen stuck on stale data.
+  const reconnectTimerRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!qrData) return;
+    let es: EventSource | null = null;
+    let pollTimer: number | null = null;
     let cancelled = false;
-    QRCode.toDataURL(qrData, {
+
+    const streamUrl = `/api/payment-display/${encodeURIComponent(counterKey)}/stream${displayToken ? `?displayToken=${encodeURIComponent(displayToken)}` : ""}`;
+    const snapshotUrl = `/api/payment-display/${encodeURIComponent(counterKey)}${displayToken ? `?displayToken=${encodeURIComponent(displayToken)}` : ""}`;
+
+    const poll = async () => {
+      if (cancelled) return;
+      try {
+        const data = await api.get<PaymentQrState>(snapshotUrl);
+        if (!cancelled) setState(data);
+      } catch {
+        // transient — try again shortly
+      }
+      if (!cancelled) pollTimer = window.setTimeout(poll, 4000);
+    };
+
+    const connect = () => {
+      if (cancelled) return;
+      try {
+        es = new EventSource(streamUrl);
+        es.onmessage = (evt) => {
+          try { setState(JSON.parse(evt.data)); } catch { /* ignore malformed frame */ }
+        };
+        es.onerror = () => {
+          es?.close();
+          es = null;
+          if (cancelled) return;
+          // Retry the stream after a short delay; poll in the meantime so the
+          // display doesn't sit frozen while reconnecting.
+          if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
+          reconnectTimerRef.current = window.setTimeout(connect, 5000);
+          poll();
+        };
+      } catch {
+        poll();
+      }
+    };
+
+    connect();
+    return () => {
+      cancelled = true;
+      es?.close();
+      if (pollTimer) window.clearTimeout(pollTimer);
+      if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
+    };
+  }, [counterKey, displayToken]);
+
+  // Generate the scannable QR client-side from whatever qrData the backend
+  // is currently relaying (Bill Desk's redirectUrl — the real ICICI hosted
+  // payment page URL, not a bare token).
+  useEffect(() => {
+    if (!state.active || !state.qrData) { setQrImageUrl(""); return; }
+    let cancelled = false;
+    QRCode.toDataURL(state.qrData, {
       errorCorrectionLevel: "M",
       margin: 2,
       width: 480,
@@ -64,32 +135,9 @@ export default function PaymentQrDisplay() {
       .then((url) => { if (!cancelled) setQrImageUrl(url); })
       .catch(() => { if (!cancelled) setQrImageUrl(""); });
     return () => { cancelled = true; };
-  }, [qrData]);
+  }, [state.active, state.qrData]);
 
-  // Poll the exact same status endpoint Billing Desk's in-app dialog uses.
-  useEffect(() => {
-    if (!txnRef || status !== "pending") return;
-    let cancelled = false;
-    let timer: number;
-    const poll = async () => {
-      try {
-        const res = await api.get<{ status: "pending" | "success" | "failed" | "expired"; error?: string }>(
-          `/api/bills/gateway-payment-status/${encodeURIComponent(txnRef)}`
-        );
-        if (cancelled) return;
-        if (res.status === "success") setStatus("success");
-        else if (res.status === "failed") setStatus("failed");
-        else if (res.status === "expired") setStatus("expired");
-        else timer = window.setTimeout(poll, 3000);
-      } catch {
-        if (!cancelled) timer = window.setTimeout(poll, 5000);
-      }
-    };
-    timer = window.setTimeout(poll, 2000);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [txnRef, status]);
-
-  if (!qrData || !txnRef) {
+  if (!state.active) {
     return (
       <div style={styles.root}>
         <div style={styles.card}>
@@ -98,6 +146,8 @@ export default function PaymentQrDisplay() {
       </div>
     );
   }
+
+  const status = state.status ?? "pending";
 
   return (
     <div style={styles.root}>
@@ -117,7 +167,7 @@ export default function PaymentQrDisplay() {
           <>
             <CheckCircle2 size={96} color="#22c55e" />
             <h1 style={styles.successTitle}>Payment Received!</h1>
-            <p style={styles.sub}>Thank you{patientName ? `, ${patientName}` : ""}.</p>
+            <p style={styles.sub}>Thank you{state.patientName ? `, ${state.patientName}` : ""}.</p>
           </>
         ) : status === "failed" ? (
           <>
@@ -134,10 +184,10 @@ export default function PaymentQrDisplay() {
         ) : (
           <>
             <h1 style={styles.title}>Scan to Pay</h1>
-            {amount && (
+            {state.amount != null && (
               <div style={styles.amountRow}>
                 <IndianRupee size={36} />
-                <span style={styles.amount}>{Number(amount).toLocaleString("en-IN")}</span>
+                <span style={styles.amount}>{Number(state.amount).toLocaleString("en-IN")}</span>
               </div>
             )}
             {qrImageUrl ? (

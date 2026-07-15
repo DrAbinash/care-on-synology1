@@ -925,7 +925,12 @@ export default function RadiologyWorklist() {
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Radiologist</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">Lock Status</th>
                       <th className="px-3 py-2.5 font-medium whitespace-nowrap">AI Draft</th>
-                      <th className="px-3 py-2.5 font-medium text-right whitespace-nowrap">Actions</th>
+                      {/* Sticky last column — with 20 columns in this table, Actions
+                          (Weasis/OHIF viewer buttons) sat far off the right edge of
+                          the viewport with no visible scroll affordance, making the
+                          viewer links effectively undiscoverable. Pinning it to the
+                          scroll container's right edge keeps it always visible. */}
+                      <th className="px-3 py-2.5 font-medium text-right whitespace-nowrap sticky right-0 z-20 bg-muted/50 border-l border-border">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y">
@@ -1127,7 +1132,7 @@ export default function RadiologyWorklist() {
                             </div>
                           )}
                         </td>
-                        <td className="px-3 py-2.5">
+                        <td className="px-3 py-2.5 sticky right-0 z-10 bg-background border-l border-border shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.08)]">
                           <div className="flex items-center justify-end gap-1 flex-wrap">
                             {entry.id !== -1 && !isReceptionView && (
                               <Button
