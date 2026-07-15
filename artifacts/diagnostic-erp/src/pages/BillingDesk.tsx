@@ -747,7 +747,12 @@ export default function BillingDesk() {
   useEffect(() => {
     if (!gatewayPaymentInfo) { setGatewayQrUrl(""); return; }
     let cancelled = false;
-    const qrData = gatewayPaymentInfo.tranCtx || gatewayPaymentInfo.redirectUrl;
+    // redirectUrl is the full ICICI hosted-payment-page URL (tranCtx already
+    // embedded as a query param by the backend) — the same value Online
+    // Booking (book.tsx) and Kiosk Mode (Kiosk.tsx) already navigate to
+    // successfully. tranCtx alone is a bare opaque token, not a URL; a QR
+    // encoding it just displays text instead of opening the gateway.
+    const qrData = gatewayPaymentInfo.redirectUrl;
     QRCode.toDataURL(qrData, {
       errorCorrectionLevel: "M",
       margin: 1,
@@ -761,7 +766,7 @@ export default function BillingDesk() {
 
   const openGatewayQrOnSecondScreen = () => {
     if (!gatewayPaymentInfo) return;
-    const qrData = gatewayPaymentInfo.tranCtx || gatewayPaymentInfo.redirectUrl;
+    const qrData = gatewayPaymentInfo.redirectUrl;
     const params = new URLSearchParams({
       qrData,
       amount: String(gatewayPaymentInfo.amount),
