@@ -50,6 +50,13 @@
       "when": 1782705414045,
       "tag": "0006_jazzy_mojo",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1782705414046,
+      "tag": "0007_quick_test_tile_images",
+      "breakpoints": true
     }
   ]
 }
