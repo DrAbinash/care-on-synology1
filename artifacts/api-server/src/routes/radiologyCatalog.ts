@@ -43,9 +43,12 @@ async function run(res: Response, fn: () => Promise<unknown>, okStatus = 200): P
   }
 }
 
-function parseId(raw: string): number {
-  const id = Number(raw);
-  if (!Number.isInteger(id) || id <= 0) throw new CatalogValidationError("INVALID_FIELD", `Invalid id "${raw}"`, "id");
+function parseId(raw: string | string[]): number {
+  // Route params are strings at runtime; normalize the string[] the Express
+  // types admit (repeated segments) to its first element before parsing.
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  const id = Number(value);
+  if (!Number.isInteger(id) || id <= 0) throw new CatalogValidationError("INVALID_FIELD", `Invalid id "${value}"`, "id");
   return id;
 }
 

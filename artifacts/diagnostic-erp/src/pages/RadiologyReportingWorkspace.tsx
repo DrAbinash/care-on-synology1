@@ -58,6 +58,9 @@ import {
   initialValues as structuredInitialValues,
 } from "@/lib/structuredFindings";
 import StructuredFindingDialog from "@/components/radiology/StructuredFindingDialog";
+import CommandPalette from "@/components/radiology/CommandPalette";
+import { useRadiologyPalettePrefs } from "@/hooks/useRadiologyPalettePrefs";
+import type { PaletteItem } from "@/lib/commandPalette";
 import { validateReport, computeQualityScore } from "@/lib/reportValidator";
 // F3 (Cockpit→Workspace merge): real-time missed-finding text-pattern nudges.
 // This lib was otherwise dead (imported only by the deprecated Cockpit).
@@ -407,6 +410,27 @@ function buildPreviewHtml(opts: {
     <p style="font-size:11px;color:#666;font-style:italic;margin:0;">Please correlate with clinical history and findings. Report issued by authorized radiologist only.</p>
   </div>`.trim();
 }
+
+// Static command-palette entries (PR #77). Actions route through the workspace's
+// EXISTING handlers / command dispatcher (see runPaletteCommand) — no new logic.
+// The id suffix after "command:" / "setting:" is the action / route.
+const PALETTE_COMMANDS: PaletteItem[] = [
+  { id: "command:generate-impression", kind: "command", title: "Generate Impression", subtitle: "AI draft from current findings", keywords: "ai impression summary" },
+  { id: "command:save", kind: "command", title: "Save Draft", keywords: "store persist" },
+  { id: "command:finalize", kind: "command", title: "Finalize Report", keywords: "sign submit complete" },
+  { id: "command:clear-findings", kind: "command", title: "Clear Findings", keywords: "reset empty remove" },
+  { id: "command:open-viewer", kind: "command", title: "Open Viewer", keywords: "dicom pacs images" },
+  { id: "command:focus-findings", kind: "command", title: "Focus Findings", keywords: "cursor edit" },
+  { id: "command:focus-impression", kind: "command", title: "Focus Impression", keywords: "cursor edit" },
+  { id: "command:next", kind: "command", title: "Next Study", keywords: "navigate forward" },
+  { id: "command:previous", kind: "command", title: "Previous Study", keywords: "navigate back" },
+  { id: "command:new-brain-report", kind: "command", title: "New Brain Report", keywords: "create worklist mri ct" },
+  { id: "command:new-ls-report", kind: "command", title: "New LS Spine Report", keywords: "create worklist lumbar" },
+];
+const PALETTE_SETTINGS: PaletteItem[] = [
+  { id: "setting:/settings/radiology-quick-select", kind: "setting", title: "Settings — Radiology Quick Select", subtitle: "Findings, structured questions, protocols, chips", keywords: "configure structured questions defaults" },
+  { id: "setting:/settings", kind: "setting", title: "Settings — All", keywords: "configure preferences" },
+];
 
 // ════════════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
@@ -1779,6 +1803,72 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     toast({ title: "Master template applied", description: `${tpl.templateName} (${tpl.groupName.replace(/_/g, " ")})` });
   };
 
+  // ── Universal Command Palette (Ctrl+K) — PR #77 ─────────────────────────────
+  // A keyboard-first launcher over data the workspace ALREADY has cached (quick
+  // findings, protocols, templates, clinical-history chips, studies) plus a
+  // command / settings registry. No new fetch, no new search index — the pure
+  // ranking/grouping lives in lib/commandPalette, and running an item calls the
+  // SAME handler the mouse UI uses. Recents + ⭐ favourites persist client-side.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const {
+    recent: paletteRecent, favourites: paletteFavourites,
+    markRecent: markPaletteRecent, toggleFav: togglePaletteFavourite,
+  } = useRadiologyPalettePrefs();
+
+  const paletteItems = useMemo<PaletteItem[]>(() => {
+    const items: PaletteItem[] = [];
+    for (const f of quickSelectData?.findings ?? []) {
+      if (!f.isActive) continue;
+      items.push({
+        id: `finding:${f.id}`, kind: "finding", title: f.label, subtitle: f.studyType,
+        keywords: `${f.studyType} ${f.tags ?? ""} ${f.category ?? ""}`, favouritable: true, payload: f,
+      });
+    }
+    for (const p of quickSelectData?.protocols ?? []) {
+      if (!p.isActive) continue;
+      items.push({
+        id: `protocol:${p.id}`, kind: "protocol", title: p.name,
+        subtitle: [p.modality, p.studyType].filter(Boolean).join(" · "), keywords: p.studyType,
+        favouritable: true, payload: p,
+      });
+    }
+    for (const t of templates) {
+      if (!t.isActive) continue;
+      items.push({
+        id: `template:s:${t.id}`, kind: "template", title: t.templateName,
+        subtitle: [t.modality, t.bodyPart].filter(Boolean).join(" · "),
+        keywords: `${t.modality} ${t.bodyPart} structured`, favouritable: true,
+        payload: { kind: "structured", template: t },
+      });
+    }
+    for (const m of masterTemplates) {
+      if (!m.isActive) continue;
+      items.push({
+        id: `template:m:${m.id}`, kind: "template", title: m.templateName,
+        subtitle: [m.modality, m.groupName?.replace(/_/g, " ")].filter(Boolean).join(" · "),
+        keywords: `${m.modality} ${m.studyType ?? ""} master`, favouritable: true,
+        payload: { kind: "master", template: m },
+      });
+    }
+    for (const c of quickSelectData?.clinicalHistory ?? []) {
+      if (!c.isActive) continue;
+      items.push({
+        id: `history:${c.id}`, kind: "history", title: c.displayLabel,
+        subtitle: c.studyType, keywords: c.insertedText, payload: c,
+      });
+    }
+    for (const s of workflow.queue) {
+      items.push({
+        id: `study:${s.id}`, kind: "study", title: s.patientName,
+        subtitle: [s.modality, s.studyDescription].filter(Boolean).join(" · "),
+        keywords: s.accessionNumber, payload: s,
+      });
+    }
+    items.push(...PALETTE_COMMANDS, ...PALETTE_SETTINGS);
+    return items;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quickSelectData, templates, masterTemplates, workflow.queue]);
+
   // E2: on-demand full AI draft from study metadata (distinct from the
   // impression-only aiImpressionMutation and from the passive fill-empty-only
   // effect below). Lets a radiologist (re)request a draft and review it before
@@ -2244,6 +2334,16 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // state.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // PR #77 — Ctrl/Cmd+K opens the universal command palette from ANYWHERE in
+      // the workspace (including inside the editors). While it is open it owns
+      // the keyboard, so nothing below double-handles the same keystroke.
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+        return;
+      }
+      if (paletteOpen) return;
+
       // M1.6B2 — voice keys FIRST (Ctrl+Space toggle, Space push-to-talk
       // outside editors, Enter confirms a non-finalize preview, Escape
       // cancels an ACTIVE voice capture/preview). Null falls through to the
@@ -2928,6 +3028,65 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     const targetId = workflow.beginPreviousTransition(studyId);
     if (targetId == null) return;
     navigate(`/radiology/report/${targetId}`);
+  }
+
+  // ── Command Palette run handlers (PR #77) ───────────────────────────────────
+  /** Clear all Findings + Impression (structured sections revert to their
+   *  baseline normals); clinical history and technique are kept. Destructive →
+   *  confirmed. */
+  function clearFindings() {
+    if (isLocked) return;
+    if (!window.confirm("Clear all findings and impression? Clinical history and technique are kept.")) return;
+    setRawFindings("");
+    setSelectedQuickIds(new Set());
+    setQuickInstances(new Map());
+    insertedTextRef.current = new Map();
+    sectionContribRef.current = new Map();
+    structuredValuesRef.current = new Map();
+    setImpression([]);
+    if (selectedTemplate) {
+      const base = currentBaseline();
+      setFindingsMap(Object.fromEntries(base.map((b) => [b.label, { normal: true, text: b.normal }])));
+    } else {
+      setFindingsMap({});
+    }
+  }
+
+  /** Palette "Commands" → the workspace's existing actions. Most route through
+   *  the SAME commandDispatcher the keyboard shortcuts use (no second path). */
+  function runPaletteCommand(action: string) {
+    switch (action) {
+      case "generate-impression": if (entry && !aiLoading) aiImpressionMutation.mutate(); break;
+      case "clear-findings": clearFindings(); break;
+      case "new-brain-report":
+      case "new-ls-report": navigate("/radiology/worklist"); break;
+      default: commandDispatcher.dispatch(action); break; // save | finalize | next | previous | open-viewer | focus-findings | focus-impression
+    }
+  }
+
+  /** Run one palette item through the workspace's existing handlers, remember it
+   *  for the Recent list, and close the palette. */
+  function runPaletteItem(item: PaletteItem) {
+    switch (item.kind) {
+      case "finding": handleFindingClick(item.payload as QuickFinding); break;
+      case "protocol": requestProtocolChange(item.payload as QuickProtocol); break;
+      case "template": {
+        const p = item.payload as { kind: "structured" | "master"; template: StructuredTemplate | MasterTemplate };
+        if (p.kind === "structured") setSelectedTemplateId((p.template as StructuredTemplate).id);
+        else handleApplyMasterTemplate(p.template as MasterTemplate);
+        break;
+      }
+      case "history": toggleClinicalHistoryChip(item.payload as QuickClinicalHistoryChip); break;
+      case "study": {
+        const s = item.payload as QueueStudy;
+        if (s.id !== studyId && guardedLeave()) goToStudy(s);
+        break;
+      }
+      case "command": runPaletteCommand(item.id.replace(/^command:/, "")); break;
+      case "setting": navigate(item.id.replace(/^setting:/, "")); break;
+    }
+    markPaletteRecent(item.id);
+    setPaletteOpen(false);
   }
 
   /** Phase 5 — Park the current study (optional reason) and advance. */
@@ -4943,6 +5102,19 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           onCancel={() => setStructuredDialog(null)}
         />
       )}
+
+      {/* Universal Command Palette (PR #77) — Ctrl+K from anywhere. Searches the
+          workspace's cached findings / protocols / templates / history / studies
+          + a command registry; runs each through the existing handlers. */}
+      <CommandPalette
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        items={paletteItems}
+        recent={paletteRecent}
+        favourites={paletteFavourites}
+        onToggleFavourite={togglePaletteFavourite}
+        onRun={runPaletteItem}
+      />
 
       {/* Protocol-replace safety prompt (Phase 8): only shown when selecting a
           protocol would overwrite manually-edited Technique text. Never fires

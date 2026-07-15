@@ -1040,7 +1040,7 @@ router.get("/qr-query", async (req, res) => {
   // Merge: RIS rows indexed by accession number. PACS rows fill in gaps.
   type QrRow = {
     id: number;
-    accessionNumber: string;
+    accessionNumber: string | null;
     studyInstanceUID: string | null;
     modality: string;
     patientName: string | null;
@@ -1051,7 +1051,9 @@ router.get("/qr-query", async (req, res) => {
     source: string;
   };
 
-  const byAccession = new Map<string, QrRow>();
+  // Key type admits null: PACS rows can lack an accession number, and the
+  // dedup below relies on the same runtime behaviour Map has always had.
+  const byAccession = new Map<string | null, QrRow>();
   for (const r of risFiltered) {
     byAccession.set(r.accessionNumber, { ...r, source: "RIS" });
   }

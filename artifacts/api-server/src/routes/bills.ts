@@ -90,7 +90,10 @@ async function resolveLedgerForOrder(orderId: number): Promise<number> {
  * `parseBillNumberParts` handles both shapes so the renumber logic keeps
  * working across the migration.
  */
-export async function generateBillNumber(_ledgerId: number, dbHandle: typeof db = db): Promise<string> {
+// A pooled db handle OR an open transaction — callers holding the bill-number
+// advisory lock MUST pass their `tx` (see the note below), so the type admits it.
+type DbOrTx = typeof db | Parameters<Parameters<(typeof db)["transaction"]>[0]>[0];
+export async function generateBillNumber(_ledgerId: number, dbHandle: DbOrTx = db): Promise<string> {
   const date = new Date();
   const yyyymm = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}`;
   // Use the global MAX across ALL numeric bills, not a per-ledger count.
