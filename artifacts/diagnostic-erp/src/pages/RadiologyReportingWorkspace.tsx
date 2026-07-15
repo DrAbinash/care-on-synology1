@@ -70,7 +70,7 @@ import { useReportingWorkflow } from "@/hooks/useReportingWorkflow";
 import { useStudyLock } from "@/hooks/useStudyLock";
 import { lockStatusMessage, QUEUE_SCOPE_LABELS, parseQueueScope, assignmentCategoryOf, type QueueScope } from "@/lib/studyLockState";
 import type { StudyLaunchResult } from "@/lib/studyLaunchService";
-import { ChevronLeft, ChevronRight, PauseCircle, Lock } from "lucide-react";
+import { ChevronLeft, ChevronRight, PauseCircle, Lock, TrendingUp, TrendingDown, Minus, GitCompare } from "lucide-react";
 // M1.6B2 — the ONE voice pipeline (providers/grammar/safety live in libs; the
 // hook executes through THIS page's adapter → the M1.5 command dispatcher).
 import { useVoiceSession, type VoiceExecutionResult } from "@/hooks/useVoiceSession";
@@ -1025,6 +1025,55 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     }
     return issues;
   }, [viewerMeasurementsForSafety.data, clinicalHistory, technique, rawFindings, impression, recommendation]);
+
+  // C1 (Cockpit→Workspace merge): quantitative interval-change vs the same
+  // patient's prior measurements — distinct from C2's narrative structured
+  // comparison, and distinct from just listing old numbers (RadiologyMemoryPanel
+  // already does that): this computes an actual %-change per matched parameter.
+  // Reuses the same viewer-measurements cache F6 reads (via useViewerMeasurements
+  // above) rather than a second parallel query.
+  const { data: historicalMeasurementsForCompare = [] } = useQuery<
+    Array<{ studyId: number | null; measurementType: string; label: string; value: string; unit: string | null }>
+  >({
+    queryKey: ["historical-measurements", entry?.patientId],
+    queryFn: () =>
+      entry?.patientId
+        ? api
+            .get<{ measurements: Array<{ studyId: number | null; measurementType: string; label: string; value: string; unit: string | null }> }>(
+              `/api/radiology-lesions/measurements?patientId=${entry.patientId}`,
+            )
+            .then((res) => res.measurements ?? [])
+        : Promise.resolve([]),
+    enabled: !!entry?.patientId,
+    staleTime: 300_000,
+  });
+  const priorComparisonMetrics = useMemo(() => {
+    type Metric = { label: string; current: string; previous: string; changePercent: number; direction: "growth" | "regression" | "stable" };
+    const imported = (viewerMeasurementsForSafety.data ?? []).filter((m) => m.status === "imported");
+    if (imported.length === 0 || historicalMeasurementsForCompare.length === 0) return [] as Metric[];
+    const priorMeasures = historicalMeasurementsForCompare.filter((p) => p.studyId !== entry?.studyId);
+    const list: Metric[] = [];
+    for (const curr of imported) {
+      const currType = (curr.measurementType || "").toLowerCase();
+      const prior = priorMeasures.find(
+        (p) => p.label.toLowerCase() === currType || p.measurementType.toLowerCase() === currType,
+      );
+      if (!prior) continue;
+      const currVal = parseFloat(curr.value);
+      const priorVal = parseFloat(prior.value);
+      if (isNaN(currVal) || isNaN(priorVal) || priorVal <= 0) continue;
+      const diff = currVal - priorVal;
+      const pct = Math.round((diff / priorVal) * 100);
+      list.push({
+        label: curr.measurementType,
+        current: `${currVal} ${curr.unit}`,
+        previous: `${priorVal} ${prior.unit || curr.unit}`,
+        changePercent: pct,
+        direction: pct > 0 ? "growth" : pct < 0 ? "regression" : "stable",
+      });
+    }
+    return list;
+  }, [viewerMeasurementsForSafety.data, historicalMeasurementsForCompare, entry?.studyId]);
 
   // ── Draft identity (Radiology Roadmap Ticket A3.0) ────────────────────────
   // Loads any existing radiology_report_drafts row for this study and tracks
@@ -3951,6 +4000,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   setImpression([text]);
                   toast({ title: "Prior impression applied" });
                 }}
+                onInsertComparisonText={(text) => setRawFindings((prev) => mergeBlock(prev, text))}
                 initialTab="prior"
               />
             )}
@@ -4005,6 +4055,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                     setImpression([text]);
                     toast({ title: "AI impression applied" });
                   }}
+                  onInsertComparisonText={(text) => setRawFindings((prev) => mergeBlock(prev, text))}
                   initialTab="impression"
                 />
                 {/* QA panel */}
@@ -4089,6 +4140,32 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                     onInsertToImpression={(line) => setImpression((prev) => mergeImpression(prev, line))}
                   />
                 </div>
+                {/* C1: quantitative interval-change vs this patient's prior
+                    measurements — self-hides when there's no matching pair. */}
+                {priorComparisonMetrics.length > 0 && (
+                  <div className="border-t p-2 space-y-1.5">
+                    <div className="flex items-center gap-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                      <GitCompare size={11} /> Prior Comparisons
+                    </div>
+                    {priorComparisonMetrics.map((c, idx) => (
+                      <div key={idx} className="flex flex-col text-[11px] bg-muted/20 p-2 rounded border">
+                        <div className="flex items-center justify-between font-medium">
+                          <span>{c.label}</span>
+                          <span className={`flex items-center gap-0.5 font-bold ${
+                            c.direction === "growth" ? "text-red-600" : c.direction === "regression" ? "text-emerald-600" : "text-muted-foreground"
+                          }`}>
+                            {c.direction === "growth" ? <TrendingUp size={13} /> : c.direction === "regression" ? <TrendingDown size={13} /> : <Minus size={13} />}
+                            {c.changePercent > 0 ? `+${c.changePercent}%` : `${c.changePercent}%`}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-[10px] text-muted-foreground mt-0.5">
+                          <span>Prior: {c.previous}</span>
+                          <span>Current: {c.current}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {entry?.patientId && (
                   <div className="border-t">
                     <RadiologyMemoryPanel

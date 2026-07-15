@@ -126,6 +126,25 @@ interface DicomMetadata {
   technique: string;
 }
 
+type ComparisonResult = {
+  comparison: Array<{ parameter: string; status: string; confidence: string; detail: string; priorValue: string | null; currentValue: string | null }>;
+  overallTrend: string;
+  counts: Record<string, number>;
+  totalParameters: number;
+};
+
+// C2 (Cockpit→Workspace merge): build a narrative "COMPARISON:" paragraph from
+// the ACTUAL structured-comparison result (real per-parameter detail from the
+// server), rather than the Cockpit's generic "Interval Changes: " placeholder
+// with nothing filled in.
+function buildComparisonNarrative(result: ComparisonResult): string {
+  if (result.comparison.length === 0) {
+    return "COMPARISON: No significant interval change compared to the prior study.";
+  }
+  const lines = result.comparison.map((item) => `${item.parameter}: ${item.detail}`);
+  return `COMPARISON: ${lines.join("\n")}`;
+}
+
 interface Props {
   patientId?: number;
   currentOrderId?: number;
@@ -134,6 +153,11 @@ interface Props {
   findingsText?: string;
   impressionText?: string;
   onImpressionSuggestion?: (text: string) => void;
+  // C2 (Cockpit→Workspace merge): one-click narrative comparison insert,
+  // driven off THIS panel's own structured-comparison result — not a
+  // re-fetch of the prior report — so there's a single source of truth for
+  // "what changed since the prior study."
+  onInsertComparisonText?: (text: string) => void;
   initialTab?: "prior" | "impression" | "consistency" | "followup" | "dicom" | "compare" | "changes" | "organ";
 }
 
@@ -145,6 +169,7 @@ export default function RadiologyCopilotPanel({
   findingsText,
   impressionText,
   onImpressionSuggestion,
+  onInsertComparisonText,
   initialTab,
 }: Props) {
   const { toast } = useToast();
@@ -163,12 +188,7 @@ export default function RadiologyCopilotPanel({
 
   // Phase 10A: Structured comparison state
   const [priorFindingsInput, setPriorFindingsInput] = useState("");
-  const [comparisonResult, setComparisonResult] = useState<null | {
-    comparison: Array<{ parameter: string; status: string; confidence: string; detail: string; priorValue: string | null; currentValue: string | null }>;
-    overallTrend: string;
-    counts: Record<string, number>;
-    totalParameters: number;
-  }>(null);
+  const [comparisonResult, setComparisonResult] = useState<ComparisonResult | null>(null);
   const [loadingComparison, setLoadingComparison] = useState(false);
 
   // Phase 10A: Change detector state
@@ -564,6 +584,19 @@ export default function RadiologyCopilotPanel({
                     <div className="text-[9px] text-amber-600 flex items-center gap-1 pt-1 border-t border-border">
                       <AlertTriangle size={8} /> AI Draft – Requires Radiologist Review
                     </div>
+                    {/* C2 (Cockpit→Workspace merge): one-click insert of a narrative
+                        comparison paragraph built from THIS result — not a generic
+                        placeholder, the actual per-parameter comparison text. */}
+                    {onInsertComparisonText && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-full text-[10px] h-7 mt-1"
+                        onClick={() => onInsertComparisonText(buildComparisonNarrative(comparisonResult))}
+                      >
+                        Insert Comparison into Findings
+                      </Button>
+                    )}
                   </div>
                 )}
               </div>
