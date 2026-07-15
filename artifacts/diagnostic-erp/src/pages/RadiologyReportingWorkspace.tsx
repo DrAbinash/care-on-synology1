@@ -71,6 +71,7 @@ import { suggestCompletion } from "@/lib/copilotCompletion";
 import { runLocalModules, runAiModules } from "@/lib/copilotModules";
 import "@/lib/copilotAiModule"; // registers the on-demand AI reasoning module (Part 20)
 import { useCopilotPrefs } from "@/hooks/useCopilotPrefs";
+import { useCopilotLearning } from "@/hooks/useCopilotLearning";
 import { isLearnableAddition } from "@/lib/learningEngine";
 import { upsertMeasurement, upsertLabeledLine } from "@/lib/measurementVars";
 import CollapsibleSection from "@/components/radiology/CollapsibleSection";
@@ -1623,6 +1624,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     setCopilotDismissed((d) => new Set(d).add(item.id));
     setCopilotRecent((r) => [{ id: item.id, title: item.title, category: item.category, outcome: "ignored" as const }, ...r].slice(0, 20));
     copilotAudit(item, "ignored");
+    // Opt-in learning (Part 11): remember an ignored suggestion so it stops
+    // resurfacing for this radiologist. Only when learning is enabled.
+    if (copilotPrefs.learning) copilotLearning.record(item.id, true);
   }
 
   function copilotUndoLast() {
@@ -1637,6 +1641,26 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
   // ── CARE Copilot — preferences + smart auto-completion (PR #80 Part 12) ─────
   const { prefs: copilotPrefs, set: setCopilotPref } = useCopilotPrefs();
+
+  // Opt-in personal-style learning (Part 11) — reuses the existing copilot
+  // profile endpoint; learned-ignored suggestions are hidden alongside this
+  // session's dismissals.
+  const copilotLearning = useCopilotLearning(copilotPrefs.learning);
+  const copilotEffectiveDismissed = useMemo(
+    () => new Set<string>([...copilotDismissed, ...copilotLearning.learnedIgnored]),
+    [copilotDismissed, copilotLearning.learnedIgnored],
+  );
+  function copilotResetLearning() {
+    copilotLearning.reset();
+    toast({ title: "Copilot learning reset", description: "Previously-ignored suggestions may reappear." });
+  }
+  function copilotExportLearning() {
+    const blob = new Blob([copilotLearning.exportData()], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "care-copilot-preferences.json"; a.click();
+    URL.revokeObjectURL(url);
+  }
 
   // Local, deterministic next-sentence suggestion for the free-text Findings
   // editor (no AI call). Only while typing free text (structured mode edits
@@ -4928,7 +4952,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             {rightTab === "copilot" && (
               <CareCopilotPanel
                 report={copilotPanelReport}
-                dismissed={copilotDismissed}
+                dismissed={copilotEffectiveDismissed}
                 onInsert={copilotInsert}
                 onDismiss={copilotDismiss}
                 onGoToConflict={copilotGoToConflict}
@@ -4940,6 +4964,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 onAskAi={askCopilotAi}
                 aiBusy={aiCopilotBusy}
                 aiCount={aiCopilotItems.length}
+                onResetLearning={copilotResetLearning}
+                onExportLearning={copilotExportLearning}
               />
             )}
 
