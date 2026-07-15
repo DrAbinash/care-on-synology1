@@ -574,7 +574,10 @@ function SectionConfigEditor({ section, onConfigChange }: { section: Section; on
         <div className="space-y-3">
           <Field label="Heading"><Input value={get("heading")} onChange={(e) => onConfigChange("heading", e.target.value)} /></Field>
           <Field label="Subheading"><Input value={get("subheading")} onChange={(e) => onConfigChange("subheading", e.target.value)} /></Field>
-          <p className="text-xs text-muted-foreground">Package cards use a fixed built-in set (Basic, Comprehensive, Senior Citizen, etc.).</p>
+          <PackageCardsEditor
+            items={Array.isArray(c.items) ? (c.items as PackageCardItem[]) : []}
+            onChange={(next) => onConfigChange("items", next)}
+          />
         </div>
       );
     case "services":
@@ -653,6 +656,63 @@ function ItemsRepeater<T extends Record<string, unknown>>({
           </div>
         ))}
         <Button size="sm" variant="outline" onClick={addRow}><Plus size={13} className="mr-1" /> Add row</Button>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Health package cards editor (name, price, test count, includes list, badge)
+// ─────────────────────────────────────────────────────────────────────────────
+type PackageCardItem = {
+  name: string; includes: string; featured: boolean; badge: string;
+  testCount: number | string; price: string; originalPrice: string; discountLabel: string;
+};
+
+function PackageCardsEditor({ items, onChange }: { items: PackageCardItem[]; onChange: (next: PackageCardItem[]) => void }) {
+  function addCard() {
+    onChange([...items, { name: "", includes: "", featured: false, badge: "", testCount: "", price: "", originalPrice: "", discountLabel: "" }]);
+  }
+  function removeCard(i: number) { onChange(items.filter((_, idx) => idx !== i)); }
+  function patchCard(i: number, patch: Partial<PackageCardItem>) {
+    onChange(items.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
+  }
+
+  return (
+    <div>
+      <Label className="text-xs">Package cards</Label>
+      <p className="text-[11px] text-muted-foreground mb-1.5">
+        Leave empty to use the built-in default set (Basic, Diabetes Care, Senior Citizen, etc.). Add cards below to override with your own.
+      </p>
+      <div className="space-y-3">
+        {items.map((row, i) => (
+          <div key={i} className="rounded-lg border border-border p-3 bg-muted/30 space-y-2">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              <Input placeholder="Package name (e.g. Senior Citizen Package)" value={row.name} onChange={(e) => patchCard(i, { name: e.target.value })} />
+              <Input placeholder="Badge (e.g. Best Value)" value={row.badge} onChange={(e) => patchCard(i, { badge: e.target.value })} />
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              <Input type="number" placeholder="Tests included" value={row.testCount === "" ? "" : String(row.testCount)} onChange={(e) => patchCard(i, { testCount: e.target.value === "" ? "" : Number(e.target.value) })} />
+              <Input placeholder="Price (e.g. 2499)" value={row.price} onChange={(e) => patchCard(i, { price: e.target.value })} />
+              <Input placeholder="Original price (optional)" value={row.originalPrice} onChange={(e) => patchCard(i, { originalPrice: e.target.value })} />
+              <Input placeholder="Discount label (e.g. 40% OFF)" value={row.discountLabel} onChange={(e) => patchCard(i, { discountLabel: e.target.value })} />
+            </div>
+            <Textarea
+              className="min-h-[70px] text-sm"
+              placeholder={"Included tests, one per line\nCBC (Blood Count)\nFasting Blood Sugar\nLiver Function (LFT)"}
+              value={row.includes}
+              onChange={(e) => patchCard(i, { includes: e.target.value })}
+            />
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Switch checked={row.featured} onCheckedChange={(v) => patchCard(i, { featured: v })} />
+                <Label className="text-xs">Highlight as featured card</Label>
+              </div>
+              <Button size="sm" variant="ghost" onClick={() => removeCard(i)}><Trash2 size={13} className="mr-1" /> Remove card</Button>
+            </div>
+          </div>
+        ))}
+        <Button size="sm" variant="outline" onClick={addCard}><Plus size={13} className="mr-1" /> Add package card</Button>
       </div>
     </div>
   );

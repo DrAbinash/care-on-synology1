@@ -653,11 +653,45 @@ const DEFAULT_PKGS = [
   },
 ];
 
+type PackageCard = {
+  name: string;
+  includes: string[];
+  featured: boolean;
+  badge: string;
+  testCount: number;
+  price: string;
+  originalPrice: string;
+  discountLabel: string;
+};
+
+function normalizePkgItems(raw: unknown): PackageCard[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((it): it is Record<string, unknown> => !!it && typeof it === "object")
+    .map((it) => ({
+      name: typeof it.name === "string" ? it.name : "",
+      includes: typeof it.includes === "string"
+        ? it.includes.split("\n").map((s) => s.trim()).filter(Boolean)
+        : Array.isArray(it.includes) ? (it.includes as unknown[]).map(String).filter(Boolean) : [],
+      featured: it.featured === true || it.featured === "yes",
+      badge: typeof it.badge === "string" ? it.badge : "",
+      testCount: typeof it.testCount === "number" ? it.testCount : Number(it.testCount) || 0,
+      price: typeof it.price === "string" ? it.price : it.price != null ? String(it.price) : "",
+      originalPrice: typeof it.originalPrice === "string" ? it.originalPrice : it.originalPrice != null ? String(it.originalPrice) : "",
+      discountLabel: typeof it.discountLabel === "string" ? it.discountLabel : "",
+    }))
+    .filter((pkg) => pkg.name);
+}
+
 export function HealthPackagesSection({ section, basePath }: { section: Section; basePath: string }) {
   const c = section.config;
   const heading  = get(c, "heading", "Popular health packages");
   const sub      = get(c, "subheading", "Preventive packages designed for families, senior citizens and chronic-disease monitoring.");
   const bookHref = `${basePath}book`;
+  const customPkgs = normalizePkgItems(c.items);
+  const pkgs: PackageCard[] = customPkgs.length > 0 ? customPkgs : DEFAULT_PKGS.map((pkg) => ({
+    ...pkg, testCount: 0, price: "", originalPrice: "", discountLabel: "",
+  }));
 
   return (
     <section className="cd-section cd-section-light">
@@ -668,11 +702,19 @@ export function HealthPackagesSection({ section, basePath }: { section: Section;
           {sub && <p className="cd-section-sub" style={{ maxWidth: 560 }}>{sub}</p>}
         </div>
         <div className="cd-pkg-grid cd-stagger">
-          {DEFAULT_PKGS.map((pkg, i) => (
+          {pkgs.map((pkg, i) => (
             <div key={i} className={`cd-card cd-pkg-card${pkg.featured ? " featured" : ""}`}>
               {pkg.badge && <span className="cd-pkg-badge">{pkg.badge}</span>}
               <span className="cd-pkg-icon" aria-hidden="true"><Package size={20} /></span>
               <h3 className="cd-pkg-name">{pkg.name}</h3>
+              {pkg.testCount > 0 && <p className="cd-pkg-meta">Includes {pkg.testCount} tests</p>}
+              {pkg.price && (
+                <p className="cd-pkg-price">
+                  <span className="cd-pkg-price-current">₹{pkg.price}</span>
+                  {pkg.originalPrice && <span className="cd-pkg-price-original">₹{pkg.originalPrice}</span>}
+                  {pkg.discountLabel && <span className="cd-pkg-discount">{pkg.discountLabel}</span>}
+                </p>
+              )}
               <ul className="cd-pkg-includes">
                 {pkg.includes.map((item, j) => <li key={j}>{item}</li>)}
               </ul>
