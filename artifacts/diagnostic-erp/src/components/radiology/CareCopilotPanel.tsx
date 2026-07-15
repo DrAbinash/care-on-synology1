@@ -7,6 +7,7 @@ import {
 import {
   CATEGORY_LABEL, type CopilotReport, type CopilotItem, type CopilotCategory, type Confidence,
 } from "@/lib/copilotOrchestrator";
+import { type CopilotPrefs } from "@/hooks/useCopilotPrefs";
 
 /**
  * CareCopilotPanel — the always-on "senior radiologist beside you" panel (PR #80).
@@ -36,6 +37,17 @@ interface Props {
   onUndoLast: () => void;
   provider: string;
   analyzing?: boolean;
+  prefs?: CopilotPrefs;
+  onSetPref?: (patch: Partial<CopilotPrefs>) => void;
+}
+
+function Toggle({ label, checked, onChange, hint }: { label: string; checked: boolean; onChange: (v: boolean) => void; hint?: string }) {
+  return (
+    <label className="flex cursor-pointer items-center gap-2 py-0.5" title={hint}>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="h-3 w-3" />
+      <span className="text-[11px]">{label}</span>
+    </label>
+  );
 }
 
 const CATEGORY_ICON: Record<CopilotCategory, React.ComponentType<{ size?: number; className?: string }>> = {
@@ -118,7 +130,7 @@ function ItemCard({ item, onInsert, onDismiss, onGoToConflict }: {
 }
 
 export default function CareCopilotPanel({
-  report, dismissed, onInsert, onDismiss, onGoToConflict, recentActions, onUndoLast, provider, analyzing,
+  report, dismissed, onInsert, onDismiss, onGoToConflict, recentActions, onUndoLast, provider, analyzing, prefs, onSetPref,
 }: Props) {
   const visible = useMemo(() => report.items.filter((i) => !dismissed.has(i.id)), [report.items, dismissed]);
   const grouped = useMemo(() => {
@@ -133,8 +145,23 @@ export default function CareCopilotPanel({
         <Sparkles size={14} className="text-primary" />
         <span className="text-sm font-semibold">CARE Copilot</span>
         {analyzing && <span className="text-[9px] text-muted-foreground">analysing…</span>}
-        <span className="ml-auto text-[9px] text-muted-foreground" title="Active AI provider">{provider}</span>
+        <span className="ml-auto text-[9px] text-muted-foreground" title="Active AI provider (local rules; AI reasoning uses the provider set in AI Reporting Settings)">{provider}</span>
       </div>
+
+      {prefs && onSetPref && (
+        <details className="rounded-md border p-2">
+          <summary className="cursor-pointer text-[10px] font-semibold uppercase text-muted-foreground">Copilot Settings</summary>
+          <div className="mt-1">
+            <Toggle label="Show Copilot & analyse live" checked={prefs.autoAnalyze} onChange={(v) => onSetPref({ autoAnalyze: v })} hint="Turn off to pause live suggestions." />
+            <Toggle label="Smart auto-completion (Tab)" checked={prefs.autoComplete} onChange={(v) => onSetPref({ autoComplete: v })} hint="GitHub-Copilot-style next-sentence suggestions in Findings." />
+            <Toggle label="Personal-style learning (opt-in)" checked={prefs.learning} onChange={(v) => onSetPref({ learning: v })} hint="Remember your accepted/rejected suggestions. Off by default." />
+            <button className="mt-1 text-[10px] text-muted-foreground hover:text-destructive" onClick={() => onSetPref({ enabled: false })}>
+              Disable Copilot (hide the tab)
+            </button>
+            <p className="mt-1 text-[9px] text-muted-foreground">AI provider &amp; fallback are configured in AI Reporting Settings.</p>
+          </div>
+        </details>
+      )}
 
       <QualityGauge score={report.quality.score} band={report.quality.band} />
 
