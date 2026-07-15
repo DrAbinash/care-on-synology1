@@ -168,6 +168,7 @@ async function getSettings() {
       logoDataUrl: null,
       portalAllowAppointmentBooking: true,
       portalAllowProfileEdit: true,
+      portalBackgroundImageDataUrl: null,
     } as any;
   }
 }
@@ -199,6 +200,7 @@ portalRouter.get("/settings", async (_req, res) => {
     phone: s.phone,
     email: s.email,
     logoDataUrl: s.logoDataUrl,
+    backgroundImageDataUrl: s.portalBackgroundImageDataUrl ?? null,
     allowAppointmentBooking: s.portalAllowAppointmentBooking,
     allowProfileEdit: s.portalAllowProfileEdit,
   });

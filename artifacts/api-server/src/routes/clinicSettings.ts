@@ -39,6 +39,7 @@ async function getOrCreate() {
       portalWelcomeMessage: "",
       portalAllowAppointmentBooking: true,
       portalAllowProfileEdit: true,
+      portalBackgroundImageDataUrl: null,
       onlineBookingEnabled: false,
       razorpayKeyId: "",
       onlineBookingLedgerId: 1,
@@ -295,7 +296,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
     "phonepeMerchantId", "bharatpeMerchantId", "cashfreeAppId", "iciciMerchantId", "iciciAggregatorId",
     "iciciSecretKey", "formFTestIds", "quickTestIds", "quickDoctorIds", "footerNote", "commissionDiscountMode", "lanAllowedIps",
     "billDefaultPaperSize", "name", "tagline", "address", "registeredAddress", "email", "phone", "website",
-    "gstin", "logoDataUrl", "portalHeading", "portalWelcomeMessage", "sidebarTheme", "receiptThankYouMessage",
+    "gstin", "logoDataUrl", "portalHeading", "portalWelcomeMessage", "portalBackgroundImageDataUrl", "sidebarTheme", "receiptThankYouMessage",
     "receiptCollectionMessage", "receiptQrMessage", "receiptPromotionalMessage", "serviceFooter", "followUpMessage",
     "promotionalTitle", "promotionalDescription", "workingHoursMessage", "homeCollectionMessage", "emergencyMessage",
     "referralProgramMessage", "healthPackagesMessage", "accreditationMessage", "whatsAppBookingMessage",
@@ -549,6 +550,10 @@ clinicSettingsRouter.put("/", async (req, res) => {
 
   if (typeof update.logoDataUrl === "string" && update.logoDataUrl.length > 2_000_000) {
     res.status(413).json({ error: "Logo too large (max ~1.5MB)" });
+    return;
+  }
+  if (typeof update.portalBackgroundImageDataUrl === "string" && update.portalBackgroundImageDataUrl.length > 4_000_000) {
+    res.status(413).json({ error: "Background image too large (max ~3MB)" });
     return;
   }
   if (typeof update.quickTestIds === "string") {
