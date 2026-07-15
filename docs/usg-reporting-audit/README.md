@@ -3,6 +3,8 @@
 **Status: audit only. No production code was modified to produce this audit.**
 **As-of commit: `15ed9dfc` on `origin/feature/website-login-redirection` (cross-checked against `origin/claude/radiology-clinical-history-chips-j04t4b` at `b0e83b39`, the active concurrent branch).**
 
+**Update:** Phase 0 item 1 (obstetric GA/EFW calculation bugs) plus the Fetal USG hardcoded-patient-ID and duplicate-route bugs called out below have since been fixed — see [`docs/usg-reporting/fetal-usg-calculation-correction.md`](../usg-reporting/fetal-usg-calculation-correction.md) ("PR A"). The other findings and recommendations in this audit (workspace consolidation, template authority, PCPNDT integration, finalize-system reconciliation, etc.) are unchanged and remain open.
+
 This is a comprehensive architecture audit answering one question: *how should USG (ultrasound) reporting be built so MRI, CT, USG, X-ray, and future modalities all share one reporting platform instead of becoming multiple independent codebases?* It was produced by five parallel research passes over the codebase and documentation, followed by synthesis and cross-verification against the current, actively-developing state of the `feature/website-login-redirection` branch.
 
 ## How this audit was produced

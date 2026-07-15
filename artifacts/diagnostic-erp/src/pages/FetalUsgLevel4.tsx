@@ -12,11 +12,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import {
   Baby, Zap, Save, Send, AlertTriangle, CheckCircle2, ChevronLeft, Stethoscope,
   Plus, Filter, RefreshCw, FileText, CheckCircle, Download, Phone, Mail, ExternalLink,
   Mic, MicOff, Calendar, BarChart3,
-  Settings2,
+  Settings2, Search, Info,
 } from "lucide-react";
 import ReportPrintSettingsDialog from "@/components/ReportPrintSettingsDialog";
 import {
@@ -27,6 +28,21 @@ interface Study {
   id: number; studyId: number; patientId: number; studyType: string; trimester: string;
   status: string; gaWeeks?: number; gaDays?: number; edd?: string; lmp?: string;
   isTwin?: boolean; createdAt: string;
+  // Established once (CRL > MSD > LMP > manual) and held fixed — see
+  // docs/usg-reporting/fetal-usg-calculation-correction.md. Distinct from
+  // gaWeeks/gaDays above, which are the GA *projected* to today from this.
+  establishedGaDays?: number | null; establishedGaMethod?: string | null;
+  establishedGaDate?: string | null; establishedEdd?: string | null;
+  calcVersion?: string | null;
+}
+
+interface Patient {
+  id: number; firstName: string; lastName: string; patientId: string; phone: string | null;
+}
+
+interface AvailableStudy {
+  id: number; accessionNumber?: string | null; studyDescription?: string | null;
+  bodyPart?: string | null; status?: string | null; scheduledAt?: string | null;
 }
 
 interface Measurements {
@@ -34,6 +50,7 @@ interface Measurements {
   nt?: number; nasalBone?: string; ductusVenousus?: string; tricuspidFlow?: string;
   bpd?: number; hc?: number; ac?: number; fl?: number; hl?: number; efw?: number; efwPercentile?: number;
   afi?: number; afiInterpretation?: string; sdp?: number;
+  afiQ1?: number; afiQ2?: number; afiQ3?: number; afiQ4?: number;
   placentaLocation?: string; placentaGrade?: string; presentation?: string;
   cervicalLength?: number; cervicalLengthInterpretation?: string;
   umbilicalArteryPi?: number; umbilicalArteryRi?: number; umbilicalArterySd?: number;
@@ -66,6 +83,15 @@ const PLACENTA_GRADES = ["0", "1", "2", "3"];
 const PRESENTATIONS = ["cephalic", "breech", "transverse", "oblique", "not_assessed"];
 const NST_RESULTS = ["reactive", "non_reactive", "suspicious", "not_done"];
 
+function useDebounce<T>(value: T, delay = 250) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return debounced;
+}
+
 export default function FetalUsgLevel4() {
   const [location, setLocation] = useLocation();
   const [, params] = useRoute("/fetal-usg/:studyId");
@@ -76,7 +102,20 @@ export default function FetalUsgLevel4() {
   const [checklist, setChecklist] = useState<Checklist>({});
   const [report, setReport] = useState<Report>({});
   const [criticalAlerts, setCriticalAlerts] = useState<string[]>([]);
+  const [calcWarnings, setCalcWarnings] = useState<string[]>([]);
   const [worklist, setWorklist] = useState<Study[]>([]);
+  // --- New Study dialog: real patient + real, existing ultrasound study
+  // required — never defaulted. Replaces the old hardcoded patientId:1/
+  // studyId:1 bug (see docs/usg-reporting/fetal-usg-calculation-correction.md).
+  const [newStudyOpen, setNewStudyOpen] = useState(false);
+  const [patientSearch, setPatientSearch] = useState("");
+  const debouncedPatientSearch = useDebounce(patientSearch, 250);
+  const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
+  const [selectedRadStudyId, setSelectedRadStudyId] = useState<number | null>(null);
+  const [newStudyType, setNewStudyType] = useState("early");
+  const [newTrimester, setNewTrimester] = useState("first");
+  const [newLmp, setNewLmp] = useState("");
+  const [creatingStudy, setCreatingStudy] = useState(false);
   const [filter, setFilter] = useState("all");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -96,6 +135,26 @@ export default function FetalUsgLevel4() {
   });
 
   const routeStudyId = params?.studyId ? Number(params.studyId) : null;
+
+  // --- New Study dialog: patient search + that patient's linkable ultrasound studies ---
+  const { data: patientSearchResults } = useQuery<{ patients: Patient[] }>({
+    queryKey: ["fetal-usg-patient-search", debouncedPatientSearch],
+    queryFn: () => api.get<{ patients: Patient[] }>(`/api/patients?search=${encodeURIComponent(debouncedPatientSearch)}&limit=10`),
+    enabled: newStudyOpen && debouncedPatientSearch.length >= 2 && !selectedPatient,
+    staleTime: 30_000,
+  });
+  const { data: availableStudiesResp, isFetching: loadingAvailableStudies } = useQuery<{ patient: Patient; studies: AvailableStudy[] }>({
+    queryKey: ["fetal-usg-available-studies", selectedPatient?.id],
+    queryFn: () => api.get<{ patient: Patient; studies: AvailableStudy[] }>(`/api/fetal-usg/available-studies/${selectedPatient!.id}`),
+    enabled: newStudyOpen && !!selectedPatient,
+  });
+  const availableStudies = availableStudiesResp?.studies ?? [];
+
+  function openNewStudyDialog() {
+    setPatientSearch(""); setSelectedPatient(null); setSelectedRadStudyId(null);
+    setNewStudyType("early"); setNewTrimester("first"); setNewLmp("");
+    setNewStudyOpen(true);
+  }
 
   useEffect(() => {
     if (routeStudyId) {
@@ -125,28 +184,45 @@ export default function FetalUsgLevel4() {
       if (res.checklist) setChecklist(res.checklist);
       if (res.report) setReport(res.report);
       setCriticalAlerts(res.alerts);
+      setCalcWarnings([]);
     } catch (e) { toast({ variant: "destructive", title: "Failed", description: String(e) }); }
     finally { setLoading(false); }
   }
 
   async function createStudy() {
-    setLoading(true);
+    if (!selectedPatient) { toast({ variant: "destructive", title: "Select a patient first" }); return; }
+    if (!selectedRadStudyId) { toast({ variant: "destructive", title: "Select an ultrasound study first" }); return; }
+    setCreatingStudy(true);
     try {
-      const res = await api.post<{ study: Study }>("/api/fetal-usg/study", { patientId: 1, studyId: 1, studyType: "early" });
+      const res = await api.post<{ study: Study }>("/api/fetal-usg/study", {
+        patientId: selectedPatient.id,
+        studyId: selectedRadStudyId,
+        studyType: newStudyType,
+        trimester: newTrimester,
+        lmp: newLmp || undefined,
+      });
       toast({ title: "Study created" });
+      setNewStudyOpen(false);
       loadWorklist();
       setLocation(`/fetal-usg/${res.study.id}`);
-    } catch (e) { toast({ variant: "destructive", title: "Failed", description: String(e) }); }
-    finally { setLoading(false); }
+    } catch (e: any) {
+      toast({ variant: "destructive", title: "Failed", description: e?.error || String(e) });
+    } finally { setCreatingStudy(false); }
   }
 
   async function saveMeasurements() {
     if (!studyId) return;
     setSaving(true);
     try {
-      const res = await api.post<{ ok: boolean; alerts: string[] }>(`/api/fetal-usg/${studyId}/measurements`, meas);
-      setCriticalAlerts(res.alerts);
+      const res = await api.post<{ ok: boolean; alerts: string[]; warnings: string[] }>(`/api/fetal-usg/${studyId}/measurements`, meas);
       toast({ title: "Measurements saved", description: res.alerts.length > 0 ? `${res.alerts.length} alert(s) detected` : undefined });
+      // Calculated fields (GA, EFW, AFI interpretation, established-GA info)
+      // are derived server-side — reload so the draft reflects them without
+      // requiring a manual page refresh; safe since finalization is never
+      // blocked here, only critical alerts (acknowledged separately) are.
+      await loadStudy(studyId);
+      setCriticalAlerts(res.alerts);
+      setCalcWarnings(res.warnings ?? []);
     } catch (e) { toast({ variant: "destructive", title: "Failed", description: String(e) }); }
     finally { setSaving(false); }
   }
@@ -304,13 +380,13 @@ export default function FetalUsgLevel4() {
     } catch (e) { toast({ variant: "destructive", title: "Failed", description: String(e) }); }
   }
 
-  // --- DICOM SR Extract ---
+  // --- DICOM SR Extract — honest capability status; not implemented yet ---
   async function extractDicomMeasurements() {
     if (!studyId) return;
     setLoading(true);
     try {
-      const res = await api.post<{ extracted: Record<string, number | string | null> }>(`/api/fetal-usg/${studyId}/extract-measurements`, {});
-      toast({ title: "DICOM extraction", description: res.extracted.status as string });
+      const res = await api.post<{ available: boolean; status: string; message: string }>(`/api/fetal-usg/${studyId}/extract-measurements`, {});
+      toast({ title: res.available ? "DICOM extraction" : "Not available", description: res.message });
     } catch (e) { toast({ variant: "destructive", title: "Failed", description: String(e) }); }
     finally { setLoading(false); }
   }
@@ -347,12 +423,117 @@ export default function FetalUsgLevel4() {
                 <ChevronLeft size={14} className="mr-1" /> Back
               </Button>
             )}
-            <Button size="sm" onClick={createStudy} disabled={loading}>
+            <Button size="sm" onClick={openNewStudyDialog} disabled={loading}>
               <Plus size={14} className="mr-1" /> New Study
             </Button>
           </div>
         }
       />
+
+      <Dialog open={newStudyOpen} onOpenChange={setNewStudyOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>New Fetal USG Study</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label className="text-xs">Patient</Label>
+              {selectedPatient ? (
+                <div className="flex items-center justify-between rounded-md border p-2 mt-1">
+                  <div className="text-sm">
+                    <div className="font-medium">{selectedPatient.firstName} {selectedPatient.lastName}</div>
+                    <div className="text-xs text-muted-foreground">{selectedPatient.patientId} {selectedPatient.phone ? `· ${selectedPatient.phone}` : ""}</div>
+                  </div>
+                  <Button size="sm" variant="ghost" onClick={() => { setSelectedPatient(null); setSelectedRadStudyId(null); }}>Change</Button>
+                </div>
+              ) : (
+                <div className="relative mt-1">
+                  <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    className="pl-8"
+                    placeholder="Search patient by name, phone or UHID…"
+                    value={patientSearch}
+                    onChange={(e) => setPatientSearch(e.target.value)}
+                    autoFocus
+                  />
+                  {debouncedPatientSearch.length >= 2 && (
+                    <div className="mt-1 max-h-48 overflow-y-auto space-y-1 border rounded-md p-1">
+                      {(patientSearchResults?.patients ?? []).map((p) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          className="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted"
+                          onClick={() => { setSelectedPatient(p); setSelectedRadStudyId(null); }}
+                        >
+                          <span className="font-medium">{p.firstName} {p.lastName}</span>{" "}
+                          <span className="text-xs text-muted-foreground">{p.patientId} {p.phone ? `· ${p.phone}` : ""}</span>
+                        </button>
+                      ))}
+                      {(patientSearchResults?.patients ?? []).length === 0 && (
+                        <div className="px-2 py-1.5 text-sm text-muted-foreground">No patient found</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {selectedPatient && (
+              <div>
+                <Label className="text-xs">Ultrasound Study</Label>
+                {loadingAvailableStudies && <p className="text-sm text-muted-foreground mt-1">Loading studies…</p>}
+                {!loadingAvailableStudies && availableStudies.length === 0 && (
+                  <p className="text-sm text-muted-foreground mt-1 flex items-center gap-1">
+                    <Info size={13} /> No unlinked ultrasound studies found for this patient. Order/schedule an ultrasound study first.
+                  </p>
+                )}
+                <div className="mt-1 max-h-40 overflow-y-auto space-y-1">
+                  {availableStudies.map((s) => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      className={`w-full text-left text-sm px-2 py-1.5 rounded border ${selectedRadStudyId === s.id ? "border-primary bg-primary/5" : "hover:bg-muted"}`}
+                      onClick={() => setSelectedRadStudyId(s.id)}
+                    >
+                      <span className="font-medium">{s.studyDescription ?? s.bodyPart ?? "Ultrasound"}</span>{" "}
+                      <span className="text-xs text-muted-foreground">
+                        {s.accessionNumber ?? `#${s.id}`} {s.scheduledAt ? `· ${new Date(s.scheduledAt).toLocaleDateString()}` : ""}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Study Type</Label>
+                <select className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm" value={newStudyType} onChange={(e) => setNewStudyType(e.target.value)}>
+                  {STUDY_TYPES.map((o) => (<option key={o} value={o}>{o}</option>))}
+                </select>
+              </div>
+              <div>
+                <Label className="text-xs">Trimester</Label>
+                <select className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm" value={newTrimester} onChange={(e) => setNewTrimester(e.target.value)}>
+                  <option value="first">First</option>
+                  <option value="second">Second</option>
+                  <option value="third">Third</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">LMP (optional — used to establish GA if no CRL/MSD entered yet)</Label>
+              <Input type="date" value={newLmp} onChange={(e) => setNewLmp(e.target.value)} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setNewStudyOpen(false)}>Cancel</Button>
+            <Button onClick={createStudy} disabled={!selectedPatient || !selectedRadStudyId || creatingStudy}>
+              {creatingStudy ? "Creating…" : "Create Study"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {!studyId && (
         <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -427,11 +608,27 @@ export default function FetalUsgLevel4() {
             </div>
           )}
 
+          {calcWarnings.length > 0 && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 space-y-2">
+              <div className="flex items-center gap-2 text-amber-700 font-semibold">
+                <Info size={16} /> Calculation Warnings — review before finalizing
+              </div>
+              <ul className="list-disc list-inside text-sm text-amber-700">
+                {calcWarnings.map((w) => (<li key={w}>{w}</li>))}
+              </ul>
+            </div>
+          )}
+
           <div className="flex items-center gap-2 flex-wrap">
             <Badge variant={report.status === "final" ? "default" : report.status === "reviewed" ? "secondary" : "outline"}>{report.status ?? "draft"}</Badge>
             <Badge variant="outline" className="capitalize">{study.studyType}</Badge>
             <Badge variant="outline">{study.trimester}</Badge>
             <span className="text-sm text-muted-foreground">GA: {study.gaWeeks ? `${study.gaWeeks}w ${study.gaDays ?? 0}d` : "?"} | EDD: {study.edd ?? "?"}</span>
+            {study.establishedGaMethod && (
+              <span className="text-xs text-muted-foreground">
+                (GA established via {study.establishedGaMethod.toUpperCase()} on {study.establishedGaDate ?? "?"}, projected forward)
+              </span>
+            )}
           </div>
 
           <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -445,12 +642,26 @@ export default function FetalUsgLevel4() {
 
             <TabsContent value="measurements" className="space-y-4">
               <Card>
-                <CardHeader><CardTitle className="text-sm">Gestational Age</CardTitle></CardHeader>
-                <CardContent className="grid grid-cols-4 gap-3">
-                  <div><Label className="text-xs">LMP</Label><Input type="date" value={study.lmp ?? ""} readOnly className="bg-muted" /></div>
-                  <div><Label className="text-xs">GA Weeks</Label><Input type="number" value={study.gaWeeks ?? ""} readOnly className="bg-muted" /></div>
-                  <div><Label className="text-xs">GA Days</Label><Input type="number" value={study.gaDays ?? ""} readOnly className="bg-muted" /></div>
-                  <div><Label className="text-xs">EDD</Label><Input value={study.edd ?? ""} readOnly className="bg-muted" /></div>
+                <CardHeader>
+                  <CardTitle className="text-sm">Gestational Age</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-xs text-muted-foreground">
+                    GA is established once (CRL preferred, then MSD, then LMP/manual) and held fixed — it is
+                    projected forward here, never re-derived from later biometry. Enter CRL or MSD below to
+                    establish or upgrade it.
+                  </p>
+                  <div className="grid grid-cols-4 gap-3">
+                    <div><Label className="text-xs">LMP</Label><Input type="date" value={study.lmp ?? ""} readOnly className="bg-muted" /></div>
+                    <div><Label className="text-xs">GA Weeks (today)</Label><Input type="number" value={study.gaWeeks ?? ""} readOnly className="bg-muted" /></div>
+                    <div><Label className="text-xs">GA Days</Label><Input type="number" value={study.gaDays ?? ""} readOnly className="bg-muted" /></div>
+                    <div><Label className="text-xs">EDD</Label><Input value={study.edd ?? ""} readOnly className="bg-muted" /></div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div><Label className="text-xs">Established via</Label><Input value={study.establishedGaMethod ? study.establishedGaMethod.toUpperCase() : "Not established"} readOnly className="bg-muted" /></div>
+                    <div><Label className="text-xs">Established on</Label><Input value={study.establishedGaDate ?? ""} readOnly className="bg-muted" /></div>
+                    <div><Label className="text-xs">Established EDD</Label><Input value={study.establishedEdd ?? ""} readOnly className="bg-muted" /></div>
+                  </div>
                 </CardContent>
               </Card>
 
@@ -505,7 +716,11 @@ export default function FetalUsgLevel4() {
               <Card>
                 <CardHeader><CardTitle className="text-sm">Liquor & Placenta</CardTitle></CardHeader>
                 <CardContent className="grid grid-cols-4 gap-3">
-                  <div><Label className="text-xs">AFI (cm)</Label><Input type="number" value={meas.afi ?? ""} onChange={(e) => updateMeas("afi", Number(e.target.value))} /></div>
+                  <div><Label className="text-xs">AFI Q1 (cm)</Label><Input type="number" value={meas.afiQ1 ?? ""} onChange={(e) => updateMeas("afiQ1", Number(e.target.value))} /></div>
+                  <div><Label className="text-xs">AFI Q2 (cm)</Label><Input type="number" value={meas.afiQ2 ?? ""} onChange={(e) => updateMeas("afiQ2", Number(e.target.value))} /></div>
+                  <div><Label className="text-xs">AFI Q3 (cm)</Label><Input type="number" value={meas.afiQ3 ?? ""} onChange={(e) => updateMeas("afiQ3", Number(e.target.value))} /></div>
+                  <div><Label className="text-xs">AFI Q4 (cm)</Label><Input type="number" value={meas.afiQ4 ?? ""} onChange={(e) => updateMeas("afiQ4", Number(e.target.value))} /></div>
+                  <div><Label className="text-xs">AFI Total (cm) — auto-summed from Q1-Q4 if all four are entered, else manual</Label><Input type="number" value={meas.afi ?? ""} onChange={(e) => updateMeas("afi", Number(e.target.value))} /></div>
                   <div><Label className="text-xs">AFI Interpretation</Label><Input value={meas.afiInterpretation ?? ""} readOnly className="bg-muted" /></div>
                   <div><Label className="text-xs">SDP (cm)</Label><Input type="number" value={meas.sdp ?? ""} onChange={(e) => updateMeas("sdp", Number(e.target.value))} /></div>
                   <div><Label className="text-xs">Placenta</Label>
