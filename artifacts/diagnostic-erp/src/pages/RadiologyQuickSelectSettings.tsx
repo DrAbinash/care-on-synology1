@@ -21,8 +21,6 @@ import type { QuickFinding, QuickStudyTab, QuickMeasurement, QuickProtocol, Quic
 
 type QuickSelectData = { tabs: QuickStudyTab[]; findings: QuickFinding[]; measurements: QuickMeasurement[]; protocols: QuickProtocol[]; clinicalHistory: QuickClinicalHistoryChip[] };
 
-// Keep in step with MAX_ACTIVE_CLINICAL_HISTORY_CHIPS in the API (radiologyQuickFindings.ts).
-const MAX_ACTIVE_CLINICAL_HISTORY_CHIPS = 10;
 
 const EMPTY_FINDING = {
   studyType: "", label: "", findingText: "", impressionText: "",
@@ -227,11 +225,6 @@ export default function RadiologyQuickSelectSettings() {
   const chips = (data?.clinicalHistory ?? [])
     .filter((c) => !filterTab || c.studyType === filterTab)
     .sort((a, b) => a.studyType.localeCompare(b.studyType) || a.sortOrder - b.sortOrder || a.displayLabel.localeCompare(b.displayLabel));
-  // Active chip count per study — drives the "N/10" cap indicator.
-  const activeChipCountByStudy = (data?.clinicalHistory ?? []).reduce<Record<string, number>>((acc, c) => {
-    if (c.isActive) acc[c.studyType] = (acc[c.studyType] ?? 0) + 1;
-    return acc;
-  }, {});
 
   return (
     <div className="p-4 md:p-6 space-y-6">
@@ -663,7 +656,7 @@ export default function RadiologyQuickSelectSettings() {
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div>
             <h3 className="text-sm font-semibold">Clinical History Quick Select</h3>
-            <p className="text-xs text-muted-foreground">Study-specific chips shown beside the Clinical History heading in the reporting workspace. The short label appears on the chip; the full text is inserted into Clinical History. Up to {MAX_ACTIVE_CLINICAL_HISTORY_CHIPS} active chips per study. Changes appear in the workspace immediately — no code change.</p>
+            <p className="text-xs text-muted-foreground">Study-specific chips shown beside the Clinical History heading in the reporting workspace. The short label appears on the chip; the full text is inserted into Clinical History. Add as many as you like per study — the strip wraps and scrolls. Changes appear in the workspace immediately — no code change.</p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <select value={filterTab} onChange={(e) => setFilterTab(e.target.value)} className="h-8 text-sm border rounded-md px-2 bg-background" title="Filter by study / body region">
@@ -684,60 +677,49 @@ export default function RadiologyQuickSelectSettings() {
           </div>
         </div>
 
-        {editingChip && (() => {
-          const targetStudy = editingChip.studyType;
-          const activeCount = activeChipCountByStudy[targetStudy] ?? 0;
-          // Adding a new active chip (or activating one that was inactive) into a
-          // study already at the cap is blocked to match the server rule.
-          const wasActiveInStudy = !!editingChip.id && (data?.clinicalHistory ?? []).some((c) => c.id === editingChip.id && c.isActive && c.studyType === targetStudy);
-          const wouldExceed = editingChip.isActive && !wasActiveInStudy && activeCount >= MAX_ACTIVE_CLINICAL_HISTORY_CHIPS;
-          return (
-            <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-                <div>
-                  <Label className="text-[11px]">Study / region</Label>
-                  <select
-                    value={editingChip.studyType}
-                    onChange={(e) => setEditingChip({ ...editingChip, studyType: e.target.value })}
-                    className="h-8 w-full text-sm border rounded-md px-2 bg-background"
-                  >
-                    <option value="">Select…</option>
-                    {tabs.map((t) => <option key={t.id} value={t.name}>{t.name}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <Label className="text-[11px]">Display label (chip)</Label>
-                  <Input value={editingChip.displayLabel} onChange={(e) => setEditingChip({ ...editingChip, displayLabel: e.target.value })} className="h-8 text-sm" placeholder="Headache" />
-                </div>
-                <div>
-                  <Label className="text-[11px]">Sort order</Label>
-                  <Input type="number" value={editingChip.sortOrder} onChange={(e) => setEditingChip({ ...editingChip, sortOrder: Number(e.target.value) || 0 })} className="h-8 text-sm" />
-                </div>
-                <div className="flex items-end gap-2 pb-1.5">
-                  <Switch checked={editingChip.isActive} onCheckedChange={(v) => setEditingChip({ ...editingChip, isActive: v })} />
-                  <Label className="text-[11px]">Active</Label>
-                </div>
+        {editingChip && (
+          <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+              <div>
+                <Label className="text-[11px]">Study / region</Label>
+                <select
+                  value={editingChip.studyType}
+                  onChange={(e) => setEditingChip({ ...editingChip, studyType: e.target.value })}
+                  className="h-8 w-full text-sm border rounded-md px-2 bg-background"
+                >
+                  <option value="">Select…</option>
+                  {tabs.map((t) => <option key={t.id} value={t.name}>{t.name}</option>)}
+                </select>
               </div>
               <div>
-                <Label className="text-[11px]">Inserted text (full phrase added to Clinical History)</Label>
-                <Textarea value={editingChip.insertedText} onChange={(e) => setEditingChip({ ...editingChip, insertedText: e.target.value })} className="text-sm min-h-[40px]" placeholder="Sudden onset weakness with suspected cerebrovascular event." />
+                <Label className="text-[11px]">Display label (chip)</Label>
+                <Input value={editingChip.displayLabel} onChange={(e) => setEditingChip({ ...editingChip, displayLabel: e.target.value })} className="h-8 text-sm" placeholder="Headache" />
               </div>
-              {wouldExceed && (
-                <p className="text-[10px] text-destructive">{targetStudy} already has {activeCount} active chips (max {MAX_ACTIVE_CLINICAL_HISTORY_CHIPS}). Disable one first, or save this chip as inactive.</p>
-              )}
-              <div className="flex gap-2 justify-end">
-                <Button size="sm" variant="outline" className="h-7" onClick={() => setEditingChip(null)}>
-                  <X size={12} /> Cancel
-                </Button>
-                <Button size="sm" className="h-7"
-                  disabled={!editingChip.studyType || !editingChip.displayLabel.trim() || wouldExceed || saveChip.isPending}
-                  onClick={() => saveChip.mutate(editingChip)}>
-                  <Save size={12} /> Save
-                </Button>
+              <div>
+                <Label className="text-[11px]">Sort order</Label>
+                <Input type="number" value={editingChip.sortOrder} onChange={(e) => setEditingChip({ ...editingChip, sortOrder: Number(e.target.value) || 0 })} className="h-8 text-sm" />
+              </div>
+              <div className="flex items-end gap-2 pb-1.5">
+                <Switch checked={editingChip.isActive} onCheckedChange={(v) => setEditingChip({ ...editingChip, isActive: v })} />
+                <Label className="text-[11px]">Active</Label>
               </div>
             </div>
-          );
-        })()}
+            <div>
+              <Label className="text-[11px]">Inserted text (full phrase added to Clinical History)</Label>
+              <Textarea value={editingChip.insertedText} onChange={(e) => setEditingChip({ ...editingChip, insertedText: e.target.value })} className="text-sm min-h-[40px]" placeholder="Sudden onset weakness with suspected cerebrovascular event." />
+            </div>
+            <div className="flex gap-2 justify-end">
+              <Button size="sm" variant="outline" className="h-7" onClick={() => setEditingChip(null)}>
+                <X size={12} /> Cancel
+              </Button>
+              <Button size="sm" className="h-7"
+                disabled={!editingChip.studyType || !editingChip.displayLabel.trim() || saveChip.isPending}
+                onClick={() => saveChip.mutate(editingChip)}>
+                <Save size={12} /> Save
+              </Button>
+            </div>
+          </div>
+        )}
 
         <div className="divide-y rounded-lg border overflow-hidden">
           {chips.map((c, i) => (
