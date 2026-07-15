@@ -136,6 +136,23 @@ type StructuredTemplate = {
   isPreset: boolean;
 };
 
+// Cockpit→Workspace merge (E1): Phase-F "winner" master template catalog
+// (radiology_master_templates), consolidated from the four legacy systems.
+// A different table/endpoint from StructuredTemplate above — surfaced here so
+// radiologists keep the catalog they used in the Cockpit. Content-only apply.
+type MasterTemplate = {
+  id: number;
+  groupName: string;
+  templateName: string;
+  modality: string;
+  studyType: string | null;
+  bodyPart: string | null;
+  findings: string;
+  impression: string;
+  recommendations: string | null;
+  isActive: boolean;
+};
+
 type TemplateSections = {
   technique: string;
   findingsItems: Array<{ label: string; normal: string }>;
@@ -170,6 +187,18 @@ type StylePreferences = {
 };
 
 type RightTab = "quickselect" | "templates" | "followup" | "prior" | "ai" | "measurements" | "teaching";
+
+// Cockpit→Workspace merge (E2): tolerant parse of a stored AI draft blob so a
+// malformed aiDraftJson can never throw in render.
+function safeParseAiDraft(json: string | null | undefined): { findings?: string; impression?: string } {
+  if (!json) return {};
+  try {
+    const parsed = JSON.parse(json);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
 
 /** M1.4 — POST /api/radiology/report-generator/validate-draft response: the
  *  backend runs the REAL D3/D3.5 builder + D1 validator read-only; nothing
@@ -1134,6 +1163,63 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     queryKey: ["structured-templates"],
     queryFn: () => api.get<StructuredTemplate[]>("/api/radiology/structured-report-templates"),
   });
+
+  // E1: Phase-F master template catalog (additive alongside the structured
+  // templates above — both surfaces coexist in the picker). Fetched the same
+  // way the Cockpit did; the section renders only when non-empty, so a doctor
+  // with the feature off (empty catalog) sees no change.
+  const { data: masterTemplatesResp } = useQuery<{ templates: MasterTemplate[]; count: number }>({
+    queryKey: ["master-templates"],
+    queryFn: () => api.get("/api/radiology/master-templates"),
+    staleTime: 300_000,
+  });
+  const masterTemplates = masterTemplatesResp?.templates ?? [];
+  // Apply a master template: content-only. Deliberately clears
+  // selectedTemplateId (that field references the structured_report_templates
+  // id namespace; reusing it for master ids would misattribute the draft).
+  const handleApplyMasterTemplate = (tpl: MasterTemplate) => {
+    setSelectedTemplateId(null);
+    setRawFindings(tpl.findings || "");
+    if (tpl.impression) setImpression([tpl.impression]);
+    toast({ title: "Master template applied", description: `${tpl.templateName} (${tpl.groupName.replace(/_/g, " ")})` });
+  };
+
+  // E2: on-demand full AI draft from study metadata (distinct from the
+  // impression-only aiImpressionMutation and from the passive fill-empty-only
+  // effect below). Lets a radiologist (re)request a draft and review it before
+  // importing — the import is guarded so it never silently clobbers typed text.
+  const generateAiDraftMutation = useMutation({
+    mutationFn: async () => {
+      if (!entry) return;
+      return api.post(`/api/internal/radiology/ai-draft`, {
+        studyId: entry.studyId,
+        modality: entry.modality,
+        studyDescription: entry.studyDescription ?? entry.modality,
+        patientName: entry.patientName,
+        age: entry.age ?? "",
+        sex: entry.sex ?? "",
+        accessionNumber: entry.accessionNumber,
+        studyDate: entry.studyDate ?? "",
+      });
+    },
+    onSuccess: () => {
+      toast({ title: "AI draft ready", description: "AI-generated draft retrieved." });
+      qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
+      if (studyId) qc.invalidateQueries({ queryKey: ["workspace-entry", studyId] });
+    },
+    onError: () => {
+      toast({ title: "AI draft failed", description: "Could not generate a draft for this study.", variant: "destructive" });
+    },
+  });
+  const importAiDraft = () => {
+    const draft = safeParseAiDraft(entry?.aiDraftJson);
+    if (!draft.findings && !draft.impression) return;
+    const hasTyped = rawFindings.trim().length > 0 || impression.filter(Boolean).length > 0;
+    if (hasTyped && !window.confirm("Replace the current Findings and Impression with the AI draft?")) return;
+    if (draft.findings) setRawFindings(draft.findings);
+    if (draft.impression) setImpression([draft.impression]);
+    toast({ title: "Draft applied", description: "Editor fields replaced with AI observations." });
+  };
 
   // R2.0 — canonical ultrasound integration. `entry.modality` is whatever
   // the PACS/DICOM source sent verbatim (US/USG/Doppler/OB US/...); fold it
@@ -2434,6 +2520,43 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   <span className="text-[10px] opacity-70">{t.category}</span>
                 </Button>
               ))}
+            </div>
+          </>
+        )}
+
+        {/* E1: Master Library (Phase-F winner catalog) — additive, filtered to
+            the current study's modality, content-only apply. Renders only when
+            the catalog is non-empty. */}
+        {masterTemplates.length > 0 && (
+          <>
+            <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide pt-1">
+              Master Library
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {masterTemplates
+                .filter((m) => {
+                  if (!entry?.modality) return true;
+                  const em = entry.modality.toUpperCase();
+                  const mm = (m.modality || "").toUpperCase();
+                  if (mm === em) return true;
+                  if (em === "X-RAY" && mm === "XR") return true;
+                  if (isUltrasoundModality(entry.modality) && isUltrasoundModality(m.modality)) return true;
+                  return false;
+                })
+                .slice(0, 12)
+                .map((m) => (
+                  <Button
+                    key={`master-${m.id}`}
+                    size="sm"
+                    variant="outline"
+                    title={`${m.groupName.replace(/_/g, " ")}${m.bodyPart ? " · " + m.bodyPart : ""}`}
+                    onClick={() => handleApplyMasterTemplate(m)}
+                    disabled={isLocked}
+                    className="h-7 text-[10px]"
+                  >
+                    {m.templateName}
+                  </Button>
+                ))}
             </div>
           </>
         )}
@@ -3764,6 +3887,41 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             {/* Tab 3: AI Review */}
             {rightTab === "ai" && (
               <div className="flex flex-col">
+                {/* E2: on-demand full AI draft from study metadata. Distinct
+                    from the impression-only "AI Review" and from the passive
+                    fill-empty autofill — this lets the radiologist (re)request
+                    and review a complete draft, then import it (guarded). */}
+                <div className="mx-2 mt-2 border rounded-md p-2 bg-muted/30 shrink-0">
+                  <div className="text-[10px] font-semibold flex items-center gap-1 mb-1.5">
+                    <Sparkles size={10} className="text-indigo-500" /> AI Draft Assistant
+                  </div>
+                  <Button
+                    size="sm"
+                    className="w-full h-7 text-[11px] gap-1.5"
+                    onClick={() => generateAiDraftMutation.mutate()}
+                    disabled={generateAiDraftMutation.isPending || !entry || isLocked}
+                  >
+                    <RefreshCw size={11} className={generateAiDraftMutation.isPending ? "animate-spin" : ""} />
+                    {generateAiDraftMutation.isPending ? "Generating…" : "Query AI Draft"}
+                  </Button>
+                  {entry?.aiDraftJson && (
+                    <div className="mt-2 space-y-1.5">
+                      <div className="text-[10px] font-medium text-muted-foreground">Draft findings preview</div>
+                      <div className="bg-background border rounded p-1.5 text-[10px] max-h-32 overflow-y-auto font-mono whitespace-pre-line leading-normal">
+                        {safeParseAiDraft(entry.aiDraftJson).findings || "No findings text"}
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-full h-7 text-[10px]"
+                        onClick={importAiDraft}
+                        disabled={isLocked}
+                      >
+                        Import Draft into Findings/Impression
+                      </Button>
+                    </div>
+                  )}
+                </div>
                 <RadiologyCopilotPanel
                   key="ai"
                   patientId={entry?.patientId ?? undefined}
