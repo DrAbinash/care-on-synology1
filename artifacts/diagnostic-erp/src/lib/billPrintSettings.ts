@@ -73,6 +73,23 @@ export type BillPrintSettings = {
   // receipts show it unconditionally since that IS the kiosk's purpose.
   showQueueTokenOnBill: boolean;
 
+  // ── Layout & typography (Classic format) ──
+  // Every field here is nullable: null means "use the built-in tuned
+  // default" (which still varies by A5 vs A4 paper size, see printBill.ts's
+  // pageMargin/titleSize/etc.). A non-null value applies as a fixed
+  // override regardless of paper size. This is deliberately per-field
+  // rather than a single global "density" so a clinic can tune exactly the
+  // one thing that's wrong for their printer without fighting a preset.
+  printMarginMm: number | null;
+  printTitleFontPx: number | null;
+  printPatientNameFontPx: number | null;
+  printBodyFontPx: number | null;
+  printHeaderFontPx: number | null;
+  printTableFontPx: number | null;
+  printTotalFontPx: number | null;
+  printFooterFontPx: number | null;
+  printTinyFontPx: number | null;
+
   // Print action
   defaultPrintAction: PrintAction;
 
@@ -110,6 +127,15 @@ export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
   showPatientInstructions: false,
   showSystemInfo: false,
   showQueueTokenOnBill: false,
+  printMarginMm: null,
+  printTitleFontPx: null,
+  printPatientNameFontPx: null,
+  printBodyFontPx: null,
+  printHeaderFontPx: null,
+  printTableFontPx: null,
+  printTotalFontPx: null,
+  printFooterFontPx: null,
+  printTinyFontPx: null,
   defaultPrintAction: "save-print",
   enablePreview: false,
   directPrintAfterSave: true,
@@ -227,6 +253,24 @@ export function saveBillPrintSettings(settings: Partial<BillPrintSettings>): voi
 export function mergeDefaults(base: BillPrintSettings, role: UserRole | null): BillPrintSettings {
   if (!role) return base;
   return { ...base, ...ROLE_BILL_PRINT_DEFAULTS[role] };
+}
+
+// ── Layout & typography overrides, ready to spread into BuildPrintHtmlOpts
+// (printBill.ts). Centralized here so every print call site (Billing Desk,
+// Bill Detail reprint, Settings live preview) stays in sync — see
+// printMarginMm etc. on BillPrintSettings for field docs. ──
+export function printLayoutOpts(settings: BillPrintSettings) {
+  return {
+    printMarginMm: settings.printMarginMm,
+    printTitleFontPx: settings.printTitleFontPx,
+    printPatientNameFontPx: settings.printPatientNameFontPx,
+    printBodyFontPx: settings.printBodyFontPx,
+    printHeaderFontPx: settings.printHeaderFontPx,
+    printTableFontPx: settings.printTableFontPx,
+    printTotalFontPx: settings.printTotalFontPx,
+    printFooterFontPx: settings.printFooterFontPx,
+    printTinyFontPx: settings.printTinyFontPx,
+  };
 }
 
 // ── Helper to get current effective format ──

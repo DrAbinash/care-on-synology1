@@ -17,6 +17,7 @@ import {
 } from "@/lib/printBill";
 import {
   loadBillPrintSettings,
+  printLayoutOpts,
   type BillPrintSettings,
 } from "@/lib/billPrintSettings";
 import { useLocation } from "wouter";
@@ -880,6 +881,7 @@ export default function BillingDesk() {
                     showPatientInstructions: settings.showPatientInstructions,
                     showSystemInfo: settings.showSystemInfo,
                     showQueueToken: settings.showQueueTokenOnBill,
+                    ...printLayoutOpts(settings),
                   });
                   if (settings.enablePreview) {
                     setPrintPreviewHtml(html);
@@ -1353,6 +1355,7 @@ export default function BillingDesk() {
               showPatientInstructions: settings.showPatientInstructions,
               showSystemInfo: settings.showSystemInfo,
               showQueueToken: settings.showQueueTokenOnBill,
+              ...printLayoutOpts(settings),
             });
             if (settings.enablePreview) {
               setPrintPreviewHtml(html);

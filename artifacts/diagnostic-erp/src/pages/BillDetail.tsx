@@ -31,6 +31,7 @@ import {
 } from "@/lib/printBill";
 import {
   loadBillPrintSettings,
+  printLayoutOpts,
   type BillPrintSettings,
 } from "@/lib/billPrintSettings";
 
@@ -276,6 +277,7 @@ export default function BillDetail({ id }: { id: number }) {
       showPatientInstructions: settings.showPatientInstructions,
       showSystemInfo: settings.showSystemInfo,
       showQueueToken: settings.showQueueTokenOnBill,
+      ...printLayoutOpts(settings),
     });
   };
 
