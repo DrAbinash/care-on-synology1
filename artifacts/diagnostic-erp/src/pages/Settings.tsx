@@ -2309,6 +2309,131 @@ function BookingPageBackgroundCard() {
   );
 }
 
+const QUICK_TEST_CATEGORY_LABELS: Record<string, string> = {
+  biochemistry: "Biochemistry",
+  cardiology: "Cardiology",
+  radiology: "Radiology",
+  pathology: "Pathology",
+  hematology: "Hematology",
+  endocrinology: "Endocrinology",
+  serology: "Serology",
+  default: "Any other category",
+};
+
+function QuickTestTileImagesCard() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { data: clinicSettings, isLoading } = useQuery<{ quickTestCategoryImages?: string; quickTestOverlayOpacity?: number }>({
+    queryKey: ["clinic-settings"],
+    queryFn: () => api.get("/api/clinic-settings"),
+  });
+  const [uploadingKey, setUploadingKey] = useState<string | null>(null);
+  const [overlayOpacity, setOverlayOpacity] = useState(35);
+
+  useEffect(() => {
+    if (clinicSettings) setOverlayOpacity(clinicSettings.quickTestOverlayOpacity ?? 35);
+  }, [clinicSettings]);
+
+  const images: Record<string, string> = (() => {
+    try { return JSON.parse(clinicSettings?.quickTestCategoryImages || "{}"); } catch { return {}; }
+  })();
+
+  const save = useMutation({
+    mutationFn: (patch: { quickTestCategoryImages?: string; quickTestOverlayOpacity?: number }) => api.put("/api/clinic-settings", patch),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["clinic-settings"] });
+      toast({ title: "Quick Select Test Tiles updated" });
+    },
+    onError: (err: any) => toast({ title: "Save failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
+  });
+
+  function setImage(key: string, url: string) {
+    const next = { ...images, [key]: url };
+    if (!url) delete next[key];
+    save.mutate({ quickTestCategoryImages: JSON.stringify(next) });
+  }
+
+  async function onUpload(key: string, e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setUploadingKey(key);
+    try {
+      const fd = new FormData();
+      fd.append("photo", file);
+      fd.append("category", "quick_test");
+      const token = getStaffToken();
+      const r = await fetch("/api/website/photos", {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        body: fd,
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const photo = await r.json();
+      setImage(key, photo.url);
+    } catch (err) {
+      toast({ title: "Upload failed", description: (err as Error).message, variant: "destructive" });
+    } finally {
+      setUploadingKey(null);
+    }
+  }
+
+  return (
+    <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
+      <h3 className="font-bold flex items-center gap-2"><ImageIcon size={16} /> Quick Select Test Tiles</h3>
+      <p className="text-xs text-muted-foreground">
+        Optional background photo for each test category on the "Book a Test" page's Quick Select tiles (step 2). Categories left empty keep the current solid-color tile.
+      </p>
+      {!isLoading && (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {Object.entries(QUICK_TEST_CATEGORY_LABELS).map(([key, label]) => {
+              const current = images[key] || "";
+              return (
+                <div key={key} className="flex items-center gap-3 rounded-lg border border-card-border p-2.5">
+                  <div className="h-12 w-16 rounded-md border border-card-border bg-muted overflow-hidden flex items-center justify-center shrink-0">
+                    {current ? <img src={current} className="h-full w-full object-cover" alt="" /> : <ImageIcon size={16} className="opacity-30" />}
+                  </div>
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="text-xs font-medium truncate">{label}</div>
+                    <div className="flex items-center gap-2">
+                      <label className="inline-flex items-center gap-1 text-[11px] font-medium border border-card-border rounded-md px-2 py-1 cursor-pointer hover:bg-muted/40">
+                        {uploadingKey === key ? "Uploading…" : current ? "Replace" : "Upload"}
+                        <input type="file" accept="image/*" className="hidden" onChange={(e) => onUpload(key, e)} disabled={uploadingKey === key} />
+                      </label>
+                      {current && (
+                        <button type="button" className="text-[11px] text-muted-foreground hover:text-foreground underline" onClick={() => setImage(key, "")}>
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="border-t border-card-border pt-4">
+            <p className="text-sm font-medium mb-1">Overlay intensity</p>
+            <p className="text-[11px] text-muted-foreground mb-2">
+              A white overlay is composited over the tile photo so the test name stays readable. Raise this to wash the photo out more, lower it to show more of the photo through. {overlayOpacity}%
+            </p>
+            <input
+              type="range" min={0} max={100} step={5}
+              value={overlayOpacity}
+              onChange={(e) => setOverlayOpacity(Number(e.target.value))}
+              onMouseUp={() => save.mutate({ quickTestOverlayOpacity: overlayOpacity })}
+              onTouchEnd={() => save.mutate({ quickTestOverlayOpacity: overlayOpacity })}
+              onKeyUp={() => save.mutate({ quickTestOverlayOpacity: overlayOpacity })}
+              className="w-full"
+            />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function OnlineBookingTab() {
   const qc = useQueryClient();
   const { toast } = useToast();
@@ -2528,6 +2653,8 @@ function OnlineBookingTab() {
       <WebsiteLogoCard />
 
       <BookingPageBackgroundCard />
+
+      <QuickTestTileImagesCard />
 
       {/* Phase 6: VIP Percentage Surcharge */}
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">

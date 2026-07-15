@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { QRCodeSVG, QRCodeCanvas } from "qrcode.react";
 import type { SiteSettings } from "../types";
+import { resolveAssetUrl } from "../config";
 import { SelfRegistrationForm } from "../../../diagnostic-erp/src/components/SelfRegistrationForm";
 import { buildBillPrintHtml, openBlankPrintWindow, writeAndPrint, type PrintBillData, type PrintClinic } from "../../../diagnostic-erp/src/lib/printBill";
 
@@ -98,6 +99,8 @@ type BookingConfig = {
   customBharatpeBannerUrl?: string;
   customPayuBannerUrl?: string;
   quickTestIds?: (number | null)[];
+  quickTestCategoryImages?: string;
+  quickTestOverlayOpacity?: number;
   allowedTestIds?: number[];
   allowedPackageIds?: number[];
 };
@@ -648,10 +651,11 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
         const overlayPct = Math.max(0, Math.min(100, settings.bookHeroOverlayOpacity ?? 55));
         const overlayAlpha = overlayPct / 100;
         const textColor = settings.bookHeroTextColor === "dark" ? "hsl(var(--cd-slate))" : "#fff";
+        const bookHeroImageUrl = resolveAssetUrl(settings.bookHeroImageUrl);
         return (
         <div className="cd-book-hero cd-scan-panel" style={{
-          backgroundImage: settings.bookHeroImageUrl
-            ? `linear-gradient(135deg, rgba(255,255,255,${overlayAlpha}) 0%, rgba(255,255,255,${Math.max(0, overlayAlpha - 0.05)}) 100%), url('${settings.bookHeroImageUrl}')`
+          backgroundImage: bookHeroImageUrl
+            ? `linear-gradient(135deg, rgba(255,255,255,${overlayAlpha}) 0%, rgba(255,255,255,${Math.max(0, overlayAlpha - 0.05)}) 100%), url('${bookHeroImageUrl}')`
             : `linear-gradient(135deg, rgba(255,255,255,${overlayAlpha}) 0%, rgba(255,255,255,${Math.max(0, overlayAlpha - 0.05)}) 100%), ${fallbackGridBg}`,
           backgroundSize: "cover",
           backgroundAttachment: "fixed",
@@ -662,7 +666,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
           <div className="container-narrow" style={{ textAlign: "center", position: "relative", zIndex: 2 }}>
             {settings.logoUrl && (
               <img
-                src={settings.logoUrl}
+                src={resolveAssetUrl(settings.logoUrl)}
                 alt="Clinic Logo"
                 style={{ height: 60, width: "auto", marginBottom: "1rem", objectFit: "contain" }}
               />
@@ -801,9 +805,10 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
           <div>
             {/* Quick Select Tests — sourced from the same clinic_settings.quick_test_ids
                 Billing Desk and the kiosk use for their quick-test slots. Sized to match
-                the previous "Our Services" photo tiles (200px min-width, 180px tall) —
-                that section relied on admin-uploaded background images that were broken/
-                missing in practice, so it's replaced with these functional tiles instead. */}
+                the previous "Our Services" photo tiles (200px min-width, 180px tall).
+                Tiles fall back to a solid category-color gradient; admins can optionally
+                set a background photo per category (Settings → Booking Page → Quick
+                Select Test Tiles) with an adjustable white-wash overlay for readability. */}
             {(() => {
               const quickTests = (config?.quickTestIds ?? [])
                 .map((id) => (id ? tests.find((t) => t.id === id) : null))
@@ -824,6 +829,15 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                 }
               };
 
+              let categoryImages: Record<string, string> = {};
+              try { categoryImages = JSON.parse(config?.quickTestCategoryImages || "{}"); } catch { /* ignore */ }
+              const tileOverlayAlpha = Math.max(0, Math.min(100, config?.quickTestOverlayOpacity ?? 35)) / 100;
+              const getCategoryImage = (category?: string): string => {
+                const key = category ? category.toLowerCase() : "default";
+                const raw = categoryImages[key] || categoryImages.default || "";
+                return resolveAssetUrl(raw);
+              };
+
               return (
                 <div style={{ marginBottom: "1.5rem" }}>
                   <h3 style={{ fontWeight: 700, fontSize: "1rem", marginBottom: "0.75rem", color: "hsl(var(--cd-slate))", display: "flex", alignItems: "center", gap: ".4rem" }}>
@@ -833,6 +847,15 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                     {quickTests.map((test) => {
                       const sel = selTests.has(test.id);
                       const categoryColor = getCategoryColor(test.category);
+                      const categoryImage = getCategoryImage(test.category);
+                      const washColor = sel ? "hsl(var(--cd-teal))" : "255,255,255";
+                      const background = categoryImage
+                        ? sel
+                          ? `linear-gradient(135deg, hsl(var(--cd-teal) / .55), hsl(var(--cd-teal) / .4)), url('${categoryImage}')`
+                          : `linear-gradient(135deg, rgba(${washColor},${tileOverlayAlpha}), rgba(${washColor},${tileOverlayAlpha})), url('${categoryImage}')`
+                        : sel
+                          ? "linear-gradient(135deg, hsl(var(--cd-teal) / .25), hsl(var(--cd-teal) / .15))"
+                          : categoryColor;
                       return (
                         <button
                           key={test.id}
@@ -845,9 +868,9 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                             padding: "0.75rem",
                             borderRadius: "var(--site-radius)",
                             border: sel ? "3px solid hsl(var(--cd-teal))" : "2px solid rgba(0,0,0,.1)",
-                            background: sel
-                              ? "linear-gradient(135deg, hsl(var(--cd-teal) / .25), hsl(var(--cd-teal) / .15))"
-                              : categoryColor,
+                            background,
+                            backgroundSize: "cover",
+                            backgroundPosition: "center",
                             cursor: "pointer",
                             transition: "all .2s cubic-bezier(0.4, 0, 0.2, 1)",
                             textAlign: "center",

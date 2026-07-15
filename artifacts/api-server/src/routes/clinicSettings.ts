@@ -136,6 +136,8 @@ async function getOrCreate() {
       onlineBookingServices: "{\"opd\":true,\"emergency\":true,\"usg\":true,\"xray\":true,\"ct\":true,\"mri\":true,\"pathology\":true,\"packages\":true,\"home_collection\":true,\"doctor\":true}",
       serviceImages: "{}",
       serviceImagesEnabled: false,
+      quickTestCategoryImages: "{}",
+      quickTestOverlayOpacity: 35,
       vipPercentage: "50.00",
       disclaimerText: "Online booking charges are subject to the centre's cancellation policy. In case of cancellation after confirmation, administrative charges may be deducted from the refundable amount.",
       disclaimerRefundPercentage: 90,
@@ -299,7 +301,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
     "receiptCollectionMessage", "receiptQrMessage", "receiptPromotionalMessage", "serviceFooter", "followUpMessage",
     "promotionalTitle", "promotionalDescription", "workingHoursMessage", "homeCollectionMessage", "emergencyMessage",
     "referralProgramMessage", "healthPackagesMessage", "accreditationMessage", "whatsAppBookingMessage",
-    "customFooterMessage", "ollamaBaseUrl", "ollamaModel", "onlineBookingServices", "serviceImages", "vipPercentage",
+    "customFooterMessage", "ollamaBaseUrl", "ollamaModel", "onlineBookingServices", "serviceImages", "quickTestCategoryImages", "vipPercentage",
     "disclaimerText", "disclaimerDisplayPosition", "disclaimerFontSize", "preferredScanner",
     // Refactored fields
     "activePaymentGateway", "customIciciBannerUrl", "customPhonepeBannerUrl", "customBharatpeBannerUrl", "customPayuBannerUrl",
@@ -545,6 +547,11 @@ clinicSettingsRouter.put("/", async (req, res) => {
       }
       update[f] = n;
     }
+  }
+
+  if (body.quickTestOverlayOpacity !== undefined) {
+    const n = Number(body.quickTestOverlayOpacity);
+    update.quickTestOverlayOpacity = Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : 35;
   }
 
   if (typeof update.logoDataUrl === "string" && update.logoDataUrl.length > 2_000_000) {
