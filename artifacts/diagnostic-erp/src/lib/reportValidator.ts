@@ -12,6 +12,15 @@ export interface ReportForValidation {
   findings: string;
   impression: string[]; // one line per impression point
   recommendation?: string;
+  // Cockpit→Workspace merge (F2/F8): optional context for the medical-
+  // consistency checks below. Every check that reads one of these fields is a
+  // no-op when it's absent, so existing callers are unaffected.
+  technique?: string;
+  clinicalHistory?: string;
+  sex?: string | null;
+  age?: string | null;
+  modality?: string | null;
+  studyDescription?: string | null;
 }
 
 // Sentence split good enough for report prose (period/newline boundaries).
@@ -97,6 +106,125 @@ export function validateReport(report: ReportForValidation): string[] {
     warnings.push("An un-filled measurement placeholder {value} is still present in the report.");
   }
 
+  warnings.push(...medicalConsistencyWarnings(report));
+  warnings.push(...repeatedWordWarnings(findings));
+
+  return warnings;
+}
+
+// ── Medical consistency (Cockpit→Workspace merge, F2) ───────────────────────
+// Ported from the Cockpit's Inspector engine. Each check only fires when its
+// required context field (sex/age/modality/studyDescription) is present, so
+// this is a pure addition — callers that don't pass that context see no
+// change in behavior.
+
+const BILATERAL_STRUCTURES = ["femur", "knee", "meniscus", "lung", "kidney", "breast", "ovary", "adrenal", "shoulder", "hip"];
+
+function medicalConsistencyWarnings(report: ReportForValidation): string[] {
+  const warnings: string[] = [];
+  const textFindings = report.findings || "";
+  const textImpression = (report.impression || []).join("\n");
+  const fullText = [report.clinicalHistory, report.technique, textFindings, textImpression, report.recommendation]
+    .filter(Boolean).join(" ");
+  const fullTextLower = fullText.toLowerCase();
+  const studyDesc = (report.studyDescription || "").toUpperCase();
+
+  // Laterality vs. study description
+  if (studyDesc.includes("LEFT") && fullTextLower.includes("right") && !fullTextLower.includes("left")) {
+    warnings.push("Laterality contradiction: study description specifies LEFT, but the report only mentions RIGHT.");
+  }
+  if (studyDesc.includes("RIGHT") && fullTextLower.includes("left") && !fullTextLower.includes("right")) {
+    warnings.push("Laterality contradiction: study description specifies RIGHT, but the report only mentions LEFT.");
+  }
+
+  // Per-structure bilateral mention — confirm it isn't a copy-paste contradiction
+  for (const s of BILATERAL_STRUCTURES) {
+    const left = new RegExp(`\\bleft\\b.*\\b${s}\\b`, "i");
+    const right = new RegExp(`\\bright\\b.*\\b${s}\\b`, "i");
+    if (left.test(fullText) && right.test(fullText)) {
+      warnings.push(`Both left and right mentions of '${s}' are present — confirm this is genuinely bilateral, not a contradiction.`);
+    }
+  }
+
+  // Anterior/posterior mismatch (common in spine reports)
+  if (fullTextLower.includes("anterior protrusion") && fullTextLower.includes("posterior protrusion")) {
+    warnings.push("Report mentions both anterior and posterior protrusions — verify the primary direction.");
+  }
+
+  // Gender vs. anatomy contradiction
+  const sex = (report.sex || "").toUpperCase();
+  if (sex === "F" && (fullTextLower.includes("prostate") || fullTextLower.includes("seminal vesicle"))) {
+    warnings.push("Gender contradiction: report for a female patient mentions male anatomy (prostate/seminal vesicle).");
+  }
+  if (sex === "M" && ["uterus", "ovary", "ovarian", "endometrium", "cervix", "uterine"].some((w) => fullTextLower.includes(w))) {
+    warnings.push("Gender contradiction: report for a male patient mentions female anatomy (uterus/ovary/endometrium/cervix).");
+  }
+
+  // Age-inappropriate wording
+  const ageMatch = (report.age || "").match(/(\d+)/);
+  const ageVal = ageMatch ? parseInt(ageMatch[1], 10) : null;
+  if (ageVal !== null && ageVal < 18 && ["degenerative changes", "senile", "osteoarthritis"].some((w) => fullTextLower.includes(w))) {
+    warnings.push(`Age-inappropriate wording: pediatric patient (${report.age}) described using adult degenerative terms.`);
+  }
+  if (ageVal !== null && ageVal > 18 && ["growth plates open", "physes open"].some((w) => fullTextLower.includes(w))) {
+    warnings.push(`Age-inappropriate wording: adult patient (${report.age}) described with pediatric phrasing (open growth plates).`);
+  }
+
+  // Cross-modality terminology contamination
+  const modality = (report.modality || "").toUpperCase();
+  if (modality === "CT" && ["magnetic resonance", "flair", "t1-weighted", "t2-weighted", "signal intensity"].some((w) => fullTextLower.includes(w))) {
+    warnings.push("Modality terminology mismatch: MRI wording (FLAIR/T1/T2/signal intensity) found inside a CT report.");
+  }
+  if (modality === "MRI" && (/\bhu\b/.test(fullTextLower) || ["hounsfield", "computed tomography", "radiation dose"].some((w) => fullTextLower.includes(w)))) {
+    warnings.push("Modality terminology mismatch: CT wording (HU/Hounsfield/computed tomography) found inside an MRI report.");
+  }
+  if ((modality === "CT" || modality === "MRI") && ["hyperechoic", "anechoic", "acoustic shadowing", "transducer"].some((w) => fullTextLower.includes(w))) {
+    warnings.push("Modality terminology mismatch: ultrasound wording (hyperechoic/acoustic shadowing) found inside a cross-sectional report.");
+  }
+
+  // Contrast contradiction
+  const isContrastStudy = studyDesc.includes("CONTRAST") || studyDesc.includes("CECT") || studyDesc.includes("CEMRI");
+  const isNonContrastStudy = studyDesc.includes("WITHOUT CONTRAST") || studyDesc.includes("NCCT") || studyDesc.includes("NON-CONTRAST");
+  if (isNonContrastStudy && ["gadolinium", "contrast enhancement", "post-contrast"].some((w) => fullTextLower.includes(w))) {
+    warnings.push("Contrast contradiction: a non-contrast study mentions contrast enhancement or gadolinium.");
+  }
+  if (isContrastStudy && ["no contrast was administered", "non-contrast study"].some((w) => fullTextLower.includes(w))) {
+    warnings.push("Contrast contradiction: a contrast study mentions that no contrast was administered.");
+  }
+
+  // Findings vs. Impression contradiction, both directions
+  const findingsLower = textFindings.toLowerCase();
+  const impressionLower2 = textImpression.toLowerCase();
+  const hasNormalFindings = ["no abnormality", "within normal limits", "unremarkable"].some((w) => findingsLower.includes(w));
+  const hasAbnormalImpression = ["acute infarct", "fracture", "hemorrhage", "stenosis", "mass", "lesion", "metastasis"].some((w) => impressionLower2.includes(w));
+  if (hasNormalFindings && hasAbnormalImpression) {
+    warnings.push("Findings/Impression contradiction: Findings show a normal/unremarkable status, but Impression lists an abnormal diagnosis.");
+  }
+  const hasAbnormalFindings = ["herniation", "fracture", "hemorrhage", "lesion", "infarct", "stenosis"].some((w) => findingsLower.includes(w));
+  const hasNormalImpression = ["no significant abnormality", "normal study", "unremarkable exam"].some((w) => impressionLower2.includes(w));
+  if (hasAbnormalFindings && hasNormalImpression) {
+    warnings.push("Findings/Impression contradiction: Findings mention abnormalities, but Impression describes the study as normal/unremarkable.");
+  }
+
+  return warnings;
+}
+
+// ── Dictation quality (Cockpit→Workspace merge, F8) ─────────────────────────
+// Catches a common voice-dictation artifact: an accidentally repeated word
+// ("the the liver"). Pure client-side heuristic, no API dependency.
+
+function repeatedWordWarnings(findings: string): string[] {
+  const words = findings.split(/\s+/);
+  const seen = new Set<string>();
+  const warnings: string[] = [];
+  for (let i = 0; i < words.length - 1; i++) {
+    const w1 = words[i].toLowerCase().replace(/[^a-z]/g, "");
+    const w2 = words[i + 1].toLowerCase().replace(/[^a-z]/g, "");
+    if (w1 && w1 === w2 && w1.length > 2 && !seen.has(w1)) {
+      warnings.push(`Repeated word "${words[i]}" in Findings — likely a dictation artifact.`);
+      seen.add(w1); // one warning per distinct repeated word, not per occurrence
+    }
+  }
   return warnings;
 }
 

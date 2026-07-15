@@ -51,6 +51,9 @@ import {
 } from "@/lib/renderEngine";
 import { deriveQuickSelectFindings } from "@/lib/quickSelectFindingsPayload";
 import { validateReport, computeQualityScore } from "@/lib/reportValidator";
+// F3 (Cockpit→Workspace merge): real-time missed-finding text-pattern nudges.
+// This lib was otherwise dead (imported only by the deprecated Cockpit).
+import { observeReportText, type CoPilotSuggestion } from "@/lib/radiologyCoPilotEngine";
 import { isLearnableAddition } from "@/lib/learningEngine";
 import { upsertMeasurement, upsertLabeledLine } from "@/lib/measurementVars";
 import CollapsibleSection from "@/components/radiology/CollapsibleSection";
@@ -190,6 +193,11 @@ type StylePreferences = {
 };
 
 type RightTab = "quickselect" | "templates" | "followup" | "prior" | "ai" | "measurements" | "teaching";
+
+// F3 (Cockpit→Workspace merge): rules superseded by MeasurementAssistantPanel,
+// which computes real ADC/Evans-Index values rather than just reminding the
+// radiologist to mention them — excluded from the ported nudge list.
+const COPILOT_SUPERSEDED_IDS = new Set(["brain-adc", "hydrocephalus-evans"]);
 
 // Cockpit→Workspace merge (E2): tolerant parse of a stored AI draft blob so a
 // malformed aiDraftJson can never throw in render.
@@ -521,6 +529,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const [isCritical, setIsCritical] = useState(false);
   const [criticalNote, setCriticalNote] = useState("");
   const [reportStatus, setReportStatus] = useState<string>("DRAFT");
+  // F5 (Cockpit→Workspace merge): critical-result communication checklist —
+  // ACR-style documentation that an actionable/critical finding was actually
+  // communicated to the referring clinician. Unlike the Cockpit (where this
+  // state was never sent to the server), it's persisted via the finalize
+  // auditDetails payload — see F7 below.
+  const [checklistComm, setChecklistComm] = useState({ phoned: false, annotated: false, dispatched: false });
 
   // ── AI ────────────────────────────────────────────────────────────────────
   const [aiLoading, setAiLoading] = useState(false);
@@ -904,17 +918,6 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     }
   }
 
-  // Live Report Quality Score (Phase 3) — recomputed as the radiologist
-  // types; purely informational, never blocks anything.
-  const quality = useMemo(
-    () => computeQualityScore({
-      findings: rawFindings, impression, recommendation, technique, clinicalHistory,
-      checklistPercent: activeProtocol ? checklistPercent : undefined,
-      missingRequiredMeasurements,
-    }),
-    [rawFindings, impression, recommendation, technique, clinicalHistory, activeProtocol, checklistPercent, missingRequiredMeasurements],
-  );
-
   // Intelligent Normal Generator (Phase 3, structured mode): sets every
   // section the radiologist has NOT touched back to its template-normal
   // text. "Touched" = text differs from the template normal — those are
@@ -976,6 +979,21 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const chocolateBoxSet = useMemo(
     () => chocolateBoxSetFor(entry?.modality, entry?.studyDescription),
     [entry?.modality, entry?.studyDescription],
+  );
+
+  // Live Report Quality Score (Phase 3) — recomputed as the radiologist
+  // types; purely informational, never blocks anything.
+  const quality = useMemo(
+    () => computeQualityScore({
+      findings: rawFindings, impression, recommendation, technique, clinicalHistory,
+      checklistPercent: activeProtocol ? checklistPercent : undefined,
+      missingRequiredMeasurements,
+      // F2: medical-consistency context (Cockpit→Workspace merge) — each
+      // check is a no-op when its field is absent, so this is additive.
+      sex: entry?.sex, age: entry?.age, modality: entry?.modality, studyDescription: entry?.studyDescription,
+    }),
+    [rawFindings, impression, recommendation, technique, clinicalHistory, activeProtocol, checklistPercent, missingRequiredMeasurements,
+      entry?.sex, entry?.age, entry?.modality, entry?.studyDescription],
   );
 
   // F6 (Cockpit→Workspace merge): imported-viewer-measurement safety checks.
@@ -1074,6 +1092,46 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     }
     return list;
   }, [viewerMeasurementsForSafety.data, historicalMeasurementsForCompare, entry?.studyId]);
+
+  // F3 (Cockpit→Workspace merge): real-time missed-finding nudges. Excludes
+  // the engine's "brain-adc" and "hydrocephalus-evans" rules — those are
+  // superseded by MeasurementAssistantPanel, which computes real ADC/Evans
+  // Index values rather than just reminding the radiologist to mention them.
+  const [dismissedCoPilotIds, setDismissedCoPilotIds] = useState<Set<string>>(new Set());
+  const coPilotSuggestions = useMemo(() => {
+    if (!rawFindings.trim()) return [] as CoPilotSuggestion[];
+    return observeReportText(entry?.modality ?? "", entry?.studyDescription ?? "", rawFindings)
+      .filter((s) => !COPILOT_SUPERSEDED_IDS.has(s.id) && !dismissedCoPilotIds.has(s.id));
+  }, [rawFindings, entry?.modality, entry?.studyDescription, dismissedCoPilotIds]);
+
+  // F4 (Cockpit→Workspace merge): institution-mandated "Comparison" section
+  // enforcement — the one genuinely novel required-section rule (Clinical
+  // History/Recommendation are already covered by computeQualityScore's
+  // existing completeness deductions; the cosmetic formatting sub-rules from
+  // the same institutional-style settings are intentionally NOT ported — the
+  // Workspace already gives direct manual heading-case/spacing controls,
+  // which serves that intent more directly than an AI nag would).
+  const { data: institutionalStyle } = useQuery<{ showComparison: boolean }>({
+    queryKey: ["institutional-style"],
+    queryFn: () => api.get("/api/radiology/institutional-style"),
+    staleTime: 300_000,
+  });
+  const { data: priorReportsTotal = 0 } = useQuery<number>({
+    queryKey: ["patient-prior-reports-count", entry?.patientId],
+    queryFn: () =>
+      entry?.patientId
+        ? api.get<{ total: number }>(`/api/patient-reports/patient/${entry.patientId}?type=radiology&limit=1`).then((r) => r.total ?? 0)
+        : Promise.resolve(0),
+    enabled: !!entry?.patientId,
+    staleTime: 300_000,
+  });
+  const COMPARISON_KEYWORDS = ["comparison", "prior", "compared", "previously", "previous study", "interval"];
+  const comparisonSectionMissing = useMemo(() => {
+    if (!institutionalStyle?.showComparison || priorReportsTotal === 0) return false;
+    const fullTextLower = [clinicalHistory, technique, rawFindings, impression.join(" "), recommendation]
+      .join(" ").toLowerCase();
+    return !COMPARISON_KEYWORDS.some((kw) => fullTextLower.includes(kw));
+  }, [institutionalStyle, priorReportsTotal, clinicalHistory, technique, rawFindings, impression, recommendation]);
 
   // ── Draft identity (Radiology Roadmap Ticket A3.0) ────────────────────────
   // Loads any existing radiology_report_drafts row for this study and tracks
@@ -2152,7 +2210,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       }
 
       // 3) Client-side rule warnings (existing validator — warn only).
-      const warnings = validateReport({ findings: rawFindings, impression, recommendation });
+      const warnings = validateReport({
+        findings: rawFindings, impression, recommendation, technique, clinicalHistory,
+        sex: entry?.sex, age: entry?.age, modality: entry?.modality, studyDescription: entry?.studyDescription,
+      });
 
       // 4) ONE explicit confirmation carrying the exact identity being
       //    signed (Phase 7/8): patient, study, modality, accession +
@@ -2248,6 +2309,16 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           criticalNote,
           createdBy: session?.user.name ?? "Radiologist",
           actor: session?.user.name ?? "staff",
+          // F7 (Cockpit→Workspace merge): durable record of the quality
+          // warnings that existed and how the critical finding (if any) was
+          // communicated at the moment of signing. `auditDetails` is already
+          // forwarded verbatim by finalizeRadiologyReport — no new transport.
+          auditDetails: {
+            qualityScore: quality.score,
+            qualityIssues: quality.issues,
+            measurementSafetyIssues: measurementSafetyIssues.map((i) => ({ severity: i.severity, message: i.message })),
+            criticalFinding: isCritical ? { note: criticalNote, communication: checklistComm } : null,
+          },
         },
       );
 
@@ -3671,13 +3742,34 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 </Label>
               </div>
               {isCritical && (
-                <Textarea
-                  value={criticalNote}
-                  onChange={(e) => setCriticalNote(e.target.value)}
-                  placeholder="Describe critical finding (e.g. acute infarct, cord compression, tension pneumothorax)..."
-                  className="min-h-[50px] text-sm resize-none"
-                  disabled={isLocked}
-                />
+                <>
+                  <Textarea
+                    value={criticalNote}
+                    onChange={(e) => setCriticalNote(e.target.value)}
+                    placeholder="Describe critical finding (e.g. acute infarct, cord compression, tension pneumothorax)..."
+                    className="min-h-[50px] text-sm resize-none"
+                    disabled={isLocked}
+                  />
+                  {/* F5: communication checklist — documents that the critical
+                      finding was actually relayed, not just flagged. */}
+                  <div className="flex flex-col gap-1.5 pt-1 border-t border-red-100">
+                    <span className="text-[10px] font-semibold text-red-700 uppercase tracking-wide">Communication Checklist</span>
+                    {([
+                      ["phoned", "Telephoned Doctor"],
+                      ["annotated", "Annotated in PACS"],
+                      ["dispatched", "Dispatched Alert"],
+                    ] as const).map(([key, label]) => (
+                      <label key={key} className="flex items-center gap-2 text-xs cursor-pointer">
+                        <Checkbox
+                          checked={checklistComm[key]}
+                          onCheckedChange={(v) => setChecklistComm((prev) => ({ ...prev, [key]: !!v }))}
+                          disabled={isLocked}
+                        />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                </>
               )}
             </div>
 
@@ -4043,6 +4135,58 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                     </div>
                   )}
                 </div>
+                {/* F3 (Cockpit→Workspace merge): real-time missed-finding nudges */}
+                {coPilotSuggestions.length > 0 && (
+                  <div className="mx-2 mt-2 space-y-1.5 shrink-0">
+                    {coPilotSuggestions.map((s) => (
+                      <div
+                        key={s.id}
+                        className={`p-2 rounded-md border text-[11px] space-y-1 ${
+                          s.severity === "critical" ? "bg-red-50 border-red-200"
+                          : s.severity === "warning" ? "bg-amber-50 border-amber-200"
+                          : "bg-muted/30 border-border"
+                        }`}
+                      >
+                        <div className="flex justify-between items-start gap-2">
+                          <span className="font-semibold">{s.title}</span>
+                          <Badge variant="outline" className="text-[8px] uppercase px-1 py-0 shrink-0">{s.severity}</Badge>
+                        </div>
+                        <p className="text-[10px] text-muted-foreground">{s.message}</p>
+                        <div className="flex gap-2 justify-end pt-1 border-t border-border/60">
+                          {s.actionableText && (
+                            <Button
+                              size="sm"
+                              className="h-6 text-[9px] px-2"
+                              disabled={isLocked}
+                              onClick={() => {
+                                if (s.actionMacro === "insertForaminalPlaceholder") {
+                                  setRawFindings((prev) => prev + "\n\nNEURAL FORAMINA:\n- Exiting nerve roots show no significant foraminal narrowing.");
+                                } else if (s.actionMacro === "addSpectroscopyRecommendation") {
+                                  setRecommendation((prev) => prev + " Recommend advanced MR Spectroscopy correlation.");
+                                } else if (s.actionMacro === "addAngioRecommendation") {
+                                  setRecommendation((prev) => prev + " Recommend MRA or CTA evaluation of intracranial circulation.");
+                                } else {
+                                  setRawFindings((prev) => (prev ? prev + " " + s.actionableText : s.actionableText!));
+                                }
+                                setDismissedCoPilotIds((prev) => new Set(prev).add(s.id));
+                              }}
+                            >
+                              Apply Advice
+                            </Button>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 text-[9px] px-2 text-muted-foreground"
+                            onClick={() => setDismissedCoPilotIds((prev) => new Set(prev).add(s.id))}
+                          >
+                            Dismiss
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <RadiologyCopilotPanel
                   key="ai"
                   patientId={entry?.patientId ?? undefined}
@@ -4080,6 +4224,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                       <div className="text-green-600">✓ Clinical history present</div>
                     )}
                     <div className="text-green-600">✓ No left-right conflict detected</div>
+                    {/* F5: critical-finding communication gate */}
+                    {isCritical && !checklistComm.phoned && (
+                      <div className="text-red-500">⚠ Critical finding flagged but "Telephoned Doctor" not yet checked in the Communication Checklist.</div>
+                    )}
+                    {/* F4: institution-mandated Comparison section */}
+                    {comparisonSectionMissing && (
+                      <div className="text-amber-600">⚠ This patient has prior report(s) but no Comparison section/wording was found.</div>
+                    )}
                     {/* F6: imported-viewer-measurement safety checks */}
                     {measurementSafetyIssues.map((issue) => (
                       <div key={issue.id} className={issue.severity === "critical" ? "text-red-500" : "text-amber-600"}>
