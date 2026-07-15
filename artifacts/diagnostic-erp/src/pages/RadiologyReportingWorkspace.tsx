@@ -1378,16 +1378,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // way the Cockpit did; the section renders only when non-empty, so a doctor
   // with the feature off (empty catalog) sees no change.
   const { data: masterTemplatesResp } = useQuery<{ templates: MasterTemplate[]; count: number }>({
-    // Deliberately NOT ["master-templates"] — the deprecated (but still
-    // routed) RadiologistCockpit.tsx uses that exact key for its OWN query,
-    // which hits a broken/404 path. Sharing a QueryClient cache means the
-    // two pages would otherwise silently poison each other's result for
-    // whichever was visited more recently within the staleTime window.
     queryKey: ["radiology-master-templates-v2"],
-    // NOTE: the Cockpit's own version of this query used the wrong path
-    // (/api/radiology/master-templates, which 404s) — the route is actually
-    // mounted under /radiology/knowledge (routes/index.ts), confirmed live
-    // against a real running server during E1 verification.
     queryFn: () => api.get("/api/radiology/knowledge/master-templates"),
     staleTime: 300_000,
   });
