@@ -39,6 +39,13 @@ interface Props {
   analyzing?: boolean;
   prefs?: CopilotPrefs;
   onSetPref?: (patch: Partial<CopilotPrefs>) => void;
+  /** On-demand AI reasoning (Part 20 module via the existing provider). */
+  onAskAi?: () => void;
+  aiBusy?: boolean;
+  aiCount?: number;
+  /** Personal-style learning controls (Part 11). */
+  onResetLearning?: () => void;
+  onExportLearning?: () => void;
 }
 
 function Toggle({ label, checked, onChange, hint }: { label: string; checked: boolean; onChange: (v: boolean) => void; hint?: string }) {
@@ -131,6 +138,7 @@ function ItemCard({ item, onInsert, onDismiss, onGoToConflict }: {
 
 export default function CareCopilotPanel({
   report, dismissed, onInsert, onDismiss, onGoToConflict, recentActions, onUndoLast, provider, analyzing, prefs, onSetPref,
+  onAskAi, aiBusy, aiCount, onResetLearning, onExportLearning,
 }: Props) {
   const visible = useMemo(() => report.items.filter((i) => !dismissed.has(i.id)), [report.items, dismissed]);
   const grouped = useMemo(() => {
@@ -154,13 +162,25 @@ export default function CareCopilotPanel({
           <div className="mt-1">
             <Toggle label="Show Copilot & analyse live" checked={prefs.autoAnalyze} onChange={(v) => onSetPref({ autoAnalyze: v })} hint="Turn off to pause live suggestions." />
             <Toggle label="Smart auto-completion (Tab)" checked={prefs.autoComplete} onChange={(v) => onSetPref({ autoComplete: v })} hint="GitHub-Copilot-style next-sentence suggestions in Findings." />
-            <Toggle label="Personal-style learning (opt-in)" checked={prefs.learning} onChange={(v) => onSetPref({ learning: v })} hint="Remember your accepted/rejected suggestions. Off by default." />
+            <Toggle label="Personal-style learning (opt-in)" checked={prefs.learning} onChange={(v) => onSetPref({ learning: v })} hint="Remember suggestions you keep ignoring, so they stop resurfacing. Off by default." />
+            {prefs.learning && (onResetLearning || onExportLearning) && (
+              <div className="ml-5 mt-0.5 flex gap-2">
+                {onResetLearning && <button className="text-[10px] text-muted-foreground hover:text-destructive" onClick={onResetLearning}>Reset learning</button>}
+                {onExportLearning && <button className="text-[10px] text-muted-foreground hover:text-foreground" onClick={onExportLearning}>Export</button>}
+              </div>
+            )}
             <button className="mt-1 text-[10px] text-muted-foreground hover:text-destructive" onClick={() => onSetPref({ enabled: false })}>
               Disable Copilot (hide the tab)
             </button>
             <p className="mt-1 text-[9px] text-muted-foreground">AI provider &amp; fallback are configured in AI Reporting Settings.</p>
           </div>
         </details>
+      )}
+
+      {onAskAi && (
+        <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={onAskAi} disabled={aiBusy}>
+          <Sparkles size={12} /> {aiBusy ? "Asking AI…" : aiCount ? `AI reasoning (${aiCount})` : "Ask Copilot (AI)"}
+        </Button>
       )}
 
       <QualityGauge score={report.quality.score} band={report.quality.band} />
