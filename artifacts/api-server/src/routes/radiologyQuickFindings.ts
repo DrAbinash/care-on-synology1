@@ -176,6 +176,9 @@ router.post("/findings", requireAdminRole, async (req, res) => {
       suggests: typeof req.body?.suggests === "string" ? req.body.suggests : "",
       properties: typeof req.body?.properties === "string" ? req.body.properties : "",
       category: typeof req.body?.category === "string" && req.body.category.trim() ? req.body.category.trim() : null,
+      anatomicalSection: typeof req.body?.anatomicalSection === "string" ? req.body.anatomicalSection : "",
+      conflictGroup: typeof req.body?.conflictGroup === "string" ? req.body.conflictGroup : "",
+      baselineReplaces: typeof req.body?.baselineReplaces === "string" ? req.body.baselineReplaces : "",
       sortOrder: Number.isFinite(Number(req.body?.sortOrder)) ? Number(req.body.sortOrder) : 0,
       isActive: req.body?.isActive !== false,
     }).returning();
@@ -204,6 +207,9 @@ router.patch("/findings/:id", requireAdminRole, async (req, res) => {
   if (typeof req.body?.suggests === "string") updates.suggests = req.body.suggests;
   if (typeof req.body?.properties === "string") updates.properties = req.body.properties;
   if (req.body?.category !== undefined) updates.category = typeof req.body.category === "string" && req.body.category.trim() ? req.body.category.trim() : null;
+  if (typeof req.body?.anatomicalSection === "string") updates.anatomicalSection = req.body.anatomicalSection;
+  if (typeof req.body?.conflictGroup === "string") updates.conflictGroup = req.body.conflictGroup;
+  if (typeof req.body?.baselineReplaces === "string") updates.baselineReplaces = req.body.baselineReplaces;
   if (req.body?.sortOrder !== undefined) updates.sortOrder = Number(req.body.sortOrder) || 0;
   if (typeof req.body?.isActive === "boolean") updates.isActive = req.body.isActive;
   try {

@@ -41,6 +41,11 @@ export type QuickFinding = {
   suggests: string;
   properties: string;
   category: string | null;
+  // Phase 6 Smart Findings: structured section this finding maps to, mutual-
+  // exclusion group, and optional baseline sentence it supersedes.
+  anatomicalSection: string;
+  conflictGroup: string;
+  baselineReplaces: string;
   sortOrder: number;
   isActive: boolean;
 };

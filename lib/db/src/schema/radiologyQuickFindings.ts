@@ -47,6 +47,21 @@ export const radiologyQuickFindingsTable = pgTable(
     // (comma list of: side, severity, chronicity, level, measurement)
     properties: text("properties").notNull().default(""),
     category: text("category"),
+    // ── Phase 6: Smart Findings engine ─────────────────────────────────────
+    // The structured-report section this finding belongs to. When it matches a
+    // loaded template section label (findingsItems[].label), selecting the
+    // finding flips that section from its baseline normal to this finding's
+    // text (intelligent replace + anatomical order + conflict resolution), in
+    // structured mode. Empty → the finding appends to free-text findings as
+    // before.
+    anatomicalSection: text("anatomical_section").notNull().default(""),
+    // Findings sharing a non-empty conflictGroup within a study are mutually
+    // exclusive — selecting one deselects the others (e.g. Fazekas 1 vs 2).
+    conflictGroup: text("conflict_group").notNull().default(""),
+    // Optional exact baseline normal sentence this finding supersedes (used in
+    // free-text mode / fine-grained replacement). In structured mode the whole
+    // mapped section's normal is replaced.
+    baselineReplaces: text("baseline_replaces").notNull().default(""),
     sortOrder: integer("sort_order").notNull().default(0),
     isActive: boolean("is_active").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
