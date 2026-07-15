@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   parseQuestions, fillStructuredTemplate, resolveSection, initialValues, missingRequired,
-  generateStructuredFinding,
+  generateStructuredFinding, parseEditableQuestions, serializeQuestions, type EditableQuestion,
 } from "./structuredFindings";
 
 // LS Disc Bulge finding template — one generic finding, level-driven section,
@@ -87,5 +87,50 @@ describe("parseQuestions / initialValues / missingRequired", () => {
   it("returns [] for empty / invalid json", () => {
     expect(parseQuestions("")).toEqual([]);
     expect(parseQuestions("not json")).toEqual([]);
+  });
+});
+
+describe("Settings editor model — parseEditableQuestions / serializeQuestions", () => {
+  it("parses the engine shape into editable rows (options joined for the text field)", () => {
+    const json = JSON.stringify([
+      { key: "level", label: "Level", type: "select", options: ["L4-L5", "L5-S1"], default: "L4-L5", required: true, sortOrder: 1 },
+      { key: "size", label: "Size", type: "text", options: [], default: "", sortOrder: 2 },
+    ]);
+    expect(parseEditableQuestions(json)).toEqual([
+      { key: "level", label: "Level", type: "select", options: "L4-L5, L5-S1", default: "L4-L5", required: true },
+      { key: "size", label: "Size", type: "text", options: "", default: "", required: false },
+    ]);
+  });
+
+  it("tolerates malformed / non-array JSON without throwing", () => {
+    expect(parseEditableQuestions("")).toEqual([]);
+    expect(parseEditableQuestions("not json")).toEqual([]);
+    expect(parseEditableQuestions('{"key":"x"}')).toEqual([]);
+  });
+
+  it("serializes rows back, numbering by display order, trimming options, key-fallback label", () => {
+    const rows: EditableQuestion[] = [
+      { key: "type", label: "Type", type: "select", options: "Diffuse, Focal", default: "Diffuse", required: false },
+      { key: "level", label: "", type: "select", options: " L4-L5 , L5-S1 ,", default: "L4-L5", required: true },
+    ];
+    expect(parseQuestions(serializeQuestions(rows))).toEqual([
+      { key: "type", label: "Type", type: "select", options: ["Diffuse", "Focal"], default: "Diffuse", required: false, sortOrder: 1 },
+      { key: "level", label: "level", type: "select", options: ["L4-L5", "L5-S1"], default: "L4-L5", required: true, sortOrder: 2 },
+    ]);
+  });
+
+  it("drops options for free-text questions", () => {
+    const rows: EditableQuestion[] = [
+      { key: "size", label: "Size", type: "text", options: "ignored, values", default: "", required: false },
+    ];
+    expect(JSON.parse(serializeQuestions(rows))[0].options).toEqual([]);
+  });
+
+  it("round-trips engine → editable → engine for a realistic finding", () => {
+    const original = JSON.stringify([
+      { key: "level", label: "Level", type: "select", options: ["L1-L2", "L4-L5"], default: "L4-L5", required: true, sortOrder: 1 },
+      { key: "canal", label: "Canal Stenosis", type: "select", options: ["Normal", "mild", "severe"], default: "Normal", required: false, sortOrder: 2 },
+    ]);
+    expect(parseQuestions(serializeQuestions(parseEditableQuestions(original)))).toEqual(parseQuestions(original));
   });
 });

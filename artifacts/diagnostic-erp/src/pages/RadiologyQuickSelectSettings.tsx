@@ -10,6 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { Plus, Trash2, Pencil, X, Save, Copy, RotateCcw, ArrowUp, ArrowDown, Search } from "lucide-react";
 import type { QuickFinding, QuickStudyTab, QuickMeasurement, QuickProtocol, QuickClinicalHistoryChip } from "@/components/radiology/QuickFindingsPanel";
+import StructuredQuestionsEditor from "@/components/radiology/StructuredQuestionsEditor";
 
 /**
  * Radiology Quick Select — admin configuration page.
@@ -26,6 +27,7 @@ const EMPTY_FINDING = {
   studyType: "", label: "", findingText: "", impressionText: "",
   techniqueText: "", recommendationText: "", icdCode: "", tags: "", suggests: "", properties: "",
   category: "", anatomicalSection: "", conflictGroup: "", baselineReplaces: "",
+  questionsJson: "[]",
   sortOrder: 0, isActive: true,
 };
 
@@ -396,9 +398,16 @@ export default function RadiologyQuickSelectSettings() {
                 <Input value={editingFinding.baselineReplaces} onChange={(e) => setEditingFinding({ ...editingFinding, baselineReplaces: e.target.value })} className="h-8 text-sm" placeholder="No disc bulge." />
               </div>
               <p className="md:col-span-3 text-[10px] text-muted-foreground">
-                In structured mode, selecting this finding replaces the matching template section's normal text with the finding text (anatomical order + conflict resolution are automatic). Leave the section blank to append to free-text findings instead.
+                In structured mode, selecting this finding replaces the matching template section's normal text with the finding text (anatomical order + conflict resolution are automatic). Leave the section blank to append to free-text findings instead. Use <span className="font-mono">{"{key}"}</span> to pull in a question&rsquo;s value, and <span className="font-mono">[ &hellip; {"{key}"} &hellip; ]</span> for a clause that drops when the value is Normal/None. Set the Anatomical section to <span className="font-mono">{"{level}"}</span> to map one finding to the chosen level&rsquo;s section.
               </p>
             </div>
+            {/* ── Structured Finding Assistant — configurable questions ─────── */}
+            <StructuredQuestionsEditor
+              key={editingFinding.id ?? "new-finding"}
+              initial={editingFinding.questionsJson}
+              referenceText={`${editingFinding.findingText} ${editingFinding.impressionText} ${editingFinding.anatomicalSection}`}
+              onChange={(json) => setEditingFinding((prev) => (prev ? { ...prev, questionsJson: json } : prev))}
+            />
             <div className="flex gap-2 justify-end">
               <Button size="sm" variant="outline" className="h-7" onClick={() => setEditingFinding(null)}>
                 <X size={12} /> Cancel
@@ -425,7 +434,7 @@ export default function RadiologyQuickSelectSettings() {
               {f.anatomicalSection ? <span className="text-[9px] rounded-full border border-primary/40 text-primary px-1.5 py-0.5 shrink-0" title="Structured section this finding flips">§ {f.anatomicalSection}</span> : null}
               <span className="text-xs text-muted-foreground truncate flex-1">{f.findingText || f.impressionText}</span>
               <Switch checked={f.isActive} onCheckedChange={(v) => toggleFinding.mutate({ id: f.id, isActive: v })} className="scale-75" />
-              <button onClick={() => setEditingFinding({ ...f, category: f.category ?? "", icdCode: f.icdCode ?? "", techniqueText: f.techniqueText ?? "", recommendationText: f.recommendationText ?? "", tags: f.tags ?? "", suggests: f.suggests ?? "", properties: f.properties ?? "", anatomicalSection: f.anatomicalSection ?? "", conflictGroup: f.conflictGroup ?? "", baselineReplaces: f.baselineReplaces ?? "" })} className="text-muted-foreground hover:text-primary">
+              <button onClick={() => setEditingFinding({ ...f, category: f.category ?? "", icdCode: f.icdCode ?? "", techniqueText: f.techniqueText ?? "", recommendationText: f.recommendationText ?? "", tags: f.tags ?? "", suggests: f.suggests ?? "", properties: f.properties ?? "", anatomicalSection: f.anatomicalSection ?? "", conflictGroup: f.conflictGroup ?? "", baselineReplaces: f.baselineReplaces ?? "", questionsJson: f.questionsJson ?? "[]" })} className="text-muted-foreground hover:text-primary">
                 <Pencil size={13} />
               </button>
               <button onClick={() => { if (window.confirm(`Delete "${f.label}"?`)) deleteFinding.mutate(f.id); }} className="text-muted-foreground hover:text-destructive">

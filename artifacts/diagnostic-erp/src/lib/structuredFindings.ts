@@ -125,3 +125,60 @@ export function generateStructuredFinding(
     recommendation: fillStructuredTemplate(f.recommendationText, values),
   };
 }
+
+// ── Settings editor model ────────────────────────────────────────────────────
+// The admin "Structured questions" sub-editor works on a slightly friendlier
+// shape than the runtime StructuredQuestion: dropdown options are a single
+// comma-separated string (so typing a comma never fights a controlled
+// re-parse), and display order is implicit in array position. These pure
+// helpers convert between that editing shape and the persisted questionsJson.
+// They live here (alias-free) so they are unit-testable under the root config,
+// same reasoning as quickSelectFindingsPayload.ts.
+
+export interface EditableQuestion {
+  key: string;
+  label: string;
+  type: "select" | "text";
+  options: string;   // comma-separated while editing; split on serialize
+  default: string;
+  required: boolean;
+}
+
+/** Lenient parse — preserves array order, tolerates malformed JSON (→ []). */
+export function parseEditableQuestions(value: string): EditableQuestion[] {
+  let arr: unknown;
+  try {
+    arr = JSON.parse(value || "[]");
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(arr)) return [];
+  return arr.map((raw) => {
+    const q = (raw ?? {}) as Record<string, unknown>;
+    return {
+      key: String(q.key ?? ""),
+      label: String(q.label ?? ""),
+      type: q.type === "text" ? "text" : "select",
+      options: Array.isArray(q.options) ? q.options.map((o) => String(o)).join(", ") : "",
+      default: String(q.default ?? ""),
+      required: !!q.required,
+    };
+  });
+}
+
+/** Serialize editable rows back to the StructuredQuestion[] shape the engine
+ *  consumes. Display order becomes sortOrder; a blank label falls back to the
+ *  key; free-text questions drop any options. */
+export function serializeQuestions(qs: EditableQuestion[]): string {
+  return JSON.stringify(
+    qs.map((q, i) => ({
+      key: q.key.trim(),
+      label: q.label.trim() || q.key.trim(),
+      type: q.type,
+      options: q.type === "text" ? [] : q.options.split(",").map((o) => o.trim()).filter(Boolean),
+      default: q.default.trim(),
+      required: q.required,
+      sortOrder: i + 1,
+    })),
+  );
+}
