@@ -121,6 +121,7 @@ import { usgReportsRouter } from "./usgReports";
 import { usgCriticalAlertsRouter } from "./usgCriticalAlerts";
 import { usgAnalyticsRouter } from "./usgAnalytics";
 import { careUsgCompanionRouter } from "./careUsgCompanion";
+import { radiologyKnowledgePacksRouter } from "./radiologyKnowledgePacks";
 import echoCardiologyRouter from "./echoCardiology";
 import fetalUsgLevel4Router from "./fetalUsgLevel4";
 import pregnancyDashboardRouter from "./pregnancyDashboard";
@@ -555,6 +556,12 @@ router.use("/usg-analytics", requireStaffAuth, requireStaffPermission("/radiolog
 // engine). Study/assembly responses are shared resources (keyed by study), so
 // they are safe for the service worker to cache — no personal-identity scoping.
 router.use("/care-usg-companion", requireStaffAuth, requireStaffPermission("/radiology"), careUsgCompanionRouter);
+
+// CARE Knowledge Pack Engine — a registry/loader/validator over the existing
+// per-study-type content (quick findings / protocols / history / measurements /
+// impression rules / templates / teaching / knowledge). Reads: any radiology
+// staff. Mutations: admin-only (enforced inside the router). Purely additive.
+router.use("/radiology/knowledge-packs", requireStaffAuth, requireStaffPermission("/radiology"), radiologyKnowledgePacksRouter);
 router.use("/echo-cardiology", requireStaffAuth, requireStaffPermission("/radiology"), echoCardiologyRouter);
 router.use("/fetal-usg", requireStaffAuth, requireStaffPermission("/radiology"), fetalUsgLevel4Router);
 router.use("/fetal-usg-dashboard", requireStaffAuth, requireStaffPermission("/radiology"), pregnancyDashboardRouter);

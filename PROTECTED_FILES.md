@@ -140,6 +140,7 @@ usgDoppler.ts
 usgExtraction.ts
 usgReports.ts
 careUsgCompanion.ts   # CARE USG Companion (Phase 1) — study assembly + telemetry
+radiologyKnowledgePacks.ts   # CARE Knowledge Pack Engine — registry/loader/validator over existing content
 abnormal-findings.ts
 echoCardiology.ts
 fetalUsgLevel4.ts
@@ -189,6 +190,7 @@ radiologyWorklist.ts
 smartRadiology.ts
 teleradiologyUsers.ts
 usgCompanion.ts   # CARE USG Companion (Phase 1) — companion_runs telemetry
+knowledgePacks.ts   # CARE Knowledge Pack Engine — knowledge_packs registry
 ```
 
 ### Frontend pages

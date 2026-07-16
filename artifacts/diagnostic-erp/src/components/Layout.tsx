@@ -282,6 +282,7 @@ const navItems: NavEntry[] = [
       { path: "/ai-caller-credentials",     icon: KeyRound,       label: "AI Caller Credentials", ownerOnly: true },
       { path: "/settings/radiology", icon: Radio,          label: "Radiology Settings", ownerOnly: true },
       { path: "/settings/radiology-quick-select", icon: Zap, label: "Quick Select Buttons", ownerOnly: true },
+      { path: "/settings/radiology/knowledge-packs", icon: Package, label: "Knowledge Packs", ownerOnly: true },
       { path: "/tests",                     icon: FlaskConical,   label: "Test Catalog" },
       { path: "/outsourced-labs",           icon: Building2,      label: "Outsourced Labs" },
       { path: "/outsourced-cost-report",    icon: IndianRupee,    label: "Outsource Costs" },
