@@ -9,6 +9,7 @@ import {
   UpdateOrderBody,
 } from "@workspace/api-zod";
 import { sanitizePatient } from "./patients";
+import { getSlowThresholdMs } from "../lib/requestMetrics";
 
 export const ordersRouter = Router();
 
@@ -20,20 +21,36 @@ async function generateOrderNumber(): Promise<string> {
   return `${prefix}-${String(num).padStart(4, "0")}`;
 }
 
-async function buildOrder(order: typeof ordersTable.$inferSelect) {
+// Preloaded rows a caller may already hold (e.g. POST / just validated the
+// patient/doctor and inserted the order tests) so buildOrder can skip its
+// lookups on the hot save-and-print path while remaining the ONE place that
+// defines this endpoint family's response shape.
+interface BuildOrderPreloaded {
+  orderTestRows: Array<{
+    orderTest: typeof orderTestsTable.$inferSelect;
+    test: typeof testsTable.$inferSelect | null;
+  }>;
+  patient: typeof patientsTable.$inferSelect | null;
+  doctor: typeof doctorsTable.$inferSelect | null;
+}
+
+async function buildOrder(order: typeof ordersTable.$inferSelect, preloaded?: BuildOrderPreloaded) {
   // Hot path: runs on every order create at the billing desk — batch the
-  // independent lookups instead of awaiting them one by one.
-  const [orderTestRows, [patient], doctorRows] = await Promise.all([
-    db
-      .select({ orderTest: orderTestsTable, test: testsTable })
-      .from(orderTestsTable)
-      .leftJoin(testsTable, eq(orderTestsTable.testId, testsTable.id))
-      .where(eq(orderTestsTable.orderId, order.id)),
-    db.select().from(patientsTable).where(eq(patientsTable.id, order.patientId)),
-    order.doctorId
-      ? db.select().from(doctorsTable).where(eq(doctorsTable.id, order.doctorId))
-      : Promise.resolve([] as (typeof doctorsTable.$inferSelect)[]),
-  ]);
+  // independent lookups instead of awaiting them one by one, and skip them
+  // entirely when the caller already holds the rows.
+  const [orderTestRows, [patient], doctorRows] = preloaded
+    ? [preloaded.orderTestRows, [preloaded.patient ?? undefined], preloaded.doctor ? [preloaded.doctor] : []]
+    : await Promise.all([
+        db
+          .select({ orderTest: orderTestsTable, test: testsTable })
+          .from(orderTestsTable)
+          .leftJoin(testsTable, eq(orderTestsTable.testId, testsTable.id))
+          .where(eq(orderTestsTable.orderId, order.id)),
+        db.select().from(patientsTable).where(eq(patientsTable.id, order.patientId)),
+        order.doctorId
+          ? db.select().from(doctorsTable).where(eq(doctorsTable.id, order.doctorId))
+          : Promise.resolve([] as (typeof doctorsTable.$inferSelect)[]),
+      ]);
   const doctor = doctorRows[0] ?? null;
 
   return {
@@ -70,7 +87,7 @@ ordersRouter.get("/", async (req, res) => {
     db.select({ count: sql<number>`count(*)` }).from(ordersTable).where(conditions.length > 0 ? and(...conditions) : undefined),
   ]);
 
-  const ordersWithDetails = await Promise.all(orders.map(buildOrder));
+  const ordersWithDetails = await Promise.all(orders.map((o) => buildOrder(o)));
   res.json({ orders: ordersWithDetails, total: Number(countResult[0]?.count ?? 0), page, limit });
 });
 
@@ -81,32 +98,24 @@ ordersRouter.post("/", async (req, res) => {
     return;
   }
   const { patientId, doctorId, testIds, tests: customTests, notes, clientRef } = parsed.data;
+  const startedAt = Date.now();
 
-  // ── Idempotency check (duplicate bill / connectivity retry fix) ───────────
-  // If the client sends a clientRef UUID and an order already exists with that
-  // key, return the existing order immediately. This makes POST /api/orders
-  // safe to retry after a network timeout — the browser gets the same order
-  // back instead of creating a duplicate, which would then produce a duplicate
-  // bill on the next POST /api/bills.
-  if (clientRef) {
-    const existing = await db.execute<{ id: number }>(
-      sql`SELECT id FROM orders WHERE client_ref = ${clientRef} LIMIT 1`
-    );
-    const rows = Array.isArray(existing) ? existing : (existing as any).rows ?? [];
-    const existingId: number | undefined = rows[0]?.id;
-    if (existingId) {
-      const [orderRow] = await db.select().from(ordersTable)
-        .where(eq(ordersTable.id, existingId));
+  const probeByClientRef = () =>
+    db.select().from(ordersTable).where(eq(ordersTable.clientRef, clientRef!)).limit(1);
+
+  const hasCustom = !!customTests && customTests.length > 0;
+  const hasLegacy = !!testIds && testIds.length > 0;
+  if (!hasCustom && !hasLegacy) {
+    // Idempotency still wins over body validation (matching the original
+    // check order): a retry carrying a known clientRef but a degraded body
+    // must replay the existing order, not 400.
+    if (clientRef) {
+      const [orderRow] = await probeByClientRef();
       if (orderRow) {
         res.status(200).json(await buildOrder(orderRow));
         return;
       }
     }
-  }
-
-  const hasCustom = !!customTests && customTests.length > 0;
-  const hasLegacy = !!testIds && testIds.length > 0;
-  if (!hasCustom && !hasLegacy) {
     res.status(400).json({
       error: "Invalid request",
       details: [
@@ -119,20 +128,31 @@ ordersRouter.post("/", async (req, res) => {
     return;
   }
 
-  // The patient/doctor/test validation lookups and the order-number sequence
-  // are independent — batch them into one round-trip wave. This POST is the
-  // first half of every billing-desk save, so serial awaits here directly
-  // delay the receipt print. Validation results are checked in the original
-  // order (patient → doctor → tests) so error precedence is unchanged.
+  // The idempotency probe, patient/doctor/test validation lookups, and the
+  // order-number sequence are all independent — batch them into one
+  // round-trip wave. This POST is the first half of every billing-desk save,
+  // so serial awaits here directly delay the receipt print. The idempotency
+  // result is checked first, then validation results in the original order
+  // (patient → doctor → tests), so error precedence is unchanged.
   const requestedTestIds = hasCustom ? customTests!.map((ct) => ct.testId) : testIds!;
-  const [patientRows, doctorRows, testRows, orderNumber] = await Promise.all([
-    db.select({ id: patientsTable.id }).from(patientsTable).where(eq(patientsTable.id, patientId)),
+  const [existingByRef, patientRows, doctorRows, testRows, orderNumber] = await Promise.all([
+    // ── Idempotency probe (duplicate bill / connectivity retry fix) ────────
+    // If the client sent a clientRef UUID and an order already exists with
+    // that key, return the existing order instead of creating a duplicate,
+    // which would then produce a duplicate bill on the next POST /api/bills.
+    clientRef ? probeByClientRef() : Promise.resolve([] as (typeof ordersTable.$inferSelect)[]),
+    db.select().from(patientsTable).where(eq(patientsTable.id, patientId)),
     doctorId !== undefined && doctorId !== null
       ? db.select().from(doctorsTable).where(eq(doctorsTable.id, doctorId))
       : Promise.resolve([] as (typeof doctorsTable.$inferSelect)[]),
     db.select().from(testsTable).where(inArray(testsTable.id, requestedTestIds)),
     generateOrderNumber(),
   ]);
+
+  if (existingByRef[0]) {
+    res.status(200).json(await buildOrder(existingByRef[0]));
+    return;
+  }
 
   if (!patientRows[0]) {
     res.status(400).json({
@@ -165,6 +185,10 @@ ordersRouter.post("/", async (req, res) => {
     resolvedDoctor = d;
   }
 
+  // One id→row map over the fetched catalog rows, shared by validation, the
+  // outsource-cost resolution at insert time, and the response build below.
+  const testMap = new Map(testRows.map((t) => [t.id, t]));
+
   // Support two formats: custom [{testId, price}] or legacy testIds[]
   // BOTH paths must verify each test id exists AND is active, otherwise we'd
   // accept orders for discontinued/unknown tests and silently fail at insert
@@ -172,9 +196,8 @@ ordersRouter.post("/", async (req, res) => {
   let lineItems: { testId: number; price: string }[] = [];
   if (hasCustom) {
     const requestedIds = requestedTestIds;
-    const foundMap = new Map(testRows.map((t) => [t.id, t]));
-    const missing = requestedIds.filter((id) => !foundMap.has(id));
-    const inactive = requestedIds.filter((id) => foundMap.get(id) && !foundMap.get(id)!.isActive);
+    const missing = requestedIds.filter((id) => !testMap.has(id));
+    const inactive = requestedIds.filter((id) => testMap.get(id) && !testMap.get(id)!.isActive);
     if (missing.length > 0 || inactive.length > 0) {
       res.status(400).json({
         error: "Invalid request",
@@ -227,37 +250,58 @@ ordersRouter.post("/", async (req, res) => {
   // Resolve ledger from doctor (fallback: default ledger 1)
   const ledgerId = resolvedDoctor?.ledgerId ?? 1;
 
-  const [order] = await db.insert(ordersTable).values({
-    orderNumber,
-    patientId,
-    doctorId: doctorId ?? null,
-    totalAmount: String(totalAmount),
-    notes: notes ?? null,
-    status: "pending",
-    ledgerId,
-    // Store clientRef so subsequent retries return this same order
-    clientRef: clientRef ?? null,
-  }).returning();
+  // Insert the order and its line items in ONE transaction: a single commit
+  // (one WAL fsync) instead of two, and a crash between the two inserts can
+  // no longer leave an order with no line items.
+  const { order, orderTestRows } = await db.transaction(async (tx) => {
+    const [orderRow] = await tx.insert(ordersTable).values({
+      orderNumber,
+      patientId,
+      doctorId: doctorId ?? null,
+      totalAmount: String(totalAmount),
+      notes: notes ?? null,
+      status: "pending",
+      ledgerId,
+      // Store clientRef so subsequent retries return this same order
+      clientRef: clientRef ?? null,
+    }).returning();
 
-  if (lineItems.length > 0) {
-    // Resolve outsource cost for each test to store in order_tests — reuses
-    // the test rows already fetched for validation instead of re-querying.
-    const testMap = new Map(testRows.map((t) => [t.id, t]));
-    await db.insert(orderTestsTable).values(
-      lineItems.map((t) => {
-        const test = testMap.get(t.testId);
-        const oc = test?.outsourceCost != null ? String(test.outsourceCost) : null;
-        return {
-          orderId: order.id,
-          testId: t.testId,
-          price: t.price,
-          outsourceCost: oc,
-        };
-      })
-    );
+    let insertedTests: (typeof orderTestsTable.$inferSelect)[] = [];
+    if (lineItems.length > 0) {
+      // Resolve outsource cost for each test to store in order_tests — reuses
+      // the test rows already fetched for validation instead of re-querying.
+      insertedTests = await tx.insert(orderTestsTable).values(
+        lineItems.map((t) => {
+          const test = testMap.get(t.testId);
+          const oc = test?.outsourceCost != null ? String(test.outsourceCost) : null;
+          return {
+            orderId: orderRow.id,
+            testId: t.testId,
+            price: t.price,
+            outsourceCost: oc,
+          };
+        })
+      ).returning();
+    }
+
+    return { order: orderRow, orderTestRows: insertedTests };
+  });
+
+  // Build the response through buildOrder — the single owner of this
+  // endpoint family's response shape — feeding it the rows already in hand
+  // (validated patient and doctor rows, catalog test rows, inserted
+  // order/order_tests rows) so it makes zero extra round-trips here.
+  const fullOrder = await buildOrder(order, {
+    orderTestRows: orderTestRows.map((ot) => ({ orderTest: ot, test: testMap.get(ot.testId) ?? null })),
+    patient: patientRows[0],
+    doctor: resolvedDoctor,
+  });
+
+  const totalMs = Date.now() - startedAt;
+  if (totalMs > getSlowThresholdMs()) {
+    req.log?.warn?.({ totalMs, orderId: order.id }, "slow order create");
   }
 
-  const fullOrder = await buildOrder(order);
   res.status(201).json(fullOrder);
 });
 

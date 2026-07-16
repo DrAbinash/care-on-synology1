@@ -94,6 +94,33 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// After a NETWORK-level failure (no response at all), wait for connectivity
+// to return before burning the next retry — capped so a browser that
+// misreports navigator.onLine (common on LAN-only clinic PCs with no internet
+// uplink) can't stall a retry for long. Never called before the first
+// attempt, and never after an HTTP error (a status code proves the server is
+// reachable regardless of what navigator.onLine claims).
+const RETRY_ONLINE_WAIT_MS = 8_000;
+function waitForOnline(maxMs: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const handler = () => { window.removeEventListener("online", handler); resolve(); };
+    window.addEventListener("online", handler);
+    setTimeout(() => { window.removeEventListener("online", handler); resolve(); }, maxMs);
+  });
+}
+
+// Shared retry pacing + DevTools breadcrumb for both retry classes (network
+// throw and 5xx gateway status) so silent retry delays stay diagnosable and
+// the two paths cannot drift apart.
+async function backoffBeforeRetry(path: string, init: RequestInit | undefined, attempt: number, reason: string, networkLevelFailure: boolean): Promise<void> {
+  const delay = retryDelay(attempt);
+  console.warn(`[fetchApi] ${init?.method ?? "GET"} ${path} ${reason} (attempt ${attempt + 1}/${MAX_RETRIES + 1}), retrying in ${Math.round(delay)}ms`);
+  await sleep(delay);
+  if (networkLevelFailure && !navigator.onLine) {
+    await waitForOnline(RETRY_ONLINE_WAIT_MS);
+  }
+}
+
 async function doFetch(path: string, init?: RequestInit): Promise<Response> {
   return fetch(path, { headers: buildHeaders(init), ...init });
 }
@@ -102,24 +129,21 @@ export async function fetchApi<T = unknown>(path: string, init?: RequestInit): P
   let lastErr: unknown;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    // Bail immediately if the browser reports no connectivity — no point
-    // hammering the server when the LAN cable is literally unplugged.
-    if (!navigator.onLine) {
-      // Wait up to 10s for connectivity to return before giving up
-      await new Promise<void>((resolve) => {
-        const handler = () => { window.removeEventListener("online", handler); resolve(); };
-        window.addEventListener("online", handler);
-        setTimeout(() => { window.removeEventListener("online", handler); resolve(); }, 10_000);
-      });
-    }
-
+    // ALWAYS attempt the request, even when navigator.onLine is false. The
+    // ERP talks to a LAN server: browsers routinely report "offline" on
+    // clinic PCs with no internet uplink (or with VPN/virtual adapters) while
+    // the NAS is perfectly reachable. The old behaviour — sleeping up to 10s
+    // BEFORE every attempt, including the first — silently added ~10s to
+    // every request (~20s per bill save) on such machines. The offline signal
+    // is now consulted only between retries after a real network failure
+    // (see backoffBeforeRetry).
     let res: Response | undefined;
     try {
       res = await doFetch(path, init);
     } catch (err) {
       lastErr = err;
       if (attempt < MAX_RETRIES && isTransientError(err)) {
-        await sleep(retryDelay(attempt));
+        await backoffBeforeRetry(path, init, attempt, "failed with a network error", true);
         continue;
       }
       // Last attempt or non-transient: surface the original network error
@@ -131,9 +155,10 @@ export async function fetchApi<T = unknown>(path: string, init?: RequestInit): P
     }
 
     if (!res.ok) {
-      // Retry on gateway errors only
+      // Retry on gateway errors only. No online-wait here: an HTTP status
+      // means the server answered, so connectivity is proven.
       if (attempt < MAX_RETRIES && isTransientError(null, res.status)) {
-        await sleep(retryDelay(attempt));
+        await backoffBeforeRetry(path, init, attempt, `got ${res.status}`, false);
         continue;
       }
 

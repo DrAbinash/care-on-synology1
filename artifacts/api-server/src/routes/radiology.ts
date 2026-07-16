@@ -33,10 +33,10 @@ import {
   usgKeyImagesTable,
   usgReportDraftsTable,
 } from "@workspace/db/schema";
-import { and, asc, desc, eq, gte, ilike, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import crypto from "node:crypto";
 import { FULL_ACCESS_ROLES, type StaffAuthRequest } from "../middleware/requireStaffAuth.js";
-import { computeStudyPriority, applyPriorityToStudy } from "../lib/studyPriorityEngine";
+import { computeStudyPriority } from "../lib/studyPriorityEngine";
 import { getLockTtlSeconds } from "../lib/studyLocks";
 import { lockExpiresAt } from "../lib/studyLockRules";
 import { assignRadiologistToStudy } from "../lib/radiologistAssignment";
@@ -135,6 +135,30 @@ export async function generateStudiesForOrder(opts: {
     if (!RADIOLOGY_DEPARTMENTS.includes(department)) continue; // skip non-radiology tests
     const modality = MODALITY_MAP[department] ?? "OT";
 
+    // Resolve priority + reason BEFORE the insert so it lands in the single
+    // INSERT for both branches — one committed write per study instead of an
+    // insert followed by an applyPriorityToStudy UPDATE. Caller-supplied
+    // priority (the billing desk always sends one) keeps its historical
+    // "VIP Patient Flag" reason; otherwise the priority engine computes it.
+    let priority: NonNullable<typeof opts.priority> = opts.priority ?? "routine";
+    let priorityReason = "VIP Patient Flag";
+    if (!opts.priority) {
+      try {
+        const priorityResult = await computeStudyPriority({
+          modality,
+          bodyPart: opts.dicomFields?.bodyPart ?? null,
+          studyDescription: opts.dicomFields?.studyDescription ?? null,
+          referringDoctor: opts.dicomFields?.referringDoctor ?? null,
+        });
+        priority = priorityResult.priority;
+        priorityReason = priorityResult.reason;
+      } catch {
+        // Never block study creation on priority computation failure
+        priority = "routine";
+        priorityReason = "Default (priority engine unavailable)";
+      }
+    }
+
     let lastErr: unknown = null;
     for (let attempt = 0; attempt < 6; attempt++) {
       const accessionNumber = await nextAccessionNumber(modality);
@@ -151,34 +175,23 @@ export async function generateStudiesForOrder(opts: {
           roomNumber: ot.roomNumber || "",
           status: "scheduled",
           studyDate: todayISO(),
-          priority: opts.priority || "routine",
+          priority,
+          priorityReason,
           ...(opts.dicomFields?.studyDescription ? { studyDescription: opts.dicomFields.studyDescription } : {}),
           ...(opts.dicomFields?.bodyPart ? { bodyPart: opts.dicomFields.bodyPart } : {}),
           ...(opts.dicomFields?.scheduledStationAETitle ? { scheduledStationAETitle: opts.dicomFields.scheduledStationAETitle } : {}),
           ...(opts.dicomFields?.referringDoctor ? { referringDoctor: opts.dicomFields.referringDoctor } : {}),
         }).returning();
 
-        // ── Auto-priority + auto-assignment (Phase 1 enterprise upgrade) ──
+        // ── Auto-assignment (Phase 1 enterprise upgrade) ──
         try {
-          if (opts.priority) {
-            await applyPriorityToStudy(row.id, opts.priority, "VIP Patient Flag");
-          } else {
-            const priorityResult = await computeStudyPriority({
-              modality,
-              bodyPart: opts.dicomFields?.bodyPart ?? null,
-              studyDescription: opts.dicomFields?.studyDescription ?? null,
-              referringDoctor: opts.dicomFields?.referringDoctor ?? null,
-            });
-            await applyPriorityToStudy(row.id, priorityResult.priority, priorityResult.reason);
-          }
-
           await assignRadiologistToStudy(row.id, {
             modality,
             bodyPart: opts.dicomFields?.bodyPart ?? null,
             studyId: row.id,
           });
         } catch {
-          // Never block study creation on priority/assignment failure
+          // Never block study creation on assignment failure
         }
 
         out.push({ orderTestId: ot.orderTestId, testName: ot.testName, modality, accessionNumber: row.accessionNumber });
@@ -202,6 +215,56 @@ export async function generateStudiesForOrder(opts: {
     if (lastErr) throw lastErr;
   }
   return out;
+}
+
+// ── Missing-study reconciliation ────────────────────────────────────────────
+// Safety net for the study fan-out: bills.ts fires generateStudiesForOrder
+// without awaiting it (so the receipt prints without waiting on per-study
+// accession allocation + radiologist assignment), and even before that the
+// fan-out was log-and-continue — an error or a process restart could leave a
+// PAID radiology test with no study row, invisible to the worklist. This
+// sweep finds billed radiology order-tests from the last 48h that have no
+// radiology_studies row and re-runs the (idempotent, unique-per-orderTest)
+// fan-out for them. Called at startup and on an interval from index.ts.
+export async function reconcileMissingStudies(): Promise<number> {
+  const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000);
+  const missing = await db
+    .selectDistinct({
+      orderId: orderTestsTable.orderId,
+      patientId: ordersTable.patientId,
+      billId: billsTable.id,
+    })
+    .from(orderTestsTable)
+    .innerJoin(testsTable, eq(testsTable.id, orderTestsTable.testId))
+    .innerJoin(ordersTable, eq(ordersTable.id, orderTestsTable.orderId))
+    .innerJoin(billsTable, eq(billsTable.orderId, ordersTable.id))
+    .leftJoin(radiologyStudiesTable, eq(radiologyStudiesTable.orderTestId, orderTestsTable.id))
+    .where(and(
+      inArray(testsTable.department, RADIOLOGY_DEPARTMENTS),
+      isNull(radiologyStudiesTable.id),
+      sql`${billsTable.status} != 'cancelled'`,
+      gte(billsTable.createdAt, cutoff),
+    ));
+
+  let recovered = 0;
+  for (const row of missing) {
+    try {
+      // priority intentionally omitted: the priority engine computes it,
+      // same as any non-billing-desk study creation.
+      const created = await generateStudiesForOrder({
+        billId: row.billId,
+        orderId: row.orderId,
+        patientId: row.patientId,
+      });
+      recovered += created.length;
+      if (created.length > 0) {
+        logger.warn({ orderId: row.orderId, billId: row.billId, created: created.length }, "reconciled missing radiology studies for billed order");
+      }
+    } catch (err) {
+      logger.warn({ err, orderId: row.orderId }, "missing-study reconciliation failed for order");
+    }
+  }
+  return recovered;
 }
 
 // ── Worklist ────────────────────────────────────────────────────────────────

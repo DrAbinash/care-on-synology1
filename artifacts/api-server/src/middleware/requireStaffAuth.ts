@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from "express";
 import { db } from "@workspace/db";
 import { portalSessionsTable, usersTable, clinicSettingsTable } from "@workspace/db/schema";
 import { and, eq, gt } from "drizzle-orm";
+import { getCached, setCached } from "../lib/ttlCache";
 
 export interface StaffAuthRequest extends Request {
   staffSession?: {
@@ -23,6 +24,21 @@ export function normalizeRole(role: string): string {
 }
 
 export const FULL_ACCESS_ROLES = new Set(["admin", "super_admin"]);
+
+const IDLE_TIMEOUT_CACHE_KEY = "clinic-settings:session-idle-timeout-minutes";
+const IDLE_TIMEOUT_CACHE_TTL_MS = 60_000;
+
+async function getIdleTimeoutMinutes(): Promise<number> {
+  const cached = getCached<number>(IDLE_TIMEOUT_CACHE_KEY);
+  if (cached !== undefined) return cached;
+  const [cfg] = await db
+    .select({ idleMinutes: clinicSettingsTable.sessionIdleTimeoutMinutes })
+    .from(clinicSettingsTable)
+    .limit(1);
+  const idleMinutes = cfg?.idleMinutes ?? 0;
+  setCached(IDLE_TIMEOUT_CACHE_KEY, idleMinutes, IDLE_TIMEOUT_CACHE_TTL_MS);
+  return idleMinutes;
+}
 
 /**
  * Express middleware that requires a valid, active, non-expired staff portal
@@ -47,17 +63,28 @@ export async function requireStaffAuth(
     return;
   }
 
-  const [session] = await db
-    .select()
-    .from(portalSessionsTable)
-    .where(
-      and(
-        eq(portalSessionsTable.token, token),
-        eq(portalSessionsTable.scope, "staff"),
-        gt(portalSessionsTable.expiresAt, new Date()),
-      ),
-    )
-    .limit(1);
+  // The session lookup and the clinic idle-timeout setting are independent —
+  // fetch them in one round-trip wave. This middleware runs on every
+  // authenticated request (twice per billing-desk save: POST /api/orders then
+  // POST /api/bills), so each serial round-trip here delays the receipt print.
+  // The idle-timeout setting is a single reference value that changes ~never,
+  // so it is served from the in-process TTL cache (ttlCache.ts, same pattern
+  // as clinicSettings.ts/display.ts) — a config change takes at most 60s to
+  // reach this middleware, well within the minute-resolution the setting has.
+  const [[session], idleMinutes] = await Promise.all([
+    db
+      .select()
+      .from(portalSessionsTable)
+      .where(
+        and(
+          eq(portalSessionsTable.token, token),
+          eq(portalSessionsTable.scope, "staff"),
+          gt(portalSessionsTable.expiresAt, new Date()),
+        ),
+      )
+      .limit(1),
+    getIdleTimeoutMinutes(),
+  ]);
 
   if (!session) {
     res.status(401).json({ error: "Invalid or expired staff session. Please log in again." });
@@ -67,12 +94,6 @@ export async function requireStaffAuth(
   // ── Idle timeout enforcement ──────────────────────────────────────────────
   // If clinic_settings.session_idle_timeout_minutes > 0, invalidate the
   // session when it has been idle longer than the configured window.
-  const [cfg] = await db
-    .select({ idleMinutes: clinicSettingsTable.sessionIdleTimeoutMinutes })
-    .from(clinicSettingsTable)
-    .limit(1);
-
-  const idleMinutes = cfg?.idleMinutes ?? 0;
   if (idleMinutes > 0 && session.lastActivityAt) {
     const idleMs = Date.now() - new Date(session.lastActivityAt).getTime();
     if (idleMs > idleMinutes * 60 * 1000) {
@@ -111,10 +132,17 @@ export async function requireStaffAuth(
     /* leave permissions empty */
   }
 
-  // Touch last_activity_at so idle timeout resets on every authenticated request
-  await db.update(portalSessionsTable)
+  // Touch last_activity_at so the idle timeout resets on every authenticated
+  // request. Fired WITHOUT await: this is a committed write (WAL fsync) that
+  // used to gate every single response — including both halves of a
+  // billing-desk save — and nothing downstream reads its result. It is NOT
+  // debounced: the idle check above compares against this timestamp, so any
+  // staleness window would shrink the effective idle timeout by that much
+  // and could log out actively-working staff.
+  db.update(portalSessionsTable)
     .set({ lastActivityAt: new Date() })
-    .where(eq(portalSessionsTable.id, session.id));
+    .where(eq(portalSessionsTable.id, session.id))
+    .catch((err) => req.log?.warn?.({ err }, "session last_activity_at touch failed"));
 
   req.staffSession = {
     id: session.id,
