@@ -216,6 +216,17 @@ export default function RadiologyOperationsDashboard() {
     refetchInterval: refreshInterval,
   });
 
+  // CARE Knowledge Pack Engine — registry coverage/health for the cockpit.
+  const { data: packStats } = useQuery<{
+    total: number; enabled: number; placeholder: number; planned: number;
+    healthy: number; warnings: number; broken: number; byModality: Record<string, number>;
+    goldStandardCompletion: number; modalityReadiness: Record<string, number>;
+  }>({
+    queryKey: ["/api/radiology/knowledge-packs/stats"],
+    queryFn: () => api.get("/api/radiology/knowledge-packs/stats"),
+    refetchInterval: refreshInterval,
+  });
+
   // Mutate Profile Override
   const profileMutation = useMutation({
     mutationFn: (profile: "LAN" | "TAILSCALE" | "PUBLIC") =>
@@ -875,6 +886,66 @@ export default function RadiologyOperationsDashboard() {
         </div>
         {(companionStats?.totalRuns ?? 0) === 0 && (
           <p className="text-[11px] text-slate-500">No Companion activity recorded yet — stats populate as USG studies are reported through the Companion.</p>
+        )}
+      </div>
+
+      {/* CARE Knowledge Pack Engine — coverage & health */}
+      <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-5 shadow-lg flex flex-col gap-4">
+        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+          <div className="flex items-center gap-2">
+            <Layers size={18} className="text-indigo-400" />
+            <h3 className="text-sm font-bold text-slate-200">Knowledge Packs</h3>
+          </div>
+          <Badge variant="outline" className="text-indigo-400 border-indigo-400/20 bg-indigo-500/5">
+            {packStats?.total ?? 0} installed
+          </Badge>
+        </div>
+        {/* Gold-Standard completion — average section readiness across enabled packs */}
+        <div className="bg-slate-950 p-3 rounded-lg border border-slate-800/80">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-slate-400 font-semibold text-xs">Gold Standard Completion</span>
+            <span className={`text-lg font-bold ${((packStats?.goldStandardCompletion ?? 0) >= 80 ? "text-emerald-400" : (packStats?.goldStandardCompletion ?? 0) >= 50 ? "text-amber-400" : "text-rose-400")}`}>
+              {packStats?.goldStandardCompletion ?? 0}%
+            </span>
+          </div>
+          <div className="h-2 rounded-full bg-slate-800 overflow-hidden">
+            <div
+              className={`h-full rounded-full ${((packStats?.goldStandardCompletion ?? 0) >= 80 ? "bg-emerald-500" : (packStats?.goldStandardCompletion ?? 0) >= 50 ? "bg-amber-500" : "bg-rose-500")}`}
+              style={{ width: `${Math.min(100, Math.max(0, packStats?.goldStandardCompletion ?? 0))}%` }}
+            />
+          </div>
+          {packStats && Object.keys(packStats.modalityReadiness ?? {}).length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {Object.entries(packStats.modalityReadiness).sort().map(([m, pct]) => (
+                <span key={m} className="text-[10px] px-2 py-0.5 rounded bg-slate-800/80 text-slate-300 border border-slate-700">
+                  {m} readiness · <span className={pct >= 80 ? "text-emerald-400" : pct >= 50 ? "text-amber-400" : "text-rose-400"}>{pct}%</span>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3">
+          {([
+            ["Enabled", packStats?.enabled, "text-emerald-400"],
+            ["Healthy", packStats?.healthy, "text-emerald-400"],
+            ["Warnings", packStats?.warnings, "text-amber-400"],
+            ["Broken", packStats?.broken, "text-rose-400"],
+            ["Placeholders", packStats?.placeholder, "text-amber-300"],
+            ["Planned", packStats?.planned, "text-slate-400"],
+            ["Modalities", packStats ? Object.keys(packStats.byModality ?? {}).length : 0, "text-slate-200"],
+          ] as const).map(([label, value, tone]) => (
+            <div key={label} className="bg-slate-950 p-3 rounded-lg border border-slate-800/80">
+              <span className="text-slate-400 font-semibold text-xs">{label}</span>
+              <p className={`text-xl font-bold mt-1 ${tone}`}>{value ?? 0}</p>
+            </div>
+          ))}
+        </div>
+        {packStats && Object.keys(packStats.byModality ?? {}).length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {Object.entries(packStats.byModality).sort().map(([m, n]) => (
+              <span key={m} className="text-[10px] px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">{m} · {n}</span>
+            ))}
+          </div>
         )}
       </div>
 

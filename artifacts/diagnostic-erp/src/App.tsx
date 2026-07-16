@@ -101,6 +101,7 @@ const RadiologyFlightDeck = lazy(() => import("@/pages/RadiologyFlightDeck"));
 const ScannerSettings = lazy(() => import("@/pages/ScannerSettings"));
 const RadiologyQuickSelectSettings = lazy(() => import("@/pages/RadiologyQuickSelectSettings"));
 const RadiologyOperationsDashboard = lazy(() => import("@/pages/RadiologyOperationsDashboard"));
+const RadiologyKnowledgePackManager = lazy(() => import("@/pages/RadiologyKnowledgePackManager"));
 const MyReportingAnalytics         = lazy(() => import("@/pages/MyReportingAnalytics"));
 const AiPromptTemplates     = lazy(() => import("@/pages/AiPromptTemplates"));
 const AiPromptManager       = lazy(() => import("@/pages/AiPromptManager"));
@@ -580,6 +581,10 @@ function Router() {
               </Route>
               <Route path="/radiology/settings-center">
                 {() => <AdminOnlySettings><RadiologySettingsCenter /></AdminOnlySettings>}
+              </Route>
+              {/* CARE Knowledge Pack Engine — admin registry/manager. */}
+              <Route path="/settings/radiology/knowledge-packs">
+                {() => <AdminOnlySettings><RadiologyKnowledgePackManager /></AdminOnlySettings>}
               </Route>
               <Route path="/settings" component={Settings} />
               <Route path="/settings/scanner">
