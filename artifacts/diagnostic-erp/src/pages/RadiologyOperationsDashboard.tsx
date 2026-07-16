@@ -220,6 +220,7 @@ export default function RadiologyOperationsDashboard() {
   const { data: packStats } = useQuery<{
     total: number; enabled: number; placeholder: number; planned: number;
     healthy: number; warnings: number; broken: number; byModality: Record<string, number>;
+    goldStandardCompletion: number; modalityReadiness: Record<string, number>;
   }>({
     queryKey: ["/api/radiology/knowledge-packs/stats"],
     queryFn: () => api.get("/api/radiology/knowledge-packs/stats"),
@@ -898,6 +899,30 @@ export default function RadiologyOperationsDashboard() {
           <Badge variant="outline" className="text-indigo-400 border-indigo-400/20 bg-indigo-500/5">
             {packStats?.total ?? 0} installed
           </Badge>
+        </div>
+        {/* Gold-Standard completion — average section readiness across enabled packs */}
+        <div className="bg-slate-950 p-3 rounded-lg border border-slate-800/80">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-slate-400 font-semibold text-xs">Gold Standard Completion</span>
+            <span className={`text-lg font-bold ${((packStats?.goldStandardCompletion ?? 0) >= 80 ? "text-emerald-400" : (packStats?.goldStandardCompletion ?? 0) >= 50 ? "text-amber-400" : "text-rose-400")}`}>
+              {packStats?.goldStandardCompletion ?? 0}%
+            </span>
+          </div>
+          <div className="h-2 rounded-full bg-slate-800 overflow-hidden">
+            <div
+              className={`h-full rounded-full ${((packStats?.goldStandardCompletion ?? 0) >= 80 ? "bg-emerald-500" : (packStats?.goldStandardCompletion ?? 0) >= 50 ? "bg-amber-500" : "bg-rose-500")}`}
+              style={{ width: `${Math.min(100, Math.max(0, packStats?.goldStandardCompletion ?? 0))}%` }}
+            />
+          </div>
+          {packStats && Object.keys(packStats.modalityReadiness ?? {}).length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {Object.entries(packStats.modalityReadiness).sort().map(([m, pct]) => (
+                <span key={m} className="text-[10px] px-2 py-0.5 rounded bg-slate-800/80 text-slate-300 border border-slate-700">
+                  {m} readiness · <span className={pct >= 80 ? "text-emerald-400" : pct >= 50 ? "text-amber-400" : "text-rose-400"}>{pct}%</span>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3">
           {([

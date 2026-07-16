@@ -76,10 +76,12 @@ async function packCoverage(pack: KnowledgePack): Promise<PackCoverage> {
   const studyType = pack.studyType;
   if (studyType) {
     cov.quickFindings = await count(radiologyQuickFindingsTable, and(eq(radiologyQuickFindingsTable.studyType, studyType), eq(radiologyQuickFindingsTable.isActive, true)));
+    cov.structuredFindings = await count(radiologyQuickFindingsTable, and(eq(radiologyQuickFindingsTable.studyType, studyType), eq(radiologyQuickFindingsTable.isActive, true), sql`${radiologyQuickFindingsTable.questionsJson} NOT IN ('[]', '', '{}')`));
     cov.protocols = await count(radiologyProtocolsTable, and(eq(radiologyProtocolsTable.studyType, studyType), eq(radiologyProtocolsTable.isActive, true)));
     cov.clinicalHistory = await count(radiologyClinicalHistoryChipsTable, and(eq(radiologyClinicalHistoryChipsTable.studyType, studyType), eq(radiologyClinicalHistoryChipsTable.isActive, true)));
     cov.quickMeasurements = await count(radiologyQuickMeasurementsTable, and(eq(radiologyQuickMeasurementsTable.studyType, studyType), eq(radiologyQuickMeasurementsTable.isActive, true)));
     cov.requiredMeasurements = await count(radiologyProtocolsTable, and(eq(radiologyProtocolsTable.studyType, studyType), eq(radiologyProtocolsTable.isActive, true), sql`length(trim(${radiologyProtocolsTable.requiredMeasurements})) > 0`));
+    cov.checklistProtocols = await count(radiologyProtocolsTable, and(eq(radiologyProtocolsTable.studyType, studyType), eq(radiologyProtocolsTable.isActive, true), sql`${radiologyProtocolsTable.checklistJson} NOT IN ('[]', '', '{}')`));
   }
   if (pack.builderType) {
     cov.impressionRules = await count(radiologyImpressionRulesTable, and(eq(radiologyImpressionRulesTable.builderType, pack.builderType), eq(radiologyImpressionRulesTable.isActive, true)));
@@ -155,7 +157,9 @@ router.get("/stats", async (_req, res) => {
     const packs = await db.select().from(knowledgePacksTable);
     const known = new Set(packs.map((p) => p.packId));
     const byModality: Record<string, number> = {};
+    const readinessByModality: Record<string, { sum: number; count: number }> = {};
     let enabled = 0, placeholder = 0, planned = 0, disabled = 0, healthy = 0, warnCount = 0, broken = 0;
+    let readinessSum = 0, readinessCount = 0;
     // Health only needs coverage for enabled packs — keep it bounded.
     for (const p of packs) {
       byModality[p.modality] = (byModality[p.modality] ?? 0) + 1;
@@ -168,14 +172,21 @@ router.get("/stats", async (_req, res) => {
       if (v.health === "ok") healthy++;
       else if (v.health === "warn") warnCount++;
       else if (v.health === "error") broken++;
+      readinessSum += v.readinessPercent; readinessCount++;
+      const rm = (readinessByModality[p.modality] ??= { sum: 0, count: 0 });
+      rm.sum += v.readinessPercent; rm.count++;
     }
+    const modalityReadiness: Record<string, number> = {};
+    for (const [m, r] of Object.entries(readinessByModality)) modalityReadiness[m] = r.count ? Math.round(r.sum / r.count) : 0;
     res.json({
       total: packs.length, enabled, placeholder, planned, disabled,
       healthy, warnings: warnCount, broken, byModality,
+      goldStandardCompletion: readinessCount ? Math.round(readinessSum / readinessCount) : 0,
+      modalityReadiness,
     });
   } catch (err) {
     logger.warn({ err }, "knowledge-packs stats failed");
-    res.json({ total: 0, enabled: 0, placeholder: 0, planned: 0, disabled: 0, healthy: 0, warnings: 0, broken: 0, byModality: {} });
+    res.json({ total: 0, enabled: 0, placeholder: 0, planned: 0, disabled: 0, healthy: 0, warnings: 0, broken: 0, byModality: {}, goldStandardCompletion: 0, modalityReadiness: {} });
   }
 });
 

@@ -31,10 +31,14 @@ export function packIdFor(modality: string, region: string): string {
 export interface PackManifest {
   /** Copilot module ids this pack activates (registered in copilotModules.ts). */
   copilotModules: string[];
+  /** Companion follow-up prompts (e.g. "Stone → hydronephrosis? level? size?"). */
+  companionRules: string[];
   /** Measurement labels the previous-comparison engine should track for this study. */
   comparisonMeasurements: string[];
   /** Critical-finding watch terms for this study. */
   criticalFindings: string[];
+  /** Rule-based recommendation phrases (e.g. "MRI correlation", "Follow-up CT"). */
+  recommendations: string[];
   /** Deterministic quality/reporting rules (free-text, admin-editable). */
   qualityRules: string[];
   /** Normal-value references (label → normal range text). */
@@ -46,8 +50,8 @@ export interface PackManifest {
 
 export function emptyManifest(): PackManifest {
   return {
-    copilotModules: [], comparisonMeasurements: [], criticalFindings: [],
-    qualityRules: [], normalValues: [], reportingNotes: "", references: [], teachingNotes: "",
+    copilotModules: [], companionRules: [], comparisonMeasurements: [], criticalFindings: [],
+    recommendations: [], qualityRules: [], normalValues: [], reportingNotes: "", references: [], teachingNotes: "",
   };
 }
 
@@ -61,8 +65,10 @@ export function parseManifest(json: string | null | undefined): PackManifest {
     const arr = (x: unknown): string[] => (Array.isArray(x) ? x.map(String) : []);
     return {
       copilotModules: arr(o.copilotModules),
+      companionRules: arr(o.companionRules),
       comparisonMeasurements: arr(o.comparisonMeasurements),
       criticalFindings: arr(o.criticalFindings),
+      recommendations: arr(o.recommendations),
       qualityRules: arr(o.qualityRules),
       normalValues: Array.isArray(o.normalValues)
         ? (o.normalValues as unknown[]).map((n) => {
@@ -84,10 +90,12 @@ export function parseManifest(json: string | null | undefined): PackManifest {
 export interface PackCoverage {
   hasTemplate: boolean;
   quickFindings: number;
+  structuredFindings: number;   // quick findings carrying questionsJson (structured follow-ups)
   protocols: number;
   clinicalHistory: number;
   quickMeasurements: number;
   requiredMeasurements: number;
+  checklistProtocols: number;   // protocols carrying a checklist
   impressionRules: number;
   structuredTemplates: number;
   teachingCases: number;
@@ -96,8 +104,8 @@ export interface PackCoverage {
 
 export function emptyCoverage(): PackCoverage {
   return {
-    hasTemplate: false, quickFindings: 0, protocols: 0, clinicalHistory: 0,
-    quickMeasurements: 0, requiredMeasurements: 0, impressionRules: 0,
+    hasTemplate: false, quickFindings: 0, structuredFindings: 0, protocols: 0, clinicalHistory: 0,
+    quickMeasurements: 0, requiredMeasurements: 0, checklistProtocols: 0, impressionRules: 0,
     structuredTemplates: 0, teachingCases: 0, knowledgeArticles: 0,
   };
 }
@@ -117,9 +125,13 @@ export interface PackValidationResult {
   health: PackHealth;
   ok: boolean;
   issues: PackValidationIssue[];
-  /** How many of the standard sections have live content. */
+  /** How many of the standard sections are present (live content or manifest). */
   coveredSections: number;
   totalSections: number;
+  /** Gold-standard completion for this pack: coveredSections / totalSections. */
+  readinessPercent: number;
+  /** Section-by-section presence (drives the validation report). */
+  sections: Record<string, boolean>;
 }
 
 export interface PackForValidation {
@@ -130,23 +142,36 @@ export interface PackForValidation {
   manifest: PackManifest;
 }
 
-/** Standard sections a fully-populated Gold-Standard pack covers. */
+/** The 15 sections a fully-populated Gold-Standard pack covers. */
 export const PACK_SECTIONS = [
-  "template", "protocol", "quickFindings", "clinicalHistory",
-  "measurements", "impressionRules", "teaching", "knowledge",
+  "template", "protocol", "clinicalHistory", "quickFindings", "structuredFindings",
+  "measurements", "checklist", "companion", "copilot", "recommendations",
+  "previousComparison", "criticalFindings", "teaching", "knowledge", "references",
 ] as const;
 
-export function coveredSectionCount(coverage: PackCoverage): number {
-  let n = 0;
-  if (coverage.hasTemplate) n++;
-  if (coverage.protocols > 0) n++;
-  if (coverage.quickFindings > 0) n++;
-  if (coverage.clinicalHistory > 0) n++;
-  if (coverage.quickMeasurements > 0 || coverage.requiredMeasurements > 0) n++;
-  if (coverage.impressionRules > 0) n++;
-  if (coverage.teachingCases > 0) n++;
-  if (coverage.knowledgeArticles > 0) n++;
-  return n;
+/** Per-section presence, from live coverage + the pack manifest. */
+export function packSections(coverage: PackCoverage, manifest: PackManifest): Record<string, boolean> {
+  return {
+    template: coverage.hasTemplate,
+    protocol: coverage.protocols > 0,
+    clinicalHistory: coverage.clinicalHistory > 0,
+    quickFindings: coverage.quickFindings > 0,
+    structuredFindings: coverage.structuredFindings > 0,
+    measurements: coverage.quickMeasurements > 0 || coverage.requiredMeasurements > 0,
+    checklist: coverage.checklistProtocols > 0,
+    companion: coverage.structuredFindings > 0 || manifest.companionRules.length > 0,
+    copilot: coverage.impressionRules > 0 || manifest.copilotModules.length > 0,
+    recommendations: coverage.protocols > 0 || manifest.recommendations.length > 0,
+    previousComparison: manifest.comparisonMeasurements.length > 0,
+    criticalFindings: manifest.criticalFindings.length > 0,
+    teaching: coverage.teachingCases > 0,
+    knowledge: coverage.knowledgeArticles > 0 || manifest.normalValues.length > 0,
+    references: manifest.references.length > 0,
+  };
+}
+
+export function coveredSectionCount(coverage: PackCoverage, manifest: PackManifest): number {
+  return Object.values(packSections(coverage, manifest)).filter(Boolean).length;
 }
 
 /**
@@ -155,14 +180,25 @@ export function coveredSectionCount(coverage: PackCoverage): number {
  * content. Enabled packs warn on missing recommended sections and error only
  * when a dependency is missing or an enabled pack is entirely empty.
  */
+const SECTION_SEVERITY: Record<string, "warn" | "info"> = {
+  template: "warn", protocol: "warn", quickFindings: "warn", criticalFindings: "warn",
+  clinicalHistory: "info", structuredFindings: "info", measurements: "info", checklist: "info",
+  companion: "info", copilot: "info", recommendations: "info", previousComparison: "info",
+  teaching: "info", knowledge: "info", references: "info",
+};
+
 export function validatePack(
   pack: PackForValidation,
   coverage: PackCoverage,
   knownPackIds: Set<string>,
 ): PackValidationResult {
   const issues: PackValidationIssue[] = [];
-  const covered = coveredSectionCount(coverage);
+  const sections = packSections(coverage, pack.manifest);
+  const covered = Object.values(sections).filter(Boolean).length;
   const total = PACK_SECTIONS.length;
+  const readinessPercent = Math.round((covered / total) * 100);
+  const base = (health: PackHealth): PackValidationResult =>
+    ({ health, ok: health !== "error", issues, coveredSections: covered, totalSections: total, readinessPercent, sections });
 
   // Dependencies must resolve regardless of status.
   for (const dep of pack.dependsOn) {
@@ -173,30 +209,22 @@ export function validatePack(
 
   if (pack.status === "placeholder" || pack.status === "planned") {
     issues.push({ section: "content", severity: "info", message: "Placeholder pack — awaiting Gold-Standard content." });
-    const health: PackHealth = issues.some((i) => i.severity === "error") ? "error" : "placeholder";
-    return { health, ok: health !== "error", issues, coveredSections: covered, totalSections: total };
+    return base(issues.some((i) => i.severity === "error") ? "error" : "placeholder");
   }
+  if (pack.status === "disabled") return base("disabled");
 
-  if (pack.status === "disabled") {
-    return { health: "disabled", ok: true, issues, coveredSections: covered, totalSections: total };
+  // Enabled pack — one issue per missing section (warn for core, info for the rest).
+  for (const section of PACK_SECTIONS) {
+    if (!sections[section]) {
+      issues.push({ section, severity: SECTION_SEVERITY[section] ?? "info", message: `${section} not defined for this pack.` });
+    }
   }
-
-  // Enabled pack — check recommended sections.
-  if (!coverage.hasTemplate) issues.push({ section: "template", severity: "warn", message: "No report template resolves for this study type." });
-  if (coverage.protocols === 0) issues.push({ section: "protocol", severity: "warn", message: "No protocol defined for this study type." });
-  if (coverage.quickFindings === 0) issues.push({ section: "quickFindings", severity: "warn", message: "No quick findings defined." });
-  if (coverage.clinicalHistory === 0) issues.push({ section: "clinicalHistory", severity: "info", message: "No clinical-history chips defined." });
-  if (coverage.quickMeasurements === 0 && coverage.requiredMeasurements === 0) issues.push({ section: "measurements", severity: "info", message: "No measurements or required-measurement checklist defined." });
-  if (coverage.impressionRules === 0) issues.push({ section: "impressionRules", severity: "info", message: "No rule-based impression rules defined." });
-  if (coverage.teachingCases === 0) issues.push({ section: "teaching", severity: "info", message: "No teaching cases linked." });
-  if (coverage.knowledgeArticles === 0) issues.push({ section: "knowledge", severity: "info", message: "No knowledge-base articles linked." });
-
-  if (covered === 0) issues.push({ section: "content", severity: "error", message: "Enabled pack has no live content in any section." });
+  if (covered === 0) issues.push({ section: "content", severity: "error", message: "Enabled pack has no content in any section." });
 
   const health: PackHealth = issues.some((i) => i.severity === "error")
     ? "error"
     : issues.some((i) => i.severity === "warn")
       ? "warn"
       : "ok";
-  return { health, ok: health !== "error", issues, coveredSections: covered, totalSections: total };
+  return base(health);
 }
