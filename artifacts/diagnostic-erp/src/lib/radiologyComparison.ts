@@ -14,6 +14,8 @@
  * formatted, never auto-classified; the radiologist chooses the classification.
  */
 
+import { resolveMeasurement, getMeasurement, convertUnitValue } from "@workspace/measurements";
+
 export type IntervalChange =
   | "new"
   | "stable"
@@ -146,6 +148,12 @@ export interface ComparisonRow {
   /** Whether prior & current are directly comparable (both present, same unit). */
   comparable: boolean;
   note?: string;
+  /**
+   * Canonical id from the Universal Measurement Registry when the label
+   * resolves (e.g. "CBD"). Rows matched by id, not label — two studies that
+   * spell the same measurement differently still compare.
+   */
+  measurementId?: string;
 }
 
 function round1(n: number): number {
@@ -166,7 +174,14 @@ export function formatMeasurementChange(prev: number, curr: number): { delta: nu
 }
 
 /**
- * Join prior & current measurement lists into comparison rows, matched by label.
+ * Join prior & current measurement lists into comparison rows.
+ *
+ * Matching is by CANONICAL ID via the Universal Measurement Registry (Step 5:
+ * comparison compares ids, never display labels): a prior "Common Bile Duct
+ * Diameter 0.6 cm" and a current "CBD 7 mm" land on the same row, with the
+ * prior converted into the registry's default unit. Labels that do not
+ * resolve fall back to the original lowercased-label match, so free-text
+ * measurements outside the registry still compare exactly as before.
  * Incompatible units and one-sided measurements are surfaced as non-comparable
  * rather than diffed. Deterministic order: current list first, then prior-only.
  */
@@ -174,35 +189,62 @@ export function compareMeasurementRows(
   prior: readonly MeasurementValue[],
   current: readonly MeasurementValue[],
 ): ComparisonRow[] {
-  const byLabel = (list: readonly MeasurementValue[]) => new Map(list.map((m) => [m.label.toLowerCase(), m]));
-  const priorMap = byLabel(prior);
-  const currentMap = byLabel(current);
-  const labels: string[] = [];
+  // Registry id when resolvable, else lowercased label — ONE join key space.
+  const joinKey = (m: MeasurementValue): string => {
+    const resolved = resolveMeasurement(m.label);
+    return resolved ? `id:${resolved.definition.id}` : `label:${m.label.toLowerCase()}`;
+  };
+  const byKey = (list: readonly MeasurementValue[]) => {
+    const map = new Map<string, MeasurementValue>();
+    for (const m of list) if (!map.has(joinKey(m))) map.set(joinKey(m), m);
+    return map;
+  };
+  const priorMap = byKey(prior);
+  const currentMap = byKey(current);
+  const keys: { key: string; label: string }[] = [];
   const seen = new Set<string>();
-  for (const m of current) if (!seen.has(m.label.toLowerCase())) { seen.add(m.label.toLowerCase()); labels.push(m.label); }
-  for (const m of prior) if (!seen.has(m.label.toLowerCase())) { seen.add(m.label.toLowerCase()); labels.push(m.label); }
+  for (const m of current) { const k = joinKey(m); if (!seen.has(k)) { seen.add(k); keys.push({ key: k, label: m.label }); } }
+  for (const m of prior) { const k = joinKey(m); if (!seen.has(k)) { seen.add(k); keys.push({ key: k, label: m.label }); } }
 
-  return labels.map((label) => {
-    const p = priorMap.get(label.toLowerCase());
-    const c = currentMap.get(label.toLowerCase());
-    const unit = c?.unit ?? p?.unit ?? "";
+  return keys.map(({ key, label }) => {
+    const p = priorMap.get(key);
+    const c = currentMap.get(key);
+    const def = key.startsWith("id:") ? getMeasurement(key.slice(3)) : undefined;
+    // Registry measurements display under their canonical name at the
+    // definition's default unit; unresolved ones keep their raw label/unit.
+    const displayLabel = def?.displayName ?? label;
+    const measurementId = def?.id;
+
+    // Normalize both sides into the registry's default unit when resolvable.
+    const norm = (m: MeasurementValue | undefined): number | null => {
+      if (!m) return null;
+      if (!def) return m.value;
+      const converted = convertUnitValue(m.value, m.unit || def.defaultUnit, def.defaultUnit);
+      return converted;
+    };
+    const pv = norm(p);
+    const cv = norm(c);
+    const unit = def ? def.defaultUnit : c?.unit ?? p?.unit ?? "";
+
     if (!p || !c) {
       return {
-        label, previous: p?.value ?? null, current: c?.value ?? null, unit,
+        label: displayLabel, measurementId, previous: pv, current: cv, unit,
         delta: null, deltaText: "—", percentText: "—", comparable: false,
         note: !p ? "No prior value" : "Not on current study",
       };
     }
-    if (p.unit !== c.unit) {
+    // Unit reconciliation: registry-resolved rows convert; unresolved rows
+    // must match exactly (original behavior).
+    if (def ? pv === null || cv === null : p.unit !== c.unit) {
       return {
-        label, previous: p.value, current: c.value, unit,
+        label: displayLabel, measurementId, previous: def ? pv : p.value, current: def ? cv : c.value, unit,
         delta: null, deltaText: "—", percentText: "—", comparable: false,
         note: `Unit mismatch (${p.unit} vs ${c.unit})`,
       };
     }
-    const change = formatMeasurementChange(p.value, c.value);
+    const change = formatMeasurementChange(pv!, cv!);
     return {
-      label, previous: p.value, current: c.value, unit,
+      label: displayLabel, measurementId, previous: pv, current: cv, unit,
       delta: change.delta, deltaText: `${change.deltaText}${unit ? " " + unit : ""}`,
       percentText: change.percentText, comparable: true,
     };

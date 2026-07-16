@@ -57,6 +57,7 @@ function OwnerOnlyPreserved({ children }: { children: React.ReactNode }) {
 const BillingDesk     = lazy(() => import("@/pages/BillingDesk"));
 const Dashboard       = lazy(() => import("@/pages/Dashboard"));
 const Diagnostics     = lazy(() => import("@/pages/Diagnostics"));
+const MeasurementRegistryManager = lazy(() => import("@/pages/MeasurementRegistryManager"));
 const Patients        = lazy(() => import("@/pages/Patients"));
 const PatientDetail   = lazy(() => import("@/pages/PatientDetail"));
 const Tests           = lazy(() => import("@/pages/Tests"));
@@ -265,7 +266,7 @@ function PermissionGuard() {
     }
     // Owner Dashboard is admin/super_admin only — redirect others to My Daily Summary.
     const normalizedRole = normalizeRole(session.user.role);
-    if ((location === "/dashboard" || location === "/diagnostics") && !FULL_ACCESS_ROLES.has(normalizedRole)) {
+    if ((location === "/dashboard" || location === "/diagnostics" || location === "/measurement-registry") && !FULL_ACCESS_ROLES.has(normalizedRole)) {
       navigate("/my-daily-summary", { replace: true });
       return;
     }
@@ -354,6 +355,7 @@ function Router() {
               <Route path="/" component={BillingDesk} />
               <Route path="/dashboard" component={Dashboard} />
               <Route path="/diagnostics" component={Diagnostics} />
+              <Route path="/measurement-registry" component={MeasurementRegistryManager} />
               <Route path="/patients" component={Patients} />
               <Route path="/patients/:id">
                 {(params) => <PatientDetail id={Number(params.id)} />}

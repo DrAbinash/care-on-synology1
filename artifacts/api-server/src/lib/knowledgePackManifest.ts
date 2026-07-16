@@ -98,6 +98,37 @@ export function parseManifest(json: string | null | undefined): PackManifest {
 
 // ── Live coverage (assembled by the route from existing tables) ───────────────
 
+
+// ── Universal Measurement Registry resolution (Step 7) ───────────────────────
+// Packs keep describing WHICH measurements they care about as strings in their
+// manifest (backward compatible), but consumers resolve those strings through
+// the Universal Measurement Registry so packs never re-define WHAT a
+// measurement means. Unresolved labels are surfaced (admin impact analysis +
+// pack validation) instead of silently treated as new measurement identities.
+
+import { resolveMeasurement } from "@workspace/measurements";
+
+export interface ResolvedPackMeasurement {
+  /** The manifest's original string. */
+  label: string;
+  /** Canonical registry id, when the label resolves (e.g. "CBD"). */
+  measurementId: string | null;
+  /** Canonical display name for UI, when resolved. */
+  displayName: string | null;
+}
+
+/** Resolve a pack manifest's comparisonMeasurements to canonical identities. */
+export function resolvePackMeasurements(manifest: PackManifest): ResolvedPackMeasurement[] {
+  return manifest.comparisonMeasurements.map((label) => {
+    const r = resolveMeasurement(label);
+    return {
+      label,
+      measurementId: r?.definition.id ?? null,
+      displayName: r?.definition.displayName ?? null,
+    };
+  });
+}
+
 export interface PackCoverage {
   hasTemplate: boolean;
   quickFindings: number;

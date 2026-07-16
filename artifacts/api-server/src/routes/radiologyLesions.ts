@@ -14,6 +14,7 @@ import {
 import { eq, and, desc, asc, inArray } from "drizzle-orm";
 import { type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { z } from "zod";
+import { resolveMeasurement, getMeasurement } from "@workspace/measurements";
 
 export const radiologyLesionsRouter = Router();
 
@@ -62,6 +63,7 @@ const saveMeasurementSchema = z.object({
   measurements: z.array(z.object({
     measurementType: z.string().min(1),
     label: z.string().min(1),
+    measurementId: z.string().max(80).optional(),
     value: z.string().min(1),
     unit: z.string().optional(),
     normalRangeLow: z.number().optional(),
@@ -284,6 +286,9 @@ radiologyLesionsRouter.post("/measurements", async (req, res) => {
       bodyPart: data.bodyPart,
       measurementType: m.measurementType,
       label: m.label,
+      // Canonical registry identity: trust an id the client resolved, else
+      // resolve the label server-side; unknown labels stay NULL (legacy path).
+      measurementId: (m.measurementId && getMeasurement(m.measurementId) ? m.measurementId : resolveMeasurement(m.label)?.definition.id) ?? null,
       value: m.value,
       unit: m.unit,
       normalRangeLow: m.normalRangeLow,
@@ -450,6 +455,7 @@ const createViewerMeasurementSchema = z.object({
   frameNumber: z.number().int().optional(),
   viewerName: z.string(),
   measurementType: z.string(),
+  measurementId: z.string().max(80).optional(),
   value: z.string(),
   unit: z.string(),
   sliceNumber: z.number().int().optional(),
@@ -482,6 +488,9 @@ radiologyLesionsRouter.post("/viewer-measurements", async (req, res) => {
         frameNumber: data.frameNumber ?? 1,
         viewerName: data.viewerName,
         measurementType: data.measurementType,
+        // Canonical registry identity when the exporting bridge knows the
+        // concept (DICOM SR / AI / manual pick); validated against the registry.
+        measurementId: data.measurementId && getMeasurement(data.measurementId) ? data.measurementId : null,
         value: data.value,
         unit: data.unit,
         sliceNumber: data.sliceNumber || null,

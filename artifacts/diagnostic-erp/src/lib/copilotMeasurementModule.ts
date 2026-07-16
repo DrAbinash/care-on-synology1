@@ -11,12 +11,34 @@
  */
 import type { CopilotContext, CopilotItem } from "./copilotOrchestrator";
 import { registerCopilotModule } from "./copilotModules";
+import { resolveMeasurement } from "@workspace/measurements";
 
 /** Numbers present in the report text, as a set of normalised strings ("7.2"). */
 function reportNumbers(text: string): Set<string> {
   const out = new Set<string>();
   for (const m of text.matchAll(/\d+(?:\.\d+)?/g)) out.add(String(Number(m[0])));
   return out;
+}
+
+/**
+ * All spellings under which a measurement may appear in report prose: its own
+ * label plus, when the label resolves in the Universal Measurement Registry,
+ * the canonical display name and every registered alias. This is what lets a
+ * viewer "CBD Diameter" match a report that wrote "common bile duct" — the
+ * canonical identity matches, not the string (Step 10).
+ */
+function labelForms(label: string): string[] {
+  const forms = new Set<string>();
+  const base = label.trim().toLowerCase();
+  if (base.length >= 3) forms.add(base);
+  const resolved = resolveMeasurement(label);
+  if (resolved) {
+    for (const alias of [resolved.definition.displayName, ...resolved.definition.aliases]) {
+      const f = alias.trim().toLowerCase();
+      if (f.length >= 3) forms.add(f);
+    }
+  }
+  return [...forms];
 }
 
 export function measurementModuleItems(ctx: CopilotContext): CopilotItem[] {
@@ -30,9 +52,10 @@ export function measurementModuleItems(ctx: CopilotContext): CopilotItem[] {
   for (const m of measurements) {
     const valueStr = String(Number(m.value));
     const label = m.label || "measurement";
-    const key = label.toLowerCase();
     const valueInReport = nums.has(valueStr);
-    const labelInReport = key.length >= 3 && reportLower.includes(key);
+    // Canonical-identity match: any registry alias of the label counts as
+    // "discussed in the report", not just the exact viewer spelling.
+    const labelInReport = labelForms(label).some((f) => reportLower.includes(f));
 
     if (!valueInReport) {
       // Accepted in the viewer, its value is nowhere in the report.
@@ -52,12 +75,17 @@ export function measurementModuleItems(ctx: CopilotContext): CopilotItem[] {
     }
   }
 
-  // Value-disagreement: the report mentions a measurement's label with a *different*
-  // number than the accepted one, near that label.
+  // Value-disagreement: the report mentions a measurement's label (any
+  // registry alias of it) with a *different* number than the accepted one,
+  // near that label.
   for (const m of measurements) {
-    const key = (m.label || "").toLowerCase();
-    if (key.length < 3) continue;
-    const idx = reportLower.indexOf(key);
+    const forms = labelForms(m.label || "");
+    let key = "";
+    let idx = -1;
+    for (const f of forms) {
+      const at = reportLower.indexOf(f);
+      if (at >= 0) { key = f; idx = at; break; }
+    }
     if (idx < 0) continue;
     const around = reportText.slice(idx, idx + key.length + 40);
     const near = [...around.matchAll(/(\d+(?:\.\d+)?)\s*(mm|cm)?/g)].map((x) => Number(x[1]));

@@ -82,6 +82,7 @@ import { requireSuperAdmin } from "../middleware/requireSuperAdmin";
 import { requireSuperAdminUsb, isValidUsbKey, isUsbGateEnforced } from "../middleware/requireSuperAdminUsb";
 import { requireStaffAuth, requireStaffPermission, requireStaffSubPermission, requireAdminRole } from "../middleware/requireStaffAuth";
 import diagnosticsRouter from "./diagnostics";
+import { measurementRegistryRouter } from "./measurementRegistry";
 import radiologyQuickFindingsRouter from "./radiologyQuickFindings";
 import radiologyCatalogRouter from "./radiologyCatalog";
 import { db, clinicSettingsTable, ledgersTable } from "@workspace/db";
@@ -307,6 +308,10 @@ router.use("/reports", requireStaffAuth, requireStaffPermission("/reports"), rep
 // Admin-only request performance diagnostics (not part of the toggleable
 // per-user permission system — see requireAdminRole).
 router.use("/diagnostics", requireStaffAuth, requireAdminRole, diagnosticsRouter);
+
+// Admin-only Universal Measurement Registry manager (read-only console +
+// live impact analysis over quick measurements / protocols / packs / rules).
+router.use("/measurement-registry", requireStaffAuth, requireAdminRole, measurementRegistryRouter);
 
 // Inventory — /inventory permission
 router.use("/inventory", requireStaffAuth, requireStaffPermission("/inventory"), inventoryRouter);
