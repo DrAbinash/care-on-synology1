@@ -22,15 +22,14 @@ quality rules and recommendations — never code paths.
 The platform's one sentence: *"The Reporting Platform is the operating system;
 Knowledge Packs are the applications."*
 
-Three design laws govern everything:
-
-1. **One engine per concern, forever.** A second implementation of any engine
-   (per-modality or otherwise) is a defect; the contract suite fails on it.
-2. **Clinical behaviour is data.** Registries (packs, measurements, rules,
-   recommendations, templates, protocols) are edited, versioned and reviewed —
-   engines only interpret them.
-3. **Deterministic and honest.** No AI decides clinical content. Anything the
-   platform cannot evaluate is reported as not-evaluated — never guessed.
+Seven design principles — the **Platform Constitution**, stated in full in
+`PLATFORM_V1_FREEZE.md` — govern everything: **One Workspace** · **One Engine**
+· **Content over Code** · **Deterministic Before AI** · **AI Advises, Humans
+Decide** · **Backward Compatibility** · **Measure Before Building**. Their
+practical effect: a second implementation of any engine is a defect the
+contract suite fails on; clinical behaviour lives in versioned, reviewed
+registries that engines only interpret; nothing the platform cannot evaluate
+deterministically is ever guessed or silently written into a report.
 
 ## 2. Component hierarchy
 

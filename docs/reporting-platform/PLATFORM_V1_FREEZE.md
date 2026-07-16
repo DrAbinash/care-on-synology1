@@ -18,6 +18,40 @@ Canonical references: `CARE_REPORTING_PLATFORM_ARCHITECTURE_V1.md` (handbook),
 
 ---
 
+## Design Principles — the Platform Constitution
+
+These seven principles govern every future change. They are the constitution of
+the CARE Reporting Platform: a proposal that violates one of them is rejected by
+default, and the burden of proof lies on the proposal, not the platform.
+
+1. **One Workspace.**
+   Never build modality-specific reporting workspaces.
+2. **One Engine.**
+   Every capability must extend an existing engine whenever possible.
+3. **Content over Code.**
+   New modalities are added through Knowledge Packs, protocols, measurements,
+   templates, quality rules, and recommendations — not new software
+   architecture.
+4. **Deterministic Before AI.**
+   If a rule can be implemented deterministically, do not use AI.
+5. **AI Advises, Humans Decide.**
+   AI may suggest but never silently modify or finalize reports.
+6. **Backward Compatibility.**
+   Public contracts are additive; breaking changes require a platform version
+   change.
+7. **Measure Before Building.**
+   Every new architectural proposal must begin with an audit demonstrating that
+   existing infrastructure cannot satisfy the requirement.
+
+Enforcement: principles 1–3 are checked mechanically by the contract suite
+(single-engine invariants, no modality forks); 4–5 are embodied in the Quality
+Engine, Copilot and Recommendation Registry designs (deterministic rules,
+advisory-only `why`-explained suggestions, explicit human insertion); 6 is the
+Platform Contract v1 below; 7 is the audit-first discipline every platform PR
+to date has followed.
+
+---
+
 ## Platform Contract v1 (Step 4 — frozen public contracts)
 
 Future changes to every contract below must be **additive** (new optional
