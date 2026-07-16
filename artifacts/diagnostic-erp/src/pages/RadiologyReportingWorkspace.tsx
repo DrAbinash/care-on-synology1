@@ -70,6 +70,8 @@ import { analyzeCopilot, type CopilotContext, type CopilotItem } from "@/lib/cop
 import { suggestCompletion } from "@/lib/copilotCompletion";
 import { runLocalModules, runAiModules } from "@/lib/copilotModules";
 import "@/lib/copilotAiModule"; // registers the on-demand AI reasoning module (Part 20)
+import "@/lib/copilotComparisonModule"; // registers the previous-study comparison module (MRI PR 1)
+import ComparisonPanel, { type SelectedPrior } from "@/components/radiology/ComparisonPanel";
 import { useCopilotPrefs } from "@/hooks/useCopilotPrefs";
 import { useCopilotLearning } from "@/hooks/useCopilotLearning";
 import { isLearnableAddition } from "@/lib/learningEngine";
@@ -433,6 +435,7 @@ const PALETTE_COMMANDS: PaletteItem[] = [
   { id: "command:previous", kind: "command", title: "Previous Study", keywords: "navigate back" },
   { id: "command:new-brain-report", kind: "command", title: "New Brain Report", keywords: "create worklist mri ct" },
   { id: "command:new-ls-report", kind: "command", title: "New LS Spine Report", keywords: "create worklist lumbar" },
+  { id: "command:compare-previous", kind: "command", title: "Compare with previous study", subtitle: "Open the prior-study comparison", keywords: "prior previous comparison interval change longitudinal" },
 ];
 const PALETTE_SETTINGS: PaletteItem[] = [
   { id: "setting:/settings/radiology-quick-select", kind: "setting", title: "Settings — Radiology Quick Select", subtitle: "Findings, structured questions, protocols, chips", keywords: "configure structured questions defaults" },
@@ -1537,6 +1540,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const copilotUndoRef = useRef<(() => void) | null>(null);
   // Shared analysis context — the SINGLE source both the deterministic engine
   // and the plug-in modules (local + on-demand AI) read from (Part 20).
+  // Previous-study comparison (MRI PR 1) — the ComparisonPanel reports the
+  // selected prior + significant measurement changes up here, so the Copilot
+  // comparison module can advise and the reference can persist with the draft.
+  const [selectedPrior, setSelectedPrior] = useState<SelectedPrior | null>(null);
+
   const copilotContext = useMemo<CopilotContext>(() => ({
     modality: entry?.modality ?? "",
     studyDescription: entry?.studyDescription ?? "",
@@ -1549,8 +1557,25 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       .map((id) => findingById.get(id)?.label)
       .filter((l): l is string => !!l),
     checklistPercent,
+    prior: selectedPrior
+      ? { available: true, dateIso: selectedPrior.dateIso, studyName: selectedPrior.studyName, significantChanges: selectedPrior.significantChanges }
+      : undefined,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [entry?.modality, entry?.studyDescription, clinicalHistory, useStructured, findingsMap, rawFindings, impression, recommendation, technique, selectedQuickIds, findingById, checklistPercent]);
+  }), [entry?.modality, entry?.studyDescription, clinicalHistory, useStructured, findingsMap, rawFindings, impression, recommendation, technique, selectedQuickIds, findingById, checklistPercent, selectedPrior]);
+
+  /** Insert a comparison statement into Findings (free-text) or the structured
+   *  catch-all section — editable, additive, never overwriting (§6 safety). */
+  function comparisonInsertFindings(text: string) {
+    if (isLocked) return;
+    if (smartModeActive()) {
+      setFindingsMap((m) => ({ ...m, [OTHER_SECTION]: { normal: false, text: mergeBlock(m[OTHER_SECTION]?.text ?? "", text) } }));
+    } else {
+      setRawFindings((prev) => mergeBlock(prev, text));
+    }
+  }
+  function comparisonInsertImpression(text: string) {
+    if (!isLocked) setImpression((prev) => [...prev, text]);
+  }
 
   // Core deterministic report + any registered LOCAL add-on modules (Part 20).
   const copilotReport = useMemo(() => {
@@ -1756,6 +1781,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     setAiCopilotItems([]);
     aiCopilotCacheRef.current = new Map();
     setCopilotDismissed(new Set());
+    setSelectedPrior(null); // previous-study comparison is per-report (MRI PR 1)
     lastToggledFindingRef.current = null;
     setIsCritical(false); setCriticalNote("");
     // F5 fix: without this, switching studies carried the PREVIOUS study's
@@ -3245,6 +3271,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     switch (action) {
       case "generate-impression": if (entry && !aiLoading) aiImpressionMutation.mutate(); break;
       case "clear-findings": clearFindings(); break;
+      case "compare-previous": setRightTab("prior"); break;
       case "new-brain-report":
       case "new-ls-report": navigate("/radiology/worklist"); break;
       default: commandDispatcher.dispatch(action); break; // save | finalize | next | previous | open-viewer | focus-findings | focus-impression
@@ -5010,21 +5037,36 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
             {/* Tab 2: Prior Reports */}
             {rightTab === "prior" && (
-              <RadiologyCopilotPanel
-                key="prior"
-                patientId={entry?.patientId ?? undefined}
-                currentOrderId={entry?.id ?? undefined}
-                studyId={entry?.studyId ?? undefined}
-                studyInstanceUid={entry?.studyInstanceUID ?? null}
-                findingsText={rawFindings}
-                impressionText={impression.join("\n")}
-                onImpressionSuggestion={(text) => {
-                  setImpression([text]);
-                  toast({ title: "Prior impression applied" });
-                }}
-                onInsertComparisonText={(text) => setRawFindings((prev) => mergeBlock(prev, text))}
-                initialTab="prior"
-              />
+              <div className="flex flex-col">
+                {/* Structured previous-study comparison (MRI PR 1) — reuses the
+                    existing prior-studies endpoint + comparison engine, above the
+                    existing prior/AI-impression panel (same tab, no duplicate). */}
+                <ComparisonPanel
+                  patientId={entry?.patientId ?? undefined}
+                  currentModality={entry?.modality ?? ""}
+                  currentStudyDescription={entry?.studyDescription ?? ""}
+                  currentFindings={useStructured ? findingsAsText() : rawFindings}
+                  onInsertFindings={comparisonInsertFindings}
+                  onInsertImpression={comparisonInsertImpression}
+                  onSelectPrior={setSelectedPrior}
+                />
+                <div className="border-t" />
+                <RadiologyCopilotPanel
+                  key="prior"
+                  patientId={entry?.patientId ?? undefined}
+                  currentOrderId={entry?.id ?? undefined}
+                  studyId={entry?.studyId ?? undefined}
+                  studyInstanceUid={entry?.studyInstanceUID ?? null}
+                  findingsText={rawFindings}
+                  impressionText={impression.join("\n")}
+                  onImpressionSuggestion={(text) => {
+                    setImpression([text]);
+                    toast({ title: "Prior impression applied" });
+                  }}
+                  onInsertComparisonText={(text) => setRawFindings((prev) => mergeBlock(prev, text))}
+                  initialTab="prior"
+                />
+              </div>
             )}
 
             {/* Tab 3: AI Review */}

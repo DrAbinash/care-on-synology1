@@ -70,6 +70,15 @@ export interface CopilotContext {
   selectedFindingLabels: string[];
   checklistPercent?: number;
   missingRequiredMeasurements?: string[];
+  /** Previous-study context (MRI PR 1) — populated by the workspace when a prior
+   *  is selected, so the comparison module can advise without re-fetching. */
+  prior?: {
+    available: boolean;
+    dateIso?: string;
+    studyName?: string;
+    /** Measurement labels whose interval change is clinically meaningful. */
+    significantChanges?: { label: string; deltaText: string }[];
+  };
 }
 
 const has = (haystack: string, needle: string) => haystack.includes(needle);
