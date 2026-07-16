@@ -190,6 +190,43 @@ router.get("/stats", async (_req, res) => {
   }
 });
 
+// ── GET /coverage — per-pack clinical-content coverage rows ──────────────────
+// The Clinical Content Coverage Dashboard / Content Validator feed. This is
+// EXACTLY the loop /stats already runs (packCoverage + validatePack per pack),
+// returned per-pack instead of summed — a thin aggregation over the existing
+// helpers, not a new engine. Read-only; never affects runtime reporting.
+router.get("/coverage", async (_req, res) => {
+  try {
+    const packs = await db.select().from(knowledgePacksTable);
+    const known = new Set(packs.map((p) => p.packId));
+    const rows = [];
+    for (const p of packs) {
+      const manifest = parseManifest(p.manifestJson);
+      const coverage = await packCoverage(p);
+      const validation = validatePack(toValidationInput(p, manifest), coverage, known);
+      rows.push({
+        packId: p.packId, modality: p.modality, name: p.name, status: p.status,
+        studyType: p.studyType, category: p.category, bodyPart: p.bodyPart,
+        knowledgeCategory: p.knowledgeCategory, version: p.version, isSystem: p.isSystem,
+        sections: validation.sections, issues: validation.issues,
+        readinessPercent: validation.readinessPercent, health: validation.health,
+        coverage,
+        manifestCounts: {
+          companionRules: manifest.companionRules.length,
+          comparisonMeasurements: manifest.comparisonMeasurements.length,
+          criticalFindings: manifest.criticalFindings.length,
+          recommendations: manifest.recommendations.length,
+          references: manifest.references.length,
+        },
+      });
+    }
+    res.json({ rows, generatedAt: new Date().toISOString() });
+  } catch (err) {
+    logger.warn({ err }, "knowledge-packs coverage failed");
+    res.json({ rows: [], generatedAt: new Date().toISOString() });
+  }
+});
+
 // ── GET /:packId — assembled pack (loader) ────────────────────────────────────
 router.get("/:packId", async (req, res) => {
   const [pack] = await db.select().from(knowledgePacksTable).where(eq(knowledgePacksTable.packId, req.params.packId)).limit(1);

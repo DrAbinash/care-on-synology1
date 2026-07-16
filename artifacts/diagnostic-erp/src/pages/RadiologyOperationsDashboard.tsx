@@ -923,6 +923,11 @@ export default function RadiologyOperationsDashboard() {
               ))}
             </div>
           )}
+          {/* Clinical Content Coverage — full per-study dashboard (drill-down of this gauge). */}
+          <a href="/settings/radiology/content-coverage"
+            className="inline-block mt-2 text-[10px] px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-400/20 hover:bg-indigo-500/20">
+            Clinical Content Coverage → per-study scores, gaps &amp; priorities
+          </a>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3">
           {([
