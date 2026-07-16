@@ -1,8 +1,21 @@
-// Bill Print Settings — types, defaults, and localStorage persistence
+// Bill Print Settings — types, defaults, and persistence.
 //
-// Global settings are stored in clinicSettings DB (server-side).
-// User-wise overrides are stored in localStorage per user ID.
-// When adminLock is ON, user overrides are ignored.
+// Clinic-wide settings are stored server-side in clinic_settings.
+// bill_print_settings_json (a JSON blob of Partial<BillPrintSettings>) —
+// parse it with parseGlobalBillPrintSettings() and pass the result to
+// loadBillPrintSettings(global) at every print call site. Per-user overrides
+// live in localStorage keyed by user ID; when the server global has
+// adminLock ON, those local overrides are ignored.
+//
+// HISTORY: before the server column existed, loadBillPrintSettings() was
+// called everywhere WITHOUT the global — so "clinic-wide" settings silently
+// lived only in each browser's localStorage, and what the admin configured
+// (and verified in the Settings live preview) never reached other counters.
+// A counter that still had the built-in A5-portrait default then sent A5
+// print jobs to a printer tray loaded with A4 paper, which many drivers
+// rotate 90° to fit — bills printed sideways while the admin's preview
+// looked perfect. Always pass the server global here so the effective paper
+// size is the one the clinic actually configured.
 
 export type BillFormat = "classic" | "premium-a5" | "designer-a" | "designer-b" | "designer-c";
 export const BILL_FORMATS: { id: BillFormat; label: string }[] = [
@@ -217,6 +230,22 @@ export function getUserName(): string {
     return String(parsed.user?.name ?? "");
   } catch {
     return "";
+  }
+}
+
+// Safe-parse the clinic_settings.billPrintSettingsJson blob (from
+// GET /api/clinic-settings or /api/clinic-settings/branding) into the
+// `global` argument for loadBillPrintSettings(). Anything malformed —
+// null, empty, invalid JSON, or a non-object — degrades to {} so a bad
+// or missing server value can never break printing.
+export function parseGlobalBillPrintSettings(json: string | null | undefined): Partial<BillPrintSettings> {
+  if (!json) return {};
+  try {
+    const parsed = JSON.parse(json);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed as Partial<BillPrintSettings>;
+  } catch {
+    return {};
   }
 }
 

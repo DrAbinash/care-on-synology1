@@ -31,6 +31,7 @@ import {
 } from "@/lib/printBill";
 import {
   loadBillPrintSettings,
+  parseGlobalBillPrintSettings,
   printLayoutOpts,
   type BillPrintSettings,
 } from "@/lib/billPrintSettings";
@@ -201,6 +202,7 @@ export default function BillDetail({ id }: { id: number }) {
     qrOnBillEnabled?: boolean;
     billShowCode?: boolean;
     billShowCategory?: boolean;
+    billPrintSettingsJson?: string | null;
   }>({
     queryKey: ["clinic-settings"],
     queryFn: () => api.get("/api/clinic-settings/branding"),
@@ -264,7 +266,9 @@ export default function BillDetail({ id }: { id: number }) {
   // case where the tab itself was opened by a target="_blank" link.
   const buildHtmlForCurrent = (opts: { reprintBy?: string; reprintReason?: string } = {}): string | null => {
     if (!bill) return null;
-    const settings = loadBillPrintSettings();
+    // Clinic-wide server settings as the base (same as the BillingDesk print
+    // paths) so a reprint honors the admin-configured format/layout too.
+    const settings = loadBillPrintSettings(parseGlobalBillPrintSettings(clinic?.billPrintSettingsJson));
     return buildBillPrintHtml({
       bill: bill as PrintBillData,
       clinic: clinic as PrintClinic,

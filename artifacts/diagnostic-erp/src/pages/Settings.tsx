@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
@@ -4254,6 +4254,128 @@ const BILL_PREVIEW_FALLBACK_CLINIC: PrintClinic = {
   qrOnBillEnabled: true,
 };
 
+// ── Billing Print tab helpers — MODULE scope on purpose ──────────────────────
+// These were previously declared inside BillingPrintTab's render body, which
+// gave them a new function identity on every settings keystroke/toggle. React
+// then treated every card as a brand-new element type and unmounted/remounted
+// the whole tab's DOM per update: the focused input was destroyed mid-typing,
+// focus fell to <body>, and the user's next arrow/space key presses scrolled
+// the page instead of editing the field (the "page rushes down" bug in
+// Layout & Typography). Keeping them here gives stable identities, so DOM and
+// focus survive re-renders. None of them close over tab state — props only.
+const SectionCard = ({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) => (
+  <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
+    <div>
+      <h2 className="font-bold text-lg flex items-center gap-2">{title}</h2>
+      {subtitle && <p className="text-sm text-muted-foreground mt-1">{subtitle}</p>}
+    </div>
+    {children}
+  </div>
+);
+
+const SelectCard = ({ label, options, value, onChange }: { label: string; options: { id: string; label: string }[]; value: string; onChange: (v: string) => void }) => (
+  <div>
+    <p className="text-sm font-medium mb-2">{label}</p>
+    <div className="grid grid-cols-2 gap-3">
+      {options.map((opt) => {
+        const active = value === opt.id;
+        return (
+          <button
+            key={opt.id}
+            type="button"
+            onClick={() => onChange(opt.id)}
+            className={`px-4 py-3 rounded-lg border text-sm font-medium transition-colors ${active ? "bg-blue-50 border-blue-400 text-blue-700 dark:bg-blue-950/30 dark:border-blue-700 dark:text-blue-300" : "bg-muted/30 border-card-border text-muted-foreground hover:bg-muted/50"}`}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  </div>
+);
+
+// Named BillPrintToggleRow (not ToggleRow) — a different module-level
+// ToggleRow with {label, checked} props already exists further down.
+const BillPrintToggleRow = ({ label, value, onChange }: { label: string; value: boolean; onChange: (v: boolean) => void }) => (
+  <button
+    type="button"
+    onClick={() => onChange(!value)}
+    className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${value ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
+  >
+    <span className="text-sm font-medium">{label}</span>
+    <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${value ? "bg-green-500" : "bg-muted-foreground/40"}`}>
+      <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${value ? "translate-x-5" : "translate-x-1"}`} />
+    </span>
+  </button>
+);
+
+// A numeric override field for print layout/typography. `value` is
+// null when unset (falls back to the built-in tuned default shown as
+// placeholder text). Typing a number applies a fixed override regardless
+// of paper size; "Reset" clears back to null (built-in default).
+const NumberOverrideField = ({ label, value, defaultLabel, unit, min, max, onChange }: {
+  label: string; value: number | null; defaultLabel: string; unit: string;
+  min: number; max: number; onChange: (v: number | null) => void;
+}) => (
+  <div>
+    <p className="text-xs font-medium mb-1">{label}</p>
+    <div className="flex items-center gap-2">
+      <input
+        type="number" min={min} max={max}
+        value={value ?? ""}
+        placeholder={`Default: ${defaultLabel}`}
+        onChange={(e) => {
+          const raw = e.target.value;
+          if (raw === "") { onChange(null); return; }
+          const n = Number(raw);
+          if (Number.isFinite(n)) onChange(Math.max(min, Math.min(max, n)));
+        }}
+        className="w-full h-8 text-sm border border-input rounded-md px-2 bg-background"
+      />
+      <span className="text-xs text-muted-foreground shrink-0">{unit}</span>
+      {value != null && (
+        <button type="button" onClick={() => onChange(null)} className="text-xs text-muted-foreground hover:text-foreground underline shrink-0">
+          Reset
+        </button>
+      )}
+    </div>
+  </div>
+);
+
+const billFormats: { id: string; label: string }[] = [
+  { id: "classic",     label: "Classic Format (Existing)" },
+  { id: "premium-a5", label: "Premium Format V1 (Existing)" },
+  { id: "designer-a", label: "Designer Layout A — Minimal Premium" },
+  { id: "designer-b", label: "Designer Layout B — Modern Diagnostic" },
+  { id: "designer-c", label: "Designer Layout C — Corporate Healthcare" },
+];
+const billPaperSizes: { id: string; label: string }[] = [
+  { id: "A5-portrait", label: "A5 Portrait" },
+  { id: "A5-landscape", label: "A5 Landscape" },
+  { id: "half-a4", label: "Half A4" },
+  { id: "A4", label: "A4" },
+];
+const billCopyTypes: { id: string; label: string }[] = [
+  { id: "patient", label: "Patient Copy" },
+  { id: "office", label: "Office Copy" },
+  { id: "both", label: "Both Copies" },
+];
+const printActions: { id: string; label: string }[] = [
+  { id: "save-print", label: "Save & Print" },
+  { id: "save-preview", label: "Save & Preview" },
+  { id: "save-only", label: "Save Only" },
+];
+
+// Approximate mm→px (96dpi) natural size per paper option, so the preview
+// shows the true page proportions (and doesn't clip content) before being
+// scaled down to fit a small on-screen box.
+const PAPER_PX: Record<string, { w: number; h: number }> = {
+  "A5-portrait": { w: 559, h: 794 },
+  "A5-landscape": { w: 794, h: 559 },
+  "half-a4": { w: 559, h: 794 },
+  "A4": { w: 794, h: 1123 },
+};
+
 function BillingPrintTab() {
   const [settings, setSettings] = useState<import("@/lib/billPrintSettings").BillPrintSettings | null>(null);
   const [loading, setLoading] = useState(true);
@@ -4265,11 +4387,12 @@ function BillingPrintTab() {
   const [previewBW, setPreviewBW] = useState<boolean | null>(null); // null = follow the real Printers-tab setting
   const [previewQrUrl, setPreviewQrUrl] = useState("");
 
-  const { data: previewClinic } = useQuery<PrintClinic>({
+  const { data: previewClinic, isFetched: clinicFetched, isError: clinicError } = useQuery<PrintClinic>({
     queryKey: ["clinic-settings"],
     queryFn: () => api.get("/api/clinic-settings"),
     staleTime: 5 * 60_000,
   });
+  const qc = useQueryClient();
   const { data: previewPrinterCfg } = useQuery<{ billPrinterType?: string }>({
     queryKey: ["printer-settings"],
     queryFn: () => api.get("/api/printers/settings"),
@@ -4326,12 +4449,20 @@ function BillingPrintTab() {
     });
   }, [settings, previewClinic, previewQrUrl, effectivePreviewIsBW]);
 
+  // Initialize once the clinic-wide server blob is known (success OR error —
+  // on error we degrade to defaults + this browser's local overrides, same as
+  // the pre-server behavior). Without waiting, the tab would show values that
+  // don't match what other counters will actually print.
+  const settingsInitialized = useRef(false);
   useEffect(() => {
+    if (settingsInitialized.current) return;
+    if (!clinicFetched && !clinicError) return;
+    settingsInitialized.current = true;
     import("@/lib/billPrintSettings").then((m) => {
-      setSettings(m.loadBillPrintSettings());
+      setSettings(m.loadBillPrintSettings(m.parseGlobalBillPrintSettings(previewClinic?.billPrintSettingsJson)));
       setLoading(false);
     });
-  }, []);
+  }, [clinicFetched, clinicError, previewClinic]);
 
   const update = useCallback((patch: Partial<import("@/lib/billPrintSettings").BillPrintSettings>) => {
     setSettings((prev) => (prev ? { ...prev, ...patch } : prev));
@@ -4340,9 +4471,23 @@ function BillingPrintTab() {
 
   const save = () => {
     if (!settings) return;
-    import("@/lib/billPrintSettings").then((m) => {
+    import("@/lib/billPrintSettings").then(async (m) => {
+      // Local first (works offline, per-user override layer), then the
+      // clinic-wide server blob so every billing counter prints with the
+      // paper size/format configured and previewed here — not each
+      // browser's stale localStorage default (the rotated-bill bug).
       m.saveBillPrintSettings(settings);
-      toast({ title: "Saved", description: "Billing print settings saved." });
+      try {
+        await api.put("/api/clinic-settings", { billPrintSettingsJson: JSON.stringify(settings) });
+        qc.invalidateQueries({ queryKey: ["clinic-settings"] });
+        toast({ title: "Saved", description: "Billing print settings saved clinic-wide." });
+      } catch {
+        toast({
+          variant: "destructive",
+          title: "Saved on this device only",
+          description: "Could not reach the server — other billing counters may keep printing with their old settings.",
+        });
+      }
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     });
@@ -4350,124 +4495,14 @@ function BillingPrintTab() {
 
   const reset = () => {
     import("@/lib/billPrintSettings").then((m) => {
-      setSettings(m.loadBillPrintSettings());
-      toast({ title: "Reset", description: "Billing print settings reset to defaults." });
+      setSettings(m.loadBillPrintSettings(m.parseGlobalBillPrintSettings(previewClinic?.billPrintSettingsJson)));
+      toast({ title: "Reset", description: "Billing print settings reset to the last saved values." });
       setSaved(false);
     });
   };
 
   if (loading || !settings) return <div className="bg-card border border-card-border rounded-xl p-8 text-center text-muted-foreground">Loading billing print settings…</div>;
 
-  const SectionCard = ({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) => (
-    <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
-      <div>
-        <h2 className="font-bold text-lg flex items-center gap-2">{title}</h2>
-        {subtitle && <p className="text-sm text-muted-foreground mt-1">{subtitle}</p>}
-      </div>
-      {children}
-    </div>
-  );
-
-  const SelectCard = ({ label, options, value, onChange }: { label: string; options: { id: string; label: string }[]; value: string; onChange: (v: string) => void }) => (
-    <div>
-      <p className="text-sm font-medium mb-2">{label}</p>
-      <div className="grid grid-cols-2 gap-3">
-        {options.map((opt) => {
-          const active = value === opt.id;
-          return (
-            <button
-              key={opt.id}
-              type="button"
-              onClick={() => onChange(opt.id)}
-              className={`px-4 py-3 rounded-lg border text-sm font-medium transition-colors ${active ? "bg-blue-50 border-blue-400 text-blue-700 dark:bg-blue-950/30 dark:border-blue-700 dark:text-blue-300" : "bg-muted/30 border-card-border text-muted-foreground hover:bg-muted/50"}`}
-            >
-              {opt.label}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-
-  const ToggleRow = ({ label, value, onChange }: { label: string; value: boolean; onChange: (v: boolean) => void }) => (
-    <button
-      type="button"
-      onClick={() => onChange(!value)}
-      className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${value ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
-    >
-      <span className="text-sm font-medium">{label}</span>
-      <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${value ? "bg-green-500" : "bg-muted-foreground/40"}`}>
-        <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${value ? "translate-x-5" : "translate-x-1"}`} />
-      </span>
-    </button>
-  );
-
-  // A numeric override field for print layout/typography. `value` is
-  // null when unset (falls back to the built-in tuned default shown as
-  // placeholder text). Typing a number applies a fixed override regardless
-  // of paper size; "Reset" clears back to null (built-in default).
-  const NumberOverrideField = ({ label, value, defaultLabel, unit, min, max, onChange }: {
-    label: string; value: number | null; defaultLabel: string; unit: string;
-    min: number; max: number; onChange: (v: number | null) => void;
-  }) => (
-    <div>
-      <p className="text-xs font-medium mb-1">{label}</p>
-      <div className="flex items-center gap-2">
-        <input
-          type="number" min={min} max={max}
-          value={value ?? ""}
-          placeholder={`Default: ${defaultLabel}`}
-          onChange={(e) => {
-            const raw = e.target.value;
-            if (raw === "") { onChange(null); return; }
-            const n = Number(raw);
-            if (Number.isFinite(n)) onChange(Math.max(min, Math.min(max, n)));
-          }}
-          className="w-full h-8 text-sm border border-input rounded-md px-2 bg-background"
-        />
-        <span className="text-xs text-muted-foreground shrink-0">{unit}</span>
-        {value != null && (
-          <button type="button" onClick={() => onChange(null)} className="text-xs text-muted-foreground hover:text-foreground underline shrink-0">
-            Reset
-          </button>
-        )}
-      </div>
-    </div>
-  );
-
-  const billFormats: { id: string; label: string }[] = [
-    { id: "classic",     label: "Classic Format (Existing)" },
-    { id: "premium-a5", label: "Premium Format V1 (Existing)" },
-    { id: "designer-a", label: "Designer Layout A — Minimal Premium" },
-    { id: "designer-b", label: "Designer Layout B — Modern Diagnostic" },
-    { id: "designer-c", label: "Designer Layout C — Corporate Healthcare" },
-  ];
-  const billPaperSizes: { id: string; label: string }[] = [
-    { id: "A5-portrait", label: "A5 Portrait" },
-    { id: "A5-landscape", label: "A5 Landscape" },
-    { id: "half-a4", label: "Half A4" },
-    { id: "A4", label: "A4" },
-  ];
-  const billCopyTypes: { id: string; label: string }[] = [
-    { id: "patient", label: "Patient Copy" },
-    { id: "office", label: "Office Copy" },
-    { id: "both", label: "Both Copies" },
-  ];
-  const printActions: { id: string; label: string }[] = [
-    { id: "save-print", label: "Save & Print" },
-    { id: "save-preview", label: "Save & Preview" },
-    { id: "save-only", label: "Save Only" },
-  ];
-
-  // Approximate mm→px (96dpi) natural size per paper option, so the preview
-  // shows the true page proportions (and doesn't clip content) before being
-  // scaled down to fit a small on-screen box.
-  const PAPER_PX: Record<string, { w: number; h: number }> = {
-    "A5-portrait": { w: 559, h: 794 },
-    "A5-landscape": { w: 794, h: 559 },
-    "half-a4": { w: 559, h: 794 },
-    "A4": { w: 794, h: 1123 },
-  };
   const previewNatural = PAPER_PX[settings.defaultPaperSize] ?? PAPER_PX["A5-portrait"];
   const previewBoxWidth = 300;
   const previewScale = previewBoxWidth / previewNatural.w;
@@ -4484,11 +4519,11 @@ function BillingPrintTab() {
           onChange={(v) => update({ defaultFormat: v as any })}
         />
         <div className="grid grid-cols-2 gap-3">
-          <ToggleRow label="Enable Classic Format" value={settings.classicEnabled} onChange={(v) => update({ classicEnabled: v })} />
-          <ToggleRow label="Enable Premium A5 Format" value={settings.premiumA5Enabled} onChange={(v) => update({ premiumA5Enabled: v })} />
-          <ToggleRow label="Enable Designer Layout A" value={(settings as any).designerAEnabled !== false} onChange={(v) => update({ designerAEnabled: v } as any)} />
-          <ToggleRow label="Enable Designer Layout B" value={(settings as any).designerBEnabled !== false} onChange={(v) => update({ designerBEnabled: v } as any)} />
-          <ToggleRow label="Enable Designer Layout C" value={(settings as any).designerCEnabled !== false} onChange={(v) => update({ designerCEnabled: v } as any)} />
+          <BillPrintToggleRow label="Enable Classic Format" value={settings.classicEnabled} onChange={(v) => update({ classicEnabled: v })} />
+          <BillPrintToggleRow label="Enable Premium A5 Format" value={settings.premiumA5Enabled} onChange={(v) => update({ premiumA5Enabled: v })} />
+          <BillPrintToggleRow label="Enable Designer Layout A" value={(settings as any).designerAEnabled !== false} onChange={(v) => update({ designerAEnabled: v } as any)} />
+          <BillPrintToggleRow label="Enable Designer Layout B" value={(settings as any).designerBEnabled !== false} onChange={(v) => update({ designerBEnabled: v } as any)} />
+          <BillPrintToggleRow label="Enable Designer Layout C" value={(settings as any).designerCEnabled !== false} onChange={(v) => update({ designerCEnabled: v } as any)} />
         </div>
         <div className="mt-3">
           <label className="text-xs font-medium text-slate-600 block mb-1">Auto switch to A4 when tests exceed</label>
@@ -4530,18 +4565,18 @@ function BillingPrintTab() {
 
       <SectionCard title="Bill Display" subtitle="Control what appears on the printed bill.">
         <div className="grid grid-cols-2 gap-3">
-          <ToggleRow label="Show QR Code" value={settings.showQrCode} onChange={(v) => update({ showQrCode: v })} />
-          <ToggleRow label="Show Amount in Words" value={settings.showAmountInWords} onChange={(v) => update({ showAmountInWords: v })} />
-          <ToggleRow label="Show Signature Line" value={settings.showSignatureLine} onChange={(v) => update({ showSignatureLine: v })} />
-          <ToggleRow label="Show Computer Generated Note" value={settings.showComputerGenerated} onChange={(v) => update({ showComputerGenerated: v })} />
-          <ToggleRow label="Show Report Collection Message" value={settings.showReportMessage} onChange={(v) => update({ showReportMessage: v })} />
-          <ToggleRow label="Show Service Footer" value={settings.showServiceFooter} onChange={(v) => update({ showServiceFooter: v })} />
-          <ToggleRow label="Show Branding Footer" value={settings.showBrandingFooter} onChange={(v) => update({ showBrandingFooter: v })} />
-          <ToggleRow label="Show Receipt Barcode" value={settings.showBarcode} onChange={(v) => update({ showBarcode: v })} />
-          <ToggleRow label="Show Watermark" value={settings.showWatermark} onChange={(v) => update({ showWatermark: v })} />
-          <ToggleRow label="Show Patient Instructions" value={settings.showPatientInstructions} onChange={(v) => update({ showPatientInstructions: v })} />
-          <ToggleRow label="Show System Information" value={settings.showSystemInfo} onChange={(v) => update({ showSystemInfo: v })} />
-          <ToggleRow label="Show Queue Token Box" value={settings.showQueueTokenOnBill} onChange={(v) => update({ showQueueTokenOnBill: v })} />
+          <BillPrintToggleRow label="Show QR Code" value={settings.showQrCode} onChange={(v) => update({ showQrCode: v })} />
+          <BillPrintToggleRow label="Show Amount in Words" value={settings.showAmountInWords} onChange={(v) => update({ showAmountInWords: v })} />
+          <BillPrintToggleRow label="Show Signature Line" value={settings.showSignatureLine} onChange={(v) => update({ showSignatureLine: v })} />
+          <BillPrintToggleRow label="Show Computer Generated Note" value={settings.showComputerGenerated} onChange={(v) => update({ showComputerGenerated: v })} />
+          <BillPrintToggleRow label="Show Report Collection Message" value={settings.showReportMessage} onChange={(v) => update({ showReportMessage: v })} />
+          <BillPrintToggleRow label="Show Service Footer" value={settings.showServiceFooter} onChange={(v) => update({ showServiceFooter: v })} />
+          <BillPrintToggleRow label="Show Branding Footer" value={settings.showBrandingFooter} onChange={(v) => update({ showBrandingFooter: v })} />
+          <BillPrintToggleRow label="Show Receipt Barcode" value={settings.showBarcode} onChange={(v) => update({ showBarcode: v })} />
+          <BillPrintToggleRow label="Show Watermark" value={settings.showWatermark} onChange={(v) => update({ showWatermark: v })} />
+          <BillPrintToggleRow label="Show Patient Instructions" value={settings.showPatientInstructions} onChange={(v) => update({ showPatientInstructions: v })} />
+          <BillPrintToggleRow label="Show System Information" value={settings.showSystemInfo} onChange={(v) => update({ showSystemInfo: v })} />
+          <BillPrintToggleRow label="Show Queue Token Box" value={settings.showQueueTokenOnBill} onChange={(v) => update({ showQueueTokenOnBill: v })} />
         </div>
         <p className="text-[11px] text-muted-foreground leading-relaxed mt-1">
           Adds a large "QUEUE TOKEN #NN" box near the top of the bill, separate from the per-test department token list (which always prints when present). Off by default to avoid a redundant box on billing-counter receipts.
@@ -4624,17 +4659,17 @@ function BillingPrintTab() {
 
       <SectionCard title="Preview & Speed" subtitle="Configure how fast the billing workflow should be.">
         <div className="grid grid-cols-2 gap-3">
-          <ToggleRow label="Enable Print Preview" value={settings.enablePreview} onChange={(v) => update({ enablePreview: v })} />
-          <ToggleRow label="Direct Print After Save" value={settings.directPrintAfterSave} onChange={(v) => update({ directPrintAfterSave: v })} />
-          <ToggleRow label="Auto Open Print Dialog" value={settings.autoOpenPrintDialog} onChange={(v) => update({ autoOpenPrintDialog: v })} />
-          <ToggleRow label="Ask Before Printing" value={settings.askBeforePrint} onChange={(v) => update({ askBeforePrint: v })} />
-          <ToggleRow label="Auto Download PDF" value={settings.autoDownloadPdf} onChange={(v) => update({ autoDownloadPdf: v })} />
-          <ToggleRow label="Fast Billing Mode" value={settings.fastBillingMode} onChange={(v) => update({ fastBillingMode: v })} />
+          <BillPrintToggleRow label="Enable Print Preview" value={settings.enablePreview} onChange={(v) => update({ enablePreview: v })} />
+          <BillPrintToggleRow label="Direct Print After Save" value={settings.directPrintAfterSave} onChange={(v) => update({ directPrintAfterSave: v })} />
+          <BillPrintToggleRow label="Auto Open Print Dialog" value={settings.autoOpenPrintDialog} onChange={(v) => update({ autoOpenPrintDialog: v })} />
+          <BillPrintToggleRow label="Ask Before Printing" value={settings.askBeforePrint} onChange={(v) => update({ askBeforePrint: v })} />
+          <BillPrintToggleRow label="Auto Download PDF" value={settings.autoDownloadPdf} onChange={(v) => update({ autoDownloadPdf: v })} />
+          <BillPrintToggleRow label="Fast Billing Mode" value={settings.fastBillingMode} onChange={(v) => update({ fastBillingMode: v })} />
         </div>
       </SectionCard>
 
       <SectionCard title="Admin Lock" subtitle="When ON, users cannot override these settings.">
-        <ToggleRow label="Admin Can Force Global Print Settings" value={settings.adminLock} onChange={(v) => update({ adminLock: v })} />
+        <BillPrintToggleRow label="Admin Can Force Global Print Settings" value={settings.adminLock} onChange={(v) => update({ adminLock: v })} />
       </SectionCard>
 
       <div className="flex justify-end gap-2 pt-2">

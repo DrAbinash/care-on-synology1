@@ -223,3 +223,57 @@ describe("PUT /api/clinic-settings — accepts real frontend payload shapes", ()
     expect(updateSetCalls[0]).not.toHaveProperty("someFieldThatDoesNotExist");
   });
 });
+
+describe("PUT /api/clinic-settings — billPrintSettingsJson (clinic-wide Billing Print settings blob)", () => {
+  beforeEach(() => {
+    currentRow = { id: 1, name: "Care Diagnostics" };
+    updateSetCalls = [];
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  test("accepts a valid JSON object string and persists it verbatim", async () => {
+    const { default: clinicSettingsRouter } = await import("./clinicSettings");
+    const handler = getPutHandler(clinicSettingsRouter);
+    const blob = JSON.stringify({ defaultPaperSize: "A4", printMarginMm: 2, adminLock: true });
+    const res = makeRes();
+    await handler({ body: { billPrintSettingsJson: blob } }, res);
+    expect(res.statusCode).toBe(200);
+    expect(updateSetCalls[0].billPrintSettingsJson).toBe(blob);
+  });
+
+  test("rejects a non-string value", async () => {
+    const { default: clinicSettingsRouter } = await import("./clinicSettings");
+    const handler = getPutHandler(clinicSettingsRouter);
+    const res = makeRes();
+    await handler({ body: { billPrintSettingsJson: { defaultPaperSize: "A4" } } }, res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/billPrintSettingsJson/);
+  });
+
+  test("rejects malformed JSON", async () => {
+    const { default: clinicSettingsRouter } = await import("./clinicSettings");
+    const handler = getPutHandler(clinicSettingsRouter);
+    const res = makeRes();
+    await handler({ body: { billPrintSettingsJson: "{not json" } }, res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/valid JSON/);
+  });
+
+  test("rejects JSON that is not an object (array)", async () => {
+    const { default: clinicSettingsRouter } = await import("./clinicSettings");
+    const handler = getPutHandler(clinicSettingsRouter);
+    const res = makeRes();
+    await handler({ body: { billPrintSettingsJson: "[1,2,3]" } }, res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/JSON object/);
+  });
+
+  test("rejects an oversized blob (> 8KB)", async () => {
+    const { default: clinicSettingsRouter } = await import("./clinicSettings");
+    const handler = getPutHandler(clinicSettingsRouter);
+    const res = makeRes();
+    await handler({ body: { billPrintSettingsJson: JSON.stringify({ pad: "x".repeat(9000) }) } }, res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatch(/max 8KB/);
+  });
+});
