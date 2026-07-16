@@ -40,6 +40,7 @@ import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
 // comparison, Copilot) into a pre-report snapshot inside THIS workspace.
 import UsgCompanionPanel from "@/components/radiology/UsgCompanionPanel";
 import type { CompanionCopilotContext } from "@/lib/usgCompanionTypes";
+import type { PopulateBlock as CompanionPopulateBlock, AutoPopulatePlan } from "@/lib/usgCompanionAutoPopulate";
 import ModuleErrorBoundary from "@/components/ModuleErrorBoundary";
 import "@/lib/copilotUsgCompanionModule"; // registers the USG Companion Copilot module
 // Cockpit→Workspace merge (D1): external-viewer (OHIF/Weasis/DICOM-SR)
@@ -1204,6 +1205,29 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     });
   }
 
+  /** CARE USG Companion (Phase 2) — apply a deterministic auto-population plan
+   *  through the EXISTING setters/merge primitives. Fill-empty for
+   *  Technique/Impression, dedupe-merge for Findings-normals/Recommendation,
+   *  upsert for machine measurements — never overwriting manual text. The
+   *  applied blocks feed the provenance ledger + edit-tracking. */
+  function handleCompanionAutoPopulate(plan: AutoPopulatePlan) {
+    if (isLocked) return;
+    let applied = 0;
+    for (const b of plan.blocks) {
+      if (b.section === "technique") setTechnique((prev) => (prev.trim() ? prev : b.text));
+      else if (b.section === "findings" && b.kind === "machine" && b.label && b.value) handleUsgMeasurementInsert(b.label, b.value, b.unit);
+      else if (b.section === "findings") setRawFindings((prev) => mergeBlock(prev, b.text));
+      else if (b.section === "recommendation") setRecommendation((prev) => mergeBlock(prev, b.text));
+      else if (b.section === "impression") setImpression((prev) => (prev.filter(Boolean).length ? prev : [b.text]));
+      applied++;
+    }
+    // Machine fill is part of the clean baseline — subsequent edits then register
+    // as real changes (and as "Edited" in the provenance ledger).
+    requestBaselineRecapture();
+    setCompanionLedger(plan.blocks);
+    if (applied > 0) toast({ title: "Report auto-populated", description: `${applied} section(s) filled from machine data — review before finalizing.` });
+  }
+
   // R2.0 — apply a practical USG template (Whole Abdomen/KUB/Pregnancy/
   // Doppler/Breast/Thyroid/...): calls the existing confidence-gated
   // auto-generate endpoint (fills ONLY from approved measurements; low-
@@ -1638,6 +1662,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // machine-measurement outcome up here so the EXISTING Copilot can advise on
   // imported / rejected / modified / missing measurements (no second Copilot).
   const [companionCopilot, setCompanionCopilot] = useState<CompanionCopilotContext | null>(null);
+  // CARE USG Companion (Phase 2) — the blocks the Companion auto-populated, so
+  // the provenance ledger + edit-tracking + telemetry can reflect them.
+  const [companionLedger, setCompanionLedger] = useState<CompanionPopulateBlock[]>([]);
 
   // Accepted viewer/DICOM-SR measurements (MRI PR 2) — read from the SAME hook +
   // cache the existing ViewerMeasurementsPanel uses, mapped into the Copilot
@@ -1911,6 +1938,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     // CARE Copilot AI reasoning is per-report — clear it and its cache.
     setAiCopilotItems([]);
     aiCopilotCacheRef.current = new Map();
+    // CARE USG Companion Phase 2 — the auto-population ledger is per-study.
+    setCompanionLedger([]);
     setCopilotDismissed(new Set());
     setSelectedPrior(null); // previous-study comparison is per-report (MRI PR 1)
     lastToggledFindingRef.current = null;
@@ -4355,6 +4384,18 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   userEdited={dirty || !!lastSavedAt}
                   reportSaved={!!lastSavedAt}
                   reportFinalized={statusLocked || finalizedReportId != null}
+                  currentTechnique={technique}
+                  currentFindings={rawFindings}
+                  currentImpression={impression}
+                  currentRecommendation={recommendation}
+                  protocolTechnique={activeProtocol?.techniqueText ?? null}
+                  protocolNormals={activeProtocol?.normalText ?? null}
+                  protocolRecommendation={activeProtocol?.recommendationText ?? null}
+                  selectedFindingIds={[...selectedQuickIds]}
+                  region={studyRegion}
+                  checklistRemaining={activeProtocol ? checklistRemaining : []}
+                  autoPopulatedBlocks={companionLedger}
+                  onAutoPopulate={handleCompanionAutoPopulate}
                   onOpenTab={(tab) => setRightTab(tab as RightTab)}
                   onCopilotContext={setCompanionCopilot}
                   onApplyProtocol={availableProtocols.some((p) => p.isDefault)

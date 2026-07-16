@@ -1,34 +1,45 @@
 /**
- * UsgCompanionPanel.tsx — CARE USG Companion (Phase 1)
+ * UsgCompanionPanel.tsx — CARE USG Companion (Phase 1 + Phase 2)
  *
- * A workflow-automation surface that sits INSIDE the existing Reporting
- * Workspace (not a new page). It turns the machine information the Voluson
- * pipeline already extracted into a structured pre-report snapshot: Study
- * Summary, Report Readiness Score (pure workflow completeness), Companion
- * Timeline, machine-measurement summary, previous-study check, and one-click
- * actions that reuse the workspace's existing engines.
+ * A workflow-automation surface INSIDE the existing Reporting Workspace (not a
+ * new page). Phase 1: Study Summary, Readiness, Timeline, machine measurements,
+ * previous-study check. Phase 2 (Intelligent Auto Report Population): a
+ * deterministic Auto-Populate action + provenance ledger (what came from where),
+ * a live checklist, report-confidence metrics, Companion suggestions sourced
+ * from the existing quick-select engine, and a previous-comparison view built on
+ * the existing comparison engine.
  *
  * HARD RULES honoured: builds no new engine. Study recognition, template,
- * protocol, measurements, comparison and Copilot all come from existing
- * infrastructure — this component only composes and presents them, and threads
- * its measurement outcome into the existing Copilot context.
+ * protocol, measurements, comparison, suggestions and Copilot all come from
+ * existing infrastructure — this composes and presents them. All population is
+ * non-destructive (manual/finalized text is never overwritten) and applied
+ * through the workspace's existing setters.
  *
- * Reliability: independent fetch, fully defensive. An assembly failure renders a
- * quiet degraded state and NEVER blocks reporting.
+ * Reliability: independent fetch, fully defensive. Any failure renders a quiet
+ * degraded state and NEVER blocks reporting.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Sparkles, Activity, Gauge, Clock, Image as ImageIcon, Stethoscope,
   CheckCircle2, AlertTriangle, ChevronDown, ChevronRight, History,
-  ClipboardList, FileText, Wand2, ArrowRight, Cpu,
+  ClipboardList, FileText, Wand2, ArrowRight, Cpu, Lightbulb, ListChecks,
+  TrendingUp, TrendingDown, Minus, ShieldCheck, Circle,
 } from "lucide-react";
 import { api } from "@/lib/fetchApi";
 import { retryWithBackoff, isTransientError } from "@/lib/reliability";
 import {
-  computeReadinessScore, buildCompanionTimeline,
-  type TimelineStage,
+  computeReadinessScore, buildCompanionTimeline, type TimelineStage,
 } from "@/lib/usgCompanionReadiness";
+import {
+  buildAutoPopulatePlan, deriveProvenance, countEdits,
+  type AutoPopulateMeasurement, type AutoPopulatePlan, type PopulateBlock, type BlockStatus,
+} from "@/lib/usgCompanionAutoPopulate";
+import {
+  buildCompanionSuggestions, buildLiveChecklist, computeReportConfidence,
+  type SuggestionFinding, type ChecklistItem,
+} from "@/lib/usgCompanionSuggestions";
+import { extractMeasurements, compareMeasurementRows } from "@/lib/radiologyComparison";
 import type { CompanionAssembly, CompanionCopilotContext } from "@/lib/usgCompanionTypes";
 
 export interface UsgCompanionPanelProps {
@@ -36,7 +47,7 @@ export interface UsgCompanionPanelProps {
   studyId?: number;
   patientId?: number;
   disabled?: boolean;
-  // Live workspace signals for readiness + timeline (the workspace owns these).
+  // Live workspace signals (readiness + timeline + confidence).
   templateSelected: boolean;
   protocolSelected: boolean;
   historyPresent: boolean;
@@ -45,15 +56,29 @@ export interface UsgCompanionPanelProps {
   userEdited: boolean;
   reportSaved: boolean;
   reportFinalized: boolean;
-  // Actions the workspace wires to its existing functions (all optional).
+  // Phase 2 — current report field values (plan / provenance / confidence / comparison).
+  currentTechnique: string;
+  currentFindings: string;
+  currentImpression: string[];
+  currentRecommendation: string;
+  // Phase 2 — protocol text used for deterministic auto-population.
+  protocolTechnique?: string | null;
+  protocolNormals?: string | null;
+  protocolRecommendation?: string | null;
+  ruleImpressionLines?: string[];
+  // Phase 2 — suggestion inputs.
+  selectedFindingIds: number[];
+  region: string | null;
+  checklistRemaining?: string[];
+  // Phase 2 — blocks the workspace has applied (for the provenance ledger).
+  autoPopulatedBlocks?: PopulateBlock[];
+  // Actions.
   onOpenTab?: (tab: string) => void;
   onApplyProtocol?: () => void;
   onSuggestHistory?: () => void;
-  // Thread the measurement outcome up into the existing Copilot context.
+  onAutoPopulate?: (plan: AutoPopulatePlan) => void;
   onCopilotContext?: (ctx: CompanionCopilotContext | null) => void;
 }
-
-function pct(n: number): string { return `${Math.round(n)}%`; }
 
 function readinessTone(score: number): { ring: string; text: string; label: string } {
   if (score >= 85) return { ring: "#059669", text: "text-emerald-600", label: "Ready" };
@@ -93,6 +118,20 @@ function SummaryStat({ icon, label, value, tone }: { icon: React.ReactNode; labe
   );
 }
 
+function ConfidenceBar({ label, value }: { label: string; value: number }) {
+  const color = value >= 85 ? "bg-emerald-500" : value >= 50 ? "bg-amber-500" : "bg-red-500";
+  return (
+    <div>
+      <div className="flex items-center justify-between text-[10px] text-gray-500 mb-0.5">
+        <span>{label}</span><span className="font-semibold text-gray-700">{value}%</span>
+      </div>
+      <div className="h-1.5 rounded-full bg-gray-100 overflow-hidden">
+        <div className={`h-full rounded-full ${color}`} style={{ width: `${Math.max(0, Math.min(100, value))}%` }} />
+      </div>
+    </div>
+  );
+}
+
 function TimelineRow({ stages }: { stages: TimelineStage[] }) {
   return (
     <div className="flex items-center gap-1 overflow-x-auto pb-1">
@@ -114,6 +153,24 @@ function TimelineRow({ stages }: { stages: TimelineStage[] }) {
   );
 }
 
+const PROV_BADGE: Record<string, { label: string; cls: string }> = {
+  machine: { label: "Machine Derived", cls: "bg-emerald-50 text-emerald-700 border-emerald-100" },
+  template: { label: "Template Normal", cls: "bg-sky-50 text-sky-700 border-sky-100" },
+  rule: { label: "Rule-based", cls: "bg-indigo-50 text-indigo-700 border-indigo-100" },
+  protocol: { label: "Protocol", cls: "bg-purple-50 text-purple-700 border-purple-100" },
+};
+const STATUS_BADGE: Record<BlockStatus, { label: string; cls: string }> = {
+  present: { label: "Auto", cls: "bg-gray-100 text-gray-500 border-gray-200" },
+  edited: { label: "Edited", cls: "bg-violet-50 text-violet-700 border-violet-200" },
+  removed: { label: "Removed", cls: "bg-gray-50 text-gray-400 border-gray-200" },
+};
+
+function checklistIcon(status: ChecklistItem["status"]) {
+  if (status === "ok") return <CheckCircle2 size={13} className="text-emerald-500 shrink-0" />;
+  if (status === "warn") return <AlertTriangle size={12} className="text-amber-500 shrink-0" />;
+  return <Circle size={12} className="text-gray-300 shrink-0" />;
+}
+
 export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
   const { studyInstanceUID } = props;
   const [collapsed, setCollapsed] = useState(false);
@@ -127,9 +184,21 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
     retry: 1,
   });
 
-  const measurements = data?.measurements;
+  // Shared quick-select cache (same key QuickFindingsPanel uses — no extra network).
+  const { data: quickSelect } = useQuery<{ findings: SuggestionFinding[] }>({
+    queryKey: ["radiology-quick-select"],
+    queryFn: () => api.get<{ findings: SuggestionFinding[] }>("/api/radiology/quick-select"),
+    staleTime: 5 * 60_000,
+  });
 
-  // Readiness — composes server measurement facts with live workspace signals.
+  const measurements = data?.measurements;
+  const current = useMemo(() => ({
+    technique: props.currentTechnique,
+    findings: props.currentFindings,
+    impression: props.currentImpression,
+    recommendation: props.currentRecommendation,
+  }), [props.currentTechnique, props.currentFindings, props.currentImpression, props.currentRecommendation]);
+
   const readiness = useMemo(() => computeReadinessScore({
     measurementsExpected: measurements?.expectedCount ?? 0,
     measurementsFound: measurements?.foundCount ?? 0,
@@ -154,30 +223,100 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
     measurements?.foundCount, props.templateSelected, props.protocolSelected,
     props.userEdited, props.reportSaved, props.reportFinalized]);
 
-  // Thread the measurement outcome up into the existing Copilot context.
+  // Machine measurements → AutoPopulate shape (key doubles as the usg_measurements field).
+  const autoMeasurements = useMemo<AutoPopulateMeasurement[]>(() =>
+    (measurements?.items ?? []).map((i) => ({
+      key: i.key, label: i.label, value: i.value, unit: i.unit,
+      field: i.key.startsWith("extra:") ? undefined : i.key,
+      confidence: i.confidence, source: i.source, present: i.present,
+    })), [measurements?.items]);
+
+  const plan = useMemo(() => buildAutoPopulatePlan({
+    measurementItems: autoMeasurements,
+    techniqueText: props.protocolTechnique,
+    normalsText: props.protocolNormals,
+    recommendationText: props.protocolRecommendation,
+    ruleImpressionLines: props.ruleImpressionLines,
+    current,
+  }), [autoMeasurements, props.protocolTechnique, props.protocolNormals, props.protocolRecommendation, props.ruleImpressionLines, current]);
+
+  const ledger = useMemo(() => deriveProvenance(props.autoPopulatedBlocks ?? [], current), [props.autoPopulatedBlocks, current]);
+  const edits = useMemo(() => countEdits(props.autoPopulatedBlocks ?? [], current), [props.autoPopulatedBlocks, current]);
+
+  // Companion suggestions from the existing quick-select engine.
+  const suggestions = useMemo(() => {
+    if (!quickSelect?.findings) return [];
+    return buildCompanionSuggestions({
+      findings: quickSelect.findings,
+      region: props.region,
+      selectedIds: props.selectedFindingIds,
+      reportText: `${current.findings}\n${current.impression.join("\n")}`,
+    });
+  }, [quickSelect?.findings, props.region, props.selectedFindingIds, current.findings, current.impression]);
+
+  // Live checklist.
+  const checklist = useMemo(() => buildLiveChecklist({
+    templateSelected: props.templateSelected,
+    protocolSelected: props.protocolSelected,
+    measurementsFound: measurements?.foundCount ?? 0,
+    measurementsExpected: measurements?.expectedCount ?? 0,
+    historyPresent: props.historyPresent,
+    findingsPresent: current.findings.trim().length > 0,
+    impressionPresent: current.impression.filter(Boolean).length > 0,
+    recommendationPresent: current.recommendation.trim().length > 0,
+    missingMeasurements: (measurements?.missing ?? []).map((m) => m.label),
+    checklistRemaining: props.checklistRemaining ?? [],
+    mismatches: [],
+  }), [props.templateSelected, props.protocolSelected, measurements, props.historyPresent, current, props.checklistRemaining]);
+
+  const confidence = useMemo(() => computeReportConfidence({
+    measurementsFound: measurements?.foundCount ?? 0,
+    measurementsExpected: measurements?.expectedCount ?? 0,
+    findingsPresent: current.findings.trim().length > 0,
+    impressionPresent: current.impression.filter(Boolean).length > 0,
+    recommendationPresent: current.recommendation.trim().length > 0,
+    techniquePresent: current.technique.trim().length > 0,
+    readinessScore: readiness.score,
+    locked: !!props.reportFinalized,
+    hasBlockingWarnings: (data?.warnings.length ?? 0) > 0 && (measurements?.foundCount ?? 0) === 0,
+  }), [measurements, current, readiness.score, props.reportFinalized, data?.warnings.length]);
+
+  // Previous comparison via the existing comparison engine.
+  const comparisonRows = useMemo(() => {
+    const priorText = data?.previousStudies.priorUsgText;
+    if (!priorText) return [];
+    const currentText = `${(measurements?.items ?? []).filter((i) => i.present).map((i) => `${i.label}: ${i.value}`).join(". ")}. ${current.findings}`;
+    const prior = extractMeasurements(priorText);
+    const cur = extractMeasurements(currentText);
+    return compareMeasurementRows(prior, cur).filter((r) => r.comparable);
+  }, [data?.previousStudies.priorUsgText, measurements?.items, current.findings]);
+
+  // Thread the measurement + auto-population outcome up into the existing Copilot.
   useEffect(() => {
     if (!props.onCopilotContext) return;
     if (!data || !measurements) { props.onCopilotContext(null); return; }
     const isRejected = measurements.status === "rejected";
     const present = measurements.items.filter((i) => i.present);
-    const ctx: CompanionCopilotContext = {
+    props.onCopilotContext({
       studyType: data.detectedStudyType.id,
       imported: isRejected ? [] : present.map((i) => ({ label: i.label, value: i.value })),
       rejected: isRejected ? present.map((i) => ({ label: i.label, value: i.value })) : [],
       modified: present.filter((i) => (i.source || "").toUpperCase() === "MANUAL").map((i) => ({ label: i.label, value: i.value })),
       missing: measurements.missing.map((m) => m.label),
-    };
-    props.onCopilotContext(ctx);
+      autoPopulated: (props.autoPopulatedBlocks ?? []).map((b) => ({ section: b.section, text: b.text, kind: b.kind })),
+    });
     return () => props.onCopilotContext?.(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, measurements]);
+  }, [data, measurements, props.autoPopulatedBlocks]);
 
-  // Fire-and-forget telemetry once per assembled study (best-effort).
+  // Fire-and-forget telemetry (Phase 1 + Phase 2 fields).
   useEffect(() => {
     if (!data || !measurements) return;
-    const sig = `${studyInstanceUID}:${measurements.foundCount}:${data.extraction.status}:${readiness.score}`;
+    const applied = props.autoPopulatedBlocks ?? [];
+    const sig = `${studyInstanceUID}:${measurements.foundCount}:${data.extraction.status}:${readiness.score}:${applied.length}:${edits}`;
     if (postedRef.current === sig) return;
     postedRef.current = sig;
+    const rejectedLabels = measurements.status === "rejected" ? measurements.items.filter((i) => i.present).map((i) => i.label) : [];
     void retryWithBackoff(() => api.post("/api/care-usg-companion/runs", {
       studyInstanceUID,
       worklistId: data.study.worklistId,
@@ -190,21 +329,25 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
       machineModel: data.machine.model,
       machineName: data.machine.station,
       extractionStatus: data.extraction.status,
-      status: "assembled",
+      status: applied.length > 0 ? "populated" : "assembled",
       measurementsExpected: measurements.expectedCount,
       measurementsFound: measurements.foundCount,
       measurementsImported: measurements.foundCount,
       missingMeasurements: measurements.missing.map((m) => m.label),
+      rejectedMeasurements: rejectedLabels,
       readinessScore: readiness.score,
+      autoPopulated: applied.length > 0,
+      sectionsPopulated: new Set(applied.map((b) => b.section)).size,
+      editsAfterPopulate: edits,
+      reportCompletionPct: confidence.reportCompleteness,
       warnings: data.warnings,
     }), { shouldRetry: isTransientError })
       .catch(() => { /* telemetry must never disturb reporting */ });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, measurements, readiness.score]);
+  }, [data, measurements, readiness.score, props.autoPopulatedBlocks, edits, confidence.reportCompleteness]);
 
   if (!studyInstanceUID) return null;
 
-  // Quiet degraded state — the workspace keeps working regardless.
   if (isError) {
     return (
       <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 flex items-center gap-2">
@@ -221,6 +364,7 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
   const extras = measurements?.extras ?? [];
   const missing = measurements?.missing ?? [];
   const prior = data?.previousStudies;
+  const canPopulate = !props.disabled && plan.eligible && plan.blocks.length > 0;
 
   return (
     <div className="rounded-xl border border-indigo-100 bg-gradient-to-br from-indigo-50/70 to-white shadow-sm overflow-hidden"
@@ -234,18 +378,14 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
           <div className="flex items-center gap-2">
             <span className="text-sm font-bold text-gray-800">CARE USG Companion</span>
             {detected && (
-              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">
-                {detected.label}
-              </span>
+              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">{detected.label}</span>
             )}
             {machine?.isVoluson && (
               <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 inline-flex items-center gap-1">
                 <Cpu size={10} /> Voluson
               </span>
             )}
-            {data?.degraded && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">partial</span>
-            )}
+            {data?.degraded && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">partial</span>}
           </div>
           <div className="text-[11px] text-gray-500 truncate">
             {isLoading ? "Assembling study…" : `${study?.studyDescription || "Ultrasound study"}${machine?.model ? ` · ${machine.model}` : ""}`}
@@ -283,26 +423,90 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
             </div>
           )}
 
-          {/* Readiness breakdown */}
-          <div>
-            <div className="flex items-center gap-1.5 mb-1.5">
-              <Gauge size={13} className="text-indigo-500" />
-              <span className="text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Report Readiness</span>
-              <span className="text-[10px] text-gray-400">workflow completeness · not AI</span>
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
-              {readiness.axes.map((a) => (
-                <div key={a.key} className="flex items-center gap-1.5" title={a.detail}>
-                  {a.done ? <CheckCircle2 size={13} className="text-emerald-500 shrink-0" />
-                    : <div className="h-3 w-3 rounded-full border-2 border-gray-300 shrink-0" />}
-                  <span className={`text-[11px] ${a.done ? "text-gray-700" : "text-gray-400"}`}>{a.label}</span>
-                  {a.key === "measurements" && a.detail && (
-                    <span className="text-[9px] text-gray-400 ml-auto">{a.detail}</span>
-                  )}
+          {/* ── Phase 2: Auto-Populate ── */}
+          {data && (
+            <div className="rounded-lg border border-indigo-100 bg-white/70 p-2.5">
+              <div className="flex items-center gap-2">
+                <Wand2 size={14} className="text-indigo-600" />
+                <span className="text-[11px] font-semibold text-gray-700 uppercase tracking-wide">Auto-Populate Report</span>
+                {props.onAutoPopulate && (
+                  <button
+                    onClick={() => props.onAutoPopulate?.(plan)}
+                    disabled={!canPopulate}
+                    className={`ml-auto text-[11px] font-semibold px-2.5 py-1 rounded-md inline-flex items-center gap-1
+                      ${canPopulate ? "bg-indigo-600 text-white hover:bg-indigo-700" : "bg-gray-100 text-gray-400 cursor-not-allowed"}`}
+                    data-testid="companion-auto-populate"
+                    title={canPopulate ? "Populate empty sections deterministically" : "Nothing new to populate"}
+                  >
+                    <Wand2 size={12} /> {ledger.length > 0 ? "Re-populate" : "Auto-Populate"}
+                  </button>
+                )}
+              </div>
+              {ledger.length === 0 ? (
+                <p className="text-[10.5px] text-gray-500 mt-1.5">
+                  {plan.eligible
+                    ? `Ready to populate ${plan.blocks.length} section(s) from machine measurements, template normals and protocol — non-destructive, never overwriting your text.`
+                    : (plan.reasons[0] ?? "Waiting for machine information.")}
+                </p>
+              ) : (
+                <div className="mt-2 flex flex-col gap-1">
+                  <div className="text-[10px] text-gray-400">{ledger.length} auto-generated item(s) · {edits} edited by you</div>
+                  {ledger.slice(0, 14).map((b) => {
+                    const prov = PROV_BADGE[b.kind] ?? PROV_BADGE.template;
+                    const st = STATUS_BADGE[b.status];
+                    return (
+                      <div key={b.id} className="flex items-center gap-1.5 text-[10.5px]">
+                        <span className={`px-1 py-0.5 rounded border text-[8px] ${prov.cls}`}>{prov.label}</span>
+                        <span className={`px-1 py-0.5 rounded border text-[8px] ${st.cls}`}>{st.label}</span>
+                        <span className="truncate text-gray-600" title={b.text}>{b.text}</span>
+                        {b.field && props.onOpenTab && (
+                          <button onClick={() => props.onOpenTab?.("measurements")}
+                            className="ml-auto text-[9px] text-indigo-500 hover:text-indigo-700 shrink-0" title="Trace to machine measurement">trace</button>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              ))}
+              )}
             </div>
-          </div>
+          )}
+
+          {/* ── Phase 2: Report Confidence ── */}
+          {data && (
+            <div>
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <ShieldCheck size={13} className="text-indigo-500" />
+                <span className="text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Report Confidence</span>
+                {confidence.readyForFinalization
+                  ? <span className="ml-auto text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">Ready to finalize</span>
+                  : <span className="ml-auto text-[10px] text-gray-400">workflow metrics · not AI</span>}
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <ConfidenceBar label="Machine" value={confidence.machineCompleteness} />
+                <ConfidenceBar label="Clinical" value={confidence.clinicalCompleteness} />
+                <ConfidenceBar label="Report" value={confidence.reportCompleteness} />
+              </div>
+            </div>
+          )}
+
+          {/* ── Phase 2: Live Checklist ── */}
+          {data && (
+            <div>
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <ListChecks size={13} className="text-indigo-500" />
+                <span className="text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Intelligent Checklist</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">
+                {checklist.map((c) => (
+                  <div key={c.key} className="flex items-center gap-1.5" title={c.detail}>
+                    {checklistIcon(c.status)}
+                    <span className={`text-[11px] ${c.status === "ok" ? "text-gray-700" : c.status === "warn" ? "text-amber-700" : "text-gray-400"}`}>{c.label}</span>
+                    {c.detail && c.status !== "warn" && <span className="text-[9px] text-gray-400 ml-auto">{c.detail}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Timeline */}
           <div>
@@ -313,7 +517,7 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
             <TimelineRow stages={timeline} />
           </div>
 
-          {/* Measurements detected / missing */}
+          {/* Machine measurements */}
           {measurements && (measurements.expectedCount > 0 || foundChips.length > 0 || extras.length > 0) && (
             <div>
               <div className="flex items-center gap-1.5 mb-1.5">
@@ -322,25 +526,19 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
                 {props.onOpenTab && (
                   <button onClick={() => props.onOpenTab?.("measurements")}
                     className="ml-auto text-[10px] font-semibold text-indigo-600 hover:text-indigo-800 inline-flex items-center gap-0.5">
-                    Review &amp; import <ArrowRight size={11} />
+                    Review &amp; trace <ArrowRight size={11} />
                   </button>
                 )}
               </div>
               <div className="flex flex-wrap gap-1">
                 {foundChips.map((i) => (
-                  <span key={i.key} className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-100">
-                    {i.label}: {i.value}
-                  </span>
+                  <span key={i.key} className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-100">{i.label}: {i.value}</span>
                 ))}
                 {extras.map((i) => (
-                  <span key={i.key} className="text-[10px] px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-100">
-                    {i.label}: {i.value}
-                  </span>
+                  <span key={i.key} className="text-[10px] px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-100">{i.label}: {i.value}</span>
                 ))}
                 {missing.map((m) => (
-                  <span key={m.key} className="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-100">
-                    {m.label} missing
-                  </span>
+                  <span key={m.key} className="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-100">{m.label} missing</span>
                 ))}
                 {foundChips.length === 0 && extras.length === 0 && missing.length === 0 && (
                   <span className="text-[10px] text-gray-400">No auto-measurements for this study type — enter manually.</span>
@@ -349,7 +547,60 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
             </div>
           )}
 
-          {/* Previous studies */}
+          {/* ── Phase 2: Companion Suggestions ── */}
+          {suggestions.length > 0 && (
+            <div>
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <Lightbulb size={13} className="text-amber-500" />
+                <span className="text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Companion Suggestions</span>
+                {props.onOpenTab && (
+                  <button onClick={() => props.onOpenTab?.("quickselect")}
+                    className="ml-auto text-[10px] font-semibold text-indigo-600 hover:text-indigo-800 inline-flex items-center gap-0.5">
+                    Open findings <ArrowRight size={11} />
+                  </button>
+                )}
+              </div>
+              <div className="flex flex-col gap-1">
+                {suggestions.slice(0, 8).map((s) => (
+                  <div key={s.id} className="flex items-start gap-1.5 text-[10.5px]" title={s.detail}>
+                    <Lightbulb size={11} className="text-amber-400 mt-0.5 shrink-0" />
+                    <span className="text-gray-600">
+                      <span className="font-semibold text-gray-700">{s.label}</span>
+                      {s.sourceLabel && <span className="text-gray-400"> · with {s.sourceLabel}</span>}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ── Phase 2: Previous Comparison ── */}
+          {comparisonRows.length > 0 && (
+            <div>
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <History size={13} className="text-indigo-500" />
+                <span className="text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Compared with previous</span>
+                {prior?.priorUsgDateIso && <span className="text-[9px] text-gray-400 ml-auto">{new Date(prior.priorUsgDateIso).toLocaleDateString()}</span>}
+              </div>
+              <div className="flex flex-col gap-0.5">
+                {comparisonRows.slice(0, 8).map((r) => {
+                  const up = (r.delta ?? 0) > 0, down = (r.delta ?? 0) < 0;
+                  return (
+                    <div key={r.label} className="flex items-center gap-2 text-[10.5px]">
+                      <span className="text-gray-600 truncate flex-1" title={r.label}>{r.label}</span>
+                      <span className="text-gray-400">{r.previous}{r.unit} → {r.current}{r.unit}</span>
+                      <span className={`inline-flex items-center gap-0.5 font-semibold ${up ? "text-red-600" : down ? "text-emerald-600" : "text-gray-500"}`}>
+                        {up ? <TrendingUp size={11} /> : down ? <TrendingDown size={11} /> : <Minus size={11} />}
+                        {r.deltaText}{r.unit} ({r.percentText})
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Previous studies availability */}
           {prior && prior.total > 0 && (
             <div>
               <div className="flex items-center gap-1.5 mb-1.5">
@@ -367,15 +618,14 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
                   .filter(([, arr]) => arr.length > 0)
                   .map(([label, arr]) => (
                     <span key={label} className="text-[10px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 border border-purple-100">
-                      {arr.length} prior {label}
-                      {arr[0]?.dateIso ? ` · ${new Date(arr[0].dateIso).toLocaleDateString()}` : ""}
+                      {arr.length} prior {label}{arr[0]?.dateIso ? ` · ${new Date(arr[0].dateIso).toLocaleDateString()}` : ""}
                     </span>
                   ))}
               </div>
             </div>
           )}
 
-          {/* One-click actions (reuse existing workspace engines) */}
+          {/* One-click actions */}
           {!props.disabled && (
             <div className="flex flex-wrap gap-1.5 pt-1 border-t border-indigo-50">
               {props.onSuggestHistory && (
@@ -420,3 +670,5 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
     </div>
   );
 }
+
+export type { PopulateBlock, AutoPopulatePlan };

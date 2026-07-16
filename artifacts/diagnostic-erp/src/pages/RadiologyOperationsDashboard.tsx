@@ -830,20 +830,49 @@ export default function RadiologyOperationsDashboard() {
             </p>
             <span className="text-[10px] text-slate-500">{companionStats?.machineBreakdown?.[0]?.runCount ?? 0} studies</span>
           </div>
+          {/* Phase 2 — auto-population telemetry */}
+          <div className="bg-slate-950 p-3 rounded-lg border border-slate-800/80">
+            <span className="text-slate-400 font-semibold text-xs">Auto-Population</span>
+            <p className="text-xl font-bold mt-1 text-indigo-300">{(companionStats?.autoPopulationRate ?? 0).toFixed(1)}%</p>
+            <span className="text-[10px] text-slate-500">of studies</span>
+          </div>
+          <div className="bg-slate-950 p-3 rounded-lg border border-slate-800/80">
+            <span className="text-slate-400 font-semibold text-xs">Avg Edits After</span>
+            <p className="text-xl font-bold mt-1 text-slate-200">{(companionStats?.avgEditsAfterPopulate ?? 0).toFixed(1)}</p>
+            <span className="text-[10px] text-slate-500">per populated report</span>
+          </div>
+          <div className="bg-slate-950 p-3 rounded-lg border border-slate-800/80">
+            <span className="text-slate-400 font-semibold text-xs">Avg Report Completion</span>
+            <p className="text-xl font-bold mt-1 text-emerald-400">{Math.round(companionStats?.avgReportCompletion ?? 0)}%</p>
+          </div>
         </div>
 
-        {(companionStats?.mostCommonMissingMeasurements?.length ?? 0) > 0 && (
-          <div>
-            <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">Most common missing measurements</span>
-            <div className="flex flex-wrap gap-1.5 mt-1.5">
-              {companionStats!.mostCommonMissingMeasurements.slice(0, 8).map((m) => (
-                <span key={m.key} className="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                  {m.key} · {m.count}
-                </span>
-              ))}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {(companionStats?.mostCommonMissingMeasurements?.length ?? 0) > 0 && (
+            <div>
+              <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">Most common missing fields</span>
+              <div className="flex flex-wrap gap-1.5 mt-1.5">
+                {companionStats!.mostCommonMissingMeasurements.slice(0, 8).map((m) => (
+                  <span key={m.key} className="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                    {m.key} · {m.count}
+                  </span>
+                ))}
+              </div>
             </div>
-          </div>
-        )}
+          )}
+          {(companionStats?.topRejectedMeasurements?.length ?? 0) > 0 && (
+            <div>
+              <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">Top rejected measurements</span>
+              <div className="flex flex-wrap gap-1.5 mt-1.5">
+                {companionStats!.topRejectedMeasurements.slice(0, 8).map((m) => (
+                  <span key={m.key} className="text-[10px] px-2 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                    {m.key} · {m.count}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
         {(companionStats?.totalRuns ?? 0) === 0 && (
           <p className="text-[11px] text-slate-500">No Companion activity recorded yet — stats populate as USG studies are reported through the Companion.</p>
         )}

@@ -18,6 +18,7 @@ import {
   serial,
   integer,
   text,
+  boolean,
   timestamp,
   index,
 } from "drizzle-orm/pg-core";
@@ -63,6 +64,13 @@ export const companionRunsTable = pgTable(
 
     // estimate: manual-entry seconds avoided by importing machine measurements
     timeSavedSeconds: integer("time_saved_seconds").notNull().default(0),
+
+    // ── Phase 2: intelligent auto report population ──
+    autoPopulated: boolean("auto_populated").notNull().default(false),
+    sectionsPopulated: integer("sections_populated").notNull().default(0),
+    editsAfterPopulate: integer("edits_after_populate").notNull().default(0),
+    reportCompletionPct: integer("report_completion_pct").notNull().default(0),
+    rejectedMeasurementsJson: text("rejected_measurements_json").notNull().default("[]"),
 
     warningsJson: text("warnings_json").notNull().default("[]"),
 
