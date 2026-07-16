@@ -16,7 +16,7 @@ import {
   Network, Server, MonitorPlay, Radio, BrainCircuit,
   Wrench, Activity, ShieldAlert, Laptop, CheckCircle2,
   XCircle, AlertTriangle, RefreshCw, Plus, Save, Trash2,
-  Tv2, Zap, ShieldCheck, PlayCircle, Info, Palette, Mic
+  Tv2, Zap, ShieldCheck, PlayCircle, Info, Palette, Mic, Waves
 } from "lucide-react";
 import type { UseMutationResult } from "@tanstack/react-query";
 // M1.6B2/B3 — voice layer settings (same pacs_settings persistence as this
@@ -36,6 +36,7 @@ import { ArchiveLifecyclePanel } from "@/pages/PacsArchiveLifecycle";
 import { AiInferencePanel } from "@/pages/AiInferenceSettings";
 import { AiReportingPanel } from "@/pages/AiReportingSettings";
 import { RadiologyStylePanel } from "@/pages/RadiologyStyleSettings";
+import { UsgExtractionPanel } from "@/pages/UsgAdminSettings";
 import {
   AiImpressionCard, QualityCheckerCard, FollowUpRecommendationsCard,
   TemplateLearningCard, MultiLanguageCard, RoutingRulesCard,
@@ -302,6 +303,7 @@ export default function RadiologySettingsCenter() {
           <TabsTrigger value="viewers"><MonitorPlay size={14} className="mr-1.5" />Viewers</TabsTrigger>
           <TabsTrigger value="mwl"><Wrench size={14} className="mr-1.5" />DICOM &amp; MWL</TabsTrigger>
           <TabsTrigger value="reporting"><BrainCircuit size={14} className="mr-1.5" />AI &amp; Templates</TabsTrigger>
+          <TabsTrigger value="usg-extraction"><Waves size={14} className="mr-1.5" />USG Extraction</TabsTrigger>
           <TabsTrigger value="style"><Palette size={14} className="mr-1.5" />Report Style</TabsTrigger>
           <TabsTrigger value="premium"><Zap size={14} className="mr-1.5" />Premium Report</TabsTrigger>
           <TabsTrigger value="voice"><Mic size={14} className="mr-1.5" />Voice</TabsTrigger>
@@ -948,6 +950,15 @@ export default function RadiologySettingsCenter() {
         {/* Tab content 8.6: Voice commands & dictation (M1.6B2) */}
         <TabsContent value="voice" className="space-y-4">
           <VoiceSettingsPanel settings={settings} upsertSetting={upsertSetting} isAdmin={isAdmin} />
+        </TabsContent>
+
+        {/* Tab content 8.7: USG extraction pipeline (GE Voluson push monitor,
+            OCR/AI-normalize toggles, confidence thresholds). Shared panel —
+            also reachable via the preserved /radiology/usg-admin-settings and
+            /usg/settings deep links. This whole page is admin-gated, matching
+            the standalone wrapper's FULL_ACCESS_ROLES check. */}
+        <TabsContent value="usg-extraction" className="space-y-4">
+          <UsgExtractionPanel />
         </TabsContent>
 
         {/* Tab content 9: Advanced */}

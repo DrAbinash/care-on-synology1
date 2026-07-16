@@ -71,12 +71,24 @@ interface PushMonitorItem {
   extractionSource: string;
 }
 
-export default function UsgAdminSettings() {
-  const [, navigate] = useLocation();
+/**
+ * UsgExtractionPanel — the USG extraction pipeline configuration surface
+ * (GE Voluson push monitor/diagnostics + AI extraction settings), extracted
+ * so it can live BOTH as a tab inside the canonical Radiology Settings
+ * Center (its primary home — same named-export convention as ModalityPanel /
+ * RadiologyStylePanel) AND behind the preserved standalone routes
+ * (/radiology/usg-admin-settings, /usg/settings) via the thin page wrapper
+ * below. This was the only UI for the live Voluson/extraction pipeline
+ * settings and was nav-hidden after the PR B sidebar consolidation — folding
+ * it into the Settings Center restores admin discoverability without
+ * creating a second settings page.
+ *
+ * Callers are responsible for admin gating (both the page wrapper and the
+ * Settings Center check FULL_ACCESS_ROLES before rendering).
+ */
+export function UsgExtractionPanel() {
   const { toast } = useToast();
   const qc = useQueryClient();
-  const session = readStaffSession();
-  const isAdmin = FULL_ACCESS_ROLES.has(normalizeRole(session?.user.role ?? ""));
 
   const [activeTab, setActiveTab] = useState<"monitor" | "settings">("monitor");
   const [showAutoPull, setShowAutoPull] = useState(false);
@@ -147,42 +159,10 @@ export default function UsgAdminSettings() {
   const toggle = (k: keyof UsgSettings) =>
     setForm((f) => ({ ...f, [k]: !f[k] }));
 
-  if (!isAdmin) {
-    return (
-      <div className="p-6 flex flex-col items-center justify-center gap-4 min-h-[40vh]">
-        <ShieldAlert className="h-10 w-10 text-destructive/60" />
-        <p className="font-semibold text-lg">Admin access required</p>
-        <p className="text-sm text-muted-foreground">Only admins and super-admins can change extraction settings.</p>
-        <Button variant="outline" onClick={() => navigate("/usg")}>← USG Dashboard</Button>
-      </div>
-    );
-  }
-
   return (
-    <div className="p-4 md:p-6 space-y-6">
-      <PageHeader
-        title="USG Auto-Acquisition & Settings"
-        subtitle="Manage GE Voluson DICOM push logs, connection checklists, and AI extraction settings"
-        actions={
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={() => navigate("/usg")}>
-              <ArrowLeft className="h-4 w-4 mr-1" /> USG Dashboard
-            </Button>
-            {activeTab === "settings" && (
-              <Button
-                size="sm"
-                onClick={() => saveMutation.mutate(form)}
-                disabled={saveMutation.isPending || isLoading}
-              >
-                {saveMutation.isPending ? "Saving…" : "Save Settings"}
-              </Button>
-            )}
-          </div>
-        }
-      />
-
-      {/* Tabs */}
-      <div className="flex border-b border-border gap-2">
+    <div className="space-y-6">
+      {/* Sub-tabs (monitor / settings) with a quick-save on the right */}
+      <div className="flex border-b border-border gap-2 items-center">
         <Button
           variant={activeTab === "monitor" ? "secondary" : "ghost"}
           className={`rounded-b-none px-4 py-2 border-b-2 ${activeTab === "monitor" ? "border-primary font-semibold" : "border-transparent"}`}
@@ -197,6 +177,16 @@ export default function UsgAdminSettings() {
         >
           <Settings2 className="h-4 w-4 mr-2 text-primary" /> Extraction Settings
         </Button>
+        {activeTab === "settings" && (
+          <Button
+            size="sm"
+            className="ml-auto mb-1"
+            onClick={() => saveMutation.mutate(form)}
+            disabled={saveMutation.isPending || isLoading}
+          >
+            {saveMutation.isPending ? "Saving…" : "Save Settings"}
+          </Button>
+        )}
       </div>
 
       {activeTab === "monitor" && (
@@ -723,6 +713,44 @@ export default function UsgAdminSettings() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Standalone page wrapper — kept so the preserved deep links
+ * (/radiology/usg-admin-settings and /usg/settings) continue to work after
+ * the panel's primary home moved to Radiology Settings Center → USG
+ * Extraction. Same admin gate as before; renders the shared panel.
+ */
+export default function UsgAdminSettings() {
+  const [, navigate] = useLocation();
+  const session = readStaffSession();
+  const isAdmin = FULL_ACCESS_ROLES.has(normalizeRole(session?.user.role ?? ""));
+
+  if (!isAdmin) {
+    return (
+      <div className="p-6 flex flex-col items-center justify-center gap-4 min-h-[40vh]">
+        <ShieldAlert className="h-10 w-10 text-destructive/60" />
+        <p className="font-semibold text-lg">Admin access required</p>
+        <p className="text-sm text-muted-foreground">Only admins and super-admins can change extraction settings.</p>
+        <Button variant="outline" onClick={() => navigate("/usg")}>← USG Dashboard</Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4 md:p-6 space-y-6">
+      <PageHeader
+        title="USG Auto-Acquisition & Settings"
+        subtitle="Manage GE Voluson DICOM push logs, connection checklists, and AI extraction settings — also available under Radiology Settings Center → USG Extraction"
+        actions={
+          <Button variant="outline" size="sm" onClick={() => navigate("/usg")}>
+            <ArrowLeft className="h-4 w-4 mr-1" /> USG Dashboard
+          </Button>
+        }
+      />
+      <UsgExtractionPanel />
     </div>
   );
 }
