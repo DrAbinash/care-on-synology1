@@ -9,9 +9,18 @@
  * protocol dropdown) call this, so all three resolve to the same region — no
  * duplicated matching logic and no divergence.
  *
- * Semantics match the panel's original behaviour: first configured region whose
- * name appears (case-insensitively) as a substring of the hint wins. Pass the
- * region names in display order (sortOrder) so the first match is deterministic.
+ * Semantics: among the configured regions whose name appears (case-insensitively)
+ * as a substring of the hint, the MOST SPECIFIC (longest name) wins; ties are
+ * broken by display order (sortOrder), so the result stays deterministic.
+ *
+ * "Longest wins" is required for multi-modality dispatch: study-tab names are
+ * scoped per modality (e.g. the generic "Brain" for MRI alongside "CT Brain
+ * Plain" for CT, or "Spine" alongside "CT Cervical Spine"). A plain first-in-
+ * sortOrder match would resolve a "CT Brain Plain" study to the shorter, lower-
+ * sorted "Brain" region and pull the wrong modality's content. Because a longer
+ * region name can only match when the hint literally contains that whole phrase,
+ * preferring it is strictly more specific and does not regress the single-match
+ * cases (e.g. MRI "Brain" still resolves to "Brain").
  */
 export function matchStudyRegion(
   hint: string | null | undefined,
@@ -19,5 +28,12 @@ export function matchStudyRegion(
 ): string | null {
   if (!hint) return null;
   const h = hint.toLowerCase();
-  return orderedRegionNames.find((name) => name && h.includes(name.toLowerCase())) ?? null;
+  let best: string | null = null;
+  for (const name of orderedRegionNames) {
+    if (!name || !h.includes(name.toLowerCase())) continue;
+    // Strictly-greater keeps the FIRST (lowest sortOrder) region among equal
+    // lengths, preserving the original deterministic tie-break.
+    if (best === null || name.length > best.length) best = name;
+  }
+  return best;
 }
