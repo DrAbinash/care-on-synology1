@@ -64,6 +64,14 @@ export interface QualityEvaluationRequest {
   knowledgePackVersion?: string | null;
   /** The report content under evaluation. */
   text: QualityContext["text"];
+  // Phase 3 (shadow): optional structured-tier slots. When present, the server
+  // additionally runs the scoped structured engine and persists a separate
+  // shadow evaluation. Absent slots are honestly notEvaluated.
+  measurements?: QualityContext["measurements"];
+  findingInstances?: QualityContext["findingInstances"];
+  protocolRequiredMeasurements?: QualityContext["protocolRequiredMeasurements"];
+  knowledgePack?: QualityContext["knowledgePack"];
+  study?: QualityContext["study"];
 }
 
 export interface DTOIdentity {

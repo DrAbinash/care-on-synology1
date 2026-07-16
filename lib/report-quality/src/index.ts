@@ -29,6 +29,14 @@ export { createExecutorRegistry, compileRule } from "./executor";
 export type { RuleDefinition, ExecutorFinding, Executor, ExecutorRegistry } from "./executor";
 // Composable rule providers.
 export { coreTextProvider } from "./rules/text";
+// Phase 3 structured tier (SHADOW) — a scoped engine, NOT on the global default.
+export {
+  createStructuredEngine,
+  structuredProvider,
+  structuredRules,
+  STRUCTURED_RULE_DEFINITIONS,
+  STRUCTURED_RULE_SET_VERSION,
+} from "./rules/structured";
 export { normalizeModality, modalityMatches } from "./modality";
 export type { CanonicalModality } from "./modality";
 export { defaultScorer } from "./score";
@@ -64,4 +72,8 @@ export type {
   QualityRule,
   QualityReport,
   RunOptions,
+  FindingInstance,
+  ProtocolRequirements,
+  KnowledgePackContext,
+  StudyContext,
 } from "./contract";

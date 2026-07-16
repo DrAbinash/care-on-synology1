@@ -134,13 +134,83 @@ export interface TemplateContext {
   qualityChecklist?: string[];
 }
 
+// ── Phase 3 structured-tier slots ──
+// Built ONLY from confirmed existing data sources. Any slot left `undefined`
+// (source flag-gated-off or unreachable) makes its rules honestly notEvaluated;
+// a slot is `[]` only after a real query returned zero rows.
+
+/**
+ * A structured quick/smart finding instance (report_finding_instances JOIN
+ * radiology_quick_findings). Every row is an asserted abnormality — there is no
+ * `presence` flag and no organ code; `side` is the only laterality signal.
+ */
+export interface FindingInstance {
+  instanceId: number;
+  findingId: number;
+  label: string;
+  studyType: string;
+  anatomicalSection: string;
+  conflictGroup: string;
+  /** Parsed radiology_quick_findings.properties (subset of side/severity/chronicity/level/measurement). */
+  properties: string[];
+  side: string;       // '' | left | right | bilateral  ('' = unset)
+  severity: string;   // '' | mild | moderate | severe
+  chronicity: string; // '' | acute | chronic
+  level: string;      // free string e.g. 'L4-L5'
+  value: string;      // string measurement (parseFloat if numeric)
+  source: string;     // 'manual' | 'quickselect'
+  targetRef: string;  // `report_finding_instances:${id}`
+}
+
+/** Protocol-declared required measurements + expected units (radiology_protocols + radiology_quick_measurements). */
+export interface ProtocolRequirements {
+  studyType: string;
+  modality: string;
+  requiredMeasurements: string[];
+  expectedUnits: Record<string, string>;
+}
+
+/** Knowledge-pack manifest context (knowledge_packs.manifest_json, fail-safe parsed). */
+export interface KnowledgePackContext {
+  packId: string;
+  modality: string;
+  studyType: string;
+  version: string;
+  status: string; // enabled | disabled | placeholder | planned
+  comparisonMeasurements: string[];
+  notApplicableSections: string[];
+  criticalFindings: string[];
+  /** Free-text normal values ("< 0.5", "29 mm") — display-only, NOT parseable ranges. */
+  normalValues: { label: string; value: string }[];
+}
+
+/** Authoritative modality/study identity (worklist → study → dicom precedence). */
+export interface StudyContext {
+  authoritativeSource: "worklist" | "study" | "dicom" | "draft";
+  authoritativeModality: string;    // canonical
+  authoritativeModalityRaw: string; // raw ('MR','CT','US','CR','OT'…)
+  authoritativeIsSentinel: boolean; // raw === 'OT' → unknown, never a mismatch
+  declaredModality: string;         // canonical modality declared on the draft (under test)
+  declaredModalityRaw: string | null;
+  studyName: string | null;
+  studyDescription: string | null;
+}
+
 /**
  * Optional structured-context slot names a rule may depend on. `text` is always
  * present and therefore is not a gate. The runner skips (records as
  * notEvaluated) any rule whose required slots are absent — this is what makes
  * one engine degrade gracefully across modalities and data tiers.
  */
-export type ContextDataKey = "measurements" | "priors" | "template";
+export type ContextDataKey =
+  | "measurements"
+  | "priors"
+  | "template"
+  | "findingInstances"
+  | "protocolRequiredMeasurements"
+  | "knowledgePack"
+  | "study"
+  | "coveredSections";
 
 /** Everything a rule may read to evaluate one report. */
 export interface QualityContext {
@@ -153,6 +223,19 @@ export interface QualityContext {
   measurements?: NormalizedMeasurement[];
   priors?: PriorMeasurementSeries[];
   template?: TemplateContext;
+  // Phase 3 structured slots:
+  findingInstances?: FindingInstance[];
+  protocolRequiredMeasurements?: ProtocolRequirements;
+  knowledgePack?: KnowledgePackContext;
+  study?: StudyContext;
+  /**
+   * Sections the report actually DOCUMENTED (positive presence signal). Distinct
+   * from findingInstances, which carry only abnormalities — a normal section
+   * produces no finding but IS documented. required-section reads this so a
+   * documented-normal section is never flagged as omitted. Absent → the rule is
+   * notEvaluated (we cannot distinguish normal-documented from omitted).
+   */
+  coveredSections?: string[];
 }
 
 /** A registered quality rule. Pure: same context in → same findings out. */
