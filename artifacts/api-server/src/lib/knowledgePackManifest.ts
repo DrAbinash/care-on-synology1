@@ -41,6 +41,15 @@ export interface PackManifest {
   recommendations: string[];
   /** Deterministic quality/reporting rules (free-text, admin-editable). */
   qualityRules: string[];
+  /**
+   * Gold-Standard sections that are clinically not-applicable to this study and
+   * should be excluded from the readiness denominator (and not flagged as
+   * missing). Purpose: descriptive modalities — e.g. most plain radiographs —
+   * legitimately carry no measurements; forcing them would misrepresent
+   * "Clinical Readiness". Must be a subset of PACK_SECTIONS; defaults to empty
+   * so MRI/USG/CT packs behave exactly as before.
+   */
+  notApplicableSections: string[];
   /** Normal-value references (label → normal range text). */
   normalValues: { label: string; value: string }[];
   reportingNotes: string;
@@ -51,7 +60,7 @@ export interface PackManifest {
 export function emptyManifest(): PackManifest {
   return {
     copilotModules: [], companionRules: [], comparisonMeasurements: [], criticalFindings: [],
-    recommendations: [], qualityRules: [], normalValues: [], reportingNotes: "", references: [], teachingNotes: "",
+    recommendations: [], qualityRules: [], notApplicableSections: [], normalValues: [], reportingNotes: "", references: [], teachingNotes: "",
   };
 }
 
@@ -70,6 +79,8 @@ export function parseManifest(json: string | null | undefined): PackManifest {
       criticalFindings: arr(o.criticalFindings),
       recommendations: arr(o.recommendations),
       qualityRules: arr(o.qualityRules),
+      // Keep only recognized section names so a typo can never silently exclude a real section from scoring.
+      notApplicableSections: arr(o.notApplicableSections).filter((s) => (PACK_SECTIONS as readonly string[]).includes(s)),
       normalValues: Array.isArray(o.normalValues)
         ? (o.normalValues as unknown[]).map((n) => {
             const r = (n ?? {}) as Record<string, unknown>;
@@ -194,9 +205,14 @@ export function validatePack(
 ): PackValidationResult {
   const issues: PackValidationIssue[] = [];
   const sections = packSections(coverage, pack.manifest);
-  const covered = Object.values(sections).filter(Boolean).length;
-  const total = PACK_SECTIONS.length;
-  const readinessPercent = Math.round((covered / total) * 100);
+  // Sections a pack declares clinically not-applicable (e.g. measurements on a
+  // descriptive radiograph) are excluded from scoring so readiness reflects
+  // what the study SHOULD have, not a fixed 15.
+  const na = new Set(pack.manifest.notApplicableSections ?? []);
+  const applicable = PACK_SECTIONS.filter((s) => !na.has(s));
+  const covered = applicable.filter((s) => sections[s]).length;
+  const total = applicable.length;
+  const readinessPercent = total > 0 ? Math.round((covered / total) * 100) : 100;
   const base = (health: PackHealth): PackValidationResult =>
     ({ health, ok: health !== "error", issues, coveredSections: covered, totalSections: total, readinessPercent, sections });
 
@@ -213,8 +229,8 @@ export function validatePack(
   }
   if (pack.status === "disabled") return base("disabled");
 
-  // Enabled pack — one issue per missing section (warn for core, info for the rest).
-  for (const section of PACK_SECTIONS) {
+  // Enabled pack — one issue per missing APPLICABLE section (warn for core, info for the rest).
+  for (const section of applicable) {
     if (!sections[section]) {
       issues.push({ section, severity: SECTION_SEVERITY[section] ?? "info", message: `${section} not defined for this pack.` });
     }
