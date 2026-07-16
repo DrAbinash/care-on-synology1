@@ -51,6 +51,11 @@ describe("safety classes (Phase 6)", () => {
     expect(evaluate("reload current").safetyClass).toBe("CONFIRM_REQUIRED");
     expect(evaluate("verify report").safetyClass).toBe("CONFIRM_REQUIRED");
     expect(evaluate("verify report").requiresConfirmation).toBe(true);
+    // MRI PR 4 — applying a combined template always previews + confirms.
+    const combo = evaluate("combine brain and cervical");
+    expect(combo.safetyClass).toBe("CONFIRM_REQUIRED");
+    expect(combo.requiresConfirmation).toBe(true);
+    expect(combo.confirmViaEnterAllowed).toBe(true);
   });
 
   it("HIGH_RISK: finalize/sign — confirmation required and Enter NEVER confirms", () => {
@@ -75,7 +80,7 @@ describe("safety classes (Phase 6)", () => {
 describe("context gates (Phase 5)", () => {
   it("edits blocked while locked by another user — with the read-only reason", () => {
     const locked = ctx({ isLocked: true, lockedByOther: true });
-    for (const phrase of ["add finding x", "select finding disc", "remove finding disc", "laterality left", "save", "replace impression with y"]) {
+    for (const phrase of ["add finding x", "select finding disc", "remove finding disc", "laterality left", "save", "replace impression with y", "combine brain and cervical"]) {
       expect(evaluate(phrase, locked).blocked, phrase).toMatch(/locked by another user/i);
     }
     // reading/navigation stays allowed

@@ -76,6 +76,10 @@ import "@/lib/copilotCriticalModule"; // registers the critical-results safety m
 import { detectCriticalFindings } from "@/lib/criticalResults";
 import { computeFinalizeSafety, formatFinalizeSafety } from "@/lib/finalizeSafety";
 import { criticalWatchListFor } from "@/lib/radiologyMasterTemplates";
+import {
+  combinationsForModality, buildCombination, combinationInserts, matchStudyCombination,
+  type StudyCombination,
+} from "@/lib/studyCombinations";
 import ComparisonPanel, { type SelectedPrior } from "@/components/radiology/ComparisonPanel";
 import { useCopilotPrefs } from "@/hooks/useCopilotPrefs";
 import { useCopilotLearning } from "@/hooks/useCopilotLearning";
@@ -2044,6 +2048,58 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     toast({ title: "Master template applied", description: `${tpl.templateName} (${tpl.groupName.replace(/_/g, " ")})` });
   };
 
+  /** MRI PR 4 — apply a multi-study COMBINATION by assembling its base master
+   *  templates through the EXISTING assembler (studyCombinations → assembleReport)
+   *  and inserting the result through the canonical, additive primitives. Never
+   *  overwrites: findings/recommendation merge, impression de-dupes, and a
+   *  confirmation guards any pre-existing content. Returns a VoiceExecutionResult
+   *  so the command palette and voice share exactly one apply path. */
+  function applyCombination(combo: StudyCombination): VoiceExecutionResult {
+    if (isLocked) return { ok: false, message: "Report is read-only" };
+    const assembled = buildCombination(combo.templateIds);
+    if (!assembled) return { ok: false, message: `Combination "${combo.label}" is unavailable` };
+    const inserts = combinationInserts(assembled);
+    const hasContent = rawFindings.trim().length > 0 || impression.filter(Boolean).length > 0 || Object.keys(findingsMap).length > 0;
+    if (hasContent && !window.confirm(`Add the "${combo.label}" combined template (${inserts.findingsBlocks.length} sections) to this report?`)) {
+      return { ok: false, message: "Combination cancelled" };
+    }
+    const prev = { findings: rawFindings, impression, recommendation, technique, templateId: selectedTemplateId };
+    // A combination is free-text combined content — drop the single-study
+    // structured template (as handleApplyMasterTemplate does) so the merged
+    // body-part sections render in the findings editor.
+    setSelectedTemplateId(null);
+    const findingsBlock = inserts.findingsBlocks.map((b) => `${b.heading}:\n${b.text}`).join("\n\n");
+    setRawFindings((p) => mergeBlock(p, findingsBlock));
+    if (inserts.technique) setTechnique((p) => (p.trim() ? p : inserts.technique));
+    if (inserts.impression.length) {
+      setImpression((p) => {
+        let next = p.filter(Boolean);
+        for (const line of inserts.impression) next = mergeImpression(next, line);
+        return next;
+      });
+    }
+    if (inserts.recommendation) setRecommendation((p) => mergeBlock(p, inserts.recommendation));
+    toast({ title: "Combination applied", description: combo.label });
+    return {
+      ok: true, message: `Applied combination: ${combo.label}`,
+      undo: () => {
+        setRawFindings(prev.findings); setImpression(prev.impression);
+        setRecommendation(prev.recommendation); setTechnique(prev.technique);
+        setSelectedTemplateId(prev.templateId);
+      },
+      undoLabel: "combination",
+    };
+  }
+
+  /** Voice adapter — resolve a spoken combination name and apply it. */
+  function voiceCombination(term: string): VoiceExecutionResult {
+    const combo = matchStudyCombination(term);
+    if (!combo) {
+      return { ok: false, message: `No unique study combination matches “${term}” — open the palette (Ctrl+K) to pick one` };
+    }
+    return applyCombination(combo);
+  }
+
   // ── Universal Command Palette (Ctrl+K) — PR #77 ─────────────────────────────
   // A keyboard-first launcher over data the workspace ALREADY has cached (quick
   // findings, protocols, templates, clinical-history chips, studies) plus a
@@ -2105,10 +2161,19 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         keywords: s.accessionNumber, payload: s,
       });
     }
+    // MRI PR 4 — study combinations for this modality (revives the reserved
+    // `combination` palette kind; running one assembles via the shared engine).
+    for (const combo of combinationsForModality(entry?.modality)) {
+      items.push({
+        id: combo.id, kind: "combination", title: combo.label,
+        subtitle: `${combo.templateIds.length} studies · combined report`,
+        keywords: combo.keywords, favouritable: true, payload: combo,
+      });
+    }
     items.push(...PALETTE_COMMANDS, ...PALETTE_SETTINGS);
     return items;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [quickSelectData, templates, masterTemplates, workflow.queue]);
+  }, [quickSelectData, templates, masterTemplates, workflow.queue, entry?.modality]);
 
   // E2: on-demand full AI draft from study metadata (distinct from the
   // impression-only aiImpressionMutation and from the passive fill-empty-only
@@ -2536,6 +2601,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       case "dictate": return voiceDictate(intent);
       case "quick-select": return voiceQuickSelect(intent.action, intent.term);
       case "quick-modifier": return voiceQuickModifier(intent.property, intent.value);
+      case "combination": return voiceCombination(intent.term);
       case "viewer": return voiceViewer(intent.op);
       case "viewer-unsupported": return { ok: false, message: `The embedded viewer does not support ${intent.capability}` };
       // Session-control intents (M1.6B3) are handled inside useVoiceSession
@@ -3348,6 +3414,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         if (s.id !== studyId && guardedLeave()) goToStudy(s);
         break;
       }
+      case "combination": applyCombination(item.payload as StudyCombination); break;
       case "command": runPaletteCommand(item.id.replace(/^command:/, "")); break;
       case "setting": navigate(item.id.replace(/^setting:/, "")); break;
     }
