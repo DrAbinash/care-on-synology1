@@ -2,14 +2,18 @@
 //
 // Selects registered rules by canonical modality, runs only those whose
 // required structured data is present (recording the rest as notEvaluated for
-// honest coverage reporting), aggregates their findings, and scores the report.
-// A rule that throws is isolated — it can never break finalize.
+// honest coverage reporting), stamps each finding with modality/study type,
+// aggregates findings, measures runtime + rule-tier counts, and stamps
+// versioning for reproducibility. A rule that throws is isolated — it can never
+// break finalize.
 
-import type { QualityContext, QualityReport, QualityRule, RunOptions } from "./contract";
+import type { QualityContext, QualityFinding, QualityReport, QualityRule, RunOptions } from "./contract";
 import { getRegisteredRules } from "./registry";
 import { normalizeModality, modalityMatches } from "./modality";
 import { defaultScorer } from "./score";
 import { REPORT_QUALITY_ENGINE_VERSION } from "./version";
+import { RULE_CATALOG_VERSION } from "./ruleCatalog";
+import { nowMs } from "./clock";
 
 function selectRules(ctx: QualityContext, opts: RunOptions | undefined): {
   runnable: QualityRule[];
@@ -35,18 +39,36 @@ function selectRules(ctx: QualityContext, opts: RunOptions | undefined): {
 
 /**
  * Run the universal quality engine over one report context.
- * Deterministic: same context + same registered rules → same report.
+ * Deterministic (except runtimeMs/evaluatedAt): same context + rules → same findings + score.
  */
 export function runQualityEngine(ctx: QualityContext, opts?: RunOptions): QualityReport {
+  const clock = opts?.now ?? nowMs;
+  const startedAt = clock();
+
+  const canonicalModality = normalizeModality(ctx.modality);
   const { runnable, notEvaluated } = selectRules(ctx, opts);
-  const findings: QualityReport["findings"] = [];
+  const findings: QualityFinding[] = [];
   let evaluatedRuleCount = 0;
+  let deterministicRuleCount = 0;
+  let heuristicRuleCount = 0;
 
   for (const rule of runnable) {
     try {
       const out = rule.evaluate(ctx);
-      if (out && out.length) findings.push(...out);
+      if (out && out.length) {
+        for (const f of out) {
+          // Stamp modality/study type so each finding is self-describing for
+          // analytics without depending on the enclosing report.
+          findings.push({
+            ...f,
+            modality: f.modality ?? canonicalModality,
+            studyType: f.studyType ?? ctx.studyDescription,
+          });
+        }
+      }
       evaluatedRuleCount++;
+      if (rule.tier === "structured") deterministicRuleCount++;
+      else heuristicRuleCount++;
     } catch {
       // A misbehaving rule must never break the report or finalize — isolate it.
       notEvaluated.push(rule.id);
@@ -66,6 +88,12 @@ export function runQualityEngine(ctx: QualityContext, opts?: RunOptions): Qualit
     infoCount,
     notEvaluated,
     evaluatedRuleCount,
+    deterministicRuleCount,
+    heuristicRuleCount,
+    runtimeMs: Math.max(0, clock() - startedAt),
     engineVersion: REPORT_QUALITY_ENGINE_VERSION,
+    ruleVersion: RULE_CATALOG_VERSION,
+    knowledgePackVersion: opts?.knowledgePackVersion ?? null,
+    evaluatedAt: opts?.evaluatedAtIso ?? new Date().toISOString(),
   };
 }

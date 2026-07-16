@@ -27,6 +27,19 @@ export { textParityScorer } from "./text/scorer";
 // the canonical engine incrementally and the parity harness can compare paths.
 export { validateReportText, computeTextQualityScore } from "./text/legacy";
 export type { TextQualityScore } from "./text/legacy";
+export { evaluateTextTier } from "./text/evaluate";
+export type { TextTierFinding, TextTierResult } from "./text/evaluate";
+// Rule catalog — the single source of rule identity (stable ids + metadata).
+export { RULE_CATALOG, RULE_CATALOG_VERSION, getRuleEntry } from "./ruleCatalog";
+export type { RuleId, RuleCatalogEntry } from "./ruleCatalog";
+// Canonical DTO — the one shape the API exposes and the DB persists.
+export { toQualityReportDTO } from "./dto";
+export type {
+  QualityFindingDTO,
+  QualityReportDTO,
+  QualityEvaluationRequest,
+  DTOIdentity,
+} from "./dto";
 export type {
   Severity,
   DataTier,
