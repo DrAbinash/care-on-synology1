@@ -2769,6 +2769,21 @@ const server = app.listen({ port, exclusive: true }, () => {
   ensureDefaultLedger().catch((e) => logger.error({ err: e }, "Failed to seed default ledger"));
   backfillExpirePublicTokens().catch((e) => logger.error({ err: e }, "Failed to backfill public token expiry"));
 
+  // Missing-study reconciliation: bills.ts creates radiology study rows in a
+  // detached (non-awaited) fan-out so the billing desk's receipt isn't gated
+  // on it; this sweep re-creates any study rows lost to an error or a restart
+  // in that window (idempotent per order-test). Runs shortly after startup —
+  // catching anything lost to THIS restart — and every 15 minutes. Always on,
+  // unlike the ENABLE_SCHEDULERS cron block above, because production does
+  // not set ENABLE_SCHEDULERS and this guards billed clinical work.
+  const runStudyReconciliation = () => {
+    import("./routes/radiology").then((mod) => mod.reconcileMissingStudies()).catch((e) => {
+      logger.warn({ err: e }, "Missing-study reconciliation sweep failed");
+    });
+  };
+  setTimeout(runStudyReconciliation, 30_000).unref?.();
+  setInterval(runStudyReconciliation, 15 * 60_000).unref?.();
+
   // seedBootstrapAdmin: run immediately and await — if the admin row is missing
   // the system is unusable. Log the error clearly but do not crash (the row may
   // have been manually deleted; the rest of the API still works).

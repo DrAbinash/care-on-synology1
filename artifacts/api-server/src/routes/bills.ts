@@ -32,6 +32,7 @@ import { generateTestTokensForOrder } from "./test-tokens";
 import { generateStudiesForOrder } from "./radiology";
 import { sendBillWhatsapp } from "./whatsapp";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
+import { getSlowThresholdMs } from "../lib/requestMetrics";
 import { eq, and, sql, desc, like, or, gt, ne, inArray } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -73,11 +74,12 @@ async function countBillsForLedger(ledgerId: number): Promise<number> {
   return Number(r[0]?.count ?? 0);
 }
 
-async function resolveLedgerForOrder(orderId: number): Promise<number> {
-  const [o] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId));
-  if (o?.ledgerId) return o.ledgerId;
-  if (o?.doctorId) {
-    const [d] = await db.select().from(doctorsTable).where(eq(doctorsTable.id, o.doctorId));
+// Takes the order row the caller already holds (this runs inside the hot
+// save-and-print guard wave — no re-select).
+async function resolveLedgerForOrder(order: typeof ordersTable.$inferSelect): Promise<number> {
+  if (order.ledgerId) return order.ledgerId;
+  if (order.doctorId) {
+    const [d] = await db.select().from(doctorsTable).where(eq(doctorsTable.id, order.doctorId));
     if (d?.ledgerId) return d.ledgerId;
   }
   // Walk-in / no-referral: route to the designated walk-in ledger
@@ -376,6 +378,7 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
     return;
   }
   const { orderId, discount = 0, dueDate, clientRef } = parsed.data;
+  const startedAt = Date.now();
   const inlinePayments = Array.isArray(payload.payments) ? payload.payments : [];
   const discountReason = typeof payload?.discountReason === "string" ? payload.discountReason.trim() || null : null;
   const discountReasonNote = typeof payload?.discountReasonNote === "string" ? payload.discountReasonNote.trim() || null : null;
@@ -469,7 +472,7 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
       .from(orderTestsTable)
       .innerJoin(testsTable, eq(testsTable.id, orderTestsTable.testId))
       .where(eq(orderTestsTable.orderId, orderId)),
-    resolveLedgerForOrder(orderId),
+    resolveLedgerForOrder(order),
     // Only shapes the response at the very end; a failure here must not fail
     // billing, so it degrades to null instead of rejecting the whole wave.
     db
@@ -551,6 +554,7 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
   // writes outside any transaction — a mid-flight failure (e.g. unique-key
   // collision on billNumber) would leave the order/patient mutated with no
   // matching bill row.
+  const txStartedAt = Date.now();
   const { bill, pat, validPayments: txPayments } = await db.transaction(async (tx) => {
     // Serialize bill-number allocation across concurrent requests. Without
     // this, two overlapping POST /api/bills calls (two billing counters
@@ -617,14 +621,34 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
     return { bill: billRow, pat: patRow, validPayments };
   });
 
-  // Post-commit fan-out — three independent jobs that each hit different
-  // tables: the queue token (per book, resets daily), the per-test department
-  // tokens (a bill with USG + X-Ray + MRI ends up with three department
-  // tokens), and the radiology study rows (X-Ray / USG / MRI / CT /
-  // Mammography / DEXA, idempotent per orderTest). Run concurrently so the
-  // billing desk waits for the slowest one, not the sum of all three. Each
-  // failure is logged but never blocks bill creation.
-  const [tokenInfo, testTokens, studies] = await Promise.all([
+  const txnDoneAt = Date.now();
+
+  // Radiology study fan-out — fire-and-forget. The billing desk's receipt and
+  // token slip never show study/accession data, and study creation for a
+  // multi-modality bill is the single slowest post-commit chain (per-study
+  // accession allocation, priority, and radiologist auto-assignment). It was
+  // already best-effort ("failure is logged but never blocks bill creation"),
+  // so it no longer gates the HTTP response either — the studies appear in
+  // the radiology worklist within a moment of the bill saving, long before
+  // the patient reaches the room. Idempotent per orderTest via
+  // `radiology_studies_order_test_uq`, so a crash-and-retry cannot duplicate.
+  generateStudiesForOrder({
+    billId: bill.id,
+    orderId: order.id,
+    patientId: order.patientId,
+    priority: isVip ? "vip" : "routine",
+    dicomFields,
+  }).catch((err) => {
+    console.warn("Radiology study fan-out failed:", err);
+  });
+
+  // Post-commit fan-out that the response DOES need — the queue token and the
+  // per-test department tokens are printed on the token slip, so they must be
+  // in the response body. They hit different tables and run concurrently with
+  // each other AND with buildBill (which only reads rows the transaction
+  // above already committed), so the desk waits for the slowest of the three,
+  // not the sum. Each token failure is logged but never blocks bill creation.
+  const [tokenInfo, testTokens, built] = await Promise.all([
     generateTokenForBill({
       ledgerId,
       billId: bill.id,
@@ -644,16 +668,7 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
       console.warn("Per-test token generation failed:", err);
       return [];
     }),
-    generateStudiesForOrder({
-      billId: bill.id,
-      orderId: order.id,
-      patientId: order.patientId,
-      priority: isVip ? "vip" : "routine",
-      dicomFields,
-    }).catch((err) => {
-      console.warn("Radiology study fan-out failed:", err);
-      return [];
-    }),
+    buildBill(bill),
   ]);
 
   // Auto-generate accounting vouchers for each inline payment — async, never blocks billing
@@ -697,8 +712,26 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
   const needsOnlinePayment = !!onlinePayment;
   const onlineAmount = onlinePayment ? Number(onlinePayment.amount) : 0;
 
-  const built = await buildBill(bill);
-  res.status(201).json({ ...built, token: tokenInfo, testTokens, studies, needsFormFData, needsOnlinePayment, onlineAmount });
+  const totalMs = Date.now() - startedAt;
+  if (totalMs > getSlowThresholdMs()) {
+    // Phase breakdown in the container logs (same slow threshold as the
+    // /erp/diagnostics page, which records totals via requestMetrics), so
+    // "the desk is slow" is diagnosable from production instead of guessed.
+    req.log?.warn?.(
+      {
+        totalMs,
+        guardsMs: txStartedAt - startedAt,
+        txnMs: txnDoneAt - txStartedAt,
+        fanoutMs: Date.now() - txnDoneAt,
+        billId: bill.id,
+      },
+      "slow bill save",
+    );
+  }
+
+  // `studies` is now created asynchronously (see fire-and-forget above); the
+  // key stays in the response for shape compatibility, but no client reads it.
+  res.status(201).json({ ...built, token: tokenInfo, testTokens, studies: [], needsFormFData, needsOnlinePayment, onlineAmount });
 });
 
 billsRouter.get("/:id", async (req, res) => {
