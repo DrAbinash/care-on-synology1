@@ -72,6 +72,10 @@ import { runLocalModules, runAiModules } from "@/lib/copilotModules";
 import "@/lib/copilotAiModule"; // registers the on-demand AI reasoning module (Part 20)
 import "@/lib/copilotComparisonModule"; // registers the previous-study comparison module (MRI PR 1)
 import "@/lib/copilotMeasurementModule"; // registers the viewer-measurement completeness module (MRI PR 2)
+import "@/lib/copilotCriticalModule"; // registers the critical-results safety module (MRI PR 3)
+import { detectCriticalFindings } from "@/lib/criticalResults";
+import { computeFinalizeSafety, formatFinalizeSafety } from "@/lib/finalizeSafety";
+import { criticalWatchListFor } from "@/lib/radiologyMasterTemplates";
 import ComparisonPanel, { type SelectedPrior } from "@/components/radiology/ComparisonPanel";
 import { useCopilotPrefs } from "@/hooks/useCopilotPrefs";
 import { useCopilotLearning } from "@/hooks/useCopilotLearning";
@@ -1557,6 +1561,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     [viewerMeasurementRows],
   );
 
+  // MRI PR 3 — per-study critical watch terms, reused verbatim from the master
+  // template `criticalWatchList` data (no duplicate list here); seeds the
+  // critical-results detector in addition to its built-in emergency table.
+  const entryCriticalWatchList = useMemo(
+    () => criticalWatchListFor(entry?.modality, entry?.studyDescription),
+    [entry?.modality, entry?.studyDescription],
+  );
+
   const copilotContext = useMemo<CopilotContext>(() => ({
     modality: entry?.modality ?? "",
     studyDescription: entry?.studyDescription ?? "",
@@ -1569,12 +1581,26 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       .map((id) => findingById.get(id)?.label)
       .filter((l): l is string => !!l),
     checklistPercent,
+    missingRequiredMeasurements,
     prior: selectedPrior
       ? { available: true, dateIso: selectedPrior.dateIso, studyName: selectedPrior.studyName, significantChanges: selectedPrior.significantChanges }
       : undefined,
     viewerMeasurements: copilotViewerMeasurements,
+    // MRI PR 3 — reuse the existing "Mark Critical Finding" toggle + F5
+    // communication checklist as the criticality state the Copilot advises on.
+    criticalWatchList: entryCriticalWatchList,
+    criticalMarked: isCritical,
+    criticalCommunicated: checklistComm.phoned,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [entry?.modality, entry?.studyDescription, clinicalHistory, useStructured, findingsMap, rawFindings, impression, recommendation, technique, selectedQuickIds, findingById, checklistPercent, selectedPrior, copilotViewerMeasurements]);
+  }), [entry?.modality, entry?.studyDescription, clinicalHistory, useStructured, findingsMap, rawFindings, impression, recommendation, technique, selectedQuickIds, findingById, checklistPercent, missingRequiredMeasurements, selectedPrior, copilotViewerMeasurements, entryCriticalWatchList, isCritical, checklistComm.phoned]);
+
+  // MRI PR 3 — critical findings described in the drafted report (for the
+  // finalize-safety gate and the pre-sign preview), computed from the same
+  // resolved findings/impression the Copilot context uses.
+  const criticalHits = useMemo(
+    () => detectCriticalFindings(copilotContext.findings, copilotContext.impression, entryCriticalWatchList),
+    [copilotContext.findings, copilotContext.impression, entryCriticalWatchList],
+  );
 
   /** Insert a comparison statement into Findings (free-text) or the structured
    *  catch-all section — editable, additive, never overwriting (§6 safety). */
@@ -2987,13 +3013,26 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       const warningBlock = warnings.length
         ? `\nReport check warnings:\n${warnings.map((w, i) => `  ${i + 1}. ${w}`).join("\n")}\n`
         : "";
+      // MRI PR 3 — pre-finalization safety checks (protocol completeness +
+      // critical-result handling), composed by the pure aggregator and surfaced
+      // in this SAME confirm dialog. Advisory: it never blocks — clicking OK is
+      // the radiologist's decision, exactly as before.
+      const safetyBlock = formatFinalizeSafety(computeFinalizeSafety({
+        checklistActive: !!activeProtocol,
+        checklistPercent,
+        checklistRemaining,
+        missingRequiredMeasurements,
+        criticalHits,
+        criticalMarked: isCritical,
+        criticalCommunicated: checklistComm.phoned,
+      }));
       // Unbilled study: the report row cannot be created (test_id NOT NULL) —
       // say so BEFORE the radiologist commits, not after.
       const unbilledNote = entry.patientId && !entry.studyId
         ? "\nNote: no billed test is linked to this study — the worklist will be marked final, but no patient-facing report row can be created.\n"
         : "";
       confirmed = window.confirm(
-        `Finalize and sign this report?\n\n${identity}\n\n${validationSummary}\n${warningBlock}${unbilledNote}\nAfter finalizing, editing is disabled.`,
+        `Finalize and sign this report?\n\n${identity}\n\n${validationSummary}\n${warningBlock}${safetyBlock}${unbilledNote}\nAfter finalizing, editing is disabled.`,
       );
       if (!confirmed) return;
     } finally {
@@ -5209,6 +5248,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                       <div className="text-green-600">✓ Clinical history present</div>
                     )}
                     <div className="text-green-600">✓ No left-right conflict detected</div>
+                    {/* MRI PR 3: critical-result DETECTION — the report describes a
+                        critical finding but the critical flag is still off. */}
+                    {criticalHits.length > 0 && !isCritical && (
+                      <div className="text-red-500">⚠ Report describes a critical finding ({criticalHits.map((h) => h.label).join(", ")}) but "Mark Critical Finding" is off.</div>
+                    )}
                     {/* F5: critical-finding communication gate */}
                     {isCritical && !checklistComm.phoned && (
                       <div className="text-red-500">⚠ Critical finding flagged but "Telephoned Doctor" not yet checked in the Communication Checklist.</div>

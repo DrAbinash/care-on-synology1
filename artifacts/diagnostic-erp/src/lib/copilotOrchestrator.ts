@@ -29,7 +29,8 @@ export type CopilotCategory =
   | "impression" // impression validator (Part 5)
   | "recommendation" // recommendation / follow-up (Parts 6, 9)
   | "differential" // differential diagnosis (Part 7)
-  | "measurement"; // structured measurement reminder (Part 10)
+  | "measurement" // structured measurement reminder (Part 10)
+  | "critical"; // critical-result safety (MRI PR 3)
 
 export type Confidence = "high" | "medium" | "low";
 export type InsertTarget = "findings" | "impression" | "recommendation";
@@ -83,6 +84,13 @@ export interface CopilotContext {
    *  workspace from the existing useViewerMeasurements hook, so the measurement
    *  module can flag values captured in the viewer but missing from the report. */
   viewerMeasurements?: { label: string; value: number; unit: string; imported: boolean }[];
+  /** Critical-result context (MRI PR 3) — per-study critical watch terms (reused
+   *  from radiologyMasterTemplates `criticalWatchList`) plus the current state of
+   *  the existing "Mark Critical Finding" toggle and the F5 communication
+   *  checklist, so the critical-results module can advise without new state. */
+  criticalWatchList?: string[];
+  criticalMarked?: boolean;
+  criticalCommunicated?: boolean;
 }
 
 const has = (haystack: string, needle: string) => haystack.includes(needle);
@@ -324,6 +332,7 @@ function dedupe(items: CopilotItem[]): CopilotItem[] {
 }
 
 export const CATEGORY_LABEL: Record<CopilotCategory, string> = {
+  critical: "Critical Results",
   suggestion: "Current Suggestions",
   missing: "Possible Missing Findings",
   contradiction: "Potential Issues",

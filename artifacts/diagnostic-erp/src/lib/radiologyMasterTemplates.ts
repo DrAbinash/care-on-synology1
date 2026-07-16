@@ -814,6 +814,42 @@ export function searchMasterTemplates(
   });
 }
 
+/** Normalises a modality code so the workspace's short forms match the master
+ *  templates' long forms ("MR" ↔ "MRI", "US"/"USG" ↔ "USG"). */
+function normModality(m: string): string {
+  const u = (m || "").toUpperCase().trim();
+  if (u === "MR" || u === "MRI") return "MR";
+  if (u === "US" || u === "USG" || u === "USE") return "US";
+  return u;
+}
+
+/**
+ * Collect the critical-finding watch terms for the master template(s) best
+ * matching a study, so the workspace can seed critical-results detection
+ * (criticalResults.ts) with study-specific red-flags WITHOUT duplicating those
+ * per-study lists. Modality-normalised; matches the study description against
+ * each template's label / bodyPart / title. De-duplicated; empty when nothing
+ * matches (the built-in critical table still covers the generic emergencies).
+ */
+export function criticalWatchListFor(modality?: string | null, studyDescription?: string | null): string[] {
+  const desc = (studyDescription || "").toLowerCase().trim();
+  const mod = normModality(modality || "");
+  const words = desc.split(/[^a-z0-9]+/).filter((w) => w.length >= 4);
+  const terms = new Set<string>();
+  for (const t of ALL_MASTER_TEMPLATES) {
+    if (!t.criticalWatchList?.length) continue;
+    if (mod && normModality(t.modality) !== mod) continue;
+    const hay = `${t.label} ${t.bodyPart} ${t.title}`.toLowerCase();
+    const matched = !!desc && (hay.includes(desc) || words.some((w) => hay.includes(w)));
+    if (!matched) continue;
+    for (const term of t.criticalWatchList) {
+      const clean = term.trim();
+      if (clean) terms.add(clean);
+    }
+  }
+  return [...terms];
+}
+
 export function getMasterCategories(): string[] {
   return [...new Set(ALL_MASTER_TEMPLATES.map((t) => t.category))].sort();
 }
