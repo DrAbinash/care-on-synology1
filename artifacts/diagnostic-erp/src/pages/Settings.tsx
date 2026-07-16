@@ -8067,6 +8067,17 @@ function QueueDisplaySettingsTab() {
     queryFn: () => api.get(`/api/settings/queue-display/${roomKey}`),
   });
 
+  // Display token — lets the unattended TV browser (which has no staff login
+  // session) read its own settings and the live queue feed. Without it the TV
+  // page 401s on every fetch and sits on "Loading display…" forever, so both
+  // the preview iframe and the "Open TV Display" link MUST carry it.
+  const { data: tokenData } = useQuery<{ token: string; hint: string }>({
+    queryKey: ["display-access-token"],
+    queryFn: () => api.get("/api/display/token"),
+    staleTime: Infinity,
+  });
+  const displayToken = tokenData?.token ?? "";
+
   const [form, setForm] = useState<QueueDisplaySettingsForm | null>(null);
 
   useEffect(() => {
@@ -8151,7 +8162,12 @@ function QueueDisplaySettingsTab() {
     return <div className="bg-card border border-card-border rounded-xl p-8 text-center text-muted-foreground">Loading…</div>;
   }
 
-  const previewUrl = `/queue/${roomKey}`;
+  // The unattended TV has no staff session, so the display token is what
+  // authorizes both the settings read and the live queue feed. Append it to
+  // every TV-facing URL (preview iframe + "Open TV Display" + copyable link).
+  const tokenQs = displayToken ? `?displayToken=${encodeURIComponent(displayToken)}` : "";
+  const previewUrl = `/queue/${roomKey}${tokenQs}`;
+  const tvUrl = `${window.location.origin}/queue/${roomKey}${tokenQs}`;
 
   return (
     <div className="space-y-4 max-w-6xl">
@@ -8374,13 +8390,41 @@ function QueueDisplaySettingsTab() {
             </div>
           </SettingsCard>
 
-          <div className="flex items-center gap-3 sticky bottom-0 bg-background/95 backdrop-blur py-3 border-t border-card-border">
-            <Button onClick={() => save.mutate(form)} disabled={save.isPending}>
-              {save.isPending ? "Saving…" : "Save Queue Display Settings"}
-            </Button>
-            <Button variant="outline" onClick={() => window.open(previewUrl, "_blank")}>
-              <ExternalLink size={14} className="mr-1.5" /> Open TV Display
-            </Button>
+          <div className="sticky bottom-0 bg-background/95 backdrop-blur py-3 border-t border-card-border space-y-3">
+            <div className="flex items-center gap-3">
+              <Button onClick={() => save.mutate(form)} disabled={save.isPending}>
+                {save.isPending ? "Saving…" : "Save Queue Display Settings"}
+              </Button>
+              <Button variant="outline" onClick={() => window.open(previewUrl, "_blank")}>
+                <ExternalLink size={14} className="mr-1.5" /> Open TV Display
+              </Button>
+            </div>
+            {/* Copyable TV URL — includes the display token so an unattended TV
+                browser (no staff login) can authorize itself. Paste this into
+                the TV / Fully Kiosk Browser. */}
+            <div>
+              <Label className="text-xs text-muted-foreground">TV browser URL (includes display token)</Label>
+              <div className="flex items-center gap-2 mt-1">
+                <Input readOnly value={tvUrl} onFocus={(e) => e.currentTarget.select()} className="font-mono text-xs" />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(tvUrl).then(
+                      () => toast({ title: "TV URL copied" }),
+                      () => toast({ title: "Copy failed — select and copy manually", variant: "destructive" }),
+                    );
+                  }}
+                >
+                  Copy
+                </Button>
+              </div>
+              {!displayToken && (
+                <p className="text-[11px] text-amber-600 dark:text-amber-500 mt-1">
+                  Fetching the display token… the URL will include it once loaded. Without the token the TV cannot read queue data.
+                </p>
+              )}
+            </div>
           </div>
         </div>
 
