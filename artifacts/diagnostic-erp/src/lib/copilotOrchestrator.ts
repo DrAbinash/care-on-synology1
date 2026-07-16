@@ -102,6 +102,8 @@ export interface CopilotContext {
     rejected: { label: string; value: string }[];
     modified: { label: string; value: string }[];
     missing: string[];
+    /** Phase 2 — sentences auto-populated by the Companion, for review advice. */
+    autoPopulated?: { section: string; text: string; kind: string }[];
   };
 }
 

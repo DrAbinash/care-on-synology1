@@ -68,7 +68,34 @@ export function usgCompanionModuleItems(ctx: CopilotContext): CopilotItem[] {
     }
   }
 
-  // 3) Expected measurements that were never captured for this study type.
+  // 3) Auto-populated content the radiologist should confirm (Phase 2).
+  const auto = c.autoPopulated ?? [];
+  if (auto.length > 0) {
+    const ruleLines = auto.filter((a) => a.kind === "rule");
+    if (ruleLines.length > 0) {
+      items.push({
+        id: `usg-companion:auto-impression`,
+        category: "impression", severity: "info",
+        title: `${ruleLines.length} rule-based impression line(s) auto-populated`,
+        detail: `The Companion added a rule-based impression: ${ruleLines.map((l) => `"${l.text}"`).join("; ")}. Confirm or edit before finalizing.`,
+        why: "Auto-populated impression text is deterministic but must be verified by the radiologist.",
+        confidence: "high",
+      });
+    }
+    const machineLines = auto.filter((a) => a.kind === "machine");
+    if (machineLines.length >= 3) {
+      items.push({
+        id: `usg-companion:auto-machine`,
+        category: "measurement", severity: "info",
+        title: `${machineLines.length} machine measurements auto-populated into Findings`,
+        detail: `Review the auto-populated measurement values against the images.`,
+        why: "Machine-derived values should be verified against the source images before signing.",
+        confidence: "high",
+      });
+    }
+  }
+
+  // 4) Expected measurements that were never captured for this study type.
   if (c.missing.length > 0) {
     items.push({
       id: `usg-companion:missing:${c.studyType}`,

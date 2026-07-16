@@ -73,6 +73,8 @@ export interface CompanionAssembly {
     ct: CompanionPriorItem[];
     other: CompanionPriorItem[];
     total: number;
+    priorUsgText: string | null;
+    priorUsgDateIso: string | null;
   };
   warnings: string[];
 }
@@ -85,8 +87,12 @@ export interface CompanionDashboardStats {
   avgImportedMeasurements: number;
   avgTimeSavedSeconds: number;
   avgReadinessScore: number;
+  autoPopulationRate: number;
+  avgEditsAfterPopulate: number;
+  avgReportCompletion: number;
   machineBreakdown: { machine: string; runCount: number; successCount: number }[];
   mostCommonMissingMeasurements: { key: string; count: number }[];
+  topRejectedMeasurements: { key: string; count: number }[];
 }
 
 /** Compact context the Companion threads up into CopilotContext.usgCompanion. */
@@ -96,4 +102,7 @@ export interface CompanionCopilotContext {
   rejected: { label: string; value: string }[];
   modified: { label: string; value: string }[];
   missing: string[];
+  /** Phase 2 — sentences the Companion auto-populated (machine/template/rule),
+   *  so Copilot can advise the radiologist to review generated content. */
+  autoPopulated?: { section: string; text: string; kind: string }[];
 }

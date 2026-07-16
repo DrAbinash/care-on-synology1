@@ -135,7 +135,11 @@ router.get("/study/:studyInstanceUID", async (req, res) => {
     ct: { label: string; dateIso: string | null; status: string | null }[];
     other: { label: string; dateIso: string | null; status: string | null }[];
     total: number;
-  } = { usg: [], mri: [], ct: [], other: [], total: 0 };
+    // most-recent finalised prior USG report text — the client extracts + diffs
+    // its measurements against the current study via the existing comparison engine.
+    priorUsgText: string | null;
+    priorUsgDateIso: string | null;
+  } = { usg: [], mri: [], ct: [], other: [], total: 0, priorUsgText: null, priorUsgDateIso: null };
 
   if (worklist?.patientId) {
     const patientId = worklist.patientId;
@@ -171,6 +175,7 @@ router.get("/study/:studyInstanceUID", async (req, res) => {
         status: usgReportDraftsTable.status,
         finalizedAt: usgReportDraftsTable.finalizedAt,
         studyInstanceUID: usgReportDraftsTable.studyInstanceUID,
+        draftContent: usgReportDraftsTable.draftContent,
       })
         .from(usgReportDraftsTable)
         .where(and(eq(usgReportDraftsTable.patientId, patientId), isNotNull(usgReportDraftsTable.finalizedAt)))
@@ -184,6 +189,11 @@ router.get("/study/:studyInstanceUID", async (req, res) => {
           dateIso: r.finalizedAt?.toISOString?.() ?? null,
           status: r.status ?? null,
         });
+        // Capture the most-recent prior USG report body for the comparison engine.
+        if (!previousStudies.priorUsgText && r.draftContent && r.draftContent.trim()) {
+          previousStudies.priorUsgText = r.draftContent.slice(0, 6000);
+          previousStudies.priorUsgDateIso = r.finalizedAt?.toISOString?.() ?? null;
+        }
       }
     } catch (err) { degrade("prior-usg", err); }
 
@@ -247,6 +257,7 @@ router.post("/runs", async (req, res) => {
   const asStr = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
   const missing = Array.isArray(b.missingMeasurements) ? b.missingMeasurements.map(String) : [];
   const warnings = Array.isArray(b.warnings) ? b.warnings.map(String) : [];
+  const rejected = Array.isArray(b.rejectedMeasurements) ? b.rejectedMeasurements.map(String) : [];
   const importedCount = asInt(b.measurementsImported, 0);
 
   const values = {
@@ -268,6 +279,11 @@ router.post("/runs", async (req, res) => {
     missingMeasurementsJson: JSON.stringify(missing),
     readinessScore: Math.max(0, Math.min(100, asInt(b.readinessScore))),
     timeSavedSeconds: b.timeSavedSeconds != null ? asInt(b.timeSavedSeconds) : estimateTimeSavedSeconds(importedCount),
+    autoPopulated: b.autoPopulated === true,
+    sectionsPopulated: asInt(b.sectionsPopulated),
+    editsAfterPopulate: asInt(b.editsAfterPopulate),
+    reportCompletionPct: Math.max(0, Math.min(100, asInt(b.reportCompletionPct))),
+    rejectedMeasurementsJson: JSON.stringify(rejected),
     warningsJson: JSON.stringify(warnings),
     createdBy: s.subjectName ?? null,
     createdById: s.subjectId ?? null,
@@ -304,8 +320,13 @@ router.get("/dashboard-stats", async (req, res) => {
     avgImportedMeasurements: 0,
     avgTimeSavedSeconds: 0,
     avgReadinessScore: 0,
+    // Phase 2
+    autoPopulationRate: 0,
+    avgEditsAfterPopulate: 0,
+    avgReportCompletion: 0,
     machineBreakdown: [] as { machine: string; runCount: number; successCount: number }[],
     mostCommonMissingMeasurements: [] as { key: string; count: number }[],
+    topRejectedMeasurements: [] as { key: string; count: number }[],
   };
 
   try {
@@ -314,9 +335,12 @@ router.get("/dashboard-stats", async (req, res) => {
         COUNT(*)::int                                                                 AS total_runs,
         COUNT(*) FILTER (WHERE extraction_status = 'completed')::int                  AS success_count,
         COUNT(*) FILTER (WHERE extraction_status = 'failed')::int                     AS failed_count,
+        COUNT(*) FILTER (WHERE auto_populated)::int                                   AS auto_populated_count,
         COALESCE(ROUND(AVG(measurements_imported)::numeric, 1), 0)                    AS avg_imported,
         COALESCE(ROUND(AVG(time_saved_seconds)::numeric, 0), 0)                       AS avg_time_saved,
-        COALESCE(ROUND(AVG(readiness_score)::numeric, 0), 0)                          AS avg_readiness
+        COALESCE(ROUND(AVG(readiness_score)::numeric, 0), 0)                          AS avg_readiness,
+        COALESCE(ROUND(AVG(edits_after_populate) FILTER (WHERE auto_populated)::numeric, 1), 0) AS avg_edits,
+        COALESCE(ROUND(AVG(report_completion_pct)::numeric, 0), 0)                    AS avg_completion
       FROM companion_runs
       WHERE created_at >= NOW() - (${days} || ' days')::interval
     `);
@@ -324,6 +348,7 @@ router.get("/dashboard-stats", async (req, res) => {
     const total = Number(r.total_runs ?? 0);
     const success = Number(r.success_count ?? 0);
     const failed = Number(r.failed_count ?? 0);
+    const autoPopulated = Number(r.auto_populated_count ?? 0);
     const graded = success + failed;
 
     const machineStats = await db.execute(sql`
@@ -346,6 +371,15 @@ router.get("/dashboard-stats", async (req, res) => {
       LIMIT 10
     `);
 
+    const rejectedStats = await db.execute(sql`
+      SELECT key AS rejected_key, COUNT(*)::int AS rejected_count
+      FROM companion_runs, jsonb_array_elements_text(rejected_measurements_json::jsonb) AS key
+      WHERE created_at >= NOW() - (${days} || ' days')::interval
+      GROUP BY key
+      ORDER BY rejected_count DESC
+      LIMIT 10
+    `);
+
     res.json({
       windowDays: days,
       totalRuns: total,
@@ -354,6 +388,9 @@ router.get("/dashboard-stats", async (req, res) => {
       avgImportedMeasurements: Number(r.avg_imported ?? 0),
       avgTimeSavedSeconds: Number(r.avg_time_saved ?? 0),
       avgReadinessScore: Number(r.avg_readiness ?? 0),
+      autoPopulationRate: total > 0 ? Math.round((autoPopulated / total) * 1000) / 10 : 0,
+      avgEditsAfterPopulate: Number(r.avg_edits ?? 0),
+      avgReportCompletion: Number(r.avg_completion ?? 0),
       machineBreakdown: (machineStats.rows ?? []).map((m) => ({
         machine: String((m as Record<string, unknown>).machine ?? "Unknown"),
         runCount: Number((m as Record<string, unknown>).run_count ?? 0),
@@ -362,6 +399,10 @@ router.get("/dashboard-stats", async (req, res) => {
       mostCommonMissingMeasurements: (missingStats.rows ?? []).map((m) => ({
         key: String((m as Record<string, unknown>).missing_key ?? ""),
         count: Number((m as Record<string, unknown>).missing_count ?? 0),
+      })),
+      topRejectedMeasurements: (rejectedStats.rows ?? []).map((m) => ({
+        key: String((m as Record<string, unknown>).rejected_key ?? ""),
+        count: Number((m as Record<string, unknown>).rejected_count ?? 0),
       })),
     });
   } catch (err) {
