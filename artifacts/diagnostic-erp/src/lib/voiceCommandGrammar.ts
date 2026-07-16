@@ -31,6 +31,10 @@ export type VoiceIntent =
   | { type: "dictate"; target: DictationTarget; mode: "append" | "replace"; text: string }
   | { type: "quick-select"; action: "search" | "select" | "remove"; term: string }
   | { type: "quick-modifier"; property: "side" | "severity" | "level"; value: string }
+  // MRI PR 4 — apply a multi-study combined template (e.g. "combine brain and
+  // cervical"). The term is resolved to a known combination downstream; voice
+  // never assembles arbitrary studies.
+  | { type: "combination"; term: string }
   | { type: "viewer"; op: ViewerOp }
   | { type: "viewer-unsupported"; capability: string }
   | { type: "cancel" }
@@ -143,6 +147,9 @@ const RULES: Rule[] = [
   { category: "Quick Select", example: "severity mild/moderate/severe", pattern: /^severity (?<v>.+)$/, build: (m) => ({ type: "quick-modifier", property: "severity", value: m.groups!.v.trim() }) },
   { category: "Quick Select", example: "level <value> / location <value>", pattern: /^(level|location) (?<v>.+)$/, build: (m) => ({ type: "quick-modifier", property: "level", value: m.groups!.v.trim() }) },
 
+  // Study combinations (MRI PR 4) — verb-led so it never collides with dictation.
+  { category: "Quick Select", example: "combine brain and cervical", pattern: /^(combine|combined study|combination) (?<term>.+)$/, build: (m) => ({ type: "combination", term: m.groups!.term.trim() }) },
+
   // Viewer — REAL operations (embedded viewer setters exist)
   { category: "Viewer", example: "next image", pattern: /^next (image|slice|frame)$/, build: () => ({ type: "viewer", op: "next-image" }) },
   { category: "Viewer", example: "previous image", pattern: /^previous (image|slice|frame)$/, build: () => ({ type: "viewer", op: "previous-image" }) },
@@ -209,6 +216,7 @@ export function parseVoiceTranscript(raw: string, opts: ParseOptions = {}): Pars
     const parameters: Record<string, string> = {};
     if (intent.type === "dictate") parameters.text = intent.text;
     if (intent.type === "quick-select") parameters.term = intent.term;
+    if (intent.type === "combination") parameters.term = intent.term;
     if (intent.type === "quick-modifier") parameters[intent.property] = intent.value;
     if (intent.type === "workflow" && intent.reason) parameters.reason = intent.reason;
     if (intent.type === "viewer-unsupported") parameters.capability = intent.capability;
@@ -266,6 +274,8 @@ export function describeIntent(intent: VoiceIntent): string {
       return `${intent.action === "remove" ? "Remove" : intent.action === "select" ? "Select" : "Search"} quick finding “${intent.term}”`;
     case "quick-modifier":
       return `Set ${intent.property} = ${intent.value} on the last selected finding`;
+    case "combination":
+      return `Apply combined study template “${intent.term}”`;
     case "viewer": {
       const ops: Record<ViewerOp, string> = {
         "next-image": "Viewer: next image", "previous-image": "Viewer: previous image",

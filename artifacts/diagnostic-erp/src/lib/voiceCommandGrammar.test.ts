@@ -136,6 +136,24 @@ describe("quick select commands", () => {
   });
 });
 
+describe("study combination command (MRI PR 4)", () => {
+  it("parses verb-led combine phrases to a combination intent with the term", () => {
+    expect(intentOf("combine brain and cervical")).toEqual({ type: "combination", term: "brain and cervical" });
+    expect(intentOf("combination whole spine")).toEqual({ type: "combination", term: "whole spine" });
+    expect(intentOf("combined study brain and whole spine")).toEqual({ type: "combination", term: "brain and whole spine" });
+  });
+
+  it("carries the term ONLY as a plain string parameter (nothing else executable)", () => {
+    const parse = parseVoiceTranscript("combine brain and cervical");
+    expect(Object.keys(parse.parameters)).toEqual(["term"]);
+    expect(parse.confidenceBand).toBe("CLEAR");
+  });
+
+  it("bare 'combine' with no term does not match (stays unrecognized)", () => {
+    expect(bandOf("combine")).toBe("UNRECOGNIZED");
+  });
+});
+
 describe("viewer commands — real vs truthfully unsupported", () => {
   it("supported: frame navigation, zoom, reset", () => {
     expect(intentOf("next image")).toEqual({ type: "viewer", op: "next-image" });
@@ -219,6 +237,7 @@ describe("descriptions + help", () => {
     expect(describeIntent({ type: "dictate", target: "impression", mode: "replace", text: "x" })).toContain("REPLACE");
     expect(describeIntent({ type: "quick-select", action: "select", term: "disc bulge" })).toContain("disc bulge");
     expect(describeIntent({ type: "quick-modifier", property: "side", value: "left" })).toContain("side = left");
+    expect(describeIntent({ type: "combination", term: "brain and cervical" })).toContain("brain and cervical");
     expect(describeIntent({ type: "viewer", op: "zoom-in" })).toBe("Viewer: zoom in");
     expect(describeIntent({ type: "viewer-unsupported", capability: "measurements" })).toContain("not supported");
     expect(describeIntent({ type: "cancel" })).toBe("Cancel");
