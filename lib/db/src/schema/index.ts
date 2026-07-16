@@ -140,3 +140,4 @@ export * from "./featureFlags";
 export * from "./reportFindingInstances";
 export * from "./radiologyCatalog";
 export * from "./staffQuickDoctors";
+export * from "./reportQualityEngine";

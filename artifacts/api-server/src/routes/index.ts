@@ -129,6 +129,7 @@ import sonologistAssistantRouter from "./sonologistAssistant";
 import dicomStudyManagerRouter from "./dicomStudyManager";
 import dicomWorkflowRouter from "./dicomWorkflow";
 import smartRadiologyRouter from "./smartRadiology";
+import reportQualityRouter from "./reportQuality";
 import risMonitoringRouter from "./risMonitoring";
 import radiologyWorkflowRouter from "./radiologyWorkflow";
 import { scanSessionsRouter } from "./scan-sessions";
@@ -571,6 +572,9 @@ router.use("/radiology-copilot/sonologist-assistant", requireStaffAuth, requireS
 router.use("/dicom-studies", requireStaffAuth, requireStaffPermission("/dicom-nodes"), dicomStudyManagerRouter);
 router.use("/dicom-workflow", requireStaffAuth, requireStaffPermission("/radiology"), dicomWorkflowRouter);
 router.use("/smart-radiology", requireStaffAuth, requireStaffPermission("/radiology"), smartRadiologyRouter);
+// PR #101 Phase 2 — canonical Report Quality Engine (shadow; additive, no
+// existing endpoint replaced). Establishes the canonical persistence + API DTO.
+router.use("/report-quality", requireStaffAuth, requireStaffPermission("/radiology"), reportQualityRouter);
 
 // Phase 11: RIS/PACS Production Monitoring & Hardening
 router.use("/ris-monitor", requireStaffAuth, requireStaffPermission("/radiology"), risMonitoringRouter);

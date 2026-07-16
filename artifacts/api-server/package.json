@@ -19,6 +19,7 @@
     "@workspace/api-zod": "workspace:*",
     "@workspace/crypto": "workspace:*",
     "@workspace/db": "workspace:*",
+    "@workspace/report-quality": "workspace:*",
     "@workspace/ai-providers": "workspace:*",
     "@workspace/integrations-gemini-ai": "workspace:*",
     "bcryptjs": "^3.0.3",

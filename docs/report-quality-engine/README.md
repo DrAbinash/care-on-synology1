@@ -49,7 +49,7 @@ evaluate rather than overclaiming determinism it cannot back.
 |---|---|---|
 | 0 | Contract + shared `lib/report-quality/` package (no behavior change) | ✅ Landed |
 | 1 | Route the live badge + Copilot through the one runner — **shadow-first** | ✅ Landed (shadow) |
-| 2 | One server endpoint + canonical persistence (migration `0008`) | ⏳ Planned |
+| 2 | Canonical persistence + API contract, stable Rule IDs, append-only (migration `0008`) — **shadow** | ✅ Landed (shadow) |
 | 3 | Cheap deterministic unlocks (measurement `isAbnormal`, reference ranges, required sections, modality normalizer) | ⏳ Planned |
 | 4 | Generalize structured USG/fetal/Doppler/spine rules | ⏳ Planned |
 | 5 | Unified finalize gate + override | ⏳ Planned |
