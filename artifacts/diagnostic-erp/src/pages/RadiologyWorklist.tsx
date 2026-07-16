@@ -442,7 +442,17 @@ export default function RadiologyWorklist() {
   const isTechView = viewRole === "technician";
   const isReceptionView = viewRole === "reception";
   const may = (path: string) => canAccess(session, path);
-  const [modalityFilter, setModalityFilter] = useState("all");
+  // PR B — USG Platform Consolidation: the "USG Worklist" sidebar entry links
+  // here with `?modality=USG` so it reuses this SAME worklist pre-filtered,
+  // instead of a second worklist component. Any ultrasound spelling
+  // ("USG", "Ultrasound", "Doppler", ...) normalizes to the existing "US"
+  // filter bucket via the same normalizer the modality Select already uses.
+  const [modalityFilter, setModalityFilter] = useState(() => {
+    const param = new URLSearchParams(window.location.search).get("modality");
+    if (!param) return "all";
+    const normalized = normalizeModality(param);
+    return MODALITY_OPTIONS.includes(normalized) ? normalized : "all";
+  });
   const [lockFilter, setLockFilter] = useState("all");
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [showSentinel, setShowSentinel] = useState(false);

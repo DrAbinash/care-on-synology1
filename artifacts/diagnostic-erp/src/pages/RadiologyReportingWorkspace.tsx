@@ -39,7 +39,7 @@ import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
 // measurement import queue — self-hides when the study has none.
 import ViewerMeasurementsPanel, { useViewerMeasurements } from "@/components/radiology/ViewerMeasurementsPanel";
 import PreferencesPanel from "@/components/PreferencesPanel";
-import { isUltrasoundModality } from "@/lib/usgModality";
+import { isUltrasoundModality, isObstetricUsgStudy } from "@/lib/usgModality";
 import QuickFindingsPanel, {
   type QuickFinding, type QuickProtocol, type QuickClinicalHistoryChip, type QuickSelectData,
 } from "@/components/radiology/QuickFindingsPanel";
@@ -72,6 +72,15 @@ import { runLocalModules, runAiModules } from "@/lib/copilotModules";
 import "@/lib/copilotAiModule"; // registers the on-demand AI reasoning module (Part 20)
 import "@/lib/copilotComparisonModule"; // registers the previous-study comparison module (MRI PR 1)
 import "@/lib/copilotMeasurementModule"; // registers the viewer-measurement completeness module (MRI PR 2)
+// PR B — USG Platform Consolidation §12: USG Copilot modules, registered the
+// same way as the modules above — plain plug-ins via registerCopilotModule(),
+// zero changes to copilotModules.ts/copilotOrchestrator.ts/CareCopilotPanel.tsx.
+import "@/lib/copilotUsgAbdomenModule";
+import "@/lib/copilotUsgObstetricModule";
+import "@/lib/copilotUsgThyroidModule";
+import "@/lib/copilotUsgBreastModule";
+import "@/lib/copilotUsgScrotumModule";
+import "@/lib/copilotUsgDopplerModule";
 import "@/lib/copilotCriticalModule"; // registers the critical-results safety module (MRI PR 3)
 import { detectCriticalFindings } from "@/lib/criticalResults";
 import { computeFinalizeSafety, formatFinalizeSafety } from "@/lib/finalizeSafety";
@@ -489,7 +498,16 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // ── Template selection ────────────────────────────────────────────────────
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
   const [templateSearch, setTemplateSearch] = useState("");
-  const [modalityFilter, setModalityFilter] = useState<string>("");
+  // PR B — USG Platform Consolidation: "General USG Reporting" in the sidebar
+  // links here with `?modality=USG` so the SAME canonical workspace opens
+  // pre-configured (Templates tab defaults to the USG catalog) instead of a
+  // separate USG workspace. Raw value, not normalizeModality() — this filter
+  // does an exact match against each template row's `modality` column
+  // ("USG"/"MRI"/"CT"/"X-RAY", see modalityMap below), not the worklist's
+  // "US"-bucket normalization.
+  const [modalityFilter, setModalityFilter] = useState<string>(
+    () => new URLSearchParams(window.location.search).get("modality") ?? "",
+  );
 
   // ── Report content ────────────────────────────────────────────────────────
   const [clinicalHistory, setClinicalHistory] = useState("");
@@ -2218,6 +2236,21 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // spelling (see lib/usgModality.ts).
   const isUltrasound = useMemo(() => isUltrasoundModality(entry?.modality), [entry?.modality]);
 
+  // PR B follow-up — PCPNDT safety guard. This workspace has no PCPNDT Form F
+  // compliance check (that lock exists only in the legacy, non-nav-linked
+  // usgReports.ts pipeline — see docs/usg-reporting/platform-consolidation-pr-b.md
+  // §17-18). Rather than duplicating that server-side check here, an
+  // obstetric/fetal USG study is BLOCKED from finalizing through this
+  // canonical workspace entirely (see finalizeReport() below) until the
+  // PCPNDT reconciliation decision is made — draft/save/print/preview remain
+  // fully usable, only Finalize is gated. Non-obstetric USG (Whole Abdomen,
+  // KUB, Thyroid, Breast, Scrotum, Doppler, ...) and every non-ultrasound
+  // modality are completely unaffected.
+  const isPcpndtRelevantUsg = useMemo(
+    () => isObstetricUsgStudy(entry?.modality, entry?.studyDescription),
+    [entry?.modality, entry?.studyDescription],
+  );
+
   // Practical USG template catalog (Whole Abdomen/KUB/Pelvis/OB/Doppler/
   // Prostate/Scrotum/Thyroid/Breast) — a separate, confidence-gated-autofill
   // catalog from `templates` above; only fetched in USG mode.
@@ -3016,6 +3049,22 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     }
     if (lockLost) {
       toast({ title: "Cannot finalize", description: "Your study lock expired — reclaim the study first. Your text is preserved.", variant: "destructive" });
+      return;
+    }
+    // PR B follow-up — PCPNDT safety guard (see isPcpndtRelevantUsg above).
+    // This workspace has no PCPNDT Form F compliance check; an obstetric/
+    // fetal USG study must not be finalizable through it. This is the single
+    // authoritative enforcement point — it also covers the Ctrl+Enter /
+    // Command Palette "finalize" dispatcher, which calls finalizeReport()
+    // directly and would otherwise bypass a disabled Finalize button.
+    // Draft save / print / preview are unaffected; only finalize is blocked.
+    if (isPcpndtRelevantUsg) {
+      toast({
+        title: "Finalize blocked — PCPNDT Form F required",
+        description:
+          "This is an obstetric/fetal ultrasound. This workspace does not check PCPNDT Form F compliance, so it cannot finalize this report. Use \"Review & Map to Form F\" (Measurements tab) to open Form F, then finalize this study through USG Reporting (the PCPNDT-compliant legacy page, /usg/reporting) instead. Your draft here is unaffected and remains saved.",
+        variant: "destructive",
+      });
       return;
     }
     setFinalizing(true);
@@ -5015,8 +5064,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 size="sm"
                 className="h-8 text-xs gap-1.5 bg-green-600 hover:bg-green-700 text-white"
                 onClick={() => void finalizeReport()}
-                disabled={finalizing}
-                title="Finalize report (Ctrl+Enter)"
+                disabled={finalizing || isPcpndtRelevantUsg}
+                title={
+                  isPcpndtRelevantUsg
+                    ? "Blocked: obstetric/fetal USG requires PCPNDT Form F compliance, which this workspace does not check — finalize via USG Reporting (legacy, /usg/reporting) instead"
+                    : "Finalize report (Ctrl+Enter)"
+                }
               >
                 {finalizing ? (
                   <RefreshCw size={12} className="animate-spin" />
@@ -5025,6 +5078,17 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 )}{" "}
                 Finalize
               </Button>
+            )}
+            {/* PR B follow-up — PCPNDT safety guard: persistent, always-visible
+                notice (not just a toast on click) so the block is understood
+                before the radiologist even reaches for Finalize. */}
+            {!isLocked && canSign && isPcpndtRelevantUsg && (
+              <span
+                className="text-[11px] text-red-600 font-medium self-center px-2 flex items-center gap-1 max-w-[260px]"
+                title="This workspace has no PCPNDT Form F compliance check. Finalize via USG Reporting (legacy, /usg/reporting) after completing Form F."
+              >
+                ⚠ PCPNDT: finalize via USG Reporting (Form F required)
+              </span>
             )}
             {/* G1: non-signing roles see why, not a live button that only 500s server-side */}
             {!isLocked && !canSign && (
