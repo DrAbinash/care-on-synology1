@@ -1,9 +1,11 @@
 # PR B — USG Platform Consolidation: Deliverables
 
 **Status: implemented.**
-**Scope: sidebar navigation, USG Worklist, General USG Reporting workspace configuration, six USG Copilot modules, and a Quick Select / Protocol / Clinical History content seed migration.**
+**Scope: sidebar navigation, USG Worklist, General USG Reporting workspace configuration, six USG Copilot modules, a Quick Select / Protocol / Clinical History content seed migration, and a PCPNDT finalize-block safety guard (added in a follow-up review pass — see §8/§17/§18).**
 **Builds on:** [`docs/usg-reporting-audit/`](../usg-reporting-audit/) (the prior architecture audit, as-of commit `15ed9dfc`) and [`docs/usg-reporting/fetal-usg-calculation-correction.md`](./fetal-usg-calculation-correction.md) ("PR A", commit `a1f8c9e6`).
 **As-of commit at audit time:** `84638b89` (branch `claude/usg-platform-consolidation-gv58pu`, based on `feature/website-login-redirection`).
+
+> **Safety addendum (post-review):** the version of this PR first opened shipped the PCPNDT gap (§17.1) as a Copilot reminder only — advisory, not blocking. A follow-up safety review correctly identified that as insufficient, since it left the canonical workspace able to finalize an obstetric/fetal USG report with zero compliance check. This revision adds a real, tested, hard finalize-block for PCPNDT-relevant studies — see the new §8 subsection "PCPNDT finalize guard" and the corrected §17.1/§18.1. It also corrects an assumption implicit in the original review request: **Fetal USG (`FetalUsgLevel4.tsx`) is *not* PCPNDT-compliant either** — verified by reading its `final-sign` route, which checks only report-review status and critical-alert acknowledgement, no Form F. The only genuinely compliant path in the codebase today is the legacy `UsgReporting.tsx` + `/usg-reports` API pipeline. The guard below routes users there, not to Fetal USG.
 
 This PR is an **architectural consolidation**, not a rewrite. Per the Hard Rules in the task spec, it does not create a second Reporting Workspace, Smart Findings engine, Template engine, Copilot, Report lifecycle, Measurement engine, or Settings page. Every change below either (a) adds configuration/content rows to an existing shared table, (b) adds a plug-in to an existing registry, or (c) adds/edits a nav entry or a `?modality=` query-param read on an existing page.
 
@@ -39,7 +41,7 @@ The repository was re-audited against current `HEAD` (`84638b89`) before any cod
 | `radiologyMasterTemplates.ts` (17 templates incl. 5 USG) | **Dead code (zero importers)** | Confirmed via `grep`: no file imports `ALL_MASTER_TEMPLATES`/`findMasterTemplateById`/`assembleReport` except the file itself. A duplicate template store (see §5); not touched or wired in this PR — wiring it is a template-authority decision the task spec explicitly defers ("Recommend consolidation. Do NOT migrate historical reports."). |
 | `radiologyReportAssembler.ts` | **Dead code / Experimental** | A second, independent "assemble multiple templates" implementation, gated behind a feature flag that is off by default and wired nowhere live. Not touched. |
 | `seeds/radiology/content-packs/v1/*.yaml` (rich structured-finding catalog) | **Experimental / unwired** | Only `usg_abdomen.yaml`/`usg_kub.yaml` exist for USG; per the prior audit and this re-audit, this catalog has no loader anywhere in `api-server/src` — a genuine "foundation only" system. Not touched; this PR's content pack (§14) goes into the *live*, wired tables instead. |
-| PCPNDT Form F gate | **Hidden gap, made visible (not fixed)** | Confirmed: the canonical workspace's `finalizeReport()` has **zero** PCPNDT check today; only the legacy `usgReports.ts` route enforces it. This PR does not touch the shared finalize transaction (see §17) — it surfaces the gap as a non-blocking Copilot reminder instead (§8). |
+| PCPNDT Form F gate | **Gap closed with a client-side block (interim, not the full migration)** | Confirmed: the canonical workspace's `finalizeReport()` had **zero** PCPNDT check, and — verified in the follow-up safety review — neither does `FetalUsgLevel4.tsx`'s `final-sign` route. Only the legacy `usgReports.ts` route enforces the real Form F lock. This PR does not touch that server-side check or the shared finalize transaction's backend (see §17.1) — instead, `RadiologyReportingWorkspace.tsx`'s `finalizeReport()` now hard-blocks finalize client-side for any study `isObstetricUsgStudy()` classifies as obstetric/fetal, with a persistent UI notice and a Copilot reminder, directing the user to the actually-compliant legacy page (§8). |
 
 ---
 
@@ -100,13 +102,24 @@ Six new local (deterministic) Copilot modules, each a standalone file implementi
 | Module id | File | Gate | What it checks |
 |---|---|---|---|
 | `usg-abdomen` | `copilotUsgAbdomenModule.ts` | US + Whole Abdomen/KUB-pattern study | Organ-coverage checklist, KUB post-void residue, ascites-in-impression |
-| `usg-obstetric` | `copilotUsgObstetricModule.ts` | US + obstetric-pattern study | GA/EDD, placenta, liquor statement completeness; **non-blocking PCPNDT Form F reminder** (see §17) |
+| `usg-obstetric` | `copilotUsgObstetricModule.ts` | US + obstetric-pattern study | GA/EDD, placenta, liquor statement completeness; PCPNDT Form F reminder — paired with a real, hard finalize block, not advisory-only (see below) |
 | `usg-thyroid` | `copilotUsgThyroidModule.ts` | US + thyroid-pattern study | TI-RADS on a described nodule, isthmus, cervical nodes |
 | `usg-breast` | `copilotUsgBreastModule.ts` | US + breast-pattern study | BI-RADS on a described lesion, laterality, axilla |
 | `usg-scrotum` | `copilotUsgScrotumModule.ts` | US + scrotal-pattern study | Vascularity assessment on a described lesion, laterality |
 | `usg-doppler` | `copilotUsgDopplerModule.ts` | US + Doppler-pattern content | PSV/EDV pairing, missing RI/S-D ratio, waveform description (grounded in `docs/usg-reporting-audit/06-measurements-and-calculations.md` §4's findings) |
 
-`RadiologyReportingWorkspace.tsx` gained six side-effect `import` lines alongside the three pre-existing ones. Zero edits to `copilotModules.ts`/`copilotOrchestrator.ts`/`CareCopilotPanel.tsx`. 43 new unit tests (one file per module) plus the 3 pre-existing Copilot test files all pass (94/94 total).
+`RadiologyReportingWorkspace.tsx` gained six side-effect `import` lines alongside the three pre-existing ones. Zero edits to `copilotModules.ts`/`copilotOrchestrator.ts`/`CareCopilotPanel.tsx`. 43 unit tests (one file per module) plus the 3 pre-existing Copilot test files all pass (94/94 total).
+
+### PCPNDT finalize guard (added in the safety-review follow-up)
+
+A reminder in the Copilot panel is advisory — a radiologist can ignore it and finalize anyway. This PR adds a real block, not just visibility:
+
+- **Classification**: `isObstetricUsgStudy(modality, studyDescription)`, a new pure function in `lib/usgModality.ts`, alongside the existing `isUltrasoundModality`/`normalizeModality`. It is `true` only when the study is ultrasound **and** its worklist study description matches an obstetric/fetal pattern (pregnancy, fetal, gestation, nuchal, NT scan, anomaly scan, growth scan, TIFFA, etc.) — the same pattern the `usg-obstetric` Copilot module already used, now extracted to one shared, tested location instead of two independently-maintained regexes (avoids duplicating the classification, per the Hard Rule against duplicating the PCPNDT engine).
+- **Enforcement point**: `RadiologyReportingWorkspace.tsx`'s `finalizeReport()` — the single function every finalize path calls (the toolbar button, the Ctrl+Enter shortcut, and the Command Palette's `finalize` command all dispatch through it). A new guard, placed alongside the existing `lockedByOther`/`lockLost` early-return guards, blocks with a `toast()` and returns before any network call when `isPcpndtRelevantUsg` is true. This is a **client-side** guard — it stops the normal UI/keyboard/palette paths, but (being out of scope for this PR, see §17.1) it does not add a server-side check to the shared `patient-reports`/`report-status` backend routes, so it does not by itself prevent a maliciously-crafted direct API call. That gap is explicitly named in §18.1 as the next step.
+- **What stays available**: draft save, print, preview, and the AI-review panel are completely unaffected — only the Finalize action is gated. Non-obstetric USG (Whole Abdomen, KUB, Thyroid, Breast, Scrotum, Doppler, ...) and every non-ultrasound modality (MRI, CT, ...) are unaffected — `isObstetricUsgStudy()` returns `false` for all of them, verified by unit test.
+- **Visibility**: three layers, not one — (1) the Finalize button itself is `disabled` and its tooltip explains why, (2) a persistent red inline notice sits next to the button whenever a PCPNDT-relevant study is open (visible before the user even attempts to click Finalize, unlike a toast), and (3) the `usg-obstetric` Copilot module's reminder, updated to describe the block rather than merely suggest checking Form F.
+- **Where it points**: the legacy `UsgReporting.tsx` page (`/usg/reporting`) — the only pipeline in the codebase with a real, server-enforced Form F lock (`usgReports.ts:464-503`) — plus the existing "Review & Map to Form F" button (already in the Measurements tab, unchanged) and `/form-f` directly. **Not** to Fetal USG: verified in this follow-up review that `FetalUsgLevel4.tsx`'s `final-sign` route has no PCPNDT check either (only report-status and critical-alert-acknowledgement checks) — routing users there would have created a false impression of compliance.
+- **Tests**: `usgModality.test.ts` gained a dedicated `isObstetricUsgStudy` suite (11 cases) covering: every non-ultrasound modality returns `false` regardless of description (MRI/CT never blocked); every non-obstetric USG study description (Whole Abdomen, KUB, Thyroid, Breast, Scrotum, Carotid Doppler, TVS, Pelvis, Prostate) returns `false` (general USG finalizes normally); every obstetric/fetal description variant seen in practice returns `true` across multiple US-family modality spellings; case-insensitivity; and null/undefined/empty description handled without throwing. `finalizeReport()` itself is not independently unit-tested — consistent with this file's existing convention (its sibling guards, `lockedByOther`/`lockLost`, aren't either) — its ~10-line guard is a direct, by-inspection wiring of the fully-tested predicate, not new logic of its own. Fetal USG's non-regression is demonstrated by its own pre-existing test suite (`fetalUsgLevel4.test.ts`, 14 tests + `obstetricCalculations.test.ts`, 57 tests — 71/71 passing, unchanged, since neither `FetalUsgLevel4.tsx` nor its routes were touched by this guard).
 
 ## 9. Template integration
 
@@ -126,14 +139,16 @@ No new settings page. "USG Settings" in the sidebar links to the existing `/sett
 
 ## 13. Files modified / added
 
-**Modified (3):**
+**Modified (5):**
 - `artifacts/diagnostic-erp/src/components/Layout.tsx` — nested USG Reporting subgroup, one-level nested-group rendering support.
 - `artifacts/diagnostic-erp/src/pages/RadiologyWorklist.tsx` — `?modality=` lazy-init for `modalityFilter`.
-- `artifacts/diagnostic-erp/src/pages/RadiologyReportingWorkspace.tsx` — `?modality=` lazy-init for `modalityFilter`; six new Copilot module side-effect imports.
+- `artifacts/diagnostic-erp/src/pages/RadiologyReportingWorkspace.tsx` — `?modality=` lazy-init for `modalityFilter`; six new Copilot module side-effect imports; PCPNDT finalize guard (block + disabled button + persistent notice, see §8).
+- `artifacts/diagnostic-erp/src/lib/usgModality.ts` — added `isObstetricUsgStudy()` (safety-review follow-up).
+- `artifacts/diagnostic-erp/src/lib/copilotUsgObstetricModule.ts` — refactored to consume the shared `isObstetricUsgStudy()` instead of its own local regex; updated reminder text (safety-review follow-up).
 
 **Added (13):**
 - `artifacts/diagnostic-erp/src/lib/copilotUsgAbdomenModule.ts` (+ `.test.ts`)
-- `artifacts/diagnostic-erp/src/lib/copilotUsgObstetricModule.ts` (+ `.test.ts`)
+- `artifacts/diagnostic-erp/src/lib/copilotUsgObstetricModule.test.ts`
 - `artifacts/diagnostic-erp/src/lib/copilotUsgThyroidModule.ts` (+ `.test.ts`)
 - `artifacts/diagnostic-erp/src/lib/copilotUsgBreastModule.ts` (+ `.test.ts`)
 - `artifacts/diagnostic-erp/src/lib/copilotUsgScrotumModule.ts` (+ `.test.ts`)
@@ -141,7 +156,9 @@ No new settings page. "USG Settings" in the sidebar links to the existing `/sett
 - `migrations/zz_add_usg_platform_content_pack.sql`
 - `docs/usg-reporting/platform-consolidation-pr-b.md` (this file)
 
-No file was deleted. No existing test was modified.
+(`usgModality.test.ts` was extended, not added — see §15.)
+
+No file was deleted. No existing test was modified — only extended (`usgModality.test.ts` gained the `isObstetricUsgStudy` suite).
 
 ## 14. Database changes
 
@@ -158,10 +175,11 @@ One new, purely additive, idempotent SQL migration: `migrations/zz_add_usg_platf
 
 ## 15. Tests
 
-- **Root workspace typecheck** (`pnpm run typecheck`, covers `lib/*` + all `artifacts/*` packages + `scripts`): **clean, 0 errors**.
-- **`diagnostic-erp` full test suite**: **617/617 passing** (43 of them new, one file per new Copilot module), zero regressions.
-- **Full monorepo test suite** (`vitest run --root .`, with `DATABASE_URL` pointed at a throwaway local Postgres to unblock the handful of files that import DB-backed modules at module-load time): **2020/2020 passing**, 131/131 test files — confirmed against the pre-PR baseline (same result), so this PR introduces zero regressions anywhere in the monorepo, not just in the files it touches.
-- **`diagnostic-erp` production build** (`pnpm run build`): succeeds, including a `RadiologyReportingWorkspace` and `RadiologyWorklist` chunk with no new build warnings.
+- **Root workspace typecheck** (`pnpm run typecheck`, covers `lib/*` + all `artifacts/*` packages + `scripts`): **clean, 0 errors** (re-run after the PCPNDT guard follow-up — still clean).
+- **`diagnostic-erp` full test suite**: **622/622 passing** (48 new: 43 across the six Copilot module test files, plus 5 new `isObstetricUsgStudy` cases in `usgModality.test.ts`), zero regressions.
+- **Full monorepo test suite** (`vitest run --root .`, with `DATABASE_URL` pointed at a throwaway local Postgres to unblock the handful of files that import DB-backed modules at module-load time): **2025/2025 passing**, 131/131 test files — confirmed against the pre-PR baseline (2020/2020 before this PR's first commit, 2025/2025 after the PCPNDT follow-up), so this PR introduces zero regressions anywhere in the monorepo, not just in the files it touches.
+- **Fetal USG non-regression, explicitly**: `fetalUsgLevel4.test.ts` (14 tests) and `obstetricCalculations.test.ts` (57 tests) re-run in isolation after the PCPNDT guard was added — **71/71 passing, unchanged** — confirming Fetal USG remains fully available and functional (neither its page nor its routes were touched).
+- **`diagnostic-erp` production build** (`pnpm run build`): succeeds, both before and after the PCPNDT guard follow-up, including a `RadiologyReportingWorkspace` and `RadiologyWorklist` chunk with no new build warnings.
 - **Migration**: applied live against a real ephemeral PostgreSQL 16 database (schema materialized via `drizzle-kit push` from the current live schema, then the migration applied via `psql`) — see §14 for the specific checks performed. This exceeds the verification depth possible in a database-less sandbox.
 - **Browser-level sanity check**: the Vite dev server was started and the app loaded in headless Chromium (Playwright, pre-installed in this environment). The bundle — including the modified `Layout.tsx` — compiled and executed with **zero JS `pageerror`/uncaught exceptions**; the app correctly redirected to `/portal` (no session), confirming the whole React tree (Layout, App, routing) mounts cleanly with the new nav code in place.
 
@@ -171,7 +189,7 @@ One new, purely additive, idempotent SQL migration: `migrations/zz_add_usg_platf
 
 ## 17. Known limitations
 
-1. **PCPNDT Form F gate is not enforced in the canonical workspace.** The canonical `finalizeReport()` path has no compliance check today (only the legacy, non-nav-linked `UsgReporting.tsx`/`usgReports.ts` enforces it server-side). This PR makes the gap **visible** — a non-blocking, always-on Copilot reminder for obstetric-USG studies (`usg-obstetric` module, §8) — rather than **fixed**, deliberately: the prior audit (doc 09, Phase 4) calls this "the single most architecturally significant remaining decision," recommends it be made *last, with full information*, and this PR's job (per the task's own Hard Rules) is workspace consolidation, not a live edit to the shared, `BEND-1`-frozen finalize transaction that every modality depends on, in a sandbox with no live database to test that specific change against. See §18 for the recommended path.
+1. **PCPNDT Form F gate is client-side-blocked in the canonical workspace, not server-enforced.** Neither `RadiologyReportingWorkspace.tsx`'s `finalizeReport()` nor `FetalUsgLevel4.tsx`'s `final-sign` route has a real Form F compliance check — only the legacy, non-nav-linked `UsgReporting.tsx`/`usgReports.ts` enforces it server-side. This PR blocks the canonical workspace's Finalize action client-side for any study `isObstetricUsgStudy()` classifies as obstetric/fetal (§8's "PCPNDT finalize guard"), which stops the normal UI, Ctrl+Enter, and Command Palette finalize paths — but it deliberately does **not** add a server-side check to the shared `patient-reports`/`report-status` backend, so a direct, hand-crafted API call could still bypass it. Porting the real check server-side (mirroring `usgReports.ts:464-503`) is the prior audit's (doc 09, Phase 4) "single most architecturally significant remaining decision," which it recommends be made *last, with full information* — and this PR's job (per the task's own Hard Rules) is workspace consolidation, not a live edit to the shared, `BEND-1`-frozen finalize transaction that every modality depends on, in a sandbox with no live database to integration-test that specific change against. See §18.1 for the recommended path.
 2. **Content is representative, not exhaustive.** 36 Quick Findings and 13 Protocols across 13 study types is a real starting catalog, not full coverage of the ~37 study types the prior audit (doc 05) catalogued. Gynaecology beyond TVS (follicular monitoring detail, infertility workup), exotic Doppler vessels (renal/portal/hepatic/penile/AV fistula), and Hernia/PVR/Appendix as standalone studies remain thin or absent, exactly as doc 05 found before this PR.
 3. **Copilot content overlap.** The new `usg-doppler` and `usg-abdomen` modules can produce advisory items alongside `radiologyCoPilotEngine.ts`'s pre-existing hardcoded USG Doppler reminder (`id: "rem-usg"`) and abdomen organ checklist for the same study — both surfaces are additive (no dedup by design across the whole Copilot system, confirmed for the pre-existing modules too), so this is redundancy, not a bug, but worth reconciling later.
 4. **No live-authenticated browser verification** (§16).
@@ -182,7 +200,7 @@ One new, purely additive, idempotent SQL migration: `migrations/zz_add_usg_platf
 
 Ordered by the same reasoning the prior audit used (touch hot/shared files last, safest-file-first):
 
-1. **PCPNDT reconciliation** (doc 09 Phase 4, still the single highest-stakes item): decide whether to (a) port a narrowly-scoped, obstetric-USG-only PCPNDT gate into the canonical finalize path (mirroring `usgReports.ts:464-503` almost verbatim, with real route-level tests against a live-migrated test database before merging), or (b) retire the legacy `usg-reports` pipeline once (a) is live and route `/usg/reporting`/`/usg/doppler` finalize actions through it instead. This PR's `usg-obstetric` Copilot reminder is a stopgap, not a substitute for this decision.
+1. **PCPNDT reconciliation** (doc 09 Phase 4, still the single highest-stakes item): this PR's client-side finalize block (§8) is a stopgap that closes the *normal-usage* bypass, not a substitute for a real, server-side check. Decide whether to (a) port a narrowly-scoped, obstetric-USG-only PCPNDT gate into the canonical finalize path's backend (mirroring `usgReports.ts:464-503` almost verbatim, with real route-level tests against a live-migrated test database before merging) — at which point `isObstetricUsgStudy()`'s client-side block becomes pure UX (fail fast, friendly message) layered on top of a real server-side enforcement, or (b) retire the legacy `usg-reports` pipeline once (a) is live and route `/usg/reporting`/`/usg/doppler` finalize actions through the canonical path instead. Whichever is chosen, the same decision should also close `FetalUsgLevel4.tsx`'s `final-sign` route, which this review confirmed has no Form F check either.
 2. **Template-authority decision** (doc 05's recommendation, still open): pick one authoritative USG template source — `usgReportTemplates.ts` (current interim renderer, real and live) vs. the YAML content-pack catalog (doc 05/06's recommended long-term shared measurement+finding store, currently unwired) — and either wire the YAML loader or formally deprecate it; either way, delete the confirmed-zero-importer `radiologyMasterTemplates.ts` and the flag-gated, also-zero-live-callers `radiologyReportAssembler.ts` once their content (if any is still wanted) is migrated into the chosen authority.
 3. **Expand the content pack** (§17.2) toward doc 05's full 37-study-type coverage — Gynaecology (follicular monitoring, infertility workup) and the remaining Doppler vessels are the largest gaps.
 4. **Wire `anatomical_section`** for USG findings once (or if) a DB-backed `structured_report_templates` row exists for a given USG study type, enabling the Smart Findings section-flip mechanism for USG the same way it already works for MRI.

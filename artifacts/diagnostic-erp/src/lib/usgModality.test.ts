@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ULTRASOUND_MODALITY_ALIASES, normalizeModality, isUltrasoundModality } from "./usgModality";
+import { ULTRASOUND_MODALITY_ALIASES, normalizeModality, isUltrasoundModality, isObstetricUsgStudy } from "./usgModality";
 
 // R2.0 Canonical Ultrasound Integration — RadiologyWorklist.tsx's modality
 // filter previously compared entry.modality to the "US" filter chip with
@@ -84,5 +84,45 @@ describe("isUltrasoundModality", () => {
     expect(isUltrasoundModality("MRI")).toBe(false);
     expect(isUltrasoundModality("USER")).toBe(false);
     expect(isUltrasoundModality(null)).toBe(false);
+  });
+});
+
+describe("isObstetricUsgStudy — PCPNDT safety guard classification (PR B follow-up)", () => {
+  it("returns false for any non-ultrasound modality, regardless of description", () => {
+    expect(isObstetricUsgStudy("MR", "MRI Obstetric Pelvimetry")).toBe(false);
+    expect(isObstetricUsgStudy("CT", "CT Pregnancy")).toBe(false);
+    expect(isObstetricUsgStudy(null, "Obstetric Growth Scan")).toBe(false);
+    expect(isObstetricUsgStudy(undefined, "Fetal Anomaly Scan")).toBe(false);
+  });
+
+  it("returns false for non-obstetric ultrasound studies — must never block General USG finalize for these", () => {
+    for (const desc of [
+      "USG Whole Abdomen", "USG KUB", "USG Thyroid", "USG Breast",
+      "USG Scrotum", "USG Carotid Doppler", "TVS", "USG Pelvis", "USG Prostate",
+    ]) {
+      expect(isObstetricUsgStudy("USG", desc)).toBe(false);
+    }
+  });
+
+  it("returns true for every obstetric/fetal ultrasound study-description spelling seen in practice", () => {
+    for (const desc of [
+      "USG Obstetric Growth Scan", "USG Pregnancy", "Fetal Anomaly Scan",
+      "USG Early Gestation", "NT Scan", "TIFFA", "Growth Scan", "Anomaly Scan",
+      "Obstetric Doppler", "Fetal Well-being Scan",
+    ]) {
+      expect(isObstetricUsgStudy("USG", desc)).toBe(true);
+      expect(isObstetricUsgStudy("Doppler", desc)).toBe(true); // any US-family modality spelling
+    }
+  });
+
+  it("is case-insensitive", () => {
+    expect(isObstetricUsgStudy("usg", "obstetric growth scan")).toBe(true);
+    expect(isObstetricUsgStudy("USG", "OBSTETRIC GROWTH SCAN")).toBe(true);
+  });
+
+  it("handles a missing/empty study description without throwing, and treats it as non-obstetric", () => {
+    expect(isObstetricUsgStudy("USG", null)).toBe(false);
+    expect(isObstetricUsgStudy("USG", undefined)).toBe(false);
+    expect(isObstetricUsgStudy("USG", "")).toBe(false);
   });
 });

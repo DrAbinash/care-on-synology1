@@ -6,25 +6,21 @@
  * Advisory only, pure, registered on import. Gated on modality + study
  * description so it contributes nothing for MRI/CT or non-obstetric USG.
  *
- * The PCPNDT reminder below is deliberately non-blocking: per the prior
- * architecture audit (docs/usg-reporting-audit/09-implementation-roadmap.md,
- * Phase 4) the canonical RadiologyReportingWorkspace has no PCPNDT Form F
- * gate today (only the legacy, nav-disconnected UsgReporting.tsx enforces it
- * server-side), and reconciling that is flagged as the single highest-stakes
- * decision in this whole area — deliberately deferred, not silently ignored.
- * This module makes the gap VISIBLE inside the workspace radiologists
- * actually use, using the existing Copilot panel, without adding a second
- * finalize pipeline or blocking the shared finalize path.
+ * The PCPNDT reminder below is one of TWO layers, not the whole guard: the
+ * canonical RadiologyReportingWorkspace's finalizeReport() now also HARD-BLOCKS
+ * finalize for the same obstetric/fetal classification (see
+ * isObstetricUsgStudy() in ./usgModality.ts, consumed directly by the
+ * workspace — a Copilot reminder alone is advisory and was found insufficient
+ * on its own). This module keeps the gap's regulatory context visible in the
+ * panel; the workspace is what actually prevents an unsafe finalize. See
+ * docs/usg-reporting/platform-consolidation-pr-b.md §17-18.
  */
 import type { CopilotContext, CopilotItem } from "./copilotOrchestrator";
 import { registerCopilotModule } from "./copilotModules";
-import { isUltrasoundModality } from "./usgModality";
-
-const OBSTETRIC_STUDY = /obstet|pregnan|fetal|gestation|nuchal|nt\s*scan|anomaly\s*scan|growth\s*scan|tiffa/i;
+import { isObstetricUsgStudy } from "./usgModality";
 
 export function usgObstetricModuleItems(ctx: CopilotContext): CopilotItem[] {
-  if (!isUltrasoundModality(ctx.modality)) return [];
-  if (!OBSTETRIC_STUDY.test(ctx.studyDescription)) return [];
+  if (!isObstetricUsgStudy(ctx.modality, ctx.studyDescription)) return [];
 
   const items: CopilotItem[] = [];
   const combined = `${ctx.findings}\n${ctx.impression.join("\n")}`;
@@ -65,17 +61,17 @@ export function usgObstetricModuleItems(ctx: CopilotContext): CopilotItem[] {
     });
   }
 
-  // Non-blocking PCPNDT visibility — always fires for an obstetric USG study,
-  // regardless of report content, since the canonical workspace's finalize
-  // path does not check this today (see module header comment).
+  // Always fires for an obstetric USG study, regardless of report content —
+  // this is the SAME classification finalizeReport() uses to hard-block
+  // finalize in this workspace (see module header comment).
   items.push({
     id: "usg-ob:pcpndt",
     category: "recommendation",
     severity: "warning",
     title: "PCPNDT Form F compliance",
     detail:
-      "This is an obstetric ultrasound. Verify the patient's PCPNDT Form F record (ID card, husband/father name, address, consent/procedure date) is complete before finalizing — the workspace does not check this automatically today. Use \"Review & Map to Form F\" or /form-f.",
-    why: "PCPNDT Form F is a statutory pre-natal diagnostic technique compliance requirement for obstetric ultrasound in India; the legacy USG reporting page enforces it server-side, but the canonical workspace does not yet.",
+      "This is an obstetric ultrasound. Finalize is blocked in this workspace until it is completed through the PCPNDT Form F-compliant USG Reporting page. Use \"Review & Map to Form F\" below, then finalize via USG Reporting (legacy) or /form-f.",
+    why: "PCPNDT Form F is a statutory pre-natal diagnostic technique compliance requirement for obstetric ultrasound in India; only the legacy USG Reporting page enforces it server-side today.",
     confidence: "high",
   });
 
