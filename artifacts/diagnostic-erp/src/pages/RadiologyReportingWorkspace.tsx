@@ -81,6 +81,15 @@ import "@/lib/copilotUsgThyroidModule";
 import "@/lib/copilotUsgBreastModule";
 import "@/lib/copilotUsgScrotumModule";
 import "@/lib/copilotUsgDopplerModule";
+// PR C — CARE USG Gold Standard §7: seven more organ/study-specific USG
+// modules, same plug-in pattern, zero core changes.
+import "@/lib/copilotUsgKidneyModule";
+import "@/lib/copilotUsgLiverModule";
+import "@/lib/copilotUsgGallbladderModule";
+import "@/lib/copilotUsgPelvisModule";
+import "@/lib/copilotUsgTvsModule";
+import "@/lib/copilotUsgGrowthModule";
+import "@/lib/copilotUsgAnomalyModule";
 import "@/lib/copilotCriticalModule"; // registers the critical-results safety module (MRI PR 3)
 import { detectCriticalFindings } from "@/lib/criticalResults";
 import { computeFinalizeSafety, formatFinalizeSafety } from "@/lib/finalizeSafety";
