@@ -25,6 +25,7 @@ import {
 } from "@workspace/db/schema";
 import { sendReportEmail } from "../email";
 import { requireStaffAuth, type StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { isObstetricUsgStudy } from "../lib/usgModality";
 // ── Ticket D5 — structured signed-report path (flag-gated, legacy default) ───
 import {
   radiologyReportDraftsTable,
@@ -1811,6 +1812,31 @@ patientReportsRouter.post("/:id/amend", async (req, res) => {
   }
 });
 
+// PCPNDT server-side finalize guard — resolves the DB-authoritative
+// modality/studyDescription for a POST /api/patient-reports `studyId`,
+// never trusting client-supplied values (e.g. the `parameters` blob, which
+// is opaque, unvalidated JSON stored verbatim). The frontend sends
+// `worklistId ?? studyId` as this field (see radiologyReportLifecycle.ts),
+// so it may be either a radiology_worklist.id or a radiology_studies.id —
+// try both, matching how POST /api/internal/radiology/report-status already
+// resolves the same ambiguity for its own PCPNDT guard.
+async function resolveWorklistRowForPcpndtGuard(
+  studyIdNum: number,
+): Promise<{ modality: string; studyDescription: string | null } | null> {
+  const [byWorklistId] = await db
+    .select({ modality: radiologyWorklistTable.modality, studyDescription: radiologyWorklistTable.studyDescription })
+    .from(radiologyWorklistTable)
+    .where(eq(radiologyWorklistTable.id, studyIdNum))
+    .limit(1);
+  if (byWorklistId) return byWorklistId;
+  const [byStudyId] = await db
+    .select({ modality: radiologyWorklistTable.modality, studyDescription: radiologyWorklistTable.studyDescription })
+    .from(radiologyWorklistTable)
+    .where(eq(radiologyWorklistTable.studyId, studyIdNum))
+    .limit(1);
+  return byStudyId ?? null;
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Create
 // ────────────────────────────────────────────────────────────────────────────
@@ -1829,6 +1855,28 @@ patientReportsRouter.post("/", async (req, res) => {
     return;
   }
   const type = (String(b.type ?? "") || (test.department && /(USG|MRI|CT|X-?RAY|MAMMO|DEXA|RAD)/i.test(test.department) ? "radiology" : "pathology")).toLowerCase();
+
+  // PCPNDT server-side finalize guard. This is the actual content-persisting
+  // write (creates the signed-eligible patient_reports row) — blocking here,
+  // BEFORE any row is created or the D5 structured-finalize transaction
+  // runs, prevents an obstetric/fetal ultrasound report's content from ever
+  // being persisted or auto-signed without PCPNDT Form F compliance. Scoped
+  // strictly to type === "radiology" with a resolvable worklist row, so
+  // pathology/lab reports and every other radiology study (MRI, CT,
+  // non-obstetric USG) are completely unaffected — see
+  // docs/usg-reporting/platform-consolidation-pr-b.md §17-18.
+  if (type === "radiology") {
+    const studyIdForGuard = b.studyId ? Number(b.studyId) : null;
+    const worklistRowForGuard = studyIdForGuard ? await resolveWorklistRowForPcpndtGuard(studyIdForGuard) : null;
+    if (worklistRowForGuard && isObstetricUsgStudy(worklistRowForGuard.modality, worklistRowForGuard.studyDescription)) {
+      res.status(409).json({
+        error: "pcpndt_compliance_required",
+        message:
+          "This is an obstetric/fetal ultrasound study. It cannot be finalized through the canonical Reporting Workspace — PCPNDT Form F compliance is not checked here. Finalize this study through USG Reporting (the PCPNDT-compliant legacy workflow, /usg/reporting) instead.",
+      });
+      return;
+    }
+  }
 
   let presetUsed = typeof b.stylePresetUsed === "string" ? b.stylePresetUsed : null;
   if (!presetUsed && type === "radiology") {
