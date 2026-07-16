@@ -91,6 +91,18 @@ export interface CopilotContext {
   criticalWatchList?: string[];
   criticalMarked?: boolean;
   criticalCommunicated?: boolean;
+  /** CARE USG Companion (Phase 1) — the Companion panel threads its
+   *  machine-measurement outcome up here (imported / rejected / modified /
+   *  missing), so the existing Copilot can advise on it WITHOUT a second
+   *  Copilot. Populated only for ultrasound studies; the module is a no-op
+   *  when absent. */
+  usgCompanion?: {
+    studyType: string;
+    imported: { label: string; value: string }[];
+    rejected: { label: string; value: string }[];
+    modified: { label: string; value: string }[];
+    missing: string[];
+  };
 }
 
 const has = (haystack: string, needle: string) => haystack.includes(needle);

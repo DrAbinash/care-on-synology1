@@ -28,7 +28,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import {
   CheckCircle2, XCircle, RefreshCw, AlertCircle, Activity,
-  ArrowDownToLine, CheckCheck, Image as ImageIcon, Pin,
+  ArrowDownToLine, CheckCheck, Image as ImageIcon, Pin, Pencil, Check, X,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { launchViewer } from "@/lib/viewerService";
@@ -147,6 +147,9 @@ interface MeasurementEntry {
   source: string;
   provenance: ProvenanceItem | null;
   parent: EntryParent;
+  /** usg_measurements column name — set only for editable measurement fields
+   *  (enables inline Modify via PATCH /measurements/:id/field). */
+  field?: string;
   studyInstanceUID: string;
   engineVersion: string;
   createdAt: string;
@@ -236,6 +239,7 @@ function buildMeasurementSections(
     return {
       key: `m:${measurement.id}:${def.field}`,
       label: def.label,
+      field: def.field,
       value: raw,
       unit,
       confidence,
@@ -424,7 +428,7 @@ function capitalize(s: string): string {
 // ── Row ───────────────────────────────────────────────────────────────────────
 
 function MeasurementEntryRow({
-  entry, inserted, canPin, canInsert, onInsert, onApproveInsert, onTrace, onOpenImage, onPin, onKeyDown,
+  entry, inserted, canPin, canInsert, canModify, onInsert, onApproveInsert, onTrace, onOpenImage, onPin, onModify, onKeyDown,
 }: {
   entry: MeasurementEntry;
   inserted: boolean;
@@ -433,22 +437,36 @@ function MeasurementEntryRow({
    *  and Approve+Insert would otherwise be active buttons that silently do
    *  nothing there. */
   canInsert: boolean;
+  /** True when the field can be corrected inline (measurement column + editable). */
+  canModify: boolean;
   onInsert: () => void;
   onApproveInsert: () => void;
   onTrace: () => void;
   onOpenImage: () => void;
   onPin: () => void;
+  onModify: (value: string) => void;
   onKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => void;
 }) {
   const pending = entry.parent.status === "pending_review";
   const rejected = entry.parent.status === "rejected";
+  // A field re-stamped MANUAL by the correction endpoint is shown as "Edited".
+  const edited = (entry.source || "").toUpperCase() === "MANUAL"
+    || (entry.provenance?.sourceType || "").toUpperCase() === "MANUAL";
   const steps = [true, entry.parent.status !== "pending_review", entry.parent.status === "approved", inserted];
+
+  const [editing, setEditing] = useState(false);
+  const [draftVal, setDraftVal] = useState(entry.value);
+  function saveEdit() {
+    const v = draftVal.trim();
+    if (v && v !== entry.value) onModify(v);
+    setEditing(false);
+  }
 
   return (
     <div
       tabIndex={0}
-      onDoubleClick={canInsert && !rejected ? onInsert : undefined}
-      onKeyDown={onKeyDown}
+      onDoubleClick={canInsert && !rejected && !editing ? onInsert : undefined}
+      onKeyDown={editing ? undefined : onKeyDown}
       className="rounded border px-1.5 py-1 text-[11px] hover:bg-muted/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 cursor-pointer"
       title={canInsert ? "Double-click to insert · Ctrl+Enter to approve" : "Ctrl+Enter to approve"}
       data-testid={`usg-entry-${entry.key}`}
@@ -457,12 +475,35 @@ function MeasurementEntryRow({
         <span className="font-medium truncate" title={entry.label}>{entry.label}</span>
         <TimelineDots steps={steps} />
       </div>
-      <div className="flex items-center gap-1 flex-wrap mt-0.5">
-        <span className="font-mono font-semibold">{entry.value}</span>
-        {entry.unit && <span className="text-muted-foreground">{entry.unit}</span>}
-        <ConfidenceBadgeCell confidence={entry.confidence} />
-        <SourceBadgeCell sourceType={entry.source} />
-      </div>
+      {editing ? (
+        <div className="flex items-center gap-1 mt-1" onClick={(e) => e.stopPropagation()}>
+          <input
+            autoFocus
+            value={draftVal}
+            onChange={(e) => setDraftVal(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); saveEdit(); } if (e.key === "Escape") setEditing(false); }}
+            className="flex-1 min-w-0 border rounded px-1 py-0.5 text-[11px] font-mono"
+            data-testid={`usg-edit-${entry.key}`}
+          />
+          <Button variant="ghost" size="sm" className="h-5 w-5 p-0 text-green-600" title="Save" onClick={(e) => { e.stopPropagation(); saveEdit(); }}>
+            <Check className="h-3 w-3" />
+          </Button>
+          <Button variant="ghost" size="sm" className="h-5 w-5 p-0 text-muted-foreground" title="Cancel" onClick={(e) => { e.stopPropagation(); setEditing(false); setDraftVal(entry.value); }}>
+            <X className="h-3 w-3" />
+          </Button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-1 flex-wrap mt-0.5">
+          <span className="font-mono font-semibold">{entry.value}</span>
+          {entry.unit && <span className="text-muted-foreground">{entry.unit}</span>}
+          <ConfidenceBadgeCell confidence={entry.confidence} />
+          <SourceBadgeCell sourceType={entry.source} />
+          {edited && (
+            <Badge variant="outline" className="h-4 px-1 text-[8px] border-violet-300 text-violet-700 bg-violet-50">Edited</Badge>
+          )}
+        </div>
+      )}
+      {!editing && (
       <div className="flex items-center gap-1 mt-1 flex-wrap">
         {canInsert && !rejected && (
           <>
@@ -485,6 +526,15 @@ function MeasurementEntryRow({
         {canInsert && rejected && (
           <span className="text-[9px] text-red-700 italic px-0.5">Rejected — not inserted</span>
         )}
+        {canModify && !rejected && (
+          <Button
+            variant="ghost" size="sm" className="h-5 px-1.5 text-[9px] text-muted-foreground border border-muted hover:border-foreground"
+            title="Modify value"
+            onClick={(e) => { e.stopPropagation(); setDraftVal(entry.value); setEditing(true); }}
+          >
+            <Pencil className="h-2.5 w-2.5 mr-0.5" /> Modify
+          </Button>
+        )}
         <Button
           variant="ghost" size="sm" className="h-5 px-1.5 text-[9px] font-mono text-muted-foreground border border-muted hover:border-foreground"
           onClick={(e) => { e.stopPropagation(); onTrace(); }}
@@ -506,6 +556,7 @@ function MeasurementEntryRow({
           </Button>
         )}
       </div>
+      )}
     </div>
   );
 }
@@ -588,6 +639,16 @@ export default function UsgMeasurementReviewPanel({
     mutationFn: (id: number) => api.patch(`/api/usg-extraction/measurements/${id}/reject`, { reviewNotes }),
     onSuccess: () => { toast({ title: "Measurements rejected" }); refetch(); },
     onError: (e: Error) => toast({ title: "Reject failed", description: e.message, variant: "destructive" }),
+  });
+
+  // Inline correction of a single machine value — reuses the existing
+  // PATCH /measurements/:id/field endpoint (which re-stamps that field's
+  // provenance as MANUAL). No new storage.
+  const modifyMutation = useMutation({
+    mutationFn: (v: { id: number; field: string; value: string }) =>
+      api.patch(`/api/usg-extraction/measurements/${v.id}/field`, { [v.field]: v.value }),
+    onSuccess: () => { toast({ title: "Measurement updated" }); refetch(); },
+    onError: (e: Error) => toast({ title: "Update failed", description: e.message, variant: "destructive" }),
   });
 
   const staffUser = readStaffSession()?.user;
@@ -734,11 +795,13 @@ export default function UsgMeasurementReviewPanel({
         inserted={insertedKeys.has(entry.key)}
         canPin={canPin}
         canInsert={canInsert}
+        canModify={entry.parent.kind === "measurement" && !!entry.field}
         onInsert={() => handleInsert(entry)}
         onApproveInsert={() => handleApproveAndInsert(entry)}
         onTrace={() => setTraceEntry(entry)}
         onOpenImage={() => void openSourceImage(entry)}
         onPin={() => pinKeyImageMutation.mutate(entry)}
+        onModify={(value) => { if (entry.field) modifyMutation.mutate({ id: entry.parent.id, field: entry.field, value }); }}
         onKeyDown={(e) => handleRowKeyDown(e, entry)}
       />
     );
