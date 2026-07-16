@@ -123,10 +123,26 @@ import {
 import { SIDEBAR_THEMES, DEFAULT_THEME, resolveTheme } from "@/lib/sidebarThemes";
 
 type NavLeaf = { path: string; icon: typeof Zap; label: string; ownerOnly?: boolean; featureFlag?: string };
-type NavGroup = { id: string; icon: typeof Zap; label: string; children: NavLeaf[] };
+// A subgroup nests one level inside a top-level NavGroup (e.g. "USG Reporting ▼"
+// inside "Radiology & Imaging") — modality-specific submenus without a second
+// top-level entry per modality. Subgroups don't nest further.
+type NavSubGroup = { id: string; icon: typeof Zap; label: string; children: NavLeaf[] };
+type NavChild = NavLeaf | NavSubGroup;
+type NavGroup = { id: string; icon: typeof Zap; label: string; children: NavChild[] };
 type NavEntry = NavLeaf | NavGroup;
 
 const isGroup = (n: NavEntry): n is NavGroup => "children" in n;
+const isSubGroup = (n: NavChild): n is NavSubGroup => "children" in n;
+const childLeaves = (c: NavChild): NavLeaf[] => (isSubGroup(c) ? c.children : [c]);
+// A few USG Reporting leaves point at the existing worklist/workspace pages
+// with a `?modality=USG` query string (reuse, not a new route) — strip it
+// before comparing against `location` (which carries no query string) so
+// active-state highlighting still matches.
+const pathOnly = (path: string) => path.split("?")[0];
+const isLeafActive = (path: string, location: string) => {
+  const p = pathOnly(path);
+  return p === "/" ? location === "/" : location === p || location.startsWith(p + "/");
+};
 
 // Sidebar layout — flat items + collapsible groups. Routes/permissions are
 // unchanged; only the visual grouping is consolidated to reduce clutter.
@@ -162,8 +178,30 @@ const navItems: NavEntry[] = [
       { path: "/radiology/critical-findings",   icon: AlertCircle,    label: "Critical Findings" },
       { path: "/teleradiology",               icon: Globe,          label: "Teleradiology" },
       { path: "/echo",                        icon: Heart,          label: "Echo Cardiology" },
-      { path: "/fetal-usg",                   icon: Baby,           label: "Fetal USG" },
-      { path: "/fetal-echo",                  icon: Baby,           label: "Fetal Echo" },
+      // PR B — USG Platform Consolidation: a nested submenu (not a second
+      // sidebar entry) around the SAME canonical RadiologyReportingWorkspace
+      // and the SAME Radiology Worklist, configured/pre-filtered for
+      // ultrasound. Fetal USG and Fetal Echo move in here from the flat list
+      // below (routes unchanged — /fetal-usg, /fetal-echo — so bookmarks and
+      // deep links still resolve identically). Doppler Reporting is newly
+      // exposed here (see docs/usg-reporting/platform-consolidation-pr-b.md
+      // §16 — UsgDopplerReporting.tsx is mature, real CRUD, previously had
+      // zero nav entry point). "General USG Reporting" and "USG Worklist"
+      // reuse the existing workspace/worklist pages with a `?modality=USG`
+      // query param — no new workspace or worklist component was created.
+      {
+        id: "usg-reporting-grp",
+        icon: Baby,
+        label: "USG Reporting",
+        children: [
+          { path: "/radiology/worklist?modality=USG",            icon: ScanSearch, label: "USG Worklist" },
+          { path: "/radiology/reporting-workspace?modality=USG", icon: FilePen,    label: "General USG Reporting" },
+          { path: "/fetal-usg",                                  icon: Baby,       label: "Fetal USG" },
+          { path: "/fetal-echo",                                 icon: Baby,       label: "Fetal Echo" },
+          { path: "/usg/doppler",                                icon: Activity,   label: "Doppler Reporting" },
+          { path: "/settings/radiology-quick-select",            icon: Settings2,  label: "USG Settings" },
+        ],
+      },
       { path: "/radiology/voice-dictation",   icon: Mic,            label: "Voice Dictation" },
       { path: "/radiology/advanced-tools",    icon: Cpu,            label: "Advanced Tools",        ownerOnly: true },
       // Hidden items kept for gradual rollout / bookmark preservation
@@ -275,7 +313,7 @@ const navItems: NavEntry[] = [
 
 // Flat list of every leaf path (used for the mobile header label lookup).
 const flatNavLeaves = (items: NavEntry[]): NavLeaf[] =>
-  items.flatMap((n) => (isGroup(n) ? n.children : [n]));
+  items.flatMap((n) => (isGroup(n) ? n.children.flatMap(childLeaves) : [n]));
 
 function FullscreenToggle() {
   const [isFs, setIsFs] = useState(() => typeof document !== "undefined" && !!document.fullscreenElement);
@@ -395,31 +433,42 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   // Filter nav by permissions when a staff session exists. For groups, drop
   // children the user can't access; hide the group entirely if nothing left.
   const isOwner = FULL_ACCESS_ROLES.has(normalizeRole(session?.user.role ?? ""));
+  // A leaf's permission is checked against its bare path — a `?modality=USG`
+  // suffix (USG Reporting's reuse-not-duplicate query param) must never be
+  // passed to canAccess(), or it silently bypasses the permission check
+  // (the querystring variant isn't a key in PERMISSIONED_PATHS, so canAccess
+  // would treat it as "not part of the permission system → always allowed").
+  const leafAllowed = (leaf: NavLeaf) => {
+    if (leaf.ownerOnly && !isOwner) return false;
+    if (leaf.featureFlag && !isFeatureEnabled(leaf.featureFlag)) return false;
+    return canAccess(session, pathOnly(leaf.path));
+  };
   const visibleNav: NavEntry[] = navItems.flatMap<NavEntry>((n) => {
     if (isGroup(n)) {
-      const kids = n.children.filter((c) => {
-        if (c.ownerOnly && !isOwner) return false;
-        if (c.featureFlag && !isFeatureEnabled(c.featureFlag)) return false;
-        return canAccess(session, c.path);
+      const kids = n.children.flatMap<NavChild>((c) => {
+        if (isSubGroup(c)) {
+          const subKids = c.children.filter(leafAllowed);
+          return subKids.length ? [{ ...c, children: subKids }] : [];
+        }
+        return leafAllowed(c) ? [c] : [];
       });
       return kids.length ? [{ ...n, children: kids }] : [];
     }
     // Owner-only items are only visible to admin / super_admin.
     if (n.ownerOnly && !FULL_ACCESS_ROLES.has(normalizeRole(session?.user.role ?? ""))) return [];
     if (n.featureFlag && !isFeatureEnabled(n.featureFlag)) return [];
-    return canAccess(session, n.path) ? [n] : [];
+    return canAccess(session, pathOnly(n.path)) ? [n] : [];
   });
 
   // Auto-expand any group containing the active route; let user toggle others.
   // The "Imaging" group is always default-open so DICOM Nodes / PACS Viewer
   // remain visible at a glance — they're easy to overlook when nested.
+  const groupHasActiveDescendant = (n: NavGroup) =>
+    n.children.some((c) => childLeaves(c).some((leaf) => isLeafActive(leaf.path, location)));
   const initialOpen: Record<string, boolean> = {};
   for (const n of visibleNav) {
     if (isGroup(n)) {
-      const active = n.children.some((c) =>
-        c.path === "/" ? location === "/" : location === c.path || location.startsWith(c.path + "/"),
-      );
-      initialOpen[n.id] = active;
+      initialOpen[n.id] = groupHasActiveDescendant(n);
     }
   }
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(initialOpen);
@@ -429,14 +478,65 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       const next = { ...prev };
       for (const n of navItems) {
         if (!isGroup(n)) continue;
-        const active = n.children.some((c) =>
-          c.path === "/" ? location === "/" : location === c.path || location.startsWith(c.path + "/"),
-        );
-        if (active) next[n.id] = true;
+        if (groupHasActiveDescendant(n)) next[n.id] = true;
       }
       return next;
     });
   }, [location]);
+
+  // Renders one nav leaf inside an expanded group (or nested subgroup) —
+  // shared between the desktop and mobile expanded-group lists so the
+  // "USG Reporting ▼" nesting only needs one JSX shape, not four copies.
+  const renderNavLeaf = (leaf: NavLeaf, onNavigate: () => void) => {
+    const isActive = isLeafActive(leaf.path, location);
+    const Icon = leaf.icon;
+    return (
+      <Link
+        key={leaf.path}
+        href={leaf.path}
+        onClick={onNavigate}
+        className={cn(
+          "flex items-center gap-2.5 px-2.5 py-2 rounded-md text-[13px] font-medium transition-all cursor-pointer",
+          isActive ? "text-white font-semibold" : "text-sidebar-foreground/55 hover:text-sidebar-foreground hover:bg-white/10",
+        )}
+        style={isActive ? { background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.2)" } : { border: "1px solid transparent" }}
+      >
+        <Icon size={13} />
+        {leaf.label}
+      </Link>
+    );
+  };
+
+  // Renders one child of an expanded top-level group: a plain leaf, or (for
+  // "USG Reporting ▼") a nested collapsible subgroup one level deep.
+  const renderNavChild = (c: NavChild, onNavigate: () => void) => {
+    if (!isSubGroup(c)) return renderNavLeaf(c, onNavigate);
+    const subActive = c.children.some((leaf) => isLeafActive(leaf.path, location));
+    const subOpen = openGroups[c.id] ?? subActive;
+    const SubIcon = c.icon;
+    return (
+      <div key={c.id}>
+        <button
+          type="button"
+          onClick={() => setOpenGroups((prev) => ({ ...prev, [c.id]: !subOpen }))}
+          className={cn(
+            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-[13px] font-medium transition-all cursor-pointer",
+            subActive ? "text-white" : "text-sidebar-foreground/55 hover:text-sidebar-foreground hover:bg-white/10",
+          )}
+          aria-expanded={subOpen}
+        >
+          <SubIcon size={13} />
+          <span className="flex-1 text-left">{c.label}</span>
+          <ChevronRight size={11} className={cn("transition-transform duration-150", subOpen && "rotate-90")} />
+        </button>
+        {subOpen && (
+          <div className="mt-0.5 ml-3 pl-2 border-l space-y-0.5" style={{ borderColor: "rgba(255,255,255,0.1)" }}>
+            {c.children.map((leaf) => renderNavLeaf(leaf, onNavigate))}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   // ── Super-admin USB pen-drive gate ──────────────────────────────────────
   // ZERO visible affordance. The Super Admin link only appears when:
@@ -796,23 +896,23 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             }
 
             const { id, icon: GroupIcon, label, children } = entry;
-            const groupActive = children.some((c) =>
-              c.path === "/" ? location === "/" : location === c.path || location.startsWith(c.path + "/"),
-            );
+            const groupActive = groupHasActiveDescendant(entry);
             const open = openGroups[id] ?? groupActive;
+            const onNavigate = () => { setSidebarOpen(false); if (autoMinimise) setSidebarCollapsed(true); };
 
             if (sidebarCollapsed) {
-              // Collapsed: show each child as an icon-only link (no group header)
+              // Collapsed: show every leaf (including nested-subgroup leaves,
+              // flattened) as an icon-only link — no group/subgroup headers.
               return (
                 <div key={id} className="space-y-0.5">
-                  {children.map(({ path, icon: ChildIcon, label: childLabel }) => {
-                    const isActive = path === "/" ? location === "/" : location === path || location.startsWith(path + "/");
+                  {children.flatMap(childLeaves).map(({ path, icon: ChildIcon, label: childLabel }) => {
+                    const isActive = isLeafActive(path, location);
                     return (
                       <Link
                         key={path}
                         href={path}
                         title={childLabel}
-                        onClick={() => { setSidebarOpen(false); if (autoMinimise) setSidebarCollapsed(true); }}
+                        onClick={onNavigate}
                         className={cn(
                           "flex items-center justify-center px-0 py-2 rounded-md transition-all cursor-pointer",
                           isActive ? "text-white font-semibold" : "text-sidebar-foreground/55 hover:text-sidebar-foreground hover:bg-white/10",
@@ -832,8 +932,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <button
                   type="button"
                   onClick={() => {
-                    // Navigate to the first child by default (Bills for billing group)
-                    const defaultPath = children[0]?.path;
+                    // Navigate to the first child by default (Bills for billing group) —
+                    // resolved through childLeaves so a subgroup as children[0] still
+                    // lands on its first real leaf, not a dead click.
+                    const defaultPath = children[0] ? childLeaves(children[0])[0]?.path : undefined;
                     if (defaultPath) {
                       navigate(defaultPath);
                     } else {
@@ -867,26 +969,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 </button>
                 {open && (
                   <div className="mt-0.5 ml-4 pl-2 border-l space-y-0.5" style={{ borderColor: "rgba(255,255,255,0.12)" }}>
-                    {children.map(({ path, icon: ChildIcon, label: childLabel }) => {
-                      const isActive = path === "/" ? location === "/" : location === path || location.startsWith(path + "/");
-                      return (
-                        <Link
-                          key={path}
-                          href={path}
-                          onClick={() => { setSidebarOpen(false); if (autoMinimise) setSidebarCollapsed(true); }}
-                          className={cn(
-                            "flex items-center gap-2.5 px-2.5 py-2 rounded-md text-[13px] font-medium transition-all cursor-pointer",
-                            isActive
-                              ? "text-white font-semibold"
-                              : "text-sidebar-foreground/55 hover:text-sidebar-foreground hover:bg-white/10",
-                          )}
-                          style={isActive ? { background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.2)" } : { border: "1px solid transparent" }}
-                        >
-                          <ChildIcon size={13} />
-                          {childLabel}
-                        </Link>
-                      );
-                    })}
+                    {children.map((c) => renderNavChild(c, onNavigate))}
                   </div>
                 )}
               </div>
@@ -1105,9 +1188,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               }
 
               const { id, icon: GroupIcon, label, children } = entry;
-              const groupActive = children.some((c) =>
-                c.path === "/" ? location === "/" : location === c.path || location.startsWith(c.path + "/"),
-              );
+              const groupActive = groupHasActiveDescendant(entry);
               const open = openGroups[id] ?? groupActive;
 
               return (
@@ -1128,24 +1209,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   </button>
                   {open && (
                     <div className="mt-0.5 ml-4 pl-2 border-l space-y-0.5" style={{ borderColor: "rgba(255,255,255,0.12)" }}>
-                      {children.map(({ path, icon: ChildIcon, label: childLabel }) => {
-                        const isActive = path === "/" ? location === "/" : location === path || location.startsWith(path + "/");
-                        return (
-                          <Link
-                            key={path}
-                            href={path}
-                            onClick={() => setSidebarOpen(false)}
-                            className={cn(
-                              "flex items-center gap-2.5 px-2.5 py-2 rounded-md text-[13px] font-medium transition-all cursor-pointer",
-                              isActive ? "text-white font-semibold" : "text-sidebar-foreground/55 hover:text-sidebar-foreground hover:bg-white/10",
-                            )}
-                            style={isActive ? { background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.2)" } : { border: "1px solid transparent" }}
-                          >
-                            <ChildIcon size={13} />
-                            {childLabel}
-                          </Link>
-                        );
-                      })}
+                      {children.map((c) => renderNavChild(c, () => setSidebarOpen(false)))}
                     </div>
                   )}
                 </div>
@@ -1178,12 +1242,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
             {/* Current module label */}
             <span className="flex-1 font-semibold text-sm truncate">
-              {flatNavLeaves(visibleNav).find(
-                (n) =>
-                  n.path === "/"
-                    ? location === "/"
-                    : location === n.path || location.startsWith(n.path + "/"),
-              )?.label ?? "Care Diagnostics"}
+              {flatNavLeaves(visibleNav).find((n) => isLeafActive(n.path, location))?.label ?? "Care Diagnostics"}
             </span>
 
             {/* Right controls */}

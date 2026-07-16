@@ -72,6 +72,15 @@ import { runLocalModules, runAiModules } from "@/lib/copilotModules";
 import "@/lib/copilotAiModule"; // registers the on-demand AI reasoning module (Part 20)
 import "@/lib/copilotComparisonModule"; // registers the previous-study comparison module (MRI PR 1)
 import "@/lib/copilotMeasurementModule"; // registers the viewer-measurement completeness module (MRI PR 2)
+// PR B — USG Platform Consolidation §12: USG Copilot modules, registered the
+// same way as the modules above — plain plug-ins via registerCopilotModule(),
+// zero changes to copilotModules.ts/copilotOrchestrator.ts/CareCopilotPanel.tsx.
+import "@/lib/copilotUsgAbdomenModule";
+import "@/lib/copilotUsgObstetricModule";
+import "@/lib/copilotUsgThyroidModule";
+import "@/lib/copilotUsgBreastModule";
+import "@/lib/copilotUsgScrotumModule";
+import "@/lib/copilotUsgDopplerModule";
 import ComparisonPanel, { type SelectedPrior } from "@/components/radiology/ComparisonPanel";
 import { useCopilotPrefs } from "@/hooks/useCopilotPrefs";
 import { useCopilotLearning } from "@/hooks/useCopilotLearning";
@@ -481,7 +490,16 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // ── Template selection ────────────────────────────────────────────────────
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
   const [templateSearch, setTemplateSearch] = useState("");
-  const [modalityFilter, setModalityFilter] = useState<string>("");
+  // PR B — USG Platform Consolidation: "General USG Reporting" in the sidebar
+  // links here with `?modality=USG` so the SAME canonical workspace opens
+  // pre-configured (Templates tab defaults to the USG catalog) instead of a
+  // separate USG workspace. Raw value, not normalizeModality() — this filter
+  // does an exact match against each template row's `modality` column
+  // ("USG"/"MRI"/"CT"/"X-RAY", see modalityMap below), not the worklist's
+  // "US"-bucket normalization.
+  const [modalityFilter, setModalityFilter] = useState<string>(
+    () => new URLSearchParams(window.location.search).get("modality") ?? "",
+  );
 
   // ── Report content ────────────────────────────────────────────────────────
   const [clinicalHistory, setClinicalHistory] = useState("");
