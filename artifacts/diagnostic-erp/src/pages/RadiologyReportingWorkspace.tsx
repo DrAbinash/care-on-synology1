@@ -71,6 +71,7 @@ import { suggestCompletion } from "@/lib/copilotCompletion";
 import { runLocalModules, runAiModules } from "@/lib/copilotModules";
 import "@/lib/copilotAiModule"; // registers the on-demand AI reasoning module (Part 20)
 import "@/lib/copilotComparisonModule"; // registers the previous-study comparison module (MRI PR 1)
+import "@/lib/copilotMeasurementModule"; // registers the viewer-measurement completeness module (MRI PR 2)
 import ComparisonPanel, { type SelectedPrior } from "@/components/radiology/ComparisonPanel";
 import { useCopilotPrefs } from "@/hooks/useCopilotPrefs";
 import { useCopilotLearning } from "@/hooks/useCopilotLearning";
@@ -1545,6 +1546,17 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // comparison module can advise and the reference can persist with the draft.
   const [selectedPrior, setSelectedPrior] = useState<SelectedPrior | null>(null);
 
+  // Accepted viewer/DICOM-SR measurements (MRI PR 2) — read from the SAME hook +
+  // cache the existing ViewerMeasurementsPanel uses, mapped into the Copilot
+  // context so the measurement-completeness module can advise. No extra fetch.
+  const { data: viewerMeasurementRows = [] } = useViewerMeasurements(entry?.studyInstanceUID);
+  const copilotViewerMeasurements = useMemo(
+    () => viewerMeasurementRows
+      .map((m) => ({ label: (m.measurementType || "").trim(), value: Number(m.value), unit: (m.unit || "").trim(), imported: m.status === "imported" }))
+      .filter((m) => Number.isFinite(m.value)),
+    [viewerMeasurementRows],
+  );
+
   const copilotContext = useMemo<CopilotContext>(() => ({
     modality: entry?.modality ?? "",
     studyDescription: entry?.studyDescription ?? "",
@@ -1560,8 +1572,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     prior: selectedPrior
       ? { available: true, dateIso: selectedPrior.dateIso, studyName: selectedPrior.studyName, significantChanges: selectedPrior.significantChanges }
       : undefined,
+    viewerMeasurements: copilotViewerMeasurements,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [entry?.modality, entry?.studyDescription, clinicalHistory, useStructured, findingsMap, rawFindings, impression, recommendation, technique, selectedQuickIds, findingById, checklistPercent, selectedPrior]);
+  }), [entry?.modality, entry?.studyDescription, clinicalHistory, useStructured, findingsMap, rawFindings, impression, recommendation, technique, selectedQuickIds, findingById, checklistPercent, selectedPrior, copilotViewerMeasurements]);
 
   /** Insert a comparison statement into Findings (free-text) or the structured
    *  catch-all section — editable, additive, never overwriting (§6 safety). */
