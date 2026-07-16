@@ -64,6 +64,11 @@ export default function PaymentQrDisplay() {
 
   const [state, setState] = useState<PaymentQrState>(INACTIVE_STATE);
   const [qrImageUrl, setQrImageUrl] = useState("");
+  // True when the feed rejects us for auth reasons (e.g. this device opened the
+  // URL without a valid ?displayToken and has no staff session). Without this,
+  // a mis-configured screen looks identical to the normal idle state and never
+  // shows a QR, with no hint as to why.
+  const [authError, setAuthError] = useState(false);
   const isFullscreen = useIsFullscreen();
 
   // Subscribe to this counter's live feed via SSE — falls back to polling if
@@ -82,9 +87,13 @@ export default function PaymentQrDisplay() {
       if (cancelled) return;
       try {
         const data = await api.get<PaymentQrState>(snapshotUrl);
-        if (!cancelled) setState(data);
-      } catch {
-        // transient — try again shortly
+        if (!cancelled) { setState(data); setAuthError(false); }
+      } catch (err) {
+        // Surface auth failures (bad/missing displayToken on an unattended
+        // device) so the screen can show a fix instead of a blank idle state.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!cancelled && /401|unauthor|forbidden|token/i.test(msg)) setAuthError(true);
+        // otherwise transient — try again shortly
       }
       if (!cancelled) pollTimer = window.setTimeout(poll, 4000);
     };
@@ -141,7 +150,19 @@ export default function PaymentQrDisplay() {
     return (
       <div style={styles.root}>
         <div style={styles.card}>
-          <p style={{ fontSize: 22, color: "#94a3b8" }}>Waiting for a payment to be started at the counter…</p>
+          {authError ? (
+            <>
+              <p style={{ fontSize: 22, fontWeight: 800, color: "#0f172a", margin: 0 }}>Display not authorized</p>
+              <p style={{ fontSize: 15, color: "#64748b", textAlign: "center", margin: "8px 0 0", maxWidth: 420 }}>
+                This screen needs its setup link. In Bill Desk, open the Online Payment
+                dialog and copy the customer-display URL (it includes the display token),
+                then load that link on this device.
+              </p>
+              <p style={{ fontSize: 12, color: "#94a3b8", margin: "10px 0 0" }}>Counter: {counterKey}</p>
+            </>
+          ) : (
+            <p style={{ fontSize: 22, color: "#94a3b8" }}>Waiting for a payment to be started at the counter…</p>
+          )}
         </div>
       </div>
     );
