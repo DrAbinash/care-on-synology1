@@ -20,6 +20,9 @@
     },
     {
       "path": "./lib/ai-providers"
+    },
+    {
+      "path": "./lib/report-quality"
     }
   ]
 }
