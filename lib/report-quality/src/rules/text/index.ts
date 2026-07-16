@@ -14,6 +14,7 @@ import { registerRule } from "../../registry";
 import { evaluateTextTier } from "../../text/evaluate";
 import { RULE_CATALOG } from "../../ruleCatalog";
 import type { QualityFinding, QualityRule } from "../../contract";
+import type { RuleProvider } from "../../engine";
 
 const EXECUTOR_ID = "text.legacy-consistency";
 
@@ -27,15 +28,28 @@ const textLegacyRule: QualityRule = {
       const entry = RULE_CATALOG[f.ruleId];
       return {
         ruleId: f.ruleId,
+        canonicalId: entry.canonicalId,
         category: entry.category,
         severity: entry.defaultSeverity,
         tier: entry.tier,
+        // Carry the deduction weight so the parity scorer sums from findings
+        // WITHOUT re-evaluating (Phase 2.5 single-evaluation fix).
+        weight: f.deduct,
         message: f.message,
       };
     });
   },
 };
 
+// Backward compatibility: self-register on the default global engine so
+// `import "@workspace/report-quality"` + runQualityEngine() work unchanged.
 registerRule(textLegacyRule);
 
-export { EXECUTOR_ID as TEXT_LEGACY_EXECUTOR_ID };
+// Also expose as a composable provider so scoped engines can include the text
+// tier explicitly: createQualityEngine({ providers: [coreTextProvider] }).
+export const coreTextProvider: RuleProvider = {
+  name: "care-core:text",
+  rules: [textLegacyRule],
+};
+
+export { textLegacyRule, EXECUTOR_ID as TEXT_LEGACY_EXECUTOR_ID };

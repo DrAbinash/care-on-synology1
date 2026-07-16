@@ -64,6 +64,13 @@
       "when": 1782705414047,
       "tag": "0008_report_quality_engine",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1782705414048,
+      "tag": "0009_report_quality_findings",
+      "breakpoints": true
     }
   ]
 }

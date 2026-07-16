@@ -50,6 +50,7 @@ evaluate rather than overclaiming determinism it cannot back.
 | 0 | Contract + shared `lib/report-quality/` package (no behavior change) | ✅ Landed |
 | 1 | Route the live badge + Copilot through the one runner — **shadow-first** | ✅ Landed (shadow) |
 | 2 | Canonical persistence + API contract, stable Rule IDs, append-only (migration `0008`) — **shadow** | ✅ Landed (shadow) |
+| 2.5 | Foundation refinement (post architecture review) — normalized findings, provider engine, executor framework, rule-id metadata, single-eval fix (migration `0009`) | ✅ Landed (shadow) |
 | 3 | Cheap deterministic unlocks (measurement `isAbnormal`, reference ranges, required sections, modality normalizer) | ⏳ Planned |
 | 4 | Generalize structured USG/fetal/Doppler/spine rules | ⏳ Planned |
 | 5 | Unified finalize gate + override | ⏳ Planned |
@@ -59,6 +60,38 @@ evaluate rather than overclaiming determinism it cannot back.
 
 Each phase is a separate reviewable commit. This README's phase table is updated as
 phases land.
+
+## Phase 2.5 — Foundation Refinement (migration notes)
+
+Applied the accepted architecture review's "free before production data exists"
+changes. All backward-compatible, all in shadow, no clinical rules, no behaviour
+change:
+
+1. **Normalized findings** — new append-only `report_quality_findings` table
+   (migration `0009`) written alongside the immutable `findings_json` blob, so
+   dashboards can aggregate by `rule_id` / `canonical_id` / `category` /
+   `severity` at scale. The blob stays the full-fidelity record.
+2. **Provider-based engine** — `createQualityEngine({ providers })` gives
+   isolated, composable engine instances; the global `registerRule` /
+   `runQualityEngine` are now a thin façade over a single `defaultEngine`, so
+   every existing import keeps working unchanged.
+3. **Generic executor framework** — `RuleDefinition` + `Executor` +
+   `compileRule` let future rules be data-driven. Framework **only**: no
+   executors or definitions ship, and no existing rule is migrated.
+4. **Rule-id metadata** — each catalog entry gains `canonicalId` (hierarchical),
+   `legacyAlias`, `owner`, `pack`, `version`, `dependsOn`. Existing `Q001–Q115`
+   ids are unchanged and grandfathered as `legacyAlias`.
+5. **Single-evaluation fix** — findings now carry their deduction `weight`; the
+   parity scorer sums weights instead of re-running `evaluateTextTier`, so the
+   text tier evaluates exactly once per run. Score is byte-identical (verified
+   offline vs the original `reportValidator` across MRI/USG/CT/X-Ray).
+6. **Categories + dependency metadata** — carried on catalog entries for future
+   dashboards and ordered execution; the runner does **not** consume `dependsOn`
+   yet (no runtime change).
+
+**Migration:** `0009_report_quality_findings.sql` is idempotent and auto-applied
+by `care-db-patch-v2`. No backfill — the table starts empty and fills as new
+evaluations are written.
 
 ## Migration strategy: shadow-first strangler façade
 

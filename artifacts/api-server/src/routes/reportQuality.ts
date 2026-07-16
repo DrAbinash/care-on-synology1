@@ -20,6 +20,7 @@ import { Router } from "express";
 import {
   db,
   reportQualityEvaluationsTable,
+  reportQualityFindingsTable,
   reportQualityOverridesTable,
   type ReportQualityEvaluation,
 } from "@workspace/db";
@@ -121,6 +122,36 @@ router.post("/evaluate", async (req, res) => {
       evaluatedAt: new Date(dto.evaluatedAt),
     })
     .returning();
+
+  // Phase 2.5: also write normalized, queryable finding rows alongside the
+  // immutable blob so dashboards can aggregate by rule/category/severity at
+  // scale. Best-effort — a failure here must not fail the evaluation, which is
+  // already durably persisted above (the blob remains the source of truth).
+  if (dto.findings.length > 0) {
+    try {
+      await db.insert(reportQualityFindingsTable).values(
+        dto.findings.map((f) => ({
+          evaluationId: row.id,
+          reportDraftId: dto.reportDraftId ?? undefined,
+          reportId: dto.reportId ?? undefined,
+          ruleId: f.ruleId,
+          canonicalId: f.canonicalId ?? undefined,
+          category: f.category,
+          severity: f.severity,
+          tier: f.tier,
+          modality: f.modality ?? undefined,
+          studyType: f.studyType ?? undefined,
+          knowledgePackSource: f.knowledgePackSource ?? undefined,
+          weight: f.weight ?? undefined,
+          message: f.message,
+          evidence: f.evidence ?? undefined,
+          suggestedFix: f.suggestedFix ?? undefined,
+        })),
+      );
+    } catch {
+      /* normalized analytics rows are non-critical; the blob is authoritative */
+    }
+  }
 
   res.status(201).json({ evaluationId: row.id, ...dto });
 });

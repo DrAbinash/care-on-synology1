@@ -1,13 +1,15 @@
 // text/scorer.ts — the computeQualityScore-parity scorer.
 //
-// Injected via RunOptions.scorer so the engine's score is byte-for-byte the
-// legacy computeQualityScore number. This is what lets Phase 1 route the live
-// badge through the engine with ZERO change to the user-visible value — the
-// engine never invents a second score (architecture §6.1).
+// Phase 2.5 single-evaluation fix: sums the deduction WEIGHTS carried on the
+// findings instead of re-running evaluateTextTier. The text rule now runs the
+// evaluator exactly ONCE per engine run and stamps each finding's weight; the
+// scorer just totals them. The result is byte-identical to the legacy
+// computeQualityScore (the weights ARE the legacy deductions), so the
+// user-visible badge is unchanged — the engine still never invents a second score.
 
 import type { QualityContext, QualityFinding } from "../contract";
-import { computeTextQualityScore } from "./legacy";
 
-export function textParityScorer(ctx: QualityContext, _findings: QualityFinding[]): number {
-  return computeTextQualityScore(ctx.text).score;
+export function textParityScorer(_ctx: QualityContext, findings: QualityFinding[]): number {
+  const totalDeduction = findings.reduce((sum, f) => sum + (f.weight ?? 0), 0);
+  return Math.max(0, 100 - totalDeduction);
 }
