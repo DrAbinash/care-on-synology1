@@ -37,6 +37,15 @@ export {
   STRUCTURED_RULE_DEFINITIONS,
   STRUCTURED_RULE_SET_VERSION,
 } from "./rules/structured";
+export {
+  MEASUREMENT_RULE_SET_VERSION,
+  MEASUREMENT_RULE_DEFINITIONS,
+  measurementRules,
+  measurementRegistryProvider,
+  createMeasurementEngine,
+  measurementRangeRuleId,
+  resolveContextMeasurement,
+} from "./rules/measurements";
 export { normalizeModality, modalityMatches } from "./modality";
 export type { CanonicalModality } from "./modality";
 export { defaultScorer } from "./score";

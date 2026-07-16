@@ -96,6 +96,9 @@ export const radiologyMeasurementsTable = pgTable(
     bodyPart: text("body_part").notNull(),
     measurementType: text("measurement_type").notNull(),
     label: text("label").notNull(),
+    // Canonical Universal Measurement Registry id (e.g. "CBD"); nullable —
+    // labels outside the registry save exactly as before.
+    measurementId: text("measurement_id"),
     value: text("value").notNull(),
     unit: text("unit"),
     normalRangeLow: real("normal_range_low"),
@@ -127,6 +130,10 @@ export const viewerMeasurementsTable = pgTable(
     frameNumber: integer("frame_number").default(1),
     viewerName: text("viewer_name").notNull(), // "OHIF" | "Weasis" | "DICOM SR" | "manual" | "AI"
     measurementType: text("measurement_type").notNull(), // "linear" | "area" | "volume" | "ellipse"
+    // Canonical Universal Measurement Registry id, when the exporting bridge
+    // (DICOM SR concept, AI, or manual pick) knows the anatomical concept —
+    // the viewer's caliper kind alone carries no semantic identity.
+    measurementId: text("measurement_id"),
     value: text("value").notNull(),
     unit: text("unit").notNull(),
     sliceNumber: integer("slice_number"),

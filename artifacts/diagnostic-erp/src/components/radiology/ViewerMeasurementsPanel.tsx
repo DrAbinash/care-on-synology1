@@ -24,6 +24,7 @@
  * viewer, never the exact series/SOP), so it is deliberately not ported here.
  */
 
+import { getMeasurement } from "@workspace/measurements";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
@@ -56,6 +57,8 @@ export interface ViewerMeasurement {
   frameNumber: number | null;
   viewerName: string;      // "OHIF" | "Weasis" | "DICOM SR" | "manual" | "AI"
   measurementType: string; // "linear" | "area" | "volume" | "ellipse"
+  /** Canonical Universal Measurement Registry id, when the exporting bridge knew the concept. */
+  measurementId?: string | null;
   value: string;
   unit: string;
   sliceNumber: number | null;
@@ -70,10 +73,14 @@ export interface ViewerMeasurement {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────────
 
-// "<measurementType>: <value> <unit>" — unit dropped when already present in value
+// "<label>: <value> <unit>" — unit dropped when already present in value
 // (dedupeUnit is shared with UsgMeasurementReviewPanel, not re-implemented here).
+// When the row carries a canonical Universal Measurement Registry id, the
+// report line uses the registry's display name (e.g. "Common Bile Duct
+// Diameter: 7 mm") instead of the bare caliper kind ("linear: 7 mm").
 function formatMeasurementLine(m: ViewerMeasurement): string {
-  const type = (m.measurementType || "Measurement").trim();
+  const registryName = m.measurementId ? getMeasurement(m.measurementId)?.displayName : undefined;
+  const type = (registryName || m.measurementType || "Measurement").trim();
   const value = (m.value ?? "").trim();
   const unit = dedupeUnit(value, (m.unit ?? "").trim());
   const valuePart = [value, unit].filter(Boolean).join(" ").trim();

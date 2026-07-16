@@ -217,6 +217,9 @@ importers:
       '@workspace/integrations-gemini-ai':
         specifier: workspace:*
         version: link:../../lib/integrations-gemini-ai
+      '@workspace/measurements':
+        specifier: workspace:*
+        version: link:../../lib/measurements
       '@workspace/report-quality':
         specifier: workspace:*
         version: link:../../lib/report-quality
@@ -696,6 +699,9 @@ importers:
 
   artifacts/diagnostic-erp:
     dependencies:
+      '@workspace/measurements':
+        specifier: workspace:*
+        version: link:../../lib/measurements
       docx:
         specifier: ^9.6.1
         version: 9.6.1
@@ -1034,7 +1040,17 @@ importers:
         specifier: ^22.19.17
         version: 22.19.17
 
+  lib/measurements:
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 25.3.5
+
   lib/report-quality:
+    dependencies:
+      '@workspace/measurements':
+        specifier: workspace:*
+        version: link:../measurements
     devDependencies:
       '@types/node':
         specifier: 'catalog:'

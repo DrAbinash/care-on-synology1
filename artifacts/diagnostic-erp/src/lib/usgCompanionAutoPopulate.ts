@@ -60,6 +60,8 @@ export interface AutoPopulateMeasurement {
   confidence: string;   // high | medium | low
   source: string;
   present: boolean;
+  /** Canonical Universal Measurement Registry id (server-resolved, additive). */
+  measurementId?: string;
 }
 
 export interface AutoPopulateInputs {

@@ -8,12 +8,5 @@
     "rootDir": "src",
     "types": []
   },
-  "include": [
-    "src"
-  ],
-  "references": [
-    {
-      "path": "../measurements"
-    }
-  ]
+  "include": ["src"]
 }

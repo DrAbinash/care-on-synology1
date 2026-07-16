@@ -13,6 +13,7 @@
  */
 
 import type { UsgMeasurement, UsgDopplerMeasurement } from "@workspace/db/schema";
+import { DEFAULT_MEASUREMENT_REGISTRY } from "@workspace/measurements";
 import {
   suggestTemplate,
   USG_TEMPLATES,
@@ -91,6 +92,13 @@ export interface MeasurementItem {
   confidence: string;            // high | medium | low
   source: string;                // dicom_sr | ocr | combined | manual | GE_PRIVATE_TAG ...
   present: boolean;
+  /**
+   * Canonical id from the Universal Measurement Registry (e.g. "CBD") when
+   * the usg_measurements column resolves. Downstream logic (Copilot modules,
+   * follow-up suggestions, Quality Engine Phase 4) keys on this — never on
+   * the display label.
+   */
+  measurementId?: string;
 }
 
 export interface DopplerSummary {
@@ -106,7 +114,7 @@ export interface MeasurementSummary {
   foundCount: number;
   missingCount: number;
   items: MeasurementItem[];
-  missing: { key: string; label: string }[];
+  missing: { key: string; label: string; measurementId?: string }[];
   extras: MeasurementItem[];     // measurements found beyond the expected checklist
   doppler: DopplerSummary;
 }
@@ -152,7 +160,7 @@ export function summarizeMeasurements(
   const rowSource = measurement?.source ?? "manual";
 
   const items: MeasurementItem[] = [];
-  const missing: { key: string; label: string }[] = [];
+  const missing: { key: string; label: string; measurementId?: string }[] = [];
 
   for (const exp of expected) {
     const raw = measurement ? (measurement as Record<string, unknown>)[exp.key] : null;
@@ -161,6 +169,9 @@ export function summarizeMeasurements(
     const conf = measurement && nonEmpty((measurement as Record<string, unknown>)[confKey])
       ? String((measurement as Record<string, unknown>)[confKey])
       : rowConfidence;
+    // Resolve the usg_measurements column to its canonical registry identity
+    // (additive — items without a registry entry simply carry no id).
+    const measurementId = DEFAULT_MEASUREMENT_REGISTRY.resolveByColumn(exp.key)?.id;
     items.push({
       key: exp.key,
       label: exp.label,
@@ -169,8 +180,9 @@ export function summarizeMeasurements(
       confidence: conf,
       source: provenanceSource(provenance, exp.key, rowSource),
       present,
+      ...(measurementId ? { measurementId } : {}),
     });
-    if (!present) missing.push({ key: exp.key, label: exp.label });
+    if (!present) missing.push({ key: exp.key, label: exp.label, ...(measurementId ? { measurementId } : {}) });
   }
 
   // Extra measurements captured beyond the checklist (extraMeasurementsJson).
