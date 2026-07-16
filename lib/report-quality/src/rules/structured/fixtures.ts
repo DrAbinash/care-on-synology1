@@ -87,6 +87,10 @@ export const mriBrainFixture: QualityContext = {
     comparisonMeasurements: [], notApplicableSections: ["POSTERIOR FOSSA"],
     criticalFindings: ["hemorrhage", "midline shift"], normalValues: [],
   },
+  // Sections the report actually documented (presence signal). WHITE MATTER is
+  // documented; VENTRICULAR SYSTEM is not → required-section flags it. POSTERIOR
+  // FOSSA is excluded as not-applicable via the knowledge pack.
+  coveredSections: ["WHITE MATTER"],
   findingInstances: [
     { instanceId: 1, findingId: 10, label: "Fazekas 1", studyType: "Brain", anatomicalSection: "WHITE MATTER", conflictGroup: "Fazekas", properties: ["severity"], side: "", severity: "mild", chronicity: "", level: "", value: "", source: "quickselect", targetRef: "report_finding_instances:1" },
     { instanceId: 2, findingId: 11, label: "Fazekas 2", studyType: "Brain", anatomicalSection: "WHITE MATTER", conflictGroup: "Fazekas", properties: ["severity"], side: "", severity: "moderate", chronicity: "", level: "", value: "", source: "quickselect", targetRef: "report_finding_instances:2" },

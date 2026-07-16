@@ -43,6 +43,12 @@ describe("structured executors — per-modality fixtures", () => {
     expect(r.findings.find((f) => f.ruleId.endsWith("fetal.fhr"))?.severity).toBe("blocker");
     expect(has(r, "fetal.afi")).toBe(true);
     expect(has(r, "fetal.cervical-length")).toBe(true);
+    // Regression (unit reconciliation): AFI is entered in mm (26 mm = 2.6 cm),
+    // checked against a cm range → BELOW range (oligohydramnios), NOT above.
+    const afi = r.findings.find((f) => f.ruleId.endsWith("fetal.afi"));
+    expect(afi?.message).toContain("below");
+    expect(afi?.suggestedFix).toContain("oligohydramnios");
+    expect(afi?.message).not.toContain("26cm"); // never fabricate a unit the value wasn't measured in
     expect(has(r, "fetal.dv-awave")).toBe(true); // mutually-exclusive enumField
     expect(has(r, "usg.fetal")).toBe(true); // unit-validation mm/cm hazard
     expect(has(r, "usg.kidneys")).toBe(true); // required-laterality pair
@@ -67,7 +73,18 @@ describe("structured executors — per-modality fixtures", () => {
     const r = engine.evaluate(ALL_FIXTURES["X-Ray chest"]);
     expect(has(r, "unit.xr")).toBe(true);
     expect(has(r, "study-modality.xr")).toBe(false); // XR authoritative == declared
-    expect(has(r, "chest-pa")).toBe(false); // Cardiothoracic ratio is present
+    expect(has(r, "by-protocol")).toBe(false); // Cardiothoracic ratio is present (protocol-driven, not modality-wide)
+  });
+
+  it("protocol-driven required-measurement does NOT false-fire without a protocol slot", () => {
+    // A US study with measurements but no protocolRequiredMeasurements must not
+    // demand growth biometry — the rule is notEvaluated, not a false pass/fail.
+    const r = engine.evaluate({
+      modality: "USG", text: { findings: "", impression: [] },
+      measurements: [{ key: "spleen", label: "Spleen", value: 9, unit: "cm" }],
+    });
+    expect(r.findings.some((f) => f.ruleId.endsWith("usg.growth"))).toBe(false);
+    expect(r.notEvaluated.some((id) => id.endsWith("usg.growth"))).toBe(true);
   });
 
   it("MRI brain fires conflict-group exclusivity + section coverage from findingInstances", () => {

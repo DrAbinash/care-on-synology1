@@ -126,26 +126,32 @@ async function assembleStudyContext(draftId: number): Promise<StudyContext | und
       .limit(1);
     if (!draft) return undefined;
 
+    // Both worklist and study default modality to the sentinel 'OT'. Treat 'OT'
+    // as "not authoritative" so precedence falls through worklist → study to a
+    // real modality instead of letting the default silently win.
+    const isReal = (m: string | null | undefined): boolean => !!m && m.trim() !== "" && m.trim().toUpperCase() !== "OT";
     let authoritativeRaw: string | null = null;
     let authoritativeSource: StudyContext["authoritativeSource"] | null = null;
     let studyDescription: string | null = null;
     if (draft.worklistId != null) {
       const [w] = await db.select({ modality: radiologyWorklistTable.modality, studyDescription: radiologyWorklistTable.studyDescription }).from(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, draft.worklistId)).limit(1);
-      if (w) { authoritativeRaw = w.modality; authoritativeSource = "worklist"; studyDescription = w.studyDescription ?? null; }
+      if (w && isReal(w.modality)) { authoritativeRaw = w.modality; authoritativeSource = "worklist"; studyDescription = w.studyDescription ?? null; }
+      else if (w) studyDescription = w.studyDescription ?? null;
     }
     if (authoritativeRaw == null && draft.studyId != null) {
       const [s] = await db.select({ modality: radiologyStudiesTable.modality, studyDescription: radiologyStudiesTable.studyDescription }).from(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, draft.studyId)).limit(1);
-      if (s) { authoritativeRaw = s.modality; authoritativeSource = "study"; studyDescription = s.studyDescription ?? null; }
+      if (s && isReal(s.modality)) { authoritativeRaw = s.modality; authoritativeSource = "study"; studyDescription = s.studyDescription ?? studyDescription; }
     }
-    if (authoritativeRaw == null || authoritativeSource == null) return undefined; // no authoritative source → notEvaluated
+    if (authoritativeRaw == null || authoritativeSource == null) return undefined; // no real authoritative modality → notEvaluated
 
+    const declaredRaw = draft.modality && draft.modality.trim() ? draft.modality : null;
     return {
       authoritativeSource,
       authoritativeModality: normalizeModality(authoritativeRaw),
       authoritativeModalityRaw: authoritativeRaw,
-      authoritativeIsSentinel: authoritativeRaw.trim().toUpperCase() === "OT",
-      declaredModality: normalizeModality(draft.modality),
-      declaredModalityRaw: draft.modality ?? null,
+      authoritativeIsSentinel: false, // sentinel values are excluded above
+      declaredModality: normalizeModality(declaredRaw),
+      declaredModalityRaw: declaredRaw,
       studyName: draft.studyName ?? null,
       studyDescription,
     };
@@ -174,8 +180,10 @@ async function runStructuredShadow(body: QualityEvaluationRequest, modality: str
       knowledgePack: body.knowledgePack,
       study,
     };
-    // Nothing structured to evaluate → skip (no empty shadow rows).
-    if (!study && !body.measurements && !body.findingInstances && !body.protocolRequiredMeasurements) return null;
+    // Nothing INDEPENDENTLY actionable to evaluate → skip (no empty shadow
+    // rows). protocolRequiredMeasurements is only auxiliary params for
+    // measurements-gated rules, so it can't produce a finding on its own.
+    if (!study && !body.measurements && !body.findingInstances) return null;
     const report = structuredEngine.evaluate(ctx, { knowledgePackVersion: body.knowledgePackVersion ?? null });
     const dto = toQualityReportDTO(report, {
       reportDraftId: body.reportDraftId ?? null,

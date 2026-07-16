@@ -209,7 +209,8 @@ export type ContextDataKey =
   | "findingInstances"
   | "protocolRequiredMeasurements"
   | "knowledgePack"
-  | "study";
+  | "study"
+  | "coveredSections";
 
 /** Everything a rule may read to evaluate one report. */
 export interface QualityContext {
@@ -227,6 +228,14 @@ export interface QualityContext {
   protocolRequiredMeasurements?: ProtocolRequirements;
   knowledgePack?: KnowledgePackContext;
   study?: StudyContext;
+  /**
+   * Sections the report actually DOCUMENTED (positive presence signal). Distinct
+   * from findingInstances, which carry only abnormalities — a normal section
+   * produces no finding but IS documented. required-section reads this so a
+   * documented-normal section is never flagged as omitted. Absent → the rule is
+   * notEvaluated (we cannot distinguish normal-documented from omitted).
+   */
+  coveredSections?: string[];
 }
 
 /** A registered quality rule. Pure: same context in → same findings out. */

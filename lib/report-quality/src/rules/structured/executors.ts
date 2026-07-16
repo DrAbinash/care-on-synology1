@@ -36,6 +36,22 @@ function matchMeasurement(measurements: NormalizedMeasurement[], key: string): N
   return measurements.find((m) => norm(m.key) === k || norm(m.label) === k);
 }
 
+// Length-unit conversion so a value measured in mm is never compared raw against
+// a cm range (which would invert the clinical conclusion). Returns the value
+// converted into `toUnit`, or null when the units are incompatible/unknown (in
+// which case numeric-range skips the comparison and defers to unit-validation).
+const LENGTH_TO_MM: Record<string, number> = { mm: 1, cm: 10, m: 1000 };
+function convertValue(value: number, fromUnit: string | undefined, toUnit: string | undefined): number | null {
+  const f = (fromUnit ?? "").trim().toLowerCase();
+  const t = (toUnit ?? "").trim().toLowerCase();
+  if (f === t) return value;            // same unit (incl. both empty/unitless)
+  if (f === "" || t === "") return value; // one side unitless → assume caller's scale, no conversion
+  const fm = LENGTH_TO_MM[f];
+  const tm = LENGTH_TO_MM[t];
+  if (fm !== undefined && tm !== undefined) return (value * fm) / tm;
+  return null;                          // incompatible units → cannot safely compare
+}
+
 // 2a. numeric-range — reads `measurements`
 export const numericRange: Executor = (def, ctx) => {
   const p = (def.params as unknown) as NumericRangeParams;
@@ -50,19 +66,25 @@ export const numericRange: Executor = (def, ctx) => {
     if (!hasLow && !hasHigh) {
       if (skipWhenNoRange) continue;
     }
-    const unit = range.unit ?? m.unit ?? "";
-    if (hasLow && m.value < (range.low as number)) {
+    // Reconcile units before comparing: convert the measured value INTO the
+    // range's unit. If incompatible, skip the comparison (unit-validation flags
+    // the mismatch separately) rather than emit an inverted/mislabeled finding.
+    const cmp = convertValue(m.value, m.unit, range.unit);
+    if (cmp === null) continue;
+    // Display in the unit the value was actually measured in — never fabricate.
+    const dispUnit = m.unit ?? range.unit ?? "";
+    if (hasLow && cmp < (range.low as number)) {
       out.push({
-        message: `${m.label} ${m.value}${unit} is below the expected range (≥ ${range.low}${unit}).`,
-        evidence: `${m.value}${unit}`,
+        message: `${m.label} ${m.value}${dispUnit} is below the expected range (≥ ${range.low}${range.unit ?? ""}).`,
+        evidence: `${m.value}${dispUnit}`,
         suggestedFix: range.classify?.below ? `Consider: ${range.classify.below}.` : "Verify the measurement and interpret the low value.",
         targetRef: m.targetRef,
         severity: range.severity,
       });
-    } else if (hasHigh && m.value > (range.high as number)) {
+    } else if (hasHigh && cmp > (range.high as number)) {
       out.push({
-        message: `${m.label} ${m.value}${unit} is above the expected range (≤ ${range.high}${unit}).`,
-        evidence: `${m.value}${unit}`,
+        message: `${m.label} ${m.value}${dispUnit} is above the expected range (≤ ${range.high}${range.unit ?? ""}).`,
+        evidence: `${m.value}${dispUnit}`,
         suggestedFix: range.classify?.above ? `Consider: ${range.classify.above}.` : "Verify the measurement and interpret the high value.",
         targetRef: m.targetRef,
         severity: range.severity,
@@ -123,7 +145,7 @@ export const studyModalityConsistency: Executor = (def, ctx) => {
   const s = ctx.study;
   if (!s) return [];
   if (s.authoritativeIsSentinel) return []; // unknown authoritative modality, not a mismatch
-  if (s.declaredModalityRaw == null) return []; // manual draft, nothing declared to contradict
+  if (s.declaredModalityRaw == null || s.declaredModalityRaw.trim() === "") return []; // nothing declared to contradict
   if (s.authoritativeModality === s.declaredModality) return [];
   return [{
     message: `Study modality mismatch: report is authored as ${s.declaredModalityRaw} but the study is ${s.authoritativeModalityRaw} (${s.authoritativeSource}).`,
@@ -140,15 +162,19 @@ export const mutuallyExclusiveState: Executor = (def, ctx) => {
   if (p.mode === "conflictGroup") {
     const instances = ctx.findingInstances ?? [];
     const maxSelected = p.maxSelected ?? 1;
-    const groups = new Map<string, FindingInstance[]>();
+    // Group by studyType::conflictGroup, deduping by finding identity so a
+    // re-selected same finding (duplicate row) does not self-conflict — only
+    // DISTINCT findings in the same exclusive group count.
+    const groups = new Map<string, Map<number, FindingInstance>>();
     for (const f of instances) {
       if (!f.conflictGroup) continue;
       const gkey = `${f.studyType}::${f.conflictGroup}`;
-      const arr = groups.get(gkey) ?? [];
-      arr.push(f);
-      groups.set(gkey, arr);
+      const byId = groups.get(gkey) ?? new Map<number, FindingInstance>();
+      if (!byId.has(f.findingId)) byId.set(f.findingId, f);
+      groups.set(gkey, byId);
     }
-    for (const [gkey, members] of groups) {
+    for (const [gkey, byId] of groups) {
+      const members = [...byId.values()];
       if (members.length > maxSelected) {
         out.push({
           message: `Mutually-exclusive findings selected together: ${members.map((m) => m.label).join(", ")}.`,
@@ -218,9 +244,16 @@ export const requiredLaterality: Executor = (def, ctx) => {
   return out;
 };
 
-// 2g. required-section — reads `template` (+ findingInstances, + knowledgePack)
+// 2g. required-section — reads `template` + `coveredSections` (+ knowledgePack)
+//
+// Coverage comes from coveredSections (sections the report actually DOCUMENTED),
+// NOT from findingInstances — abnormality rows cannot prove a normal section was
+// documented, so inferring coverage from them false-flags every normal section.
+// If coveredSections is absent the runner leaves this rule notEvaluated (via
+// requires), so this executor treats a missing signal as "cannot determine".
 export const requiredSection: Executor = (def, ctx) => {
   const p = (def.params as unknown) as RequiredSectionParams;
+  if (ctx.coveredSections === undefined) return []; // no presence signal → cannot determine
   const required = p.requiredSections
     ?? (ctx.template?.sections ?? []).filter((s) => s.required).map((s) => s.name);
   let requiredSet = required;
@@ -228,14 +261,14 @@ export const requiredSection: Executor = (def, ctx) => {
     const na = new Set(ctx.knowledgePack.notApplicableSections.map(norm));
     requiredSet = required.filter((s) => !na.has(norm(s)));
   }
-  const covered = new Set((ctx.findingInstances ?? []).map((f) => norm(f.anatomicalSection)).filter(Boolean));
+  const covered = new Set(ctx.coveredSections.map(norm).filter(Boolean));
   const out: ExecutorFinding[] = [];
   for (const section of requiredSet) {
     if (!covered.has(norm(section))) {
       out.push({
-        message: `Required section "${section}" is not covered by any structured finding.`,
+        message: `Required section "${section}" is not documented in the report.`,
         evidence: section,
-        suggestedFix: `Document findings for ${section}.`,
+        suggestedFix: `Document the ${section} section.`,
         targetRef: section,
       });
     }
