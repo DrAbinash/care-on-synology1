@@ -41,6 +41,7 @@ import {
 } from "@/lib/usgCompanionSuggestions";
 import { extractMeasurements, compareMeasurementRows } from "@/lib/radiologyComparison";
 import type { CompanionAssembly, CompanionCopilotContext } from "@/lib/usgCompanionTypes";
+import { matchRecommendations, recommendationQuestions } from "@/lib/clinicalRecommendations";
 
 export interface UsgCompanionPanelProps {
   studyInstanceUID: string;
@@ -243,16 +244,35 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
   const ledger = useMemo(() => deriveProvenance(props.autoPopulatedBlocks ?? [], current), [props.autoPopulatedBlocks, current]);
   const edits = useMemo(() => countEdits(props.autoPopulatedBlocks ?? [], current), [props.autoPopulatedBlocks, current]);
 
-  // Companion suggestions from the existing quick-select engine.
+  // Companion suggestions from the existing quick-select engine, plus
+  // follow-up QUESTIONS consumed from the shared Clinical Recommendation
+  // Registry (the Companion asks; it never creates recommendations).
   const suggestions = useMemo(() => {
-    if (!quickSelect?.findings) return [];
-    return buildCompanionSuggestions({
-      findings: quickSelect.findings,
-      region: props.region,
-      selectedIds: props.selectedFindingIds,
-      reportText: `${current.findings}\n${current.impression.join("\n")}`,
+    const reportText = `${current.findings}\n${current.impression.join("\n")}`;
+    const base = quickSelect?.findings
+      ? buildCompanionSuggestions({
+          findings: quickSelect.findings,
+          region: props.region,
+          selectedIds: props.selectedFindingIds,
+          reportText,
+        })
+      : [];
+    const matches = matchRecommendations({
+      modality: data?.study?.modality ?? "",
+      measurements: (measurements?.items ?? []).map((m) => ({
+        label: m.label, value: Number.parseFloat(m.value), unit: m.unit ?? "",
+      })).filter((m) => Number.isFinite(m.value)),
+      reportText,
+      priorChanges: [],
     });
-  }, [quickSelect?.findings, props.region, props.selectedFindingIds, current.findings, current.impression]);
+    const questions = recommendationQuestions(matches)
+      .filter((q) => !base.some((s) => s.id === q.id))
+      .map((q) => ({
+        id: q.id, kind: "followup" as const, label: q.question,
+        detail: "From the Clinical Recommendation Registry", sourceLabel: "Registry",
+      }));
+    return [...base, ...questions];
+  }, [quickSelect?.findings, props.region, props.selectedFindingIds, current.findings, current.impression, data?.study?.modality, measurements?.items]);
 
   // Live checklist.
   const checklist = useMemo(() => buildLiveChecklist({

@@ -103,6 +103,7 @@ import "@/lib/copilotUsgTvsModule";
 import "@/lib/copilotUsgGrowthModule";
 import "@/lib/copilotUsgAnomalyModule";
 import "@/lib/copilotCriticalModule"; // registers the critical-results safety module (MRI PR 3)
+import "@/lib/copilotRecommendationModule"; // registers the Clinical Recommendation Registry module (CDS PR)
 import { detectCriticalFindings } from "@/lib/criticalResults";
 import { computeFinalizeSafety, formatFinalizeSafety } from "@/lib/finalizeSafety";
 import { criticalWatchListFor } from "@/lib/radiologyMasterTemplates";
