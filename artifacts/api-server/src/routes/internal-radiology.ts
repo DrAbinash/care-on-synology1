@@ -42,7 +42,7 @@ import { createOrLinkPatientFromDicom, type DicomDemographics } from "../lib/dic
 import { computeStudyPriority, applyPriorityToStudy } from "../lib/studyPriorityEngine";
 import { assignRadiologistToStudy } from "../lib/radiologistAssignment";
 import { runUsgExtraction, getUsgAdminSettings } from "../lib/usgExtractor";
-import { isUltrasoundModality } from "../lib/usgModality";
+import { isUltrasoundModality, isObstetricUsgStudy } from "../lib/usgModality";
 import { calculateMatchScore, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
 import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
 
@@ -861,6 +861,30 @@ router.post("/radiology/report-status", async (req, res) => {
 
   if (!existing) {
     res.status(404).json({ error: "Worklist entry not found" });
+    return;
+  }
+
+  // PCPNDT server-side finalize guard. The canonical Radiology Reporting
+  // Workspace's finalizeReport() already blocks this client-side
+  // (isObstetricUsgStudy() in the frontend's lib/usgModality.ts), but that
+  // is a UI-level guard only — a direct call to this endpoint (bypassing the
+  // client entirely) would otherwise still be able to flip an obstetric/
+  // fetal ultrasound study to REPORT_FINAL with zero PCPNDT Form F
+  // compliance check. This is the authoritative, DB-verified check (reads
+  // `existing.modality`/`existing.studyDescription` from the worklist row
+  // itself, never trusts client-supplied values) and covers BOTH the billed
+  // path (which also creates a patient_reports row — see the equivalent
+  // guard in patient-reports.ts POST /) and the unbilled path (where this
+  // report-status call is the ONLY finalize-adjacent write that happens).
+  // Only the legacy, PCPNDT-compliant pipeline (routes/usgReports.ts,
+  // UsgReporting.tsx) may finalize these studies — see
+  // docs/usg-reporting/platform-consolidation-pr-b.md §17-18.
+  if (b.status === "REPORT_FINAL" && isObstetricUsgStudy(existing.modality, existing.studyDescription)) {
+    res.status(409).json({
+      error: "pcpndt_compliance_required",
+      message:
+        "This is an obstetric/fetal ultrasound study. It cannot be finalized through the canonical Reporting Workspace — PCPNDT Form F compliance is not checked here. Finalize this study through USG Reporting (the PCPNDT-compliant legacy workflow, /usg/reporting) instead.",
+    });
     return;
   }
 

@@ -43,3 +43,28 @@ export function normalizeModality(raw: string | null | undefined): string {
 export function isUltrasoundModality(raw: string | null | undefined): boolean {
   return normalizeModality(raw) === "US";
 }
+
+/**
+ * PCPNDT server-side finalize guard (see routes/patient-reports.ts and
+ * routes/internal-radiology.ts). Mirrors the frontend's
+ * artifacts/diagnostic-erp/src/lib/usgModality.ts#isObstetricUsgStudy
+ * exactly — same reasoning as the rest of this file's header comment: the
+ * two packages don't share a lib, so this is a deliberate, documented
+ * duplicate of the CLASSIFICATION only, not of the PCPNDT Form F check
+ * itself (that check lives solely in routes/usgReports.ts, the legacy
+ * compliant pipeline). Deliberately broad/inclusive — a false positive here
+ * just routes a non-obstetric study through an extra compliance check
+ * unnecessarily; a false negative would let a PCPNDT-relevant study
+ * finalize with zero compliance check, which is the failure mode this
+ * exists to prevent.
+ */
+export const OBSTETRIC_USG_STUDY_PATTERN =
+  /obstet|pregnan|fetal|gestation|nuchal|nt\s*scan|anomaly\s*scan|growth\s*scan|tiffa/i;
+
+export function isObstetricUsgStudy(
+  modality: string | null | undefined,
+  studyDescription: string | null | undefined,
+): boolean {
+  if (!isUltrasoundModality(modality)) return false;
+  return OBSTETRIC_USG_STUDY_PATTERN.test(studyDescription ?? "");
+}
