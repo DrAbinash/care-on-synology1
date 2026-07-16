@@ -26,6 +26,21 @@ export const fetalUsgStudiesTable = pgTable("fetal_usg_studies", {
   visitNumber: integer("visit_number"),
   studyOrder: integer("study_order"),
   growthHistory: json("growth_history"),
+  // ── Established GA (see obstetricCalculations.ts establishGa()) ─────────
+  // Gestational age is established ONCE, from the most reliable dating
+  // source available at the time (CRL preferred, MSD as an early fallback,
+  // LMP, or a manual override), then held fixed for the pregnancy and
+  // projected forward by elapsed calendar days at later visits — not
+  // re-derived from second/third-trimester biometry at every visit.
+  establishedGaDays: integer("established_ga_days"),
+  establishedGaMethod: varchar("established_ga_method", { length: 10 }), // crl, msd, lmp, manual
+  establishedGaDate: varchar("established_ga_date", { length: 20 }), // ISO date this GA was established on
+  establishedEdd: varchar("established_edd", { length: 20 }),
+  // Marks which calculation-engine version produced gaWeeks/gaDays/edd on
+  // this row — lets historical rows computed by the pre-fix formulas be
+  // distinguished from rows computed by obstetricCalculations.ts, without
+  // silently rewriting finalized historical data.
+  calcVersion: varchar("calc_version", { length: 10 }),
   createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { mode: "date" }).defaultNow().notNull(),
 });
@@ -55,6 +70,12 @@ export const fetalUsgMeasurementsTable = pgTable("fetal_usg_measurements", {
   afi: numeric("afi", { precision: 5, scale: 1 }),
   afiInterpretation: varchar("afi_interpretation", { length: 30 }),
   sdp: numeric("sdp", { precision: 5, scale: 1 }),
+  // Optional 4-quadrant AFI inputs — when all four are present, afi above is
+  // computed as their sum rather than trusting a single typed-in total.
+  afiQ1: numeric("afi_q1", { precision: 4, scale: 1 }),
+  afiQ2: numeric("afi_q2", { precision: 4, scale: 1 }),
+  afiQ3: numeric("afi_q3", { precision: 4, scale: 1 }),
+  afiQ4: numeric("afi_q4", { precision: 4, scale: 1 }),
   // Placenta
   placentaLocation: varchar("placenta_location", { length: 30 }),
   placentaGrade: varchar("placenta_grade", { length: 10 }),
@@ -102,6 +123,10 @@ export const fetalUsgMeasurementsTable = pgTable("fetal_usg_measurements", {
   bppTotal: integer("bpp_total"),
   nstDone: boolean("nst_done").default(false),
   nstResult: varchar("nst_result", { length: 30 }),
+  // Marks which calculation-engine version produced efw/afiInterpretation/
+  // cervicalLengthInterpretation on this row — see calcVersion on
+  // fetalUsgStudiesTable above for why this exists.
+  calcVersion: varchar("calc_version", { length: 10 }),
   createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { mode: "date" }).defaultNow().notNull(),
 });

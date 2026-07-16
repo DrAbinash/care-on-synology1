@@ -4,11 +4,26 @@ import {
   fetalUsgStudiesTable, fetalUsgMeasurementsTable, fetalUsgChecklistsTable,
   fetalUsgReportsTable, fetalUsgAuditLogsTable, fetalUsgCriticalAlertsTable,
   fetalUsgTemplatePreferencesTable, patientsTable, clinicSettingsTable,
+  radiologyStudiesTable,
 } from "@workspace/db/schema";
-import { eq, and, desc, sql } from "drizzle-orm";
+import { eq, and, desc, sql, isNull, notInArray } from "drizzle-orm";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { generateAiForTask } from "@workspace/ai-providers";
 import { logger } from "../lib/logger";
+import { isUltrasoundModality } from "../lib/usgModality";
+import {
+  calcGaDaysFromCrl, calcGaDaysFromMsd, calcGaDaysFromLmp, calcEddFromLmp, calcEddFromEstablishedGa,
+  gaDaysToWeeksDays, establishGa, projectGaForwardDays, calcEfwGrams,
+  calcAfiFromQuadrants, calcAfiInterpretation, calcCervicalLengthInterpretation,
+  calcRi, calcSdRatio, calcSdFromRi, calcCpr, calcTwinDiscordancePercent,
+  isFiniteNumber, type EstablishGaInput, type GaMethod,
+} from "../lib/obstetricCalculations";
+
+// The calc-engine version stamped onto every row this route computes derived
+// fields for — see calcVersion column comments in the schema. Bump this if
+// the calculation module's formulas ever change again, so historical rows
+// stay distinguishable from rows computed by whichever version produced them.
+const CALC_VERSION = "v2";
 
 const router = Router();
 
@@ -38,82 +53,67 @@ function audit(
     .catch(() => {});
 }
 
-function calcGaFromLmp(lmp: string): { weeks: number; days: number } | null {
-  const d = new Date(lmp);
-  if (isNaN(d.getTime())) return null;
-  const now = new Date();
-  const diff = now.getTime() - d.getTime();
-  const totalDays = Math.floor(diff / (1000 * 60 * 60 * 24));
-  return { weeks: Math.floor(totalDays / 7), days: totalDays % 7 };
-}
+/**
+ * Establishes GA once (CRL > MSD > LMP > manual, per obstetricCalculations'
+ * clinical preference order) if not already established for this study, or
+ * projects the already-established GA forward to `asOfDate` otherwise.
+ * Never silently re-derives/overwrites an established GA from later
+ * biometry — see obstetricCalculations.ts's module header for why the old
+ * per-visit BPD/HC/AC/FL "composite GA" re-averaging was removed entirely.
+ */
+// Methods considered a genuine ultrasound-measurement dating (more reliable
+// than an LMP guess or a manual placeholder) — once GA is established via
+// one of these, it is never silently re-derived again.
+const MEASUREMENT_BASED_GA_METHODS: GaMethod[] = ["crl", "msd"];
 
-function calcGaFromCrl(crl: number): { weeks: number; days: number } | null {
-  if (crl <= 0) return null;
-  const weeks = 40.9 + 3.2 * Math.log(crl);
-  const w = Math.floor(weeks);
-  const d = Math.round((weeks - w) * 7);
-  return { weeks: w, days: d };
-}
+function establishOrProjectGa(
+  study: { establishedGaDays: number | null; establishedGaMethod: string | null; establishedGaDate: string | null },
+  input: { crlMm?: number | null; msdMm?: number | null; lmp?: string | null; manualGaDays?: number | null },
+  asOfDate: Date,
+): { gaDays: number | null; method: GaMethod | null; establishedDate: string | null; isNewlyEstablished: boolean; warnings: string[] } {
+  const alreadyMeasurementBased = study.establishedGaDays != null && study.establishedGaDate
+    && MEASUREMENT_BASED_GA_METHODS.includes(study.establishedGaMethod as GaMethod);
 
-function calcGaFromBpd(bpd: number): { weeks: number } | null {
-  if (bpd <= 0) return null;
-  const weeks = 9.54 + 1.482 * bpd + 0.0167 * bpd * bpd;
-  return { weeks: Math.round(weeks) };
-}
+  if (alreadyMeasurementBased) {
+    // CRL/MSD-established GA is never silently re-derived — project it
+    // forward by elapsed calendar days instead.
+    const projected = projectGaForwardDays(study.establishedGaDays!, study.establishedGaDate!, asOfDate);
+    return { gaDays: projected, method: study.establishedGaMethod as GaMethod, establishedDate: study.establishedGaDate!, isNewlyEstablished: false, warnings: [] };
+  }
 
-function calcGaFromFl(fl: number): { weeks: number } | null {
-  if (fl <= 0) return null;
-  const weeks = 8.1 + 2.53 * fl + 0.019 * fl * fl;
-  return { weeks: Math.round(weeks) };
-}
+  // Not yet established, or only established via LMP/manual so far — a
+  // fresh CRL/MSD measurement now available upgrades to the more reliable
+  // source (standard obstetric practice: the first ultrasound dating
+  // measurement supersedes an LMP-based estimate). Not silent: flagged via
+  // a warning whenever it replaces a prior LMP/manual estimate that
+  // materially disagreed with it.
+  const establishInput: EstablishGaInput = { crlMm: input.crlMm, msdMm: input.msdMm, lmp: input.lmp, manualGaDays: input.manualGaDays, asOfDate };
+  const established = establishGa(establishInput);
+  if (!established) {
+    if (study.establishedGaDays != null && study.establishedGaDate) {
+      const projected = projectGaForwardDays(study.establishedGaDays, study.establishedGaDate, asOfDate);
+      return { gaDays: projected, method: study.establishedGaMethod as GaMethod, establishedDate: study.establishedGaDate, isNewlyEstablished: false, warnings: [] };
+    }
+    return { gaDays: null, method: null, establishedDate: null, isNewlyEstablished: false, warnings: [] };
+  }
 
-function calcGaFromAc(ac: number): { weeks: number } | null {
-  if (ac <= 0) return null;
-  const weeks = -7.31 + 0.49 * ac + 0.038 * ac * ac;
-  return { weeks: Math.round(weeks) };
-}
-
-function calcCompositeGa(measurements: any): { weeks: number; days: number } | null {
-  const vals: number[] = [];
-  if (measurements.crl) { const g = calcGaFromCrl(Number(measurements.crl)); if (g) vals.push(g.weeks + g.days / 7); }
-  if (measurements.bpd) { const g = calcGaFromBpd(Number(measurements.bpd)); if (g) vals.push(g.weeks); }
-  if (measurements.fl) { const g = calcGaFromFl(Number(measurements.fl)); if (g) vals.push(g.weeks); }
-  if (measurements.ac) { const g = calcGaFromAc(Number(measurements.ac)); if (g) vals.push(g.weeks); }
-  if (vals.length === 0) return null;
-  const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
-  const w = Math.floor(avg);
-  const d = Math.round((avg - w) * 7);
-  return { weeks: w, days: d };
-}
-
-function calcEddFromLmp(lmp: string): string | null {
-  const d = new Date(lmp);
-  if (isNaN(d.getTime())) return null;
-  const edd = new Date(d);
-  edd.setDate(edd.getDate() + 280);
-  return edd.toISOString().split("T")[0];
-}
-
-function calcEfw(bpd: number, hc: number, ac: number, fl: number): number | null {
-  if (bpd <= 0 || hc <= 0 || ac <= 0 || fl <= 0) return null;
-  const efw = Math.pow(10, 1.326 - 0.00326 * ac * fl + 0.0107 * hc + 0.0438 * ac + 0.158 * fl);
-  return Math.round(efw * 100) / 100;
-}
-
-function calcAfiInterpretation(afi: number): string {
-  if (afi < 5) return "oligohydramnios";
-  if (afi > 24) return "polyhydramnios";
-  return "normal";
-}
-
-function calcCervicalLengthInterpretation(cl: number): string {
-  if (cl < 25) return "short_cervix";
-  if (cl < 30) return "borderline";
-  return "normal";
+  const todayIso = asOfDate.toISOString().split("T")[0];
+  const warnings = [...established.warnings];
+  if (study.establishedGaDays != null && study.establishedGaDate && MEASUREMENT_BASED_GA_METHODS.includes(established.method)) {
+    const priorProjected = projectGaForwardDays(study.establishedGaDays, study.establishedGaDate, asOfDate);
+    const discrepancyDays = Math.abs(priorProjected - established.gaDays);
+    if (discrepancyDays > 7) {
+      warnings.push(`New ${established.method.toUpperCase()}-based dating (${gaDaysToWeeksDays(established.gaDays).weeks}w${gaDaysToWeeksDays(established.gaDays).days}d) differs from the prior ${study.establishedGaMethod ?? "estimated"}-based GA by ${discrepancyDays} days — GA has been updated to the more reliable ${established.method.toUpperCase()} measurement. Please confirm.`);
+    }
+  }
+  return { gaDays: established.gaDays, method: established.method, establishedDate: todayIso, isNewlyEstablished: true, warnings };
 }
 
 function detectCriticalAlerts(study: any, measurements: any): string[] {
   const alerts: string[] = [];
+  if (study.establishedGaDays == null && !study.lmp) {
+    alerts.push("Gestational age could not be established — no CRL, MSD, or LMP on file. Enter a dating measurement or a manual GA before finalizing.");
+  }
   if (measurements.fetalHeartRate && (measurements.fetalHeartRate < 110 || measurements.fetalHeartRate > 160)) {
     alerts.push(`Fetal heart rate ${measurements.fetalHeartRate} bpm outside normal range (110-160)`);
   }
@@ -214,23 +214,105 @@ router.get("/worklist", async (req: StaffAuthRequest, res) => {
   res.json({ worklist: rows });
 });
 
+// --- Available (unlinked) ultrasound studies for a patient ---
+// Powers the "New Study" patient/study picker — a Fetal USG study must
+// attach to a REAL patient and a REAL, already-ordered ultrasound study
+// (radiology_studies row), never a guessed/default id. Excludes studies
+// already linked to an existing fetal_usg_studies row.
+router.get("/available-studies/:patientId", async (req: StaffAuthRequest, res) => {
+  const patientId = Number(req.params.patientId);
+  if (!Number.isInteger(patientId) || patientId <= 0) {
+    res.status(400).json({ error: "A valid patientId is required" });
+    return;
+  }
+  const [patient] = await db.select().from(patientsTable).where(eq(patientsTable.id, patientId)).limit(1);
+  if (!patient) { res.status(404).json({ error: "Patient not found" }); return; }
+
+  const alreadyLinked = await db.select({ studyId: fetalUsgStudiesTable.studyId }).from(fetalUsgStudiesTable);
+  const linkedIds = alreadyLinked.map((r) => r.studyId);
+
+  const candidates = await db.select().from(radiologyStudiesTable)
+    .where(and(
+      eq(radiologyStudiesTable.patientId, patientId),
+      linkedIds.length > 0 ? notInArray(radiologyStudiesTable.id, linkedIds) : sql`true`,
+    ))
+    .orderBy(desc(radiologyStudiesTable.scheduledAt));
+
+  const studies = candidates.filter((s) => isUltrasoundModality(s.modality));
+  res.json({
+    patient: { id: patient.id, firstName: patient.firstName, lastName: patient.lastName, patientId: patient.patientId },
+    studies: studies.map((s) => ({
+      id: s.id,
+      accessionNumber: s.accessionNumber,
+      studyDescription: s.studyDescription,
+      bodyPart: s.bodyPart,
+      status: s.status,
+      scheduledAt: s.scheduledAt,
+    })),
+  });
+});
+
 // --- Create study ---
+// Requires a real, valid patientId and studyId (an existing, unlinked
+// ultrasound radiology_studies row for that patient) — never defaults or
+// guesses either. See docs/usg-reporting/fetal-usg-calculation-correction.md
+// for the confirmed patientId:1/studyId:1 bug this replaces.
 router.post("/study", async (req: StaffAuthRequest, res) => {
   const body = req.body as any;
+  const patientId = Number(body.patientId);
+  const radiologyStudyId = Number(body.studyId);
+  if (!Number.isInteger(patientId) || patientId <= 0) {
+    res.status(400).json({ error: "A valid patientId is required to create a Fetal USG study — select a patient first." });
+    return;
+  }
+  if (!Number.isInteger(radiologyStudyId) || radiologyStudyId <= 0) {
+    res.status(400).json({ error: "A valid studyId (an existing ultrasound study) is required — select a study first." });
+    return;
+  }
+
+  const [patient] = await db.select().from(patientsTable).where(eq(patientsTable.id, patientId)).limit(1);
+  if (!patient) { res.status(400).json({ error: `No patient found with id ${patientId}` }); return; }
+
+  const [radStudy] = await db.select().from(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, radiologyStudyId)).limit(1);
+  if (!radStudy) { res.status(400).json({ error: `No radiology study found with id ${radiologyStudyId}` }); return; }
+  if (radStudy.patientId !== patientId) {
+    res.status(400).json({ error: `Study ${radiologyStudyId} belongs to a different patient — refusing to link it to patient ${patientId}` });
+    return;
+  }
+  if (!isUltrasoundModality(radStudy.modality)) {
+    res.status(400).json({ error: `Study ${radiologyStudyId} is not an ultrasound study (modality: ${radStudy.modality})` });
+    return;
+  }
+  const [existingLink] = await db.select().from(fetalUsgStudiesTable).where(eq(fetalUsgStudiesTable.studyId, radiologyStudyId)).limit(1);
+  if (existingLink) {
+    res.status(400).json({ error: `Study ${radiologyStudyId} already has a Fetal USG record (id ${existingLink.id})`, existingFetalUsgStudyId: existingLink.id });
+    return;
+  }
+
+  const asOfDate = new Date();
+  const established = body.lmp ? establishGa({ lmp: body.lmp, asOfDate }) : null;
+  const lmpGaResult = body.lmp ? calcGaDaysFromLmp(body.lmp, asOfDate) : null;
+  const eddResult = body.lmp ? calcEddFromLmp(body.lmp) : null;
+
   const [study] = await db.insert(fetalUsgStudiesTable).values({
-    studyId: body.studyId,
-    patientId: body.patientId,
+    studyId: radiologyStudyId,
+    patientId,
     studyType: body.studyType ?? "unknown",
     trimester: body.trimester ?? "unknown",
     lmp: body.lmp,
-    lmpGa: body.lmp ? calcGaFromLmp(body.lmp)?.weeks : undefined,
-    edd: body.lmp ? calcEddFromLmp(body.lmp) : undefined,
+    lmpGa: lmpGaResult?.value != null ? gaDaysToWeeksDays(lmpGaResult.value).weeks : undefined,
+    edd: eddResult?.value ?? undefined,
+    establishedGaDays: established?.gaDays ?? undefined,
+    establishedGaMethod: established?.method ?? undefined,
+    establishedGaDate: established ? asOfDate.toISOString().split("T")[0] : undefined,
+    establishedEdd: established ? calcEddFromEstablishedGa(established.gaDays, asOfDate.toISOString().split("T")[0]).value ?? undefined : undefined,
+    calcVersion: CALC_VERSION,
     isTwin: body.isTwin ?? false,
     chorionicity: body.chorionicity,
     amnionicity: body.amnionicity,
     status: "received",
   }).returning();
-  audit(req, { entityId: study.id, table: "fetalUsgStudies", action: "study_created" });
+  audit(req, { entityId: study.id, table: "fetalUsgStudies", action: "study_created", details: `patientId=${patientId}, radiologyStudyId=${radiologyStudyId}` });
   res.json({ study });
 });
 
@@ -253,6 +335,83 @@ router.post("/:studyId/measurements", async (req: StaffAuthRequest, res) => {
   const [study] = await db.select().from(fetalUsgStudiesTable).where(eq(fetalUsgStudiesTable.id, studyId)).limit(1);
   if (!study) { res.status(404).json({ error: "Study not found" }); return; }
   const body = req.body as any;
+  const warnings: string[] = [];
+
+  // ── GA: establish once, else project the already-established GA forward ──
+  const asOfDate = new Date();
+  const gaResult = establishOrProjectGa(
+    study,
+    { crlMm: body.crl != null ? Number(body.crl) : undefined, msdMm: body.msd != null ? Number(body.msd) : undefined, lmp: study.lmp, manualGaDays: body.manualGaDays != null ? Number(body.manualGaDays) : undefined },
+    asOfDate,
+  );
+  warnings.push(...gaResult.warnings);
+  const gaWeeksDays = gaResult.gaDays != null ? gaDaysToWeeksDays(gaResult.gaDays) : null;
+  const currentGaWeeksForContext = gaWeeksDays?.weeks ?? study.gaWeeks ?? undefined;
+
+  // ── EFW: Hadlock HC+AC+FL — manual entry always wins if provided ──────────
+  let efw = body.efw != null ? Number(body.efw) : undefined;
+  if (efw == null && isFiniteNumber(Number(body.hc)) && isFiniteNumber(Number(body.ac)) && isFiniteNumber(Number(body.fl))) {
+    const efwResult = calcEfwGrams(Number(body.hc), Number(body.ac), Number(body.fl));
+    warnings.push(...efwResult.warnings);
+    if (efwResult.value != null) efw = efwResult.value;
+    else if (efwResult.error) warnings.push(`EFW not calculated: ${efwResult.error}`);
+  }
+
+  // ── AFI: 4-quadrant sum if all four given, else the manually-typed total ──
+  let afi = body.afi != null ? Number(body.afi) : undefined;
+  const hasAllQuadrants = [body.afiQ1, body.afiQ2, body.afiQ3, body.afiQ4].every((v) => v != null && v !== "");
+  if (hasAllQuadrants) {
+    const afiResult = calcAfiFromQuadrants(Number(body.afiQ1), Number(body.afiQ2), Number(body.afiQ3), Number(body.afiQ4));
+    if (afiResult.value != null) afi = afiResult.value;
+    else if (afiResult.error) warnings.push(`AFI not calculated from quadrants: ${afiResult.error}`);
+  }
+  let afiInterpretation: string | undefined;
+  if (afi != null) {
+    const r = calcAfiInterpretation(afi);
+    warnings.push(...r.warnings);
+    afiInterpretation = r.value ?? undefined;
+  }
+
+  // ── Cervical length: same 25mm threshold, GA-context-aware advisory ───────
+  let cervicalLengthInterpretation: string | undefined;
+  if (body.cervicalLength != null) {
+    const r = calcCervicalLengthInterpretation(Number(body.cervicalLength), currentGaWeeksForContext);
+    warnings.push(...r.warnings);
+    cervicalLengthInterpretation = r.value ?? undefined;
+  }
+
+  // ── UA RI/S-D: derive whichever is missing from the other (same PSV/EDV
+  // pair, exact algebraic identity — never a separate clinical formula) ─────
+  let umbilicalArteryRi = body.umbilicalArteryRi != null ? Number(body.umbilicalArteryRi) : undefined;
+  let umbilicalArterySd = body.umbilicalArterySd != null ? Number(body.umbilicalArterySd) : undefined;
+  if (umbilicalArteryRi != null && umbilicalArterySd == null) {
+    const r = calcSdFromRi(umbilicalArteryRi);
+    if (r.value != null) umbilicalArterySd = r.value;
+  } else if (umbilicalArterySd != null && umbilicalArteryRi == null) {
+    // RI from S/D: RI = 1 - 1/(S/D) — same identity, inverted.
+    if (isFiniteNumber(umbilicalArterySd) && umbilicalArterySd > 0) {
+      umbilicalArteryRi = Math.round((1 - 1 / umbilicalArterySd) * 100) / 100;
+    }
+  }
+
+  // ── CPR: auto-derive from MCA-PI / UA-PI when not manually entered ────────
+  let cpr = body.cpr != null ? Number(body.cpr) : undefined;
+  const mcaPiVal = body.mcaPi != null ? Number(body.mcaPi) : undefined;
+  const uaPiVal = body.umbilicalArteryPi != null ? Number(body.umbilicalArteryPi) : undefined;
+  if (cpr == null && mcaPiVal != null && uaPiVal != null) {
+    const r = calcCpr(mcaPiVal, uaPiVal);
+    warnings.push(...r.warnings);
+    if (r.value != null) cpr = r.value;
+  }
+
+  // ── Twin discordance: auto-derive from twinA/twinB EFW when not manual ────
+  let discordancePercent = body.discordancePercent != null ? Number(body.discordancePercent) : undefined;
+  if (study.isTwin && discordancePercent == null && body.twinA_efw != null && body.twinB_efw != null) {
+    const r = calcTwinDiscordancePercent(Number(body.twinA_efw), Number(body.twinB_efw));
+    warnings.push(...r.warnings);
+    if (r.value != null) discordancePercent = r.value;
+  }
+
   const upsert = {
     studyId,
     crl: body.crl,
@@ -268,22 +427,26 @@ router.post("/:studyId/measurements", async (req: StaffAuthRequest, res) => {
     ac: body.ac,
     fl: body.fl,
     hl: body.hl,
-    efw: body.efw ?? (body.bpd && body.hc && body.ac && body.fl ? calcEfw(body.bpd, body.hc, body.ac, body.fl) : undefined),
+    // numeric() columns are string-typed on the Drizzle insert side (avoids
+    // float precision loss) — values computed here as JS numbers must be
+    // stringified; raw pass-through body.* fields stay untyped (any) as before.
+    efw: efw != null ? String(efw) : undefined,
     efwPercentile: body.efwPercentile,
-    afi: body.afi,
-    afiInterpretation: body.afi ? calcAfiInterpretation(Number(body.afi)) : undefined,
+    afi: afi != null ? String(afi) : undefined,
+    afiInterpretation,
+    afiQ1: body.afiQ1, afiQ2: body.afiQ2, afiQ3: body.afiQ3, afiQ4: body.afiQ4,
     sdp: body.sdp,
     placentaLocation: body.placentaLocation,
     placentaGrade: body.placentaGrade,
     presentation: body.presentation,
     cervicalLength: body.cervicalLength,
-    cervicalLengthInterpretation: body.cervicalLength ? calcCervicalLengthInterpretation(Number(body.cervicalLength)) : undefined,
+    cervicalLengthInterpretation,
     umbilicalArteryPi: body.umbilicalArteryPi,
-    umbilicalArteryRi: body.umbilicalArteryRi,
-    umbilicalArterySd: body.umbilicalArterySd,
+    umbilicalArteryRi: umbilicalArteryRi != null ? String(umbilicalArteryRi) : undefined,
+    umbilicalArterySd: umbilicalArterySd != null ? String(umbilicalArterySd) : undefined,
     mcaPi: body.mcaPi,
     mcaRi: body.mcaRi,
-    cpr: body.cpr,
+    cpr: cpr != null ? String(cpr) : undefined,
     ductusVenoususPi: body.ductusVenoususPi,
     ductusVenoususAWave: body.ductusVenoususAWave,
     uterineArteryPi: body.uterineArteryPi,
@@ -304,7 +467,7 @@ router.post("/:studyId/measurements", async (req: StaffAuthRequest, res) => {
     twinB_fl: body.twinB_fl,
     twinB_efw: body.twinB_efw,
     twinB_presentation: body.twinB_presentation,
-    discordancePercent: body.discordancePercent,
+    discordancePercent: discordancePercent != null ? String(discordancePercent) : undefined,
     bppFetalBreathing: body.bppFetalBreathing,
     bppFetalMovement: body.bppFetalMovement,
     bppFetalTone: body.bppFetalTone,
@@ -312,6 +475,7 @@ router.post("/:studyId/measurements", async (req: StaffAuthRequest, res) => {
     bppTotal: body.bppTotal,
     nstDone: body.nstDone,
     nstResult: body.nstResult,
+    calcVersion: CALC_VERSION,
   };
   const [existing] = await db.select().from(fetalUsgMeasurementsTable).where(eq(fetalUsgMeasurementsTable.studyId, studyId)).limit(1);
   if (existing) {
@@ -319,17 +483,25 @@ router.post("/:studyId/measurements", async (req: StaffAuthRequest, res) => {
   } else {
     await db.insert(fetalUsgMeasurementsTable).values(upsert);
   }
-  const composite = calcCompositeGa(upsert);
-  const lmpGa = study.lmp ? calcGaFromLmp(study.lmp)?.weeks : undefined;
+
+  const eddResult = gaResult.gaDays != null && gaResult.establishedDate
+    ? calcEddFromEstablishedGa(gaResult.isNewlyEstablished ? gaResult.gaDays : (study.establishedGaDays ?? gaResult.gaDays), gaResult.isNewlyEstablished ? gaResult.establishedDate : (study.establishedGaDate ?? gaResult.establishedDate))
+    : null;
+
   await db.update(fetalUsgStudiesTable).set({
-    gaWeeks: composite?.weeks ?? study.gaWeeks,
-    gaDays: composite?.days ?? study.gaDays,
-    compositeGa: composite ? composite.weeks : undefined,
-    biometricGa: composite ? composite.weeks : undefined,
-    lmpGa: lmpGa ?? study.lmpGa,
-    edd: study.lmp ? calcEddFromLmp(study.lmp) : study.edd,
+    gaWeeks: gaWeeksDays?.weeks ?? study.gaWeeks,
+    gaDays: gaWeeksDays?.days ?? study.gaDays,
+    ...(gaResult.isNewlyEstablished ? {
+      establishedGaDays: gaResult.gaDays,
+      establishedGaMethod: gaResult.method,
+      establishedGaDate: gaResult.establishedDate,
+      establishedEdd: eddResult?.value ?? undefined,
+    } : {}),
+    edd: eddResult?.value ?? study.edd,
+    calcVersion: CALC_VERSION,
     updatedAt: new Date(),
   }).where(eq(fetalUsgStudiesTable.id, studyId));
+
   audit(req, { entityId: studyId, table: "fetalUsgStudies", action: "measurements_entered", details: JSON.stringify(Object.keys(upsert).filter((k) => (upsert as any)[k] !== undefined)) });
   const [updatedMeas] = await db.select().from(fetalUsgMeasurementsTable).where(eq(fetalUsgMeasurementsTable.studyId, studyId)).limit(1);
   const [updatedStudy] = await db.select().from(fetalUsgStudiesTable).where(eq(fetalUsgStudiesTable.id, studyId)).limit(1);
@@ -338,12 +510,26 @@ router.post("/:studyId/measurements", async (req: StaffAuthRequest, res) => {
   for (const a of alerts) {
     await db.insert(fetalUsgCriticalAlertsTable).values({ studyId, alertType: "auto", alertMessage: a });
   }
-  res.json({ ok: true, alerts });
+  res.json({ ok: true, alerts, warnings });
 });
 
-// --- Extract measurements (stub) ---
+// --- Extract measurements — honest capability status, not implemented ─────
+// Single authoritative handler (a prior duplicate registration of this same
+// route made this one unreachable — see fetal-usg-calculation-correction.md).
 router.post("/:studyId/extract-measurements", async (req: StaffAuthRequest, res) => {
-  res.json({ ok: true, message: "DICOM SR extraction not yet available." });
+  const studyId = Number(req.params.studyId);
+  const [study] = await db.select().from(fetalUsgStudiesTable).where(eq(fetalUsgStudiesTable.id, studyId)).limit(1);
+  if (!study) { res.status(404).json({ error: "Study not found" }); return; }
+
+  const rawStudy = study as any;
+  const srInstanceUid = rawStudy.srInstanceUid as string | undefined;
+
+  res.json({
+    available: false,
+    status: "not_implemented",
+    message: "DICOM-SR extraction is not currently available for the Fetal USG module.",
+    srInstanceUid: srInstanceUid ?? null,
+  });
 });
 
 // --- Save checklist ---
@@ -584,29 +770,6 @@ router.get("/:studyId/pacs-viewer", async (req: StaffAuthRequest, res) => {
     ? `https://viewer.ohif.org/viewer?StudyInstanceUIDs=${studyInstanceUid}`
     : "https://viewer.ohif.org";
   res.json({ viewerUrl, weasisUrl: studyInstanceUid ? `weasis://$dicom:get -r "https://viewer.ohif.org/wado?requestType=WADO&studyUID=${studyInstanceUid}"` : null });
-});
-
-// --- DICOM SR measurement extraction stub — connects to PACS for auto-population ---
-router.post("/:studyId/extract-measurements", async (req: StaffAuthRequest, res) => {
-  const studyId = Number(req.params.studyId);
-  const [study] = await db.select().from(fetalUsgStudiesTable).where(eq(fetalUsgStudiesTable.id, studyId)).limit(1);
-  if (!study) { res.status(404).json({ error: "Study not found" }); return; }
-
-  // Access DICOM UIDs from the raw row
-  const rawStudy = study as any;
-  const srInstanceUid = rawStudy.srInstanceUid as string | undefined;
-
-  // If DICOM SR UID is linked, fetch measurements from PACS
-  const extracted: Record<string, number | string | null> = {};
-  if (srInstanceUid) {
-    // Placeholder: actual DIMSE query would go here via dicomConnectors
-    // For now, return the expected structure
-    extracted.status = "DICOM SR UID present but extraction not yet implemented";
-  } else {
-    extracted.status = "No DICOM SR linked to this study";
-  }
-
-  res.json({ studyId, extracted, srInstanceUid: srInstanceUid ?? null });
 });
 
 // --- Auto follow-up appointment suggestion ---
