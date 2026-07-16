@@ -778,6 +778,19 @@ export default function BillingDesk() {
     localStorage.setItem("diagnosticErp:paymentDisplayCounterKey", paymentCounterKey);
   }, [paymentCounterKey]);
 
+  // Display token — a networked customer-facing device (tablet/monitor) has no
+  // staff login, so /api/payment-display/:counterKey (snapshot + SSE) 401s
+  // without it and the screen silently stays on "Waiting for a payment…". The
+  // token authorizes that device; append it to every URL we hand to the screen.
+  const { data: displayTokenData } = useQuery<{ token: string; hint: string }>({
+    queryKey: ["display-access-token"],
+    queryFn: () => api.get("/api/display/token"),
+    staleTime: Infinity,
+  });
+  const paymentDisplayToken = displayTokenData?.token ?? "";
+  const paymentDisplayTokenQs = paymentDisplayToken ? `?displayToken=${encodeURIComponent(paymentDisplayToken)}` : "";
+  const paymentDisplayUrl = `${window.location.origin}${erpPath(`/display/payment-qr/${encodeURIComponent(paymentCounterKey)}`)}${paymentDisplayTokenQs}`;
+
   const pushedShowTxnRef = useRef<string | null>(null);
   useEffect(() => {
     if (!gatewayPaymentInfo || !gatewayQrUrl) return;
@@ -820,7 +833,9 @@ export default function BillingDesk() {
   // a separate networked device (tablet, standalone monitor), just point its
   // browser at that same URL once — no manual re-opening needed there.
   const openGatewayQrOnSecondScreen = () => {
-    void openOnSecondMonitor(erpPath(`/display/payment-qr/${encodeURIComponent(paymentCounterKey)}`), "paymentQrDisplay");
+    // Carry the display token so the opened screen authorizes even when it is a
+    // separate device with no staff session (matches Queue Display behaviour).
+    void openOnSecondMonitor(erpPath(`/display/payment-qr/${encodeURIComponent(paymentCounterKey)}`) + paymentDisplayTokenQs, "paymentQrDisplay");
   };
 
   useEffect(() => {
@@ -2951,16 +2966,39 @@ export default function BillingDesk() {
           <DialogHeader>
             <DialogTitle>Online Payment</DialogTitle>
           </DialogHeader>
-          <div className="flex items-center justify-center gap-1.5 text-[10px] text-[#94a3b8]">
-            <Monitor size={11} />
-            Customer display:
-            <input
-              value={paymentCounterKey}
-              onChange={(e) => setPaymentCounterKey(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
-              className="w-20 h-5 px-1 text-[10px] border border-[#e2e8f0] rounded bg-white text-center"
-              title="Which customer-facing screen shows this QR — set once per workstation, must match the URL used on that screen's tablet/monitor"
-            />
-            <span className="opacity-70">— set up once: point that screen at /display/payment-qr/{paymentCounterKey}</span>
+          <div className="flex flex-col items-center gap-1 text-[10px] text-[#94a3b8]">
+            <div className="flex items-center justify-center gap-1.5">
+              <Monitor size={11} />
+              Customer display:
+              <input
+                value={paymentCounterKey}
+                onChange={(e) => setPaymentCounterKey(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
+                className="w-20 h-5 px-1 text-[10px] border border-[#e2e8f0] rounded bg-white text-center"
+                title="Which customer-facing screen shows this QR — set once per workstation, must match the URL used on that screen's tablet/monitor"
+              />
+              <span className="opacity-70">— set up once, point that screen at this URL:</span>
+            </div>
+            {/* Full URL including the display token — a networked tablet/monitor
+                needs it to authorize; without it the screen never shows the QR. */}
+            <div className="flex items-center gap-1.5 w-full justify-center">
+              <input
+                readOnly
+                value={paymentDisplayUrl}
+                onFocus={(e) => e.currentTarget.select()}
+                className="flex-1 max-w-[320px] h-5 px-1 text-[10px] font-mono border border-[#e2e8f0] rounded bg-white text-center"
+                title="Open this exact URL (it includes the display token) on the customer-facing screen"
+              />
+              <button
+                type="button"
+                onClick={() => { navigator.clipboard?.writeText(paymentDisplayUrl).catch(() => {}); }}
+                className="text-[10px] font-semibold text-[#2563eb] hover:underline"
+              >
+                Copy
+              </button>
+            </div>
+            {!paymentDisplayToken && (
+              <span className="text-[9px] text-amber-600">Loading display token… the URL will include it once ready.</span>
+            )}
           </div>
           <div className="space-y-3 py-2 text-center">
             {gatewayPaymentStatus === "pending" && !gatewayPaymentInfo && (

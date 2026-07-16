@@ -104,11 +104,12 @@ export default function QueueDisplay() {
 
   // ── Settings (presentation config) ────────────────────────────────────
   const settingsUrl = `/api/settings/queue-display/${roomKey}${displayToken ? `?displayToken=${encodeURIComponent(displayToken)}` : ""}`;
-  const { data: settings, isLoading: settingsLoading } = useQuery<QueueDisplaySettings>({
+  const { data: settings, isLoading: settingsLoading, isError: settingsError, error: settingsErrObj } = useQuery<QueueDisplaySettings>({
     queryKey: ["queue-display-settings", roomKey, displayToken],
     queryFn: () => api.get(settingsUrl),
     staleTime: 30_000,
     refetchInterval: 60_000, // pick up admin edits without a manual refresh
+    retry: 2,
   });
 
   // ── Live queue data — reuses the existing display feed, unchanged ──────
@@ -161,6 +162,26 @@ export default function QueueDisplay() {
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
+
+  // Distinguish "still loading" from "failed to load". Without this the page
+  // sits on "Loading display…" forever whenever the settings fetch fails —
+  // most commonly a 401 because the TV opened the URL without a ?displayToken
+  // (no staff session on an unattended TV). Show an actionable message instead.
+  if (settingsError && !settings) {
+    const msg = settingsErrObj instanceof Error ? settingsErrObj.message : "Could not load display settings.";
+    const looksUnauthorized = /401|unauthor|forbidden|token/i.test(msg);
+    return (
+      <div style={{ width: "100vw", height: "100vh", background: "#03152f", color: "#fff", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, textAlign: "center", padding: "6vw", fontFamily: "Inter, Arial, sans-serif" }}>
+        <div style={{ fontSize: 30, fontWeight: 800 }}>Display not available</div>
+        <div style={{ fontSize: 20, opacity: 0.85, maxWidth: 640 }}>
+          {looksUnauthorized
+            ? "This screen needs its display link. Open Settings ▸ Queue Display (TV) in the ERP, copy the “TV browser URL” (it includes the display token), and load that link on this TV."
+            : msg}
+        </div>
+        <div style={{ fontSize: 15, opacity: 0.5 }}>Room: {roomKey}</div>
+      </div>
+    );
+  }
 
   if (settingsLoading || !settings) {
     return (
