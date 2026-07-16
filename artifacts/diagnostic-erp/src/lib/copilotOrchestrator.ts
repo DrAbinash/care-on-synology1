@@ -79,6 +79,10 @@ export interface CopilotContext {
     /** Measurement labels whose interval change is clinically meaningful. */
     significantChanges?: { label: string; deltaText: string }[];
   };
+  /** Accepted viewer/DICOM-SR measurements (MRI PR 2) — populated by the
+   *  workspace from the existing useViewerMeasurements hook, so the measurement
+   *  module can flag values captured in the viewer but missing from the report. */
+  viewerMeasurements?: { label: string; value: number; unit: string; imported: boolean }[];
 }
 
 const has = (haystack: string, needle: string) => haystack.includes(needle);
