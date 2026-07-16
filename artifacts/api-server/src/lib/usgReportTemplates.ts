@@ -16,6 +16,24 @@
  *     radiologist's own narrative — the system never writes the impression.
  *   - "Recommendations" section is rendered empty unless the radiologist
  *     types one — the AI does not suggest clinical follow-up.
+ *
+ * ── Template-store consolidation ─────────────────────────────────────────────
+ * Each template is now split into two parts:
+ *   1. SKELETON (content): the static report body with `${token}`
+ *      placeholders — data, editable by admins. The authoritative copy lives
+ *      in the canonical `structured_report_templates` table (modality "USG",
+ *      studyType = the UsgTemplateId), seeded from USG_STRUCTURED_TEMPLATE_
+ *      PRESETS below via POST /api/structured-report-templates/seed. The
+ *      copies in this file are the built-in defaults AND the fallback when
+ *      no DB row exists (see lib/usgTemplateStore.ts for the DB lookup).
+ *   2. BINDINGS (logic): which approved measurement feeds which token, with
+ *      the low-confidence guard. This stays code — it is the safety layer
+ *      and is NOT admin-editable. The header (patient identity) and footer
+ *      (disclaimer) are likewise system-owned and never come from the DB.
+ * After substitution, any `${token}` the binding layer doesn't know is
+ * rendered as "___" so a typo in an admin-edited skeleton degrades to a
+ * blank the radiologist fills manually — it can never leak a raw token or
+ * an unapproved value into a report.
  */
 
 import type { UsgMeasurement, UsgDopplerMeasurement } from "@workspace/db/schema";
@@ -82,6 +100,13 @@ export interface AutoGenOutput {
   usedDopplerIds: number[];
 }
 
+/** Options for autoGenerateReport — `skeletonOverride` is the admin-edited
+ *  skeleton body from structured_report_templates (defaultFindings column);
+ *  null/undefined/blank falls back to the built-in skeleton. */
+export interface AutoGenOptions {
+  skeletonOverride?: string | null;
+}
+
 // ─── Smart template selector ──────────────────────────────────────────────────
 // Suggest the best template from modality + studyDescription + body part.
 
@@ -114,6 +139,264 @@ export function suggestTemplate(opts: {
 
   return "WHOLE_ABDOMEN";
 }
+
+// ─── Skeletons (content — DB-overridable) ────────────────────────────────────
+
+export interface UsgTemplateSkeleton {
+  /** Report title line rendered in the system-owned header. */
+  title: string;
+  /** bodyPart value used for the structured_report_templates row. */
+  bodyPart: string;
+  /** Report body with ${token} placeholders bound by buildBindings(). */
+  skeleton: string;
+}
+
+export const USG_TEMPLATE_SKELETONS: Record<UsgTemplateId, UsgTemplateSkeleton> = {
+  OB_EARLY: {
+    title: "USG OBSTETRIC — EARLY PREGNANCY",
+    bodyPart: "OBSTETRIC",
+    skeleton: [
+      "GESTATIONAL SAC:  ${gestationalSac}      Yolk Sac: ${yolkSac}",
+      "CRL             : ${crl}",
+      "Gestational Age : ${ga}    EDD: ${edd}",
+      "FHR             : ${fhr} bpm     Cardiac activity: Present / Absent",
+      "Uterus          : ${uterus}",
+      "Ovaries         : R ${rightOvary}    L ${leftOvary}",
+      "",
+      "FINDINGS:",
+      "Single live intrauterine gestation noted.",
+      "Gestational sac is regular, with yolk sac visualised.",
+      "CRL corresponds to ${ga} of gestation.",
+      "Cardiac activity is present at ${fhr} bpm.",
+      "",
+      "IMPRESSION:",
+    ].join("\n"),
+  },
+  OB_GROWTH: {
+    title: "USG OBSTETRIC — GROWTH SCAN",
+    bodyPart: "OBSTETRIC",
+    skeleton: [
+      "FETAL BIOMETRY:",
+      "  BPD : ${bpd}        HC : ${hc}",
+      "  AC  : ${ac}         FL : ${fl}",
+      "  EFW : ${efw}",
+      "",
+      "GESTATIONAL AGE:",
+      "  By USG: ${ga}        EDD by USG: ${edd}",
+      "",
+      "FETAL WELL-BEING:",
+      "  FHR        : ${fhr} bpm   Rhythm: Regular",
+      "  Presentation: ${presentation}",
+      "  Fetal movements: Present",
+      "",
+      "PLACENTA & LIQUOR:",
+      "  Placenta: ${placenta}     Grade: ___",
+      "  AFI     : ${afi} cm        (Normal: 8–18 cm)",
+      "",
+      "FINDINGS:",
+      "Single live intrauterine fetus seen.",
+      "Biometry corresponds to approximately ${ga}.",
+      "BPD ${bpd}, HC ${hc}, AC ${ac}, FL ${fl}.",
+      "Estimated fetal weight ${efw}.",
+      "FHR ${fhr} bpm. Placenta ${placenta}. Liquor ${afi}.",
+      "EDD by USG: ${edd}.",
+      "",
+      "IMPRESSION:",
+    ].join("\n"),
+  },
+  OB_ANOMALY: {
+    title: "USG OBSTETRIC — ANOMALY SCAN (18–22 wks)",
+    bodyPart: "OBSTETRIC",
+    skeleton: [
+      "BIOMETRY: BPD ${bpd}  HC ${hc}  AC ${ac}  FL ${fl}  EFW ${efw}",
+      "GA: ${ga}    EDD: ${edd}    FHR: ${fhr} bpm",
+      "",
+      "ANATOMICAL SURVEY:",
+      "  Head & Neck : ___",
+      "  Face & Profile: ___",
+      "  Cranium / Cerebellum / Cavum Septum Pellucidum: ___",
+      "  Lateral Ventricles: ___",
+      "  Spine: ___",
+      "  Heart (4-chamber view): ___    Outflow tracts: ___",
+      "  Diaphragm: ___",
+      "  Stomach: ___       Bowel: ___       Kidneys: ___",
+      "  Urinary bladder: ___           Genitalia: ___",
+      "  Upper limbs: ___      Lower limbs: ___      Hands/Feet: ___",
+      "  Placenta: ___        Cord (3 vessels): ___",
+      "",
+      "IMPRESSION:",
+    ].join("\n"),
+  },
+  PELVIS_FEMALE: {
+    title: "USG PELVIS — FEMALE (TV / TA)",
+    bodyPart: "PELVIS",
+    skeleton: [
+      "UTERUS      : Size ${uterus}   Position: Anteverted / Retroverted",
+      "              Myometrium: Homogeneous     Endometrium: ${endometrium}",
+      "RIGHT OVARY : ${rightOvary}   Follicles: ___",
+      "LEFT OVARY  : ${leftOvary}   Follicles: ___",
+      "POD         : Free / Fluid",
+      "Adnexal lesion: Nil / Present",
+      "",
+      "IMPRESSION:",
+    ].join("\n"),
+  },
+  WHOLE_ABDOMEN: {
+    title: "USG WHOLE ABDOMEN",
+    bodyPart: "ABDOMEN",
+    skeleton: [
+      "LIVER       : Size ${liver}   Echotexture: Homogeneous   IHBR: Not dilated",
+      "              Portal Vein: Normal calibre",
+      "GALLBLADDER : Wall ${gbWall} mm   Calculi: Nil   Sludge: Nil",
+      "CBD         : ${cbd} mm",
+      "SPLEEN      : ${spleen}   Echotexture: Homogeneous",
+      "PANCREAS    : Head/Body/Tail visualised, normal echotexture",
+      "RIGHT KIDNEY: ${rightKidney}",
+      "LEFT KIDNEY : ${leftKidney}",
+      "U. BLADDER  : Adequately filled, wall normal, no calculi",
+      "AORTA / IVC : Normal calibre",
+      "Free fluid  : Nil",
+      "",
+      "IMPRESSION:",
+    ].join("\n"),
+  },
+  KUB: {
+    title: "USG KUB",
+    bodyPart: "KUB",
+    skeleton: [
+      "RIGHT KIDNEY : ${rightKidney}   Cortex: ___ mm   Calculi: Nil / Present",
+      "LEFT KIDNEY  : ${leftKidney}   Cortex: ___ mm   Calculi: Nil / Present",
+      "URETERS      : Not dilated / Dilated at ___",
+      "U. BLADDER   : Capacity ___ ml   Wall: Normal   Calculi: Nil",
+      "               Post-void residue: ___ ml",
+      "PROSTATE     : ${prostateVolume} ml (if applicable)",
+      "",
+      "IMPRESSION:",
+    ].join("\n"),
+  },
+  PROSTATE: {
+    title: "USG PROSTATE (TA / TRUS)",
+    bodyPart: "PELVIS",
+    skeleton: [
+      "PROSTATE      : Volume ${prostateVolume} ml",
+      "                Shape: Normal / Enlarged",
+      "                Echotexture: Homogeneous / Heterogeneous",
+      "                Median lobe protrusion: Absent / Present",
+      "                Calcifications: Nil / Present",
+      "SEMINAL VESICLES: Symmetric, no abnormality",
+      "U. BLADDER    : Wall normal   Capacity: ___ ml",
+      "                Post-void residue: ___ ml",
+      "",
+      "IMPRESSION:",
+    ].join("\n"),
+  },
+  SCROTUM: {
+    title: "USG SCROTUM",
+    bodyPart: "SCROTUM",
+    skeleton: [
+      "RIGHT TESTIS  : ___ × ___ × ___ mm   Volume: ___ ml   Echotexture: Homogeneous",
+      "LEFT TESTIS   : ___ × ___ × ___ mm   Volume: ___ ml   Echotexture: Homogeneous",
+      "RIGHT EPIDIDYMIS: Head ___ mm   No focal lesion",
+      "LEFT EPIDIDYMIS : Head ___ mm   No focal lesion",
+      "HYDROCELE     : Nil / Right / Left / Bilateral",
+      "VARICOCELE    : Nil / Right / Left",
+      "VASCULARITY   : Symmetric arterial flow on colour Doppler",
+      "",
+      "IMPRESSION:",
+    ].join("\n"),
+  },
+  THYROID: {
+    title: "USG THYROID + NECK",
+    bodyPart: "NECK",
+    skeleton: [
+      "RIGHT LOBE  : ___ × ___ × ___ mm   Volume: ___ ml",
+      "LEFT LOBE   : ___ × ___ × ___ mm   Volume: ___ ml",
+      "ISTHMUS     : ___ mm",
+      "ECHOTEXTURE : Homogeneous / Heterogeneous",
+      "NODULES     : Nil / Right ___ TIRADS ___ / Left ___ TIRADS ___",
+      "CERVICAL LN : No significant adenopathy",
+      "",
+      "IMPRESSION:",
+    ].join("\n"),
+  },
+  BREAST: {
+    title: "USG BREAST — BILATERAL",
+    bodyPart: "BREAST",
+    skeleton: [
+      "RIGHT BREAST : No focal lesion   Skin/Subcutaneous: Normal",
+      "               Ductal dilatation: Nil",
+      "LEFT BREAST  : No focal lesion   Skin/Subcutaneous: Normal",
+      "               Ductal dilatation: Nil",
+      "RIGHT AXILLA : No significant adenopathy",
+      "LEFT AXILLA  : No significant adenopathy",
+      "BIRADS       : ___",
+      "",
+      "IMPRESSION:",
+    ].join("\n"),
+  },
+  ARTERIAL_DOPPLER: {
+    title: "ARTERIAL DOPPLER",
+    bodyPart: "LIMB",
+    skeleton: [
+      "VESSELS EVALUATED:",
+      "${dopplerRows}",
+      "",
+      "ANKLE-BRACHIAL INDEX (ABI):\n  Right: ___        Left: ___",
+      "",
+      "IMPRESSION:",
+    ].join("\n"),
+  },
+  VENOUS_DOPPLER: {
+    title: "VENOUS DOPPLER",
+    bodyPart: "LIMB",
+    skeleton: [
+      "VESSELS EVALUATED:",
+      "${dopplerRows}",
+      "",
+      "COMPRESSIBILITY: ___ \nAUGMENTATION   : ___ \nFLOW PHASICITY : ___",
+      "",
+      "IMPRESSION:",
+    ].join("\n"),
+  },
+  CAROTID_DOPPLER: {
+    title: "CAROTID DOPPLER",
+    bodyPart: "CAROTID",
+    skeleton: [
+      "VESSELS EVALUATED:",
+      "${dopplerRows}",
+      "",
+      "INTIMA-MEDIA THICKNESS:\n  Right CCA: ___ mm     Left CCA: ___ mm\nPLAQUE  : Nil / Right ___ / Left ___",
+      "",
+      "IMPRESSION:",
+    ].join("\n"),
+  },
+};
+
+/** Rows for the canonical structured_report_templates table (modality "USG",
+ *  studyType = UsgTemplateId, defaultFindings = the skeleton). Seeded by
+ *  POST /api/structured-report-templates/seed so the canonical store — not
+ *  this file — is what admins edit; this file remains the fallback. */
+export const USG_STRUCTURED_TEMPLATE_PRESETS = USG_TEMPLATES.map((t) => {
+  const s = USG_TEMPLATE_SKELETONS[t.id];
+  const placeholders = [...new Set([...s.skeleton.matchAll(/\$\{([a-zA-Z0-9_]+)\}/g)].map((m) => m[1]))];
+  return {
+    templateName: t.label,
+    modality: "USG",
+    bodyPart: s.bodyPart,
+    studyType: t.id,
+    defaultFindings: s.skeleton,
+    sectionsJson: JSON.stringify({
+      kind: "usg-autofill-skeleton",
+      placeholders,
+      note:
+        "Skeleton for USG auto-generated reports (/api/usg-reports). ${tokens} are filled " +
+        "from APPROVED measurements only; unknown tokens render as '___'. The report header, " +
+        "footer and safety disclaimer are system-owned and cannot be edited here.",
+    }),
+    macrosJson: null as string | null,
+    isPreset: true,
+  };
+});
 
 // ─── Renderer ─────────────────────────────────────────────────────────────────
 
@@ -167,8 +450,19 @@ function footer(source?: string | null): string {
   return disclaimerLines.join("\n");
 }
 
-/** Render the template, filling in approved measurements and tracking stats. */
-export function autoGenerateReport(input: AutoGenInput): AutoGenOutput {
+/** Substitute ${token} placeholders. Unknown tokens degrade to "___" — an
+ *  admin skeleton typo can never leak a raw token or an unapproved value. */
+function renderSkeleton(skeleton: string, bindings: Record<string, string>): string {
+  return skeleton.replace(/\$\{([a-zA-Z0-9_]+)\}/g, (_whole, token: string) =>
+    Object.prototype.hasOwnProperty.call(bindings, token) ? bindings[token] : "___",
+  );
+}
+
+/** Render the template, filling in approved measurements and tracking stats.
+ *  Pass opts.skeletonOverride (the admin-edited structured_report_templates
+ *  row's defaultFindings) to render that skeleton instead of the built-in;
+ *  bindings, header, footer and all safety rules are identical either way. */
+export function autoGenerateReport(input: AutoGenInput, opts: AutoGenOptions = {}): AutoGenOutput {
   const m = input.measurement ?? null;
   const d = input.dopplerMeasurements ?? [];
   let filled = 0;
@@ -182,220 +476,98 @@ export function autoGenerateReport(input: AutoGenInput): AutoGenOutput {
     return r.text;
   };
 
-  let body = "";
+  const usedDopplerIds: number[] = [];
+  let bindings: Record<string, string>;
+
   switch (input.templateId) {
     case "OB_EARLY":
-      body = [
-        "GESTATIONAL SAC:  ${gs}      Yolk Sac: ${ys}",
-        "CRL             : ${crl}",
-        "Gestational Age : ${ga}    EDD: ${edd}",
-        "FHR             : ${fhr} bpm     Cardiac activity: Present / Absent",
-        "Uterus          : ${uterus}",
-        "Ovaries         : R ${ro}    L ${lo}",
-        "",
-        "FINDINGS:",
-        "Single live intrauterine gestation noted.",
-        "Gestational sac is regular, with yolk sac visualised.",
-        "CRL corresponds to ${ga} of gestation.",
-        "Cardiac activity is present at ${fhr} bpm.",
-        "",
-        "IMPRESSION:",
-      ].join("\n")
-        .replace("${gs}", "___")
-        .replace("${ys}", "___")
-        .replace("${crl}", g("crl", "crlConfidence"))
-        .replace(/\$\{ga\}/g, g("ga", "gaConfidence"))
-        .replace("${edd}", g("edd", "eddConfidence"))
-        .replace(/\$\{fhr\}/g, g("fhr", "fhrConfidence"))
-        .replace("${uterus}", g("uterusSize", "uterusSizeConfidence"))
-        .replace("${ro}", g("rightOvary", "rightOvaryConfidence"))
-        .replace("${lo}", g("leftOvary", "leftOvaryConfidence"));
-      return { content: header(input, "USG OBSTETRIC — EARLY PREGNANCY") + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
+      bindings = {
+        gestationalSac: "___",
+        yolkSac: "___",
+        crl: g("crl", "crlConfidence"),
+        ga: g("ga", "gaConfidence"),
+        edd: g("edd", "eddConfidence"),
+        fhr: g("fhr", "fhrConfidence"),
+        uterus: g("uterusSize", "uterusSizeConfidence"),
+        rightOvary: g("rightOvary", "rightOvaryConfidence"),
+        leftOvary: g("leftOvary", "leftOvaryConfidence"),
+      };
+      break;
 
-    case "OB_GROWTH": {
-      const bpd = g("bpd", "bpdConfidence");
-      const hc  = g("hc",  "hcConfidence");
-      const ac  = g("ac",  "acConfidence");
-      const fl  = g("fl",  "flConfidence");
-      const efw = g("efw", "efwConfidence");
-      const ga  = g("ga",  "gaConfidence");
-      const edd = g("edd", "eddConfidence");
-      const fhr = g("fhr", "fhrConfidence");
-      const afi = m?.liquorAfi ?? "___";
-      const placenta = m?.placentaPosition ?? "___";
-      const presentation = m?.fetalPresentation ?? "___";
-      body = [
-        "FETAL BIOMETRY:",
-        `  BPD : ${bpd}        HC : ${hc}`,
-        `  AC  : ${ac}         FL : ${fl}`,
-        `  EFW : ${efw}`,
-        "",
-        "GESTATIONAL AGE:",
-        `  By USG: ${ga}        EDD by USG: ${edd}`,
-        "",
-        "FETAL WELL-BEING:",
-        `  FHR        : ${fhr} bpm   Rhythm: Regular`,
-        `  Presentation: ${presentation}`,
-        "  Fetal movements: Present",
-        "",
-        "PLACENTA & LIQUOR:",
-        `  Placenta: ${placenta}     Grade: ___`,
-        `  AFI     : ${afi} cm        (Normal: 8–18 cm)`,
-        "",
-        "FINDINGS:",
-        "Single live intrauterine fetus seen.",
-        `Biometry corresponds to approximately ${ga}.`,
-        `BPD ${bpd}, HC ${hc}, AC ${ac}, FL ${fl}.`,
-        `Estimated fetal weight ${efw}.`,
-        `FHR ${fhr} bpm. Placenta ${placenta}. Liquor ${afi}.`,
-        `EDD by USG: ${edd}.`,
-        "",
-        "IMPRESSION:",
-      ].join("\n");
-      return { content: header(input, "USG OBSTETRIC — GROWTH SCAN") + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
-    }
+    case "OB_GROWTH":
+      bindings = {
+        bpd: g("bpd", "bpdConfidence"),
+        hc:  g("hc",  "hcConfidence"),
+        ac:  g("ac",  "acConfidence"),
+        fl:  g("fl",  "flConfidence"),
+        efw: g("efw", "efwConfidence"),
+        ga:  g("ga",  "gaConfidence"),
+        edd: g("edd", "eddConfidence"),
+        fhr: g("fhr", "fhrConfidence"),
+        // Directly substituted (no confidence column, not counted) — same as
+        // the pre-consolidation renderer.
+        afi: String(m?.liquorAfi ?? "___"),
+        placenta: String(m?.placentaPosition ?? "___"),
+        presentation: String(m?.fetalPresentation ?? "___"),
+      };
+      break;
 
-    case "OB_ANOMALY": {
-      const bpd = g("bpd","bpdConfidence"), hc=g("hc","hcConfidence"), ac=g("ac","acConfidence"), fl=g("fl","flConfidence"), efw=g("efw","efwConfidence"), ga=g("ga","gaConfidence"), edd=g("edd","eddConfidence"), fhr=g("fhr","fhrConfidence");
-      body = [
-        `BIOMETRY: BPD ${bpd}  HC ${hc}  AC ${ac}  FL ${fl}  EFW ${efw}`,
-        `GA: ${ga}    EDD: ${edd}    FHR: ${fhr} bpm`,
-        "",
-        "ANATOMICAL SURVEY:",
-        "  Head & Neck : ___",
-        "  Face & Profile: ___",
-        "  Cranium / Cerebellum / Cavum Septum Pellucidum: ___",
-        "  Lateral Ventricles: ___",
-        "  Spine: ___",
-        "  Heart (4-chamber view): ___    Outflow tracts: ___",
-        "  Diaphragm: ___",
-        "  Stomach: ___       Bowel: ___       Kidneys: ___",
-        "  Urinary bladder: ___           Genitalia: ___",
-        "  Upper limbs: ___      Lower limbs: ___      Hands/Feet: ___",
-        "  Placenta: ___        Cord (3 vessels): ___",
-        "",
-        "IMPRESSION:",
-      ].join("\n");
-      return { content: header(input, "USG OBSTETRIC — ANOMALY SCAN (18–22 wks)") + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
-    }
+    case "OB_ANOMALY":
+      bindings = {
+        bpd: g("bpd", "bpdConfidence"),
+        hc:  g("hc",  "hcConfidence"),
+        ac:  g("ac",  "acConfidence"),
+        fl:  g("fl",  "flConfidence"),
+        efw: g("efw", "efwConfidence"),
+        ga:  g("ga",  "gaConfidence"),
+        edd: g("edd", "eddConfidence"),
+        fhr: g("fhr", "fhrConfidence"),
+      };
+      break;
 
-    case "PELVIS_FEMALE": {
-      const ut = g("uterusSize","uterusSizeConfidence"), endo=g("endometrium","endometriumConfidence"), ro=g("rightOvary","rightOvaryConfidence"), lo=g("leftOvary","leftOvaryConfidence");
-      body = [
-        `UTERUS      : Size ${ut}   Position: Anteverted / Retroverted`,
-        `              Myometrium: Homogeneous     Endometrium: ${endo}`,
-        `RIGHT OVARY : ${ro}   Follicles: ___`,
-        `LEFT OVARY  : ${lo}   Follicles: ___`,
-        "POD         : Free / Fluid",
-        "Adnexal lesion: Nil / Present",
-        "",
-        "IMPRESSION:",
-      ].join("\n");
-      return { content: header(input, "USG PELVIS — FEMALE (TV / TA)") + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
-    }
+    case "PELVIS_FEMALE":
+      bindings = {
+        uterus: g("uterusSize", "uterusSizeConfidence"),
+        endometrium: g("endometrium", "endometriumConfidence"),
+        rightOvary: g("rightOvary", "rightOvaryConfidence"),
+        leftOvary: g("leftOvary", "leftOvaryConfidence"),
+      };
+      break;
 
-    case "WHOLE_ABDOMEN": {
-      const liver=g("liverSize","liverSizeConfidence"), gbw=g("gbWall","gbWallConfidence"), cbd=g("cbd","cbdConfidence"), spleen=g("spleenSize","spleenSizeConfidence"), rk=g("rightKidney","rightKidneyConfidence"), lk=g("leftKidney","leftKidneyConfidence");
-      body = [
-        `LIVER       : Size ${liver}   Echotexture: Homogeneous   IHBR: Not dilated`,
-        `              Portal Vein: Normal calibre`,
-        `GALLBLADDER : Wall ${gbw} mm   Calculi: Nil   Sludge: Nil`,
-        `CBD         : ${cbd} mm`,
-        `SPLEEN      : ${spleen}   Echotexture: Homogeneous`,
-        "PANCREAS    : Head/Body/Tail visualised, normal echotexture",
-        `RIGHT KIDNEY: ${rk}`,
-        `LEFT KIDNEY : ${lk}`,
-        "U. BLADDER  : Adequately filled, wall normal, no calculi",
-        "AORTA / IVC : Normal calibre",
-        "Free fluid  : Nil",
-        "",
-        "IMPRESSION:",
-      ].join("\n");
-      return { content: header(input, "USG WHOLE ABDOMEN") + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
-    }
+    case "WHOLE_ABDOMEN":
+      bindings = {
+        liver: g("liverSize", "liverSizeConfidence"),
+        gbWall: g("gbWall", "gbWallConfidence"),
+        cbd: g("cbd", "cbdConfidence"),
+        spleen: g("spleenSize", "spleenSizeConfidence"),
+        rightKidney: g("rightKidney", "rightKidneyConfidence"),
+        leftKidney: g("leftKidney", "leftKidneyConfidence"),
+      };
+      break;
 
-    case "KUB": {
-      const rk=g("rightKidney","rightKidneyConfidence"), lk=g("leftKidney","leftKidneyConfidence"), pv=g("prostateVolume","prostateVolumeConfidence");
-      body = [
-        `RIGHT KIDNEY : ${rk}   Cortex: ___ mm   Calculi: Nil / Present`,
-        `LEFT KIDNEY  : ${lk}   Cortex: ___ mm   Calculi: Nil / Present`,
-        "URETERS      : Not dilated / Dilated at ___",
-        "U. BLADDER   : Capacity ___ ml   Wall: Normal   Calculi: Nil",
-        "               Post-void residue: ___ ml",
-        `PROSTATE     : ${pv} ml (if applicable)`,
-        "",
-        "IMPRESSION:",
-      ].join("\n");
-      return { content: header(input, "USG KUB") + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
-    }
+    case "KUB":
+      bindings = {
+        rightKidney: g("rightKidney", "rightKidneyConfidence"),
+        leftKidney: g("leftKidney", "leftKidneyConfidence"),
+        prostateVolume: g("prostateVolume", "prostateVolumeConfidence"),
+      };
+      break;
 
-    case "PROSTATE": {
-      const pv=g("prostateVolume","prostateVolumeConfidence");
-      body = [
-        `PROSTATE      : Volume ${pv} ml`,
-        "                Shape: Normal / Enlarged",
-        "                Echotexture: Homogeneous / Heterogeneous",
-        "                Median lobe protrusion: Absent / Present",
-        "                Calcifications: Nil / Present",
-        "SEMINAL VESICLES: Symmetric, no abnormality",
-        "U. BLADDER    : Wall normal   Capacity: ___ ml",
-        "                Post-void residue: ___ ml",
-        "",
-        "IMPRESSION:",
-      ].join("\n");
-      return { content: header(input, "USG PROSTATE (TA / TRUS)") + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
-    }
+    case "PROSTATE":
+      bindings = {
+        prostateVolume: g("prostateVolume", "prostateVolumeConfidence"),
+      };
+      break;
 
     case "SCROTUM":
-      body = [
-        "RIGHT TESTIS  : ___ × ___ × ___ mm   Volume: ___ ml   Echotexture: Homogeneous",
-        "LEFT TESTIS   : ___ × ___ × ___ mm   Volume: ___ ml   Echotexture: Homogeneous",
-        "RIGHT EPIDIDYMIS: Head ___ mm   No focal lesion",
-        "LEFT EPIDIDYMIS : Head ___ mm   No focal lesion",
-        "HYDROCELE     : Nil / Right / Left / Bilateral",
-        "VARICOCELE    : Nil / Right / Left",
-        "VASCULARITY   : Symmetric arterial flow on colour Doppler",
-        "",
-        "IMPRESSION:",
-      ].join("\n");
-      return { content: header(input, "USG SCROTUM") + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
-
     case "THYROID":
-      body = [
-        "RIGHT LOBE  : ___ × ___ × ___ mm   Volume: ___ ml",
-        "LEFT LOBE   : ___ × ___ × ___ mm   Volume: ___ ml",
-        "ISTHMUS     : ___ mm",
-        "ECHOTEXTURE : Homogeneous / Heterogeneous",
-        "NODULES     : Nil / Right ___ TIRADS ___ / Left ___ TIRADS ___",
-        "CERVICAL LN : No significant adenopathy",
-        "",
-        "IMPRESSION:",
-      ].join("\n");
-      return { content: header(input, "USG THYROID + NECK") + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
-
     case "BREAST":
-      body = [
-        "RIGHT BREAST : No focal lesion   Skin/Subcutaneous: Normal",
-        "               Ductal dilatation: Nil",
-        "LEFT BREAST  : No focal lesion   Skin/Subcutaneous: Normal",
-        "               Ductal dilatation: Nil",
-        "RIGHT AXILLA : No significant adenopathy",
-        "LEFT AXILLA  : No significant adenopathy",
-        "BIRADS       : ___",
-        "",
-        "IMPRESSION:",
-      ].join("\n");
-      return { content: header(input, "USG BREAST — BILATERAL") + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds: [] };
+      bindings = {};
+      break;
 
     case "ARTERIAL_DOPPLER":
     case "VENOUS_DOPPLER":
     case "CAROTID_DOPPLER": {
-      const titleMap: Record<string,string> = {
-        ARTERIAL_DOPPLER: "ARTERIAL DOPPLER",
-        VENOUS_DOPPLER:   "VENOUS DOPPLER",
-        CAROTID_DOPPLER:  "CAROTID DOPPLER",
-      };
-      const usedDopplerIds: number[] = [];
       const rows = d.length
         ? d.map((row) => {
             usedDopplerIds.push(row.id);
@@ -406,20 +578,23 @@ export function autoGenerateReport(input: AutoGenInput): AutoGenOutput {
               (row.waveformDescription ? `\n    ${row.waveformDescription}` : "");
           }).join("\n\n")
         : "  (no approved Doppler measurements — add vessels in the Doppler Reporting page)";
-
-      body = [
-        `VESSELS EVALUATED:`,
-        rows,
-        "",
-        input.templateId === "VENOUS_DOPPLER"
-          ? "COMPRESSIBILITY: ___ \nAUGMENTATION   : ___ \nFLOW PHASICITY : ___"
-          : input.templateId === "CAROTID_DOPPLER"
-            ? "INTIMA-MEDIA THICKNESS:\n  Right CCA: ___ mm     Left CCA: ___ mm\nPLAQUE  : Nil / Right ___ / Left ___"
-            : "ANKLE-BRACHIAL INDEX (ABI):\n  Right: ___        Left: ___",
-        "",
-        "IMPRESSION:",
-      ].join("\n");
-      return { content: header(input, `${titleMap[input.templateId]}`) + body + footer(m?.source), templateId: input.templateId, filledFieldCount: filled, skippedLowConfidenceCount: skipped, usedMeasurementId: m?.id ?? null, usedDopplerIds };
+      bindings = { dopplerRows: rows };
+      break;
     }
   }
+
+  const tpl = USG_TEMPLATE_SKELETONS[input.templateId];
+  const skeleton = opts.skeletonOverride && opts.skeletonOverride.trim().length > 0
+    ? opts.skeletonOverride
+    : tpl.skeleton;
+  const body = renderSkeleton(skeleton, bindings);
+
+  return {
+    content: header(input, tpl.title) + body + footer(m?.source),
+    templateId: input.templateId,
+    filledFieldCount: filled,
+    skippedLowConfidenceCount: skipped,
+    usedMeasurementId: m?.id ?? null,
+    usedDopplerIds,
+  };
 }

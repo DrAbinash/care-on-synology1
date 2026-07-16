@@ -1,0 +1,219 @@
+{
+  "OB_EARLY": {
+    "content": "USG OBSTETRIC — EARLY PREGNANCY\n════════════════════════════════════════════════════════════\nPatient   : SITA DEVI   Age: 28 Y   Sex: F\nAccession : ACC-2026-0042\nStudy Date: 2026-07-16\nReferrer  : Dr. A. Kumar\nGESTATIONAL SAC:  ___      Yolk Sac: ___\nCRL             : 62 mm\nGestational Age : 12w4d    EDD: 2027-01-20\nFHR             : 156 bpm     Cardiac activity: Present / Absent\nUterus          : 78 x 42 x 51 mm\nOvaries         : R 30 x 20 mm    L [___ low confidence – verify]\n\nFINDINGS:\nSingle live intrauterine gestation noted.\nGestational sac is regular, with yolk sac visualised.\nCRL corresponds to 12w4d of gestation.\nCardiac activity is present at 156 bpm.\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.\nNote: Measurements in this report were auto-extracted using Gemini AI OCR from modality captures and verified/approved by the signing radiologist.",
+    "templateId": "OB_EARLY",
+    "filledFieldCount": 6,
+    "skippedLowConfidenceCount": 1,
+    "usedMeasurementId": 42,
+    "usedDopplerIds": []
+  },
+  "OB_EARLY__empty": {
+    "content": "USG OBSTETRIC — EARLY PREGNANCY\n════════════════════════════════════════════════════════════\nPatient   : ___\nAccession : ___\nStudy Date: 2026-07-16\nReferrer  : ___\nGESTATIONAL SAC:  ___      Yolk Sac: ___\nCRL             : ___\nGestational Age : ___    EDD: ___\nFHR             : ___ bpm     Cardiac activity: Present / Absent\nUterus          : ___\nOvaries         : R ___    L ___\n\nFINDINGS:\nSingle live intrauterine gestation noted.\nGestational sac is regular, with yolk sac visualised.\nCRL corresponds to ___ of gestation.\nCardiac activity is present at ___ bpm.\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.",
+    "templateId": "OB_EARLY",
+    "filledFieldCount": 0,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": null,
+    "usedDopplerIds": []
+  },
+  "OB_GROWTH": {
+    "content": "USG OBSTETRIC — GROWTH SCAN\n════════════════════════════════════════════════════════════\nPatient   : SITA DEVI   Age: 28 Y   Sex: F\nAccession : ACC-2026-0042\nStudy Date: 2026-07-16\nReferrer  : Dr. A. Kumar\nFETAL BIOMETRY:\n  BPD : 82 mm        HC : 300 mm\n  AC  : [___ low confidence – verify]         FL : 65 mm\n  EFW : 2100 g\n\nGESTATIONAL AGE:\n  By USG: 12w4d        EDD by USG: 2027-01-20\n\nFETAL WELL-BEING:\n  FHR        : 156 bpm   Rhythm: Regular\n  Presentation: Cephalic\n  Fetal movements: Present\n\nPLACENTA & LIQUOR:\n  Placenta: Anterior, upper segment     Grade: ___\n  AFI     : 12 cm        (Normal: 8–18 cm)\n\nFINDINGS:\nSingle live intrauterine fetus seen.\nBiometry corresponds to approximately 12w4d.\nBPD 82 mm, HC 300 mm, AC [___ low confidence – verify], FL 65 mm.\nEstimated fetal weight 2100 g.\nFHR 156 bpm. Placenta Anterior, upper segment. Liquor 12.\nEDD by USG: 2027-01-20.\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.\nNote: Measurements in this report were auto-extracted using Gemini AI OCR from modality captures and verified/approved by the signing radiologist.",
+    "templateId": "OB_GROWTH",
+    "filledFieldCount": 7,
+    "skippedLowConfidenceCount": 1,
+    "usedMeasurementId": 42,
+    "usedDopplerIds": []
+  },
+  "OB_GROWTH__empty": {
+    "content": "USG OBSTETRIC — GROWTH SCAN\n════════════════════════════════════════════════════════════\nPatient   : ___\nAccession : ___\nStudy Date: 2026-07-16\nReferrer  : ___\nFETAL BIOMETRY:\n  BPD : ___        HC : ___\n  AC  : ___         FL : ___\n  EFW : ___\n\nGESTATIONAL AGE:\n  By USG: ___        EDD by USG: ___\n\nFETAL WELL-BEING:\n  FHR        : ___ bpm   Rhythm: Regular\n  Presentation: ___\n  Fetal movements: Present\n\nPLACENTA & LIQUOR:\n  Placenta: ___     Grade: ___\n  AFI     : ___ cm        (Normal: 8–18 cm)\n\nFINDINGS:\nSingle live intrauterine fetus seen.\nBiometry corresponds to approximately ___.\nBPD ___, HC ___, AC ___, FL ___.\nEstimated fetal weight ___.\nFHR ___ bpm. Placenta ___. Liquor ___.\nEDD by USG: ___.\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.",
+    "templateId": "OB_GROWTH",
+    "filledFieldCount": 0,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": null,
+    "usedDopplerIds": []
+  },
+  "OB_ANOMALY": {
+    "content": "USG OBSTETRIC — ANOMALY SCAN (18–22 wks)\n════════════════════════════════════════════════════════════\nPatient   : SITA DEVI   Age: 28 Y   Sex: F\nAccession : ACC-2026-0042\nStudy Date: 2026-07-16\nReferrer  : Dr. A. Kumar\nBIOMETRY: BPD 82 mm  HC 300 mm  AC [___ low confidence – verify]  FL 65 mm  EFW 2100 g\nGA: 12w4d    EDD: 2027-01-20    FHR: 156 bpm\n\nANATOMICAL SURVEY:\n  Head & Neck : ___\n  Face & Profile: ___\n  Cranium / Cerebellum / Cavum Septum Pellucidum: ___\n  Lateral Ventricles: ___\n  Spine: ___\n  Heart (4-chamber view): ___    Outflow tracts: ___\n  Diaphragm: ___\n  Stomach: ___       Bowel: ___       Kidneys: ___\n  Urinary bladder: ___           Genitalia: ___\n  Upper limbs: ___      Lower limbs: ___      Hands/Feet: ___\n  Placenta: ___        Cord (3 vessels): ___\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.\nNote: Measurements in this report were auto-extracted using Gemini AI OCR from modality captures and verified/approved by the signing radiologist.",
+    "templateId": "OB_ANOMALY",
+    "filledFieldCount": 7,
+    "skippedLowConfidenceCount": 1,
+    "usedMeasurementId": 42,
+    "usedDopplerIds": []
+  },
+  "OB_ANOMALY__empty": {
+    "content": "USG OBSTETRIC — ANOMALY SCAN (18–22 wks)\n════════════════════════════════════════════════════════════\nPatient   : ___\nAccession : ___\nStudy Date: 2026-07-16\nReferrer  : ___\nBIOMETRY: BPD ___  HC ___  AC ___  FL ___  EFW ___\nGA: ___    EDD: ___    FHR: ___ bpm\n\nANATOMICAL SURVEY:\n  Head & Neck : ___\n  Face & Profile: ___\n  Cranium / Cerebellum / Cavum Septum Pellucidum: ___\n  Lateral Ventricles: ___\n  Spine: ___\n  Heart (4-chamber view): ___    Outflow tracts: ___\n  Diaphragm: ___\n  Stomach: ___       Bowel: ___       Kidneys: ___\n  Urinary bladder: ___           Genitalia: ___\n  Upper limbs: ___      Lower limbs: ___      Hands/Feet: ___\n  Placenta: ___        Cord (3 vessels): ___\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.",
+    "templateId": "OB_ANOMALY",
+    "filledFieldCount": 0,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": null,
+    "usedDopplerIds": []
+  },
+  "PELVIS_FEMALE": {
+    "content": "USG PELVIS — FEMALE (TV / TA)\n════════════════════════════════════════════════════════════\nPatient   : SITA DEVI   Age: 28 Y   Sex: F\nAccession : ACC-2026-0042\nStudy Date: 2026-07-16\nReferrer  : Dr. A. Kumar\nUTERUS      : Size 78 x 42 x 51 mm   Position: Anteverted / Retroverted\n              Myometrium: Homogeneous     Endometrium: 8 mm\nRIGHT OVARY : 30 x 20 mm   Follicles: ___\nLEFT OVARY  : [___ low confidence – verify]   Follicles: ___\nPOD         : Free / Fluid\nAdnexal lesion: Nil / Present\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.\nNote: Measurements in this report were auto-extracted using Gemini AI OCR from modality captures and verified/approved by the signing radiologist.",
+    "templateId": "PELVIS_FEMALE",
+    "filledFieldCount": 3,
+    "skippedLowConfidenceCount": 1,
+    "usedMeasurementId": 42,
+    "usedDopplerIds": []
+  },
+  "PELVIS_FEMALE__empty": {
+    "content": "USG PELVIS — FEMALE (TV / TA)\n════════════════════════════════════════════════════════════\nPatient   : ___\nAccession : ___\nStudy Date: 2026-07-16\nReferrer  : ___\nUTERUS      : Size ___   Position: Anteverted / Retroverted\n              Myometrium: Homogeneous     Endometrium: ___\nRIGHT OVARY : ___   Follicles: ___\nLEFT OVARY  : ___   Follicles: ___\nPOD         : Free / Fluid\nAdnexal lesion: Nil / Present\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.",
+    "templateId": "PELVIS_FEMALE",
+    "filledFieldCount": 0,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": null,
+    "usedDopplerIds": []
+  },
+  "WHOLE_ABDOMEN": {
+    "content": "USG WHOLE ABDOMEN\n════════════════════════════════════════════════════════════\nPatient   : SITA DEVI   Age: 28 Y   Sex: F\nAccession : ACC-2026-0042\nStudy Date: 2026-07-16\nReferrer  : Dr. A. Kumar\nLIVER       : Size 14.2 cm   Echotexture: Homogeneous   IHBR: Not dilated\n              Portal Vein: Normal calibre\nGALLBLADDER : Wall 2.5 mm   Calculi: Nil   Sludge: Nil\nCBD         : 4.1 mm\nSPLEEN      : 10.5 cm   Echotexture: Homogeneous\nPANCREAS    : Head/Body/Tail visualised, normal echotexture\nRIGHT KIDNEY: 10.2 x 4.4 cm\nLEFT KIDNEY : 10.6 x 4.7 cm\nU. BLADDER  : Adequately filled, wall normal, no calculi\nAORTA / IVC : Normal calibre\nFree fluid  : Nil\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.\nNote: Measurements in this report were auto-extracted using Gemini AI OCR from modality captures and verified/approved by the signing radiologist.",
+    "templateId": "WHOLE_ABDOMEN",
+    "filledFieldCount": 6,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": 42,
+    "usedDopplerIds": []
+  },
+  "WHOLE_ABDOMEN__empty": {
+    "content": "USG WHOLE ABDOMEN\n════════════════════════════════════════════════════════════\nPatient   : ___\nAccession : ___\nStudy Date: 2026-07-16\nReferrer  : ___\nLIVER       : Size ___   Echotexture: Homogeneous   IHBR: Not dilated\n              Portal Vein: Normal calibre\nGALLBLADDER : Wall ___ mm   Calculi: Nil   Sludge: Nil\nCBD         : ___ mm\nSPLEEN      : ___   Echotexture: Homogeneous\nPANCREAS    : Head/Body/Tail visualised, normal echotexture\nRIGHT KIDNEY: ___\nLEFT KIDNEY : ___\nU. BLADDER  : Adequately filled, wall normal, no calculi\nAORTA / IVC : Normal calibre\nFree fluid  : Nil\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.",
+    "templateId": "WHOLE_ABDOMEN",
+    "filledFieldCount": 0,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": null,
+    "usedDopplerIds": []
+  },
+  "KUB": {
+    "content": "USG KUB\n════════════════════════════════════════════════════════════\nPatient   : SITA DEVI   Age: 28 Y   Sex: F\nAccession : ACC-2026-0042\nStudy Date: 2026-07-16\nReferrer  : Dr. A. Kumar\nRIGHT KIDNEY : 10.2 x 4.4 cm   Cortex: ___ mm   Calculi: Nil / Present\nLEFT KIDNEY  : 10.6 x 4.7 cm   Cortex: ___ mm   Calculi: Nil / Present\nURETERS      : Not dilated / Dilated at ___\nU. BLADDER   : Capacity ___ ml   Wall: Normal   Calculi: Nil\n               Post-void residue: ___ ml\nPROSTATE     : 24 ml (if applicable)\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.\nNote: Measurements in this report were auto-extracted using Gemini AI OCR from modality captures and verified/approved by the signing radiologist.",
+    "templateId": "KUB",
+    "filledFieldCount": 3,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": 42,
+    "usedDopplerIds": []
+  },
+  "KUB__empty": {
+    "content": "USG KUB\n════════════════════════════════════════════════════════════\nPatient   : ___\nAccession : ___\nStudy Date: 2026-07-16\nReferrer  : ___\nRIGHT KIDNEY : ___   Cortex: ___ mm   Calculi: Nil / Present\nLEFT KIDNEY  : ___   Cortex: ___ mm   Calculi: Nil / Present\nURETERS      : Not dilated / Dilated at ___\nU. BLADDER   : Capacity ___ ml   Wall: Normal   Calculi: Nil\n               Post-void residue: ___ ml\nPROSTATE     : ___ ml (if applicable)\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.",
+    "templateId": "KUB",
+    "filledFieldCount": 0,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": null,
+    "usedDopplerIds": []
+  },
+  "PROSTATE": {
+    "content": "USG PROSTATE (TA / TRUS)\n════════════════════════════════════════════════════════════\nPatient   : SITA DEVI   Age: 28 Y   Sex: F\nAccession : ACC-2026-0042\nStudy Date: 2026-07-16\nReferrer  : Dr. A. Kumar\nPROSTATE      : Volume 24 ml\n                Shape: Normal / Enlarged\n                Echotexture: Homogeneous / Heterogeneous\n                Median lobe protrusion: Absent / Present\n                Calcifications: Nil / Present\nSEMINAL VESICLES: Symmetric, no abnormality\nU. BLADDER    : Wall normal   Capacity: ___ ml\n                Post-void residue: ___ ml\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.\nNote: Measurements in this report were auto-extracted using Gemini AI OCR from modality captures and verified/approved by the signing radiologist.",
+    "templateId": "PROSTATE",
+    "filledFieldCount": 1,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": 42,
+    "usedDopplerIds": []
+  },
+  "PROSTATE__empty": {
+    "content": "USG PROSTATE (TA / TRUS)\n════════════════════════════════════════════════════════════\nPatient   : ___\nAccession : ___\nStudy Date: 2026-07-16\nReferrer  : ___\nPROSTATE      : Volume ___ ml\n                Shape: Normal / Enlarged\n                Echotexture: Homogeneous / Heterogeneous\n                Median lobe protrusion: Absent / Present\n                Calcifications: Nil / Present\nSEMINAL VESICLES: Symmetric, no abnormality\nU. BLADDER    : Wall normal   Capacity: ___ ml\n                Post-void residue: ___ ml\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.",
+    "templateId": "PROSTATE",
+    "filledFieldCount": 0,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": null,
+    "usedDopplerIds": []
+  },
+  "SCROTUM": {
+    "content": "USG SCROTUM\n════════════════════════════════════════════════════════════\nPatient   : SITA DEVI   Age: 28 Y   Sex: F\nAccession : ACC-2026-0042\nStudy Date: 2026-07-16\nReferrer  : Dr. A. Kumar\nRIGHT TESTIS  : ___ × ___ × ___ mm   Volume: ___ ml   Echotexture: Homogeneous\nLEFT TESTIS   : ___ × ___ × ___ mm   Volume: ___ ml   Echotexture: Homogeneous\nRIGHT EPIDIDYMIS: Head ___ mm   No focal lesion\nLEFT EPIDIDYMIS : Head ___ mm   No focal lesion\nHYDROCELE     : Nil / Right / Left / Bilateral\nVARICOCELE    : Nil / Right / Left\nVASCULARITY   : Symmetric arterial flow on colour Doppler\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.\nNote: Measurements in this report were auto-extracted using Gemini AI OCR from modality captures and verified/approved by the signing radiologist.",
+    "templateId": "SCROTUM",
+    "filledFieldCount": 0,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": 42,
+    "usedDopplerIds": []
+  },
+  "SCROTUM__empty": {
+    "content": "USG SCROTUM\n════════════════════════════════════════════════════════════\nPatient   : ___\nAccession : ___\nStudy Date: 2026-07-16\nReferrer  : ___\nRIGHT TESTIS  : ___ × ___ × ___ mm   Volume: ___ ml   Echotexture: Homogeneous\nLEFT TESTIS   : ___ × ___ × ___ mm   Volume: ___ ml   Echotexture: Homogeneous\nRIGHT EPIDIDYMIS: Head ___ mm   No focal lesion\nLEFT EPIDIDYMIS : Head ___ mm   No focal lesion\nHYDROCELE     : Nil / Right / Left / Bilateral\nVARICOCELE    : Nil / Right / Left\nVASCULARITY   : Symmetric arterial flow on colour Doppler\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.",
+    "templateId": "SCROTUM",
+    "filledFieldCount": 0,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": null,
+    "usedDopplerIds": []
+  },
+  "THYROID": {
+    "content": "USG THYROID + NECK\n════════════════════════════════════════════════════════════\nPatient   : SITA DEVI   Age: 28 Y   Sex: F\nAccession : ACC-2026-0042\nStudy Date: 2026-07-16\nReferrer  : Dr. A. Kumar\nRIGHT LOBE  : ___ × ___ × ___ mm   Volume: ___ ml\nLEFT LOBE   : ___ × ___ × ___ mm   Volume: ___ ml\nISTHMUS     : ___ mm\nECHOTEXTURE : Homogeneous / Heterogeneous\nNODULES     : Nil / Right ___ TIRADS ___ / Left ___ TIRADS ___\nCERVICAL LN : No significant adenopathy\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.\nNote: Measurements in this report were auto-extracted using Gemini AI OCR from modality captures and verified/approved by the signing radiologist.",
+    "templateId": "THYROID",
+    "filledFieldCount": 0,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": 42,
+    "usedDopplerIds": []
+  },
+  "THYROID__empty": {
+    "content": "USG THYROID + NECK\n════════════════════════════════════════════════════════════\nPatient   : ___\nAccession : ___\nStudy Date: 2026-07-16\nReferrer  : ___\nRIGHT LOBE  : ___ × ___ × ___ mm   Volume: ___ ml\nLEFT LOBE   : ___ × ___ × ___ mm   Volume: ___ ml\nISTHMUS     : ___ mm\nECHOTEXTURE : Homogeneous / Heterogeneous\nNODULES     : Nil / Right ___ TIRADS ___ / Left ___ TIRADS ___\nCERVICAL LN : No significant adenopathy\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.",
+    "templateId": "THYROID",
+    "filledFieldCount": 0,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": null,
+    "usedDopplerIds": []
+  },
+  "BREAST": {
+    "content": "USG BREAST — BILATERAL\n════════════════════════════════════════════════════════════\nPatient   : SITA DEVI   Age: 28 Y   Sex: F\nAccession : ACC-2026-0042\nStudy Date: 2026-07-16\nReferrer  : Dr. A. Kumar\nRIGHT BREAST : No focal lesion   Skin/Subcutaneous: Normal\n               Ductal dilatation: Nil\nLEFT BREAST  : No focal lesion   Skin/Subcutaneous: Normal\n               Ductal dilatation: Nil\nRIGHT AXILLA : No significant adenopathy\nLEFT AXILLA  : No significant adenopathy\nBIRADS       : ___\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.\nNote: Measurements in this report were auto-extracted using Gemini AI OCR from modality captures and verified/approved by the signing radiologist.",
+    "templateId": "BREAST",
+    "filledFieldCount": 0,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": 42,
+    "usedDopplerIds": []
+  },
+  "BREAST__empty": {
+    "content": "USG BREAST — BILATERAL\n════════════════════════════════════════════════════════════\nPatient   : ___\nAccession : ___\nStudy Date: 2026-07-16\nReferrer  : ___\nRIGHT BREAST : No focal lesion   Skin/Subcutaneous: Normal\n               Ductal dilatation: Nil\nLEFT BREAST  : No focal lesion   Skin/Subcutaneous: Normal\n               Ductal dilatation: Nil\nRIGHT AXILLA : No significant adenopathy\nLEFT AXILLA  : No significant adenopathy\nBIRADS       : ___\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.",
+    "templateId": "BREAST",
+    "filledFieldCount": 0,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": null,
+    "usedDopplerIds": []
+  },
+  "ARTERIAL_DOPPLER": {
+    "content": "ARTERIAL DOPPLER\n════════════════════════════════════════════════════════════\nPatient   : SITA DEVI   Age: 28 Y   Sex: F\nAccession : ACC-2026-0042\nStudy Date: 2026-07-16\nReferrer  : Dr. A. Kumar\nVESSELS EVALUATED:\n  Right CCA (right):  PSV 82   EDV 24   RI 0.71   PI 1.4   S/D 3.4\n    Waveform: Triphasic\n    Normal low-resistance waveform.\n\n  Left ICA (left):  PSV 64   EDV 22   RI 0.66   PI ___   S/D ___\n\nANKLE-BRACHIAL INDEX (ABI):\n  Right: ___        Left: ___\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.\nNote: Measurements in this report were auto-extracted using Gemini AI OCR from modality captures and verified/approved by the signing radiologist.",
+    "templateId": "ARTERIAL_DOPPLER",
+    "filledFieldCount": 2,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": 42,
+    "usedDopplerIds": [
+      7,
+      9
+    ]
+  },
+  "ARTERIAL_DOPPLER__empty": {
+    "content": "ARTERIAL DOPPLER\n════════════════════════════════════════════════════════════\nPatient   : ___\nAccession : ___\nStudy Date: 2026-07-16\nReferrer  : ___\nVESSELS EVALUATED:\n  (no approved Doppler measurements — add vessels in the Doppler Reporting page)\n\nANKLE-BRACHIAL INDEX (ABI):\n  Right: ___        Left: ___\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.",
+    "templateId": "ARTERIAL_DOPPLER",
+    "filledFieldCount": 0,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": null,
+    "usedDopplerIds": []
+  },
+  "VENOUS_DOPPLER": {
+    "content": "VENOUS DOPPLER\n════════════════════════════════════════════════════════════\nPatient   : SITA DEVI   Age: 28 Y   Sex: F\nAccession : ACC-2026-0042\nStudy Date: 2026-07-16\nReferrer  : Dr. A. Kumar\nVESSELS EVALUATED:\n  Right CCA (right):  PSV 82   EDV 24   RI 0.71   PI 1.4   S/D 3.4\n    Waveform: Triphasic\n    Normal low-resistance waveform.\n\n  Left ICA (left):  PSV 64   EDV 22   RI 0.66   PI ___   S/D ___\n\nCOMPRESSIBILITY: ___ \nAUGMENTATION   : ___ \nFLOW PHASICITY : ___\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.\nNote: Measurements in this report were auto-extracted using Gemini AI OCR from modality captures and verified/approved by the signing radiologist.",
+    "templateId": "VENOUS_DOPPLER",
+    "filledFieldCount": 2,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": 42,
+    "usedDopplerIds": [
+      7,
+      9
+    ]
+  },
+  "VENOUS_DOPPLER__empty": {
+    "content": "VENOUS DOPPLER\n════════════════════════════════════════════════════════════\nPatient   : ___\nAccession : ___\nStudy Date: 2026-07-16\nReferrer  : ___\nVESSELS EVALUATED:\n  (no approved Doppler measurements — add vessels in the Doppler Reporting page)\n\nCOMPRESSIBILITY: ___ \nAUGMENTATION   : ___ \nFLOW PHASICITY : ___\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.",
+    "templateId": "VENOUS_DOPPLER",
+    "filledFieldCount": 0,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": null,
+    "usedDopplerIds": []
+  },
+  "CAROTID_DOPPLER": {
+    "content": "CAROTID DOPPLER\n════════════════════════════════════════════════════════════\nPatient   : SITA DEVI   Age: 28 Y   Sex: F\nAccession : ACC-2026-0042\nStudy Date: 2026-07-16\nReferrer  : Dr. A. Kumar\nVESSELS EVALUATED:\n  Right CCA (right):  PSV 82   EDV 24   RI 0.71   PI 1.4   S/D 3.4\n    Waveform: Triphasic\n    Normal low-resistance waveform.\n\n  Left ICA (left):  PSV 64   EDV 22   RI 0.66   PI ___   S/D ___\n\nINTIMA-MEDIA THICKNESS:\n  Right CCA: ___ mm     Left CCA: ___ mm\nPLAQUE  : Nil / Right ___ / Left ___\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.\nNote: Measurements in this report were auto-extracted using Gemini AI OCR from modality captures and verified/approved by the signing radiologist.",
+    "templateId": "CAROTID_DOPPLER",
+    "filledFieldCount": 2,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": 42,
+    "usedDopplerIds": [
+      7,
+      9
+    ]
+  },
+  "CAROTID_DOPPLER__empty": {
+    "content": "CAROTID DOPPLER\n════════════════════════════════════════════════════════════\nPatient   : ___\nAccession : ___\nStudy Date: 2026-07-16\nReferrer  : ___\nVESSELS EVALUATED:\n  (no approved Doppler measurements — add vessels in the Doppler Reporting page)\n\nINTIMA-MEDIA THICKNESS:\n  Right CCA: ___ mm     Left CCA: ___ mm\nPLAQUE  : Nil / Right ___ / Left ___\n\nIMPRESSION:\nRECOMMENDATIONS:\n(to be added by the radiologist)\n\n─── Disclaimer ───────────────────────────────────────────────\nThis report is generated from approved measurements only.\nLow-confidence OCR values were excluded and require manual entry.\nAI never finalizes a report — human verification is mandatory.",
+    "templateId": "CAROTID_DOPPLER",
+    "filledFieldCount": 0,
+    "skippedLowConfidenceCount": 0,
+    "usedMeasurementId": null,
+    "usedDopplerIds": []
+  }
+}

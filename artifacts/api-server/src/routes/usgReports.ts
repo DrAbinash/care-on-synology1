@@ -42,6 +42,7 @@ import {
   autoGenerateReport,
   type UsgTemplateId,
 } from "../lib/usgReportTemplates";
+import { fetchUsgSkeletonOverride, fetchCustomizedUsgTemplateIds } from "../lib/usgTemplateStore";
 import { runQualityCheck } from "../lib/usgQualityCheck";
 
 const router = Router();
@@ -92,7 +93,13 @@ router.get("/", async (req, res) => {
 
 // ── GET /templates ────────────────────────────────────────────────────────────
 
-router.get("/templates", (_req, res) => { res.json(USG_TEMPLATES); });
+router.get("/templates", async (_req, res) => {
+  // Annotate each descriptor with whether its skeleton is currently served
+  // from the canonical structured_report_templates table ("customized") or
+  // from the built-in fallback in lib/usgReportTemplates.ts.
+  const customized = await fetchCustomizedUsgTemplateIds();
+  res.json(USG_TEMPLATES.map((t) => ({ ...t, customized: customized.has(t.id) })));
+});
 
 // ── POST /suggest-template ───────────────────────────────────────────────────
 
@@ -244,7 +251,7 @@ router.post("/auto-generate", async (req, res) => {
       referringDoctor: ctx.worklist?.referringDoctor ?? null,
       accessionNumber: ctx.worklist?.accessionNumber ?? null,
       studyDate: ctx.worklist?.studyDate ?? null,
-    });
+    }, { skeletonOverride: await fetchUsgSkeletonOverride(templateId) });
 
     res.json({
       ...out,
@@ -274,15 +281,16 @@ router.post("/", async (req, res) => {
 
     if (!draftContent && (b.studyInstanceUID || b.worklistId)) {
       const ctx = await gatherContext({ studyInstanceUID: b.studyInstanceUID, worklistId: b.worklistId });
+      const createTemplateId = (b.templateType ?? "WHOLE_ABDOMEN") as UsgTemplateId;
       const out = autoGenerateReport({
-        templateId: (b.templateType ?? "WHOLE_ABDOMEN") as UsgTemplateId,
+        templateId: createTemplateId,
         measurement: ctx.measurement,
         dopplerMeasurements: ctx.dopplerMeasurements,
         patientName: ctx.worklist?.patientName ?? null,
         referringDoctor: ctx.worklist?.referringDoctor ?? null,
         accessionNumber: b.accessionNumber ?? ctx.worklist?.accessionNumber ?? null,
         studyDate: ctx.worklist?.studyDate ?? null,
-      });
+      }, { skeletonOverride: await fetchUsgSkeletonOverride(createTemplateId) });
       draftContent = out.content;
       autoFilledFromMeasurementId = ctx.measurement?.id ?? null;
     }
@@ -328,15 +336,16 @@ router.post("/:id/regenerate", async (req, res) => {
     worklistId: existing.worklistId,
   });
 
+  const regenTemplateId = (b.templateType ?? existing.templateType) as UsgTemplateId;
   const out = autoGenerateReport({
-    templateId: (b.templateType ?? existing.templateType) as UsgTemplateId,
+    templateId: regenTemplateId,
     measurement: ctx.measurement,
     dopplerMeasurements: ctx.dopplerMeasurements,
     patientName: ctx.worklist?.patientName ?? null,
     referringDoctor: ctx.worklist?.referringDoctor ?? null,
     accessionNumber: existing.accessionNumber ?? ctx.worklist?.accessionNumber ?? null,
     studyDate: ctx.worklist?.studyDate ?? null,
-  });
+  }, { skeletonOverride: await fetchUsgSkeletonOverride(regenTemplateId) });
 
   const [row] = await db.update(usgReportDraftsTable)
     .set({
