@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CARE Radiology — Engineering Cockpit (Audit Snapshot)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Versioned, read-only engineering audit snapshot of the CARE radiology reporting platform. Not live telemetry.">
+<style>
+  :root{
+    --bg:#eaeef3;--surface:#ffffff;--surface-2:#f4f7fa;
+    --ink:#18222e;--ink-soft:#54636f;--ink-faint:#8493a1;
+    --line:#d8e0e8;--line-soft:#e7edf2;
+    --accent:#0e7c86;--accent-ink:#0b5a62;--accent-bg:#e3f2f2;
+    --crit:#c0362c;--high:#c2680c;--med:#9c7d1c;--low:#4a6b8a;--good:#2f8f4e;
+    --full:#2f8f4e;--partial:#c2860c;--none:#c0362c;--plan:#6a80a8;--na:#c2ccd6;
+    --crit-bg:#fbecea;--high-bg:#fbf1e6;--good-bg:#e9f4ec;--plan-bg:#eef2f8;--warn-bg:#fcf4e2;
+    --shadow:0 1px 2px rgba(24,34,46,.05),0 8px 24px rgba(24,34,46,.06);
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){:root{
+    --bg:#0c1015;--surface:#141a21;--surface-2:#0f151b;--ink:#e7eef5;--ink-soft:#9aa8b5;--ink-faint:#6a7885;
+    --line:#232d38;--line-soft:#1b232c;--accent:#31b3ad;--accent-ink:#5fd0c8;--accent-bg:#132824;
+    --crit:#e5675c;--high:#e0913f;--med:#cbaa3f;--low:#7ba0c4;--good:#57b473;
+    --full:#57b473;--partial:#d59b34;--none:#e5675c;--plan:#8098bd;--na:#2a3542;
+    --crit-bg:#2a1614;--high-bg:#271b10;--good-bg:#12231a;--plan-bg:#141a24;--warn-bg:#251c0e;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px rgba(0,0,0,.35);
+  }}
+  :root[data-theme="light"]{--bg:#eaeef3;--surface:#ffffff;--surface-2:#f4f7fa;--ink:#18222e;--ink-soft:#54636f;--ink-faint:#8493a1;--line:#d8e0e8;--line-soft:#e7edf2;--accent:#0e7c86;--accent-ink:#0b5a62;--accent-bg:#e3f2f2;--crit:#c0362c;--high:#c2680c;--med:#9c7d1c;--low:#4a6b8a;--good:#2f8f4e;--full:#2f8f4e;--partial:#c2860c;--none:#c0362c;--plan:#6a80a8;--na:#c2ccd6;--crit-bg:#fbecea;--high-bg:#fbf1e6;--good-bg:#e9f4ec;--plan-bg:#eef2f8;--warn-bg:#fcf4e2;--shadow:0 1px 2px rgba(24,34,46,.05),0 8px 24px rgba(24,34,46,.06)}
+  :root[data-theme="dark"]{--bg:#0c1015;--surface:#141a21;--surface-2:#0f151b;--ink:#e7eef5;--ink-soft:#9aa8b5;--ink-faint:#6a7885;--line:#232d38;--line-soft:#1b232c;--accent:#31b3ad;--accent-ink:#5fd0c8;--accent-bg:#132824;--crit:#e5675c;--high:#e0913f;--med:#cbaa3f;--low:#7ba0c4;--good:#57b473;--full:#57b473;--partial:#d59b34;--none:#e5675c;--plan:#8098bd;--na:#2a3542;--crit-bg:#2a1614;--high-bg:#271b10;--good-bg:#12231a;--plan-bg:#141a24;--warn-bg:#251c0e;--shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px rgba(0,0,0,.35)}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.55;-webkit-font-smoothing:antialiased;font-size:15px}
+  .wrap{max-width:1240px;margin:0 auto;padding:0 22px}
+  a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+  .mono{font-family:var(--mono)}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint)}
+  h1,h2,h3{text-wrap:balance;margin:0;font-weight:700;letter-spacing:-.01em}
+  section{padding:32px 0;border-top:1px solid var(--line-soft)}
+  .sec-h{display:flex;align-items:baseline;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+  .sec-h h2{font-size:20px}.sec-h .note{font-size:12.5px;color:var(--ink-soft)}
+  header{background:linear-gradient(180deg,var(--surface),var(--surface-2));border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20;backdrop-filter:blur(6px)}
+  .hdr{display:flex;align-items:center;gap:22px;padding:15px 0;flex-wrap:wrap}
+  .hdr .id{flex:1;min-width:280px}
+  .hdr .id .k{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent)}
+  .hdr .id h1{font-size:22px;margin-top:3px}
+  .hdr .id p{margin:4px 0 0;font-size:12.5px;color:var(--ink-soft)}
+  .kpis{display:flex;gap:10px;flex-wrap:wrap}
+  .kpi{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:9px 14px;box-shadow:var(--shadow);min-width:118px}
+  .kpi .v{font-family:var(--mono);font-size:22px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+  .kpi .l{font-size:10.5px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.05em;margin-top:1px}
+  .kpi.a .v{color:var(--accent-ink)}
+  .metabar{display:flex;flex-wrap:wrap;gap:6px 16px;padding:9px 0 0;font-family:var(--mono);font-size:11px;color:var(--ink-soft)}
+  .metabar b{color:var(--ink);font-weight:600}
+  /* snapshot banner */
+  .banner{background:var(--warn-bg);border:1px solid var(--partial);border-radius:11px;padding:13px 16px;margin:18px 0 4px;display:flex;gap:12px;align-items:flex-start}
+  .banner svg{flex:none;margin-top:1px}
+  .banner .bt{font-size:12.5px;color:var(--ink-soft)}
+  .banner .bt b{color:var(--ink)}
+  .banner .bt .row{margin-top:4px}
+  /* readiness bars */
+  .readi{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:11px;overflow:hidden;box-shadow:var(--shadow)}
+  .rrow{display:grid;grid-template-columns:150px minmax(0,1fr) auto;gap:16px;align-items:center;padding:11px 16px;background:var(--surface);border-top:1px solid var(--line-soft)}
+  .rrow:first-child{border-top:none}
+  .rrow .mn{font-size:13.5px;font-weight:600}
+  .rrow .mn small{display:block;font-family:var(--mono);font-size:10px;color:var(--ink-faint);font-weight:400;letter-spacing:.04em}
+  .track{height:12px;border-radius:7px;background:var(--line);overflow:hidden;position:relative}
+  .track>i{display:block;height:100%;border-radius:7px}
+  .rrow .rt{display:flex;align-items:center;justify-content:flex-end;gap:9px}
+  .rrow .pct{font-family:var(--mono);font-size:14px;font-variant-numeric:tabular-nums;font-weight:600;min-width:38px;text-align:right}
+  .st{font-family:var(--mono);font-size:9.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:2px 7px;border-radius:5px;white-space:nowrap}
+  .st-prod{background:var(--good-bg);color:var(--good)}.st-test{background:var(--accent-bg);color:var(--accent-ink)}
+  .st-dev{background:var(--high-bg);color:var(--high)}.st-plan{background:var(--plan-bg);color:var(--plan)}.st-none{background:var(--surface-2);color:var(--ink-faint)}
+  @media(max-width:720px){.rrow{grid-template-columns:110px 1fr;gap:8px}.rrow .rt{grid-column:2;justify-content:flex-start}}
+  /* modality cards */
+  .mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:13px}
+  .mcard{background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);overflow:hidden;border-top:3px solid var(--mc)}
+  .mcard .mh{display:flex;align-items:center;gap:10px;padding:13px 15px 9px}
+  .mcard .mh h3{font-size:16px;flex:1}
+  .mcard .mh .mp{font-family:var(--mono);font-size:20px;font-weight:600;color:var(--mc);font-variant-numeric:tabular-nums}
+  .mcard .cr{padding:0 15px 4px;font-size:12px;color:var(--ink-soft)}
+  .caps{display:flex;flex-wrap:wrap;gap:5px;padding:9px 15px 13px}
+  .cap{font-size:10.5px;padding:2px 7px 2px 6px;border-radius:5px;display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line-soft);background:var(--surface-2);color:var(--ink-soft);font-family:var(--mono)}
+  .cap .cd{width:7px;height:7px;border-radius:2px;flex:none}
+  .cd2{background:var(--full)}.cd1{background:var(--partial)}.cd0{background:var(--none)}.cdp{background:var(--plan)}
+  .mcard .mf{border-top:1px solid var(--line-soft);padding:10px 15px;background:var(--surface-2);font-size:11.5px;color:var(--ink-soft);display:flex;flex-direction:column;gap:4px}
+  .mcard .mf .row2{display:flex;gap:7px}.mcard .mf .row2 .kk{font-family:var(--mono);font-size:10px;color:var(--ink-faint);min-width:56px;text-transform:uppercase;letter-spacing:.03em;flex:none;padding-top:1px}
+  /* study coverage */
+  .scov{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:11px}
+  .sc{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 14px;box-shadow:var(--shadow)}
+  .sc .top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px}
+  .sc .top b{font-size:13px}
+  .sc .frac{font-family:var(--mono);font-size:13px;font-variant-numeric:tabular-nums;color:var(--ink-soft)}
+  .sc .frac em{color:var(--ink);font-style:normal;font-weight:600}
+  .segbar{height:9px;border-radius:5px;background:var(--line);overflow:hidden;display:flex}
+  .segbar i{height:100%}.seg-full{background:var(--full)}
+  .sc .lg{margin-top:6px;font-size:10.5px;color:var(--ink-faint);font-family:var(--mono)}
+  /* matrix */
+  .mtx-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:11px;box-shadow:var(--shadow)}
+  table.mtx{border-collapse:collapse;width:100%;min-width:960px;background:var(--surface);font-size:12px}
+  table.mtx th,table.mtx td{padding:7px 5px;text-align:center;border-bottom:1px solid var(--line-soft);border-right:1px solid var(--line-soft)}
+  table.mtx thead th{position:sticky;top:0;background:var(--surface-2);font-family:var(--mono);font-size:9.5px;font-weight:600;color:var(--ink-soft);text-transform:uppercase;height:74px;vertical-align:bottom;padding-bottom:8px}
+  table.mtx thead th.mod-h{text-align:left;vertical-align:middle;height:auto}
+  table.mtx th span{writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap;display:inline-block}
+  table.mtx td.mod{text-align:left;font-weight:600;font-size:12.5px;white-space:nowrap;font-family:var(--sans)}
+  table.mtx td.mod small{color:var(--ink-faint);font-family:var(--mono);font-size:9.5px;font-weight:400}
+  .cell{width:22px;height:22px;border-radius:5px;display:inline-block}
+  .m2{background:var(--full)}.m1{background:var(--partial)}.m0{background:color-mix(in srgb,var(--none) 22%,transparent);border:1px solid color-mix(in srgb,var(--none) 45%,transparent)}
+  .mp2{background:repeating-linear-gradient(45deg,var(--plan),var(--plan) 3px,transparent 3px,transparent 6px);border:1px solid var(--plan)}
+  .mtx tbody tr:hover td{background:color-mix(in srgb,var(--accent) 6%,transparent)}
+  /* tracker */
+  .trk-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:11px;box-shadow:var(--shadow)}
+  table.trk{border-collapse:collapse;width:100%;min-width:1040px;background:var(--surface);font-size:12px}
+  table.trk th,table.trk td{padding:9px 11px;text-align:left;border-bottom:1px solid var(--line-soft);vertical-align:top}
+  table.trk thead th{background:var(--surface-2);font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);position:sticky;top:0}
+  table.trk td.id{font-family:var(--mono);font-weight:700;color:var(--sev);white-space:nowrap}
+  table.trk td.iss b{color:var(--ink)}table.trk td.iss{color:var(--ink-soft);min-width:230px}
+  table.trk td.ev{font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);min-width:150px}
+  .badge{font-family:var(--mono);font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;padding:2px 7px;border-radius:5px;white-space:nowrap}
+  .bg-open{background:var(--crit-bg);color:var(--crit)}.bg-plan{background:var(--plan-bg);color:var(--plan)}.bg-defer{background:var(--high-bg);color:var(--high)}.bg-done{background:var(--good-bg);color:var(--good)}
+  .risk-h{color:var(--crit);font-weight:600}.risk-m{color:var(--high)}.risk-l{color:var(--good)}
+  table.trk tbody tr:hover td{background:color-mix(in srgb,var(--accent) 5%,transparent)}
+  /* clean chips */
+  .clean{display:flex;flex-wrap:wrap;gap:8px}
+  .cchip{display:flex;gap:8px;align-items:center;background:var(--good-bg);border:1px solid var(--good);color:var(--ink);border-radius:8px;padding:7px 11px;font-size:12.5px}
+  .cchip svg{flex:none}
+  /* roadmap table */
+  .rm-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:11px;box-shadow:var(--shadow)}
+  table.rm{border-collapse:collapse;width:100%;min-width:900px;background:var(--surface);font-size:12.5px}
+  table.rm th,table.rm td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line-soft);vertical-align:top}
+  table.rm thead th{background:var(--surface-2);font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft)}
+  table.rm td.mn b{color:var(--ink)}table.rm td{color:var(--ink-soft)}
+  table.rm td.mn small{display:block;font-family:var(--mono);font-size:10px;color:var(--ink-faint)}
+  table.rm td .pct2{font-family:var(--mono);font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
+  /* control center */
+  .cc{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:13px}
+  .ccp{background:var(--surface);border:1px solid var(--line);border-radius:11px;padding:14px 16px;box-shadow:var(--shadow)}
+  .ccp h3{font-size:12px;font-family:var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--accent-ink);margin-bottom:9px;display:flex;align-items:center;gap:7px}
+  .ccp ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px}
+  .ccp li{font-size:12.5px;color:var(--ink-soft);display:flex;gap:8px;align-items:baseline}
+  .ccp li b{color:var(--ink);font-weight:600}
+  .ccp li .tk{font-family:var(--mono);font-size:10px;padding:1px 6px;border-radius:4px;background:var(--surface-2);border:1px solid var(--line-soft);color:var(--ink-soft);white-space:nowrap;flex:none}
+  .ccp li code{font-family:var(--mono);font-size:11px;color:var(--ink);word-break:break-all}
+  .dotr{width:7px;height:7px;border-radius:50%;flex:none;margin-top:6px}
+  /* audit history + import */
+  .hist{border:1px solid var(--line);border-radius:11px;overflow:hidden;box-shadow:var(--shadow)}
+  .hrow{display:grid;grid-template-columns:80px 110px 120px 1fr 130px;gap:14px;padding:11px 16px;background:var(--surface);border-top:1px solid var(--line-soft);font-size:12.5px;align-items:baseline}
+  .hrow:first-child{border-top:none}
+  .hrow .hv{font-family:var(--mono);font-weight:700;color:var(--accent-ink)}
+  .hrow .hd,.hrow .hb,.hrow .hr{font-family:var(--mono);font-size:11px;color:var(--ink-soft)}
+  .hrow .hs{color:var(--ink-soft)}
+  @media(max-width:720px){.hrow{grid-template-columns:1fr 1fr}}
+  .import{background:var(--surface);border:1px solid var(--line);border-radius:11px;padding:16px 18px;box-shadow:var(--shadow)}
+  .import p{margin:0 0 10px;font-size:13.5px;color:var(--ink-soft)}
+  .import p:last-child{margin-bottom:0}.import b{color:var(--ink)}
+  .import ol{margin:6px 0 0;padding-left:20px;font-size:13px;color:var(--ink-soft)}.import li{margin:5px 0}
+  .import code{font-family:var(--mono);font-size:11.5px;background:var(--surface-2);border:1px solid var(--line-soft);padding:1px 5px;border-radius:4px;color:var(--ink)}
+  .legend{display:flex;gap:15px;flex-wrap:wrap;font-size:11.5px;color:var(--ink-soft);margin-top:10px;font-family:var(--mono)}
+  .legend span{display:inline-flex;gap:6px;align-items:center}
+  .swatch{width:12px;height:12px;border-radius:3px;display:inline-block}
+  footer{padding:26px 0 44px;font-size:12px;color:var(--ink-faint);border-top:1px solid var(--line-soft)}
+  #err{display:none;margin:40px auto;max-width:640px;background:var(--crit-bg);border:1px solid var(--crit);color:var(--ink);padding:18px 20px;border-radius:11px;font-size:14px}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+</style>
+</head>
+<body>
+<div id="err">Could not load <code>audit-data.js</code>. Open this file from its folder (it loads a sibling data file), or serve the <code>docs/reporting-platform/cockpit/</code> directory over a static server.</div>
+
+<header>
+  <div class="wrap hdr">
+    <div class="id">
+      <div class="k">Reporting Platform Health · Audit Snapshot</div>
+      <h1>CARE Radiology — Engineering Cockpit</h1>
+      <p>Per-modality readiness, coverage &amp; roadmap · <b>versioned audit snapshot</b> — not live telemetry.</p>
+      <div class="metabar" id="metabar"></div>
+    </div>
+    <div class="kpis" id="kpis"></div>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="banner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--partial)" stroke-width="2.2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    <div class="bt">
+      <b>This is a point-in-time audit snapshot — not connected to live repository, runtime, or database telemetry.</b>
+      <div class="row">Percentage scores and readiness bands are <b>engineering judgments (estimates)</b>. Asset counts (templates, protocols, Copilot modules, <span class="mono">modalityMap</span>) were <b>code-verified</b> at the audit base commit. Evidence-backed issue detail (file:line, effort, regression risk) lives in <a href="../CARE_PLATFORM_MASTER_AUDIT.md">CARE_PLATFORM_MASTER_AUDIT.md</a>. To refresh: edit <span class="mono">audit-data.js</span> and append an Audit History row.</div>
+    </div>
+  </div>
+
+  <section><div class="sec-h"><span class="eyebrow">01 — Modality Readiness</span><h2>Reporting readiness by modality</h2><span class="note">capability depth for each modality's covered studies · code-verified assets + estimated %</span></div>
+    <div class="readi" id="readi"></div>
+    <div class="legend">
+      <span><span class="swatch st-prod" style="width:auto;padding:2px 7px">Production</span></span>
+      <span><span class="swatch st-dev" style="width:auto;padding:2px 7px">In Development</span></span>
+      <span><span class="swatch st-plan" style="width:auto;padding:2px 7px">Planning</span></span>
+      <span><span class="swatch st-none" style="width:auto;padding:2px 7px">Not Started</span></span>
+    </div></section>
+
+  <section><div class="sec-h"><span class="eyebrow">02 — Per-Modality Health</span><h2>Capability breakdown</h2><span class="note">18 capabilities each · <span class="mono">■</span> full · <span class="mono">■</span> partial · <span class="mono">■</span> none · <span class="mono">▨</span> planned</span></div>
+    <div class="mgrid" id="mgrid"></div></section>
+
+  <section><div class="sec-h"><span class="eyebrow">03 — Study Coverage</span><h2>Studies with dedicated clinical-intelligence assets</h2><span class="note">implemented = code-verified · totals = domain targets (estimated) · generic reporting works beyond this</span></div>
+    <div class="scov" id="scov"></div></section>
+
+  <section><div class="sec-h"><span class="eyebrow">04 — Clinical Intelligence Coverage</span><h2>Capability × modality matrix</h2><span class="note">infra columns (comparison → audit) are modality-generic; content columns (templates → critical) are per-modality</span></div>
+    <div class="mtx-wrap"><table class="mtx" id="mtx"></table></div>
+    <div class="legend"><span><span class="swatch m2"></span>Full</span><span><span class="swatch m1"></span>Partial</span><span><span class="swatch m0"></span>None</span><span><span class="swatch mp2"></span>Planned</span></div></section>
+
+  <section><div class="sec-h"><span class="eyebrow">05 — Issue Tracker</span><h2>Audit findings — living tracker</h2><span class="note">seeded from the audit's Critical + High · Status/Owner/PR/Commit to be filled as work lands · all ~75 in the master audit</span></div>
+    <div class="trk-wrap"><table class="trk" id="trk"></table></div></section>
+
+  <section><div class="sec-h"><span class="eyebrow">06 — Verified Solid</span><h2>Subsystems checked &amp; sound</h2><span class="note">seeing strengths matters as much as gaps — do not "fix" these</span></div>
+    <div class="clean" id="clean"></div></section>
+
+  <section><div class="sec-h"><span class="eyebrow">07 — Modality Roadmap</span><h2>Current work, next steps, blockers</h2><span class="note">migration/consolidation items are planned-only — not implemented</span></div>
+    <div class="rm-wrap"><table class="rm" id="rm"></table></div></section>
+
+  <section><div class="sec-h"><span class="eyebrow">08 — Engineering Cockpit</span><h2>Control center</h2><span class="note">branches · PRs · migrations · merge risks · PR queue · docs · Knowledge Packs · debt</span></div>
+    <div class="cc" id="cc"></div></section>
+
+  <section><div class="sec-h"><span class="eyebrow">09 — Audit History</span><h2>Versioned snapshots</h2><span class="note">append a row in audit-data.js each time the cockpit is refreshed</span></div>
+    <div class="hist" id="hist"></div></section>
+
+  <section><div class="sec-h"><span class="eyebrow">10 — Super Admin Import</span><h2>How a future in-app dashboard could use these snapshots</h2></div>
+    <div class="import">
+      <p><b>These snapshots are designed to be imported read-only.</b> A future in-app Super Admin dashboard could surface this data <b>without ever claiming live analysis</b> by treating each committed <span class="mono">audit-data.js</span> (or a JSON export of <span class="mono">window.CARE_AUDIT</span>) as an immutable, versioned artifact:</p>
+      <ol>
+        <li>Read the committed snapshot(s) from <code>docs/reporting-platform/cockpit/</code> (or a generated <code>audit-data.json</code>) at build time — never recompute percentages at runtime.</li>
+        <li>Render every score with its provenance from <code>meta</code>: <b>version</b>, <b>auditDate</b>, <b>auditBaseCommit</b>, and <b>reviewer</b>, plus a persistent "snapshot — not live" badge.</li>
+        <li>Offer a version picker over <code>auditHistory</code> so admins compare snapshots (trend), while each remains labelled as a manual audit, not telemetry.</li>
+        <li>Keep it behind the existing Super Admin RBAC gate; it reads static docs only — no new API, schema, or workspace coupling.</li>
+      </ol>
+      <p>The contract: <b>the app may display these numbers, but must attribute them to a dated manual audit and must not present them as computed-live.</b> Regenerating a snapshot is a documentation change (edit <span class="mono">audit-data.js</span>), reviewed like any other doc PR.</p>
+    </div></section>
+
+  <footer id="footer"></footer>
+</div>
+
+<script src="audit-data.js"></script>
+<script>
+(function(){
+  const D = window.CARE_AUDIT;
+  if(!D){ document.getElementById('err').style.display='block'; return; }
+  const M = D.meta, CAP = D.capabilities, MODS = D.modalities;
+
+  document.getElementById('kpis').innerHTML = [
+    ['a',M.liveModalitiesPct+'%','Live modalities'],
+    ['',M.allModalityPct+'%','All-modality target'],
+    ['',M.engHealth,'Eng health /100'],
+    ['',M.productionOrDev,'Production/dev'],
+  ].map(([c,v,l])=>`<div class="kpi ${c}"><div class="v">${v}</div><div class="l">${l}</div></div>`).join('');
+
+  document.getElementById('metabar').innerHTML =
+    `<span>v<b>${M.auditVersion}</b></span><span>audit <b>${M.auditDate}</b></span>`+
+    `<span>base <b>${M.auditBaseCommit}</b></span><span>on <b>${M.committedOnto}</b></span>`+
+    `<span>updated <b>${M.lastUpdated}</b></span><span>reviewer <b>${M.reviewer}</b></span>`;
+
+  const band = p => p>=85?'--good':p>=55?'--high':p>=10?'--plan':'--na';
+  document.getElementById('readi').innerHTML = MODS.map(m=>{const c=`var(${band(m.pct)})`;
+    return `<div class="rrow"><div class="mn">${m.n}<small>${m.code}</small></div>
+      <div class="track"><i style="width:${Math.max(m.pct,1.5)}%;background:${c}"></i></div>
+      <div class="rt"><span class="pct" style="color:${c}">${m.pct}%</span><span class="st ${m.st[1]}">${m.st[0]}</span></div></div>`;}).join('');
+
+  const cclass = v => v===2?'cd2':v===1?'cd1':v==='p'?'cdp':'cd0';
+  document.getElementById('mgrid').innerHTML = MODS.map(m=>`
+    <div class="mcard" style="--mc:var(${m.mc})">
+      <div class="mh"><h3>${m.n}</h3><span class="st ${m.st[1]}">${m.st[0]}</span><span class="mp">${m.pct}%</span></div>
+      <div class="cr">${m.cr}</div>
+      <div class="caps">${CAP.map((c,i)=>`<span class="cap"><span class="cd ${cclass(m.caps[i])}"></span>${c}</span>`).join('')}</div>
+      <div class="mf"><div class="row2"><span class="kk">Known</span><span>${m.issues}</span></div>
+        <div class="row2"><span class="kk">Audit</span><span>${m.audit}</span></div></div></div>`).join('');
+
+  document.getElementById('scov').innerHTML = MODS.filter(m=>m.cov[1]>0).map(m=>{const [i,t]=m.cov,p=Math.round(i/t*100);
+    return `<div class="sc"><div class="top"><b>${m.n}</b><span class="frac"><em>${i}</em> / ${t}</span></div>
+      <div class="segbar"><i class="seg-full" style="width:${p}%"></i></div>
+      <div class="lg">${p}% dedicated · ${t-i} without dedicated assets (generic engine capable)</div></div>`;}).join('');
+
+  const mcell = v => v===2?'m2':v===1?'m1':v==='p'?'mp2':'m0';
+  let mtx = '<thead><tr><th class="mod-h">Modality</th>'+CAP.map(c=>`<th><span>${c}</span></th>`).join('')+'</tr></thead><tbody>';
+  mtx += MODS.map(m=>`<tr><td class="mod">${m.n} <small>${m.code}</small></td>`+m.caps.map(v=>`<td><span class="cell ${mcell(v)}"></span></td>`).join('')+'</tr>').join('');
+  document.getElementById('mtx').innerHTML = mtx+'</tbody>';
+
+  let trk = '<thead><tr><th>ID</th><th>Issue</th><th>Status</th><th>Owner</th><th>PR / Phase</th><th>Commit</th><th>Fixed&nbsp;in</th><th>Risk</th><th>Evidence</th><th>Notes</th></tr></thead><tbody>';
+  trk += D.issues.map(([id,sev,iss,st,stc,pr,rk,ev,nt])=>`<tr style="--sev:var(--${sev})">
+    <td class="id">${id}</td><td class="iss"><b>${iss}</b></td>
+    <td><span class="badge ${stc}">${st}</span></td><td class="mono" style="color:var(--ink-faint)">—</td>
+    <td class="mono" style="font-size:11px">${pr}</td><td class="mono" style="color:var(--ink-faint)">—</td>
+    <td class="mono" style="color:var(--ink-faint)">—</td>
+    <td class="risk-${rk}">${rk==='h'?'High':rk==='m'?'Med':'Low'}</td>
+    <td class="ev">${ev}</td><td style="color:var(--ink-soft);font-size:11.5px">${nt}</td></tr>`).join('');
+  document.getElementById('trk').innerHTML = trk+'</tbody>';
+
+  document.getElementById('clean').innerHTML = D.verifiedSolid.map(c=>`<span class="cchip"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--good)" stroke-width="2.4"><path d="M20 6 9 17l-5-5"/></svg>${c}</span>`).join('');
+
+  let rm = '<thead><tr><th>Modality</th><th>Current work</th><th>Next PR</th><th>Blockers</th><th>Remaining</th><th>Depends on</th><th>%</th></tr></thead><tbody>';
+  rm += MODS.filter(m=>m.pct>0||m.cov[1]>0).map(m=>`<tr><td class="mn"><b>${m.n}</b><small>${m.st[0]}</small></td>
+    <td>${m.cur}</td><td>${m.nxt}</td><td>${m.blk}</td><td>${m.rem}</td><td>${m.dep}</td><td class="pct2">${m.pct}%</td></tr>`).join('');
+  document.getElementById('rm').innerHTML = rm+'</tbody>';
+
+  document.getElementById('cc').innerHTML = D.controlCenter.map(([t,c,items])=>`
+    <div class="ccp"><h3><span class="dotr" style="background:var(${c});margin-top:0"></span>${t}</h3>
+      <ul>${items.map(([a,b])=>`<li><span class="dotr" style="background:var(${c})"></span><span>${a}</span>${b?`<span class="tk" style="margin-left:auto">${b}</span>`:''}</li>`).join('')}</ul></div>`).join('');
+
+  document.getElementById('hist').innerHTML = D.auditHistory.map(h=>`<div class="hrow">
+    <span class="hv">v${h.version}</span><span class="hd">${h.date}</span><span class="hb">${h.base}</span>
+    <span class="hs">${h.summary}</span><span class="hr">${h.reviewer}</span></div>`).join('');
+
+  document.getElementById('footer').innerHTML =
+    `Read-only audit snapshot · v${M.auditVersion} · audit ${M.auditDate} · base <span class="mono">${M.auditBaseCommit}</span> · committed onto <span class="mono">${M.committedOnto}</span>. `+
+    `${M.freshnessNote} Not connected to live telemetry; percentages are engineering judgments. Method: ${M.method} `+
+    `Evidence &amp; the full ~75 ranked issues: <a href="../CARE_PLATFORM_MASTER_AUDIT.md">CARE_PLATFORM_MASTER_AUDIT.md</a>.`;
+})();
+</script>
+</body>
+</html>
