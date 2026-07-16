@@ -70,6 +70,10 @@ import CommandPalette from "@/components/radiology/CommandPalette";
 import { useRadiologyPalettePrefs } from "@/hooks/useRadiologyPalettePrefs";
 import type { PaletteItem } from "@/lib/commandPalette";
 import { validateReport, computeQualityScore } from "@/lib/reportValidator";
+// PR #101 Phase 1 (shadow-first): run the canonical quality engine in parallel
+// with the legacy validator and log parity diffs in dev only. Does not change
+// the user-visible score.
+import { logParityInDev } from "@/lib/reportQualityShadow";
 // F3 (Cockpit→Workspace merge): real-time missed-finding text-pattern nudges.
 // This lib was otherwise dead (imported only by the deprecated Cockpit).
 import { observeReportText, type CoPilotSuggestion } from "@/lib/radiologyCoPilotEngine";
@@ -1500,8 +1504,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
   // Live Report Quality Score (Phase 3) — recomputed as the radiologist
   // types; purely informational, never blocks anything.
-  const quality = useMemo(
-    () => computeQualityScore({
+  //
+  // The input is extracted so the (user-visible) legacy score and the PR #101
+  // shadow parity check see byte-for-byte identical data.
+  const qualityInput = useMemo(
+    () => ({
       findings: rawFindings, impression, recommendation, technique, clinicalHistory,
       checklistPercent: activeProtocol ? checklistPercent : undefined,
       missingRequiredMeasurements,
@@ -1512,6 +1519,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     [rawFindings, impression, recommendation, technique, clinicalHistory, activeProtocol, checklistPercent, missingRequiredMeasurements,
       entry?.sex, entry?.age, entry?.modality, entry?.studyDescription],
   );
+  // User-visible score — UNCHANGED (still the legacy computeQualityScore).
+  const quality = useMemo(() => computeQualityScore(qualityInput), [qualityInput]);
+  // PR #101 Phase 1 (shadow-first, strangler façade): run the canonical engine
+  // in parallel and log parity differences in dev only. Never changes what the
+  // radiologist sees; wrapped so it can never affect the workspace.
+  useEffect(() => { logParityInDev(qualityInput); }, [qualityInput]);
 
   // F6 (Cockpit→Workspace merge): imported-viewer-measurement safety checks.
   // Reads the SAME cache entry ViewerMeasurementsPanel populates (shared

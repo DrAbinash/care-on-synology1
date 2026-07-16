@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { runQualityEngine } from "./runner";
 import { registerRule, clearRules } from "./registry";
 import { normalizeModality, modalityMatches } from "./modality";
+import { REPORT_QUALITY_ENGINE_VERSION } from "./version";
 import type { QualityContext, QualityRule } from "./contract";
 
 function ctx(over: Partial<QualityContext> = {}): QualityContext {
@@ -52,7 +53,7 @@ describe("runQualityEngine", () => {
     expect(report.findings).toHaveLength(0);
     expect(report.evaluatedRuleCount).toBe(0);
     expect(report.score).toBe(100);
-    expect(report.engineVersion).toMatch(/phase0/);
+    expect(report.engineVersion).toBe(REPORT_QUALITY_ENGINE_VERSION);
   });
 
   it("runs a matching rule and aggregates severity counts", () => {

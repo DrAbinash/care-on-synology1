@@ -847,6 +847,9 @@ importers:
       '@workspace/api-client-react':
         specifier: workspace:*
         version: link:../../lib/api-client-react
+      '@workspace/report-quality':
+        specifier: workspace:*
+        version: link:../../lib/report-quality
       class-variance-authority:
         specifier: 'catalog:'
         version: 0.7.1

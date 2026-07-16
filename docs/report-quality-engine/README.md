@@ -48,7 +48,7 @@ evaluate rather than overclaiming determinism it cannot back.
 | Phase | Description | Status |
 |---|---|---|
 | 0 | Contract + shared `lib/report-quality/` package (no behavior change) | ✅ Landed |
-| 1 | Route the live badge + Copilot through the one runner | ⏳ Planned |
+| 1 | Route the live badge + Copilot through the one runner — **shadow-first** | ✅ Landed (shadow) |
 | 2 | One server endpoint + canonical persistence (migration `0008`) | ⏳ Planned |
 | 3 | Cheap deterministic unlocks (measurement `isAbnormal`, reference ranges, required sections, modality normalizer) | ⏳ Planned |
 | 4 | Generalize structured USG/fetal/Doppler/spine rules | ⏳ Planned |
@@ -59,3 +59,22 @@ evaluate rather than overclaiming determinism it cannot back.
 
 Each phase is a separate reviewable commit. This README's phase table is updated as
 phases land.
+
+## Migration strategy: shadow-first strangler façade
+
+The canonical engine replaces the six-plus legacy validators **incrementally and
+reversibly**, never by big-bang cutover:
+
+1. The engine wraps the legacy behaviour (`validateReport` / `computeQualityScore`)
+   as a faithful shadow copy — the legacy files are **not modified or deleted**.
+2. Both paths run in parallel; **golden parity tests** (`reportQualityShadow.test.ts`,
+   representative MRI/USG/CT/X-Ray reports) assert byte-for-byte equivalence.
+3. Parity differences are recorded/exposed in **development only** (and, later,
+   Super-Admin diagnostics) — never to end users.
+4. The **user-visible quality score is not changed** until parity is demonstrated.
+5. Free-text/narrative checks stay **advisory**; only deterministic structured-tier
+   rules may ever become finalize blockers.
+6. The dormant **D1 structured-report layer is NOT activated in this PR** — it is a
+   separate future PR once the canonical engine is stable.
+7. Legacy validators and quality tables are **not deleted**; callers migrate one at a
+   time behind the façade.

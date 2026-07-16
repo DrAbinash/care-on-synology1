@@ -22,6 +22,11 @@ export {
 export { normalizeModality, modalityMatches } from "./modality";
 export type { CanonicalModality } from "./modality";
 export { defaultScorer } from "./score";
+export { textParityScorer } from "./text/scorer";
+// Ported legacy checks (shadow copies). Exported so callers can migrate onto
+// the canonical engine incrementally and the parity harness can compare paths.
+export { validateReportText, computeTextQualityScore } from "./text/legacy";
+export type { TextQualityScore } from "./text/legacy";
 export type {
   Severity,
   DataTier,

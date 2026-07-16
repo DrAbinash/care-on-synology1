@@ -7,8 +7,10 @@
 // text-tier rules.
 //
 // Later phases append, e.g.:
-//   import "./text/consistency";
 //   import "./measurement/out-of-range";
 //   import "./completeness/checklist";
+
+// Phase 1: free-text (heuristic) tier — wraps the legacy validator/score.
+import "./text";
 
 export {};
