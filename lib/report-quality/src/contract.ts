@@ -29,22 +29,35 @@ export type QualityCategory =
   | "knowledge-pack"
   | "protocol";
 
-/** A single quality observation about a report. */
+/**
+ * A single quality observation about a report. Carries STRUCTURED metadata so
+ * persistence/analytics never depend on the (changeable) message text —
+ * everything keys off `ruleId`. (PR #101 Phase 2 requirements 2 & 3.)
+ */
 export interface QualityFinding {
-  /** Stable, dotted id, e.g. "measurement.out-of-range". */
+  /** Stable catalog rule id (e.g. "Q104"); analytics/override/suppression key off this, never the message. */
   ruleId: string;
   category: QualityCategory;
   severity: Severity;
+  /** "structured" = deterministic on typed data; "heuristic" = free-text keyword/regex. */
   tier: DataTier;
+  /** Canonical modality the finding was produced for (stamped by the runner). */
+  modality?: string;
+  /** Study type / description the finding was produced for (stamped by the runner). */
+  studyType?: string;
+  /** Knowledge-pack id/version that sourced this rule, if any (Phase 7). */
+  knowledgePackSource?: string;
   /** Human-readable, radiologist-facing statement of the problem. */
   message: string;
   /** The "why" — knowledge-pack rule / clinical rationale behind the flag. */
   rationale?: string;
   /** Concrete evidence (the offending phrase, value, measurement). */
   evidence?: string;
+  /** Suggested human-readable fix. */
+  suggestedFix?: string;
   /** Points at the finding / measurement id / section this concerns, for "where" UX. */
   targetRef?: string;
-  /** Optional one-click fix, reusing the Copilot Apply pattern. */
+  /** Optional one-click machine fix, reusing the Copilot Apply pattern. */
   actionMacro?: string;
 }
 
@@ -155,7 +168,18 @@ export interface QualityReport {
   notEvaluated: string[];
   /** How many rules actually ran (matched modality + had their data). */
   evaluatedRuleCount: number;
+  /** Of the evaluated rules, how many were deterministic (structured tier). */
+  deterministicRuleCount: number;
+  /** Of the evaluated rules, how many were heuristic (free-text tier). */
+  heuristicRuleCount: number;
+  /** Wall-clock/monotonic engine runtime in milliseconds (requirement 9). */
+  runtimeMs: number;
+  /** Versioning for reproducibility of historical evaluations (requirement 6). */
   engineVersion: string;
+  ruleVersion: string;
+  knowledgePackVersion: string | null;
+  /** ISO-8601 timestamp of the evaluation. */
+  evaluatedAt: string;
 }
 
 /** Optional overrides for a single engine run. */
@@ -168,4 +192,10 @@ export interface RunOptions {
   scorer?: (ctx: QualityContext, findings: QualityFinding[]) => number;
   /** Restrict to a subset of rule ids (used by targeted callers/tests). */
   onlyRuleIds?: string[];
+  /** Knowledge-pack version to stamp on the report (Phase 7); null until packs are wired. */
+  knowledgePackVersion?: string | null;
+  /** Injectable monotonic clock (ms) for deterministic runtime measurement in tests. */
+  now?: () => number;
+  /** Injectable ISO timestamp for deterministic `evaluatedAt` in tests. */
+  evaluatedAtIso?: string;
 }

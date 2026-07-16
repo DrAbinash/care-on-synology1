@@ -1,57 +1,41 @@
-// rules/text/index.ts — the free-text (heuristic) tier rule.
+// rules/text/index.ts — the free-text (heuristic) tier evaluator.
 //
-// Emits one advisory finding per legacy computeQualityScore "issue" (empty
-// sections, consistency/laterality/terminology warnings, checklist, missing
-// measurements), so the engine's findings match the legacy badge issue list
-// exactly. ALL findings are severity "warning" and tier "heuristic": free-text
-// checks stay advisory and can NEVER become finalize blockers (only
-// deterministic structured-tier rules may block — PR #101 block policy).
+// Emits one finding per legacy check, each carrying a STABLE catalog rule id
+// (Q0xx/Q1xx) plus its category/severity/tier from ruleCatalog.ts. ALL findings
+// are severity "warning" + tier "heuristic": free-text checks stay advisory and
+// can NEVER become finalize blockers (only deterministic structured-tier rules
+// may block — PR #101 block policy).
 //
-// Phase 1 keeps this as one aggregate rule to guarantee parity; later phases
-// may split it into granular per-check rules once parity is locked.
+// This is one registry executor that emits findings for many catalog rules
+// (the checks share text parsing); the per-finding ruleId is the analytics/
+// override/suppression identity, not this executor's id.
 
 import { registerRule } from "../../registry";
-import { computeTextQualityScore } from "../../text/legacy";
-import type { QualityCategory, QualityFinding, QualityRule } from "../../contract";
+import { evaluateTextTier } from "../../text/evaluate";
+import { RULE_CATALOG } from "../../ruleCatalog";
+import type { QualityFinding, QualityRule } from "../../contract";
 
-const RULE_ID = "text.legacy-consistency";
-
-function classify(message: string): QualityCategory {
-  const m = message.toLowerCase();
-  if (m.includes("laterality")) return "laterality";
-  if (m.includes("terminology")) return "terminology";
-  if (m.includes("measurement")) return "measurement";
-  if (m.includes("checklist")) return "completeness";
-  if (
-    m.startsWith("findings section is empty") ||
-    m.startsWith("impression section is empty") ||
-    m.startsWith("technique not documented") ||
-    m.startsWith("clinical history not documented") ||
-    m.startsWith("no recommendation") ||
-    m.includes("impression section is empty")
-  ) {
-    return "completeness";
-  }
-  return "consistency";
-}
+const EXECUTOR_ID = "text.legacy-consistency";
 
 const textLegacyRule: QualityRule = {
-  id: RULE_ID,
+  id: EXECUTOR_ID,
   category: "consistency",
   modalities: "*",
   tier: "heuristic",
   evaluate(ctx): QualityFinding[] {
-    const { issues } = computeTextQualityScore(ctx.text);
-    return issues.map((message): QualityFinding => ({
-      ruleId: RULE_ID,
-      category: classify(message),
-      severity: "warning",
-      tier: "heuristic",
-      message,
-    }));
+    return evaluateTextTier(ctx.text).findings.map((f): QualityFinding => {
+      const entry = RULE_CATALOG[f.ruleId];
+      return {
+        ruleId: f.ruleId,
+        category: entry.category,
+        severity: entry.defaultSeverity,
+        tier: entry.tier,
+        message: f.message,
+      };
+    });
   },
 };
 
 registerRule(textLegacyRule);
 
-export { RULE_ID as TEXT_LEGACY_RULE_ID };
+export { EXECUTOR_ID as TEXT_LEGACY_EXECUTOR_ID };

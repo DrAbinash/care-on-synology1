@@ -217,6 +217,9 @@ importers:
       '@workspace/integrations-gemini-ai':
         specifier: workspace:*
         version: link:../../lib/integrations-gemini-ai
+      '@workspace/report-quality':
+        specifier: workspace:*
+        version: link:../../lib/report-quality
       bcryptjs:
         specifier: ^3.0.3
         version: 3.0.3
