@@ -35,6 +35,13 @@ import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
 // canonical workspace (no separate USG reporting workflow).
 import UsgMeasurementReviewPanel from "@/components/radiology/UsgMeasurementReviewPanel";
 import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
+// CARE USG Companion (Phase 1) — workflow-automation panel that composes the
+// existing engines (study recognition, template, protocol, measurements,
+// comparison, Copilot) into a pre-report snapshot inside THIS workspace.
+import UsgCompanionPanel from "@/components/radiology/UsgCompanionPanel";
+import type { CompanionCopilotContext } from "@/lib/usgCompanionTypes";
+import ModuleErrorBoundary from "@/components/ModuleErrorBoundary";
+import "@/lib/copilotUsgCompanionModule"; // registers the USG Companion Copilot module
 // Cockpit→Workspace merge (D1): external-viewer (OHIF/Weasis/DICOM-SR)
 // measurement import queue — self-hides when the study has none.
 import ViewerMeasurementsPanel, { useViewerMeasurements } from "@/components/radiology/ViewerMeasurementsPanel";
@@ -1627,6 +1634,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // comparison module can advise and the reference can persist with the draft.
   const [selectedPrior, setSelectedPrior] = useState<SelectedPrior | null>(null);
 
+  // CARE USG Companion (Phase 1) — the Companion panel reports its
+  // machine-measurement outcome up here so the EXISTING Copilot can advise on
+  // imported / rejected / modified / missing measurements (no second Copilot).
+  const [companionCopilot, setCompanionCopilot] = useState<CompanionCopilotContext | null>(null);
+
   // Accepted viewer/DICOM-SR measurements (MRI PR 2) — read from the SAME hook +
   // cache the existing ViewerMeasurementsPanel uses, mapped into the Copilot
   // context so the measurement-completeness module can advise. No extra fetch.
@@ -1668,8 +1680,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     criticalWatchList: entryCriticalWatchList,
     criticalMarked: isCritical,
     criticalCommunicated: checklistComm.phoned,
+    // CARE USG Companion (Phase 1) — machine-measurement outcome for the
+    // USG Companion Copilot module (undefined for non-USG studies → module no-op).
+    usgCompanion: companionCopilot ?? undefined,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [entry?.modality, entry?.studyDescription, clinicalHistory, useStructured, findingsMap, rawFindings, impression, recommendation, technique, selectedQuickIds, findingById, checklistPercent, missingRequiredMeasurements, selectedPrior, copilotViewerMeasurements, entryCriticalWatchList, isCritical, checklistComm.phoned]);
+  }), [entry?.modality, entry?.studyDescription, clinicalHistory, useStructured, findingsMap, rawFindings, impression, recommendation, technique, selectedQuickIds, findingById, checklistPercent, missingRequiredMeasurements, selectedPrior, copilotViewerMeasurements, entryCriticalWatchList, isCritical, checklistComm.phoned, companionCopilot]);
 
   // MRI PR 3 — critical findings described in the drafted report (for the
   // finalize-safety gate and the pre-sign preview), computed from the same
@@ -4320,6 +4335,36 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 studyId={entry?.studyId}
                 onApplyToReport={(text) => setRawFindings((prev) => mergeBlock(prev, text))}
               />
+            )}
+
+            {/* CARE USG Companion (Phase 1) — pre-report snapshot composed from the
+                existing engines. Independent + defensive: an error here is caught
+                by the boundary and never breaks the reporting workspace. */}
+            {isUltrasound && entry?.studyInstanceUID && (
+              <ModuleErrorBoundary resetKey={String(entry.studyInstanceUID)}>
+                <UsgCompanionPanel
+                  studyInstanceUID={entry.studyInstanceUID}
+                  studyId={entry.studyId ?? undefined}
+                  patientId={entry.patientId ?? undefined}
+                  disabled={isLocked}
+                  templateSelected={selectedTemplateId != null}
+                  protocolSelected={!!activeProtocol}
+                  historyPresent={clinicalHistory.trim().length > 0}
+                  quickFindingsSelected={selectedQuickIds.size > 0}
+                  copilotClear={!copilotReport.items.some((i) => i.category === "critical" || i.severity === "critical")}
+                  userEdited={dirty || !!lastSavedAt}
+                  reportSaved={!!lastSavedAt}
+                  reportFinalized={statusLocked || finalizedReportId != null}
+                  onOpenTab={(tab) => setRightTab(tab as RightTab)}
+                  onCopilotContext={setCompanionCopilot}
+                  onApplyProtocol={availableProtocols.some((p) => p.isDefault)
+                    ? () => { const d = availableProtocols.find((p) => p.isDefault); if (d) requestProtocolChange(d); }
+                    : undefined}
+                  onSuggestHistory={clinicalHistoryChips.length > 0
+                    ? () => { if (isLocked) return; setClinicalHistory((cur) => clinicalHistoryChips.reduce((acc, chip) => hasPhrase(acc, chip.insertedText) ? acc : appendClinicalPhrase(acc, chip.insertedText), cur)); }
+                    : undefined}
+                />
+              </ModuleErrorBoundary>
             )}
 
             {/* Finalized banner */}

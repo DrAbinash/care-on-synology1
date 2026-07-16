@@ -10,8 +10,9 @@ import {
   Server, AlertCircle, Clock, CheckCircle2, IndianRupee, Database, HardDrive,
   Cpu, Terminal, AlertTriangle, Eye, Globe, Zap, Gauge, HeartPulse,
   LayoutDashboard, Layers, PlayCircle, BarChart3, TrendingUp, TrendingDown,
-  Download, FileSpreadsheet, FileText, Send, User, Calendar
+  Download, FileSpreadsheet, FileText, Send, User, Calendar, Sparkles
 } from "lucide-react";
+import type { CompanionDashboardStats } from "@/lib/usgCompanionTypes";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   BarChart, Bar, Legend
@@ -203,6 +204,15 @@ export default function RadiologyOperationsDashboard() {
   const { data: networkSettings, refetch: refetchSettings } = useQuery<NetworkSettings>({
     queryKey: ["/api/radiology/network/settings"],
     queryFn: () => api.get<NetworkSettings>("/api/radiology/network/settings"),
+    refetchInterval: refreshInterval,
+  });
+
+  // CARE USG Companion (Phase 1) — extraction/import telemetry for the
+  // "Companion Status" card. Degrades to empty stats if the table is not yet
+  // migrated (endpoint returns zeros), so this never breaks the dashboard.
+  const { data: companionStats } = useQuery<CompanionDashboardStats>({
+    queryKey: ["/api/care-usg-companion/dashboard-stats"],
+    queryFn: () => api.get<CompanionDashboardStats>("/api/care-usg-companion/dashboard-stats?days=30"),
     refetchInterval: refreshInterval,
   });
 
@@ -776,6 +786,67 @@ export default function RadiologyOperationsDashboard() {
           </div>
         </div>
 
+      </div>
+
+      {/* CARE USG Companion — Phase 1 Companion Status card */}
+      <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-5 shadow-lg flex flex-col gap-4">
+        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+          <div className="flex items-center gap-2">
+            <Sparkles size={18} className="text-indigo-400" />
+            <h3 className="text-sm font-bold text-slate-200">CARE USG Companion</h3>
+          </div>
+          <Badge variant="outline" className="text-indigo-400 border-indigo-400/20 bg-indigo-500/5">
+            last {companionStats?.windowDays ?? 30} days · {companionStats?.totalRuns ?? 0} studies
+          </Badge>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+          <div className="bg-slate-950 p-3 rounded-lg border border-slate-800/80">
+            <span className="text-slate-400 font-semibold text-xs">Extraction Success</span>
+            <p className="text-xl font-bold mt-1 text-emerald-400">{(companionStats?.extractionSuccessRate ?? 0).toFixed(1)}%</p>
+          </div>
+          <div className="bg-slate-950 p-3 rounded-lg border border-slate-800/80">
+            <span className="text-slate-400 font-semibold text-xs">Extraction Failure</span>
+            <p className="text-xl font-bold mt-1 text-rose-400">{(companionStats?.extractionFailureRate ?? 0).toFixed(1)}%</p>
+          </div>
+          <div className="bg-slate-950 p-3 rounded-lg border border-slate-800/80">
+            <span className="text-slate-400 font-semibold text-xs">Avg Imported</span>
+            <p className="text-xl font-bold mt-1 text-slate-200">{(companionStats?.avgImportedMeasurements ?? 0).toFixed(1)}</p>
+            <span className="text-[10px] text-slate-500">measurements / study</span>
+          </div>
+          <div className="bg-slate-950 p-3 rounded-lg border border-slate-800/80">
+            <span className="text-slate-400 font-semibold text-xs">Avg Time Saved</span>
+            <p className="text-xl font-bold mt-1 text-slate-200">{Math.round((companionStats?.avgTimeSavedSeconds ?? 0) / 6) / 10} min</p>
+            <span className="text-[10px] text-slate-500">per study</span>
+          </div>
+          <div className="bg-slate-950 p-3 rounded-lg border border-slate-800/80">
+            <span className="text-slate-400 font-semibold text-xs">Avg Readiness</span>
+            <p className="text-xl font-bold mt-1 text-indigo-300">{Math.round(companionStats?.avgReadinessScore ?? 0)}/100</p>
+          </div>
+          <div className="bg-slate-950 p-3 rounded-lg border border-slate-800/80">
+            <span className="text-slate-400 font-semibold text-xs">Machine Used</span>
+            <p className="text-sm font-bold mt-1 text-slate-200 truncate" title={companionStats?.machineBreakdown?.[0]?.machine}>
+              {companionStats?.machineBreakdown?.[0]?.machine ?? "—"}
+            </p>
+            <span className="text-[10px] text-slate-500">{companionStats?.machineBreakdown?.[0]?.runCount ?? 0} studies</span>
+          </div>
+        </div>
+
+        {(companionStats?.mostCommonMissingMeasurements?.length ?? 0) > 0 && (
+          <div>
+            <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">Most common missing measurements</span>
+            <div className="flex flex-wrap gap-1.5 mt-1.5">
+              {companionStats!.mostCommonMissingMeasurements.slice(0, 8).map((m) => (
+                <span key={m.key} className="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                  {m.key} · {m.count}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        {(companionStats?.totalRuns ?? 0) === 0 && (
+          <p className="text-[11px] text-slate-500">No Companion activity recorded yet — stats populate as USG studies are reported through the Companion.</p>
+        )}
       </div>
 
       {/* Grid Row 2: Performance Analytics & Alerts */}

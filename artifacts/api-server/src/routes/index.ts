@@ -120,6 +120,7 @@ import { usgDopplerRouter } from "./usgDoppler";
 import { usgReportsRouter } from "./usgReports";
 import { usgCriticalAlertsRouter } from "./usgCriticalAlerts";
 import { usgAnalyticsRouter } from "./usgAnalytics";
+import { careUsgCompanionRouter } from "./careUsgCompanion";
 import echoCardiologyRouter from "./echoCardiology";
 import fetalUsgLevel4Router from "./fetalUsgLevel4";
 import pregnancyDashboardRouter from "./pregnancyDashboard";
@@ -548,6 +549,12 @@ router.use("/usg-doppler", requireStaffAuth, requireStaffPermission("/radiology"
 router.use("/usg-reports", requireStaffAuth, requireStaffPermission("/radiology"), usgReportsRouter);
 router.use("/usg-critical", requireStaffAuth, requireStaffPermission("/radiology"), usgCriticalAlertsRouter);
 router.use("/usg-analytics", requireStaffAuth, requireStaffPermission("/radiology"), usgAnalyticsRouter);
+
+// CARE USG Companion (Phase 1) — study-scoped assembly + telemetry + dashboard
+// stats. Composes existing engines only (no new measurement/template/copilot
+// engine). Study/assembly responses are shared resources (keyed by study), so
+// they are safe for the service worker to cache — no personal-identity scoping.
+router.use("/care-usg-companion", requireStaffAuth, requireStaffPermission("/radiology"), careUsgCompanionRouter);
 router.use("/echo-cardiology", requireStaffAuth, requireStaffPermission("/radiology"), echoCardiologyRouter);
 router.use("/fetal-usg", requireStaffAuth, requireStaffPermission("/radiology"), fetalUsgLevel4Router);
 router.use("/fetal-usg-dashboard", requireStaffAuth, requireStaffPermission("/radiology"), pregnancyDashboardRouter);

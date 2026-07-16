@@ -139,6 +139,7 @@ usgCriticalAlerts.ts
 usgDoppler.ts
 usgExtraction.ts
 usgReports.ts
+careUsgCompanion.ts   # CARE USG Companion (Phase 1) — study assembly + telemetry
 abnormal-findings.ts
 echoCardiology.ts
 fetalUsgLevel4.ts
@@ -187,6 +188,7 @@ radiologyWorkflow.ts
 radiologyWorklist.ts
 smartRadiology.ts
 teleradiologyUsers.ts
+usgCompanion.ts   # CARE USG Companion (Phase 1) — companion_runs telemetry
 ```
 
 ### Frontend pages
