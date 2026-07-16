@@ -55,6 +55,49 @@ export const reportQualityEvaluationsTable = pgTable(
 );
 export type ReportQualityEvaluation = typeof reportQualityEvaluationsTable.$inferSelect;
 
+// ── Report Quality Findings ── normalized, queryable finding rows (Phase 2.5)
+//
+// Written ALONGSIDE the immutable findings_json blob on the evaluation. The blob
+// stays the full-fidelity record for point reads; these rows exist so dashboards
+// can index and aggregate by rule_id / canonical_id / category / severity across
+// millions of evaluations (a JSON blob cannot be GROUP BY'd efficiently).
+// Append-only children of an immutable evaluation.
+export const reportQualityFindingsTable = pgTable(
+  "report_quality_findings",
+  {
+    id: serial("id").primaryKey(),
+    evaluationId: integer("evaluation_id").notNull(),
+    // Denormalized from the parent evaluation for single-table analytics.
+    reportDraftId: integer("report_draft_id"),
+    reportId: integer("report_id"),
+    // Stable identity — flat id + hierarchical canonical id.
+    ruleId: text("rule_id").notNull(),
+    canonicalId: text("canonical_id"),
+    category: text("category").notNull(),
+    severity: text("severity").notNull(),
+    tier: text("tier").notNull(),
+    modality: text("modality"),
+    studyType: text("study_type"),
+    knowledgePackSource: text("knowledge_pack_source"),
+    // Score deduction this finding contributed.
+    weight: integer("weight"),
+    // Rendered message kept for display; the STRUCTURE above is what analytics use.
+    message: text("message"),
+    evidence: text("evidence"),
+    suggestedFix: text("suggested_fix"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    evalIdx: index("rqf_eval_idx").on(t.evaluationId),
+    ruleIdx: index("rqf_rule_idx").on(t.ruleId),
+    canonicalIdx: index("rqf_canonical_idx").on(t.canonicalId),
+    draftIdx: index("rqf_draft_idx").on(t.reportDraftId),
+    categoryIdx: index("rqf_category_idx").on(t.category),
+    severityIdx: index("rqf_severity_idx").on(t.severity),
+  }),
+);
+export type ReportQualityFinding = typeof reportQualityFindingsTable.$inferSelect;
+
 // ── Report Quality Overrides ── append-only override/acknowledge history
 export const reportQualityOverridesTable = pgTable(
   "report_quality_overrides",

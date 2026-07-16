@@ -1,34 +1,35 @@
-// registry.ts — the single place rules register themselves.
+// registry.ts — compatibility façade over the default global engine.
 //
-// Rule modules (added phase by phase under ./rules/) call registerRule() at
-// import time; ./rules/index.ts imports them all so that importing the package
-// wires the full rule set. Keyed by id so a re-imported module can't double-register.
+// Phase 2.5 moved rule storage into engine instances (engine.ts). These
+// functions delegate to the single `defaultEngine`, so all existing callers —
+// rules that self-register via registerRule() on import, tests that call
+// clearRules() — keep working unchanged. New code should prefer
+// createQualityEngine({ providers }).
 
 import type { QualityRule } from "./contract";
+import { defaultEngine } from "./engine";
 
-const registry = new Map<string, QualityRule>();
-
-/** Register (or replace, by id) a quality rule. */
+/** Register (or replace, by id) a rule on the default global engine. */
 export function registerRule(rule: QualityRule): void {
-  registry.set(rule.id, rule);
+  defaultEngine.register(rule);
 }
 
-/** Register many rules at once. */
+/** Register many rules on the default global engine. */
 export function registerRules(rules: QualityRule[]): void {
-  for (const r of rules) registerRule(r);
+  defaultEngine.registerMany(rules);
 }
 
-/** All currently-registered rules, in registration order. */
+/** All rules registered on the default global engine. */
 export function getRegisteredRules(): QualityRule[] {
-  return [...registry.values()];
+  return defaultEngine.getRules();
 }
 
-/** Look up a single rule by id. */
+/** Look up a rule on the default global engine by id. */
 export function getRule(id: string): QualityRule | undefined {
-  return registry.get(id);
+  return defaultEngine.getRule(id);
 }
 
-/** Test/reset helper — clears the registry. Not used in production paths. */
+/** Test/reset helper — clears the default global engine. Not used in production paths. */
 export function clearRules(): void {
-  registry.clear();
+  defaultEngine.clear();
 }

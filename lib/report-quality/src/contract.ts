@@ -37,10 +37,22 @@ export type QualityCategory =
 export interface QualityFinding {
   /** Stable catalog rule id (e.g. "Q104"); analytics/override/suppression key off this, never the message. */
   ruleId: string;
+  /**
+   * Optional hierarchical, namespaced id for this rule (e.g.
+   * "care.text.laterality.impression-vs-findings"). Additive metadata for
+   * ownership + prefix-scoped analytics; `ruleId` remains the stable primary key.
+   */
+  canonicalId?: string;
   category: QualityCategory;
   severity: Severity;
   /** "structured" = deterministic on typed data; "heuristic" = free-text keyword/regex. */
   tier: DataTier;
+  /**
+   * Points this finding deducts from the 100-point quality score. Carried on the
+   * finding so a scorer can sum from findings WITHOUT re-evaluating (Phase 2.5
+   * single-evaluation fix). Absent → contributes 0.
+   */
+  weight?: number;
   /** Canonical modality the finding was produced for (stamped by the runner). */
   modality?: string;
   /** Study type / description the finding was produced for (stamped by the runner). */

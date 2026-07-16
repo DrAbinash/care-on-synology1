@@ -10,12 +10,16 @@ import type { DataTier, QualityContext, QualityReport, Severity } from "./contra
 /** One structured finding as persisted/transported. Keyed by ruleId, never text. */
 export interface QualityFindingDTO {
   ruleId: string;
+  /** Hierarchical namespaced id, when known (e.g. "care.text.laterality.*"). */
+  canonicalId?: string;
   category: string;
   severity: Severity;
   tier: DataTier; // "structured" (deterministic) | "heuristic"
   modality?: string;
   studyType?: string;
   knowledgePackSource?: string;
+  /** Score deduction this finding contributed. */
+  weight?: number;
   message: string;
   rationale?: string;
   evidence?: string;
@@ -93,12 +97,14 @@ export function toQualityReportDTO(report: QualityReport, identity?: DTOIdentity
     evaluatedAt: report.evaluatedAt,
     findings: report.findings.map((f): QualityFindingDTO => ({
       ruleId: f.ruleId,
+      canonicalId: f.canonicalId,
       category: f.category,
       severity: f.severity,
       tier: f.tier,
       modality: f.modality,
       studyType: f.studyType,
       knowledgePackSource: f.knowledgePackSource,
+      weight: f.weight,
       message: f.message,
       rationale: f.rationale,
       evidence: f.evidence,
