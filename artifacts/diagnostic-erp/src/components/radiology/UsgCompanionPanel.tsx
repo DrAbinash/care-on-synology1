@@ -351,7 +351,7 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
   if (isError) {
     return (
       <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 flex items-center gap-2">
-        <AlertTriangle size={14} /> CARE USG Companion is unavailable for this study. Reporting continues normally.
+        <AlertTriangle size={14} /> CARE Reporting Companion is unavailable for this study. Reporting continues normally.
       </div>
     );
   }
@@ -376,7 +376,7 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-bold text-gray-800">CARE USG Companion</span>
+            <span className="text-sm font-bold text-gray-800">CARE Reporting Companion</span>
             {detected && (
               <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">{detected.label}</span>
             )}
@@ -388,7 +388,7 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
             {data?.degraded && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">partial</span>}
           </div>
           <div className="text-[11px] text-gray-500 truncate">
-            {isLoading ? "Assembling study…" : `${study?.studyDescription || "Ultrasound study"}${machine?.model ? ` · ${machine.model}` : ""}`}
+            {isLoading ? "Assembling study…" : `${study?.studyDescription || "Study"}${machine?.model ? ` · ${machine.model}` : ""}`}
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">

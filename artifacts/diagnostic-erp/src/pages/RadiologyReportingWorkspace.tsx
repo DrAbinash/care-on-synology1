@@ -2348,6 +2348,20 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // spelling (see lib/usgModality.ts).
   const isUltrasound = useMemo(() => isUltrasoundModality(entry?.modality), [entry?.modality]);
 
+  // CARE Reporting Companion eligibility. The Companion is NOT a USG feature —
+  // it composes the SAME shared engines (protocol / clinical-history / quick
+  // findings / measurements / Copilot) into a pre-report snapshot, driven by the
+  // region props it already receives. It mounts for ultrasound and for CT (which
+  // now carries full Knowledge-Pack content), reusing the ONE panel — there is
+  // no per-modality Companion. The server assembly degrades gracefully for any
+  // study, and the panel is wrapped in a ModuleErrorBoundary, so broadening the
+  // gate can never break reporting for either modality.
+  const isCtModality = useMemo(
+    () => (entry?.modality ?? "").trim().toUpperCase().startsWith("CT"),
+    [entry?.modality],
+  );
+  const companionEligible = isUltrasound || isCtModality;
+
   // PR B follow-up — PCPNDT safety guard. This workspace has no PCPNDT Form F
   // compliance check (that lock exists only in the legacy, non-nav-linked
   // usgReports.ts pipeline — see docs/usg-reporting/platform-consolidation-pr-b.md
@@ -4382,7 +4396,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             {/* CARE USG Companion (Phase 1) — pre-report snapshot composed from the
                 existing engines. Independent + defensive: an error here is caught
                 by the boundary and never breaks the reporting workspace. */}
-            {isUltrasound && entry?.studyInstanceUID && (
+            {companionEligible && entry?.studyInstanceUID && (
               <ModuleErrorBoundary resetKey={String(entry.studyInstanceUID)}>
                 <UsgCompanionPanel
                   studyInstanceUID={entry.studyInstanceUID}
