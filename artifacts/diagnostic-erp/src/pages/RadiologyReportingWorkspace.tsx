@@ -97,6 +97,12 @@ import { upsertMeasurement, upsertLabeledLine } from "@/lib/measurementVars";
 import CollapsibleSection from "@/components/radiology/CollapsibleSection";
 import FollowUpPanel from "@/components/radiology/FollowUpPanel";
 import { useLocalDraftBackup } from "@/hooks/useLocalDraftBackup";
+import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import { retryWithBackoff, isTransientError, offlineBlockMessage } from "@/lib/reliability";
+import {
+  registerDraftRescueSaver, deregisterDraftRescueSaver, writeRescueDraft, readRescueDraft, clearRescueDraft,
+  type RescueDraft,
+} from "@/lib/draftRescue";
 import { useRadiologyDraftId } from "@/hooks/useRadiologyDraftId";
 import { isOwnerRole } from "@/lib/staffSession";
 import {
@@ -1308,6 +1314,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     enabled: reportStatus !== "FINAL",
   });
 
+  // MRI PR 5 — offline awareness for Save/Finalize (reuses the existing hook).
+  const isOnline = useOnlineStatus();
+  // MRI PR 5 — a rescue draft recovered from a 401 session-expiry (state here;
+  // the register/read effects live after `entry` is declared).
+  const [rescueDraft, setRescueDraft] = useState<RescueDraft | null>(null);
+
   function restoreLocalBackup() {
     const b = draftBackup.restore();
     if (!b) return;
@@ -1328,6 +1340,40 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     queryFn: () => api.get<WorklistEntry>(`/api/internal/radiology/worklist/${studyId}`),
     enabled: !!studyId,
   });
+
+  // MRI PR 5 — participate in the 401 session-expiry rescue (reuses draftRescue,
+  // the exact mechanism the Command Center uses). If the JWT expires mid-dictation
+  // and fetchApi redirects to login, the in-memory findings/impression are written
+  // to localStorage FIRST so nothing is lost — the workspace previously did not
+  // register a saver, so its dictation was unprotected against that redirect.
+  useEffect(() => {
+    registerDraftRescueSaver(() => {
+      const acc = entry?.accessionNumber;
+      if (!acc) return;
+      if (!rawFindings.trim() && impression.filter(Boolean).length === 0) return;
+      writeRescueDraft({ accessionNumber: acc, rawFindings, impression: impression.filter(Boolean), savedAt: new Date().toISOString() });
+    });
+    return () => deregisterDraftRescueSaver();
+  }, [entry?.accessionNumber, rawFindings, impression]);
+  // On (re)entry, offer a rescue draft only when it belongs to THIS study and the
+  // report is still editable — never over a finalized report.
+  useEffect(() => {
+    const r = readRescueDraft();
+    setRescueDraft(r && entry?.accessionNumber && r.accessionNumber === entry.accessionNumber && reportStatus !== "FINAL" ? r : null);
+  }, [entry?.accessionNumber, reportStatus]);
+
+  function restoreRescueDraft() {
+    if (!rescueDraft) return;
+    if (rescueDraft.rawFindings) setRawFindings(rescueDraft.rawFindings);
+    if (rescueDraft.impression?.length) setImpression(rescueDraft.impression);
+    clearRescueDraft();
+    setRescueDraft(null);
+    toast({ title: "Recovered after session expiry", description: "Your dictation from before the session expired has been restored." });
+  }
+  function dismissRescueDraft() {
+    clearRescueDraft();
+    setRescueDraft(null);
+  }
 
   // ── Quick-select config (shared cache with the right Quick panel) ───────────
   // Same queryKey as QuickFindingsPanel, so react-query de-dupes — no extra
@@ -2961,6 +3007,13 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       toast({ title: "No study loaded", description: "Open a study from the worklist before saving.", variant: "destructive" });
       return null;
     }
+    // MRI PR 5 — fail clearly (not confusingly) when offline; the local autosave
+    // has the text either way, so nothing is lost.
+    const offline = offlineBlockMessage(isOnline, "save");
+    if (offline) {
+      toast({ title: "Offline", description: offline, variant: "destructive" });
+      return null;
+    }
     setSaving(true);
     try {
       // id omitted on the first save (server creates the row); included on
@@ -2978,7 +3031,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       // selection; A3.2 persists it to report_finding_instances, which is
       // what the selection restore above reads back.
       const savedFindings = deriveQuickSelectFindings(selectedQuickIds, quickInstances, structuredValuesRef.current);
-      const res = await saveRadiologyDraft<{ success: boolean; draft: { id: number } & Record<string, unknown> }>(
+      // MRI PR 5 — a transient network blip retries with backoff before it
+      // becomes a "Save Failed" toast; non-transient errors still fail fast.
+      const res = await retryWithBackoff(() => saveRadiologyDraft<{ success: boolean; draft: { id: number } & Record<string, unknown> }>(
         {
           id: draftId ?? undefined,
           studyId: studyId ?? entry.studyId ?? null,
@@ -2994,7 +3049,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           recommendation: recommendation || null,
           findings: savedFindings,
         },
-      );
+      ), { shouldRetry: isTransientError });
       captureSavedDraftId(res.draft.id);
       // R1.4 — force the preview effect to refetch even though draftId is
       // unchanged on every save after the first (see previewRefreshToken).
@@ -3065,6 +3120,13 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           "This is an obstetric/fetal ultrasound. This workspace does not check PCPNDT Form F compliance, so it cannot finalize this report. Use \"Review & Map to Form F\" (Measurements tab) to open Form F, then finalize this study through USG Reporting (the PCPNDT-compliant legacy page, /usg/reporting) instead. Your draft here is unaffected and remains saved.",
         variant: "destructive",
       });
+      return;
+    }
+    // MRI PR 5 — never begin a sign flow offline (the save-before-sign would
+    // fail mid-way); block clearly with the work preserved locally.
+    const offlineFinal = offlineBlockMessage(isOnline, "finalize");
+    if (offlineFinal) {
+      toast({ title: "Offline", description: offlineFinal, variant: "destructive" });
       return;
     }
     setFinalizing(true);
@@ -3262,6 +3324,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       // Finalized text is now safely on the server — remove the local
       // backup so patient report text never lingers on a shared machine.
       draftBackup.clear();
+      // MRI PR 5 — the signed report supersedes any session-expiry rescue draft.
+      clearRescueDraft();
+      setRescueDraft(null);
       // Surface the TRUE finalize path (Phase 8) — never claim a structured
       // sign that did not happen. R1.4 — never claim "Finalized" as a
       // completed, deliverable document unless it is actually signed: an
@@ -3883,6 +3948,16 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         >
           {STATUS_CONFIG[reportStatus]?.label || reportStatus}
         </Badge>
+        {/* MRI PR 5 — offline indicator: Save/Finalize pause while offline;
+            work stays backed up locally. */}
+        {!isOnline && (
+          <Badge
+            className="shrink-0 text-[10px] bg-red-100 text-red-700 border-red-200"
+            title="You are offline — Save and Finalize are paused. Your work is backed up locally and will save when you reconnect."
+          >
+            Offline
+          </Badge>
+        )}
         {/* M1.4 — draft-load + dirty state, always truthful */}
         {!!studyId && isLoadingExistingDraft && (
           <span className="shrink-0 text-[10px] text-muted-foreground">Loading draft…</span>
@@ -4369,6 +4444,22 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 </Button>
                 <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={draftBackup.discard}>
                   Discard
+                </Button>
+              </div>
+            )}
+
+            {/* MRI PR 5 — dictation recovered from a 401 session expiry (distinct
+                from the autosave banner above: this is the exact in-memory text
+                captured at the moment the session dropped and the page redirected). */}
+            {rescueDraft && (
+              <div className="flex items-center gap-2 p-2 rounded-md bg-indigo-50 border border-indigo-200 text-indigo-800 text-xs font-medium shrink-0">
+                <AlertTriangle size={14} className="shrink-0" />
+                <span className="flex-1">Recovered dictation from before your session expired ({new Date(rescueDraft.savedAt).toLocaleString()}).</span>
+                <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={restoreRescueDraft}>
+                  Restore
+                </Button>
+                <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={dismissRescueDraft}>
+                  Dismiss
                 </Button>
               </div>
             )}
