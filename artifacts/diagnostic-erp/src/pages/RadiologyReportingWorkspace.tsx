@@ -81,6 +81,14 @@ import "@/lib/copilotUsgThyroidModule";
 import "@/lib/copilotUsgBreastModule";
 import "@/lib/copilotUsgScrotumModule";
 import "@/lib/copilotUsgDopplerModule";
+import "@/lib/copilotCriticalModule"; // registers the critical-results safety module (MRI PR 3)
+import { detectCriticalFindings } from "@/lib/criticalResults";
+import { computeFinalizeSafety, formatFinalizeSafety } from "@/lib/finalizeSafety";
+import { criticalWatchListFor } from "@/lib/radiologyMasterTemplates";
+import {
+  combinationsForModality, buildCombination, combinationInserts, matchStudyCombination,
+  type StudyCombination,
+} from "@/lib/studyCombinations";
 import ComparisonPanel, { type SelectedPrior } from "@/components/radiology/ComparisonPanel";
 import { useCopilotPrefs } from "@/hooks/useCopilotPrefs";
 import { useCopilotLearning } from "@/hooks/useCopilotLearning";
@@ -1575,6 +1583,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     [viewerMeasurementRows],
   );
 
+  // MRI PR 3 — per-study critical watch terms, reused verbatim from the master
+  // template `criticalWatchList` data (no duplicate list here); seeds the
+  // critical-results detector in addition to its built-in emergency table.
+  const entryCriticalWatchList = useMemo(
+    () => criticalWatchListFor(entry?.modality, entry?.studyDescription),
+    [entry?.modality, entry?.studyDescription],
+  );
+
   const copilotContext = useMemo<CopilotContext>(() => ({
     modality: entry?.modality ?? "",
     studyDescription: entry?.studyDescription ?? "",
@@ -1587,12 +1603,26 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       .map((id) => findingById.get(id)?.label)
       .filter((l): l is string => !!l),
     checklistPercent,
+    missingRequiredMeasurements,
     prior: selectedPrior
       ? { available: true, dateIso: selectedPrior.dateIso, studyName: selectedPrior.studyName, significantChanges: selectedPrior.significantChanges }
       : undefined,
     viewerMeasurements: copilotViewerMeasurements,
+    // MRI PR 3 — reuse the existing "Mark Critical Finding" toggle + F5
+    // communication checklist as the criticality state the Copilot advises on.
+    criticalWatchList: entryCriticalWatchList,
+    criticalMarked: isCritical,
+    criticalCommunicated: checklistComm.phoned,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [entry?.modality, entry?.studyDescription, clinicalHistory, useStructured, findingsMap, rawFindings, impression, recommendation, technique, selectedQuickIds, findingById, checklistPercent, selectedPrior, copilotViewerMeasurements]);
+  }), [entry?.modality, entry?.studyDescription, clinicalHistory, useStructured, findingsMap, rawFindings, impression, recommendation, technique, selectedQuickIds, findingById, checklistPercent, missingRequiredMeasurements, selectedPrior, copilotViewerMeasurements, entryCriticalWatchList, isCritical, checklistComm.phoned]);
+
+  // MRI PR 3 — critical findings described in the drafted report (for the
+  // finalize-safety gate and the pre-sign preview), computed from the same
+  // resolved findings/impression the Copilot context uses.
+  const criticalHits = useMemo(
+    () => detectCriticalFindings(copilotContext.findings, copilotContext.impression, entryCriticalWatchList),
+    [copilotContext.findings, copilotContext.impression, entryCriticalWatchList],
+  );
 
   /** Insert a comparison statement into Findings (free-text) or the structured
    *  catch-all section — editable, additive, never overwriting (§6 safety). */
@@ -2036,6 +2066,58 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     toast({ title: "Master template applied", description: `${tpl.templateName} (${tpl.groupName.replace(/_/g, " ")})` });
   };
 
+  /** MRI PR 4 — apply a multi-study COMBINATION by assembling its base master
+   *  templates through the EXISTING assembler (studyCombinations → assembleReport)
+   *  and inserting the result through the canonical, additive primitives. Never
+   *  overwrites: findings/recommendation merge, impression de-dupes, and a
+   *  confirmation guards any pre-existing content. Returns a VoiceExecutionResult
+   *  so the command palette and voice share exactly one apply path. */
+  function applyCombination(combo: StudyCombination): VoiceExecutionResult {
+    if (isLocked) return { ok: false, message: "Report is read-only" };
+    const assembled = buildCombination(combo.templateIds);
+    if (!assembled) return { ok: false, message: `Combination "${combo.label}" is unavailable` };
+    const inserts = combinationInserts(assembled);
+    const hasContent = rawFindings.trim().length > 0 || impression.filter(Boolean).length > 0 || Object.keys(findingsMap).length > 0;
+    if (hasContent && !window.confirm(`Add the "${combo.label}" combined template (${inserts.findingsBlocks.length} sections) to this report?`)) {
+      return { ok: false, message: "Combination cancelled" };
+    }
+    const prev = { findings: rawFindings, impression, recommendation, technique, templateId: selectedTemplateId };
+    // A combination is free-text combined content — drop the single-study
+    // structured template (as handleApplyMasterTemplate does) so the merged
+    // body-part sections render in the findings editor.
+    setSelectedTemplateId(null);
+    const findingsBlock = inserts.findingsBlocks.map((b) => `${b.heading}:\n${b.text}`).join("\n\n");
+    setRawFindings((p) => mergeBlock(p, findingsBlock));
+    if (inserts.technique) setTechnique((p) => (p.trim() ? p : inserts.technique));
+    if (inserts.impression.length) {
+      setImpression((p) => {
+        let next = p.filter(Boolean);
+        for (const line of inserts.impression) next = mergeImpression(next, line);
+        return next;
+      });
+    }
+    if (inserts.recommendation) setRecommendation((p) => mergeBlock(p, inserts.recommendation));
+    toast({ title: "Combination applied", description: combo.label });
+    return {
+      ok: true, message: `Applied combination: ${combo.label}`,
+      undo: () => {
+        setRawFindings(prev.findings); setImpression(prev.impression);
+        setRecommendation(prev.recommendation); setTechnique(prev.technique);
+        setSelectedTemplateId(prev.templateId);
+      },
+      undoLabel: "combination",
+    };
+  }
+
+  /** Voice adapter — resolve a spoken combination name and apply it. */
+  function voiceCombination(term: string): VoiceExecutionResult {
+    const combo = matchStudyCombination(term);
+    if (!combo) {
+      return { ok: false, message: `No unique study combination matches “${term}” — open the palette (Ctrl+K) to pick one` };
+    }
+    return applyCombination(combo);
+  }
+
   // ── Universal Command Palette (Ctrl+K) — PR #77 ─────────────────────────────
   // A keyboard-first launcher over data the workspace ALREADY has cached (quick
   // findings, protocols, templates, clinical-history chips, studies) plus a
@@ -2097,10 +2179,19 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         keywords: s.accessionNumber, payload: s,
       });
     }
+    // MRI PR 4 — study combinations for this modality (revives the reserved
+    // `combination` palette kind; running one assembles via the shared engine).
+    for (const combo of combinationsForModality(entry?.modality)) {
+      items.push({
+        id: combo.id, kind: "combination", title: combo.label,
+        subtitle: `${combo.templateIds.length} studies · combined report`,
+        keywords: combo.keywords, favouritable: true, payload: combo,
+      });
+    }
     items.push(...PALETTE_COMMANDS, ...PALETTE_SETTINGS);
     return items;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [quickSelectData, templates, masterTemplates, workflow.queue]);
+  }, [quickSelectData, templates, masterTemplates, workflow.queue, entry?.modality]);
 
   // E2: on-demand full AI draft from study metadata (distinct from the
   // impression-only aiImpressionMutation and from the passive fill-empty-only
@@ -2543,6 +2634,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       case "dictate": return voiceDictate(intent);
       case "quick-select": return voiceQuickSelect(intent.action, intent.term);
       case "quick-modifier": return voiceQuickModifier(intent.property, intent.value);
+      case "combination": return voiceCombination(intent.term);
       case "viewer": return voiceViewer(intent.op);
       case "viewer-unsupported": return { ok: false, message: `The embedded viewer does not support ${intent.capability}` };
       // Session-control intents (M1.6B3) are handled inside useVoiceSession
@@ -3036,13 +3128,26 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       const warningBlock = warnings.length
         ? `\nReport check warnings:\n${warnings.map((w, i) => `  ${i + 1}. ${w}`).join("\n")}\n`
         : "";
+      // MRI PR 3 — pre-finalization safety checks (protocol completeness +
+      // critical-result handling), composed by the pure aggregator and surfaced
+      // in this SAME confirm dialog. Advisory: it never blocks — clicking OK is
+      // the radiologist's decision, exactly as before.
+      const safetyBlock = formatFinalizeSafety(computeFinalizeSafety({
+        checklistActive: !!activeProtocol,
+        checklistPercent,
+        checklistRemaining,
+        missingRequiredMeasurements,
+        criticalHits,
+        criticalMarked: isCritical,
+        criticalCommunicated: checklistComm.phoned,
+      }));
       // Unbilled study: the report row cannot be created (test_id NOT NULL) —
       // say so BEFORE the radiologist commits, not after.
       const unbilledNote = entry.patientId && !entry.studyId
         ? "\nNote: no billed test is linked to this study — the worklist will be marked final, but no patient-facing report row can be created.\n"
         : "";
       confirmed = window.confirm(
-        `Finalize and sign this report?\n\n${identity}\n\n${validationSummary}\n${warningBlock}${unbilledNote}\nAfter finalizing, editing is disabled.`,
+        `Finalize and sign this report?\n\n${identity}\n\n${validationSummary}\n${warningBlock}${safetyBlock}${unbilledNote}\nAfter finalizing, editing is disabled.`,
       );
       if (!confirmed) return;
     } finally {
@@ -3358,6 +3463,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         if (s.id !== studyId && guardedLeave()) goToStudy(s);
         break;
       }
+      case "combination": applyCombination(item.payload as StudyCombination); break;
       case "command": runPaletteCommand(item.id.replace(/^command:/, "")); break;
       case "setting": navigate(item.id.replace(/^setting:/, "")); break;
     }
@@ -5273,6 +5379,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                       <div className="text-green-600">✓ Clinical history present</div>
                     )}
                     <div className="text-green-600">✓ No left-right conflict detected</div>
+                    {/* MRI PR 3: critical-result DETECTION — the report describes a
+                        critical finding but the critical flag is still off. */}
+                    {criticalHits.length > 0 && !isCritical && (
+                      <div className="text-red-500">⚠ Report describes a critical finding ({criticalHits.map((h) => h.label).join(", ")}) but "Mark Critical Finding" is off.</div>
+                    )}
                     {/* F5: critical-finding communication gate */}
                     {isCritical && !checklistComm.phoned && (
                       <div className="text-red-500">⚠ Critical finding flagged but "Telephoned Doctor" not yet checked in the Communication Checklist.</div>

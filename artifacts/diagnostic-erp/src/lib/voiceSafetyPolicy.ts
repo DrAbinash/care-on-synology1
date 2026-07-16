@@ -61,6 +61,10 @@ function classify(intent: VoiceIntent, ctx: VoiceContext): VoiceSafetyClass {
       return intent.action === "search" ? "SAFE_IMMEDIATE" : "REVERSIBLE_EDIT";
     case "quick-modifier":
       return "REVERSIBLE_EDIT";
+    case "combination":
+      // Inserts a multi-section combined template — always preview + confirm,
+      // exactly like a replace, even though the workspace apply is additive.
+      return "CONFIRM_REQUIRED";
     case "dictate":
       return intent.mode === "replace" ? "CONFIRM_REQUIRED" : "REVERSIBLE_EDIT";
     case "workflow":
@@ -106,6 +110,8 @@ function contextBlock(intent: VoiceIntent, ctx: VoiceContext): string | null {
       if (intent.action !== "search" && ctx.isLocked) return readOnlyReason;
       return null;
     case "quick-modifier":
+      return ctx.isLocked ? readOnlyReason : null;
+    case "combination":
       return ctx.isLocked ? readOnlyReason : null;
     case "viewer":
       return ctx.viewerAvailable ? null : "Embedded viewer is not open for this study";

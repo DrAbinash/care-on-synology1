@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
-  Sparkles, AlertTriangle, ListChecks, ClipboardCheck, Stethoscope, GitBranch, Ruler,
+  Sparkles, AlertTriangle, AlertOctagon, ListChecks, ClipboardCheck, Stethoscope, GitBranch, Ruler,
   ChevronDown, ChevronRight, Undo2, Info, ShieldCheck,
 } from "lucide-react";
 import {
@@ -58,6 +58,7 @@ function Toggle({ label, checked, onChange, hint }: { label: string; checked: bo
 }
 
 const CATEGORY_ICON: Record<CopilotCategory, React.ComponentType<{ size?: number; className?: string }>> = {
+  critical: AlertOctagon,
   suggestion: Sparkles,
   missing: ListChecks,
   contradiction: AlertTriangle,
@@ -74,7 +75,7 @@ const CONFIDENCE_STYLE: Record<Confidence, string> = {
 };
 
 const SECTION_ORDER: CopilotCategory[] = [
-  "contradiction", "impression", "suggestion", "missing", "measurement", "recommendation", "differential",
+  "critical", "contradiction", "impression", "suggestion", "missing", "measurement", "recommendation", "differential",
 ];
 
 function QualityGauge({ score, band }: { score: number; band: string }) {
