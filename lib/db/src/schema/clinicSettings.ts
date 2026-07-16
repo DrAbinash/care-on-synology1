@@ -69,6 +69,13 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   onlineBookingAllowedPackageIds: text("online_booking_allowed_package_ids").notNull().default("[]"),
   sidebarTheme: text("sidebar_theme").notNull().default("navy"),
   billDefaultPaperSize: text("bill_default_paper_size").notNull().default("A5"),
+  // Clinic-wide Billing Print settings (Settings → Billing Print) as a JSON
+  // blob of Partial<BillPrintSettings> — paper size, format, layout/typography
+  // overrides, print-action toggles, adminLock. "{}" = nothing configured yet
+  // (each field falls back to the built-in defaults client-side). See
+  // artifacts/diagnostic-erp/src/lib/billPrintSettings.ts for the shape and
+  // for why this must live server-side, not in per-browser localStorage.
+  billPrintSettingsJson: text("bill_print_settings_json").notNull().default("{}"),
   billShowCode: boolean("bill_show_code").notNull().default(true),
   billShowCategory: boolean("bill_show_category").notNull().default(true),
   // When true, closing the day auto-prints the summary slip on the bill printer.

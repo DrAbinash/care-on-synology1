@@ -56,6 +56,10 @@ export type PrintClinic = {
   billShowCode?: boolean;
   billShowCategory?: boolean;
   qrOnBillEnabled?: boolean;
+  // Clinic-wide Billing Print settings blob (JSON of Partial<BillPrintSettings>)
+  // from /api/clinic-settings/branding — parse with parseGlobalBillPrintSettings
+  // and pass to loadBillPrintSettings so prints honor the admin's paper size.
+  billPrintSettingsJson?: string | null;
   // V3: Receipt messages
   receiptThankYouMessage?: string;
   receiptCollectionMessage?: string;

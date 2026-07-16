@@ -68,6 +68,7 @@ async function getOrCreate() {
       onlineBookingAllowedPackageIds: "[]",
       sidebarTheme: "navy",
       billDefaultPaperSize: "A5",
+      billPrintSettingsJson: "{}",
       billShowCode: true,
       billShowCategory: true,
       dayCloseAutoPrint: true,
@@ -185,6 +186,10 @@ clinicSettingsRouter.get("/branding", async (_req, res) => {
     portalWelcomeMessage: row.portalWelcomeMessage ?? "",
     billPrintCopies: row.billPrintCopies ?? 1,
     billDefaultPaperSize: row.billDefaultPaperSize ?? "A5",
+    // Clinic-wide Billing Print settings blob — the billing pages read their
+    // clinic data from this endpoint, so it must ride along here for the
+    // print call sites to honor the admin-configured paper size/format.
+    billPrintSettingsJson: (row as { billPrintSettingsJson?: string }).billPrintSettingsJson ?? "{}",
     billShowCode: row.billShowCode ?? false,
     billShowCategory: row.billShowCategory ?? false,
     qrOnBillEnabled: row.qrOnBillEnabled ?? true,
@@ -489,6 +494,29 @@ clinicSettingsRouter.put("/", async (req, res) => {
       return;
     }
     update.onlineBookingLedgerId = n;
+  }
+  // Clinic-wide Billing Print settings blob (Settings → Billing Print).
+  // Must be a JSON object (Partial<BillPrintSettings>) as a string — reject
+  // anything else so a corrupt value can never reach the printing call sites.
+  if (body.billPrintSettingsJson !== undefined) {
+    if (typeof body.billPrintSettingsJson !== "string" || body.billPrintSettingsJson.length > 8192) {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "billPrintSettingsJson must be a JSON string (max 8KB)", "| received body keys:", Object.keys(body));
+      res.status(400).json({ error: "billPrintSettingsJson must be a JSON string (max 8KB)" });
+      return;
+    }
+    try {
+      const parsed = JSON.parse(body.billPrintSettingsJson);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        console.warn("[PUT /api/clinic-settings] rejected 400:", "billPrintSettingsJson must be a JSON object", "| received body keys:", Object.keys(body));
+        res.status(400).json({ error: "billPrintSettingsJson must be a JSON object" });
+        return;
+      }
+    } catch {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "billPrintSettingsJson must be valid JSON", "| received body keys:", Object.keys(body));
+      res.status(400).json({ error: "billPrintSettingsJson must be valid JSON" });
+      return;
+    }
+    update.billPrintSettingsJson = body.billPrintSettingsJson;
   }
   if (body.billDefaultPaperSize !== undefined) {
     if (body.billDefaultPaperSize !== "A4" && body.billDefaultPaperSize !== "A5") {

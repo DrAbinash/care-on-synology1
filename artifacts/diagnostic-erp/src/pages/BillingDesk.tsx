@@ -17,6 +17,7 @@ import {
 } from "@/lib/printBill";
 import {
   loadBillPrintSettings,
+  parseGlobalBillPrintSettings,
   printLayoutOpts,
   type BillPrintSettings,
 } from "@/lib/billPrintSettings";
@@ -892,8 +893,13 @@ export default function BillingDesk() {
                 testTokens: lastBillLocalRef.current?.testTokens ?? null,
               };
 
-              const settings = loadBillPrintSettings();
               const cachedClinic = queryClient.getQueryData<PrintClinic>(["clinic-settings"]) || (clinic as PrintClinic);
+              // Base the effective settings on the clinic-wide server blob so
+              // this counter prints the paper size the admin configured (and
+              // verified in the Settings preview) — not a stale per-browser
+              // default. An A5 default job on an A4-loaded tray is what made
+              // bills print rotated 90°.
+              const settings = loadBillPrintSettings(parseGlobalBillPrintSettings(cachedClinic?.billPrintSettingsJson));
               const cachedPrinter = printerCfgCached ?? queryClient.getQueryData<PrinterCfg>(["printer-settings"]);
               const isBW = (cachedPrinter as { billPrinterType?: string } | undefined)?.billPrinterType === "bw";
               
@@ -1332,7 +1338,10 @@ export default function BillingDesk() {
         const cachedPrinter =
           printerCfgCached ??
           queryClient.getQueryData<PrinterCfg>(["printer-settings"]);
-        const settings = loadBillPrintSettings();
+        // Clinic-wide server settings as the base — see the identical call in
+        // the direct-print path above for why this matters (rotated A5-on-A4
+        // prints when a counter falls back to built-in defaults).
+        const settings = loadBillPrintSettings(parseGlobalBillPrintSettings(cachedClinic?.billPrintSettingsJson));
         const runPrint = (skipConfirm: boolean) => {
           if (settings.askBeforePrint && !skipConfirm) {
             if (!window.confirm("Print receipt now?")) {
