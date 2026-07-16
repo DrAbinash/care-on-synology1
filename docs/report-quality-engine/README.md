@@ -51,7 +51,7 @@ evaluate rather than overclaiming determinism it cannot back.
 | 1 | Route the live badge + Copilot through the one runner — **shadow-first** | ✅ Landed (shadow) |
 | 2 | Canonical persistence + API contract, stable Rule IDs, append-only (migration `0008`) — **shadow** | ✅ Landed (shadow) |
 | 2.5 | Foundation refinement (post architecture review) — normalized findings, provider engine, executor framework, rule-id metadata, single-eval fix (migration `0009`) | ✅ Landed (shadow) |
-| 3 | Cheap deterministic unlocks (measurement `isAbnormal`, reference ranges, required sections, modality normalizer) | ⏳ Planned |
+| 3 | First deterministic structured-tier rules — 7 generic executors, 23 real-data configs, structured context + shadow assembler — **shadow** | ✅ Landed (shadow) |
 | 4 | Generalize structured USG/fetal/Doppler/spine rules | ⏳ Planned |
 | 5 | Unified finalize gate + override | ⏳ Planned |
 | 6 | Admin quality dashboard + trends | ⏳ Planned |
@@ -92,6 +92,39 @@ change:
 **Migration:** `0009_report_quality_findings.sql` is idempotent and auto-applied
 by `care-db-patch-v2`. No backfill — the table starts empty and fills as new
 evaluations are written.
+
+## Phase 3 — first deterministic structured-tier rules (shadow)
+
+The first structured (deterministic) rules, all in **shadow**: they run in a
+**separate scoped engine** (`createStructuredEngine`), never the global default
+engine that backs the live badge, so they cannot change the user-visible score
+or block finalize (`blockingEligibility:false` on every rule; the finalize gate
+is Phase 5).
+
+- **7 generic executors** (`rules/structured/executors.ts`): `numeric-range`,
+  `unit-validation`, `required-measurement`, `study-modality-consistency`,
+  `mutually-exclusive-state`, `required-laterality`, `required-section`.
+- **23 data-driven rule configs** (`rules/structured/index.ts`) sourced from
+  REAL data — fetal thresholds (`fetalUsgLevel4.detectCriticalAlerts`),
+  `MEASUREMENT_TEMPLATES`, `radiology_protocols`, `radiology_quick_measurements`
+  — each carrying canonicalId, category, owner, version, tier=structured,
+  severity, provenance, and `blockingEligibility:false`.
+- **Structured context** (`contract.ts`): 4 new slots — `findingInstances`,
+  `protocolRequiredMeasurements`, `knowledgePack`, `study` — degrading
+  gracefully (absent slot → rules honestly `notEvaluated`).
+- **Server shadow path** (`reportQuality.ts`): `/evaluate` additionally
+  assembles the authoritative `study` slot (worklist → study modality) + any
+  structured slots in the request, runs the structured engine, and persists a
+  separate evaluation with `source:"shadow:structured-v3"`. Best-effort; the
+  primary text evaluation + response are unchanged.
+
+**Honest coverage:** on today's data the shadow tier meaningfully exercises
+`study-modality-consistency` (all modalities) and the fetal/USG range, unit,
+required-measurement and enum rules. Everything keyed on `report_finding_instances`
+(section coverage, conflict-group exclusivity, finding-side laterality) and the
+flag-gated `radiology_measurements` MRI/CT ranges reports as `notEvaluated`
+until `ff_radiology_structured_core` / `measurementAssistant` are enabled.
+No D1 activation, no free-text contradiction/laterality rules, no finalize gate.
 
 ## Migration strategy: shadow-first strangler façade
 

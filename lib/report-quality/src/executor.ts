@@ -42,6 +42,14 @@ export interface RuleDefinition {
   dependsOn?: string[];
   /** Default score deduction for findings this rule emits. */
   weight?: number;
+  /**
+   * Whether this rule is eligible to block finalization. FALSE for all Phase-3
+   * shadow rules; the Phase-5 finalize gate reads this. Not consumed at
+   * evaluate time — carried metadata.
+   */
+  blockingEligibility?: boolean;
+  /** Data-source provenance for auditability (table/column or code symbol). */
+  provenance?: { source: string; ref: string };
 }
 
 /** What an executor returns; identity/severity default from the definition. */
