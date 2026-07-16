@@ -3,6 +3,7 @@ import { db } from "@workspace/db";
 import { structuredReportTemplatesTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
+import { USG_STRUCTURED_TEMPLATE_PRESETS } from "../lib/usgReportTemplates";
 
 export const structuredReportTemplatesRouter = Router();
 
@@ -455,15 +456,21 @@ structuredReportTemplatesRouter.delete("/:id", async (req, res): Promise<void> =
   res.json({ ok: true });
 });
 
-/** POST /api/structured-report-templates/seed — load 14 built-in presets */
+/** POST /api/structured-report-templates/seed — load built-in presets:
+ *  the MRI/CT/X-ray/USG/Doppler structured presets above, plus the 13 USG
+ *  auto-generate skeletons from lib/usgReportTemplates.ts (modality "USG",
+ *  studyType = UsgTemplateId). Once seeded, the rows here — not the code —
+ *  are what /api/usg-reports renders from; edits apply on the next
+ *  auto-generate/regenerate. Idempotent: existing preset names are skipped. */
 structuredReportTemplatesRouter.post("/seed", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
   if (!sReq.staffSession || !FULL_ACCESS_ROLES.has(sReq.staffSession.role)) {
     res.status(403).json({ error: "Only admin can seed templates" }); return;
   }
 
+  const allPresets = [...PRESETS, ...USG_STRUCTURED_TEMPLATE_PRESETS];
   let inserted = 0;
-  for (const preset of PRESETS) {
+  for (const preset of allPresets) {
     const existing = await db.select({ id: structuredReportTemplatesTable.id })
       .from(structuredReportTemplatesTable)
       .where(and(
@@ -478,5 +485,5 @@ structuredReportTemplatesRouter.post("/seed", async (req, res): Promise<void> =>
     });
     inserted++;
   }
-  res.json({ inserted, total: PRESETS.length });
+  res.json({ inserted, total: allPresets.length });
 });
