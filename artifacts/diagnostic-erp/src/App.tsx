@@ -105,6 +105,7 @@ const RadiologyOperationsDashboard = lazy(() => import("@/pages/RadiologyOperati
 const RadiologyKnowledgePackManager = lazy(() => import("@/pages/RadiologyKnowledgePackManager"));
 const ClinicalRecommendationRegistryManager = lazy(() => import("@/pages/ClinicalRecommendationRegistryManager"));
 const ClinicalContentCoverage = lazy(() => import("@/pages/ClinicalContentCoverage"));
+const ClinicalContentValidatorPage = lazy(() => import("@/pages/ClinicalContentValidatorPage"));
 const MyReportingAnalytics         = lazy(() => import("@/pages/MyReportingAnalytics"));
 const AiPromptTemplates     = lazy(() => import("@/pages/AiPromptTemplates"));
 const AiPromptManager       = lazy(() => import("@/pages/AiPromptManager"));
@@ -597,6 +598,10 @@ function Router() {
               {/* Clinical Content Coverage Dashboard — management analytics. */}
               <Route path="/settings/radiology/content-coverage">
                 {() => <AdminOnlySettings><ClinicalContentCoverage /></AdminOnlySettings>}
+              </Route>
+              {/* Clinical Content Validator — read-only content linting. */}
+              <Route path="/settings/radiology/content-validator">
+                {() => <AdminOnlySettings><ClinicalContentValidatorPage /></AdminOnlySettings>}
               </Route>
               <Route path="/settings" component={Settings} />
               <Route path="/settings/scanner">
