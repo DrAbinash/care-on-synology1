@@ -18,6 +18,19 @@ import { describe, expect, test, vi, beforeEach } from "vitest";
 let flags: Record<string, boolean>;
 let worklistRow: Record<string, unknown> | null;
 let legacyInsertValues: Record<string, unknown>[];
+// Latest form_f_records row for the patient — null means "no Form F exists"
+// (the guard must then refuse an obstetric finalize). Set to COMPLETE_FORM_F
+// to exercise the compliant-allow path added by the canonical PCPNDT gate
+// (roadmap §1.4 step 2).
+let formFRow: Record<string, unknown> | null;
+let auditInsertValues: Record<string, unknown>[];
+
+const COMPLETE_FORM_F = {
+  id: 91, patientId: 12, idCardVerified: true,
+  husbandFatherName: "Ramesh Kumar", address: "Deoghar",
+  consentDate: "2026-07-10", procedureDate: "",
+  createdAt: new Date("2026-07-10T09:00:00Z"),
+};
 
 const TBL = {
   patientReports: { __name: "patient_reports", id: "id" },
@@ -56,6 +69,7 @@ vi.mock("@workspace/db/schema", () => ({
   radiologyQuickFindingsTable: TBL.quickFindings,
   auditLogsTable: TBL.auditLogs,
   patientReportAmendmentsTable: { __name: "patient_report_amendments", originalReportId: "original_report_id", amendedReportId: "amended_report_id", rootReportId: "root_report_id", sequenceNumber: "sequence_number" },
+  formFRecordsTable: { __name: "form_f_records", patientId: "patient_id", createdAt: "created_at" },
 }));
 
 function makeSelectChain(tbl: { __name?: string }) {
@@ -74,6 +88,7 @@ function makeSelectChain(tbl: { __name?: string }) {
     if (name === "radiology_worklist") return worklistRow ? [worklistRow] : [];
     if (name === "radiology_quick_findings") return [];
     if (name === "audit_logs") return [];
+    if (name === "form_f_records") return formFRow ? [formFRow] : [];
     return [];
   };
   const thenable = () => {
@@ -96,21 +111,37 @@ function makeSelectChain(tbl: { __name?: string }) {
 }
 
 vi.mock("@workspace/db", () => ({
+  // lib/audit imports auditLogsTable from the package root (not /schema) —
+  // without this the override's audit insert would target `undefined`.
+  auditLogsTable: TBL.auditLogs,
   db: {
     execute: async () => [{ n: 0 }],
     select: (_proj?: unknown) => ({ from: (tbl: { __name?: string }) => makeSelectChain(tbl) }),
     insert: (tbl: { __name?: string }) => ({
       values: (v: Record<string, unknown>) => {
         if (tbl?.__name === "patient_reports") legacyInsertValues.push(v);
+        if (tbl?.__name === "audit_logs") auditInsertValues.push(v);
         return { returning: async () => [{ id: 101, ...v }] };
       },
     }),
     update: () => ({ set: () => ({ where: async () => undefined }) }),
     transaction: async (fn: (tx: unknown) => Promise<unknown>) => {
-      // Flags are always OFF in this file, so the D5 structured path is
-      // never attempted and this is never invoked — present only so an
-      // accidental structured-path entry fails loudly instead of hanging.
-      throw new Error("unexpected transaction() call — D5 flag should be OFF in PCPNDT guard tests");
+      // Used by lib/audit's hash-chained auditLog() (advisory lock + read
+      // last chainHash + insert) — needed here because the PCPNDT override
+      // path writes a pcpndt_override_finalize audit row. The D5 structured
+      // path never runs in this file (flags are always OFF), so a working
+      // transaction stub is safe.
+      const tx = {
+        execute: async () => [{}],
+        select: (_proj?: unknown) => ({ from: (tbl: { __name?: string }) => makeSelectChain(tbl) }),
+        insert: (tbl: { __name?: string }) => ({
+          values: async (v: Record<string, unknown>) => {
+            if (tbl?.__name === "audit_logs") auditInsertValues.push(v);
+            return undefined;
+          },
+        }),
+      };
+      return fn(tx);
     },
   },
 }));
@@ -164,11 +195,11 @@ function makeRes() {
   return res;
 }
 
-async function postCreate(body: Record<string, unknown>) {
+async function postCreate(body: Record<string, unknown>, staffSession?: Record<string, unknown>) {
   const { patientReportsRouter } = await import("./patient-reports");
   const handler = getRouteHandler(patientReportsRouter, "post", "/");
   const req = {
-    body, staffSession: undefined,
+    body, staffSession,
     headers: {}, ip: "10.0.0.9", socket: {},
     log: { error: () => undefined, warn: () => undefined },
   };
@@ -187,6 +218,8 @@ beforeEach(() => {
   flags = { ff_radiology_structured_final: false, ff_radiology_catalog: false };
   worklistRow = { id: 9, studyId: 55, modality: "USG", studyDescription: "Whole Abdomen", accessionNumber: "ACC-1", studyInstanceUID: "1.2.3" };
   legacyInsertValues = [];
+  formFRow = null; // no Form F on file — obstetric finalizes must be refused
+  auditInsertValues = [];
 });
 
 describe("PCPNDT server-side finalize guard — POST /api/patient-reports", () => {
@@ -262,10 +295,69 @@ describe("PCPNDT server-side finalize guard — POST /api/patient-reports", () =
 
   test("legacy compliant workflow (routes/usgReports.ts) is a completely separate route/table and is untouched by this guard", async () => {
     // Structural assertion, not a route call: usgReports.ts's own PCPNDT
-    // Form F lock (usgReports.ts:464-503) is independent of
-    // patient-reports.ts/internal-radiology.ts — those two files were not
-    // modified by this guard, so its behavior is unchanged by construction.
+    // Form F lock now calls the SAME shared checkPcpndtFormFCompliance()
+    // (lib/pcpndtCompliance.ts) with byte-identical response shapes — one
+    // engine, not two drifting implementations.
     const usgReportsSource = await import("./usgReports");
     expect(usgReportsSource).toBeDefined();
+  });
+});
+
+// ── Roadmap §1.4 step 2+4 — the guard is now a real compliance GATE ─────────
+describe("PCPNDT gate — compliant obstetric studies finalize; override is audited", () => {
+  const OBSTETRIC_ROW = { id: 9, studyId: 55, modality: "USG", studyDescription: "Obstetric Growth Scan", accessionNumber: "ACC-1", studyInstanceUID: "1.2.3" };
+
+  test("obstetric USG with a COMPLETE, ID-verified Form F finalizes normally (no false-block)", async () => {
+    worklistRow = OBSTETRIC_ROW;
+    formFRow = COMPLETE_FORM_F;
+    const res = await postCreate(BASE_BODY);
+    expect(res.statusCode).toBe(201);
+    expect(legacyInsertValues).toHaveLength(1);
+  });
+
+  test("obstetric USG with an INCOMPLETE Form F is refused, listing the exact missing fields", async () => {
+    worklistRow = OBSTETRIC_ROW;
+    formFRow = { ...COMPLETE_FORM_F, idCardVerified: false, address: "" };
+    const res = await postCreate(BASE_BODY);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toBe("pcpndt_compliance_required");
+    expect(res.body.validationErrors).toEqual(["ID Card must be verified.", "Address is required."]);
+    expect(legacyInsertValues).toHaveLength(0);
+  });
+
+  test("override is refused for a non-admin session even with a reason", async () => {
+    worklistRow = OBSTETRIC_ROW;
+    formFRow = null;
+    const res = await postCreate(
+      { ...BASE_BODY, pcpndtOverride: true, pcpndtOverrideReason: "urgent" },
+      { subjectId: 4, subjectName: "Dr R", role: "radiologist" },
+    );
+    expect(res.statusCode).toBe(409);
+    expect(legacyInsertValues).toHaveLength(0);
+  });
+
+  test("override is refused without a documented reason, even for super_admin", async () => {
+    worklistRow = OBSTETRIC_ROW;
+    formFRow = null;
+    const res = await postCreate(
+      { ...BASE_BODY, pcpndtOverride: true },
+      { subjectId: 1, subjectName: "Dr A", role: "super_admin" },
+    );
+    expect(res.statusCode).toBe(409);
+    expect(legacyInsertValues).toHaveLength(0);
+  });
+
+  test("super_admin override with a documented reason proceeds AND writes a pcpndt_override_finalize audit row", async () => {
+    worklistRow = OBSTETRIC_ROW;
+    formFRow = null;
+    const res = await postCreate(
+      { ...BASE_BODY, pcpndtOverride: true, pcpndtOverrideReason: "supervisor-approved exception" },
+      { subjectId: 1, subjectName: "Dr A", role: "super_admin" },
+    );
+    expect(res.statusCode).toBe(201);
+    expect(legacyInsertValues).toHaveLength(1);
+    const override = auditInsertValues.find((a) => a.action === "pcpndt_override_finalize");
+    expect(override).toBeDefined();
+    expect(String(override!.reason)).toBe("supervisor-approved exception");
   });
 });

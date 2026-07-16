@@ -11,6 +11,7 @@ import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { generateAiForTask } from "@workspace/ai-providers";
 import { logger } from "../lib/logger";
 import { isUltrasoundModality } from "../lib/usgModality";
+import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
 import {
   calcGaDaysFromCrl, calcGaDaysFromMsd, calcGaDaysFromLmp, calcEddFromLmp, calcEddFromEstablishedGa,
   gaDaysToWeeksDays, establishGa, projectGaForwardDays, calcEfwGrams,
@@ -638,6 +639,34 @@ router.post("/:studyId/final-sign", async (req: StaffAuthRequest, res) => {
   if (criticalAlerts.length > 0 && !report.criticalAlertsAcknowledged) {
     res.status(400).json({ error: `Critical alerts not acknowledged: ${criticalAlerts.map((a) => a.alertMessage).join(", ")}` });
     return;
+  }
+
+  // PCPNDT Form F gate — every Fetal USG study is obstetric by definition,
+  // yet this finalize path historically had NO Form F check (confirmed in
+  // PR B's safety review; docs/usg-reporting/pcpndt-canonical-roadmap.md).
+  // Same ONE shared verification as the legacy usgReports finalize and the
+  // canonical patient-reports/report-status gates, with the same audited
+  // admin/super_admin override contract.
+  {
+    const [fetalStudy] = await db.select({ patientId: fetalUsgStudiesTable.patientId }).from(fetalUsgStudiesTable).where(eq(fetalUsgStudiesTable.id, studyId)).limit(1);
+    const compliance = await checkPcpndtFormFCompliance(fetalStudy?.patientId);
+    if (!compliance.compliant) {
+      const body = (req.body ?? {}) as { pcpndtOverride?: boolean; pcpndtOverrideReason?: string };
+      const overrideReason = typeof body.pcpndtOverrideReason === "string" ? body.pcpndtOverrideReason.trim() : "";
+      const role = staffOf(req).role ?? "";
+      if (body.pcpndtOverride === true && PCPNDT_OVERRIDE_ROLES.has(role) && overrideReason.length >= 3) {
+        audit(req, { entityId: studyId, table: "fetalUsgStudies", action: "pcpndt_override_finalize", details: `reason=${overrideReason}; missing=${compliance.errors.join(" | ")}` });
+      } else {
+        res.status(409).json({
+          error: "pcpndt_compliance_required",
+          message:
+            "PCPNDT Form F record for this patient is missing or incomplete — a fetal ultrasound report cannot be finalized without it. Complete and verify Form F, then finalize again. An admin/super_admin may override with a documented reason (pcpndtOverride + pcpndtOverrideReason).",
+          validationErrors: compliance.errors,
+          formFId: compliance.formFId,
+        });
+        return;
+      }
+    }
   }
   const s = staffOf(req);
   await db.update(fetalUsgReportsTable).set({ status: "final", finalizedBy: s.subjectId, finalizedAt: new Date(), updatedAt: new Date() }).where(eq(fetalUsgReportsTable.studyId, studyId));
