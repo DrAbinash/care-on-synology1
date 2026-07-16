@@ -47,7 +47,7 @@ evaluate rather than overclaiming determinism it cannot back.
 
 | Phase | Description | Status |
 |---|---|---|
-| 0 | Contract + shared `lib/report-quality/` package (no behavior change) | ⏳ Planned |
+| 0 | Contract + shared `lib/report-quality/` package (no behavior change) | ✅ Landed |
 | 1 | Route the live badge + Copilot through the one runner | ⏳ Planned |
 | 2 | One server endpoint + canonical persistence (migration `0008`) | ⏳ Planned |
 | 3 | Cheap deterministic unlocks (measurement `isAbnormal`, reference ranges, required sections, modality normalizer) | ⏳ Planned |
