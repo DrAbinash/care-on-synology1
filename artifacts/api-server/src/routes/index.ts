@@ -83,6 +83,7 @@ import { requireSuperAdminUsb, isValidUsbKey, isUsbGateEnforced } from "../middl
 import { requireStaffAuth, requireStaffPermission, requireStaffSubPermission, requireAdminRole } from "../middleware/requireStaffAuth";
 import diagnosticsRouter from "./diagnostics";
 import { measurementRegistryRouter } from "./measurementRegistry";
+import { pathologyRegistryRouter } from "./pathologyRegistry";
 import radiologyQuickFindingsRouter from "./radiologyQuickFindings";
 import radiologyCatalogRouter from "./radiologyCatalog";
 import { db, clinicSettingsTable, ledgersTable } from "@workspace/db";
@@ -312,6 +313,10 @@ router.use("/diagnostics", requireStaffAuth, requireAdminRole, diagnosticsRouter
 // Admin-only Universal Measurement Registry manager (read-only console +
 // live impact analysis over quick measurements / protocols / packs / rules).
 router.use("/measurement-registry", requireStaffAuth, requireAdminRole, measurementRegistryRouter);
+
+// Admin-only Universal Pathology Registry manager (read-only catalog + live
+// self-validation + coverage scan of existing report parameter labels).
+router.use("/pathology-registry", requireStaffAuth, requireAdminRole, pathologyRegistryRouter);
 
 // Inventory — /inventory permission
 router.use("/inventory", requireStaffAuth, requireStaffPermission("/inventory"), inventoryRouter);
