@@ -4009,15 +4009,47 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     (i) => !copilotDismissed.has(i.id) && (i.severity === "critical" || i.severity === "warning"),
   ).length;
   const RIGHT_TABS = [
-    ...(copilotPrefs.enabled ? [{ id: "copilot", label: "Copilot", icon: <Sparkles size={11} />, badge: copilotAlerts }] : []),
-    { id: "quickselect", label: "Quick", icon: <Zap size={11} /> },
-    { id: "templates", label: "Templates", icon: <LayoutTemplate size={11} /> },
-    { id: "followup", label: "Follow-up", icon: <RefreshCw size={11} /> },
-    { id: "prior", label: "Prior", icon: <ClipboardList size={11} /> },
-    { id: "ai", label: "AI", icon: <Sparkles size={11} /> },
-    { id: "measurements", label: "Measure", icon: <BarChart3 size={11} /> },
-    { id: "teaching", label: "Teaching", icon: <BookOpen size={11} /> },
+    ...(copilotPrefs.enabled ? [{ id: "copilot", label: "Copilot", icon: <Sparkles size={14} />, badge: copilotAlerts }] : []),
+    { id: "quickselect", label: "Quick", icon: <Zap size={14} /> },
+    { id: "templates", label: "Templates", icon: <LayoutTemplate size={14} /> },
+    { id: "followup", label: "Follow-up", icon: <RefreshCw size={14} /> },
+    { id: "prior", label: "Prior", icon: <ClipboardList size={14} /> },
+    { id: "ai", label: "AI", icon: <Sparkles size={14} /> },
+    { id: "measurements", label: "Measure", icon: <BarChart3 size={14} /> },
+    { id: "teaching", label: "Teaching", icon: <BookOpen size={14} /> },
   ];
+  // Right-panel header layout: Copilot/Quick/AI/Templates each get a full-width
+  // "hero" row (the panel's most-used tabs, per the workspace's actual daily
+  // use), the remaining tabs share one compact row below. Looked up by id
+  // (not array index) so the Copilot row simply disappears — without shifting
+  // the others — when copilotPrefs.enabled is false.
+  const HERO_TAB_IDS = ["copilot", "quickselect", "ai", "templates"];
+  const HERO_ACCENT: Record<string, { card: string; chip: string; text: string }> = {
+    copilot: {
+      card: "border-indigo-300 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950/30",
+      chip: "bg-indigo-100 text-indigo-700 border-indigo-200 dark:bg-indigo-900/50 dark:text-indigo-300 dark:border-indigo-800",
+      text: "text-indigo-900 dark:text-indigo-200",
+    },
+    quickselect: {
+      card: "border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30",
+      chip: "bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-900/50 dark:text-amber-300 dark:border-amber-800",
+      text: "text-amber-900 dark:text-amber-200",
+    },
+    ai: {
+      card: "border-purple-300 bg-purple-50 dark:border-purple-800 dark:bg-purple-950/30",
+      chip: "bg-purple-100 text-purple-700 border-purple-200 dark:bg-purple-900/50 dark:text-purple-300 dark:border-purple-800",
+      text: "text-purple-900 dark:text-purple-200",
+    },
+    templates: {
+      card: "border-blue-300 bg-blue-50 dark:border-blue-800 dark:bg-blue-950/30",
+      chip: "bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-900/50 dark:text-blue-300 dark:border-blue-800",
+      text: "text-blue-900 dark:text-blue-200",
+    },
+  };
+  const heroTabs = HERO_TAB_IDS
+    .map((id) => RIGHT_TABS.find((t) => t.id === id))
+    .filter((t): t is (typeof RIGHT_TABS)[number] => Boolean(t));
+  const restTabs = RIGHT_TABS.filter((tab) => !HERO_TAB_IDS.includes(tab.id));
 
   return (
     <div className="flex flex-col" style={{ height: "calc(100vh - 48px)" }}>
@@ -5415,41 +5447,78 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           </div>
         </div>
 
-        {/* ── RIGHT 20%: 5-tab assistant panel (narrower floor on phone-width
-            screens, alongside the left-panel default-collapse above, so the
-            center report editor keeps real width instead of being squeezed
-            to ~0px) ──────────────────────────────────────────────────── */}
+        {/* ── RIGHT: 5-tab assistant panel (Copilot/Quick/Templates/Follow-
+            up/Prior/AI/Measure/Teach) — the primary workhorse of this
+            workspace, so it gets more than double its old 20% share on
+            desktop. Center report editor (flex-1, min-w-0) absorbs the
+            difference and shrinks accordingly. Phone-width floor unchanged
+            (45% left + 32% right = 77%, still leaves real width for the
+            center column at small viewports). ──────────────────────── */}
         <div
           className="flex flex-col border-l overflow-hidden shrink-0"
           style={isMobile
-            // 45% (left) + 32% (right) = 77%, always leaving real width for
-            // the center column even when both side panels are at their max.
             ? { width: "32%", minWidth: 110, maxWidth: 170 }
-            : { width: "20%", minWidth: 200, maxWidth: 280 }}
+            : { width: "42%", minWidth: 440, maxWidth: 640 }}
         >
-          {/* Tab header */}
-          <div className="shrink-0 flex border-b bg-muted/10">
-            {RIGHT_TABS.map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setRightTab(tab.id as RightTab)}
-                className={`flex-1 flex flex-col items-center gap-0.5 py-1.5 text-[9px] font-medium border-b-2 transition-colors ${
-                  rightTab === tab.id
-                    ? "border-primary text-primary bg-white"
-                    : "border-transparent text-muted-foreground hover:text-foreground hover:bg-white/50"
-                }`}
-              >
-                <span className="relative">
-                  {tab.icon}
-                  {"badge" in tab && tab.badge ? (
-                    <span className="absolute -right-2 -top-1.5 min-w-[13px] rounded-full bg-rose-500 px-0.5 text-center text-[8px] font-bold leading-[13px] text-white">
-                      {tab.badge}
-                    </span>
-                  ) : null}
-                </span>
-                {tab.label}
-              </button>
-            ))}
+          {/* Tab header — 5-row layout. Rows 1-4 are full-width "hero" cards,
+              one tab each (Copilot / Quick / AI / Templates — the panel's
+              most-used tabs), each with its own accent color and a clear
+              filled/tinted active state. Row 5 packs the remaining tabs
+              (Follow-up / Prior / Measure / Teaching) into one compact line
+              of smaller sibling pills using the same visual language. */}
+          <div className="shrink-0 flex flex-col gap-1.5 p-1.5 border-b bg-muted/10">
+            {heroTabs.map((tab) => {
+              const active = rightTab === tab.id;
+              const accent = HERO_ACCENT[tab.id];
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setRightTab(tab.id as RightTab)}
+                  className={`group flex w-full items-center gap-2.5 rounded-xl border px-3 py-2.5 text-left transition-all ${
+                    active
+                      ? `${accent.card} shadow-sm`
+                      : "border-border bg-white dark:bg-card dark:border-card-border hover:border-muted-foreground/30 hover:bg-muted/40 hover:-translate-y-px"
+                  }`}
+                >
+                  <span
+                    className={`relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-colors ${
+                      active ? accent.chip : "border-transparent bg-muted text-muted-foreground group-hover:text-foreground"
+                    }`}
+                  >
+                    {tab.icon}
+                    {"badge" in tab && tab.badge ? (
+                      <span className="absolute -right-1.5 -top-1.5 min-w-[16px] rounded-full bg-rose-500 px-1 text-center text-[9px] font-bold leading-[16px] text-white shadow-sm">
+                        {tab.badge}
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className={`text-[13px] font-semibold tracking-tight ${active ? accent.text : "text-foreground/85"}`}>
+                    {tab.label}
+                  </span>
+                </button>
+              );
+            })}
+
+            {/* Row 5 — remaining tabs, compact siblings sharing one line */}
+            <div className="flex gap-1">
+              {restTabs.map((tab) => {
+                const active = rightTab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => setRightTab(tab.id as RightTab)}
+                    className={`flex flex-1 items-center justify-center gap-1 rounded-lg border px-1.5 py-1.5 text-[10px] font-medium transition-colors ${
+                      active
+                        ? "border-primary/40 bg-primary/10 text-primary"
+                        : "border-border bg-white dark:bg-card dark:border-card-border text-muted-foreground hover:text-foreground hover:bg-muted/40"
+                    }`}
+                  >
+                    {tab.icon}
+                    <span className="truncate">{tab.label}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           {/* Tab content */}
