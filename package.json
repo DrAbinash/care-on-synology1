@@ -13,6 +13,7 @@
     "db:generate": "pnpm --filter @workspace/db run generate",
     "db:deploy": "pnpm --filter @workspace/db run deploy",
     "db:manage": "pnpm --filter @workspace/db run manage",
+    "db:check-migration-order": "node scripts/check-migration-order.cjs",
     "validate:radiology-content": "pnpm --filter @workspace/scripts run validate:radiology-content",
     "test": "vitest run"
   },

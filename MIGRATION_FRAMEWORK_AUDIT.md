@@ -139,7 +139,7 @@ async function executeStartupSQL(sql: string): Promise<void> {
 
 ### Path 3: Feature Migrations (shell script execution)
 
-**Entry Point:** `docker/db-patch-entrypoint.sh` (lines 196-268)
+**Entry Point:** `docker/db-patch-entrypoint.sh` (Step 4)
 
 **Execution:** Direct `psql` piping of SQL files
 
@@ -151,8 +151,9 @@ async function executeStartupSQL(sql: string): Promise<void> {
 | Supports autocommit | ✓ PASS | Each migration executed via separate psql invocation |
 | Idempotent | ✓ PASS | Uses `IF NOT EXISTS`, `ON CONFLICT DO NOTHING` |
 | Error handling | ✓ PASS | `set -e` exits on first error; `ON_ERROR_STOP=1` for later runs |
+| **Dependency-safe discovery order** | ✗ **FAIL (found 2026-07-17)** | Files are discovered via `ls migrations/*.sql \| sort` — plain alphabetical filename order with **no concept of inter-file dependencies** |
 
-**Code (lines 250-253):**
+**Code:**
 ```bash
 info "  [apply] ${name}…"
 psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" \
@@ -162,7 +163,43 @@ psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" \
 **Behavior:**
 - Launches separate `psql` process for each feature migration
 - No connection pooling or transaction wrapper across files
-- ✓ ALREADY CORRECT — No changes needed
+- Transaction/autocommit handling: ✓ CORRECT — no changes needed
+
+**2026-07-17 incident — ✗ Discovery/ordering was NOT already correct.**
+`add_companion_autopopulation_columns.sql` (`ALTER TABLE companion_runs`)
+sorted alphabetically *before* `add_usg_companion_runs.sql` (`CREATE TABLE
+companion_runs`) — "companion" < "usg" — so the deploy failed with
+`relation "companion_runs" does not exist`, and because `set -e` hard-exits
+on the first failure, every feature migration alphabetically after it (~44
+files) silently never ran either, blocking `care-api` entirely. A second,
+independent instance of the same bug class was found and fixed in the same
+incident: `seed_usg_companion_suggestions.sql` used a column
+(`radiology_quick_findings.conflict_group`) not added until
+`z_add_radiology_smart_findings_engine.sql`, which sorts after it.
+
+**Fix — 2026-07-17:**
+- Renamed both offending files so their filenames sort after the migration
+  that creates what they depend on (`add_usg_companion_runs_autopopulation_columns.sql`,
+  `z_seed_usg_companion_suggestions.sql`).
+- Added `scripts/check-migration-order.cjs`: a static analyzer that
+  simulates the exact execution order `db-patch-entrypoint.sh` uses (core
+  Drizzle tables, then `migrations/*.sql` alphabetically) and fails if any
+  `ALTER TABLE` / `CREATE INDEX ... ON` / `CREATE TRIGGER ... ON` /
+  `REFERENCES` target isn't yet created at that point. Wired into `pnpm test`
+  via `scripts/check-migration-order.test.cjs` so this class of bug fails
+  CI/local test runs before it ever reaches a deploy — not just this one
+  instance of it.
+- Full details: root cause, dependency graph, and validation evidence in the
+  PR description for this fix.
+
+**Known residual gap:** the validator checks table-level DDL dependencies
+only. The `seed_usg_companion_suggestions.sql` case was a *column*-level DML
+dependency (an `UPDATE` referencing a column added by a later file), which
+the validator does not detect — that instance was found only by actually
+running every migration against a real database end-to-end, not by static
+analysis. Extending the validator to track column-level dependencies (or
+running a real empty-DB migration dry-run in CI) would close this gap; see
+recommendations below.
 
 ---
 
@@ -298,26 +335,60 @@ psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" \
 ### Immediate (Done)
 ✓ Disable transaction wrapping in Drizzle migrator
 ✓ Split API startup migrations into auto-commit batches
+✓ (2026-07-17) Fixed the two alphabetical-ordering violations in `migrations/`
+✓ (2026-07-17) Added `scripts/check-migration-order.cjs` + `pnpm test` coverage for table-level ordering
+✓ (2026-07-17) Corrected `HOW_TO_ADD_DB_MIGRATIONS.md`, which had drifted from the actual (auto-discovery) implementation and no longer described the real deploy behavior
 
 ### Short-term (Before Next Release)
 - [ ] Add migration execution logging/metrics
-- [ ] Implement migration dry-run mode
+- [ ] Implement migration dry-run mode — a CI job that runs
+      `docker/db-patch-entrypoint.sh` against a throwaway empty Postgres on
+      every PR touching `migrations/` or `lib/db/drizzle/`. This is the only
+      check that would have caught the `conflict_group` column-level
+      dependency found in this incident — static analysis alone did not.
+- [ ] Extend `scripts/check-migration-order.cjs` to track column-level
+      dependencies (`UPDATE`/`INSERT` referencing a column not yet added by
+      an earlier `ADD COLUMN`), not just table-level DDL
 - [ ] Test rollback scenarios
 
 ### Long-term (Architecture)
 - [ ] Split startup migrations into 3-4 smaller files
-- [ ] Migrate from PostgreSQL feature migrations to Drizzle
+- [ ] Migrate from PostgreSQL feature migrations to Drizzle — this would
+      also resolve the dual-tracking risk where a table (e.g. `companion_runs`)
+      is declared in the Drizzle TypeScript schema (`lib/db/src/schema/`) but
+      actually created by a hand-written SQL file with no corresponding
+      generated Drizzle migration/snapshot
 - [ ] Implement database schema versioning
+- [ ] Replace the `zzzz_`-style manual alphabetical-ordering convention with
+      an explicit sequence number or dependency manifest once the migration
+      count grows further — prefix-chaining (this incident's fix) scales to
+      shallow dependency chains but gets unwieldy for deep ones
 
 ---
 
 ## Conclusion
 
-**Assessment:** Migration framework had latent defect in transaction handling.
+**Assessment:** Migration framework had two separate latent defects: transaction
+handling (Path 1/2, fixed prior to this audit) and, found in this pass,
+dependency-blind alphabetical ordering in Path 3 (feature migrations).
 
-**Scope:** Affected both Drizzle and API startup paths.
+**Scope:** Path 3's ordering defect affects every future feature migration
+that depends on another one — not a one-off bug specific to `companion_runs`.
+It was pure luck (or discipline via the informal `z_`/`zz_`/`zzz_`/`zzzz_`
+prefix convention) that no prior feature migration pair had triggered it
+before now.
 
-**Resolution:** ✓ COMPLETE — Both paths now execute with autocommit.
+**Resolution:** ✓ COMPLETE for the two violations found in this incident,
+proven by running every Drizzle + feature migration from an empty database
+to a clean exit 0, and again for idempotency. ⚠ PARTIAL for the underlying
+architecture: `scripts/check-migration-order.cjs` closes the table-level gap
+but not column-level DML dependencies (see Short-term above) — that residual
+gap is the reason the second violation in this incident was only found by
+actually running the migrations, not by static analysis.
 
-**Risk Level:** LOW — All migrations are idempotent and re-runnable.
+**Risk Level:** LOW for the two fixed instances (idempotent, re-runnable,
+proven end-to-end). MEDIUM for the framework itself until the dry-run CI job
+or column-level checking above is implemented — the ordering defect class
+that caused this incident is still reachable by any future migration that
+isn't manually reviewed for filename ordering.
 
