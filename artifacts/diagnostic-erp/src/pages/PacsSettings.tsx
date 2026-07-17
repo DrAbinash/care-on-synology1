@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Save, RefreshCw, Trash2, Server, Settings2, Radio, Search, ScanLine, MonitorPlay, Network, ToggleLeft, ToggleRight, CheckCircle2, XCircle, Wifi, WifiOff, Copy, ExternalLink, Lock, Tv2, Info } from "lucide-react";
+import { Plus, Save, RefreshCw, Trash2, Server, Settings2, Radio, Search, ScanLine, MonitorPlay, Network, ToggleLeft, ToggleRight, CheckCircle2, XCircle, Wifi, WifiOff, Copy, ExternalLink, Lock, Tv2, Info, AlertTriangle } from "lucide-react";
 import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 import { getOhifUrl, getWeasisUrl } from "@/lib/viewerService";
 
@@ -781,6 +781,18 @@ export default function PacsSettings() {
                 }}>Load Defaults</Button>
               )}
             </div>
+            {window.location.protocol === "https:" && (viewerMap["ohif_base_url"] ?? "").trim().toLowerCase().startsWith("http:") && (
+              <div className="rounded-lg border border-red-200 bg-red-50 dark:bg-red-950/20 p-3 flex items-start gap-2.5 text-sm">
+                <AlertTriangle size={14} className="text-red-600 shrink-0 mt-0.5" />
+                <span className="text-red-800 dark:text-red-300">
+                  This ERP is loaded over HTTPS, but the OHIF Base URL below is <code>http://</code> — browsers block
+                  embedding HTTP content inside an HTTPS page, so the in-page viewer panel will show a "cannot be
+                  embedded" error. Point this at an <code>https://</code> address the browser can reach (e.g. OHIF /
+                  Orthanc reverse-proxied under this same domain) to fix embedding. Until then, "Open OHIF in new
+                  tab" from the reporting workspace still works.
+                </span>
+              </div>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <ViewerField label="OHIF Base URL" description={`e.g. ${ohifBaseForProfile("LAN")}`} type="text"
                 value={viewerMap["ohif_base_url"] ?? ""} onSave={(v) => saveViewerKey("ohif_base_url", v)}
@@ -1030,6 +1042,14 @@ function ViewerSettingsVerificationPanel({
   const configured = REQUIRED_KEYS.filter((k) => (viewerMap[k.key] ?? "").trim().length > 0);
   const missing = REQUIRED_KEYS.filter((k) => (viewerMap[k.key] ?? "").trim().length === 0);
 
+  // Mixed content: an http:// viewer URL can never embed inside this https:// page,
+  // even though the key is "configured" (non-empty) — flag it separately so this
+  // doesn't get buried under a false-positive "all configured" green banner.
+  const MIXED_CONTENT_CHECK_KEYS = ["ohif_base_url", "dicom_web_base_url", "wado_uri_base_url"];
+  const mixedContentKeys = window.location.protocol === "https:"
+    ? REQUIRED_KEYS.filter((k) => MIXED_CONTENT_CHECK_KEYS.includes(k.key) && (viewerMap[k.key] ?? "").trim().toLowerCase().startsWith("http:"))
+    : [];
+
   const sampleUID = "1.2.3.4.5.TEST";
   const ohifBase = (viewerMap["ohif_base_url"] ?? "").replace(/\/$/, "");
   const ohifPreview = ohifBase
@@ -1069,6 +1089,21 @@ function ViewerSettingsVerificationPanel({
           </Button>
         </div>
       </div>
+      {mixedContentKeys.length > 0 && (
+        <div className="rounded-lg border border-red-300 bg-red-50 dark:bg-red-950/20 p-3 space-y-1.5 text-sm">
+          <p className="font-semibold text-red-800 dark:text-red-200 flex items-center gap-1.5">
+            <AlertTriangle size={14} /> Mixed content — viewer will not embed
+          </p>
+          <p className="text-xs text-red-700 dark:text-red-400">
+            This page is served over HTTPS, but {mixedContentKeys.map((k) => k.label).join(", ")}{" "}
+            {mixedContentKeys.length === 1 ? "is" : "are"} set to an <code>http://</code> address. Browsers block
+            embedding HTTP content inside an HTTPS page, so the in-page viewer will show an error even though these
+            settings count as "configured" below. Update {mixedContentKeys.length === 1 ? "it" : "them"} to an{" "}
+            <code>https://</code> address the browser can reach, or use "Open in new tab" from the reporting
+            workspace in the meantime.
+          </p>
+        </div>
+      )}
       {(configured.length === REQUIRED_KEYS.length) && (
         <div className="rounded-lg border bg-green-50 dark:bg-green-950/20 p-3 space-y-2 text-sm">
           <p className="font-semibold text-green-800 dark:text-green-200">All viewer settings are configured.</p>

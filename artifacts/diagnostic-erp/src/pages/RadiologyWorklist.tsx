@@ -6,6 +6,7 @@ import { readStaffSession, ERP_SESSION_KEY, canAccess, normalizeRole } from "@/l
 import { toUnifiedStatus, worklistRoleView, priorityInfo, type WorklistRoleView } from "@/lib/radiologyStatus";
 import { launchViewer } from "@/lib/viewerService";
 import { normalizeModality, isUltrasoundModality } from "@/lib/usgModality";
+import { DATE_PRESETS, toISTDateStr } from "@/lib/dateRangePresets";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -136,39 +137,6 @@ function LockBadge({ entry, currentUserId }: { entry: any; currentUserId?: numbe
 
 const MODALITY_OPTIONS = ["all", "CR", "MR", "CT", "US", "MG", "BMD", "OT"];
 const STATUS_OPTIONS = ["all", "STUDY_RECEIVED", "AI_DRAFT_READY", "REPORT_IN_PROGRESS", "REPORT_FINAL", "DELIVERED"];
-
-// ── Date-range filter helpers — all dates computed/compared in IST so quick
-// presets line up with the same "day" the rest of the ERP (My Daily Summary,
-// day-close) uses, regardless of the browser's local timezone.
-function todayISO(): string {
-  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
-}
-function daysAgoISO(n: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
-}
-function startOfWeekISO(): string {
-  const [y, m, day] = todayISO().split("-").map(Number);
-  const d = new Date(Date.UTC(y, m - 1, day));
-  const diffFromMonday = (d.getUTCDay() + 6) % 7;
-  d.setUTCDate(d.getUTCDate() - diffFromMonday);
-  return d.toISOString().slice(0, 10);
-}
-function startOfMonthISO(): string {
-  const [y, m] = todayISO().split("-").map(Number);
-  return `${y}-${String(m).padStart(2, "0")}-01`;
-}
-function toISTDateStr(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
-}
-const DATE_PRESETS = [
-  { label: "Today", from: () => todayISO(), to: () => todayISO() },
-  { label: "Yesterday", from: () => daysAgoISO(1), to: () => daysAgoISO(1) },
-  { label: "Day Before", from: () => daysAgoISO(2), to: () => daysAgoISO(2) },
-  { label: "This Week", from: () => startOfWeekISO(), to: () => todayISO() },
-  { label: "This Month", from: () => startOfMonthISO(), to: () => todayISO() },
-];
 
 const AI_DRAFT_STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   NONE:    { label: "None",    color: "bg-gray-100 text-gray-600 border-gray-200" },

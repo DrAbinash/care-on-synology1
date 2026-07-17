@@ -139,7 +139,8 @@ import { useReportingWorkflow } from "@/hooks/useReportingWorkflow";
 import { useStudyLock } from "@/hooks/useStudyLock";
 import { lockStatusMessage, QUEUE_SCOPE_LABELS, parseQueueScope, assignmentCategoryOf, type QueueScope } from "@/lib/studyLockState";
 import type { StudyLaunchResult } from "@/lib/studyLaunchService";
-import { ChevronLeft, ChevronRight, PauseCircle, Lock, TrendingUp, TrendingDown, Minus, GitCompare } from "lucide-react";
+import { ChevronLeft, ChevronRight, PauseCircle, Lock, TrendingUp, TrendingDown, Minus, GitCompare, CalendarDays } from "lucide-react";
+import { DATE_PRESETS, toISTDateStr } from "@/lib/dateRangePresets";
 // M1.6B2 — the ONE voice pipeline (providers/grammar/safety live in libs; the
 // hook executes through THIS page's adapter → the M1.5 command dispatcher).
 import { useVoiceSession, type VoiceExecutionResult } from "@/hooks/useVoiceSession";
@@ -739,6 +740,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // distinct from the template `modalityFilter` (which filters the picker).
   const [queueFilterText, setQueueFilterText] = useState("");
   const [queueModalityFilter, setQueueModalityFilter] = useState("all");
+  // Date-range filter over the jump list — same IST-calendar-day presets as
+  // the PACS Worklist page (Today/Yesterday/Day Before/This Week/This Month).
+  const [queueDateFrom, setQueueDateFrom] = useState("");
+  const [queueDateTo, setQueueDateTo] = useState("");
+  function setQueueDatePreset(from: string, to: string) {
+    setQueueDateFrom(from);
+    setQueueDateTo(to);
+  }
   const jumpQueue = useMemo(() => {
     const q = queueFilterText.trim().toLowerCase();
     const mod = queueModalityFilter;
@@ -750,13 +759,19 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           : m.startsWith(mod);
         if (!matchesModality) return false;
       }
+      if (queueDateFrom || queueDateTo) {
+        const d = s.createdAt ? toISTDateStr(s.createdAt) : null;
+        if (!d) return false;
+        if (queueDateFrom && d < queueDateFrom) return false;
+        if (queueDateTo && d > queueDateTo) return false;
+      }
       if (q) {
         const hay = `${s.patientName ?? ""} ${s.modality ?? ""} ${s.accessionNumber ?? ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
     });
-  }, [workflow.queue, queueFilterText, queueModalityFilter]);
+  }, [workflow.queue, queueFilterText, queueModalityFilter, queueDateFrom, queueDateTo]);
 
   // Claim the current study on entry (visible in the status bar — never
   // silent), heartbeat while held, stop after finalize. Server expiry stays
@@ -4132,7 +4147,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 ? "launch failed"
                 : "—"}
         </span>
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex items-center gap-1 flex-wrap">
           {/* M1.6A/M1.6B1 — assignment-aware queue scope (+ By Radiologist) */}
           <select
             className="h-6 text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
@@ -4175,6 +4190,49 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             <option value="CR">CR</option>
             <option value="DX">DX</option>
           </select>
+          {/* Date-range filter over the jump list — same presets as PACS Worklist */}
+          <CalendarDays size={11} className="text-muted-foreground shrink-0" />
+          <Input
+            type="date"
+            value={queueDateFrom}
+            onChange={(e) => setQueueDateFrom(e.target.value)}
+            className="h-6 w-[90px] text-[10px] px-1"
+            data-testid="queue-filter-date-from"
+            title="Filter the queue jump list from this date"
+          />
+          <Input
+            type="date"
+            value={queueDateTo}
+            onChange={(e) => setQueueDateTo(e.target.value)}
+            className="h-6 w-[90px] text-[10px] px-1"
+            data-testid="queue-filter-date-to"
+            title="Filter the queue jump list up to this date"
+          />
+          {DATE_PRESETS.map((p) => (
+            <Button
+              key={p.label}
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-6 text-[10px] px-1.5"
+              onClick={() => setQueueDatePreset(p.from(), p.to())}
+              title={`Filter queue to ${p.label}`}
+            >
+              {p.label}
+            </Button>
+          ))}
+          {(queueDateFrom || queueDateTo) && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-6 text-[10px] px-1"
+              onClick={() => setQueueDatePreset("", "")}
+              title="Clear date filter"
+              data-testid="queue-filter-date-clear"
+            >
+              <X size={10} />
+            </Button>
+          )}
           {/* Jump to a specific queue row — →current ✓done ⏸parked 🔒locked */}
           <select
             className="h-6 max-w-[260px] text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
