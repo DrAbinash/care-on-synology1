@@ -43,6 +43,7 @@ import {
   type UsgTemplateId,
 } from "../lib/usgReportTemplates";
 import { fetchUsgSkeletonOverride, fetchCustomizedUsgTemplateIds } from "../lib/usgTemplateStore";
+import { checkPcpndtFormFCompliance } from "../lib/pcpndtCompliance";
 import { runQualityCheck } from "../lib/usgQualityCheck";
 
 const router = Router();
@@ -470,42 +471,24 @@ router.post("/:id/finalize", async (req, res) => {
   const [draftRow] = await db.select().from(usgReportDraftsTable).where(eq(usgReportDraftsTable.id, id)).limit(1);
   if (!draftRow) { res.status(404).json({ error: "Not found" }); return; }
 
-  // PCPNDT Form F Lock
+  // PCPNDT Form F Lock — via the ONE shared compliance check
+  // (lib/pcpndtCompliance.ts), also used by the canonical finalize path.
+  // Response shapes/wording are unchanged from the pre-extraction inline
+  // gate, so UsgReporting.tsx keeps working byte-identically.
   if (draftRow.templateType?.startsWith("OB_")) {
-    if (!existing.patientId) {
+    const compliance = await checkPcpndtFormFCompliance(existing.patientId);
+    if (compliance.reason === "no_patient") {
       res.status(400).json({ error: "Patient ID is missing for this obstetric report." });
       return;
     }
-    const [formF] = await db
-      .select()
-      .from(formFRecordsTable)
-      .where(eq(formFRecordsTable.patientId, existing.patientId))
-      .orderBy(desc(formFRecordsTable.createdAt))
-      .limit(1);
-
-    if (!formF) {
+    if (compliance.reason === "no_form_f") {
       res.status(400).json({ error: "PCPNDT Form F record is missing for this obstetric study." });
       return;
     }
-
-    const formFErrors: string[] = [];
-    if (!formF.idCardVerified) {
-      formFErrors.push("ID Card must be verified.");
-    }
-    if (!formF.husbandFatherName?.trim()) {
-      formFErrors.push("Husband/Father Name is required.");
-    }
-    if (!formF.address?.trim()) {
-      formFErrors.push("Address is required.");
-    }
-    if (!formF.consentDate?.trim() && !formF.procedureDate?.trim()) {
-      formFErrors.push("Consent Date or Procedure Date is required.");
-    }
-
-    if (formFErrors.length > 0) {
+    if (!compliance.compliant) {
       res.status(400).json({
         error: "PCPNDT Form F compliance lock: Mandatory fields are missing or unverified.",
-        validationErrors: formFErrors,
+        validationErrors: compliance.errors,
       });
       return;
     }

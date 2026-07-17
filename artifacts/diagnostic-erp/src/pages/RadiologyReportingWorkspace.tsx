@@ -2363,20 +2363,31 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   );
   const companionEligible = isUltrasound || isCtModality;
 
-  // PR B follow-up — PCPNDT safety guard. This workspace has no PCPNDT Form F
-  // compliance check (that lock exists only in the legacy, non-nav-linked
-  // usgReports.ts pipeline — see docs/usg-reporting/platform-consolidation-pr-b.md
-  // §17-18). Rather than duplicating that server-side check here, an
-  // obstetric/fetal USG study is BLOCKED from finalizing through this
-  // canonical workspace entirely (see finalizeReport() below) until the
-  // PCPNDT reconciliation decision is made — draft/save/print/preview remain
-  // fully usable, only Finalize is gated. Non-obstetric USG (Whole Abdomen,
-  // KUB, Thyroid, Breast, Scrotum, Doppler, ...) and every non-ultrasound
-  // modality are completely unaffected.
+  // PCPNDT gate (roadmap §1.4 step 2 — docs/usg-reporting/
+  // pcpndt-canonical-roadmap.md). The server-side finalize gates
+  // (patient-reports.ts, internal-radiology.ts) now run the real shared
+  // Form F verification, so this workspace no longer blocks obstetric/fetal
+  // USG unconditionally: it asks the server whether the patient's Form F is
+  // complete and verified, finalizes normally when it is, and blocks with
+  // the exact missing fields when it isn't. Non-obstetric USG and every
+  // non-ultrasound modality are completely unaffected. Draft/save/print/
+  // preview remain fully usable either way — only Finalize is gated, and
+  // the server re-checks regardless of anything this client decides.
   const isPcpndtRelevantUsg = useMemo(
     () => isObstetricUsgStudy(entry?.modality, entry?.studyDescription),
     [entry?.modality, entry?.studyDescription],
   );
+  const { data: pcpndtCompliance } = useQuery<{ compliant: boolean; errors: string[]; formFId: number | null }>({
+    queryKey: ["pcpndt-compliance", entry?.patientId],
+    queryFn: () => api.get(`/api/patient-reports/pcpndt-compliance/${entry!.patientId}`),
+    enabled: isPcpndtRelevantUsg && !!entry?.patientId,
+    // Form F is completed in a separate tab (the "Review & Map to Form F"
+    // hand-off) — poll so the unblock is picked up without a page reload.
+    refetchInterval: 30_000,
+  });
+  // Blocked when relevant AND not yet confirmed compliant (unknown/loading/
+  // no-patient counts as blocked — fail closed; the server enforces anyway).
+  const pcpndtBlocked = isPcpndtRelevantUsg && pcpndtCompliance?.compliant !== true;
 
   // Practical USG template catalog (Whole Abdomen/KUB/Pelvis/OB/Doppler/
   // Prostate/Scrotum/Thyroid/Breast) — a separate, confidence-gated-autofill
@@ -3187,18 +3198,22 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       toast({ title: "Cannot finalize", description: "Your study lock expired — reclaim the study first. Your text is preserved.", variant: "destructive" });
       return;
     }
-    // PR B follow-up — PCPNDT safety guard (see isPcpndtRelevantUsg above).
-    // This workspace has no PCPNDT Form F compliance check; an obstetric/
-    // fetal USG study must not be finalizable through it. This is the single
-    // authoritative enforcement point — it also covers the Ctrl+Enter /
-    // Command Palette "finalize" dispatcher, which calls finalizeReport()
-    // directly and would otherwise bypass a disabled Finalize button.
-    // Draft save / print / preview are unaffected; only finalize is blocked.
-    if (isPcpndtRelevantUsg) {
+    // PCPNDT gate (see isPcpndtRelevantUsg/pcpndtBlocked above). Blocks only
+    // when the patient's Form F is genuinely missing/incomplete — a
+    // compliant obstetric study finalizes here normally now, and the server
+    // re-verifies with the same shared check regardless. This single client
+    // enforcement point also covers the Ctrl+Enter / Command Palette
+    // "finalize" dispatcher, which calls finalizeReport() directly and would
+    // otherwise bypass a disabled Finalize button. Draft save / print /
+    // preview are unaffected; only finalize is gated.
+    if (pcpndtBlocked) {
+      const missing = pcpndtCompliance?.errors?.length
+        ? ` Missing: ${pcpndtCompliance.errors.join(" ")}`
+        : "";
       toast({
         title: "Finalize blocked — PCPNDT Form F required",
         description:
-          "This is an obstetric/fetal ultrasound. This workspace does not check PCPNDT Form F compliance, so it cannot finalize this report. Use \"Review & Map to Form F\" (Measurements tab) to open Form F, then finalize this study through USG Reporting (the PCPNDT-compliant legacy page, /usg/reporting) instead. Your draft here is unaffected and remains saved.",
+          `This is an obstetric/fetal ultrasound and the patient's PCPNDT Form F record is missing or incomplete.${missing} Use "Review & Map to Form F" (Measurements tab) to complete and verify Form F, then finalize again — this page rechecks automatically. Your draft is unaffected and remains saved.`,
         variant: "destructive",
       });
       return;
@@ -5278,10 +5293,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 size="sm"
                 className="h-8 text-xs gap-1.5 bg-green-600 hover:bg-green-700 text-white"
                 onClick={() => void finalizeReport()}
-                disabled={finalizing || isPcpndtRelevantUsg}
+                disabled={finalizing || pcpndtBlocked}
                 title={
-                  isPcpndtRelevantUsg
-                    ? "Blocked: obstetric/fetal USG requires PCPNDT Form F compliance, which this workspace does not check — finalize via USG Reporting (legacy, /usg/reporting) instead"
+                  pcpndtBlocked
+                    ? `Blocked: PCPNDT Form F for this patient is missing or incomplete.${pcpndtCompliance?.errors?.length ? ` Missing: ${pcpndtCompliance.errors.join(" ")}` : ""} Complete Form F, then finalize — this page rechecks automatically.`
                     : "Finalize report (Ctrl+Enter)"
                 }
               >
@@ -5293,16 +5308,26 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 Finalize
               </Button>
             )}
-            {/* PR B follow-up — PCPNDT safety guard: persistent, always-visible
-                notice (not just a toast on click) so the block is understood
-                before the radiologist even reaches for Finalize. */}
+            {/* PCPNDT: persistent, always-visible status (not just a toast on
+                click) so the state is understood before the radiologist even
+                reaches for Finalize — red when Form F is missing/incomplete,
+                green once verified (finalize then proceeds here normally). */}
             {!isLocked && canSign && isPcpndtRelevantUsg && (
-              <span
-                className="text-[11px] text-red-600 font-medium self-center px-2 flex items-center gap-1 max-w-[260px]"
-                title="This workspace has no PCPNDT Form F compliance check. Finalize via USG Reporting (legacy, /usg/reporting) after completing Form F."
-              >
-                ⚠ PCPNDT: finalize via USG Reporting (Form F required)
-              </span>
+              pcpndtBlocked ? (
+                <span
+                  className="text-[11px] text-red-600 font-medium self-center px-2 flex items-center gap-1 max-w-[260px]"
+                  title={`PCPNDT Form F for this patient is missing or incomplete.${pcpndtCompliance?.errors?.length ? ` Missing: ${pcpndtCompliance.errors.join(" ")}` : ""} Complete and verify Form F (Measurements tab → "Review & Map to Form F"); this page rechecks automatically.`}
+                >
+                  ⚠ PCPNDT: complete Form F to finalize
+                </span>
+              ) : (
+                <span
+                  className="text-[11px] text-emerald-600 font-medium self-center px-2 flex items-center gap-1 max-w-[260px]"
+                  title="PCPNDT Form F for this patient is complete and ID-verified — finalize proceeds normally (the server re-verifies on finalize)."
+                >
+                  ✓ PCPNDT Form F verified
+                </span>
+              )
             )}
             {/* G1: non-signing roles see why, not a live button that only 500s server-side */}
             {!isLocked && !canSign && (

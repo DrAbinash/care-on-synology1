@@ -26,6 +26,7 @@ import {
 import { sendReportEmail } from "../email";
 import { requireStaffAuth, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { isObstetricUsgStudy } from "../lib/usgModality";
+import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
 // ── Ticket D5 — structured signed-report path (flag-gated, legacy default) ───
 import {
   radiologyReportDraftsTable,
@@ -1856,25 +1857,61 @@ patientReportsRouter.post("/", async (req, res) => {
   }
   const type = (String(b.type ?? "") || (test.department && /(USG|MRI|CT|X-?RAY|MAMMO|DEXA|RAD)/i.test(test.department) ? "radiology" : "pathology")).toLowerCase();
 
-  // PCPNDT server-side finalize guard. This is the actual content-persisting
-  // write (creates the signed-eligible patient_reports row) — blocking here,
+  // PCPNDT server-side finalize gate. This is the actual content-persisting
+  // write (creates the signed-eligible patient_reports row) — checking here,
   // BEFORE any row is created or the D5 structured-finalize transaction
   // runs, prevents an obstetric/fetal ultrasound report's content from ever
   // being persisted or auto-signed without PCPNDT Form F compliance. Scoped
   // strictly to type === "radiology" with a resolvable worklist row, so
   // pathology/lab reports and every other radiology study (MRI, CT,
-  // non-obstetric USG) are completely unaffected — see
-  // docs/usg-reporting/platform-consolidation-pr-b.md §17-18.
+  // non-obstetric USG) are completely unaffected.
+  //
+  // Roadmap §1.4 step 2 (docs/usg-reporting/pcpndt-canonical-roadmap.md):
+  // this is no longer a blanket block. It now runs the SAME shared Form F
+  // verification the legacy usgReports.ts finalize has always enforced
+  // (lib/pcpndtCompliance.ts) — a compliant obstetric study finalizes here
+  // normally; a non-compliant one is refused with the exact missing fields.
+  // Step 4: an admin/super_admin may override a failing check with a
+  // documented reason (mirrors the legacy finalize-force gate) — audited.
   if (type === "radiology") {
     const studyIdForGuard = b.studyId ? Number(b.studyId) : null;
     const worklistRowForGuard = studyIdForGuard ? await resolveWorklistRowForPcpndtGuard(studyIdForGuard) : null;
     if (worklistRowForGuard && isObstetricUsgStudy(worklistRowForGuard.modality, worklistRowForGuard.studyDescription)) {
-      res.status(409).json({
-        error: "pcpndt_compliance_required",
-        message:
-          "This is an obstetric/fetal ultrasound study. It cannot be finalized through the canonical Reporting Workspace — PCPNDT Form F compliance is not checked here. Finalize this study through USG Reporting (the PCPNDT-compliant legacy workflow, /usg/reporting) instead.",
-      });
-      return;
+      const compliance = await checkPcpndtFormFCompliance(patientId);
+      if (!compliance.compliant) {
+        const overrideReason = typeof b.pcpndtOverrideReason === "string" ? b.pcpndtOverrideReason.trim() : "";
+        const sessionRole = (req as StaffAuthRequest).staffSession?.role ?? "";
+        const overrideRequested = b.pcpndtOverride === true;
+        if (overrideRequested && PCPNDT_OVERRIDE_ROLES.has(sessionRole) && overrideReason.length >= 3) {
+          // Audited escape hatch for exceptional cases — same roles and
+          // documented-reason requirement as legacy POST /:id/finalize-force.
+          const session = (req as StaffAuthRequest).staffSession;
+          await auditLog({
+            userId: session?.subjectId ?? null,
+            userName: session?.subjectName ?? "system",
+            role: sessionRole || "system",
+            action: "pcpndt_override_finalize",
+            module: "radiology",
+            entityType: "patient_report",
+            entityId: null,
+            newValue: JSON.stringify({
+              patientId,
+              studyId: studyIdForGuard,
+              complianceErrors: compliance.errors,
+            }),
+            reason: overrideReason,
+          });
+        } else {
+          res.status(409).json({
+            error: "pcpndt_compliance_required",
+            message:
+              "This is an obstetric/fetal ultrasound study and its PCPNDT Form F record is missing or incomplete. Complete and verify Form F for this patient (Form F page), then finalize again. An admin/super_admin may override with a documented reason (pcpndtOverride + pcpndtOverrideReason).",
+            validationErrors: compliance.errors,
+            formFId: compliance.formFId,
+          });
+          return;
+        }
+      }
     }
   }
 
@@ -2887,6 +2924,23 @@ patientReportsRouter.get("/templates/:testId", async (req, res) => {
 
 // Helper: surface radiology-finalized reports as candidates so the hub can
 // "promote" them into the patient_reports table without re-typing the body.
+// ── PCPNDT Form F compliance status (read-only) ─────────────────────────────
+// Lets the canonical Reporting Workspace show — BEFORE a finalize attempt —
+// whether an obstetric study's patient has a complete, verified Form F
+// record, instead of hard-blocking unconditionally. Same shared check as
+// every finalize gate (lib/pcpndtCompliance.ts); returns field-presence
+// status only, no Form F content. Mounted under /patient-reports so it
+// carries the same /reports-family staff permission as the finalize itself.
+patientReportsRouter.get("/pcpndt-compliance/:patientId", async (req, res) => {
+  const patientId = Number(req.params.patientId);
+  if (!Number.isInteger(patientId) || patientId <= 0) {
+    res.status(400).json({ error: "valid patientId required" });
+    return;
+  }
+  const compliance = await checkPcpndtFormFCompliance(patientId);
+  res.json(compliance);
+});
+
 patientReportsRouter.get("/from-study/:studyId", async (req, res) => {
   const studyId = Number(req.params.studyId);
   const [study] = await db.select().from(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, studyId));

@@ -1,6 +1,26 @@
 # PCPNDT Canonical Migration Roadmap & Configuration-Driven Design
 
 **Status: roadmap and design only. No implementation in this document or the PR that produced it.**
+
+> **Implementation update (Part 1 steps 2 & 4 — done):** the Form F
+> verification now lives in ONE shared function,
+> `artifacts/api-server/src/lib/pcpndtCompliance.ts`, called by the legacy
+> `usgReports.ts` finalize (byte-identical responses), by BOTH canonical
+> server-side gates (`patient-reports.ts` POST /, `internal-radiology.ts`
+> report-status REPORT_FINAL), and by `fetalUsgLevel4.ts` final-sign (which
+> previously had **no** Form F check at all). The canonical gates are no
+> longer blanket blocks: a compliant obstetric study finalizes through the
+> canonical workspace normally; a non-compliant one is refused with the
+> exact missing fields; an admin/super_admin may override with a documented
+> reason, audited (`pcpndt_override_finalize` in `audit_logs` /
+> `fetal_usg_audit_logs`) — mirroring the legacy finalize-force gate. The
+> workspace UI shows live compliance status (red missing-fields notice /
+> green verified) via `GET /api/patient-reports/pcpndt-compliance/:patientId`
+> and unblocks automatically once Form F is completed. The by-patient-latest
+> lookup semantics were kept deliberately (see §1.6 — a per-study date
+> window would false-block Form F records completed at registration, before
+> the study). Steps 3 (inline Form F UX — the tab hand-off remains), 5–6
+> (legacy retirement) and Part 2 (config-driven classifier) remain open.
 **Produced for:** PR C (CARE USG Gold Standard, Complete Study Library & Canonical PCPNDT Migration Roadmap), Phases 8–9.
 **Builds on:** [`platform-consolidation-pr-b.md`](./platform-consolidation-pr-b.md) §17.1/§18.1 (where this exact roadmap was first promised), and the PCPNDT guard code itself (`isObstetricUsgStudy()` in both `usgModality.ts` files, the finalize blocks in `RadiologyReportingWorkspace.tsx`/`patient-reports.ts`/`internal-radiology.ts`).
 
