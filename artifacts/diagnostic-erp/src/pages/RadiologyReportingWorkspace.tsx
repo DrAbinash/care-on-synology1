@@ -5415,17 +5415,18 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           </div>
         </div>
 
-        {/* ── RIGHT 20%: 5-tab assistant panel (narrower floor on phone-width
-            screens, alongside the left-panel default-collapse above, so the
-            center report editor keeps real width instead of being squeezed
-            to ~0px) ──────────────────────────────────────────────────── */}
+        {/* ── RIGHT: 5-tab assistant panel (Copilot/Quick/Templates/Follow-
+            up/Prior/AI/Measure/Teach) — the primary workhorse of this
+            workspace, so it gets more than double its old 20% share on
+            desktop. Center report editor (flex-1, min-w-0) absorbs the
+            difference and shrinks accordingly. Phone-width floor unchanged
+            (45% left + 32% right = 77%, still leaves real width for the
+            center column at small viewports). ──────────────────────── */}
         <div
           className="flex flex-col border-l overflow-hidden shrink-0"
           style={isMobile
-            // 45% (left) + 32% (right) = 77%, always leaving real width for
-            // the center column even when both side panels are at their max.
             ? { width: "32%", minWidth: 110, maxWidth: 170 }
-            : { width: "20%", minWidth: 200, maxWidth: 280 }}
+            : { width: "42%", minWidth: 440, maxWidth: 640 }}
         >
           {/* Tab header */}
           <div className="shrink-0 flex border-b bg-muted/10">
