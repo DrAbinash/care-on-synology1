@@ -7,6 +7,7 @@ import {
   ZoomIn, ZoomOut, RotateCcw, Sun, Moon, ChevronLeft, ChevronRight,
   Layers, Maximize2, Minimize2, AlertTriangle, RefreshCw, ExternalLink,
 } from "lucide-react";
+import { planStudyLaunch, localStorageRouteCache, type StudyLaunchResult } from "@/lib/studyLaunchService";
 
 interface Series {
   uid: string;
@@ -120,6 +121,40 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef }: {
     enabled: !!studyInstanceUID,
     staleTime: 5 * 60_000,
   });
+
+  // Network-aware embed URL — reuses the SAME LAN/Tailscale/Cloudflare/Public
+  // auto-detect + mixed-content-aware selection the "Open Study" (Weasis)
+  // launch button already uses (studyLaunchService.ts), instead of the single
+  // static server-side ohif_base_url the /ohif-launch endpoint above returns.
+  // Query key/shape matches OpenStudyPanel.tsx exactly so the two components
+  // share one cached fetch when mounted together.
+  const { data: viewerSettings = {} as Record<string, string> } = useQuery<Record<string, string>>({
+    queryKey: ["pacs-viewer-settings"],
+    queryFn: async () => {
+      const rows = await api.get<{ key: string; value: string }[]>("/api/radiology/pacs-settings");
+      return Object.fromEntries(rows.map((r) => [r.key, r.value]));
+    },
+    staleTime: 60_000,
+  });
+  // undefined = not yet planned (probing in flight); null = planned but no
+  // usable route; StudyLaunchResult = plan complete (success or typed failure).
+  const [embedPlan, setEmbedPlan] = useState<StudyLaunchResult | null | undefined>(undefined);
+  useEffect(() => {
+    if (!studyInstanceUID || Object.keys(viewerSettings).length === 0) return;
+    let cancelled = false;
+    setEmbedPlan(undefined);
+    planStudyLaunch(
+      { studyInstanceUID, accessionNumber: accessionNumber ?? null, viewer: "OHIF", requestedMode: "AUTO" },
+      viewerSettings,
+      { pageIsHttps: window.location.protocol === "https:", cache: localStorageRouteCache() },
+    ).then((res) => { if (!cancelled) setEmbedPlan(res); });
+    return () => { cancelled = true; };
+  }, [studyInstanceUID, accessionNumber, viewerSettings]);
+  // Best URL to hand to "open in new tab" — new-tab navigation isn't subject
+  // to mixed-content blocking, so prefer whatever network was auto-detected
+  // (may be reachable over Tailscale/Cloudflare even when LAN isn't), falling
+  // back to the legacy static LAN URL.
+  const bestOhifUrl = embedPlan?.finalLaunchUrl ?? launchData?.ohifUrl ?? null;
 
   // Fetch series from DICOMweb
   const dicomWebBase = launchData?.dicomWebBaseUrl;
@@ -262,9 +297,9 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef }: {
               Frames
             </button>
           </div>
-          {viewMode === "OHIF" && launchData?.ohifUrl && (
+          {viewMode === "OHIF" && bestOhifUrl && (
             <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title="Open OHIF in a new tab"
-              onClick={() => window.open(launchData.ohifUrl!, "_blank")}>
+              onClick={() => window.open(bestOhifUrl, "_blank")}>
               <ExternalLink className="h-3.5 w-3.5" />
             </Button>
           )}
@@ -275,26 +310,49 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef }: {
       </div>
 
       {viewMode === "OHIF" ? (
-        /* ── In-page OHIF view box ─────────────────────────────────────── */
-        launchData?.ohifUrl && window.location.protocol === "https:" && launchData.ohifUrl.startsWith("http:") ? (
-          /* Mixed content: the browser refuses to frame an HTTP viewer inside
-             an HTTPS page and shows nothing — say so instead of a blank box. */
+        /* ── In-page OHIF view box — network-aware: auto-probes LAN/Tailscale/
+           Cloudflare/Public (same logic the "Open Study" launch button uses)
+           and embeds whichever configured route is actually reachable AND
+           https-compatible with this page. ───────────────────────────────── */
+        embedPlan === undefined ? (
+          <div className="flex-1 min-h-[420px] flex items-center justify-center gap-2 bg-black text-white/50 text-sm">
+            <RefreshCw className="h-4 w-4 animate-spin" /> Detecting best viewer route…
+          </div>
+        ) : embedPlan?.success && embedPlan.finalLaunchUrl ? (
+          <iframe
+            title="OHIF viewer"
+            src={embedPlan.finalLaunchUrl}
+            className="flex-1 w-full min-h-[420px] border-0 bg-black"
+            allow="fullscreen"
+            data-testid="ohif-embed"
+          />
+        ) : embedPlan?.errorCode === "MIXED_CONTENT_BLOCKED" ? (
+          /* Every configured OHIF route is plain http, and this page is https
+             — the browser refuses to frame an http endpoint inside an https
+             page, no matter which network the client is actually on. */
           <div className="flex-1 min-h-[420px] flex flex-col items-center justify-center gap-2 p-4 text-center bg-black text-white/60 text-sm">
             <AlertTriangle className="h-8 w-8" />
             <p className="font-medium">OHIF cannot be embedded here</p>
             <p className="text-xs text-white/40 max-w-xs">
-              This page is HTTPS but the configured OHIF URL is HTTP — the browser blocks embedding it.
-              Use an HTTPS OHIF URL in PACS / DICOM Settings, or open it in a new tab.
+              This page is HTTPS but every configured OHIF route (LAN{embedPlan.probeResults.some((r) => r.mode === "TAILSCALE") ? ", Tailscale" : ""}) is HTTP.
+              Add an HTTPS OHIF URL for at least one route in PACS / DICOM Settings → Viewer Network Routes (e.g. via
+              <code className="mx-1">tailscale serve</code> or a reverse proxy), or open it in a new tab.
             </p>
-            <Button size="sm" variant="outline" className="h-7 text-xs mt-1"
-              onClick={() => window.open(launchData.ohifUrl!, "_blank")}>
-              <ExternalLink className="h-3.5 w-3.5 mr-1" /> Open OHIF in new tab
-            </Button>
+            {bestOhifUrl && (
+              <Button size="sm" variant="outline" className="h-7 text-xs mt-1"
+                onClick={() => window.open(bestOhifUrl, "_blank")}>
+                <ExternalLink className="h-3.5 w-3.5 mr-1" /> Open OHIF in new tab
+              </Button>
+            )}
           </div>
-        ) : launchData?.ohifUrl ? (
+        ) : bestOhifUrl ? (
+          /* planStudyLaunch didn't succeed (e.g. no reachable network probed
+             yet) but a configured URL still exists — fall back to it rather
+             than showing a dead end; "open in new tab" always works even if
+             embedding doesn't. */
           <iframe
             title="OHIF viewer"
-            src={launchData.ohifUrl}
+            src={bestOhifUrl}
             className="flex-1 w-full min-h-[420px] border-0 bg-black"
             allow="fullscreen"
             data-testid="ohif-embed"
@@ -354,8 +412,8 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef }: {
             <Button size="sm" variant="ghost" className="h-7 px-1.5 text-xs" onClick={nextFrame} disabled={selectedInstIdx >= instances.length - 1}><ChevronRight className="h-3.5 w-3.5" /></Button>
             <div className="flex-1" />
             <span className="text-[10px] text-muted-foreground">B:{brightness}% C:{contrast}%</span>
-            {launchData?.ohifUrl && (
-              <Button size="sm" variant="ghost" className="h-7 px-1.5 text-xs" onClick={() => window.open(launchData.ohifUrl!, "_blank")}>
+            {bestOhifUrl && (
+              <Button size="sm" variant="ghost" className="h-7 px-1.5 text-xs" onClick={() => window.open(bestOhifUrl, "_blank")}>
                 <ExternalLink className="h-3.5 w-3.5" />
               </Button>
             )}
