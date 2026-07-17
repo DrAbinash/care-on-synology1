@@ -761,7 +761,7 @@ const DRILLDOWN_TYPES = [
   "totalBills", "duesCollected", "cancellations", "outstandingDues",
   "collectibleAmount", "netDigitalCollection", "totalExpenses",
   "expectedPhysicalCash", "totalReceived", "discountsGiven",
-  "cancellationCount", "averageBillValue",
+  "cancellationCount", "averageBillValue", "refundsWithoutCancellation",
 ] as const;
 type DrilldownType = typeof DRILLDOWN_TYPES[number];
 
@@ -1038,6 +1038,39 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
       }
       // Suppress unused-var lint for digitalIn/digitalRefunded when only one branch used them
       void digitalIn; void digitalRefunded;
+      break;
+    }
+
+    case "refundsWithoutCancellation": {
+      const refundRows = await db
+        .select({
+          billNumber: billsTable.billNumber,
+          amount: paymentsTable.amount,
+          method: paymentsTable.method,
+          status: billsTable.status,
+          patientFirstName: patientsTable.firstName,
+          patientLastName: patientsTable.lastName,
+          recordedByName: paymentsTable.recordedByName,
+          createdAt: paymentsTable.createdAt,
+        })
+        .from(paymentsTable)
+        .innerJoin(billsTable, eq(paymentsTable.billId, billsTable.id))
+        .leftJoin(patientsTable, eq(billsTable.patientId, patientsTable.id))
+        .where(and(
+          gte(paymentsTable.createdAt, start),
+          lt(paymentsTable.createdAt, end),
+          sql`${paymentsTable.amount}::numeric < 0`,
+          ...(staffName !== null ? [eq(paymentsTable.recordedByName, staffName)] : []),
+        ))
+        .orderBy(sql`${paymentsTable.createdAt} DESC`);
+      const notCancelled = refundRows.filter((r) => r.status !== "cancelled");
+      result = {
+        label: "Refunds (No Cancellation)",
+        columns: ["Bill #", "Patient", "Amount", "Method", "Recorded By", "Refunded At"],
+        rows: notCancelled.map((r) => [
+          r.billNumber, patientNameOf(r), Math.abs(Number(r.amount)), formatMethod(r.method), r.recordedByName ?? "—", fmtDate(r.createdAt),
+        ]),
+      };
       break;
     }
 

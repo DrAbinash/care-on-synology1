@@ -22,7 +22,8 @@ export type DrilldownType =
   | "totalReceived"
   | "discountsGiven"
   | "cancellationCount"
-  | "averageBillValue";
+  | "averageBillValue"
+  | "refundsWithoutCancellation";
 
 type DrilldownResponse = {
   type: DrilldownType;
@@ -50,6 +51,7 @@ export const DRILLDOWN_TITLES: Record<DrilldownType, string> = {
   discountsGiven: "Discounts Given",
   cancellationCount: "Cancellation Count",
   averageBillValue: "Average Bill Value",
+  refundsWithoutCancellation: "Refunds (No Cancellation)",
 };
 
 // Columns known to hold a currency amount — right-aligned + ₹-formatted for
