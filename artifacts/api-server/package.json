@@ -47,7 +47,8 @@
     "sharp": "^0.34.5",
     "yaml": "catalog:",
     "zod": "catalog:",
-    "@workspace/measurements": "workspace:*"
+    "@workspace/measurements": "workspace:*",
+    "@workspace/pathology": "workspace:*"
   },
   "devDependencies": {
     "@types/bcryptjs": "^3.0.0",
