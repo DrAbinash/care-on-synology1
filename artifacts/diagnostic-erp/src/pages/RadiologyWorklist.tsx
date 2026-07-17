@@ -137,6 +137,39 @@ function LockBadge({ entry, currentUserId }: { entry: any; currentUserId?: numbe
 const MODALITY_OPTIONS = ["all", "CR", "MR", "CT", "US", "MG", "BMD", "OT"];
 const STATUS_OPTIONS = ["all", "STUDY_RECEIVED", "AI_DRAFT_READY", "REPORT_IN_PROGRESS", "REPORT_FINAL", "DELIVERED"];
 
+// ── Date-range filter helpers — all dates computed/compared in IST so quick
+// presets line up with the same "day" the rest of the ERP (My Daily Summary,
+// day-close) uses, regardless of the browser's local timezone.
+function todayISO(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+}
+function daysAgoISO(n: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+}
+function startOfWeekISO(): string {
+  const [y, m, day] = todayISO().split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1, day));
+  const diffFromMonday = (d.getUTCDay() + 6) % 7;
+  d.setUTCDate(d.getUTCDate() - diffFromMonday);
+  return d.toISOString().slice(0, 10);
+}
+function startOfMonthISO(): string {
+  const [y, m] = todayISO().split("-").map(Number);
+  return `${y}-${String(m).padStart(2, "0")}-01`;
+}
+function toISTDateStr(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+}
+const DATE_PRESETS = [
+  { label: "Today", from: () => todayISO(), to: () => todayISO() },
+  { label: "Yesterday", from: () => daysAgoISO(1), to: () => daysAgoISO(1) },
+  { label: "Day Before", from: () => daysAgoISO(2), to: () => daysAgoISO(2) },
+  { label: "This Week", from: () => startOfWeekISO(), to: () => todayISO() },
+  { label: "This Month", from: () => startOfMonthISO(), to: () => todayISO() },
+];
+
 const AI_DRAFT_STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   NONE:    { label: "None",    color: "bg-gray-100 text-gray-600 border-gray-200" },
   PENDING: { label: "Pending", color: "bg-yellow-50 text-yellow-700 border-yellow-200" },
@@ -454,6 +487,12 @@ export default function RadiologyWorklist() {
     return MODALITY_OPTIONS.includes(normalized) ? normalized : "all";
   });
   const [lockFilter, setLockFilter] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  function setDatePreset(from: string, to: string) {
+    setDateFrom(from);
+    setDateTo(to);
+  }
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [showSentinel, setShowSentinel] = useState(false);
   const [showRawJson, setShowRawJson] = useState(false);
@@ -625,6 +664,14 @@ export default function RadiologyWorklist() {
     if (lockFilter === "mine" && !isMine) return false;
     if (lockFilter === "locked" && (!isLocked || isMine)) return false;
 
+    // Client-side date-range filter (IST calendar day), keyed off study received time
+    if (dateFrom || dateTo) {
+      const entryDate = e.createdAt ? toISTDateStr(e.createdAt) : null;
+      if (!entryDate) return false;
+      if (dateFrom && entryDate < dateFrom) return false;
+      if (dateTo && entryDate > dateTo) return false;
+    }
+
     if (!search) return true;
     const s = search.toLowerCase();
     return (
@@ -755,6 +802,38 @@ export default function RadiologyWorklist() {
               </div>
             </div>
 
+            {/* Date range — quick presets + custom from/to, IST calendar day */}
+            <div className="flex flex-wrap items-center gap-2">
+              <CalendarDays className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+              <Input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+                className="h-9 w-[150px] text-sm"
+              />
+              <span className="text-muted-foreground text-sm">→</span>
+              <Input
+                type="date"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+                className="h-9 w-[150px] text-sm"
+              />
+              <div className="flex gap-1.5 flex-wrap">
+                {DATE_PRESETS.map((p) => (
+                  <Button
+                    key={p.label}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs px-3"
+                    onClick={() => setDatePreset(p.from(), p.to())}
+                  >
+                    {p.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
             {/* Filters — all default to ALL */}
             <div className="flex flex-wrap gap-2 items-center">
               <div className="relative flex-1 min-w-[180px]">
@@ -798,12 +877,12 @@ export default function RadiologyWorklist() {
                   <SelectItem value="locked">🔴 Locked by Others</SelectItem>
                 </SelectContent>
               </Select>
-              {(statusFilter !== "all" || modalityFilter !== "all" || lockFilter !== "all" || search) && (
+              {(statusFilter !== "all" || modalityFilter !== "all" || lockFilter !== "all" || search || dateFrom || dateTo) && (
                 <Button
                   variant="ghost"
                   size="sm"
                   className="text-xs"
-                  onClick={() => { setSearch(""); setStatusFilter("all"); setModalityFilter("all"); setLockFilter("all"); }}
+                  onClick={() => { setSearch(""); setStatusFilter("all"); setModalityFilter("all"); setLockFilter("all"); setDateFrom(""); setDateTo(""); }}
                 >
                   Clear filters
                 </Button>
