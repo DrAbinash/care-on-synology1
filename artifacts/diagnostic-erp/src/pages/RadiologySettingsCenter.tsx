@@ -602,30 +602,18 @@ export default function RadiologySettingsCenter() {
         <TabsContent value="mwl" className="space-y-4">
           <div className="grid lg:grid-cols-2 gap-6">
             <div className="space-y-6">
-              <div className="rounded-xl border bg-card p-5 space-y-4">
+              <div className="rounded-xl border bg-card p-5 space-y-3">
                 <h3 className="font-semibold text-sm flex items-center gap-2">
                   <Wrench size={16} className="text-primary" />
                   MWL Config
                 </h3>
-                <div className="space-y-3">
-                  <div className="space-y-1">
-                    <Label className="text-xs">MWL AE Title</Label>
-                    <Input
-                      value={settings.find(s => s.key === "mwl_ae_title")?.value ?? ""}
-                      onChange={(e) => upsertSetting.mutate({ key: "mwl_ae_title", value: e.target.value, category: "mwl" })}
-                      className="h-9 text-sm"
-                      placeholder="ERPMWL"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs">MWL TCP Port</Label>
-                    <Input
-                      value={settings.find(s => s.key === "mwl_port")?.value ?? ""}
-                      onChange={(e) => upsertSetting.mutate({ key: "mwl_port", value: e.target.value, category: "mwl" })}
-                      className="h-9 text-sm"
-                      placeholder="4242"
-                    />
-                  </div>
+                <div className="flex items-start gap-2 text-xs text-muted-foreground">
+                  <Info size={14} className="mt-0.5 shrink-0 text-primary" />
+                  <p>
+                    The Modality Worklist AE Title &amp; port are configured on the <strong>Windows MWL agent</strong>
+                    itself (see the DICOM Agent setup guide below), not stored here. The ERP serves scheduled
+                    procedures to that agent over <code className="font-mono">GET /api/internal/radiology/mwl</code>.
+                  </p>
                 </div>
               </div>
               <div className="rounded-xl border bg-card p-5 space-y-4">

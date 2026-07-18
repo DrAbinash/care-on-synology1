@@ -34,19 +34,8 @@ const MWL_FIELDS: Array<{
   options?: string[];
   hint?: string;
 }> = [
-  {
-    key: "mwl_ae_title",
-    label: "MWL AE Title",
-    placeholder: "ERPMWL",
-    hint: "DICOM Application Entity title for the MWL SCP (e.g. ERPMWL)",
-  },
-  {
-    key: "mwl_port",
-    label: "MWL Port",
-    placeholder: "4242",
-    type: "number",
-    hint: "TCP port the MWL SCP listens on",
-  },
+  // NOTE: mwl_ae_title / mwl_port were removed — those are configured on the
+  // Windows MWL agent itself, not stored in the ERP (nothing consumed them).
   {
     key: "mwl_default_station_ae_title",
     label: "Default Station AE Title",
