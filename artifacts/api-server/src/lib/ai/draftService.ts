@@ -100,6 +100,13 @@ export async function recordDraftFeedback(input: {
   action: "accept" | "edit" | "ignore" | "reject";
   editedText?: string | null;
   staffId?: number | null;
+  // P4 / G21 — structured feedback dataset fields (analytics only; no retraining).
+  reason?: string | null;
+  laterality?: string | null;
+  measurementRef?: string | null;
+  confidence?: number | null;
+  promptVersion?: string | null;
+  modelVersion?: string | null;
 }): Promise<void> {
   await db.insert(aiDraftFeedbackTable).values({
     draftId: input.draftId,
@@ -108,5 +115,11 @@ export async function recordDraftFeedback(input: {
     action: input.action,
     editedText: input.editedText ?? null,
     staffId: input.staffId ?? null,
+    reason: input.reason ?? null,
+    laterality: input.laterality ?? null,
+    measurementRef: input.measurementRef ?? null,
+    confidence: input.confidence ?? null,
+    promptVersion: input.promptVersion ?? null,
+    modelVersion: input.modelVersion ?? null,
   });
 }

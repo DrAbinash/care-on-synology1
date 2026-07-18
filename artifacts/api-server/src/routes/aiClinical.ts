@@ -92,6 +92,13 @@ aiClinicalRouter.post("/draft/:id/feedback", async (req, res) => {
     findingKey: z.string().optional(),
     action: z.enum(["accept", "edit", "ignore", "reject"]),
     editedText: z.string().optional(),
+    // P4 / G21 — optional structured feedback dataset fields (analytics only).
+    reason: z.string().optional(),
+    laterality: z.string().optional(),
+    measurementRef: z.string().optional(),
+    confidence: z.number().int().optional(),
+    promptVersion: z.string().optional(),
+    modelVersion: z.string().optional(),
   }).safeParse(req.body);
   if (!Number.isInteger(draftId) || !parsed.success) { res.status(400).json({ error: parsed.success ? "bad id" : parsed.error.issues }); return; }
   await recordDraftFeedback({ draftId, staffId: s?.id ?? null, ...parsed.data });

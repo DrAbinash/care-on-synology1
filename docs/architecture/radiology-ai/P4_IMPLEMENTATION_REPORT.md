@@ -98,6 +98,31 @@ tables link by `report_id` / `study_instance_uid` values, not hard FKs) so there
 
 ---
 
+## API documentation (G22 enterprise surface)
+
+All endpoints are mounted at `/api/ai/interop` behind `requireStaffAuth` + `requireStaffPermission("/radiology")`
+and the same master-flag + per-scope gating as the clinical router. Reads return **204** when AI is not visible
+to the user; write/export endpoints require a full-access (admin) role.
+
+| Method | Path | Role | Purpose |
+|---|---|---|---|
+| GET | `/api/ai/interop/timeline?studyInstanceUid=` | visible | Immutable AI history (versions + feedback), ordered (G19) |
+| GET | `/api/ai/interop/versions?studyInstanceUid=` | visible | List provisional versions (metadata) |
+| GET | `/api/ai/interop/comparison?studyInstanceUid=&from=&to=` | visible | Diff two AI versions (G20) |
+| GET | `/api/ai/interop/evidence?studyInstanceUid=&ohifBase=&wadoBase=` | visible | Evidence anchors + OHIF/Weasis deep-links (G18) |
+| GET | `/api/ai/interop/status?studyInstanceUid=` | visible | SR/PDF/MPPS/Storage-Commitment status (G13/G16) |
+| POST | `/api/ai/interop/structured-report` `{studyInstanceUid}` | admin | Build SR (TID 1500) + enqueue DIMSE export (G12) |
+| POST | `/api/ai/interop/fhir-export` `{studyInstanceUid}` | admin | Emit + log FHIR R4 resources (G17) |
+| GET | `/api/ai/interop/feedback-dataset?studyInstanceUid=&action=` | admin | De-identified feedback dataset + stats (G21) |
+
+Feedback **capture** reuses the existing P3 endpoint (Strangler — no parallel path), now extended with the
+G21 structured fields: `POST /api/ai/draft/:id/feedback` `{studyInstanceUid, findingKey?, action,
+editedText?, reason?, laterality?, measurementRef?, confidence?, promptVersion?, modelVersion?}`.
+
+The existing measurements / structured-report / evaluation / study-timeline reads remain served by their
+existing routers (`/api/ai/*`, `radiology*`, evaluation runner) — this surface adds the interop-specific
+endpoints without duplicating them.
+
 ## 5. DICOM conformance summary (foundation)
 
 | Object | SOP / template | Direction | Transport | Notes |
@@ -181,6 +206,37 @@ to the same invariant: no writes to `patient_reports`, the human draft, amendmen
   unrelated to P4 — payments, presentation templates, ops/diagnostics, pacsEnterprise.)
 
 ---
+
+## Risks
+
+| Risk | Severity | Mitigation |
+|---|---|---|
+| SR/PDF byte encoding + DIMSE association not exercised in-sandbox (no PACS/agent here) | Med | Content model is pure + unit-tested; encoding reuses the **existing** agent/Orthanc + `dicom_sr_export_queue` (already in production). Full C-STORE verified only in staging (guide §13.6). |
+| SR built from the AI provisional store, not a signed report | Med | Deliberate foundation choice — `buildInteropReport` is the single seam; swapping in the finalized report is a one-function change. SR is an *additional* export and never replaces the ERP report. |
+| FHIR resources are minimal R4 (no full profiling/terminology binding) | Low | Backend interface only, logged not sent; a downstream integration engine adds profiles/terminology later. No external send in P4. |
+| Viewer deep-links depend on correctly configured OHIF/WADO base URLs | Low | URL selection reuses the hardened `studyLaunchService` (scheme/credential/mixed-content guards); anchors are appended, not re-derived. Findings without an anchor are flagged, never mis-linked. |
+| Feedback dataset could leak PHI if shaping is bypassed | Low | `buildFeedbackDataset` drops patient identifiers by construction and a test asserts no study/patient id survives; export is admin-gated. |
+| New tables link by value (no hard FKs) so orphan rows are possible | Low | Intentional (additive, avoids migration-order hazards); links are `report_id` / `study_instance_uid` values validated at query time. |
+| MPPS/Storage-Commitment SCU wiring is status-layer only | Low | Explicitly foundation; tables + status API ship, live SCU is a staging/deploy task (guide §13.9). |
+
+No risk in this phase changes the safety spine: AI never signs, never writes `patient_reports`, and never
+auto-learns; everything stays behind the default-OFF gate.
+
+## Rollback plan
+
+Rollback is **layered and non-destructive**:
+
+1. **Instant (no deploy):** set `feature_flags.ff_radiology_ai = false` (or narrow the per-scope policies).
+   Every `/api/ai/interop` read returns `204` and exports are refused immediately — the entire P4 surface
+   goes dark without touching data.
+2. **Code:** revert the P4 commit(s). The new router/service/pure modules are additive; removing them leaves
+   P0–P3 untouched (no P3 file was modified except the additive G21 feedback fields, which are backward-compatible).
+3. **Schema (only if required):** the migration is additive and idempotent; the new tables and columns can be
+   left in place harmlessly. If a full teardown is needed, the explicit manual rollback SQL is documented at the
+   top of `migrations/add_ai_interop.sql` (`DROP TABLE …` for the 7 tables + `DROP COLUMN …` for the 6
+   `ai_draft_feedback` columns). **No previous data is destroyed** — the P1/P2/P3 tables are never altered.
+
+There is no data migration to reverse and no destructive change to undo; the safe default is rollback step 1.
 
 ## 13. Staging validation guide
 
