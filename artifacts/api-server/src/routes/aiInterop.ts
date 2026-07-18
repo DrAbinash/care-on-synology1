@@ -40,6 +40,19 @@ function requireAdmin(req: Request, res: import("express").Response): boolean {
   if (!isAdmin(req)) { res.status(403).json({ error: "admin role required" }); return false; }
   return true;
 }
+/**
+ * Export/PHI-egress actions (DICOM SR, FHIR, feedback dataset) require BOTH a
+ * full-access role AND that AI is enabled (master flag on). Without the second
+ * check these endpoints stayed live even with ff_radiology_ai OFF — the
+ * documented default-OFF kill-switch must also cover the export surface (P5 fix).
+ */
+async function requireAdminAndEnabled(req: Request, res: import("express").Response): Promise<boolean> {
+  if (!requireAdmin(req, res)) return false;
+  const s = staff(req);
+  const enablement = await resolveAiEnablementForUser({ staffId: s?.id ?? null, modality: null });
+  if (!enablement.enabled) { res.status(403).json({ error: "AI is not enabled (ff_radiology_ai is off)" }); return false; }
+  return true;
+}
 
 // ── G19: immutable AI timeline ───────────────────────────────────────────────
 aiInteropRouter.get("/timeline", async (req, res) => {
@@ -98,7 +111,7 @@ aiInteropRouter.get("/status", async (req, res) => {
 
 // ── G12: structured-report (DICOM SR) export — admin-gated write ─────────────
 aiInteropRouter.post("/structured-report", async (req, res) => {
-  if (!requireAdmin(req, res)) return;
+  if (!(await requireAdminAndEnabled(req, res))) return;
   const parsed = z.object({ studyInstanceUid: z.string().min(1) }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues }); return; }
   const s = staff(req);
@@ -108,7 +121,7 @@ aiInteropRouter.post("/structured-report", async (req, res) => {
 
 // ── G17: FHIR export (backend log; no external send) — admin-gated write ─────
 aiInteropRouter.post("/fhir-export", async (req, res) => {
-  if (!requireAdmin(req, res)) return;
+  if (!(await requireAdminAndEnabled(req, res))) return;
   const parsed = z.object({ studyInstanceUid: z.string().min(1) }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues }); return; }
   const result = await exportFhir(parsed.data.studyInstanceUid);
@@ -117,7 +130,7 @@ aiInteropRouter.post("/fhir-export", async (req, res) => {
 
 // ── G21: human feedback dataset (analytics/export only; admin-gated) ─────────
 aiInteropRouter.get("/feedback-dataset", async (req, res) => {
-  if (!requireAdmin(req, res)) return;
+  if (!(await requireAdminAndEnabled(req, res))) return;
   const uid = typeof req.query.studyInstanceUid === "string" ? req.query.studyInstanceUid : undefined;
   const action = typeof req.query.action === "string" ? req.query.action : undefined;
   res.json(await getFeedbackDataset({ studyInstanceUid: uid, action }));

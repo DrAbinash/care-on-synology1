@@ -202,4 +202,17 @@ describe("G21 human feedback dataset (no retraining — shaping only)", () => {
     expect(jsonl.split("\n").length).toBe(1);
     expect(JSON.parse(jsonl)).toMatchObject({ action: "accept", findingKey: "a" });
   });
+
+  it("NEVER emits free-text reason or edited text (PHI) into the de-identified export", () => {
+    const ds = buildFeedbackDataset([
+      { action: "edit", findingKey: "a", reason: "patient John Doe MRN 12345 has a cyst", editedText: "full corrected report with PHI" },
+    ]);
+    const serialized = JSON.stringify(ds.records) + toJsonl(ds.records);
+    expect(serialized).not.toContain("John Doe");
+    expect(serialized).not.toContain("12345");
+    expect(serialized).not.toContain("full corrected report");
+    // The structured edit SIGNAL is retained, just not the text.
+    expect(ds.records[0].wasEdited).toBe(true);
+    expect("reason" in ds.records[0]).toBe(false);
+  });
 });

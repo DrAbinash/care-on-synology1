@@ -72,7 +72,9 @@ export const aiProcessingManifestsTable = pgTable(
   },
   (t) => ({
     snapIdx: index("ai_manifest_snapshot_idx").on(t.studySnapshotId),
-    inputHashIdx: index("ai_manifest_input_hash_idx").on(t.inputHash),
+    // UNIQUE: inputHash is the reprocessing idempotency key — two concurrent
+    // jobs with identical inputs must not both persist a manifest (P5 fix).
+    inputHashIdx: uniqueIndex("ai_manifest_input_hash_idx").on(t.inputHash),
     uidIdx: index("ai_manifest_uid_idx").on(t.studyInstanceUid),
   }),
 );
@@ -113,7 +115,10 @@ export const aiShadowDraftsTable = pgTable(
   (t) => ({
     manifestIdx: index("ai_shadow_draft_manifest_idx").on(t.manifestId),
     uidIdx: index("ai_shadow_draft_uid_idx").on(t.studyInstanceUid),
-    uidVersionIdx: index("ai_shadow_draft_uid_version_idx").on(t.studyInstanceUid, t.version),
+    // UNIQUE: the provisional store is documented as monotonic-versioned and
+    // never-overwritten — enforce that two concurrent jobs can't both insert the
+    // same (study, version) (P5 fix; pairs with the append-only trigger).
+    uidVersionIdx: uniqueIndex("ai_shadow_draft_uid_version_idx").on(t.studyInstanceUid, t.version),
   }),
 );
 export type AiShadowDraft = typeof aiShadowDraftsTable.$inferSelect;

@@ -8,8 +8,16 @@
  * records a human can later curate for offline model work.
  *
  * Pure + unit-tested: the service layer reads the feedback rows and passes
- * plain objects here; nothing here touches the DB. Patient identity is dropped
- * (only study UID hash prefix + finding key + action are retained).
+ * plain objects here; nothing here touches the DB.
+ *
+ * De-identification contract: only STRUCTURED, non-identifying fields are
+ * emitted (finding key, action, laterality, measurement ref, confidence,
+ * prompt/model version, and a wasEdited boolean). The two FREE-TEXT fields that
+ * can carry operator-typed PHI — `editedText` (the corrected report text) and
+ * `reason` — are NEVER emitted; `editedText` collapses to `wasEdited` and
+ * `reason` is dropped entirely. `reason` is still captured in ai_draft_feedback
+ * (Gate G21) for authorized, non-de-identified analytics — it just never enters
+ * this export. No patient identifiers are ever emitted.
  */
 
 export interface RawFeedbackRow {
@@ -33,9 +41,11 @@ export interface FeedbackDatasetRecord {
   confidence: number | null;
   promptVersion: string | null;
   modelVersion: string | null;
-  /** True when the radiologist supplied corrected text (edit signal). */
+  /** True when the radiologist supplied corrected text (edit signal). The
+   *  corrected text itself is intentionally NOT emitted (PHI). */
   wasEdited: boolean;
-  reason: string | null;
+  // NOTE: free-text `reason` is deliberately omitted from the de-identified
+  // export (it can contain operator-typed PHI). It stays in ai_draft_feedback.
 }
 
 export interface FeedbackDatasetStats {
@@ -84,7 +94,7 @@ export function buildFeedbackDataset(rows: RawFeedbackRow[]): FeedbackDataset {
       promptVersion: clean(r.promptVersion),
       modelVersion: clean(r.modelVersion),
       wasEdited: action === "edit" || Boolean(editedText),
-      reason: clean(r.reason),
+      // `reason` (free text) is intentionally NOT emitted — see de-id contract.
     });
     byAction[action] = (byAction[action] ?? 0) + 1;
     const pv = clean(r.promptVersion);

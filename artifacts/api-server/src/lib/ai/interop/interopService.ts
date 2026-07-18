@@ -32,13 +32,15 @@ import { buildFeedbackDataset } from "./feedbackDataset";
 // version + its evidence anchors + study identity. Returns null when there is
 // no validated provisional report for the study.
 export async function buildInteropReport(studyInstanceUid: string, version?: number): Promise<InteropReport | null> {
+  // Only VALIDATED drafts are exportable (honors this function's contract; an
+  // unvalidated/future draft must never be shipped as SR/FHIR — P5 fix).
   const draftRows = await db
     .select()
     .from(aiShadowDraftsTable)
     .where(
       version
-        ? and(eq(aiShadowDraftsTable.studyInstanceUid, studyInstanceUid), eq(aiShadowDraftsTable.version, version))
-        : eq(aiShadowDraftsTable.studyInstanceUid, studyInstanceUid),
+        ? and(eq(aiShadowDraftsTable.studyInstanceUid, studyInstanceUid), eq(aiShadowDraftsTable.version, version), eq(aiShadowDraftsTable.validated, true))
+        : and(eq(aiShadowDraftsTable.studyInstanceUid, studyInstanceUid), eq(aiShadowDraftsTable.validated, true)),
     )
     .orderBy(desc(aiShadowDraftsTable.version))
     .limit(1);

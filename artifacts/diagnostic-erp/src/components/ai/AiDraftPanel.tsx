@@ -44,6 +44,15 @@ export function AiDraftPanel({ studyInstanceUid, modality, onInsertText }: Props
     if (enablement?.visibleToRadiologist && studyInstanceUid) loadDraft();
   }, [enablement, studyInstanceUid, loadDraft]);
 
+  // Reset the per-finding accept/edit/reject state whenever the study changes or
+  // a NEW draft version loads. The panel is reused (not remounted) across studies
+  // in the workspace, so without this the `handled` map from a prior study leaks
+  // in — positional finding keys (f0/f1…) collide and the new study's findings
+  // render as already-handled and become silently un-insertable (P5 fix).
+  useEffect(() => {
+    setHandled({});
+  }, [studyInstanceUid, draft?.draftId]);
+
   const act = async (finding: { key: string; text: string; laterality?: string }, action: DraftAction) => {
     if (!draft) return;
     setHandled((h) => ({ ...h, [finding.key]: action }));

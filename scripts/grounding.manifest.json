@@ -16,9 +16,10 @@
     { "kind": "table", "table": "audit_logs", "file": "lib/db/src/schema/auditLogs.ts", "note": "tamper-evident audit spine (archive-before-purge)" },
     { "kind": "function", "name": "resolveRadiologyStudyId", "file": "artifacts/api-server/src/lib/canonicalStudy.ts", "note": "server-side study identity resolution (Gate G3)" },
     { "kind": "function", "name": "ensureCanonicalStudy", "file": "artifacts/api-server/src/lib/canonicalStudy.ts", "note": "idempotent crosswalk upsert" },
-    { "kind": "function", "name": "validateOllamaUrl", "file": "artifacts/api-server/src/routes/radiologyOllama.ts", "note": "SSRF guard + egress allowlist (Gate G2)" },
-    { "kind": "contains", "file": "artifacts/api-server/src/routes/radiologyOllama.ts", "text": "100.64.0.0/10", "note": "tailnet/CGNAT range is now blocked (was missing)" },
-    { "kind": "contains", "file": "artifacts/api-server/src/routes/radiologyOllama.ts", "text": "AI_EGRESS_ALLOWLIST", "note": "exact-endpoint egress allowlist env" },
+    { "kind": "function", "name": "validateOllamaUrl", "file": "artifacts/api-server/src/lib/ssrf/ollamaUrlGuard.ts", "note": "SSRF guard + egress allowlist (Gate G2; pure module extracted in P5)" },
+    { "kind": "function", "name": "canonicalHostsForGuard", "file": "artifacts/api-server/src/lib/ssrf/ollamaUrlGuard.ts", "note": "P5 SSRF hardening: trailing-dot + IPv4-mapped-IPv6 canonicalisation" },
+    { "kind": "contains", "file": "artifacts/api-server/src/lib/ssrf/ollamaUrlGuard.ts", "text": "100.64.0.0/10", "note": "tailnet/CGNAT range is blocked" },
+    { "kind": "contains", "file": "artifacts/api-server/src/lib/ssrf/ollamaUrlGuard.ts", "text": "AI_EGRESS_ALLOWLIST", "note": "exact-endpoint egress allowlist env" },
     { "kind": "function", "name": "runRadiologyJobTick", "file": "artifacts/api-server/src/lib/radiologyJobs.ts", "note": "the ONE durable job engine (constitution §6/§14)" },
     { "kind": "function", "name": "enqueueRadiologyJob", "file": "artifacts/api-server/src/lib/radiologyJobs.ts", "note": "idempotent enqueue (idempotencyKey dedup)" },
     { "kind": "contains", "file": "artifacts/api-server/src/cron.ts", "text": "archive-before-purge", "note": "audit retention fix — no unarchived deletes (Gate G2)" },
@@ -106,6 +107,10 @@
     { "kind": "function", "name": "buildFeedbackDataset", "file": "artifacts/api-server/src/lib/ai/interop/feedbackDataset.ts", "note": "de-identified feedback dataset — NO retraining (G21)" },
     { "kind": "function", "name": "exportStructuredReport", "file": "artifacts/api-server/src/lib/ai/interop/interopService.ts", "note": "reuses the existing dicom_sr_export_queue for DIMSE hand-off (G12)" },
     { "kind": "contains", "file": "artifacts/api-server/src/routes/index.ts", "text": "aiInteropRouter", "note": "AI enterprise interop router mounted at /api/ai/interop (gated)" },
-    { "kind": "contains", "file": "migrations/add_ai_interop.sql", "text": "fhir_export_log", "note": "P4 interop tables migration (additive, idempotent)" }
+    { "kind": "contains", "file": "migrations/add_ai_interop.sql", "text": "fhir_export_log", "note": "P4 interop tables migration (additive, idempotent)" },
+
+    { "kind": "contains", "file": "migrations/add_ai_shadow_uniqueness_hardening.sql", "text": "study_snapshots_immutable_guard", "note": "P5 DB-enforced snapshot content immutability (allows only supersede)" },
+    { "kind": "contains", "file": "migrations/add_ai_shadow_uniqueness_hardening.sql", "text": "CREATE UNIQUE INDEX", "note": "P5 uniqueness on (study,version) + input_hash to stop concurrent duplicates" },
+    { "kind": "contains", "file": "artifacts/api-server/src/lib/ai/shadowPipeline.ts", "text": "onConflictDoNothing", "note": "P5 concurrency-safe manifest/draft inserts (idempotent under races)" }
   ]
 }

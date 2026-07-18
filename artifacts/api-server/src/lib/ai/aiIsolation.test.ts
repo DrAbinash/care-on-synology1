@@ -31,7 +31,10 @@ function aiSourceFiles(): string[] {
   return [...local, ...routes];
 }
 
-// Forbidden WRITE patterns (reads like `isFinalized` are fine).
+// Forbidden WRITE patterns (reads like `isFinalized` are fine). Two layers:
+// (1) Drizzle variable-name writes; (2) raw-SQL against the PHYSICAL table names
+// — so an aliased import (`patientReportsTable as pr`) or a `db.execute(sql\`…\`)`
+// cannot evade the guard for the P0–P4 AI subsystem it scans.
 const FORBIDDEN: Array<{ re: RegExp; why: string }> = [
   { re: /\.insert\(\s*patientReportsTable/, why: "AI must not create patient_reports" },
   { re: /\.update\(\s*patientReportsTable/, why: "AI must not modify patient_reports" },
@@ -39,7 +42,14 @@ const FORBIDDEN: Array<{ re: RegExp; why: string }> = [
   { re: /patientReportAmendmentsTable/, why: "amendments must remain human-controlled" },
   { re: /\.insert\(\s*radiologyReportDraftsTable/, why: "AI must not write the human working draft server-side" },
   { re: /\.update\(\s*radiologyReportDraftsTable/, why: "AI must not modify the human working draft server-side" },
+  { re: /\.delete\(\s*radiologyReportDraftsTable/, why: "AI must not delete the human working draft server-side" },
   { re: /signaturesTable|\/sign\b|signReport|finalizeReport|finalReportId/, why: "no AI-specific signing/finalize path" },
+  // Raw-SQL evasion — INSERT/UPDATE/DELETE against the physical table names.
+  { re: /insert\s+into\s+"?patient_reports\b/i, why: "AI must not INSERT patient_reports (raw SQL)" },
+  { re: /update\s+"?patient_reports"?\s+set/i, why: "AI must not UPDATE patient_reports (raw SQL)" },
+  { re: /delete\s+from\s+"?patient_reports\b/i, why: "AI must not DELETE patient_reports (raw SQL)" },
+  { re: /(insert\s+into|update|delete\s+from)\s+"?radiology_report_drafts\b/i, why: "AI must not write the human draft (raw SQL)" },
+  { re: /(insert\s+into|update|delete\s+from)\s+"?patient_report_amendments\b/i, why: "amendments must remain human-controlled (raw SQL)" },
 ];
 
 describe("AI isolation guard (P3 patch)", () => {

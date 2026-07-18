@@ -194,8 +194,11 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
     const degraded = provenance.degraded || quality.degradeRecommended;
 
     // 7. Persist manifest (immutable) — records the REAL model version/digest.
+    // inputHash is UNIQUE: if a concurrent job (that passed the pre-check above
+    // before either inserted) already persisted this manifest, onConflictDoNothing
+    // makes this run a clean no-op instead of duplicating the manifest + draft.
     const modelVersion = provenance.modelDigest ? `${provenance.modelVersion}@${provenance.modelDigest}` : provenance.modelVersion;
-    const [manifestRow] = await db
+    const insertedManifest = await db
       .insert(aiProcessingManifestsTable)
       .values({
         studySnapshotId: snapshotId,
@@ -212,7 +215,16 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
         startedAt,
         completedAt: new Date(),
       })
+      // No-target ON CONFLICT DO NOTHING: catches the input_hash unique
+      // violation when the index exists, and stays safe (plain insert) on a
+      // legacy DB where the duplicate-guarded migration skipped creating it —
+      // never a runtime "no matching ON CONFLICT constraint" error.
+      .onConflictDoNothing()
       .returning({ id: aiProcessingManifestsTable.id });
+    if (insertedManifest.length === 0) {
+      return { ok: true, detail: `shadow no-op — concurrent job already persisted the manifest for this inputHash (snapshot rev ${snapshotRevision})` };
+    }
+    const manifestRow = insertedManifest[0];
 
     // 8. Persist shadow draft — valid + quarantined findings (nothing exposed).
     const shadowDraftJson = {
@@ -225,28 +237,41 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
       degraded,
     };
     // Immutable, versioned provisional report: regeneration inserts a NEW
-    // version; the DB trigger forbids overwriting an old one.
-    const version = await getNextProvisionalVersion(uid);
+    // version; the DB trigger forbids overwriting an old one. (study_uid, version)
+    // is UNIQUE — if a concurrent job grabbed the same version number, retry with
+    // the next one instead of silently creating a duplicate "v2" (P5 fix).
     const [csRow] = await db.select({ id: canonicalStudyTable.id }).from(canonicalStudyTable).where(eq(canonicalStudyTable.studyInstanceUid, uid)).limit(1);
-    const [draftRow] = await db
-      .insert(aiShadowDraftsTable)
-      .values({
-        version,
-        manifestId: manifestRow.id,
-        studySnapshotId: snapshotId,
-        studyInstanceUid: uid,
-        radiologyStudyId: payload.radiologyStudyId ?? null,
-        canonicalStudyId: csRow?.id ?? null,
-        snapshotRevision,
-        aiJobId: job.id,
-        modelDigest: provenance.modelDigest ?? null,
-        promptVersion: P2_META.promptVersion,
-        validated: true,
-        source: degraded ? "ai_shadow_degraded" : "ai_shadow",
-        draftJson: shadowDraftJson,
-        findingCount: gauntlet.valid.length,
-      })
-      .returning({ id: aiShadowDraftsTable.id });
+    let draftRow: { id: number } | undefined;
+    let version = 0;
+    for (let attempt = 0; attempt < 6 && !draftRow; attempt++) {
+      version = await getNextProvisionalVersion(uid);
+      const insertedDraft = await db
+        .insert(aiShadowDraftsTable)
+        .values({
+          version,
+          manifestId: manifestRow.id,
+          studySnapshotId: snapshotId,
+          studyInstanceUid: uid,
+          radiologyStudyId: payload.radiologyStudyId ?? null,
+          canonicalStudyId: csRow?.id ?? null,
+          snapshotRevision,
+          aiJobId: job.id,
+          modelDigest: provenance.modelDigest ?? null,
+          promptVersion: P2_META.promptVersion,
+          validated: true,
+          source: degraded ? "ai_shadow_degraded" : "ai_shadow",
+          draftJson: shadowDraftJson,
+          findingCount: gauntlet.valid.length,
+        })
+        // No-target (see manifest insert): safe whether or not the unique
+        // (study_instance_uid, version) index exists on this DB.
+        .onConflictDoNothing()
+        .returning({ id: aiShadowDraftsTable.id });
+      draftRow = insertedDraft[0];
+    }
+    if (!draftRow) {
+      return { ok: false, detail: `could not allocate a unique provisional version for ${uid} after retries (concurrent contention)` };
+    }
 
     // 9. Persist evidence — from VALID findings only (grounded anchors).
     const evidenceRows = gauntlet.valid.flatMap((f) =>

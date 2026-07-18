@@ -26,6 +26,7 @@ import { db } from "@workspace/db";
 import { clinicSettingsTable, radiologyAiReviewAuditsTable } from "@workspace/db";
 import { desc, sql } from "drizzle-orm";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
+import { validateOllamaUrl } from "../lib/ssrf/ollamaUrlGuard";
 
 export const radiologyOllamaRouter = Router();
 
@@ -41,76 +42,8 @@ export const radiologyOllamaRouter = Router();
 //   3. PRIVATE_RANGES  — private / LAN / CGNAT (incl. the 100.64.0.0/10 tailnet
 //      range, previously missing) blocked UNLESS Local/LAN mode is enabled.
 
-// Never reachable, regardless of Local/LAN mode.
-const ALWAYS_BLOCKED: RegExp[] = [
-  /^169\.254\.169\.254$/,             // cloud instance metadata (AWS/GCP/Azure/OpenStack)
-  /^metadata(\.google)?\.internal$/i, // GCP metadata hostname
-  /^0\.0\.0\.0$/,
-  /^\[?::\]?$/,                        // IPv6 unspecified
-];
-
-// Private / LAN / CGNAT ranges — require Local/LAN mode when no allowlist is set.
-const PRIVATE_RANGES: RegExp[] = [
-  /^localhost$/i,
-  /^127\.\d+\.\d+\.\d+$/,
-  /^10\.\d+\.\d+\.\d+$/,
-  /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/,
-  /^192\.168\.\d+\.\d+$/,
-  /^169\.254\.\d+\.\d+$/,             // link-local
-  /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+$/, // 100.64.0.0/10 CGNAT / Tailscale tailnet
-  /^\[?::1\]?$/,                       // IPv6 loopback
-  /^\[?fe80::/i,                      // IPv6 link-local
-  /^\[?f[cd][0-9a-f]{2}:/i,           // IPv6 unique-local fc00::/7
-];
-
-/** Optional exact-endpoint egress allowlist from AI_EGRESS_ALLOWLIST
- *  (comma-separated host or host:port). Empty ⇒ no allowlist (legacy behaviour). */
-function egressAllowlist(): Set<string> {
-  return new Set(
-    (process.env.AI_EGRESS_ALLOWLIST ?? "")
-      .split(",")
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean),
-  );
-}
-
-function validateOllamaUrl(raw: string, allowLocal = false): { ok: true; url: URL } | { ok: false; reason: string } {
-  let u: URL;
-  try { u = new URL(raw); } catch { return { ok: false, reason: "Invalid URL format" }; }
-  if (u.protocol !== "http:" && u.protocol !== "https:") {
-    return { ok: false, reason: "Only http:// and https:// are allowed" };
-  }
-  const host = u.hostname;
-
-  // 1. Metadata / unspecified endpoints are NEVER reachable, even in LAN mode.
-  for (const re of ALWAYS_BLOCKED) {
-    if (re.test(host)) return { ok: false, reason: `Blocked host (${host})` };
-  }
-
-  // 2. An explicit allowlist is authoritative — even in Local/LAN mode.
-  const allow = egressAllowlist();
-  if (allow.size > 0) {
-    const hostKey = host.toLowerCase();
-    const port = u.port || (u.protocol === "https:" ? "443" : "80");
-    if (!allow.has(hostKey) && !allow.has(`${hostKey}:${port}`)) {
-      return { ok: false, reason: `Host not in AI egress allowlist (${host})` };
-    }
-    return { ok: true, url: u };
-  }
-
-  // 3. No allowlist configured: private/LAN/CGNAT require Local/LAN mode.
-  if (!allowLocal) {
-    for (const re of PRIVATE_RANGES) {
-      if (re.test(host)) {
-        return {
-          ok: false,
-          reason: `Private/LAN addresses require "Local / LAN mode" to be enabled in Settings → Radiology → AI Assistant (${host})`,
-        };
-      }
-    }
-  }
-  return { ok: true, url: u };
-}
+// The SSRF egress guard is extracted to a PURE, unit-tested module (P5) — see
+// the import of `validateOllamaUrl` at the top of this file.
 
 // ── Permission guard ─────────────────────────────────────────────────────────
 function canUseAi(req: StaffAuthRequest): boolean {
@@ -450,10 +383,21 @@ radiologyOllamaRouter.get("/status", async (_req, res): Promise<void> => {
 
 // ── POST /test — test a specific URL without saving ──────────────────────────
 radiologyOllamaRouter.post("/test", async (req, res): Promise<void> => {
+  // SSRF-capable endpoint (it fetches an operator-supplied URL) — restrict to
+  // AI-permitted users, not every authenticated staff account (P5 fix).
+  if (!canUseAi(req as StaffAuthRequest)) { res.status(403).json({ ok: false, error: "AI reporting permission required" }); return; }
   const b = (req.body ?? {}) as Record<string, unknown>;
   const rawUrl = b.baseUrl ? String(b.baseUrl).trim() : "";
   const model = b.model ? String(b.model).trim() : "llama3";
-  const allowLocal = Boolean(b.allowLocal ?? false);
+  // `allowLocal` comes from the saved admin policy (`ollamaLocalOnly`), NEVER the
+  // request body: a client-controlled flag here let any caller opt out of the
+  // private/LAN SSRF guard (P5 fix).
+  const [settingsRow] = await db
+    .select({ localOnly: clinicSettingsTable.ollamaLocalOnly })
+    .from(clinicSettingsTable)
+    .orderBy(desc(clinicSettingsTable.id))
+    .limit(1);
+  const allowLocal = settingsRow?.localOnly ?? false;
 
   if (!rawUrl) { res.status(400).json({ ok: false, error: "baseUrl required" }); return; }
 

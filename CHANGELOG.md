@@ -4,6 +4,49 @@ Notable, reviewable changes to CARE ERP. Newest first.
 
 ## [Unreleased]
 
+### Radiology AI Platform — Phase P5 (Production Hardening & End-to-End Validation) — 2026-07-18
+
+Feature-complete hardening pass — **no new features**. A three-front adversarial review (AI backend seams,
+safety invariants, workspace binding) plus empirical testing found and this phase **fixed 11 real defects**;
+the core safety spine was confirmed intact (AI never signs, never writes `patient_reports`, never
+auto-learns; everything default-OFF and flag-gated). See
+`docs/architecture/radiology-ai/P5_VALIDATION_REPORT.md`.
+
+**Security fixes**
+- **SSRF (HIGH):** `/radiology-ollama/test` took a client-controlled `allowLocal` flag — an authenticated
+  low-privilege SSRF oracle. Now derives it from the saved admin policy and requires the AI permission.
+- **SSRF filter bypass (MED-HIGH):** `localhost.` (trailing dot) and IPv4-mapped IPv6
+  (`[::ffff:127.0.0.1]`, `[::ffff:169.254.169.254]`) evaded the guard (empirically confirmed). Added host
+  canonicalization; the whole SSRF guard is extracted to a pure, unit-tested module (`lib/ssrf/ollamaUrlGuard.ts`).
+- **PHI in "de-identified" feedback dataset (MED):** free-text `reason` (+ edited text) is no longer emitted
+  in the export (still captured in `ai_draft_feedback` for authorized analytics).
+- **Interop flag-gating hole (MED):** SR/FHIR/feedback **export** endpoints now require `ff_radiology_ai` ON
+  **and** admin (previously admin-only, live even with AI off).
+
+**Data-integrity / immutability fixes**
+- **Duplicate provisional versions (HIGH):** `(study_instance_uid, version)` is now **UNIQUE**; the pipeline
+  retries the version on conflict — two concurrent jobs can no longer both write "v2".
+- **Racy manifest idempotency (MED):** `input_hash` is now **UNIQUE** with `onConflictDoNothing`, so a raced
+  reprocess is a clean no-op instead of duplicating work.
+- **Snapshot immutability now DB-enforced:** a column-guarded trigger allows only the `is_current`/
+  `superseded_at` supersede and rejects any content change/delete; `ai_shadow_drafts` gains a `TRUNCATE` guard.
+- **`buildInteropReport`** now only exports `validated` drafts (honors its contract).
+
+**Workspace fix**
+- **AI Draft Panel cross-study state (MED-HIGH):** `handled` (accept/edit/reject) is reset when the study or
+  draft version changes — previously a prior study's state leaked in and made the new study's findings render
+  as already-handled and silently un-insertable.
+
+**Hardening**
+- AI-isolation guard extended: raw-SQL patterns + a missing `delete(radiology_report_drafts)` rule (closes
+  alias/raw-SQL evasion for the P0–P4 AI subsystem).
+- Migration `add_ai_shadow_uniqueness_hardening.sql` — additive, idempotent, **duplicate-guarded** unique
+  indexes (no hard-fail on legacy data). Grounding 101 → **105** claims. Full suite **2645 pass**.
+
+**Assessment:** READY FOR CLINICAL PILOT (AI default-OFF, pilot-only), conditional on the staging
+DICOM/PACS/viewer/DB end-to-end run (no live stack in CI). Not yet cleared for full production. Residual
+items (DNS-rebind pinning, legacy Ollama-proxy gating, legacy auto-prefill) documented with remediation.
+
 ### Radiology AI Platform — Phase P4 (Enterprise Interoperability & Clinical Exchange) — 2026-07-18
 
 The standards-based **exchange** layer (gates G12–G22). Everything ships as **additional** exports /
