@@ -96,6 +96,13 @@ export const aiDraftFeedbackTable = pgTable(
     action: text("action").notNull(), // accept | edit | ignore | reject
     editedText: text("edited_text"),
     staffId: integer("staff_id"),
+    // P4 / G21 — structured feedback dataset fields (analytics only; no retraining).
+    reason: text("reason"),
+    laterality: text("laterality"),
+    measurementRef: text("measurement_ref"),
+    confidence: integer("confidence"),
+    promptVersion: text("prompt_version"),
+    modelVersion: text("model_version"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

@@ -87,6 +87,25 @@
     { "kind": "function", "name": "nextProvisionalVersion", "file": "artifacts/api-server/src/lib/ai/provisionalVersioning.ts", "note": "regeneration → new version, never overwrite" },
     { "kind": "function", "name": "chooseReportPrefill", "file": "artifacts/diagnostic-erp/src/lib/aiDraftBinding.ts", "note": "saved human draft always wins; AI never auto-prefills" },
     { "kind": "contains", "file": "migrations/add_ai_provisional_report_versioning.sql", "text": "ai_shadow_drafts_immutable_guard", "note": "DB-enforced append-only immutability trigger" },
-    { "kind": "contains", "file": "artifacts/diagnostic-erp/src/pages/RadiologyReportingWorkspace.tsx", "text": "appendToFindings", "note": "Accept binds into the existing findings editor (radiology_report_drafts)" }
+    { "kind": "contains", "file": "artifacts/diagnostic-erp/src/pages/RadiologyReportingWorkspace.tsx", "text": "appendToFindings", "note": "Accept binds into the existing findings editor (radiology_report_drafts)" },
+
+    { "kind": "table", "table": "dicom_sr_documents", "file": "lib/db/src/schema/aiInterop.ts", "note": "P4 DICOM SR (TID 1500) ↔ ERP report link (G12)" },
+    { "kind": "column", "table": "dicom_sr_documents", "column": "content_json", "file": "lib/db/src/schema/aiInterop.ts", "note": "the SR content tree (measurements/findings/impression/evidence)" },
+    { "kind": "table", "table": "encapsulated_pdf_exports", "file": "lib/db/src/schema/aiInterop.ts", "note": "P4 encapsulated PDF exports, versioned (G13)" },
+    { "kind": "table", "table": "presentation_states", "file": "lib/db/src/schema/aiInterop.ts", "note": "P4 GSPS foundation — overlays only (G14)" },
+    { "kind": "table", "table": "segmentation_objects", "file": "lib/db/src/schema/aiInterop.ts", "note": "P4 DICOM SEG storage interface (G15)" },
+    { "kind": "table", "table": "mpps_events", "file": "lib/db/src/schema/aiInterop.ts", "note": "P4 MPPS events (G16)" },
+    { "kind": "table", "table": "storage_commitments", "file": "lib/db/src/schema/aiInterop.ts", "note": "P4 Storage Commitment status (G16)" },
+    { "kind": "table", "table": "fhir_export_log", "file": "lib/db/src/schema/aiInterop.ts", "note": "P4 FHIR export log — resources only, no external send (G17)" },
+    { "kind": "column", "table": "ai_draft_feedback", "column": "model_version", "file": "lib/db/src/schema/aiClinicalConfig.ts", "note": "P4 structured feedback dataset provenance (G21)" },
+    { "kind": "function", "name": "buildSrContentTree", "file": "artifacts/api-server/src/lib/ai/interop/srContentModel.ts", "note": "TID 1500 content tree (pure) — SR is an ADDITIONAL export (G12)" },
+    { "kind": "function", "name": "toFhirBundle", "file": "artifacts/api-server/src/lib/ai/interop/fhirMapping.ts", "note": "FHIR R4 DiagnosticReport/ImagingStudy/Observation/ServiceRequest (G17)" },
+    { "kind": "function", "name": "buildOhifDeepLink", "file": "artifacts/api-server/src/lib/ai/interop/viewerDeepLinks.ts", "note": "viewer sync deep-link — reuses studyLaunchService base URL (G18)" },
+    { "kind": "function", "name": "buildAiTimeline", "file": "artifacts/api-server/src/lib/ai/interop/aiTimelineShaping.ts", "note": "immutable AI history timeline (pure) (G19)" },
+    { "kind": "function", "name": "compareAiVersions", "file": "artifacts/api-server/src/lib/ai/interop/aiComparison.ts", "note": "AI-vs-AI version diff (pure) (G20)" },
+    { "kind": "function", "name": "buildFeedbackDataset", "file": "artifacts/api-server/src/lib/ai/interop/feedbackDataset.ts", "note": "de-identified feedback dataset — NO retraining (G21)" },
+    { "kind": "function", "name": "exportStructuredReport", "file": "artifacts/api-server/src/lib/ai/interop/interopService.ts", "note": "reuses the existing dicom_sr_export_queue for DIMSE hand-off (G12)" },
+    { "kind": "contains", "file": "artifacts/api-server/src/routes/index.ts", "text": "aiInteropRouter", "note": "AI enterprise interop router mounted at /api/ai/interop (gated)" },
+    { "kind": "contains", "file": "migrations/add_ai_interop.sql", "text": "fhir_export_log", "note": "P4 interop tables migration (additive, idempotent)" }
   ]
 }

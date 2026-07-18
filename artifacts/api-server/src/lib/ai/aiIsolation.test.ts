@@ -14,13 +14,21 @@ import path from "node:path";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+function tsFilesRecursive(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...tsFilesRecursive(full));
+    else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) out.push(full);
+  }
+  return out;
+}
+
 function aiSourceFiles(): string[] {
-  const dir = here; // artifacts/api-server/src/lib/ai
-  const local = readdirSync(dir)
-    .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))
-    .map((f) => path.join(dir, f));
-  const route = path.join(here, "..", "..", "routes", "aiClinical.ts");
-  return [...local, route];
+  // artifacts/api-server/src/lib/ai (+ the P4 interop/ subdir) + AI routes.
+  const local = tsFilesRecursive(here);
+  const routes = ["aiClinical.ts", "aiInterop.ts"].map((r) => path.join(here, "..", "..", "routes", r));
+  return [...local, ...routes];
 }
 
 // Forbidden WRITE patterns (reads like `isFinalized` are fine).

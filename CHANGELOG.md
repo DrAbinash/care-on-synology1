@@ -4,6 +4,44 @@ Notable, reviewable changes to CARE ERP. Newest first.
 
 ## [Unreleased]
 
+### Radiology AI Platform — Phase P4 (Enterprise Interoperability & Clinical Exchange) — 2026-07-18
+
+The standards-based **exchange** layer (gates G12–G22). Everything ships as **additional** exports /
+interfaces — nothing replaces the report. Strangler Pattern throughout: byte-level DICOM/DIMSE runs through
+the **existing** DICOM agent + Orthanc and the **existing** `dicom_sr_export_queue`; identity comes from the
+P0 canonical crosswalk; structured content comes from the P1/P2 immutable provisional store. Still behind the
+P3 master flag + per-scope gating (default OFF); exports are admin-only. **AI still never signs, never writes
+`patient_reports`, and never auto-learns** (the feedback dataset is analytics/export only).
+
+**Added — DICOM & imaging exchange**
+- **DICOM SR (G12):** pure TID 1500 content model (`srContentModel.buildSrContentTree`) → `dicom_sr_documents`;
+  DIMSE hand-off reuses the existing `dicom_sr_export_queue` (no new worker). SR is an additional SOP instance.
+- **Encapsulated PDF (G13):** versioned `encapsulated_pdf_exports` storage/link layer (encoding via existing Orthanc path).
+- **GSPS / SEG foundations (G14/G15):** `presentation_states` / `segmentation_objects` storage interfaces only —
+  no overlay editor, no segmentation engine.
+- **MPPS + Storage Commitment (G16):** `mpps_events` + `storage_commitments` status tables + status API.
+
+**Added — HL7/FHIR & viewer**
+- **FHIR R4 (G17):** pure mappers for `DiagnosticReport` / `ImagingStudy` / `Observation` / `ServiceRequest`
+  → `fhir_export_log`. Resources only; **no external send**.
+- **Viewer sync (G18):** pure OHIF/Weasis deep-links anchored on G6 evidence (study→series→instance), built
+  over the existing `studyLaunchService` base-URL selection; findings without an anchor are flagged.
+
+**Added — AI history & feedback**
+- **Immutable AI timeline (G19):** `buildAiTimeline` over the append-only `ai_shadow_drafts` version history + feedback.
+- **AI comparison (G20):** `compareAiVersions` — added/removed/changed findings, measurement deltas, impression
+  and model/prompt change (AI-vs-AI only).
+- **Human feedback dataset (G21):** `buildFeedbackDataset` — de-identified JSONL + stats; **no retraining**.
+- **Enterprise APIs (G22):** `/api/ai/interop` (timeline, versions, comparison, evidence+links, status, SR/FHIR
+  export, feedback dataset), gated like the clinical router; exports admin-only.
+
+**Database** — `migrations/add_ai_interop.sql`: 7 additive tables + 6 additive `ai_draft_feedback` columns;
+idempotent; sorts after `add_ai_clinical_config.sql`; passes `check-migration-order.cjs`.
+
+**Safety / verification** — the AI isolation guard now recurses into `lib/ai/interop/` and covers
+`routes/aiInterop.ts`. Grounding manifest 76 → **101** claims. Typechecks clean; **2626 tests pass** (21 new
+pure interop cases). See `docs/architecture/radiology-ai/P4_IMPLEMENTATION_REPORT.md`.
+
 ### Radiology AI Platform — Phase P3 (Clinical Workflow Integration) — 2026-07-18
 
 The **first radiologist-visible** phase (gates G10–G11), fully **feature-flagged: AI is OFF by default for

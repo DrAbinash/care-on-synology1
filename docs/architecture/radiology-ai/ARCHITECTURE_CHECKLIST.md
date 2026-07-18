@@ -32,8 +32,9 @@ ONE-of-each guarantees. Tick items only when they are enforced **in code**, not 
 
 ## Grounding claims coverage (G1)
 
-The grounding manifest (`scripts/grounding.manifest.json`) currently pins **22** claims spanning the
-Canonical Study identity, `ai_job_queue`, `dicom_incoming_studies` (real arrival signal), the worklist
-`ai_draft_status` enum, the audit spine, the SSRF/egress fix, the one job engine (`radiologyJobs.ts`), and
-the P0 migration. Extend this manifest whenever a design doc begins to depend on a concrete
-table / column / function.
+The grounding manifest (`scripts/grounding.manifest.json`) pins **101** claims (22 at P0; +25 in P4 for the
+enterprise-interop tables/columns/functions). They span the Canonical Study identity, `ai_job_queue`,
+`dicom_incoming_studies` (real arrival signal), the worklist `ai_draft_status` enum, the audit spine, the
+SSRF/egress fix, the one job engine (`radiologyJobs.ts`), the P1–P3 execution/trust/clinical tables, and the
+P4 interop layer (DICOM SR / FHIR / viewer sync / timeline / comparison / feedback dataset). Extend this
+manifest whenever a design doc begins to depend on a concrete table / column / function.

@@ -135,6 +135,7 @@ import reportQualityRouter from "./reportQuality";
 import risMonitoringRouter from "./risMonitoring";
 import radiologyWorkflowRouter from "./radiologyWorkflow";
 import { aiClinicalRouter } from "./aiClinical";
+import { aiInteropRouter } from "./aiInterop";
 import { scanSessionsRouter } from "./scan-sessions";
 // Federated Radiology Service — boundary API (additive, server-to-server only)
 import boundaryRouter from "./boundary";
@@ -554,6 +555,10 @@ router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"),
 // endpoint is internally gated by the ff_radiology_ai master flag + per-scope
 // policy (default OFF), so mounting it exposes nothing until an admin enables it.
 router.use("/ai", requireStaffAuth, requireStaffPermission("/radiology"), aiClinicalRouter);
+// Phase P4 — AI enterprise interoperability (DICOM SR / FHIR / viewer sync /
+// timeline / comparison / feedback dataset). Same master flag + per-scope
+// gating as the clinical router; exports are admin-gated. Additive only.
+router.use("/ai/interop", requireStaffAuth, requireStaffPermission("/radiology"), aiInteropRouter);
 
 // USG auto-measurement extraction — all authenticated staff can trigger/review;
 // settings writes require admin role (enforced inside the router).
