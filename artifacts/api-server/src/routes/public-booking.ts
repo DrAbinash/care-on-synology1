@@ -265,7 +265,12 @@ publicBookingRouter.get("/by-ref", async (req, res): Promise<void> => {
     if (tok) tokenNo = tok.tokenNo;
   }
 
-  res.json({ booking: row, tokenNo });
+  // Never expose the Razorpay HMAC signature: it is a server-computed secret
+  // used only for internal payment verification and is not read by any client
+  // (the confirmation UIs derive the paid gateway from the payment/txn IDs,
+  // not the signature). Everything else on the row is unchanged.
+  const { razorpaySignature: _omit, ...booking } = row as Record<string, unknown>;
+  res.json({ booking, tokenNo });
 });
 
 // GET /api/public/booking/clinic-print-info

@@ -10,7 +10,7 @@ import {
   testsTable,
   onlineBookingsTable,
 } from "@workspace/db/schema";
-import { and, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, lt, sql, type AnyColumn } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { sendPlainWhatsappText } from "./whatsapp";
 import { ensurePublicToken } from "./patient-reports";
@@ -26,8 +26,17 @@ import { ensurePublicToken } from "./patient-reports";
  *    same model as the staff portal_sessions), which every data endpoint
  *    requires as a Bearer header. A bare phone number no longer unlocks
  *    anything.
- *  - Data endpoints return minimal projections, not full rows.
- *  - Route-specific rate limiters on both OTP endpoints.
+ *  - send-otp only messages numbers already known to the clinic (a patient
+ *    record or a prior booking), returning an identical response either way
+ *    so it neither enumerates patients nor lets an attacker WhatsApp-bomb an
+ *    arbitrary number from the clinic's Business line.
+ *  - OTP attempts are consumed via a single atomic conditional UPDATE, so the
+ *    per-challenge guess cap holds under concurrent requests.
+ *  - Rate limiters are keyed by BOTH ip and phone, so rotating source IPs
+ *    can't multiply the guess/send budget for one target.
+ *  - Data endpoints return minimal projections keyed to the verified session
+ *    phone (matched on normalized digits, since stored numbers may carry a
+ *    +91 / spaces / dashes).
  *
  * The legacy phone-keyed endpoints in public-booking.ts (send-otp,
  * verify-otp, my-bookings, my-reports) are retired to 410 Gone in the same
@@ -44,11 +53,25 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 // itself would serve (see patient-reports.ts /p/r/:token/pdf).
 const VISIBLE_REPORT_STATUSES = ["verified", "delivered"];
 
+// Uniform response for any invalid/expired/exhausted verify — deliberately
+// indistinguishable so a caller can't tell whether a live challenge exists
+// for a phone (login-activity oracle) or how many guesses remain.
+const OTP_REJECT = { error: "Invalid or expired code. Please request a new one." };
+
+// Bucket rate limiters by phone as well as IP so an attacker rotating source
+// addresses (proxy pool, IPv6 /64) can't stack the per-IP budget against one
+// target. Falls back to IP when no valid phone is supplied.
+function ipPlusPhoneKey(req: Request): string {
+  const phone = validPhone((req.body as { phone?: string })?.phone) || "nophone";
+  return `${req.ip}|${phone}`;
+}
+
 const otpSendLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 6,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: ipPlusPhoneKey,
   message: { error: "Too many code requests. Please try again in a few minutes." },
 });
 
@@ -57,6 +80,7 @@ const otpVerifyLimiter = rateLimit({
   max: 12,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: ipPlusPhoneKey,
   message: { error: "Too many attempts. Please try again in a few minutes." },
 });
 
@@ -67,12 +91,42 @@ function validPhone(raw: unknown): string | null {
   return /^\d{10}$/.test(digits) ? digits : null;
 }
 
+// SQL fragment: does this stored (possibly-formatted) phone column match the
+// verified session's bare 10-digit phone once both are reduced to their last
+// 10 digits? Handles "+91 98765 43210", "098765-43210", etc.
+function phoneMatches(column: AnyColumn, phone10: string) {
+  return sql`right(regexp_replace(${column}, '[^0-9]', '', 'g'), 10) = ${phone10}`;
+}
+
+// Does this phone (bare 10 digits) belong to an existing clinic patient or a
+// prior online booking? Gate OTP delivery on this so the clinic's WhatsApp
+// line can't be used to message arbitrary strangers.
+async function isKnownPhone(phone10: string): Promise<boolean> {
+  const [hit] = await db
+    .select({ one: sql<number>`1` })
+    .from(patientsTable)
+    .where(phoneMatches(patientsTable.phone, phone10))
+    .limit(1);
+  if (hit) return true;
+  const [booking] = await db
+    .select({ one: sql<number>`1` })
+    .from(onlineBookingsTable)
+    .where(phoneMatches(onlineBookingsTable.phone, phone10))
+    .limit(1);
+  return !!booking;
+}
+
 // ── POST /api/patient/send-otp ───────────────────────────────────────────────
 patientPortalRouter.post("/send-otp", otpSendLimiter, async (req, res) => {
   const phone = validPhone((req.body as { phone?: string })?.phone);
   if (!phone) return res.status(400).json({ error: "A valid 10-digit phone number is required." });
 
-  // Per-phone resend cooldown (on top of the per-IP limiter).
+  // Uniform success response used on every non-error path, so the caller
+  // cannot distinguish "known number, code sent" from "unknown number,
+  // nothing sent" (no patient enumeration) or "still in cooldown".
+  const uniformOk = () => res.json({ sent: true, channel: "whatsapp" });
+
+  // Per-phone resend cooldown (on top of the ip+phone limiter).
   const [latest] = await db
     .select({ createdAt: patientOtpTable.createdAt })
     .from(patientOtpTable)
@@ -80,7 +134,13 @@ patientPortalRouter.post("/send-otp", otpSendLimiter, async (req, res) => {
     .orderBy(desc(patientOtpTable.createdAt))
     .limit(1);
   if (latest && Date.now() - latest.createdAt.getTime() < OTP_RESEND_COOLDOWN_MS) {
-    return res.status(429).json({ error: "Please wait a minute before requesting another code." });
+    return uniformOk();
+  }
+
+  // Only ever message a number the clinic already knows.
+  if (!(await isKnownPhone(phone))) {
+    logger.info({ phone: phone.slice(-4) }, "patient OTP requested for unknown number — not sent");
+    return uniformOk();
   }
 
   const code = String(crypto.randomInt(100000, 1000000));
@@ -105,7 +165,7 @@ patientPortalRouter.post("/send-otp", otpSendLimiter, async (req, res) => {
     expiresAt: new Date(Date.now() + OTP_TTL_MS),
   });
 
-  return res.json({ sent: true, channel: "whatsapp" });
+  return uniformOk();
 });
 
 // ── POST /api/patient/verify-otp ─────────────────────────────────────────────
@@ -124,11 +184,29 @@ patientPortalRouter.post("/verify-otp", otpVerifyLimiter, async (req, res) => {
     .orderBy(desc(patientOtpTable.createdAt))
     .limit(1);
 
-  if (!challenge || challenge.expiresAt.getTime() < Date.now()) {
-    return res.status(400).json({ error: "Code expired. Please request a new one." });
+  if (!challenge) {
+    return res.status(400).json(OTP_REJECT);
   }
-  if (challenge.attempts >= OTP_MAX_ATTEMPTS) {
-    return res.status(400).json({ error: "Too many wrong attempts. Please request a new code." });
+
+  // Consume one attempt ATOMICALLY before comparing: a single conditional
+  // UPDATE that only succeeds while the challenge is unexpired and under the
+  // attempt cap. Concurrent guesses each increment exactly once, so the cap
+  // holds regardless of race — the previous read-then-write was a lost-update
+  // TOCTOU that let a burst of parallel guesses share one attempt slot.
+  const claimed = await db
+    .update(patientOtpTable)
+    .set({ attempts: sql`${patientOtpTable.attempts} + 1` })
+    .where(
+      and(
+        eq(patientOtpTable.id, challenge.id),
+        lt(patientOtpTable.attempts, OTP_MAX_ATTEMPTS),
+        gt(patientOtpTable.expiresAt, new Date()),
+      ),
+    )
+    .returning({ id: patientOtpTable.id });
+  if (claimed.length === 0) {
+    // Expired or attempts exhausted — uniform rejection.
+    return res.status(400).json(OTP_REJECT);
   }
 
   const expected = Buffer.from(challenge.codeHash, "hex");
@@ -136,11 +214,7 @@ patientPortalRouter.post("/verify-otp", otpVerifyLimiter, async (req, res) => {
   const matches = expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
 
   if (!matches) {
-    await db
-      .update(patientOtpTable)
-      .set({ attempts: challenge.attempts + 1 })
-      .where(eq(patientOtpTable.id, challenge.id));
-    return res.status(400).json({ error: "Incorrect code. Please try again." });
+    return res.status(400).json(OTP_REJECT);
   }
 
   await db.delete(patientOtpTable).where(eq(patientOtpTable.phone, phone));
@@ -213,7 +287,7 @@ patientPortalRouter.get("/my-bookings", requirePatientSession, async (req: Patie
       createdAt: onlineBookingsTable.createdAt,
     })
     .from(onlineBookingsTable)
-    .where(eq(onlineBookingsTable.phone, req.patientPhone!))
+    .where(phoneMatches(onlineBookingsTable.phone, req.patientPhone!))
     .orderBy(desc(onlineBookingsTable.id))
     .limit(50);
   return res.json({ bookings: rows });
@@ -227,7 +301,7 @@ patientPortalRouter.get("/my-reports", requirePatientSession, async (req: Patien
   const patients = await db
     .select({ id: patientsTable.id, firstName: patientsTable.firstName, lastName: patientsTable.lastName })
     .from(patientsTable)
-    .where(eq(patientsTable.phone, req.patientPhone!));
+    .where(phoneMatches(patientsTable.phone, req.patientPhone!));
   if (patients.length === 0) return res.json({ reports: [] });
 
   const nameById = new Map(patients.map((p) => [p.id, `${p.firstName} ${p.lastName}`.trim()]));
@@ -291,7 +365,7 @@ patientPortalRouter.post("/reports/:id/link", requirePatientSession, async (req:
   const [owner] = await db
     .select({ id: patientsTable.id })
     .from(patientsTable)
-    .where(and(eq(patientsTable.id, report.patientId), eq(patientsTable.phone, req.patientPhone!)))
+    .where(and(eq(patientsTable.id, report.patientId), phoneMatches(patientsTable.phone, req.patientPhone!)))
     .limit(1);
   if (!owner) return res.status(404).json({ error: "Report not found" });
 
