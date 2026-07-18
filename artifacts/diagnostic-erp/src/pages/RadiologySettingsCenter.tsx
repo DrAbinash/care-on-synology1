@@ -32,6 +32,7 @@ import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffS
 import { ModalityPanel } from "@/pages/ModalityManagement";
 import { DicomNodesPanel } from "@/pages/DicomNodes";
 import { AgentSetupPanel } from "@/pages/AgentSetup";
+import PacsSettings from "@/pages/PacsSettings";
 import { AiInferencePanel } from "@/pages/AiInferenceSettings";
 import { AiReportingPanel } from "@/pages/AiReportingSettings";
 import { RadiologyStylePanel } from "@/pages/RadiologyStyleSettings";
@@ -298,6 +299,7 @@ export default function RadiologySettingsCenter() {
           <TabsTrigger value="network"><Network size={14} className="mr-1.5" />Profiles</TabsTrigger>
           <TabsTrigger value="modalities"><Server size={14} className="mr-1.5" />Modalities</TabsTrigger>
           <TabsTrigger value="pacs"><Radio size={14} className="mr-1.5" />PACS Servers</TabsTrigger>
+          <TabsTrigger value="pacs-advanced"><Server size={14} className="mr-1.5" />PACS / DICOM (Full)</TabsTrigger>
           <TabsTrigger value="viewers"><MonitorPlay size={14} className="mr-1.5" />Viewers</TabsTrigger>
           <TabsTrigger value="mwl"><Wrench size={14} className="mr-1.5" />DICOM &amp; MWL</TabsTrigger>
           <TabsTrigger value="reporting"><BrainCircuit size={14} className="mr-1.5" />AI &amp; Templates</TabsTrigger>
@@ -470,6 +472,13 @@ export default function RadiologySettingsCenter() {
               </div>
             </div>
           </div>
+        </TabsContent>
+
+        {/* PACS / DICOM (Full) — the complete PACS/DICOM/viewer/MWL/routing/
+            connection-test configuration, embedded from the former standalone
+            PacsSettings page (now retired) so there is ONE settings entry point. */}
+        <TabsContent value="pacs-advanced" className="space-y-4">
+          <PacsSettings embedded />
         </TabsContent>
 
         {/* Tab content 4: Viewers */}

@@ -420,7 +420,7 @@ function DicomMwlTestsTab() {
   );
 }
 
-export default function PacsSettings() {
+export default function PacsSettings({ embedded = false }: { embedded?: boolean }) {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -510,32 +510,38 @@ export default function PacsSettings() {
   const isAdmin = FULL_ACCESS_ROLES.has(normalizeRole(readStaffSession()?.user.role ?? ""));
 
   return (
-    <div className="p-4 md:p-6 space-y-6">
-      <PageHeader
-        title="PACS / DICOM Settings"
-        subtitle="Configure Conquest PACS, imaging devices, and Modality Worklist (MWL)"
-        actions={
-          <Button variant="outline" size="sm" onClick={() => { refetchSettings(); refetchModalities(); }} disabled={fetchingSettings || fetchingModalities}>
-            <RefreshCw size={14} className={fetchingSettings || fetchingModalities ? "animate-spin" : ""} />
-            Refresh
-          </Button>
-        }
-      />
+    <div className={embedded ? "space-y-6" : "p-4 md:p-6 space-y-6"}>
+      {/* When embedded inside the Radiology Settings hub, hide the standalone
+          page chrome (header + "moved" banner) — the hub is now the ONE place. */}
+      {!embedded && (
+        <>
+          <PageHeader
+            title="PACS / DICOM Settings"
+            subtitle="Configure Conquest PACS, imaging devices, and Modality Worklist (MWL)"
+            actions={
+              <Button variant="outline" size="sm" onClick={() => { refetchSettings(); refetchModalities(); }} disabled={fetchingSettings || fetchingModalities}>
+                <RefreshCw size={14} className={fetchingSettings || fetchingModalities ? "animate-spin" : ""} />
+                Refresh
+              </Button>
+            }
+          />
 
-      <div className="rounded-xl border bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="flex items-start gap-2.5">
-          <Info className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" size={18} />
-          <div>
-            <h4 className="font-semibold text-sm">These settings have moved!</h4>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              To simplify configuration and avoid profile/IP mismatches, all PACS, DICOM, Modality, and AI settings are now consolidated in the unified Settings Center.
-            </p>
+          <div className="rounded-xl border bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-start gap-2.5">
+              <Info className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" size={18} />
+              <div>
+                <h4 className="font-semibold text-sm">These settings have moved!</h4>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  To simplify configuration and avoid profile/IP mismatches, all PACS, DICOM, Modality, and AI settings are now consolidated in the unified Settings Center.
+                </p>
+              </div>
+            </div>
+            <Button variant="default" size="sm" onClick={() => navigate("/settings/radiology")} className="shrink-0">
+              Go to Settings Center
+            </Button>
           </div>
-        </div>
-        <Button variant="default" size="sm" onClick={() => navigate("/settings/radiology")} className="shrink-0">
-          Go to Settings Center
-        </Button>
-      </div>
+        </>
+      )}
 
       {/* Tab bar */}
       <div className="flex flex-wrap gap-2 border-b">

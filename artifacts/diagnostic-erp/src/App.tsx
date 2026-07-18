@@ -147,7 +147,6 @@ const PatientCommunication  = lazy(() => import("@/pages/PatientCommunication"))
 const NormalReportTemplates = lazy(() => import("@/pages/NormalReportTemplates"));
 const DicomViewer           = lazy(() => import("@/pages/DicomViewer"));
 const AgentSetup            = lazy(() => import("@/pages/AgentSetup"));
-const PacsSettings          = lazy(() => import("@/pages/PacsSettings"));
 const PacsLogs              = lazy(() => import("@/pages/PacsLogs"));
 const DicomAgentDashboard   = lazy(() => import("@/pages/DicomAgentDashboard"));
 const ModalityManagement    = lazy(() => import("@/pages/ModalityManagement"));
@@ -444,7 +443,12 @@ function Router() {
               <Route path="/radiology/pacs-dashboard" component={PacsDashboard} />
               <Route path="/radiology/operations-dashboard" component={RadiologyOperationsDashboard} />
               <Route path="/radiology/my-analytics" component={MyReportingAnalytics} />
-              <Route path="/radiology/pacs-settings" component={PacsSettings} />
+              {/* PacsSettings is retired as a standalone page — its full config
+                  now lives in the Radiology Settings hub ("PACS / DICOM (Full)"
+                  tab). Old bookmarks land on the hub. */}
+              <Route path="/radiology/pacs-settings">
+                {() => <AdminOnlySettings><RadiologySettingsCenter /></AdminOnlySettings>}
+              </Route>
               <Route path="/radiology/network-control-center" component={NetworkControlCenter} />
               <Route path="/radiology/pacs-logs" component={PacsLogs} />
               <Route path="/radiology/dicom-agent-dashboard" component={DicomAgentDashboard} />
