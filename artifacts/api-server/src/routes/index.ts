@@ -69,6 +69,8 @@ import internalCronRouter from "./internal-cron";
 import internalRadiologyRouter from "./internal-radiology";
 import dicomAgentRouter from "./dicom-agent";
 import { publicBookingRouter } from "./public-booking";
+import { mobileConfigRouter } from "./mobileConfig";
+import { mobileBillDeskRouter } from "./mobileBillDesk";
 import { onlineBookingsRouter } from "./online-bookings";
 import { webauthnRouter } from "./webauthn";
 import { dailySummaryRouter } from "./daily-summary";
@@ -232,6 +234,10 @@ router.use("/verify", verifyRouter);
 // via HMAC before any record is persisted.
 router.use("/public/booking", publicBookingRouter);
 
+// Public mobile-app display config (clinic info + admin-curated content for
+// diagno-booking-mobile). Whitelisted non-secret fields only — see the router.
+router.use("/public/mobile-config", mobileConfigRouter);
+
 // Payment gateway server-to-server webhooks (ICICI, HDFC).
 // MUST be public — the gateways POST here without a staff session.
 // Individual admin endpoints inside the router apply requireStaffAuth themselves.
@@ -304,6 +310,11 @@ router.use("/bills", requireStaffAuth, requireStaffPermission("/billing"), bills
 
 // Payments — /payments permission
 router.use("/payments", requireStaffAuth, requireStaffPermission("/payments"), paymentsRouter);
+
+// Mobile Bill Desk — READ-ONLY billing views for the staff mobile app, behind
+// its own dedicated permission so admins grant mobile billing visibility per
+// staff member independent of the desktop /billing permission.
+router.use("/mobile-bill-desk", requireStaffAuth, requireStaffPermission("/mobile-bill-desk"), mobileBillDeskRouter);
 
 // Reports — /reports permission (covers dashboard, revenue, print reports)
 router.use("/reports", requireStaffAuth, requireStaffPermission("/reports"), reportsRouter);

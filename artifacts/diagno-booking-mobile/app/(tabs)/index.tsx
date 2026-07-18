@@ -7,6 +7,7 @@ import { useRouter } from "expo-router";
 
 import { useColors } from "@/hooks/useColors";
 import { useApi } from "@/hooks/useApi";
+import { useMobileConfig } from "@/hooks/useMobileConfig";
 import {
   Card,
   IconTile,
@@ -15,18 +16,11 @@ import {
   InlineAlert,
   spacing,
   radii,
-  cardShadow,
   type FeatherIconName,
 } from "@/components/ui";
 
-const SERVICES: { icon: FeatherIconName; label: string }[] = [
-  { icon: "droplet", label: "Pathology" },
-  { icon: "camera", label: "X-Ray" },
-  { icon: "monitor", label: "Ultrasound" },
-  { icon: "cpu", label: "CT / MRI" },
-  { icon: "heart", label: "ECG" },
-  { icon: "package", label: "Packages" },
-];
+// Chip icons cycle through these so admin-added chips always get a glyph.
+const CHIP_ICONS: FeatherIconName[] = ["award", "clock", "check-circle", "shield", "star", "thumbs-up"];
 
 export default function HomeScreen() {
   const colors = useColors();
@@ -38,10 +32,14 @@ export default function HomeScreen() {
     queryKey: ["booking-config"],
     queryFn: () => api.get("/api/public/booking/config"),
   });
+  // Admin-curated content (Settings → Mobile App in the ERP); has built-in
+  // fallbacks so the screen renders fully before/without configuration.
+  const { clinic, config: appCfg } = useMobileConfig();
 
   const enabled = config?.enabled ?? false;
   const gateway = config?.gateway;
-  const phone = config?.phone || "9973497200";
+  const phone = clinic.phone || "9973497200";
+  const services = appCfg.services;
 
   const heroTopPad = Platform.OS === "web" ? 67 : insets.top + spacing.lg;
 
@@ -61,20 +59,20 @@ export default function HomeScreen() {
         <View style={styles.heroBrandRow}>
           <IconTile icon="activity" color="#0f766e" backgroundColor="#ffffff" size={44} />
           <View style={{ flex: 1 }}>
-            <Text style={styles.heroTitle}>Care Diagnostics</Text>
-            <Text style={styles.heroSubtitle}>Subhash Chowk, Castair's Town, Deoghar</Text>
+            <Text style={styles.heroTitle}>{clinic.name}</Text>
+            <Text style={styles.heroSubtitle}>{clinic.tagline || clinic.address}</Text>
           </View>
         </View>
-        <View style={styles.heroChipRow}>
-          <View style={styles.heroChip}>
-            <Feather name="award" size={12} color="#ffffff" />
-            <Text style={styles.heroChipText}>NABL Accredited</Text>
+        {appCfg.trustChips.length > 0 && (
+          <View style={styles.heroChipRow}>
+            {appCfg.trustChips.map((chip, i) => (
+              <View key={chip} style={styles.heroChip}>
+                <Feather name={CHIP_ICONS[i % CHIP_ICONS.length]} size={12} color="#ffffff" />
+                <Text style={styles.heroChipText}>{chip}</Text>
+              </View>
+            ))}
           </View>
-          <View style={styles.heroChip}>
-            <Feather name="clock" size={12} color="#ffffff" />
-            <Text style={styles.heroChipText}>Same-day Reports</Text>
-          </View>
-        </View>
+        )}
       </LinearGradient>
 
       <View style={styles.body}>
@@ -99,12 +97,20 @@ export default function HomeScreen() {
           </View>
         )}
 
+        {/* Admin-configured promo banner (Settings → Mobile App) */}
+        {appCfg.promoBanner.enabled && appCfg.promoBanner.text ? (
+          <Card style={[styles.promoCard, { backgroundColor: colors.primary + "10", borderColor: colors.primary + "30" }]}>
+            <Feather name="gift" size={18} color={colors.primary} />
+            <Text style={[styles.promoText, { color: colors.foreground }]}>{appCfg.promoBanner.text}</Text>
+          </Card>
+        ) : null}
+
         {/* Services */}
         <SectionLabel>Services</SectionLabel>
         <View style={styles.serviceGrid}>
-          {SERVICES.map((s) => (
+          {services.map((s) => (
             <Card key={s.label} style={styles.serviceTile}>
-              <IconTile icon={s.icon} color={colors.primary} size={38} />
+              <IconTile icon={s.icon as FeatherIconName} color={colors.primary} size={38} />
               <Text style={[styles.serviceLabel, { color: colors.foreground }]}>{s.label}</Text>
             </Card>
           ))}
@@ -146,6 +152,21 @@ export default function HomeScreen() {
           </View>
           <Feather name="chevron-right" size={20} color={colors.mutedForeground} />
         </Card>
+        {appCfg.whatsappNumber ? (
+          <Card
+            style={[styles.contactCard, { marginTop: spacing.md }]}
+            onPress={() =>
+              Linking.openURL(`https://wa.me/${appCfg.whatsappNumber.replace(/[^0-9]/g, "")}`)
+            }
+          >
+            <IconTile icon="message-circle" color={colors.accent} size={40} />
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.contactTitle, { color: colors.foreground }]}>WhatsApp us</Text>
+              <Text style={[styles.contactSub, { color: colors.mutedForeground }]}>{appCfg.whatsappNumber}</Text>
+            </View>
+            <Feather name="chevron-right" size={20} color={colors.mutedForeground} />
+          </Card>
+        ) : null}
       </View>
     </ScrollView>
   );
@@ -208,6 +229,13 @@ const styles = StyleSheet.create({
   },
   ctaTitle: { fontSize: 16, fontFamily: "Inter_600SemiBold" },
   ctaSubtitle: { fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 2, lineHeight: 18 },
+  promoCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    marginBottom: spacing.xxl,
+  },
+  promoText: { flex: 1, fontSize: 14, fontFamily: "Inter_500Medium", lineHeight: 20 },
   serviceGrid: {
     flexDirection: "row",
     flexWrap: "wrap",

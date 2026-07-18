@@ -4,7 +4,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useQuery } from "@tanstack/react-query";
 
 import { useColors } from "@/hooks/useColors";
-import { useApi } from "@/hooks/useApi";
+import { useMobileConfig } from "@/hooks/useMobileConfig";
 import {
   Screen,
   SectionLabel,
@@ -15,16 +15,13 @@ import {
   type FeatherIconName,
 } from "@/components/ui";
 
+const DEFAULT_ABOUT =
+  "Care Diagnostics is a state-of-the-art diagnostic center located in the heart of Deoghar. We offer comprehensive pathology, radiology, and imaging services with accurate results and quick turnaround times. Our mission is to make quality healthcare accessible to every patient.";
+
 export default function AboutScreen() {
   const colors = useColors();
-  const api = useApi();
-
-  const { data: config } = useQuery({
-    queryKey: ["booking-config"],
-    queryFn: () => api.get("/api/public/booking/config"),
-  });
-
-  const clinic = config || {};
+  // Admin-curated content (Settings → Mobile App); falls back to built-ins.
+  const { clinic, config: appCfg } = useMobileConfig();
 
   return (
     <Screen>
@@ -37,25 +34,27 @@ export default function AboutScreen() {
         <View style={styles.heroLogo}>
           <Feather name="activity" size={28} color="#ffffff" />
         </View>
-        <Text style={styles.heroTitle}>Care Diagnostics</Text>
-        <Text style={styles.heroSub}>Subhash Chowk, Castair's Town, Deoghar</Text>
+        <Text style={styles.heroTitle}>{clinic.name}</Text>
+        <Text style={styles.heroSub}>{clinic.tagline || clinic.address}</Text>
       </LinearGradient>
 
       <SectionLabel style={{ marginTop: spacing.section }}>About Us</SectionLabel>
       <Card>
         <Text style={[styles.para, { color: colors.mutedForeground }]}>
-          Care Diagnostics is a state-of-the-art diagnostic center located in the heart of Deoghar. We offer comprehensive pathology, radiology, and imaging services with accurate results and quick turnaround times. Our mission is to make quality healthcare accessible to every patient.
+          {appCfg.aboutText || DEFAULT_ABOUT}
         </Text>
       </Card>
 
       <SectionLabel style={{ marginTop: spacing.xxl }}>Services Offered</SectionLabel>
       <Card>
-        <ServiceItem icon="droplet" label="Pathology & Blood Tests" />
-        <ServiceItem icon="camera" label="Digital X-Ray" />
-        <ServiceItem icon="monitor" label="Ultrasound (USG)" />
-        <ServiceItem icon="cpu" label="CT Scan & MRI" />
-        <ServiceItem icon="heart" label="ECG & Cardiology" />
-        <ServiceItem icon="file-text" label="Health Packages" last />
+        {appCfg.services.map((s, i) => (
+          <ServiceItem
+            key={s.label}
+            icon={s.icon as FeatherIconName}
+            label={s.label}
+            last={i === appCfg.services.length - 1}
+          />
+        ))}
       </Card>
 
       <SectionLabel style={{ marginTop: spacing.xxl }}>Contact</SectionLabel>
@@ -63,34 +62,41 @@ export default function AboutScreen() {
         <ContactRow
           icon="phone"
           label="Phone"
-          value={clinic.phone || "9973497200"}
-          onPress={() => Linking.openURL(`tel:${clinic.phone || "9973497200"}`)}
+          value={clinic.phone}
+          onPress={() => Linking.openURL(`tel:${clinic.phone}`)}
         />
-        <ContactRow
-          icon="map-pin"
-          label="Address"
-          value="CARE DIAGNOSTICS, Subhash Chowk, Castair's Town, Near Bajla Mahila College, Deoghar–814112"
-        />
-        <ContactRow
-          icon="clock"
-          label="Timings"
-          value="Mon-Sat: 7:00 AM - 7:00 PM | Sun: 8:00 AM - 2:00 PM"
-        />
+        {appCfg.whatsappNumber ? (
+          <ContactRow
+            icon="message-circle"
+            label="WhatsApp"
+            value={appCfg.whatsappNumber}
+            onPress={() => Linking.openURL(`https://wa.me/${appCfg.whatsappNumber.replace(/[^0-9]/g, "")}`)}
+          />
+        ) : null}
+        {appCfg.emergencyPhone ? (
+          <ContactRow
+            icon="alert-circle"
+            label="Emergency"
+            value={appCfg.emergencyPhone}
+            onPress={() => Linking.openURL(`tel:${appCfg.emergencyPhone}`)}
+          />
+        ) : null}
+        <ContactRow icon="map-pin" label="Address" value={clinic.address} />
+        <ContactRow icon="clock" label="Timings" value={appCfg.timings} />
         <ContactRow
           icon="mail"
           label="Email"
-          value={clinic.email || "CARE.DEOGHAR@GMAIL.COM"}
-          onPress={() => Linking.openURL(`mailto:${clinic.email || "CARE.DEOGHAR@GMAIL.COM"}`)}
+          value={clinic.email}
+          onPress={() => Linking.openURL(`mailto:${clinic.email}`)}
           last
         />
       </Card>
 
       <SectionLabel style={{ marginTop: spacing.xxl }}>Why Choose Us</SectionLabel>
       <Card>
-        <WhyItem text="NABL Accredited Lab" />
-        <WhyItem text="Same-Day Reports" />
-        <WhyItem text="Home Sample Collection" />
-        <WhyItem text="Online Booking & Payment" last />
+        {appCfg.trustChips.map((chip, i) => (
+          <WhyItem key={chip} text={chip} last={i === appCfg.trustChips.length - 1} />
+        ))}
       </Card>
     </Screen>
   );

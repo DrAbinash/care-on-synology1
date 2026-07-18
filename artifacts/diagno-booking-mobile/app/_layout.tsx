@@ -33,6 +33,8 @@ function RootLayoutNav() {
       <Stack.Screen name="studies-list" options={{ headerShown: false }} />
       <Stack.Screen name="study-detail" options={{ headerShown: false }} />
       <Stack.Screen name="critical-alerts" options={{ headerShown: false }} />
+      <Stack.Screen name="bill-desk" options={{ headerShown: false }} />
+      <Stack.Screen name="bill-detail" options={{ headerShown: false }} />
     </Stack>
   );
 }
