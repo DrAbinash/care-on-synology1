@@ -441,8 +441,16 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
                   </tr>
                   <tr><td style="padding:4px 6px;border-top:1px solid #000;font-weight:800">PAID</td><td style="padding:4px 6px;border-top:1px solid #000;text-align:right;font-weight:800;white-space:nowrap;color:${statusColor(isUnconfirmedQr ? "#b45309" : "#15803d")}">${isUnconfirmedQr ? `${fmt(bill.totalAmount)} (To Be Confirmed)` : `₹${fmt(bill.paidAmount)}`}</td></tr>
                   <tr>
-                    <td style="padding:6px;border-top:2px solid #000;font-weight:900;font-size:${parseInt(totalPx, 10) + 7}px;background:${statusBg(isUnconfirmedQr ? "#fef3c7" : Number(bill.balanceAmount) > 0 ? "#fee2e2" : "#dcfce7")}">BALANCE DUE</td>
-                    <td style="padding:6px;border-top:2px solid #000;text-align:right;font-weight:900;white-space:nowrap;color:${statusColor(isUnconfirmedQr ? "#b45309" : Number(bill.balanceAmount) > 0 ? "#b91c1c" : "#15803d")};font-size:${parseInt(totalPx, 10) + 7}px;background:${statusBg(isUnconfirmedQr ? "#fef3c7" : Number(bill.balanceAmount) > 0 ? "#fee2e2" : "#dcfce7")}">${isUnconfirmedQr ? "To Be Confirmed" : `₹${fmt(bill.balanceAmount)}`}</td>
+                    <!-- Spans BOTH columns (not the 58/42 split above) so the
+                         bold, enlarged "BALANCE DUE" label always has the
+                         totals column's full width to lay out on one line
+                         instead of wrapping inside the narrower 58% half. -->
+                    <td colspan="2" style="padding:6px;border-top:2px solid #000;background:${statusBg(isUnconfirmedQr ? "#fef3c7" : Number(bill.balanceAmount) > 0 ? "#fee2e2" : "#dcfce7")}">
+                      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:${parseInt(totalPx, 10) + 7}px">
+                        <span style="font-weight:900;white-space:nowrap">BALANCE DUE</span>
+                        <span style="font-weight:900;white-space:nowrap;color:${statusColor(isUnconfirmedQr ? "#b45309" : Number(bill.balanceAmount) > 0 ? "#b91c1c" : "#15803d")}">${isUnconfirmedQr ? "To Be Confirmed" : `₹${fmt(bill.balanceAmount)}`}</span>
+                      </div>
+                    </td>
                   </tr>
                   ${cashAmt > 0 ? `<tr><td style="padding:3px 6px;color:#555;font-size:${tinyPx}">Cash</td><td style="padding:3px 6px;text-align:right;white-space:nowrap;color:#555;font-size:${tinyPx}">₹${fmt(cashAmt)}</td></tr>` : ""}
                   ${upiAmt > 0 ? `<tr><td style="padding:3px 6px;color:#555;font-size:${tinyPx}">UPI</td><td style="padding:3px 6px;text-align:right;white-space:nowrap;color:#555;font-size:${tinyPx}">₹${fmt(upiAmt)}</td></tr>` : ""}
