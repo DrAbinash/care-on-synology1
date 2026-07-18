@@ -14,9 +14,9 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import {
   Network, Server, MonitorPlay, Radio, BrainCircuit,
-  Wrench, Activity, ShieldAlert, Laptop, CheckCircle2,
-  XCircle, AlertTriangle, RefreshCw, Plus, Save, Trash2,
-  Tv2, Zap, ShieldCheck, PlayCircle, Info, Palette, Mic, Waves
+  Wrench, Activity, ShieldAlert,
+  RefreshCw, Save,
+  Zap, ShieldCheck, PlayCircle, Info, Palette, Mic, Waves
 } from "lucide-react";
 import type { UseMutationResult } from "@tanstack/react-query";
 // M1.6B2/B3 — voice layer settings (same pacs_settings persistence as this
@@ -32,7 +32,6 @@ import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffS
 import { ModalityPanel } from "@/pages/ModalityManagement";
 import { DicomNodesPanel } from "@/pages/DicomNodes";
 import { AgentSetupPanel } from "@/pages/AgentSetup";
-import { ArchiveLifecyclePanel } from "@/pages/PacsArchiveLifecycle";
 import { AiInferencePanel } from "@/pages/AiInferenceSettings";
 import { AiReportingPanel } from "@/pages/AiReportingSettings";
 import { RadiologyStylePanel } from "@/pages/RadiologyStyleSettings";
@@ -40,7 +39,6 @@ import { UsgExtractionPanel } from "@/pages/UsgAdminSettings";
 import {
   AiImpressionCard, QualityCheckerCard, FollowUpRecommendationsCard,
   TemplateLearningCard, MultiLanguageCard, RoutingRulesCard,
-  AmendmentManagerCard, SonographerModeCard, DicomSrExportCard,
 } from "@/components/smartRadiology/SmartRadiologyCards";
 import { RisMonitorCommandGrid } from "@/components/risMonitoring/RisMonitorCards";
 import ViewerNetworkRoutesCard from "@/components/radiology/ViewerNetworkRoutesCard";

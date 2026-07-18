@@ -96,7 +96,6 @@ const RadiologyReportEditor = lazy(() => import("@/pages/RadiologyReportEditor")
 const RadiologyReportGen = lazy(() => import("@/pages/RadiologyReportGenerator"));
 const RadiologyReportingWorkspace = lazy(() => import("@/pages/RadiologyReportingWorkspace"));
 const PacsDashboard         = lazy(() => import("@/pages/PacsDashboard"));
-const RadiologySettings     = lazy(() => import("@/pages/RadiologySettings"));
 const RadiologySettingsCenter = lazy(() => import("@/pages/RadiologySettingsCenter"));
 const RadiologyFlightDeck = lazy(() => import("@/pages/RadiologyFlightDeck"));
 const ScannerSettings = lazy(() => import("@/pages/ScannerSettings"));
@@ -573,8 +572,8 @@ function Router() {
               <Route path="/report-delivery" component={ReportDelivery} />
               {/* Phase E (Radiology V2): RadiologySettingsCenter is the one
                   owner/admin-only Radiology Settings hub. All legacy settings
-                  URLs render it; RadiologySettings (old page) is kept as an
-                  unrouted lazy import for rollback/reference only. */}
+                  URLs render it. (The old RadiologySettings page was deleted —
+                  it was an unrouted, unreachable redirect stub.) */}
               <Route path="/settings/radiology">
                 {() => <AdminOnlySettings><RadiologySettingsCenter /></AdminOnlySettings>}
               </Route>
