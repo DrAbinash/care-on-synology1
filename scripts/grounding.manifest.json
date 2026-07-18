@@ -41,6 +41,26 @@
     { "kind": "function", "name": "listStudyInstances", "file": "artifacts/api-server/src/lib/ai/studyImageFetch.ts", "note": "Orthanc DICOMweb instance manifest" },
     { "kind": "function", "name": "makeAiShadowPipelineHandler", "file": "artifacts/api-server/src/lib/ai/shadowPipeline.ts", "note": "the one AI execution pipeline (shadow)" },
     { "kind": "contains", "file": "artifacts/api-server/src/lib/radiologyJobHandlers.ts", "text": "AI_SHADOW_PIPELINE_JOB", "note": "AI job runs on the existing engine (G4) — no new worker" },
-    { "kind": "contains", "file": "migrations/add_ai_execution_shadow.sql", "text": "ai_evidence", "note": "P1 shadow tables migration" }
+    { "kind": "contains", "file": "migrations/add_ai_execution_shadow.sql", "text": "ai_evidence", "note": "P1 shadow tables migration" },
+
+    { "kind": "table", "table": "ai_model_capabilities", "file": "lib/db/src/schema/aiModelCapabilities.ts", "note": "P2 Capability Registry" },
+    { "kind": "column", "table": "ai_model_capabilities", "column": "model_digest", "file": "lib/db/src/schema/aiModelCapabilities.ts", "note": "model digest pinning" },
+    { "kind": "column", "table": "ai_model_capabilities", "column": "phi_eligible", "file": "lib/db/src/schema/aiModelCapabilities.ts", "note": "local-first PHI egress policy" },
+    { "kind": "table", "table": "ai_model_versions", "file": "lib/db/src/schema/aiEvaluation.ts", "note": "shadow/candidate/live lifecycle" },
+    { "kind": "column", "table": "ai_model_versions", "column": "state", "file": "lib/db/src/schema/aiEvaluation.ts", "note": "version lifecycle state" },
+    { "kind": "table", "table": "ai_golden_cases", "file": "lib/db/src/schema/aiEvaluation.ts", "note": "golden dataset" },
+    { "kind": "table", "table": "ai_evaluation_runs", "file": "lib/db/src/schema/aiEvaluation.ts", "note": "evaluation runs + metrics" },
+    { "kind": "table", "table": "ai_evaluation_case_results", "file": "lib/db/src/schema/aiEvaluation.ts", "note": "per-case eval results" },
+    { "kind": "function", "name": "requestStructuredReport", "file": "lib/ai-providers/src/gateway.ts", "note": "the AI Gateway entry point (G7)" },
+    { "kind": "function", "name": "computeCircuitState", "file": "lib/ai-providers/src/circuitLogic.ts", "note": "circuit breaker (derived from ai_provider_health_logs)" },
+    { "kind": "function", "name": "buildProviderChain", "file": "lib/ai-providers/src/capabilityLogic.ts", "note": "local-first, PHI-aware provider chain" },
+    { "kind": "function", "name": "validateProvisionalReport", "file": "lib/ai-providers/src/reportContract.ts", "note": "contract validation + repair (G7)" },
+    { "kind": "function", "name": "selectProviderChain", "file": "lib/ai-providers/src/capabilityRegistry.ts", "note": "reuses resolveTaskRoute + capability filter" },
+    { "kind": "function", "name": "decideVersionPromotion", "file": "lib/ai-providers/src/evaluation.ts", "note": "shadow→candidate→live human gate (G8)" },
+    { "kind": "function", "name": "applyTrustGauntlet", "file": "artifacts/api-server/src/lib/ai/findingValidation.ts", "note": "grounding/laterality/negation/contradiction (G9)" },
+    { "kind": "function", "name": "runDeterministicQuality", "file": "artifacts/api-server/src/lib/ai/rulesBeforeAi.ts", "note": "reuses lib/report-quality runQualityEngine (G9)" },
+    { "kind": "function", "name": "runEvaluation", "file": "artifacts/api-server/src/lib/ai/evaluationRunner.ts", "note": "DB-backed golden-set runner (G8)" },
+    { "kind": "contains", "file": "artifacts/api-server/src/lib/radiologyJobHandlers.ts", "text": "gatewayInferenceProvider", "note": "the gateway replaces the P1 stub at the pipeline seam" },
+    { "kind": "contains", "file": "migrations/add_ai_gateway_and_evaluation.sql", "text": "ai_model_capabilities", "note": "P2 migration" }
   ]
 }

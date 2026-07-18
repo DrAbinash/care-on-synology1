@@ -10,12 +10,12 @@ ONE-of-each guarantees. Tick items only when they are enforced **in code**, not 
 | One canonical study object | 🟡 Partial (P0) | `canonical_study` crosswalk + FK exist; consumers migrate in later phases. |
 | One job engine | ✅ (P1) | AI jobs run on the existing `radiologyJobs.ts` runner (`ai_shadow_pipeline` handler); no second engine/worker/queue. |
 | One scheduler | ⬜ | AI Scheduler is a later phase (G10). |
-| One AI gateway | ⬜ | G7. The shadow-inference seam is reserved for it; direct provider calls eliminated then. |
-| One rules engine | ✅ (pre-existing) | `lib/report-quality`. |
+| One AI gateway | ✅ (P2) | `requestStructuredReport` in `lib/ai-providers` (hardened, not parallel); it is the shadow pipeline's inference seam. |
+| One rules engine | ✅ (pre-existing, wired P2) | `lib/report-quality` runs before AI via `runDeterministicQuality`. |
 | One measurement engine | ✅ (pre-existing) | `lib/measurements`. |
-| One evidence store | ✅ (P1) | `ai_evidence` + `validateEvidenceAnchor` grounding gate. |
-| One processing manifest | ✅ (P1) | `ai_processing_manifests` + `computeInputHash`. |
-| One evaluation framework | ⬜ | G8. |
+| One evidence store | ✅ (P1) | `ai_evidence` + `validateEvidenceAnchor` grounding gate (reused by the P2 gauntlet). |
+| One processing manifest | ✅ (P1) | `ai_processing_manifests` + `computeInputHash`; P2 records real model+digest. |
+| One evaluation framework | ✅ (P2) | golden set + runs + shadow/candidate/live human gate. |
 
 ## Non-negotiable principles — P0 conformance
 

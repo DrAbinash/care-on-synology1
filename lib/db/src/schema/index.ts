@@ -143,3 +143,5 @@ export * from "./staffQuickDoctors";
 export * from "./reportQualityEngine";
 export * from "./canonicalStudy";
 export * from "./aiExecution";
+export * from "./aiModelCapabilities";
+export * from "./aiEvaluation";

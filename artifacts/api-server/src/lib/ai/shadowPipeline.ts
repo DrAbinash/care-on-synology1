@@ -1,14 +1,16 @@
 /**
- * AI Shadow Pipeline — the one AI execution pipeline (Phase P1 / Gates G4/G5/G6).
+ * AI Shadow Pipeline — the one AI execution pipeline (P1 G4/G5/G6; P2 G7/G9).
  *
- * Runs as a handler on the EXISTING radiology job engine (radiologyJobs.ts over
- * dicom_retry_queue) — no new scheduler, no new worker, no new queue. It is
- * SHADOW-ONLY: it stores snapshot + manifest + evidence + structured draft, and
- * never touches reports, the reporting UI, or anything a radiologist sees.
+ * Runs as a handler on the EXISTING radiology job engine (radiologyJobs.ts) —
+ * no new scheduler/worker/queue. SHADOW-ONLY: stores snapshot + manifest +
+ * evidence + structured draft; never touches reports or the reporting UI.
  *
- * Stages: snapshot → structured image selection → immutable manifest →
- * shadow inference (STUB seam for the P2 AI Gateway) → evidence grounding →
- * persist (shadow). See P1_IMPLEMENTATION_REPORT.md.
+ * P2 fills the inference seam with the AI Gateway and adds the trust layer:
+ *   snapshot → structured image selection → immutable manifest →
+ *   AI Gateway inference (routing/resilience/contract) →
+ *   deterministic Quality Engine (rules before AI) →
+ *   trust gauntlet (grounding/laterality/negation/contradiction; det. overrides) →
+ *   persist (valid + quarantined, shadow). Degrades to deterministic-only on failure.
  */
 import { db } from "@workspace/db";
 import {
@@ -19,21 +21,24 @@ import type { RadiologyJobHandler } from "../radiologyJobs";
 import { enqueueRadiologyJob } from "../radiologyJobs";
 import { buildSnapshotManifest, decideRevision, type InstanceRef } from "./studySnapshot";
 import { computeInputHash } from "./processingManifest";
-import { validateEvidenceAnchor, type EvidenceAnchor } from "./evidence";
 import { selectImageAnchors, type ImageAnchor, type SelectedImage } from "./studyImageSelection";
 import { listStudyInstances, renderAnchors } from "./studyImageFetch";
 import { shadowStubProvider, type ShadowInferenceProvider } from "./shadowInference";
+import { runDeterministicQuality } from "./rulesBeforeAi";
+import { applyTrustGauntlet, type GauntletFinding } from "./findingValidation";
 
 export const AI_SHADOW_PIPELINE_JOB = "ai_shadow_pipeline";
 
-// Placeholder version strings recorded IMMUTABLY now; the P2 Capability/Prompt
-// registries will supply real values. The manifest schema is already complete.
-const P1_VERSIONS = {
-  modelVersion: shadowStubProvider.name, // "shadow-stub-v0" — no real model in P1
-  promptVersion: "none-p1",
-  knowledgePackVersion: "unversioned-p1",
-  rulesVersion: "unversioned-p1",
-  measurementEngineVersion: "lib-measurements-p1",
+// Stable pipeline versions. The MODEL that answers is recorded per-run from the
+// gateway's provenance; the inputHash uses a stable model-POLICY version so
+// dedup is invariant across provider fallback (audit: modelVersion is not part
+// of the idempotency key).
+const P2_META = {
+  modelPolicyVersion: "ai-gateway-p2", // for inputHash only (stable)
+  promptVersion: "radiology-draft-p2-v1",
+  knowledgePackVersion: "unversioned-p2",
+  rulesVersion: "report-quality",
+  measurementEngineVersion: "lib-measurements-p2",
 };
 
 export interface ShadowJobPayload {
@@ -42,7 +47,6 @@ export interface ShadowJobPayload {
   modality?: string | null;
 }
 
-/** Injectable side-effect deps so the pipeline is testable without Orthanc. */
 export interface ShadowPipelineDeps {
   listInstances: (uid: string) => Promise<InstanceRef[]>;
   renderAnchors: (uid: string, anchors: ImageAnchor[]) => Promise<SelectedImage[]>;
@@ -51,14 +55,9 @@ export interface ShadowPipelineDeps {
 const defaultDeps: ShadowPipelineDeps = {
   listInstances: listStudyInstances,
   renderAnchors,
-  provider: shadowStubProvider,
+  provider: shadowStubProvider, // default is the stub; the registered handler injects the gateway
 };
 
-/**
- * Enqueue a shadow-pipeline job onto the existing job engine. Idempotency keys
- * on the arrival signature, so an unchanged study dedups while a changed
- * instance set (late series) enqueues a fresh run.
- */
 export async function enqueueAiShadowJob(
   p: ShadowJobPayload & { arrivalSignature?: string },
 ): Promise<{ id: number; created: boolean }> {
@@ -76,7 +75,8 @@ export async function enqueueAiShadowJob(
   });
 }
 
-export function makeAiShadowPipelineHandler(deps: ShadowPipelineDeps = defaultDeps): RadiologyJobHandler {
+export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDeps> = {}): RadiologyJobHandler {
+  const deps: ShadowPipelineDeps = { ...defaultDeps, ...overrides };
   return async (job) => {
     const payload = (job.payload ?? {}) as ShadowJobPayload;
     const uid = payload.studyInstanceUid;
@@ -113,7 +113,6 @@ export function makeAiShadowPipelineHandler(deps: ShadowPipelineDeps = defaultDe
     } else {
       const revision = decision.kind === "new" ? 1 : decision.revision;
       if (decision.kind === "revision") {
-        // Supersede — never overwrite — the previous current snapshot.
         await db
           .update(studySnapshotsTable)
           .set({ isCurrent: false, supersededAt: new Date() })
@@ -151,10 +150,14 @@ export function makeAiShadowPipelineHandler(deps: ShadowPipelineDeps = defaultDe
     const modality = payload.modality ?? instances.find((i) => i.modality)?.modality ?? undefined;
     const anchors = selectImageAnchors(instances, { strategy: "modality-aware", modality: modality ?? undefined, maxImages: 20 });
 
-    // 3. Immutable processing manifest — idempotent on inputHash.
+    // 3. Manifest idempotency — inputHash on STABLE inputs (not the resolved model).
     const inputHash = computeInputHash({
       snapshotContentHash: manifest.contentHash,
-      ...P1_VERSIONS,
+      modelVersion: P2_META.modelPolicyVersion,
+      promptVersion: P2_META.promptVersion,
+      knowledgePackVersion: P2_META.knowledgePackVersion,
+      rulesVersion: P2_META.rulesVersion,
+      measurementEngineVersion: P2_META.measurementEngineVersion,
       imageSelection: anchors.map((a) => ({ seriesUid: a.seriesUid, sopUid: a.sopUid, frameNumber: a.frameNumber })),
     });
     const existingManifest = await db
@@ -169,35 +172,57 @@ export function makeAiShadowPipelineHandler(deps: ShadowPipelineDeps = defaultDe
     const startedAt = new Date();
     const rendered = await deps.renderAnchors(uid, anchors);
 
-    // 4. Shadow inference — STUB seam (no model / no gateway in P1).
-    const draft = await deps.provider.infer({ studyInstanceUid: uid, modality: modality ?? undefined, imageAnchors: anchors });
+    // 4. Inference via the AI Gateway seam (P2 / G7). Still shadow.
+    const { draft, provenance } = await deps.provider.infer({
+      studyInstanceUid: uid,
+      modality: modality ?? undefined,
+      imageAnchors: anchors,
+      images: rendered,
+    });
 
-    // 5. Evidence grounding — validate each anchor against the snapshot.
+    // 5. Rules before AI (G9) — the deterministic Quality Engine over the draft.
+    const quality = runDeterministicQuality(draft);
+
+    // 6. Trust gauntlet (G9) — grounding + laterality + negation + contradiction;
+    //    deterministic findings override AI; invalid findings are QUARANTINED.
     const snapInsts = manifest.instances.map((i) => ({ seriesUid: i.seriesUid, sopUid: i.sopUid }));
-    const validEvidence: EvidenceAnchor[] = [];
-    for (const f of draft.findings) {
-      for (const ev of f.evidence) {
-        const anchor: EvidenceAnchor = { ...ev, findingKey: ev.findingKey || f.key };
-        if (validateEvidenceAnchor(anchor, snapInsts).ok) validEvidence.push(anchor);
-      }
-    }
+    const aiFindings: GauntletFinding[] = draft.findings.map((f) => ({
+      key: f.key, text: f.text, laterality: f.laterality, negated: f.negated, evidence: f.evidence,
+    }));
+    const gauntlet = applyTrustGauntlet(aiFindings, snapInsts, draft.impression, []);
+    const degraded = provenance.degraded || quality.degradeRecommended;
 
-    // 6. Persist manifest + shadow draft + evidence (shadow only).
+    // 7. Persist manifest (immutable) — records the REAL model version/digest.
+    const modelVersion = provenance.modelDigest ? `${provenance.modelVersion}@${provenance.modelDigest}` : provenance.modelVersion;
     const [manifestRow] = await db
       .insert(aiProcessingManifestsTable)
       .values({
         studySnapshotId: snapshotId,
         studyInstanceUid: uid,
         snapshotContentHash: manifest.contentHash,
-        ...P1_VERSIONS,
+        modelVersion,
+        promptVersion: P2_META.promptVersion,
+        knowledgePackVersion: P2_META.knowledgePackVersion,
+        rulesVersion: quality.report.ruleVersion || P2_META.rulesVersion,
+        measurementEngineVersion: P2_META.measurementEngineVersion,
         imageSelectionJson: anchors,
         inputHash,
-        degraded: false,
+        degraded,
         startedAt,
         completedAt: new Date(),
       })
       .returning({ id: aiProcessingManifestsTable.id });
 
+    // 8. Persist shadow draft — valid + quarantined findings (nothing exposed).
+    const shadowDraftJson = {
+      studyContext: draft.studyContext,
+      findings: gauntlet.valid,
+      quarantined: gauntlet.quarantined,
+      measurements: draft.measurements,
+      impression: draft.impression,
+      qualityScore: quality.report.score,
+      degraded,
+    };
     const [draftRow] = await db
       .insert(aiShadowDraftsTable)
       .values({
@@ -205,31 +230,31 @@ export function makeAiShadowPipelineHandler(deps: ShadowPipelineDeps = defaultDe
         studySnapshotId: snapshotId,
         studyInstanceUid: uid,
         radiologyStudyId: payload.radiologyStudyId ?? null,
-        source: "ai_shadow",
-        draftJson: draft,
-        findingCount: draft.findings.length,
+        source: degraded ? "ai_shadow_degraded" : "ai_shadow",
+        draftJson: shadowDraftJson,
+        findingCount: gauntlet.valid.length,
       })
       .returning({ id: aiShadowDraftsTable.id });
 
-    if (validEvidence.length > 0) {
-      await db.insert(aiEvidenceTable).values(
-        validEvidence.map((e) => ({
-          draftId: draftRow.id,
-          manifestId: manifestRow.id,
-          findingKey: e.findingKey,
-          evidenceType: e.evidenceType,
-          seriesInstanceUid: e.seriesInstanceUid ?? null,
-          sopInstanceUid: e.sopInstanceUid ?? null,
-          frameNumber: e.frameNumber ?? null,
-          measurementRef: e.measurementRef ?? null,
-          confidence: e.confidence ?? null,
-        })),
-      );
-    }
+    // 9. Persist evidence — from VALID findings only (grounded anchors).
+    const evidenceRows = gauntlet.valid.flatMap((f) =>
+      f.evidence.map((e) => ({
+        draftId: draftRow.id,
+        manifestId: manifestRow.id,
+        findingKey: e.findingKey || f.key,
+        evidenceType: e.evidenceType,
+        seriesInstanceUid: e.seriesInstanceUid ?? null,
+        sopInstanceUid: e.sopInstanceUid ?? null,
+        frameNumber: e.frameNumber ?? null,
+        measurementRef: e.measurementRef ?? null,
+        confidence: e.confidence ?? null,
+      })),
+    );
+    if (evidenceRows.length > 0) await db.insert(aiEvidenceTable).values(evidenceRows);
 
     return {
       ok: true,
-      detail: `shadow OK — snapshot rev ${snapshotRevision}, manifest ${manifestRow.id}, draft ${draftRow.id}, findings ${draft.findings.length}, evidence ${validEvidence.length}, images ${rendered.length}`,
+      detail: `shadow OK — rev ${snapshotRevision}, manifest ${manifestRow.id}, draft ${draftRow.id}, valid ${gauntlet.valid.length}, quarantined ${gauntlet.quarantined.length}, degraded ${degraded}, images ${rendered.length}, model ${provenance.modelVersion}`,
     };
   };
 }

@@ -4,6 +4,35 @@ Notable, reviewable changes to CARE ERP. Newest first.
 
 ## [Unreleased]
 
+### Radiology AI Platform — Phase P2 (Trust Layer, Shadow Mode) — 2026-07-18
+
+The AI Gateway, Evaluation Framework, and Rules-Before-AI (gates G7–G9), still **SHADOW MODE** — the P1
+stub is replaced by a real gateway, but no radiologist sees output and no reporting workflow/UI changed.
+Built with the Strangler Pattern (reuse, no parallel implementations).
+
+**Added — G7 AI Gateway** (hardened evolution of `lib/ai-providers`, reusing its provider routing)
+- `requestStructuredReport` — capability routing, **model digest/version pinning** (`ai_model_capabilities`),
+  local-first PHI policy, timeout, retry, **circuit breaker** (derived from the existing
+  `ai_provider_health_logs`), provider fallback, **schema projection**, and JSON **validation/repair**.
+- `gatewayInferenceProvider` replaces the P1 stub at the pipeline's inference seam (still shadow).
+
+**Added — G8 Evaluation Framework**
+- `ai_golden_cases`, `ai_evaluation_runs`, `ai_evaluation_case_results`, `ai_model_versions`.
+- `runEvaluation` (critical-finding recall + structured-report validation), and a
+  **shadow → candidate → live** lifecycle where **live requires explicit human approval** (`approveVersion`).
+
+**Added — G9 Rules Before AI**
+- Reuses `runQualityEngine` (deterministic engine runs over the structured draft before AI).
+- Trust gauntlet: evidence **grounding** (reuses P1 `validateEvidenceAnchor`), **laterality**, **negation**,
+  and **contradiction** checks that **quarantine** invalid findings; **deterministic findings override AI**;
+  **degrade-to-deterministic** when the gateway fails.
+
+**Migration** `migrations/add_ai_gateway_and_evaluation.sql` (5 additive tables, idempotent).
+
+**Verification** — typecheck (libs + api-server) ✅; `pnpm test` → **2582 pass** (+38 P2 tests; same 7
+pre-existing `DATABASE_URL` file errors); grounding (59) + migration-order ✅. End-to-end/DB/provider paths
+require staging (no DB/Orthanc/providers in this environment) — see `P2_IMPLEMENTATION_REPORT.md` §8.
+
 ### Radiology AI Platform — Phase P1 (AI Execution Layer, Shadow Mode) — 2026-07-18
 
 Backend AI execution infrastructure running in **SHADOW MODE** (gates G4–G6). **No radiologist-facing
