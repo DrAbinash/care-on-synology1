@@ -1,16 +1,27 @@
-import { StyleSheet, Text, View, FlatList, RefreshControl, ActivityIndicator } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  StyleSheet,
+  Text,
+  View,
+  RefreshControl,
+  TouchableOpacity,
+  Linking,
+} from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
-import { useRouter } from "expo-router";
 
 import { useColors } from "@/hooks/useColors";
 import { useApi } from "@/hooks/useApi";
+import {
+  Screen,
+  ScreenHeader,
+  Card,
+  SkeletonList,
+  EmptyState,
+  spacing,
+} from "@/components/ui";
 
 export default function DoctorsScreen() {
   const colors = useColors();
-  const insets = useSafeAreaInsets();
-  const router = useRouter();
   const api = useApi();
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
@@ -21,81 +32,100 @@ export default function DoctorsScreen() {
   const doctors: any[] = data?.doctors ?? [];
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top + 16 }]}>
-      <View style={{ paddingHorizontal: 16, marginBottom: 12 }}>
-        <Text style={[styles.header, { color: colors.foreground }]}>Our Doctors</Text>
-        <Text style={[styles.sub, { color: colors.mutedForeground }]}>
-          Experienced specialists and referring physicians
-        </Text>
-      </View>
+    <Screen
+      refreshControl={
+        <RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={colors.primary} />
+      }
+    >
+      <ScreenHeader title="Our Doctors" subtitle="Experienced specialists and referring physicians" />
 
       {isLoading ? (
-        <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-          <ActivityIndicator color={colors.primary} />
-        </View>
+        <SkeletonList count={4} height={104} />
       ) : doctors.length === 0 ? (
-        <View style={styles.empty}>
-          <Feather name="users" size={48} color={colors.mutedForeground} />
-          <Text style={[styles.emptyTitle, { color: colors.foreground }]}>No doctors listed</Text>
-          <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>
-            Doctor profiles will appear here
-          </Text>
-        </View>
-      ) : (
-        <FlatList
-          data={doctors}
-          keyExtractor={(item) => String(item.id)}
-          contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 24 }}
-          refreshControl={
-            <RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={colors.primary} />
-          }
-          renderItem={({ item }) => <DoctorCard item={item} colors={colors} />}
-          ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+        <EmptyState
+          icon="users"
+          title="No doctors listed"
+          message="Doctor profiles will appear here."
         />
+      ) : (
+        <View style={{ gap: spacing.md }}>
+          {doctors.map((item) => (
+            <DoctorCard key={String(item.id)} item={item} />
+          ))}
+        </View>
       )}
-    </View>
+    </Screen>
   );
 }
 
-function DoctorCard({ item, colors }: { item: any; colors: any }) {
+function DoctorCard({ item }: { item: any }) {
+  const colors = useColors();
+
   return (
-    <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+    <Card>
       <View style={styles.cardHeader}>
         <View style={[styles.avatar, { backgroundColor: colors.primary }]}>
           <Text style={styles.avatarText}>{(item.name || "?").charAt(0).toUpperCase()}</Text>
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={[styles.name, { color: colors.foreground }]}>Dr. {item.name}</Text>
-          <Text style={[styles.spec, { color: colors.mutedForeground }]}>{item.specialty || "General Physician"}</Text>
+          <Text style={[styles.name, { color: colors.foreground }]} numberOfLines={1}>
+            Dr. {item.name}
+          </Text>
+          <Text style={[styles.spec, { color: colors.mutedForeground }]} numberOfLines={1}>
+            {item.specialty || "General Physician"}
+          </Text>
         </View>
       </View>
-      <View style={styles.metaRow}>
-        <Feather name="phone" size={12} color={colors.mutedForeground} />
-        <Text style={[styles.meta, { color: colors.mutedForeground }]}>{item.phone || "N/A"}</Text>
-      </View>
-      {item.qualification && (
+
+      {item.qualification ? (
         <View style={styles.metaRow}>
-          <Feather name="award" size={12} color={colors.mutedForeground} />
+          <Feather name="award" size={14} color={colors.mutedForeground} />
           <Text style={[styles.meta, { color: colors.mutedForeground }]}>{item.qualification}</Text>
         </View>
-      )}
-    </View>
+      ) : null}
+
+      {item.phone ? (
+        <TouchableOpacity
+          style={[styles.phoneRow, { borderTopColor: colors.border }]}
+          onPress={() => Linking.openURL("tel:" + item.phone)}
+          activeOpacity={0.6}
+          hitSlop={8}
+        >
+          <Feather name="phone" size={15} color={colors.primary} />
+          <Text style={[styles.phoneText, { color: colors.primary }]}>{item.phone}</Text>
+        </TouchableOpacity>
+      ) : null}
+    </Card>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  header: { fontSize: 24, fontFamily: "Inter_700Bold" },
-  sub: { fontSize: 14, fontFamily: "Inter_400Regular", marginTop: 2 },
-  card: { borderRadius: 16, borderWidth: 1, padding: 16 },
-  cardHeader: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 10 },
-  avatar: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center" },
+  cardHeader: { flexDirection: "row", alignItems: "center", gap: spacing.md },
+  avatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   avatarText: { fontSize: 18, fontFamily: "Inter_700Bold", color: "#fff" },
-  name: { fontSize: 16, fontFamily: "Inter_600SemiBold" },
-  spec: { fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 1 },
-  metaRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 },
-  meta: { fontSize: 12, fontFamily: "Inter_400Regular" },
-  empty: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 40 },
-  emptyTitle: { fontSize: 18, fontFamily: "Inter_600SemiBold", marginTop: 16 },
-  emptyText: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 6 },
+  name: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  spec: { fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 2, lineHeight: 18 },
+  metaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    marginTop: spacing.md,
+  },
+  meta: { fontSize: 13, fontFamily: "Inter_400Regular", flex: 1, lineHeight: 20 },
+  phoneRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    marginTop: spacing.md,
+    paddingTop: spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    minHeight: 44,
+  },
+  phoneText: { fontSize: 14, fontFamily: "Inter_500Medium" },
 });

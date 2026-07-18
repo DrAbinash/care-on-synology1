@@ -1,16 +1,34 @@
-import { StyleSheet, View, Text, FlatList, TouchableOpacity, RefreshControl, ActivityIndicator } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Feather } from "@expo/vector-icons";
+import { StyleSheet, View, Text, FlatList, RefreshControl } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 
 import { useColors } from "@/hooks/useColors";
 import { useApi } from "@/hooks/useApi";
 import { useAuth } from "@/context/AuthContext";
+import {
+  Screen,
+  ScreenHeader,
+  Card,
+  IconTile,
+  Badge,
+  SkeletonList,
+  EmptyState,
+  spacing,
+  type FeatherIconName,
+} from "@/components/ui";
+
+type StatusTone = "success" | "warning" | "destructive";
+
+function statusMeta(status: string): { icon: FeatherIconName; tone: StatusTone; label: string } {
+  if (status === "paid") return { icon: "check-circle", tone: "success", label: "Paid" };
+  if (status === "confirmed") return { icon: "check-circle", tone: "success", label: "Confirmed" };
+  if (status === "cancelled") return { icon: "x-circle", tone: "destructive", label: "Cancelled" };
+  if (status === "pending_payment") return { icon: "clock", tone: "warning", label: "Payment Pending" };
+  return { icon: "clock", tone: "warning", label: status.charAt(0).toUpperCase() + status.slice(1) };
+}
 
 export default function BookingsScreen() {
   const colors = useColors();
-  const insets = useSafeAreaInsets();
   const router = useRouter();
   const api = useApi();
   const { user } = useAuth();
@@ -24,107 +42,95 @@ export default function BookingsScreen() {
   const bookings: any[] = data?.bookings ?? [];
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top + 16 }]}>
-      <View style={{ paddingHorizontal: 16, marginBottom: 12 }}>
-        <Text style={[styles.header, { color: colors.foreground }]}>My Bookings</Text>
-        <Text style={[styles.sub, { color: colors.mutedForeground }]}>
-          {user?.phone ? "Your appointments and test bookings" : "Login to view your bookings"}
-        </Text>
-      </View>
+    <Screen scroll={false}>
+      <ScreenHeader
+        title="My Bookings"
+        subtitle={user?.phone ? "Your appointments and test bookings" : "Login to view your bookings"}
+      />
 
       {!user?.phone ? (
-        <View style={styles.empty}>
-          <Feather name="lock" size={48} color={colors.mutedForeground} />
-          <Text style={[styles.emptyTitle, { color: colors.foreground, marginTop: 16 }]}>Login Required</Text>
-          <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>
-            Please log in with your phone number to see your bookings
-          </Text>
-          <TouchableOpacity
-            style={[styles.refreshBtn, { backgroundColor: colors.primary } ]}
-            onPress={() => router.push("/login")}
-          >
-            <Text style={styles.refreshBtnText}>Login</Text>
-          </TouchableOpacity>
-        </View>
+        <EmptyState
+          icon="lock"
+          title="Login Required"
+          message="Please log in with your phone number to see your bookings"
+          actionLabel="Login"
+          onAction={() => router.push("/login")}
+        />
       ) : isLoading ? (
-        <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-          <ActivityIndicator color={colors.primary} />
-        </View>
+        <SkeletonList count={4} />
       ) : bookings.length === 0 ? (
-        <View style={styles.empty}>
-          <Feather name="calendar" size={48} color={colors.mutedForeground} />
-          <Text style={[styles.emptyTitle, { color: colors.foreground }]}>No bookings yet</Text>
-          <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>
-            Book your first test from the Home screen
-          </Text>
-          <TouchableOpacity
-            style={[styles.refreshBtn, { backgroundColor: colors.primary } ]}
-            onPress={() => router.push("/book")}
-          >
-            <Text style={styles.refreshBtnText}>Book Now</Text>
-          </TouchableOpacity>
-        </View>
+        <EmptyState
+          icon="calendar"
+          title="No bookings yet"
+          message="Book your first test from the Home screen"
+          actionLabel="Book Now"
+          onAction={() => router.push("/book")}
+        />
       ) : (
         <FlatList
           data={bookings}
           keyExtractor={(item) => String(item.id)}
-          contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 24 }}
+          contentContainerStyle={{ gap: spacing.md, paddingBottom: 110 }}
+          showsVerticalScrollIndicator={false}
           refreshControl={
             <RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={colors.primary} />
           }
-          renderItem={({ item }) => <BookingCard item={item} colors={colors} onPress={() => router.push(`/booking-detail?ref=${encodeURIComponent(item.bookingRef)}`)} />}
-          ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+          renderItem={({ item }) => (
+            <BookingCard
+              item={item}
+              onPress={() => router.push(`/booking-detail?ref=${encodeURIComponent(item.bookingRef)}`)}
+            />
+          )}
         />
       )}
-    </View>
+    </Screen>
   );
 }
 
-function BookingCard({ item, colors, onPress }: { item: any; colors: any; onPress: () => void }) {
-  const status = item.status || "pending";
-  const isPaid = status === "paid" || status === "confirmed";
-  const statusColor = isPaid ? colors.success : status === "cancelled" ? colors.destructive : colors.warning;
+function BookingCard({ item, onPress }: { item: any; onPress: () => void }) {
+  const colors = useColors();
+  const status = String(item.status || "pending");
+  const meta = statusMeta(status);
+  const toneColor =
+    meta.tone === "success" ? colors.success : meta.tone === "destructive" ? colors.destructive : colors.warning;
 
   return (
-    <TouchableOpacity style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]} onPress={onPress} activeOpacity={0.7}>
-      <View style={styles.cardHeader}>
-        <View style={[styles.iconBox, { backgroundColor: statusColor + "18" }]}>
-          <Feather name={isPaid ? "check-circle" : "clock"} size={20} color={statusColor} />
-        </View>
+    <Card onPress={onPress}>
+      <View style={styles.rowTop}>
+        <IconTile icon={meta.icon} color={toneColor} />
         <View style={{ flex: 1 }}>
-          <Text style={[styles.ref, { color: colors.foreground }]}>Ref: {item.bookingRef}</Text>
-          <Text style={[styles.name, { color: colors.mutedForeground }]}>{item.patientName || item.name}</Text>
+          <Text style={[styles.ref, { color: colors.foreground }]} numberOfLines={1}>
+            {item.bookingRef}
+          </Text>
+          <Text style={[styles.name, { color: colors.mutedForeground }]} numberOfLines={1}>
+            {item.patientName || item.name}
+          </Text>
         </View>
-        <View style={[styles.statusBadge, { backgroundColor: statusColor + "18" }]}>
-          <Text style={[styles.statusText, { color: statusColor }]}>{status.toUpperCase()}</Text>
-        </View>
+        <Text style={[styles.amount, { color: colors.foreground }]}>
+          ₹{Number(item.amount || 0).toLocaleString("en-IN")}
+        </Text>
       </View>
-      <Text style={[styles.date, { color: colors.mutedForeground }]}>
-        {item.appointmentDate || item.date || ""} · {item.timeSlot || ""}
-      </Text>
-      <Text style={[styles.amount, { color: colors.foreground }]}>
-        ₹{Number(item.amount || 0).toLocaleString("en-IN")}
-      </Text>
-    </TouchableOpacity>
+      <View style={styles.rowBottom}>
+        <Text style={[styles.date, { color: colors.mutedForeground }]} numberOfLines={1}>
+          {[item.appointmentDate || item.date || "", item.timeSlot || ""].filter(Boolean).join(" · ")}
+        </Text>
+        <Badge label={meta.label} tone={meta.tone} />
+      </View>
+    </Card>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  header: { fontSize: 24, fontFamily: "Inter_700Bold", paddingHorizontal: 16, marginBottom: 4 },
-  sub: { fontSize: 14, fontFamily: "Inter_400Regular", paddingHorizontal: 16, marginBottom: 16, color: "#64748b" },
-  card: { borderRadius: 16, padding: 16, borderWidth: 1 },
-  cardHeader: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 8 },
-  iconBox: { width: 40, height: 40, borderRadius: 10, alignItems: "center", justifyContent: "center" },
-  ref: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
-  name: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 1 },
-  statusBadge: { borderRadius: 8, paddingVertical: 3, paddingHorizontal: 10 },
-  statusText: { fontSize: 10, fontFamily: "Inter_700Bold" },
-  date: { fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 4 },
-  amount: { fontSize: 15, fontFamily: "Inter_700Bold", marginTop: 6 },
-  empty: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 40 },
-  emptyTitle: { fontSize: 18, fontFamily: "Inter_600SemiBold", marginTop: 16 },
-  emptyText: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 6 },
-  refreshBtn: { marginTop: 20, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 24 },
-  refreshBtnText: { color: "#fff", fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  rowTop: { flexDirection: "row", alignItems: "center", gap: spacing.md },
+  rowBottom: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+    marginTop: spacing.md,
+  },
+  ref: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  name: { fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 2 },
+  amount: { fontSize: 15, fontFamily: "Inter_700Bold" },
+  date: { flex: 1, fontSize: 13, fontFamily: "Inter_400Regular", lineHeight: 20 },
 });
