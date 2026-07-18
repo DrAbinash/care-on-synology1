@@ -152,6 +152,7 @@ import {
   type TranscribeCapabilities,
 } from "@/lib/voiceTranscription";
 import type { EmbeddedViewerHandle } from "@/components/EmbeddedWadoViewer";
+import { AiDraftPanel } from "@/components/ai/AiDraftPanel";
 
 // ════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -4053,6 +4054,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
   return (
     <div className="flex flex-col" style={{ height: "calc(100vh - 48px)" }}>
+      {/* Phase P3 — feature-flagged AI draft panel. Renders nothing unless AI is
+          enabled AND visible for this radiologist (pilot/production); default OFF. */}
+      <AiDraftPanel studyInstanceUid={entry?.studyInstanceUID ?? null} modality={entry?.modality ?? null} />
 
       {/* ── Compact header ─────────────────────────────────────────────────── */}
       <div className="shrink-0 flex items-center flex-wrap gap-x-3 gap-y-1 px-3 py-2 border-b bg-white">

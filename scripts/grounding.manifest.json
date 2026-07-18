@@ -61,6 +61,24 @@
     { "kind": "function", "name": "runDeterministicQuality", "file": "artifacts/api-server/src/lib/ai/rulesBeforeAi.ts", "note": "reuses lib/report-quality runQualityEngine (G9)" },
     { "kind": "function", "name": "runEvaluation", "file": "artifacts/api-server/src/lib/ai/evaluationRunner.ts", "note": "DB-backed golden-set runner (G8)" },
     { "kind": "contains", "file": "artifacts/api-server/src/lib/radiologyJobHandlers.ts", "text": "gatewayInferenceProvider", "note": "the gateway replaces the P1 stub at the pipeline seam" },
-    { "kind": "contains", "file": "migrations/add_ai_gateway_and_evaluation.sql", "text": "ai_model_capabilities", "note": "P2 migration" }
+    { "kind": "contains", "file": "migrations/add_ai_gateway_and_evaluation.sql", "text": "ai_model_capabilities", "note": "P2 migration" },
+
+    { "kind": "table", "table": "ai_feature_policies", "file": "lib/db/src/schema/aiClinicalConfig.ts", "note": "P3 per-scope enablement (default OFF)" },
+    { "kind": "column", "table": "ai_feature_policies", "column": "scope", "file": "lib/db/src/schema/aiClinicalConfig.ts", "note": "global|hospital|modality|study_type|radiologist" },
+    { "kind": "table", "table": "ai_scheduler_config", "file": "lib/db/src/schema/aiClinicalConfig.ts", "note": "scheduler config (night/quiet/limits)" },
+    { "kind": "table", "table": "ai_modality_policies", "file": "lib/db/src/schema/aiClinicalConfig.ts", "note": "per-modality immediate/night_batch/manual/disabled" },
+    { "kind": "table", "table": "ai_radiologist_preferences", "file": "lib/db/src/schema/aiClinicalConfig.ts", "note": "per-radiologist preferences" },
+    { "kind": "table", "table": "ai_draft_feedback", "file": "lib/db/src/schema/aiClinicalConfig.ts", "note": "Accept/Edit/Ignore feedback for learning" },
+    { "kind": "column", "table": "ai_draft_feedback", "column": "action", "file": "lib/db/src/schema/aiClinicalConfig.ts", "note": "accept|edit|ignore|reject" },
+    { "kind": "function", "name": "resolveAiEnablement", "file": "artifacts/api-server/src/lib/ai/aiPolicy.ts", "note": "default-OFF, most-specific-wins policy (G11 safety)" },
+    { "kind": "function", "name": "decideScheduling", "file": "artifacts/api-server/src/lib/ai/aiScheduler.ts", "note": "5-mode scheduler decision (G10)" },
+    { "kind": "function", "name": "admitJob", "file": "artifacts/api-server/src/lib/ai/aiScheduler.ts", "note": "concurrency/GPU/CPU admission control" },
+    { "kind": "function", "name": "resolveAiEnablementForUser", "file": "artifacts/api-server/src/lib/ai/clinicalConfigService.ts", "note": "composes ff_radiology_ai master flag + policies" },
+    { "kind": "function", "name": "scheduleStudy", "file": "artifacts/api-server/src/lib/ai/schedulerService.ts", "note": "enqueues via existing engine — no new worker" },
+    { "kind": "function", "name": "getLatestDraftForStudy", "file": "artifacts/api-server/src/lib/ai/draftService.ts", "note": "grounded findings + evidence + provenance for the workspace" },
+    { "kind": "contains", "file": "artifacts/api-server/src/routes/index.ts", "text": "aiClinicalRouter", "note": "AI clinical router mounted at /api/ai (gated)" },
+    { "kind": "contains", "file": "artifacts/api-server/src/cron.ts", "text": "scheduleAiSchedulerModes", "note": "night-batch/reprocess/learning crons (master-flag gated)" },
+    { "kind": "contains", "file": "artifacts/diagnostic-erp/src/pages/RadiologyReportingWorkspace.tsx", "text": "AiDraftPanel", "note": "feature-flagged AI panel mounted in the workspace (G11)" },
+    { "kind": "contains", "file": "migrations/add_ai_clinical_config.sql", "text": "ff_radiology_ai", "note": "master flag seeded OFF by default" }
   ]
 }

@@ -145,3 +145,4 @@ export * from "./canonicalStudy";
 export * from "./aiExecution";
 export * from "./aiModelCapabilities";
 export * from "./aiEvaluation";
+export * from "./aiClinicalConfig";

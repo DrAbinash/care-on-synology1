@@ -134,6 +134,7 @@ import smartRadiologyRouter from "./smartRadiology";
 import reportQualityRouter from "./reportQuality";
 import risMonitoringRouter from "./risMonitoring";
 import radiologyWorkflowRouter from "./radiologyWorkflow";
+import { aiClinicalRouter } from "./aiClinical";
 import { scanSessionsRouter } from "./scan-sessions";
 // Federated Radiology Service — boundary API (additive, server-to-server only)
 import boundaryRouter from "./boundary";
@@ -549,6 +550,10 @@ router.use("/dicom-agent", requireStaffAuth, requireStaffPermission("/dicom-node
 // MWL procedures, pulled-studies stats, failed-queue retry).
 // Mounted BEFORE radiologyRouter so its handlers (e.g. echo-test upgrade) win.
 router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), pacsEnterpriseRouter);
+// Phase P3 — AI clinical workflow (scheduler/policy/preferences/draft). Every
+// endpoint is internally gated by the ff_radiology_ai master flag + per-scope
+// policy (default OFF), so mounting it exposes nothing until an admin enables it.
+router.use("/ai", requireStaffAuth, requireStaffPermission("/radiology"), aiClinicalRouter);
 
 // USG auto-measurement extraction — all authenticated staff can trigger/review;
 // settings writes require admin role (enforced inside the router).

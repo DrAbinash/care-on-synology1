@@ -14,16 +14,17 @@ Update this file as gates land. **Do not build a gate before its prerequisites a
 | G7 | P2 | AI Gateway hardening — Capability + Prompt Registry + schema projection | ✅ Done | 2026-07-18 |
 | G8 | P2 | Evaluation Framework + Golden Dataset (ADR D-17) | ✅ Done | 2026-07-18 |
 | G9 | P2 | Rules Engine before AI + grounding gate on findings | ✅ Done | 2026-07-18 |
-| G10 | P3 | AI Scheduler + 5 processing modes (Immediate first) | ⬜ Not started | — |
-| G11 | P3 | Reporting integration (JSON→report, voice) | ⬜ Not started | — |
+| G10 | P3 | AI Scheduler + 5 processing modes (Immediate first) | ✅ Done | 2026-07-18 |
+| G11 | P3 | Reporting integration (workspace AI panel, feature flags, voice hook) | ✅ Done | 2026-07-18 |
 | G12 | P4 | DICOM SR (TID 1500) encoder + multi-hospital tenant fairness | ⬜ Not started | — |
 
 ## Phase status
 
 - **P0 — Foundation:** ✅ **Complete** (G1, G2, G3). See `P0_IMPLEMENTATION_REPORT.md`.
 - **P1 — Execution:** ✅ **Complete** (G4, G5, G6) — shadow mode. See `P1_IMPLEMENTATION_REPORT.md`.
-- **P2 — Trust:** ✅ **Complete** (G7, G8, G9) — shadow mode. See `P2_IMPLEMENTATION_REPORT.md`. The AI Gateway (hardened `lib/ai-providers`) replaces the P1 stub; deterministic rules + trust gauntlet quarantine invalid findings; the evaluation framework gates version promotion behind a human. Still shadow — nothing reaches a radiologist.
-- **P3 — Clinical:** ⬜ next (AI Scheduler + 5 modes, JSON→report, voice, first companions). **No provisional report reaches a radiologist before the evaluation golden set is populated and a version is human-approved to `live`.**
+- **P2 — Trust:** ✅ **Complete** (G7, G8, G9) — shadow mode. See `P2_IMPLEMENTATION_REPORT.md`.
+- **P3 — Clinical:** ✅ **Complete** (G10, G11) — the FIRST radiologist-visible phase, fully feature-flagged (AI OFF by default; pilot-only). See `P3_IMPLEMENTATION_REPORT.md`. One scheduler over the existing engine (5 modes), a gated `/api/ai` surface, and a flag-guarded AI Draft Panel in the workspace. Radiologist is the only signer.
+- **P4 — Enterprise:** ⬜ next (DICOM SR encoder, critical-findings consolidation, mammography content, multi-hospital fairness/federation).
 - **P3 — Clinical:** ⬜ blocked on P2. **No provisional report reaches a radiologist before G5, G6, G8, G9.**
 - **P4 — Enterprise / P5 — Frontier:** ⬜ later.
 

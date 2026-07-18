@@ -41,6 +41,7 @@ export function startCronScheduler() {
   scheduleWhatsappReminders();
   scheduleRadiologyJobs();
   scheduleAuditChainVerify();
+  scheduleAiSchedulerModes();
 
   // Start the in-process DIMSE pull agent if enabled.
   // When ENABLE_DICOM_PULL_AGENT is set, the agent polls for pull jobs and
@@ -52,6 +53,45 @@ export function startCronScheduler() {
     startDimsePullAgent();
     console.log("[cron] In-process DIMSE pull agent started");
   }
+}
+
+// ── Phase P3: AI Scheduler modes (Night Batch / Reprocessing / Learning) ─────
+// Each handler is internally gated by the ff_radiology_ai master flag, so these
+// crons are a hard no-op until an admin enables AI. They only ENQUEUE onto the
+// existing radiology job engine — no new worker or queue is created here.
+function scheduleAiSchedulerModes() {
+  // Night Batch — every 30 min; runNightBatch itself checks the night window is
+  // configured via the scheduler config and skips finalized/unchanged studies.
+  cron.schedule("*/30 23,0,1,2,3,4,5 * * *", async () => {
+    try {
+      const { runNightBatch } = await import("./lib/ai/schedulerService");
+      const r = await runNightBatch();
+      if (r.enqueued > 0) console.log(`[cron] AI night batch: enqueued ${r.enqueued}/${r.considered}`);
+    } catch (err) {
+      console.error("[cron] AI night batch failed:", err);
+    }
+  });
+  // Scheduled Reprocessing — weekly, Sunday 02:00.
+  cron.schedule("0 2 * * 0", async () => {
+    try {
+      const { runScheduledReprocessing } = await import("./lib/ai/schedulerService");
+      const r = await runScheduledReprocessing();
+      if (r.enqueued > 0) console.log(`[cron] AI reprocessing: enqueued ${r.enqueued}/${r.considered}`);
+    } catch (err) {
+      console.error("[cron] AI reprocessing failed:", err);
+    }
+  });
+  // Learning aggregation — weekly, Sunday 03:00 (no auto-retrain; summary only).
+  cron.schedule("0 3 * * 0", async () => {
+    try {
+      const { runLearningAggregation } = await import("./lib/ai/schedulerService");
+      const summary = await runLearningAggregation();
+      console.log(`[cron] AI learning aggregation:`, summary);
+    } catch (err) {
+      console.error("[cron] AI learning aggregation failed:", err);
+    }
+  });
+  console.log("[cron] AI scheduler modes registered (gated by ff_radiology_ai)");
 }
 
 // ── BEND-1: durable radiology job runner ─────────────────────────────────────

@@ -4,6 +4,37 @@ Notable, reviewable changes to CARE ERP. Newest first.
 
 ## [Unreleased]
 
+### Radiology AI Platform — Phase P3 (Clinical Workflow Integration) — 2026-07-18
+
+The **first radiologist-visible** phase (gates G10–G11), fully **feature-flagged: AI is OFF by default for
+everyone**; only an explicitly enabled pilot radiologist sees anything. The radiologist remains the only
+signer — **AI never signs**. Strangler Pattern (reuse the existing job engine, cron, feature-flags backbone,
+staff auth, and workspace).
+
+**Added — G10 AI Scheduler** (a policy layer over the existing `radiologyJobs` engine — no new worker/queue)
+- 5 modes: Immediate, Night Batch, On-demand (`POST /api/ai/generate`), Scheduled Reprocessing, Learning
+  aggregation (no auto-retrain). Config in `ai_scheduler_config` (night/quiet windows, GPU/CPU limits, max
+  concurrency, retry, include priors/OCR, skip finalized/unchanged). Night-batch/reprocess/learning run as
+  crons in the existing `cron.ts`, each hard-gated by the master flag. Queue dashboard / cancel reuse the
+  existing job-engine counters. Per-modality policies (`ai_modality_policies`): immediate/night_batch/manual/disabled.
+
+**Added — G11 Workspace integration**
+- A feature-flagged **AI Draft Panel** in `RadiologyReportingWorkspace.tsx`: grounded findings only,
+  evidence + confidence, provenance, shadow status, and an **Accept / Edit / Ignore** workflow with an
+  `onInsertText` hook for the report editor. Renders nothing unless AI is visible for the radiologist.
+- **Feature flags**: master `ff_radiology_ai` (reuses the `feature_flags` backbone) + per
+  hospital/radiologist/modality/study-type policies (`ai_feature_policies`) with shadow/pilot/production modes,
+  resolved most-specific-wins (default OFF). Per-radiologist **preferences** (`ai_radiologist_preferences`).
+- Gated `/api/ai` router (policy, preferences, draft, generate, feedback, admin scheduler/modality/queue).
+- Feedback capture (`ai_draft_feedback`) for the learning aggregation.
+
+**Migration** `migrations/add_ai_clinical_config.sql` (5 tables) — seeds the master flag **OFF** and every
+modality **disabled**, so a fresh deploy shows AI to nobody.
+
+**Verification** — typecheck (libs + api-server + **frontend**) ✅; `pnpm test` → **2599 pass** (+17 P3 tests;
+same 7 pre-existing `DATABASE_URL` file errors); grounding (76) + migration-order ✅. DB-backed services, the
+`/api/ai` endpoints end-to-end, and live panel/voice rendering require staging — see `P3_IMPLEMENTATION_REPORT.md` §11.
+
 ### Radiology AI Platform — Phase P2 (Trust Layer, Shadow Mode) — 2026-07-18
 
 The AI Gateway, Evaluation Framework, and Rules-Before-AI (gates G7–G9), still **SHADOW MODE** — the P1

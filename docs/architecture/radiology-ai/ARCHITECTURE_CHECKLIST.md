@@ -9,7 +9,7 @@ ONE-of-each guarantees. Tick items only when they are enforced **in code**, not 
 |---|---|---|
 | One canonical study object | 🟡 Partial (P0) | `canonical_study` crosswalk + FK exist; consumers migrate in later phases. |
 | One job engine | ✅ (P1) | AI jobs run on the existing `radiologyJobs.ts` runner (`ai_shadow_pipeline` handler); no second engine/worker/queue. |
-| One scheduler | ⬜ | AI Scheduler is a later phase (G10). |
+| One scheduler | ✅ (P3) | Policy layer (`aiScheduler`/`schedulerService`) above the one job engine; no embedded queue. |
 | One AI gateway | ✅ (P2) | `requestStructuredReport` in `lib/ai-providers` (hardened, not parallel); it is the shadow pipeline's inference seam. |
 | One rules engine | ✅ (pre-existing, wired P2) | `lib/report-quality` runs before AI via `runDeterministicQuality`. |
 | One measurement engine | ✅ (pre-existing) | `lib/measurements`. |
