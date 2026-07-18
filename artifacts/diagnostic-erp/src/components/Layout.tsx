@@ -213,7 +213,6 @@ const navItems: NavEntry[] = [
       { path: "/radiology/provider-fallback",          icon: ShieldCheck,    label: "Provider Fallback",       ownerOnly: true, featureFlag: "hideDeprecatedNav" },
       { path: "/teaching-cases",                   icon: GraduationCap,    label: "Teaching Files",          ownerOnly: true, featureFlag: "hideDeprecatedNav" },
       { path: "/radiology/ai-extraction-review",  icon: Microscope,   label: "AI Extraction Review",  ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/pacs-settings",         icon: Settings2,    label: "PACS Settings",         ownerOnly: true, featureFlag: "hideDeprecatedNav" },
       { path: "/radiology/modality-management",   icon: Monitor,      label: "Modality Management",   ownerOnly: true, featureFlag: "hideDeprecatedNav" },
       { path: "/radiology/dicom-agent-dashboard", icon: Server,       label: "DICOM Agent",           ownerOnly: true, featureFlag: "hideDeprecatedNav" },
       { path: "/radiology/watchdog",              icon: ShieldAlert,  label: "Watchdog",              ownerOnly: true, featureFlag: "hideDeprecatedNav" },
@@ -294,7 +293,6 @@ const navItems: NavEntry[] = [
       { path: "/system-update",             icon: Download,       label: "System Update" },
       // Radiology admin items moved from main sidebar (hidden via feature flag)
       { path: "/radiology/network-control-center", icon: Network,        label: "Network Control Center", ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/pacs-settings",         icon: Server,         label: "PACS & DICOM",        ownerOnly: true, featureFlag: "hideDeprecatedNav" },
       { path: "/dicom-nodes",                     icon: Network,        label: "DICOM Nodes",         ownerOnly: true, featureFlag: "hideDeprecatedNav" },
       { path: "/radiology/modality-management",   icon: Monitor,        label: "Modality Management", ownerOnly: true, featureFlag: "hideDeprecatedNav" },
       { path: "/radiology/dicom-agent-dashboard", icon: Server,         label: "DICOM Agent",         ownerOnly: true, featureFlag: "hideDeprecatedNav" },

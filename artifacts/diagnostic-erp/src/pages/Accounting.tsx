@@ -4,6 +4,7 @@ import { api } from "@/lib/fetchApi";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import { useToast } from "@/hooks/use-toast";
 import PageHeader from "@/components/PageHeader";
+import IdCardScanPanel from "@/components/IdCardScanPanel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -1414,6 +1415,8 @@ function BankStatementPanel({ accounts, onImported }: { accounts: Account[]; onI
   const [importing, setImporting] = useState(false);
   const [imported, setImported] = useState(0);
   const [error, setError] = useState("");
+  // Captured statement photo awaiting the crop/enhance editor before parsing.
+  const [editing, setEditing] = useState<{ base64: string; mimeType: string } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const bankAccounts = accounts.filter(a => a.type === "bank" || a.type === "cash");
@@ -1422,12 +1425,12 @@ function BankStatementPanel({ accounts, onImported }: { accounts: Account[]; onI
   const handleImageFile = (file: File) => {
     setError(""); setTxns([]); setImported(0);
     const mt = file.type || "image/jpeg";
-    setImageMime(mt);
     const reader = new FileReader();
     reader.onload = (e) => {
       const dataUrl = e.target?.result as string;
-      setImagePreview(dataUrl);
-      setImageBase64(dataUrl.split(",")[1] ?? "");
+      // Deskew + flatten the statement photo before OCR — a full A4 page, so the
+      // "document" preset (not the small-receipt one).
+      setEditing({ base64: dataUrl.split(",")[1] ?? "", mimeType: mt });
     };
     reader.readAsDataURL(file);
   };
@@ -1474,6 +1477,22 @@ function BankStatementPanel({ accounts, onImported }: { accounts: Account[]; onI
 
   return (
     <div className="space-y-4">
+      {editing && (
+        <IdCardScanPanel
+          imageBase64={editing.base64}
+          mimeType={editing.mimeType}
+          docType="document"
+          title="Bank Statement"
+          onSave={(r) => {
+            const enhanced = r.enhancedBase64 || r.croppedBase64 || r.originalBase64;
+            setImageMime("image/jpeg");
+            setImageBase64(enhanced);
+            setImagePreview(`data:image/jpeg;base64,${enhanced}`);
+            setEditing(null);
+          }}
+          onCancel={() => setEditing(null)}
+        />
+      )}
       {imported > 0 && (
         <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center gap-3">
           <CheckCircle2 size={20} className="text-green-500 shrink-0" />

@@ -25,6 +25,7 @@ import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { Camera, Upload, X, Loader2, ScanLine, RefreshCcw } from "lucide-react";
+import IdCardScanPanel, { type ScanDocType } from "@/components/IdCardScanPanel";
 
 export interface DocumentScanCaptureProps<TResult = unknown> {
   /** Backend endpoint that accepts { imageBase64, mimeType } and returns the parsed result. */
@@ -39,6 +40,17 @@ export interface DocumentScanCaptureProps<TResult = unknown> {
   helperText?: string;
   /** Max file size in MB for uploads (default 8MB, matches expense scan-bill limit). */
   maxSizeMB?: number;
+  /** Show the crop/enhance editor after capture, before OCR. Default true — the
+   *  enhanced (deskewed, white-balanced, shadow-flattened) image OCRs far better
+   *  on phone photos of receipts/bills/cheques. Set false for the old direct flow. */
+  enableEditor?: boolean;
+  /** Document type for the editor preset. Default "receipt". */
+  docType?: ScanDocType;
+  /** Editor header/label. Default "Document". */
+  editorTitle?: string;
+  /** Optional: receives the FINAL (enhanced) image base64 + mime, e.g. to persist
+   *  it on the record for an audit trail. Fires whether or not OCR succeeds. */
+  onImage?: (base64: string, mimeType: string) => void;
 }
 
 const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
@@ -50,6 +62,10 @@ export default function DocumentScanCapture<TResult = unknown>({
   triggerLabel = "Scan with AI",
   helperText = "Take a photo or upload an image — fields will be auto-filled for you to review.",
   maxSizeMB = 8,
+  enableEditor = true,
+  docType = "receipt",
+  editorTitle = "Document",
+  onImage,
 }: DocumentScanCaptureProps<TResult>) {
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
@@ -57,6 +73,8 @@ export default function DocumentScanCapture<TResult = unknown>({
   const [cameraActive, setCameraActive] = useState(false);
   const [preview, setPreview] = useState<string>("");
   const [dragOver, setDragOver] = useState(false);
+  // When set, the crop/enhance editor is shown for this captured image before OCR.
+  const [editing, setEditing] = useState<{ base64: string; mimeType: string } | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -122,29 +140,37 @@ export default function DocumentScanCapture<TResult = unknown>({
     }
 
     const reader = new FileReader();
-    reader.onload = async (e) => {
+    reader.onload = (e) => {
       const dataUrl = e.target?.result as string;
-      setPreview(dataUrl);
       const base64 = dataUrl.split(",")[1] ?? "";
-      setScanning(true);
-      try {
-        const result = await api.post<TResult>(endpoint, {
-          imageBase64: base64,
-          mimeType: file.type,
-        });
-        onResult(result);
-        toast({ title: "Scan complete", description: "Review the auto-filled fields before saving." });
-        setOpen(false);
-        setPreview("");
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "AI scan failed";
-        onError?.(msg);
-        toast({ title: "Scan failed", description: msg, variant: "destructive" });
-      } finally {
-        setScanning(false);
+      if (enableEditor) {
+        // Show the crop/enhance editor first; OCR runs on the enhanced image.
+        setEditing({ base64, mimeType: file.type });
+      } else {
+        setPreview(dataUrl);
+        void runOcr(base64, file.type);
       }
     };
     reader.readAsDataURL(file);
+  };
+
+  /** POST the (possibly enhanced) image to the OCR endpoint and hand back the result. */
+  const runOcr = async (base64: string, mimeType: string) => {
+    onImage?.(base64, mimeType);
+    setScanning(true);
+    try {
+      const result = await api.post<TResult>(endpoint, { imageBase64: base64, mimeType });
+      onResult(result);
+      toast({ title: "Scan complete", description: "Review the auto-filled fields before saving." });
+      setOpen(false);
+      setPreview("");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "AI scan failed";
+      onError?.(msg);
+      toast({ title: "Scan failed", description: msg, variant: "destructive" });
+    } finally {
+      setScanning(false);
+    }
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -154,15 +180,36 @@ export default function DocumentScanCapture<TResult = unknown>({
     if (file) void submitFile(file);
   };
 
+  // The crop/enhance editor is a full-screen modal — render it over whatever
+  // trigger/panel state we're in whenever an image is awaiting review.
+  const editor = editing ? (
+    <IdCardScanPanel
+      imageBase64={editing.base64}
+      mimeType={editing.mimeType}
+      docType={docType}
+      title={editorTitle}
+      onSave={(r) => {
+        const enhanced = r.enhancedBase64 || r.croppedBase64 || r.originalBase64;
+        setEditing(null);
+        void runOcr(enhanced, "image/jpeg");
+      }}
+      onCancel={() => setEditing(null)}
+    />
+  ) : null;
+
   if (!open) {
     return (
-      <Button type="button" variant="outline" onClick={() => setOpen(true)} className="gap-1.5">
-        <ScanLine size={15} /> {triggerLabel}
-      </Button>
+      <>
+        <Button type="button" variant="outline" onClick={() => setOpen(true)} className="gap-1.5">
+          <ScanLine size={15} /> {triggerLabel}
+        </Button>
+        {editor}
+      </>
     );
   }
 
   return (
+    <>
     <div className="border rounded-xl p-4 space-y-3 bg-muted/20">
       <div className="flex items-center justify-between">
         <p className="text-xs text-muted-foreground">{helperText}</p>
@@ -224,5 +271,7 @@ export default function DocumentScanCapture<TResult = unknown>({
         </div>
       )}
     </div>
+    {editor}
+    </>
   );
 }

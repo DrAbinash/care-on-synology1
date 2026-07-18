@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Camera, ScanLine, Upload, X, CheckCircle2 } from "lucide-react";
+import IdCardScanPanel from "@/components/IdCardScanPanel";
 
 type BillOcrResult = {
   vendor: string; date: string; amount: number; gstAmount: number;
@@ -44,18 +45,19 @@ export default function BillReceiptScannerPanel() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  // Captured image awaiting the crop/enhance editor before it becomes the scan input.
+  const [editing, setEditing] = useState<{ base64: string; mimeType: string } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
 
   const handleFile = useCallback((file: File) => {
     setError(""); setResult(null); setDraft(null); setSaved(false);
     const mt = file.type || "image/jpeg";
-    setMimeType(mt);
     const reader = new FileReader();
     reader.onload = (e) => {
       const dataUrl = e.target?.result as string;
-      setPreview(dataUrl);
-      setImageBase64(dataUrl.split(",")[1] ?? "");
+      // Open the crop/enhance editor first — the enhanced image scans far better.
+      setEditing({ base64: dataUrl.split(",")[1] ?? "", mimeType: mt });
     };
     reader.readAsDataURL(file);
   }, []);
@@ -110,6 +112,23 @@ export default function BillReceiptScannerPanel() {
   const confidenceColor = (c: string) => c === "high" ? "text-green-600" : c === "medium" ? "text-amber-600" : "text-red-500";
 
   return (
+    <>
+    {editing && (
+      <IdCardScanPanel
+        imageBase64={editing.base64}
+        mimeType={editing.mimeType}
+        docType="receipt"
+        title="Bill / Receipt"
+        onSave={(r) => {
+          const enhanced = r.enhancedBase64 || r.croppedBase64 || r.originalBase64;
+          setMimeType("image/jpeg");
+          setImageBase64(enhanced);
+          setPreview(`data:image/jpeg;base64,${enhanced}`);
+          setEditing(null);
+        }}
+        onCancel={() => setEditing(null)}
+      />
+    )}
     <div className="grid md:grid-cols-2 gap-6">
       {/* Left — upload / camera */}
       <div className="space-y-3">
@@ -252,5 +271,6 @@ export default function BillReceiptScannerPanel() {
         )}
       </div>
     </div>
+    </>
   );
 }
