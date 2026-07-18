@@ -7055,183 +7055,6 @@ function ReportTemplatesTab() {
 }
 
 // ============================================================
-// OLLAMA SETTINGS CARD — Phase 10C Local Model Configuration
-// ============================================================
-const OLLAMA_MODELS_KEY = "ollama_known_models";
-
-function OllamaSettingsCard() {
-  const { toast } = useToast();
-  const [baseUrl, setBaseUrl] = useState("");
-  const [model, setModel] = useState("llama3");
-  const [localOnly, setLocalOnly] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [availableModels, setAvailableModels] = useState<string[]>(() => {
-    try {
-      const stored = localStorage.getItem(OLLAMA_MODELS_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.every((m) => typeof m === "string")) return parsed;
-      }
-    } catch { /* ignore */ }
-    return [];
-  });
-
-  useEffect(() => {
-    api.get<{ ollamaBaseUrl?: string | null; ollamaModel?: string | null; ollamaLocalOnly?: boolean; ollamaKnownModels?: string }>("/api/clinic-settings")
-      .then((d) => {
-        setBaseUrl(d.ollamaBaseUrl ?? "");
-        setModel(d.ollamaModel ?? "qwen3:8b");
-        setLocalOnly(d.ollamaLocalOnly ?? false);
-        // Seed availableModels from DB so every workstation gets the dropdown
-        // without needing to run "Test Connection" individually.
-        if (d.ollamaKnownModels) {
-          try {
-            const parsed = JSON.parse(d.ollamaKnownModels);
-            if (Array.isArray(parsed) && parsed.length > 0 && parsed.every((m) => typeof m === "string")) {
-              setAvailableModels(parsed);
-              try { localStorage.setItem(OLLAMA_MODELS_KEY, d.ollamaKnownModels); } catch { /* ignore */ }
-            }
-          } catch { /* ignore */ }
-        }
-      })
-      .catch(() => {});
-  }, []);
-
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      await api.put("/api/clinic-settings", {
-        ollamaBaseUrl: baseUrl.trim() || null,
-        ollamaModel: model.trim() || "qwen3:8b",
-        ollamaLocalOnly: localOnly,
-      });
-      toast({ title: "Ollama settings saved" });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to save";
-      toast({ title: "Save failed", description: msg, variant: "destructive" });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleTest = async () => {
-    if (!baseUrl.trim()) {
-      toast({ title: "Enter a base URL first", variant: "destructive" });
-      return;
-    }
-    setTesting(true);
-    try {
-      const resp = await api.post<{ ok: boolean; model: string; models?: string[]; modelFound?: boolean; latencyMs?: number; error?: string }>(
-        "/api/radiology-ollama/test",
-        { baseUrl: baseUrl.trim(), model: model.trim() || "llama3", allowLocal: localOnly }
-      );
-      if (resp.ok) {
-        const pulledModels = resp.models ?? [];
-        if (pulledModels.length > 0) {
-          setAvailableModels(pulledModels);
-          const modelsJson = JSON.stringify(pulledModels);
-          try { localStorage.setItem(OLLAMA_MODELS_KEY, modelsJson); } catch { /* ignore */ }
-          // Persist to DB so all other workstations see the dropdown immediately.
-          api.put("/api/clinic-settings", { ollamaKnownModels: modelsJson }).catch(() => {});
-        }
-        const detail = [
-          resp.modelFound ? `Model "${resp.model}" found` : `Model "${resp.model}" not in list (${pulledModels.slice(0, 3).join(", ")})`,
-          resp.latencyMs != null ? `${resp.latencyMs}ms` : null,
-        ].filter(Boolean).join(" · ");
-        toast({ title: "Ollama connection OK", description: detail });
-      } else {
-        toast({ title: "Ollama connection failed", description: resp.error ?? "Unknown error", variant: "destructive" });
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed";
-      toast({ title: "Test failed", description: msg, variant: "destructive" });
-    } finally {
-      setTesting(false);
-    }
-  };
-
-  return (
-    <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
-      <div>
-        <h2 className="font-bold text-lg flex items-center gap-2">
-          🦙 Ollama Local Model Configuration (Phase 10C)
-        </h2>
-        <p className="text-sm text-muted-foreground mt-1">
-          Run privacy-preserving AI locally using Ollama. Requires the <strong>Ollama Local Models</strong> feature flag to be ON.
-          All AI output is a draft and requires radiologist review.
-        </p>
-      </div>
-      <div className="space-y-3">
-        <div>
-          <Label className="text-sm">Ollama Base URL</Label>
-          <Input
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="http://localhost:11434"
-            className="mt-1"
-          />
-          <p className="text-[11px] text-muted-foreground mt-1">Leave blank to disable. Use the machine's LAN IP if Ollama runs on a separate workstation.</p>
-        </div>
-        <div>
-          <Label className="text-sm">Model Name</Label>
-          {availableModels.length > 0 ? (
-            <div className="mt-1 space-y-1">
-              <select
-                value={availableModels.includes(model) ? model : "__custom__"}
-                onChange={(e) => { if (e.target.value !== "__custom__") setModel(e.target.value); }}
-                className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
-              >
-                {availableModels.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-                {!availableModels.includes(model) && (
-                  <option value="__custom__">{model} (custom)</option>
-                )}
-              </select>
-              <p className="text-[11px] text-muted-foreground">
-                Models pulled on the Ollama instance. To use a different model, type it below after pulling it with <code className="font-mono">ollama pull &lt;name&gt;</code>.
-              </p>
-              <Input
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder="qwen3:8b"
-                className="text-xs h-7"
-              />
-            </div>
-          ) : (
-            <>
-              <Input
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder="llama3"
-                className="mt-1"
-              />
-              <p className="text-[11px] text-muted-foreground mt-1">Recommended for radiology: <code className="font-mono">qwen3:14b</code> (best quality) or <code className="font-mono">qwen3:8b</code> (faster). Pull on Windows PC: <code className="font-mono">ollama pull qwen3:8b</code>. Click "Test Connection" to see available models.</p>
-            </>
-          )}
-        </div>
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" checked={localOnly} onChange={(e) => setLocalOnly(e.target.checked)} className="h-4 w-4" />
-          <div>
-            <span className="text-sm font-medium">Local-only mode</span>
-            <p className="text-[11px] text-muted-foreground">Disable cloud AI fallback — use Ollama exclusively. Useful for strict data-residency environments.</p>
-          </div>
-        </label>
-      </div>
-      <div className="flex gap-2">
-        <Button size="sm" onClick={handleSave} disabled={saving}>
-          {saving ? "Saving..." : "Save Ollama Settings"}
-        </Button>
-        <Button size="sm" variant="outline" onClick={handleTest} disabled={testing} type="button">
-          {testing ? "Testing..." : "Test Connection"}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-// ============================================================
 // RADIOLOGY SETTINGS TAB — Productivity Tools
 // ============================================================
 function RadiologySettingsTab() {
@@ -7648,8 +7471,17 @@ function RadiologySettingsTab() {
         </div>
       </div>
 
-      {/* Phase 10C: Ollama Local Model Configuration */}
-      <OllamaSettingsCard />
+      {/* Ollama Local Model config is configured in ONE place — Radiology
+          Settings → AI & Templates → Local AI (POST /api/clinic-settings/ollama).
+          The old duplicate card here wrote a different, partial path and is
+          removed to avoid two competing save flows. */}
+      <div className="bg-card border border-card-border rounded-xl p-5">
+        <h2 className="font-bold text-lg flex items-center gap-2">🦙 Ollama Local Model Configuration</h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Configured in <strong>Radiology Settings → AI &amp; Templates → Local AI</strong> — the single place for the
+          Ollama endpoint (primary/fallback), model, timeout, and enable toggle.
+        </p>
+      </div>
 
       {/* Phase 9: Radiology Memory + Context Engine */}
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">

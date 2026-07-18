@@ -1,0 +1,101 @@
+/**
+ * AI Scheduler — pure decision logic (Phase P3 / Gate G10).
+ *
+ * The scheduler is a POLICY layer above the existing radiology job engine — it
+ * decides WHAT to enqueue and WHEN across the five processing modes; it never
+ * contains its own queue or worker (enqueue goes through enqueueAiShadowJob →
+ * the existing radiologyJobs runner). No DB — unit-tested directly.
+ */
+export type ModalityMode = "immediate" | "night_batch" | "manual" | "disabled";
+export type Priority = "stat" | "emergency" | "vip" | "routine";
+
+export interface SchedulerConfig {
+  nightStart: string; // "HH:MM" local
+  nightEnd: string;
+  quietStart: string;
+  quietEnd: string;
+  maxConcurrentJobs: number;
+  gpuLimitPercent: number;
+  cpuLimitPercent: number;
+  skipFinalizedReports: boolean;
+  skipUnchangedStudies: boolean;
+}
+
+function toMinutes(hhmm: string): number {
+  const [h, m] = hhmm.split(":").map((x) => Number(x));
+  return (h || 0) * 60 + (m || 0);
+}
+
+/** Window membership, handling windows that wrap past midnight. */
+export function inWindow(nowMinutes: number, start: string, end: string): boolean {
+  const s = toMinutes(start);
+  const e = toMinutes(end);
+  return s <= e ? nowMinutes >= s && nowMinutes < e : nowMinutes >= s || nowMinutes < e;
+}
+
+export function isWithinNightWindow(nowMinutes: number, cfg: SchedulerConfig): boolean {
+  return inWindow(nowMinutes, cfg.nightStart, cfg.nightEnd);
+}
+export function isQuietHours(nowMinutes: number, cfg: SchedulerConfig): boolean {
+  return inWindow(nowMinutes, cfg.quietStart, cfg.quietEnd);
+}
+
+export interface SchedulingInput {
+  modalityMode: ModalityMode;
+  priority: Priority;
+  nowMinutes: number;
+  isFinalized: boolean;
+  isUnchanged: boolean;
+  manualRequest?: boolean;
+}
+
+export interface SchedulingDecision {
+  enqueue: boolean;
+  mode: "immediate" | "night_batch" | "manual";
+  reason: string;
+}
+
+/**
+ * Decide whether/when a study should be AI-processed. STAT/emergency always run
+ * immediately (even in quiet hours). Otherwise: immediate modality runs now but
+ * defers to night batch during quiet hours; night_batch defers; manual/disabled
+ * never auto-enqueue. Finalized and unchanged studies are skipped per config.
+ */
+export function decideScheduling(inp: SchedulingInput, cfg: SchedulerConfig): SchedulingDecision {
+  if (inp.manualRequest) return { enqueue: true, mode: "immediate", reason: "manual/on-demand request" };
+  if (cfg.skipFinalizedReports && inp.isFinalized) return { enqueue: false, mode: "manual", reason: "skip: report finalized" };
+  if (cfg.skipUnchangedStudies && inp.isUnchanged) return { enqueue: false, mode: "manual", reason: "skip: study unchanged" };
+
+  const stat = inp.priority === "stat" || inp.priority === "emergency";
+  const quiet = isQuietHours(inp.nowMinutes, cfg);
+
+  switch (inp.modalityMode) {
+    case "disabled":
+      return { enqueue: false, mode: "manual", reason: "modality AI disabled" };
+    case "manual":
+      return { enqueue: false, mode: "manual", reason: "modality manual-only" };
+    case "immediate":
+      if (quiet && !stat) return { enqueue: false, mode: "night_batch", reason: "quiet hours — deferred to night batch" };
+      return { enqueue: true, mode: "immediate", reason: stat ? "STAT/emergency immediate" : "immediate" };
+    case "night_batch":
+      if (stat) return { enqueue: true, mode: "immediate", reason: "STAT/emergency overrides night-batch" };
+      return { enqueue: false, mode: "night_batch", reason: "queued for night batch window" };
+    default:
+      return { enqueue: false, mode: "manual", reason: "unknown modality mode" };
+  }
+}
+
+export interface ResourceLoad {
+  runningJobs: number;
+  gpuPercent?: number;
+  cpuPercent?: number;
+}
+
+/** Admission control: refuse to start a new job past the concurrency or resource
+ *  ceilings. Resource percentages are optional (supplied by staging metrics). */
+export function admitJob(load: ResourceLoad, cfg: SchedulerConfig): { admit: boolean; reason: string } {
+  if (load.runningJobs >= cfg.maxConcurrentJobs) return { admit: false, reason: `at max concurrency (${load.runningJobs}/${cfg.maxConcurrentJobs})` };
+  if (load.gpuPercent != null && load.gpuPercent > cfg.gpuLimitPercent) return { admit: false, reason: `GPU ${load.gpuPercent}% > limit ${cfg.gpuLimitPercent}%` };
+  if (load.cpuPercent != null && load.cpuPercent > cfg.cpuLimitPercent) return { admit: false, reason: `CPU ${load.cpuPercent}% > limit ${cfg.cpuLimitPercent}%` };
+  return { admit: true, reason: "admitted" };
+}

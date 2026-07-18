@@ -7,6 +7,7 @@ export default defineConfig({
       "bridge-service/src/**/*.test.js",
       "lib/**/*.test.ts",
       "scripts/**/*.test.cjs",
+      "scripts/**/*.test.mjs",
     ],
     environment: "node",
   },

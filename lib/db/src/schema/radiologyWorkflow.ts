@@ -9,6 +9,7 @@
 import {
   pgTable, serial, text, integer, boolean, timestamp, jsonb, index,
 } from "drizzle-orm/pg-core";
+import { radiologyStudiesTable } from "./radiology";
 
 // ── 1. MWL Entries ─────────────────────────────────────────────────────────────────────────────────────────
 
@@ -103,7 +104,11 @@ export const aiJobQueueTable = pgTable(
   "ai_job_queue",
   {
     id: serial("id").primaryKey(),
-    studyId: integer("study_id").notNull(),
+    // FK to the order/financial study spine (Gate G3). The value is always
+    // resolved server-side from a canonical identity — never trusted from a
+    // client request. The production constraint is added NOT VALID via
+    // migrations/add_canonical_study_crosswalk.sql (safe on existing rows).
+    studyId: integer("study_id").notNull().references(() => radiologyStudiesTable.id),
     jobType: text("job_type").notNull(),
     // ocr_extraction | impression | structured_report | critical_detection | template_recommendation | auto_coding
     modality: text("modality").notNull().default("OT"),

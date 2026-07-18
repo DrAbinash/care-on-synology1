@@ -926,6 +926,17 @@ export default function FormF() {
     return resp;
   }
 
+  // ── Blob → base64 (no data: prefix), via FileReader — safe for large images
+  // (avoids the call-stack blowup of spreading a Uint8Array into String.fromCharCode). ──
+  function blobToBase64(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result ?? "").split(",")[1] ?? "");
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
+  }
+
   // ── ID card image processing (shared by upload, UnifiedScanCapture, camera) ──
   async function processIdImage(file: Blob) {
     setIdCardUploading(true);
@@ -1775,7 +1786,25 @@ export default function FormF() {
                         module="form-f"
                         docType="id-card"
                         triggerLabel={idCardUploading ? "Scanning…" : "Scan ID Front"}
-                        onCapture={async (result) => { await processIdImage(result.file); }}
+                        onCapture={async (result) => {
+                          // Camera-originated captures (webcam / TVS / mobile-phone
+                          // camera) typically include background/skew a physical ID
+                          // card needs cropped out — route through the crop/enhance
+                          // review panel (auto-crop fires automatically on open) before
+                          // OCR, same pipeline the older captureFromCamera() flow used
+                          // but that UnifiedScanCapture's onCapture had bypassed.
+                          // Disk uploads and the workstation/bridge scanner already
+                          // produce a clean, pre-cropped image — go straight to OCR.
+                          const isCameraSource = result.source === "webcam" || result.source === "tvs" || result.source === "mobile";
+                          if (isCameraSource) {
+                            const base64 = await blobToBase64(result.file);
+                            setScanPanelBase64(base64);
+                            setScanPanelMime(result.mimeType || "image/jpeg");
+                            setScanPanelOpen(true);
+                            return;
+                          }
+                          await processIdImage(result.file);
+                        }}
                         onError={(msg) => toast({ title: "Scan failed", description: msg, variant: "destructive" })}
                       />
                       {/* ── Upload ID Back (file picker) — back side has no OCR ── */}

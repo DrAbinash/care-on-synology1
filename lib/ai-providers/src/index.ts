@@ -653,3 +653,14 @@ export async function probeOllamaModelVision(
     clearTimeout(timer);
   }
 }
+
+// ─── Phase P2 — AI Gateway / Evaluation (Gates G7/G8) ─────────────────────────
+// The AI Gateway is the hardened evolution of this module: it reuses the
+// provider routing + generateAiResponse above and adds capability routing,
+// resilience, contract enforcement, and evaluation. See gateway.ts.
+export * from "./reportContract";
+export * from "./circuitLogic";
+export * from "./circuitBreaker";
+export * from "./capabilityRegistry";
+export * from "./gateway";
+export * from "./evaluation";
