@@ -12,6 +12,25 @@ import * as Haptics from "expo-haptics";
 
 import { useColors } from "@/hooks/useColors";
 import { useApi } from "@/hooks/useApi";
+import PaymentWebView, { PaymentResult, RazorpayPaymentPayload } from "@/components/PaymentWebView";
+
+type PendingPayment =
+  | { mode: "url"; url: string }
+  | { mode: "post"; url: string; fields: Record<string, string> }
+  | {
+      mode: "razorpay";
+      razorpay: {
+        keyId: string;
+        amountPaise: number;
+        orderId: string;
+        name: string;
+        description: string;
+        prefillName: string;
+        prefillPhone: string;
+        prefillEmail: string;
+        bookingRef: string;
+      };
+    };
 
 export default function BookScreen() {
   const colors = useColors();
@@ -26,6 +45,8 @@ export default function BookScreen() {
   const [search, setSearch] = useState("");
   const [patient, setPatient] = useState({ name: "", phone: "", email: "", date: "", timeSlot: "", notes: "" });
   const [successRef, setSuccessRef] = useState("");
+  const [pendingPayment, setPendingPayment] = useState<PendingPayment | null>(null);
+  const [payError, setPayError] = useState("");
 
   const { data: catalog, isLoading } = useQuery({
     queryKey: ["booking-catalog"],
@@ -93,7 +114,7 @@ export default function BookScreen() {
   const [slotPickerOpen, setSlotPickerOpen] = useState(false);
 
   const bookMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (): Promise<PendingPayment> => {
       const body = {
         name: patient.name,
         phone: patient.phone,
@@ -107,52 +128,73 @@ export default function BookScreen() {
         isVip: false,
       };
       const gateway = config?.gateway;
+      // Every gateway below is driven to completion inside PaymentWebView (a
+      // native WebView), not the browser-only window.location/DOM-form-submit
+      // APIs this used to call — those are no-ops on Android/iOS.
       if (gateway === "icici") {
-        const res = await api.post("/api/public/booking/icici-initiate", body) as { bookingRef: string; redirectUrl: string; tranCtx: string };
-        // For mobile WebView, redirect to payment URL
-        if (res.redirectUrl) {
-          window.location.href = res.redirectUrl;
-        }
-        return res;
+        const res = await api.post("/api/public/booking/icici-initiate", body) as { bookingRef: string; redirectUrl: string };
+        return { mode: "url", url: res.redirectUrl };
       }
       if (gateway === "payu") {
-        const res = await api.post("/api/public/booking/payu-initiate", body) as { payuUrl: string; fields: Record<string, string> };
-        // Build and submit a hidden form
-        const form = document.createElement("form");
-        form.method = "POST";
-        form.action = res.payuUrl;
-        form.style.display = "none";
-        for (const [k, v] of Object.entries(res.fields)) {
-          const input = document.createElement("input");
-          input.type = "hidden"; input.name = k; input.value = String(v);
-          form.appendChild(input);
-        }
-        document.body.appendChild(form);
-        form.submit();
-        return res;
+        // Backend returns PaymentEngine's rawResponse verbatim: { fields, actionUrl }.
+        const res = await api.post("/api/public/booking/payu-initiate", body) as { fields: Record<string, string>; actionUrl: string };
+        return { mode: "post", url: res.actionUrl, fields: res.fields };
       }
       if (gateway === "phonepe") {
         const res = await api.post("/api/public/booking/phonepe-initiate", body) as { redirectUrl: string };
-        if (res.redirectUrl) window.location.href = res.redirectUrl;
-        return res;
+        return { mode: "url", url: res.redirectUrl };
       }
       if (gateway === "bharatpe") {
         const res = await api.post("/api/public/booking/bharatpe-initiate", body) as { redirectUrl: string };
-        if (res.redirectUrl) window.location.href = res.redirectUrl;
-        return res;
+        return { mode: "url", url: res.redirectUrl };
       }
-      // Fallback: Razorpay or QR
-      const res = await api.post("/api/public/booking/create-order", body) as { bookingRef: string; razorpayOrderId: string; amountPaise: number; keyId: string };
-      return res;
+      // Razorpay: create the order, then drive its JS checkout inside the WebView.
+      const res = await api.post("/api/public/booking/create-order", body) as {
+        bookingRef: string; razorpayOrderId: string; amountPaise: number; keyId: string;
+      };
+      return {
+        mode: "razorpay",
+        razorpay: {
+          keyId: res.keyId,
+          amountPaise: res.amountPaise,
+          orderId: res.razorpayOrderId,
+          name: "Care Diagnostics",
+          description: `Test booking — ${res.bookingRef}`,
+          prefillName: patient.name,
+          prefillPhone: patient.phone,
+          prefillEmail: patient.email,
+          bookingRef: res.bookingRef,
+        },
+      };
     },
-    onSuccess: (data: any) => {
-      setSuccessRef(data.bookingRef || "");
-      setStep("done");
+    onSuccess: (data) => {
+      setPayError("");
+      setPendingPayment(data);
     },
-    onError: () => {
+    onError: (err: unknown) => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setPayError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
     },
   });
+
+  const handlePaymentResult = useCallback((result: PaymentResult) => {
+    setPendingPayment(null);
+    if (result.outcome === "confirmed") {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setPayError("");
+      setSuccessRef(result.ref);
+      setStep("done");
+    } else if (result.outcome === "failed") {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setPayError(result.reason);
+    }
+    // "cancelled": user backed out of the WebView — return to the pay step silently.
+  }, []);
+
+  const handleRazorpayVerify = useCallback(async (payload: RazorpayPaymentPayload) => {
+    const res = await api.post("/api/public/booking/verify-payment", payload) as { success: boolean; bookingRef: string };
+    return { bookingRef: res.bookingRef };
+  }, [api]);
 
   if (!enabled && config) {
     return (
@@ -384,6 +426,13 @@ export default function BookScreen() {
                 )}
               </View>
 
+              {payError ? (
+                <View style={[styles.warnBox, { backgroundColor: colors.destructive + "12", borderColor: colors.destructive + "40", marginTop: 12 }]}>
+                  <Feather name="alert-circle" size={16} color={colors.destructive} />
+                  <Text style={[styles.warnText, { color: colors.destructive }]}>{payError}</Text>
+                </View>
+              ) : null}
+
               <TouchableOpacity
                 style={[styles.nextBtn, { backgroundColor: colors.primary, opacity: config?.gateway ? 1 : 0.4 } ]}
                 disabled={!config?.gateway}
@@ -421,6 +470,22 @@ export default function BookScreen() {
             </TouchableOpacity>
           </View>
         </View>
+      )}
+
+      {pendingPayment?.mode === "url" && (
+        <PaymentWebView visible mode="url" url={pendingPayment.url} onResult={handlePaymentResult} />
+      )}
+      {pendingPayment?.mode === "post" && (
+        <PaymentWebView visible mode="post" url={pendingPayment.url} fields={pendingPayment.fields} onResult={handlePaymentResult} />
+      )}
+      {pendingPayment?.mode === "razorpay" && (
+        <PaymentWebView
+          visible
+          mode="razorpay"
+          razorpay={pendingPayment.razorpay}
+          onVerify={handleRazorpayVerify}
+          onResult={handlePaymentResult}
+        />
       )}
     </KeyboardAvoidingView>
   );

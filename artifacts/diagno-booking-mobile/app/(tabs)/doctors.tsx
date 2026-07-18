@@ -1,4 +1,4 @@
-import { StyleSheet, Text, View, ScrollView, FlatList, TouchableOpacity } from "react-native";
+import { StyleSheet, Text, View, FlatList, RefreshControl, ActivityIndicator } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
@@ -31,7 +31,7 @@ export default function DoctorsScreen() {
 
       {isLoading ? (
         <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-          <ActivityIndicator colors={colors} />
+          <ActivityIndicator color={colors.primary} />
         </View>
       ) : doctors.length === 0 ? (
         <View style={styles.empty}>
@@ -83,14 +83,6 @@ function DoctorCard({ item, colors }: { item: any; colors: any }) {
   );
 }
 
-function ActivityIndicator({ colors }: { colors: any }) {
-  return <View style={[styles.skeleton, { backgroundColor: colors.card }]} />;
-}
-
-function RefreshControl({ refreshing, onRefresh, tintColor }: { refreshing: boolean; onRefresh: () => void; tintColor: string }) {
-  return null; // Stub for web; on native this is imported from react-native
-}
-
 const styles = StyleSheet.create({
   container: { flex: 1 },
   header: { fontSize: 24, fontFamily: "Inter_700Bold" },
@@ -106,5 +98,4 @@ const styles = StyleSheet.create({
   empty: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 40 },
   emptyTitle: { fontSize: 18, fontFamily: "Inter_600SemiBold", marginTop: 16 },
   emptyText: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 6 },
-  skeleton: { height: 100, borderRadius: 16, opacity: 0.5, marginHorizontal: 16 },
 });

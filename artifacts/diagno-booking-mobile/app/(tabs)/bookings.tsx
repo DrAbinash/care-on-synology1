@@ -72,7 +72,7 @@ export default function BookingsScreen() {
           refreshControl={
             <RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={colors.primary} />
           }
-          renderItem={({ item }) => <BookingCard item={item} colors={colors} onPress={() => router.push(`/booking-detail?id=${item.id}`)} />}
+          renderItem={({ item }) => <BookingCard item={item} colors={colors} onPress={() => router.push(`/booking-detail?ref=${encodeURIComponent(item.bookingRef)}`)} />}
           ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
         />
       )}
