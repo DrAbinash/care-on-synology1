@@ -1,0 +1,27 @@
+{
+  "$comment": "Documentation<->code grounding claims (Gate G1). Every load-bearing architecture fact in docs/architecture/radiology-ai is pinned here and verified by scripts/grounding-check.cjs on build. If the code changes, either the code or this manifest (and the doc) must be updated together. Add a claim whenever a design doc starts depending on a concrete table/column/function.",
+  "claims": [
+    { "kind": "table", "table": "radiology_studies", "file": "lib/db/src/schema/radiology.ts", "note": "order/financial study spine — the studyId surrogate" },
+    { "kind": "column", "table": "radiology_studies", "column": "study_instance_uid", "file": "lib/db/src/schema/radiology.ts", "note": "canonical imaging identity lives here" },
+    { "kind": "table", "table": "ai_job_queue", "file": "lib/db/src/schema/radiologyWorkflow.ts", "note": "AI job record; driven by the one job engine" },
+    { "kind": "column", "table": "ai_job_queue", "column": "study_id", "file": "lib/db/src/schema/radiologyWorkflow.ts", "note": "FK to radiology_studies.id (Gate G3)" },
+    { "kind": "column", "table": "ai_job_queue", "column": "result_json", "file": "lib/db/src/schema/radiologyWorkflow.ts", "note": "TEXT (transient), not jsonb — no GIN index" },
+    { "kind": "contains", "file": "lib/db/src/schema/radiologyWorkflow.ts", "text": "references(() => radiologyStudiesTable.id)", "note": "ai_job_queue.study_id declares the FK reference" },
+    { "kind": "table", "table": "canonical_study", "file": "lib/db/src/schema/canonicalStudy.ts", "note": "the thin Canonical Study crosswalk" },
+    { "kind": "column", "table": "canonical_study", "column": "study_instance_uid", "file": "lib/db/src/schema/canonicalStudy.ts", "note": "unique canonical identity key" },
+    { "kind": "table", "table": "dicom_incoming_studies", "file": "lib/db/src/schema/radiologyWorkflow.ts", "note": "real arrival/stability signal (not the dead hashSignature)" },
+    { "kind": "column", "table": "dicom_incoming_studies", "column": "transfer_status", "file": "lib/db/src/schema/radiologyWorkflow.ts", "note": "receiving|complete|... stability window" },
+    { "kind": "table", "table": "radiology_worklist", "file": "lib/db/src/schema/radiologyWorklist.ts", "note": "reporting/queue spine" },
+    { "kind": "column", "table": "radiology_worklist", "column": "ai_draft_status", "file": "lib/db/src/schema/radiologyWorklist.ts", "note": "NONE|PENDING|READY|ERROR (draft readiness = READY)" },
+    { "kind": "table", "table": "audit_logs", "file": "lib/db/src/schema/auditLogs.ts", "note": "tamper-evident audit spine (archive-before-purge)" },
+    { "kind": "function", "name": "resolveRadiologyStudyId", "file": "artifacts/api-server/src/lib/canonicalStudy.ts", "note": "server-side study identity resolution (Gate G3)" },
+    { "kind": "function", "name": "ensureCanonicalStudy", "file": "artifacts/api-server/src/lib/canonicalStudy.ts", "note": "idempotent crosswalk upsert" },
+    { "kind": "function", "name": "validateOllamaUrl", "file": "artifacts/api-server/src/routes/radiologyOllama.ts", "note": "SSRF guard + egress allowlist (Gate G2)" },
+    { "kind": "contains", "file": "artifacts/api-server/src/routes/radiologyOllama.ts", "text": "100.64.0.0/10", "note": "tailnet/CGNAT range is now blocked (was missing)" },
+    { "kind": "contains", "file": "artifacts/api-server/src/routes/radiologyOllama.ts", "text": "AI_EGRESS_ALLOWLIST", "note": "exact-endpoint egress allowlist env" },
+    { "kind": "function", "name": "runRadiologyJobTick", "file": "artifacts/api-server/src/lib/radiologyJobs.ts", "note": "the ONE durable job engine (constitution §6/§14)" },
+    { "kind": "function", "name": "enqueueRadiologyJob", "file": "artifacts/api-server/src/lib/radiologyJobs.ts", "note": "idempotent enqueue (idempotencyKey dedup)" },
+    { "kind": "contains", "file": "artifacts/api-server/src/cron.ts", "text": "archive-before-purge", "note": "audit retention fix — no unarchived deletes (Gate G2)" },
+    { "kind": "contains", "file": "migrations/add_canonical_study_crosswalk.sql", "text": "ai_job_queue_study_id_fkey", "note": "production FK migration (NOT VALID, idempotent)" }
+  ]
+}

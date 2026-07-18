@@ -1,0 +1,37 @@
+# Radiology AI Platform — Architecture Checklist
+
+A running conformance checklist against the constitution's non-negotiable principles (§22) and the
+ONE-of-each guarantees. Tick items only when they are enforced **in code**, not merely intended.
+
+## ONE-of-each guarantees
+
+| Guarantee | Enforced today | Notes |
+|---|---|---|
+| One canonical study object | 🟡 Partial (P0) | `canonical_study` crosswalk + FK exist; consumers migrate in later phases. |
+| One job engine | ⬜ | The `radiologyJobs.ts` runner is designated the single engine; AI jobs wire to it in G4. |
+| One scheduler | ⬜ | AI Scheduler is a later phase (G10). |
+| One AI gateway | ⬜ | G7. Direct provider calls to be eliminated then. |
+| One rules engine | ✅ (pre-existing) | `lib/report-quality`. |
+| One measurement engine | ✅ (pre-existing) | `lib/measurements`. |
+| One evidence store / manifest / evaluation framework | ⬜ | G5 / G8. |
+
+## Non-negotiable principles — P0 conformance
+
+- [x] **Backend-only, no clinical-workflow change** — P0 touches schema/routes/cron/CI only; no UI, no radiologist path.
+- [x] **Deterministic before AI** — P0 adds no AI behavior at all.
+- [x] **Backward compatible / incremental** — additive table, `NOT VALID` FK, idempotent migration, no deletes.
+- [x] **Local-first PHI / egress controlled** — SSRF hardened; exact-endpoint allowlist added (`AI_EGRESS_ALLOWLIST`).
+- [x] **Reproducible / grounded** — every load-bearing doc claim is machine-checked (G1); build fails on drift.
+- [x] **Server-side identity** — `study_id` resolved server-side; client-supplied ids no longer trusted.
+- [x] **No unarchived audit loss** — audit retention is archive-before-purge.
+- [ ] **AI never blocks / degrade-never-block** — N/A in P0 (no AI path yet); enforced from G4 onward.
+- [ ] **No finding without evidence** — G5/G9.
+- [ ] **JSON-first reporting** — G11.
+
+## Grounding claims coverage (G1)
+
+The grounding manifest (`scripts/grounding.manifest.json`) currently pins **22** claims spanning the
+Canonical Study identity, `ai_job_queue`, `dicom_incoming_studies` (real arrival signal), the worklist
+`ai_draft_status` enum, the audit spine, the SSRF/egress fix, the one job engine (`radiologyJobs.ts`), and
+the P0 migration. Extend this manifest whenever a design doc begins to depend on a concrete
+table / column / function.

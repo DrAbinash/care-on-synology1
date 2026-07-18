@@ -29,18 +29,50 @@ import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireS
 
 export const radiologyOllamaRouter = Router();
 
-// ── SSRF guard ───────────────────────────────────────────────────────────────
+// ── SSRF guard (Phase P0 / Gate G2) ────────────────────────────────────────────
+// Layered defence:
+//   1. ALWAYS_BLOCKED  — cloud metadata / unspecified hosts, unreachable even in
+//      Local/LAN mode. These are never a legitimate Ollama target and are the
+//      classic SSRF pivot.
+//   2. Egress allowlist — if AI_EGRESS_ALLOWLIST is configured it is
+//      AUTHORITATIVE: the target host (or host:port) must be on it, and this
+//      holds even in Local/LAN mode. This is the exact-endpoint allowlist the
+//      architecture requires; leaving it unset preserves legacy behaviour.
+//   3. PRIVATE_RANGES  — private / LAN / CGNAT (incl. the 100.64.0.0/10 tailnet
+//      range, previously missing) blocked UNLESS Local/LAN mode is enabled.
+
+// Never reachable, regardless of Local/LAN mode.
+const ALWAYS_BLOCKED: RegExp[] = [
+  /^169\.254\.169\.254$/,             // cloud instance metadata (AWS/GCP/Azure/OpenStack)
+  /^metadata(\.google)?\.internal$/i, // GCP metadata hostname
+  /^0\.0\.0\.0$/,
+  /^\[?::\]?$/,                        // IPv6 unspecified
+];
+
+// Private / LAN / CGNAT ranges — require Local/LAN mode when no allowlist is set.
 const PRIVATE_RANGES: RegExp[] = [
   /^localhost$/i,
   /^127\.\d+\.\d+\.\d+$/,
   /^10\.\d+\.\d+\.\d+$/,
   /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/,
   /^192\.168\.\d+\.\d+$/,
-  /^169\.254\.\d+\.\d+$/,  // link-local
-  /^\[?::1\]?$/,            // IPv6 loopback
-  /^\[?fe80::/i,            // IPv6 link-local
-  /^0\.0\.0\.0$/,
+  /^169\.254\.\d+\.\d+$/,             // link-local
+  /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+$/, // 100.64.0.0/10 CGNAT / Tailscale tailnet
+  /^\[?::1\]?$/,                       // IPv6 loopback
+  /^\[?fe80::/i,                      // IPv6 link-local
+  /^\[?f[cd][0-9a-f]{2}:/i,           // IPv6 unique-local fc00::/7
 ];
+
+/** Optional exact-endpoint egress allowlist from AI_EGRESS_ALLOWLIST
+ *  (comma-separated host or host:port). Empty ⇒ no allowlist (legacy behaviour). */
+function egressAllowlist(): Set<string> {
+  return new Set(
+    (process.env.AI_EGRESS_ALLOWLIST ?? "")
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
 
 function validateOllamaUrl(raw: string, allowLocal = false): { ok: true; url: URL } | { ok: false; reason: string } {
   let u: URL;
@@ -48,8 +80,26 @@ function validateOllamaUrl(raw: string, allowLocal = false): { ok: true; url: UR
   if (u.protocol !== "http:" && u.protocol !== "https:") {
     return { ok: false, reason: "Only http:// and https:// are allowed" };
   }
+  const host = u.hostname;
+
+  // 1. Metadata / unspecified endpoints are NEVER reachable, even in LAN mode.
+  for (const re of ALWAYS_BLOCKED) {
+    if (re.test(host)) return { ok: false, reason: `Blocked host (${host})` };
+  }
+
+  // 2. An explicit allowlist is authoritative — even in Local/LAN mode.
+  const allow = egressAllowlist();
+  if (allow.size > 0) {
+    const hostKey = host.toLowerCase();
+    const port = u.port || (u.protocol === "https:" ? "443" : "80");
+    if (!allow.has(hostKey) && !allow.has(`${hostKey}:${port}`)) {
+      return { ok: false, reason: `Host not in AI egress allowlist (${host})` };
+    }
+    return { ok: true, url: u };
+  }
+
+  // 3. No allowlist configured: private/LAN/CGNAT require Local/LAN mode.
   if (!allowLocal) {
-    const host = u.hostname;
     for (const re of PRIVATE_RANGES) {
       if (re.test(host)) {
         return {
