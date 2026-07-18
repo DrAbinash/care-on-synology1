@@ -295,6 +295,9 @@ export function AiReportingPanel() {
         ollamaTimeoutSeconds: localAi.timeoutSeconds,
         ollamaAuditEnabled: localAi.auditEnabled,
       });
+      // Keep the shared clinic-settings cache in sync — RadiologySettingsCenter
+      // and any other consumer read from the same ["clinic-settings"] query key.
+      void queryClient.invalidateQueries({ queryKey: ["clinic-settings"] });
       toast({ title: "Local AI settings saved" });
     } catch (e: unknown) {
       toast({ title: "Save failed", description: e instanceof Error ? e.message : "Error", variant: "destructive" });
@@ -306,6 +309,17 @@ export function AiReportingPanel() {
     queryKey: ["ai-reporting-settings"],
     queryFn: () => api.get("/api/ai-reporting/settings"),
   });
+
+  // Clinic settings — the Local AI tab is the ONE place Ollama endpoint/model/
+  // timeout/enabled config lives, so it must reflect what's actually saved
+  // (clinic_settings.ollama_*), not just UI defaults. Shares the ["clinic-settings"]
+  // query cache with RadiologySettingsCenter (same key), so no extra fetch when
+  // this panel is embedded there.
+  const { data: clinicSettingsData } = useQuery<Record<string, unknown>>({
+    queryKey: ["clinic-settings"],
+    queryFn: () => api.get("/api/clinic-settings"),
+  });
+  const [localAiHydrated, setLocalAiHydrated] = useState(false);
 
   // Local state
   const [globalDraft, setGlobalDraft] = useState<GlobalSettings>({
@@ -341,6 +355,28 @@ export function AiReportingPanel() {
       };
     }
     setProviderDrafts(newDrafts);
+  }
+
+  // Hydrate Local AI (Ollama) state from clinic_settings when it arrives —
+  // without this, the tab always showed hardcoded placeholder values, so
+  // opening it and clicking Save could silently overwrite real production
+  // endpoints with UI defaults.
+  if (clinicSettingsData && !localAiHydrated) {
+    setLocalAiHydrated(true);
+    const cs = clinicSettingsData as {
+      ollamaBaseUrl?: string | null; ollamaFallbackUrl?: string | null; ollamaModel?: string | null;
+      ollamaEnabled?: boolean; ollamaLocalOnly?: boolean; ollamaTimeoutSeconds?: number; ollamaAuditEnabled?: boolean;
+    };
+    setLocalAi((s) => ({
+      ...s,
+      primaryUrl: cs.ollamaBaseUrl ?? s.primaryUrl,
+      fallbackUrl: cs.ollamaFallbackUrl ?? s.fallbackUrl,
+      model: cs.ollamaModel ?? s.model,
+      enabled: cs.ollamaEnabled ?? s.enabled,
+      localOnly: cs.ollamaLocalOnly ?? s.localOnly,
+      timeoutSeconds: cs.ollamaTimeoutSeconds ?? s.timeoutSeconds,
+      auditEnabled: cs.ollamaAuditEnabled ?? s.auditEnabled,
+    }));
   }
 
   const saveMutation = useMutation({

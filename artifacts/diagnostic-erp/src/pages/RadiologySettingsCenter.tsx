@@ -661,38 +661,20 @@ export default function RadiologySettingsCenter() {
               <div className="rounded-xl border bg-card p-5 space-y-4">
                 <h3 className="font-semibold text-sm flex items-center gap-2">
                   <BrainCircuit size={16} className="text-purple-600" />
-                  Ollama Local Model Configuration
+                  Radiology AI Settings
                 </h3>
-                <div className="grid sm:grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <Label className="text-xs">Primary Ollama Endpoint</Label>
-                    <Input
-                      value={clinicSettings.ollamaBaseUrl ?? ""}
-                      onChange={(e) => updateClinicSettings.mutate({ ollamaBaseUrl: e.target.value })}
-                      placeholder="http://192.168.1.250:11434"
-                      className="h-9 text-sm"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs">Fallback Ollama Endpoint</Label>
-                    <Input
-                      value={clinicSettings.ollamaFallbackUrl ?? ""}
-                      onChange={(e) => updateClinicSettings.mutate({ ollamaFallbackUrl: e.target.value })}
-                      placeholder="http://172.16.1.140:11434"
-                      className="h-9 text-sm"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/40 mt-2">
-                  <div className="space-y-0.5">
-                    <span className="text-xs font-semibold">Enable AI Sonologist Assistant</span>
-                    <p className="text-[11px] text-muted-foreground">Allow AI draft generation and clinical quality checklist rules</p>
-                  </div>
-                  <Switch
-                    checked={clinicSettings.ollamaEnabled ?? false}
-                    onCheckedChange={(val) => updateClinicSettings.mutate({ ollamaEnabled: val })}
-                  />
+                {/* Ollama endpoint (primary/fallback), model, timeout, and the
+                    Local AI enable toggle live in ONE place — the "Local AI" tab
+                    of the panel to the right — so there is exactly one working
+                    save path (POST /api/clinic-settings/ollama) instead of two
+                    UIs writing the same columns through different, inconsistently
+                    validated code paths. */}
+                <div className="flex items-start gap-2 p-3 rounded-lg border bg-purple-50 dark:bg-purple-950/20 border-purple-200 dark:border-purple-800">
+                  <Info size={14} className="text-purple-600 mt-0.5 shrink-0" />
+                  <p className="text-xs text-muted-foreground">
+                    Ollama endpoint (primary/fallback), model, timeout, and the AI-enabled toggle are configured
+                    in the <strong>Local AI</strong> tab of the AI Reporting panel, on the right.
+                  </p>
                 </div>
 
                 <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/40">
