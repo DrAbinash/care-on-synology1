@@ -630,7 +630,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
             <div className="cd-book-topbar-title">
               {settings.logoUrl && (
                 <img
-                  src={settings.logoUrl}
+                  src={resolveAssetUrl(settings.logoUrl)}
                   alt="Clinic Logo"
                   style={{ height: 32, width: "auto", marginRight: ".5rem", objectFit: "contain" }}
                 />
@@ -1245,12 +1245,12 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                 (config?.gateway === "payu" && config?.customPayuBannerUrl)) ? (
                 <div style={{ margin: "-1.5rem -1.5rem 1.25rem -1.5rem", borderBottom: "1px solid hsl(var(--cd-hairline))" }}>
                   <img
-                    src={
+                    src={resolveAssetUrl(
                       config?.gateway === "icici" ? config.customIciciBannerUrl :
                       config?.gateway === "phonepe" ? config.customPhonepeBannerUrl :
                       config?.gateway === "bharatpe" ? config.customBharatpeBannerUrl :
-                      config.customPayuBannerUrl
-                    }
+                      config.customPayuBannerUrl,
+                    )}
                     alt={`${gatewayLabel} Banner`}
                     style={{ width: "100%", height: "auto", display: "block", objectFit: "cover" }}
                   />
