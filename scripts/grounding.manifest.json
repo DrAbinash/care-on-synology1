@@ -22,6 +22,25 @@
     { "kind": "function", "name": "runRadiologyJobTick", "file": "artifacts/api-server/src/lib/radiologyJobs.ts", "note": "the ONE durable job engine (constitution §6/§14)" },
     { "kind": "function", "name": "enqueueRadiologyJob", "file": "artifacts/api-server/src/lib/radiologyJobs.ts", "note": "idempotent enqueue (idempotencyKey dedup)" },
     { "kind": "contains", "file": "artifacts/api-server/src/cron.ts", "text": "archive-before-purge", "note": "audit retention fix — no unarchived deletes (Gate G2)" },
-    { "kind": "contains", "file": "migrations/add_canonical_study_crosswalk.sql", "text": "ai_job_queue_study_id_fkey", "note": "production FK migration (NOT VALID, idempotent)" }
+    { "kind": "contains", "file": "migrations/add_canonical_study_crosswalk.sql", "text": "ai_job_queue_study_id_fkey", "note": "production FK migration (NOT VALID, idempotent)" },
+
+    { "kind": "table", "table": "study_snapshots", "file": "lib/db/src/schema/aiExecution.ts", "note": "P1 Immutable Study Snapshot (per-revision)" },
+    { "kind": "column", "table": "study_snapshots", "column": "content_hash", "file": "lib/db/src/schema/aiExecution.ts", "note": "sha256 of the instance set" },
+    { "kind": "table", "table": "ai_processing_manifests", "file": "lib/db/src/schema/aiExecution.ts", "note": "P1 immutable reproducibility manifest" },
+    { "kind": "column", "table": "ai_processing_manifests", "column": "input_hash", "file": "lib/db/src/schema/aiExecution.ts", "note": "drives reprocessing" },
+    { "kind": "table", "table": "ai_shadow_drafts", "file": "lib/db/src/schema/aiExecution.ts", "note": "shadow structured draft — never exposed in P1" },
+    { "kind": "column", "table": "ai_shadow_drafts", "column": "draft_json", "file": "lib/db/src/schema/aiExecution.ts", "note": "structured provisional report (jsonb)" },
+    { "kind": "table", "table": "ai_evidence", "file": "lib/db/src/schema/aiExecution.ts", "note": "P1 Evidence Store" },
+    { "kind": "column", "table": "ai_evidence", "column": "sop_instance_uid", "file": "lib/db/src/schema/aiExecution.ts", "note": "image evidence anchor" },
+    { "kind": "column", "table": "ai_evidence", "column": "overlay_ref", "file": "lib/db/src/schema/aiExecution.ts", "note": "reserved heatmap/overlay slot — unused in P1" },
+    { "kind": "function", "name": "computeContentHash", "file": "artifacts/api-server/src/lib/ai/studySnapshot.ts", "note": "snapshot content hash (order-independent)" },
+    { "kind": "function", "name": "decideRevision", "file": "artifacts/api-server/src/lib/ai/studySnapshot.ts", "note": "late-series → new revision, never overwrite" },
+    { "kind": "function", "name": "computeInputHash", "file": "artifacts/api-server/src/lib/ai/processingManifest.ts", "note": "manifest reproducibility key" },
+    { "kind": "function", "name": "validateEvidenceAnchor", "file": "artifacts/api-server/src/lib/ai/evidence.ts", "note": "grounding gate — anchor must exist in snapshot" },
+    { "kind": "function", "name": "selectImageAnchors", "file": "artifacts/api-server/src/lib/ai/studyImageSelection.ts", "note": "structured, modality-aware selection with UID/frame provenance (G6)" },
+    { "kind": "function", "name": "listStudyInstances", "file": "artifacts/api-server/src/lib/ai/studyImageFetch.ts", "note": "Orthanc DICOMweb instance manifest" },
+    { "kind": "function", "name": "makeAiShadowPipelineHandler", "file": "artifacts/api-server/src/lib/ai/shadowPipeline.ts", "note": "the one AI execution pipeline (shadow)" },
+    { "kind": "contains", "file": "artifacts/api-server/src/lib/radiologyJobHandlers.ts", "text": "AI_SHADOW_PIPELINE_JOB", "note": "AI job runs on the existing engine (G4) — no new worker" },
+    { "kind": "contains", "file": "migrations/add_ai_execution_shadow.sql", "text": "ai_evidence", "note": "P1 shadow tables migration" }
   ]
 }

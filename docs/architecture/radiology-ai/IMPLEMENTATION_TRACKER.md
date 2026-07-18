@@ -8,9 +8,9 @@ Update this file as gates land. **Do not build a gate before its prerequisites a
 | **G1** | P0 | Mechanized documentation↔code grounding CI | ✅ Done | 2026-07-18 |
 | **G2** | P0 | Security: egress allowlist + SSRF hardening + audit archive-before-purge | ✅ Done | 2026-07-18 |
 | **G3** | P0 | Canonical Study crosswalk + `ai_job_queue.study_id` FK + server-side resolution | ✅ Done | 2026-07-18 |
-| G4 | P1 | One Job Engine wired to AI jobs (reuse `radiologyJobs.ts` runner + `idempotencyKey`) | ⬜ Not started | — |
-| G5 | P1 | Immutable Study Snapshot + Processing Manifest + Evidence Store | ⬜ Not started | — |
-| G6 | P1 | `fetchStudyImages()` returns `{seriesUid, sopUid, frameNumber}` anchors | ⬜ Not started | — |
+| G4 | P1 | One Job Engine wired to AI jobs (reuse `radiologyJobs.ts` runner + `idempotencyKey`) | ✅ Done | 2026-07-18 |
+| G5 | P1 | Immutable Study Snapshot + Processing Manifest + Evidence Store | ✅ Done | 2026-07-18 |
+| G6 | P1 | Structured image selection returns `{seriesUid, sopUid, frameNumber}` anchors | ✅ Done | 2026-07-18 |
 | G7 | P2 | AI Gateway hardening — Capability + Prompt Registry + schema projection | ⬜ Not started | — |
 | G8 | P2 | Evaluation Framework + Golden Dataset (ADR D-17) | ⬜ Not started | — |
 | G9 | P2 | Rules Engine before AI + grounding gate on findings | ⬜ Not started | — |
@@ -21,8 +21,8 @@ Update this file as gates land. **Do not build a gate before its prerequisites a
 ## Phase status
 
 - **P0 — Foundation:** ✅ **Complete** (G1, G2, G3). See `P0_IMPLEMENTATION_REPORT.md`.
-- **P1 — Execution:** ⬜ blocked on P0 review/merge. First task: G4.
-- **P2 — Trust:** ⬜ blocked on P1.
+- **P1 — Execution:** ✅ **Complete** (G4, G5, G6) — shadow mode. See `P1_IMPLEMENTATION_REPORT.md`. An AI job runs end-to-end producing a snapshot + immutable manifest + (evidence-anchored) shadow draft; the inference seam is reserved for the P2 AI Gateway.
+- **P2 — Trust:** ⬜ next. First task: G7 (AI Gateway — Capability + Prompt Registry + schema projection) plugging into the reserved shadow-inference seam. **No provisional report reaches a radiologist before G5, G6, G8, G9.**
 - **P3 — Clinical:** ⬜ blocked on P2. **No provisional report reaches a radiologist before G5, G6, G8, G9.**
 - **P4 — Enterprise / P5 — Frontier:** ⬜ later.
 

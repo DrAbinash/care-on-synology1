@@ -28,6 +28,7 @@ import { eq } from "drizzle-orm";
 import { resolveReportVersion } from "./radiologyReportVersion";
 import { recordObligationSendOutcome, completeObligationsForDelivery } from "./redeliveryObligations";
 import type { RadiologyJobHandler, RadiologyJobRow } from "./radiologyJobs";
+import { AI_SHADOW_PIPELINE_JOB, aiShadowPipelineHandler } from "./ai/shadowPipeline";
 
 export const REDELIVERY_SEND_JOB = "radiology_redelivery_send";
 export const PACS_REARCHIVE_JOB = "radiology_pacs_rearchive";
@@ -225,4 +226,7 @@ export const RADIOLOGY_JOB_HANDLERS: Record<string, RadiologyJobHandler> = {
   [REDELIVERY_SEND_JOB]: redeliverySendHandler,
   [PACS_REARCHIVE_JOB]: pacsRearchiveHandler,
   [RESTORE_VERIFY_JOB]: restoreVerifyHandler,
+  // Phase P1 (shadow): the AI execution pipeline runs on this same engine —
+  // no new scheduler, no new worker, no new queue.
+  [AI_SHADOW_PIPELINE_JOB]: aiShadowPipelineHandler,
 };

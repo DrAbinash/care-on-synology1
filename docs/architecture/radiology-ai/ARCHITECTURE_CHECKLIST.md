@@ -8,12 +8,14 @@ ONE-of-each guarantees. Tick items only when they are enforced **in code**, not 
 | Guarantee | Enforced today | Notes |
 |---|---|---|
 | One canonical study object | 🟡 Partial (P0) | `canonical_study` crosswalk + FK exist; consumers migrate in later phases. |
-| One job engine | ⬜ | The `radiologyJobs.ts` runner is designated the single engine; AI jobs wire to it in G4. |
+| One job engine | ✅ (P1) | AI jobs run on the existing `radiologyJobs.ts` runner (`ai_shadow_pipeline` handler); no second engine/worker/queue. |
 | One scheduler | ⬜ | AI Scheduler is a later phase (G10). |
-| One AI gateway | ⬜ | G7. Direct provider calls to be eliminated then. |
+| One AI gateway | ⬜ | G7. The shadow-inference seam is reserved for it; direct provider calls eliminated then. |
 | One rules engine | ✅ (pre-existing) | `lib/report-quality`. |
 | One measurement engine | ✅ (pre-existing) | `lib/measurements`. |
-| One evidence store / manifest / evaluation framework | ⬜ | G5 / G8. |
+| One evidence store | ✅ (P1) | `ai_evidence` + `validateEvidenceAnchor` grounding gate. |
+| One processing manifest | ✅ (P1) | `ai_processing_manifests` + `computeInputHash`. |
+| One evaluation framework | ⬜ | G8. |
 
 ## Non-negotiable principles — P0 conformance
 

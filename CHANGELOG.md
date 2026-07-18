@@ -4,6 +4,32 @@ Notable, reviewable changes to CARE ERP. Newest first.
 
 ## [Unreleased]
 
+### Radiology AI Platform — Phase P1 (AI Execution Layer, Shadow Mode) — 2026-07-18
+
+Backend AI execution infrastructure running in **SHADOW MODE** (gates G4–G6). **No radiologist-facing
+output, no report changes, no reporting UI, no AI Gateway/model call.** Nothing is exposed to radiologists.
+
+**Added**
+- **Immutable Study Snapshot** (`study_snapshots`) — order-independent content hash of the actual DICOM
+  instance set; late-arriving series create a new revision and supersede (never overwrite) the previous one.
+- **Processing Manifest** (`ai_processing_manifests`) — immutable record of study identity, snapshot hash,
+  model/prompt/pack/rules/measurement versions, image selection, timestamps, and a reproducibility `input_hash`.
+- **Evidence Store** (`ai_evidence`) — per-finding anchors (series/SOP/frame, measurement ref, confidence)
+  with a grounding gate (`validateEvidenceAnchor`). Heatmap evidence type + `overlay_ref` are **reserved only**.
+- **Shadow structured draft** (`ai_shadow_drafts`) — JSON-first provisional report, shadow-only.
+- **Structured, modality-aware image selection** (`selectImageAnchors` / `selectStudyImages`) returning
+  `{seriesUid, sopUid, frameNumber, imageData}` with full provenance (G6).
+- **AI execution on the existing job engine** — `ai_shadow_pipeline` handler registered in
+  `RADIOLOGY_JOB_HANDLERS`; enqueued via the existing `enqueueRadiologyJob`. **No new scheduler/worker/queue.**
+- **Reserved inference seam** (`shadowInference.ts`) — the single interface the P2 AI Gateway plugs into;
+  P1 uses a stub that calls no model.
+- Migration `migrations/add_ai_execution_shadow.sql` (four shadow tables, idempotent, additive) and
+  +18 grounding claims (now 40).
+
+**Verification**
+- `pnpm typecheck:libs` ✅, api-server typecheck ✅, `pnpm test` → **2544 pass** (+31 P1 tests; same 7
+  pre-existing `DATABASE_URL` file errors), grounding (40) + migration-order checks ✅.
+
 ### Radiology AI Platform — Phase P0 (Foundation) — 2026-07-18
 
 Backend foundation for the Radiology AI Platform (gates G1–G3 of
