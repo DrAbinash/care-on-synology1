@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 
-function getBaseUrl(): string {
+export function getBaseUrl(): string {
   // 1. Desktop app override (Electron injects this)
   if (typeof window !== "undefined" && (window as any).__CARE_API_DOMAIN__) {
     return `https://${(window as any).__CARE_API_DOMAIN__}`;

@@ -10,14 +10,14 @@ import { LinearGradient } from "expo-linear-gradient";
 import * as Haptics from "expo-haptics";
 
 import { useColors } from "@/hooks/useColors";
-import { useApi } from "@/hooks/useApi";
+import { useAuth } from "@/context/AuthContext";
 import { Card, AppButton, InlineAlert, spacing } from "@/components/ui";
 
 export default function LoginScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const api = useApi();
+  const { requestOtp, verifyOtp: verifySession } = useAuth();
 
   const [phone, setPhone] = useState("");
   const [name, setName] = useState("");
@@ -31,11 +31,12 @@ export default function LoginScreen() {
     if (!/^\d{10}$/.test(phone)) { setError("Enter a valid 10-digit phone number"); return; }
     setLoading(true);
     try {
-      await api.post("/api/public/booking/send-otp", { phone, name });
+      // Server delivers the code on WhatsApp; it is never returned to the app.
+      await requestOtp(phone);
       setStep("otp");
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e: any) {
-      setError(e?.message || "Failed to send OTP");
+      setError(e?.message || "Failed to send the code");
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setLoading(false);
@@ -44,13 +45,14 @@ export default function LoginScreen() {
 
   const verifyOtp = async () => {
     setError("");
-    if (!/^\d{6}$/.test(otp)) { setError("Enter the 6-digit OTP"); return; }
+    if (!/^\d{6}$/.test(otp)) { setError("Enter the 6-digit code"); return; }
     setLoading(true);
     try {
-      await api.post("/api/public/booking/verify-otp", { phone, code: otp, name });
+      // Mints and stores the server-side session token on success.
+      await verifySession(phone, otp, name);
       router.replace("/");
     } catch (e: any) {
-      setError(e?.message || "Invalid OTP");
+      setError(e?.message || "Incorrect code");
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setLoading(false);
@@ -86,8 +88,8 @@ export default function LoginScreen() {
           </Text>
           <Text style={[styles.formSub, { color: colors.mutedForeground }]}>
             {step === "phone"
-              ? "We'll send a one-time password to confirm it's you"
-              : `Enter the OTP sent to +91 ${phone}`}
+              ? "We'll send a one-time code on WhatsApp to confirm it's you"
+              : `Enter the code sent on WhatsApp to +91 ${phone}`}
           </Text>
 
           {error ? (
@@ -152,7 +154,7 @@ export default function LoginScreen() {
         </Card>
 
         <Text style={[styles.footerNote, { color: colors.mutedForeground }]}>
-          The one-time password is delivered by SMS to your mobile number and expires shortly after it is sent.
+          The one-time code is delivered on WhatsApp to your mobile number and expires 5 minutes after it is sent.
         </Text>
       </ScrollView>
     </KeyboardAvoidingView>

@@ -1,10 +1,10 @@
+import { useEffect } from "react";
 import { StyleSheet, View, Text, FlatList, RefreshControl } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 
 import { useColors } from "@/hooks/useColors";
-import { useApi } from "@/hooks/useApi";
-import { useAuth } from "@/context/AuthContext";
+import { useAuth, usePatientApi } from "@/context/AuthContext";
 import {
   Screen,
   ScreenHeader,
@@ -30,14 +30,23 @@ function statusMeta(status: string): { icon: FeatherIconName; tone: StatusTone; 
 export default function BookingsScreen() {
   const colors = useColors();
   const router = useRouter();
-  const api = useApi();
-  const { user } = useAuth();
+  const api = usePatientApi();
+  const { user, clearSession } = useAuth();
 
-  const { data, isLoading, refetch, isRefetching } = useQuery({
+  const { data, isLoading, refetch, isRefetching, error } = useQuery({
     queryKey: ["my-bookings", user?.phone],
-    queryFn: () => api.get("/api/public/booking/my-bookings?phone=" + encodeURIComponent(user?.phone || "")),
-    enabled: !!user?.phone,
+    queryFn: () => api.get("/api/patient/my-bookings"),
+    enabled: !!user?.token,
+    retry: false,
   });
+
+  // A 401 means the server-side session expired — drop the stored session so
+  // the login prompt reappears instead of an endless error state.
+  useEffect(() => {
+    if (error && /session expired|login required/i.test(error.message || "")) {
+      clearSession();
+    }
+  }, [error, clearSession]);
 
   const bookings: any[] = data?.bookings ?? [];
 
@@ -107,12 +116,12 @@ function BookingCard({ item, onPress }: { item: any; onPress: () => void }) {
           </Text>
         </View>
         <Text style={[styles.amount, { color: colors.foreground }]}>
-          ₹{Number(item.amount || 0).toLocaleString("en-IN")}
+          ₹{Number(item.totalAmount || 0).toLocaleString("en-IN")}
         </Text>
       </View>
       <View style={styles.rowBottom}>
         <Text style={[styles.date, { color: colors.mutedForeground }]} numberOfLines={1}>
-          {[item.appointmentDate || item.date || "", item.timeSlot || ""].filter(Boolean).join(" · ")}
+          {[item.selectedDate || "", item.timeSlot || ""].filter(Boolean).join(" · ")}
         </Text>
         <Badge label={meta.label} tone={meta.tone} />
       </View>

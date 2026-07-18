@@ -71,6 +71,7 @@ import dicomAgentRouter from "./dicom-agent";
 import { publicBookingRouter } from "./public-booking";
 import { mobileConfigRouter } from "./mobileConfig";
 import { mobileBillDeskRouter } from "./mobileBillDesk";
+import { patientPortalRouter } from "./patientPortal";
 import { onlineBookingsRouter } from "./online-bookings";
 import { webauthnRouter } from "./webauthn";
 import { dailySummaryRouter } from "./daily-summary";
@@ -237,6 +238,11 @@ router.use("/public/booking", publicBookingRouter);
 // Public mobile-app display config (clinic info + admin-curated content for
 // diagno-booking-mobile). Whitelisted non-secret fields only — see the router.
 router.use("/public/mobile-config", mobileConfigRouter);
+
+// Patient portal — OTP-over-WhatsApp login minting server-side sessions, and
+// session-gated bookings/reports. The OTP endpoints are public (rate-limited
+// inside the router); the data endpoints enforce the patient session token.
+router.use("/patient", patientPortalRouter);
 
 // Payment gateway server-to-server webhooks (ICICI, HDFC).
 // MUST be public — the gateways POST here without a staff session.

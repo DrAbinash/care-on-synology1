@@ -52,6 +52,12 @@ const NETWORK_ONLY_PREFIXES = [
   // endpoint) means every future /api/my/* route is safe by default.
   "/api/my/",
 
+  // Patient portal (mobile app): every endpoint is scoped to the verified
+  // patient session (my-bookings, my-reports, report links). Same shared-
+  // device cache-poisoning risk as /api/my/ — excluded as a whole prefix so
+  // future patient endpoints are safe by default.
+  "/api/patient/",
+
   // The rest of this list is a repository-wide audit sweep for every OTHER
   // authenticated endpoint that returns data scoped to the calling
   // staff/patient identity rather than a shared resource, found the same way
