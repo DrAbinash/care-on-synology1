@@ -14,6 +14,11 @@ export const expensesTable = pgTable("expenses", {
   voucherId: integer("voucher_id"),
   approvedBy: text("approved_by"),
   notes: text("notes"),
+  // The scanned bill/receipt image (data URL) kept for audit parity — the source
+  // document behind the OCR'd fields. Deliberately NEVER selected by the list
+  // endpoint (only fetched on the single-expense detail view) so it can't bloat
+  // list responses.
+  receiptImageUrl: text("receipt_image_url"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

@@ -44,8 +44,27 @@ router.get("/", async (req, res) => {
     search ? ilike(expensesTable.description, `%${search}%`) : undefined,
   ].filter(Boolean);
 
+  // Explicit column list that EXCLUDES receipt_image_url — the scanned image can
+  // be large, and selecting it for every row would bloat this list response.
+  // A lightweight `hasReceipt` flag lets the UI show an indicator; the image
+  // itself is fetched only via GET /expenses/:id when a receipt is opened.
   const rows = await db
-    .select()
+    .select({
+      id: expensesTable.id,
+      expenseId: expensesTable.expenseId,
+      category: expensesTable.category,
+      description: expensesTable.description,
+      amount: expensesTable.amount,
+      expenseDate: expensesTable.expenseDate,
+      paymentMode: expensesTable.paymentMode,
+      paidTo: expensesTable.paidTo,
+      voucherId: expensesTable.voucherId,
+      approvedBy: expensesTable.approvedBy,
+      notes: expensesTable.notes,
+      hasReceipt: sql<boolean>`(${expensesTable.receiptImageUrl} is not null)`,
+      createdAt: expensesTable.createdAt,
+      updatedAt: expensesTable.updatedAt,
+    })
     .from(expensesTable)
     .where(conditions.length ? and(...(conditions as Parameters<typeof and>)) : undefined)
     .orderBy(desc(expensesTable.expenseDate), desc(expensesTable.createdAt));
@@ -95,6 +114,16 @@ router.post("/", async (req, res) => {
   }
   const { category, description, amount, expenseDate, paymentMode, paidTo, approvedBy, notes } = parsed.data;
 
+  // Optional scanned receipt image (data URL). Read directly from the body —
+  // it's not part of the generated CreateExpenseBody schema (which strips it),
+  // so no generated code needs changing. Bounded to ~6MB of base64 to reject
+  // absurd payloads while comfortably fitting an enhanced JPEG.
+  const rawReceipt = (req.body as Record<string, unknown>)?.receiptImageUrl;
+  const receiptImageUrl =
+    typeof rawReceipt === "string" && rawReceipt.length > 0 && rawReceipt.length <= 6_000_000
+      ? rawReceipt
+      : null;
+
   const expId = await generateExpenseId();
   const [expense] = await db
     .insert(expensesTable)
@@ -108,6 +137,7 @@ router.post("/", async (req, res) => {
       paidTo: paidTo ?? null,
       approvedBy: approvedBy ?? null,
       notes: notes ?? null,
+      receiptImageUrl,
     })
     .returning();
 

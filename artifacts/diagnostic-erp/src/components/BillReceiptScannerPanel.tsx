@@ -94,6 +94,8 @@ export default function BillReceiptScannerPanel() {
         paymentMode: draft.paymentMode || "cash",
         paidTo: draft.vendor || undefined,
         notes: draft.gstAmount > 0 ? `GST: ₹${draft.gstAmount}` : undefined,
+        // Keep the scanned (enhanced) bill image for audit.
+        receiptImageUrl: preview || undefined,
       });
       qc.invalidateQueries({ queryKey: ["expenses"] });
       setSaved(true);
