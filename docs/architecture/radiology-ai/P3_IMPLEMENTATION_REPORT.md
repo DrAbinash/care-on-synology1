@@ -116,11 +116,57 @@ signature** path is touched.
 
 ---
 
+## 7.5 AI draft storage map (P3 completion patch)
+
+The complete storage chain, with **actual table and column names**. The boundary is absolute: AI writes
+only the AI stores; the human report is written only through the existing radiologist draft/finalize workflow.
+
+| # | Stage | Where it lives (table.column) | Properties |
+|---|---|---|---|
+| 1 | **Raw provider response** | **Transient** — held in memory during the gateway call (`requestStructuredReport` provider `text`), validated, then discarded. Deliberately **not persisted** as canonical (avoids storing ungrounded/PHI-bearing raw text). `ai_job_queue.result_json` (TEXT) and `dicom_retry_queue.payload` are execution artifacts, **not** the report store. | transient/audit-only |
+| 2 | **Validated structured provisional report** | `ai_shadow_drafts.draft_json` (**JSONB**) | **immutable + versioned** — trigger `ai_shadow_drafts_immutable_guard` rejects UPDATE/DELETE |
+| 3 | **Accepted grounded findings** | `ai_shadow_drafts.draft_json.findings` (gauntlet-passed). On **Accept** → inserted into `radiology_report_drafts.raw_findings` via the editor (`setRawFindings` → existing autosave). Feedback in `ai_draft_feedback (action='accept')`. | human-gated insert |
+| 4 | **Quarantined findings** | `ai_shadow_drafts.draft_json.quarantined` (kept for audit; shown only as a count, never as findings) | never surfaced |
+| 5 | **Processing Manifest** | `ai_processing_manifests` (`model_version`+digest, `prompt_version`, `snapshot_content_hash`, `input_hash`, `rules_version`, `image_selection_json`) | immutable |
+| 6 | **Evidence anchors** | `ai_evidence` (`series_instance_uid`, `sop_instance_uid`, `frame_number`, `measurement_ref`, `confidence`) linked by `draft_id`+`manifest_id` | append-only |
+| 7 | **Radiologist working draft** | **`radiology_report_drafts`** (`raw_findings`, `impression`, `recommendation`, `structured_json`, `status='DRAFT'`) — the EXISTING human store | mutable, human-owned |
+| 8 | **Final signed report** | **`patient_reports`** — written only by the EXISTING finalize endpoint (re-reads `radiology_report_drafts`, stamps `draft.final_report_id`) | radiologist-signed only |
+| 9 | **Amendments** | the existing `patient_report_amendments` lifecycle | human-controlled |
+
+**The immutable provisional record (`ai_shadow_drafts`) is directly linked** to: `canonical_study_id`,
+`snapshot_revision` (+ `study_snapshot_id`), `manifest_id` (Processing Manifest), `ai_job_id` (the AI job),
+`model_digest`, and `prompt_version` — plus a monotonic `version`.
+
+**Required-architecture compliance:**
+
+- ✅ Raw provider output is transient (not canonical). `ai_job_queue.result_json` is **not** the report store.
+- ✅ Validated provisional report lives in a **dedicated, immutable (trigger-enforced), versioned JSONB** record.
+- ✅ Linked to canonicalStudyId, snapshot revision, Processing Manifest, AI job, model digest, prompt version.
+- ✅ **Regeneration inserts a new version** (`nextProvisionalVersion` → `version+1`); an old draft is never overwritten (DB trigger).
+- ✅ Accepted content is written through the **existing** `radiology_report_drafts` editor/autosave — not a parallel store.
+- ✅ Final content is written only through the **existing** finalize/sign workflow into `patient_reports`.
+- ✅ **AI never writes `patient_reports`, the working draft, or amendments, and never signs** — enforced by the static guard test `aiIsolation.test.ts`.
+- ✅ Saved human draft **always wins** over AI on reopen; AI is never auto-prefilled (`chooseReportPrefill`); reopening restores content from `radiology_report_drafts`, not from the AI result.
+
+### Editor binding (completed)
+
+`AiDraftPanel` actions bind to the existing workspace editor: **Accept**/**Edit** insert the formatted finding
+(`formatFindingForInsertion`) into `rawFindings` via `onInsertText → setRawFindings → appendToFindings`, which
+the existing autosave persists to `radiology_report_drafts`; **Ignore/Reject** record feedback only
+(`shouldInsertOnAction` gates insertion). **Accept all** confirms then inserts all grounded findings. Because
+inserts land in the normal findings editor state, the **existing voice dictation** operates on the same text
+and can replace or extend inserted AI content. **Finalize** is unchanged — it flows through the existing
+finalize endpoint under the radiologist's authenticated permissions; there is **no AI-specific signing path**.
+
 ## 8. Test results
 
 - `pnpm typecheck:libs` ✅ · `pnpm --filter @workspace/api-server typecheck` ✅ · **`pnpm --filter @workspace/diagnostic-erp typecheck` ✅** (the panel, settings, client, and workspace mount all compile).
-- `pnpm test` → **2599 passed** (was 2582; +17 P3 tests). The 7 failing test files error only on missing
-  `DATABASE_URL` (no DB in this sandbox) — all pre-existing, none in changed areas.
+- `pnpm test` → **2607 passed** (was 2582; +17 P3 tests +8 completion-patch tests). The 7 failing test files
+  error only on missing `DATABASE_URL` (no DB in this sandbox) — all pre-existing, none in changed areas.
+- **Completion-patch tests (8):** AI draft **immutability** guard + **regeneration → new version**
+  (`provisionalVersioning`); **AI isolation** static guard — no AI module writes `patient_reports`, the working
+  draft, or amendments, or signs (`aiIsolation`); **editor binding** — accept/edit insert & ignore/reject don't,
+  saved human draft wins over AI on reopen (`aiDraftBinding`).
 - P3 suite (2 files, 17 tests): **policy** (master-off ⇒ OFF, default OFF, shadow-not-visible, single pilot
   visible, most-specific-wins radiologist-disable overrides global, per-modality) · **scheduler** (night/quiet
   window wrap, manual-always, skip finalized/unchanged, disabled/manual modalities, immediate vs quiet-defer,

@@ -31,8 +31,17 @@ staff auth, and workspace).
 **Migration** `migrations/add_ai_clinical_config.sql` (5 tables) — seeds the master flag **OFF** and every
 modality **disabled**, so a fresh deploy shows AI to nobody.
 
-**Verification** — typecheck (libs + api-server + **frontend**) ✅; `pnpm test` → **2599 pass** (+17 P3 tests;
-same 7 pre-existing `DATABASE_URL` file errors); grounding (76) + migration-order ✅. DB-backed services, the
+**Completion patch — AI draft storage + editor binding.** Made `ai_shadow_drafts` the **immutable, versioned**
+provisional report store (new columns `version`/`canonical_study_id`/`snapshot_revision`/`ai_job_id`/`model_digest`/
+`prompt_version`/`validated` + a DB trigger `ai_shadow_drafts_immutable_guard` rejecting UPDATE/DELETE; regeneration
+inserts `version+1`). Bound the workspace editor: **Accept/Edit** insert into the existing `radiology_report_drafts`
+findings editor (via `setRawFindings`/autosave), **Ignore/Reject** record feedback only, **Accept all** grounded;
+voice operates on the inserted text; the **saved human draft always wins** over AI on reopen (AI never auto-prefills).
+**AI never writes `patient_reports`, the working draft, or amendments, and never signs** — enforced by a static guard
+test. Full storage map in `P3_IMPLEMENTATION_REPORT.md` §7.5.
+
+**Verification** — typecheck (libs + api-server + **frontend**) ✅; `pnpm test` → **2607 pass** (+17 P3 +8 patch tests;
+same 7 pre-existing `DATABASE_URL` file errors); grounding (83) + migration-order ✅. DB-backed services, the
 `/api/ai` endpoints end-to-end, and live panel/voice rendering require staging — see `P3_IMPLEMENTATION_REPORT.md` §11.
 
 ### Radiology AI Platform — Phase P2 (Trust Layer, Shadow Mode) — 2026-07-18

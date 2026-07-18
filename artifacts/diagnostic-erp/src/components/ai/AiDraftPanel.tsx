@@ -12,6 +12,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Bot, Check, Pencil, X, ChevronDown, ChevronUp, ShieldCheck, AlertTriangle, Image as ImageIcon } from "lucide-react";
 import { aiClient, type AiEnablement, type AiWorkspaceDraft } from "../../lib/aiClient";
+import { formatFindingForInsertion, shouldInsertOnAction, type DraftAction } from "../../lib/aiDraftBinding";
 
 interface Props {
   studyInstanceUid: string | null;
@@ -25,7 +26,7 @@ export function AiDraftPanel({ studyInstanceUid, modality, onInsertText }: Props
   const [draft, setDraft] = useState<AiWorkspaceDraft | null>(null);
   const [open, setOpen] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [handled, setHandled] = useState<Record<string, "accept" | "edit" | "ignore" | "reject">>({});
+  const [handled, setHandled] = useState<Record<string, DraftAction>>({});
 
   // Resolve enablement (gates the whole panel).
   useEffect(() => {
@@ -43,13 +44,26 @@ export function AiDraftPanel({ studyInstanceUid, modality, onInsertText }: Props
     if (enablement?.visibleToRadiologist && studyInstanceUid) loadDraft();
   }, [enablement, studyInstanceUid, loadDraft]);
 
-  const act = async (findingKey: string, action: "accept" | "edit" | "ignore" | "reject", text?: string) => {
+  const act = async (finding: { key: string; text: string; laterality?: string }, action: DraftAction) => {
     if (!draft) return;
-    setHandled((h) => ({ ...h, [findingKey]: action }));
-    if (action === "accept" && text && onInsertText) onInsertText(text);
+    setHandled((h) => ({ ...h, [finding.key]: action }));
+    // Accept/Edit insert into the EXISTING working draft (via onInsertText →
+    // the workspace findings editor → existing autosave). Ignore/Reject only
+    // record feedback and never touch the report.
+    const insertText = formatFindingForInsertion(finding);
+    if (shouldInsertOnAction(action) && onInsertText) onInsertText(insertText);
     try {
-      await aiClient.feedback(draft.draftId, { studyInstanceUid: draft.studyInstanceUid, findingKey, action, editedText: text });
+      await aiClient.feedback(draft.draftId, {
+        studyInstanceUid: draft.studyInstanceUid, findingKey: finding.key, action,
+        editedText: shouldInsertOnAction(action) ? insertText : undefined,
+      });
     } catch { /* feedback is best-effort; never blocks the radiologist */ }
+  };
+
+  const acceptAll = async () => {
+    if (!draft || draft.findings.length === 0) return;
+    if (!window.confirm(`Insert all ${draft.findings.length} grounded finding(s) into the report? You can still edit them.`)) return;
+    for (const f of draft.findings) if (!handled[f.key]) await act(f, "accept");
   };
 
   const generate = async () => {
@@ -98,6 +112,12 @@ export function AiDraftPanel({ studyInstanceUid, modality, onInsertText }: Props
 
               {draft.findings.length === 0 && <div className="py-3 text-center text-neutral-400">No grounded findings.</div>}
 
+              {draft.findings.length > 0 && (
+                <div className="mb-2 flex justify-end">
+                  <button onClick={acceptAll} className="rounded bg-emerald-600 px-2 py-1 text-xs text-white hover:bg-emerald-700">Accept all grounded</button>
+                </div>
+              )}
+
               <ul className="space-y-2">
                 {draft.findings.map((f) => {
                   const status = handled[f.key];
@@ -124,9 +144,9 @@ export function AiDraftPanel({ studyInstanceUid, modality, onInsertText }: Props
                           ? <span className="text-[11px] uppercase text-neutral-400">{status}</span>
                           : (
                             <div className="flex shrink-0 gap-1">
-                              <button title="Accept (insert)" onClick={() => act(f.key, "accept", f.text)} className="rounded p-1 text-emerald-600 hover:bg-emerald-50"><Check size={14} /></button>
-                              <button title="Edit" onClick={() => act(f.key, "edit", f.text)} className="rounded p-1 text-amber-600 hover:bg-amber-50"><Pencil size={14} /></button>
-                              <button title="Ignore / reject" onClick={() => act(f.key, "reject")} className="rounded p-1 text-red-600 hover:bg-red-50"><X size={14} /></button>
+                              <button title="Accept (insert into report)" onClick={() => act(f, "accept")} className="rounded p-1 text-emerald-600 hover:bg-emerald-50"><Check size={14} /></button>
+                              <button title="Edit (insert, then edit in report)" onClick={() => act(f, "edit")} className="rounded p-1 text-amber-600 hover:bg-amber-50"><Pencil size={14} /></button>
+                              <button title="Ignore / reject (no change to report)" onClick={() => act(f, "reject")} className="rounded p-1 text-red-600 hover:bg-red-50"><X size={14} /></button>
                             </div>
                           )}
                       </div>

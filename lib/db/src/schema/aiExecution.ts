@@ -78,17 +78,34 @@ export const aiProcessingManifestsTable = pgTable(
 );
 export type AiProcessingManifest = typeof aiProcessingManifestsTable.$inferSelect;
 
-// ── Shadow Structured Draft (never exposed to radiologists in P1) ───────────
+// ── Structured Provisional Report — the IMMUTABLE, VERSIONED AI draft store ──
+// This is the canonical store for the VALIDATED structured provisional report.
+// It is append-only and DB-enforced immutable (a BEFORE UPDATE/DELETE trigger,
+// see migrations/add_ai_provisional_report_versioning.sql). Regeneration inserts
+// a NEW version; an old draft is never overwritten. It is NOT the human report:
+// accepted content flows through the existing radiology_report_drafts editor and
+// finalizes into patient_reports via the radiologist's own workflow. Raw provider
+// output is transient (never persisted here) — only the validated report is stored.
 export const aiShadowDraftsTable = pgTable(
   "ai_shadow_drafts",
   {
     id: serial("id").primaryKey(),
+    // Monotonic version per study (regeneration → version+1; never overwritten).
+    version: integer("version").notNull().default(1),
     manifestId: integer("manifest_id").notNull().references(() => aiProcessingManifestsTable.id),
     studySnapshotId: integer("study_snapshot_id").notNull().references(() => studySnapshotsTable.id),
     studyInstanceUid: text("study_instance_uid").notNull(),
     radiologyStudyId: integer("radiology_study_id").references(() => radiologyStudiesTable.id),
+    // Direct links required of the immutable provisional record (also reachable
+    // via manifest/snapshot; duplicated here for queryability + audit clarity).
+    canonicalStudyId: integer("canonical_study_id"),
+    snapshotRevision: integer("snapshot_revision"),
+    aiJobId: integer("ai_job_id"),
+    modelDigest: text("model_digest"),
+    promptVersion: text("prompt_version"),
+    validated: boolean("validated").notNull().default(true),
     source: text("source").notNull().default("ai_shadow"),
-    // The structured provisional report (JSON-first). Shadow-only.
+    // The VALIDATED structured provisional report (JSON-first). Immutable.
     draftJson: jsonb("draft_json").notNull(),
     findingCount: integer("finding_count").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -96,6 +113,7 @@ export const aiShadowDraftsTable = pgTable(
   (t) => ({
     manifestIdx: index("ai_shadow_draft_manifest_idx").on(t.manifestId),
     uidIdx: index("ai_shadow_draft_uid_idx").on(t.studyInstanceUid),
+    uidVersionIdx: index("ai_shadow_draft_uid_version_idx").on(t.studyInstanceUid, t.version),
   }),
 );
 export type AiShadowDraft = typeof aiShadowDraftsTable.$inferSelect;

@@ -19,6 +19,7 @@ export interface WorkspaceDraftFinding {
 
 export interface WorkspaceDraft {
   draftId: number;
+  version: number;
   studyInstanceUid: string;
   status: "shadow" | "shadow_degraded";
   degraded: boolean;
@@ -43,7 +44,7 @@ export async function getLatestDraftForStudy(studyInstanceUid: string): Promise<
     .select()
     .from(aiShadowDraftsTable)
     .where(eq(aiShadowDraftsTable.studyInstanceUid, studyInstanceUid))
-    .orderBy(desc(aiShadowDraftsTable.createdAt))
+    .orderBy(desc(aiShadowDraftsTable.version), desc(aiShadowDraftsTable.createdAt))
     .limit(1);
   if (!draft) return null;
 
@@ -73,6 +74,7 @@ export async function getLatestDraftForStudy(studyInstanceUid: string): Promise<
 
   return {
     draftId: draft.id,
+    version: draft.version,
     studyInstanceUid: draft.studyInstanceUid,
     status: draft.source === "ai_shadow_degraded" ? "shadow_degraded" : "shadow",
     degraded: draft.source === "ai_shadow_degraded",

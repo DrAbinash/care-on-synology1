@@ -14,9 +14,10 @@
  */
 import { db } from "@workspace/db";
 import {
-  studySnapshotsTable, aiProcessingManifestsTable, aiShadowDraftsTable, aiEvidenceTable,
+  studySnapshotsTable, aiProcessingManifestsTable, aiShadowDraftsTable, aiEvidenceTable, canonicalStudyTable,
 } from "@workspace/db/schema";
 import { and, desc, eq } from "drizzle-orm";
+import { getNextProvisionalVersion } from "./provisionalVersioning";
 import type { RadiologyJobHandler } from "../radiologyJobs";
 import { enqueueRadiologyJob } from "../radiologyJobs";
 import { buildSnapshotManifest, decideRevision, type InstanceRef } from "./studySnapshot";
@@ -223,13 +224,24 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
       qualityScore: quality.report.score,
       degraded,
     };
+    // Immutable, versioned provisional report: regeneration inserts a NEW
+    // version; the DB trigger forbids overwriting an old one.
+    const version = await getNextProvisionalVersion(uid);
+    const [csRow] = await db.select({ id: canonicalStudyTable.id }).from(canonicalStudyTable).where(eq(canonicalStudyTable.studyInstanceUid, uid)).limit(1);
     const [draftRow] = await db
       .insert(aiShadowDraftsTable)
       .values({
+        version,
         manifestId: manifestRow.id,
         studySnapshotId: snapshotId,
         studyInstanceUid: uid,
         radiologyStudyId: payload.radiologyStudyId ?? null,
+        canonicalStudyId: csRow?.id ?? null,
+        snapshotRevision,
+        aiJobId: job.id,
+        modelDigest: provenance.modelDigest ?? null,
+        promptVersion: P2_META.promptVersion,
+        validated: true,
         source: degraded ? "ai_shadow_degraded" : "ai_shadow",
         draftJson: shadowDraftJson,
         findingCount: gauntlet.valid.length,
@@ -254,7 +266,7 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
 
     return {
       ok: true,
-      detail: `shadow OK — rev ${snapshotRevision}, manifest ${manifestRow.id}, draft ${draftRow.id}, valid ${gauntlet.valid.length}, quarantined ${gauntlet.quarantined.length}, degraded ${degraded}, images ${rendered.length}, model ${provenance.modelVersion}`,
+      detail: `shadow OK — rev ${snapshotRevision}, draft v${version} (#${draftRow.id}), manifest ${manifestRow.id}, valid ${gauntlet.valid.length}, quarantined ${gauntlet.quarantined.length}, degraded ${degraded}, images ${rendered.length}, model ${provenance.modelVersion}`,
     };
   };
 }

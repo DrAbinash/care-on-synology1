@@ -79,6 +79,14 @@
     { "kind": "contains", "file": "artifacts/api-server/src/routes/index.ts", "text": "aiClinicalRouter", "note": "AI clinical router mounted at /api/ai (gated)" },
     { "kind": "contains", "file": "artifacts/api-server/src/cron.ts", "text": "scheduleAiSchedulerModes", "note": "night-batch/reprocess/learning crons (master-flag gated)" },
     { "kind": "contains", "file": "artifacts/diagnostic-erp/src/pages/RadiologyReportingWorkspace.tsx", "text": "AiDraftPanel", "note": "feature-flagged AI panel mounted in the workspace (G11)" },
-    { "kind": "contains", "file": "migrations/add_ai_clinical_config.sql", "text": "ff_radiology_ai", "note": "master flag seeded OFF by default" }
+    { "kind": "contains", "file": "migrations/add_ai_clinical_config.sql", "text": "ff_radiology_ai", "note": "master flag seeded OFF by default" },
+
+    { "kind": "column", "table": "ai_shadow_drafts", "column": "version", "file": "lib/db/src/schema/aiExecution.ts", "note": "immutable, versioned provisional report" },
+    { "kind": "column", "table": "ai_shadow_drafts", "column": "model_digest", "file": "lib/db/src/schema/aiExecution.ts", "note": "direct link to the model digest" },
+    { "kind": "column", "table": "ai_shadow_drafts", "column": "prompt_version", "file": "lib/db/src/schema/aiExecution.ts", "note": "direct link to the prompt version" },
+    { "kind": "function", "name": "nextProvisionalVersion", "file": "artifacts/api-server/src/lib/ai/provisionalVersioning.ts", "note": "regeneration → new version, never overwrite" },
+    { "kind": "function", "name": "chooseReportPrefill", "file": "artifacts/diagnostic-erp/src/lib/aiDraftBinding.ts", "note": "saved human draft always wins; AI never auto-prefills" },
+    { "kind": "contains", "file": "migrations/add_ai_provisional_report_versioning.sql", "text": "ai_shadow_drafts_immutable_guard", "note": "DB-enforced append-only immutability trigger" },
+    { "kind": "contains", "file": "artifacts/diagnostic-erp/src/pages/RadiologyReportingWorkspace.tsx", "text": "appendToFindings", "note": "Accept binds into the existing findings editor (radiology_report_drafts)" }
   ]
 }
