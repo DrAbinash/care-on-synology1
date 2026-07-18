@@ -28,6 +28,7 @@ export * from "./reportTemplates";
 export * from "./abnormalFindings";
 export * from "./formF";
 export * from "./portalSessions";
+export * from "./patientAuth";
 export * from "./dicom";
 export * from "./samples";
 export * from "./testTokens";
