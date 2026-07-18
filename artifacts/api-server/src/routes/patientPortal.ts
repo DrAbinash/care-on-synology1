@@ -48,10 +48,20 @@ const patientPortalRouter = Router();
 const OTP_TTL_MS = 5 * 60 * 1000;
 const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
 const OTP_MAX_ATTEMPTS = 5;
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 // Reports a patient may see: only finalized states the public PDF route
 // itself would serve (see patient-reports.ts /p/r/:token/pdf).
 const VISIBLE_REPORT_STATUSES = ["verified", "delivered"];
+
+// ACCEPTED RESIDUAL RISK — phone-as-identity (product decision, documented in
+// SECURITY_FINDING_PUBLIC_BOOKING_PHI_EXPOSURE.md §"Patient portal"): reports
+// and bookings are scoped to the verified phone, and a clinic patient record's
+// `phone` is a contact field, not a per-person id. If the SAME number is put
+// on multiple patient records (a family member's phone, or — the case to
+// avoid — a shared front-desk/agent number), whoever verifies that number
+// sees every report filed under it. This is intended for a genuine personal/
+// family number; the operational guard is: never put a shared or clinic-owned
+// number on a patient record. Not mitigated in code by design.
 
 // Uniform response for any invalid/expired/exhausted verify — deliberately
 // indistinguishable so a caller can't tell whether a live challenge exists
