@@ -25,6 +25,7 @@ import { queueDisplaySettingsTable } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
 import { requireStaffAuth } from "../middleware/requireStaffAuth";
 import crypto from "node:crypto";
+import { displayCommandBroadcaster, type DisplayCommand } from "../lib/displayCommandBroadcast";
 
 export const queueDisplaySettingsRouter: IRouter = Router();
 
@@ -101,6 +102,14 @@ function serialize(row: typeof queueDisplaySettingsTable.$inferSelect) {
     primaryColor: row.primaryColor,
     secondaryColor: row.secondaryColor,
     accentColor: row.accentColor,
+    backgroundColor: row.backgroundColor,
+    cardBackgroundColor: row.cardBackgroundColor,
+    textColor: row.textColor,
+    layoutOrientation: row.layoutOrientation,
+    kioskWakeLock: row.kioskWakeLock,
+    kioskAutoFullscreen: row.kioskAutoFullscreen,
+    kioskAutoReload: row.kioskAutoReload,
+    kioskPreventExit: row.kioskPreventExit,
     ledgerId: row.ledgerId,
     departments: row.departments,
   };
@@ -153,14 +162,18 @@ const TEXT_FIELDS = [
   "displayName", "location", "logoUrl", "roomTitle", "qrImageUrl", "qrHeading",
   "qrSubheading", "qrDescription", "qrButtonText", "announcementText", "phone",
   "website", "slogan", "themeMode", "primaryColor", "secondaryColor", "accentColor",
+  "backgroundColor", "cardBackgroundColor", "textColor",
   "departments",
 ] as const;
 
 const BOOL_FIELDS = [
   "showLogo", "showDisplayName", "showLocation", "showRoomTitle", "showNowServing",
   "showNextPatients", "showQrBooking", "showAnnouncement", "showPhone", "showWebsite",
-  "showSlogan",
+  "showSlogan", "kioskWakeLock", "kioskAutoFullscreen", "kioskAutoReload", "kioskPreventExit",
 ] as const;
+
+const LAYOUT_ORIENTATIONS = ["portrait", "landscape"] as const;
+const DISPLAY_COMMANDS: readonly DisplayCommand[] = ["reload"] as const;
 
 queueDisplaySettingsRouter.patch("/:roomKey", requireStaffAuth, async (req, res): Promise<void> => {
   const roomKey = String(req.params.roomKey || "").trim().toLowerCase();
@@ -203,6 +216,14 @@ queueDisplaySettingsRouter.patch("/:roomKey", requireStaffAuth, async (req, res)
       return;
     }
     update.nextPatientCount = n;
+  }
+
+  if (body.layoutOrientation !== undefined) {
+    if (!LAYOUT_ORIENTATIONS.includes(body.layoutOrientation)) {
+      res.status(400).json({ error: `layoutOrientation must be one of: ${LAYOUT_ORIENTATIONS.join(", ")}` });
+      return;
+    }
+    update.layoutOrientation = body.layoutOrientation;
   }
 
   if (body.ledgerId !== undefined) {
@@ -257,6 +278,53 @@ queueDisplaySettingsRouter.patch("/:roomKey", requireStaffAuth, async (req, res)
     req.log?.error?.({ err }, "queue-display-settings PATCH error");
     res.status(500).json({ error: "Failed to save queue display settings" });
   }
+});
+
+// ─── GET /api/settings/queue-display/:roomKey/stream (readAuth) ──────────
+// Remote-admin channel: pushes commands (e.g. "reload") from the ERP's
+// Remote Control panel to the unattended TV over SSE. Same auth model as
+// the settings GET — the TV has no staff session, so a valid displayToken
+// is accepted alongside a staff session.
+
+queueDisplaySettingsRouter.get("/:roomKey/stream", readAuth as any, (req, res): void => {
+  const roomKey = String(req.params.roomKey || "").trim().toLowerCase();
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  res.write(":ok\n\n");
+
+  const heartbeat = setInterval(() => res.write(":hb\n\n"), 25_000);
+
+  const handler = (evt: { roomKey: string; command: DisplayCommand; ts: number }) => {
+    if (evt.roomKey !== roomKey) return;
+    res.write(`data: ${JSON.stringify({ command: evt.command, ts: evt.ts })}\n\n`);
+  };
+  displayCommandBroadcaster.on("display-command", handler);
+
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    displayCommandBroadcaster.off("display-command", handler);
+  });
+});
+
+// ─── POST /api/settings/queue-display/:roomKey/command (staff auth) ──────
+// Sends a one-off remote command (currently just "reload") to whichever TV
+// is subscribed to this room's stream. Fire-and-forget — there is no ack
+// from the TV, matching the rest of this table's "presentation only, no
+// new business logic" scope.
+
+queueDisplaySettingsRouter.post("/:roomKey/command", requireStaffAuth, (req, res): void => {
+  const roomKey = String(req.params.roomKey || "").trim().toLowerCase();
+  const command = req.body?.command;
+  if (!DISPLAY_COMMANDS.includes(command)) {
+    res.status(400).json({ error: `command must be one of: ${DISPLAY_COMMANDS.join(", ")}` });
+    return;
+  }
+  displayCommandBroadcaster.send(roomKey, command);
+  res.json({ success: true });
 });
 
 // ─── DELETE /api/settings/queue-display/:roomKey (staff auth required) ────

@@ -177,8 +177,6 @@ const Website         = lazy(() => import("@/pages/Website"));
 const WhatsAppChatbot = lazy(() => import("@/pages/WhatsAppChatbot"));
 const Portal          = lazy(() => import("@/pages/Portal"));
 const VerifyReceipt   = lazy(() => import("@/pages/VerifyReceipt"));
-const Display         = lazy(() => import("@/pages/Display"));
-const QueueDisplay     = lazy(() => import("@/pages/QueueDisplay"));
 const PaymentQrDisplay = lazy(() => import("@/pages/PaymentQrDisplay"));
 const OnlineBookings  = lazy(() => import("@/pages/OnlineBookings"));
 const DicomStudyWorklist    = lazy(() => import("@/pages/DicomStudyWorklist"));
@@ -335,16 +333,15 @@ function Router() {
         <Route path="/teleradiology" component={TeleradiologyPortal} />
         <Route path="/teleradiology/:rest*" component={TeleradiologyPortal} />
         <Route path="/verify-receipt/:billId" component={VerifyReceipt} />
-        {/* Specific display routes must come BEFORE generic :roomKey pattern */}
         <Route path="/display/payment-qr/:counterKey" component={PaymentQrDisplay} />
         {/* Bare URL defaults to counter1 inside the component — kept for
             any already-configured single-counter setups. */}
         <Route path="/display/payment-qr" component={PaymentQrDisplay} />
-        <Route path="/display" component={Display} />
-        {/* Primary URL per spec: caredeoghar.com/queue/usg, /queue/mri, etc. */}
-        <Route path="/queue/:roomKey" component={QueueDisplay} />
-        {/* Kept for backward compatibility with any already-configured TVs */}
-        <Route path="/display/:roomKey" component={QueueDisplay} />
+        {/* Queue-display TV boards live on the public site (clinic-site's
+            /queue/:roomKey), served at the bare caredeoghar.com origin —
+            NOT under this app's /erp/ base path. The old duplicate copies
+            here (Display.tsx, QueueDisplay.tsx) were unreachable at their
+            documented TV URLs and were removed; see clinic-site instead. */}
         <Route path="/kiosk" component={Kiosk} />
         <Route>
           <PermissionGuard />

@@ -1,36 +1,42 @@
 /**
- * QueueDisplay.tsx — Configurable TV/kiosk queue display (portrait, 9:16)
+ * QueueDisplay.tsx — Configurable TV/kiosk queue display
  *
  * Route: /queue/:roomKey  (e.g. caredeoghar.com/queue/usg, /queue/mri, /queue/ct)
  * Also reachable at /display/:roomKey for backward compatibility with any
  * TV already configured with the older URL.
  *
- * This is an ENHANCEMENT alongside the existing Display.tsx (landscape,
- * multi-department grid board), not a replacement. Display.tsx remains
- * unchanged and continues to serve its existing waiting-room TVs.
+ * This is the SINGLE canonical TV display — a duplicate copy used to exist
+ * in diagnostic-erp (routes /queue/:roomKey, /display/:roomKey there) but
+ * was unreachable at any real TV URL, since diagnostic-erp is served under
+ * the /erp/ path (see docker/nginx.conf) while this page is served at the
+ * bare origin. That duplicate was removed; this is the only display page.
  *
- * This page targets a single room's single-department "now serving + next
- * patients" board in portrait orientation (1080x1920 target), matching the
- * reference signage design (green Now Serving bar, blue Next Patients bar,
- * QR booking card, instruction rows, announcement strip, footer).
+ * Supports both portrait (1080x1920, the original signage design — green
+ * Now Serving bar, blue Next Patients bar, QR booking card, instruction
+ * rows, announcement strip, footer) and landscape (1920x1080, two-column
+ * body) orientations, selected per-room via settings.layoutOrientation.
  *
  * Data sources:
  *  - Presentation config: GET /api/settings/queue-display/:roomKey
- *    (branding, which cards to show, QR image, instruction text, colors)
+ *    (branding, layout, theme, kiosk-mode toggles, which cards to show)
  *  - Live token data: reuses the EXISTING /api/display/queue-stream (SSE)
  *    and /api/display/queue (polling fallback) endpoints unchanged — same
  *    display-token auth, same department grouping, same privacy masking.
+ *  - Remote commands: GET /api/settings/queue-display/:roomKey/stream (SSE)
+ *    lets Settings ▸ Queue Display ▸ Remote Control force a reload.
  *
  * No new queue logic was written. No billing/registration/payment code was
  * touched. Safe for unattended Android TV / Fully Kiosk Browser: no
- * scrollbars, no browser chrome dependencies, auto-reconnecting SSE with an
- * 15s polling fallback per the existing Display.tsx pattern.
+ * scrollbars, no browser chrome dependencies, auto-reconnecting SSE with a
+ * 15s polling fallback, plus kiosk-mode hardening (useKioskMode) — wake
+ * lock, auto-fullscreen, offline/staleness auto-reload, remote reload.
  */
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
+import { useKioskMode } from "../hooks/useKioskMode";
 
 type InstructionItem = { id: string; icon: string; text: string; color: string; enabled: boolean };
 
@@ -67,6 +73,14 @@ type QueueDisplaySettings = {
   primaryColor: string;
   secondaryColor: string;
   accentColor: string;
+  backgroundColor: string;
+  cardBackgroundColor: string;
+  textColor: string;
+  layoutOrientation: "portrait" | "landscape";
+  kioskWakeLock: boolean;
+  kioskAutoFullscreen: boolean;
+  kioskAutoReload: boolean;
+  kioskPreventExit: boolean;
   ledgerId: number;
   departments: string;
 };
@@ -93,6 +107,12 @@ type DisplayPayload = { date: string; departments: DeptCard[] };
 
 interface QueueDisplayProps {
   roomKey?: string;
+}
+
+// "" from settings means "not configured — use the built-in default" (CSS
+// var fallback), not "set to an empty color".
+function cssVar(value: string | undefined): string | undefined {
+  return value ? value : undefined;
 }
 
 export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps = {}) {
@@ -159,6 +179,22 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
     return () => clearInterval(t);
   }, []);
 
+  // ── Kiosk-mode hardening — wake lock, fullscreen, watchdog, remote reload
+  const [lastDataAt, setLastDataAt] = useState<number | null>(null);
+  useEffect(() => {
+    if (queueData) setLastDataAt(Date.now());
+  }, [queueData]);
+
+  const { needsFullscreenTap, tapToEnterFullscreen } = useKioskMode({
+    roomKey: finalRoomKey,
+    displayToken,
+    wakeLock: settings?.kioskWakeLock ?? true,
+    autoFullscreen: settings?.kioskAutoFullscreen ?? true,
+    autoReload: settings?.kioskAutoReload ?? true,
+    preventExit: settings?.kioskPreventExit ?? true,
+    lastDataAt,
+  });
+
   // Distinguish "still loading" from "failed to load". Without this the page
   // sits on "Loading display…" forever whenever the settings fetch fails —
   // most commonly a 401 because the TV opened the URL without a ?displayToken.
@@ -190,16 +226,20 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
   const nextCount = s.nextPatientCount || 5;
   const nextList = next.slice(0, nextCount);
   const enabledInstructions = (s.instructionItems || []).filter((i) => i.enabled);
+  const isLandscape = s.layoutOrientation === "landscape";
 
   return (
     <div
-      className="usg-display"
+      className={["usg-display", isLandscape ? "landscape" : "portrait", s.kioskPreventExit ? "kiosk-lock" : ""].filter(Boolean).join(" ")}
       style={{
         // Colors are fully configurable via settings — no hardcoded palette.
         // @ts-ignore CSS custom properties
         "--primary-color": s.primaryColor,
         "--secondary-color": s.secondaryColor,
         "--accent-color": s.accentColor,
+        "--bg-color": cssVar(s.backgroundColor),
+        "--card-bg-color": cssVar(s.cardBackgroundColor),
+        "--text-color": cssVar(s.textColor),
       }}
     >
       <style>{DISPLAY_CSS}</style>
@@ -218,64 +258,66 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
         </section>
       )}
 
-      {s.showNowServing && (
-        <section className="now-card">
-          <div className="green-bar">NOW SERVING</div>
-          {current ? (
-            <>
-              <h3>#{current.tokenNo}</h3>
-              <h4>{current.patientLabel}</h4>
-              <p>
-                {current.testName && <>{current.testName}</>}
-                {current.priority > 0 && <span> · VIP</span>}
-              </p>
-              <div className="room-strip">
-                {[roomKeyLabel(s.roomTitle), current.floorLabel].filter(Boolean).join(" · ")}
+      <div className="body">
+        {s.showNowServing && (
+          <section className="now-card">
+            <div className="green-bar">NOW SERVING</div>
+            {current ? (
+              <>
+                <h3>#{current.tokenNo}</h3>
+                <h4>{current.patientLabel}</h4>
+                <p>
+                  {current.testName && <>{current.testName}</>}
+                  {current.priority > 0 && <span> · VIP</span>}
+                </p>
+                <div className="room-strip">
+                  {[roomKeyLabel(s.roomTitle), current.floorLabel].filter(Boolean).join(" · ")}
+                </div>
+              </>
+            ) : (
+              <div className="no-serving">Waiting for next token…</div>
+            )}
+          </section>
+        )}
+
+        {s.showNextPatients && (
+          <section className="next-card">
+            <div className="blue-bar">NEXT PATIENTS</div>
+            {nextList.length === 0 ? (
+              <div className="next-empty">Queue is clear</div>
+            ) : (
+              nextList.map((p) => (
+                <div className="next-row" key={p.id}>
+                  <b>{p.tokenNo}</b>
+                  <span>{p.patientLabel}</span>
+                  <em>{p.testName || ""}</em>
+                </div>
+              ))
+            )}
+          </section>
+        )}
+
+        {s.showQrBooking && s.qrImageUrl && (
+          <section className="qr-card">
+            <h3>{s.qrHeading}</h3>
+            <h2>{s.qrSubheading}</h2>
+            <p>{s.qrDescription}</p>
+            <img src={s.qrImageUrl} className="qr" alt="Booking QR code" />
+            <div className="qr-btn">{s.qrButtonText}</div>
+          </section>
+        )}
+
+        {enabledInstructions.length > 0 && (
+          <section className="instruction-row" style={{ gridTemplateColumns: `repeat(${Math.min(enabledInstructions.length, 3)}, 1fr)` }}>
+            {enabledInstructions.map((i) => (
+              <div className="instruction" key={i.id} style={{ borderColor: i.color, color: i.color }}>
+                <span>{i.icon}</span>
+                <p>{i.text}</p>
               </div>
-            </>
-          ) : (
-            <div className="no-serving">Waiting for next token…</div>
-          )}
-        </section>
-      )}
-
-      {s.showNextPatients && (
-        <section className="next-card">
-          <div className="blue-bar">NEXT PATIENTS</div>
-          {nextList.length === 0 ? (
-            <div className="next-empty">Queue is clear</div>
-          ) : (
-            nextList.map((p) => (
-              <div className="next-row" key={p.id}>
-                <b>{p.tokenNo}</b>
-                <span>{p.patientLabel}</span>
-                <em>{p.testName || ""}</em>
-              </div>
-            ))
-          )}
-        </section>
-      )}
-
-      {s.showQrBooking && s.qrImageUrl && (
-        <section className="qr-card">
-          <h3>{s.qrHeading}</h3>
-          <h2>{s.qrSubheading}</h2>
-          <p>{s.qrDescription}</p>
-          <img src={s.qrImageUrl} className="qr" alt="Booking QR code" />
-          <div className="qr-btn">{s.qrButtonText}</div>
-        </section>
-      )}
-
-      {enabledInstructions.length > 0 && (
-        <section className="instruction-row" style={{ gridTemplateColumns: `repeat(${Math.min(enabledInstructions.length, 3)}, 1fr)` }}>
-          {enabledInstructions.map((i) => (
-            <div className="instruction" key={i.id} style={{ borderColor: i.color, color: i.color }}>
-              <span>{i.icon}</span>
-              <p>{i.text}</p>
-            </div>
-          ))}
-        </section>
-      )}
+            ))}
+          </section>
+        )}
+      </div>
 
       {s.showAnnouncement && s.announcementText && (
         <section className="announcement">🔔 {s.announcementText}</section>
@@ -290,6 +332,12 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
         {s.showWebsite && s.website && <span>🌐 {s.website}</span>}
       </footer>
       {s.showSlogan && s.slogan && <div className="slogan-strip">{s.slogan}</div>}
+
+      {needsFullscreenTap && (
+        <button type="button" className="fullscreen-tap" onClick={tapToEnterFullscreen}>
+          ⛶ Tap for fullscreen
+        </button>
+      )}
     </div>
   );
 }
@@ -299,33 +347,36 @@ function roomKeyLabel(roomTitle: string): string {
 }
 
 // Scoped CSS — kept in-file (no Tailwind dependency needed for a fixed
-// 1080x1920 signage layout) and driven entirely by --primary/secondary/accent
-// custom properties from settings, per DEVELOPMENT_PRINCIPLES ("never
-// hardcode" applies to colors/branding just as much as IPs and ports).
+// signage layout) and driven entirely by --primary/secondary/accent/bg/
+// card-bg/text custom properties from settings, per DEVELOPMENT_PRINCIPLES
+// ("never hardcode" applies to colors/branding just as much as IPs/ports).
 const DISPLAY_CSS = `
 .usg-display {
   width: 100vw;
   height: 100vh;
-  background: linear-gradient(180deg, #03152f, #05295a);
-  color: white;
+  background: var(--bg-color, linear-gradient(180deg, #03152f, #05295a));
+  color: var(--text-color, white);
   font-family: Inter, Arial, sans-serif;
   padding: 2.2vh 2.2vw;
   box-sizing: border-box;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 .usg-display * { box-sizing: border-box; }
+.usg-display.kiosk-lock { user-select: none; -webkit-user-select: none; cursor: none; }
 .top { display: flex; align-items: center; gap: 1.6vw; justify-content: center; flex-shrink: 0; }
 .logo { width: 6vh; height: 6vh; object-fit: contain; border-radius: 8px; background: white; padding: 4px; }
 .top h1 { font-size: 3.4vh; margin: 0; color: var(--primary-color, #4ee24e); text-align: center; }
 .top p { font-size: 1.9vh; margin: 2px 0 0; text-align: center; opacity: 0.85; }
 .room-title { margin: 1.6vh 0 1.2vh; text-align: center; flex-shrink: 0; }
 .room-title h2 { font-size: 3vh; font-weight: 800; margin: 0; letter-spacing: 0.02em; }
+.body { display: contents; }
 .now-card, .next-card, .qr-card, .announcement, footer {
   border-radius: 18px;
   border: 2px solid var(--secondary-color, #1687ff);
-  background: #06224a;
+  background: var(--card-bg-color, #06224a);
   margin-bottom: 1.4vh;
   overflow: hidden;
   flex-shrink: 0;
@@ -374,7 +425,7 @@ const DISPLAY_CSS = `
 .instruction {
   border-radius: 14px;
   border: 1.5px solid;
-  background: #06224a;
+  background: var(--card-bg-color, #06224a);
   padding: 1.2vh 0.8vw;
   text-align: center;
   font-weight: 700;
@@ -402,5 +453,45 @@ footer {
   font-size: 1.8vh;
   border-radius: 14px;
   flex-shrink: 0;
+}
+
+/* ── Landscape (1920x1080-style) layout — two-column body ────────────── */
+.usg-display.landscape .body {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr;
+  grid-template-rows: 1fr auto;
+  grid-template-areas: "now qr" "next instructions";
+  gap: 1.2vh 1.6vw;
+  flex: 1;
+  min-height: 0;
+}
+.usg-display.landscape .now-card { grid-area: now; margin-bottom: 0; }
+.usg-display.landscape .next-card { grid-area: next; margin-bottom: 0; overflow: auto; }
+.usg-display.landscape .qr-card { grid-area: qr; margin-bottom: 0; }
+.usg-display.landscape .instruction-row {
+  grid-area: instructions;
+  display: flex;
+  flex-direction: column;
+  gap: 1vh;
+  margin-bottom: 0;
+  overflow: auto;
+}
+.usg-display.landscape .instruction { display: flex; align-items: center; gap: 0.8vw; text-align: left; padding: 1vh 1vw; }
+.usg-display.landscape .instruction span { margin-bottom: 0; font-size: 2.4vh; }
+
+/* ── Kiosk fullscreen-tap fallback — shown only until fullscreen granted ─ */
+.fullscreen-tap {
+  position: absolute;
+  bottom: 1.5vh;
+  right: 1.5vw;
+  background: rgba(0, 0, 0, 0.55);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 10px;
+  padding: 0.8vh 1.2vw;
+  font-size: 1.6vh;
+  font-family: inherit;
+  cursor: pointer;
+  z-index: 999;
 }
 `;
