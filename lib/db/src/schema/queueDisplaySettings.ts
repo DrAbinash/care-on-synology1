@@ -77,6 +77,22 @@ export const queueDisplaySettingsTable = pgTable("queue_display_settings", {
   primaryColor: text("primary_color").notNull().default("#03a814"),
   secondaryColor: text("secondary_color").notNull().default("#075fe0"),
   accentColor: text("accent_color").notNull().default("#ffe600"),
+  // "" for any of these three = fall back to the built-in dark-gradient
+  // look (same as before these columns existed) so old rows keep working.
+  backgroundColor: text("background_color").notNull().default(""),
+  cardBackgroundColor: text("card_background_color").notNull().default(""),
+  textColor: text("text_color").notNull().default(""),
+
+  // ── Layout ───────────────────────────────────────────────────────────────
+  // "portrait" (1080x1920 signage board, the original design) or
+  // "landscape" (1920x1080 — header/footer full-width, two-column body).
+  layoutOrientation: text("layout_orientation").notNull().default("portrait"),
+
+  // ── Kiosk mode — unattended-TV hardening ───────────────────────────────
+  kioskWakeLock: boolean("kiosk_wake_lock").notNull().default(true),
+  kioskAutoFullscreen: boolean("kiosk_auto_fullscreen").notNull().default(true),
+  kioskAutoReload: boolean("kiosk_auto_reload").notNull().default(true),
+  kioskPreventExit: boolean("kiosk_prevent_exit").notNull().default(true),
 
   // ── Queue data source — links this display to an existing ledger/department
   // so it can reuse /api/display/queue(-stream) without any new queue logic.

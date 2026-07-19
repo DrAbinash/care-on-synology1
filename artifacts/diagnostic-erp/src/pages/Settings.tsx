@@ -26,7 +26,7 @@ import {
   RefreshCcw, FileCode, Send, QrCode, Palette, Bot, Inbox, ChevronRight,
   ArrowLeft, Phone, Layers, AlertTriangle, ScanLine, Receipt, Keyboard, Brain,
   Sparkles, Construction, GraduationCap, Tv, GripVertical, ScrollText, Flag,
-  Smartphone,
+  Smartphone, RectangleVertical, RectangleHorizontal,
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
@@ -8106,9 +8106,11 @@ function QueueSettingsTab() {
 // QUEUE DISPLAY (TV) SETTINGS TAB
 // ============================================================
 // Manages queue_display_settings rows — one per physical TV/kiosk display
-// (USG room, X-Ray room, Reception, etc). Nothing here touches the existing
-// waiting-room Display.tsx board or its /api/display/queue feed; this only
-// controls branding/presentation for the new portrait QueueDisplay.tsx page.
+// (USG room, X-Ray room, Reception, etc). This is the admin control panel
+// for clinic-site's /queue/:roomKey page (artifacts/clinic-site/src/pages/
+// queue-display.tsx) — the single canonical TV board, reachable at the
+// bare caredeoghar.com origin. It doesn't touch /api/display/queue itself,
+// only the presentation config layered on top of that existing feed.
 
 type InstructionItemForm = { id: string; icon: string; text: string; color: string; enabled: boolean };
 
@@ -8144,6 +8146,14 @@ type QueueDisplaySettingsForm = {
   primaryColor: string;
   secondaryColor: string;
   accentColor: string;
+  backgroundColor: string;
+  cardBackgroundColor: string;
+  textColor: string;
+  layoutOrientation: "portrait" | "landscape";
+  kioskWakeLock: boolean;
+  kioskAutoFullscreen: boolean;
+  kioskAutoReload: boolean;
+  kioskPreventExit: boolean;
   ledgerId: number;
   departments: string;
 };
@@ -8218,6 +8228,12 @@ function QueueDisplaySettingsTab() {
     onError: (err: any) => toast({ title: "Save failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
   });
 
+  const sendCommand = useMutation({
+    mutationFn: (command: "reload") => api.post(`/api/settings/queue-display/${roomKey}/command`, { command }),
+    onSuccess: () => toast({ title: "Reload command sent" }),
+    onError: (err: any) => toast({ title: "Could not send command", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
+  });
+
   const onLogoChange = (file: File | null) => {
     if (!file || !form) return;
     if (!file.type.startsWith("image/")) { toast({ title: "Please pick an image file", variant: "destructive" }); return; }
@@ -8279,9 +8295,9 @@ function QueueDisplaySettingsTab() {
           <div>
             <div className="font-semibold text-sm">TV / Kiosk Queue Display</div>
             <div className="text-xs text-muted-foreground mt-1">
-              Configure a portrait TV display for a specific room (USG, X-Ray, Reception, etc).
-              Everything shown on the TV — branding, room title, QR code, instructions, footer —
-              is controlled here. Open the display at <code className="px-1 py-0.5 bg-black/5 dark:bg-white/10 rounded">/queue/{roomKey}</code> on the TV browser.
+              Configure a TV display for a specific room (USG, X-Ray, Reception, etc) — portrait or landscape.
+              Everything shown on the TV — branding, room title, QR code, instructions, footer, theme, and
+              kiosk-mode behavior — is controlled here. Open the display at <code className="px-1 py-0.5 bg-black/5 dark:bg-white/10 rounded">/queue/{roomKey}</code> on the TV browser.
             </div>
           </div>
         </div>
@@ -8483,12 +8499,73 @@ function QueueDisplaySettingsTab() {
             {form.showSlogan && <Input value={form.slogan} onChange={(e) => setForm({ ...form, slogan: e.target.value })} placeholder="We care for you" />}
           </SettingsCard>
 
+          {/* Layout & orientation */}
+          <SettingsCard title="Layout & Orientation">
+            <Label className="text-xs block mb-1.5">TV orientation</Label>
+            <div className="flex gap-2 mb-1">
+              <button
+                type="button"
+                onClick={() => setForm({ ...form, layoutOrientation: "portrait" })}
+                className={`flex-1 flex items-center justify-center gap-2 border rounded-lg py-2 text-sm ${form.layoutOrientation === "portrait" ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300" : "border-card-border"}`}
+              >
+                <RectangleVertical size={15} /> Portrait (9:16)
+              </button>
+              <button
+                type="button"
+                onClick={() => setForm({ ...form, layoutOrientation: "landscape" })}
+                className={`flex-1 flex items-center justify-center gap-2 border rounded-lg py-2 text-sm ${form.layoutOrientation === "landscape" ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300" : "border-card-border"}`}
+              >
+                <RectangleHorizontal size={15} /> Landscape (16:9)
+              </button>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Match this to how the physical TV is mounted. Landscape rearranges the same cards into a two-column board instead of rotating the portrait design.
+            </p>
+          </SettingsCard>
+
           {/* Theme */}
           <SettingsCard title="Theme Colors">
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-3 gap-3 mb-3">
               <ColorField label="Primary (green)" value={form.primaryColor} onChange={(v) => setForm({ ...form, primaryColor: v })} />
               <ColorField label="Secondary (blue)" value={form.secondaryColor} onChange={(v) => setForm({ ...form, secondaryColor: v })} />
               <ColorField label="Accent (announce)" value={form.accentColor} onChange={(v) => setForm({ ...form, accentColor: v })} />
+            </div>
+            <div className="grid grid-cols-3 gap-3 pt-3 border-t border-card-border">
+              <OptionalColorField label="Background" value={form.backgroundColor} onChange={(v) => setForm({ ...form, backgroundColor: v })} placeholder="#03152f" />
+              <OptionalColorField label="Card background" value={form.cardBackgroundColor} onChange={(v) => setForm({ ...form, cardBackgroundColor: v })} placeholder="#06224a" />
+              <OptionalColorField label="Text color" value={form.textColor} onChange={(v) => setForm({ ...form, textColor: v })} placeholder="#ffffff" />
+            </div>
+          </SettingsCard>
+
+          {/* Kiosk mode — unattended-TV hardening (distinct from the
+              walk-in registration "Kiosk Settings" tab elsewhere). */}
+          <SettingsCard title="Kiosk Mode (Unattended TV)">
+            <ToggleRow label="Keep screen awake (wake lock)" checked={form.kioskWakeLock} onChange={(v) => setForm({ ...form, kioskWakeLock: v })} />
+            <ToggleRow label="Auto-enter fullscreen (hide browser bar)" checked={form.kioskAutoFullscreen} onChange={(v) => setForm({ ...form, kioskAutoFullscreen: v })} />
+            <ToggleRow label="Auto-reload after network loss or if the screen freezes" checked={form.kioskAutoReload} onChange={(v) => setForm({ ...form, kioskAutoReload: v })} />
+            <ToggleRow label="Discourage leaving the page (block right-click, confirm on navigate)" checked={form.kioskPreventExit} onChange={(v) => setForm({ ...form, kioskPreventExit: v })} />
+            <div className="mt-3 pt-3 border-t border-card-border text-[11px] text-muted-foreground space-y-1.5">
+              <p>
+                These toggles control what the TV's own browser tab can do on its own. A normal browser can't fully lock itself down or
+                auto-launch on boot — for that, install a kiosk browser app on the TV/box (e.g. <b>Fully Kiosk Browser</b> on Android/Fire TV,
+                or Chrome with <code className="px-1 py-0.5 bg-black/5 dark:bg-white/10 rounded">--kiosk</code> on a mini PC), set it to launch
+                automatically on power-up, and point it at the TV browser URL below.
+              </p>
+            </div>
+          </SettingsCard>
+
+          {/* Remote control */}
+          <SettingsCard title="Remote Control">
+            <div className="flex items-center gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => sendCommand.mutate("reload")}
+                disabled={sendCommand.isPending}
+              >
+                <RefreshCcw size={14} className="mr-1.5" /> {sendCommand.isPending ? "Sending…" : "Reload this TV now"}
+              </Button>
+              <span className="text-[11px] text-muted-foreground">Pushes an instant reload to whichever TV is currently open on this room's URL — no need to walk over to it.</span>
             </div>
           </SettingsCard>
 
@@ -8538,14 +8615,22 @@ function QueueDisplaySettingsTab() {
               <RefreshCcw size={11} /> Refresh
             </button>
           </div>
-          <div className="border-4 border-black rounded-[24px] overflow-hidden shadow-xl mx-auto" style={{ width: 270, height: 480 }}>
-            <iframe
-              key={previewKey}
-              src={previewUrl}
-              title="Queue display preview"
-              style={{ width: 1080, height: 1920, transform: "scale(0.25)", transformOrigin: "top left", border: "none" }}
-            />
-          </div>
+          {(() => {
+            const landscape = form.layoutOrientation === "landscape";
+            const frameW = landscape ? 1920 : 1080;
+            const frameH = landscape ? 1080 : 1920;
+            const scale = 270 / frameW; // fixed 270px-wide frame either orientation
+            return (
+              <div className="border-4 border-black rounded-[24px] overflow-hidden shadow-xl mx-auto" style={{ width: 270, height: frameH * scale }}>
+                <iframe
+                  key={previewKey}
+                  src={previewUrl}
+                  title="Queue display preview"
+                  style={{ width: frameW, height: frameH, transform: `scale(${scale})`, transformOrigin: "top left", border: "none" }}
+                />
+              </div>
+            );
+          })()}
           <p className="text-[11px] text-muted-foreground mt-2 text-center">
             Preview reflects the last <b>saved</b> settings. Save to update it.
           </p>
@@ -8584,6 +8669,29 @@ function ColorField({ label, value, onChange }: { label: string; value: string; 
       <div className="flex items-center gap-2">
         <input type="color" value={/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value) ? value : "#000000"} onChange={(e) => onChange(e.target.value)} className="w-9 h-9 rounded-md border border-card-border shrink-0" />
         <Input value={value} onChange={(e) => onChange(e.target.value)} className="text-xs" />
+      </div>
+    </div>
+  );
+}
+
+// Like ColorField, but "" is a valid value meaning "use the display's
+// built-in default" rather than an invalid/unset color — used for the
+// background/card-background/text-color overrides, which are optional.
+function OptionalColorField({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (v: string) => void; placeholder: string }) {
+  const isCustom = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value);
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <Label className="text-xs">{label}</Label>
+        {isCustom && (
+          <button type="button" onClick={() => onChange("")} className="text-[10px] text-muted-foreground hover:underline">
+            Reset to default
+          </button>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <input type="color" value={isCustom ? value : placeholder} onChange={(e) => onChange(e.target.value)} className="w-9 h-9 rounded-md border border-card-border shrink-0" />
+        <Input value={value} onChange={(e) => onChange(e.target.value)} placeholder="Default" className="text-xs" />
       </div>
     </div>
   );
