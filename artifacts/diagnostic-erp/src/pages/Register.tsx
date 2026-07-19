@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import {
   useCreatePatient,
@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import ScanIdButton from "@/components/ScanIdButton";
 import { useToast } from "@/hooks/use-toast";
+import { detectGenderFromName } from "@/lib/nameGender";
 
 function convertDateFormat(dateStr: string): string {
   if (!dateStr) return "";
@@ -87,6 +88,17 @@ export default function Register() {
   const { register, handleSubmit, setValue, watch } = useForm({
     defaultValues: { gender: "male", firstName: "", lastName: "", dateOfBirth: "", phone: "", email: "", address: "", bloodGroup: "" },
   });
+
+  // Suggestion, not a decision: auto-fill Gender from First Name as it's
+  // typed, but stop the instant the user (or the ID scan) sets an explicit
+  // value so we never overwrite a real choice.
+  const genderTouched = useRef(false);
+  const firstNameValue = watch("firstName");
+  useEffect(() => {
+    if (genderTouched.current) return;
+    const suggested = detectGenderFromName(firstNameValue);
+    if (suggested) setValue("gender", suggested);
+  }, [firstNameValue, setValue]);
 
   const subtotal = selectedTests.reduce((s, t) => s + t.price, 0);
   const total = Math.max(0, subtotal - discount);
@@ -223,6 +235,7 @@ export default function Register() {
                       setValue("dateOfBirth", convertDateFormat(data.dob));
                     }
                     if (data.gender) {
+                      genderTouched.current = true;
                       setValue("gender", data.gender.toLowerCase() === "female" ? "female" : "male");
                     }
                     if (data.address) {
@@ -250,12 +263,11 @@ export default function Register() {
               </div>
               <div>
                 <Label>Gender *</Label>
-                <Select defaultValue="male" onValueChange={(v) => setValue("gender", v)}>
+                <Select defaultValue="male" onValueChange={(v) => { genderTouched.current = true; setValue("gender", v); }}>
                   <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="male">Male</SelectItem>
                     <SelectItem value="female">Female</SelectItem>
-                    <SelectItem value="other">Other</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
