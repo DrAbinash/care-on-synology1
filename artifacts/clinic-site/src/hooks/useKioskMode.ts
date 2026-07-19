@@ -122,6 +122,19 @@ export function useKioskMode(opts: KioskOptions) {
     return () => es.close();
   }, [roomKey, displayToken]);
 
+  // ── Heartbeat — lets Settings ▸ Queue Display ▸ Displays Overview show
+  // accurate online/last-seen status, and lets the staff offline-TV alert
+  // scheduler know this screen is actually alive.
+  useEffect(() => {
+    const qs = displayToken ? `?displayToken=${encodeURIComponent(displayToken)}` : "";
+    const ping = () => {
+      fetch(`/api/settings/queue-display/${roomKey}/heartbeat${qs}`, { method: "POST" }).catch(() => {});
+    };
+    ping();
+    const t = setInterval(ping, 30_000);
+    return () => clearInterval(t);
+  }, [roomKey, displayToken]);
+
   // ── Discourage accidental exit (best-effort — see module docblock) ─────
   useEffect(() => {
     if (!preventExit) return;

@@ -8113,6 +8113,7 @@ function QueueSettingsTab() {
 // only the presentation config layered on top of that existing feed.
 
 type InstructionItemForm = { id: string; icon: string; text: string; color: string; enabled: boolean };
+type MediaItemForm = { id: string; type: "image" | "video"; url: string; durationSeconds: number; enabled: boolean };
 
 type QueueDisplaySettingsForm = {
   roomKey: string;
@@ -8154,9 +8155,69 @@ type QueueDisplaySettingsForm = {
   kioskAutoFullscreen: boolean;
   kioskAutoReload: boolean;
   kioskPreventExit: boolean;
+  showWaitEstimate: boolean;
+  voiceAnnouncementEnabled: boolean;
+  language: "en" | "hi";
+  patientPingEnabled: boolean;
+  patientPingTokensBefore: number;
+  showMedia: boolean;
+  mediaItems: MediaItemForm[];
+  mediaIntervalMinutes: number;
+  mediaDurationSeconds: number;
+  quietHoursEnabled: boolean;
+  quietHoursStart: string;
+  quietHoursEnd: string;
+  quietHoursDimPercent: number;
+  staffAlertEnabled: boolean;
+  staffAlertPhone: string;
+  staffAlertAfterMinutes: number;
   ledgerId: number;
   departments: string;
 };
+
+// Shows every configured room's TV online/offline status (via the heartbeat
+// ping each display sends every ~30s) and last-seen time, so staff can spot
+// a dark screen from the ERP instead of walking to check it. Purely a
+// read-only status view — no settings live here.
+function DisplaysOverview({
+  rooms,
+  activeRoomKey,
+  onSelectRoom,
+}: {
+  rooms?: { roomKey: string; roomTitle: string; online: boolean; lastSeenAt: number | null }[];
+  activeRoomKey: string;
+  onSelectRoom: (roomKey: string) => void;
+}) {
+  if (!rooms || rooms.length === 0) return null;
+
+  const fmtLastSeen = (ts: number | null) => {
+    if (!ts) return "never seen";
+    const mins = Math.round((Date.now() - ts) / 60_000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    return `${Math.round(mins / 60)}h ago`;
+  };
+
+  return (
+    <div className="bg-card border border-card-border rounded-xl p-4">
+      <div className="text-sm font-semibold mb-3">Displays Overview</div>
+      <div className="flex flex-wrap gap-2">
+        {rooms.map((r) => (
+          <button
+            key={r.roomKey}
+            type="button"
+            onClick={() => onSelectRoom(r.roomKey)}
+            className={`flex items-center gap-2 border rounded-lg px-3 py-1.5 text-xs ${r.roomKey === activeRoomKey ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40" : "border-card-border hover:bg-muted"}`}
+          >
+            <span className={`w-2 h-2 rounded-full shrink-0 ${r.online ? "bg-emerald-500" : "bg-red-500"}`} />
+            <span className="font-medium">{r.roomTitle || r.roomKey.toUpperCase()}</span>
+            <span className="text-muted-foreground">{r.online ? "online" : fmtLastSeen(r.lastSeenAt)}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function QueueDisplaySettingsTab() {
   const { toast } = useToast();
@@ -8169,9 +8230,10 @@ function QueueDisplaySettingsTab() {
   // List of all configured displays (MRI, CT, X-Ray, USG, Reception, etc.)
   // — fully dynamic, no fixed list. Doctors add rooms from here; each gets
   // its own independent settings row and its own /display/:roomKey URL.
-  const { data: rooms } = useQuery<{ roomKey: string; roomTitle: string; displayName: string }[]>({
+  const { data: rooms } = useQuery<{ roomKey: string; roomTitle: string; displayName: string; online: boolean; lastSeenAt: number | null }[]>({
     queryKey: ["queue-display-rooms"],
     queryFn: () => api.get("/api/settings/queue-display"),
+    refetchInterval: 30_000, // keep the Displays Overview online/offline status fresh
   });
 
   const { data, isLoading } = useQuery<QueueDisplaySettingsForm>({
@@ -8233,6 +8295,57 @@ function QueueDisplaySettingsTab() {
     onSuccess: () => toast({ title: "Reload command sent" }),
     onError: (err: any) => toast({ title: "Could not send command", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
   });
+
+  const cloneSettings = useMutation({
+    mutationFn: (fromRoomKey: string) => api.post(`/api/settings/queue-display/${roomKey}/clone`, { fromRoomKey }),
+    onSuccess: (res: any) => {
+      setForm(res);
+      toast({ title: `Copied settings from ${cloneFromKey.toUpperCase()}` });
+    },
+    onError: (err: any) => toast({ title: "Clone failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
+  });
+
+  const [cloneFromKey, setCloneFromKey] = useState("");
+  const [mediaUploading, setMediaUploading] = useState(false);
+
+  const uploadMedia = async (file: File | null) => {
+    if (!file || !form) return;
+    if (file.size > 60 * 1024 * 1024) { toast({ title: "File too large — 60 MB max", variant: "destructive" }); return; }
+    setMediaUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const token = getStaffToken();
+      const res = await fetch(`/api/settings/queue-display/${roomKey}/media`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        body: fd,
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || `Upload failed (${res.status})`);
+      const uploaded = await res.json() as { url: string; type: "image" | "video" };
+      setForm({
+        ...form,
+        mediaItems: [
+          ...form.mediaItems,
+          { id: String(Date.now()), type: uploaded.type, url: uploaded.url, durationSeconds: 15, enabled: true },
+        ],
+      });
+      toast({ title: "Media uploaded — remember to save" });
+    } catch (err) {
+      toast({ title: "Upload failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    } finally {
+      setMediaUploading(false);
+    }
+  };
+
+  const removeMedia = (id: string) => {
+    if (!form) return;
+    const item = form.mediaItems.find((m) => m.id === id);
+    setForm({ ...form, mediaItems: form.mediaItems.filter((m) => m.id !== id) });
+    if (item?.url) {
+      api.delete(`/api/settings/queue-display/${roomKey}/media`, { url: item.url }).catch(() => {});
+    }
+  };
 
   const onLogoChange = (file: File | null) => {
     if (!file || !form) return;
@@ -8363,10 +8476,34 @@ function QueueDisplaySettingsTab() {
           </Button>
         )}
 
+        {rooms && rooms.length > 1 && (
+          <div className="flex items-center gap-2">
+            <Label className="text-xs shrink-0">Clone settings from</Label>
+            <Select value={cloneFromKey} onValueChange={setCloneFromKey}>
+              <SelectTrigger className="w-40 h-8 text-xs"><SelectValue placeholder="Pick a room…" /></SelectTrigger>
+              <SelectContent>
+                {rooms.filter((r) => r.roomKey !== roomKey).map((r) => (
+                  <SelectItem key={r.roomKey} value={r.roomKey}>{r.roomTitle || r.roomKey.toUpperCase()}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!cloneFromKey || cloneSettings.isPending}
+              onClick={() => cloneSettings.mutate(cloneFromKey)}
+            >
+              {cloneSettings.isPending ? "Copying…" : "Copy"}
+            </Button>
+          </div>
+        )}
+
         <span className="text-xs text-muted-foreground w-full">
           Each room (MRI, CT, X-Ray, USG, Reception…) has its own independent branding, QR code, and TV URL at <code className="px-1 py-0.5 bg-black/5 dark:bg-white/10 rounded">/queue/{roomKey}</code>.
         </span>
       </div>
+
+      <DisplaysOverview rooms={rooms} activeRoomKey={roomKey} onSelectRoom={setRoomKey} />
 
       <div className="grid grid-cols-1 xl:grid-cols-[1fr_420px] gap-4">
         {/* ── Settings form ─────────────────────────────────────────── */}
@@ -8411,6 +8548,7 @@ function QueueDisplaySettingsTab() {
                 <Input type="number" min={1} max={20} value={form.nextPatientCount} onChange={(e) => setForm({ ...form, nextPatientCount: Number(e.target.value) || 5 })} className="w-24" />
               </div>
             )}
+            <ToggleRow label='Show estimated wait time (e.g. "~12 min wait")' checked={form.showWaitEstimate} onChange={(v) => setForm({ ...form, showWaitEstimate: v })} />
             <div className="flex items-center gap-2 mb-3">
               <Label className="text-xs w-40 shrink-0">Ledger / Book ID</Label>
               <Input type="number" min={1} value={form.ledgerId} onChange={(e) => setForm({ ...form, ledgerId: Number(e.target.value) || 1 })} className="w-24" />
@@ -8523,6 +8661,24 @@ function QueueDisplaySettingsTab() {
             </p>
           </SettingsCard>
 
+          {/* Voice & language */}
+          <SettingsCard title="Voice & Language">
+            <ToggleRow label="Announce the token number out loud when it changes" checked={form.voiceAnnouncementEnabled} onChange={(v) => setForm({ ...form, voiceAnnouncementEnabled: v })} />
+            <div className="flex items-center gap-2 mt-2">
+              <Label className="text-xs w-40 shrink-0">On-screen label language</Label>
+              <Select value={form.language} onValueChange={(v) => setForm({ ...form, language: v as "en" | "hi" })}>
+                <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="en">English</SelectItem>
+                  <SelectItem value="hi">हिन्दी (Hindi)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-2">
+              Language only translates the fixed labels ("Now Serving", "Next Patients", etc). Your own text (room title, QR heading, instructions, announcement, footer) stays exactly as you typed it.
+            </p>
+          </SettingsCard>
+
           {/* Theme */}
           <SettingsCard title="Theme Colors">
             <div className="grid grid-cols-3 gap-3 mb-3">
@@ -8567,6 +8723,118 @@ function QueueDisplaySettingsTab() {
               </Button>
               <span className="text-[11px] text-muted-foreground">Pushes an instant reload to whichever TV is currently open on this room's URL — no need to walk over to it.</span>
             </div>
+          </SettingsCard>
+
+          {/* Branding / video interstitial */}
+          <SettingsCard title="Branding / Video Interstitial">
+            <ToggleRow label="Periodically take over the screen with branding/video" checked={form.showMedia} onChange={(v) => setForm({ ...form, showMedia: v })} />
+            {form.showMedia && (
+              <>
+                <div className="flex items-center gap-4 mb-3">
+                  <div className="flex items-center gap-2">
+                    <Label className="text-xs shrink-0">Every</Label>
+                    <Input type="number" min={1} max={60} value={form.mediaIntervalMinutes} onChange={(e) => setForm({ ...form, mediaIntervalMinutes: Number(e.target.value) || 5 })} className="w-16" />
+                    <span className="text-xs text-muted-foreground">min</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Label className="text-xs shrink-0">for</Label>
+                    <Input type="number" min={5} max={300} value={form.mediaDurationSeconds} onChange={(e) => setForm({ ...form, mediaDurationSeconds: Number(e.target.value) || 30 })} className="w-16" />
+                    <span className="text-xs text-muted-foreground">sec (default, per-item override below)</span>
+                  </div>
+                </div>
+                <div className="space-y-2 mb-3">
+                  {form.mediaItems.map((m) => (
+                    <div key={m.id} className="flex items-center gap-2 border border-card-border rounded-lg p-2">
+                      {m.type === "video" ? (
+                        <video src={m.url} className="w-16 h-10 rounded object-cover bg-black shrink-0" muted />
+                      ) : (
+                        <img src={m.url} className="w-16 h-10 rounded object-cover bg-muted shrink-0" alt="" />
+                      )}
+                      <span className="text-xs text-muted-foreground flex-1 truncate">{m.type} · {m.url.split("/").pop()}</span>
+                      <Label className="text-[11px] shrink-0">sec</Label>
+                      <Input
+                        type="number" min={3} max={300}
+                        value={m.durationSeconds}
+                        onChange={(e) => setForm({ ...form, mediaItems: form.mediaItems.map((x) => x.id === m.id ? { ...x, durationSeconds: Number(e.target.value) || 15 } : x) })}
+                        className="w-16 h-8 text-xs"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setForm({ ...form, mediaItems: form.mediaItems.map((x) => x.id === m.id ? { ...x, enabled: !x.enabled } : x) })}
+                        className="shrink-0"
+                        title={m.enabled ? "Included in rotation — click to skip" : "Skipped — click to include"}
+                      >
+                        {m.enabled ? <CheckSquare size={18} className="text-emerald-500" /> : <Square size={18} className="text-muted-foreground" />}
+                      </button>
+                      <button type="button" onClick={() => removeMedia(m.id)} className="shrink-0 text-red-500 hover:text-red-600">
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <label className="text-xs px-3 py-1.5 border border-card-border rounded-lg cursor-pointer hover:bg-muted inline-flex items-center gap-1.5">
+                  <Upload size={12} /> {mediaUploading ? "Uploading…" : "Upload image or video (60 MB max)"}
+                  <input type="file" accept="image/*,video/mp4,video/webm" className="hidden" disabled={mediaUploading} onChange={(e) => uploadMedia(e.target.files?.[0] ?? null)} />
+                </label>
+              </>
+            )}
+          </SettingsCard>
+
+          {/* Quiet hours */}
+          <SettingsCard title="Quiet Hours">
+            <ToggleRow label="Dim the screen outside clinic hours" checked={form.quietHoursEnabled} onChange={(v) => setForm({ ...form, quietHoursEnabled: v })} />
+            {form.quietHoursEnabled && (
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <Label className="text-xs shrink-0">From</Label>
+                  <Input type="time" value={form.quietHoursStart} onChange={(e) => setForm({ ...form, quietHoursStart: e.target.value })} className="w-28" />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Label className="text-xs shrink-0">To</Label>
+                  <Input type="time" value={form.quietHoursEnd} onChange={(e) => setForm({ ...form, quietHoursEnd: e.target.value })} className="w-28" />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Label className="text-xs shrink-0">Dim by</Label>
+                  <Input type="number" min={0} max={90} value={form.quietHoursDimPercent} onChange={(e) => setForm({ ...form, quietHoursDimPercent: Number(e.target.value) || 0 })} className="w-16" />
+                  <span className="text-xs text-muted-foreground">%</span>
+                </div>
+              </div>
+            )}
+            <p className="text-[11px] text-muted-foreground mt-2">
+              This dims the picture (CSS brightness) — it does not turn the TV itself off. Power scheduling is a TV/smart-plug setting, not something a webpage can control.
+            </p>
+          </SettingsCard>
+
+          {/* Patient WhatsApp ping */}
+          <SettingsCard title="Patient Notifications (WhatsApp)">
+            <ToggleRow label="Message a patient's WhatsApp when they're almost up" checked={form.patientPingEnabled} onChange={(v) => setForm({ ...form, patientPingEnabled: v })} />
+            {form.patientPingEnabled && (
+              <div className="flex items-center gap-2 mb-2">
+                <Label className="text-xs w-40 shrink-0">Ping this many tokens before</Label>
+                <Input type="number" min={1} max={10} value={form.patientPingTokensBefore} onChange={(e) => setForm({ ...form, patientPingTokensBefore: Number(e.target.value) || 2 })} className="w-20" />
+              </div>
+            )}
+            <p className="text-[11px] text-amber-600 dark:text-amber-500">
+              Off by default. This sends a real WhatsApp message to real patients — test it carefully before turning it on for a busy room.
+            </p>
+          </SettingsCard>
+
+          {/* Staff offline-TV alert */}
+          <SettingsCard title="Staff Alerts (WhatsApp)">
+            <ToggleRow label="WhatsApp a staff number if this TV goes offline" checked={form.staffAlertEnabled} onChange={(v) => setForm({ ...form, staffAlertEnabled: v })} />
+            {form.staffAlertEnabled && (
+              <div className="space-y-2">
+                <Input value={form.staffAlertPhone} onChange={(e) => setForm({ ...form, staffAlertPhone: e.target.value })} placeholder="Staff WhatsApp number, e.g. 9876543210" />
+                <div className="flex items-center gap-2">
+                  <Label className="text-xs w-40 shrink-0">Alert after offline for</Label>
+                  <Input type="number" min={1} max={120} value={form.staffAlertAfterMinutes} onChange={(e) => setForm({ ...form, staffAlertAfterMinutes: Number(e.target.value) || 10 })} className="w-20" />
+                  <span className="text-xs text-muted-foreground">min</span>
+                </div>
+              </div>
+            )}
+            <p className="text-[11px] text-muted-foreground mt-2">
+              Also shown live in the Displays Overview above. Re-alerts at most once an hour while the screen stays dark.
+            </p>
           </SettingsCard>
 
           <div className="sticky bottom-0 bg-background/95 backdrop-blur py-3 border-t border-card-border space-y-3">

@@ -99,6 +99,41 @@ export const queueDisplaySettingsTable = pgTable("queue_display_settings", {
   ledgerId: integer("ledger_id").notNull().default(1),
   departments: text("departments").notNull().default(""), // comma-separated, "" = all
 
+  // ── Wait-time estimate — computed server-side (read-only) from today's
+  // completed test_tokens; this column is just the show/hide toggle.
+  showWaitEstimate: boolean("show_wait_estimate").notNull().default(true),
+
+  // ── Voice announcement (browser SpeechSynthesis — no server component) ──
+  voiceAnnouncementEnabled: boolean("voice_announcement_enabled").notNull().default(false),
+
+  // ── Language for the fixed on-screen labels ("NOW SERVING" etc). Not a
+  // full i18n system — a small built-in dictionary on the display page.
+  language: text("language").notNull().default("en"),
+
+  // ── Patient "you're almost up" WhatsApp ping — off by default per room;
+  // an admin must explicitly opt in after configuring it.
+  patientPingEnabled: boolean("patient_ping_enabled").notNull().default(false),
+  patientPingTokensBefore: integer("patient_ping_tokens_before").notNull().default(2),
+
+  // ── Branding / video interstitial — JSON array of
+  // { id, type: "image"|"video", url, durationSeconds, enabled }
+  showMedia: boolean("show_media").notNull().default(false),
+  mediaItems: text("media_items").notNull().default("[]"),
+  mediaIntervalMinutes: integer("media_interval_minutes").notNull().default(5),
+  mediaDurationSeconds: integer("media_duration_seconds").notNull().default(30),
+
+  // ── Quiet hours — dim the screen (CSS brightness, not a real power-off)
+  // outside clinic hours. "HH:MM" 24h strings; "" = not configured.
+  quietHoursEnabled: boolean("quiet_hours_enabled").notNull().default(false),
+  quietHoursStart: text("quiet_hours_start").notNull().default(""),
+  quietHoursEnd: text("quiet_hours_end").notNull().default(""),
+  quietHoursDimPercent: integer("quiet_hours_dim_percent").notNull().default(40),
+
+  // ── Staff alert when this TV goes offline (WhatsApp, best-effort) ───────
+  staffAlertEnabled: boolean("staff_alert_enabled").notNull().default(false),
+  staffAlertPhone: text("staff_alert_phone").notNull().default(""),
+  staffAlertAfterMinutes: integer("staff_alert_after_minutes").notNull().default(10),
+
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (table) => ({

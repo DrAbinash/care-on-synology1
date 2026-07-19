@@ -42,6 +42,7 @@ export function startCronScheduler() {
   scheduleRadiologyJobs();
   scheduleAuditChainVerify();
   scheduleAiSchedulerModes();
+  scheduleQueueDisplayAlerts();
 
   // Start the in-process DIMSE pull agent if enabled.
   // When ENABLE_DICOM_PULL_AGENT is set, the agent polls for pull jobs and
@@ -1029,6 +1030,65 @@ export async function fireBankingAutoSync() {
       console.log(`[cron] Auto-reconciliation: ${result.matched} matched, ${result.autoClosed} auto-closed, ${result.failed} failed`);
     } catch (err) {
       console.error("[cron] Auto-reconciliation failed:", err);
+    }
+  }
+}
+
+// ── Queue Display: patient "almost up" pings + staff offline-TV alerts ──────
+// Both are off by default per room (queue_display_settings toggles). Runs
+// every 2 minutes — frequent enough that a patient ping still feels timely,
+// infrequent enough not to spam the WhatsApp provider on a busy queue.
+function scheduleQueueDisplayAlerts() {
+  cron.schedule("*/2 * * * *", async () => {
+    try {
+      const { runPatientPingSweep } = await import("./lib/queueDisplayPingScheduler");
+      const r = await runPatientPingSweep();
+      if (r.pinged > 0) console.log(`[cron] Queue display: sent ${r.pinged} patient ping(s)`);
+    } catch (err) {
+      console.error("[cron] Queue display patient ping sweep failed:", err);
+    }
+    try {
+      await checkQueueDisplayOfflineAlerts();
+    } catch (err) {
+      console.error("[cron] Queue display offline-alert check failed:", err);
+    }
+  });
+  console.log("[cron] Queue display patient-ping + offline-alert scheduler started (runs every 2 minutes)");
+}
+
+async function checkQueueDisplayOfflineAlerts() {
+  const { queueDisplaySettingsTable } = await import("@workspace/db/schema");
+  const { eq } = await import("drizzle-orm");
+  const { displayHeartbeatTracker } = await import("./lib/displayHeartbeatTracker");
+  const { getWhatsAppService } = await import("./services/whatsapp/WhatsAppService");
+
+  const rooms = await db.select().from(queueDisplaySettingsTable).where(eq(queueDisplaySettingsTable.staffAlertEnabled, true));
+  if (rooms.length === 0) return;
+
+  const service = getWhatsAppService();
+  for (const room of rooms) {
+    if (!room.staffAlertPhone) continue;
+    const thresholdMs = room.staffAlertAfterMinutes * 60_000;
+    const lastSeen = displayHeartbeatTracker.getLastSeen(room.roomKey);
+    const offline = !lastSeen || Date.now() - lastSeen > thresholdMs;
+    if (!offline) continue;
+
+    const cooldownMs = 60 * 60_000; // re-alert at most once an hour while it stays down
+    const lastAlerted = displayHeartbeatTracker.getLastAlertedAt(room.roomKey);
+    if (lastAlerted && Date.now() - lastAlerted < cooldownMs) continue;
+
+    const minutesDark = lastSeen ? Math.round((Date.now() - lastSeen) / 60_000) : null;
+    const phone = service.normalizePhone(room.staffAlertPhone);
+    const text = `Care Diagnostics: the "${room.roomTitle || room.roomKey}" queue display TV appears offline` +
+      (minutesDark ? ` (no heartbeat for ${minutesDark} min)` : " (never connected)") +
+      `. Please check the screen.`;
+
+    displayHeartbeatTracker.markAlerted(room.roomKey);
+    try {
+      const result = await service.sendText(phone, text);
+      if (!result.ok) console.warn(`[cron] Queue display offline alert failed for room ${room.roomKey}:`, result.error);
+    } catch (err) {
+      console.warn(`[cron] Queue display offline alert threw for room ${room.roomKey}:`, err);
     }
   }
 }

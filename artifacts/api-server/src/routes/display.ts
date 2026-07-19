@@ -34,7 +34,7 @@ import { db } from "@workspace/db";
 import {
   testTokensTable, patientsTable, testsTable, clinicSettingsTable,
 } from "@workspace/db/schema";
-import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
 import { requireStaffAuth } from "../middleware/requireStaffAuth";
 import { queueBroadcaster, type QueueUpdateEvent } from "../lib/queueBroadcast";
 import { withCache, TTL } from "../lib/ttlCache";
@@ -180,21 +180,77 @@ async function fetchQueueData(opts: {
     (byDept[r.department] ??= []).push(r);
   }
 
+  // Wait-time estimate — read-only, additive. Averages today's actual
+  // calledAt→completedAt service duration per department so the display
+  // can show "~N min" next to each waiting patient. Does not touch
+  // test-tokens.ts (protected/billing) — this only reads columns that
+  // route already writes as part of its normal call/complete flow.
+  const avgServiceMinutesByDept = await computeAvgServiceMinutes({ ledgerId, date, departments: Object.keys(byDept) });
+  const DEFAULT_SERVICE_MINUTES = 8; // used until a department has any "done" tokens today
+
   return {
     date,
     departments: Object.entries(byDept).map(([department, tokens]) => {
       const serving = tokens.find((t) => t.status === "serving");
       const waiting = tokens.filter((t) => t.status === "waiting");
+      const avgMinutes = avgServiceMinutesByDept[department] ?? DEFAULT_SERVICE_MINUTES;
       return {
         department,
         roomNumber: tokens[0]?.roomNumber ?? "",
         floorLabel: tokens[0]?.floorLabel ?? "",
         nowServing: serving ?? null,
-        waiting: waiting.slice(0, 8),
+        waiting: waiting.slice(0, 8).map((t, i) => ({ ...t, estimatedWaitMinutes: Math.round(avgMinutes * (i + 1)) })),
         waitingCount: waiting.length,
       };
     }).sort((a, b) => a.department.localeCompare(b.department)),
   };
+}
+
+// Average minutes between calledAt and completedAt for today's finished
+// tokens, per department. Read-only against test_tokens — never writes to
+// it. Falls back to an empty map (caller applies a default) when a
+// department has no completed tokens yet today (e.g. first patient of the
+// day, or a brand-new room).
+async function computeAvgServiceMinutes(opts: { ledgerId: number; date: string; departments: string[] }): Promise<Record<string, number>> {
+  const { ledgerId, date, departments } = opts;
+  if (departments.length === 0) return {};
+
+  const conds = [
+    eq(testTokensTable.tokenDate, date),
+    eq(testTokensTable.status, "done"),
+    isNotNull(testTokensTable.calledAt),
+    isNotNull(testTokensTable.completedAt),
+    inArray(testTokensTable.department, departments),
+    ledgerId === 1
+      ? or(eq(testTokensTable.ledgerId, 1), isNull(testTokensTable.ledgerId))
+      : eq(testTokensTable.ledgerId, ledgerId),
+  ];
+
+  const rows = await db
+    .select({
+      department: testTokensTable.department,
+      calledAt: testTokensTable.calledAt,
+      completedAt: testTokensTable.completedAt,
+    })
+    .from(testTokensTable)
+    .where(and(...conds))
+    .limit(500);
+
+  const sums: Record<string, { total: number; count: number }> = {};
+  for (const r of rows) {
+    if (!r.calledAt || !r.completedAt) continue;
+    const minutes = (r.completedAt.getTime() - r.calledAt.getTime()) / 60_000;
+    if (minutes <= 0 || minutes > 120) continue; // discard bad/outlier data (e.g. missed status transitions)
+    const bucket = (sums[r.department] ??= { total: 0, count: 0 });
+    bucket.total += minutes;
+    bucket.count += 1;
+  }
+
+  const out: Record<string, number> = {};
+  for (const [dept, { total, count }] of Object.entries(sums)) {
+    if (count > 0) out[dept] = total / count;
+  }
+  return out;
 }
 
 // ─── Polling endpoint: GET /api/display/queue ─────────────────────────────────
