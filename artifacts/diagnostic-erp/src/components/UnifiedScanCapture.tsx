@@ -43,12 +43,17 @@ export type ScanModule = "form-f" | "patients" | "expenses" | "banking";
 export type ScanDocType = "id-card" | "bill" | "bank-statement" | "photo" | "other";
 export type ScanSource = "bridge" | "upload" | "mobile" | "webcam" | "tvs";
 
+export type ScanSide = "front" | "back";
+
 export interface ScanCaptureResult {
   file: Blob;
   mimeType: string;
   source: ScanSource;
   deviceLabel?: string;
   filename?: string;
+  /** Which side of a two-sided document this capture is for. Callers that
+   *  don't distinguish sides can ignore it; it defaults to "front". */
+  side: ScanSide;
 }
 
 export interface UnifiedScanCaptureProps {
@@ -56,6 +61,10 @@ export interface UnifiedScanCaptureProps {
   docType: ScanDocType;
   triggerLabel?: string;
   className?: string;
+  /** Fixes which side every capture from this trigger targets. Lets a caller
+   *  render one trigger per side (e.g. "Scan Front" / "Scan Back"), each
+   *  offering the full set of capture methods. Defaults to "front". */
+  side?: ScanSide;
   onCapture: (result: ScanCaptureResult) => void;
   onError?: (message: string) => void;
 }
@@ -73,6 +82,7 @@ export default function UnifiedScanCapture({
   docType,
   triggerLabel = "Scan Document",
   className = "",
+  side = "front",
   onCapture,
   onError,
 }: UnifiedScanCaptureProps) {
@@ -101,7 +111,7 @@ export default function UnifiedScanCapture({
       const raw = await scanBridgeCapture();
       if (!raw.ok || !raw.imageBase64) throw new Error(raw.error || "Scan failed");
       const blob = base64ToBlob(raw.imageBase64, raw.mimeType || "image/jpeg");
-      onCapture({ file: blob, mimeType: raw.mimeType || "image/jpeg", source: "bridge", filename: raw.filename, deviceLabel: "Workstation Scanner" });
+      onCapture({ file: blob, mimeType: raw.mimeType || "image/jpeg", source: "bridge", filename: raw.filename, deviceLabel: "Workstation Scanner", side });
       setOpen(false);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Scanner bridge failed";
@@ -122,7 +132,7 @@ export default function UnifiedScanCapture({
       toast({ title: "Unsupported file", description: msg, variant: "destructive" });
       return;
     }
-    onCapture({ file, mimeType: file.type, source: "upload", filename: file.name });
+    onCapture({ file, mimeType: file.type, source: "upload", filename: file.name, side });
     setOpen(false);
   }
 
@@ -233,7 +243,7 @@ export default function UnifiedScanCapture({
     canvas.toBlob(
       (blob) => {
         if (!blob) return;
-        onCapture({ file: blob, mimeType: "image/jpeg", source, deviceLabel: label, filename: `${source}-capture.jpg` });
+        onCapture({ file: blob, mimeType: "image/jpeg", source, deviceLabel: label, filename: `${source}-capture.jpg`, side });
         setOpen(false);
       },
       "image/jpeg",
@@ -293,7 +303,7 @@ export default function UnifiedScanCapture({
           if (data.frontImageUrl) {
             const resp = await fetch(`/uploads/${data.frontImageUrl}`);
             const blob = await resp.blob();
-            onCapture({ file: blob, mimeType: blob.type || "image/jpeg", source: "mobile", filename: data.frontImageUrl });
+            onCapture({ file: blob, mimeType: blob.type || "image/jpeg", source: "mobile", filename: data.frontImageUrl, side });
             setOpen(false);
           }
           return;
