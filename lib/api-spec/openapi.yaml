@@ -2362,7 +2362,7 @@ components:
           type: string
         gender:
           type: string
-          enum: [male, female, other]
+          enum: [male, female]
         phone:
           type: string
         email:
@@ -2411,7 +2411,7 @@ components:
           type: string
         gender:
           type: string
-          enum: [male, female, other]
+          enum: [male, female]
         phone:
           type: string
         email:

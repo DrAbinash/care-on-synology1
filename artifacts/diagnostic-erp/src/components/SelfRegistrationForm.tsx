@@ -1,4 +1,9 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+// Relative import, not the "@/" alias: this file is reached into directly
+// by clinic-site (see book.tsx) whose "@" alias points at its OWN src, not
+// diagnostic-erp's — an aliased import here would resolve to the wrong
+// (non-existent) path when clinic-site's bundler processes it.
+import { detectGenderFromName } from "../lib/nameGender";
 
 export interface SelfRegistrationFormProps {
   mode: "online" | "kiosk" | "qr";
@@ -6,7 +11,7 @@ export interface SelfRegistrationFormProps {
     firstName: string;
     lastName: string;
     phone: string;
-    gender: "male" | "female" | "other" | "";
+    gender: "male" | "female" | "";
     ageValue: string;
     ageUnit: "years" | "months" | "days";
     email?: string;
@@ -23,7 +28,7 @@ export interface SelfRegistrationFormProps {
     firstName: string;
     lastName: string;
     phone: string;
-    gender: "male" | "female" | "other";
+    gender: "male" | "female";
     ageValue: number;
     ageUnit: "years" | "months" | "days";
     email?: string;
@@ -38,7 +43,6 @@ export interface SelfRegistrationFormProps {
 const GENDERS = [
   { value: "male", label: "Male" },
   { value: "female", label: "Female" },
-  { value: "other", label: "Other" },
 ];
 
 export const SelfRegistrationForm: React.FC<SelfRegistrationFormProps> = ({
@@ -55,9 +59,18 @@ export const SelfRegistrationForm: React.FC<SelfRegistrationFormProps> = ({
   const [firstName, setFirstName] = useState(initialValues.firstName);
   const [lastName, setLastName] = useState(initialValues.lastName);
   const [phone, setPhone] = useState(initialValues.phone);
-  const [gender, setGender] = useState<"male" | "female" | "other" | "">(initialValues.gender);
+  const [gender, setGender] = useState<"male" | "female" | "">(initialValues.gender);
   const [ageValue, setAgeValue] = useState(initialValues.ageValue);
   const [ageUnit, setAgeUnit] = useState<"years" | "months" | "days">(initialValues.ageUnit);
+
+  // Suggestion, not a decision: auto-fill Gender from the name as it's
+  // typed, but stop once the person picks a gender button themselves.
+  const genderTouched = useRef(!!initialValues.gender);
+  useEffect(() => {
+    if (genderTouched.current) return;
+    const suggested = detectGenderFromName(firstName);
+    if (suggested) setGender(suggested);
+  }, [firstName]);
 
   // Online booking only fields
   const [email, setEmail] = useState(initialValues.email || "");
@@ -69,7 +82,8 @@ export const SelfRegistrationForm: React.FC<SelfRegistrationFormProps> = ({
   const [error, setError] = useState("");
   const [errFields, setErrFields] = useState<string[]>([]);
 
-  const handleGenderSelect = (val: "male" | "female" | "other") => {
+  const handleGenderSelect = (val: "male" | "female") => {
+    genderTouched.current = true;
     setGender(val);
     setErrFields(f => f.filter(x => x !== "gender"));
   };
@@ -131,7 +145,7 @@ export const SelfRegistrationForm: React.FC<SelfRegistrationFormProps> = ({
       firstName: firstName.trim(),
       lastName: lastName.trim(),
       phone: phone.trim(),
-      gender: gender as "male" | "female" | "other",
+      gender: gender as "male" | "female",
       ageValue: Number(ageValue),
       ageUnit,
       email,
@@ -201,7 +215,7 @@ export const SelfRegistrationForm: React.FC<SelfRegistrationFormProps> = ({
                 <button
                   key={g.value}
                   type="button"
-                  onClick={() => handleGenderSelect(g.value as "male" | "female" | "other")}
+                  onClick={() => handleGenderSelect(g.value as "male" | "female")}
                   className={`kiosk-gender-btn${gender === g.value ? " kiosk-gender-active" : ""}`}
                 >
                   {g.label}
@@ -351,7 +365,7 @@ export const SelfRegistrationForm: React.FC<SelfRegistrationFormProps> = ({
           <button
             key={g.value}
             type="button"
-            onClick={() => handleGenderSelect(g.value as "male" | "female" | "other")}
+            onClick={() => handleGenderSelect(g.value as "male" | "female")}
             style={{
               flex: 1,
               padding: "0.7rem 0.5rem",

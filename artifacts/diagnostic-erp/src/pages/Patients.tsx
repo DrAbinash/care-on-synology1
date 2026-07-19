@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Link } from "wouter";
 import {
   useListPatients,
@@ -33,13 +33,14 @@ import { useMutation } from "@tanstack/react-query";
 import { readStaffSession, FULL_ACCESS_ROLES, hasSubPermission } from "@/lib/staffSession";
 import UnifiedScanCapture from "@/components/UnifiedScanCapture";
 import { useDocumentScan } from "@/hooks/useDocumentScan";
+import { detectGenderFromName } from "@/lib/nameGender";
 
 type PatientForm = {
   firstName: string;
   lastName: string;
   ageValue: number;
   ageUnit: "years" | "months" | "days";
-  gender: "male" | "female" | "other";
+  gender: "male" | "female";
   phone: string;
   email?: string;
   address?: string;
@@ -85,6 +86,7 @@ export default function Patients() {
         setPhotoDataUrl(null);
         setPhotoErr("");
         reset();
+        genderTouched.current = false;
       },
     },
   });
@@ -92,6 +94,16 @@ export default function Patients() {
   const { register, handleSubmit, reset, setValue, watch } = useForm<PatientForm>({
     defaultValues: { gender: "male" },
   });
+
+  // Suggestion, not a decision: auto-fill Gender from First Name as it's
+  // typed in the create dialog, but stop once the user picks it themselves.
+  const genderTouched = useRef(false);
+  const newPatientFirstName = watch("firstName");
+  useEffect(() => {
+    if (genderTouched.current) return;
+    const suggested = detectGenderFromName(newPatientFirstName);
+    if (suggested) setValue("gender", suggested);
+  }, [newPatientFirstName, setValue]);
 
   const { toast } = useToast();
   const [exporting, setExporting] = useState(false);
@@ -413,14 +425,13 @@ export default function Patients() {
               </div>
               <div>
                 <Label>Gender *</Label>
-                <Select value={watch("gender")} onValueChange={(v) => setValue("gender", v as "male" | "female" | "other")}>
+                <Select value={watch("gender")} onValueChange={(v) => { genderTouched.current = true; setValue("gender", v as "male" | "female"); }}>
                   <SelectTrigger className="mt-1">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="male">Male</SelectItem>
                     <SelectItem value="female">Female</SelectItem>
-                    <SelectItem value="other">Other</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -540,7 +551,7 @@ type EditForm = {
   lastName: string;
   ageValue: number;
   ageUnit: "years" | "months" | "days";
-  gender: "male" | "female" | "other";
+  gender: "male" | "female";
   phone: string;
   email?: string;
   address?: string;
@@ -643,11 +654,10 @@ function EditPatientDialog({
             <div>
               <Label>Gender *</Label>
               <Select value={watch("gender")} onValueChange={(v) => setValue("gender", v as EditForm["gender"])}>
-                <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                <SelectTrigger className="mt-1"><SelectValue placeholder="Select gender" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="male">Male</SelectItem>
                   <SelectItem value="female">Female</SelectItem>
-                  <SelectItem value="other">Other</SelectItem>
                 </SelectContent>
               </Select>
             </div>

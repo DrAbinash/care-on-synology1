@@ -64,7 +64,6 @@ type Step = 0 | 1 | 2 | 3 | 4 | 5;
 const GENDERS = [
   { value: "male", label: "Male" },
   { value: "female", label: "Female" },
-  { value: "other", label: "Other" },
 ];
 
 function fmt(n: number) {
@@ -94,7 +93,7 @@ export default function Kiosk() {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [phone, setPhone] = useState("");
-  const [gender, setGender] = useState<"male" | "female" | "other" | "">("");
+  const [gender, setGender] = useState<"male" | "female" | "">("");
   const [ageValue, setAgeValue] = useState("");
   const [ageUnit, setAgeUnit] = useState<"years" | "months" | "days">("years");
   const [errFields, setErrFields] = useState<string[]>([]);

@@ -135,7 +135,7 @@ type LastBill = {
 // "cheque" was removed — this clinic no longer accepts cheque payments.
 const PAYMENT_MODES  = ["cash", "card", "upi", "insurance", "online"];
 const BLOOD_GROUPS   = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"];
-const GENDERS        = ["male", "female", "other"];
+const GENDERS        = ["male", "female"];
 
 const inr = (n: number) =>
   new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 }).format(n);

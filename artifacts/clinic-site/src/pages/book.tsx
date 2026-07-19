@@ -214,7 +214,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
       isVip: false,
       ageValue: "",
       ageUnit: "years" as "years" | "months" | "days",
-      gender: "" as "male" | "female" | "other" | "",
+      gender: "" as "male" | "female" | "",
     };
   });
   const [selTests, setSelTests] = useState<Set<number>>(new Set());

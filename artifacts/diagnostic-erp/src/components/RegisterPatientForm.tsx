@@ -10,19 +10,20 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { UserPlus } from "lucide-react";
+import { detectGenderFromName } from "@/lib/nameGender";
 
 export interface NewPatientData {
   firstName: string;
   lastName: string;
   phone: string;
-  gender: "male" | "female" | "other";
+  gender: "male" | "female";
   ageValue: string | number;
   ageUnit: "years" | "months" | "days";
   email?: string;
   address?: string;
 }
 
-const GENDERS = ["male", "female", "other"];
+const GENDERS = ["male", "female"];
 
 interface RegisterPatientFormProps {
   newPatient: NewPatientData;
@@ -52,6 +53,11 @@ export function RegisterPatientForm({
   // out from under us (e.g. clearing the form after registration).
   const [nameText, setNameText] = useState(`${newPatient.firstName} ${newPatient.lastName}`.trim());
   const lastSyncedName = useRef(nameText);
+  // Suggestion, not a decision: auto-fill Sex from the name as it's typed,
+  // but stop the instant the user picks Sex themselves so we never
+  // overwrite an explicit choice. Resets whenever the form is reset for a
+  // new patient (detected the same way nameText's own sync does, below).
+  const genderTouched = useRef(false);
   useEffect(() => {
     const parentName = `${newPatient.firstName} ${newPatient.lastName}`.trim();
     // Only overwrite local text if the parent's name changed for a reason
@@ -61,6 +67,7 @@ export function RegisterPatientForm({
     if (parentName !== lastSyncedName.current) {
       setNameText(parentName);
       lastSyncedName.current = parentName;
+      if (!parentName) genderTouched.current = false; // form reset — allow auto-detect again
     }
   }, [newPatient.firstName, newPatient.lastName]);
 
@@ -81,10 +88,12 @@ export function RegisterPatientForm({
               const first = parts[0] || "";
               const last = parts.slice(1).join(" ") || "";
               lastSyncedName.current = trimmed;
+              const suggested = !genderTouched.current ? detectGenderFromName(first) : null;
               onPatientChange({
                 ...newPatient,
                 firstName: first,
                 lastName: last,
+                ...(suggested ? { gender: suggested } : {}),
               });
             }}
             placeholder="Full name (e.g. Rohit Kumar)"
@@ -136,12 +145,13 @@ export function RegisterPatientForm({
           <Label className="text-xs font-extrabold">Sex</Label>
           <Select
             value={newPatient.gender}
-            onValueChange={(v) =>
+            onValueChange={(v) => {
+              genderTouched.current = true;
               onPatientChange({
                 ...newPatient,
-                gender: v as "male" | "female" | "other",
-              })
-            }
+                gender: v as "male" | "female",
+              });
+            }}
           >
             <SelectTrigger className="h-8 text-xs px-2">
               <SelectValue />
