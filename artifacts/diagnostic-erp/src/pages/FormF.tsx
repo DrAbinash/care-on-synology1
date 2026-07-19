@@ -7,11 +7,11 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import {
   Search, Printer, RefreshCcw, FileText, List, User, Phone, Users, BookOpen,
-  Upload, Camera, CheckCircle2, AlertTriangle, MessageCircle, Stethoscope, X,
+  Camera, CheckCircle2, AlertTriangle, MessageCircle, Stethoscope, X,
   ChevronDown, ExternalLink
 } from "lucide-react";
 import IdCardScanPanel from "@/components/IdCardScanPanel";
-import UnifiedScanCapture from "@/components/UnifiedScanCapture";
+import UnifiedScanCapture, { type ScanCaptureResult } from "@/components/UnifiedScanCapture";
 import { decodeQrFromBlob } from "@/lib/aadhaarQr";
 import { readStaffSession } from "@/lib/staffSession";
 import {
@@ -1010,8 +1010,9 @@ export default function FormF() {
     }
   }
 
-  // ── ID card BACK side upload (no OCR, just stores image) ──
-  async function processIdBackImage(file: File) {
+  // ── ID card BACK side capture (no OCR, just stores image). Accepts a Blob so
+  // it works with every capture method (upload File, webcam/scanner Blob). ──
+  async function processIdBackImage(file: Blob) {
     setIdCardUploading(true);
     try {
       const reader = new FileReader();
@@ -1026,6 +1027,27 @@ export default function FormF() {
       setIdCardUploading(false);
       toast({ title: "Failed to process ID back image", variant: "destructive" });
     }
+  }
+
+  // ── Route a unified-scan capture to the correct side (shared by the "Scan
+  // Front" and "Scan Back" triggers; the result's `side` decides where it
+  // lands). Front preserves the existing behaviour — camera sources pass
+  // through the crop/enhance editor first, disk/bridge scans go straight to
+  // OCR. Back is stored image-only (no OCR). ──
+  async function handleIdCapture(result: ScanCaptureResult) {
+    if (result.side === "back") {
+      await processIdBackImage(result.file);
+      return;
+    }
+    const isCameraSource = result.source === "webcam" || result.source === "tvs" || result.source === "mobile";
+    if (isCameraSource) {
+      const base64 = await blobToBase64(result.file);
+      setScanPanelBase64(base64);
+      setScanPanelMime(result.mimeType || "image/jpeg");
+      setScanPanelOpen(true);
+      return;
+    }
+    await processIdImage(result.file);
   }
 
   // ── Camera / scanner capture helpers ──
@@ -1766,7 +1788,7 @@ export default function FormF() {
                 <span className="text-base font-extrabold text-gray-900">Details to Fill</span>
                 <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-semibold">Type these fields</span>
               </div>
-              <div className="space-y-5">
+              <div className="space-y-3">
                 <BigLabelRow label={`Husband / Father Name ${guardianRequired ? "*" : ""}`}>
                   <div className="flex flex-col gap-2">
                     {/* Row 1: Full-width input */}
@@ -1775,53 +1797,30 @@ export default function FormF() {
                       placeholder={guardianRequired ? "Required for PCPNDT" : "Optional — enter if available"}
                       className="w-full text-base h-11"
                     />
-                    {/* Row 2: ID-capture — unified scan dialog (TVS PDS 8M / Existing
-                        Scanner / Upload / Mobile Scan / Webcam) replaces the old
-                        6-button menu (Wireless/Smart Scan, Upload ID, Capture ID
-                        Direct Scan, Webcam, Import Latest Scan, Open Scanner App).
-                        Back-side capture stays a plain upload — it has no OCR and
-                        never needed the full option set. */}
+                    {/* Row 2: ID-capture — Front and Back each get the full set of
+                        methods (TVS PDS 8M / Existing Scanner / Upload / Mobile
+                        Scan / Webcam) inside the one scan dialog. The trigger's
+                        `side` prop routes the result: Front runs OCR (camera
+                        sources first pass through the crop/enhance editor), Back
+                        is stored image-only. Two triggers × the method list give
+                        the front/back-per-method matrix. */}
                     <div className="flex flex-wrap items-center gap-2">
                       <UnifiedScanCapture
                         module="form-f"
                         docType="id-card"
-                        triggerLabel={idCardUploading ? "Scanning…" : "Scan ID Front"}
-                        onCapture={async (result) => {
-                          // Camera-originated captures (webcam / TVS / mobile-phone
-                          // camera) typically include background/skew a physical ID
-                          // card needs cropped out — route through the crop/enhance
-                          // review panel (auto-crop fires automatically on open) before
-                          // OCR, same pipeline the older captureFromCamera() flow used
-                          // but that UnifiedScanCapture's onCapture had bypassed.
-                          // Disk uploads and the workstation/bridge scanner already
-                          // produce a clean, pre-cropped image — go straight to OCR.
-                          const isCameraSource = result.source === "webcam" || result.source === "tvs" || result.source === "mobile";
-                          if (isCameraSource) {
-                            const base64 = await blobToBase64(result.file);
-                            setScanPanelBase64(base64);
-                            setScanPanelMime(result.mimeType || "image/jpeg");
-                            setScanPanelOpen(true);
-                            return;
-                          }
-                          await processIdImage(result.file);
-                        }}
+                        side="front"
+                        triggerLabel={idCardUploading ? "Scanning…" : idCardFrontUrl ? "Front ✓" : "Scan Front"}
+                        onCapture={handleIdCapture}
                         onError={(msg) => toast({ title: "Scan failed", description: msg, variant: "destructive" })}
                       />
-                      {/* ── Upload ID Back (file picker) — back side has no OCR ── */}
-                      <label className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-dashed border-orange-300 bg-orange-50 cursor-pointer text-sm font-medium transition-colors ${idCardUploading ? "opacity-60 cursor-wait" : "hover:bg-orange-100 text-orange-700"} ${idCardBackUrl ? "border-orange-400 bg-orange-100" : ""}`}>
-                        <Upload size={14} className={idCardUploading ? "animate-pulse" : ""} />
-                        <span>{idCardBackUrl ? "Back ✓" : idCardUploading ? "Scanning…" : "Upload Back"}</span>
-                        <input
-                          type="file"
-                          accept="image/*"
-                          className="hidden"
-                          onChange={async (e) => {
-                            const file = e.target.files?.[0];
-                            if (!file) return;
-                            await processIdBackImage(file);
-                          }}
-                        />
-                      </label>
+                      <UnifiedScanCapture
+                        module="form-f"
+                        docType="id-card"
+                        side="back"
+                        triggerLabel={idCardUploading ? "Scanning…" : idCardBackUrl ? "Back ✓" : "Scan Back"}
+                        onCapture={handleIdCapture}
+                        onError={(msg) => toast({ title: "Scan failed", description: msg, variant: "destructive" })}
+                      />
                     </div>
                     {isFormFAdmin && <OcrDiagnosticsPanel />}
                   </div>
@@ -2298,11 +2297,11 @@ export default function FormF() {
             const displayB64 = result.enhancedBase64 || result.croppedBase64 || result.originalBase64;
             const dataUrl = `data:${result.mimeType};base64,${displayB64}`;
             setIdCardFrontUrl(dataUrl);
-            // Keep original available as a second slot for audit
-            if (result.originalBase64 && result.originalBase64 !== displayB64) {
-              // Store original in back URL slot for audit trail (non-destructive)
-              setIdCardBackUrl(`data:${result.mimeType};base64,${result.originalBase64}`);
-            }
+            // NOTE: a front scan must NOT touch the Back slot. Previously the
+            // uncropped original was stuffed into idCardBackUrl "for audit",
+            // which made one front scan appear to capture two images and printed
+            // a duplicate of the front as "ID Back" on the statutory Form F. The
+            // Back slot is reserved exclusively for a real back-side capture.
             setScanPanelOpen(false);
             setScanPanelBase64("");
             // Run OCR on the enhanced/cropped image for better text extraction
