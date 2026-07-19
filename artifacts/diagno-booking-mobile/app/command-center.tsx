@@ -1,18 +1,24 @@
-import {
-  StyleSheet, Text, View, ScrollView, RefreshControl,
-} from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Feather } from "@expo/vector-icons";
+import { StyleSheet, Text, View, RefreshControl } from "react-native";
 import { useQuery } from "@tanstack/react-query";
-import { useRouter } from "expo-router";
 
 import { useColors } from "@/hooks/useColors";
 import { useStaffApi, useStaffAuth } from "@/context/StaffAuthContext";
+import {
+  Screen,
+  ScreenHeader,
+  BackBar,
+  SectionLabel,
+  Card,
+  IconTile,
+  Badge,
+  SkeletonList,
+  EmptyState,
+  spacing,
+  type FeatherIconName,
+} from "@/components/ui";
 
 export default function CommandCenterScreen() {
   const colors = useColors();
-  const insets = useSafeAreaInsets();
-  const router = useRouter();
   const api = useStaffApi();
   const { session } = useStaffAuth();
 
@@ -25,83 +31,115 @@ export default function CommandCenterScreen() {
   const data = cc.data;
 
   return (
-    <ScrollView
-      style={[styles.container, { backgroundColor: colors.background }]}
+    <Screen
       refreshControl={
         <RefreshControl refreshing={cc.isRefetching} onRefresh={cc.refetch} tintColor={colors.primary} />
       }
     >
-      <View style={{ paddingTop: insets.top + 16, paddingHorizontal: 16 }}>
-        <View style={styles.header}>
-          <Text style={[styles.title, { color: colors.foreground }]}>Command Center</Text>
-          <Text style={[styles.subtitle, { color: colors.mutedForeground }]}>
-            Real-time RIS/PACS overview
-          </Text>
-        </View>
+      <BackBar />
+      <ScreenHeader title="Command Center" subtitle="Real-time RIS/PACS overview" />
 
-        {/* Metrics Grid */}
-        <View style={styles.grid}>
-          <MetricCard label="Pending Reports" value={data?.pendingReports ?? "—"} color={colors.warning} colors={colors} />
-          <MetricCard label="Critical Alerts" value={data?.criticalAlerts ?? "—"} color={colors.destructive} colors={colors} />
-          <MetricCard label="Studies Today" value={data?.studiesToday ?? "—"} color={colors.success} colors={colors} />
-          <MetricCard label="AI Processing" value={data?.aiQueue?.processing ?? "—"} color={colors.accent} colors={colors} />
-          <MetricCard label="Failed Transfers" value={data?.failedTransfers ?? "—"} color={colors.destructive} colors={colors} />
-          <MetricCard label="Avg TAT (min)" value={data?.avgTatMinutes ?? "—"} color={colors.primary} colors={colors} />
-        </View>
+      {/* KPI metrics */}
+      <View style={styles.grid}>
+        <MetricTile label="Pending Reports" value={data?.pendingReports ?? "—"} icon="clock" tint={colors.warning} />
+        <MetricTile label="Critical Alerts" value={data?.criticalAlerts ?? "—"} icon="alert-triangle" tint={colors.destructive} />
+        <MetricTile label="Studies Today" value={data?.studiesToday ?? "—"} icon="activity" tint={colors.success} />
+        <MetricTile label="AI Processing" value={data?.aiQueue?.processing ?? "—"} icon="cpu" tint={colors.accent} />
+        <MetricTile label="Failed Transfers" value={data?.failedTransfers ?? "—"} icon="x-octagon" tint={colors.destructive} />
+        <MetricTile label="Avg TAT (min)" value={data?.avgTatMinutes ?? "—"} icon="bar-chart-2" tint={colors.primary} />
+      </View>
 
-        {/* Live Modalities */}
-        <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Live Modalities</Text>
-        {data?.modalities?.map((m: any) => (
-          <View key={m.modality} style={[styles.modCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <View style={styles.modLeft}>
-              <View style={[styles.modIcon, { backgroundColor: colors.primary + "15" }]}>
-                <Feather name="monitor" size={16} color={colors.primary} />
-              </View>
-              <View>
+      <SectionLabel style={{ marginTop: spacing.section }}>Live modalities</SectionLabel>
+      {cc.isLoading ? (
+        <SkeletonList count={3} height={68} />
+      ) : data?.modalities?.length ? (
+        <View style={{ gap: spacing.md }}>
+          {data.modalities.map((m: any) => (
+            <Card key={m.modality} style={styles.modRow}>
+              <IconTile icon="monitor" color={colors.primary} />
+              <View style={styles.modInfo}>
                 <Text style={[styles.modName, { color: colors.foreground }]}>{m.modality}</Text>
                 <Text style={[styles.modSub, { color: colors.mutedForeground }]}>
                   {m.online} / {m.total} online
                 </Text>
               </View>
-            </View>
-            <View style={styles.modRight}>
-              <View style={[styles.liveDot, { backgroundColor: m.online > 0 ? colors.success : colors.mutedForeground }]} />
-              <Text style={[styles.liveText, { color: m.online > 0 ? colors.success : colors.mutedForeground }]}>
-                {m.online > 0 ? "LIVE" : "OFFLINE"}
-              </Text>
-            </View>
-          </View>
-        )) || (
-          <Text style={[styles.empty, { color: colors.mutedForeground }]}>No modality data available</Text>
-        )}
+              <Badge
+                label={m.online > 0 ? "Live" : "Offline"}
+                tone={m.online > 0 ? "success" : "muted"}
+                icon={m.online > 0 ? "wifi" : "wifi-off"}
+              />
+            </Card>
+          ))}
+        </View>
+      ) : (
+        <EmptyState
+          icon="monitor"
+          title="No modality data"
+          message="Connected modalities will appear here once they report in."
+        />
+      )}
 
-        {/* Storage Summary */}
-        <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Storage Overview</Text>
-        {data?.storage && (
-          <View style={[styles.storageCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <StorageRow label="Hot" value={data.storage.hot} colors={colors} tint={colors.success} />
-            <StorageRow label="Archive" value={data.storage.archive} colors={colors} tint={colors.accent} />
-            <StorageRow label="Orphans" value={data.storage.orphans} colors={colors} tint={colors.warning} />
-          </View>
-        )}
+      {data?.storage && (
+        <>
+          <SectionLabel style={{ marginTop: spacing.section }}>Storage overview</SectionLabel>
+          <Card>
+            <StorageRow label="Hot" value={data.storage.hot} tint={colors.success} />
+            <StorageRow label="Archive" value={data.storage.archive} tint={colors.accent} />
+            <StorageRow label="Orphans" value={data.storage.orphans} tint={colors.warning} last />
+          </Card>
+        </>
+      )}
+    </Screen>
+  );
+}
+
+function MetricTile({
+  label,
+  value,
+  icon,
+  tint,
+}: {
+  label: string;
+  value: string | number;
+  icon: FeatherIconName;
+  tint: string;
+}) {
+  const colors = useColors();
+  return (
+    <Card style={styles.metricTile}>
+      <IconTile icon={icon} color={tint} size={34} />
+      <View style={{ flex: 1 }}>
+        <Text style={[styles.metricValue, { color: colors.foreground }]} numberOfLines={1}>
+          {value}
+        </Text>
+        <Text style={[styles.metricLabel, { color: colors.mutedForeground }]} numberOfLines={2}>
+          {label}
+        </Text>
       </View>
-    </ScrollView>
+    </Card>
   );
 }
 
-function MetricCard({ label, value, color, colors }: any) {
+function StorageRow({
+  label,
+  value,
+  tint,
+  last = false,
+}: {
+  label: string;
+  value: string | number;
+  tint: string;
+  last?: boolean;
+}) {
+  const colors = useColors();
   return (
-    <View style={[styles.metricCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-      <Text style={[styles.metricValue, { color }]}>{value}</Text>
-      <Text style={[styles.metricLabel, { color: colors.mutedForeground }]}>{label}</Text>
-    </View>
-  );
-}
-
-function StorageRow({ label, value, colors, tint }: any) {
-  return (
-    <View style={styles.storageRow}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+    <View
+      style={[
+        styles.storageRow,
+        !last && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+      ]}
+    >
+      <View style={styles.storageLeft}>
         <View style={[styles.miniDot, { backgroundColor: tint }]} />
         <Text style={[styles.storageLabel, { color: colors.foreground }]}>{label}</Text>
       </View>
@@ -111,27 +149,33 @@ function StorageRow({ label, value, colors, tint }: any) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  header: { marginBottom: 16 },
-  title: { fontSize: 24, fontFamily: "Inter_700Bold" },
-  subtitle: { fontSize: 14, fontFamily: "Inter_400Regular", marginTop: 2 },
-  grid: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginBottom: 20 },
-  metricCard: { flex: 1, minWidth: 100, borderRadius: 14, borderWidth: 1, padding: 12, alignItems: "center" },
-  metricValue: { fontSize: 22, fontFamily: "Inter_700Bold" },
-  metricLabel: { fontSize: 11, fontFamily: "Inter_500Medium", marginTop: 4, textAlign: "center" },
-  sectionTitle: { fontSize: 16, fontFamily: "Inter_600SemiBold", marginTop: 20, marginBottom: 10 },
-  modCard: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderRadius: 14, borderWidth: 1, padding: 12, marginBottom: 8 },
-  modLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
-  modIcon: { width: 36, height: 36, borderRadius: 8, alignItems: "center", justifyContent: "center" },
+  grid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.md,
+  },
+  metricTile: {
+    flexGrow: 1,
+    flexBasis: "44%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    padding: spacing.md,
+  },
+  metricValue: { fontSize: 24, fontFamily: "Inter_700Bold", letterSpacing: -0.3 },
+  metricLabel: { fontSize: 12, fontFamily: "Inter_500Medium", marginTop: 1, lineHeight: 15 },
+  modRow: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md },
+  modInfo: { flex: 1 },
   modName: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
-  modSub: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 1 },
-  modRight: { flexDirection: "row", alignItems: "center", gap: 6 },
-  liveDot: { width: 7, height: 7, borderRadius: 4 },
-  liveText: { fontSize: 11, fontFamily: "Inter_700Bold" },
-  storageCard: { borderRadius: 14, borderWidth: 1, padding: 14 },
-  storageRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 8, borderBottomColor: "#e2e8f020", borderBottomWidth: 1 },
+  modSub: { fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 2, lineHeight: 18 },
+  storageRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: spacing.md,
+  },
+  storageLeft: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   miniDot: { width: 8, height: 8, borderRadius: 4 },
   storageLabel: { fontSize: 14, fontFamily: "Inter_500Medium" },
   storageValue: { fontSize: 14, fontFamily: "Inter_700Bold" },
-  empty: { fontSize: 14, fontFamily: "Inter_400Regular", paddingVertical: 12 },
 });

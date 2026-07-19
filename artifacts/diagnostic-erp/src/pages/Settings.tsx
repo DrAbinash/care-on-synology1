@@ -26,6 +26,7 @@ import {
   RefreshCcw, FileCode, Send, QrCode, Palette, Bot, Inbox, ChevronRight,
   ArrowLeft, Phone, Layers, AlertTriangle, ScanLine, Receipt, Keyboard, Brain,
   Sparkles, Construction, GraduationCap, Tv, GripVertical, ScrollText, Flag,
+  Smartphone,
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
@@ -94,6 +95,9 @@ const ALL_MODULES = [
   { path: "/settings", label: "Settings" },
   { path: "/form-f", label: "Form F (PCPNDT)" },
   { path: "/queue", label: "Queue Tokens" },
+  // Grants the mobile staff app's read-only Bill Desk (separate from the
+  // desktop /billing permission so mobile visibility is assigned per staff).
+  { path: "/mobile-bill-desk", label: "Mobile Bill Desk (App)" },
 ];
 const DEFAULT_PERMISSIONS: Record<string, string[]> = {
   super_admin: ALL_MODULES.map(m => m.path),
@@ -161,6 +165,7 @@ const TABS = [
   { id: "report-templates", label: "Report Templates", icon: FileCode },
   { id: "portal", label: "Patient Portal", icon: Globe },
   { id: "online-booking", label: "Online Booking", icon: CreditCard },
+  { id: "mobile-app", label: "Mobile App", icon: Smartphone },
   { id: "kiosk", label: "Self-Reg Kiosk", icon: QrCode },
   { id: "queue-settings", label: "Queue Settings", icon: ClipboardList },
   { id: "queue-display", label: "Queue Display (TV)", icon: Tv },
@@ -298,6 +303,7 @@ export default function Settings() {
         {tab === "report-templates" && <ReportTemplatesTab />}
         {tab === "portal" && <PatientPortalTab />}
         {tab === "online-booking" && <OnlineBookingTab />}
+        {tab === "mobile-app" && <MobileAppTab />}
         {tab === "kiosk" && <KioskSettingsTab />}
         {tab === "queue-settings" && <QueueSettingsTab />}
         {tab === "queue-display" && <QueueDisplaySettingsTab />}
@@ -3861,6 +3867,235 @@ function FeatureFlagsTab() {
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Mobile App tab ───────────────────────────────────────────────────────────
+// Edits clinic_settings.mobile_app_config_json — the content the patient
+// mobile app (diagno-booking-mobile) renders: promo banner, services grid,
+// trust chips, tab visibility, contact overrides. Served to the app via the
+// whitelisting GET /api/public/mobile-config endpoint.
+
+type MobileAppCfg = {
+  promoBanner: { enabled: boolean; text: string };
+  services: { icon: string; label: string }[];
+  trustChips: string[];
+  showDoctorsTab: boolean;
+  showReportsTab: boolean;
+  showStaffPortal: boolean;
+  whatsappNumber: string;
+  emergencyPhone: string;
+  timings: string;
+  aboutText: string;
+};
+
+const MOBILE_APP_CFG_DEFAULTS: MobileAppCfg = {
+  promoBanner: { enabled: false, text: "" },
+  services: [
+    { icon: "droplet", label: "Pathology" },
+    { icon: "camera", label: "X-Ray" },
+    { icon: "monitor", label: "Ultrasound" },
+    { icon: "cpu", label: "CT / MRI" },
+    { icon: "heart", label: "ECG" },
+    { icon: "package", label: "Packages" },
+  ],
+  trustChips: ["NABL Accredited", "Same-day Reports"],
+  showDoctorsTab: true,
+  showReportsTab: true,
+  showStaffPortal: true,
+  whatsappNumber: "",
+  emergencyPhone: "",
+  timings: "Mon-Sat: 7:00 AM - 7:00 PM | Sun: 8:00 AM - 2:00 PM",
+  aboutText: "",
+};
+
+// Feather icon names the mobile app can render on service tiles.
+const MOBILE_SERVICE_ICONS = [
+  "droplet", "camera", "monitor", "cpu", "heart", "package",
+  "activity", "thermometer", "eye", "zap", "shield", "plus-circle",
+];
+
+function parseMobileAppCfg(raw: string | undefined | null): MobileAppCfg {
+  try {
+    const parsed = JSON.parse(raw || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return MOBILE_APP_CFG_DEFAULTS;
+    const p = parsed as Partial<MobileAppCfg>;
+    return {
+      ...MOBILE_APP_CFG_DEFAULTS,
+      ...p,
+      promoBanner: { ...MOBILE_APP_CFG_DEFAULTS.promoBanner, ...(p.promoBanner ?? {}) },
+      services: Array.isArray(p.services) && p.services.length > 0 ? p.services : MOBILE_APP_CFG_DEFAULTS.services,
+      trustChips: Array.isArray(p.trustChips) ? p.trustChips : MOBILE_APP_CFG_DEFAULTS.trustChips,
+    };
+  } catch {
+    return MOBILE_APP_CFG_DEFAULTS;
+  }
+}
+
+function MobileAppTab() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { data: settings, isLoading } = useQuery<{ mobileAppConfigJson?: string }>({
+    queryKey: ["clinic-settings"],
+    queryFn: () => api.get("/api/clinic-settings"),
+  });
+
+  const [cfg, setCfg] = useState<MobileAppCfg | null>(null);
+  const current = cfg ?? parseMobileAppCfg(settings?.mobileAppConfigJson);
+  const [newChip, setNewChip] = useState("");
+
+  const save = useMutation({
+    mutationFn: (body: MobileAppCfg) =>
+      api.put("/api/clinic-settings", { mobileAppConfigJson: JSON.stringify(body) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["clinic-settings"] });
+      toast({ title: "Saved", description: "Mobile app content updated. The app picks it up on next refresh." });
+    },
+    onError: (err: unknown) => {
+      toast({ title: "Save failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    },
+  });
+
+  const update = (patch: Partial<MobileAppCfg>) => setCfg({ ...current, ...patch });
+
+  if (isLoading) {
+    return <div className="bg-card border border-card-border rounded-xl p-8 text-center text-muted-foreground">Loading mobile app settings…</div>;
+  }
+
+  return (
+    <div className="space-y-4 max-w-3xl">
+      <div className="bg-card border border-card-border rounded-xl p-5">
+        <div className="flex items-center gap-2 mb-1"><Smartphone size={16} className="text-primary" /><h2 className="text-lg font-bold">Mobile App Content</h2></div>
+        <p className="text-sm text-muted-foreground">
+          Everything below is rendered by the patient booking app (Android/iOS). Changes apply on the app's next refresh — no app-store update needed.
+        </p>
+      </div>
+
+      {/* Promo banner */}
+      <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
+        <h3 className="font-semibold">Promo Banner</h3>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={current.promoBanner.enabled}
+            onChange={(e) => update({ promoBanner: { ...current.promoBanner, enabled: e.target.checked } })}
+          />
+          Show a banner on the app home screen
+        </label>
+        <Input
+          placeholder="e.g. Full Body Checkup @ ₹999 this month!"
+          value={current.promoBanner.text}
+          maxLength={240}
+          onChange={(e) => update({ promoBanner: { ...current.promoBanner, text: e.target.value } })}
+        />
+      </div>
+
+      {/* Trust chips */}
+      <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
+        <h3 className="font-semibold">Trust Chips</h3>
+        <p className="text-xs text-muted-foreground">Short credibility badges shown on the app's home hero (max 6).</p>
+        <div className="flex flex-wrap gap-2">
+          {current.trustChips.map((chip, i) => (
+            <span key={`${chip}-${i}`} className="inline-flex items-center gap-1 bg-muted rounded-full px-3 py-1 text-xs">
+              {chip}
+              <button
+                className="text-muted-foreground hover:text-destructive"
+                onClick={() => update({ trustChips: current.trustChips.filter((_, j) => j !== i) })}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <Input placeholder="Add chip…" value={newChip} maxLength={60} onChange={(e) => setNewChip(e.target.value)} />
+          <Button
+            variant="outline"
+            disabled={!newChip.trim() || current.trustChips.length >= 6}
+            onClick={() => { update({ trustChips: [...current.trustChips, newChip.trim()] }); setNewChip(""); }}
+          >
+            <Plus size={14} />
+          </Button>
+        </div>
+      </div>
+
+      {/* Services grid */}
+      <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
+        <h3 className="font-semibold">Services Grid</h3>
+        <p className="text-xs text-muted-foreground">Tiles shown under "Services" on the app home screen (max 12).</p>
+        {current.services.map((svc, i) => (
+          <div key={i} className="flex gap-2 items-center">
+            <select
+              className="border border-input rounded-md h-9 px-2 text-sm bg-background"
+              value={svc.icon}
+              onChange={(e) => update({ services: current.services.map((s, j) => (j === i ? { ...s, icon: e.target.value } : s)) })}
+            >
+              {MOBILE_SERVICE_ICONS.map((ic) => <option key={ic} value={ic}>{ic}</option>)}
+            </select>
+            <Input
+              value={svc.label}
+              maxLength={60}
+              onChange={(e) => update({ services: current.services.map((s, j) => (j === i ? { ...s, label: e.target.value } : s)) })}
+            />
+            <Button variant="ghost" size="icon" onClick={() => update({ services: current.services.filter((_, j) => j !== i) })}>
+              <Trash2 size={14} className="text-destructive" />
+            </Button>
+          </div>
+        ))}
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={current.services.length >= 12}
+          onClick={() => update({ services: [...current.services, { icon: "activity", label: "" }] })}
+        >
+          <Plus size={14} className="mr-1" /> Add service
+        </Button>
+      </div>
+
+      {/* Feature toggles */}
+      <div className="bg-card border border-card-border rounded-xl p-5 space-y-2">
+        <h3 className="font-semibold">App Sections</h3>
+        {([
+          ["showDoctorsTab", "Show Doctors tab"],
+          ["showReportsTab", "Show Reports tab"],
+          ["showStaffPortal", "Show Staff Portal entry"],
+        ] as const).map(([key, label]) => (
+          <label key={key} className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={current[key]} onChange={(e) => update({ [key]: e.target.checked } as Partial<MobileAppCfg>)} />
+            {label}
+          </label>
+        ))}
+      </div>
+
+      {/* Contact & info */}
+      <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
+        <h3 className="font-semibold">Contact & Info</h3>
+        <div className="grid md:grid-cols-2 gap-3">
+          <div>
+            <Label className="text-xs">WhatsApp number</Label>
+            <Input value={current.whatsappNumber} maxLength={20} placeholder="e.g. 9973497200" onChange={(e) => update({ whatsappNumber: e.target.value })} />
+          </div>
+          <div>
+            <Label className="text-xs">Emergency phone</Label>
+            <Input value={current.emergencyPhone} maxLength={20} placeholder="Optional" onChange={(e) => update({ emergencyPhone: e.target.value })} />
+          </div>
+        </div>
+        <div>
+          <Label className="text-xs">Timings line</Label>
+          <Input value={current.timings} maxLength={200} onChange={(e) => update({ timings: e.target.value })} />
+        </div>
+        <div>
+          <Label className="text-xs">About text (app About screen)</Label>
+          <Textarea rows={4} value={current.aboutText} maxLength={2000} placeholder="Leave empty to use the app's built-in description." onChange={(e) => update({ aboutText: e.target.value })} />
+        </div>
+      </div>
+
+      <div className="flex justify-end">
+        <Button onClick={() => save.mutate(current)} disabled={save.isPending}>
+          {save.isPending ? "Saving…" : "Save Mobile App Settings"}
+        </Button>
       </div>
     </div>
   );

@@ -76,6 +76,12 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   // artifacts/diagnostic-erp/src/lib/billPrintSettings.ts for the shape and
   // for why this must live server-side, not in per-browser localStorage.
   billPrintSettingsJson: text("bill_print_settings_json").notNull().default("{}"),
+  // Mobile-app display config (Settings → Mobile App) as a JSON blob:
+  // promo banner, services grid, trust chips, tab toggles, contact overrides,
+  // about text. "{}" = nothing configured (the app falls back to its built-in
+  // defaults client-side). Served publicly via GET /api/public/mobile-config —
+  // never put secrets in here.
+  mobileAppConfigJson: text("mobile_app_config_json").notNull().default("{}"),
   billShowCode: boolean("bill_show_code").notNull().default(true),
   billShowCategory: boolean("bill_show_category").notNull().default(true),
   // When true, closing the day auto-prints the summary slip on the bill printer.

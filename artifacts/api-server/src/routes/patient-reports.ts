@@ -113,9 +113,10 @@ export async function backfillExpirePublicTokens(): Promise<void> {
 // 72 hours. Explicit /public-link requests always rotate immediately.
 const AUTO_SHARE_TTL_MS = 72 * 60 * 60 * 1000;
 
-// ensurePublicToken — used by auto-share paths (WhatsApp on verify).
+// ensurePublicToken — used by auto-share paths (WhatsApp on verify) and by
+// the patient portal (session-authenticated "view my report" links).
 // Reuses an existing token only if it is still valid; otherwise rotates.
-async function ensurePublicToken(reportId: number): Promise<string | null> {
+export async function ensurePublicToken(reportId: number): Promise<string | null> {
   const [row] = await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, reportId));
   if (!row) return null;
   const now = new Date();

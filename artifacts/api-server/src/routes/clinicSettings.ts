@@ -69,6 +69,7 @@ async function getOrCreate() {
       sidebarTheme: "navy",
       billDefaultPaperSize: "A5",
       billPrintSettingsJson: "{}",
+      mobileAppConfigJson: "{}",
       billShowCode: true,
       billShowCategory: true,
       dayCloseAutoPrint: true,
@@ -190,6 +191,9 @@ clinicSettingsRouter.get("/branding", async (_req, res) => {
     // clinic data from this endpoint, so it must ride along here for the
     // print call sites to honor the admin-configured paper size/format.
     billPrintSettingsJson: (row as { billPrintSettingsJson?: string }).billPrintSettingsJson ?? "{}",
+    // Mobile-app display config blob (Settings → Mobile App); served publicly
+    // (whitelisted) via GET /api/public/mobile-config.
+    mobileAppConfigJson: (row as { mobileAppConfigJson?: string }).mobileAppConfigJson ?? "{}",
     billShowCode: row.billShowCode ?? false,
     billShowCategory: row.billShowCategory ?? false,
     qrOnBillEnabled: row.qrOnBillEnabled ?? true,
@@ -517,6 +521,30 @@ clinicSettingsRouter.put("/", async (req, res) => {
       return;
     }
     update.billPrintSettingsJson = body.billPrintSettingsJson;
+  }
+  // Mobile-app display config blob (Settings → Mobile App). Same contract as
+  // billPrintSettingsJson: must be a JSON object serialized as a string. The
+  // public /api/public/mobile-config endpoint additionally whitelists keys on
+  // the way out, so even a well-formed-but-wrong blob can't leak secrets.
+  if (body.mobileAppConfigJson !== undefined) {
+    if (typeof body.mobileAppConfigJson !== "string" || body.mobileAppConfigJson.length > 16384) {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "mobileAppConfigJson must be a JSON string (max 16KB)", "| received body keys:", Object.keys(body));
+      res.status(400).json({ error: "mobileAppConfigJson must be a JSON string (max 16KB)" });
+      return;
+    }
+    try {
+      const parsed = JSON.parse(body.mobileAppConfigJson);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        console.warn("[PUT /api/clinic-settings] rejected 400:", "mobileAppConfigJson must be a JSON object", "| received body keys:", Object.keys(body));
+        res.status(400).json({ error: "mobileAppConfigJson must be a JSON object" });
+        return;
+      }
+    } catch {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "mobileAppConfigJson must be valid JSON", "| received body keys:", Object.keys(body));
+      res.status(400).json({ error: "mobileAppConfigJson must be valid JSON" });
+      return;
+    }
+    update.mobileAppConfigJson = body.mobileAppConfigJson;
   }
   if (body.billDefaultPaperSize !== undefined) {
     if (body.billDefaultPaperSize !== "A4" && body.billDefaultPaperSize !== "A5") {

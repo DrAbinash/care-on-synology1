@@ -174,3 +174,54 @@ engineering cost:
 tagged security + PHI, and get an explicit decision from the product/security
 owner on which of the three recommended-solution options (or a combination)
 to implement, before any code changes are made here.
+
+---
+
+## Resolution — Patient portal (implemented)
+
+The finding is **closed** by the patient-portal auth boundary in
+`artifacts/api-server/src/routes/patientPortal.ts` (mounted at `/api/patient`).
+All three original recommendations were adopted, and the legacy surface was
+retired rather than left in place:
+
+- **Real auth boundary.** `POST /api/patient/send-otp` generates a
+  `crypto.randomInt` code, stores only its SHA-256 hash (never echoed), and
+  delivers it out-of-band via WhatsApp. `POST /api/patient/verify-otp` does a
+  timing-safe compare, consumes attempts via a single atomic conditional
+  `UPDATE` (concurrency-safe 5-try cap), and mints a **server-side session
+  token** (`patient_sessions`, 7-day TTL). Every data endpoint requires that
+  token — a bare phone number no longer unlocks anything.
+- **Rate limiting.** `send-otp` / `verify-otp` are rate-limited keyed on
+  **ip + phone** (so rotating IPs can't multiply the budget for one target),
+  plus a per-phone resend cooldown. `send-otp` only messages a number already
+  known to the clinic (a patient record or prior booking) and returns an
+  identical response either way — no patient enumeration, no arbitrary-number
+  WhatsApp abuse.
+- **Minimal payloads.** `GET /api/patient/my-bookings` returns a reduced
+  projection (no email, notes, test lists, or gateway txn IDs).
+  `GET /api/patient/my-reports` returns metadata only; the PDF is fetched via
+  a short-lived, ownership-checked token (`POST /api/patient/reports/:id/link`
+  → the existing `/api/p/r/:token/pdf` route). Phone matching is on normalized
+  last-10-digits so stored `+91`/spaced numbers resolve correctly.
+- **Legacy surface retired.** The old `send-otp`, `verify-otp`, `my-bookings`
+  and `my-reports` on `/api/public/booking` now return **410 Gone**; the
+  in-memory `otpStore` and the code-echo are deleted. `GET /by-ref` no longer
+  returns the Razorpay HMAC signature.
+- **Cache safety.** `/api/patient/` is network-only in the service worker
+  (`public/sw.js`), so one patient's identity-scoped responses are never
+  cache-served to another on a shared device (enforced by
+  `personalEndpointCacheGuard.test.ts`).
+
+### Accepted residual risk — phone as identity (product decision)
+
+Reports/bookings are scoped to the **verified phone number**, and a patient
+record's `phone` is a contact field, not a per-person identity. If the **same
+number is placed on multiple patient records** — a family member's phone, or
+(the case to avoid) a shared front-desk or agent number — whoever verifies
+that number sees every report filed under it. This is intended behaviour for a
+genuine personal/family number and is **not mitigated in code by design**.
+
+**Operational guard:** never put a shared or clinic-owned number on a patient
+record. Use each patient's own mobile number. Staff creating walk-in records
+under a placeholder/front-desk number would expose those records to anyone who
+controls that number.

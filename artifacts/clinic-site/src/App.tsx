@@ -10,6 +10,7 @@ import { HeadManager } from "./head";
 import { SectionRenderer } from "./sections";
 import { WhatsAppFab, PopupHost } from "./widgets";
 import PoliciesPage from "./pages/policies";
+import AppPrivacyPage from "./pages/appPrivacy";
 import BookPage from "./pages/book";
 import ScanMobilePage from "./pages/scan-mobile";
 import QueueDisplay from "./pages/queue-display";
@@ -226,6 +227,10 @@ function AppShell({ settings, pages, popups, isPreview }: { settings: SiteSettin
         <PoliciesRoute settings={settings} />
       </>
     );
+  }
+
+  if (slug === "app-privacy") {
+    return <AppPrivacyPage settings={settings} />;
   }
 
   if (slug === "scan-mobile") {

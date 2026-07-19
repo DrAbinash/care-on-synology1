@@ -22,8 +22,6 @@ import { recordPaymentDiagnostic, getRecentDiagnostics, getDiagnosticById, getLa
 import { confirmBookingInternal } from "./online-bookings";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
 
-const otpStore = new Map<string, { code: string; name: string; expiresAt: number }>();
-
 export function validateSelfRegistration(params: {
   name: string;
   phone: string;
@@ -69,10 +67,6 @@ export let lastIciciTransaction: {
   respDescription?: string;
   timestamp?: string;
 } | null = null;
-
-function generateOtp(): string {
-  return String(Math.floor(100000 + Math.random() * 900000));
-}
 
 export const publicBookingRouter = Router();
 
@@ -271,7 +265,12 @@ publicBookingRouter.get("/by-ref", async (req, res): Promise<void> => {
     if (tok) tokenNo = tok.tokenNo;
   }
 
-  res.json({ booking: row, tokenNo });
+  // Never expose the Razorpay HMAC signature: it is a server-computed secret
+  // used only for internal payment verification and is not read by any client
+  // (the confirmation UIs derive the paid gateway from the payment/txn IDs,
+  // not the signature). Everything else on the row is unchanged.
+  const { razorpaySignature: _omit, ...booking } = row as Record<string, unknown>;
+  res.json({ booking, tokenNo });
 });
 
 // GET /api/public/booking/clinic-print-info
@@ -286,24 +285,20 @@ publicBookingRouter.get("/clinic-print-info", async (_req, res): Promise<void> =
   res.json(buildPrintClinic(settings));
 });
 
-// GET /api/public/booking/my-bookings
-publicBookingRouter.get("/my-bookings", async (req, res): Promise<void> => {
-  const phone = String(req.query.phone || "");
-  if (!phone) { res.json({ bookings: [] }); return; }
-  const rows = await db.select()
-    .from(onlineBookingsTable)
-    .where(eq(onlineBookingsTable.phone, phone))
-    .orderBy(onlineBookingsTable.id)
-    .limit(50);
-  res.json({ bookings: rows });
+// GET /api/public/booking/my-bookings — RETIRED (410).
+// Previously returned every online_bookings column (name, email, tests,
+// gateway txn ids...) to anyone who typed a 10-digit phone number — the core
+// PHI exposure in SECURITY_FINDING_PUBLIC_BOOKING_PHI_EXPOSURE. Replaced by
+// the session-authenticated GET /api/patient/my-bookings (patientPortal.ts).
+publicBookingRouter.get("/my-bookings", async (_req, res): Promise<void> => {
+  res.status(410).json({ error: "This endpoint has been retired. Please update the app." });
 });
 
-// GET /api/public/booking/my-reports
-publicBookingRouter.get("/my-reports", async (req, res): Promise<void> => {
-  const phone = String(req.query.phone || "");
-  if (!phone) { res.json({ reports: [] }); return; }
-  // Stub: return empty for now; reports table integration is future work
-  res.json({ reports: [] });
+// GET /api/public/booking/my-reports — RETIRED (410).
+// Was an empty stub; real report delivery is the session-authenticated
+// GET /api/patient/my-reports + POST /api/patient/reports/:id/link.
+publicBookingRouter.get("/my-reports", async (_req, res): Promise<void> => {
+  res.status(410).json({ error: "This endpoint has been retired. Please update the app." });
 });
 
 // Helper function to check if test category is enabled in settings
@@ -1577,32 +1572,20 @@ publicBookingRouter.post("/verify-payment", bookingLimiter, async (req, res): Pr
   res.json({ success: true, bookingRef: booking.bookingRef });
 });
 
-// ── OTP endpoints (mobile login) ─────────────────────────────────────────────
-publicBookingRouter.post("/send-otp", bookingLimiter, async (req, res): Promise<void> => {
-  const { phone, name } = req.body || {};
-  if (!phone || typeof phone !== "string" || !/^\d{10}$/.test(phone)) {
-    res.status(400).json({ error: "Valid 10-digit phone number required" });
-    return;
-  }
-  const code = generateOtp();
-  otpStore.set(phone, { code, name: name || "", expiresAt: Date.now() + 5 * 60 * 1000 });
-  res.json({ sent: true, phone, code });
+// ── Retired OTP endpoints (mobile login) ─────────────────────────────────────
+// SECURITY_FINDING_PUBLIC_BOOKING_PHI_EXPOSURE remediation: the old flow
+// echoed the OTP code in the response (never delivering it anywhere) and
+// issued no session — a bare phone number unlocked PHI. Replaced by
+// /api/patient/send-otp + /api/patient/verify-otp (patientPortal.ts): codes
+// hashed server-side, delivered via WhatsApp, never echoed; verified logins
+// mint server-side patient_sessions tokens. These stubs return 410 so any
+// stale client fails loudly instead of silently insecurely.
+publicBookingRouter.post("/send-otp", bookingLimiter, async (_req, res): Promise<void> => {
+  res.status(410).json({ error: "This login method has been retired. Please update the app." });
 });
 
-publicBookingRouter.post("/verify-otp", bookingLimiter, async (req, res): Promise<void> => {
-  const { phone, code, name } = req.body || {};
-  if (!phone || !code) { res.status(400).json({ error: "Phone and OTP required" }); return; }
-  const record = otpStore.get(phone);
-  if (!record || record.expiresAt < Date.now()) {
-    res.status(400).json({ error: "OTP expired or not found" });
-    return;
-  }
-  if (record.code !== String(code)) {
-    res.status(400).json({ error: "Invalid OTP" });
-    return;
-  }
-  otpStore.delete(phone);
-  res.json({ verified: true, phone, name: name || record.name });
+publicBookingRouter.post("/verify-otp", bookingLimiter, async (_req, res): Promise<void> => {
+  res.status(410).json({ error: "This login method has been retired. Please update the app." });
 });
 
 // ── POST /api/public/booking/qr-initiate ─────────────────────────────────────
