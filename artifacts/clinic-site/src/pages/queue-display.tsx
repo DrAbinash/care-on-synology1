@@ -30,15 +30,23 @@
  * scrollbars, no browser chrome dependencies, auto-reconnecting SSE with a
  * 15s polling fallback, plus kiosk-mode hardening (useKioskMode) — wake
  * lock, auto-fullscreen, offline/staleness auto-reload, remote reload.
+ *
+ * Also: per-patient wait-time estimate (server-computed, display.ts),
+ * optional voice announcement on token change (SpeechSynthesis), a small
+ * en/hi label dictionary (settings.language), a branding/video interstitial
+ * that takes over the screen periodically (settings.mediaItems), and
+ * quiet-hours screen dimming (CSS brightness, not a real power-off).
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { useKioskMode } from "../hooks/useKioskMode";
 
 type InstructionItem = { id: string; icon: string; text: string; color: string; enabled: boolean };
+type MediaItem = { id: string; type: "image" | "video"; url: string; durationSeconds: number; enabled: boolean };
+type Language = "en" | "hi";
 
 type QueueDisplaySettings = {
   id: number;
@@ -81,6 +89,17 @@ type QueueDisplaySettings = {
   kioskAutoFullscreen: boolean;
   kioskAutoReload: boolean;
   kioskPreventExit: boolean;
+  showWaitEstimate: boolean;
+  voiceAnnouncementEnabled: boolean;
+  language: Language;
+  showMedia: boolean;
+  mediaItems: MediaItem[];
+  mediaIntervalMinutes: number;
+  mediaDurationSeconds: number;
+  quietHoursEnabled: boolean;
+  quietHoursStart: string;
+  quietHoursEnd: string;
+  quietHoursDimPercent: number;
   ledgerId: number;
   departments: string;
 };
@@ -92,6 +111,7 @@ type TokenEntry = {
   testName: string | null;
   floorLabel: string;
   priority: number;
+  estimatedWaitMinutes?: number;
 };
 
 type DeptCard = {
@@ -113,6 +133,46 @@ interface QueueDisplayProps {
 // var fallback), not "set to an empty color".
 function cssVar(value: string | undefined): string | undefined {
   return value ? value : undefined;
+}
+
+// Small built-in dictionary for the fixed on-screen labels — not a full
+// i18n system, just enough to make the board readable in the clinic's
+// primary local language. Admin-entered text (room title, QR heading,
+// instructions, announcement, etc.) is already free-text and unaffected.
+const LABELS: Record<Language, Record<string, string>> = {
+  en: {
+    nowServing: "NOW SERVING",
+    waitingForNext: "Waiting for next token…",
+    nextPatients: "NEXT PATIENTS",
+    queueClear: "Queue is clear",
+    waitSuffix: "min wait",
+  },
+  hi: {
+    nowServing: "अभी बुलाया जा रहा है",
+    waitingForNext: "अगले टोकन की प्रतीक्षा है…",
+    nextPatients: "अगले मरीज़",
+    queueClear: "कतार खाली है",
+    waitSuffix: "मिनट प्रतीक्षा",
+  },
+};
+
+function t(language: Language | undefined, key: keyof (typeof LABELS)["en"]): string {
+  return LABELS[language ?? "en"]?.[key] ?? LABELS.en[key];
+}
+
+// "HH:MM" strings compared against the current time, handling ranges that
+// wrap past midnight (e.g. 22:00 → 06:00).
+function isWithinQuietHours(now: Date, start: string, end: string): boolean {
+  if (!start || !end) return false;
+  const [sh, sm] = start.split(":").map(Number);
+  const [eh, em] = end.split(":").map(Number);
+  if ([sh, sm, eh, em].some((n) => Number.isNaN(n))) return false;
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const startMin = sh * 60 + sm;
+  const endMin = eh * 60 + em;
+  if (startMin === endMin) return false;
+  if (startMin < endMin) return nowMin >= startMin && nowMin < endMin;
+  return nowMin >= startMin || nowMin < endMin; // wraps past midnight
 }
 
 export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps = {}) {
@@ -195,6 +255,54 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
     lastDataAt,
   });
 
+  // ── Voice announcement — speak the token number when "now serving" changes.
+  // Skips the very first render (a TV that just loaded shouldn't announce
+  // whatever was already being served) and only speaks on an actual change.
+  const announcedRef = useRef<{ id: number | null; ready: boolean }>({ id: null, ready: false });
+  useEffect(() => {
+    if (!settings?.voiceAnnouncementEnabled || typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    const currentId = current?.id ?? null;
+    if (!announcedRef.current.ready) {
+      announcedRef.current = { id: currentId, ready: true };
+      return;
+    }
+    if (currentId === announcedRef.current.id || currentId === null) return;
+    announcedRef.current = { id: currentId, ready: true };
+    const utter = new SpeechSynthesisUtterance(
+      `Token number ${current?.tokenNo}. ${current?.patientLabel || ""}. Please proceed to ${settings.roomTitle || "the counter"}.`,
+    );
+    utter.lang = settings.language === "hi" ? "hi-IN" : "en-IN";
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utter);
+  }, [current?.id, settings?.voiceAnnouncementEnabled, settings?.language, settings?.roomTitle]);
+
+  // ── Branding / video interstitial — full-screen takeover every N minutes.
+  const enabledMedia = useMemo(
+    () => (settings?.mediaItems ?? []).filter((m) => m.enabled),
+    [settings?.mediaItems],
+  );
+  const [mediaBreak, setMediaBreak] = useState<MediaItem | null>(null);
+  const [mediaIndex, setMediaIndex] = useState(0);
+  useEffect(() => {
+    if (!settings?.showMedia || enabledMedia.length === 0) { setMediaBreak(null); return; }
+    const intervalMs = Math.max(1, settings.mediaIntervalMinutes) * 60_000;
+    const durationMs = Math.max(3, settings.mediaDurationSeconds) * 1000;
+    const startBreak = () => {
+      setMediaIndex((i) => {
+        const item = enabledMedia[i % enabledMedia.length];
+        setMediaBreak(item);
+        setTimeout(() => setMediaBreak(null), item.durationSeconds ? item.durationSeconds * 1000 : durationMs);
+        return i + 1;
+      });
+    };
+    const t = setInterval(startBreak, intervalMs);
+    return () => clearInterval(t);
+  }, [settings?.showMedia, settings?.mediaIntervalMinutes, settings?.mediaDurationSeconds, enabledMedia]);
+
+  // ── Quiet hours — dim (not power off) the screen outside clinic hours.
+  const dimmed = !!settings?.quietHoursEnabled && isWithinQuietHours(now, settings.quietHoursStart, settings.quietHoursEnd);
+  const dimBrightness = dimmed ? Math.max(10, 100 - (settings?.quietHoursDimPercent ?? 40)) : 100;
+
   // Distinguish "still loading" from "failed to load". Without this the page
   // sits on "Loading display…" forever whenever the settings fetch fails —
   // most commonly a 401 because the TV opened the URL without a ?displayToken.
@@ -240,9 +348,20 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
         "--bg-color": cssVar(s.backgroundColor),
         "--card-bg-color": cssVar(s.cardBackgroundColor),
         "--text-color": cssVar(s.textColor),
+        filter: dimBrightness < 100 ? `brightness(${dimBrightness}%)` : undefined,
       }}
     >
       <style>{DISPLAY_CSS}</style>
+
+      {mediaBreak && (
+        <div className="media-break">
+          {mediaBreak.type === "video" ? (
+            <video src={mediaBreak.url} autoPlay muted loop playsInline />
+          ) : (
+            <img src={mediaBreak.url} alt="" />
+          )}
+        </div>
+      )}
 
       <header className="top">
         {s.showLogo && s.logoUrl && <img src={s.logoUrl} className="logo" alt="" />}
@@ -261,7 +380,7 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
       <div className="body">
         {s.showNowServing && (
           <section className="now-card">
-            <div className="green-bar">NOW SERVING</div>
+            <div className="green-bar">{t(s.language, "nowServing")}</div>
             {current ? (
               <>
                 <h3>#{current.tokenNo}</h3>
@@ -275,22 +394,26 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
                 </div>
               </>
             ) : (
-              <div className="no-serving">Waiting for next token…</div>
+              <div className="no-serving">{t(s.language, "waitingForNext")}</div>
             )}
           </section>
         )}
 
         {s.showNextPatients && (
           <section className="next-card">
-            <div className="blue-bar">NEXT PATIENTS</div>
+            <div className="blue-bar">{t(s.language, "nextPatients")}</div>
             {nextList.length === 0 ? (
-              <div className="next-empty">Queue is clear</div>
+              <div className="next-empty">{t(s.language, "queueClear")}</div>
             ) : (
               nextList.map((p) => (
                 <div className="next-row" key={p.id}>
                   <b>{p.tokenNo}</b>
                   <span>{p.patientLabel}</span>
-                  <em>{p.testName || ""}</em>
+                  {s.showWaitEstimate && p.estimatedWaitMinutes ? (
+                    <em>~{p.estimatedWaitMinutes} {t(s.language, "waitSuffix")}</em>
+                  ) : (
+                    <em>{p.testName || ""}</em>
+                  )}
                 </div>
               ))
             )}
@@ -478,6 +601,22 @@ footer {
 }
 .usg-display.landscape .instruction { display: flex; align-items: center; gap: 0.8vw; text-align: left; padding: 1vh 1vw; }
 .usg-display.landscape .instruction span { margin-bottom: 0; font-size: 2.4vh; }
+
+/* ── Branding / video interstitial — full-screen takeover ─────────────── */
+.media-break {
+  position: absolute;
+  inset: 0;
+  z-index: 500;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.media-break img, .media-break video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
 
 /* ── Kiosk fullscreen-tap fallback — shown only until fullscreen granted ─ */
 .fullscreen-tap {
