@@ -4,6 +4,7 @@ import { patientsTable, ordersTable } from "@workspace/db";
 import { orderTestsTable, testsTable, billsTable, paymentsTable, pacsSettingsTable } from "@workspace/db";
 import { eq, desc, gte, lte, and } from "drizzle-orm";
 import { requireStaffAuth, requireStaffPermission } from "../middleware/requireStaffAuth";
+import { RADIOLOGY_WHISPER_PROMPT, normalizeDictation } from "../lib/ai/radiologyDictationVocab";
 import {
   generateAiForTask,
 } from "@workspace/ai-providers";
@@ -209,9 +210,9 @@ router.post("/radiology-impression", requireStaffAuth, async (req, res) => {
 // client config). The target URL is ADMIN-CONFIGURED ONLY (pacs_settings POST
 // is admin-gated), which bounds the SSRF surface to deliberate clinic config.
 
-const LOCAL_STT_SETTINGS = { url: "voice_local_stt_url", kind: "voice_local_stt_kind", model: "voice_local_stt_model" } as const;
+const LOCAL_STT_SETTINGS = { url: "voice_local_stt_url", kind: "voice_local_stt_kind", model: "voice_local_stt_model", prompt: "voice_local_stt_prompt" } as const;
 
-async function readLocalSttConfig(): Promise<{ url: string; kind: "openai" | "whispercpp"; model: string } | null> {
+async function readLocalSttConfig(): Promise<{ url: string; kind: "openai" | "whispercpp"; model: string; prompt: string; language: string } | null> {
   const rows = await db
     .select({ key: pacsSettingsTable.key, value: pacsSettingsTable.value })
     .from(pacsSettingsTable)
@@ -219,10 +220,17 @@ async function readLocalSttConfig(): Promise<{ url: string; kind: "openai" | "wh
   const get = (k: string) => rows.find((r) => r.key === k)?.value?.trim() ?? "";
   const url = get(LOCAL_STT_SETTINGS.url);
   if (!url || !/^https?:\/\//i.test(url)) return null;
+  // Vocabulary-biasing prompt: admin override if set, otherwise the built-in
+  // radiology default. Language is the primary subtag of the dictation locale
+  // (e.g. "en-IN" → "en"); Whisper wants ISO-639-1. Passing it stabilises short
+  // clips instead of relying on per-clip auto-detection.
+  const language = (get("voice_language") || "en-IN").split("-")[0].toLowerCase();
   return {
     url: url.replace(/\/+$/, ""),
     kind: get(LOCAL_STT_SETTINGS.kind) === "whispercpp" ? "whispercpp" : "openai",
     model: get(LOCAL_STT_SETTINGS.model),
+    prompt: get(LOCAL_STT_SETTINGS.prompt) || RADIOLOGY_WHISPER_PROMPT,
+    language: language || "en",
   };
 }
 
@@ -254,6 +262,13 @@ router.post("/transcribe/local", requireStaffAuth, async (req, res) => {
   try {
     const form = new FormData();
     form.append("file", new Blob([Buffer.from(audioBase64, "base64")], { type: mimeType }), "audio.webm");
+    // Vocabulary biasing (initial_prompt) + language + greedy decoding are the
+    // three levers that turn a general STT model into a medical-grade one for
+    // radiology speech. Sent on both protocols; harmless if the server ignores
+    // a field it doesn't support.
+    form.append("prompt", config.prompt);
+    form.append("language", config.language);
+    form.append("temperature", "0");
     let endpoint: string;
     if (config.kind === "whispercpp") {
       endpoint = `${config.url}/inference`;
@@ -270,7 +285,9 @@ router.post("/transcribe/local", requireStaffAuth, async (req, res) => {
       return;
     }
     const data = (await upstream.json().catch(() => null)) as { text?: unknown } | null;
-    const text = typeof data?.text === "string" ? data.text.trim() : "";
+    // Post-process with the deterministic radiology normaliser (acronym casing,
+    // units, decimals/dimensions) so every provider returns clean report text.
+    const text = normalizeDictation(typeof data?.text === "string" ? data.text : "");
     res.json({ text });
   } catch (err: unknown) {
     req.log?.error({ err }, "local stt transcription failed");
@@ -294,8 +311,8 @@ router.post("/transcribe", requireStaffAuth, async (req, res) => {
     return;
   }
   try {
-    const text = await geminiTranscribe(audioBase64, mimeType);
-    res.json({ text });
+    const raw = await geminiTranscribe(audioBase64, mimeType);
+    res.json({ text: normalizeDictation(raw) });
   } catch (err: unknown) {
     req.log?.error({ err }, "ai transcribe failed");
     res.status(502).json({ error: "Voice transcription is temporarily unavailable. Please try again." });

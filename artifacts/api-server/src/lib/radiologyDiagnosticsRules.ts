@@ -315,6 +315,7 @@ export const KNOWN_PACS_SETTINGS: SettingDescriptor[] = [
   { key: "voice_local_stt_url", category: "voice", purpose: "clinic-local STT server URL", url: true },
   { key: "voice_local_stt_kind", category: "voice", purpose: "local STT protocol", enumValues: ["openai", "whispercpp"] },
   { key: "voice_local_stt_model", category: "voice", purpose: "local STT model name" },
+  { key: "voice_local_stt_prompt", category: "voice", purpose: "Whisper vocabulary-biasing prompt (blank = built-in radiology default)" },
 ];
 
 export interface SettingsFinding {
