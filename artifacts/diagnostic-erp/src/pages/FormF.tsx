@@ -1824,20 +1824,15 @@ export default function FormF() {
                 <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-semibold">Type these fields</span>
               </div>
               <div className="space-y-2">
-                <BigLabelRow label={`Husband / Father Name ${guardianRequired ? "*" : ""}`}>
+                {/* ID-capture — an inline scanner panel (method switch + per-side
+                    capture tiles + drag-&-drop upload). It delegates every
+                    capture to the shared UnifiedScanCapture engine, tagged by
+                    side: Front runs OCR (camera/upload pass through the crop/
+                    enhance editor first), Back is cropped/enhanced then stored
+                    image-only. The Husband/Father Name field it feeds via OCR now
+                    sits lower down, next to Full Address. */}
+                <BigLabelRow label="Scan ID card">
                   <div className="flex flex-col gap-2">
-                    {/* Row 1: Full-width input */}
-                    <Input
-                      {...inp("husbandFatherName")}
-                      placeholder={guardianRequired ? "Required for PCPNDT" : "Optional — enter if available"}
-                      className="w-full text-base h-11"
-                    />
-                    {/* Row 2: ID-capture — an inline scanner panel (method
-                        switch + per-side capture tiles + drag-&-drop upload). It
-                        delegates every capture to the shared UnifiedScanCapture
-                        engine, tagged by side: Front runs OCR (camera/upload pass
-                        through the crop/enhance editor first), Back is cropped/
-                        enhanced then stored image-only. */}
                     <IdScanCapturePanel
                       frontDone={!!idCardFrontUrl}
                       backDone={!!idCardBackUrl}
@@ -1966,6 +1961,13 @@ export default function FormF() {
                   </BigLabelRow>
                 )}
 
+                <BigLabelRow label={`Husband / Father Name ${guardianRequired ? "*" : ""}`}>
+                  <Input
+                    {...inp("husbandFatherName")}
+                    placeholder={guardianRequired ? "Required for PCPNDT" : "Optional — enter if available"}
+                    className="w-full text-base h-11"
+                  />
+                </BigLabelRow>
                 <BigLabelRow label={`Full Address ${addressRequired ? "*" : ""}`}>
                   <Input {...inp("address")} placeholder={addressRequired ? "Patient's full address" : "Optional — enter if available"} className="text-base h-11" />
                 </BigLabelRow>
