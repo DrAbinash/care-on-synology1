@@ -173,6 +173,9 @@ export async function confirmBookingInternal(bookingId: number, staffName: strin
     email: booking.email || "",
     source: "online",
     createdByName: `Online Booking (${staffName})`,
+    // Referring doctor captured at booking time → order.doctor_id, so the
+    // referral shows up on the bill just like a Billing Desk referral.
+    doctorId: booking.referringDoctorId ?? null,
   });
 
   // Mark booking confirmed

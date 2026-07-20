@@ -4,7 +4,7 @@ import crypto from "crypto";
 import { db, pool } from "@workspace/db";
 import {
   clinicSettingsTable, testsTable, patientsTable, ordersTable,
-  orderTestsTable, billsTable, paymentsTable, ledgersTable,
+  orderTestsTable, billsTable, paymentsTable, ledgersTable, doctorsTable,
 } from "@workspace/db/schema";
 import { eq, sql, and, inArray } from "drizzle-orm";
 import { generateTokenForBill } from "./tokens";
@@ -167,6 +167,26 @@ kioskRouter.get("/config", async (_req, res): Promise<void> => {
     // see PrintClinic in diagnostic-erp/src/lib/printBill.ts.
     printClinic: buildPrintClinic(s),
   });
+});
+
+// ── GET /api/kiosk/doctors ────────────────────────────────────────────────────
+// Minimal referring-doctor list for the kiosk's "Referring Doctor" picker
+// (same shape the Billing Desk and online booking form use). Only id/name/
+// specialization — no PII. Empty when the kiosk is disabled.
+kioskRouter.get("/doctors", async (_req, res): Promise<void> => {
+  const s = await getKioskSettings();
+  if (!s?.kioskEnabled) {
+    res.json({ doctors: [] });
+    return;
+  }
+  const rows = await db
+    .select({
+      id: doctorsTable.id,
+      name: doctorsTable.name,
+      specialization: doctorsTable.specialization,
+    })
+    .from(doctorsTable);
+  res.json({ doctors: rows });
 });
 
 // ── GET /api/kiosk/tests ──────────────────────────────────────────────────────
@@ -360,6 +380,8 @@ const RegisterBody = SelfRegistrationSchema.extend({
   testIds: z.array(z.number().int().positive()).min(1).max(30).optional(),
   utrReference: z.string().max(100).optional(),
   clientTotal: z.number().optional(),
+  // Referring doctor picked in the kiosk form (optional — walk-in has none).
+  doctorId: z.number().int().positive().nullable().optional(),
 });
 
 kioskRouter.post("/register", registerLimiter, async (req, res): Promise<void> => {
@@ -370,7 +392,7 @@ kioskRouter.post("/register", registerLimiter, async (req, res): Promise<void> =
     return;
   }
 
-  const { firstName, lastName, phone, gender, ageValue, ageUnit, paymentLinkId, razorpayPaymentId, testIds, utrReference, clientTotal, isVip } = parsed.data;
+  const { firstName, lastName, phone, gender, ageValue, ageUnit, paymentLinkId, razorpayPaymentId, testIds, utrReference, clientTotal, isVip, doctorId } = parsed.data;
 
   if (paymentLinkId) {
     // ── GATEWAY-AWARE MODE (Razorpay or ICICI) ──────────────────────────────────
@@ -459,6 +481,7 @@ kioskRouter.post("/register", registerLimiter, async (req, res): Promise<void> =
         paymentAmount: sessionAmountPaise / 100,
         source: "kiosk",
         isVip,
+        doctorId: doctorId ?? null,
       });
       res.status(201).json(result);
       return;
@@ -517,6 +540,7 @@ kioskRouter.post("/register", registerLimiter, async (req, res): Promise<void> =
       paymentAmount: amountPaisePaid / 100,
       source: "kiosk",
       isVip,
+      doctorId: doctorId ?? null,
     });
     res.status(201).json(result);
     return;
@@ -558,6 +582,7 @@ kioskRouter.post("/register", registerLimiter, async (req, res): Promise<void> =
     paymentReference: utrReference,
     paymentAmount: subtotal,
     source: "kiosk",
+    doctorId: doctorId ?? null,
   });
   res.status(201).json(result);
 });

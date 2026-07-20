@@ -26,7 +26,7 @@ import {
   RefreshCcw, FileCode, Send, QrCode, Palette, Bot, Inbox, ChevronRight,
   ArrowLeft, Phone, Layers, AlertTriangle, ScanLine, Receipt, Keyboard, Brain,
   Sparkles, Construction, GraduationCap, Tv, GripVertical, ScrollText, Flag,
-  Smartphone, RectangleVertical, RectangleHorizontal,
+  Smartphone, RectangleVertical, RectangleHorizontal, Clock,
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
@@ -1929,6 +1929,7 @@ type OnlineBookingSettings = {
   upiQrImageUrl: string;
   onlineBookingAllowedTestIds: string;
   onlineBookingAllowedPackageIds: string;
+  bookingTimeSlots: string;
   // New fields added
   onlineBookingServices?: string;
   serviceImages?: string;
@@ -1978,6 +1979,33 @@ function OnlineBookingCatalogSelector({
     try { return new Set<number>(JSON.parse(form.onlineBookingAllowedPackageIds || "[]")); }
     catch { return new Set<number>(); }
   }, [form.onlineBookingAllowedPackageIds]);
+
+  // ── Booking time slots (configurable "Select time slot" options) ──────────
+  const bookingSlots = useMemo<Array<{ value: string; label: string }>>(() => {
+    try {
+      const parsed = JSON.parse(form.bookingTimeSlots || "[]");
+      if (Array.isArray(parsed)) {
+        return parsed
+          .filter((s) => s && typeof s.value === "string" && typeof s.label === "string")
+          .map((s) => ({ value: s.value, label: s.label }));
+      }
+    } catch { /* ignore */ }
+    return [];
+  }, [form.bookingTimeSlots]);
+
+  const writeBookingSlots = (slots: Array<{ value: string; label: string }>) =>
+    setForm((prev) => prev && { ...prev, bookingTimeSlots: JSON.stringify(slots) });
+  const updateSlot = (idx: number, patch: Partial<{ value: string; label: string }>) =>
+    writeBookingSlots(bookingSlots.map((s, i) => (i === idx ? { ...s, ...patch } : s)));
+  const removeSlot = (idx: number) => writeBookingSlots(bookingSlots.filter((_, i) => i !== idx));
+  const addSlot = () => writeBookingSlots([...bookingSlots, { value: "", label: "" }]);
+  const resetSlotsToDefault = () => writeBookingSlots([
+    { value: "07:00 – 10:00", label: "Morning (7:00 – 10:00 AM)" },
+    { value: "10:00 – 13:00", label: "Late Morning (10:00 AM – 1:00 PM)" },
+    { value: "13:00 – 16:00", label: "Afternoon (1:00 – 4:00 PM)" },
+    { value: "16:00 – 19:00", label: "Evening (4:00 – 7:00 PM)" },
+    { value: "19:00 – 21:00", label: "Night (7:00 – 9:00 PM)" },
+  ]);
 
   const activeTests = tests.filter((t) => t.isActive !== false);
   const filteredTests = activeTests.filter((t) => {
@@ -2172,6 +2200,69 @@ function OnlineBookingCatalogSelector({
           </div>
         </div>
       )}
+
+      {/* Appointment time slots — configurable "Select time slot" options shown
+          on the website booking form. Saved together with the catalog by the
+          Save button above. */}
+      <div className="border-t border-card-border pt-4">
+        <div className="flex items-center justify-between gap-2 mb-1">
+          <div className="flex items-center gap-2">
+            <Clock size={14} className="text-muted-foreground" />
+            <span className="font-semibold text-sm">Appointment Time Slots</span>
+            <span className="text-xs text-muted-foreground">({bookingSlots.length})</span>
+          </div>
+          <button
+            type="button"
+            onClick={resetSlotsToDefault}
+            className="text-xs font-medium text-primary hover:underline"
+          >
+            Reset to defaults
+          </button>
+        </div>
+        <p className="text-sm text-muted-foreground mb-3">
+          These are the time slots patients pick from in the online booking form.
+          Edit them to match your opening hours (e.g. 9 AM – 11 PM). The
+          <strong> label</strong> is what patients see; the <strong>value</strong> is
+          stored on the booking. Leave the list empty to fall back to the built-in defaults.
+        </p>
+        <div className="space-y-2">
+          {bookingSlots.length === 0 ? (
+            <p className="text-sm text-muted-foreground italic">No custom slots — the default slots are used.</p>
+          ) : (
+            bookingSlots.map((slot, idx) => (
+              <div key={idx} className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
+                <Input
+                  className="h-9 flex-1"
+                  placeholder="Label (e.g. Morning (9:00 – 11:00 AM))"
+                  value={slot.label}
+                  onChange={(e) => updateSlot(idx, { label: e.target.value })}
+                />
+                <Input
+                  className="h-9 sm:w-48"
+                  placeholder="Value (e.g. 09:00 – 11:00)"
+                  value={slot.value}
+                  onChange={(e) => updateSlot(idx, { value: e.target.value })}
+                />
+                <button
+                  type="button"
+                  onClick={() => removeSlot(idx)}
+                  className="shrink-0 text-muted-foreground hover:text-red-600 px-2 py-1.5 rounded-lg border border-card-border hover:border-red-300"
+                  title="Remove this slot"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={addSlot}
+          className="mt-2 inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+        >
+          <Plus size={14} /> Add time slot
+        </button>
+      </div>
     </div>
   );
 }
@@ -2556,6 +2647,7 @@ function OnlineBookingTab() {
       upiQrImageUrl: data.upiQrImageUrl || "",
       onlineBookingAllowedTestIds: data.onlineBookingAllowedTestIds || "[]",
       onlineBookingAllowedPackageIds: data.onlineBookingAllowedPackageIds || "[]",
+      bookingTimeSlots: data.bookingTimeSlots || "[]",
       onlineBookingServices: data.onlineBookingServices || "{}",
       serviceImages: data.serviceImages || "{}",
       serviceImagesEnabled: data.serviceImagesEnabled ?? false,

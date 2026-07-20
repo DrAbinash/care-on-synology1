@@ -8,7 +8,8 @@ function get(c: Record<string, unknown>, k: string, fb = ""): string {
   return typeof c[k] === "string" ? (c[k] as string) : fb;
 }
 
-type BookingConfig = { enabled: boolean; keyId: string; vipEnabled: boolean; gateway: "payu" | "razorpay" | "phonepe" | "bharatpe" | "icici" | "hdfc" | null; payuMerchantKey?: string; phonepeMerchantId?: string; bharatpeMerchantId?: string; iciciMerchantId?: string; kioskUpiVpa?: string; kioskUpiName?: string; upiQrEnabled?: boolean; upiVpa?: string; upiQrImageUrl?: string };
+type BookingConfig = { enabled: boolean; keyId: string; vipEnabled: boolean; gateway: "payu" | "razorpay" | "phonepe" | "bharatpe" | "icici" | "hdfc" | null; payuMerchantKey?: string; phonepeMerchantId?: string; bharatpeMerchantId?: string; iciciMerchantId?: string; kioskUpiVpa?: string; kioskUpiName?: string; upiQrEnabled?: boolean; upiVpa?: string; upiQrImageUrl?: string; bookingTimeSlots?: { value: string; label: string }[] };
+type DoctorOption = { id: number; name: string; specialization?: string | null };
 type TestItem = { id: number; code: string; name: string; category: string; price: string };
 type PkgItem  = { id: number; code: string; name: string; price: string; description: string };
 
@@ -64,6 +65,7 @@ export default function AppointmentSection({ section, settings }: { section: Sec
   const bookingPhone = (settings.whatsappNumber || "").replace(/[^0-9]/g, "");
 
   const [config, setConfig] = useState<BookingConfig | null>(null);
+  const [doctors, setDoctors] = useState<DoctorOption[]>([]);
   const [tests, setTests] = useState<TestItem[]>([]);
   const [pkgs, setPkgs] = useState<PkgItem[]>([]);
   const [step, setStep] = useState<"form" | "select" | "pay" | "qr" | "done" | "failed">("form");
@@ -74,7 +76,7 @@ export default function AppointmentSection({ section, settings }: { section: Sec
   const [catFilter, setCatFilter] = useState("all");
   const urlChecked = useRef(false);
 
-  const [pd, setPd] = useState({ name: "", phone: "", email: "", date: "", timeSlot: "", notes: "", isVip: false, ageValue: "", ageUnit: "years", gender: "" });
+  const [pd, setPd] = useState({ name: "", phone: "", email: "", date: "", timeSlot: "", notes: "", isVip: false, ageValue: "", ageUnit: "years", gender: "", referringDoctorId: null as number | null, referringDoctorName: "" });
   const [errFields, setErrFields] = useState<string[]>([]);
   const [selTests, setSelTests] = useState<Set<number>>(new Set());
   const [selPkgs, setSelPkgs] = useState<Set<number>>(new Set());
@@ -115,6 +117,9 @@ export default function AppointmentSection({ section, settings }: { section: Sec
     bookingGet<BookingConfig>("/api/public/booking/config")
       .then(setConfig)
       .catch(() => setConfig({ enabled: false, keyId: "", vipEnabled: false, gateway: null }));
+    bookingGet<{ doctors: DoctorOption[] }>("/api/public/booking/doctors")
+      .then((d) => setDoctors(d.doctors || []))
+      .catch(() => setDoctors([]));
   }, []);
 
   const loadCatalog = () => {
@@ -158,6 +163,7 @@ export default function AppointmentSection({ section, settings }: { section: Sec
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
+        referringDoctorId: pd.referringDoctorId, referringDoctorName: pd.referringDoctorName,
       });
       // Redirect to PayU — page will come back via surl/furl
       submitPayuForm(res.payuUrl, res.fields);
@@ -176,6 +182,7 @@ export default function AppointmentSection({ section, settings }: { section: Sec
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
+        referringDoctorId: pd.referringDoctorId, referringDoctorName: pd.referringDoctorName,
       });
       // Redirect to PhonePe checkout — page will come back via redirectUrl
       window.location.href = res.redirectUrl;
@@ -194,6 +201,7 @@ export default function AppointmentSection({ section, settings }: { section: Sec
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
+        referringDoctorId: pd.referringDoctorId, referringDoctorName: pd.referringDoctorName,
       });
       // Redirect to BharatPe checkout — page will come back via redirectUrl
       window.location.href = res.redirectUrl;
@@ -212,6 +220,7 @@ export default function AppointmentSection({ section, settings }: { section: Sec
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
+        referringDoctorId: pd.referringDoctorId, referringDoctorName: pd.referringDoctorName,
       });
       setSuccessRef(res.bookingRef);
       window.location.href = res.redirectUrl;
@@ -229,6 +238,7 @@ export default function AppointmentSection({ section, settings }: { section: Sec
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
+        referringDoctorId: pd.referringDoctorId, referringDoctorName: pd.referringDoctorName,
       });
       setQrBookingRef(res.bookingRef);
       setQrAmount(res.amount);
@@ -273,6 +283,7 @@ export default function AppointmentSection({ section, settings }: { section: Sec
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
+        referringDoctorId: pd.referringDoctorId, referringDoctorName: pd.referringDoctorName,
       });
 
       const RZP = (window as unknown as { Razorpay: new (opts: Record<string, unknown>) => { open(): void } }).Razorpay;
@@ -448,6 +459,8 @@ export default function AppointmentSection({ section, settings }: { section: Sec
         ) : step === "form" ? (
           <SelfRegistrationForm
             mode="online"
+            timeSlots={config?.bookingTimeSlots}
+            doctors={doctors}
             initialValues={{
               firstName: pd.name,
               lastName: "",
@@ -460,6 +473,8 @@ export default function AppointmentSection({ section, settings }: { section: Sec
               timeSlot: pd.timeSlot,
               notes: pd.notes,
               isVip: pd.isVip,
+              referringDoctorId: pd.referringDoctorId,
+              referringDoctorName: pd.referringDoctorName,
             }}
             vipEnabled={!!config?.vipEnabled}
             submitButtonClass={buttonClass(settings, "primary")}
@@ -475,6 +490,8 @@ export default function AppointmentSection({ section, settings }: { section: Sec
                 ageValue: String(data.ageValue),
                 ageUnit: data.ageUnit,
                 gender: data.gender,
+                referringDoctorId: data.referringDoctorId ?? null,
+                referringDoctorName: data.referringDoctorName || "",
               });
               loadCatalog();
               setStep("select");

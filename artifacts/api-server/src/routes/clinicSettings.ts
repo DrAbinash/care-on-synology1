@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, clinicSettingsTable } from "@workspace/db";
+import { db, clinicSettingsTable, DEFAULT_BOOKING_TIME_SLOTS_JSON } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { getCached, setCached, invalidateCached, TTL } from "../lib/ttlCache";
 
@@ -66,6 +66,7 @@ async function getOrCreate() {
       upiQrEnabled: false,
       onlineBookingAllowedTestIds: "[]",
       onlineBookingAllowedPackageIds: "[]",
+      bookingTimeSlots: DEFAULT_BOOKING_TIME_SLOTS_JSON,
       sidebarTheme: "navy",
       billDefaultPaperSize: "A5",
       billPrintSettingsJson: "{}",
@@ -303,7 +304,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
   
   const textFields = [
     "kioskPaymentGateway", "kioskUpiVpa", "kioskUpiName", "kioskWelcomeMessage", "kioskAllowedTestIds",
-    "onlineBookingAllowedTestIds", "onlineBookingAllowedPackageIds", "razorpayKeyId", "payuMerchantKey",
+    "onlineBookingAllowedTestIds", "onlineBookingAllowedPackageIds", "bookingTimeSlots", "razorpayKeyId", "payuMerchantKey",
     "phonepeMerchantId", "bharatpeMerchantId", "cashfreeAppId", "iciciMerchantId", "iciciAggregatorId",
     "iciciSecretKey", "formFTestIds", "quickTestIds", "quickDoctorIds", "footerNote", "commissionDiscountMode", "lanAllowedIps",
     "billDefaultPaperSize", "name", "tagline", "address", "registeredAddress", "email", "phone", "website",
@@ -336,6 +337,43 @@ clinicSettingsRouter.put("/", async (req, res) => {
         return;
       }
       update[f] = body[f] === null ? "" : body[f].trim();
+    }
+  }
+
+  // bookingTimeSlots is stored as JSON-as-text (whitelisted in textFields
+  // above). Validate it parses to an array of { value, label } strings so a
+  // malformed blob can never reach the public booking form and break the
+  // dropdown. An empty array is allowed (the form falls back to defaults).
+  if (update.bookingTimeSlots !== undefined) {
+    const raw = String(update.bookingTimeSlots || "").trim();
+    if (raw === "") {
+      update.bookingTimeSlots = "[]";
+    } else {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        res.status(400).json({ error: "bookingTimeSlots must be valid JSON." });
+        return;
+      }
+      if (
+        !Array.isArray(parsed) ||
+        !parsed.every(
+          (s) =>
+            s && typeof s === "object" &&
+            typeof (s as { value?: unknown }).value === "string" &&
+            typeof (s as { label?: unknown }).label === "string",
+        )
+      ) {
+        res.status(400).json({ error: "bookingTimeSlots must be an array of { value, label } objects." });
+        return;
+      }
+      // Re-serialize the sanitized list (drops any extra keys, trims strings).
+      update.bookingTimeSlots = JSON.stringify(
+        (parsed as Array<{ value: string; label: string }>)
+          .map((s) => ({ value: s.value.trim(), label: s.label.trim() }))
+          .filter((s) => s.value !== "" && s.label !== ""),
+      );
     }
   }
 

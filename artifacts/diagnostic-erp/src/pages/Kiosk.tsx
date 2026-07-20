@@ -47,6 +47,8 @@ type TestItem = {
   duration: string;
 };
 
+type DoctorOption = { id: number; name: string; specialization?: string | null };
+
 type ConfirmResult = {
   billNumber: string;
   billId: number;
@@ -98,6 +100,11 @@ export default function Kiosk() {
   const [ageUnit, setAgeUnit] = useState<"years" | "months" | "days">("years");
   const [errFields, setErrFields] = useState<string[]>([]);
   const [isVip, setIsVip] = useState(false);
+  // Referring doctor (optional) selected in Step 1 — sent to /api/kiosk/register
+  // so the created order carries the referral, just like the Billing Desk.
+  const [doctors, setDoctors] = useState<DoctorOption[]>([]);
+  const [referringDoctorId, setReferringDoctorId] = useState<number | null>(null);
+  const [referringDoctorName, setReferringDoctorName] = useState("");
 
   // Step 2 — test selection
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -121,15 +128,18 @@ export default function Kiosk() {
     async function load() {
       setLoading(true);
       try {
-        const [cfgRes, testsRes] = await Promise.all([
+        const [cfgRes, testsRes, docsRes] = await Promise.all([
           fetch("/api/kiosk/config"),
           fetch("/api/kiosk/tests"),
+          fetch("/api/kiosk/doctors"),
         ]);
         const cfg = await cfgRes.json() as KioskConfig;
         const td = await testsRes.json() as { tests: TestItem[]; quickTestIds?: number[] };
+        const dd = await docsRes.json().catch(() => ({ doctors: [] })) as { doctors?: DoctorOption[] };
         setConfig(cfg);
         setTests(td.tests ?? []);
         setQuickTestIds(td.quickTestIds ?? []);
+        setDoctors(dd.doctors ?? []);
         const cats = [...new Set((td.tests ?? []).map(t => t.category || "General"))];
         if (cats.length > 0) setActiveCategory(cats[0]!);
         // Same default as the online booking page: prefer the configured
@@ -312,6 +322,7 @@ export default function Kiosk() {
           ageUnit,
           paymentLinkId: ref,
           isVip,
+          doctorId: referringDoctorId,
         }),
       });
       if (!res.ok) {
@@ -352,6 +363,7 @@ export default function Kiosk() {
           utrReference: utr.trim(),
           clientTotal: subtotal,
           isVip,
+          doctorId: referringDoctorId,
         }),
       });
       if (!res.ok) {
@@ -480,6 +492,7 @@ export default function Kiosk() {
           <SelfRegistrationForm
             mode="kiosk"
             vipEnabled={config?.vipQueueEnabled}
+            doctors={doctors}
             initialValues={{
               firstName,
               lastName,
@@ -488,6 +501,8 @@ export default function Kiosk() {
               ageValue,
               ageUnit,
               isVip,
+              referringDoctorId,
+              referringDoctorName,
             }}
             onSubmit={(data) => {
               setFirstName(data.firstName);
@@ -497,6 +512,8 @@ export default function Kiosk() {
               setAgeValue(String(data.ageValue));
               setAgeUnit(data.ageUnit);
               setIsVip(!!data.isVip);
+              setReferringDoctorId(data.referringDoctorId ?? null);
+              setReferringDoctorName(data.referringDoctorName || "");
               setStep(2);
             }}
           />
