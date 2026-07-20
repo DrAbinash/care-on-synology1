@@ -8241,6 +8241,16 @@ function QueueDisplaySettingsTab() {
     queryFn: () => api.get(`/api/settings/queue-display/${roomKey}`),
   });
 
+  // Real department strings tokens are actually created with — used to
+  // build the Departments filter as a picker instead of free text, so a TV
+  // room can never be silently misconfigured with a department string
+  // ("USG Room", "Ultrasound") that no token actually carries, which would
+  // make every token for that department vanish from the whole feed.
+  const { data: knownDepartments } = useQuery<{ department: string; roomNumber: string }[]>({
+    queryKey: ["test-token-departments"],
+    queryFn: () => api.get("/api/test-tokens/departments"),
+  });
+
   // Display token — lets the unattended TV browser (which has no staff login
   // session) read its own settings and the live queue feed. Without it the TV
   // page 401s on every fetch and sits on "Loading display…" forever, so both
@@ -8554,9 +8564,43 @@ function QueueDisplaySettingsTab() {
               <Input type="number" min={1} value={form.ledgerId} onChange={(e) => setForm({ ...form, ledgerId: Number(e.target.value) || 1 })} className="w-24" />
               <span className="text-xs text-muted-foreground">Which existing queue book this TV shows (see Queue page)</span>
             </div>
-            <div className="flex items-center gap-2">
-              <Label className="text-xs w-40 shrink-0">Departments filter</Label>
-              <Input value={form.departments} onChange={(e) => setForm({ ...form, departments: e.target.value })} placeholder="e.g. USG (blank = all)" />
+            <div>
+              <Label className="text-xs block mb-1.5">Departments filter</Label>
+              {(() => {
+                const selected = form.departments ? form.departments.split(",").map((s) => s.trim()).filter(Boolean) : [];
+                const known = (knownDepartments ?? []).map((d) => d.department);
+                // Union in any already-saved value not in the known list (e.g. a
+                // department with no tokens created yet today) so it stays
+                // visible/editable instead of silently disappearing.
+                const options = Array.from(new Set([...known, ...selected])).sort();
+                const toggle = (dept: string) => {
+                  const next = selected.includes(dept) ? selected.filter((d) => d !== dept) : [...selected, dept];
+                  setForm({ ...form, departments: next.join(",") });
+                };
+                if (options.length === 0) {
+                  return <p className="text-xs text-muted-foreground">No departments found yet — add tests under Tests first, or leave blank to show every department.</p>;
+                }
+                return (
+                  <div className="flex flex-wrap gap-1.5">
+                    {options.map((d) => {
+                      const isOn = selected.includes(d);
+                      return (
+                        <button
+                          key={d}
+                          type="button"
+                          onClick={() => toggle(d)}
+                          className={`text-xs px-2.5 py-1 rounded-full border ${isOn ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 font-medium" : "border-card-border text-muted-foreground hover:bg-muted"}`}
+                        >
+                          {d}
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+              <p className="text-[11px] text-muted-foreground mt-1.5">
+                Picked from actual test departments, so this can never silently mismatch what tokens are tagged with. None selected = show every department on this TV.
+              </p>
             </div>
           </SettingsCard>
 
