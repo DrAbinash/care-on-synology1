@@ -268,8 +268,8 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   // was previously LARGER than the title, inverting the hierarchy.
   const titleSize = `${opts.printTitleFontPx ?? (isA5 ? 19 : 20)}px`;
   const patientNameSize = `${opts.printPatientNameFontPx ?? (isA5 ? 14 : 18)}px`;    // compact patient / ref / date block
-  const bodyPx = `${opts.printBodyFontPx ?? (isA5 ? 14 : 13)}px`;                     // tagline under logo
-  const headerPx = `${opts.printHeaderFontPx ?? (isA5 ? 11 : 10)}px`;                 // clinic address / phone / email (caption weight)
+  const bodyPx = `${opts.printBodyFontPx ?? (isA5 ? 16 : 15)}px`;                     // tagline under logo
+  const headerPx = `${opts.printHeaderFontPx ?? (isA5 ? 13 : 12)}px`;                 // clinic address / phone / email (caption weight)
   const tablePx = `${opts.printTableFontPx ?? 12}px`;
   const totalPx = `${opts.printTotalFontPx ?? 13}px`;
   const footerPx = `${opts.printFooterFontPx ?? 11}px`;
@@ -327,7 +327,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
       <table style="width:100%;border-collapse:collapse;margin-bottom:8px">
         <tr>
           <td style="vertical-align:middle;padding:0;width:45%">
-            ${clinic?.logoDataUrl ? `<img src="${clinic.logoDataUrl}" alt="logo" style="max-height:78px;max-width:160px;object-fit:contain;display:block;margin-bottom:3px"/>` : ""}
+            ${clinic?.logoDataUrl ? `<img src="${clinic.logoDataUrl}" alt="logo" style="max-height:100px;max-width:210px;object-fit:contain;display:block;margin-bottom:3px"/>` : ""}
             <div style="font-size:${bodyPx};color:#333;font-weight:700;line-height:1.2">${esc(clinic?.tagline || "DIAGNOSTIC & PATHOLOGY SERVICES")}</div>
           </td>
           <td style="vertical-align:middle;text-align:right;padding:0;font-size:${headerPx};line-height:1.45;color:#555;font-weight:600">
@@ -441,15 +441,18 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
                   </tr>
                   <tr><td style="padding:4px 6px;border-top:1px solid #000;font-weight:800">PAID</td><td style="padding:4px 6px;border-top:1px solid #000;text-align:right;font-weight:800;white-space:nowrap;color:${statusColor(isUnconfirmedQr ? "#b45309" : "#15803d")}">${isUnconfirmedQr ? `${fmt(bill.totalAmount)} (To Be Confirmed)` : `₹${fmt(bill.paidAmount)}`}</td></tr>
                   <tr>
-                    <!-- Spans BOTH columns (not the 58/42 split above) so the
-                         bold, enlarged "BALANCE DUE" label always has the
-                         totals column's full width to lay out on one line
-                         instead of wrapping inside the narrower 58% half. -->
+                    <!-- Spans BOTH columns (not the 58/42 split above). Label
+                         and amount are stacked on separate lines (not a
+                         side-by-side flex row) so the amount can NEVER get
+                         squeezed past the totals column's fixed 170px/200px
+                         width and silently clipped by the print page — the
+                         bug this replaced: a wide bold label + large amount
+                         sharing one nowrap line could overflow the column
+                         and the amount would render off the printable page
+                         with nothing visibly wrong until you looked closely. -->
                     <td colspan="2" style="padding:6px;border-top:2px solid #000;background:${statusBg(isUnconfirmedQr ? "#fef3c7" : Number(bill.balanceAmount) > 0 ? "#fee2e2" : "#dcfce7")}">
-                      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:${parseInt(totalPx, 10) + 7}px">
-                        <span style="font-weight:900;white-space:nowrap">BALANCE DUE</span>
-                        <span style="font-weight:900;white-space:nowrap;color:${statusColor(isUnconfirmedQr ? "#b45309" : Number(bill.balanceAmount) > 0 ? "#b91c1c" : "#15803d")}">${isUnconfirmedQr ? "To Be Confirmed" : `₹${fmt(bill.balanceAmount)}`}</span>
-                      </div>
+                      <div style="font-weight:900;font-size:${totalPx};letter-spacing:0.3px">BALANCE DUE</div>
+                      <div style="font-weight:900;font-size:${parseInt(totalPx, 10) + 7}px;text-align:right;color:${statusColor(isUnconfirmedQr ? "#b45309" : Number(bill.balanceAmount) > 0 ? "#b91c1c" : "#15803d")}">${isUnconfirmedQr ? "To Be Confirmed" : `₹${fmt(bill.balanceAmount)}`}</div>
                     </td>
                   </tr>
                   ${cashAmt > 0 ? `<tr><td style="padding:3px 6px;color:#555;font-size:${tinyPx}">Cash</td><td style="padding:3px 6px;text-align:right;white-space:nowrap;color:#555;font-size:${tinyPx}">₹${fmt(cashAmt)}</td></tr>` : ""}
