@@ -4,7 +4,7 @@ import { patientsTable, ordersTable } from "@workspace/db";
 import { orderTestsTable, testsTable, billsTable, paymentsTable, pacsSettingsTable } from "@workspace/db";
 import { eq, desc, gte, lte, and } from "drizzle-orm";
 import { requireStaffAuth, requireStaffPermission } from "../middleware/requireStaffAuth";
-import { RADIOLOGY_WHISPER_PROMPT, normalizeDictation } from "../lib/ai/radiologyDictationVocab";
+import { RADIOLOGY_WHISPER_PROMPT, normalizeDictation, PROMPT_DICTATION_POLISH, isPolishSafe } from "../lib/ai/radiologyDictationVocab";
 import {
   generateAiForTask,
 } from "@workspace/ai-providers";
@@ -316,6 +316,47 @@ router.post("/transcribe", requireStaffAuth, async (req, res) => {
   } catch (err: unknown) {
     req.log?.error({ err }, "ai transcribe failed");
     res.status(502).json({ error: "Voice transcription is temporarily unavailable. Please try again." });
+  }
+});
+
+// Optional AI dictation polish — OPT-IN and guard-railed. Cleans punctuation /
+// formatting / obvious STT spelling only; a hard safety gate (isPolishSafe)
+// rejects any rewrite that changes a number, laterality, or negation, in which
+// case the deterministically-normalised original is returned. Route the
+// "dictation_polish" task to a LOCAL model to keep PHI on-prem. This endpoint
+// never fails the caller — it always returns usable text.
+router.post("/transcribe/polish", requireStaffAuth, async (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const input = typeof b.text === "string" ? b.text : "";
+  if (!input.trim()) { res.json({ text: "", polished: false }); return; }
+
+  // Deterministic normalisation always applies (safe). The AI pass is opt-in.
+  const normalized = normalizeDictation(input);
+
+  let enabled = false;
+  try {
+    const rows = await db
+      .select({ key: pacsSettingsTable.key, value: pacsSettingsTable.value })
+      .from(pacsSettingsTable)
+      .where(eq(pacsSettingsTable.category, "voice"));
+    enabled = rows.find((r) => r.key === "voice_ai_polish_enabled")?.value?.trim() === "true";
+  } catch { /* settings unreadable → stay disabled */ }
+
+  if (!enabled) { res.json({ text: normalized, polished: false }); return; }
+
+  try {
+    const prompt = `${PROMPT_DICTATION_POLISH}\n\nDictation:\n"""\n${normalized}\n"""`;
+    const aiText = await legacyAiGenerate("dictation_polish", prompt, { maxTokens: 1024 });
+    const cleaned = normalizeDictation(aiText.replace(/^"""/, "").replace(/"""$/, "").trim());
+    if (isPolishSafe(normalized, cleaned)) {
+      res.json({ text: cleaned, polished: true });
+    } else {
+      req.log?.warn("dictation polish rejected by safety gate — returning normalized original");
+      res.json({ text: normalized, polished: false });
+    }
+  } catch (err: unknown) {
+    req.log?.warn({ err }, "dictation polish failed — returning normalized original");
+    res.json({ text: normalized, polished: false });
   }
 });
 

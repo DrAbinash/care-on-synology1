@@ -316,6 +316,7 @@ export const KNOWN_PACS_SETTINGS: SettingDescriptor[] = [
   { key: "voice_local_stt_kind", category: "voice", purpose: "local STT protocol", enumValues: ["openai", "whispercpp"] },
   { key: "voice_local_stt_model", category: "voice", purpose: "local STT model name" },
   { key: "voice_local_stt_prompt", category: "voice", purpose: "Whisper vocabulary-biasing prompt (blank = built-in radiology default)" },
+  { key: "voice_ai_polish_enabled", category: "voice", purpose: "opt-in AI punctuation/formatting cleanup of dictation (route dictation_polish to a local model)", enumValues: ["true", "false"] },
 ];
 
 export interface SettingsFinding {

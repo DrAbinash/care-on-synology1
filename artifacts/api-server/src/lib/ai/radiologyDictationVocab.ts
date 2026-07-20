@@ -125,3 +125,47 @@ export function normalizeDictation(raw: string): string {
 
   return text.trim();
 }
+
+// ── Optional AI polish — safety gate ──────────────────────────────────────────
+//
+// An LLM cleanup pass (punctuation/formatting only) can improve readability, but
+// it must NEVER change clinical meaning. This gate is the hard safety net around
+// any AI-rewritten dictation: it re-derives the load-bearing facts from both the
+// input and the AI output and rejects the rewrite if any of them changed. On
+// rejection the caller keeps the deterministic-normalised original.
+//
+// Checked invariants (a rewrite that alters any of these is unsafe):
+//   - the multiset of numbers (measurements, grades, counts) is identical
+//   - laterality words (left/right) counts are identical
+//   - negation words (no/not/without/absent) counts are identical
+//   - length stays within a sane ratio (no wholesale rewrite / truncation)
+
+export const PROMPT_DICTATION_POLISH =
+  "You are a medical transcription formatter for a radiologist's dictation. " +
+  "Correct ONLY punctuation, capitalization, sentence breaks, and obvious " +
+  "speech-to-text spelling errors of radiology terms. You MUST NOT add, remove, " +
+  "reorder, or change any clinical finding, measurement, number, unit, laterality " +
+  "(left/right), or negation (no/not/without). Do not add commentary or new " +
+  "findings. If unsure, leave the text unchanged. Return ONLY the corrected " +
+  "dictation text, nothing else.";
+
+function numberMultiset(text: string): string {
+  return (text.match(/\d+(?:\.\d+)?/g) ?? []).map(Number).sort((a, b) => a - b).join(",");
+}
+function countWord(text: string, word: string): number {
+  return (text.toLowerCase().match(new RegExp(`\\b${word}\\b`, "g")) ?? []).length;
+}
+
+export function isPolishSafe(original: string, polished: string): boolean {
+  if (!polished.trim()) return false;
+  // Numbers must be identical (protects every measurement / grade / count).
+  if (numberMultiset(original) !== numberMultiset(polished)) return false;
+  // Laterality and negation counts must be preserved.
+  for (const w of ["left", "right", "no", "not", "without", "absent"]) {
+    if (countWord(original, w) !== countWord(polished, w)) return false;
+  }
+  // Guard against wholesale rewrite / truncation.
+  const ratio = polished.trim().length / Math.max(1, original.trim().length);
+  if (ratio < 0.6 || ratio > 2.2) return false;
+  return true;
+}
