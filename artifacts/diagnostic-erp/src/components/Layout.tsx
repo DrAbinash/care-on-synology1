@@ -199,6 +199,12 @@ const navItems: NavEntry[] = [
           { path: "/fetal-usg",                                  icon: Baby,       label: "Fetal USG" },
           { path: "/fetal-echo",                                 icon: Baby,       label: "Fetal Echo" },
           { path: "/usg/doppler",                                icon: Activity,   label: "Doppler Reporting" },
+          // Deep-links into the generic Queue page pre-filtered to USG so
+          // staff working only this nav section can find the "Call" button
+          // that flips a waiting token to "serving" (what the USG TV
+          // display's "Now Serving" card actually reads) — previously only
+          // reachable via the unrelated top-level "Queue Tokens" nav item.
+          { path: "/queue?department=USG",                       icon: Ticket,     label: "USG Queue / Call Next" },
           { path: "/settings/radiology-quick-select",            icon: Settings2,  label: "USG Settings" },
         ],
       },

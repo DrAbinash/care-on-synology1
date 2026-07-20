@@ -51,6 +51,14 @@ export default function QueuePage() {
     try { return Number(localStorage.getItem("queue:ledgerId") || "1") || 1; } catch { return 1; }
   });
   const [department, setDepartment] = useState<string>(() => {
+    // A nav link can deep-link straight into a department's queue (e.g. the
+    // Radiology/USG sidebar's "USG Queue / Call Next" entry links here with
+    // ?department=USG) so staff who only work that section's nav can find
+    // and use the Call button without knowing the generic /queue page exists.
+    try {
+      const fromUrl = new URLSearchParams(window.location.search).get("department");
+      if (fromUrl) return fromUrl;
+    } catch { /* ignore */ }
     try { return localStorage.getItem("queue:department") || "all"; } catch { return "all"; }
   });
   const [search, setSearch] = useState("");
