@@ -315,6 +315,25 @@ async function pollOnce(port: number): Promise<void> {
   }
 }
 
+// ── Public: ingest one Orthanc study on demand ───────────────────────────────
+//
+// Used by the Orthanc-side OnStoredInstance webhook (POST
+// /api/internal/radiology/orthanc-webhook) for near-instant push — the poller
+// remains the reliable safety net, this is the low-latency fast path. Resolves
+// the Orthanc base and the API port itself so callers need no wiring.
+export async function ingestOrthancStudyId(orthancStudyId: string): Promise<boolean> {
+  const base = orthancBase();
+  if (!base || !orthancStudyId) return false;
+  const port = Number(process.env.PORT) || 8080;
+  try {
+    await ingestStudy(base, orthancStudyId, port);
+    return true;
+  } catch (err) {
+    logger.warn({ err, orthancStudyId }, "orthanc-poller: on-demand ingest failed");
+    return false;
+  }
+}
+
 // ── Public entrypoint ─────────────────────────────────────────────────────────
 
 let ticking = false;
