@@ -11,7 +11,8 @@ import {
   ChevronDown, ExternalLink
 } from "lucide-react";
 import IdCardScanPanel from "@/components/IdCardScanPanel";
-import UnifiedScanCapture, { type ScanCaptureResult, type ScanSide } from "@/components/UnifiedScanCapture";
+import IdScanCapturePanel from "@/components/IdScanCapturePanel";
+import { type ScanCaptureResult, type ScanSide } from "@/components/UnifiedScanCapture";
 import { decodeQrFromBlob } from "@/lib/aadhaarQr";
 import { readStaffSession } from "@/lib/staffSession";
 import {
@@ -1831,31 +1832,20 @@ export default function FormF() {
                       placeholder={guardianRequired ? "Required for PCPNDT" : "Optional — enter if available"}
                       className="w-full text-base h-11"
                     />
-                    {/* Row 2: ID-capture — Front and Back each get the full set of
-                        methods (TVS PDS 8M / Existing Scanner / Upload / Mobile
-                        Scan / Webcam) inside the one scan dialog. The trigger's
-                        `side` prop routes the result: Front runs OCR (camera
-                        sources first pass through the crop/enhance editor), Back
-                        is stored image-only. Two triggers × the method list give
-                        the front/back-per-method matrix. */}
-                    <div className="flex flex-wrap items-center gap-2">
-                      <UnifiedScanCapture
-                        module="form-f"
-                        docType="id-card"
-                        side="front"
-                        triggerLabel={idCardUploading ? "Scanning…" : idCardFrontUrl ? "Front ✓" : "Scan Front"}
-                        onCapture={handleIdCapture}
-                        onError={(msg) => toast({ title: "Scan failed", description: msg, variant: "destructive" })}
-                      />
-                      <UnifiedScanCapture
-                        module="form-f"
-                        docType="id-card"
-                        side="back"
-                        triggerLabel={idCardUploading ? "Scanning…" : idCardBackUrl ? "Back ✓" : "Scan Back"}
-                        onCapture={handleIdCapture}
-                        onError={(msg) => toast({ title: "Scan failed", description: msg, variant: "destructive" })}
-                      />
-                    </div>
+                    {/* Row 2: ID-capture — an inline scanner panel (method
+                        switch + per-side capture tiles + drag-&-drop upload). It
+                        delegates every capture to the shared UnifiedScanCapture
+                        engine, tagged by side: Front runs OCR (camera/upload pass
+                        through the crop/enhance editor first), Back is cropped/
+                        enhanced then stored image-only. */}
+                    <IdScanCapturePanel
+                      frontDone={!!idCardFrontUrl}
+                      backDone={!!idCardBackUrl}
+                      busy={idCardUploading}
+                      onCapture={handleIdCapture}
+                      onError={(msg) => toast({ title: "Scan failed", description: msg, variant: "destructive" })}
+                      onViewSaved={() => setActiveTab("records")}
+                    />
                     {isFormFAdmin && <OcrDiagnosticsPanel />}
                   </div>
                 </BigLabelRow>

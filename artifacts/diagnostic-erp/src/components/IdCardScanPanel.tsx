@@ -92,9 +92,11 @@ const MODE_LABELS: Record<EnhancementMode, string> = {
   bw:           "B&W Scan",
 };
 
-/** Default enhancement mode per document type. */
+/** Default enhancement mode per document type. Indian ID cards (Aadhaar/PAN)
+ *  are almost always laminated, so the ID-card editor opens on the anti-glare
+ *  laminated preset by default rather than plain Auto. */
 const DEFAULT_MODE_FOR_DOC: Record<ScanDocType, EnhancementMode> = {
-  "id-card": "auto",
+  "id-card": "laminated",
   receipt: "receipt",
   document: "document",
 };

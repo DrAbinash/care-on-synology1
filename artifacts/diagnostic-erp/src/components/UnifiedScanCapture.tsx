@@ -26,7 +26,7 @@
  * returned blob — this component does not know about Form F fields, expense
  * categories, or any other module-specific shape.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "wouter";
 import QRCode from "qrcode";
 import { api } from "@/lib/fetchApi";
@@ -65,6 +65,14 @@ export interface UnifiedScanCaptureProps {
    *  render one trigger per side (e.g. "Scan Front" / "Scan Back"), each
    *  offering the full set of capture methods. Defaults to "front". */
   side?: ScanSide;
+  /** Custom trigger renderer. Receives a `launch` fn — call it to start capture.
+   *  When provided it replaces the default outlined Button, so a caller can
+   *  embed the trigger as a styled card/tile (see IdScanCapturePanel). */
+  renderTrigger?: (launch: () => void) => ReactNode;
+  /** Skip the in-dialog method picker and go straight into one method.
+   *  "upload"/"bridge" need no viewfinder, so they run without opening the
+   *  dialog at all; "webcam"/"tvs"/"mobile" open the dialog on that view. */
+  autoStart?: ScanSource;
   onCapture: (result: ScanCaptureResult) => void;
   onError?: (message: string) => void;
 }
@@ -83,6 +91,8 @@ export default function UnifiedScanCapture({
   triggerLabel = "Scan Document",
   className = "",
   side = "front",
+  renderTrigger,
+  autoStart,
   onCapture,
   onError,
 }: UnifiedScanCaptureProps) {
@@ -330,11 +340,44 @@ export default function UnifiedScanCapture({
     setOpen(false);
   }
 
+  // Start capture. With `autoStart` set, skip the method picker: upload/bridge
+  // need no viewfinder so they run without opening the dialog; the camera/mobile
+  // methods open the dialog and the effect below launches the right view.
+  function launch() {
+    if (autoStart === "upload") { fileInputRef.current?.click(); return; }
+    if (autoStart === "bridge") { void handleBridgeCapture(); return; }
+    setOpen(true);
+    setMode("select");
+  }
+
+  useEffect(() => {
+    if (!open || !autoStart) return;
+    if (autoStart === "webcam") void startCameraStream("webcam");
+    else if (autoStart === "tvs") void startCameraStream("tvs", tvsDeviceId);
+    else if (autoStart === "mobile") void startMobileSession();
+    // Launch once per open; the capture fns manage their own teardown.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
   return (
     <>
-      <Button type="button" variant="outline" onClick={() => { setOpen(true); setMode("select"); }} className={`gap-1.5 ${className}`}>
-        <Scan size={15} /> {triggerLabel}
-      </Button>
+      {/* Hidden file input lives outside the dialog so an `autoStart="upload"`
+          trigger can open the picker without first opening the dialog. */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={ACCEPTED_UPLOAD_TYPES.join(",")}
+        className="hidden"
+        onChange={(e) => handleFileChosen(e.target.files?.[0] ?? null)}
+      />
+
+      {renderTrigger ? (
+        renderTrigger(launch)
+      ) : (
+        <Button type="button" variant="outline" onClick={launch} className={`gap-1.5 ${className}`}>
+          <Scan size={15} /> {triggerLabel}
+        </Button>
+      )}
 
       <Dialog open={open} onOpenChange={(v) => { if (!v) resetAndClose(); else setOpen(true); }}>
         <DialogContent className="max-w-md">
@@ -395,13 +438,6 @@ export default function UnifiedScanCapture({
                   <div className="text-[10px] text-muted-foreground">Select a file from this computer</div>
                 </div>
               </Button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept={ACCEPTED_UPLOAD_TYPES.join(",")}
-                className="hidden"
-                onChange={(e) => handleFileChosen(e.target.files?.[0] ?? null)}
-              />
 
               <Button variant="outline" onClick={startMobileSession} className="h-14 justify-start gap-3 border-dashed hover:bg-muted/40">
                 <Smartphone size={20} className="text-muted-foreground shrink-0" />
