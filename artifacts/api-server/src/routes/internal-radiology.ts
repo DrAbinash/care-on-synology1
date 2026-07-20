@@ -1432,6 +1432,32 @@ router.post("/radiology/dicom-event", async (req, res) => {
   res.status(201).json(row);
 });
 
+// ── Orthanc OnStoredInstance webhook (low-latency auto-push) ──────────────────
+// POST /api/internal/radiology/orthanc-webhook   { orthancStudyId }
+//
+// The background /changes poller (lib/pacs/orthancChangesPoller.ts) is the
+// reliable baseline; this endpoint is the near-instant fast path, called by a
+// tiny Orthanc-side Lua hook (docker/orthanc/erp_notify.lua) the moment a study
+// stabilises. It fetches the study from Orthanc and runs the SAME intake
+// (incl. USG SR extraction) the poller uses, so the two paths are identical and
+// idempotent — a study pushed by both is upserted once.
+router.post("/radiology/orthanc-webhook", async (req, res): Promise<void> => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const orthancStudyId = typeof b.orthancStudyId === "string" ? b.orthancStudyId.trim() : "";
+  if (!orthancStudyId) {
+    res.status(400).json({ success: false, error: "orthancStudyId is required" });
+    return;
+  }
+  try {
+    const { ingestOrthancStudyId } = await import("../lib/pacs/orthancChangesPoller");
+    const ok = await ingestOrthancStudyId(orthancStudyId);
+    res.json({ success: ok });
+  } catch (err) {
+    logger.error({ err, orthancStudyId }, "orthanc-webhook ingest failed");
+    res.status(502).json({ success: false, error: "Ingest failed" });
+  }
+});
+
 // ── Worklist read endpoints ───────────────────────────────────────────────────
 // GET /api/internal/radiology/worklist?status=&modality=&date=
 router.get("/radiology/worklist", async (req, res) => {

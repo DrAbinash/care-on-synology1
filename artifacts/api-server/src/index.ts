@@ -2784,6 +2784,19 @@ const server = app.listen({ port, exclusive: true }, () => {
   setTimeout(runStudyReconciliation, 30_000).unref?.();
   setInterval(runStudyReconciliation, 15 * 60_000).unref?.();
 
+  // Orthanc → ERP study auto-push: poll Orthanc's /changes feed and forward
+  // newly-stable studies to the study-intake endpoint so they appear in the
+  // worklist without a manual pull. Ultrasound studies (incl. GE Voluson E9)
+  // carry their DICOM SR so the USG auto-measurement extractor runs on intake.
+  // Always-on in production for the same reason as reconciliation above
+  // (ENABLE_SCHEDULERS is not set there); self-gates on PACS_PROVIDER=orthanc
+  // and INTERNAL_API_KEY.
+  import("./lib/pacs/orthancChangesPoller").then((mod) => {
+    mod.startOrthancChangesPoller(port);
+  }).catch((err) => {
+    logger.error({ err }, "Failed to start Orthanc changes poller");
+  });
+
   // seedBootstrapAdmin: run immediately and await — if the admin row is missing
   // the system is unusable. Log the error clearly but do not crash (the row may
   // have been manually deleted; the rest of the API still works).

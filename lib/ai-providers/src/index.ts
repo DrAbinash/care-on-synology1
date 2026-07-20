@@ -457,6 +457,7 @@ export const AI_TASK_CATALOG: AiTaskDef[] = [
   { key: "clinical_notes", label: "Clinical Notes", description: "Generate clinical notes from patient demographics and history.", vision: false },
   { key: "billing_insights", label: "Billing Insights", description: "Summarize billing/revenue patterns for a patient or period.", vision: false },
   { key: "patient_communication", label: "Patient Communication", description: "Draft patient-facing messages (reminders, results, follow-ups).", vision: false },
+  { key: "dictation_polish", label: "Dictation Polish", description: "Punctuation/formatting-only cleanup of dictated radiology text — never changes clinical meaning. Route to a local (Ollama) model to keep PHI on-prem.", vision: false },
   { key: "report_findings", label: "Radiology Findings", description: "Generate the findings section of a radiology report.", vision: false },
   { key: "report_impression", label: "Radiology Impression", description: "Generate the impression section of a radiology report.", vision: false },
   { key: "echo_draft", label: "Echo Cardiology AI Draft", description: "AI-assisted 2D echocardiography report drafting from measurements and valve assessment.", vision: false },

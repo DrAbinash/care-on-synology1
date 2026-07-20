@@ -4,6 +4,7 @@ import { patientsTable, ordersTable } from "@workspace/db";
 import { orderTestsTable, testsTable, billsTable, paymentsTable, pacsSettingsTable } from "@workspace/db";
 import { eq, desc, gte, lte, and } from "drizzle-orm";
 import { requireStaffAuth, requireStaffPermission } from "../middleware/requireStaffAuth";
+import { RADIOLOGY_WHISPER_PROMPT, normalizeDictation, PROMPT_DICTATION_POLISH, isPolishSafe } from "../lib/ai/radiologyDictationVocab";
 import {
   generateAiForTask,
 } from "@workspace/ai-providers";
@@ -209,9 +210,9 @@ router.post("/radiology-impression", requireStaffAuth, async (req, res) => {
 // client config). The target URL is ADMIN-CONFIGURED ONLY (pacs_settings POST
 // is admin-gated), which bounds the SSRF surface to deliberate clinic config.
 
-const LOCAL_STT_SETTINGS = { url: "voice_local_stt_url", kind: "voice_local_stt_kind", model: "voice_local_stt_model" } as const;
+const LOCAL_STT_SETTINGS = { url: "voice_local_stt_url", kind: "voice_local_stt_kind", model: "voice_local_stt_model", prompt: "voice_local_stt_prompt" } as const;
 
-async function readLocalSttConfig(): Promise<{ url: string; kind: "openai" | "whispercpp"; model: string } | null> {
+async function readLocalSttConfig(): Promise<{ url: string; kind: "openai" | "whispercpp"; model: string; prompt: string; language: string } | null> {
   const rows = await db
     .select({ key: pacsSettingsTable.key, value: pacsSettingsTable.value })
     .from(pacsSettingsTable)
@@ -219,10 +220,17 @@ async function readLocalSttConfig(): Promise<{ url: string; kind: "openai" | "wh
   const get = (k: string) => rows.find((r) => r.key === k)?.value?.trim() ?? "";
   const url = get(LOCAL_STT_SETTINGS.url);
   if (!url || !/^https?:\/\//i.test(url)) return null;
+  // Vocabulary-biasing prompt: admin override if set, otherwise the built-in
+  // radiology default. Language is the primary subtag of the dictation locale
+  // (e.g. "en-IN" → "en"); Whisper wants ISO-639-1. Passing it stabilises short
+  // clips instead of relying on per-clip auto-detection.
+  const language = (get("voice_language") || "en-IN").split("-")[0].toLowerCase();
   return {
     url: url.replace(/\/+$/, ""),
     kind: get(LOCAL_STT_SETTINGS.kind) === "whispercpp" ? "whispercpp" : "openai",
     model: get(LOCAL_STT_SETTINGS.model),
+    prompt: get(LOCAL_STT_SETTINGS.prompt) || RADIOLOGY_WHISPER_PROMPT,
+    language: language || "en",
   };
 }
 
@@ -254,6 +262,13 @@ router.post("/transcribe/local", requireStaffAuth, async (req, res) => {
   try {
     const form = new FormData();
     form.append("file", new Blob([Buffer.from(audioBase64, "base64")], { type: mimeType }), "audio.webm");
+    // Vocabulary biasing (initial_prompt) + language + greedy decoding are the
+    // three levers that turn a general STT model into a medical-grade one for
+    // radiology speech. Sent on both protocols; harmless if the server ignores
+    // a field it doesn't support.
+    form.append("prompt", config.prompt);
+    form.append("language", config.language);
+    form.append("temperature", "0");
     let endpoint: string;
     if (config.kind === "whispercpp") {
       endpoint = `${config.url}/inference`;
@@ -270,7 +285,9 @@ router.post("/transcribe/local", requireStaffAuth, async (req, res) => {
       return;
     }
     const data = (await upstream.json().catch(() => null)) as { text?: unknown } | null;
-    const text = typeof data?.text === "string" ? data.text.trim() : "";
+    // Post-process with the deterministic radiology normaliser (acronym casing,
+    // units, decimals/dimensions) so every provider returns clean report text.
+    const text = normalizeDictation(typeof data?.text === "string" ? data.text : "");
     res.json({ text });
   } catch (err: unknown) {
     req.log?.error({ err }, "local stt transcription failed");
@@ -294,11 +311,52 @@ router.post("/transcribe", requireStaffAuth, async (req, res) => {
     return;
   }
   try {
-    const text = await geminiTranscribe(audioBase64, mimeType);
-    res.json({ text });
+    const raw = await geminiTranscribe(audioBase64, mimeType);
+    res.json({ text: normalizeDictation(raw) });
   } catch (err: unknown) {
     req.log?.error({ err }, "ai transcribe failed");
     res.status(502).json({ error: "Voice transcription is temporarily unavailable. Please try again." });
+  }
+});
+
+// Optional AI dictation polish — OPT-IN and guard-railed. Cleans punctuation /
+// formatting / obvious STT spelling only; a hard safety gate (isPolishSafe)
+// rejects any rewrite that changes a number, laterality, or negation, in which
+// case the deterministically-normalised original is returned. Route the
+// "dictation_polish" task to a LOCAL model to keep PHI on-prem. This endpoint
+// never fails the caller — it always returns usable text.
+router.post("/transcribe/polish", requireStaffAuth, async (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const input = typeof b.text === "string" ? b.text : "";
+  if (!input.trim()) { res.json({ text: "", polished: false }); return; }
+
+  // Deterministic normalisation always applies (safe). The AI pass is opt-in.
+  const normalized = normalizeDictation(input);
+
+  let enabled = false;
+  try {
+    const rows = await db
+      .select({ key: pacsSettingsTable.key, value: pacsSettingsTable.value })
+      .from(pacsSettingsTable)
+      .where(eq(pacsSettingsTable.category, "voice"));
+    enabled = rows.find((r) => r.key === "voice_ai_polish_enabled")?.value?.trim() === "true";
+  } catch { /* settings unreadable → stay disabled */ }
+
+  if (!enabled) { res.json({ text: normalized, polished: false }); return; }
+
+  try {
+    const prompt = `${PROMPT_DICTATION_POLISH}\n\nDictation:\n"""\n${normalized}\n"""`;
+    const aiText = await legacyAiGenerate("dictation_polish", prompt, { maxTokens: 1024 });
+    const cleaned = normalizeDictation(aiText.replace(/^"""/, "").replace(/"""$/, "").trim());
+    if (isPolishSafe(normalized, cleaned)) {
+      res.json({ text: cleaned, polished: true });
+    } else {
+      req.log?.warn("dictation polish rejected by safety gate — returning normalized original");
+      res.json({ text: normalized, polished: false });
+    }
+  } catch (err: unknown) {
+    req.log?.warn({ err }, "dictation polish failed — returning normalized original");
+    res.json({ text: normalized, polished: false });
   }
 });
 
