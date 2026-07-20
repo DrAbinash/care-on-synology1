@@ -141,6 +141,51 @@ function sampleGrid(bg: Float32Array, gx: number, gy: number, fx: number, fy: nu
 }
 
 /**
+ * Specular-glare suppression IN PLACE — for laminated / glossy ID cards.
+ *
+ * A laminated Aadhaar / PAN card photographed or flat-bed-scanned under a lamp
+ * develops blown-out white patches (specular reflections off the plastic) that
+ * bury the text underneath. A pixel that has clipped all the way to 255 is
+ * unrecoverable, but two things still help legibility:
+ *   1. Pull the near-white specular pixels down toward `hiThresh` so the glare
+ *      stops dominating and any residual detail on its shoulder re-emerges.
+ *   2. Because the correction only touches bright, *desaturated* pixels, the
+ *      card's coloured artwork (saffron Aadhaar header, blue emblem, the photo)
+ *      and any coloured ink are left untouched.
+ *
+ * A pixel is treated as glare when luma > `hiThresh` AND saturation
+ * (max-min channel) < `satThresh` — specular highlights are white, not
+ * coloured. `strength` in [0,1] is how hard the over-threshold excess is
+ * compressed (1 = flatten every glare pixel down to `hiThresh`).
+ *
+ * NOTE: this reduces the *visual dominance* of glare and recovers marginal
+ * detail; it cannot reconstruct text that was fully clipped to pure white.
+ */
+export function suppressGlare(
+  data: Uint8ClampedArray,
+  hiThresh = 200,
+  satThresh = 32,
+  strength = 0.7,
+): void {
+  const s = strength < 0 ? 0 : strength > 1 ? 1 : strength;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    const maxC = r > g ? (r > b ? r : b) : (g > b ? g : b);
+    const minC = r < g ? (r < b ? r : b) : (g < b ? g : b);
+    if (maxC - minC >= satThresh) continue;            // coloured pixel → keep
+    const luma = LUMA_R * r + LUMA_G * g + LUMA_B * b;
+    if (luma <= hiThresh) continue;                    // not blown out → keep
+    // Compress the portion of luma above the threshold, then scale RGB uniformly
+    // by target/luma so any faint residual hue in the highlight is preserved.
+    const target = hiThresh + (luma - hiThresh) * (1 - s);
+    const factor = target / luma;                      // luma > hiThresh > 0
+    data[i] = clamp8(Math.round(r * factor));
+    data[i + 1] = clamp8(Math.round(g * factor));
+    data[i + 2] = clamp8(Math.round(b * factor));
+  }
+}
+
+/**
  * Illumination flattening (shadow/uneven-light removal) IN PLACE. Divides each
  * pixel by a smooth background-illumination estimate so paper reads as uniform
  * white regardless of shadows or a lamp on one side — the single biggest quality
