@@ -22,6 +22,7 @@ import {
   Printer, RefreshCw, Star, ClipboardList, Plus, Trash2, Eye,
   Share2, AlertCircle, X, Send, Zap, BookOpen, MonitorPlay,
   LayoutTemplate, BarChart3, Monitor, PanelLeftClose, PanelLeftOpen,
+  Brain, GitCompare, FileText,
 } from "lucide-react";
 import EmbeddedWadoViewer from "@/components/EmbeddedWadoViewer";
 import ReportImagePicker from "@/components/radiology/ReportImagePicker";
@@ -30,6 +31,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { FindingsHighlightEditor, type FindingsHighlightEditorHandle } from "@/components/FindingsHighlightEditor";
 import { chocolateBoxSetFor, insertAtCursor } from "@/lib/findingsMacros";
 import RadiologyMemoryPanel from "@/components/RadiologyMemoryPanel";
+import RadiologyKnowledgePanel from "@/components/RadiologyKnowledgePanel";
 import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
 // R2.0 — canonical ultrasound integration: USG mode inside the ONE
 // canonical workspace (no separate USG reporting workflow).
@@ -261,7 +263,7 @@ type StylePreferences = {
   includeMeasurements: boolean;
 };
 
-type RightTab = "copilot" | "quickselect" | "templates" | "followup" | "prior" | "ai" | "measurements" | "teaching";
+type RightTab = "copilot" | "quickselect" | "templates" | "followup" | "prior" | "ai" | "measurements" | "teaching" | "knowledge" | "diff" | "print";
 
 // F3 (Cockpit→Workspace merge): rules superseded by MeasurementAssistantPanel,
 // which computes real ADC/Evans-Index values rather than just reminding the
@@ -491,6 +493,57 @@ const PALETTE_SETTINGS: PaletteItem[] = [
   { id: "setting:/settings", kind: "setting", title: "Settings — All", keywords: "configure preferences" },
 ];
 
+// AI-draft-vs-final diff, embedded as a workspace tab (previously only the
+// standalone ReportDiffViewer page). Reuses the existing
+// /api/ai-reporting/report-diff/:worklistId endpoint, scoped to the open study.
+function DiffList({ title, items, tone }: { title: string; items: string[]; tone: "add" | "del" | "same" }) {
+  const toneCls =
+    tone === "add" ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300"
+    : tone === "del" ? "border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300"
+    : "border-card-border bg-muted/30 text-muted-foreground";
+  return (
+    <div>
+      <div className="text-[11px] font-semibold mb-1">{title} <span className="opacity-60">({items.length})</span></div>
+      {items.length === 0 ? (
+        <div className="text-[10px] text-muted-foreground italic">None</div>
+      ) : (
+        <ul className="space-y-1">
+          {items.map((t, i) => (
+            <li key={i} className={`text-[11px] rounded border px-2 py-1 whitespace-pre-wrap ${toneCls}`}>{t}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function ReportDiffTab({ worklistId }: { worklistId: number | null }) {
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["workspace-report-diff", worklistId],
+    enabled: !!worklistId,
+    queryFn: () => api.get<{
+      aiDraft: string;
+      finalReport: string;
+      aiDraftStatus: string;
+      diff: { addedByRadiologist: string[]; removedByRadiologist: string[]; unchanged: string[] };
+    }>(`/api/ai-reporting/report-diff/${worklistId}`),
+  });
+
+  if (!worklistId) return <div className="p-3 text-xs text-muted-foreground">Open a study to compare its AI draft with your report.</div>;
+  if (isLoading) return <div className="p-3 text-xs text-muted-foreground">Loading diff…</div>;
+  if (isError || !data) return <div className="p-3 text-xs text-muted-foreground">No AI draft available to compare yet.</div>;
+  if (!(data.aiDraft ?? "").trim()) return <div className="p-3 text-xs text-muted-foreground">No AI draft was generated for this study — nothing to compare.</div>;
+
+  return (
+    <div className="p-3 space-y-3 overflow-y-auto">
+      <div className="text-[11px] text-muted-foreground">AI draft vs your report — what you added, removed, or kept.</div>
+      <DiffList title="Added by you" items={data.diff.addedByRadiologist} tone="add" />
+      <DiffList title="Removed from AI draft" items={data.diff.removedByRadiologist} tone="del" />
+      <DiffList title="Unchanged" items={data.diff.unchanged} tone="same" />
+    </div>
+  );
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ════════════════════════════════════════════════════════════════════════════
@@ -510,6 +563,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
   // ── Layout ────────────────────────────────────────────────────────────────
   const [rightTab, setRightTab] = useState<RightTab>("templates");
+  // Which sub-panel the embedded Knowledge tab shows (RadiologyKnowledgePanel is
+  // parent-driven: it renders one of master/personal/packs/knowledge by activePanel).
+  const [knowledgeSubPanel, setKnowledgeSubPanel] = useState<"knowledge" | "personal" | "master" | "packs">("knowledge");
   const [previewMode, setPreviewMode] = useState(false);
   // R1.1 — the preview shows the CANONICAL server-rendered document (shared
   // presentation layer) whenever a saved draft/report exists; the client-side
@@ -4018,6 +4074,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     { id: "prior", label: "Prior", icon: <ClipboardList size={14} /> },
     { id: "ai", label: "AI", icon: <Sparkles size={14} /> },
     { id: "measurements", label: "Measure", icon: <BarChart3 size={14} /> },
+    { id: "knowledge", label: "Knowledge", icon: <Brain size={14} /> },
+    { id: "diff", label: "Diff", icon: <GitCompare size={14} /> },
+    { id: "print", label: "Print", icon: <FileText size={14} /> },
     { id: "teaching", label: "Teaching", icon: <BookOpen size={14} /> },
   ];
   // Right-panel header layout: Copilot/Quick/AI/Templates each get a full-width
@@ -5582,6 +5641,64 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               />
             )}
             {rightTab === "templates" && <TemplatesTab />}
+            {/* Knowledge / reference lookup + personal library (previously an
+                orphaned component, never rendered). Its sub-panels are
+                parent-driven, so a compact sub-nav selects which one shows.
+                onInsert reuses the shared, lock-and-smart-mode-aware inserter. */}
+            {rightTab === "knowledge" && (
+              <div className="flex flex-col h-full min-h-0">
+                <div className="flex flex-wrap gap-1 p-2 border-b border-card-border shrink-0">
+                  {([
+                    ["knowledge", "Reference"],
+                    ["personal", "My Library"],
+                    ["master", "Master"],
+                    ["packs", "Packs"],
+                  ] as const).map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setKnowledgeSubPanel(id)}
+                      className={`text-[11px] px-2 py-1 rounded-md border transition-colors ${
+                        knowledgeSubPanel === id
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "bg-background text-muted-foreground border-card-border hover:text-foreground"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex-1 min-h-0 flex flex-col">
+                  <RadiologyKnowledgePanel
+                    activePanel={knowledgeSubPanel}
+                    onInsert={comparisonInsertFindings}
+                  />
+                </div>
+              </div>
+            )}
+            {/* AI-draft-vs-final diff for the open study (was a separate page). */}
+            {rightTab === "diff" && <ReportDiffTab worklistId={entry?.id ?? null} />}
+            {/* Print / PDF: surfaces the workspace's existing canonical
+                server-rendered preview + print, so it's reachable from the tab
+                bar too (the toolbar "Preview" button toggles the same view). */}
+            {rightTab === "print" && (
+              <div className="p-3 space-y-3">
+                <div className="text-[11px] text-muted-foreground">
+                  Preview the final, server-rendered document and print or save as PDF — without leaving the workspace.
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Button size="sm" variant="outline" className="justify-start gap-2" onClick={() => setPreviewMode(true)}>
+                    <Eye size={13} /> Show full preview
+                  </Button>
+                  <Button size="sm" variant="outline" className="justify-start gap-2" onClick={() => void printReport()}>
+                    <Printer size={13} /> Print / Save as PDF
+                  </Button>
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  Tip: the “Preview” button in the report toolbar toggles the same in-page canonical preview.
+                </p>
+              </div>
+            )}
             {rightTab === "followup" && (
               <FollowUpPanel
                 patientId={entry?.patientId ?? null}
