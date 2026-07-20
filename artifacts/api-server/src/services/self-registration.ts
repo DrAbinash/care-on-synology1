@@ -11,6 +11,7 @@ import {
   paymentsTable,
   clinicSettingsTable,
   ledgersTable,
+  doctorsTable,
 } from "@workspace/db/schema";
 import { eq, sql, inArray } from "drizzle-orm";
 import { generateBillNumber } from "../routes/bills";
@@ -48,6 +49,10 @@ export interface RegisterPatientSelfFlowParams {
   email?: string;
   source: "kiosk" | "online";
   createdByName?: string;
+  // Referring doctor selected in the booking/kiosk form. Copied onto the
+  // created order's doctor_id so the referral is tracked exactly like an
+  // over-the-counter Billing Desk bill. Undefined/null for walk-in/self.
+  doctorId?: number | null;
 }
 
 export async function registerPatientSelfFlow(params: RegisterPatientSelfFlowParams) {
@@ -68,6 +73,7 @@ export async function registerPatientSelfFlow(params: RegisterPatientSelfFlowPar
     email = "",
     source,
     createdByName,
+    doctorId = null,
   } = params;
 
   // Resolve package -> test IDs
@@ -87,9 +93,25 @@ export async function registerPatientSelfFlow(params: RegisterPatientSelfFlowPar
     throw new Error("No tests could be resolved for registration.");
   }
 
-  // Get settings for ledger
+  // Ledger routing. When a referring doctor is attached, route the whole
+  // registration (order, bill, queue tokens, and the patient's home ledger) to
+  // that doctor's own ledger — exactly what the Billing Desk does via
+  // resolveLedgerForOrder()/orders.ts (`resolvedDoctor.ledgerId ?? walk-in`).
+  // This is what makes referral commission accrue against the doctor's ledger
+  // instead of silently landing in the generic booking ledger. Falls back to
+  // the configured "Booking Ledger" (onlineBookingLedgerId) — the walk-in
+  // equivalent for this flow — when there's no referral (or the doctor has no
+  // ledger assigned).
   const [settings] = await db.select().from(clinicSettingsTable).limit(1);
-  const ledgerId = settings?.onlineBookingLedgerId || 1;
+  let ledgerId = settings?.onlineBookingLedgerId || 1;
+  if (doctorId) {
+    const [doc] = await db
+      .select({ ledgerId: doctorsTable.ledgerId })
+      .from(doctorsTable)
+      .where(eq(doctorsTable.id, doctorId))
+      .limit(1);
+    if (doc?.ledgerId) ledgerId = doc.ledgerId;
+  }
 
   // Find or create patient by phone
   const [existingPatient] = await db
@@ -161,6 +183,7 @@ export async function registerPatientSelfFlow(params: RegisterPatientSelfFlowPar
       .values({
         orderNumber,
         patientId: patientDbId,
+        doctorId: doctorId ?? undefined,
         status: "pending",
         totalAmount: calculatedTotal.toFixed(2),
         notes: `${source === "kiosk" ? "Kiosk self-registration" : "Online booking"}. ${notes}`.trim(),

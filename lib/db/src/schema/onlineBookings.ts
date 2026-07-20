@@ -16,6 +16,13 @@ export const onlineBookingsTable = pgTable("online_bookings", {
   ageValue: integer("age_value"),
   ageUnit: text("age_unit"),
   gender: text("gender"),
+  // Referring doctor selected in the booking form (mirrors the Billing Desk
+  // referring-doctor picker). Nullable: a self/walk-in booking has none. On
+  // confirmation the id is copied onto the created order's doctor_id so the
+  // referral is tracked exactly like an over-the-counter bill. The name is
+  // captured too so it survives even if the doctor record is later removed.
+  referringDoctorId: integer("referring_doctor_id"),
+  referringDoctorName: text("referring_doctor_name"),
   razorpayOrderId: text("razorpay_order_id"),
   razorpayPaymentId: text("razorpay_payment_id"),
   razorpaySignature: text("razorpay_signature"),

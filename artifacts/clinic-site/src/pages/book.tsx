@@ -103,7 +103,9 @@ type BookingConfig = {
   quickTestOverlayOpacity?: number;
   allowedTestIds?: number[];
   allowedPackageIds?: number[];
+  bookingTimeSlots?: { value: string; label: string }[];
 };
+type DoctorOption = { id: number; name: string; specialization?: string | null };
 type TestItem = { id: number; code: string; name: string; category: string; price: string };
 type PkgItem  = { id: number; code: string; name: string; price: string; description: string };
 
@@ -215,6 +217,8 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
       ageValue: "",
       ageUnit: "years" as "years" | "months" | "days",
       gender: "" as "male" | "female" | "",
+      referringDoctorId: null as number | null,
+      referringDoctorName: "",
     };
   });
   const [selTests, setSelTests] = useState<Set<number>>(new Set());
@@ -246,6 +250,14 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
     bookingGet<BookingConfig>("/api/public/booking/config")
       .then(setConfig)
       .catch(() => setConfig({ enabled: false, keyId: "", vipEnabled: false, gateway: null }));
+  }, []);
+
+  // Referring-doctor list for the booking form's "Referring Doctor" picker.
+  const [doctors, setDoctors] = useState<DoctorOption[]>([]);
+  useEffect(() => {
+    bookingGet<{ doctors: DoctorOption[] }>("/api/public/booking/doctors")
+      .then((d) => setDoctors(d.doctors || []))
+      .catch(() => setDoctors([]));
   }, []);
 
   // Clinic fields for the printed receipt (GSTIN, footer messages, etc.) —
@@ -363,6 +375,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
+        referringDoctorId: pd.referringDoctorId, referringDoctorName: pd.referringDoctorName,
       });
       submitPayuForm(res.payuUrl, res.fields);
     } catch (e: unknown) {
@@ -379,6 +392,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
+        referringDoctorId: pd.referringDoctorId, referringDoctorName: pd.referringDoctorName,
       });
       window.location.href = res.redirectUrl;
     } catch (e: unknown) {
@@ -395,6 +409,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
+        referringDoctorId: pd.referringDoctorId, referringDoctorName: pd.referringDoctorName,
       });
       window.location.href = res.redirectUrl;
     } catch (e: unknown) {
@@ -414,6 +429,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
+        referringDoctorId: pd.referringDoctorId, referringDoctorName: pd.referringDoctorName,
       });
 
       const RZP = (window as unknown as { Razorpay: new (opts: Record<string, unknown>) => { open(): void } }).Razorpay;
@@ -468,6 +484,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
+        referringDoctorId: pd.referringDoctorId, referringDoctorName: pd.referringDoctorName,
       });
       setSuccessRef(res.bookingRef);
       window.location.href = res.redirectUrl;
@@ -486,6 +503,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
+        referringDoctorId: pd.referringDoctorId, referringDoctorName: pd.referringDoctorName,
       });
       setQrBookingRef(res.bookingRef);
       setQrAmount(res.amount);
@@ -722,6 +740,8 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
               </h2>
               <SelfRegistrationForm
                 mode={mode}
+                timeSlots={config?.bookingTimeSlots}
+                doctors={doctors}
                 initialValues={{
                   firstName: pd.name,
                   lastName: "",
@@ -734,6 +754,8 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                   timeSlot: pd.timeSlot,
                   notes: pd.notes,
                   isVip: pd.isVip,
+                  referringDoctorId: pd.referringDoctorId,
+                  referringDoctorName: pd.referringDoctorName,
                 }}
                 vipEnabled={config?.enableVipBooking !== false}
                 submitButtonClass="cd-btn-primary"
@@ -749,6 +771,8 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                     ageValue: String(data.ageValue),
                     ageUnit: data.ageUnit,
                     gender: data.gender,
+                    referringDoctorId: data.referringDoctorId ?? null,
+                    referringDoctorName: data.referringDoctorName || "",
                   });
                   loadCatalog();
                   setStep(1);
