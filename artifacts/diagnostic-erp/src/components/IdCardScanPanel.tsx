@@ -38,7 +38,7 @@ import {
 } from "lucide-react";
 import {
   lumaHistogram, percentileFromHistogram, otsuThreshold,
-  grayWorldGains, applyChannelGains, flattenIllumination,
+  grayWorldGains, applyChannelGains, flattenIllumination, suppressGlare,
 } from "@/lib/scannerImaging";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -46,6 +46,7 @@ import {
 export type EnhancementMode =
   | "original"
   | "auto"
+  | "laminated"
   | "document"
   | "receipt"
   | "darkText"
@@ -82,6 +83,7 @@ export interface IdCardScanPanelProps {
 const MODE_LABELS: Record<EnhancementMode, string> = {
   original:     "Original",
   auto:         "Auto Enhance",
+  laminated:    "Anti-Glare (Laminated)",
   document:     "Document / Text",
   receipt:      "Receipt / Bill",
   darkText:     "Dark Text",
@@ -121,6 +123,25 @@ function applyEnhancement(
   if (mode === "receipt") {
     applyChannelGains(data, grayWorldGains(data)); // gray-world white balance
     flattenIllumination(data, src.width, src.height, 10, 0.9); // shadow removal
+  }
+
+  // --- "laminated" mode: glossy ID-card glare removal. White-balance, knock
+  // down the specular highlights the plastic throws back at the lamp, then a
+  // gentle illumination flatten so the card tone reads evenly. Runs before the
+  // luma/percentile stretch (below) so contrast is measured on the de-glared
+  // image. Falls through to the document-strength sharpen + dark-text pass.
+  if (mode === "laminated") {
+    applyChannelGains(data, grayWorldGains(data));
+    suppressGlare(data, 200, 32, 0.85);
+    flattenIllumination(data, src.width, src.height, 12, 0.45);
+  }
+
+  // --- "auto" mode: a light glare pass by default. Most Indian ID cards
+  // (Aadhaar / PAN) are laminated, so a gentle specular knock-down helps the
+  // common case; it only touches near-white desaturated pixels, leaving a
+  // plain matte card essentially unchanged.
+  if (mode === "auto") {
+    suppressGlare(data, 214, 26, 0.4);
   }
 
   // --- Step 1: Grayscale luminance (used by all non-original modes)
@@ -193,11 +214,12 @@ function applyEnhancement(
     return new ImageData(data, src.width, src.height);
   }
 
-  // "auto", "document" and "receipt" modes — colour-preserving contrast +
-  // sharpening. ("receipt" has already had white-balance + illumination
-  // flattening applied above; here it gets the document-strength sharpen.)
+  // "auto", "document", "receipt" and "laminated" modes — colour-preserving
+  // contrast + sharpening. ("receipt"/"laminated" have already had their
+  // white-balance / glare / illumination pre-passes applied above; here they
+  // get the document-strength sharpen.)
   // Step A: per-channel contrast stretch
-  if (mode === "document" || mode === "auto" || mode === "receipt") {
+  if (mode === "document" || mode === "auto" || mode === "receipt" || mode === "laminated") {
     for (let i = 0; i < len; i += 4) {
       data[i]     = Math.round(stretch(data[i]));
       data[i + 1] = Math.round(stretch(data[i + 1]));
@@ -232,8 +254,8 @@ function applyEnhancement(
       }
     }
 
-    // Step C: document/receipt mode — also bring dark text darker
-    if (mode === "document" || mode === "receipt") {
+    // Step C: document/receipt/laminated mode — also bring dark text darker
+    if (mode === "document" || mode === "receipt" || mode === "laminated") {
       for (let i = 0; i < len; i += 4) {
         const g = 0.299 * sharpened[i] + 0.587 * sharpened[i + 1] + 0.114 * sharpened[i + 2];
         if (g < 100) {
@@ -406,22 +428,34 @@ export default function IdCardScanPanel({
     const imageData = ctx.getImageData(0, 0, w, h);
     const data = imageData.data;
 
-    // ── Step 1: Estimate background colour from the four corners (5×5 px each) ──
-    let bgR = 0, bgG = 0, bgB = 0, bgN = 0;
+    // ── Step 1: Estimate background colour from the four corners (8×8 px each) ──
+    // Take each corner's own mean, then the component-wise MEDIAN of the four.
+    // A single corner ruined by lamination glare (a blown-out white patch) or a
+    // finger/shadow would otherwise drag a pooled mean far off the true
+    // background and blow up the crop box; the median ignores that one outlier.
     const cornerSize = Math.min(8, Math.floor(Math.min(w, h) * 0.05));
     const sampleCorners = [
       [0, 0], [w - cornerSize, 0],
       [0, h - cornerSize], [w - cornerSize, h - cornerSize],
     ];
+    const cornerR: number[] = [], cornerG: number[] = [], cornerB: number[] = [];
     for (const [cx, cy] of sampleCorners) {
+      let r = 0, g = 0, b = 0, n = 0;
       for (let py = cy; py < cy + cornerSize && py < h; py++) {
         for (let px = cx; px < cx + cornerSize && px < w; px++) {
           const i = (py * w + px) * 4;
-          bgR += data[i]; bgG += data[i + 1]; bgB += data[i + 2]; bgN++;
+          r += data[i]; g += data[i + 1]; b += data[i + 2]; n++;
         }
       }
+      if (n > 0) { cornerR.push(r / n); cornerG.push(g / n); cornerB.push(b / n); }
     }
-    if (bgN > 0) { bgR /= bgN; bgG /= bgN; bgB /= bgN; }
+    const medianOf = (vals: number[]): number => {
+      if (vals.length === 0) return 255;
+      const s = [...vals].sort((a, b) => a - b);
+      const m = s.length >> 1;
+      return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+    };
+    let bgR = medianOf(cornerR), bgG = medianOf(cornerG), bgB = medianOf(cornerB);
 
     // ── Step 2: Mark each pixel as content vs background ──
     // Threshold: pixel differs from background by more than 20 in any channel
@@ -696,6 +730,17 @@ export default function IdCardScanPanel({
           setEnhancedBase64(croppedB64);
         }
 
+        resolve();
+      };
+      // The editor is canvas-based, so it can only open images the browser can
+      // decode. Without this handler a format it can't decode (a PDF, or HEIC on
+      // a non-Safari browser) would fire neither onload nor a rejection, leaving
+      // the Promise unresolved and the modal stuck on "Processing…" forever with
+      // Save disabled. Resolving here reaches setProcessing(false) below so the
+      // dialog recovers and the user can Cancel (callers pre-screen undecodable
+      // files, but this keeps the editor safe against any input).
+      img.onerror = () => {
+        setStatus("Couldn't open this file for editing — the image format may be unsupported. Please use a JPG or PNG.", "warn");
         resolve();
       };
       img.src = `data:${mime};base64,${base64}`;

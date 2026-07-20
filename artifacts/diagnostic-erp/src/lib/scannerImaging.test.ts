@@ -4,7 +4,7 @@
 import { describe, it, expect } from "vitest";
 import {
   lumaHistogram, percentileFromHistogram, otsuThreshold,
-  grayWorldGains, applyChannelGains, flattenIllumination,
+  grayWorldGains, applyChannelGains, flattenIllumination, suppressGlare,
 } from "./scannerImaging";
 
 /** Build RGBA data of `n` pixels with a per-pixel (r,g,b) from `fn`. */
@@ -98,5 +98,34 @@ describe("flattenIllumination", () => {
     const d = rgba(1, () => [10, 10, 10]);
     flattenIllumination(d, 1, 1, 8, 1);
     expect(d[0]).toBe(10);
+  });
+});
+
+describe("suppressGlare", () => {
+  it("tones down a blown-out white specular highlight", () => {
+    const d = rgba(4, () => [255, 255, 255]); // pure-white glare
+    suppressGlare(d, 200, 32, 0.7);
+    // Every channel is pulled below 255 (glare no longer clips to pure white).
+    expect(d[0]).toBeLessThan(255);
+    expect(d[0]).toBe(d[1]); // stays neutral gray
+    expect(d[0]).toBe(d[2]);
+    // With hiThresh=200, strength=0.7: target = 200 + 55*0.3 = 216.5 → ~217.
+    expect(d[0]).toBeGreaterThanOrEqual(210);
+    expect(d[0]).toBeLessThanOrEqual(222);
+  });
+  it("leaves coloured bright pixels (saffron header) untouched", () => {
+    const d = rgba(4, () => [255, 153, 51]); // saturated saffron — not specular
+    suppressGlare(d, 200, 32, 0.9);
+    expect([d[0], d[1], d[2]]).toEqual([255, 153, 51]);
+  });
+  it("leaves mid/low luminance pixels untouched", () => {
+    const d = rgba(4, () => [150, 150, 150]); // below hiThresh
+    suppressGlare(d, 200, 32, 0.9);
+    expect(d[0]).toBe(150);
+  });
+  it("strength 0 is a no-op even on glare", () => {
+    const d = rgba(4, () => [255, 255, 255]);
+    suppressGlare(d, 200, 32, 0);
+    expect(d[0]).toBe(255);
   });
 });
