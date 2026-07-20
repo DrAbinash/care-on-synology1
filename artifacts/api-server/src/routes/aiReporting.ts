@@ -40,6 +40,7 @@ import {
 import { eq, and, desc, gte, lte, sql, inArray } from "drizzle-orm";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
 import { encryptSecret } from "../lib/cryptoUtils";
+import { embedText, parseEmbedding, serializeEmbedding, cosineSimilarity, isEmbeddingAvailable } from "../lib/ai/embeddings";
 import {
   BUILTIN_PROVIDER_NAMES,
   BUILTIN_PROVIDER_CONFIGS,
@@ -1499,6 +1500,16 @@ router.post("/rag-documents", async (req, res): Promise<void> => {
     res.status(400).json({ error: "documentId, documentType, and content required" }); return;
   }
 
+  // Compute a real embedding from the content when the caller didn't supply one
+  // and a local embedding engine is configured. Stored as a JSON float array in
+  // the existing text column; null (→ keyword-only) when no engine is available.
+  let embeddingStr: string | null = b.embedding ?? null;
+  let embeddingDim: number = b.embeddingDimension ?? 384;
+  if (!embeddingStr) {
+    const vec = await embedText(b.content);
+    if (vec) { embeddingStr = serializeEmbedding(vec); embeddingDim = vec.length; }
+  }
+
   const existing = await db
     .select({ id: ragDocumentEmbeddingsTable.id })
     .from(ragDocumentEmbeddingsTable)
@@ -1509,8 +1520,8 @@ router.post("/rag-documents", async (req, res): Promise<void> => {
     await db.update(ragDocumentEmbeddingsTable)
       .set({
         content: b.content,
-        embedding: b.embedding ?? null,
-        embeddingDimension: b.embeddingDimension ?? 384,
+        embedding: embeddingStr,
+        embeddingDimension: embeddingDim,
         modality: b.modality ?? null,
         patientId: b.patientId ?? null,
         studyId: b.studyId ?? null,
@@ -1519,15 +1530,15 @@ router.post("/rag-documents", async (req, res): Promise<void> => {
         updatedAt: new Date(),
       })
       .where(eq(ragDocumentEmbeddingsTable.id, existing[0].id));
-    res.json({ id: existing[0].id, action: "updated" }); return;
+    res.json({ id: existing[0].id, action: "updated", embedded: embeddingStr !== null }); return;
   }
 
   const inserted = await db.insert(ragDocumentEmbeddingsTable).values({
     documentId: b.documentId,
     documentType: b.documentType,
     content: b.content,
-    embedding: b.embedding ?? null,
-    embeddingDimension: b.embeddingDimension ?? 384,
+    embedding: embeddingStr,
+    embeddingDimension: embeddingDim,
     modality: b.modality ?? null,
     patientId: b.patientId ?? null,
     studyId: b.studyId ?? null,
@@ -1535,7 +1546,7 @@ router.post("/rag-documents", async (req, res): Promise<void> => {
     sourceTitle: b.sourceTitle ?? null,
   }).returning();
 
-  res.json({ id: inserted[0]?.id, action: "created" });
+  res.json({ id: inserted[0]?.id, action: "created", embedded: embeddingStr !== null });
 });
 
 /**
@@ -1552,6 +1563,51 @@ router.delete("/rag-documents/:id", async (req, res): Promise<void> => {
     .set({ isActive: false, updatedAt: new Date() })
     .where(eq(ragDocumentEmbeddingsTable.id, id));
   res.json({ ok: true });
+});
+
+/**
+ * POST /api/ai-reporting/rag-documents/reembed
+ * Back-fill embeddings for active documents that don't have one yet (e.g. rows
+ * created before an embedding engine was configured, or when it was offline).
+ * Bounded per call; returns counts so a caller can loop until done.
+ */
+router.post("/rag-documents/reembed", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  if (!canConfigure(sReq)) { res.status(403).json({ error: "Insufficient permissions." }); return; }
+
+  if (!(await isEmbeddingAvailable())) {
+    res.status(503).json({ error: "No embedding engine configured. Set a local Ollama endpoint (provider settings) first." });
+    return;
+  }
+
+  const limit = Math.min(Math.max(Number((req.body as { limit?: unknown })?.limit) || 100, 1), 500);
+  const pending = await db
+    .select({ id: ragDocumentEmbeddingsTable.id, content: ragDocumentEmbeddingsTable.content })
+    .from(ragDocumentEmbeddingsTable)
+    .where(and(eq(ragDocumentEmbeddingsTable.isActive, true), sql`${ragDocumentEmbeddingsTable.embedding} IS NULL`))
+    .limit(limit);
+
+  let embedded = 0;
+  let failed = 0;
+  for (const row of pending) {
+    const vec = await embedText(row.content);
+    if (vec) {
+      await db.update(ragDocumentEmbeddingsTable)
+        .set({ embedding: serializeEmbedding(vec), embeddingDimension: vec.length, updatedAt: new Date() })
+        .where(eq(ragDocumentEmbeddingsTable.id, row.id));
+      embedded++;
+    } else {
+      failed++;
+    }
+  }
+
+  // Are any still pending after this batch? (so the caller knows to loop)
+  const [{ count } = { count: 0 }] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(ragDocumentEmbeddingsTable)
+    .where(and(eq(ragDocumentEmbeddingsTable.isActive, true), sql`${ragDocumentEmbeddingsTable.embedding} IS NULL`));
+
+  res.json({ processed: pending.length, embedded, failed, remaining: count });
 });
 
 // ──────────────────────────── Phase 10: AI Search & Retrieval ────────────────────────────
@@ -1580,13 +1636,76 @@ router.post("/rag-search", async (req, res): Promise<void> => {
   if (modality) conditions.push(eq(ragDocumentEmbeddingsTable.modality, modality));
   if (patientId) conditions.push(eq(ragDocumentEmbeddingsTable.patientId, patientId));
 
-  // Fallback: text-based ILIKE search (no pgvector required in this env)
-  const rows = await db
-    .select()
-    .from(ragDocumentEmbeddingsTable)
-    .where(and(...conditions, sql`${ragDocumentEmbeddingsTable.content} ILIKE ${`%${query}%`}`))
-    .orderBy(desc(ragDocumentEmbeddingsTable.searchCount))
-    .limit(topK);
+  // ── Semantic search when an embedding engine is configured ──────────────────
+  // Embed the query, score every candidate doc that has a stored vector by
+  // cosine similarity, and rank. Docs without a vector (e.g. pre-embedding rows)
+  // are not silently dropped — they're back-filled by keyword match below so the
+  // corpus stays searchable during migration.
+  const queryVec = await embedText(query);
+  let rows: (typeof ragDocumentEmbeddingsTable.$inferSelect)[];
+  let mode: "semantic" | "keyword";
+
+  if (queryVec) {
+    mode = "semantic";
+    const candidates = await db
+      .select()
+      .from(ragDocumentEmbeddingsTable)
+      .where(and(...conditions));
+    const scored = candidates
+      .map((r) => {
+        const vec = parseEmbedding(r.embedding);
+        return { r, score: vec ? cosineSimilarity(queryVec, vec) : -1 };
+      })
+      .filter((s) => s.score > 0)
+      .sort((a, b2) => b2.score - a.score)
+      .slice(0, topK);
+
+    if (scored.length > 0) {
+      const results = scored.map(({ r, score }) => ({
+        id: r.id,
+        documentId: r.documentId,
+        documentType: r.documentType,
+        content: r.content.slice(0, 300),
+        modality: r.modality,
+        sourceTitle: r.sourceTitle,
+        score: Math.round(score * 1000) / 1000,
+      }));
+      rows = scored.map((s) => s.r);
+      const durationMs = Date.now() - start;
+      await db.insert(ragSearchQueriesTable).values({
+        queryText: query,
+        embedding: serializeEmbedding(queryVec),
+        topK,
+        resultsJson: JSON.stringify(results.map((r) => ({ id: r.id, documentId: r.documentId, score: r.score }))),
+        userId: sReq.staffSession?.subjectId ?? null,
+        userName: sReq.staffSession?.subjectName ?? null,
+        durationMs,
+      });
+      for (const r of rows) {
+        await db.update(ragDocumentEmbeddingsTable)
+          .set({ searchCount: (r.searchCount ?? 0) + 1, lastSearchedAt: new Date() })
+          .where(eq(ragDocumentEmbeddingsTable.id, r.id));
+      }
+      res.json({ query, results, totalMatches: results.length, durationMs, mode, note: "Semantic vector search (local embeddings)." });
+      return;
+    }
+    // No vector matches (all docs unembedded, or nothing similar) — fall through
+    // to keyword search so the query still returns something useful.
+    rows = await db
+      .select()
+      .from(ragDocumentEmbeddingsTable)
+      .where(and(...conditions, sql`${ragDocumentEmbeddingsTable.content} ILIKE ${`%${query}%`}`))
+      .orderBy(desc(ragDocumentEmbeddingsTable.searchCount))
+      .limit(topK);
+  } else {
+    mode = "keyword";
+    rows = await db
+      .select()
+      .from(ragDocumentEmbeddingsTable)
+      .where(and(...conditions, sql`${ragDocumentEmbeddingsTable.content} ILIKE ${`%${query}%`}`))
+      .orderBy(desc(ragDocumentEmbeddingsTable.searchCount))
+      .limit(topK);
+  }
 
   const results = rows.map((r) => ({
     id: r.id,
@@ -1595,7 +1714,7 @@ router.post("/rag-search", async (req, res): Promise<void> => {
     content: r.content.slice(0, 300),
     modality: r.modality,
     sourceTitle: r.sourceTitle,
-    score: null, // computed when embedding engine is available
+    score: null as number | null,
   }));
 
   const durationMs = Date.now() - start;
@@ -1622,7 +1741,10 @@ router.post("/rag-search", async (req, res): Promise<void> => {
     results,
     totalMatches: results.length,
     durationMs,
-    note: "Text-based search (semantic embedding search requires pgvector + embedding engine on-prem)",
+    mode,
+    note: mode === "semantic"
+      ? "No semantically similar vectors found — showing keyword matches. Re-embed documents if this persists."
+      : "Keyword search — configure a local embedding model (Ollama) to enable semantic search.",
   });
 });
 
