@@ -376,6 +376,32 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     if (!isMobile && sidebarOpen) setSidebarOpen(false);
   }, [isMobile, sidebarOpen]);
 
+  // The Radiology Reporting Workspace requests this app sidebar be minimised
+  // while the radiologist is working inside the embedded DICOM viewer, so the
+  // images get maximum room. It emits `care:viewer-focus` (detail: boolean) —
+  // a decoupled event so the workspace never reaches into this component's
+  // state. We remember the sidebar state from BEFORE viewer-focus so exiting
+  // restores exactly what the user had (a manual collapse is preserved), and
+  // never leave it stuck collapsed once the workspace unmounts.
+  const preViewerFocusCollapsed = useRef<boolean | null>(null);
+  useEffect(() => {
+    const onViewerFocus = (e: Event) => {
+      const on = Boolean((e as CustomEvent).detail);
+      if (on) {
+        setSidebarCollapsed((cur) => {
+          if (preViewerFocusCollapsed.current === null) preViewerFocusCollapsed.current = cur;
+          return true;
+        });
+      } else if (preViewerFocusCollapsed.current !== null) {
+        const restore = preViewerFocusCollapsed.current;
+        preViewerFocusCollapsed.current = null;
+        setSidebarCollapsed(restore);
+      }
+    };
+    window.addEventListener("care:viewer-focus", onViewerFocus);
+    return () => window.removeEventListener("care:viewer-focus", onViewerFocus);
+  }, []);
+
   // Pass the login-time DB value so the hook seeds localStorage on a fresh device.
   // Effective theme reads purely from localStorage (via userTheme) after seeding so
   // changes and resets take effect immediately without re-login.
