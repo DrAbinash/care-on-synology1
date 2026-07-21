@@ -441,19 +441,19 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
                   </tr>
                   <tr><td style="padding:4px 6px;border-top:1px solid #000;font-weight:800">PAID</td><td style="padding:4px 6px;border-top:1px solid #000;text-align:right;font-weight:800;white-space:nowrap;color:${statusColor(isUnconfirmedQr ? "#b45309" : "#15803d")}">${isUnconfirmedQr ? `${fmt(bill.totalAmount)} (To Be Confirmed)` : `₹${fmt(bill.paidAmount)}`}</td></tr>
                   <tr>
-                    <!-- Spans BOTH columns (not the 58/42 split above). Label
-                         and amount are stacked on separate lines (not a
-                         side-by-side flex row) so the amount can NEVER get
-                         squeezed past the totals column's fixed 170px/200px
-                         width and silently clipped by the print page — the
-                         bug this replaced: a wide bold label + large amount
-                         sharing one nowrap line could overflow the column
-                         and the amount would render off the printable page
-                         with nothing visibly wrong until you looked closely. -->
-                    <td colspan="2" style="padding:6px;border-top:2px solid #000;background:${statusBg(isUnconfirmedQr ? "#fef3c7" : Number(bill.balanceAmount) > 0 ? "#fee2e2" : "#dcfce7")}">
-                      <div style="font-weight:900;font-size:${totalPx};letter-spacing:0.3px">BALANCE DUE</div>
-                      <div style="font-weight:900;font-size:${parseInt(totalPx, 10) + 7}px;text-align:right;color:${statusColor(isUnconfirmedQr ? "#b45309" : Number(bill.balanceAmount) > 0 ? "#b91c1c" : "#15803d")}">${isUnconfirmedQr ? "To Be Confirmed" : `₹${fmt(bill.balanceAmount)}`}</div>
-                    </td>
+                    <!-- BALANCE DUE on a single horizontal row (label left,
+                         amount right) matching the TOTAL and PAID rows above.
+                         Kept at the same font size as TOTAL and right-aligned
+                         within the fixed 42% column, so the amount renders
+                         exactly like TOTAL's does and can't overflow/clip the
+                         printable page — the failure the previous stacked
+                         layout guarded against was specifically an oversized
+                         (+7px) amount in that narrow column. The colored
+                         background now carries the emphasis instead of size.
+                         The amount cell is allowed to wrap so the longer
+                         "To Be Confirmed" string also can't be clipped. -->
+                    <td style="padding:6px;border-top:2px solid #000;font-weight:900;letter-spacing:0.3px;background:${statusBg(isUnconfirmedQr ? "#fef3c7" : Number(bill.balanceAmount) > 0 ? "#fee2e2" : "#dcfce7")}">BALANCE DUE</td>
+                    <td style="padding:6px;border-top:2px solid #000;text-align:right;font-weight:900;white-space:${isUnconfirmedQr ? "normal" : "nowrap"};background:${statusBg(isUnconfirmedQr ? "#fef3c7" : Number(bill.balanceAmount) > 0 ? "#fee2e2" : "#dcfce7")};color:${statusColor(isUnconfirmedQr ? "#b45309" : Number(bill.balanceAmount) > 0 ? "#b91c1c" : "#15803d")}">${isUnconfirmedQr ? "To Be Confirmed" : `₹${fmt(bill.balanceAmount)}`}</td>
                   </tr>
                   ${cashAmt > 0 ? `<tr><td style="padding:3px 6px;color:#555;font-size:${tinyPx}">Cash</td><td style="padding:3px 6px;text-align:right;white-space:nowrap;color:#555;font-size:${tinyPx}">₹${fmt(cashAmt)}</td></tr>` : ""}
                   ${upiAmt > 0 ? `<tr><td style="padding:3px 6px;color:#555;font-size:${tinyPx}">UPI</td><td style="padding:3px 6px;text-align:right;white-space:nowrap;color:#555;font-size:${tinyPx}">₹${fmt(upiAmt)}</td></tr>` : ""}
