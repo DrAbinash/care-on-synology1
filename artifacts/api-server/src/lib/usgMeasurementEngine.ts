@@ -4,6 +4,8 @@
  * All formulas are standard sonography references.
  */
 
+import { ellipsoidVolumeMlFromMm } from "@workspace/measurements";
+
 export interface MeasurementSet {
   // Kidney
   rightKidneyLengthMm?: number | null;
@@ -75,16 +77,11 @@ export interface CalculationResult {
   gestationalAgeByFl: number | null; // from FL (Hadlock)
 }
 
-function volEllipsoid(l?: number | null, w?: number | null, h?: number | null): number | null {
-  if (l == null || w == null || h == null || l <= 0 || w <= 0 || h <= 0) return null;
-  return Math.round((l * w * h * 0.523 / 1000) * 100) / 100;
-}
-
-function volProstate(l?: number | null, w?: number | null, h?: number | null): number | null {
-  if (l == null || w == null || h == null || l <= 0 || w <= 0 || h <= 0) return null;
-  // Prostate uses same ellipsoid formula, convert mm^3 to ml by dividing by 1000
-  return Math.round((l * w * h * 0.523 / 1000) * 100) / 100;
-}
+// Ellipsoid volume comes from the shared @workspace/measurements package — the
+// single source of truth also used by the frontend Dynamic Finding Builder.
+// Prostate uses the identical ellipsoid formula, so both alias the same fn.
+const volEllipsoid = ellipsoidVolumeMlFromMm;
+const volProstate = ellipsoidVolumeMlFromMm;
 
 export function calculateMeasurements(m: MeasurementSet): CalculationResult {
   // Kidney volume = ellipsoid (0.523 × L × W × Thickness)

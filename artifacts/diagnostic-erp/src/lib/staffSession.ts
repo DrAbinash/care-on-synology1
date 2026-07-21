@@ -384,6 +384,10 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   ff_radiology_multiwindow: false,
   ff_radiology_ai_assist: false,
   ff_radiology_scale_partition: false,
+  // Dedicated USG Companion Workspace (P0/P1). Off by default: the canonical
+  // RadiologyReportingWorkspace continues to serve every USG study until this
+  // is enabled, so there is no regression when the flag is off.
+  ff_radiology_usg_workspace: false,
 };
 
 const RADIOLOGY_FLAG_PREFIX = "ff_radiology_";
