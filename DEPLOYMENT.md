@@ -549,6 +549,11 @@ Backed by (admin-gated: `requireStaffAuth` + `requireAdminRole`):
 `GET /api/admin/operations/health` (live), `POST /api/admin/operations/smoke-run`
 (run + persist), `GET /api/admin/operations/history`.
 
+Run history is stored in `operational_health_runs` with **bounded retention** —
+each write (admin run or CLI `--save-result`) prunes to the newest 200 rows
+(`OPS_HISTORY_RETENTION`), so the table cannot grow without limit and needs no
+background worker.
+
 ### What each status means
 
 | Status | Meaning |

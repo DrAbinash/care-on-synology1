@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
+import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { useToast } from "@/hooks/use-toast";
@@ -8,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   RefreshCw, PlayCircle, CheckCircle2, AlertTriangle, XCircle, MinusCircle, HelpCircle,
-  ChevronDown, ChevronRight, Clock, GitCommit, Server,
+  ChevronDown, ChevronRight, Clock, GitCommit, Server, Timer, Database, ScrollText, Network, Gauge, Tv, ExternalLink,
 } from "lucide-react";
 
 // ── Types (mirror the server OpsHealthReport; the API is the source of truth) ──
@@ -37,22 +38,38 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 const CATEGORY_ORDER = ["application", "database", "authentication", "core_erp", "radiology_pacs", "queue_displays", "integrations", "storage_backup"];
 
-const STATUS_UI: Record<OpsStatus, { badge: string; text: string; ring: string; icon: ReactNode }> = {
-  PASS: { badge: "bg-emerald-100 text-emerald-800 border-emerald-300", text: "text-emerald-700", ring: "border-l-emerald-500", icon: <CheckCircle2 size={14} className="text-emerald-600" /> },
-  WARNING: { badge: "bg-amber-100 text-amber-800 border-amber-300", text: "text-amber-700", ring: "border-l-amber-500", icon: <AlertTriangle size={14} className="text-amber-600" /> },
-  FAIL: { badge: "bg-red-100 text-red-800 border-red-300", text: "text-red-700", ring: "border-l-red-500", icon: <XCircle size={14} className="text-red-600" /> },
-  SKIPPED: { badge: "bg-slate-100 text-slate-600 border-slate-300", text: "text-slate-500", ring: "border-l-slate-300", icon: <MinusCircle size={14} className="text-slate-400" /> },
-  UNKNOWN: { badge: "bg-purple-100 text-purple-800 border-purple-300", text: "text-purple-700", ring: "border-l-purple-400", icon: <HelpCircle size={14} className="text-purple-600" /> },
+const STATUS_UI: Record<OpsStatus, { badge: string; text: string; ring: string; dot: string; light: string; icon: ReactNode }> = {
+  PASS: { badge: "bg-emerald-100 text-emerald-800 border-emerald-300", text: "text-emerald-700", ring: "border-l-emerald-500", dot: "bg-emerald-500", light: "Healthy", icon: <CheckCircle2 size={14} className="text-emerald-600" /> },
+  WARNING: { badge: "bg-amber-100 text-amber-800 border-amber-300", text: "text-amber-700", ring: "border-l-amber-500", dot: "bg-amber-500", light: "Warning", icon: <AlertTriangle size={14} className="text-amber-600" /> },
+  FAIL: { badge: "bg-red-100 text-red-800 border-red-300", text: "text-red-700", ring: "border-l-red-500", dot: "bg-red-500", light: "Critical", icon: <XCircle size={14} className="text-red-600" /> },
+  SKIPPED: { badge: "bg-slate-100 text-slate-600 border-slate-300", text: "text-slate-500", ring: "border-l-slate-300", dot: "bg-slate-400", light: "—", icon: <MinusCircle size={14} className="text-slate-400" /> },
+  UNKNOWN: { badge: "bg-purple-100 text-purple-800 border-purple-300", text: "text-purple-700", ring: "border-l-purple-400", dot: "bg-purple-500", light: "Unknown", icon: <HelpCircle size={14} className="text-purple-600" /> },
 };
+
+function formatUptime(seconds?: number | null): string | null {
+  if (seconds == null || !Number.isFinite(seconds)) return null;
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
 
 function OverallBanner({ report, live }: { report: OpsReport; live: boolean }) {
   const ui = STATUS_UI[report.overall];
   const s = report.summary;
+  const uptime = formatUptime(report.version.uptimeSeconds);
+  // Database schema state — surfaced from the existing db.schema_verify check
+  // (no new backend data), so operators see the schema-verification result.
+  const schema = report.checks.find((c) => c.id === "db.schema_verify");
   return (
     <div className={`rounded-lg border-l-4 ${ui.ring} border bg-card p-4 flex flex-wrap items-center gap-x-6 gap-y-2`}>
+      {/* Traffic-light headline: Healthy / Warning / Critical */}
       <div className="flex items-center gap-2">
-        {ui.icon}
-        <span className="text-lg font-bold">{report.overall}</span>
+        <span className={`inline-block h-3.5 w-3.5 rounded-full ${ui.dot}`} />
+        <span className="text-lg font-bold">{ui.light}</span>
+        <Badge variant="outline" className={`text-[10px] ${ui.badge}`}>{report.overall}</Badge>
         <Badge variant="outline" className="text-[10px]">{live ? "LIVE" : "LAST RUN"}</Badge>
       </div>
       <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
@@ -62,10 +79,16 @@ function OverallBanner({ report, live }: { report: OpsReport; live: boolean }) {
         <span>{s.skipped} skipped</span>
         <span className="text-purple-700">{s.unknown} unknown</span>
       </div>
-      <div className="flex items-center gap-4 text-xs text-muted-foreground ml-auto flex-wrap">
+      <div className="flex items-center gap-x-4 gap-y-1 text-xs text-muted-foreground ml-auto flex-wrap">
         <span className="flex items-center gap-1"><Clock size={12} /> {new Date(report.generatedAt).toLocaleString()} · {report.durationMs}ms</span>
         <span className="flex items-center gap-1"><Server size={12} /> v{report.version.version} (build {report.version.build})</span>
         <span className="flex items-center gap-1"><GitCommit size={12} /> {report.version.commit}{report.version.buildTime ? ` · ${report.version.buildTime}` : ""}</span>
+        {uptime && <span className="flex items-center gap-1"><Timer size={12} /> up {uptime}</span>}
+        {schema && (
+          <span className="flex items-center gap-1" title={schema.message}>
+            <Database size={12} /> schema {schema.status === "PASS" ? "verified" : schema.status.toLowerCase()}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -113,6 +136,7 @@ function CheckRow({ check }: { check: OpsCheck }) {
 export default function OperationalHealth() {
   const { toast } = useToast();
   const qc = useQueryClient();
+  const [, navigate] = useLocation();
   const [filter, setFilter] = useState<"ALL" | "FAIL" | "WARNING">("ALL");
   const [ranReport, setRanReport] = useState<OpsReport | null>(null);
 
@@ -191,6 +215,28 @@ export default function OperationalHealth() {
       {report && (
         <>
           <OverallBanner report={report} live={!ranReport} />
+
+          {/* Contextual actions — reuse existing routes; no new surfaces. The
+              deeper PACS/viewer launchers (Orthanc/OHIF) live on Network
+              Control; logs on PACS Logs; queue displays open in a new tab. */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground mr-1">Related tools:</span>
+            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => runSmoke.mutate()} disabled={runSmoke.isPending}>
+              <PlayCircle size={13} className="mr-1" /> Run smoke test again
+            </Button>
+            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => navigate("/radiology/network-control-center")}>
+              <Network size={13} className="mr-1" /> Orthanc / OHIF (Network Control)
+            </Button>
+            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => navigate("/radiology/pacs-logs")}>
+              <ScrollText size={13} className="mr-1" /> View PACS Logs
+            </Button>
+            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => navigate("/radiology/operations-dashboard")}>
+              <Gauge size={13} className="mr-1" /> Operations Dashboard
+            </Button>
+            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => window.open("/queue/usg", "_blank", "noopener")}>
+              <Tv size={13} className="mr-1" /> Open Queue <ExternalLink size={11} className="ml-1" />
+            </Button>
+          </div>
 
           <div className="grid gap-3 md:grid-cols-2">
             {grouped.map(({ category, checks }) => (

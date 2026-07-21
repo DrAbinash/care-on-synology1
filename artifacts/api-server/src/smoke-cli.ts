@@ -18,7 +18,7 @@
  *   --strict               make an UNKNOWN overall non-zero too
  *   --trigger <name>       deployment | cli | scheduled (default cli)
  */
-import { aggregateOverall, summarize, exitCodeFor, type OpsCheck, type OpsHealthReport, type OpsRunTrigger } from "./lib/operationsHealth";
+import { aggregateOverall, summarize, exitCodeFor, OPS_CATEGORY_LABELS, type OpsCheck, type OpsCategory, type OpsHealthReport, type OpsRunTrigger } from "./lib/operationsHealth";
 import { buildOperationsReport } from "./lib/operationsChecks";
 import { buildOpsContext, makeHttpProbe } from "./lib/operationsContext";
 
@@ -49,23 +49,42 @@ function parseArgs(argv: string[]): Args {
 
 // ── terminal rendering ───────────────────────────────────────────────────────
 const LABEL: Record<OpsCheck["status"], string> = { PASS: "PASS", WARNING: "WARN", FAIL: "FAIL", SKIPPED: "SKIP", UNKNOWN: "UNKN" };
-function colorize(status: OpsCheck["status"], text: string): string {
-  if (!process.stdout.isTTY) return text;
-  const c: Record<OpsCheck["status"], string> = { PASS: "\x1b[32m", WARNING: "\x1b[33m", FAIL: "\x1b[31m", SKIPPED: "\x1b[90m", UNKNOWN: "\x1b[35m" };
-  return `${c[status]}${text}\x1b[0m`;
+const ICON: Record<OpsCheck["status"], string> = { PASS: "✓", WARNING: "!", FAIL: "✗", SKIPPED: "–", UNKNOWN: "?" };
+const ANSI: Record<OpsCheck["status"], string> = { PASS: "\x1b[32m", WARNING: "\x1b[33m", FAIL: "\x1b[31m", SKIPPED: "\x1b[90m", UNKNOWN: "\x1b[35m" };
+// Traffic-light headline the operator reads first (Healthy / Warning / Critical).
+const TRAFFIC: Record<OpsCheck["status"], string> = { PASS: "Healthy", WARNING: "Warning", FAIL: "Critical", SKIPPED: "Healthy", UNKNOWN: "Unknown" };
+const CATEGORY_ORDER: OpsCategory[] = ["application", "database", "authentication", "core_erp", "radiology_pacs", "queue_displays", "integrations", "storage_backup"];
+
+function color(status: OpsCheck["status"], text: string): string {
+  return process.stdout.isTTY ? `${ANSI[status]}${text}\x1b[0m` : text;
+}
+function bold(text: string): string {
+  return process.stdout.isTTY ? `\x1b[1m${text}\x1b[0m` : text;
 }
 
 function printReport(report: OpsHealthReport): void {
-  const out: string[] = ["CARE-ERP DEPLOYMENT SMOKE TEST"];
-  for (const c of report.checks) {
-    out.push(`${colorize(c.status, LABEL[c.status].padEnd(4))}  ${c.name.padEnd(30)} ${c.message}`);
-  }
-  out.push("");
-  out.push(`Overall: ${colorize(report.overall, report.overall)}`);
   const s = report.summary;
-  out.push(`Summary: ${s.pass} pass · ${s.warning} warn · ${s.fail} fail · ${s.skipped} skip · ${s.unknown} unknown`);
-  out.push(`Version: ${report.version.version} (build ${report.version.build}) commit ${report.version.commit}`);
-  out.push(`Duration: ${report.durationMs}ms`);
+  const out: string[] = [];
+  out.push(bold("CARE-ERP DEPLOYMENT SMOKE TEST"));
+  // Traffic-light headline first — Healthy / Warning / Critical.
+  out.push(`${color(report.overall, `● ${TRAFFIC[report.overall]}`)}  ${color("PASS", `${s.pass}✓`)} ${color("WARNING", `${s.warning}!`)} ${color("FAIL", `${s.fail}✗`)} ${color("SKIPPED", `${s.skipped}–`)} ${color("UNKNOWN", `${s.unknown}?`)}  (${report.durationMs}ms)`);
+  out.push("");
+
+  // Group by category with headers so a run scans top-to-bottom by subsystem.
+  const seen = new Set(report.checks.map((c) => c.category));
+  const cats = [...CATEGORY_ORDER.filter((c) => seen.has(c)), ...[...seen].filter((c) => !CATEGORY_ORDER.includes(c as OpsCategory))];
+  for (const cat of cats) {
+    const rows = report.checks.filter((c) => c.category === cat);
+    if (!rows.length) continue;
+    out.push(bold(`  ${OPS_CATEGORY_LABELS[cat as OpsCategory] ?? cat}`));
+    for (const c of rows) {
+      out.push(`    ${color(c.status, ICON[c.status])} ${color(c.status, LABEL[c.status].padEnd(4))} ${c.name.padEnd(30)} ${c.message}`);
+    }
+  }
+
+  out.push("");
+  out.push(`Overall:  ${color(report.overall, `${TRAFFIC[report.overall]} (${report.overall})`)}`);
+  out.push(`Version:  ${report.version.version} (build ${report.version.build}) · commit ${report.version.commit}${report.version.buildTime ? ` · built ${report.version.buildTime}` : ""}`);
   process.stdout.write(out.join("\n") + "\n");
 }
 
