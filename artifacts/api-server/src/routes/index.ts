@@ -85,6 +85,7 @@ import { requireSuperAdmin } from "../middleware/requireSuperAdmin";
 import { requireSuperAdminUsb, isValidUsbKey, isUsbGateEnforced } from "../middleware/requireSuperAdminUsb";
 import { requireStaffAuth, requireStaffPermission, requireStaffSubPermission, requireAdminRole } from "../middleware/requireStaffAuth";
 import diagnosticsRouter from "./diagnostics";
+import adminOperationsRouter from "./admin-operations";
 import { measurementRegistryRouter } from "./measurementRegistry";
 import { pathologyRegistryRouter } from "./pathologyRegistry";
 import radiologyQuickFindingsRouter from "./radiologyQuickFindings";
@@ -328,6 +329,11 @@ router.use("/reports", requireStaffAuth, requireStaffPermission("/reports"), rep
 // Admin-only request performance diagnostics (not part of the toggleable
 // per-user permission system — see requireAdminRole).
 router.use("/diagnostics", requireStaffAuth, requireAdminRole, diagnosticsRouter);
+
+// Admin-only Operational Health / Deployment Smoke Test (one-minute
+// post-rebuild verification: application/db/auth/core-erp/radiology-pacs/
+// queue/integrations/storage checks + persisted run history).
+router.use("/admin/operations", requireStaffAuth, requireAdminRole, adminOperationsRouter);
 
 // Admin-only Universal Measurement Registry manager (read-only console +
 // live impact analysis over quick measurements / protocols / packs / rules).

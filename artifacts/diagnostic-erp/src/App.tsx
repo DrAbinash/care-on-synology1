@@ -101,6 +101,7 @@ const RadiologyFlightDeck = lazy(() => import("@/pages/RadiologyFlightDeck"));
 const ScannerSettings = lazy(() => import("@/pages/ScannerSettings"));
 const RadiologyQuickSelectSettings = lazy(() => import("@/pages/RadiologyQuickSelectSettings"));
 const RadiologyOperationsDashboard = lazy(() => import("@/pages/RadiologyOperationsDashboard"));
+const OperationalHealth = lazy(() => import("@/pages/OperationalHealth"));
 const RadiologyKnowledgePackManager = lazy(() => import("@/pages/RadiologyKnowledgePackManager"));
 const ClinicalRecommendationRegistryManager = lazy(() => import("@/pages/ClinicalRecommendationRegistryManager"));
 const ClinicalContentCoverage = lazy(() => import("@/pages/ClinicalContentCoverage"));
@@ -234,7 +235,7 @@ const queryClient = new QueryClient({
 
 const ERP_NAV_ORDER = [
   "/", "/dashboard", "/my-daily-summary", "/reception-command-center", "/daily-summary", "/patients", "/appointments", "/queue", "/online-bookings",
-  "/radiology", "/radiology/legacy", "/radiology/worklist", "/radiology/report-generator", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/pacs-settings", "/radiology/network-control-center", "/radiology/pacs-logs",
+  "/radiology", "/radiology/legacy", "/radiology/worklist", "/radiology/report-generator", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/operational-health", "/radiology/pacs-settings", "/radiology/network-control-center", "/radiology/pacs-logs",
   "/radiology/dicom-agent-dashboard", "/radiology/modality-management",
   "/radiology/agent-setup", "/radiology/ai-reporting-settings", "/radiology/ai-prompt-templates", "/radiology/ai-model-routing", "/radiology/structured-report-templates", "/radiology/ai-audit-log",
   "/radiology/viewer", "/radiology/archive-lifecycle", "/radiology/watchdog", "/radiology/ai-inference-settings", "/radiology/hl7-settings", "/teleradiology",
@@ -436,6 +437,9 @@ function Router() {
               </Route>
               <Route path="/radiology/pacs-dashboard" component={PacsDashboard} />
               <Route path="/radiology/operations-dashboard" component={RadiologyOperationsDashboard} />
+              <Route path="/radiology/operational-health">
+                {() => <AdminOnlySettings><OperationalHealth /></AdminOnlySettings>}
+              </Route>
               <Route path="/radiology/my-analytics" component={MyReportingAnalytics} />
               {/* PacsSettings is retired as a standalone page — its full config
                   now lives in the Radiology Settings hub ("PACS / DICOM (Full)"

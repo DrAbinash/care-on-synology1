@@ -148,6 +148,15 @@ COPY --from=web-build /repo/artifacts/diagnostic-erp/dist/public           /usr/
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80
 
+# Web-container health check — hits GET /nginx-health, a 200 served by nginx
+# ITSELF (no api upstream), so the web container's health reflects "nginx is
+# serving" without coupling to the api container (which has its own health
+# gate via depends_on). busybox wget ships in nginx:alpine, so no extra
+# install. Liveness, not a deep readiness probe — deliberately independent of
+# the api to avoid a false-unhealthy web container during an api restart.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
+  CMD wget -q -O /dev/null http://localhost:80/nginx-health || exit 1
+
 
 # Stage: migrate
 # -----------------------------------------------------------------------------

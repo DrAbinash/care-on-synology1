@@ -317,6 +317,17 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    # Previously MISSING — the web/nginx container had no health check, so
+    # Container Manager reported it healthy the instant the process started,
+    # even if nginx was mis-configured. GET /nginx-health is answered by nginx
+    # itself (no api upstream), so this reflects "nginx is serving" without
+    # coupling to the api container (which has its own health gate above).
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:80/nginx-health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
 
   # ---------------------------------------------------------------------------
   # Manual/emergency migration container — NOT part of normal deployment.

@@ -171,6 +171,7 @@ const navItems: NavEntry[] = [
       { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist Hub" },
       { path: "/radiology/reporting-workspace", icon: FilePen,        label: "Reporting Workspace" },
       { path: "/radiology/operations-dashboard", icon: Gauge,          label: "Operations Dashboard" },
+      { path: "/radiology/operational-health",   icon: Activity,       label: "Operational Health", ownerOnly: true },
       { path: "/radiology/my-analytics",         icon: BarChart3,      label: "My Analytics" },
       { path: "/radiology/my-collection",       icon: ShieldAlert,    label: "DICOM Match Center" },
       { path: "/pacs",                        icon: Monitor,        label: "PACS Viewer" },

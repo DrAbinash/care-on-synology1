@@ -8,6 +8,7 @@
     "build": "node ./build.mjs",
     "build:deploy": "node ./scripts/build-deploy.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
+    "smoke": "node ./dist/smoke-cli.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:validation": "node ./scripts/validation-tests.mjs"
   },
