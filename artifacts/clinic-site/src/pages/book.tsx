@@ -1242,12 +1242,14 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                       tokenNo,
                     };
                     const clinic: PrintClinic = clinicPrint ?? { name: settings.siteTitle, address: settings.address, logoDataUrl: settings.logoUrl };
-                    // Patient-facing receipt: print on A4 — that's what almost
-                    // every patient's home/office printer is loaded with, so an
-                    // A5 page box would leave the bottom half of the A4 sheet
-                    // blank. (The clinic's own counter copy stays A5 via the
+                    // Patient-facing receipt: a compact A5 slip, but printed on
+                    // a physical A4 sheet (compactOnA4) — that's what almost
+                    // every patient's home/office printer is loaded with. The
+                    // slip stays A5-sized and centred at the top of the A4 page
+                    // (tidy and cuttable) rather than being stretched to fill
+                    // A4. (The clinic's own counter copy stays A5 via the
                     // Billing Desk's own paper-size setting — a separate path.)
-                    const html = buildBillPrintHtml({ bill, clinic, paperSize: "A4", isBW: false, qrDataUrl, format: "classic", compactFooterGap: true });
+                    const html = buildBillPrintHtml({ bill, clinic, paperSize: "A5", isBW: false, qrDataUrl, format: "classic", compactFooterGap: true, compactOnA4: true });
                     writeAndPrint(win, html);
                   }}
                 >

@@ -189,6 +189,15 @@ export type BuildPrintHtmlOpts = {
   // callers opt into the compact gap instead. Defaults to false so Billing
   // Desk's existing print output is unaffected.
   compactFooterGap?: boolean;
+  // When true (with paperSize "A5"), the receipt keeps its compact A5 content
+  // sizing but is printed on a physical A4 page — the A5-width slip is centred
+  // at the top of the sheet. This is for patient-facing copies (online booking
+  // receipt): almost every patient prints on A4, so declaring an A5 @page made
+  // printers scale/centre awkwardly or leave the content in a narrow, mostly
+  // blank band. A4 @page prints predictably on their paper while the slip stays
+  // a tidy, cuttable A5 receipt rather than being stretched to fill A4.
+  // Defaults to false so Billing Desk's A5 output is unaffected.
+  compactOnA4?: boolean;
   // Layout & typography overrides (Classic format only) — see
   // BillPrintSettings's matching print*Px/printMarginMm fields. Each is
   // undefined/null-safe: omit or pass null to fall back to the built-in
@@ -205,12 +214,15 @@ export type BuildPrintHtmlOpts = {
 };
 
 export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
-  const { bill, clinic, paperSize, orientation = "portrait", isBW, qrDataUrl, reprintBy, reprintReason, compactFooterGap = false } = opts;
+  const { bill, clinic, paperSize, orientation = "portrait", isBW, qrDataUrl, reprintBy, reprintReason, compactFooterGap = false, compactOnA4 = false } = opts;
   const copies = Math.max(1, Math.min(2, Number(clinic?.billPrintCopies ?? 1) || 1));
   const showCode = clinic?.billShowCode !== false;
   const showCategory = clinic?.billShowCategory !== false;
   const qrEnabled = clinic?.qrOnBillEnabled !== false;
   const isA5 = paperSize === "A5";
+  // Compact A5 slip printed on a physical A4 sheet (patient copies). Content
+  // sizing stays A5; only the physical page and the slip's max width change.
+  const a4Page = compactOnA4 && isA5;
 
   const tests = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled");
   const cancelled = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") === "cancelled");
@@ -452,7 +464,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
                          background now carries the emphasis instead of size.
                          The amount cell is allowed to wrap so the longer
                          "To Be Confirmed" string also can't be clipped. -->
-                    <td style="padding:6px;border-top:2px solid #000;font-weight:900;letter-spacing:0.3px;background:${statusBg(isUnconfirmedQr ? "#fef3c7" : Number(bill.balanceAmount) > 0 ? "#fee2e2" : "#dcfce7")}">BALANCE DUE</td>
+                    <td style="padding:6px;border-top:2px solid #000;font-weight:900;white-space:nowrap;background:${statusBg(isUnconfirmedQr ? "#fef3c7" : Number(bill.balanceAmount) > 0 ? "#fee2e2" : "#dcfce7")}">BALANCE DUE</td>
                     <td style="padding:6px;border-top:2px solid #000;text-align:right;font-weight:900;white-space:${isUnconfirmedQr ? "normal" : "nowrap"};background:${statusBg(isUnconfirmedQr ? "#fef3c7" : Number(bill.balanceAmount) > 0 ? "#fee2e2" : "#dcfce7")};color:${statusColor(isUnconfirmedQr ? "#b45309" : Number(bill.balanceAmount) > 0 ? "#b91c1c" : "#15803d")}">${isUnconfirmedQr ? "To Be Confirmed" : `₹${fmt(bill.balanceAmount)}`}</td>
                   </tr>
                   ${cashAmt > 0 ? `<tr><td style="padding:3px 6px;color:#555;font-size:${tinyPx}">Cash</td><td style="padding:3px 6px;text-align:right;white-space:nowrap;color:#555;font-size:${tinyPx}">₹${fmt(cashAmt)}</td></tr>` : ""}
@@ -500,11 +512,11 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 
   return `<!doctype html><html><head><meta charset="utf-8"><title>Bill ${esc(bill.billNumber)}</title>
 <style>
-  @page { size: ${isA5 ? "A5" : "A4"} ${isA5 ? orientation : "portrait"}; margin: ${pageMargin}; }
+  @page { size: ${a4Page ? "A4 portrait" : `${isA5 ? "A5" : "A4"} ${isA5 ? orientation : "portrait"}`}; margin: ${pageMargin}; }
   *, *::before, *::after { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; height: 100%; }
   body { background: #fff; color: #000; font-family: Arial, Helvetica, sans-serif; font-size: ${bodyPx}; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .receipt { width: 100%; padding: 2mm 3mm; box-sizing: border-box; }
+  .receipt { width: 100%; padding: 2mm 3mm; box-sizing: border-box;${a4Page ? " max-width: 148mm; margin-left: auto; margin-right: auto;" : ""} }
   table { width: 100%; }
   .test-table tbody tr:nth-child(even) td { background: #f7f7f7; }
 </style></head><body>${pages}</body></html>`;
