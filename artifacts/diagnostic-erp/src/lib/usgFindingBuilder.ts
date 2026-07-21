@@ -20,6 +20,14 @@
  */
 
 import { fillStructuredTemplate } from "./structuredFindings";
+import { convertUnitValue, ellipsoidVolumeMlFromMm, ELLIPSOID_FACTOR } from "@workspace/measurements";
+
+// The ellipsoid-volume formula and unit conversion are NOT reimplemented here —
+// they come from the shared @workspace/measurements package, the single source
+// of truth used by both this builder and the server usgMeasurementEngine.
+export { ELLIPSOID_FACTOR };
+/** @deprecated re-export — canonical impl is ellipsoidVolumeMlFromMm in @workspace/measurements. */
+export const ellipsoidVolumeMl = ellipsoidVolumeMlFromMm;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Parameter model
@@ -49,8 +57,6 @@ export interface UsgFindingParam {
 
 /** Answers treated as affirmative for a yes/no parameter (case-insensitive). */
 const YES_VALUES = new Set(["yes", "present", "positive", "true", "y"]);
-/** Length-unit conversion factors to millimetres. Volume units pass through. */
-const LENGTH_TO_MM: Record<string, number> = { mm: 1, cm: 10 };
 
 export function isAffirmative(value: string | undefined): boolean {
   return YES_VALUES.has((value ?? "").trim().toLowerCase());
@@ -97,45 +103,22 @@ export function parseMeasurement(
   if (!Number.isFinite(value)) return empty;
   const unit = (m[2] || defaultUnit).toLowerCase();
 
+  // Unit conversion is delegated to the shared @workspace/measurements module,
+  // so mm/cm normalise identically to every other consumer (no local table).
   let normalized = value;
   let normalizedUnit = unit;
-  if (unit in LENGTH_TO_MM && normalizeTo in LENGTH_TO_MM) {
-    const mm = value * LENGTH_TO_MM[unit];
-    normalized = mm / LENGTH_TO_MM[normalizeTo];
+  const converted = convertUnitValue(value, unit, normalizeTo);
+  if (converted != null) {
+    normalized = Math.round(converted * 1000) / 1000; // guard floating dust
     normalizedUnit = normalizeTo;
-    // guard floating dust (e.g. 3 cm → 30 mm exactly)
-    normalized = Math.round(normalized * 1000) / 1000;
   }
   return { raw: text, value, unit, normalized, normalizedUnit, display: `${tidyNumber(value)} ${unit}` };
 }
 
-/** Convert a parsed measurement to millimetres, or null. */
+/** Convert a parsed measurement to millimetres, or null (via the shared units). */
 export function toMm(p: ParsedMeasurement): number | null {
   if (p.value == null) return null;
-  if (p.unit in LENGTH_TO_MM) return p.value * LENGTH_TO_MM[p.unit];
-  return p.value;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Ellipsoid volume — SINGLE frontend source of the formula
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// V = 0.523 · L · W · H  (0.523 ≈ π/6, the prolate-ellipsoid factor). Inputs in
-// millimetres, result in millilitres (=cc); mirrors the canonical server engine
-// artifacts/api-server/src/lib/usgMeasurementEngine.ts (volEllipsoid/volProstate)
-// which is not importable across packages. Kept here as the ONE frontend copy so
-// the Dynamic Finding Builder never scatters the constant across components.
-
-export const ELLIPSOID_FACTOR = 0.523;
-
-export function ellipsoidVolumeMl(
-  lMm: number | null | undefined,
-  wMm: number | null | undefined,
-  hMm: number | null | undefined,
-): number | null {
-  if (lMm == null || wMm == null || hMm == null) return null;
-  if (!(lMm > 0) || !(wMm > 0) || !(hMm > 0)) return null;
-  return Math.round((lMm * wMm * hMm * ELLIPSOID_FACTOR / 1000) * 100) / 100;
+  return convertUnitValue(p.value, p.unit, "mm") ?? p.value;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
