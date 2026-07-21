@@ -1,18 +1,40 @@
-import {
-  StyleSheet, Text, View, FlatList, TouchableOpacity,
-  RefreshControl, Platform,
-} from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { StyleSheet, Text, View, FlatList, RefreshControl } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 
 import { useColors } from "@/hooks/useColors";
 import { useStaffApi, useStaffAuth } from "@/context/StaffAuthContext";
+import {
+  Screen,
+  BackBar,
+  ScreenHeader,
+  Card,
+  Badge,
+  SkeletonList,
+  EmptyState,
+  spacing,
+} from "@/components/ui";
+
+type StatusTone = "success" | "destructive" | "warning" | "primary" | "muted";
+
+function statusTone(status: string): StatusTone {
+  switch (status) {
+    case "complete":
+      return "success";
+    case "failed":
+      return "destructive";
+    case "quarantined":
+      return "warning";
+    case "receiving":
+      return "primary";
+    default:
+      return "muted";
+  }
+}
 
 export default function StudiesListScreen() {
   const colors = useColors();
-  const insets = useSafeAreaInsets();
   const router = useRouter();
   const api = useStaffApi();
   const { session } = useStaffAuth();
@@ -26,96 +48,84 @@ export default function StudiesListScreen() {
   const items = studies.data?.studies ?? [];
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top + 16 }]}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={{ marginRight: 12 }}>
-          <Feather name="arrow-left" size={22} color={colors.foreground} />
-        </TouchableOpacity>
-        <Text style={[styles.title, { color: colors.foreground }]}>Incoming Studies</Text>
-      </View>
+    <Screen scroll={false}>
+      <BackBar />
+      <ScreenHeader title="Incoming Studies" subtitle="Studies received from connected modalities" />
 
       <FlatList
         data={items}
         keyExtractor={(item) => String(item.id)}
-        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 24 }}
+        contentContainerStyle={{ paddingBottom: spacing.section }}
+        showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl refreshing={studies.isRefetching} onRefresh={studies.refetch} tintColor={colors.primary} />
         }
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}
-            onPress={() => router.push({ pathname: "/study-detail" as any, params: { id: item.id } })}
-            activeOpacity={0.7}
-          >
-            <View style={styles.cardTop}>
-              <View style={[styles.modBadge, { backgroundColor: getModalityColor(item.modality) + "15" }]}>
-                <Text style={[styles.modText, { color: getModalityColor(item.modality) }]}>{item.modality}</Text>
+        renderItem={({ item }) => {
+          const rawDate = item.studyDate || item.createdAt;
+          const dateStr = rawDate
+            ? new Date(rawDate).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" })
+            : null;
+          return (
+            <Card onPress={() => router.push({ pathname: "/study-detail" as any, params: { id: item.id } })}>
+              <View style={styles.rowInner}>
+                <View style={{ flex: 1 }}>
+                  <View style={styles.cardTop}>
+                    <Badge label={item.modality || "—"} tone="accent" />
+                    <Text style={[styles.accession, { color: colors.mutedForeground }]}>
+                      {item.accessionNumber || "No Acc#"}
+                    </Text>
+                  </View>
+                  <Text style={[styles.patientName, { color: colors.foreground }]}>
+                    {item.patientName || "Unknown"}
+                  </Text>
+                  {item.studyDescription ? (
+                    <Text style={[styles.desc, { color: colors.mutedForeground }]} numberOfLines={1}>
+                      {item.studyDescription}
+                    </Text>
+                  ) : null}
+                  <Text style={[styles.meta, { color: colors.mutedForeground }]}>
+                    {dateStr ? `${dateStr} · ` : ""}
+                    {item.imageCount} images · {item.seriesCount} series · {item.aeTitle || "N/A"}
+                  </Text>
+                  <View style={styles.bottomRow}>
+                    <Badge label={item.transferStatus} tone={statusTone(item.transferStatus)} />
+                    {item.aeMismatch && <Feather name="alert-triangle" size={14} color={colors.warning} />}
+                    {item.duplicateStudy && <Feather name="copy" size={14} color={colors.warning} />}
+                  </View>
+                </View>
+                <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
               </View>
-              <Text style={[styles.accession, { color: colors.mutedForeground }]}>
-                {item.accessionNumber || "No Acc#"}
-              </Text>
-            </View>
-            <Text style={[styles.patientName, { color: colors.foreground }]}>{item.patientName || "Unknown"}</Text>
-            <Text style={[styles.meta, { color: colors.mutedForeground }]}>
-              {item.imageCount} images · {item.seriesCount} series · {item.aeTitle || "N/A"}
-            </Text>
-            <View style={styles.bottomRow}>
-              <StatusBadge status={item.transferStatus} colors={colors} />
-              {item.aeMismatch && <Feather name="alert-triangle" size={14} color={colors.warning} />}
-              {item.duplicateStudy && <Feather name="copy" size={14} color={colors.warning} />}
-            </View>
-          </TouchableOpacity>
-        )}
-        ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
-        ListEmptyComponent={() => (
-          <View style={styles.empty}>
-            <Feather name="inbox" size={32} color={colors.mutedForeground} />
-            <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>No incoming studies</Text>
-          </View>
-        )}
+            </Card>
+          );
+        }}
+        ItemSeparatorComponent={() => <View style={{ height: spacing.md }} />}
+        ListEmptyComponent={
+          studies.isLoading ? (
+            <SkeletonList count={4} height={112} />
+          ) : (
+            <EmptyState
+              icon="inbox"
+              title="No incoming studies"
+              message="New studies from connected modalities will appear here."
+            />
+          )
+        }
       />
-    </View>
+    </Screen>
   );
-}
-
-function StatusBadge({ status, colors }: any) {
-  const color =
-    status === "complete" ? colors.success :
-    status === "failed" ? colors.destructive :
-    status === "quarantined" ? colors.warning :
-    status === "receiving" ? colors.primary :
-    colors.mutedForeground;
-  return (
-    <View style={[styles.statusBadge, { backgroundColor: color + "18" }]}>
-      <View style={[styles.statusDot, { backgroundColor: color }]} />
-      <Text style={[styles.statusText, { color }]}>{status}</Text>
-    </View>
-  );
-}
-
-function getModalityColor(modality: string) {
-  const map: Record<string, string> = {
-    CT: "#3b82f6", MR: "#a855f7", XR: "#f59e0b", US: "#10b981",
-    CR: "#ef4444", DR: "#6366f1", MG: "#ec4899", OT: "#64748b",
-  };
-  return map[modality] || "#64748b";
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  header: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingBottom: 12 },
-  title: { fontSize: 20, fontFamily: "Inter_700Bold" },
-  card: { borderRadius: 14, borderWidth: 1, padding: 14 },
-  cardTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 6 },
-  modBadge: { borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3 },
-  modText: { fontSize: 11, fontFamily: "Inter_700Bold" },
-  accession: { fontSize: 11, fontFamily: "Inter_500Medium" },
-  patientName: { fontSize: 15, fontFamily: "Inter_600SemiBold", marginBottom: 4 },
-  meta: { fontSize: 12, fontFamily: "Inter_400Regular", marginBottom: 8 },
-  bottomRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  statusBadge: { flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 3 },
-  statusDot: { width: 6, height: 6, borderRadius: 3 },
-  statusText: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
-  empty: { alignItems: "center", paddingVertical: 40 },
-  emptyText: { fontSize: 14, fontFamily: "Inter_400Regular", marginTop: 8 },
+  rowInner: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  cardTop: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: spacing.sm,
+  },
+  accession: { fontSize: 11, fontFamily: "Inter_500Medium", letterSpacing: 0.2 },
+  patientName: { fontSize: 15, fontFamily: "Inter_600SemiBold", marginBottom: 2 },
+  desc: { fontSize: 13, fontFamily: "Inter_400Regular", lineHeight: 20 },
+  meta: { fontSize: 12, fontFamily: "Inter_400Regular", lineHeight: 18, marginTop: 2, marginBottom: spacing.sm },
+  bottomRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
 });

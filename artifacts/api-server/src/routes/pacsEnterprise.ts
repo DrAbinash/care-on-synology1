@@ -13,6 +13,7 @@ import { db } from "@workspace/db";
 import { tcpProbe } from "../lib/pacs/providers.js";
 import { testNodeConnection } from "../services/dicom-pull-agent/dimse-agent";
 import { getRadiologyConfig, validateRadiologyConfig, isDockerBridgeIp } from "../lib/pacs/pacsConfig.js";
+import { writeWorklistFile, removeWorklistFile, syncWorklistForStatus, isMwlEnabled, MWL_TERMINAL_STATUSES } from "../lib/pacs/mwlWorklistWriter.js";
 import { NETWORK_LAN_HOST, DEFAULT_OHIF_BASE_URL, DEFAULT_WADO_URL, OHIF_HTTP_PORT } from "../lib/networkDefaults";
 import {
   dicomRoutingRulesTable,
@@ -509,6 +510,31 @@ router.delete("/failed-queue/:id", async (req, res) => {
 
 // ─── WEASIS VIEWER LAUNCH ─────────────────────────────────────────────────────
 
+// Browser-followable launch: 302-redirects straight to the weasis:// URL so an
+// <a href>/window.open hands off to the OS Weasis protocol handler without any
+// client JS. The sibling /weasis-launch below returns the same URL as JSON for
+// JS-driven navigation. (Reported missing in PACS_CURRENT_STATE_REPORT.md.)
+router.get("/studies/:studyInstanceUID/weasis-launch-redirect", async (req, res) => {
+  const { studyInstanceUID } = req.params;
+  const cfg = await getRadiologyConfig();
+  const wadoUrl = cfg.weasis.wadoUrl;
+  const manifestTemplate = cfg.weasis.launchTemplate;
+
+  if (!wadoUrl && !manifestTemplate) {
+    res.status(503).json({ error: "Viewer settings are not configured. Go to PACS / DICOM Settings → Viewer Settings and click Load Clinic Viewer Defaults." });
+    return;
+  }
+
+  const weasisUrl = manifestTemplate
+    ? manifestTemplate
+        .replace(/\{WADO_URL\}/g, wadoUrl)
+        .replace(/\{wado_url\}/g, wadoUrl)
+        .replace(/\{studyInstanceUID\}/g, studyInstanceUID)
+    : `weasis://$dicom:get -w "${wadoUrl}" -r "studyUID=${studyInstanceUID}"`;
+
+  res.redirect(302, weasisUrl);
+});
+
 router.get("/studies/:studyInstanceUID/weasis-launch", async (req, res) => {
   const { studyInstanceUID } = req.params;
   const cfg = await getRadiologyConfig();
@@ -888,6 +914,10 @@ router.patch("/mwl-procedures/:id", async (req, res) => {
     });
   }
 
+  // Keep the modality worklist file in sync with the procedure's status:
+  // (re)write it while active, remove it once terminal. Inert unless configured.
+  void syncWorklistForStatus(row, row.status);
+
   res.json(row);
 });
 
@@ -934,7 +964,32 @@ router.post("/mwl-procedures", async (req, res) => {
     accessionNumber: row.accessionNumber,
   });
 
+  // Publish to the modality worklist (inert unless ORTHANC_WORKLIST_DIR is set).
+  void writeWorklistFile(row);
+
   res.json(row);
+});
+
+// Regenerate the whole worklist folder from the DB — initial population after
+// enabling the feature, and reconciliation if files drift. Removes terminal
+// procedures' files, (re)writes active ones.
+router.post("/mwl-worklist/sync", async (_req, res) => {
+  if (!isMwlEnabled()) {
+    res.status(503).json({ error: "Modality worklist is not configured. Set ORTHANC_WORKLIST_DIR and mount a folder shared with Orthanc (worklists plugin)." });
+    return;
+  }
+  const rows = await db.select().from(radiologyScheduledProceduresTable).limit(5000);
+  let written = 0;
+  let removed = 0;
+  for (const row of rows) {
+    if (MWL_TERMINAL_STATUSES.has((row.status || "").toUpperCase())) {
+      await removeWorklistFile(row.accessionNumber);
+      removed++;
+    } else if (await writeWorklistFile(row)) {
+      written++;
+    }
+  }
+  res.json({ total: rows.length, written, removed });
 });
 
 // ─── DICOM Q/R QUERY ─────────────────────────────────────────────────────────

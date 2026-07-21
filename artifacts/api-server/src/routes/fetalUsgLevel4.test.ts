@@ -27,6 +27,9 @@ let allFetalUsgStudyRows: Record<string, unknown>[];
 let allRadiologyStudyRows: Record<string, unknown>[];
 let insertedFetalUsgStudyValues: Record<string, unknown> | undefined;
 let insertedAuditLogValues: Record<string, unknown>[];
+let fetalUsgReportRow: Record<string, unknown> | undefined;
+let fetalUsgCriticalAlertRows: Record<string, unknown>[];
+let updateCalls: Array<{ table: string; values: Record<string, unknown> }>;
 
 const TBL = {
   patients: { __name: "patients", id: "id" },
@@ -63,6 +66,10 @@ vi.mock("@workspace/db", () => {
         return allRadiologyStudyRows.length > 0 ? allRadiologyStudyRows : (radiologyStudyRow ? [radiologyStudyRow] : []);
       case "fetal_usg_studies":
         return fetalUsgStudyRow ? [fetalUsgStudyRow] : [];
+      case "fetal_usg_reports":
+        return fetalUsgReportRow ? [fetalUsgReportRow] : [];
+      case "fetal_usg_critical_alerts":
+        return fetalUsgCriticalAlertRows;
       default:
         return [];
     }
@@ -74,6 +81,8 @@ vi.mock("@workspace/db", () => {
           where: () => ({
             limit: async () => rowsFor(tbl),
             orderBy: () => rowsFor(tbl),
+            // final-sign's critical-alerts query awaits .where(...) directly
+            then: (resolve: (v: unknown) => void) => resolve(rowsFor(tbl)),
           }),
           // GET /available-studies/:patientId's "already linked" lookup has
           // no .where() before it — select({studyId}).from(fetalUsgStudiesTable)
@@ -98,9 +107,24 @@ vi.mock("@workspace/db", () => {
           };
         },
       }),
+      update: (tbl: { __name?: string }) => ({
+        set: (v: Record<string, unknown>) => {
+          updateCalls.push({ table: tbl?.__name ?? "?", values: v });
+          return { where: () => Promise.resolve() };
+        },
+      }),
     },
   };
 });
+
+// Unit boundary: the shared Form F verification has its own suite
+// (lib/pcpndtCompliance.test.ts) — here it is mocked so the final-sign
+// route tests control the compliance verdict directly.
+let complianceResult: { compliant: boolean; reason: string; errors: string[]; formFId: number | null; formFCreatedAt: string | null };
+vi.mock("../lib/pcpndtCompliance", () => ({
+  checkPcpndtFormFCompliance: async () => complianceResult,
+  PCPNDT_OVERRIDE_ROLES: new Set(["admin", "super_admin"]),
+}));
 
 function getHandler(router: any, method: "get" | "post", path: string) {
   const matches = router.stack.filter(
@@ -133,6 +157,10 @@ beforeEach(() => {
   allRadiologyStudyRows = [];
   insertedFetalUsgStudyValues = undefined;
   insertedAuditLogValues = [];
+  fetalUsgReportRow = undefined;
+  fetalUsgCriticalAlertRows = [];
+  updateCalls = [];
+  complianceResult = { compliant: true, reason: "compliant", errors: [], formFId: 91, formFCreatedAt: "2026-07-10T09:00:00.000Z" };
 });
 
 describe("POST /api/fetal-usg/study — real patient/study context, never hardcoded", () => {
@@ -328,5 +356,105 @@ describe("POST /:studyId/extract-measurements — route duplication fixed", () =
     const res = makeRes();
     await handler(req, res);
     expect(res.statusCode).toBe(404);
+  });
+});
+
+describe("POST /:studyId/final-sign — PCPNDT Form F gate (roadmap step 2 for Fetal USG)", () => {
+  function finalSignHandler(router: any) {
+    const matches = getHandler(router, "post", "/:studyId/final-sign");
+    expect(matches.length).toBe(1);
+    return matches[0].route.stack[matches[0].route.stack.length - 1].handle;
+  }
+  const reviewedReport = { id: 7, studyId: 501, status: "reviewed", criticalAlertsAcknowledged: true };
+
+  test("blocks finalize with 409 + missing fields when Form F is incomplete", async () => {
+    const { default: router } = await import("./fetalUsgLevel4");
+    const handler = finalSignHandler(router);
+    fetalUsgReportRow = reviewedReport;
+    fetalUsgStudyRow = { id: 501, studyId: 88, patientId: 47 };
+    complianceResult = {
+      compliant: false, reason: "incomplete_form_f",
+      errors: ["ID Card must be verified.", "Address is required."],
+      formFId: 91, formFCreatedAt: null,
+    };
+    const res = makeRes();
+    await handler({ params: { studyId: "501" }, body: {}, staffSession: { subjectId: 1, subjectName: "Dr X", role: "radiologist" } }, res);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toBe("pcpndt_compliance_required");
+    expect(res.body.validationErrors).toEqual(["ID Card must be verified.", "Address is required."]);
+    // Nothing was finalized.
+    expect(updateCalls.filter((c) => c.table === "fetal_usg_reports")).toHaveLength(0);
+  });
+
+  test("blocks a non-admin even when an override is requested", async () => {
+    const { default: router } = await import("./fetalUsgLevel4");
+    const handler = finalSignHandler(router);
+    fetalUsgReportRow = reviewedReport;
+    fetalUsgStudyRow = { id: 501, studyId: 88, patientId: 47 };
+    complianceResult = { compliant: false, reason: "no_form_f", errors: ["PCPNDT Form F record is missing for this obstetric study."], formFId: null, formFCreatedAt: null };
+    const res = makeRes();
+    await handler(
+      { params: { studyId: "501" }, body: { pcpndtOverride: true, pcpndtOverrideReason: "urgent clinical need" }, staffSession: { subjectId: 1, subjectName: "Dr X", role: "radiologist" } },
+      res,
+    );
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toBe("pcpndt_compliance_required");
+  });
+
+  test("admin override with a documented reason proceeds and is audited", async () => {
+    const { default: router } = await import("./fetalUsgLevel4");
+    const handler = finalSignHandler(router);
+    fetalUsgReportRow = reviewedReport;
+    fetalUsgStudyRow = { id: 501, studyId: 88, patientId: 47 };
+    complianceResult = { compliant: false, reason: "no_form_f", errors: ["PCPNDT Form F record is missing for this obstetric study."], formFId: null, formFCreatedAt: null };
+    const res = makeRes();
+    await handler(
+      { params: { studyId: "501" }, body: { pcpndtOverride: true, pcpndtOverrideReason: "supervisor-approved exception" }, staffSession: { subjectId: 2, subjectName: "Dr Admin", role: "super_admin" } },
+      res,
+    );
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+    // The override itself is written to the fetal USG audit trail.
+    const overrideAudit = insertedAuditLogValues.find((a) => a.action === "pcpndt_override_finalize");
+    expect(overrideAudit).toBeDefined();
+    expect(String(overrideAudit!.details)).toContain("supervisor-approved exception");
+  });
+
+  test("override without a documented reason is refused", async () => {
+    const { default: router } = await import("./fetalUsgLevel4");
+    const handler = finalSignHandler(router);
+    fetalUsgReportRow = reviewedReport;
+    fetalUsgStudyRow = { id: 501, studyId: 88, patientId: 47 };
+    complianceResult = { compliant: false, reason: "no_form_f", errors: ["PCPNDT Form F record is missing for this obstetric study."], formFId: null, formFCreatedAt: null };
+    const res = makeRes();
+    await handler(
+      { params: { studyId: "501" }, body: { pcpndtOverride: true, pcpndtOverrideReason: "" }, staffSession: { subjectId: 2, subjectName: "Dr Admin", role: "super_admin" } },
+      res,
+    );
+    expect(res.statusCode).toBe(409);
+  });
+
+  test("compliant Form F finalizes normally (no false-block)", async () => {
+    const { default: router } = await import("./fetalUsgLevel4");
+    const handler = finalSignHandler(router);
+    fetalUsgReportRow = reviewedReport;
+    fetalUsgStudyRow = { id: 501, studyId: 88, patientId: 47 };
+    complianceResult = { compliant: true, reason: "compliant", errors: [], formFId: 91, formFCreatedAt: "2026-07-10T09:00:00.000Z" };
+    const res = makeRes();
+    await handler({ params: { studyId: "501" }, body: {}, staffSession: { subjectId: 1, subjectName: "Dr X", role: "radiologist" } }, res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+    expect(updateCalls.some((c) => c.table === "fetal_usg_reports" && c.values.status === "final")).toBe(true);
+  });
+
+  test("pre-existing gates still run first: unreviewed report is refused before the PCPNDT check", async () => {
+    const { default: router } = await import("./fetalUsgLevel4");
+    const handler = finalSignHandler(router);
+    fetalUsgReportRow = { id: 7, studyId: 501, status: "draft", criticalAlertsAcknowledged: false };
+    complianceResult = { compliant: true, reason: "compliant", errors: [], formFId: 91, formFCreatedAt: null };
+    const res = makeRes();
+    await handler({ params: { studyId: "501" }, body: {}, staffSession: { subjectId: 1, subjectName: "Dr X", role: "radiologist" } }, res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toBe("Report must be reviewed before finalization");
   });
 });

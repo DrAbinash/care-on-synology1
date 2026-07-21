@@ -171,6 +171,7 @@ const navItems: NavEntry[] = [
       { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist Hub" },
       { path: "/radiology/reporting-workspace", icon: FilePen,        label: "Reporting Workspace" },
       { path: "/radiology/operations-dashboard", icon: Gauge,          label: "Operations Dashboard" },
+      { path: "/radiology/operational-health",   icon: Activity,       label: "Operational Health", ownerOnly: true },
       { path: "/radiology/my-analytics",         icon: BarChart3,      label: "My Analytics" },
       { path: "/radiology/my-collection",       icon: ShieldAlert,    label: "DICOM Match Center" },
       { path: "/pacs",                        icon: Monitor,        label: "PACS Viewer" },
@@ -199,6 +200,12 @@ const navItems: NavEntry[] = [
           { path: "/fetal-usg",                                  icon: Baby,       label: "Fetal USG" },
           { path: "/fetal-echo",                                 icon: Baby,       label: "Fetal Echo" },
           { path: "/usg/doppler",                                icon: Activity,   label: "Doppler Reporting" },
+          // Deep-links into the generic Queue page pre-filtered to USG so
+          // staff working only this nav section can find the "Call" button
+          // that flips a waiting token to "serving" (what the USG TV
+          // display's "Now Serving" card actually reads) — previously only
+          // reachable via the unrelated top-level "Queue Tokens" nav item.
+          { path: "/queue?department=USG",                       icon: Ticket,     label: "USG Queue / Call Next" },
           { path: "/settings/radiology-quick-select",            icon: Settings2,  label: "USG Settings" },
         ],
       },
@@ -213,7 +220,6 @@ const navItems: NavEntry[] = [
       { path: "/radiology/provider-fallback",          icon: ShieldCheck,    label: "Provider Fallback",       ownerOnly: true, featureFlag: "hideDeprecatedNav" },
       { path: "/teaching-cases",                   icon: GraduationCap,    label: "Teaching Files",          ownerOnly: true, featureFlag: "hideDeprecatedNav" },
       { path: "/radiology/ai-extraction-review",  icon: Microscope,   label: "AI Extraction Review",  ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/pacs-settings",         icon: Settings2,    label: "PACS Settings",         ownerOnly: true, featureFlag: "hideDeprecatedNav" },
       { path: "/radiology/modality-management",   icon: Monitor,      label: "Modality Management",   ownerOnly: true, featureFlag: "hideDeprecatedNav" },
       { path: "/radiology/dicom-agent-dashboard", icon: Server,       label: "DICOM Agent",           ownerOnly: true, featureFlag: "hideDeprecatedNav" },
       { path: "/radiology/watchdog",              icon: ShieldAlert,  label: "Watchdog",              ownerOnly: true, featureFlag: "hideDeprecatedNav" },
@@ -294,7 +300,6 @@ const navItems: NavEntry[] = [
       { path: "/system-update",             icon: Download,       label: "System Update" },
       // Radiology admin items moved from main sidebar (hidden via feature flag)
       { path: "/radiology/network-control-center", icon: Network,        label: "Network Control Center", ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/pacs-settings",         icon: Server,         label: "PACS & DICOM",        ownerOnly: true, featureFlag: "hideDeprecatedNav" },
       { path: "/dicom-nodes",                     icon: Network,        label: "DICOM Nodes",         ownerOnly: true, featureFlag: "hideDeprecatedNav" },
       { path: "/radiology/modality-management",   icon: Monitor,        label: "Modality Management", ownerOnly: true, featureFlag: "hideDeprecatedNav" },
       { path: "/radiology/dicom-agent-dashboard", icon: Server,         label: "DICOM Agent",         ownerOnly: true, featureFlag: "hideDeprecatedNav" },
@@ -371,6 +376,32 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!isMobile && sidebarOpen) setSidebarOpen(false);
   }, [isMobile, sidebarOpen]);
+
+  // The Radiology Reporting Workspace requests this app sidebar be minimised
+  // while the radiologist is working inside the embedded DICOM viewer, so the
+  // images get maximum room. It emits `care:viewer-focus` (detail: boolean) —
+  // a decoupled event so the workspace never reaches into this component's
+  // state. We remember the sidebar state from BEFORE viewer-focus so exiting
+  // restores exactly what the user had (a manual collapse is preserved), and
+  // never leave it stuck collapsed once the workspace unmounts.
+  const preViewerFocusCollapsed = useRef<boolean | null>(null);
+  useEffect(() => {
+    const onViewerFocus = (e: Event) => {
+      const on = Boolean((e as CustomEvent).detail);
+      if (on) {
+        setSidebarCollapsed((cur) => {
+          if (preViewerFocusCollapsed.current === null) preViewerFocusCollapsed.current = cur;
+          return true;
+        });
+      } else if (preViewerFocusCollapsed.current !== null) {
+        const restore = preViewerFocusCollapsed.current;
+        preViewerFocusCollapsed.current = null;
+        setSidebarCollapsed(restore);
+      }
+    };
+    window.addEventListener("care:viewer-focus", onViewerFocus);
+    return () => window.removeEventListener("care:viewer-focus", onViewerFocus);
+  }, []);
 
   // Pass the login-time DB value so the hook seeds localStorage on a fresh device.
   // Effective theme reads purely from localStorage (via userTheme) after seeding so

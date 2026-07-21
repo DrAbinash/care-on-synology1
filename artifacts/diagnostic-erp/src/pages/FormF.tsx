@@ -7,11 +7,12 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import {
   Search, Printer, RefreshCcw, FileText, List, User, Phone, Users, BookOpen,
-  Upload, Camera, CheckCircle2, AlertTriangle, MessageCircle, Stethoscope, X,
+  Camera, CheckCircle2, AlertTriangle, MessageCircle, Stethoscope, X,
   ChevronDown, ExternalLink
 } from "lucide-react";
 import IdCardScanPanel from "@/components/IdCardScanPanel";
-import UnifiedScanCapture from "@/components/UnifiedScanCapture";
+import IdScanCapturePanel from "@/components/IdScanCapturePanel";
+import { type ScanCaptureResult, type ScanSide } from "@/components/UnifiedScanCapture";
 import { decodeQrFromBlob } from "@/lib/aadhaarQr";
 import { readStaffSession } from "@/lib/staffSession";
 import {
@@ -305,7 +306,7 @@ function LabelRow({ label, children }: { label: string; children: React.ReactNod
 function BigLabelRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-start gap-3">
-      <span className="text-sm font-semibold w-44 flex-shrink-0 text-gray-700 pt-2">{label}</span>
+      <span className="text-sm font-semibold w-44 flex-shrink-0 text-gray-700 pt-1.5">{label}</span>
       <div className="flex-1">{children}</div>
     </div>
   );
@@ -784,6 +785,9 @@ export default function FormF() {
   const [scanPanelOpen, setScanPanelOpen] = useState(false);
   const [scanPanelBase64, setScanPanelBase64] = useState("");
   const [scanPanelMime, setScanPanelMime] = useState("image/jpeg");
+  // Which side the editor is currently cropping — decides where onSave lands
+  // (front → OCR + front slot, back → back slot, image only).
+  const [scanPanelSide, setScanPanelSide] = useState<ScanSide>("front");
 
   // ── PCPNDT Portal bookmarklet dialog ──
   const [portalOpen, setPortalOpen] = useState(false);
@@ -926,6 +930,17 @@ export default function FormF() {
     return resp;
   }
 
+  // ── Blob → base64 (no data: prefix), via FileReader — safe for large images
+  // (avoids the call-stack blowup of spreading a Uint8Array into String.fromCharCode). ──
+  function blobToBase64(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result ?? "").split(",")[1] ?? "");
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
+  }
+
   // ── ID card image processing (shared by upload, UnifiedScanCapture, camera) ──
   async function processIdImage(file: Blob) {
     setIdCardUploading(true);
@@ -999,22 +1014,74 @@ export default function FormF() {
     }
   }
 
-  // ── ID card BACK side upload (no OCR, just stores image) ──
-  async function processIdBackImage(file: File) {
+  // ── Can the browser decode this data URL as a raster image? The crop/enhance
+  // editor is canvas-based, so a file it can't draw — a PDF, or a HEIC on any
+  // non-Safari browser (both accepted by the shared uploader) — must not be
+  // routed into it, or its <Image> loader would hang the dialog. Resolves false
+  // for anything undecodable instead of throwing. ──
+  function canDecodeImage(dataUrl: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve(img.naturalWidth > 0 && img.naturalHeight > 0);
+      img.onerror = () => resolve(false);
+      img.src = dataUrl;
+    });
+  }
+
+  // ── Open the crop/enhance editor on a captured blob for the given side. The
+  // editor's onSave (see the <IdCardScanPanel/> at the bottom) reads
+  // scanPanelSide to decide where the result lands. Files the editor can't
+  // decode (PDF / HEIC-on-Chrome) fall back gracefully rather than opening a
+  // dead editor: BACK is stored as-is (its original pre-editor behaviour),
+  // FRONT drops to the standard QR/OCR pipeline. ──
+  async function openScanEditor(file: Blob, mimeType: string, side: ScanSide) {
     setIdCardUploading(true);
     try {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = String(reader.result ?? "");
-        setIdCardBackUrl(dataUrl);
-        toast({ title: "ID back side uploaded" });
-        setIdCardUploading(false);
-      };
-      reader.readAsDataURL(file);
+      const base64 = await blobToBase64(file);
+      if (!base64) { toast({ title: "Failed to read image", variant: "destructive" }); return; }
+      const mime = mimeType || "image/jpeg";
+      const dataUrl = `data:${mime};base64,${base64}`;
+      if (!(await canDecodeImage(dataUrl))) {
+        if (side === "back") {
+          setIdCardBackUrl(dataUrl);
+          toast({ title: "ID back saved", description: "This file can't be auto-cropped in the editor, so it was saved as-is." });
+        } else {
+          // Front, undecodable (rare — camera captures are JPEG). Let the front
+          // pipeline handle the raw bytes (QR decode / server-side OCR).
+          await processIdImage(file);
+        }
+        return;
+      }
+      setScanPanelSide(side);
+      setScanPanelBase64(base64);
+      setScanPanelMime(mime);
+      setScanPanelOpen(true);
     } catch {
+      toast({ title: "Failed to process image", variant: "destructive" });
+    } finally {
       setIdCardUploading(false);
-      toast({ title: "Failed to process ID back image", variant: "destructive" });
     }
+  }
+
+  // ── Route a unified-scan capture to the correct side (shared by the "Scan
+  // Front" and "Scan Back" triggers; the result's `side` decides where it
+  // lands). BACK now always passes through the crop/enhance editor (auto-crop +
+  // enhancement) before it is stored — previously it was saved raw with no
+  // crop, which left uncropped, oversized back images on the record. FRONT
+  // camera sources go through the editor too; disk/bridge front scans keep the
+  // fast QR-first → OCR path. ──
+  async function handleIdCapture(result: ScanCaptureResult) {
+    if (result.side === "back") {
+      await openScanEditor(result.file, result.mimeType, "back");
+      return;
+    }
+    const isCameraSource = result.source === "webcam" || result.source === "tvs" || result.source === "mobile";
+    if (isCameraSource) {
+      await openScanEditor(result.file, result.mimeType, "front");
+      return;
+    }
+    setScanPanelSide("front");
+    await processIdImage(result.file);
   }
 
   // ── Camera / scanner capture helpers ──
@@ -1049,6 +1116,7 @@ export default function FormF() {
     const base64 = dataUrl.split(",")[1];
     stopCamera();
     setCameraOpen(false);
+    setScanPanelSide("front");
     setScanPanelBase64(base64);
     setScanPanelMime("image/jpeg");
     setScanPanelOpen(true);
@@ -1750,53 +1818,31 @@ export default function FormF() {
             </div>
 
             {/* Section 1: DETAILS TO FILL — BIG BOX, BIG FONTS */}
-            <div className="bg-white border-2 border-orange-200 rounded-xl p-6 shadow-md">
-              <div className="flex items-center gap-2 pb-3 border-b-2 border-orange-100 mb-4">
+            <div className="bg-white border-2 border-orange-200 rounded-xl p-4 shadow-md">
+              <div className="flex items-center gap-2 pb-2 border-b-2 border-orange-100 mb-3">
                 <span className="text-base font-extrabold text-gray-900">Details to Fill</span>
                 <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-semibold">Type these fields</span>
               </div>
-              <div className="space-y-5">
-                <BigLabelRow label={`Husband / Father Name ${guardianRequired ? "*" : ""}`}>
-                  <div className="flex flex-col gap-2">
-                    {/* Row 1: Full-width input */}
-                    <Input
-                      {...inp("husbandFatherName")}
-                      placeholder={guardianRequired ? "Required for PCPNDT" : "Optional — enter if available"}
-                      className="w-full text-base h-11"
-                    />
-                    {/* Row 2: ID-capture — unified scan dialog (TVS PDS 8M / Existing
-                        Scanner / Upload / Mobile Scan / Webcam) replaces the old
-                        6-button menu (Wireless/Smart Scan, Upload ID, Capture ID
-                        Direct Scan, Webcam, Import Latest Scan, Open Scanner App).
-                        Back-side capture stays a plain upload — it has no OCR and
-                        never needed the full option set. */}
-                    <div className="flex flex-wrap items-center gap-2">
-                      <UnifiedScanCapture
-                        module="form-f"
-                        docType="id-card"
-                        triggerLabel={idCardUploading ? "Scanning…" : "Scan ID Front"}
-                        onCapture={async (result) => { await processIdImage(result.file); }}
-                        onError={(msg) => toast({ title: "Scan failed", description: msg, variant: "destructive" })}
-                      />
-                      {/* ── Upload ID Back (file picker) — back side has no OCR ── */}
-                      <label className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-dashed border-orange-300 bg-orange-50 cursor-pointer text-sm font-medium transition-colors ${idCardUploading ? "opacity-60 cursor-wait" : "hover:bg-orange-100 text-orange-700"} ${idCardBackUrl ? "border-orange-400 bg-orange-100" : ""}`}>
-                        <Upload size={14} className={idCardUploading ? "animate-pulse" : ""} />
-                        <span>{idCardBackUrl ? "Back ✓" : idCardUploading ? "Scanning…" : "Upload Back"}</span>
-                        <input
-                          type="file"
-                          accept="image/*"
-                          className="hidden"
-                          onChange={async (e) => {
-                            const file = e.target.files?.[0];
-                            if (!file) return;
-                            await processIdBackImage(file);
-                          }}
-                        />
-                      </label>
-                    </div>
-                    {isFormFAdmin && <OcrDiagnosticsPanel />}
-                  </div>
-                </BigLabelRow>
+              <div className="space-y-2">
+                {/* ID-capture — a compact, full-width inline scanner panel
+                    (status + method switch on one row, capture / upload side by
+                    side). It delegates every capture to the shared
+                    UnifiedScanCapture engine, tagged by side: Front runs OCR
+                    (camera/upload pass through the crop/enhance editor first),
+                    Back is cropped/enhanced then stored image-only. The
+                    Husband/Father Name field it feeds via OCR sits lower down,
+                    next to Full Address. */}
+                <div className="flex flex-col gap-2">
+                  <IdScanCapturePanel
+                    frontDone={!!idCardFrontUrl}
+                    backDone={!!idCardBackUrl}
+                    busy={idCardUploading}
+                    onCapture={handleIdCapture}
+                    onError={(msg) => toast({ title: "Scan failed", description: msg, variant: "destructive" })}
+                    onViewSaved={() => setActiveTab("records")}
+                  />
+                  {isFormFAdmin && <OcrDiagnosticsPanel />}
+                </div>
 
                 {/* ── AI-extracted ID card data review ── */}
                 {(idCardOcrResult || idCardExtractedName || idCardExtractedAddress) && (
@@ -1914,6 +1960,13 @@ export default function FormF() {
                   </BigLabelRow>
                 )}
 
+                <BigLabelRow label={`Husband / Father Name ${guardianRequired ? "*" : ""}`}>
+                  <Input
+                    {...inp("husbandFatherName")}
+                    placeholder={guardianRequired ? "Required for PCPNDT" : "Optional — enter if available"}
+                    className="w-full text-base h-11"
+                  />
+                </BigLabelRow>
                 <BigLabelRow label={`Full Address ${addressRequired ? "*" : ""}`}>
                   <Input {...inp("address")} placeholder={addressRequired ? "Patient's full address" : "Optional — enter if available"} className="text-base h-11" />
                 </BigLabelRow>
@@ -2260,6 +2313,8 @@ export default function FormF() {
         <IdCardScanPanel
           imageBase64={scanPanelBase64}
           mimeType={scanPanelMime}
+          docType="id-card"
+          title={scanPanelSide === "back" ? "ID Card — Back" : "ID Card — Front"}
           autoCropEnabled={fSettings?.autoCropIdScan !== false}
           cropPadding={fSettings?.cropPadding ?? 12}
           jpegQuality={fSettings?.jpegQuality ?? 85}
@@ -2268,19 +2323,27 @@ export default function FormF() {
             // Prefer enhanced → cropped → original for Form F display
             const displayB64 = result.enhancedBase64 || result.croppedBase64 || result.originalBase64;
             const dataUrl = `data:${result.mimeType};base64,${displayB64}`;
-            setIdCardFrontUrl(dataUrl);
-            // Keep original available as a second slot for audit
-            if (result.originalBase64 && result.originalBase64 !== displayB64) {
-              // Store original in back URL slot for audit trail (non-destructive)
-              setIdCardBackUrl(`data:${result.mimeType};base64,${result.originalBase64}`);
-            }
-            setScanPanelOpen(false);
-            setScanPanelBase64("");
-            // Run OCR on the enhanced/cropped image for better text extraction
-            await runOcrOnImage(displayB64, result.mimeType);
             const modeLabel = result.enhancementMode && result.enhancementMode !== "original"
               ? ` · ${result.enhancementMode} enhancement`
               : "";
+            setScanPanelOpen(false);
+            setScanPanelBase64("");
+            if (scanPanelSide === "back") {
+              // Back side: store the cropped/enhanced image only — no OCR, and
+              // never touch the Front slot or the extracted-field state.
+              setIdCardBackUrl(dataUrl);
+              toast({ title: `ID back saved${modeLabel}` });
+              return;
+            }
+            // Front side. NOTE: a front scan must NOT touch the Back slot.
+            // Previously the uncropped original was stuffed into idCardBackUrl
+            // "for audit", which made one front scan appear to capture two
+            // images and printed a duplicate of the front as "ID Back" on the
+            // statutory Form F. The Back slot is reserved exclusively for a real
+            // back-side capture.
+            setIdCardFrontUrl(dataUrl);
+            // Run OCR on the enhanced/cropped image for better text extraction
+            await runOcrOnImage(displayB64, result.mimeType);
             toast({ title: `ID card saved${modeLabel}` });
           }}
           onCancel={() => {

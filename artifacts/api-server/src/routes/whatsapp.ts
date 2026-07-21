@@ -566,6 +566,40 @@ export function normalizePhone(raw: string, countryCode: string): string | null 
   return `${countryCode}${digits}`;
 }
 
+/**
+ * Send an arbitrary free-text WhatsApp message to a phone number using the
+ * clinic's configured default number (DB-backed settings, same stack as
+ * report delivery). Used for patient login OTP codes — a session text, so it
+ * needs no pre-approved template. Returns ok:false (never throws) when
+ * WhatsApp is disabled/unconfigured or the send fails.
+ */
+export async function sendPlainWhatsappText(
+  phone: string,
+  body: string,
+): Promise<{ ok: boolean; skipped?: boolean; error?: string; messageId?: string }> {
+  const s = await getOrCreateSettings();
+  if (!s.enabled) return { ok: false, skipped: true, error: "WhatsApp disabled" };
+  const cfg = await resolveDefaultNumber();
+  if (!cfg) return { ok: false, error: "WhatsApp settings incomplete" };
+  const to = normalizePhone(phone, s.defaultCountryCode);
+  if (!to) return { ok: false, error: "Invalid phone" };
+
+  const url = `https://graph.facebook.com/v20.0/${encodeURIComponent(cfg.phoneNumberId)}/messages`;
+  const payload = { messaging_product: "whatsapp", to, type: "text", text: { body } };
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${cfg.accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = (await resp.json().catch(() => ({}))) as { messages?: { id: string }[]; error?: { message?: string } };
+    if (!resp.ok) return { ok: false, error: data.error?.message || `HTTP ${resp.status}` };
+    return { ok: true, messageId: data.messages?.[0]?.id };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Send failed" };
+  }
+}
+
 export async function sendBillWhatsapp(params: {
   phone: string;
   patientName: string;

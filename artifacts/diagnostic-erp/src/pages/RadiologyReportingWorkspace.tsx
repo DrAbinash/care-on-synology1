@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, type ReactNode } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import VoiceDictationButton from "@/components/VoiceDictationButton";
@@ -22,14 +22,27 @@ import {
   Printer, RefreshCw, Star, ClipboardList, Plus, Trash2, Eye,
   Share2, AlertCircle, X, Send, Zap, BookOpen, MonitorPlay,
   LayoutTemplate, BarChart3, Monitor, PanelLeftClose, PanelLeftOpen,
+  PanelRightClose, PanelRightOpen, Brain, GitCompare, FileText,
+  Maximize2, Columns2, AppWindow,
 } from "lucide-react";
 import EmbeddedWadoViewer from "@/components/EmbeddedWadoViewer";
+import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@/components/ui/resizable";
+import type { ImperativePanelHandle } from "react-resizable-panels";
+import {
+  CENTER_MIN_PX, LEFT_COLLAPSED_PCT, LEFT_MAX_PCT, LEFT_MIN_PCT,
+  RIGHT_COLLAPSED_PCT, RIGHT_MAX_PCT, RIGHT_MIN_PCT,
+  clampLeftPct, clampRightPct, fallbackModeWhenPopupBlocked,
+  loadWorkspaceLayoutPrefs, saveWorkspaceLayoutPrefs, shouldShowEmbeddedViewer,
+  workspaceLayoutStorageKey,
+  type ModeLayoutState, type WorkspaceLayoutMode, type WorkspaceLayoutPrefs,
+} from "@/lib/workspaceLayoutPrefs";
 import ReportImagePicker from "@/components/radiology/ReportImagePicker";
 import RadiologyCopilotPanel from "@/components/RadiologyCopilotPanel";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { FindingsHighlightEditor, type FindingsHighlightEditorHandle } from "@/components/FindingsHighlightEditor";
 import { chocolateBoxSetFor, insertAtCursor } from "@/lib/findingsMacros";
 import RadiologyMemoryPanel from "@/components/RadiologyMemoryPanel";
+import RadiologyKnowledgePanel from "@/components/RadiologyKnowledgePanel";
 import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
 // R2.0 — canonical ultrasound integration: USG mode inside the ONE
 // canonical workspace (no separate USG reporting workflow).
@@ -139,7 +152,8 @@ import { useReportingWorkflow } from "@/hooks/useReportingWorkflow";
 import { useStudyLock } from "@/hooks/useStudyLock";
 import { lockStatusMessage, QUEUE_SCOPE_LABELS, parseQueueScope, assignmentCategoryOf, type QueueScope } from "@/lib/studyLockState";
 import type { StudyLaunchResult } from "@/lib/studyLaunchService";
-import { ChevronLeft, ChevronRight, PauseCircle, Lock, TrendingUp, TrendingDown, Minus, GitCompare } from "lucide-react";
+import { ChevronLeft, ChevronRight, PauseCircle, Lock, TrendingUp, TrendingDown, Minus, CalendarDays } from "lucide-react";
+import { DATE_PRESETS, toISTDateStr } from "@/lib/dateRangePresets";
 // M1.6B2 — the ONE voice pipeline (providers/grammar/safety live in libs; the
 // hook executes through THIS page's adapter → the M1.5 command dispatcher).
 import { useVoiceSession, type VoiceExecutionResult } from "@/hooks/useVoiceSession";
@@ -151,6 +165,8 @@ import {
   type TranscribeCapabilities,
 } from "@/lib/voiceTranscription";
 import type { EmbeddedViewerHandle } from "@/components/EmbeddedWadoViewer";
+import { AiDraftPanel } from "@/components/ai/AiDraftPanel";
+import { appendToFindings } from "@/lib/aiDraftBinding";
 
 // ════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -258,7 +274,17 @@ type StylePreferences = {
   includeMeasurements: boolean;
 };
 
-type RightTab = "copilot" | "quickselect" | "templates" | "followup" | "prior" | "ai" | "measurements" | "teaching";
+type RightTab = "copilot" | "quickselect" | "templates" | "followup" | "prior" | "ai" | "measurements" | "teaching" | "knowledge" | "diff" | "print";
+
+// Workspace layout mode selector (Phase 2) — the upper-right control that
+// used to be a single left-panel collapse icon. Doesn't depend on component
+// state, so it's a module-level constant rather than rebuilt every render.
+const LAYOUT_MODE_OPTIONS: Array<{ mode: WorkspaceLayoutMode; label: string; title: string; icon: ReactNode }> = [
+  { mode: "reportFocus", label: "Report", title: "Report Focus — viewer hidden, editor gets maximum width (toggle viewer: Alt+\\)", icon: <Maximize2 size={13} /> },
+  { mode: "split", label: "Split", title: "Split View — viewer and editor share the screen (laptop/remote default; toggle viewer: Alt+\\)", icon: <Columns2 size={13} /> },
+  { mode: "viewerFocus", label: "Viewer", title: "Viewer Focus — embedded viewer gets more width for close image review", icon: <Monitor size={13} /> },
+  { mode: "dualScreen", label: "Dual", title: "Dual Screen — open the viewer in a separate window/monitor, editor uses the full primary screen", icon: <AppWindow size={13} /> },
+];
 
 // F3 (Cockpit→Workspace merge): rules superseded by MeasurementAssistantPanel,
 // which computes real ADC/Evans-Index values rather than just reminding the
@@ -511,6 +537,57 @@ const DEFAULT_RECOMMENDATION_CHIPS: string[] = [
   "No further imaging is required at present.",
 ];
 
+// AI-draft-vs-final diff, embedded as a workspace tab (previously only the
+// standalone ReportDiffViewer page). Reuses the existing
+// /api/ai-reporting/report-diff/:worklistId endpoint, scoped to the open study.
+function DiffList({ title, items, tone }: { title: string; items: string[]; tone: "add" | "del" | "same" }) {
+  const toneCls =
+    tone === "add" ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300"
+    : tone === "del" ? "border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300"
+    : "border-card-border bg-muted/30 text-muted-foreground";
+  return (
+    <div>
+      <div className="text-[11px] font-semibold mb-1">{title} <span className="opacity-60">({items.length})</span></div>
+      {items.length === 0 ? (
+        <div className="text-[10px] text-muted-foreground italic">None</div>
+      ) : (
+        <ul className="space-y-1">
+          {items.map((t, i) => (
+            <li key={i} className={`text-[11px] rounded border px-2 py-1 whitespace-pre-wrap ${toneCls}`}>{t}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function ReportDiffTab({ worklistId }: { worklistId: number | null }) {
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["workspace-report-diff", worklistId],
+    enabled: !!worklistId,
+    queryFn: () => api.get<{
+      aiDraft: string;
+      finalReport: string;
+      aiDraftStatus: string;
+      diff: { addedByRadiologist: string[]; removedByRadiologist: string[]; unchanged: string[] };
+    }>(`/api/ai-reporting/report-diff/${worklistId}`),
+  });
+
+  if (!worklistId) return <div className="p-3 text-xs text-muted-foreground">Open a study to compare its AI draft with your report.</div>;
+  if (isLoading) return <div className="p-3 text-xs text-muted-foreground">Loading diff…</div>;
+  if (isError || !data) return <div className="p-3 text-xs text-muted-foreground">No AI draft available to compare yet.</div>;
+  if (!(data.aiDraft ?? "").trim()) return <div className="p-3 text-xs text-muted-foreground">No AI draft was generated for this study — nothing to compare.</div>;
+
+  return (
+    <div className="p-3 space-y-3 overflow-y-auto">
+      <div className="text-[11px] text-muted-foreground">AI draft vs your report — what you added, removed, or kept.</div>
+      <DiffList title="Added by you" items={data.diff.addedByRadiologist} tone="add" />
+      <DiffList title="Removed from AI draft" items={data.diff.removedByRadiologist} tone="del" />
+      <DiffList title="Unchanged" items={data.diff.unchanged} tone="same" />
+    </div>
+  );
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ════════════════════════════════════════════════════════════════════════════
@@ -530,6 +607,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
   // ── Layout ────────────────────────────────────────────────────────────────
   const [rightTab, setRightTab] = useState<RightTab>("templates");
+  // Which sub-panel the embedded Knowledge tab shows (RadiologyKnowledgePanel is
+  // parent-driven: it renders one of master/personal/packs/knowledge by activePanel).
+  const [knowledgeSubPanel, setKnowledgeSubPanel] = useState<"knowledge" | "personal" | "master" | "packs">("knowledge");
   const [previewMode, setPreviewMode] = useState(false);
   // R1.1 — the preview shows the CANONICAL server-rendered document (shared
   // presentation layer) whenever a saved draft/report exists; the client-side
@@ -575,22 +655,126 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
   const isMobile = useIsMobile();
 
-  // ── Left viewer panel collapse — frees width for the report editor without
-  // duplicating the DICOM viewer elsewhere (it already lives here, not the
-  // center column). Persisted per-browser like the sidebar auto-minimise
-  // pattern in Layout.tsx. On a phone-width screen with no stored preference
-  // yet, default to collapsed — the left panel's 280px min-width otherwise
-  // squeezes the report editor column (flex-1 min-w-0) down to ~0px, which is
-  // the root cause of the mobile "cut view" report: the editor never got any
-  // width to render into.
-  const [isLeftPanelCollapsed, setIsLeftPanelCollapsed] = useState(() => {
-    const stored = localStorage.getItem("radiologyWorkspaceLeftPanelCollapsed");
-    if (stored != null) return stored === "1";
-    return typeof window !== "undefined" && window.innerWidth < 768;
+  // ── Workspace layout mode (Report Focus / Split View / Viewer Focus /
+  // Dual Screen) — one persisted preference object per radiologist drives
+  // which panels show, their widths, and left/right collapse state. Column
+  // sizes and collapse state are tracked PER MODE, so switching modes and
+  // switching back restores whatever the radiologist last left that specific
+  // mode at, rather than one global collapse flag fighting across modes.
+  // Replaces the old single `radiologyWorkspaceLeftPanelCollapsed` boolean —
+  // one persisted object, not parallel state.
+  const layoutUserKey = session?.user?.id ?? null;
+  const [layoutPrefs, setLayoutPrefs] = useState<WorkspaceLayoutPrefs>(() => {
+    const loaded = loadWorkspaceLayoutPrefs(layoutUserKey);
+    // First-ever visit (nothing persisted yet) on a narrow screen: start
+    // with the left panel collapsed so the report editor gets real width
+    // immediately — mirrors the pre-redesign mobile default. Never overrides
+    // an explicit stored preference.
+    let hasStoredPrefs = true;
+    try { hasStoredPrefs = localStorage.getItem(workspaceLayoutStorageKey(layoutUserKey)) != null; } catch { hasStoredPrefs = true; }
+    if (!hasStoredPrefs && typeof window !== "undefined" && window.innerWidth < 768) {
+      return {
+        ...loaded,
+        byMode: { ...loaded.byMode, [loaded.mode]: { ...loaded.byMode[loaded.mode], leftCollapsed: true } },
+      };
+    }
+    return loaded;
   });
   useEffect(() => {
-    localStorage.setItem("radiologyWorkspaceLeftPanelCollapsed", isLeftPanelCollapsed ? "1" : "0");
-  }, [isLeftPanelCollapsed]);
+    saveWorkspaceLayoutPrefs(layoutUserKey, layoutPrefs);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutPrefs]);
+
+  const layoutMode = layoutPrefs.mode;
+  const currentModeLayout = layoutPrefs.byMode[layoutMode];
+  const setLayoutMode = useCallback((mode: WorkspaceLayoutMode) => {
+    setLayoutPrefs((prev) => (prev.mode === mode ? prev : { ...prev, mode }));
+  }, []);
+  function updateModeLayout(mode: WorkspaceLayoutMode, patch: Partial<ModeLayoutState>) {
+    setLayoutPrefs((prev) => {
+      const cur = prev.byMode[mode];
+      const next = { ...cur, ...patch };
+      if (next.left === cur.left && next.right === cur.right
+        && next.leftCollapsed === cur.leftCollapsed && next.rightCollapsed === cur.rightCollapsed) {
+        return prev; // no-op — avoids redundant re-renders/saves from idempotent library callbacks
+      }
+      return { ...prev, byMode: { ...prev.byMode, [mode]: next } };
+    });
+  }
+
+  // Kept as `isLeftPanelCollapsed` (same name as before this redesign) so the
+  // render logic and header toggle below need minimal changes — it now reads
+  // from the per-mode layout instead of its own standalone state.
+  const isLeftPanelCollapsed = currentModeLayout.leftCollapsed;
+  // New (Phase 5) — the right contextual drawer previously had no collapse
+  // control at all.
+  const isRightPanelCollapsed = currentModeLayout.rightCollapsed;
+
+  const leftPanelRef = useRef<ImperativePanelHandle>(null);
+  const rightPanelRef = useRef<ImperativePanelHandle>(null);
+
+  // The embedded DICOM viewer's mount/unmount is driven ONLY by the layout
+  // mode (Phase 2/4) — never by panel collapse state, which just controls
+  // how much patient metadata is visible alongside it.
+  const showEmbeddedViewer = shouldShowEmbeddedViewer(layoutMode);
+
+  // ── Viewer focus mode ──────────────────────────────────────────────────
+  // Clicking into the embedded WADO/OHIF viewer maximises image space: the
+  // patient-demographics block (top of this left panel) collapses to a slim
+  // strip, and the app's blue navigation sidebar minimises (via the decoupled
+  // `care:viewer-focus` event that Layout listens for). Clicking back into the
+  // report editor — or the strip's "Show details" — restores both. A ref backs
+  // the boolean so the toggler is stable and never fires a redundant event.
+  const [viewerFocusMode, setViewerFocusMode] = useState(false);
+  const viewerFocusRef = useRef(false);
+  const setViewerFocus = useCallback((on: boolean) => {
+    if (viewerFocusRef.current === on) return;
+    viewerFocusRef.current = on;
+    setViewerFocusMode(on);
+    try { window.dispatchEvent(new CustomEvent("care:viewer-focus", { detail: on })); } catch { /* SSR/no window */ }
+  }, []);
+  // Leave focus mode whenever the viewer isn't shown (mode switched to Report
+  // Focus / Dual Screen) so the demographics + app sidebar can never get stuck
+  // collapsed with no viewer to justify it.
+  useEffect(() => {
+    if (!showEmbeddedViewer) setViewerFocus(false);
+  }, [showEmbeddedViewer, setViewerFocus]);
+  // Restore the app sidebar if we unmount (navigate away) while focused.
+  useEffect(() => () => {
+    if (viewerFocusRef.current) {
+      try { window.dispatchEvent(new CustomEvent("care:viewer-focus", { detail: false })); } catch { /* noop */ }
+    }
+  }, []);
+
+  // Reposition the two resizable panels whenever the mode changes (imperative
+  // — the panels stay mounted across mode switches so the embedded viewer
+  // never remounts just because the mode's proportions changed). Live drag
+  // and manual collapse/expand are handled by the Resizable* callbacks near
+  // the 3-column body, and intentionally do NOT run through this effect.
+  useEffect(() => {
+    if (currentModeLayout.leftCollapsed) leftPanelRef.current?.collapse();
+    else { leftPanelRef.current?.expand(); leftPanelRef.current?.resize(currentModeLayout.left); }
+    if (currentModeLayout.rightCollapsed) rightPanelRef.current?.collapse();
+    else { rightPanelRef.current?.expand(); rightPanelRef.current?.resize(currentModeLayout.right); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutMode]);
+
+  function handleWorkspacePanelLayout(sizes: number[]) {
+    const [leftSize, , rightSize] = sizes;
+    if (typeof leftSize !== "number" || typeof rightSize !== "number") return;
+    setLayoutPrefs((prev) => {
+      const mode = prev.mode;
+      const cur = prev.byMode[mode];
+      const next = { ...cur };
+      // Only a panel's OWN drag while expanded counts as a width preference —
+      // collapsed panels report their tiny snap size through this same
+      // callback, which must never overwrite the remembered expanded width.
+      if (!cur.leftCollapsed) next.left = clampLeftPct(leftSize);
+      if (!cur.rightCollapsed) next.right = clampRightPct(rightSize);
+      if (next.left === cur.left && next.right === cur.right) return prev;
+      return { ...prev, byMode: { ...prev.byMode, [mode]: next } };
+    });
+  }
 
   // ── Cockpit→Workspace merge ────────────────────────────────────────────────
   // G1: client-side role gate on the Sign action (defense-in-depth + clearer
@@ -762,6 +946,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // distinct from the template `modalityFilter` (which filters the picker).
   const [queueFilterText, setQueueFilterText] = useState("");
   const [queueModalityFilter, setQueueModalityFilter] = useState("all");
+  // Date-range filter over the jump list — same IST-calendar-day presets as
+  // the PACS Worklist page (Today/Yesterday/Day Before/This Week/This Month).
+  const [queueDateFrom, setQueueDateFrom] = useState("");
+  const [queueDateTo, setQueueDateTo] = useState("");
+  function setQueueDatePreset(from: string, to: string) {
+    setQueueDateFrom(from);
+    setQueueDateTo(to);
+  }
   const jumpQueue = useMemo(() => {
     const q = queueFilterText.trim().toLowerCase();
     const mod = queueModalityFilter;
@@ -773,13 +965,19 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           : m.startsWith(mod);
         if (!matchesModality) return false;
       }
+      if (queueDateFrom || queueDateTo) {
+        const d = s.createdAt ? toISTDateStr(s.createdAt) : null;
+        if (!d) return false;
+        if (queueDateFrom && d < queueDateFrom) return false;
+        if (queueDateTo && d > queueDateTo) return false;
+      }
       if (q) {
         const hay = `${s.patientName ?? ""} ${s.modality ?? ""} ${s.accessionNumber ?? ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
     });
-  }, [workflow.queue, queueFilterText, queueModalityFilter]);
+  }, [workflow.queue, queueFilterText, queueModalityFilter, queueDateFrom, queueDateTo]);
 
   // Claim the current study on entry (visible in the status bar — never
   // silent), heartbeat while held, stop after finalize. Server expiry stays
@@ -794,6 +992,25 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     busy: false,
     lastResult: null,
   });
+
+  // Dual Screen mode relies entirely on the EXISTING study-launch path above
+  // (Open Study / OHIF / Weasis, already popup-safe and already reported
+  // through viewerLaunch by OpenStudyPanel) — no separate window.open logic.
+  // If the browser blocked that popup, fall back to Split View so the
+  // radiologist still has a working in-page viewer instead of a dead end.
+  useEffect(() => {
+    if (layoutMode !== "dualScreen") return;
+    if (viewerLaunch.busy || !viewerLaunch.lastResult) return;
+    if (!viewerLaunch.lastResult.success && viewerLaunch.lastResult.errorCode === "POPUP_BLOCKED") {
+      setLayoutMode(fallbackModeWhenPopupBlocked(layoutMode));
+      toast({
+        title: "Popup blocked — showing Split View",
+        description: "Allow popups for this site to use Dual Screen, then open the study again.",
+        variant: "destructive",
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutMode, viewerLaunch]);
 
   // ── M1.6B2 — voice layer wiring ───────────────────────────────────────────
   /** Live handle onto the embedded viewer (null unless a study is rendered) —
@@ -2422,20 +2639,31 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   );
   const companionEligible = isUltrasound || isCtModality;
 
-  // PR B follow-up — PCPNDT safety guard. This workspace has no PCPNDT Form F
-  // compliance check (that lock exists only in the legacy, non-nav-linked
-  // usgReports.ts pipeline — see docs/usg-reporting/platform-consolidation-pr-b.md
-  // §17-18). Rather than duplicating that server-side check here, an
-  // obstetric/fetal USG study is BLOCKED from finalizing through this
-  // canonical workspace entirely (see finalizeReport() below) until the
-  // PCPNDT reconciliation decision is made — draft/save/print/preview remain
-  // fully usable, only Finalize is gated. Non-obstetric USG (Whole Abdomen,
-  // KUB, Thyroid, Breast, Scrotum, Doppler, ...) and every non-ultrasound
-  // modality are completely unaffected.
+  // PCPNDT gate (roadmap §1.4 step 2 — docs/usg-reporting/
+  // pcpndt-canonical-roadmap.md). The server-side finalize gates
+  // (patient-reports.ts, internal-radiology.ts) now run the real shared
+  // Form F verification, so this workspace no longer blocks obstetric/fetal
+  // USG unconditionally: it asks the server whether the patient's Form F is
+  // complete and verified, finalizes normally when it is, and blocks with
+  // the exact missing fields when it isn't. Non-obstetric USG and every
+  // non-ultrasound modality are completely unaffected. Draft/save/print/
+  // preview remain fully usable either way — only Finalize is gated, and
+  // the server re-checks regardless of anything this client decides.
   const isPcpndtRelevantUsg = useMemo(
     () => isObstetricUsgStudy(entry?.modality, entry?.studyDescription),
     [entry?.modality, entry?.studyDescription],
   );
+  const { data: pcpndtCompliance } = useQuery<{ compliant: boolean; errors: string[]; formFId: number | null }>({
+    queryKey: ["pcpndt-compliance", entry?.patientId],
+    queryFn: () => api.get(`/api/patient-reports/pcpndt-compliance/${entry!.patientId}`),
+    enabled: isPcpndtRelevantUsg && !!entry?.patientId,
+    // Form F is completed in a separate tab (the "Review & Map to Form F"
+    // hand-off) — poll so the unblock is picked up without a page reload.
+    refetchInterval: 30_000,
+  });
+  // Blocked when relevant AND not yet confirmed compliant (unknown/loading/
+  // no-patient counts as blocked — fail closed; the server enforces anyway).
+  const pcpndtBlocked = isPcpndtRelevantUsg && pcpndtCompliance?.compliant !== true;
 
   // Practical USG template catalog (Whole Abdomen/KUB/Pelvis/OB/Doppler/
   // Prostate/Scrotum/Thyroid/Breast) — a separate, confidence-gated-autofill
@@ -2916,6 +3144,29 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         closeTopPanel();
         return;
       }
+      // Layout redesign — panel/viewer toggles route to the resizable-panel
+      // handles + layout mode directly (component-local refs/state), not the
+      // command dispatcher.
+      if (shortcut === "toggle-left-panel") {
+        e.preventDefault();
+        if (isLeftPanelCollapsed) leftPanelRef.current?.expand();
+        else leftPanelRef.current?.collapse();
+        return;
+      }
+      if (shortcut === "toggle-right-panel") {
+        e.preventDefault();
+        if (isRightPanelCollapsed) rightPanelRef.current?.expand();
+        else rightPanelRef.current?.collapse();
+        return;
+      }
+      if (shortcut === "toggle-viewer") {
+        e.preventDefault();
+        // Show the embedded viewer (Split) when it's currently hidden,
+        // otherwise hide it (Report Focus). Mirrors the mode selector — one
+        // source of truth (layoutMode), no parallel viewer-visibility flag.
+        setLayoutMode(showEmbeddedViewer ? "reportFocus" : "split");
+        return;
+      }
       e.preventDefault();
       const command =
         shortcut === "quickselect" ? "focus-quick-search"
@@ -3246,18 +3497,22 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       toast({ title: "Cannot finalize", description: "Your study lock expired — reclaim the study first. Your text is preserved.", variant: "destructive" });
       return;
     }
-    // PR B follow-up — PCPNDT safety guard (see isPcpndtRelevantUsg above).
-    // This workspace has no PCPNDT Form F compliance check; an obstetric/
-    // fetal USG study must not be finalizable through it. This is the single
-    // authoritative enforcement point — it also covers the Ctrl+Enter /
-    // Command Palette "finalize" dispatcher, which calls finalizeReport()
-    // directly and would otherwise bypass a disabled Finalize button.
-    // Draft save / print / preview are unaffected; only finalize is blocked.
-    if (isPcpndtRelevantUsg) {
+    // PCPNDT gate (see isPcpndtRelevantUsg/pcpndtBlocked above). Blocks only
+    // when the patient's Form F is genuinely missing/incomplete — a
+    // compliant obstetric study finalizes here normally now, and the server
+    // re-verifies with the same shared check regardless. This single client
+    // enforcement point also covers the Ctrl+Enter / Command Palette
+    // "finalize" dispatcher, which calls finalizeReport() directly and would
+    // otherwise bypass a disabled Finalize button. Draft save / print /
+    // preview are unaffected; only finalize is gated.
+    if (pcpndtBlocked) {
+      const missing = pcpndtCompliance?.errors?.length
+        ? ` Missing: ${pcpndtCompliance.errors.join(" ")}`
+        : "";
       toast({
         title: "Finalize blocked — PCPNDT Form F required",
         description:
-          "This is an obstetric/fetal ultrasound. This workspace does not check PCPNDT Form F compliance, so it cannot finalize this report. Use \"Review & Map to Form F\" (Measurements tab) to open Form F, then finalize this study through USG Reporting (the PCPNDT-compliant legacy page, /usg/reporting) instead. Your draft here is unaffected and remains saved.",
+          `This is an obstetric/fetal ultrasound and the patient's PCPNDT Form F record is missing or incomplete.${missing} Use "Review & Map to Form F" (Measurements tab) to complete and verify Form F, then finalize again — this page rechecks automatically. Your draft is unaffected and remains saved.`,
         variant: "destructive",
       });
       return;
@@ -4038,18 +4293,58 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     (i) => !copilotDismissed.has(i.id) && (i.severity === "critical" || i.severity === "warning"),
   ).length;
   const RIGHT_TABS = [
-    ...(copilotPrefs.enabled ? [{ id: "copilot", label: "Copilot", icon: <Sparkles size={11} />, badge: copilotAlerts }] : []),
-    { id: "quickselect", label: "Quick", icon: <Zap size={11} /> },
-    { id: "templates", label: "Templates", icon: <LayoutTemplate size={11} /> },
-    { id: "followup", label: "Follow-up", icon: <RefreshCw size={11} /> },
-    { id: "prior", label: "Prior", icon: <ClipboardList size={11} /> },
-    { id: "ai", label: "AI", icon: <Sparkles size={11} /> },
-    { id: "measurements", label: "Measure", icon: <BarChart3 size={11} /> },
-    { id: "teaching", label: "Teaching", icon: <BookOpen size={11} /> },
+    ...(copilotPrefs.enabled ? [{ id: "copilot", label: "Copilot", icon: <Sparkles size={14} />, badge: copilotAlerts }] : []),
+    { id: "quickselect", label: "Quick", icon: <Zap size={14} /> },
+    { id: "templates", label: "Templates", icon: <LayoutTemplate size={14} /> },
+    { id: "followup", label: "Follow-up", icon: <RefreshCw size={14} /> },
+    { id: "prior", label: "Prior", icon: <ClipboardList size={14} /> },
+    { id: "ai", label: "AI", icon: <Sparkles size={14} /> },
+    { id: "measurements", label: "Measure", icon: <BarChart3 size={14} /> },
+    { id: "knowledge", label: "Knowledge", icon: <Brain size={14} /> },
+    { id: "diff", label: "Diff", icon: <GitCompare size={14} /> },
+    { id: "print", label: "Print", icon: <FileText size={14} /> },
+    { id: "teaching", label: "Teaching", icon: <BookOpen size={14} /> },
   ];
+  // HERO_ACCENT — distinct accent color for the 4 most-used tabs (Copilot/
+  // Quick/AI/Templates) in the compact ribbon below; looked up by id so a
+  // tab simply gets the default neutral accent when not listed here (e.g.
+  // Copilot disappearing entirely when copilotPrefs.enabled is false doesn't
+  // require any shifting logic elsewhere).
+  const HERO_ACCENT: Record<string, { card: string; chip: string; text: string }> = {
+    copilot: {
+      card: "border-indigo-300 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950/30",
+      chip: "bg-indigo-100 text-indigo-700 border-indigo-200 dark:bg-indigo-900/50 dark:text-indigo-300 dark:border-indigo-800",
+      text: "text-indigo-900 dark:text-indigo-200",
+    },
+    quickselect: {
+      card: "border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30",
+      chip: "bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-900/50 dark:text-amber-300 dark:border-amber-800",
+      text: "text-amber-900 dark:text-amber-200",
+    },
+    ai: {
+      card: "border-purple-300 bg-purple-50 dark:border-purple-800 dark:bg-purple-950/30",
+      chip: "bg-purple-100 text-purple-700 border-purple-200 dark:bg-purple-900/50 dark:text-purple-300 dark:border-purple-800",
+      text: "text-purple-900 dark:text-purple-200",
+    },
+    templates: {
+      card: "border-blue-300 bg-blue-50 dark:border-blue-800 dark:bg-blue-950/30",
+      chip: "bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-900/50 dark:text-blue-300 dark:border-blue-800",
+      text: "text-blue-900 dark:text-blue-200",
+    },
+  };
 
   return (
     <div className="flex flex-col" style={{ height: "calc(100vh - 48px)" }}>
+      {/* Phase P3 — feature-flagged AI draft panel. Renders nothing unless AI is
+          enabled AND visible for this radiologist (pilot/production); default OFF.
+          Accept inserts into the EXISTING findings editor (setRawFindings), which
+          the existing autosave persists to radiology_report_drafts — the AI never
+          writes the draft store, patient_reports, or signs. */}
+      <AiDraftPanel
+        studyInstanceUid={entry?.studyInstanceUID ?? null}
+        modality={entry?.modality ?? null}
+        onInsertText={(text) => setRawFindings((prev) => appendToFindings(prev, text))}
+      />
 
       {/* ── Compact header ─────────────────────────────────────────────────── */}
       <div className="shrink-0 flex items-center flex-wrap gap-x-3 gap-y-1 px-3 py-2 border-b bg-white">
@@ -4125,13 +4420,49 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             Structured
           </Label>
         </div>
+        {/* ── Workspace layout mode (Phase 2) — extends the single left-panel
+            collapse icon this used to be into 4 full layout modes. Controls
+            embedded-viewer visibility + column proportions; persisted per
+            radiologist. The left/right collapse buttons beside it are an
+            orthogonal, per-panel manual override available in any mode. ── */}
+        <div className="flex items-center gap-0.5 shrink-0 rounded-md border p-0.5 bg-muted/30" role="radiogroup" aria-label="Workspace layout mode" data-testid="layout-mode-selector">
+          {LAYOUT_MODE_OPTIONS.map((opt) => (
+            <button
+              key={opt.mode}
+              type="button"
+              role="radio"
+              aria-checked={layoutMode === opt.mode}
+              title={opt.title}
+              data-testid={`layout-mode-${opt.mode}`}
+              onClick={() => setLayoutMode(opt.mode)}
+              className={`flex items-center gap-1 px-1.5 py-1 rounded text-[10px] font-medium transition-colors ${
+                layoutMode === opt.mode
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
+              }`}
+            >
+              {opt.icon}
+              <span className="hidden lg:inline">{opt.label}</span>
+            </button>
+          ))}
+        </div>
         <button
           type="button"
-          title={isLeftPanelCollapsed ? "Expand viewer panel" : "Collapse viewer panel"}
-          onClick={() => setIsLeftPanelCollapsed((v) => !v)}
+          title={`${isLeftPanelCollapsed ? "Expand" : "Collapse"} patient panel (Alt+[)`}
+          data-testid="toggle-left-panel"
+          onClick={() => { if (isLeftPanelCollapsed) leftPanelRef.current?.expand(); else leftPanelRef.current?.collapse(); }}
           className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:bg-muted transition-colors"
         >
           {isLeftPanelCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+        </button>
+        <button
+          type="button"
+          title={`${isRightPanelCollapsed ? "Expand" : "Collapse"} tool drawer (Alt+])`}
+          data-testid="toggle-right-panel"
+          onClick={() => { if (isRightPanelCollapsed) rightPanelRef.current?.expand(); else rightPanelRef.current?.collapse(); }}
+          className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:bg-muted transition-colors"
+        >
+          {isRightPanelCollapsed ? <PanelRightOpen size={15} /> : <PanelRightClose size={15} />}
         </button>
       </div>
 
@@ -4176,7 +4507,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 ? "launch failed"
                 : "—"}
         </span>
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex items-center gap-1 flex-wrap">
           {/* M1.6A/M1.6B1 — assignment-aware queue scope (+ By Radiologist) */}
           <select
             className="h-6 text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
@@ -4219,6 +4550,49 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             <option value="CR">CR</option>
             <option value="DX">DX</option>
           </select>
+          {/* Date-range filter over the jump list — same presets as PACS Worklist */}
+          <CalendarDays size={11} className="text-muted-foreground shrink-0" />
+          <Input
+            type="date"
+            value={queueDateFrom}
+            onChange={(e) => setQueueDateFrom(e.target.value)}
+            className="h-6 w-[90px] text-[10px] px-1"
+            data-testid="queue-filter-date-from"
+            title="Filter the queue jump list from this date"
+          />
+          <Input
+            type="date"
+            value={queueDateTo}
+            onChange={(e) => setQueueDateTo(e.target.value)}
+            className="h-6 w-[90px] text-[10px] px-1"
+            data-testid="queue-filter-date-to"
+            title="Filter the queue jump list up to this date"
+          />
+          {DATE_PRESETS.map((p) => (
+            <Button
+              key={p.label}
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-6 text-[10px] px-1.5"
+              onClick={() => setQueueDatePreset(p.from(), p.to())}
+              title={`Filter queue to ${p.label}`}
+            >
+              {p.label}
+            </Button>
+          ))}
+          {(queueDateFrom || queueDateTo) && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-6 text-[10px] px-1"
+              onClick={() => setQueueDatePreset("", "")}
+              title="Clear date filter"
+              data-testid="queue-filter-date-clear"
+            >
+              <X size={10} />
+            </Button>
+          )}
           {/* Jump to a specific queue row — →current ✓done ⏸parked 🔒locked */}
           <select
             className="h-6 max-w-[260px] text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
@@ -4282,41 +4656,101 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           workspace never depends on voice — keyboard/mouse stay canonical) ── */}
       {voiceSettings.enabled && <VoiceCommandBar voice={voice} />}
 
-      {/* ── 3-column body ──────────────────────────────────────────────────── */}
-      <div className="flex flex-1 overflow-hidden">
+      {/* ── 3-column body — resizable via drag (react-resizable-panels), plus
+          collapsible left/right panels. Widths + collapse state persist per
+          radiologist per layout mode (layoutPrefs above); the panels stay
+          mounted across mode switches (see the layoutMode effect) so the
+          embedded viewer never remounts just from toggling a drawer. ───── */}
+      <ResizablePanelGroup
+        direction={isMobile ? "vertical" : "horizontal"}
+        className="flex-1 min-h-0"
+        onLayout={handleWorkspacePanelLayout}
+      >
 
-        {/* ── LEFT 35%: Study info + DICOM viewer (collapsible to an icon
-            strip via isLeftPanelCollapsed — frees width for the editor
-            without duplicating the viewer into the center column) ──── */}
-        <div
-          className="flex flex-col border-r bg-muted/5 overflow-hidden shrink-0 transition-[width] duration-200"
-          style={isLeftPanelCollapsed
-            ? { width: 44, minWidth: 44, maxWidth: 44 }
-            : isMobile
-              // Kept low enough that left + right (below, 32% on mobile)
-              // never combine past 100% of viewport width — if they did, the
-              // center report editor (flex-1, no floor) would be forced back
-              // to ~0px, reproducing the exact bug this mobile fix exists for.
-              ? { width: "45%", minWidth: 160, maxWidth: 240 }
-              : { width: "35%", minWidth: 280, maxWidth: 460 }}
+        {/* ── LEFT: patient/study panel — collapsible to a compact summary
+            card (Phase 4), never to a bare icon strip, so the essentials
+            stay legible even collapsed. The embedded DICOM viewer inside the
+            expanded state is gated separately by showEmbeddedViewer (layout
+            mode), not by this collapse state. ──────────────────────────── */}
+        <ResizablePanel
+          ref={leftPanelRef}
+          id="workspace-left"
+          order={1}
+          collapsible
+          collapsedSize={LEFT_COLLAPSED_PCT}
+          minSize={LEFT_MIN_PCT}
+          maxSize={LEFT_MAX_PCT}
+          defaultSize={isLeftPanelCollapsed ? LEFT_COLLAPSED_PCT : currentModeLayout.left}
+          onCollapse={() => updateModeLayout(layoutMode, { leftCollapsed: true })}
+          onExpand={() => updateModeLayout(layoutMode, { leftCollapsed: false })}
+          className="flex flex-col border-r bg-muted/5"
         >
         {isLeftPanelCollapsed ? (
-          <button
-            type="button"
-            onClick={() => setIsLeftPanelCollapsed(false)}
-            title={entry ? `${entry.patientName} · ${entry.modality} — expand viewer` : "Expand viewer panel"}
-            className="flex flex-col items-center gap-2 pt-3 h-full hover:bg-muted/40 transition-colors"
-          >
-            <PanelLeftOpen size={16} className="text-muted-foreground" />
-            {entry?.modality && (
-              <Badge variant="outline" className="text-[9px] py-0 h-4 px-1 rotate-90 mt-4">
-                {entry.modality}
-              </Badge>
-            )}
-          </button>
+          <div className="flex flex-col h-full overflow-y-auto" data-testid="left-panel-compact">
+            <div className="shrink-0 p-2.5 flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => leftPanelRef.current?.expand()}
+                title={entry ? `${entry.patientName} · ${entry.modality} — expand patient panel` : "Expand patient panel"}
+                className="self-start p-1 -m-1 rounded text-muted-foreground hover:bg-muted transition-colors"
+              >
+                <PanelLeftOpen size={14} />
+              </button>
+              {entryLoading && <div className="text-xs text-muted-foreground">Loading study...</div>}
+              {!entryLoading && !entry && (
+                <div className="text-xs text-muted-foreground">No study loaded. Open from worklist.</div>
+              )}
+              {entry && (
+                <div className="flex flex-col gap-1.5" data-testid="left-panel-compact-summary">
+                  <div className="font-semibold text-sm leading-tight truncate" title={entry.patientName}>{entry.patientName}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {[entry.age, entry.sex].filter(Boolean).join(" / ") || "—"}
+                  </div>
+                  <Badge variant="outline" className="w-fit text-[10px] py-0 h-4">{entry.modality}</Badge>
+                  <div className="text-xs truncate" title={entry.studyDescription || undefined}>{entry.studyDescription || "—"}</div>
+                  <div className="text-xs text-muted-foreground truncate" title={entry.referringDoctor || undefined}>
+                    {entry.referringDoctor || "—"}
+                  </div>
+                  {(() => { const u = toUnifiedStatus(entry.status, entry.deliveryStatus); return (
+                    <span className={`inline-flex w-fit items-center px-1.5 py-0.5 rounded border text-[10px] font-semibold ${u.color}`}>{u.label}</span>
+                  ); })()}
+                  <OpenStudyPanel
+                    study={{
+                      studyInstanceUID: entry.studyInstanceUID ?? null,
+                      accessionNumber: entry.accessionNumber ?? null,
+                      patientId: entry.patientId ?? null,
+                      worklistId: entry.id ?? null,
+                    }}
+                    isAdmin={isOwnerRole(session)}
+                    onLaunchStateChange={setViewerLaunch}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
         ) : (
         <>
-          {/* Study info */}
+          {/* Viewer focus mode — the demographics block collapses to this slim
+              strip so the embedded viewer below gets the reclaimed height. */}
+          {viewerFocusMode && showEmbeddedViewer ? (
+            <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b bg-muted/10" data-testid="viewer-focus-strip">
+              <MonitorPlay size={13} className="text-muted-foreground shrink-0" />
+              <span className="text-xs font-semibold truncate flex-1" title={entry?.patientName ?? undefined}>
+                {entry?.patientName ?? "Viewer"}
+              </span>
+              {entry?.modality && <Badge variant="outline" className="text-[9px] py-0 h-4 shrink-0">{entry.modality}</Badge>}
+              <button
+                type="button"
+                onClick={() => setViewerFocus(false)}
+                className="text-[10px] text-muted-foreground hover:text-foreground underline underline-offset-2 shrink-0"
+                title="Show patient details and the app menu again"
+                data-testid="viewer-focus-restore"
+              >
+                Show details
+              </button>
+            </div>
+          ) : (
+          /* Study info */
           <div className="shrink-0 p-3 border-b">
             {entryLoading && (
               <div className="text-xs text-muted-foreground py-2">Loading study...</div>
@@ -4402,27 +4836,53 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               </div>
             )}
           </div>
+          )}
 
-          {/* DICOM image viewer */}
-          <div className="flex-1 overflow-hidden">
-            {entry?.studyInstanceUID ? (
-              <EmbeddedWadoViewer
-                ref={embeddedViewerRef}
-                studyInstanceUID={entry.studyInstanceUID}
-                accessionNumber={entry.accessionNumber}
-              />
-            ) : (
-              <div className="h-full flex flex-col items-center justify-center gap-3 p-4 text-center">
-                <MonitorPlay size={40} className="text-muted-foreground/20" />
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">No DICOM study linked</p>
-                  <p className="text-xs text-muted-foreground/70 mt-1">
-                    Open images in Weasis or OHIF using the buttons above.
-                  </p>
+          {/* DICOM image viewer — mounted only when the layout mode calls
+              for it (Phase 2/4). Report Focus and Dual Screen hide it so
+              this space goes to metadata + report images instead; Split
+              View and Viewer Focus show it. Gated on the mode alone, so
+              toggling the LEFT panel collapse or switching right-drawer
+              tabs never mounts/unmounts it. Clicking anywhere in the viewer
+              enters viewer-focus mode (collapses demographics + app sidebar
+              for maximum image room) — onMouseDownCapture so it engages even
+              though the viewer's own pan handler also consumes the event. */}
+          {showEmbeddedViewer ? (
+            <div className="flex-1 overflow-hidden" onMouseDownCapture={() => setViewerFocus(true)} data-testid="embedded-viewer-wrap">
+              {entry?.studyInstanceUID ? (
+                <EmbeddedWadoViewer
+                  ref={embeddedViewerRef}
+                  studyInstanceUID={entry.studyInstanceUID}
+                  accessionNumber={entry.accessionNumber}
+                />
+              ) : (
+                <div className="h-full flex flex-col items-center justify-center gap-3 p-4 text-center">
+                  <MonitorPlay size={40} className="text-muted-foreground/20" />
+                  <div>
+                    <p className="text-sm font-medium text-muted-foreground">No DICOM study linked</p>
+                    <p className="text-xs text-muted-foreground/70 mt-1">
+                      Open images in Weasis or OHIF using the buttons above.
+                    </p>
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          ) : (
+            <div
+              className="flex-1 flex flex-col items-center justify-center gap-2 p-4 text-center text-muted-foreground/70 border-y bg-muted/10"
+              data-testid="viewer-hidden-notice"
+            >
+              <MonitorPlay size={24} className="text-muted-foreground/30" />
+              <p className="text-xs max-w-[220px]">
+                {layoutMode === "dualScreen"
+                  ? "Embedded viewer hidden — use Open Study above to view images in a separate window or monitor."
+                  : "Embedded viewer hidden in Report Focus."}
+              </p>
+              <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={() => setLayoutMode("split")}>
+                Switch to Split View
+              </Button>
+            </div>
+          )}
 
           {/* R1.1 — selected report images: persisted as DICOM references,
               rendered into every artifact by the shared presentation layer. */}
@@ -4436,10 +4896,22 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           </div>
         </>
         )}
-        </div>
+        </ResizablePanel>
 
-        {/* ── CENTER 45%: Report editor + action bar ────────────────────── */}
-        <div className="flex flex-col flex-1 overflow-hidden min-w-0">
+        <ResizableHandle withHandle />
+
+        {/* ── CENTER: Report editor + action bar — the workspace's primary
+            working area; gets the remaining space and never shrinks below a
+            clinically usable width. Clicking back into the editor exits
+            viewer-focus mode (restores the demographics + app sidebar). ── */}
+        <ResizablePanel
+          id="workspace-center"
+          order={2}
+          minSize={20}
+          style={{ minWidth: CENTER_MIN_PX, minHeight: isMobile ? 320 : undefined }}
+          className="flex flex-col overflow-hidden min-w-0"
+          onMouseDownCapture={() => setViewerFocus(false)}
+        >
 
           {/* Scrollable editor area */}
           <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
@@ -5408,10 +5880,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 size="sm"
                 className="h-8 text-xs gap-1.5 bg-green-600 hover:bg-green-700 text-white"
                 onClick={() => void finalizeReport()}
-                disabled={finalizing || isPcpndtRelevantUsg}
+                disabled={finalizing || pcpndtBlocked}
                 title={
-                  isPcpndtRelevantUsg
-                    ? "Blocked: obstetric/fetal USG requires PCPNDT Form F compliance, which this workspace does not check — finalize via USG Reporting (legacy, /usg/reporting) instead"
+                  pcpndtBlocked
+                    ? `Blocked: PCPNDT Form F for this patient is missing or incomplete.${pcpndtCompliance?.errors?.length ? ` Missing: ${pcpndtCompliance.errors.join(" ")}` : ""} Complete Form F, then finalize — this page rechecks automatically.`
                     : "Finalize report (Ctrl+Enter)"
                 }
               >
@@ -5423,16 +5895,26 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 Finalize
               </Button>
             )}
-            {/* PR B follow-up — PCPNDT safety guard: persistent, always-visible
-                notice (not just a toast on click) so the block is understood
-                before the radiologist even reaches for Finalize. */}
+            {/* PCPNDT: persistent, always-visible status (not just a toast on
+                click) so the state is understood before the radiologist even
+                reaches for Finalize — red when Form F is missing/incomplete,
+                green once verified (finalize then proceeds here normally). */}
             {!isLocked && canSign && isPcpndtRelevantUsg && (
-              <span
-                className="text-[11px] text-red-600 font-medium self-center px-2 flex items-center gap-1 max-w-[260px]"
-                title="This workspace has no PCPNDT Form F compliance check. Finalize via USG Reporting (legacy, /usg/reporting) after completing Form F."
-              >
-                ⚠ PCPNDT: finalize via USG Reporting (Form F required)
-              </span>
+              pcpndtBlocked ? (
+                <span
+                  className="text-[11px] text-red-600 font-medium self-center px-2 flex items-center gap-1 max-w-[260px]"
+                  title={`PCPNDT Form F for this patient is missing or incomplete.${pcpndtCompliance?.errors?.length ? ` Missing: ${pcpndtCompliance.errors.join(" ")}` : ""} Complete and verify Form F (Measurements tab → "Review & Map to Form F"); this page rechecks automatically.`}
+                >
+                  ⚠ PCPNDT: complete Form F to finalize
+                </span>
+              ) : (
+                <span
+                  className="text-[11px] text-emerald-600 font-medium self-center px-2 flex items-center gap-1 max-w-[260px]"
+                  title="PCPNDT Form F for this patient is complete and ID-verified — finalize proceeds normally (the server re-verifies on finalize)."
+                >
+                  ✓ PCPNDT Form F verified
+                </span>
+              )
             )}
             {/* G1: non-signing roles see why, not a live button that only 500s server-side */}
             {!isLocked && !canSign && (
@@ -5460,43 +5942,112 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               </Button>
             )}
           </div>
-        </div>
+        </ResizablePanel>
 
-        {/* ── RIGHT 20%: 5-tab assistant panel (narrower floor on phone-width
-            screens, alongside the left-panel default-collapse above, so the
-            center report editor keeps real width instead of being squeezed
-            to ~0px) ──────────────────────────────────────────────────── */}
-        <div
-          className="flex flex-col border-l overflow-hidden shrink-0"
-          style={isMobile
-            // 45% (left) + 32% (right) = 77%, always leaving real width for
-            // the center column even when both side panels are at their max.
-            ? { width: "32%", minWidth: 110, maxWidth: 170 }
-            : { width: "20%", minWidth: 200, maxWidth: 280 }}
+        {/* ── RIGHT: contextual tool drawer — Copilot/Quick/Templates/AI/
+            Follow-up/Prior/Measure/Knowledge/Diff/Print/Teaching, one
+            compact icon ribbon instead of large "hero" cards (Phase 5), so
+            it no longer permanently consumes a third of the screen. Only one
+            tab body ever renders (unchanged below); collapsible to a slim
+            icon rail. ─────────────────────────────────────────────────── */}
+        <ResizableHandle withHandle />
+        <ResizablePanel
+          ref={rightPanelRef}
+          id="workspace-right"
+          order={3}
+          collapsible
+          collapsedSize={RIGHT_COLLAPSED_PCT}
+          minSize={RIGHT_MIN_PCT}
+          maxSize={RIGHT_MAX_PCT}
+          defaultSize={isRightPanelCollapsed ? RIGHT_COLLAPSED_PCT : currentModeLayout.right}
+          onCollapse={() => updateModeLayout(layoutMode, { rightCollapsed: true })}
+          onExpand={() => updateModeLayout(layoutMode, { rightCollapsed: false })}
+          className="flex flex-col border-l overflow-hidden"
         >
-          {/* Tab header */}
-          <div className="shrink-0 flex border-b bg-muted/10">
-            {RIGHT_TABS.map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setRightTab(tab.id as RightTab)}
-                className={`flex-1 flex flex-col items-center gap-0.5 py-1.5 text-[9px] font-medium border-b-2 transition-colors ${
-                  rightTab === tab.id
-                    ? "border-primary text-primary bg-white"
-                    : "border-transparent text-muted-foreground hover:text-foreground hover:bg-white/50"
-                }`}
-              >
-                <span className="relative">
+        {isRightPanelCollapsed ? (
+          <div className="flex flex-col items-center gap-1 py-2 h-full overflow-y-auto" data-testid="right-panel-compact">
+            <button
+              type="button"
+              title="Expand tool drawer"
+              onClick={() => rightPanelRef.current?.expand()}
+              className="p-1.5 rounded-md text-muted-foreground hover:bg-muted transition-colors mb-1"
+            >
+              <PanelRightOpen size={14} />
+            </button>
+            {RIGHT_TABS.map((tab) => {
+              const active = rightTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  title={tab.label}
+                  aria-label={tab.label}
+                  onClick={() => { setRightTab(tab.id as RightTab); rightPanelRef.current?.expand(); }}
+                  className={`relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md border transition-colors ${
+                    active
+                      ? "bg-primary/10 border-primary/40 text-primary"
+                      : "border-transparent text-muted-foreground hover:bg-muted hover:text-foreground"
+                  }`}
+                >
                   {tab.icon}
                   {"badge" in tab && tab.badge ? (
-                    <span className="absolute -right-2 -top-1.5 min-w-[13px] rounded-full bg-rose-500 px-0.5 text-center text-[8px] font-bold leading-[13px] text-white">
+                    <span className="absolute -right-1 -top-1 min-w-[14px] rounded-full bg-rose-500 px-1 text-center text-[8px] font-bold leading-[14px] text-white shadow-sm">
                       {tab.badge}
                     </span>
                   ) : null}
-                </span>
-                {tab.label}
-              </button>
-            ))}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+        <>
+          {/* Tab header — compact icon ribbon, every tool at equal visual
+              weight (Phase 5). Tooltip + aria-label carry the tab name;
+              the active tab's name also appears in the strip below so a
+              dozen icons stay identifiable without full-width cards. */}
+          <div className="shrink-0 flex flex-wrap items-center gap-1 p-1.5 border-b bg-muted/10" data-testid="right-drawer-ribbon">
+            {RIGHT_TABS.map((tab) => {
+              const active = rightTab === tab.id;
+              const accent = HERO_ACCENT[tab.id];
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  title={tab.label}
+                  aria-label={tab.label}
+                  aria-pressed={active}
+                  data-testid={`right-tab-${tab.id}`}
+                  onClick={() => setRightTab(tab.id as RightTab)}
+                  className={`relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md border transition-colors ${
+                    active
+                      ? accent
+                        ? `${accent.chip} border-current`
+                        : "bg-primary/10 border-primary/40 text-primary"
+                      : "border-transparent text-muted-foreground hover:bg-muted hover:text-foreground"
+                  }`}
+                >
+                  {tab.icon}
+                  {"badge" in tab && tab.badge ? (
+                    <span className="absolute -right-1 -top-1 min-w-[14px] rounded-full bg-rose-500 px-1 text-center text-[8px] font-bold leading-[14px] text-white shadow-sm">
+                      {tab.badge}
+                    </span>
+                  ) : null}
+                </button>
+              );
+            })}
+            <div className="flex-1" />
+            <button
+              type="button"
+              title="Collapse tool drawer"
+              onClick={() => rightPanelRef.current?.collapse()}
+              className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:bg-muted transition-colors"
+            >
+              <PanelRightClose size={14} />
+            </button>
+          </div>
+          <div className="shrink-0 px-2 py-1 border-b bg-muted/5 text-[11px] font-semibold text-foreground/80 flex items-center gap-1.5">
+            {RIGHT_TABS.find((t) => t.id === rightTab)?.icon}
+            {RIGHT_TABS.find((t) => t.id === rightTab)?.label}
           </div>
 
           {/* Tab content */}
@@ -5548,6 +6099,64 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               />
             )}
             {rightTab === "templates" && <TemplatesTab />}
+            {/* Knowledge / reference lookup + personal library (previously an
+                orphaned component, never rendered). Its sub-panels are
+                parent-driven, so a compact sub-nav selects which one shows.
+                onInsert reuses the shared, lock-and-smart-mode-aware inserter. */}
+            {rightTab === "knowledge" && (
+              <div className="flex flex-col h-full min-h-0">
+                <div className="flex flex-wrap gap-1 p-2 border-b border-card-border shrink-0">
+                  {([
+                    ["knowledge", "Reference"],
+                    ["personal", "My Library"],
+                    ["master", "Master"],
+                    ["packs", "Packs"],
+                  ] as const).map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setKnowledgeSubPanel(id)}
+                      className={`text-[11px] px-2 py-1 rounded-md border transition-colors ${
+                        knowledgeSubPanel === id
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "bg-background text-muted-foreground border-card-border hover:text-foreground"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex-1 min-h-0 flex flex-col">
+                  <RadiologyKnowledgePanel
+                    activePanel={knowledgeSubPanel}
+                    onInsert={comparisonInsertFindings}
+                  />
+                </div>
+              </div>
+            )}
+            {/* AI-draft-vs-final diff for the open study (was a separate page). */}
+            {rightTab === "diff" && <ReportDiffTab worklistId={entry?.id ?? null} />}
+            {/* Print / PDF: surfaces the workspace's existing canonical
+                server-rendered preview + print, so it's reachable from the tab
+                bar too (the toolbar "Preview" button toggles the same view). */}
+            {rightTab === "print" && (
+              <div className="p-3 space-y-3">
+                <div className="text-[11px] text-muted-foreground">
+                  Preview the final, server-rendered document and print or save as PDF — without leaving the workspace.
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Button size="sm" variant="outline" className="justify-start gap-2" onClick={() => setPreviewMode(true)}>
+                    <Eye size={13} /> Show full preview
+                  </Button>
+                  <Button size="sm" variant="outline" className="justify-start gap-2" onClick={() => void printReport()}>
+                    <Printer size={13} /> Print / Save as PDF
+                  </Button>
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  Tip: the “Preview” button in the report toolbar toggles the same in-page canonical preview.
+                </p>
+              </div>
+            )}
             {rightTab === "followup" && (
               <FollowUpPanel
                 patientId={entry?.patientId ?? null}
@@ -5896,8 +6505,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               </div>
             )}
           </div>
-        </div>
-      </div>
+        </>
+        )}
+        </ResizablePanel>
+      </ResizablePanelGroup>
 
       {/* Structured Finding Assistant (Phase 6.2): compact "ask only what's
           needed" dialog. Opened for a finding that declares questions; on Apply

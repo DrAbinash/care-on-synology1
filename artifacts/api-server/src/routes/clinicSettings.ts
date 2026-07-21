@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, clinicSettingsTable } from "@workspace/db";
+import { db, clinicSettingsTable, DEFAULT_BOOKING_TIME_SLOTS_JSON } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { getCached, setCached, invalidateCached, TTL } from "../lib/ttlCache";
 
@@ -66,9 +66,11 @@ async function getOrCreate() {
       upiQrEnabled: false,
       onlineBookingAllowedTestIds: "[]",
       onlineBookingAllowedPackageIds: "[]",
+      bookingTimeSlots: DEFAULT_BOOKING_TIME_SLOTS_JSON,
       sidebarTheme: "navy",
       billDefaultPaperSize: "A5",
       billPrintSettingsJson: "{}",
+      mobileAppConfigJson: "{}",
       billShowCode: true,
       billShowCategory: true,
       dayCloseAutoPrint: true,
@@ -190,6 +192,9 @@ clinicSettingsRouter.get("/branding", async (_req, res) => {
     // clinic data from this endpoint, so it must ride along here for the
     // print call sites to honor the admin-configured paper size/format.
     billPrintSettingsJson: (row as { billPrintSettingsJson?: string }).billPrintSettingsJson ?? "{}",
+    // Mobile-app display config blob (Settings → Mobile App); served publicly
+    // (whitelisted) via GET /api/public/mobile-config.
+    mobileAppConfigJson: (row as { mobileAppConfigJson?: string }).mobileAppConfigJson ?? "{}",
     billShowCode: row.billShowCode ?? false,
     billShowCategory: row.billShowCategory ?? false,
     qrOnBillEnabled: row.qrOnBillEnabled ?? true,
@@ -299,7 +304,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
   
   const textFields = [
     "kioskPaymentGateway", "kioskUpiVpa", "kioskUpiName", "kioskWelcomeMessage", "kioskAllowedTestIds",
-    "onlineBookingAllowedTestIds", "onlineBookingAllowedPackageIds", "razorpayKeyId", "payuMerchantKey",
+    "onlineBookingAllowedTestIds", "onlineBookingAllowedPackageIds", "bookingTimeSlots", "razorpayKeyId", "payuMerchantKey",
     "phonepeMerchantId", "bharatpeMerchantId", "cashfreeAppId", "iciciMerchantId", "iciciAggregatorId",
     "iciciSecretKey", "formFTestIds", "quickTestIds", "quickDoctorIds", "footerNote", "commissionDiscountMode", "lanAllowedIps",
     "billDefaultPaperSize", "name", "tagline", "address", "registeredAddress", "email", "phone", "website",
@@ -332,6 +337,43 @@ clinicSettingsRouter.put("/", async (req, res) => {
         return;
       }
       update[f] = body[f] === null ? "" : body[f].trim();
+    }
+  }
+
+  // bookingTimeSlots is stored as JSON-as-text (whitelisted in textFields
+  // above). Validate it parses to an array of { value, label } strings so a
+  // malformed blob can never reach the public booking form and break the
+  // dropdown. An empty array is allowed (the form falls back to defaults).
+  if (update.bookingTimeSlots !== undefined) {
+    const raw = String(update.bookingTimeSlots || "").trim();
+    if (raw === "") {
+      update.bookingTimeSlots = "[]";
+    } else {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        res.status(400).json({ error: "bookingTimeSlots must be valid JSON." });
+        return;
+      }
+      if (
+        !Array.isArray(parsed) ||
+        !parsed.every(
+          (s) =>
+            s && typeof s === "object" &&
+            typeof (s as { value?: unknown }).value === "string" &&
+            typeof (s as { label?: unknown }).label === "string",
+        )
+      ) {
+        res.status(400).json({ error: "bookingTimeSlots must be an array of { value, label } objects." });
+        return;
+      }
+      // Re-serialize the sanitized list (drops any extra keys, trims strings).
+      update.bookingTimeSlots = JSON.stringify(
+        (parsed as Array<{ value: string; label: string }>)
+          .map((s) => ({ value: s.value.trim(), label: s.label.trim() }))
+          .filter((s) => s.value !== "" && s.label !== ""),
+      );
     }
   }
 
@@ -517,6 +559,30 @@ clinicSettingsRouter.put("/", async (req, res) => {
       return;
     }
     update.billPrintSettingsJson = body.billPrintSettingsJson;
+  }
+  // Mobile-app display config blob (Settings → Mobile App). Same contract as
+  // billPrintSettingsJson: must be a JSON object serialized as a string. The
+  // public /api/public/mobile-config endpoint additionally whitelists keys on
+  // the way out, so even a well-formed-but-wrong blob can't leak secrets.
+  if (body.mobileAppConfigJson !== undefined) {
+    if (typeof body.mobileAppConfigJson !== "string" || body.mobileAppConfigJson.length > 16384) {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "mobileAppConfigJson must be a JSON string (max 16KB)", "| received body keys:", Object.keys(body));
+      res.status(400).json({ error: "mobileAppConfigJson must be a JSON string (max 16KB)" });
+      return;
+    }
+    try {
+      const parsed = JSON.parse(body.mobileAppConfigJson);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        console.warn("[PUT /api/clinic-settings] rejected 400:", "mobileAppConfigJson must be a JSON object", "| received body keys:", Object.keys(body));
+        res.status(400).json({ error: "mobileAppConfigJson must be a JSON object" });
+        return;
+      }
+    } catch {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "mobileAppConfigJson must be valid JSON", "| received body keys:", Object.keys(body));
+      res.status(400).json({ error: "mobileAppConfigJson must be valid JSON" });
+      return;
+    }
+    update.mobileAppConfigJson = body.mobileAppConfigJson;
   }
   if (body.billDefaultPaperSize !== undefined) {
     if (body.billDefaultPaperSize !== "A4" && body.billDefaultPaperSize !== "A5") {

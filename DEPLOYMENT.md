@@ -484,6 +484,111 @@ while editing `.env`).
 
 ---
 
+## Operational Health & Deployment Smoke Test
+
+After every Container Manager rebuild, verify the system is actually
+operational — in about a minute — with the smoke test or the admin dashboard.
+Both run the **same** checks (application, database, authentication, core ERP,
+radiology/PACS, queue displays, integrations, storage/backup) and report each
+as **PASS / WARNING / FAIL / SKIPPED / UNKNOWN**. No secrets or PHI are ever
+returned.
+
+### One-command smoke test (terminal)
+
+Run it inside the api container (it has `DATABASE_URL` and all env already):
+
+```bash
+# From the Synology host:
+docker compose exec care-api pnpm smoke:production
+# or, equivalently, directly:
+docker compose exec care-api node dist/smoke-cli.mjs
+```
+
+Options (repository-standard flags):
+
+| Flag | Effect |
+|---|---|
+| `--json` | Machine-readable JSON to stdout (for CI / scripts) |
+| `--base-url <url>` | API base to probe (default `http://localhost:$PORT`) |
+| `--include-optional` | Also run optional integration checks (n8n, Evolution, payment, public site) |
+| `--timeout <ms>` | Per-check timeout (default 5000) |
+| `--save-result` | Persist the run into `operational_health_runs` (history) |
+| `--transactional` | Also run the rollback-isolated create/read/update probe (never commits) |
+| `--strict` | Make an UNKNOWN overall exit non-zero too |
+
+**Exit codes:** `0` = all required checks passed (warnings are non-fatal and
+reported separately); `1` = a required check FAILed (or, with `--strict`, an
+UNKNOWN overall). This makes it safe to gate a deploy script on the exit code.
+
+Example:
+
+```text
+CARE-ERP DEPLOYMENT SMOKE TEST
+PASS  API Health                     API responding (12ms)
+PASS  PostgreSQL connection          connection succeeded (14ms)
+PASS  Admin endpoint rejects anon    admin health endpoint correctly rejects anonymous access (401)
+PASS  Orthanc connectivity           Orthanc reachable, version 1.12.4 (8ms)
+WARN  Orthanc → ERP sync freshness   last successful sync was 37 min ago
+PASS  Queue USG                      queue/usg responds (200)
+SKIP  Evolution API                  Evolution API not configured (set EVOLUTION_API_URL to enable)
+Overall: WARNING
+Version: 2.0.0 (build 1) commit a1b2c3d4
+Duration: 840ms
+```
+
+### Admin dashboard
+
+Route (owner/admin only): **`/radiology/operational-health`** — in the
+sidebar under **Radiology & Imaging → Operational Health**. Shows the overall
+banner, per-category service cards (status + latency + message + expandable
+safe details + recommended action), application version / Git commit / build
+time, a **Refresh** (live) and **Run full smoke test** (persists) button,
+FAIL/WARNING/ALL filters, and the recent smoke-test run history.
+
+Backed by (admin-gated: `requireStaffAuth` + `requireAdminRole`):
+`GET /api/admin/operations/health` (live), `POST /api/admin/operations/smoke-run`
+(run + persist), `GET /api/admin/operations/history`.
+
+Run history is stored in `operational_health_runs` with **bounded retention** —
+each write (admin run or CLI `--save-result`) prunes to the newest 200 rows
+(`OPS_HISTORY_RETENTION`), so the table cannot grow without limit and needs no
+background worker.
+
+### What each status means
+
+| Status | Meaning |
+|---|---|
+| **PASS** | Check succeeded. |
+| **WARNING** | Non-fatal — e.g. stale-but-present sync, no recent DICOM past threshold, an optional integration down. Never fails the deploy. |
+| **FAIL** | A required check failed (API/DB/auth/core-ERP/Orthanc-when-configured). Investigate before considering the deploy healthy. |
+| **SKIPPED** | Not applicable — an unconfigured optional integration, or a check that only runs in another mode. Never a failure. |
+| **UNKNOWN** | Could not be verified (e.g. a column/table absent in this environment, a probe timeout). Honest — never masquerades as PASS. |
+
+### Optional-integration env vars
+
+These are checked **only when configured** (otherwise SKIPPED, never FAIL):
+
+| Variable | Enables the check for |
+|---|---|
+| `N8N_HEALTH_URL` (or `N8N_URL`) | n8n reachability |
+| `EVOLUTION_API_URL` | Evolution API reachability |
+| `PUBLIC_BASE_URL` (or `NETWORK_PUBLIC_DOMAIN`) | Public website / reverse proxy reachability |
+| `ORTHANC_URL` / `ORTHANC_INTERNAL_URL` (+ `ORTHANC_USERNAME`/`ORTHANC_PASSWORD`) | Orthanc `/system` connectivity + auth |
+| `OHIF_URL` | OHIF viewer reachability |
+
+### Troubleshooting common failures
+
+| Symptom | Likely cause / fix |
+|---|---|
+| `FAIL API Health` from the CLI | `--base-url` wrong, or care-api not up. Check `docker compose ps` and `docker compose logs care-api`. |
+| `FAIL Required configuration` | `JWT_SECRET` / `SESSION_SECRET` / `DATABASE_URL` missing from the api container env — set them in Container Manager and redeploy. |
+| `FAIL Admin endpoint rejects anon → returned 200` | The admin endpoint is not behind auth — a real security regression; do not ship. |
+| `FAIL Orthanc … unavailable / authentication failed` | care-orthanc down or `ORTHANC_USERNAME`/`ORTHANC_PASSWORD` wrong. Distinguished explicitly from a stale sync. |
+| `WARN Orthanc → ERP sync freshness` | Sync is working but the last success is older than the threshold — usually benign after a quiet period; investigate only if it keeps growing. |
+| `UNKNOWN Schema verification state` | `schema_deploy_state` absent — expected outside the container migration pipeline (dev). In production it should be PASS. |
+
+---
+
 ## Rebuilding only part of the stack — quick reference
 
 | Situation | What to rebuild | What to leave alone |

@@ -12,6 +12,8 @@ import {
   billsTable,
   paymentsTable,
   paymentLogsTable,
+  doctorsTable,
+  DEFAULT_BOOKING_TIME_SLOTS,
 } from "@workspace/db/schema";
 import { eq, and } from "drizzle-orm";
 import { logger } from "../lib/logger";
@@ -21,8 +23,6 @@ import { buildPrintClinic } from "../lib/buildPrintClinic";
 import { recordPaymentDiagnostic, getRecentDiagnostics, getDiagnosticById, getLastSuccessAndFailure } from "../lib/payments/paymentDiagnostics";
 import { confirmBookingInternal } from "./online-bookings";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
-
-const otpStore = new Map<string, { code: string; name: string; expiresAt: number }>();
 
 export function validateSelfRegistration(params: {
   name: string;
@@ -70,10 +70,6 @@ export let lastIciciTransaction: {
   timestamp?: string;
 } | null = null;
 
-function generateOtp(): string {
-  return String(Math.floor(100000 + Math.random() * 900000));
-}
-
 export const publicBookingRouter = Router();
 
 const bookingLimiter = rateLimit({
@@ -95,6 +91,42 @@ const createOrderLimiter = rateLimit({
 async function getSettings() {
   const [row] = await db.select().from(clinicSettingsTable).limit(1);
   return row;
+}
+
+// Parse the admin-configured booking time slots (JSON-as-text). Falls back to
+// the built-in defaults when unset or malformed so the public form always has
+// a usable list of options.
+function parseBookingTimeSlots(raw: string | null | undefined): Array<{ value: string; label: string }> {
+  if (!raw || !raw.trim()) return [...DEFAULT_BOOKING_TIME_SLOTS];
+  try {
+    const parsed = JSON.parse(raw);
+    if (
+      Array.isArray(parsed) &&
+      parsed.every(
+        (s) => s && typeof s === "object" && typeof s.value === "string" && typeof s.label === "string",
+      )
+    ) {
+      const cleaned = (parsed as Array<{ value: string; label: string }>)
+        .map((s) => ({ value: s.value.trim(), label: s.label.trim() }))
+        .filter((s) => s.value !== "" && s.label !== "");
+      return cleaned.length > 0 ? cleaned : [...DEFAULT_BOOKING_TIME_SLOTS];
+    }
+  } catch { /* fall through to defaults */ }
+  return [...DEFAULT_BOOKING_TIME_SLOTS];
+}
+
+// Normalize the referring doctor captured by the booking form for persistence
+// on the online_bookings row. Only a positive integer id is trusted; the name
+// is display-only (kept alongside so the bookings list can show it even if the
+// doctor is later removed) and dropped when there is no valid id.
+function normalizeReferringDoctor(
+  rawId: unknown,
+  rawName: unknown,
+): { referringDoctorId: number | null; referringDoctorName: string | null } {
+  const id = Number(rawId);
+  const validId = Number.isInteger(id) && id > 0 ? id : null;
+  const name = typeof rawName === "string" ? rawName.trim() : "";
+  return { referringDoctorId: validId, referringDoctorName: validId && name ? name : null };
 }
 
 function generateBookingRef(): string {
@@ -219,8 +251,13 @@ publicBookingRouter.get("/config", async (_req, res): Promise<void> => {
     if (Array.isArray(parsed)) quickTestIds = parsed;
   } catch { /* ignore */ }
 
+  // Admin-configurable appointment time slots ({ value, label }[]). The form
+  // falls back to its built-in defaults when this is empty/unset.
+  const bookingTimeSlots = parseBookingTimeSlots(settings.bookingTimeSlots);
+
   res.json({
     enabled: true,
+    bookingTimeSlots,
     keyId: razorpayKeyId,
     vipEnabled: settings.vipQueueEnabled,
     gateway,
@@ -253,6 +290,28 @@ publicBookingRouter.get("/config", async (_req, res): Promise<void> => {
   });
 });
 
+// GET /api/public/booking/doctors
+// Public, minimal referring-doctor list for the online booking form's
+// "Referring Doctor" picker (mirrors the Billing Desk picker). Only exposes
+// id/name/specialization — no PII (phone/email/commission). Returns an empty
+// list when online booking is disabled so the picker simply doesn't populate.
+publicBookingRouter.get("/doctors", async (_req, res): Promise<void> => {
+  res.setHeader("Cache-Control", "no-store");
+  const settings = await getSettings();
+  if (!settings?.onlineBookingEnabled) {
+    res.json({ doctors: [] });
+    return;
+  }
+  const rows = await db
+    .select({
+      id: doctorsTable.id,
+      name: doctorsTable.name,
+      specialization: doctorsTable.specialization,
+    })
+    .from(doctorsTable);
+  res.json({ doctors: rows });
+});
+
 // GET /api/public/booking/by-ref?ref=...
 publicBookingRouter.get("/by-ref", async (req, res): Promise<void> => {
   const ref = String(req.query.ref || "").trim();
@@ -271,7 +330,12 @@ publicBookingRouter.get("/by-ref", async (req, res): Promise<void> => {
     if (tok) tokenNo = tok.tokenNo;
   }
 
-  res.json({ booking: row, tokenNo });
+  // Never expose the Razorpay HMAC signature: it is a server-computed secret
+  // used only for internal payment verification and is not read by any client
+  // (the confirmation UIs derive the paid gateway from the payment/txn IDs,
+  // not the signature). Everything else on the row is unchanged.
+  const { razorpaySignature: _omit, ...booking } = row as Record<string, unknown>;
+  res.json({ booking, tokenNo });
 });
 
 // GET /api/public/booking/clinic-print-info
@@ -286,24 +350,20 @@ publicBookingRouter.get("/clinic-print-info", async (_req, res): Promise<void> =
   res.json(buildPrintClinic(settings));
 });
 
-// GET /api/public/booking/my-bookings
-publicBookingRouter.get("/my-bookings", async (req, res): Promise<void> => {
-  const phone = String(req.query.phone || "");
-  if (!phone) { res.json({ bookings: [] }); return; }
-  const rows = await db.select()
-    .from(onlineBookingsTable)
-    .where(eq(onlineBookingsTable.phone, phone))
-    .orderBy(onlineBookingsTable.id)
-    .limit(50);
-  res.json({ bookings: rows });
+// GET /api/public/booking/my-bookings — RETIRED (410).
+// Previously returned every online_bookings column (name, email, tests,
+// gateway txn ids...) to anyone who typed a 10-digit phone number — the core
+// PHI exposure in SECURITY_FINDING_PUBLIC_BOOKING_PHI_EXPOSURE. Replaced by
+// the session-authenticated GET /api/patient/my-bookings (patientPortal.ts).
+publicBookingRouter.get("/my-bookings", async (_req, res): Promise<void> => {
+  res.status(410).json({ error: "This endpoint has been retired. Please update the app." });
 });
 
-// GET /api/public/booking/my-reports
-publicBookingRouter.get("/my-reports", async (req, res): Promise<void> => {
-  const phone = String(req.query.phone || "");
-  if (!phone) { res.json({ reports: [] }); return; }
-  // Stub: return empty for now; reports table integration is future work
-  res.json({ reports: [] });
+// GET /api/public/booking/my-reports — RETIRED (410).
+// Was an empty stub; real report delivery is the session-authenticated
+// GET /api/patient/my-reports + POST /api/patient/reports/:id/link.
+publicBookingRouter.get("/my-reports", async (_req, res): Promise<void> => {
+  res.status(410).json({ error: "This endpoint has been retired. Please update the app." });
 });
 
 // Helper function to check if test category is enabled in settings
@@ -509,11 +569,13 @@ publicBookingRouter.post("/payu-initiate", createOrderLimiter, async (req, res):
     testIds = [], packageIds = [], totalAmount,
     notes = "", isVip = false,
     ageValue, ageUnit = "years", gender,
+    referringDoctorId = null, referringDoctorName = "",
   } = req.body as {
     name: string; phone: string; email?: string; selectedDate: string; timeSlot?: string;
     testIds?: number[]; packageIds?: number[]; totalAmount: number;
     notes?: string; isVip?: boolean;
     ageValue: number; ageUnit?: string; gender: string;
+    referringDoctorId?: number | null; referringDoctorName?: string;
   };
 
   const validationError = validateSelfRegistration({
@@ -569,6 +631,7 @@ publicBookingRouter.post("/payu-initiate", createOrderLimiter, async (req, res):
       email: email.trim(),
       selectedDate,
       timeSlot: timeSlot.trim(),
+      ...normalizeReferringDoctor(referringDoctorId, referringDoctorName),
       testIds: JSON.stringify(testIds),
       packageIds: JSON.stringify(packageIds),
       totalAmount: String(amount),
@@ -697,11 +760,13 @@ publicBookingRouter.post("/phonepe-initiate", createOrderLimiter, async (req, re
     testIds = [], packageIds = [], totalAmount,
     notes = "", isVip = false,
     ageValue, ageUnit = "years", gender,
+    referringDoctorId = null, referringDoctorName = "",
   } = req.body as {
     name: string; phone: string; email?: string; selectedDate: string; timeSlot?: string;
     testIds?: number[]; packageIds?: number[]; totalAmount: number;
     notes?: string; isVip?: boolean;
     ageValue: number; ageUnit?: string; gender: string;
+    referringDoctorId?: number | null; referringDoctorName?: string;
   };
 
   const validationError = validateSelfRegistration({
@@ -757,6 +822,7 @@ publicBookingRouter.post("/phonepe-initiate", createOrderLimiter, async (req, re
       email: email.trim(),
       selectedDate,
       timeSlot: timeSlot.trim(),
+      ...normalizeReferringDoctor(referringDoctorId, referringDoctorName),
       testIds: JSON.stringify(testIds),
       packageIds: JSON.stringify(packageIds),
       totalAmount: String(amount),
@@ -860,11 +926,13 @@ publicBookingRouter.post("/bharatpe-initiate", createOrderLimiter, async (req, r
     testIds = [], packageIds = [], totalAmount,
     notes = "", isVip = false,
     ageValue, ageUnit = "years", gender,
+    referringDoctorId = null, referringDoctorName = "",
   } = req.body as {
     name: string; phone: string; email?: string; selectedDate: string; timeSlot?: string;
     testIds?: number[]; packageIds?: number[]; totalAmount: number;
     notes?: string; isVip?: boolean;
     ageValue: number; ageUnit?: string; gender: string;
+    referringDoctorId?: number | null; referringDoctorName?: string;
   };
 
   const validationError = validateSelfRegistration({
@@ -920,6 +988,7 @@ publicBookingRouter.post("/bharatpe-initiate", createOrderLimiter, async (req, r
       email: email.trim(),
       selectedDate,
       timeSlot: timeSlot.trim(),
+      ...normalizeReferringDoctor(referringDoctorId, referringDoctorName),
       testIds: JSON.stringify(testIds),
       packageIds: JSON.stringify(packageIds),
       totalAmount: String(amount),
@@ -1103,11 +1172,13 @@ publicBookingRouter.post("/icici-initiate", createOrderLimiter, async (req, res)
     testIds = [], packageIds = [], totalAmount,
     notes = "", isVip = false,
     ageValue, ageUnit = "years", gender,
+    referringDoctorId = null, referringDoctorName = "",
   } = req.body as {
     name: string; phone: string; email?: string; selectedDate: string; timeSlot?: string;
     testIds?: number[]; packageIds?: number[]; totalAmount: number;
     notes?: string; isVip?: boolean;
     ageValue: number; ageUnit?: string; gender: string;
+    referringDoctorId?: number | null; referringDoctorName?: string;
   };
 
   const validationError = validateSelfRegistration({
@@ -1205,6 +1276,7 @@ publicBookingRouter.post("/icici-initiate", createOrderLimiter, async (req, res)
       email: email.trim(),
       selectedDate,
       timeSlot: timeSlot.trim(),
+      ...normalizeReferringDoctor(referringDoctorId, referringDoctorName),
       testIds: JSON.stringify(testIds),
       packageIds: JSON.stringify(packageIds),
       totalAmount: String(amount),
@@ -1456,11 +1528,13 @@ publicBookingRouter.post("/create-order", createOrderLimiter, async (req, res): 
     testIds = [], packageIds = [], totalAmount,
     notes = "", isVip = false,
     ageValue, ageUnit = "years", gender,
+    referringDoctorId = null, referringDoctorName = "",
   } = req.body as {
     name: string; phone: string; email?: string; selectedDate: string; timeSlot?: string;
     testIds?: number[]; packageIds?: number[]; totalAmount: number;
     notes?: string; isVip?: boolean;
     ageValue: number; ageUnit?: string; gender: string;
+    referringDoctorId?: number | null; referringDoctorName?: string;
   };
 
   const validationError = validateSelfRegistration({
@@ -1519,6 +1593,7 @@ publicBookingRouter.post("/create-order", createOrderLimiter, async (req, res): 
   await db.insert(onlineBookingsTable).values({
     bookingRef, name: name, phone: phone.trim(), email: email.trim(),
     selectedDate, timeSlot: timeSlot.trim(), testIds: JSON.stringify(testIds), packageIds: JSON.stringify(packageIds),
+    ...normalizeReferringDoctor(referringDoctorId, referringDoctorName),
     totalAmount: String(amount), notes: notes.trim(),
     isVip: Boolean(isVip) && Boolean(settings.vipQueueEnabled),
     ageValue: Number(ageValue),
@@ -1577,32 +1652,20 @@ publicBookingRouter.post("/verify-payment", bookingLimiter, async (req, res): Pr
   res.json({ success: true, bookingRef: booking.bookingRef });
 });
 
-// ── OTP endpoints (mobile login) ─────────────────────────────────────────────
-publicBookingRouter.post("/send-otp", bookingLimiter, async (req, res): Promise<void> => {
-  const { phone, name } = req.body || {};
-  if (!phone || typeof phone !== "string" || !/^\d{10}$/.test(phone)) {
-    res.status(400).json({ error: "Valid 10-digit phone number required" });
-    return;
-  }
-  const code = generateOtp();
-  otpStore.set(phone, { code, name: name || "", expiresAt: Date.now() + 5 * 60 * 1000 });
-  res.json({ sent: true, phone, code });
+// ── Retired OTP endpoints (mobile login) ─────────────────────────────────────
+// SECURITY_FINDING_PUBLIC_BOOKING_PHI_EXPOSURE remediation: the old flow
+// echoed the OTP code in the response (never delivering it anywhere) and
+// issued no session — a bare phone number unlocked PHI. Replaced by
+// /api/patient/send-otp + /api/patient/verify-otp (patientPortal.ts): codes
+// hashed server-side, delivered via WhatsApp, never echoed; verified logins
+// mint server-side patient_sessions tokens. These stubs return 410 so any
+// stale client fails loudly instead of silently insecurely.
+publicBookingRouter.post("/send-otp", bookingLimiter, async (_req, res): Promise<void> => {
+  res.status(410).json({ error: "This login method has been retired. Please update the app." });
 });
 
-publicBookingRouter.post("/verify-otp", bookingLimiter, async (req, res): Promise<void> => {
-  const { phone, code, name } = req.body || {};
-  if (!phone || !code) { res.status(400).json({ error: "Phone and OTP required" }); return; }
-  const record = otpStore.get(phone);
-  if (!record || record.expiresAt < Date.now()) {
-    res.status(400).json({ error: "OTP expired or not found" });
-    return;
-  }
-  if (record.code !== String(code)) {
-    res.status(400).json({ error: "Invalid OTP" });
-    return;
-  }
-  otpStore.delete(phone);
-  res.json({ verified: true, phone, name: name || record.name });
+publicBookingRouter.post("/verify-otp", bookingLimiter, async (_req, res): Promise<void> => {
+  res.status(410).json({ error: "This login method has been retired. Please update the app." });
 });
 
 // ── POST /api/public/booking/qr-initiate ─────────────────────────────────────
@@ -1620,6 +1683,7 @@ publicBookingRouter.post("/qr-initiate", createOrderLimiter, async (req, res): P
     name: rawName, phone, email = "", selectedDate, timeSlot = "",
     testIds = [], packageIds = [], totalAmount, notes = "", isVip = false,
     ageValue, ageUnit = "years", gender,
+    referringDoctorId = null, referringDoctorName = "",
   } = req.body || {};
 
   const validationError = validateSelfRegistration({
@@ -1650,6 +1714,7 @@ publicBookingRouter.post("/qr-initiate", createOrderLimiter, async (req, res): P
     email: email.trim(),
     selectedDate,
     timeSlot: timeSlot.trim(),
+    ...normalizeReferringDoctor(referringDoctorId, referringDoctorName),
     testIds: JSON.stringify(testIds),
     packageIds: JSON.stringify(packageIds),
     totalAmount: String(amount),

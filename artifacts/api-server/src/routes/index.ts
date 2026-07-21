@@ -69,6 +69,9 @@ import internalCronRouter from "./internal-cron";
 import internalRadiologyRouter from "./internal-radiology";
 import dicomAgentRouter from "./dicom-agent";
 import { publicBookingRouter } from "./public-booking";
+import { mobileConfigRouter } from "./mobileConfig";
+import { mobileBillDeskRouter } from "./mobileBillDesk";
+import { patientPortalRouter } from "./patientPortal";
 import { onlineBookingsRouter } from "./online-bookings";
 import { webauthnRouter } from "./webauthn";
 import { dailySummaryRouter } from "./daily-summary";
@@ -82,7 +85,9 @@ import { requireSuperAdmin } from "../middleware/requireSuperAdmin";
 import { requireSuperAdminUsb, isValidUsbKey, isUsbGateEnforced } from "../middleware/requireSuperAdminUsb";
 import { requireStaffAuth, requireStaffPermission, requireStaffSubPermission, requireAdminRole } from "../middleware/requireStaffAuth";
 import diagnosticsRouter from "./diagnostics";
+import adminOperationsRouter from "./admin-operations";
 import { measurementRegistryRouter } from "./measurementRegistry";
+import { pathologyRegistryRouter } from "./pathologyRegistry";
 import radiologyQuickFindingsRouter from "./radiologyQuickFindings";
 import radiologyCatalogRouter from "./radiologyCatalog";
 import { db, clinicSettingsTable, ledgersTable } from "@workspace/db";
@@ -133,6 +138,8 @@ import smartRadiologyRouter from "./smartRadiology";
 import reportQualityRouter from "./reportQuality";
 import risMonitoringRouter from "./risMonitoring";
 import radiologyWorkflowRouter from "./radiologyWorkflow";
+import { aiClinicalRouter } from "./aiClinical";
+import { aiInteropRouter } from "./aiInterop";
 import { scanSessionsRouter } from "./scan-sessions";
 // Federated Radiology Service — boundary API (additive, server-to-server only)
 import boundaryRouter from "./boundary";
@@ -229,6 +236,15 @@ router.use("/verify", verifyRouter);
 // via HMAC before any record is persisted.
 router.use("/public/booking", publicBookingRouter);
 
+// Public mobile-app display config (clinic info + admin-curated content for
+// diagno-booking-mobile). Whitelisted non-secret fields only — see the router.
+router.use("/public/mobile-config", mobileConfigRouter);
+
+// Patient portal — OTP-over-WhatsApp login minting server-side sessions, and
+// session-gated bookings/reports. The OTP endpoints are public (rate-limited
+// inside the router); the data endpoints enforce the patient session token.
+router.use("/patient", patientPortalRouter);
+
 // Payment gateway server-to-server webhooks (ICICI, HDFC).
 // MUST be public — the gateways POST here without a staff session.
 // Individual admin endpoints inside the router apply requireStaffAuth themselves.
@@ -302,6 +318,11 @@ router.use("/bills", requireStaffAuth, requireStaffPermission("/billing"), bills
 // Payments — /payments permission
 router.use("/payments", requireStaffAuth, requireStaffPermission("/payments"), paymentsRouter);
 
+// Mobile Bill Desk — READ-ONLY billing views for the staff mobile app, behind
+// its own dedicated permission so admins grant mobile billing visibility per
+// staff member independent of the desktop /billing permission.
+router.use("/mobile-bill-desk", requireStaffAuth, requireStaffPermission("/mobile-bill-desk"), mobileBillDeskRouter);
+
 // Reports — /reports permission (covers dashboard, revenue, print reports)
 router.use("/reports", requireStaffAuth, requireStaffPermission("/reports"), reportsRouter);
 
@@ -309,9 +330,18 @@ router.use("/reports", requireStaffAuth, requireStaffPermission("/reports"), rep
 // per-user permission system — see requireAdminRole).
 router.use("/diagnostics", requireStaffAuth, requireAdminRole, diagnosticsRouter);
 
+// Admin-only Operational Health / Deployment Smoke Test (one-minute
+// post-rebuild verification: application/db/auth/core-erp/radiology-pacs/
+// queue/integrations/storage checks + persisted run history).
+router.use("/admin/operations", requireStaffAuth, requireAdminRole, adminOperationsRouter);
+
 // Admin-only Universal Measurement Registry manager (read-only console +
 // live impact analysis over quick measurements / protocols / packs / rules).
 router.use("/measurement-registry", requireStaffAuth, requireAdminRole, measurementRegistryRouter);
+
+// Admin-only Universal Pathology Registry manager (read-only catalog + live
+// self-validation + coverage scan of existing report parameter labels).
+router.use("/pathology-registry", requireStaffAuth, requireAdminRole, pathologyRegistryRouter);
 
 // Inventory — /inventory permission
 router.use("/inventory", requireStaffAuth, requireStaffPermission("/inventory"), inventoryRouter);
@@ -544,6 +574,14 @@ router.use("/dicom-agent", requireStaffAuth, requireStaffPermission("/dicom-node
 // MWL procedures, pulled-studies stats, failed-queue retry).
 // Mounted BEFORE radiologyRouter so its handlers (e.g. echo-test upgrade) win.
 router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), pacsEnterpriseRouter);
+// Phase P3 — AI clinical workflow (scheduler/policy/preferences/draft). Every
+// endpoint is internally gated by the ff_radiology_ai master flag + per-scope
+// policy (default OFF), so mounting it exposes nothing until an admin enables it.
+router.use("/ai", requireStaffAuth, requireStaffPermission("/radiology"), aiClinicalRouter);
+// Phase P4 — AI enterprise interoperability (DICOM SR / FHIR / viewer sync /
+// timeline / comparison / feedback dataset). Same master flag + per-scope
+// gating as the clinical router; exports are admin-gated. Additive only.
+router.use("/ai/interop", requireStaffAuth, requireStaffPermission("/radiology"), aiInteropRouter);
 
 // USG auto-measurement extraction — all authenticated staff can trigger/review;
 // settings writes require admin role (enforced inside the router).

@@ -43,7 +43,10 @@ import {
   PieChart,
   X,
   ScanLine,
+  FileImage,
+  Loader2,
 } from "lucide-react";
+import { api } from "@/lib/fetchApi";
 
 const inr = (n: number) =>
   new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n);
@@ -118,7 +121,21 @@ export default function Expenses() {
   const [showForm, setShowForm] = useState(false);
   const [editExp, setEditExp] = useState<Expense | null>(null);
   const [form, setForm] = useState({ ...EMPTY_FORM });
+  // Scanned (enhanced) receipt image data-URL, persisted with a new expense for audit.
+  const [receiptImage, setReceiptImage] = useState("");
+  // Receipt viewer: the image is fetched on demand (never in the list response).
+  const [viewReceipt, setViewReceipt] = useState<{ loading: boolean; url: string | null; expenseId: string } | null>(null);
   const [activeTab, setActiveTab] = useState<"list" | "summary" | "scanner">("list");
+
+  async function openReceipt(exp: Expense) {
+    setViewReceipt({ loading: true, url: null, expenseId: exp.expenseId });
+    try {
+      const full = await api.get<{ receiptImageUrl?: string | null }>(`/api/expenses/${exp.id}`);
+      setViewReceipt({ loading: false, url: full.receiptImageUrl ?? null, expenseId: exp.expenseId });
+    } catch {
+      setViewReceipt({ loading: false, url: null, expenseId: exp.expenseId });
+    }
+  }
 
   const listParams = {
     category: categoryFilter !== "all" ? categoryFilter : undefined,
@@ -148,6 +165,7 @@ export default function Expenses() {
         invalidateExpenses();
         setShowForm(false);
         setForm({ ...EMPTY_FORM });
+        setReceiptImage("");
         toast({ title: "Expense recorded" });
       },
       onError: () => toast({ title: "Failed to record expense", variant: "destructive" }),
@@ -216,7 +234,11 @@ export default function Expenses() {
     if (editExp) {
       updateMut.mutate({ id: editExp.id, data: body });
     } else {
-      createMut.mutate({ data: body });
+      // receiptImageUrl is read directly from the request body by the backend
+      // (not part of the generated CreateExpenseBody), carried here as an extra
+      // runtime field the generated client forwards as-is.
+      const createBody = receiptImage ? { ...body, receiptImageUrl: receiptImage } : body;
+      createMut.mutate({ data: createBody as typeof body });
     }
   }
 
@@ -385,6 +407,17 @@ export default function Expenses() {
                         <td className="px-4 py-3 text-right font-semibold">{inr(exp.amount)}</td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1">
+                            {(exp as unknown as { hasReceipt?: boolean }).hasReceipt && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-indigo-600 hover:text-indigo-700"
+                                title="View scanned bill"
+                                onClick={() => openReceipt(exp)}
+                              >
+                                <FileImage size={12} />
+                              </Button>
+                            )}
                             <Button
                               variant="ghost"
                               size="icon"
@@ -494,7 +527,9 @@ export default function Expenses() {
               <DocumentScanCapture<ScanBillResult>
                 endpoint="/api/expenses/scan-bill"
                 triggerLabel="Scan Bill / Receipt with AI"
+                editorTitle="Bill / Receipt"
                 helperText="Photograph or upload the bill — fields below will be auto-filled. Please review before saving."
+                onImage={(b64, mime) => setReceiptImage(`data:${mime};base64,${b64}`)}
                 onResult={(result) => {
                   // Below 80% confidence, don't auto-fill the form at all —
                   // just tell staff to type it in manually from the bill.
@@ -638,6 +673,26 @@ export default function Expenses() {
               </Button>
             </div>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Receipt viewer — image fetched on demand (never in the list payload). */}
+      <Dialog open={!!viewReceipt} onOpenChange={(o) => { if (!o) setViewReceipt(null); }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Scanned Bill — {viewReceipt?.expenseId}</DialogTitle>
+          </DialogHeader>
+          <div className="flex items-center justify-center min-h-[200px] max-h-[75vh] overflow-auto bg-muted/30 rounded-lg">
+            {viewReceipt?.loading ? (
+              <span className="flex items-center gap-2 text-sm text-muted-foreground py-10">
+                <Loader2 size={16} className="animate-spin" /> Loading image…
+              </span>
+            ) : viewReceipt?.url ? (
+              <img src={viewReceipt.url} alt="Scanned bill" className="max-w-full max-h-[72vh] object-contain" />
+            ) : (
+              <span className="text-sm text-muted-foreground py-10">No image stored for this expense.</span>
+            )}
+          </div>
         </DialogContent>
       </Dialog>
     </div>

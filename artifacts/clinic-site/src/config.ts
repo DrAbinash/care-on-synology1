@@ -33,6 +33,7 @@ export const ASSET_BASE = stripTrailingSlash(
 export function resolveAssetUrl(url: string | null | undefined): string {
   if (!url) return "";
   if (/^([a-z]+:)?\/\//i.test(url) || /^(data|mailto|tel):/i.test(url)) return url;
+  if (url.startsWith("/objects/")) return `${ASSET_BASE}/api/storage${url}`;
   if (url.startsWith("/")) return `${ASSET_BASE}${url}`;
   return url;
 }

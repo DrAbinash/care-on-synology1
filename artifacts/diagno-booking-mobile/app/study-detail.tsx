@@ -1,18 +1,46 @@
-import {
-  StyleSheet, Text, View, ScrollView, TouchableOpacity, Image,
-} from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { StyleSheet, Text, View } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams } from "expo-router";
 
 import { useColors } from "@/hooks/useColors";
 import { useStaffApi, useStaffAuth } from "@/context/StaffAuthContext";
+import {
+  Screen,
+  BackBar,
+  ScreenHeader,
+  Card,
+  Badge,
+  DetailRow,
+  InlineAlert,
+  AppButton,
+  SectionLabel,
+  Skeleton,
+  SkeletonList,
+  EmptyState,
+  spacing,
+  radii,
+} from "@/components/ui";
+
+type StatusTone = "success" | "destructive" | "warning" | "primary" | "muted";
+
+function statusTone(status: string): StatusTone {
+  switch (status) {
+    case "complete":
+      return "success";
+    case "failed":
+      return "destructive";
+    case "quarantined":
+      return "warning";
+    case "receiving":
+      return "primary";
+    default:
+      return "muted";
+  }
+}
 
 export default function StudyDetailScreen() {
   const colors = useColors();
-  const insets = useSafeAreaInsets();
-  const router = useRouter();
   const { id } = useLocalSearchParams();
   const api = useStaffApi();
   const { session } = useStaffAuth();
@@ -30,133 +58,129 @@ export default function StudyDetailScreen() {
 
   if (!study && !studies.isLoading) {
     return (
-      <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top + 24 }]}>
-        <TouchableOpacity onPress={() => router.back()} style={{ paddingHorizontal: 16, marginBottom: 12 }}>
-          <Feather name="arrow-left" size={22} color={colors.foreground} />
-        </TouchableOpacity>
-        <Text style={[styles.notFound, { color: colors.mutedForeground }]}>Study not found</Text>
-      </View>
+      <Screen>
+        <BackBar />
+        <EmptyState
+          icon="search"
+          title="Study not found"
+          message="This study may have been removed or is no longer available."
+        />
+      </Screen>
     );
   }
 
   if (!study) {
     return (
-      <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top + 24 }]}>
-        <TouchableOpacity onPress={() => router.back()} style={{ paddingHorizontal: 16, marginBottom: 12 }}>
-          <Feather name="arrow-left" size={22} color={colors.foreground} />
-        </TouchableOpacity>
-        <Text style={[styles.notFound, { color: colors.mutedForeground }]}>Loading...</Text>
-      </View>
+      <Screen>
+        <BackBar />
+        <Skeleton height={200} style={{ marginBottom: spacing.md }} />
+        <SkeletonList count={3} height={72} />
+      </Screen>
     );
   }
 
-  const statusColor =
-    study.transferStatus === "complete" ? colors.success :
-    study.transferStatus === "failed" ? colors.destructive :
-    study.transferStatus === "quarantined" ? colors.warning :
-    colors.primary;
+  const rows: { label: string; value: string }[] = [
+    { label: "Patient", value: study.patientName || "Unknown" },
+    { label: "Accession #", value: study.accessionNumber || "N/A" },
+    {
+      label: "Study UID",
+      value: study.studyInstanceUID ? `${String(study.studyInstanceUID).slice(0, 30)}…` : "N/A",
+    },
+    { label: "Modality", value: study.modality || "N/A" },
+    { label: "AE Title", value: study.aeTitle || "N/A" },
+    { label: "Images", value: String(study.imageCount) },
+    { label: "Series", value: String(study.seriesCount) },
+  ];
+  if (study.bodyPart) rows.push({ label: "Body Part", value: study.bodyPart });
+  if (study.studyDescription) rows.push({ label: "Description", value: study.studyDescription });
+
+  const hasAlerts = study.aeMismatch || study.duplicateStudy || study.incompleteStudy;
 
   return (
-    <ScrollView style={[styles.container, { backgroundColor: colors.background }]}>
-      <View style={{ paddingTop: insets.top + 16, paddingHorizontal: 16 }}>
-        <View style={styles.headerRow}>
-          <TouchableOpacity onPress={() => router.back()}>
-            <Feather name="arrow-left" size={22} color={colors.foreground} />
-          </TouchableOpacity>
-          <Text style={[styles.title, { color: colors.foreground }]}>Study Detail</Text>
-          <View style={{ width: 22 }} />
-        </View>
+    <Screen>
+      <BackBar />
+      <ScreenHeader title="Study Detail" subtitle={study.patientName || "Unknown patient"} />
 
-        {/* DICOM Thumbnail Placeholder */}
-        <View style={[styles.thumbWrap, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <Feather name="image" size={48} color={colors.mutedForeground} />
-          <Text style={[styles.thumbLabel, { color: colors.mutedForeground }]}>
-            DICOM Image Viewer
-          </Text>
-          <Text style={[styles.thumbSub, { color: colors.mutedForeground }]}>
-            Web-based DICOM viewer integration coming soon.
-          </Text>
-        </View>
-
-        {/* Status */}
-        <View style={[styles.statusBar, { backgroundColor: statusColor + "12", borderColor: statusColor + "30" }]}>
-          <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
-          <Text style={[styles.statusText, { color: statusColor }]}>{study.transferStatus.toUpperCase()}</Text>
-        </View>
-
-        {/* Metadata */}
-        <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Study Metadata</Text>
-        <MetaRow label="Patient" value={study.patientName || "Unknown"} colors={colors} />
-        <MetaRow label="Accession #" value={study.accessionNumber || "N/A"} colors={colors} />
-        <MetaRow label="Study UID" value={study.studyInstanceUID?.slice(0, 30) + "..." || "N/A"} colors={colors} />
-        <MetaRow label="Modality" value={study.modality} colors={colors} />
-        <MetaRow label="AE Title" value={study.aeTitle || "N/A"} colors={colors} />
-        <MetaRow label="Images" value={String(study.imageCount)} colors={colors} />
-        <MetaRow label="Series" value={String(study.seriesCount)} colors={colors} />
-        {study.bodyPart && <MetaRow label="Body Part" value={study.bodyPart} colors={colors} />}
-        {study.studyDescription && <MetaRow label="Description" value={study.studyDescription} colors={colors} />}
-
-        {/* Alerts */}
-        {study.aeMismatch && (
-          <View style={[styles.alertBox, { backgroundColor: colors.warning + "12", borderColor: colors.warning + "40" }]}>
-            <Feather name="alert-triangle" size={16} color={colors.warning} />
-            <Text style={[styles.alertText, { color: colors.warning }]}>AE Title mismatch detected</Text>
-          </View>
-        )}
-        {study.duplicateStudy && (
-          <View style={[styles.alertBox, { backgroundColor: colors.warning + "12", borderColor: colors.warning + "40" }]}>
-            <Feather name="copy" size={16} color={colors.warning} />
-            <Text style={[styles.alertText, { color: colors.warning }]}>Duplicate Study UID detected</Text>
-          </View>
-        )}
-        {study.incompleteStudy && (
-          <View style={[styles.alertBox, { backgroundColor: colors.destructive + "12", borderColor: colors.destructive + "40" }]}>
-            <Feather name="alert-circle" size={16} color={colors.destructive} />
-            <Text style={[styles.alertText, { color: colors.destructive }]}>Incomplete study (missing images)</Text>
-          </View>
-        )}
-
-        {/* Actions */}
-        <Text style={[styles.sectionTitle, { color: colors.foreground, marginTop: 24 }]}>Actions</Text>
-        <TouchableOpacity style={[styles.actionBtn, { backgroundColor: colors.primary }]} activeOpacity={0.8}>
-          <Feather name="external-link" size={16} color="#fff" />
-          <Text style={styles.actionBtnText}>Open in PACS Viewer</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={[styles.actionBtn, { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 }]} activeOpacity={0.8}>
-          <Feather name="file-text" size={16} color={colors.primary} />
-          <Text style={[styles.actionBtnText, { color: colors.primary }]}>Create Report</Text>
-        </TouchableOpacity>
+      <View style={styles.badgeRow}>
+        <Badge label={study.modality || "—"} tone="accent" />
+        <Badge label={String(study.transferStatus).toUpperCase()} tone={statusTone(study.transferStatus)} />
       </View>
-    </ScrollView>
-  );
-}
 
-function MetaRow({ label, value, colors }: any) {
-  return (
-    <View style={[styles.metaRow, { borderBottomColor: colors.border }]}>
-      <Text style={[styles.metaLabel, { color: colors.mutedForeground }]}>{label}</Text>
-      <Text style={[styles.metaValue, { color: colors.foreground }]}>{value}</Text>
-    </View>
+      {/* DICOM viewer placeholder */}
+      <Card style={styles.thumbCard}>
+        <View style={[styles.thumbIcon, { backgroundColor: colors.muted }]}>
+          <Feather name="image" size={28} color={colors.mutedForeground} />
+        </View>
+        <Text style={[styles.thumbLabel, { color: colors.foreground }]}>DICOM Image Viewer</Text>
+        <Text style={[styles.thumbSub, { color: colors.mutedForeground }]}>
+          Web-based DICOM viewer integration coming soon.
+        </Text>
+      </Card>
+
+      {hasAlerts ? (
+        <View style={styles.alertStack}>
+          {study.aeMismatch ? <InlineAlert tone="warning" message="AE Title mismatch detected" /> : null}
+          {study.duplicateStudy ? <InlineAlert tone="warning" message="Duplicate Study UID detected" /> : null}
+          {study.incompleteStudy ? (
+            <InlineAlert tone="destructive" message="Incomplete study (missing images)" />
+          ) : null}
+        </View>
+      ) : null}
+
+      <SectionLabel style={{ marginTop: spacing.xxl }}>Study metadata</SectionLabel>
+      <Card style={{ paddingVertical: spacing.xs }}>
+        {rows.map((row, index) => (
+          <DetailRow key={row.label} label={row.label} value={row.value} last={index === rows.length - 1} />
+        ))}
+      </Card>
+
+      <SectionLabel style={{ marginTop: spacing.xxl }}>Actions</SectionLabel>
+      <View style={[styles.note, { backgroundColor: colors.muted }]}>
+        <Feather name="info" size={15} color={colors.mutedForeground} style={{ marginTop: 1 }} />
+        <Text style={[styles.noteText, { color: colors.mutedForeground }]}>
+          PACS viewer integration coming soon
+        </Text>
+      </View>
+      <View style={{ gap: spacing.sm, marginTop: spacing.md }}>
+        <AppButton
+          label="Open in PACS Viewer"
+          icon="external-link"
+          variant="secondary"
+          disabled
+          onPress={() => {}}
+        />
+        <AppButton label="Create Report" icon="file-text" variant="secondary" disabled onPress={() => {}} />
+      </View>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 16 },
-  title: { fontSize: 18, fontFamily: "Inter_700Bold" },
-  notFound: { fontSize: 16, fontFamily: "Inter_400Regular", textAlign: "center", paddingVertical: 40 },
-  thumbWrap: { borderRadius: 14, borderWidth: 1, height: 200, alignItems: "center", justifyContent: "center", marginBottom: 16 },
-  thumbLabel: { fontSize: 16, fontFamily: "Inter_600SemiBold", marginTop: 12 },
-  thumbSub: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 4 },
-  statusBar: { flexDirection: "row", alignItems: "center", gap: 8, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, marginBottom: 16 },
-  statusDot: { width: 8, height: 8, borderRadius: 4 },
-  statusText: { fontSize: 12, fontFamily: "Inter_700Bold" },
-  sectionTitle: { fontSize: 15, fontFamily: "Inter_600SemiBold", marginBottom: 8 },
-  metaRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 10, borderBottomWidth: 1 },
-  metaLabel: { fontSize: 13, fontFamily: "Inter_400Regular" },
-  metaValue: { fontSize: 13, fontFamily: "Inter_500Medium" },
-  alertBox: { flexDirection: "row", alignItems: "center", gap: 8, borderRadius: 10, padding: 10, borderWidth: 1, marginTop: 8 },
-  alertText: { fontSize: 13, fontFamily: "Inter_500Medium" },
-  actionBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: 12, height: 44, marginTop: 8 },
-  actionBtnText: { color: "#fff", fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  badgeRow: { flexDirection: "row", gap: spacing.sm, marginBottom: spacing.lg },
+  thumbCard: { alignItems: "center", paddingVertical: spacing.section },
+  thumbIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: spacing.md,
+  },
+  thumbLabel: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  thumbSub: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    marginTop: 4,
+    lineHeight: 20,
+    textAlign: "center",
+  },
+  alertStack: { gap: spacing.sm, marginTop: spacing.lg },
+  note: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.sm,
+    borderRadius: radii.icon,
+    padding: spacing.md,
+  },
+  noteText: { flex: 1, fontSize: 13, fontFamily: "Inter_500Medium", lineHeight: 18 },
 });

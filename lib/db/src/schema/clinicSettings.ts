@@ -1,5 +1,19 @@
 import { pgTable, serial, text, timestamp, boolean, integer, numeric } from "drizzle-orm/pg-core";
 
+// Built-in default appointment time slots for the online booking form. Kept as
+// { value, label } pairs: `value` is stored on the booking, `label` is what the
+// patient sees. Admins can override this list in Settings → Online Booking.
+// Exported so the API/UI can share one source of truth for the fallback.
+export const DEFAULT_BOOKING_TIME_SLOTS = [
+  { value: "07:00 – 10:00", label: "Morning (7:00 – 10:00 AM)" },
+  { value: "10:00 – 13:00", label: "Late Morning (10:00 AM – 1:00 PM)" },
+  { value: "13:00 – 16:00", label: "Afternoon (1:00 – 4:00 PM)" },
+  { value: "16:00 – 19:00", label: "Evening (4:00 – 7:00 PM)" },
+  { value: "19:00 – 21:00", label: "Night (7:00 – 9:00 PM)" },
+] as const;
+
+export const DEFAULT_BOOKING_TIME_SLOTS_JSON = JSON.stringify(DEFAULT_BOOKING_TIME_SLOTS);
+
 export const clinicSettingsTable = pgTable("clinic_settings", {
   id: serial("id").primaryKey(),
   name: text("name").notNull().default("Care Diagnostics"),
@@ -67,6 +81,12 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   // Online booking whitelist (tests + packages)
   onlineBookingAllowedTestIds: text("online_booking_allowed_test_ids").notNull().default("[]"),
   onlineBookingAllowedPackageIds: text("online_booking_allowed_package_ids").notNull().default("[]"),
+  // Configurable appointment time slots shown in the online booking form.
+  // JSON-as-text array of { value, label } objects — admins edit these in
+  // Settings so the clinic can match its actual opening hours (e.g. 9 AM–11 PM)
+  // instead of the old hard-coded 7 AM–9 PM list. Empty "[]" makes the form
+  // fall back to its built-in defaults.
+  bookingTimeSlots: text("booking_time_slots").notNull().default(DEFAULT_BOOKING_TIME_SLOTS_JSON),
   sidebarTheme: text("sidebar_theme").notNull().default("navy"),
   billDefaultPaperSize: text("bill_default_paper_size").notNull().default("A5"),
   // Clinic-wide Billing Print settings (Settings → Billing Print) as a JSON
@@ -76,6 +96,12 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   // artifacts/diagnostic-erp/src/lib/billPrintSettings.ts for the shape and
   // for why this must live server-side, not in per-browser localStorage.
   billPrintSettingsJson: text("bill_print_settings_json").notNull().default("{}"),
+  // Mobile-app display config (Settings → Mobile App) as a JSON blob:
+  // promo banner, services grid, trust chips, tab toggles, contact overrides,
+  // about text. "{}" = nothing configured (the app falls back to its built-in
+  // defaults client-side). Served publicly via GET /api/public/mobile-config —
+  // never put secrets in here.
+  mobileAppConfigJson: text("mobile_app_config_json").notNull().default("{}"),
   billShowCode: boolean("bill_show_code").notNull().default(true),
   billShowCategory: boolean("bill_show_category").notNull().default(true),
   // When true, closing the day auto-prints the summary slip on the bill printer.

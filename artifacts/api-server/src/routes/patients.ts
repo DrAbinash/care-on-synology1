@@ -225,9 +225,9 @@ patientsRouter.post("/import", requireStaffSubPermission("/patients", "create"),
       errors.push({ row: i + 2, reason: `Invalid dateOfBirth "${dateOfBirth}" — use YYYY-MM-DD.` });
       continue;
     }
-    if (!["male", "female", "other"].includes(gender)) {
+    if (!["male", "female"].includes(gender)) {
       skipped++;
-      errors.push({ row: i + 2, reason: `Invalid gender "${gender}" — use male/female/other.` });
+      errors.push({ row: i + 2, reason: `Invalid gender "${gender}" — use male/female.` });
       continue;
     }
 

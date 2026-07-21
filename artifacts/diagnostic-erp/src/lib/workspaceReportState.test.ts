@@ -245,4 +245,26 @@ describe("matchWorkspaceShortcut (Phase 11)", () => {
     // Ctrl+Alt+O (AltGr on some layouts) must not hijack typing.
     expect(matchWorkspaceShortcut({ key: "o", altKey: true, ctrlKey: true })).toBeNull();
   });
+
+  it("Layout redesign: Alt+[ / Alt+] / Alt+\\ toggle the panels and viewer", () => {
+    expect(matchWorkspaceShortcut({ key: "[", altKey: true })).toBe("toggle-left-panel");
+    expect(matchWorkspaceShortcut({ key: "]", altKey: true })).toBe("toggle-right-panel");
+    expect(matchWorkspaceShortcut({ key: "\\", altKey: true })).toBe("toggle-viewer");
+  });
+
+  it("Layout redesign: panel/viewer toggles fire even while a text editor is focused (Alt combos produce no text)", () => {
+    expect(matchWorkspaceShortcut({ key: "[", altKey: true, target: { tagName: "TEXTAREA" } })).toBe("toggle-left-panel");
+    expect(matchWorkspaceShortcut({ key: "]", altKey: true, target: { tagName: "INPUT" } })).toBe("toggle-right-panel");
+    expect(matchWorkspaceShortcut({ key: "\\", altKey: true, target: { tagName: "TEXTAREA" } })).toBe("toggle-viewer");
+  });
+
+  it("Layout redesign: the toggle keys need Alt and never fire on a plain or Ctrl-modified press", () => {
+    // Bare bracket/backslash keystrokes are ordinary typing.
+    expect(matchWorkspaceShortcut({ key: "[" })).toBeNull();
+    expect(matchWorkspaceShortcut({ key: "]" })).toBeNull();
+    expect(matchWorkspaceShortcut({ key: "\\" })).toBeNull();
+    // Ctrl+Alt (AltGr) must not hijack them either — mod excludes the match.
+    expect(matchWorkspaceShortcut({ key: "[", altKey: true, ctrlKey: true })).toBeNull();
+    expect(matchWorkspaceShortcut({ key: "\\", altKey: true, metaKey: true })).toBeNull();
+  });
 });

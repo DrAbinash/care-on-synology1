@@ -26,6 +26,7 @@ import {
   RefreshCcw, FileCode, Send, QrCode, Palette, Bot, Inbox, ChevronRight,
   ArrowLeft, Phone, Layers, AlertTriangle, ScanLine, Receipt, Keyboard, Brain,
   Sparkles, Construction, GraduationCap, Tv, GripVertical, ScrollText, Flag,
+  Smartphone, RectangleVertical, RectangleHorizontal, Clock,
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
@@ -94,6 +95,9 @@ const ALL_MODULES = [
   { path: "/settings", label: "Settings" },
   { path: "/form-f", label: "Form F (PCPNDT)" },
   { path: "/queue", label: "Queue Tokens" },
+  // Grants the mobile staff app's read-only Bill Desk (separate from the
+  // desktop /billing permission so mobile visibility is assigned per staff).
+  { path: "/mobile-bill-desk", label: "Mobile Bill Desk (App)" },
 ];
 const DEFAULT_PERMISSIONS: Record<string, string[]> = {
   super_admin: ALL_MODULES.map(m => m.path),
@@ -161,6 +165,7 @@ const TABS = [
   { id: "report-templates", label: "Report Templates", icon: FileCode },
   { id: "portal", label: "Patient Portal", icon: Globe },
   { id: "online-booking", label: "Online Booking", icon: CreditCard },
+  { id: "mobile-app", label: "Mobile App", icon: Smartphone },
   { id: "kiosk", label: "Self-Reg Kiosk", icon: QrCode },
   { id: "queue-settings", label: "Queue Settings", icon: ClipboardList },
   { id: "queue-display", label: "Queue Display (TV)", icon: Tv },
@@ -298,6 +303,7 @@ export default function Settings() {
         {tab === "report-templates" && <ReportTemplatesTab />}
         {tab === "portal" && <PatientPortalTab />}
         {tab === "online-booking" && <OnlineBookingTab />}
+        {tab === "mobile-app" && <MobileAppTab />}
         {tab === "kiosk" && <KioskSettingsTab />}
         {tab === "queue-settings" && <QueueSettingsTab />}
         {tab === "queue-display" && <QueueDisplaySettingsTab />}
@@ -1923,6 +1929,7 @@ type OnlineBookingSettings = {
   upiQrImageUrl: string;
   onlineBookingAllowedTestIds: string;
   onlineBookingAllowedPackageIds: string;
+  bookingTimeSlots: string;
   // New fields added
   onlineBookingServices?: string;
   serviceImages?: string;
@@ -1972,6 +1979,33 @@ function OnlineBookingCatalogSelector({
     try { return new Set<number>(JSON.parse(form.onlineBookingAllowedPackageIds || "[]")); }
     catch { return new Set<number>(); }
   }, [form.onlineBookingAllowedPackageIds]);
+
+  // ── Booking time slots (configurable "Select time slot" options) ──────────
+  const bookingSlots = useMemo<Array<{ value: string; label: string }>>(() => {
+    try {
+      const parsed = JSON.parse(form.bookingTimeSlots || "[]");
+      if (Array.isArray(parsed)) {
+        return parsed
+          .filter((s) => s && typeof s.value === "string" && typeof s.label === "string")
+          .map((s) => ({ value: s.value, label: s.label }));
+      }
+    } catch { /* ignore */ }
+    return [];
+  }, [form.bookingTimeSlots]);
+
+  const writeBookingSlots = (slots: Array<{ value: string; label: string }>) =>
+    setForm((prev) => prev && { ...prev, bookingTimeSlots: JSON.stringify(slots) });
+  const updateSlot = (idx: number, patch: Partial<{ value: string; label: string }>) =>
+    writeBookingSlots(bookingSlots.map((s, i) => (i === idx ? { ...s, ...patch } : s)));
+  const removeSlot = (idx: number) => writeBookingSlots(bookingSlots.filter((_, i) => i !== idx));
+  const addSlot = () => writeBookingSlots([...bookingSlots, { value: "", label: "" }]);
+  const resetSlotsToDefault = () => writeBookingSlots([
+    { value: "07:00 – 10:00", label: "Morning (7:00 – 10:00 AM)" },
+    { value: "10:00 – 13:00", label: "Late Morning (10:00 AM – 1:00 PM)" },
+    { value: "13:00 – 16:00", label: "Afternoon (1:00 – 4:00 PM)" },
+    { value: "16:00 – 19:00", label: "Evening (4:00 – 7:00 PM)" },
+    { value: "19:00 – 21:00", label: "Night (7:00 – 9:00 PM)" },
+  ]);
 
   const activeTests = tests.filter((t) => t.isActive !== false);
   const filteredTests = activeTests.filter((t) => {
@@ -2166,6 +2200,69 @@ function OnlineBookingCatalogSelector({
           </div>
         </div>
       )}
+
+      {/* Appointment time slots — configurable "Select time slot" options shown
+          on the website booking form. Saved together with the catalog by the
+          Save button above. */}
+      <div className="border-t border-card-border pt-4">
+        <div className="flex items-center justify-between gap-2 mb-1">
+          <div className="flex items-center gap-2">
+            <Clock size={14} className="text-muted-foreground" />
+            <span className="font-semibold text-sm">Appointment Time Slots</span>
+            <span className="text-xs text-muted-foreground">({bookingSlots.length})</span>
+          </div>
+          <button
+            type="button"
+            onClick={resetSlotsToDefault}
+            className="text-xs font-medium text-primary hover:underline"
+          >
+            Reset to defaults
+          </button>
+        </div>
+        <p className="text-sm text-muted-foreground mb-3">
+          These are the time slots patients pick from in the online booking form.
+          Edit them to match your opening hours (e.g. 9 AM – 11 PM). The
+          <strong> label</strong> is what patients see; the <strong>value</strong> is
+          stored on the booking. Leave the list empty to fall back to the built-in defaults.
+        </p>
+        <div className="space-y-2">
+          {bookingSlots.length === 0 ? (
+            <p className="text-sm text-muted-foreground italic">No custom slots — the default slots are used.</p>
+          ) : (
+            bookingSlots.map((slot, idx) => (
+              <div key={idx} className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
+                <Input
+                  className="h-9 flex-1"
+                  placeholder="Label (e.g. Morning (9:00 – 11:00 AM))"
+                  value={slot.label}
+                  onChange={(e) => updateSlot(idx, { label: e.target.value })}
+                />
+                <Input
+                  className="h-9 sm:w-48"
+                  placeholder="Value (e.g. 09:00 – 11:00)"
+                  value={slot.value}
+                  onChange={(e) => updateSlot(idx, { value: e.target.value })}
+                />
+                <button
+                  type="button"
+                  onClick={() => removeSlot(idx)}
+                  className="shrink-0 text-muted-foreground hover:text-red-600 px-2 py-1.5 rounded-lg border border-card-border hover:border-red-300"
+                  title="Remove this slot"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={addSlot}
+          className="mt-2 inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+        >
+          <Plus size={14} /> Add time slot
+        </button>
+      </div>
     </div>
   );
 }
@@ -2550,6 +2647,7 @@ function OnlineBookingTab() {
       upiQrImageUrl: data.upiQrImageUrl || "",
       onlineBookingAllowedTestIds: data.onlineBookingAllowedTestIds || "[]",
       onlineBookingAllowedPackageIds: data.onlineBookingAllowedPackageIds || "[]",
+      bookingTimeSlots: data.bookingTimeSlots || "[]",
       onlineBookingServices: data.onlineBookingServices || "{}",
       serviceImages: data.serviceImages || "{}",
       serviceImagesEnabled: data.serviceImagesEnabled ?? false,
@@ -3861,6 +3959,235 @@ function FeatureFlagsTab() {
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Mobile App tab ───────────────────────────────────────────────────────────
+// Edits clinic_settings.mobile_app_config_json — the content the patient
+// mobile app (diagno-booking-mobile) renders: promo banner, services grid,
+// trust chips, tab visibility, contact overrides. Served to the app via the
+// whitelisting GET /api/public/mobile-config endpoint.
+
+type MobileAppCfg = {
+  promoBanner: { enabled: boolean; text: string };
+  services: { icon: string; label: string }[];
+  trustChips: string[];
+  showDoctorsTab: boolean;
+  showReportsTab: boolean;
+  showStaffPortal: boolean;
+  whatsappNumber: string;
+  emergencyPhone: string;
+  timings: string;
+  aboutText: string;
+};
+
+const MOBILE_APP_CFG_DEFAULTS: MobileAppCfg = {
+  promoBanner: { enabled: false, text: "" },
+  services: [
+    { icon: "droplet", label: "Pathology" },
+    { icon: "camera", label: "X-Ray" },
+    { icon: "monitor", label: "Ultrasound" },
+    { icon: "cpu", label: "CT / MRI" },
+    { icon: "heart", label: "ECG" },
+    { icon: "package", label: "Packages" },
+  ],
+  trustChips: ["NABL Accredited", "Same-day Reports"],
+  showDoctorsTab: true,
+  showReportsTab: true,
+  showStaffPortal: true,
+  whatsappNumber: "",
+  emergencyPhone: "",
+  timings: "Mon-Sat: 7:00 AM - 7:00 PM | Sun: 8:00 AM - 2:00 PM",
+  aboutText: "",
+};
+
+// Feather icon names the mobile app can render on service tiles.
+const MOBILE_SERVICE_ICONS = [
+  "droplet", "camera", "monitor", "cpu", "heart", "package",
+  "activity", "thermometer", "eye", "zap", "shield", "plus-circle",
+];
+
+function parseMobileAppCfg(raw: string | undefined | null): MobileAppCfg {
+  try {
+    const parsed = JSON.parse(raw || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return MOBILE_APP_CFG_DEFAULTS;
+    const p = parsed as Partial<MobileAppCfg>;
+    return {
+      ...MOBILE_APP_CFG_DEFAULTS,
+      ...p,
+      promoBanner: { ...MOBILE_APP_CFG_DEFAULTS.promoBanner, ...(p.promoBanner ?? {}) },
+      services: Array.isArray(p.services) && p.services.length > 0 ? p.services : MOBILE_APP_CFG_DEFAULTS.services,
+      trustChips: Array.isArray(p.trustChips) ? p.trustChips : MOBILE_APP_CFG_DEFAULTS.trustChips,
+    };
+  } catch {
+    return MOBILE_APP_CFG_DEFAULTS;
+  }
+}
+
+function MobileAppTab() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { data: settings, isLoading } = useQuery<{ mobileAppConfigJson?: string }>({
+    queryKey: ["clinic-settings"],
+    queryFn: () => api.get("/api/clinic-settings"),
+  });
+
+  const [cfg, setCfg] = useState<MobileAppCfg | null>(null);
+  const current = cfg ?? parseMobileAppCfg(settings?.mobileAppConfigJson);
+  const [newChip, setNewChip] = useState("");
+
+  const save = useMutation({
+    mutationFn: (body: MobileAppCfg) =>
+      api.put("/api/clinic-settings", { mobileAppConfigJson: JSON.stringify(body) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["clinic-settings"] });
+      toast({ title: "Saved", description: "Mobile app content updated. The app picks it up on next refresh." });
+    },
+    onError: (err: unknown) => {
+      toast({ title: "Save failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    },
+  });
+
+  const update = (patch: Partial<MobileAppCfg>) => setCfg({ ...current, ...patch });
+
+  if (isLoading) {
+    return <div className="bg-card border border-card-border rounded-xl p-8 text-center text-muted-foreground">Loading mobile app settings…</div>;
+  }
+
+  return (
+    <div className="space-y-4 max-w-3xl">
+      <div className="bg-card border border-card-border rounded-xl p-5">
+        <div className="flex items-center gap-2 mb-1"><Smartphone size={16} className="text-primary" /><h2 className="text-lg font-bold">Mobile App Content</h2></div>
+        <p className="text-sm text-muted-foreground">
+          Everything below is rendered by the patient booking app (Android/iOS). Changes apply on the app's next refresh — no app-store update needed.
+        </p>
+      </div>
+
+      {/* Promo banner */}
+      <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
+        <h3 className="font-semibold">Promo Banner</h3>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={current.promoBanner.enabled}
+            onChange={(e) => update({ promoBanner: { ...current.promoBanner, enabled: e.target.checked } })}
+          />
+          Show a banner on the app home screen
+        </label>
+        <Input
+          placeholder="e.g. Full Body Checkup @ ₹999 this month!"
+          value={current.promoBanner.text}
+          maxLength={240}
+          onChange={(e) => update({ promoBanner: { ...current.promoBanner, text: e.target.value } })}
+        />
+      </div>
+
+      {/* Trust chips */}
+      <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
+        <h3 className="font-semibold">Trust Chips</h3>
+        <p className="text-xs text-muted-foreground">Short credibility badges shown on the app's home hero (max 6).</p>
+        <div className="flex flex-wrap gap-2">
+          {current.trustChips.map((chip, i) => (
+            <span key={`${chip}-${i}`} className="inline-flex items-center gap-1 bg-muted rounded-full px-3 py-1 text-xs">
+              {chip}
+              <button
+                className="text-muted-foreground hover:text-destructive"
+                onClick={() => update({ trustChips: current.trustChips.filter((_, j) => j !== i) })}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <Input placeholder="Add chip…" value={newChip} maxLength={60} onChange={(e) => setNewChip(e.target.value)} />
+          <Button
+            variant="outline"
+            disabled={!newChip.trim() || current.trustChips.length >= 6}
+            onClick={() => { update({ trustChips: [...current.trustChips, newChip.trim()] }); setNewChip(""); }}
+          >
+            <Plus size={14} />
+          </Button>
+        </div>
+      </div>
+
+      {/* Services grid */}
+      <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
+        <h3 className="font-semibold">Services Grid</h3>
+        <p className="text-xs text-muted-foreground">Tiles shown under "Services" on the app home screen (max 12).</p>
+        {current.services.map((svc, i) => (
+          <div key={i} className="flex gap-2 items-center">
+            <select
+              className="border border-input rounded-md h-9 px-2 text-sm bg-background"
+              value={svc.icon}
+              onChange={(e) => update({ services: current.services.map((s, j) => (j === i ? { ...s, icon: e.target.value } : s)) })}
+            >
+              {MOBILE_SERVICE_ICONS.map((ic) => <option key={ic} value={ic}>{ic}</option>)}
+            </select>
+            <Input
+              value={svc.label}
+              maxLength={60}
+              onChange={(e) => update({ services: current.services.map((s, j) => (j === i ? { ...s, label: e.target.value } : s)) })}
+            />
+            <Button variant="ghost" size="icon" onClick={() => update({ services: current.services.filter((_, j) => j !== i) })}>
+              <Trash2 size={14} className="text-destructive" />
+            </Button>
+          </div>
+        ))}
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={current.services.length >= 12}
+          onClick={() => update({ services: [...current.services, { icon: "activity", label: "" }] })}
+        >
+          <Plus size={14} className="mr-1" /> Add service
+        </Button>
+      </div>
+
+      {/* Feature toggles */}
+      <div className="bg-card border border-card-border rounded-xl p-5 space-y-2">
+        <h3 className="font-semibold">App Sections</h3>
+        {([
+          ["showDoctorsTab", "Show Doctors tab"],
+          ["showReportsTab", "Show Reports tab"],
+          ["showStaffPortal", "Show Staff Portal entry"],
+        ] as const).map(([key, label]) => (
+          <label key={key} className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={current[key]} onChange={(e) => update({ [key]: e.target.checked } as Partial<MobileAppCfg>)} />
+            {label}
+          </label>
+        ))}
+      </div>
+
+      {/* Contact & info */}
+      <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
+        <h3 className="font-semibold">Contact & Info</h3>
+        <div className="grid md:grid-cols-2 gap-3">
+          <div>
+            <Label className="text-xs">WhatsApp number</Label>
+            <Input value={current.whatsappNumber} maxLength={20} placeholder="e.g. 9973497200" onChange={(e) => update({ whatsappNumber: e.target.value })} />
+          </div>
+          <div>
+            <Label className="text-xs">Emergency phone</Label>
+            <Input value={current.emergencyPhone} maxLength={20} placeholder="Optional" onChange={(e) => update({ emergencyPhone: e.target.value })} />
+          </div>
+        </div>
+        <div>
+          <Label className="text-xs">Timings line</Label>
+          <Input value={current.timings} maxLength={200} onChange={(e) => update({ timings: e.target.value })} />
+        </div>
+        <div>
+          <Label className="text-xs">About text (app About screen)</Label>
+          <Textarea rows={4} value={current.aboutText} maxLength={2000} placeholder="Leave empty to use the app's built-in description." onChange={(e) => update({ aboutText: e.target.value })} />
+        </div>
+      </div>
+
+      <div className="flex justify-end">
+        <Button onClick={() => save.mutate(current)} disabled={save.isPending}>
+          {save.isPending ? "Saving…" : "Save Mobile App Settings"}
+        </Button>
       </div>
     </div>
   );
@@ -7055,183 +7382,6 @@ function ReportTemplatesTab() {
 }
 
 // ============================================================
-// OLLAMA SETTINGS CARD — Phase 10C Local Model Configuration
-// ============================================================
-const OLLAMA_MODELS_KEY = "ollama_known_models";
-
-function OllamaSettingsCard() {
-  const { toast } = useToast();
-  const [baseUrl, setBaseUrl] = useState("");
-  const [model, setModel] = useState("llama3");
-  const [localOnly, setLocalOnly] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [availableModels, setAvailableModels] = useState<string[]>(() => {
-    try {
-      const stored = localStorage.getItem(OLLAMA_MODELS_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.every((m) => typeof m === "string")) return parsed;
-      }
-    } catch { /* ignore */ }
-    return [];
-  });
-
-  useEffect(() => {
-    api.get<{ ollamaBaseUrl?: string | null; ollamaModel?: string | null; ollamaLocalOnly?: boolean; ollamaKnownModels?: string }>("/api/clinic-settings")
-      .then((d) => {
-        setBaseUrl(d.ollamaBaseUrl ?? "");
-        setModel(d.ollamaModel ?? "qwen3:8b");
-        setLocalOnly(d.ollamaLocalOnly ?? false);
-        // Seed availableModels from DB so every workstation gets the dropdown
-        // without needing to run "Test Connection" individually.
-        if (d.ollamaKnownModels) {
-          try {
-            const parsed = JSON.parse(d.ollamaKnownModels);
-            if (Array.isArray(parsed) && parsed.length > 0 && parsed.every((m) => typeof m === "string")) {
-              setAvailableModels(parsed);
-              try { localStorage.setItem(OLLAMA_MODELS_KEY, d.ollamaKnownModels); } catch { /* ignore */ }
-            }
-          } catch { /* ignore */ }
-        }
-      })
-      .catch(() => {});
-  }, []);
-
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      await api.put("/api/clinic-settings", {
-        ollamaBaseUrl: baseUrl.trim() || null,
-        ollamaModel: model.trim() || "qwen3:8b",
-        ollamaLocalOnly: localOnly,
-      });
-      toast({ title: "Ollama settings saved" });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to save";
-      toast({ title: "Save failed", description: msg, variant: "destructive" });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleTest = async () => {
-    if (!baseUrl.trim()) {
-      toast({ title: "Enter a base URL first", variant: "destructive" });
-      return;
-    }
-    setTesting(true);
-    try {
-      const resp = await api.post<{ ok: boolean; model: string; models?: string[]; modelFound?: boolean; latencyMs?: number; error?: string }>(
-        "/api/radiology-ollama/test",
-        { baseUrl: baseUrl.trim(), model: model.trim() || "llama3", allowLocal: localOnly }
-      );
-      if (resp.ok) {
-        const pulledModels = resp.models ?? [];
-        if (pulledModels.length > 0) {
-          setAvailableModels(pulledModels);
-          const modelsJson = JSON.stringify(pulledModels);
-          try { localStorage.setItem(OLLAMA_MODELS_KEY, modelsJson); } catch { /* ignore */ }
-          // Persist to DB so all other workstations see the dropdown immediately.
-          api.put("/api/clinic-settings", { ollamaKnownModels: modelsJson }).catch(() => {});
-        }
-        const detail = [
-          resp.modelFound ? `Model "${resp.model}" found` : `Model "${resp.model}" not in list (${pulledModels.slice(0, 3).join(", ")})`,
-          resp.latencyMs != null ? `${resp.latencyMs}ms` : null,
-        ].filter(Boolean).join(" · ");
-        toast({ title: "Ollama connection OK", description: detail });
-      } else {
-        toast({ title: "Ollama connection failed", description: resp.error ?? "Unknown error", variant: "destructive" });
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed";
-      toast({ title: "Test failed", description: msg, variant: "destructive" });
-    } finally {
-      setTesting(false);
-    }
-  };
-
-  return (
-    <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
-      <div>
-        <h2 className="font-bold text-lg flex items-center gap-2">
-          🦙 Ollama Local Model Configuration (Phase 10C)
-        </h2>
-        <p className="text-sm text-muted-foreground mt-1">
-          Run privacy-preserving AI locally using Ollama. Requires the <strong>Ollama Local Models</strong> feature flag to be ON.
-          All AI output is a draft and requires radiologist review.
-        </p>
-      </div>
-      <div className="space-y-3">
-        <div>
-          <Label className="text-sm">Ollama Base URL</Label>
-          <Input
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="http://localhost:11434"
-            className="mt-1"
-          />
-          <p className="text-[11px] text-muted-foreground mt-1">Leave blank to disable. Use the machine's LAN IP if Ollama runs on a separate workstation.</p>
-        </div>
-        <div>
-          <Label className="text-sm">Model Name</Label>
-          {availableModels.length > 0 ? (
-            <div className="mt-1 space-y-1">
-              <select
-                value={availableModels.includes(model) ? model : "__custom__"}
-                onChange={(e) => { if (e.target.value !== "__custom__") setModel(e.target.value); }}
-                className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
-              >
-                {availableModels.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-                {!availableModels.includes(model) && (
-                  <option value="__custom__">{model} (custom)</option>
-                )}
-              </select>
-              <p className="text-[11px] text-muted-foreground">
-                Models pulled on the Ollama instance. To use a different model, type it below after pulling it with <code className="font-mono">ollama pull &lt;name&gt;</code>.
-              </p>
-              <Input
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder="qwen3:8b"
-                className="text-xs h-7"
-              />
-            </div>
-          ) : (
-            <>
-              <Input
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder="llama3"
-                className="mt-1"
-              />
-              <p className="text-[11px] text-muted-foreground mt-1">Recommended for radiology: <code className="font-mono">qwen3:14b</code> (best quality) or <code className="font-mono">qwen3:8b</code> (faster). Pull on Windows PC: <code className="font-mono">ollama pull qwen3:8b</code>. Click "Test Connection" to see available models.</p>
-            </>
-          )}
-        </div>
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" checked={localOnly} onChange={(e) => setLocalOnly(e.target.checked)} className="h-4 w-4" />
-          <div>
-            <span className="text-sm font-medium">Local-only mode</span>
-            <p className="text-[11px] text-muted-foreground">Disable cloud AI fallback — use Ollama exclusively. Useful for strict data-residency environments.</p>
-          </div>
-        </label>
-      </div>
-      <div className="flex gap-2">
-        <Button size="sm" onClick={handleSave} disabled={saving}>
-          {saving ? "Saving..." : "Save Ollama Settings"}
-        </Button>
-        <Button size="sm" variant="outline" onClick={handleTest} disabled={testing} type="button">
-          {testing ? "Testing..." : "Test Connection"}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-// ============================================================
 // RADIOLOGY SETTINGS TAB — Productivity Tools
 // ============================================================
 function RadiologySettingsTab() {
@@ -7648,8 +7798,17 @@ function RadiologySettingsTab() {
         </div>
       </div>
 
-      {/* Phase 10C: Ollama Local Model Configuration */}
-      <OllamaSettingsCard />
+      {/* Ollama Local Model config is configured in ONE place — Radiology
+          Settings → AI & Templates → Local AI (POST /api/clinic-settings/ollama).
+          The old duplicate card here wrote a different, partial path and is
+          removed to avoid two competing save flows. */}
+      <div className="bg-card border border-card-border rounded-xl p-5">
+        <h2 className="font-bold text-lg flex items-center gap-2">🦙 Ollama Local Model Configuration</h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Configured in <strong>Radiology Settings → AI &amp; Templates → Local AI</strong> — the single place for the
+          Ollama endpoint (primary/fallback), model, timeout, and enable toggle.
+        </p>
+      </div>
 
       {/* Phase 9: Radiology Memory + Context Engine */}
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
@@ -8039,11 +8198,14 @@ function QueueSettingsTab() {
 // QUEUE DISPLAY (TV) SETTINGS TAB
 // ============================================================
 // Manages queue_display_settings rows — one per physical TV/kiosk display
-// (USG room, X-Ray room, Reception, etc). Nothing here touches the existing
-// waiting-room Display.tsx board or its /api/display/queue feed; this only
-// controls branding/presentation for the new portrait QueueDisplay.tsx page.
+// (USG room, X-Ray room, Reception, etc). This is the admin control panel
+// for clinic-site's /queue/:roomKey page (artifacts/clinic-site/src/pages/
+// queue-display.tsx) — the single canonical TV board, reachable at the
+// bare caredeoghar.com origin. It doesn't touch /api/display/queue itself,
+// only the presentation config layered on top of that existing feed.
 
 type InstructionItemForm = { id: string; icon: string; text: string; color: string; enabled: boolean };
+type MediaItemForm = { id: string; type: "image" | "video"; url: string; durationSeconds: number; enabled: boolean };
 
 type QueueDisplaySettingsForm = {
   roomKey: string;
@@ -8077,9 +8239,77 @@ type QueueDisplaySettingsForm = {
   primaryColor: string;
   secondaryColor: string;
   accentColor: string;
+  backgroundColor: string;
+  cardBackgroundColor: string;
+  textColor: string;
+  layoutOrientation: "portrait" | "landscape";
+  kioskWakeLock: boolean;
+  kioskAutoFullscreen: boolean;
+  kioskAutoReload: boolean;
+  kioskPreventExit: boolean;
+  showWaitEstimate: boolean;
+  voiceAnnouncementEnabled: boolean;
+  language: "en" | "hi";
+  patientPingEnabled: boolean;
+  patientPingTokensBefore: number;
+  showMedia: boolean;
+  mediaItems: MediaItemForm[];
+  mediaIntervalMinutes: number;
+  mediaDurationSeconds: number;
+  quietHoursEnabled: boolean;
+  quietHoursStart: string;
+  quietHoursEnd: string;
+  quietHoursDimPercent: number;
+  staffAlertEnabled: boolean;
+  staffAlertPhone: string;
+  staffAlertAfterMinutes: number;
   ledgerId: number;
   departments: string;
 };
+
+// Shows every configured room's TV online/offline status (via the heartbeat
+// ping each display sends every ~30s) and last-seen time, so staff can spot
+// a dark screen from the ERP instead of walking to check it. Purely a
+// read-only status view — no settings live here.
+function DisplaysOverview({
+  rooms,
+  activeRoomKey,
+  onSelectRoom,
+}: {
+  rooms?: { roomKey: string; roomTitle: string; online: boolean; lastSeenAt: number | null }[];
+  activeRoomKey: string;
+  onSelectRoom: (roomKey: string) => void;
+}) {
+  if (!rooms || rooms.length === 0) return null;
+
+  const fmtLastSeen = (ts: number | null) => {
+    if (!ts) return "never seen";
+    const mins = Math.round((Date.now() - ts) / 60_000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    return `${Math.round(mins / 60)}h ago`;
+  };
+
+  return (
+    <div className="bg-card border border-card-border rounded-xl p-4">
+      <div className="text-sm font-semibold mb-3">Displays Overview</div>
+      <div className="flex flex-wrap gap-2">
+        {rooms.map((r) => (
+          <button
+            key={r.roomKey}
+            type="button"
+            onClick={() => onSelectRoom(r.roomKey)}
+            className={`flex items-center gap-2 border rounded-lg px-3 py-1.5 text-xs ${r.roomKey === activeRoomKey ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40" : "border-card-border hover:bg-muted"}`}
+          >
+            <span className={`w-2 h-2 rounded-full shrink-0 ${r.online ? "bg-emerald-500" : "bg-red-500"}`} />
+            <span className="font-medium">{r.roomTitle || r.roomKey.toUpperCase()}</span>
+            <span className="text-muted-foreground">{r.online ? "online" : fmtLastSeen(r.lastSeenAt)}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function QueueDisplaySettingsTab() {
   const { toast } = useToast();
@@ -8092,14 +8322,25 @@ function QueueDisplaySettingsTab() {
   // List of all configured displays (MRI, CT, X-Ray, USG, Reception, etc.)
   // — fully dynamic, no fixed list. Doctors add rooms from here; each gets
   // its own independent settings row and its own /display/:roomKey URL.
-  const { data: rooms } = useQuery<{ roomKey: string; roomTitle: string; displayName: string }[]>({
+  const { data: rooms } = useQuery<{ roomKey: string; roomTitle: string; displayName: string; online: boolean; lastSeenAt: number | null }[]>({
     queryKey: ["queue-display-rooms"],
     queryFn: () => api.get("/api/settings/queue-display"),
+    refetchInterval: 30_000, // keep the Displays Overview online/offline status fresh
   });
 
   const { data, isLoading } = useQuery<QueueDisplaySettingsForm>({
     queryKey: ["queue-display-settings-admin", roomKey],
     queryFn: () => api.get(`/api/settings/queue-display/${roomKey}`),
+  });
+
+  // Real department strings tokens are actually created with — used to
+  // build the Departments filter as a picker instead of free text, so a TV
+  // room can never be silently misconfigured with a department string
+  // ("USG Room", "Ultrasound") that no token actually carries, which would
+  // make every token for that department vanish from the whole feed.
+  const { data: knownDepartments } = useQuery<{ department: string; roomNumber: string }[]>({
+    queryKey: ["test-token-departments"],
+    queryFn: () => api.get("/api/test-tokens/departments"),
   });
 
   // Display token — lets the unattended TV browser (which has no staff login
@@ -8150,6 +8391,63 @@ function QueueDisplaySettingsTab() {
     },
     onError: (err: any) => toast({ title: "Save failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
   });
+
+  const sendCommand = useMutation({
+    mutationFn: (command: "reload") => api.post(`/api/settings/queue-display/${roomKey}/command`, { command }),
+    onSuccess: () => toast({ title: "Reload command sent" }),
+    onError: (err: any) => toast({ title: "Could not send command", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
+  });
+
+  const cloneSettings = useMutation({
+    mutationFn: (fromRoomKey: string) => api.post(`/api/settings/queue-display/${roomKey}/clone`, { fromRoomKey }),
+    onSuccess: (res: any) => {
+      setForm(res);
+      toast({ title: `Copied settings from ${cloneFromKey.toUpperCase()}` });
+    },
+    onError: (err: any) => toast({ title: "Clone failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
+  });
+
+  const [cloneFromKey, setCloneFromKey] = useState("");
+  const [mediaUploading, setMediaUploading] = useState(false);
+
+  const uploadMedia = async (file: File | null) => {
+    if (!file || !form) return;
+    if (file.size > 60 * 1024 * 1024) { toast({ title: "File too large — 60 MB max", variant: "destructive" }); return; }
+    setMediaUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const token = getStaffToken();
+      const res = await fetch(`/api/settings/queue-display/${roomKey}/media`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        body: fd,
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || `Upload failed (${res.status})`);
+      const uploaded = await res.json() as { url: string; type: "image" | "video" };
+      setForm({
+        ...form,
+        mediaItems: [
+          ...form.mediaItems,
+          { id: String(Date.now()), type: uploaded.type, url: uploaded.url, durationSeconds: 15, enabled: true },
+        ],
+      });
+      toast({ title: "Media uploaded — remember to save" });
+    } catch (err) {
+      toast({ title: "Upload failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    } finally {
+      setMediaUploading(false);
+    }
+  };
+
+  const removeMedia = (id: string) => {
+    if (!form) return;
+    const item = form.mediaItems.find((m) => m.id === id);
+    setForm({ ...form, mediaItems: form.mediaItems.filter((m) => m.id !== id) });
+    if (item?.url) {
+      api.delete(`/api/settings/queue-display/${roomKey}/media`, { url: item.url }).catch(() => {});
+    }
+  };
 
   const onLogoChange = (file: File | null) => {
     if (!file || !form) return;
@@ -8212,9 +8510,9 @@ function QueueDisplaySettingsTab() {
           <div>
             <div className="font-semibold text-sm">TV / Kiosk Queue Display</div>
             <div className="text-xs text-muted-foreground mt-1">
-              Configure a portrait TV display for a specific room (USG, X-Ray, Reception, etc).
-              Everything shown on the TV — branding, room title, QR code, instructions, footer —
-              is controlled here. Open the display at <code className="px-1 py-0.5 bg-black/5 dark:bg-white/10 rounded">/queue/{roomKey}</code> on the TV browser.
+              Configure a TV display for a specific room (USG, X-Ray, Reception, etc) — portrait or landscape.
+              Everything shown on the TV — branding, room title, QR code, instructions, footer, theme, and
+              kiosk-mode behavior — is controlled here. Open the display at <code className="px-1 py-0.5 bg-black/5 dark:bg-white/10 rounded">/queue/{roomKey}</code> on the TV browser.
             </div>
           </div>
         </div>
@@ -8280,10 +8578,34 @@ function QueueDisplaySettingsTab() {
           </Button>
         )}
 
+        {rooms && rooms.length > 1 && (
+          <div className="flex items-center gap-2">
+            <Label className="text-xs shrink-0">Clone settings from</Label>
+            <Select value={cloneFromKey} onValueChange={setCloneFromKey}>
+              <SelectTrigger className="w-40 h-8 text-xs"><SelectValue placeholder="Pick a room…" /></SelectTrigger>
+              <SelectContent>
+                {rooms.filter((r) => r.roomKey !== roomKey).map((r) => (
+                  <SelectItem key={r.roomKey} value={r.roomKey}>{r.roomTitle || r.roomKey.toUpperCase()}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!cloneFromKey || cloneSettings.isPending}
+              onClick={() => cloneSettings.mutate(cloneFromKey)}
+            >
+              {cloneSettings.isPending ? "Copying…" : "Copy"}
+            </Button>
+          </div>
+        )}
+
         <span className="text-xs text-muted-foreground w-full">
           Each room (MRI, CT, X-Ray, USG, Reception…) has its own independent branding, QR code, and TV URL at <code className="px-1 py-0.5 bg-black/5 dark:bg-white/10 rounded">/queue/{roomKey}</code>.
         </span>
       </div>
+
+      <DisplaysOverview rooms={rooms} activeRoomKey={roomKey} onSelectRoom={setRoomKey} />
 
       <div className="grid grid-cols-1 xl:grid-cols-[1fr_420px] gap-4">
         {/* ── Settings form ─────────────────────────────────────────── */}
@@ -8328,14 +8650,49 @@ function QueueDisplaySettingsTab() {
                 <Input type="number" min={1} max={20} value={form.nextPatientCount} onChange={(e) => setForm({ ...form, nextPatientCount: Number(e.target.value) || 5 })} className="w-24" />
               </div>
             )}
+            <ToggleRow label='Show estimated wait time (e.g. "~12 min wait")' checked={form.showWaitEstimate} onChange={(v) => setForm({ ...form, showWaitEstimate: v })} />
             <div className="flex items-center gap-2 mb-3">
               <Label className="text-xs w-40 shrink-0">Ledger / Book ID</Label>
               <Input type="number" min={1} value={form.ledgerId} onChange={(e) => setForm({ ...form, ledgerId: Number(e.target.value) || 1 })} className="w-24" />
               <span className="text-xs text-muted-foreground">Which existing queue book this TV shows (see Queue page)</span>
             </div>
-            <div className="flex items-center gap-2">
-              <Label className="text-xs w-40 shrink-0">Departments filter</Label>
-              <Input value={form.departments} onChange={(e) => setForm({ ...form, departments: e.target.value })} placeholder="e.g. USG (blank = all)" />
+            <div>
+              <Label className="text-xs block mb-1.5">Departments filter</Label>
+              {(() => {
+                const selected = form.departments ? form.departments.split(",").map((s) => s.trim()).filter(Boolean) : [];
+                const known = (knownDepartments ?? []).map((d) => d.department);
+                // Union in any already-saved value not in the known list (e.g. a
+                // department with no tokens created yet today) so it stays
+                // visible/editable instead of silently disappearing.
+                const options = Array.from(new Set([...known, ...selected])).sort();
+                const toggle = (dept: string) => {
+                  const next = selected.includes(dept) ? selected.filter((d) => d !== dept) : [...selected, dept];
+                  setForm({ ...form, departments: next.join(",") });
+                };
+                if (options.length === 0) {
+                  return <p className="text-xs text-muted-foreground">No departments found yet — add tests under Tests first, or leave blank to show every department.</p>;
+                }
+                return (
+                  <div className="flex flex-wrap gap-1.5">
+                    {options.map((d) => {
+                      const isOn = selected.includes(d);
+                      return (
+                        <button
+                          key={d}
+                          type="button"
+                          onClick={() => toggle(d)}
+                          className={`text-xs px-2.5 py-1 rounded-full border ${isOn ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 font-medium" : "border-card-border text-muted-foreground hover:bg-muted"}`}
+                        >
+                          {d}
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+              <p className="text-[11px] text-muted-foreground mt-1.5">
+                Picked from actual test departments, so this can never silently mismatch what tokens are tagged with. None selected = show every department on this TV.
+              </p>
             </div>
           </SettingsCard>
 
@@ -8416,13 +8773,204 @@ function QueueDisplaySettingsTab() {
             {form.showSlogan && <Input value={form.slogan} onChange={(e) => setForm({ ...form, slogan: e.target.value })} placeholder="We care for you" />}
           </SettingsCard>
 
+          {/* Layout & orientation */}
+          <SettingsCard title="Layout & Orientation">
+            <Label className="text-xs block mb-1.5">TV orientation</Label>
+            <div className="flex gap-2 mb-1">
+              <button
+                type="button"
+                onClick={() => setForm({ ...form, layoutOrientation: "portrait" })}
+                className={`flex-1 flex items-center justify-center gap-2 border rounded-lg py-2 text-sm ${form.layoutOrientation === "portrait" ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300" : "border-card-border"}`}
+              >
+                <RectangleVertical size={15} /> Portrait (9:16)
+              </button>
+              <button
+                type="button"
+                onClick={() => setForm({ ...form, layoutOrientation: "landscape" })}
+                className={`flex-1 flex items-center justify-center gap-2 border rounded-lg py-2 text-sm ${form.layoutOrientation === "landscape" ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300" : "border-card-border"}`}
+              >
+                <RectangleHorizontal size={15} /> Landscape (16:9)
+              </button>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Match this to how the physical TV is mounted. Landscape rearranges the same cards into a two-column board instead of rotating the portrait design.
+            </p>
+          </SettingsCard>
+
+          {/* Voice & language */}
+          <SettingsCard title="Voice & Language">
+            <ToggleRow label="Announce the token number out loud when it changes" checked={form.voiceAnnouncementEnabled} onChange={(v) => setForm({ ...form, voiceAnnouncementEnabled: v })} />
+            <div className="flex items-center gap-2 mt-2">
+              <Label className="text-xs w-40 shrink-0">On-screen label language</Label>
+              <Select value={form.language} onValueChange={(v) => setForm({ ...form, language: v as "en" | "hi" })}>
+                <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="en">English</SelectItem>
+                  <SelectItem value="hi">हिन्दी (Hindi)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-2">
+              Language only translates the fixed labels ("Now Serving", "Next Patients", etc). Your own text (room title, QR heading, instructions, announcement, footer) stays exactly as you typed it.
+            </p>
+          </SettingsCard>
+
           {/* Theme */}
           <SettingsCard title="Theme Colors">
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-3 gap-3 mb-3">
               <ColorField label="Primary (green)" value={form.primaryColor} onChange={(v) => setForm({ ...form, primaryColor: v })} />
               <ColorField label="Secondary (blue)" value={form.secondaryColor} onChange={(v) => setForm({ ...form, secondaryColor: v })} />
               <ColorField label="Accent (announce)" value={form.accentColor} onChange={(v) => setForm({ ...form, accentColor: v })} />
             </div>
+            <div className="grid grid-cols-3 gap-3 pt-3 border-t border-card-border">
+              <OptionalColorField label="Background" value={form.backgroundColor} onChange={(v) => setForm({ ...form, backgroundColor: v })} placeholder="#03152f" />
+              <OptionalColorField label="Card background" value={form.cardBackgroundColor} onChange={(v) => setForm({ ...form, cardBackgroundColor: v })} placeholder="#06224a" />
+              <OptionalColorField label="Text color" value={form.textColor} onChange={(v) => setForm({ ...form, textColor: v })} placeholder="#ffffff" />
+            </div>
+          </SettingsCard>
+
+          {/* Kiosk mode — unattended-TV hardening (distinct from the
+              walk-in registration "Kiosk Settings" tab elsewhere). */}
+          <SettingsCard title="Kiosk Mode (Unattended TV)">
+            <ToggleRow label="Keep screen awake (wake lock)" checked={form.kioskWakeLock} onChange={(v) => setForm({ ...form, kioskWakeLock: v })} />
+            <ToggleRow label="Auto-enter fullscreen (hide browser bar)" checked={form.kioskAutoFullscreen} onChange={(v) => setForm({ ...form, kioskAutoFullscreen: v })} />
+            <ToggleRow label="Auto-reload after network loss or if the screen freezes" checked={form.kioskAutoReload} onChange={(v) => setForm({ ...form, kioskAutoReload: v })} />
+            <ToggleRow label="Discourage leaving the page (block right-click, confirm on navigate)" checked={form.kioskPreventExit} onChange={(v) => setForm({ ...form, kioskPreventExit: v })} />
+            <div className="mt-3 pt-3 border-t border-card-border text-[11px] text-muted-foreground space-y-1.5">
+              <p>
+                These toggles control what the TV's own browser tab can do on its own. A normal browser can't fully lock itself down or
+                auto-launch on boot — for that, install a kiosk browser app on the TV/box (e.g. <b>Fully Kiosk Browser</b> on Android/Fire TV,
+                or Chrome with <code className="px-1 py-0.5 bg-black/5 dark:bg-white/10 rounded">--kiosk</code> on a mini PC), set it to launch
+                automatically on power-up, and point it at the TV browser URL below.
+              </p>
+            </div>
+          </SettingsCard>
+
+          {/* Remote control */}
+          <SettingsCard title="Remote Control">
+            <div className="flex items-center gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => sendCommand.mutate("reload")}
+                disabled={sendCommand.isPending}
+              >
+                <RefreshCcw size={14} className="mr-1.5" /> {sendCommand.isPending ? "Sending…" : "Reload this TV now"}
+              </Button>
+              <span className="text-[11px] text-muted-foreground">Pushes an instant reload to whichever TV is currently open on this room's URL — no need to walk over to it.</span>
+            </div>
+          </SettingsCard>
+
+          {/* Branding / video interstitial */}
+          <SettingsCard title="Branding / Video Interstitial">
+            <ToggleRow label="Periodically take over the screen with branding/video" checked={form.showMedia} onChange={(v) => setForm({ ...form, showMedia: v })} />
+            {form.showMedia && (
+              <>
+                <div className="flex items-center gap-4 mb-3">
+                  <div className="flex items-center gap-2">
+                    <Label className="text-xs shrink-0">Every</Label>
+                    <Input type="number" min={1} max={60} value={form.mediaIntervalMinutes} onChange={(e) => setForm({ ...form, mediaIntervalMinutes: Number(e.target.value) || 5 })} className="w-16" />
+                    <span className="text-xs text-muted-foreground">min</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Label className="text-xs shrink-0">for</Label>
+                    <Input type="number" min={5} max={300} value={form.mediaDurationSeconds} onChange={(e) => setForm({ ...form, mediaDurationSeconds: Number(e.target.value) || 30 })} className="w-16" />
+                    <span className="text-xs text-muted-foreground">sec (default, per-item override below)</span>
+                  </div>
+                </div>
+                <div className="space-y-2 mb-3">
+                  {form.mediaItems.map((m) => (
+                    <div key={m.id} className="flex items-center gap-2 border border-card-border rounded-lg p-2">
+                      {m.type === "video" ? (
+                        <video src={m.url} className="w-16 h-10 rounded object-cover bg-black shrink-0" muted />
+                      ) : (
+                        <img src={m.url} className="w-16 h-10 rounded object-cover bg-muted shrink-0" alt="" />
+                      )}
+                      <span className="text-xs text-muted-foreground flex-1 truncate">{m.type} · {m.url.split("/").pop()}</span>
+                      <Label className="text-[11px] shrink-0">sec</Label>
+                      <Input
+                        type="number" min={3} max={300}
+                        value={m.durationSeconds}
+                        onChange={(e) => setForm({ ...form, mediaItems: form.mediaItems.map((x) => x.id === m.id ? { ...x, durationSeconds: Number(e.target.value) || 15 } : x) })}
+                        className="w-16 h-8 text-xs"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setForm({ ...form, mediaItems: form.mediaItems.map((x) => x.id === m.id ? { ...x, enabled: !x.enabled } : x) })}
+                        className="shrink-0"
+                        title={m.enabled ? "Included in rotation — click to skip" : "Skipped — click to include"}
+                      >
+                        {m.enabled ? <CheckSquare size={18} className="text-emerald-500" /> : <Square size={18} className="text-muted-foreground" />}
+                      </button>
+                      <button type="button" onClick={() => removeMedia(m.id)} className="shrink-0 text-red-500 hover:text-red-600">
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <label className="text-xs px-3 py-1.5 border border-card-border rounded-lg cursor-pointer hover:bg-muted inline-flex items-center gap-1.5">
+                  <Upload size={12} /> {mediaUploading ? "Uploading…" : "Upload image or video (60 MB max)"}
+                  <input type="file" accept="image/*,video/mp4,video/webm" className="hidden" disabled={mediaUploading} onChange={(e) => uploadMedia(e.target.files?.[0] ?? null)} />
+                </label>
+              </>
+            )}
+          </SettingsCard>
+
+          {/* Quiet hours */}
+          <SettingsCard title="Quiet Hours">
+            <ToggleRow label="Dim the screen outside clinic hours" checked={form.quietHoursEnabled} onChange={(v) => setForm({ ...form, quietHoursEnabled: v })} />
+            {form.quietHoursEnabled && (
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <Label className="text-xs shrink-0">From</Label>
+                  <Input type="time" value={form.quietHoursStart} onChange={(e) => setForm({ ...form, quietHoursStart: e.target.value })} className="w-28" />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Label className="text-xs shrink-0">To</Label>
+                  <Input type="time" value={form.quietHoursEnd} onChange={(e) => setForm({ ...form, quietHoursEnd: e.target.value })} className="w-28" />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Label className="text-xs shrink-0">Dim by</Label>
+                  <Input type="number" min={0} max={90} value={form.quietHoursDimPercent} onChange={(e) => setForm({ ...form, quietHoursDimPercent: Number(e.target.value) || 0 })} className="w-16" />
+                  <span className="text-xs text-muted-foreground">%</span>
+                </div>
+              </div>
+            )}
+            <p className="text-[11px] text-muted-foreground mt-2">
+              This dims the picture (CSS brightness) — it does not turn the TV itself off. Power scheduling is a TV/smart-plug setting, not something a webpage can control.
+            </p>
+          </SettingsCard>
+
+          {/* Patient WhatsApp ping */}
+          <SettingsCard title="Patient Notifications (WhatsApp)">
+            <ToggleRow label="Message a patient's WhatsApp when they're almost up" checked={form.patientPingEnabled} onChange={(v) => setForm({ ...form, patientPingEnabled: v })} />
+            {form.patientPingEnabled && (
+              <div className="flex items-center gap-2 mb-2">
+                <Label className="text-xs w-40 shrink-0">Ping this many tokens before</Label>
+                <Input type="number" min={1} max={10} value={form.patientPingTokensBefore} onChange={(e) => setForm({ ...form, patientPingTokensBefore: Number(e.target.value) || 2 })} className="w-20" />
+              </div>
+            )}
+            <p className="text-[11px] text-amber-600 dark:text-amber-500">
+              Off by default. This sends a real WhatsApp message to real patients — test it carefully before turning it on for a busy room.
+            </p>
+          </SettingsCard>
+
+          {/* Staff offline-TV alert */}
+          <SettingsCard title="Staff Alerts (WhatsApp)">
+            <ToggleRow label="WhatsApp a staff number if this TV goes offline" checked={form.staffAlertEnabled} onChange={(v) => setForm({ ...form, staffAlertEnabled: v })} />
+            {form.staffAlertEnabled && (
+              <div className="space-y-2">
+                <Input value={form.staffAlertPhone} onChange={(e) => setForm({ ...form, staffAlertPhone: e.target.value })} placeholder="Staff WhatsApp number, e.g. 9876543210" />
+                <div className="flex items-center gap-2">
+                  <Label className="text-xs w-40 shrink-0">Alert after offline for</Label>
+                  <Input type="number" min={1} max={120} value={form.staffAlertAfterMinutes} onChange={(e) => setForm({ ...form, staffAlertAfterMinutes: Number(e.target.value) || 10 })} className="w-20" />
+                  <span className="text-xs text-muted-foreground">min</span>
+                </div>
+              </div>
+            )}
+            <p className="text-[11px] text-muted-foreground mt-2">
+              Also shown live in the Displays Overview above. Re-alerts at most once an hour while the screen stays dark.
+            </p>
           </SettingsCard>
 
           <div className="sticky bottom-0 bg-background/95 backdrop-blur py-3 border-t border-card-border space-y-3">
@@ -8471,14 +9019,22 @@ function QueueDisplaySettingsTab() {
               <RefreshCcw size={11} /> Refresh
             </button>
           </div>
-          <div className="border-4 border-black rounded-[24px] overflow-hidden shadow-xl mx-auto" style={{ width: 270, height: 480 }}>
-            <iframe
-              key={previewKey}
-              src={previewUrl}
-              title="Queue display preview"
-              style={{ width: 1080, height: 1920, transform: "scale(0.25)", transformOrigin: "top left", border: "none" }}
-            />
-          </div>
+          {(() => {
+            const landscape = form.layoutOrientation === "landscape";
+            const frameW = landscape ? 1920 : 1080;
+            const frameH = landscape ? 1080 : 1920;
+            const scale = 270 / frameW; // fixed 270px-wide frame either orientation
+            return (
+              <div className="border-4 border-black rounded-[24px] overflow-hidden shadow-xl mx-auto" style={{ width: 270, height: frameH * scale }}>
+                <iframe
+                  key={previewKey}
+                  src={previewUrl}
+                  title="Queue display preview"
+                  style={{ width: frameW, height: frameH, transform: `scale(${scale})`, transformOrigin: "top left", border: "none" }}
+                />
+              </div>
+            );
+          })()}
           <p className="text-[11px] text-muted-foreground mt-2 text-center">
             Preview reflects the last <b>saved</b> settings. Save to update it.
           </p>
@@ -8517,6 +9073,29 @@ function ColorField({ label, value, onChange }: { label: string; value: string; 
       <div className="flex items-center gap-2">
         <input type="color" value={/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value) ? value : "#000000"} onChange={(e) => onChange(e.target.value)} className="w-9 h-9 rounded-md border border-card-border shrink-0" />
         <Input value={value} onChange={(e) => onChange(e.target.value)} className="text-xs" />
+      </div>
+    </div>
+  );
+}
+
+// Like ColorField, but "" is a valid value meaning "use the display's
+// built-in default" rather than an invalid/unset color — used for the
+// background/card-background/text-color overrides, which are optional.
+function OptionalColorField({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (v: string) => void; placeholder: string }) {
+  const isCustom = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value);
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <Label className="text-xs">{label}</Label>
+        {isCustom && (
+          <button type="button" onClick={() => onChange("")} className="text-[10px] text-muted-foreground hover:underline">
+            Reset to default
+          </button>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <input type="color" value={isCustom ? value : placeholder} onChange={(e) => onChange(e.target.value)} className="w-9 h-9 rounded-md border border-card-border shrink-0" />
+        <Input value={value} onChange={(e) => onChange(e.target.value)} placeholder="Default" className="text-xs" />
       </div>
     </div>
   );

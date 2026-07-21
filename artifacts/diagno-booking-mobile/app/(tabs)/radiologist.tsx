@@ -1,20 +1,28 @@
-import {
-  StyleSheet, Text, View, ScrollView, TouchableOpacity,
-  RefreshControl, FlatList, useColorScheme, Platform,
-} from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { StyleSheet, Text, View, TouchableOpacity, RefreshControl } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 
 import { useColors } from "@/hooks/useColors";
 import { useStaffApi, useStaffAuth } from "@/context/StaffAuthContext";
+import { hasBillDeskAccess } from "@/app/bill-desk";
+import {
+  Screen,
+  ScreenHeader,
+  SectionLabel,
+  Card,
+  IconTile,
+  Badge,
+  SkeletonList,
+  EmptyState,
+  spacing,
+  radii,
+  type FeatherIconName,
+} from "@/components/ui";
 
 export default function RadiologistScreen() {
   const colors = useColors();
-  const insets = useSafeAreaInsets();
   const router = useRouter();
-  const isDark = useColorScheme() === "dark";
   const { session, logout } = useStaffAuth();
   const api = useStaffApi();
 
@@ -40,19 +48,15 @@ export default function RadiologistScreen() {
 
   if (!session) {
     return (
-      <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top + 24, alignItems: "center" }]}>
-        <Feather name="radio" size={48} color={colors.mutedForeground} />
-        <Text style={[styles.lockedTitle, { color: colors.foreground }]}>Staff Access Required</Text>
-        <Text style={[styles.lockedSub, { color: colors.mutedForeground }]}>
-          Log in as a radiologist to view DICOM studies and critical alerts.
-        </Text>
-        <TouchableOpacity
-          style={[styles.loginBtn, { backgroundColor: colors.primary }]} 
-          onPress={() => router.push("/staff-login" as any)}
-        >
-          <Text style={styles.loginBtnText}>Staff Login</Text>
-        </TouchableOpacity>
-      </View>
+      <Screen scroll={false}>
+        <EmptyState
+          icon="shield"
+          title="Staff Access Required"
+          message="Log in as a radiologist to view DICOM studies and critical alerts."
+          actionLabel="Staff Login"
+          onAction={() => router.push("/staff-login" as any)}
+        />
+      </Screen>
     );
   }
 
@@ -61,219 +65,233 @@ export default function RadiologistScreen() {
   const incoming = studies.data?.studies ?? [];
 
   return (
-    <ScrollView
-      style={[styles.container, { backgroundColor: colors.background }]}
+    <Screen
       refreshControl={
         <RefreshControl refreshing={cc.isRefetching} onRefresh={cc.refetch} tintColor={colors.primary} />
       }
     >
-      <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top + 16, paddingHorizontal: 16 }}>
-        {/* Header */}
-        <View style={styles.headerRow}>
-          <View>
-            <Text style={[styles.title, { color: colors.foreground }]}>Radiologist Hub</Text>
-            <Text style={[styles.subtitle, { color: colors.mutedForeground }]}>
-              Welcome, Dr. {session.user.name}
-            </Text>
-          </View>
-          <TouchableOpacity onPress={logout} style={[styles.logoutBtn, { borderColor: colors.border }]}>
+      <ScreenHeader
+        title="Radiologist Hub"
+        subtitle={`Welcome, Dr. ${session.user.name}`}
+        right={
+          <TouchableOpacity
+            onPress={logout}
+            style={[styles.logoutBtn, { borderColor: colors.border, backgroundColor: colors.card }]}
+            hitSlop={6}
+            activeOpacity={0.6}
+          >
             <Feather name="log-out" size={18} color={colors.mutedForeground} />
           </TouchableOpacity>
-        </View>
+        }
+      />
 
-        {/* Quick Stats */}
-        <View style={styles.statsRow}>
-          <StatCard
-            label="Pending"
-            value={data?.pendingReports ?? "—"}
-            icon="clock"
-            tint={colors.warning}
-            colors={colors}
-            isDark={isDark}
-          />
-          <StatCard
-            label="Critical"
-            value={openAlerts.length ?? "—"}
-            icon="alert-triangle"
-            tint={colors.destructive}
-            colors={colors}
-            isDark={isDark}
-          />
-          <StatCard
-            label="Today"
-            value={data?.studiesToday ?? "—"}
-            icon="activity"
-            tint={colors.success}
-            colors={colors}
-            isDark={isDark}
-          />
-          <StatCard
-            label="AI Queue"
-            value={data?.aiQueue?.queued ?? "—"}
-            icon="cpu"
-            tint={colors.accent}
-            colors={colors}
-            isDark={isDark}
-          />
-        </View>
+      {/* KPI stat tiles */}
+      <View style={styles.statGrid}>
+        <StatTile label="Pending" value={data?.pendingReports ?? "—"} icon="clock" tint={colors.warning} />
+        <StatTile label="Critical" value={openAlerts.length ?? "—"} icon="alert-triangle" tint={colors.destructive} />
+        <StatTile label="Today" value={data?.studiesToday ?? "—"} icon="activity" tint={colors.success} />
+        <StatTile label="AI Queue" value={data?.aiQueue?.queued ?? "—"} icon="cpu" tint={colors.accent} />
+      </View>
 
-        {/* Critical Alerts Banner */}
-        {openAlerts.length > 0 && (
-          <TouchableOpacity
-            style={[styles.criticalBanner, { backgroundColor: colors.destructive + "18", borderColor: colors.destructive + "40" }]}
-            onPress={() => router.push("/critical-alerts" as any)}
-            activeOpacity={0.8}
-          >
-            <Feather name="alert-octagon" size={18} color={colors.destructive} />
-            <Text style={[styles.criticalText, { color: colors.destructive }]}>
-              {openAlerts.length} critical finding{openAlerts.length > 1 ? "s" : ""} require attention
+      {/* Critical alerts banner */}
+      {openAlerts.length > 0 && (
+        <TouchableOpacity
+          style={[
+            styles.criticalBanner,
+            { backgroundColor: colors.destructive + "12", borderColor: colors.destructive + "36" },
+          ]}
+          onPress={() => router.push("/critical-alerts" as any)}
+          activeOpacity={0.8}
+        >
+          <Feather name="alert-octagon" size={18} color={colors.destructive} />
+          <Text style={[styles.criticalText, { color: colors.destructive }]}>
+            {openAlerts.length} critical finding{openAlerts.length > 1 ? "s" : ""} require attention
+          </Text>
+          <Feather name="chevron-right" size={16} color={colors.destructive} />
+        </TouchableOpacity>
+      )}
+
+      <SectionLabel style={{ marginTop: spacing.md }}>Quick actions</SectionLabel>
+      <View style={styles.quickRow}>
+        <QuickAction icon="list" label="Studies" onPress={() => router.push("/studies-list" as any)} />
+        <QuickAction icon="edit-3" label="Report" onPress={() => router.push("/studies-list" as any)} />
+        <QuickAction icon="alert-triangle" label="Alerts" onPress={() => router.push("/critical-alerts" as any)} />
+        <QuickAction icon="bar-chart-2" label="Metrics" onPress={() => router.push("/command-center" as any)} />
+      </View>
+
+      {/* Bill Desk — shown only to staff granted the dedicated
+          /mobile-bill-desk permission (ERP Settings → Users). */}
+      {hasBillDeskAccess(session.user.role, session.user.permissions) && (
+        <Card
+          style={styles.billDeskCard}
+          onPress={() => router.push("/bill-desk" as any)}
+        >
+          <IconTile icon="dollar-sign" color={colors.success} size={40} />
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.billDeskTitle, { color: colors.foreground }]}>Bill Desk</Text>
+            <Text style={[styles.billDeskSub, { color: colors.mutedForeground }]}>
+              Today's collections, bills & payments
             </Text>
-            <Feather name="chevron-right" size={16} color={colors.destructive} />
-          </TouchableOpacity>
-        )}
+          </View>
+          <Feather name="chevron-right" size={20} color={colors.mutedForeground} />
+        </Card>
+      )}
 
-        {/* Quick Actions */}
-        <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Quick Actions</Text>
-        <View style={styles.quickRow}>
-          <QuickAction
-            icon="list"
-            label="Studies"
-            onPress={() => router.push("/studies-list" as any)}
-            colors={colors}
-            isDark={isDark}
-          />
-          <QuickAction
-            icon="edit-3"
-            label="Report"
-            onPress={() => router.push("/studies-list" as any)}
-            colors={colors}
-            isDark={isDark}
-          />
-          <QuickAction
-            icon="alert-triangle"
-            label="Alerts"
-            onPress={() => router.push("/critical-alerts" as any)}
-            colors={colors}
-            isDark={isDark}
-          />
-          <QuickAction
-            icon="bar-chart-2"
-            label="Metrics"
-            onPress={() => router.push("/command-center" as any)}
-            colors={colors}
-            isDark={isDark}
-          />
+      <SectionLabel style={{ marginTop: spacing.section }}>Recent incoming studies</SectionLabel>
+      {studies.isLoading ? (
+        <SkeletonList count={3} height={78} />
+      ) : incoming.length === 0 ? (
+        <EmptyState
+          icon="inbox"
+          title="No incoming studies"
+          message="Newly received DICOM studies will appear here."
+        />
+      ) : (
+        <View style={{ gap: spacing.md }}>
+          {incoming.slice(0, 5).map((item: any) => (
+            <StudyRow key={String(item.id)} item={item} />
+          ))}
         </View>
-
-        {/* Incoming Studies Preview */}
-        <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Recent Incoming Studies</Text>
-        {studies.isLoading ? (
-          <LoadingDots colors={colors} />
-        ) : incoming.length === 0 ? (
-          <Text style={[styles.empty, { color: colors.mutedForeground }]}>No recent incoming studies</Text>
-        ) : (
-          <FlatList
-            data={incoming.slice(0, 5)}
-            keyExtractor={(item) => String(item.id)}
-            scrollEnabled={false}
-            renderItem={({ item }) => <StudyRow item={item} colors={colors} />}
-            ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: colors.border, marginLeft: 56 }} />}
-          />
-        )}
-      </View>
-    </ScrollView>
+      )}
+    </Screen>
   );
 }
 
-function StatCard({ label, value, icon, tint, colors, isDark }: any) {
+function StatTile({
+  label,
+  value,
+  icon,
+  tint,
+}: {
+  label: string;
+  value: string | number;
+  icon: FeatherIconName;
+  tint: string;
+}) {
+  const colors = useColors();
   return (
-    <View style={[styles.statCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-      <View style={[styles.statIconWrap, { backgroundColor: isDark ? tint + "25" : tint + "12" }]}>
-        <Feather name={icon} size={16} color={tint} />
+    <Card style={styles.statTile}>
+      <IconTile icon={icon} color={tint} size={34} />
+      <View style={{ flex: 1 }}>
+        <Text style={[styles.statValue, { color: colors.foreground }]} numberOfLines={1}>
+          {value}
+        </Text>
+        <Text style={[styles.statLabel, { color: colors.mutedForeground }]} numberOfLines={1}>
+          {label}
+        </Text>
       </View>
-      <Text style={[styles.statValue, { color: colors.foreground }]}>{value}</Text>
-      <Text style={[styles.statLabel, { color: colors.mutedForeground }]}>{label}</Text>
-    </View>
+    </Card>
   );
 }
 
-function QuickAction({ icon, label, onPress, colors, isDark }: any) {
+function QuickAction({
+  icon,
+  label,
+  onPress,
+}: {
+  icon: FeatherIconName;
+  label: string;
+  onPress: () => void;
+}) {
+  const colors = useColors();
   return (
-    <TouchableOpacity
-      style={[styles.quickBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
-      onPress={onPress}
-      activeOpacity={0.7}
-    >
-      <View style={[styles.quickIcon, { backgroundColor: isDark ? colors.primary + "25" : colors.primary + "12" }]}>
-        <Feather name={icon} size={18} color={colors.primary} />
-      </View>
+    <Card style={styles.quickBtn} onPress={onPress}>
+      <IconTile icon={icon} color={colors.primary} size={38} />
       <Text style={[styles.quickLabel, { color: colors.foreground }]}>{label}</Text>
-    </TouchableOpacity>
+    </Card>
   );
 }
 
-function StudyRow({ item, colors }: any) {
-  const status = item.transferStatus || "receiving";
-  const statusColor =
-    status === "complete" ? colors.success :
-    status === "failed" ? colors.destructive :
-    status === "quarantined" ? colors.warning :
-    colors.primary;
+function StudyRow({ item }: { item: any }) {
+  const colors = useColors();
+  const status: string = item.transferStatus || "receiving";
+
+  const statusMeta: Record<string, { tone: "success" | "destructive" | "warning" | "primary"; icon: FeatherIconName; label: string }> = {
+    complete: { tone: "success", icon: "check-circle", label: "Complete" },
+    failed: { tone: "destructive", icon: "x-circle", label: "Failed" },
+    quarantined: { tone: "warning", icon: "alert-triangle", label: "Quarantined" },
+    receiving: { tone: "primary", icon: "download-cloud", label: "Receiving" },
+  };
+  const meta = statusMeta[status] ?? statusMeta.receiving;
+  const tint =
+    meta.tone === "success"
+      ? colors.success
+      : meta.tone === "destructive"
+        ? colors.destructive
+        : meta.tone === "warning"
+          ? colors.warning
+          : colors.primary;
 
   return (
-    <View style={[styles.studyRow, { borderBottomColor: colors.border }]}>
-      <View style={[styles.modBadge, { backgroundColor: statusColor + "15" }]}>
-        <Text style={[styles.modText, { color: statusColor }]}>{item.modality}</Text>
-      </View>
+    <Card style={styles.studyRow}>
+      <IconTile icon={meta.icon} color={tint} />
       <View style={styles.studyInfo}>
         <Text style={[styles.studyTitle, { color: colors.foreground }]} numberOfLines={1}>
           {item.patientName || "Unknown"}
         </Text>
-        <Text style={[styles.studyMeta, { color: colors.mutedForeground }]}>
-          {item.imageCount} images · {item.aeTitle || "N/A"} · {status}
+        <Text style={[styles.studyMeta, { color: colors.mutedForeground }]} numberOfLines={1}>
+          {item.modality} · {item.imageCount} images · {item.aeTitle || "N/A"}
         </Text>
       </View>
-      <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
-    </View>
-  );
-}
-
-function LoadingDots({ colors }: any) {
-  return (
-    <View style={{ paddingVertical: 20, alignItems: "center" }}>
-      <Text style={{ color: colors.mutedForeground, fontFamily: "Inter_400Regular" }}>Loading...</Text>
-    </View>
+      <Badge label={meta.label} tone={meta.tone} />
+    </Card>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 20 },
-  title: { fontSize: 26, fontFamily: "Inter_700Bold" },
-  subtitle: { fontSize: 14, fontFamily: "Inter_400Regular", marginTop: 2 },
-  logoutBtn: { width: 36, height: 36, borderRadius: 10, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  statsRow: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginBottom: 16 },
-  statCard: { flex: 1, minWidth: 72, borderRadius: 14, borderWidth: 1, padding: 12, alignItems: "center" },
-  statIconWrap: { width: 32, height: 32, borderRadius: 8, alignItems: "center", justifyContent: "center", marginBottom: 6 },
-  statValue: { fontSize: 20, fontFamily: "Inter_700Bold" },
-  statLabel: { fontSize: 11, fontFamily: "Inter_500Medium", marginTop: 2 },
-  criticalBanner: { flexDirection: "row", alignItems: "center", gap: 10, borderRadius: 12, padding: 12, borderWidth: 1, marginBottom: 16 },
-  criticalText: { flex: 1, fontSize: 14, fontFamily: "Inter_600SemiBold" },
-  sectionTitle: { fontSize: 16, fontFamily: "Inter_600SemiBold", marginTop: 20, marginBottom: 10 },
-  quickRow: { flexDirection: "row", gap: 10 },
-  quickBtn: { flex: 1, borderRadius: 14, borderWidth: 1, padding: 12, alignItems: "center" },
-  quickIcon: { width: 40, height: 40, borderRadius: 10, alignItems: "center", justifyContent: "center", marginBottom: 6 },
+  logoutBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: radii.icon,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  statGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.md,
+    marginBottom: spacing.lg,
+  },
+  statTile: {
+    flexGrow: 1,
+    flexBasis: "44%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    padding: spacing.md,
+  },
+  statValue: { fontSize: 24, fontFamily: "Inter_700Bold", letterSpacing: -0.3 },
+  statLabel: { fontSize: 12, fontFamily: "Inter_500Medium", marginTop: 1 },
+  criticalBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    borderRadius: radii.icon,
+    borderWidth: 1,
+    padding: spacing.md,
+    marginBottom: spacing.lg,
+    minHeight: 44,
+  },
+  criticalText: { flex: 1, fontSize: 14, fontFamily: "Inter_600SemiBold", lineHeight: 19 },
+  quickRow: { flexDirection: "row", gap: spacing.md },
+  quickBtn: {
+    flex: 1,
+    alignItems: "center",
+    gap: spacing.sm,
+    padding: spacing.md,
+  },
   quickLabel: { fontSize: 12, fontFamily: "Inter_500Medium" },
-  studyRow: { flexDirection: "row", alignItems: "center", paddingVertical: 10, paddingHorizontal: 4 },
-  modBadge: { width: 44, height: 28, borderRadius: 6, alignItems: "center", justifyContent: "center" },
-  modText: { fontSize: 11, fontFamily: "Inter_700Bold" },
-  studyInfo: { flex: 1, marginLeft: 10 },
-  studyTitle: { fontSize: 14, fontFamily: "Inter_500Medium" },
-  studyMeta: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
-  statusDot: { width: 8, height: 8, borderRadius: 4 },
-  empty: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center", paddingVertical: 16 },
-  lockedTitle: { fontSize: 20, fontFamily: "Inter_700Bold", marginTop: 16 },
-  lockedSub: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 8, paddingHorizontal: 32 },
-  loginBtn: { marginTop: 24, paddingHorizontal: 28, height: 44, borderRadius: 12, alignItems: "center", justifyContent: "center" },
-  loginBtnText: { color: "#fff", fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  billDeskCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.lg,
+    marginTop: spacing.lg,
+  },
+  billDeskTitle: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  billDeskSub: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
+  studyRow: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md },
+  studyInfo: { flex: 1 },
+  studyTitle: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  studyMeta: { fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 2, lineHeight: 18 },
 });

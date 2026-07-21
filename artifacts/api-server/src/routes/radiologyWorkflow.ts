@@ -23,6 +23,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, and, desc, sql, asc, gte, lte, isNull, ne, count } from "drizzle-orm";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { resolveRadiologyStudyId, ensureCanonicalStudy } from "../lib/canonicalStudy";
 
 const router = Router();
 
@@ -233,14 +234,31 @@ router.get("/ai-jobs", async (req, res) => {
 
 router.post("/ai-jobs", async (req, res) => {
   const parsed = z.object({
-    studyId: z.number(),
+    // Canonical identity is preferred; a raw studyId is accepted for backward
+    // compatibility but is validated server-side (never trusted verbatim).
+    studyInstanceUid: z.string().min(1).optional(),
+    studyId: z.number().int().positive().optional(),
     jobType: z.string(),
     modality: z.string().default("OT"),
     priority: z.number().default(5),
     gpuMode: z.boolean().default(false),
   }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues }); return; }
-  const [row] = await db.insert(aiJobQueueTable).values(parsed.data as any).returning();
+  const { studyInstanceUid, studyId: candidateStudyId, jobType, modality, priority, gpuMode } = parsed.data;
+  if (!studyInstanceUid && candidateStudyId == null) {
+    res.status(400).json({ error: "studyInstanceUid or studyId is required" }); return;
+  }
+  // Gate G3: resolve the study SERVER-SIDE. A client-supplied studyId is never
+  // inserted verbatim — it must resolve to an existing radiology_studies row,
+  // which also satisfies the ai_job_queue.study_id foreign key.
+  const studyId = await resolveRadiologyStudyId({ studyInstanceUid, studyId: candidateStudyId });
+  if (studyId == null) {
+    res.status(404).json({ error: "Study not found for the supplied identity" }); return;
+  }
+  if (studyInstanceUid) { await ensureCanonicalStudy(studyInstanceUid, studyId); }
+  const [row] = await db.insert(aiJobQueueTable).values({
+    studyId, jobType, modality, priority, gpuMode,
+  }).returning();
   res.status(201).json(row);
 });
 

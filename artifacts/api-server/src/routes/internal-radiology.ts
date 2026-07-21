@@ -43,6 +43,8 @@ import { computeStudyPriority, applyPriorityToStudy } from "../lib/studyPriority
 import { assignRadiologistToStudy } from "../lib/radiologistAssignment";
 import { runUsgExtraction, getUsgAdminSettings } from "../lib/usgExtractor";
 import { isUltrasoundModality, isObstetricUsgStudy } from "../lib/usgModality";
+import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
+import { auditLog } from "../lib/audit";
 import { calculateMatchScore, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
 import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
 
@@ -833,6 +835,10 @@ router.post("/radiology/report-status", async (req, res) => {
     reportId?: number;
     actor?: string;
     auditDetails?: unknown;
+    // PCPNDT override (admin/super_admin only, audited) — see the
+    // REPORT_FINAL compliance gate below.
+    pcpndtOverride?: boolean;
+    pcpndtOverrideReason?: string;
   };
 
   // Find worklist row
@@ -879,13 +885,47 @@ router.post("/radiology/report-status", async (req, res) => {
   // Only the legacy, PCPNDT-compliant pipeline (routes/usgReports.ts,
   // UsgReporting.tsx) may finalize these studies — see
   // docs/usg-reporting/platform-consolidation-pr-b.md §17-18.
+  // Roadmap §1.4 step 2 (docs/usg-reporting/pcpndt-canonical-roadmap.md):
+  // upgraded from a blanket block to the real shared Form F verification
+  // (lib/pcpndtCompliance.ts — the same check the legacy usgReports.ts
+  // finalize enforces). Compliant obstetric studies proceed; non-compliant
+  // ones are refused with the exact missing fields. Step 4: admin/
+  // super_admin may override with a documented reason (audited), mirroring
+  // the legacy finalize-force gate. Note: the billed path also passes the
+  // equivalent gate in patient-reports.ts POST /; this covers the unbilled
+  // path where this status flip is the only finalize-adjacent write.
   if (b.status === "REPORT_FINAL" && isObstetricUsgStudy(existing.modality, existing.studyDescription)) {
-    res.status(409).json({
-      error: "pcpndt_compliance_required",
-      message:
-        "This is an obstetric/fetal ultrasound study. It cannot be finalized through the canonical Reporting Workspace — PCPNDT Form F compliance is not checked here. Finalize this study through USG Reporting (the PCPNDT-compliant legacy workflow, /usg/reporting) instead.",
-    });
-    return;
+    const compliance = await checkPcpndtFormFCompliance(existing.patientId);
+    if (!compliance.compliant) {
+      const overrideReason = typeof b.pcpndtOverrideReason === "string" ? b.pcpndtOverrideReason.trim() : "";
+      const sessionRole = (req as StaffAuthRequest).staffSession?.role ?? "";
+      if (b.pcpndtOverride === true && PCPNDT_OVERRIDE_ROLES.has(sessionRole) && overrideReason.length >= 3) {
+        const session = (req as StaffAuthRequest).staffSession;
+        await auditLog({
+          userId: session?.subjectId ?? null,
+          userName: session?.subjectName ?? "system",
+          role: sessionRole || "system",
+          action: "pcpndt_override_finalize",
+          module: "radiology",
+          entityType: "radiology_worklist",
+          entityId: String(existing.id),
+          newValue: JSON.stringify({
+            patientId: existing.patientId,
+            complianceErrors: compliance.errors,
+          }),
+          reason: overrideReason,
+        });
+      } else {
+        res.status(409).json({
+          error: "pcpndt_compliance_required",
+          message:
+            "This is an obstetric/fetal ultrasound study and its PCPNDT Form F record is missing or incomplete. Complete and verify Form F for this patient (Form F page), then finalize again. An admin/super_admin may override with a documented reason (pcpndtOverride + pcpndtOverrideReason).",
+          validationErrors: compliance.errors,
+          formFId: compliance.formFId,
+        });
+        return;
+      }
+    }
   }
 
   // M1.6A — a status flip (finalize) by a STAFF session is refused while
@@ -1390,6 +1430,32 @@ router.post("/radiology/dicom-event", async (req, res) => {
   }).returning();
 
   res.status(201).json(row);
+});
+
+// ── Orthanc OnStoredInstance webhook (low-latency auto-push) ──────────────────
+// POST /api/internal/radiology/orthanc-webhook   { orthancStudyId }
+//
+// The background /changes poller (lib/pacs/orthancChangesPoller.ts) is the
+// reliable baseline; this endpoint is the near-instant fast path, called by a
+// tiny Orthanc-side Lua hook (docker/orthanc/erp_notify.lua) the moment a study
+// stabilises. It fetches the study from Orthanc and runs the SAME intake
+// (incl. USG SR extraction) the poller uses, so the two paths are identical and
+// idempotent — a study pushed by both is upserted once.
+router.post("/radiology/orthanc-webhook", async (req, res): Promise<void> => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const orthancStudyId = typeof b.orthancStudyId === "string" ? b.orthancStudyId.trim() : "";
+  if (!orthancStudyId) {
+    res.status(400).json({ success: false, error: "orthancStudyId is required" });
+    return;
+  }
+  try {
+    const { ingestOrthancStudyId } = await import("../lib/pacs/orthancChangesPoller");
+    const ok = await ingestOrthancStudyId(orthancStudyId);
+    res.json({ success: ok });
+  } catch (err) {
+    logger.error({ err, orthancStudyId }, "orthanc-webhook ingest failed");
+    res.status(502).json({ success: false, error: "Ingest failed" });
+  }
 });
 
 // ── Worklist read endpoints ───────────────────────────────────────────────────

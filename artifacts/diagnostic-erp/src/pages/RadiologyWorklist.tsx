@@ -2,10 +2,11 @@ import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { api } from "@/lib/fetchApi";
-import { readStaffSession, ERP_SESSION_KEY, canAccess, normalizeRole } from "@/lib/staffSession";
+import { readStaffSession, ERP_SESSION_KEY, canAccess, normalizeRole, isFeatureEnabled } from "@/lib/staffSession";
 import { toUnifiedStatus, worklistRoleView, priorityInfo, type WorklistRoleView } from "@/lib/radiologyStatus";
 import { launchViewer } from "@/lib/viewerService";
 import { normalizeModality, isUltrasoundModality } from "@/lib/usgModality";
+import { DATE_PRESETS, toISTDateStr } from "@/lib/dateRangePresets";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -454,6 +455,12 @@ export default function RadiologyWorklist() {
     return MODALITY_OPTIONS.includes(normalized) ? normalized : "all";
   });
   const [lockFilter, setLockFilter] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  function setDatePreset(from: string, to: string) {
+    setDateFrom(from);
+    setDateTo(to);
+  }
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [showSentinel, setShowSentinel] = useState(false);
   const [showRawJson, setShowRawJson] = useState(false);
@@ -625,6 +632,14 @@ export default function RadiologyWorklist() {
     if (lockFilter === "mine" && !isMine) return false;
     if (lockFilter === "locked" && (!isLocked || isMine)) return false;
 
+    // Client-side date-range filter (IST calendar day), keyed off study received time
+    if (dateFrom || dateTo) {
+      const entryDate = e.createdAt ? toISTDateStr(e.createdAt) : null;
+      if (!entryDate) return false;
+      if (dateFrom && entryDate < dateFrom) return false;
+      if (dateTo && entryDate > dateTo) return false;
+    }
+
     if (!search) return true;
     const s = search.toLowerCase();
     return (
@@ -755,6 +770,38 @@ export default function RadiologyWorklist() {
               </div>
             </div>
 
+            {/* Date range — quick presets + custom from/to, IST calendar day */}
+            <div className="flex flex-wrap items-center gap-2">
+              <CalendarDays className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+              <Input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+                className="h-9 w-[150px] text-sm"
+              />
+              <span className="text-muted-foreground text-sm">→</span>
+              <Input
+                type="date"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+                className="h-9 w-[150px] text-sm"
+              />
+              <div className="flex gap-1.5 flex-wrap">
+                {DATE_PRESETS.map((p) => (
+                  <Button
+                    key={p.label}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs px-3"
+                    onClick={() => setDatePreset(p.from(), p.to())}
+                  >
+                    {p.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
             {/* Filters — all default to ALL */}
             <div className="flex flex-wrap gap-2 items-center">
               <div className="relative flex-1 min-w-[180px]">
@@ -798,12 +845,12 @@ export default function RadiologyWorklist() {
                   <SelectItem value="locked">🔴 Locked by Others</SelectItem>
                 </SelectContent>
               </Select>
-              {(statusFilter !== "all" || modalityFilter !== "all" || lockFilter !== "all" || search) && (
+              {(statusFilter !== "all" || modalityFilter !== "all" || lockFilter !== "all" || search || dateFrom || dateTo) && (
                 <Button
                   variant="ghost"
                   size="sm"
                   className="text-xs"
-                  onClick={() => { setSearch(""); setStatusFilter("all"); setModalityFilter("all"); setLockFilter("all"); }}
+                  onClick={() => { setSearch(""); setStatusFilter("all"); setModalityFilter("all"); setLockFilter("all"); setDateFrom(""); setDateTo(""); }}
                 >
                   Clear filters
                 </Button>
@@ -1209,7 +1256,13 @@ export default function RadiologyWorklist() {
                               <Button
                                 size="sm"
                                 className="h-7 px-2 text-xs bg-indigo-600 hover:bg-indigo-700 text-white"
-                                onClick={() => navigate(`/radiology/report/${entry.id}`)}
+                                onClick={() =>
+                                  navigate(
+                                    isFeatureEnabled("ff_radiology_usg_workspace") && isUltrasoundModality(entry.modality)
+                                      ? `/radiology/usg/${entry.id}`        // dedicated USG shell (flag on)
+                                      : `/radiology/report/${entry.id}`,    // canonical workspace (default)
+                                  )
+                                }
                                 title="Open in the Reporting Workspace"
                               >
                                 <Stethoscope className="h-3 w-3 mr-1" />

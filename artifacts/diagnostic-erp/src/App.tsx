@@ -95,13 +95,14 @@ const RadiologyWorklist = lazy(() => import("@/pages/RadiologyWorklist"));
 const RadiologyReportEditor = lazy(() => import("@/pages/RadiologyReportEditor"));
 const RadiologyReportGen = lazy(() => import("@/pages/RadiologyReportGenerator"));
 const RadiologyReportingWorkspace = lazy(() => import("@/pages/RadiologyReportingWorkspace"));
+const UsgCompanionWorkspace = lazy(() => import("@/pages/UsgCompanionWorkspace"));
 const PacsDashboard         = lazy(() => import("@/pages/PacsDashboard"));
-const RadiologySettings     = lazy(() => import("@/pages/RadiologySettings"));
 const RadiologySettingsCenter = lazy(() => import("@/pages/RadiologySettingsCenter"));
 const RadiologyFlightDeck = lazy(() => import("@/pages/RadiologyFlightDeck"));
 const ScannerSettings = lazy(() => import("@/pages/ScannerSettings"));
 const RadiologyQuickSelectSettings = lazy(() => import("@/pages/RadiologyQuickSelectSettings"));
 const RadiologyOperationsDashboard = lazy(() => import("@/pages/RadiologyOperationsDashboard"));
+const OperationalHealth = lazy(() => import("@/pages/OperationalHealth"));
 const RadiologyKnowledgePackManager = lazy(() => import("@/pages/RadiologyKnowledgePackManager"));
 const ClinicalRecommendationRegistryManager = lazy(() => import("@/pages/ClinicalRecommendationRegistryManager"));
 const ClinicalContentCoverage = lazy(() => import("@/pages/ClinicalContentCoverage"));
@@ -148,7 +149,6 @@ const PatientCommunication  = lazy(() => import("@/pages/PatientCommunication"))
 const NormalReportTemplates = lazy(() => import("@/pages/NormalReportTemplates"));
 const DicomViewer           = lazy(() => import("@/pages/DicomViewer"));
 const AgentSetup            = lazy(() => import("@/pages/AgentSetup"));
-const PacsSettings          = lazy(() => import("@/pages/PacsSettings"));
 const PacsLogs              = lazy(() => import("@/pages/PacsLogs"));
 const DicomAgentDashboard   = lazy(() => import("@/pages/DicomAgentDashboard"));
 const ModalityManagement    = lazy(() => import("@/pages/ModalityManagement"));
@@ -165,7 +165,6 @@ const BackupReplication     = lazy(() => import("@/pages/BackupReplication"));
 const UsgMeasurementReview  = lazy(() => import("@/pages/UsgMeasurementReview"));
 const UsgAdminSettings      = lazy(() => import("@/pages/UsgAdminSettings"));
 const UsgDoppler            = lazy(() => import("@/pages/UsgDoppler"));
-const UsgWorklist           = lazy(() => import("@/pages/UsgWorklist"));
 const UsgReporting          = lazy(() => import("@/pages/UsgReporting"));
 const UsgDopplerReporting   = lazy(() => import("@/pages/UsgDopplerReporting"));
 const UsgKeyImagesGallery   = lazy(() => import("@/pages/UsgKeyImagesGallery"));
@@ -179,12 +178,8 @@ const Website         = lazy(() => import("@/pages/Website"));
 const WhatsAppChatbot = lazy(() => import("@/pages/WhatsAppChatbot"));
 const Portal          = lazy(() => import("@/pages/Portal"));
 const VerifyReceipt   = lazy(() => import("@/pages/VerifyReceipt"));
-const Display         = lazy(() => import("@/pages/Display"));
-const QueueDisplay     = lazy(() => import("@/pages/QueueDisplay"));
 const PaymentQrDisplay = lazy(() => import("@/pages/PaymentQrDisplay"));
 const OnlineBookings  = lazy(() => import("@/pages/OnlineBookings"));
-const DicomStudyWorklist    = lazy(() => import("@/pages/DicomStudyWorklist"));
-const RadiologistQueue      = lazy(() => import("@/pages/RadiologistQueue"));
 const TechnicianWorkflow    = lazy(() => import("@/pages/TechnicianWorkflow"));
 const AiExtractionReview    = lazy(() => import("@/pages/AiExtractionReview"));
 const HangingProtocols      = lazy(() => import("@/pages/HangingProtocols"));
@@ -241,7 +236,7 @@ const queryClient = new QueryClient({
 
 const ERP_NAV_ORDER = [
   "/", "/dashboard", "/my-daily-summary", "/reception-command-center", "/daily-summary", "/patients", "/appointments", "/queue", "/online-bookings",
-  "/radiology", "/radiology/legacy", "/radiology/worklist", "/radiology/report-generator", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/pacs-settings", "/radiology/network-control-center", "/radiology/pacs-logs",
+  "/radiology", "/radiology/legacy", "/radiology/worklist", "/radiology/report-generator", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/operational-health", "/radiology/pacs-settings", "/radiology/network-control-center", "/radiology/pacs-logs",
   "/radiology/dicom-agent-dashboard", "/radiology/modality-management",
   "/radiology/agent-setup", "/radiology/ai-reporting-settings", "/radiology/ai-prompt-templates", "/radiology/ai-model-routing", "/radiology/structured-report-templates", "/radiology/ai-audit-log",
   "/radiology/viewer", "/radiology/archive-lifecycle", "/radiology/watchdog", "/radiology/ai-inference-settings", "/radiology/hl7-settings", "/teleradiology",
@@ -337,16 +332,15 @@ function Router() {
         <Route path="/teleradiology" component={TeleradiologyPortal} />
         <Route path="/teleradiology/:rest*" component={TeleradiologyPortal} />
         <Route path="/verify-receipt/:billId" component={VerifyReceipt} />
-        {/* Specific display routes must come BEFORE generic :roomKey pattern */}
         <Route path="/display/payment-qr/:counterKey" component={PaymentQrDisplay} />
         {/* Bare URL defaults to counter1 inside the component — kept for
             any already-configured single-counter setups. */}
         <Route path="/display/payment-qr" component={PaymentQrDisplay} />
-        <Route path="/display" component={Display} />
-        {/* Primary URL per spec: caredeoghar.com/queue/usg, /queue/mri, etc. */}
-        <Route path="/queue/:roomKey" component={QueueDisplay} />
-        {/* Kept for backward compatibility with any already-configured TVs */}
-        <Route path="/display/:roomKey" component={QueueDisplay} />
+        {/* Queue-display TV boards live on the public site (clinic-site's
+            /queue/:roomKey), served at the bare caredeoghar.com origin —
+            NOT under this app's /erp/ base path. The old duplicate copies
+            here (Display.tsx, QueueDisplay.tsx) were unreachable at their
+            documented TV URLs and were removed; see clinic-site instead. */}
         <Route path="/kiosk" component={Kiosk} />
         <Route>
           <PermissionGuard />
@@ -430,6 +424,13 @@ function Router() {
               <Route path="/radiology/report/:studyId">
                 {(params) => <RadiologyReportingWorkspace studyId={Number(params.studyId)} />}
               </Route>
+              {/* Dedicated USG Companion Workspace (P0/P1), behind
+                  ff_radiology_usg_workspace. The page itself redirects to the
+                  canonical /radiology/report route when the flag is off, so this
+                  surface is safely unavailable by default. */}
+              <Route path="/radiology/usg/:studyId">
+                {(params) => <UsgCompanionWorkspace studyId={Number(params.studyId)} />}
+              </Route>
               <Route path="/radiology/report-legacy/:studyId">
                 {(params) => <RadiologyReportEditor studyId={Number(params.studyId)} />}
               </Route>
@@ -444,8 +445,16 @@ function Router() {
               </Route>
               <Route path="/radiology/pacs-dashboard" component={PacsDashboard} />
               <Route path="/radiology/operations-dashboard" component={RadiologyOperationsDashboard} />
+              <Route path="/radiology/operational-health">
+                {() => <AdminOnlySettings><OperationalHealth /></AdminOnlySettings>}
+              </Route>
               <Route path="/radiology/my-analytics" component={MyReportingAnalytics} />
-              <Route path="/radiology/pacs-settings" component={PacsSettings} />
+              {/* PacsSettings is retired as a standalone page — its full config
+                  now lives in the Radiology Settings hub ("PACS / DICOM (Full)"
+                  tab). Old bookmarks land on the hub. */}
+              <Route path="/radiology/pacs-settings">
+                {() => <AdminOnlySettings><RadiologySettingsCenter /></AdminOnlySettings>}
+              </Route>
               <Route path="/radiology/network-control-center" component={NetworkControlCenter} />
               <Route path="/radiology/pacs-logs" component={PacsLogs} />
               <Route path="/radiology/dicom-agent-dashboard" component={DicomAgentDashboard} />
@@ -573,8 +582,8 @@ function Router() {
               <Route path="/report-delivery" component={ReportDelivery} />
               {/* Phase E (Radiology V2): RadiologySettingsCenter is the one
                   owner/admin-only Radiology Settings hub. All legacy settings
-                  URLs render it; RadiologySettings (old page) is kept as an
-                  unrouted lazy import for rollback/reference only. */}
+                  URLs render it. (The old RadiologySettings page was deleted —
+                  it was an unrouted, unreachable redirect stub.) */}
               <Route path="/settings/radiology">
                 {() => <AdminOnlySettings><RadiologySettingsCenter /></AdminOnlySettings>}
               </Route>

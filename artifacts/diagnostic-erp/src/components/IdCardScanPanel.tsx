@@ -36,17 +36,28 @@ import {
   Maximize2, ScanLine, X, Sparkles, Eye, EyeOff, ZoomIn,
   CheckCircle2, Info,
 } from "lucide-react";
+import {
+  lumaHistogram, percentileFromHistogram, otsuThreshold,
+  grayWorldGains, applyChannelGains, flattenIllumination, suppressGlare,
+} from "@/lib/scannerImaging";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type EnhancementMode =
   | "original"
   | "auto"
+  | "laminated"
   | "document"
+  | "receipt"
   | "darkText"
   | "highContrast"
   | "grayscale"
   | "bw";
+
+/** The kind of document being scanned — drives the default enhancement mode
+ *  and crop aspect expectations so Form F (ID card), Expenses (receipt/bill)
+ *  and Bank (cheque/passbook) each start on the right preset. */
+export type ScanDocType = "id-card" | "receipt" | "document";
 
 export interface IdCardScanPanelProps {
   imageBase64: string;
@@ -63,16 +74,31 @@ export interface IdCardScanPanelProps {
   cropPadding?: number;
   jpegQuality?: number;
   maxWidth?: number;
+  /** Document type — selects the initial enhancement preset. Default "id-card". */
+  docType?: ScanDocType;
+  /** Title shown in the editor header / save button. Default "ID Card". */
+  title?: string;
 }
 
 const MODE_LABELS: Record<EnhancementMode, string> = {
   original:     "Original",
   auto:         "Auto Enhance",
+  laminated:    "Anti-Glare (Laminated)",
   document:     "Document / Text",
+  receipt:      "Receipt / Bill",
   darkText:     "Dark Text",
   highContrast: "High Contrast",
   grayscale:    "Grayscale",
   bw:           "B&W Scan",
+};
+
+/** Default enhancement mode per document type. Indian ID cards (Aadhaar/PAN)
+ *  are almost always laminated, so the ID-card editor opens on the anti-glare
+ *  laminated preset by default rather than plain Auto. */
+const DEFAULT_MODE_FOR_DOC: Record<ScanDocType, EnhancementMode> = {
+  "id-card": "laminated",
+  receipt: "receipt",
+  document: "document",
 };
 
 // ── Image Processing Pipeline ──────────────────────────────────────────────────
@@ -89,17 +115,49 @@ function applyEnhancement(
 
   const data = new Uint8ClampedArray(src.data);
   const len = data.length;
+  const pixels = len / 4;
+
+  // --- "receipt" mode: white-balance + illumination flatten, THEN document
+  // pipeline. This runs before luma/percentile so the stretch works on the
+  // shadow-corrected image — the big quality win for phone photos of receipts,
+  // bills and cheques (uneven lighting, colour cast). New mode; leaves the
+  // existing ID-card modes untouched.
+  if (mode === "receipt") {
+    applyChannelGains(data, grayWorldGains(data)); // gray-world white balance
+    flattenIllumination(data, src.width, src.height, 10, 0.9); // shadow removal
+  }
+
+  // --- "laminated" mode: glossy ID-card glare removal. White-balance, knock
+  // down the specular highlights the plastic throws back at the lamp, then a
+  // gentle illumination flatten so the card tone reads evenly. Runs before the
+  // luma/percentile stretch (below) so contrast is measured on the de-glared
+  // image. Falls through to the document-strength sharpen + dark-text pass.
+  if (mode === "laminated") {
+    applyChannelGains(data, grayWorldGains(data));
+    suppressGlare(data, 200, 32, 0.85);
+    flattenIllumination(data, src.width, src.height, 12, 0.45);
+  }
+
+  // --- "auto" mode: a light glare pass by default. Most Indian ID cards
+  // (Aadhaar / PAN) are laminated, so a gentle specular knock-down helps the
+  // common case; it only touches near-white desaturated pixels, leaving a
+  // plain matte card essentially unchanged.
+  if (mode === "auto") {
+    suppressGlare(data, 214, 26, 0.4);
+  }
 
   // --- Step 1: Grayscale luminance (used by all non-original modes)
-  const luma = new Float32Array(len / 4);
+  const luma = new Float32Array(pixels);
   for (let i = 0; i < len; i += 4) {
     luma[i >> 2] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
   }
 
-  // --- Step 2: Contrast stretch (find 2nd–98th percentile)
-  const sorted = Array.from(luma).sort((a, b) => a - b);
-  const lo = sorted[Math.floor(sorted.length * 0.02)] ?? 0;
-  const hi = sorted[Math.floor(sorted.length * 0.98)] ?? 255;
+  // --- Step 2: Contrast stretch on the 2nd–98th luma percentile.
+  // O(n) histogram percentile (was an O(n log n) Array.sort of every pixel —
+  // slow + memory-heavy on full-resolution scans).
+  const hist = lumaHistogram(data);
+  const lo = percentileFromHistogram(hist, pixels, 0.02);
+  const hi = percentileFromHistogram(hist, pixels, 0.98);
   const range = hi - lo || 1;
 
   function stretch(v: number): number {
@@ -115,10 +173,14 @@ function applyEnhancement(
   }
 
   if (mode === "bw") {
-    // Adaptive threshold: Sauvola-style, simplified
+    // Otsu adaptive threshold (was a fixed cutoff of 140 that blotched over/
+    // under-exposed scans). stretch() is monotonic, so thresholding the raw
+    // luma at the Otsu value is equivalent to thresholding the stretched value.
+    const bwThreshold = otsuThreshold(hist, pixels);
     for (let i = 0; i < len; i += 4) {
-      const g = stretch(luma[i >> 2]);
-      const v = g < 140 ? 0 : 255;
+      // Otsu's threshold is the top of the dark (background/ink) class, so
+      // pixels <= threshold are the darker class → black.
+      const v = luma[i >> 2] <= bwThreshold ? 0 : 255;
       data[i] = data[i + 1] = data[i + 2] = v;
     }
     return new ImageData(data, src.width, src.height);
@@ -138,7 +200,7 @@ function applyEnhancement(
 
   if (mode === "darkText") {
     // Darken text (pixels below median) while brightening background
-    const med = sorted[Math.floor(sorted.length * 0.5)] ?? 128;
+    const med = percentileFromHistogram(hist, pixels, 0.5);
     for (let i = 0; i < len; i += 4) {
       const g = stretch(luma[i >> 2]);
       let out: number;
@@ -154,9 +216,12 @@ function applyEnhancement(
     return new ImageData(data, src.width, src.height);
   }
 
-  // "auto" and "document" modes — colour-preserving contrast + sharpening
+  // "auto", "document", "receipt" and "laminated" modes — colour-preserving
+  // contrast + sharpening. ("receipt"/"laminated" have already had their
+  // white-balance / glare / illumination pre-passes applied above; here they
+  // get the document-strength sharpen.)
   // Step A: per-channel contrast stretch
-  if (mode === "document" || mode === "auto") {
+  if (mode === "document" || mode === "auto" || mode === "receipt" || mode === "laminated") {
     for (let i = 0; i < len; i += 4) {
       data[i]     = Math.round(stretch(data[i]));
       data[i + 1] = Math.round(stretch(data[i + 1]));
@@ -167,7 +232,7 @@ function applyEnhancement(
     const w = src.width;
     const h = src.height;
     const sharpened = new Uint8ClampedArray(data);
-    const strength = mode === "document" ? 0.6 : 0.4;
+    const strength = mode === "auto" ? 0.4 : 0.6;
 
     for (let y = 1; y < h - 1; y++) {
       for (let x = 1; x < w - 1; x++) {
@@ -191,8 +256,8 @@ function applyEnhancement(
       }
     }
 
-    // Step C: document mode — also bring dark text darker
-    if (mode === "document") {
+    // Step C: document/receipt/laminated mode — also bring dark text darker
+    if (mode === "document" || mode === "receipt" || mode === "laminated") {
       for (let i = 0; i < len; i += 4) {
         const g = 0.299 * sharpened[i] + 0.587 * sharpened[i + 1] + 0.114 * sharpened[i + 2];
         if (g < 100) {
@@ -295,6 +360,8 @@ export default function IdCardScanPanel({
   cropPadding = 12,
   jpegQuality = 85,
   maxWidth = 1200,
+  docType = "id-card",
+  title = "ID Card",
 }: IdCardScanPanelProps) {
   const { toast } = useToast();
 
@@ -310,7 +377,7 @@ export default function IdCardScanPanel({
   const [cropRect, setCropRect]             = useState({ x: 0, y: 0, w: 0, h: 0 });
   const [imgSize, setImgSize]               = useState({ w: 0, h: 0 });
   const [cropConfidence, setCropConfidence] = useState<"high" | "medium" | "low">("high");
-  const [enhancementMode, setEnhancementMode] = useState<EnhancementMode>("auto");
+  const [enhancementMode, setEnhancementMode] = useState<EnhancementMode>(DEFAULT_MODE_FOR_DOC[docType]);
   const [processing, setProcessing]         = useState(false);
   const [deskewAngle, setDeskewAngle]       = useState(0);
   const [deskewApplied, setDeskewApplied]   = useState(false);
@@ -363,22 +430,34 @@ export default function IdCardScanPanel({
     const imageData = ctx.getImageData(0, 0, w, h);
     const data = imageData.data;
 
-    // ── Step 1: Estimate background colour from the four corners (5×5 px each) ──
-    let bgR = 0, bgG = 0, bgB = 0, bgN = 0;
+    // ── Step 1: Estimate background colour from the four corners (8×8 px each) ──
+    // Take each corner's own mean, then the component-wise MEDIAN of the four.
+    // A single corner ruined by lamination glare (a blown-out white patch) or a
+    // finger/shadow would otherwise drag a pooled mean far off the true
+    // background and blow up the crop box; the median ignores that one outlier.
     const cornerSize = Math.min(8, Math.floor(Math.min(w, h) * 0.05));
     const sampleCorners = [
       [0, 0], [w - cornerSize, 0],
       [0, h - cornerSize], [w - cornerSize, h - cornerSize],
     ];
+    const cornerR: number[] = [], cornerG: number[] = [], cornerB: number[] = [];
     for (const [cx, cy] of sampleCorners) {
+      let r = 0, g = 0, b = 0, n = 0;
       for (let py = cy; py < cy + cornerSize && py < h; py++) {
         for (let px = cx; px < cx + cornerSize && px < w; px++) {
           const i = (py * w + px) * 4;
-          bgR += data[i]; bgG += data[i + 1]; bgB += data[i + 2]; bgN++;
+          r += data[i]; g += data[i + 1]; b += data[i + 2]; n++;
         }
       }
+      if (n > 0) { cornerR.push(r / n); cornerG.push(g / n); cornerB.push(b / n); }
     }
-    if (bgN > 0) { bgR /= bgN; bgG /= bgN; bgB /= bgN; }
+    const medianOf = (vals: number[]): number => {
+      if (vals.length === 0) return 255;
+      const s = [...vals].sort((a, b) => a - b);
+      const m = s.length >> 1;
+      return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+    };
+    let bgR = medianOf(cornerR), bgG = medianOf(cornerG), bgB = medianOf(cornerB);
 
     // ── Step 2: Mark each pixel as content vs background ──
     // Threshold: pixel differs from background by more than 20 in any channel
@@ -655,6 +734,17 @@ export default function IdCardScanPanel({
 
         resolve();
       };
+      // The editor is canvas-based, so it can only open images the browser can
+      // decode. Without this handler a format it can't decode (a PDF, or HEIC on
+      // a non-Safari browser) would fire neither onload nor a rejection, leaving
+      // the Promise unresolved and the modal stuck on "Processing…" forever with
+      // Save disabled. Resolving here reaches setProcessing(false) below so the
+      // dialog recovers and the user can Cancel (callers pre-screen undecodable
+      // files, but this keeps the editor safe against any input).
+      img.onerror = () => {
+        setStatus("Couldn't open this file for editing — the image format may be unsupported. Please use a JPG or PNG.", "warn");
+        resolve();
+      };
       img.src = `data:${mime};base64,${base64}`;
     });
 
@@ -898,7 +988,7 @@ export default function IdCardScanPanel({
         <div className="flex items-center justify-between px-5 py-3.5 border-b bg-gray-50 rounded-t-xl">
           <div className="flex items-center gap-2">
             <ScanLine size={17} className="text-blue-600" />
-            <h3 className="text-sm font-bold text-gray-900">ID Card Editor</h3>
+            <h3 className="text-sm font-bold text-gray-900">{title} Editor</h3>
             {cropConfidence === "medium" && (
               <Badge variant="outline" className="text-amber-600 border-amber-200 bg-amber-50 text-[10px] h-5 px-1.5">
                 <AlertTriangle size={9} className="mr-1" /> Adjust if needed
@@ -988,7 +1078,7 @@ export default function IdCardScanPanel({
                 )}
               </div>
               <div className="text-[9px] text-gray-400 mt-1">
-                This image will be saved to Form F
+                This is the image that will be saved
               </div>
             </div>
           </div>
@@ -1059,7 +1149,7 @@ export default function IdCardScanPanel({
               size="sm" className="h-8 text-xs bg-blue-600 hover:bg-blue-700 text-white"
               onClick={handleSave} disabled={processing}
             >
-              <Check size={12} className="mr-1" /> Save to Form F
+              <Check size={12} className="mr-1" /> Save
             </Button>
           </div>
         </div>

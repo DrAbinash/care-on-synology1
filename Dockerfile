@@ -50,13 +50,16 @@ RUN pnpm --filter @workspace/api-server run build \
 # -----------------------------------------------------------------------------
 FROM node:22-bookworm-slim AS api
 
-# Install tini (process supervisor) and curl (health check probe).
+# Install tini (process supervisor), curl (health check probe), and DCMTK.
 # curl MUST be installed in this final runtime stage, NOT only in the
 # builder. node:22-bookworm-slim is a Debian slim image — curl is NOT
 # pre-installed, which is why the healthcheck was failing with
 # "curl: not found" even though the container started successfully.
+# dcmtk provides echoscu / findscu / dump2dcm, used by the PACS layer for real
+# C-ECHO connectivity tests, C-FIND queries, and generating Orthanc modality
+# worklist (.wl) files. Without it those paths fall back to TCP-reachability only.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tini curl \
+ && apt-get install -y --no-install-recommends tini curl dcmtk \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -144,6 +147,15 @@ COPY --from=web-build /repo/artifacts/clinic-site/dist/public              /usr/
 COPY --from=web-build /repo/artifacts/diagnostic-erp/dist/public           /usr/share/nginx/html/erp
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80
+
+# Web-container health check — hits GET /nginx-health, a 200 served by nginx
+# ITSELF (no api upstream), so the web container's health reflects "nginx is
+# serving" without coupling to the api container (which has its own health
+# gate via depends_on). busybox wget ships in nginx:alpine, so no extra
+# install. Liveness, not a deep readiness probe — deliberately independent of
+# the api to avoid a false-unhealthy web container during an api restart.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
+  CMD wget -q -O /dev/null http://localhost:80/nginx-health || exit 1
 
 
 # Stage: migrate

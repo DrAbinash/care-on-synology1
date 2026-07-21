@@ -68,7 +68,6 @@ export type PatientGender = (typeof PatientGender)[keyof typeof PatientGender];
 export const PatientGender = {
   male: "male",
   female: "female",
-  other: "other",
 } as const;
 
 export type PatientAgeUnit =
@@ -110,7 +109,6 @@ export type CreatePatientBodyGender =
 export const CreatePatientBodyGender = {
   male: "male",
   female: "female",
-  other: "other",
 } as const;
 
 export type CreatePatientBodyAgeUnit =

@@ -20,6 +20,7 @@ export type {
 export { MEASUREMENT_CATALOG, MEASUREMENT_CATALOG_VERSION } from "./catalog";
 export { normalizeMeasurementLabel, stripParenthetical } from "./normalize";
 export { canonicalUnit, isKnownUnit, convertUnitValue } from "./units";
+export { ellipsoidVolumeMl, ellipsoidVolumeMlFromMm, ELLIPSOID_FACTOR } from "./volume";
 export {
   createMeasurementRegistry,
   DEFAULT_MEASUREMENT_REGISTRY,

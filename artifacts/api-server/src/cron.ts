@@ -41,6 +41,8 @@ export function startCronScheduler() {
   scheduleWhatsappReminders();
   scheduleRadiologyJobs();
   scheduleAuditChainVerify();
+  scheduleAiSchedulerModes();
+  scheduleQueueDisplayAlerts();
 
   // Start the in-process DIMSE pull agent if enabled.
   // When ENABLE_DICOM_PULL_AGENT is set, the agent polls for pull jobs and
@@ -52,6 +54,45 @@ export function startCronScheduler() {
     startDimsePullAgent();
     console.log("[cron] In-process DIMSE pull agent started");
   }
+}
+
+// ── Phase P3: AI Scheduler modes (Night Batch / Reprocessing / Learning) ─────
+// Each handler is internally gated by the ff_radiology_ai master flag, so these
+// crons are a hard no-op until an admin enables AI. They only ENQUEUE onto the
+// existing radiology job engine — no new worker or queue is created here.
+function scheduleAiSchedulerModes() {
+  // Night Batch — every 30 min; runNightBatch itself checks the night window is
+  // configured via the scheduler config and skips finalized/unchanged studies.
+  cron.schedule("*/30 23,0,1,2,3,4,5 * * *", async () => {
+    try {
+      const { runNightBatch } = await import("./lib/ai/schedulerService");
+      const r = await runNightBatch();
+      if (r.enqueued > 0) console.log(`[cron] AI night batch: enqueued ${r.enqueued}/${r.considered}`);
+    } catch (err) {
+      console.error("[cron] AI night batch failed:", err);
+    }
+  });
+  // Scheduled Reprocessing — weekly, Sunday 02:00.
+  cron.schedule("0 2 * * 0", async () => {
+    try {
+      const { runScheduledReprocessing } = await import("./lib/ai/schedulerService");
+      const r = await runScheduledReprocessing();
+      if (r.enqueued > 0) console.log(`[cron] AI reprocessing: enqueued ${r.enqueued}/${r.considered}`);
+    } catch (err) {
+      console.error("[cron] AI reprocessing failed:", err);
+    }
+  });
+  // Learning aggregation — weekly, Sunday 03:00 (no auto-retrain; summary only).
+  cron.schedule("0 3 * * 0", async () => {
+    try {
+      const { runLearningAggregation } = await import("./lib/ai/schedulerService");
+      const summary = await runLearningAggregation();
+      console.log(`[cron] AI learning aggregation:`, summary);
+    } catch (err) {
+      console.error("[cron] AI learning aggregation failed:", err);
+    }
+  });
+  console.log("[cron] AI scheduler modes registered (gated by ff_radiology_ai)");
 }
 
 // ── BEND-1: durable radiology job runner ─────────────────────────────────────
@@ -326,44 +367,57 @@ function scheduleAuditLogPurge() {
   cron.schedule("0 3 * * *", async () => {
     try {
       const { auditLogsTable } = await import("@workspace/db/schema");
-      const { sql, lte } = await import("drizzle-orm");
+      const { lte, inArray, asc } = await import("drizzle-orm");
       const fs = require("fs");
       const path = require("path");
       const crypto = require("crypto");
       const zlib = require("zlib");
 
-      const RETENTION_DAYS = 730; // 2 years
+      const RETENTION_DAYS = 730; // 2 years kept hot; older records live in cold archive files
+      const BATCH = 5000;
       const archiveDir = path.join(process.cwd(), "data", "archives", "audit-logs");
       fs.mkdirSync(archiveDir, { recursive: true });
 
       const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000);
-      const oldLogs = await db
-        .select()
-        .from(auditLogsTable)
-        .where(lte(auditLogsTable.createdAt, cutoff))
-        .limit(5000);
 
-      if (oldLogs.length === 0) return;
+      // Gate G2 — archive-before-purge, with NO unarchived deletes.
+      // Prior bug: archived at most 5,000 rows but then deleted EVERY row <= cutoff,
+      // silently destroying the unarchived remainder on any backlog > 5,000.
+      // Now we page through the backlog and delete ONLY the exact ids we have
+      // durably written to a checksummed archive file in this iteration.
+      let totalArchived = 0;
+      for (;;) {
+        const batch = await db
+          .select()
+          .from(auditLogsTable)
+          .where(lte(auditLogsTable.createdAt, cutoff))
+          .orderBy(asc(auditLogsTable.id))
+          .limit(BATCH);
+        if (batch.length === 0) break;
 
-      const archiveName = `audit_archive_${cutoff.toISOString().slice(0, 10)}_${Date.now()}.json.gz`;
-      const archivePath = path.join(archiveDir, archiveName);
+        const archiveName = `audit_archive_${cutoff.toISOString().slice(0, 10)}_${Date.now()}_${totalArchived}.json.gz`;
+        const archivePath = path.join(archiveDir, archiveName);
+        const payload = JSON.stringify({
+          archivedAt: new Date().toISOString(),
+          retentionDays: RETENTION_DAYS,
+          count: batch.length,
+          logs: batch,
+        });
+        const compressed = zlib.gzipSync(payload);
+        // Write the archive + its checksum BEFORE deleting anything.
+        fs.writeFileSync(archivePath, compressed);
+        const checksum = crypto.createHash("sha256").update(compressed).digest("hex");
+        fs.writeFileSync(`${archivePath}.sha256`, checksum);
 
-      const payload = JSON.stringify({
-        archivedAt: new Date().toISOString(),
-        retentionDays: RETENTION_DAYS,
-        count: oldLogs.length,
-        logs: oldLogs,
-      });
-      const compressed = zlib.gzipSync(payload);
-      fs.writeFileSync(archivePath, compressed);
+        const ids = batch.map((r: { id: number }) => r.id);
+        await db.delete(auditLogsTable).where(inArray(auditLogsTable.id, ids));
+        totalArchived += batch.length;
+        console.log(`[cron] Audit log archive batch: ${batch.length} rows → ${archiveName} (SHA-256 ${checksum.slice(0, 16)}...)`);
+        if (batch.length < BATCH) break;
+      }
 
-      const checksum = crypto.createHash("sha256").update(compressed).digest("hex");
-      fs.writeFileSync(`${archivePath}.sha256`, checksum);
-
-      // Now delete the archived rows
-      await db.delete(auditLogsTable).where(lte(auditLogsTable.createdAt, cutoff));
-
-      console.log(`[cron] Audit log archive: ${oldLogs.length} rows archived to ${archiveName} (${compressed.length} bytes, SHA-256 ${checksum.slice(0, 16)}...)`);
+      if (totalArchived === 0) return;
+      console.log(`[cron] Audit log retention complete: ${totalArchived} rows archived + purged (archive-before-purge, no unarchived deletes).`);
     } catch (err) {
       console.error("[cron] Audit log purge/archive failed:", err);
     }
@@ -976,6 +1030,65 @@ export async function fireBankingAutoSync() {
       console.log(`[cron] Auto-reconciliation: ${result.matched} matched, ${result.autoClosed} auto-closed, ${result.failed} failed`);
     } catch (err) {
       console.error("[cron] Auto-reconciliation failed:", err);
+    }
+  }
+}
+
+// ── Queue Display: patient "almost up" pings + staff offline-TV alerts ──────
+// Both are off by default per room (queue_display_settings toggles). Runs
+// every 2 minutes — frequent enough that a patient ping still feels timely,
+// infrequent enough not to spam the WhatsApp provider on a busy queue.
+function scheduleQueueDisplayAlerts() {
+  cron.schedule("*/2 * * * *", async () => {
+    try {
+      const { runPatientPingSweep } = await import("./lib/queueDisplayPingScheduler");
+      const r = await runPatientPingSweep();
+      if (r.pinged > 0) console.log(`[cron] Queue display: sent ${r.pinged} patient ping(s)`);
+    } catch (err) {
+      console.error("[cron] Queue display patient ping sweep failed:", err);
+    }
+    try {
+      await checkQueueDisplayOfflineAlerts();
+    } catch (err) {
+      console.error("[cron] Queue display offline-alert check failed:", err);
+    }
+  });
+  console.log("[cron] Queue display patient-ping + offline-alert scheduler started (runs every 2 minutes)");
+}
+
+async function checkQueueDisplayOfflineAlerts() {
+  const { queueDisplaySettingsTable } = await import("@workspace/db/schema");
+  const { eq } = await import("drizzle-orm");
+  const { displayHeartbeatTracker } = await import("./lib/displayHeartbeatTracker");
+  const { getWhatsAppService } = await import("./services/whatsapp/WhatsAppService");
+
+  const rooms = await db.select().from(queueDisplaySettingsTable).where(eq(queueDisplaySettingsTable.staffAlertEnabled, true));
+  if (rooms.length === 0) return;
+
+  const service = getWhatsAppService();
+  for (const room of rooms) {
+    if (!room.staffAlertPhone) continue;
+    const thresholdMs = room.staffAlertAfterMinutes * 60_000;
+    const lastSeen = displayHeartbeatTracker.getLastSeen(room.roomKey);
+    const offline = !lastSeen || Date.now() - lastSeen > thresholdMs;
+    if (!offline) continue;
+
+    const cooldownMs = 60 * 60_000; // re-alert at most once an hour while it stays down
+    const lastAlerted = displayHeartbeatTracker.getLastAlertedAt(room.roomKey);
+    if (lastAlerted && Date.now() - lastAlerted < cooldownMs) continue;
+
+    const minutesDark = lastSeen ? Math.round((Date.now() - lastSeen) / 60_000) : null;
+    const phone = service.normalizePhone(room.staffAlertPhone);
+    const text = `Care Diagnostics: the "${room.roomTitle || room.roomKey}" queue display TV appears offline` +
+      (minutesDark ? ` (no heartbeat for ${minutesDark} min)` : " (never connected)") +
+      `. Please check the screen.`;
+
+    displayHeartbeatTracker.markAlerted(room.roomKey);
+    try {
+      const result = await service.sendText(phone, text);
+      if (!result.ok) console.warn(`[cron] Queue display offline alert failed for room ${room.roomKey}:`, result.error);
+    } catch (err) {
+      console.warn(`[cron] Queue display offline alert threw for room ${room.roomKey}:`, err);
     }
   }
 }

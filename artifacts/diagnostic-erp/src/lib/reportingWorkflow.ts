@@ -32,6 +32,8 @@ export interface QueueStudy {
   // M1.6B1 — canonical id-based assignment (name above stays the mirror).
   assignedRadiologistId?: number | null;
   assignedAt?: string | null;
+  // Study-received timestamp, used by the queue's date-range filter.
+  createdAt?: string;
 }
 
 export interface ParkedStudy {

@@ -97,6 +97,10 @@ const KNOWN_PERSONAL_ENDPOINTS: KnownPersonalEndpoint[] = [
   // the bare "subjectId" token PERSONAL_IDENTITY_MARKERS looks for — found
   // while diagnosing "My Daily Summary" showing stale data on every visit.
   { file: "my-daily-summary.ts", localPath: "/", fullPath: "/api/dashboard/my-daily-summary" },
+  // Patient portal (mobile app): responses are scoped to the verified patient
+  // session's phone. The whole /api/patient/ prefix is network-only in sw.js.
+  { file: "patientPortal.ts", localPath: "/my-bookings", fullPath: "/api/patient/my-bookings" },
+  { file: "patientPortal.ts", localPath: "/my-reports", fullPath: "/api/patient/my-reports" },
   { file: "radiology.ts", localPath: "/user-item-usage", fullPath: "/api/radiology/user-item-usage" },
   { file: "dicomWorkflow.ts", localPath: "/radiologist-queue", fullPath: "/api/dicom-workflow/radiologist-queue" },
   // M1.3 Flight Deck: the report body is shared deployment truth, not

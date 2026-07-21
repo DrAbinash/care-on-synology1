@@ -9,6 +9,11 @@ dist/
 web-build/
 expo-env.d.ts
 
+# Compiled web export (produced by `pnpm build` at deploy time, where the Expo
+# API is reachable). Was previously committed and went stale on every source
+# change — serving a stale bundle shipped an old, broken app. Build on deploy.
+static-build/
+
 # Native
 ios/
 android/

@@ -26,7 +26,7 @@
  * returned blob — this component does not know about Form F fields, expense
  * categories, or any other module-specific shape.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "wouter";
 import QRCode from "qrcode";
 import { api } from "@/lib/fetchApi";
@@ -43,12 +43,17 @@ export type ScanModule = "form-f" | "patients" | "expenses" | "banking";
 export type ScanDocType = "id-card" | "bill" | "bank-statement" | "photo" | "other";
 export type ScanSource = "bridge" | "upload" | "mobile" | "webcam" | "tvs";
 
+export type ScanSide = "front" | "back";
+
 export interface ScanCaptureResult {
   file: Blob;
   mimeType: string;
   source: ScanSource;
   deviceLabel?: string;
   filename?: string;
+  /** Which side of a two-sided document this capture is for. Callers that
+   *  don't distinguish sides can ignore it; it defaults to "front". */
+  side: ScanSide;
 }
 
 export interface UnifiedScanCaptureProps {
@@ -56,6 +61,18 @@ export interface UnifiedScanCaptureProps {
   docType: ScanDocType;
   triggerLabel?: string;
   className?: string;
+  /** Fixes which side every capture from this trigger targets. Lets a caller
+   *  render one trigger per side (e.g. "Scan Front" / "Scan Back"), each
+   *  offering the full set of capture methods. Defaults to "front". */
+  side?: ScanSide;
+  /** Custom trigger renderer. Receives a `launch` fn — call it to start capture.
+   *  When provided it replaces the default outlined Button, so a caller can
+   *  embed the trigger as a styled card/tile (see IdScanCapturePanel). */
+  renderTrigger?: (launch: () => void) => ReactNode;
+  /** Skip the in-dialog method picker and go straight into one method.
+   *  "upload"/"bridge" need no viewfinder, so they run without opening the
+   *  dialog at all; "webcam"/"tvs"/"mobile" open the dialog on that view. */
+  autoStart?: ScanSource;
   onCapture: (result: ScanCaptureResult) => void;
   onError?: (message: string) => void;
 }
@@ -73,6 +90,9 @@ export default function UnifiedScanCapture({
   docType,
   triggerLabel = "Scan Document",
   className = "",
+  side = "front",
+  renderTrigger,
+  autoStart,
   onCapture,
   onError,
 }: UnifiedScanCaptureProps) {
@@ -101,7 +121,7 @@ export default function UnifiedScanCapture({
       const raw = await scanBridgeCapture();
       if (!raw.ok || !raw.imageBase64) throw new Error(raw.error || "Scan failed");
       const blob = base64ToBlob(raw.imageBase64, raw.mimeType || "image/jpeg");
-      onCapture({ file: blob, mimeType: raw.mimeType || "image/jpeg", source: "bridge", filename: raw.filename, deviceLabel: "Workstation Scanner" });
+      onCapture({ file: blob, mimeType: raw.mimeType || "image/jpeg", source: "bridge", filename: raw.filename, deviceLabel: "Workstation Scanner", side });
       setOpen(false);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Scanner bridge failed";
@@ -122,7 +142,7 @@ export default function UnifiedScanCapture({
       toast({ title: "Unsupported file", description: msg, variant: "destructive" });
       return;
     }
-    onCapture({ file, mimeType: file.type, source: "upload", filename: file.name });
+    onCapture({ file, mimeType: file.type, source: "upload", filename: file.name, side });
     setOpen(false);
   }
 
@@ -233,7 +253,7 @@ export default function UnifiedScanCapture({
     canvas.toBlob(
       (blob) => {
         if (!blob) return;
-        onCapture({ file: blob, mimeType: "image/jpeg", source, deviceLabel: label, filename: `${source}-capture.jpg` });
+        onCapture({ file: blob, mimeType: "image/jpeg", source, deviceLabel: label, filename: `${source}-capture.jpg`, side });
         setOpen(false);
       },
       "image/jpeg",
@@ -293,7 +313,7 @@ export default function UnifiedScanCapture({
           if (data.frontImageUrl) {
             const resp = await fetch(`/uploads/${data.frontImageUrl}`);
             const blob = await resp.blob();
-            onCapture({ file: blob, mimeType: blob.type || "image/jpeg", source: "mobile", filename: data.frontImageUrl });
+            onCapture({ file: blob, mimeType: blob.type || "image/jpeg", source: "mobile", filename: data.frontImageUrl, side });
             setOpen(false);
           }
           return;
@@ -320,11 +340,44 @@ export default function UnifiedScanCapture({
     setOpen(false);
   }
 
+  // Start capture. With `autoStart` set, skip the method picker: upload/bridge
+  // need no viewfinder so they run without opening the dialog; the camera/mobile
+  // methods open the dialog and the effect below launches the right view.
+  function launch() {
+    if (autoStart === "upload") { fileInputRef.current?.click(); return; }
+    if (autoStart === "bridge") { void handleBridgeCapture(); return; }
+    setOpen(true);
+    setMode("select");
+  }
+
+  useEffect(() => {
+    if (!open || !autoStart) return;
+    if (autoStart === "webcam") void startCameraStream("webcam");
+    else if (autoStart === "tvs") void startCameraStream("tvs", tvsDeviceId);
+    else if (autoStart === "mobile") void startMobileSession();
+    // Launch once per open; the capture fns manage their own teardown.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
   return (
     <>
-      <Button type="button" variant="outline" onClick={() => { setOpen(true); setMode("select"); }} className={`gap-1.5 ${className}`}>
-        <Scan size={15} /> {triggerLabel}
-      </Button>
+      {/* Hidden file input lives outside the dialog so an `autoStart="upload"`
+          trigger can open the picker without first opening the dialog. */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={ACCEPTED_UPLOAD_TYPES.join(",")}
+        className="hidden"
+        onChange={(e) => handleFileChosen(e.target.files?.[0] ?? null)}
+      />
+
+      {renderTrigger ? (
+        renderTrigger(launch)
+      ) : (
+        <Button type="button" variant="outline" onClick={launch} className={`gap-1.5 ${className}`}>
+          <Scan size={15} /> {triggerLabel}
+        </Button>
+      )}
 
       <Dialog open={open} onOpenChange={(v) => { if (!v) resetAndClose(); else setOpen(true); }}>
         <DialogContent className="max-w-md">
@@ -385,13 +438,6 @@ export default function UnifiedScanCapture({
                   <div className="text-[10px] text-muted-foreground">Select a file from this computer</div>
                 </div>
               </Button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept={ACCEPTED_UPLOAD_TYPES.join(",")}
-                className="hidden"
-                onChange={(e) => handleFileChosen(e.target.files?.[0] ?? null)}
-              />
 
               <Button variant="outline" onClick={startMobileSession} className="h-14 justify-start gap-3 border-dashed hover:bg-muted/40">
                 <Smartphone size={20} className="text-muted-foreground shrink-0" />
