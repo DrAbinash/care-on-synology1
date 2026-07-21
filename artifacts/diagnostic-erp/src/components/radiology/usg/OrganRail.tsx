@@ -29,12 +29,18 @@ const DOT: Record<OrganStatus, string> = {
   normal: "bg-emerald-500",
   abnormal: "bg-amber-500",
   incomplete: "bg-sky-500",
+  not_visualized: "bg-violet-500",
+  surgically_absent: "bg-slate-500",
+  not_applicable: "bg-slate-400 dark:bg-slate-500",
 };
 const DOT_LABEL: Record<OrganStatus, string> = {
   untouched: "Not reported",
   normal: "Normal",
   abnormal: "Abnormal",
   incomplete: "Incomplete",
+  not_visualized: "Not visualized",
+  surgically_absent: "Surgically absent",
+  not_applicable: "Not applicable",
 };
 
 export default function OrganRail({
