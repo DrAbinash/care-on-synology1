@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, type ReactNode } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import VoiceDictationButton from "@/components/VoiceDictationButton";
@@ -22,9 +22,20 @@ import {
   Printer, RefreshCw, Star, ClipboardList, Plus, Trash2, Eye,
   Share2, AlertCircle, X, Send, Zap, BookOpen, MonitorPlay,
   LayoutTemplate, BarChart3, Monitor, PanelLeftClose, PanelLeftOpen,
-  Brain, GitCompare, FileText,
+  PanelRightClose, PanelRightOpen, Brain, GitCompare, FileText,
+  Maximize2, Columns2, AppWindow,
 } from "lucide-react";
 import EmbeddedWadoViewer from "@/components/EmbeddedWadoViewer";
+import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@/components/ui/resizable";
+import type { ImperativePanelHandle } from "react-resizable-panels";
+import {
+  CENTER_MIN_PX, LEFT_COLLAPSED_PCT, LEFT_MAX_PCT, LEFT_MIN_PCT,
+  RIGHT_COLLAPSED_PCT, RIGHT_MAX_PCT, RIGHT_MIN_PCT,
+  clampLeftPct, clampRightPct, fallbackModeWhenPopupBlocked,
+  loadWorkspaceLayoutPrefs, saveWorkspaceLayoutPrefs, shouldShowEmbeddedViewer,
+  workspaceLayoutStorageKey,
+  type ModeLayoutState, type WorkspaceLayoutMode, type WorkspaceLayoutPrefs,
+} from "@/lib/workspaceLayoutPrefs";
 import ReportImagePicker from "@/components/radiology/ReportImagePicker";
 import RadiologyCopilotPanel from "@/components/RadiologyCopilotPanel";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -264,6 +275,16 @@ type StylePreferences = {
 };
 
 type RightTab = "copilot" | "quickselect" | "templates" | "followup" | "prior" | "ai" | "measurements" | "teaching" | "knowledge" | "diff" | "print";
+
+// Workspace layout mode selector (Phase 2) — the upper-right control that
+// used to be a single left-panel collapse icon. Doesn't depend on component
+// state, so it's a module-level constant rather than rebuilt every render.
+const LAYOUT_MODE_OPTIONS: Array<{ mode: WorkspaceLayoutMode; label: string; title: string; icon: ReactNode }> = [
+  { mode: "reportFocus", label: "Report", title: "Report Focus — viewer hidden, editor gets maximum width", icon: <Maximize2 size={13} /> },
+  { mode: "split", label: "Split", title: "Split View — viewer and editor share the screen (laptop/remote default)", icon: <Columns2 size={13} /> },
+  { mode: "viewerFocus", label: "Viewer", title: "Viewer Focus — embedded viewer gets more width for close image review", icon: <Monitor size={13} /> },
+  { mode: "dualScreen", label: "Dual", title: "Dual Screen — open the viewer in a separate window/monitor, editor uses the full primary screen", icon: <AppWindow size={13} /> },
+];
 
 // F3 (Cockpit→Workspace merge): rules superseded by MeasurementAssistantPanel,
 // which computes real ADC/Evans-Index values rather than just reminding the
@@ -611,22 +632,98 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
   const isMobile = useIsMobile();
 
-  // ── Left viewer panel collapse — frees width for the report editor without
-  // duplicating the DICOM viewer elsewhere (it already lives here, not the
-  // center column). Persisted per-browser like the sidebar auto-minimise
-  // pattern in Layout.tsx. On a phone-width screen with no stored preference
-  // yet, default to collapsed — the left panel's 280px min-width otherwise
-  // squeezes the report editor column (flex-1 min-w-0) down to ~0px, which is
-  // the root cause of the mobile "cut view" report: the editor never got any
-  // width to render into.
-  const [isLeftPanelCollapsed, setIsLeftPanelCollapsed] = useState(() => {
-    const stored = localStorage.getItem("radiologyWorkspaceLeftPanelCollapsed");
-    if (stored != null) return stored === "1";
-    return typeof window !== "undefined" && window.innerWidth < 768;
+  // ── Workspace layout mode (Report Focus / Split View / Viewer Focus /
+  // Dual Screen) — one persisted preference object per radiologist drives
+  // which panels show, their widths, and left/right collapse state. Column
+  // sizes and collapse state are tracked PER MODE, so switching modes and
+  // switching back restores whatever the radiologist last left that specific
+  // mode at, rather than one global collapse flag fighting across modes.
+  // Replaces the old single `radiologyWorkspaceLeftPanelCollapsed` boolean —
+  // one persisted object, not parallel state.
+  const layoutUserKey = session?.user?.id ?? null;
+  const [layoutPrefs, setLayoutPrefs] = useState<WorkspaceLayoutPrefs>(() => {
+    const loaded = loadWorkspaceLayoutPrefs(layoutUserKey);
+    // First-ever visit (nothing persisted yet) on a narrow screen: start
+    // with the left panel collapsed so the report editor gets real width
+    // immediately — mirrors the pre-redesign mobile default. Never overrides
+    // an explicit stored preference.
+    let hasStoredPrefs = true;
+    try { hasStoredPrefs = localStorage.getItem(workspaceLayoutStorageKey(layoutUserKey)) != null; } catch { hasStoredPrefs = true; }
+    if (!hasStoredPrefs && typeof window !== "undefined" && window.innerWidth < 768) {
+      return {
+        ...loaded,
+        byMode: { ...loaded.byMode, [loaded.mode]: { ...loaded.byMode[loaded.mode], leftCollapsed: true } },
+      };
+    }
+    return loaded;
   });
   useEffect(() => {
-    localStorage.setItem("radiologyWorkspaceLeftPanelCollapsed", isLeftPanelCollapsed ? "1" : "0");
-  }, [isLeftPanelCollapsed]);
+    saveWorkspaceLayoutPrefs(layoutUserKey, layoutPrefs);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutPrefs]);
+
+  const layoutMode = layoutPrefs.mode;
+  const currentModeLayout = layoutPrefs.byMode[layoutMode];
+  const setLayoutMode = useCallback((mode: WorkspaceLayoutMode) => {
+    setLayoutPrefs((prev) => (prev.mode === mode ? prev : { ...prev, mode }));
+  }, []);
+  function updateModeLayout(mode: WorkspaceLayoutMode, patch: Partial<ModeLayoutState>) {
+    setLayoutPrefs((prev) => {
+      const cur = prev.byMode[mode];
+      const next = { ...cur, ...patch };
+      if (next.left === cur.left && next.right === cur.right
+        && next.leftCollapsed === cur.leftCollapsed && next.rightCollapsed === cur.rightCollapsed) {
+        return prev; // no-op — avoids redundant re-renders/saves from idempotent library callbacks
+      }
+      return { ...prev, byMode: { ...prev.byMode, [mode]: next } };
+    });
+  }
+
+  // Kept as `isLeftPanelCollapsed` (same name as before this redesign) so the
+  // render logic and header toggle below need minimal changes — it now reads
+  // from the per-mode layout instead of its own standalone state.
+  const isLeftPanelCollapsed = currentModeLayout.leftCollapsed;
+  // New (Phase 5) — the right contextual drawer previously had no collapse
+  // control at all.
+  const isRightPanelCollapsed = currentModeLayout.rightCollapsed;
+
+  const leftPanelRef = useRef<ImperativePanelHandle>(null);
+  const rightPanelRef = useRef<ImperativePanelHandle>(null);
+
+  // The embedded DICOM viewer's mount/unmount is driven ONLY by the layout
+  // mode (Phase 2/4) — never by panel collapse state, which just controls
+  // how much patient metadata is visible alongside it.
+  const showEmbeddedViewer = shouldShowEmbeddedViewer(layoutMode);
+
+  // Reposition the two resizable panels whenever the mode changes (imperative
+  // — the panels stay mounted across mode switches so the embedded viewer
+  // never remounts just because the mode's proportions changed). Live drag
+  // and manual collapse/expand are handled by the Resizable* callbacks near
+  // the 3-column body, and intentionally do NOT run through this effect.
+  useEffect(() => {
+    if (currentModeLayout.leftCollapsed) leftPanelRef.current?.collapse();
+    else { leftPanelRef.current?.expand(); leftPanelRef.current?.resize(currentModeLayout.left); }
+    if (currentModeLayout.rightCollapsed) rightPanelRef.current?.collapse();
+    else { rightPanelRef.current?.expand(); rightPanelRef.current?.resize(currentModeLayout.right); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutMode]);
+
+  function handleWorkspacePanelLayout(sizes: number[]) {
+    const [leftSize, , rightSize] = sizes;
+    if (typeof leftSize !== "number" || typeof rightSize !== "number") return;
+    setLayoutPrefs((prev) => {
+      const mode = prev.mode;
+      const cur = prev.byMode[mode];
+      const next = { ...cur };
+      // Only a panel's OWN drag while expanded counts as a width preference —
+      // collapsed panels report their tiny snap size through this same
+      // callback, which must never overwrite the remembered expanded width.
+      if (!cur.leftCollapsed) next.left = clampLeftPct(leftSize);
+      if (!cur.rightCollapsed) next.right = clampRightPct(rightSize);
+      if (next.left === cur.left && next.right === cur.right) return prev;
+      return { ...prev, byMode: { ...prev.byMode, [mode]: next } };
+    });
+  }
 
   // ── Cockpit→Workspace merge ────────────────────────────────────────────────
   // G1: client-side role gate on the Sign action (defense-in-depth + clearer
@@ -844,6 +941,25 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     busy: false,
     lastResult: null,
   });
+
+  // Dual Screen mode relies entirely on the EXISTING study-launch path above
+  // (Open Study / OHIF / Weasis, already popup-safe and already reported
+  // through viewerLaunch by OpenStudyPanel) — no separate window.open logic.
+  // If the browser blocked that popup, fall back to Split View so the
+  // radiologist still has a working in-page viewer instead of a dead end.
+  useEffect(() => {
+    if (layoutMode !== "dualScreen") return;
+    if (viewerLaunch.busy || !viewerLaunch.lastResult) return;
+    if (!viewerLaunch.lastResult.success && viewerLaunch.lastResult.errorCode === "POPUP_BLOCKED") {
+      setLayoutMode(fallbackModeWhenPopupBlocked(layoutMode));
+      toast({
+        title: "Popup blocked — showing Split View",
+        description: "Allow popups for this site to use Dual Screen, then open the study again.",
+        variant: "destructive",
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutMode, viewerLaunch]);
 
   // ── M1.6B2 — voice layer wiring ───────────────────────────────────────────
   /** Live handle onto the embedded viewer (null unless a study is rendered) —
@@ -4079,12 +4195,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     { id: "print", label: "Print", icon: <FileText size={14} /> },
     { id: "teaching", label: "Teaching", icon: <BookOpen size={14} /> },
   ];
-  // Right-panel header layout: Copilot/Quick/AI/Templates each get a full-width
-  // "hero" row (the panel's most-used tabs, per the workspace's actual daily
-  // use), the remaining tabs share one compact row below. Looked up by id
-  // (not array index) so the Copilot row simply disappears — without shifting
-  // the others — when copilotPrefs.enabled is false.
-  const HERO_TAB_IDS = ["copilot", "quickselect", "ai", "templates"];
+  // HERO_ACCENT — distinct accent color for the 4 most-used tabs (Copilot/
+  // Quick/AI/Templates) in the compact ribbon below; looked up by id so a
+  // tab simply gets the default neutral accent when not listed here (e.g.
+  // Copilot disappearing entirely when copilotPrefs.enabled is false doesn't
+  // require any shifting logic elsewhere).
   const HERO_ACCENT: Record<string, { card: string; chip: string; text: string }> = {
     copilot: {
       card: "border-indigo-300 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950/30",
@@ -4107,10 +4222,6 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       text: "text-blue-900 dark:text-blue-200",
     },
   };
-  const heroTabs = HERO_TAB_IDS
-    .map((id) => RIGHT_TABS.find((t) => t.id === id))
-    .filter((t): t is (typeof RIGHT_TABS)[number] => Boolean(t));
-  const restTabs = RIGHT_TABS.filter((tab) => !HERO_TAB_IDS.includes(tab.id));
 
   return (
     <div className="flex flex-col" style={{ height: "calc(100vh - 48px)" }}>
@@ -4199,13 +4310,49 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             Structured
           </Label>
         </div>
+        {/* ── Workspace layout mode (Phase 2) — extends the single left-panel
+            collapse icon this used to be into 4 full layout modes. Controls
+            embedded-viewer visibility + column proportions; persisted per
+            radiologist. The left/right collapse buttons beside it are an
+            orthogonal, per-panel manual override available in any mode. ── */}
+        <div className="flex items-center gap-0.5 shrink-0 rounded-md border p-0.5 bg-muted/30" role="radiogroup" aria-label="Workspace layout mode" data-testid="layout-mode-selector">
+          {LAYOUT_MODE_OPTIONS.map((opt) => (
+            <button
+              key={opt.mode}
+              type="button"
+              role="radio"
+              aria-checked={layoutMode === opt.mode}
+              title={opt.title}
+              data-testid={`layout-mode-${opt.mode}`}
+              onClick={() => setLayoutMode(opt.mode)}
+              className={`flex items-center gap-1 px-1.5 py-1 rounded text-[10px] font-medium transition-colors ${
+                layoutMode === opt.mode
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
+              }`}
+            >
+              {opt.icon}
+              <span className="hidden lg:inline">{opt.label}</span>
+            </button>
+          ))}
+        </div>
         <button
           type="button"
-          title={isLeftPanelCollapsed ? "Expand viewer panel" : "Collapse viewer panel"}
-          onClick={() => setIsLeftPanelCollapsed((v) => !v)}
+          title={isLeftPanelCollapsed ? "Expand patient panel" : "Collapse patient panel"}
+          data-testid="toggle-left-panel"
+          onClick={() => { if (isLeftPanelCollapsed) leftPanelRef.current?.expand(); else leftPanelRef.current?.collapse(); }}
           className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:bg-muted transition-colors"
         >
           {isLeftPanelCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+        </button>
+        <button
+          type="button"
+          title={isRightPanelCollapsed ? "Expand tool drawer" : "Collapse tool drawer"}
+          data-testid="toggle-right-panel"
+          onClick={() => { if (isRightPanelCollapsed) rightPanelRef.current?.expand(); else rightPanelRef.current?.collapse(); }}
+          className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:bg-muted transition-colors"
+        >
+          {isRightPanelCollapsed ? <PanelRightOpen size={15} /> : <PanelRightClose size={15} />}
         </button>
       </div>
 
@@ -4399,38 +4546,78 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           workspace never depends on voice — keyboard/mouse stay canonical) ── */}
       {voiceSettings.enabled && <VoiceCommandBar voice={voice} />}
 
-      {/* ── 3-column body ──────────────────────────────────────────────────── */}
-      <div className="flex flex-1 overflow-hidden">
+      {/* ── 3-column body — resizable via drag (react-resizable-panels), plus
+          collapsible left/right panels. Widths + collapse state persist per
+          radiologist per layout mode (layoutPrefs above); the panels stay
+          mounted across mode switches (see the layoutMode effect) so the
+          embedded viewer never remounts just from toggling a drawer. ───── */}
+      <ResizablePanelGroup
+        direction={isMobile ? "vertical" : "horizontal"}
+        className="flex-1 min-h-0"
+        onLayout={handleWorkspacePanelLayout}
+      >
 
-        {/* ── LEFT 35%: Study info + DICOM viewer (collapsible to an icon
-            strip via isLeftPanelCollapsed — frees width for the editor
-            without duplicating the viewer into the center column) ──── */}
-        <div
-          className="flex flex-col border-r bg-muted/5 overflow-hidden shrink-0 transition-[width] duration-200"
-          style={isLeftPanelCollapsed
-            ? { width: 44, minWidth: 44, maxWidth: 44 }
-            : isMobile
-              // Kept low enough that left + right (below, 32% on mobile)
-              // never combine past 100% of viewport width — if they did, the
-              // center report editor (flex-1, no floor) would be forced back
-              // to ~0px, reproducing the exact bug this mobile fix exists for.
-              ? { width: "45%", minWidth: 160, maxWidth: 240 }
-              : { width: "35%", minWidth: 280, maxWidth: 460 }}
+        {/* ── LEFT: patient/study panel — collapsible to a compact summary
+            card (Phase 4), never to a bare icon strip, so the essentials
+            stay legible even collapsed. The embedded DICOM viewer inside the
+            expanded state is gated separately by showEmbeddedViewer (layout
+            mode), not by this collapse state. ──────────────────────────── */}
+        <ResizablePanel
+          ref={leftPanelRef}
+          id="workspace-left"
+          order={1}
+          collapsible
+          collapsedSize={LEFT_COLLAPSED_PCT}
+          minSize={LEFT_MIN_PCT}
+          maxSize={LEFT_MAX_PCT}
+          defaultSize={isLeftPanelCollapsed ? LEFT_COLLAPSED_PCT : currentModeLayout.left}
+          onCollapse={() => updateModeLayout(layoutMode, { leftCollapsed: true })}
+          onExpand={() => updateModeLayout(layoutMode, { leftCollapsed: false })}
+          className="flex flex-col border-r bg-muted/5"
         >
         {isLeftPanelCollapsed ? (
-          <button
-            type="button"
-            onClick={() => setIsLeftPanelCollapsed(false)}
-            title={entry ? `${entry.patientName} · ${entry.modality} — expand viewer` : "Expand viewer panel"}
-            className="flex flex-col items-center gap-2 pt-3 h-full hover:bg-muted/40 transition-colors"
-          >
-            <PanelLeftOpen size={16} className="text-muted-foreground" />
-            {entry?.modality && (
-              <Badge variant="outline" className="text-[9px] py-0 h-4 px-1 rotate-90 mt-4">
-                {entry.modality}
-              </Badge>
-            )}
-          </button>
+          <div className="flex flex-col h-full overflow-y-auto" data-testid="left-panel-compact">
+            <div className="shrink-0 p-2.5 flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => leftPanelRef.current?.expand()}
+                title={entry ? `${entry.patientName} · ${entry.modality} — expand patient panel` : "Expand patient panel"}
+                className="self-start p-1 -m-1 rounded text-muted-foreground hover:bg-muted transition-colors"
+              >
+                <PanelLeftOpen size={14} />
+              </button>
+              {entryLoading && <div className="text-xs text-muted-foreground">Loading study...</div>}
+              {!entryLoading && !entry && (
+                <div className="text-xs text-muted-foreground">No study loaded. Open from worklist.</div>
+              )}
+              {entry && (
+                <div className="flex flex-col gap-1.5" data-testid="left-panel-compact-summary">
+                  <div className="font-semibold text-sm leading-tight truncate" title={entry.patientName}>{entry.patientName}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {[entry.age, entry.sex].filter(Boolean).join(" / ") || "—"}
+                  </div>
+                  <Badge variant="outline" className="w-fit text-[10px] py-0 h-4">{entry.modality}</Badge>
+                  <div className="text-xs truncate" title={entry.studyDescription || undefined}>{entry.studyDescription || "—"}</div>
+                  <div className="text-xs text-muted-foreground truncate" title={entry.referringDoctor || undefined}>
+                    {entry.referringDoctor || "—"}
+                  </div>
+                  {(() => { const u = toUnifiedStatus(entry.status, entry.deliveryStatus); return (
+                    <span className={`inline-flex w-fit items-center px-1.5 py-0.5 rounded border text-[10px] font-semibold ${u.color}`}>{u.label}</span>
+                  ); })()}
+                  <OpenStudyPanel
+                    study={{
+                      studyInstanceUID: entry.studyInstanceUID ?? null,
+                      accessionNumber: entry.accessionNumber ?? null,
+                      patientId: entry.patientId ?? null,
+                      worklistId: entry.id ?? null,
+                    }}
+                    isAdmin={isOwnerRole(session)}
+                    onLaunchStateChange={setViewerLaunch}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
         ) : (
         <>
           {/* Study info */}
@@ -4520,26 +4707,48 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             )}
           </div>
 
-          {/* DICOM image viewer */}
-          <div className="flex-1 overflow-hidden">
-            {entry?.studyInstanceUID ? (
-              <EmbeddedWadoViewer
-                ref={embeddedViewerRef}
-                studyInstanceUID={entry.studyInstanceUID}
-                accessionNumber={entry.accessionNumber}
-              />
-            ) : (
-              <div className="h-full flex flex-col items-center justify-center gap-3 p-4 text-center">
-                <MonitorPlay size={40} className="text-muted-foreground/20" />
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">No DICOM study linked</p>
-                  <p className="text-xs text-muted-foreground/70 mt-1">
-                    Open images in Weasis or OHIF using the buttons above.
-                  </p>
+          {/* DICOM image viewer — mounted only when the layout mode calls
+              for it (Phase 2/4). Report Focus and Dual Screen hide it so
+              this space goes to metadata + report images instead; Split
+              View and Viewer Focus show it. Gated on the mode alone, so
+              toggling the LEFT panel collapse or switching right-drawer
+              tabs never mounts/unmounts it. */}
+          {showEmbeddedViewer ? (
+            <div className="flex-1 overflow-hidden">
+              {entry?.studyInstanceUID ? (
+                <EmbeddedWadoViewer
+                  ref={embeddedViewerRef}
+                  studyInstanceUID={entry.studyInstanceUID}
+                  accessionNumber={entry.accessionNumber}
+                />
+              ) : (
+                <div className="h-full flex flex-col items-center justify-center gap-3 p-4 text-center">
+                  <MonitorPlay size={40} className="text-muted-foreground/20" />
+                  <div>
+                    <p className="text-sm font-medium text-muted-foreground">No DICOM study linked</p>
+                    <p className="text-xs text-muted-foreground/70 mt-1">
+                      Open images in Weasis or OHIF using the buttons above.
+                    </p>
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          ) : (
+            <div
+              className="flex-1 flex flex-col items-center justify-center gap-2 p-4 text-center text-muted-foreground/70 border-y bg-muted/10"
+              data-testid="viewer-hidden-notice"
+            >
+              <MonitorPlay size={24} className="text-muted-foreground/30" />
+              <p className="text-xs max-w-[220px]">
+                {layoutMode === "dualScreen"
+                  ? "Embedded viewer hidden — use Open Study above to view images in a separate window or monitor."
+                  : "Embedded viewer hidden in Report Focus."}
+              </p>
+              <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={() => setLayoutMode("split")}>
+                Switch to Split View
+              </Button>
+            </div>
+          )}
 
           {/* R1.1 — selected report images: persisted as DICOM references,
               rendered into every artifact by the shared presentation layer. */}
@@ -4553,10 +4762,20 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           </div>
         </>
         )}
-        </div>
+        </ResizablePanel>
 
-        {/* ── CENTER 45%: Report editor + action bar ────────────────────── */}
-        <div className="flex flex-col flex-1 overflow-hidden min-w-0">
+        <ResizableHandle withHandle />
+
+        {/* ── CENTER: Report editor + action bar — the workspace's primary
+            working area; gets the remaining space and never shrinks below a
+            clinically usable width. ─────────────────────────────────────── */}
+        <ResizablePanel
+          id="workspace-center"
+          order={2}
+          minSize={20}
+          style={{ minWidth: CENTER_MIN_PX, minHeight: isMobile ? 320 : undefined }}
+          className="flex flex-col overflow-hidden min-w-0"
+        >
 
           {/* Scrollable editor area */}
           <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
@@ -5516,80 +5735,112 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               </Button>
             )}
           </div>
-        </div>
+        </ResizablePanel>
 
-        {/* ── RIGHT: 5-tab assistant panel (Copilot/Quick/Templates/Follow-
-            up/Prior/AI/Measure/Teach) — the primary workhorse of this
-            workspace, so it gets more than double its old 20% share on
-            desktop. Center report editor (flex-1, min-w-0) absorbs the
-            difference and shrinks accordingly. Phone-width floor unchanged
-            (45% left + 32% right = 77%, still leaves real width for the
-            center column at small viewports). ──────────────────────── */}
-        <div
-          className="flex flex-col border-l overflow-hidden shrink-0"
-          style={isMobile
-            ? { width: "32%", minWidth: 110, maxWidth: 170 }
-            : { width: "42%", minWidth: 440, maxWidth: 640 }}
+        {/* ── RIGHT: contextual tool drawer — Copilot/Quick/Templates/AI/
+            Follow-up/Prior/Measure/Knowledge/Diff/Print/Teaching, one
+            compact icon ribbon instead of large "hero" cards (Phase 5), so
+            it no longer permanently consumes a third of the screen. Only one
+            tab body ever renders (unchanged below); collapsible to a slim
+            icon rail. ─────────────────────────────────────────────────── */}
+        <ResizableHandle withHandle />
+        <ResizablePanel
+          ref={rightPanelRef}
+          id="workspace-right"
+          order={3}
+          collapsible
+          collapsedSize={RIGHT_COLLAPSED_PCT}
+          minSize={RIGHT_MIN_PCT}
+          maxSize={RIGHT_MAX_PCT}
+          defaultSize={isRightPanelCollapsed ? RIGHT_COLLAPSED_PCT : currentModeLayout.right}
+          onCollapse={() => updateModeLayout(layoutMode, { rightCollapsed: true })}
+          onExpand={() => updateModeLayout(layoutMode, { rightCollapsed: false })}
+          className="flex flex-col border-l overflow-hidden"
         >
-          {/* Tab header — 5-row layout. Rows 1-4 are full-width "hero" cards,
-              one tab each (Copilot / Quick / AI / Templates — the panel's
-              most-used tabs), each with its own accent color and a clear
-              filled/tinted active state. Row 5 packs the remaining tabs
-              (Follow-up / Prior / Measure / Teaching) into one compact line
-              of smaller sibling pills using the same visual language. */}
-          <div className="shrink-0 flex flex-col gap-1.5 p-1.5 border-b bg-muted/10">
-            {heroTabs.map((tab) => {
+        {isRightPanelCollapsed ? (
+          <div className="flex flex-col items-center gap-1 py-2 h-full overflow-y-auto" data-testid="right-panel-compact">
+            <button
+              type="button"
+              title="Expand tool drawer"
+              onClick={() => rightPanelRef.current?.expand()}
+              className="p-1.5 rounded-md text-muted-foreground hover:bg-muted transition-colors mb-1"
+            >
+              <PanelRightOpen size={14} />
+            </button>
+            {RIGHT_TABS.map((tab) => {
+              const active = rightTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  title={tab.label}
+                  aria-label={tab.label}
+                  onClick={() => { setRightTab(tab.id as RightTab); rightPanelRef.current?.expand(); }}
+                  className={`relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md border transition-colors ${
+                    active
+                      ? "bg-primary/10 border-primary/40 text-primary"
+                      : "border-transparent text-muted-foreground hover:bg-muted hover:text-foreground"
+                  }`}
+                >
+                  {tab.icon}
+                  {"badge" in tab && tab.badge ? (
+                    <span className="absolute -right-1 -top-1 min-w-[14px] rounded-full bg-rose-500 px-1 text-center text-[8px] font-bold leading-[14px] text-white shadow-sm">
+                      {tab.badge}
+                    </span>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+        <>
+          {/* Tab header — compact icon ribbon, every tool at equal visual
+              weight (Phase 5). Tooltip + aria-label carry the tab name;
+              the active tab's name also appears in the strip below so a
+              dozen icons stay identifiable without full-width cards. */}
+          <div className="shrink-0 flex flex-wrap items-center gap-1 p-1.5 border-b bg-muted/10" data-testid="right-drawer-ribbon">
+            {RIGHT_TABS.map((tab) => {
               const active = rightTab === tab.id;
               const accent = HERO_ACCENT[tab.id];
               return (
                 <button
                   key={tab.id}
+                  type="button"
+                  title={tab.label}
+                  aria-label={tab.label}
+                  aria-pressed={active}
+                  data-testid={`right-tab-${tab.id}`}
                   onClick={() => setRightTab(tab.id as RightTab)}
-                  className={`group flex w-full items-center gap-2.5 rounded-xl border px-3 py-2.5 text-left transition-all ${
+                  className={`relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md border transition-colors ${
                     active
-                      ? `${accent.card} shadow-sm`
-                      : "border-border bg-white dark:bg-card dark:border-card-border hover:border-muted-foreground/30 hover:bg-muted/40 hover:-translate-y-px"
+                      ? accent
+                        ? `${accent.chip} border-current`
+                        : "bg-primary/10 border-primary/40 text-primary"
+                      : "border-transparent text-muted-foreground hover:bg-muted hover:text-foreground"
                   }`}
                 >
-                  <span
-                    className={`relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-colors ${
-                      active ? accent.chip : "border-transparent bg-muted text-muted-foreground group-hover:text-foreground"
-                    }`}
-                  >
-                    {tab.icon}
-                    {"badge" in tab && tab.badge ? (
-                      <span className="absolute -right-1.5 -top-1.5 min-w-[16px] rounded-full bg-rose-500 px-1 text-center text-[9px] font-bold leading-[16px] text-white shadow-sm">
-                        {tab.badge}
-                      </span>
-                    ) : null}
-                  </span>
-                  <span className={`text-[13px] font-semibold tracking-tight ${active ? accent.text : "text-foreground/85"}`}>
-                    {tab.label}
-                  </span>
+                  {tab.icon}
+                  {"badge" in tab && tab.badge ? (
+                    <span className="absolute -right-1 -top-1 min-w-[14px] rounded-full bg-rose-500 px-1 text-center text-[8px] font-bold leading-[14px] text-white shadow-sm">
+                      {tab.badge}
+                    </span>
+                  ) : null}
                 </button>
               );
             })}
-
-            {/* Row 5 — remaining tabs, compact siblings sharing one line */}
-            <div className="flex gap-1">
-              {restTabs.map((tab) => {
-                const active = rightTab === tab.id;
-                return (
-                  <button
-                    key={tab.id}
-                    onClick={() => setRightTab(tab.id as RightTab)}
-                    className={`flex flex-1 items-center justify-center gap-1 rounded-lg border px-1.5 py-1.5 text-[10px] font-medium transition-colors ${
-                      active
-                        ? "border-primary/40 bg-primary/10 text-primary"
-                        : "border-border bg-white dark:bg-card dark:border-card-border text-muted-foreground hover:text-foreground hover:bg-muted/40"
-                    }`}
-                  >
-                    {tab.icon}
-                    <span className="truncate">{tab.label}</span>
-                  </button>
-                );
-              })}
-            </div>
+            <div className="flex-1" />
+            <button
+              type="button"
+              title="Collapse tool drawer"
+              onClick={() => rightPanelRef.current?.collapse()}
+              className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:bg-muted transition-colors"
+            >
+              <PanelRightClose size={14} />
+            </button>
+          </div>
+          <div className="shrink-0 px-2 py-1 border-b bg-muted/5 text-[11px] font-semibold text-foreground/80 flex items-center gap-1.5">
+            {RIGHT_TABS.find((t) => t.id === rightTab)?.icon}
+            {RIGHT_TABS.find((t) => t.id === rightTab)?.label}
           </div>
 
           {/* Tab content */}
@@ -6047,8 +6298,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               </div>
             )}
           </div>
-        </div>
-      </div>
+        </>
+        )}
+        </ResizablePanel>
+      </ResizablePanelGroup>
 
       {/* Structured Finding Assistant (Phase 6.2): compact "ask only what's
           needed" dialog. Opened for a finding that declares questions; on Apply
