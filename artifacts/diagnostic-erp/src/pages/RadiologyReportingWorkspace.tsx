@@ -72,7 +72,7 @@ import {
   applyRenderedTransition, toggleQuickSelection, setQuickInstance, deleteQuickInstance,
   seedQuickInstance, patchQuickInstance,
 } from "@/lib/renderEngine";
-import { applySectionContribution, conflictingSelections } from "@/lib/smartFindings";
+import { applySectionContribution, conflictingSelections, matchTemplateSection } from "@/lib/smartFindings";
 import { deriveQuickSelectFindings } from "@/lib/quickSelectFindingsPayload";
 import {
   parseQuestions, resolveSection, generateStructuredFinding,
@@ -1146,7 +1146,13 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     const raw = (f.anatomicalSection ?? "").trim();
     const values = structuredValuesRef.current.get(f.id);
     const resolved = values ? resolveSection(raw, values).trim() : raw;
-    return resolved || OTHER_SECTION;
+    if (!resolved) return OTHER_SECTION;
+    // Keyword-match the (possibly loosely-labelled) section to the loaded
+    // template's real region labels, so near-misses — level spellings like
+    // "L4/5", catalog category names, technician typos — still flip the
+    // intended region instead of scattering into a stray section.
+    const matched = matchTemplateSection(resolved, currentBaseline().map((b) => b.label));
+    return matched ?? resolved;
   }
 
   /** One finding's rendered report sections. A structured finding (has questions
@@ -1678,14 +1684,32 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     [quickSelectData],
   );
 
-  const studyRegion = useMemo(() => {
-    const orderedRegions = (quickSelectData?.tabs ?? [])
+  // All active study-region tab names (ordered) — the option list for the
+  // manual region override below.
+  const availableRegions = useMemo(
+    () => (quickSelectData?.tabs ?? [])
       .filter((t) => t.isActive)
       .slice()
       .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
-      .map((t) => t.name);
-    return matchStudyRegion(`${entry?.modality ?? ""} ${entry?.studyDescription ?? ""}`, orderedRegions);
-  }, [quickSelectData, entry?.modality, entry?.studyDescription]);
+      .map((t) => t.name),
+    [quickSelectData],
+  );
+
+  // The region resolved from the study's modality + description (matchStudyRegion:
+  // longest matching tab name wins). This is only as good as the PACS/billing
+  // labelling, so it can be wrong for a mislabelled or misrouted study.
+  const autoStudyRegion = useMemo(
+    () => matchStudyRegion(`${entry?.modality ?? ""} ${entry?.studyDescription ?? ""}`, availableRegions),
+    [availableRegions, entry?.modality, entry?.studyDescription],
+  );
+
+  // Manual override — lets the radiologist FORCE the study region (and therefore
+  // which quick findings / protocols / clinical-history chips appear) when the
+  // technician/billing desk labelled the study wrong or the auto-match misfired.
+  // Reset whenever the open study changes (below) so it never leaks across
+  // patients. `null` = follow the auto-resolved region.
+  const [regionOverride, setRegionOverride] = useState<string | null>(null);
+  const studyRegion = regionOverride ?? autoStudyRegion;
 
   // Protocols for this study region — the SAME list the Quick panel shows.
   const availableProtocols = useMemo(
@@ -2247,6 +2271,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     setStructuredFinalInfo(null); setFinalizedReportId(null);
     setReportCreationSkipped(null);
     setShowDiagnostics(false);
+    setRegionOverride(null); // manual region override must not leak across studies
     setPreviewMode(false); // transient UI must not carry across patients
     // Re-arm the once-per-study machine-hydration guards (M1.5): REVISITING a
     // study (Previous / return-to-parked) must hydrate and restore selections
@@ -5332,6 +5357,43 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   />
                 </div>
               </div>
+
+              {/* Manual study-region override — the quick findings / protocols /
+                  clinical-history chips shown are driven by the auto-detected
+                  study region, which is only as reliable as the PACS/billing
+                  labelling. This lets the radiologist FORCE the correct region
+                  when a study is mislabelled or misrouted. */}
+              {availableRegions.length > 0 && (
+                <div className="flex items-center gap-1.5 flex-wrap text-[10px]">
+                  <span className="text-muted-foreground font-medium">Study region:</span>
+                  <select
+                    aria-label="Force study region"
+                    title="Force the study region — use when the technician/billing desk labelled the study wrong or auto-detection misfired. Controls which quick findings, protocols and clinical-history chips appear."
+                    className="h-5 text-[10px] rounded border bg-background px-1"
+                    value={studyRegion ?? ""}
+                    disabled={isLocked}
+                    onChange={(e) => setRegionOverride(e.target.value || null)}
+                  >
+                    {!studyRegion && <option value="">— none detected —</option>}
+                    {availableRegions.map((r) => (
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                  </select>
+                  {regionOverride != null && regionOverride !== autoStudyRegion && (
+                    <span className="inline-flex items-center gap-0.5 text-amber-600" title={`Auto-detected region: ${autoStudyRegion ?? "none"}`}>
+                      <AlertTriangle size={10} /> forced
+                      <button
+                        type="button"
+                        className="underline ml-0.5 disabled:opacity-50"
+                        onClick={() => setRegionOverride(null)}
+                        disabled={isLocked}
+                      >
+                        reset
+                      </button>
+                    </span>
+                  )}
+                </div>
+              )}
 
               {/* Quick Findings (Phase 6) — prominent study-specific chips in
                   the main report column. Clicking a chip flips its anatomical
