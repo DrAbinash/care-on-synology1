@@ -429,15 +429,24 @@ function buildPreviewHtml(opts: {
 
   let findingsHtml = "";
   if (opts.useStructured) {
+    // Normal-scaffold rendering: one line per anatomical region. A NORMAL
+    // region prints its full descriptive normal sentence (the template
+    // baseline text) — never the bare word "Normal" — so the report reads as
+    // a complete radiologist narrative in which each region is accounted for.
+    // An ABNORMAL region swaps that sentence for the finding text and is
+    // bolded, so the abnormal reads immediately against the normal scaffold.
     findingsHtml = Object.entries(opts.findingsMap)
       .map(([label, item]) => {
-        const status = item.normal ? "Normal" : item.text.trim() || "—";
+        const raw = item.text.trim();
+        const sentence = raw || (item.normal ? "Normal." : "—");
+        const body = escHtml(sentence).replaceAll("\n", "<br/>");
+        const bodyHtml = item.normal ? body : `<strong>${body}</strong>`;
         // R1.4 — break-after:avoid-page on the heading itself (not the full
         // .section-heading class, which carries template color/border/font
         // styling this handwritten preview does not use) so a heading can
         // never print as the last line on a page with its content starting
         // on the next.
-        return `<p style="margin:${sp} 0;break-after:avoid-page;page-break-after:avoid;"><strong><u>${escHtml(fmtHeading(label, hc))}</u></strong><br/>${escHtml(status).replaceAll("\n", "<br/>")}</p>`;
+        return `<p style="margin:${sp} 0;break-after:avoid-page;page-break-after:avoid;"><strong>${escHtml(fmtHeading(label, hc))}:</strong> ${bodyHtml}</p>`;
       })
       .join("\n");
   } else {
@@ -512,6 +521,20 @@ const PALETTE_COMMANDS: PaletteItem[] = [
 const PALETTE_SETTINGS: PaletteItem[] = [
   { id: "setting:/settings/radiology-quick-select", kind: "setting", title: "Settings — Radiology Quick Select", subtitle: "Findings, structured questions, protocols, chips", keywords: "configure structured questions defaults" },
   { id: "setting:/settings", kind: "setting", title: "Settings — All", keywords: "configure preferences" },
+];
+
+// Item 1 — default Recommendation / Advice quick chips, used when the
+// admin-editable `report_recommendation_chips` pacs setting is unset or
+// malformed. Clicking a chip merges its text into the Recommendation field.
+const DEFAULT_RECOMMENDATION_CHIPS: string[] = [
+  "Clinical correlation is recommended.",
+  "Please correlate with clinical and laboratory findings.",
+  "Correlation with previous imaging is advised.",
+  "Follow-up imaging is advised as clinically indicated.",
+  "Contrast-enhanced study is suggested for further characterisation.",
+  "MRI is advised for further evaluation.",
+  "Specialist / surgical consultation is recommended.",
+  "No further imaging is required at present.",
 ];
 
 // AI-draft-vs-final diff, embedded as a workspace tab (previously only the
@@ -1690,6 +1713,42 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       .sort((a, b) => a.sortOrder - b.sortOrder || a.label.localeCompare(b.label)),
     [quickSelectData, studyRegion],
   );
+
+  // Item 2 — grouped options for the Findings "add from list" dropdown. Quick
+  // chips cannot hold every finding for a busy study (the user's own point:
+  // "chocolate/quick boxes will not accommodate all findings"), so this
+  // dropdown exposes the FULL region finding set, grouped by anatomical
+  // section, and drives the SAME handleFindingClick engine the chips use — so
+  // in structured mode a pick flips its region normal→abnormal, and in
+  // free-text mode it inserts, exactly like clicking a chip.
+  const findingsDropdownGroups = useMemo(() => {
+    const groups = new Map<string, QuickFinding[]>();
+    for (const f of regionFindings) {
+      const key = (f.anatomicalSection ?? "").trim() || OTHER_SECTION;
+      const arr = groups.get(key) ?? [];
+      arr.push(f);
+      groups.set(key, arr);
+    }
+    return [...groups.entries()];
+  }, [regionFindings]);
+
+  // Item 1 — Recommendation / Advice quick-select chips. Admin-editable from
+  // Radiology Settings via the `report_recommendation_chips` pacs setting
+  // (JSON string array); falls back to a sensible default set so the panel is
+  // useful out of the box. Clicking a chip merges its text into Recommendation.
+  const recommendationChips = useMemo<string[]>(() => {
+    const raw = pacsSettingsRows?.find((r) => r.key === "report_recommendation_chips")?.value;
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          const chips = parsed.map((x) => String(x).trim()).filter(Boolean);
+          if (chips.length > 0) return chips;
+        }
+      } catch { /* malformed setting → fall back to defaults */ }
+    }
+    return DEFAULT_RECOMMENDATION_CHIPS;
+  }, [pacsSettingsRows]);
 
   // Options for the near-Technique dropdown. Normally the region's protocols;
   // if the shared selection points at a protocol outside this region (the Quick
@@ -5219,6 +5278,35 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               <div className="flex items-center justify-between">
                 <Label className="text-xs font-semibold">Findings / Observation</Label>
                 <div className="flex items-center gap-1">
+                  {/* Item 2 — full-list Findings dropdown (like the Technique
+                      protocol dropdown). Quick chips cannot hold every finding
+                      for a busy study; this exposes the complete list grouped
+                      by anatomical section and drives the same engine. */}
+                  {findingsDropdownGroups.length > 0 && (
+                    <select
+                      aria-label="Add finding from full list"
+                      title="Add a finding from the full list — for findings that do not fit as quick chips"
+                      className="h-5 max-w-[150px] text-[10px] rounded border bg-background px-1"
+                      value=""
+                      disabled={isLocked}
+                      onChange={(e) => {
+                        const f = findingById.get(Number(e.target.value));
+                        if (f) handleFindingClick(f);
+                        e.currentTarget.value = "";
+                      }}
+                    >
+                      <option value="">＋ Finding…</option>
+                      {findingsDropdownGroups.map(([section, items]) => (
+                        <optgroup key={section} label={section}>
+                          {items.map((f) => (
+                            <option key={f.id} value={f.id}>
+                              {selectedQuickIds.has(f.id) ? "✓ " : ""}{f.label}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  )}
                   {selectedTemplate &&
                     parseMacrosJson(selectedTemplate.macrosJson)
                       .slice(0, 3)
@@ -5495,6 +5583,25 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               id="recommendation"
               title="Recommendation / Advice"
             >
+              {/* Item 1 — quick-select "chocolate box" chips for Recommendation,
+                  like the other sections. Admin-editable from Radiology Settings
+                  (report_recommendation_chips). Clicking merges the text in. */}
+              {recommendationChips.length > 0 && (
+                <div className="flex flex-wrap gap-1 mb-1.5" data-testid="recommendation-chips">
+                  {recommendationChips.map((chip, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      disabled={isLocked}
+                      title={chip}
+                      onClick={() => setRecommendation((prev) => mergeBlock(prev, chip))}
+                      className="text-[10px] font-medium px-2 py-0.5 rounded-full border bg-background text-muted-foreground border-border hover:bg-muted/50 hover:text-foreground transition-colors disabled:opacity-50 max-w-[220px] truncate"
+                    >
+                      {chip}
+                    </button>
+                  ))}
+                </div>
+              )}
               <Textarea
                 value={recommendation}
                 onChange={(e) => setRecommendation(e.target.value)}
@@ -5504,6 +5611,29 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 data-editor="recommendation"
               />
             </CollapsibleSection>
+
+            {/* Item 5 — DICOM selectable-image picker surfaced in the report
+                column. The left-panel picker lives under the embedded viewer,
+                which is unmounted when the viewer panel is collapsed (Report
+                mode) — so the "premium report with selectable DICOM images"
+                feature appeared "nowhere". When the left panel is collapsed we
+                mount the SAME picker here (exactly one instance ever, so no
+                double side-effects) so selected images remain reachable and
+                render into the report artifact. */}
+            {isLeftPanelCollapsed && (
+              <CollapsibleSection
+                layoutKey="radiology_report_layout"
+                id="report-images"
+                title="Report Images (DICOM)"
+              >
+                <ReportImagePicker
+                  draftId={draftId}
+                  studyId={entry?.studyId ?? null}
+                  studyInstanceUID={entry?.studyInstanceUID ?? null}
+                  disabled={isLocked}
+                />
+              </CollapsibleSection>
+            )}
 
             {/* Critical finding */}
             <div className="flex flex-col gap-2 border rounded-md p-3 bg-red-50/40 border-red-100">

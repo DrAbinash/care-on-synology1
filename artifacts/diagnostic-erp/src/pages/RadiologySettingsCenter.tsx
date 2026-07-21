@@ -921,6 +921,98 @@ export default function RadiologySettingsCenter() {
           {/* R1.2 — versioned enterprise template engine. Admins manage
               versions/activation/import/export; radiologists can preview. */}
           <PresentationTemplateManager isAdmin={isAdmin} />
+
+          {/* Report Letterhead Size — pacs_settings key/value overrides applied
+              on top of the active template (presentation-only, no schema change).
+              Defaults are "large" so the header/logo/address/footer print bigger
+              out of the box. Applied to BOTH draft previews and final reports. */}
+          <div className="rounded-xl border bg-card p-5 space-y-3 max-w-3xl">
+            <h3 className="text-sm font-bold">Report Letterhead Size</h3>
+            <p className="text-xs text-muted-foreground">
+              Enlarge the report header, clinic logo, clinic name/address block and the footer.
+              These sizing overrides apply on top of the selected report template and affect both draft previews and finalized reports.
+            </p>
+            <div className="grid sm:grid-cols-3 gap-4">
+              <div className="space-y-2">
+                <Label className="text-xs font-semibold">Header &amp; Address Size</Label>
+                <select
+                  value={sv("report_header_scale", "large")}
+                  disabled={!isAdmin}
+                  onChange={(e) => upsertSetting.mutate({ key: "report_header_scale", value: e.target.value, category: "report" })}
+                  className="w-full h-9 text-sm border rounded-md px-2 bg-background"
+                >
+                  <option value="standard">Standard</option>
+                  <option value="large">Large (default)</option>
+                  <option value="xlarge">Extra Large</option>
+                </select>
+                <p className="text-[11px] text-muted-foreground">Clinic name, tagline and the address/contact block.</p>
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-xs font-semibold">Logo Size</Label>
+                <select
+                  value={sv("report_logo_scale", "large")}
+                  disabled={!isAdmin}
+                  onChange={(e) => upsertSetting.mutate({ key: "report_logo_scale", value: e.target.value, category: "report" })}
+                  className="w-full h-9 text-sm border rounded-md px-2 bg-background"
+                >
+                  <option value="standard">Standard</option>
+                  <option value="large">Large (default)</option>
+                  <option value="xlarge">Extra Large</option>
+                </select>
+                <p className="text-[11px] text-muted-foreground">Clinic logo in the report header.</p>
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-xs font-semibold">Footer Size</Label>
+                <select
+                  value={sv("report_footer_scale", "large")}
+                  disabled={!isAdmin}
+                  onChange={(e) => upsertSetting.mutate({ key: "report_footer_scale", value: e.target.value, category: "report" })}
+                  className="w-full h-9 text-sm border rounded-md px-2 bg-background"
+                >
+                  <option value="standard">Standard</option>
+                  <option value="large">Large (default)</option>
+                </select>
+                <p className="text-[11px] text-muted-foreground">Footer note at the bottom of every report.</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Recommendation / Advice quick chips — editable "chocolate box"
+              for the Recommendation section, mirroring the other sections.
+              Stored as a JSON string array in report_recommendation_chips;
+              empty falls back to the workspace's built-in defaults. */}
+          <div className="rounded-xl border bg-card p-5 space-y-3 max-w-3xl">
+            <h3 className="text-sm font-bold">Recommendation / Advice Quick Chips</h3>
+            <p className="text-xs text-muted-foreground">
+              One recommendation per line. These appear as clickable chips above the Recommendation / Advice
+              field in the reporting workspace; clicking one inserts its text. Leave empty to use the built-in defaults.
+            </p>
+            {(() => {
+              const stored = sv("report_recommendation_chips", "");
+              let initial = "";
+              try {
+                const parsed = stored ? JSON.parse(stored) : [];
+                if (Array.isArray(parsed)) initial = parsed.map((x: unknown) => String(x)).join("\n");
+              } catch { initial = ""; }
+              return (
+                <textarea
+                  key={stored}
+                  defaultValue={initial}
+                  disabled={!isAdmin}
+                  rows={6}
+                  placeholder={"Clinical correlation is recommended.\nFollow-up imaging is advised as clinically indicated.\nContrast-enhanced study is suggested for further characterisation."}
+                  className="w-full text-sm border rounded-md px-2 py-1.5 bg-background resize-y"
+                  onBlur={(e) => {
+                    const chips = e.target.value.split("\n").map((s) => s.trim()).filter(Boolean);
+                    upsertSetting.mutate({ key: "report_recommendation_chips", value: JSON.stringify(chips), category: "report" });
+                  }}
+                />
+              );
+            })()}
+          </div>
+
           <RadiologyStylePanel />
         </TabsContent>
 

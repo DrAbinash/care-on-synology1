@@ -48,6 +48,7 @@ import {
   mriProtocolSpecsTable,
   mriProtocolQualityResultsTable,
   reportFindingInstancesTable,
+  pacsSettingsTable,
 } from "@workspace/db/schema";
 import { eq, and, desc, isNull, asc, ilike, or, inArray, sql } from "drizzle-orm";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
@@ -56,6 +57,12 @@ import {
   type ReportDocumentModel, type ReportKeyImageModel,
 } from "../lib/reportPresentation";
 import { resolveTemplateForRender } from "../lib/presentationTemplateStore";
+import {
+  buildLetterheadScaleCss,
+  REPORT_HEADER_SCALE_KEY,
+  REPORT_LOGO_SCALE_KEY,
+  REPORT_FOOTER_SCALE_KEY,
+} from "../lib/reportLetterheadScale";
 import { resolveDraftKeyImages } from "../lib/reportImages";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import { checkWriteLock } from "../lib/studyLocks";
@@ -1864,9 +1871,32 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     explicit: typeof req.query.template === "string" ? req.query.template : null,
     copyType: "standard",
   });
+
+  // Letterhead sizing (pacs_settings key/value; presentation-only) — the SAME
+  // three keys the finalized render path (patient-reports.ts) reads, so the
+  // draft preview and the final report size the header/logo/address/footer
+  // identically. Never blocks the preview: falls back to the (bigger) defaults.
+  let letterheadCss = "";
+  try {
+    const scaleRows = await db.select({ key: pacsSettingsTable.key, value: pacsSettingsTable.value })
+      .from(pacsSettingsTable)
+      .where(and(
+        inArray(pacsSettingsTable.key, [REPORT_HEADER_SCALE_KEY, REPORT_LOGO_SCALE_KEY, REPORT_FOOTER_SCALE_KEY]),
+        eq(pacsSettingsTable.category, "report"),
+      ));
+    const scaleVal = (k: string) => scaleRows.find((row) => row.key === k)?.value;
+    letterheadCss = buildLetterheadScaleCss({
+      headerScale: scaleVal(REPORT_HEADER_SCALE_KEY),
+      logoScale: scaleVal(REPORT_LOGO_SCALE_KEY),
+      footerScale: scaleVal(REPORT_FOOTER_SCALE_KEY),
+    });
+  } catch {
+    letterheadCss = buildLetterheadScaleCss();
+  }
+
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
-  res.send(renderReportDocument(model, template));
+  res.send(renderReportDocument(model, template, { customCss: letterheadCss }));
 });
 
 // POST /key-images — multipart upload
