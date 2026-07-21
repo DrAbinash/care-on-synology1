@@ -280,8 +280,8 @@ type RightTab = "copilot" | "quickselect" | "templates" | "followup" | "prior" |
 // used to be a single left-panel collapse icon. Doesn't depend on component
 // state, so it's a module-level constant rather than rebuilt every render.
 const LAYOUT_MODE_OPTIONS: Array<{ mode: WorkspaceLayoutMode; label: string; title: string; icon: ReactNode }> = [
-  { mode: "reportFocus", label: "Report", title: "Report Focus — viewer hidden, editor gets maximum width", icon: <Maximize2 size={13} /> },
-  { mode: "split", label: "Split", title: "Split View — viewer and editor share the screen (laptop/remote default)", icon: <Columns2 size={13} /> },
+  { mode: "reportFocus", label: "Report", title: "Report Focus — viewer hidden, editor gets maximum width (toggle viewer: Alt+\\)", icon: <Maximize2 size={13} /> },
+  { mode: "split", label: "Split", title: "Split View — viewer and editor share the screen (laptop/remote default; toggle viewer: Alt+\\)", icon: <Columns2 size={13} /> },
   { mode: "viewerFocus", label: "Viewer", title: "Viewer Focus — embedded viewer gets more width for close image review", icon: <Monitor size={13} /> },
   { mode: "dualScreen", label: "Dual", title: "Dual Screen — open the viewer in a separate window/monitor, editor uses the full primary screen", icon: <AppWindow size={13} /> },
 ];
@@ -694,6 +694,34 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // mode (Phase 2/4) — never by panel collapse state, which just controls
   // how much patient metadata is visible alongside it.
   const showEmbeddedViewer = shouldShowEmbeddedViewer(layoutMode);
+
+  // ── Viewer focus mode ──────────────────────────────────────────────────
+  // Clicking into the embedded WADO/OHIF viewer maximises image space: the
+  // patient-demographics block (top of this left panel) collapses to a slim
+  // strip, and the app's blue navigation sidebar minimises (via the decoupled
+  // `care:viewer-focus` event that Layout listens for). Clicking back into the
+  // report editor — or the strip's "Show details" — restores both. A ref backs
+  // the boolean so the toggler is stable and never fires a redundant event.
+  const [viewerFocusMode, setViewerFocusMode] = useState(false);
+  const viewerFocusRef = useRef(false);
+  const setViewerFocus = useCallback((on: boolean) => {
+    if (viewerFocusRef.current === on) return;
+    viewerFocusRef.current = on;
+    setViewerFocusMode(on);
+    try { window.dispatchEvent(new CustomEvent("care:viewer-focus", { detail: on })); } catch { /* SSR/no window */ }
+  }, []);
+  // Leave focus mode whenever the viewer isn't shown (mode switched to Report
+  // Focus / Dual Screen) so the demographics + app sidebar can never get stuck
+  // collapsed with no viewer to justify it.
+  useEffect(() => {
+    if (!showEmbeddedViewer) setViewerFocus(false);
+  }, [showEmbeddedViewer, setViewerFocus]);
+  // Restore the app sidebar if we unmount (navigate away) while focused.
+  useEffect(() => () => {
+    if (viewerFocusRef.current) {
+      try { window.dispatchEvent(new CustomEvent("care:viewer-focus", { detail: false })); } catch { /* noop */ }
+    }
+  }, []);
 
   // Reposition the two resizable panels whenever the mode changes (imperative
   // — the panels stay mounted across mode switches so the embedded viewer
@@ -3057,6 +3085,29 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         closeTopPanel();
         return;
       }
+      // Layout redesign — panel/viewer toggles route to the resizable-panel
+      // handles + layout mode directly (component-local refs/state), not the
+      // command dispatcher.
+      if (shortcut === "toggle-left-panel") {
+        e.preventDefault();
+        if (isLeftPanelCollapsed) leftPanelRef.current?.expand();
+        else leftPanelRef.current?.collapse();
+        return;
+      }
+      if (shortcut === "toggle-right-panel") {
+        e.preventDefault();
+        if (isRightPanelCollapsed) rightPanelRef.current?.expand();
+        else rightPanelRef.current?.collapse();
+        return;
+      }
+      if (shortcut === "toggle-viewer") {
+        e.preventDefault();
+        // Show the embedded viewer (Split) when it's currently hidden,
+        // otherwise hide it (Report Focus). Mirrors the mode selector — one
+        // source of truth (layoutMode), no parallel viewer-visibility flag.
+        setLayoutMode(showEmbeddedViewer ? "reportFocus" : "split");
+        return;
+      }
       e.preventDefault();
       const command =
         shortcut === "quickselect" ? "focus-quick-search"
@@ -4338,7 +4389,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         </div>
         <button
           type="button"
-          title={isLeftPanelCollapsed ? "Expand patient panel" : "Collapse patient panel"}
+          title={`${isLeftPanelCollapsed ? "Expand" : "Collapse"} patient panel (Alt+[)`}
           data-testid="toggle-left-panel"
           onClick={() => { if (isLeftPanelCollapsed) leftPanelRef.current?.expand(); else leftPanelRef.current?.collapse(); }}
           className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:bg-muted transition-colors"
@@ -4347,7 +4398,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         </button>
         <button
           type="button"
-          title={isRightPanelCollapsed ? "Expand tool drawer" : "Collapse tool drawer"}
+          title={`${isRightPanelCollapsed ? "Expand" : "Collapse"} tool drawer (Alt+])`}
           data-testid="toggle-right-panel"
           onClick={() => { if (isRightPanelCollapsed) rightPanelRef.current?.expand(); else rightPanelRef.current?.collapse(); }}
           className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:bg-muted transition-colors"
@@ -4620,7 +4671,27 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           </div>
         ) : (
         <>
-          {/* Study info */}
+          {/* Viewer focus mode — the demographics block collapses to this slim
+              strip so the embedded viewer below gets the reclaimed height. */}
+          {viewerFocusMode && showEmbeddedViewer ? (
+            <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b bg-muted/10" data-testid="viewer-focus-strip">
+              <MonitorPlay size={13} className="text-muted-foreground shrink-0" />
+              <span className="text-xs font-semibold truncate flex-1" title={entry?.patientName ?? undefined}>
+                {entry?.patientName ?? "Viewer"}
+              </span>
+              {entry?.modality && <Badge variant="outline" className="text-[9px] py-0 h-4 shrink-0">{entry.modality}</Badge>}
+              <button
+                type="button"
+                onClick={() => setViewerFocus(false)}
+                className="text-[10px] text-muted-foreground hover:text-foreground underline underline-offset-2 shrink-0"
+                title="Show patient details and the app menu again"
+                data-testid="viewer-focus-restore"
+              >
+                Show details
+              </button>
+            </div>
+          ) : (
+          /* Study info */
           <div className="shrink-0 p-3 border-b">
             {entryLoading && (
               <div className="text-xs text-muted-foreground py-2">Loading study...</div>
@@ -4706,15 +4777,19 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               </div>
             )}
           </div>
+          )}
 
           {/* DICOM image viewer — mounted only when the layout mode calls
               for it (Phase 2/4). Report Focus and Dual Screen hide it so
               this space goes to metadata + report images instead; Split
               View and Viewer Focus show it. Gated on the mode alone, so
               toggling the LEFT panel collapse or switching right-drawer
-              tabs never mounts/unmounts it. */}
+              tabs never mounts/unmounts it. Clicking anywhere in the viewer
+              enters viewer-focus mode (collapses demographics + app sidebar
+              for maximum image room) — onMouseDownCapture so it engages even
+              though the viewer's own pan handler also consumes the event. */}
           {showEmbeddedViewer ? (
-            <div className="flex-1 overflow-hidden">
+            <div className="flex-1 overflow-hidden" onMouseDownCapture={() => setViewerFocus(true)} data-testid="embedded-viewer-wrap">
               {entry?.studyInstanceUID ? (
                 <EmbeddedWadoViewer
                   ref={embeddedViewerRef}
@@ -4768,13 +4843,15 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
         {/* ── CENTER: Report editor + action bar — the workspace's primary
             working area; gets the remaining space and never shrinks below a
-            clinically usable width. ─────────────────────────────────────── */}
+            clinically usable width. Clicking back into the editor exits
+            viewer-focus mode (restores the demographics + app sidebar). ── */}
         <ResizablePanel
           id="workspace-center"
           order={2}
           minSize={20}
           style={{ minWidth: CENTER_MIN_PX, minHeight: isMobile ? 320 : undefined }}
           className="flex flex-col overflow-hidden min-w-0"
+          onMouseDownCapture={() => setViewerFocus(false)}
         >
 
           {/* Scrollable editor area */}
