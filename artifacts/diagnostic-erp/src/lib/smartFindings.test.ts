@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { applySectionContribution, conflictingSelections, type SectionState } from "./smartFindings";
+import { applySectionContribution, conflictingSelections, matchTemplateSection, type SectionState } from "./smartFindings";
 
 // The Smart Findings engine's per-finding section transition. A finding's
 // contribution changes from prevText → nextText; the section is updated with
@@ -71,5 +71,54 @@ describe("conflictingSelections", () => {
     expect(conflictingSelections({ id: 3, studyType: "Brain", conflictGroup: "" }, [
       { id: 1, studyType: "Brain", conflictGroup: "fazekas" },
     ])).toEqual([]);
+  });
+});
+
+describe("matchTemplateSection — keyword/fuzzy section→region matching", () => {
+  const LS = [
+    "Alignment & Curvature", "L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1",
+    "Lumbar Vertebral Bodies", "Conus & Cauda Equina",
+    "Screening — Cervical Spine", "Screening — Dorsal Spine",
+    "Screening — Cord Signal", "Screening — Vertebral Marrow",
+  ];
+
+  it("returns null when nothing is provided", () => {
+    expect(matchTemplateSection("", LS)).toBeNull();
+    expect(matchTemplateSection("L4-L5", [])).toBeNull();
+  });
+
+  it("exact match wins", () => {
+    expect(matchTemplateSection("L4-L5", LS)).toBe("L4-L5");
+    expect(matchTemplateSection("Screening — Cord Signal", LS)).toBe("Screening — Cord Signal");
+  });
+
+  it("matches spine levels across spelling variants", () => {
+    expect(matchTemplateSection("L4/5", LS)).toBe("L4-L5");
+    expect(matchTemplateSection("l4 l5", LS)).toBe("L4-L5");
+    expect(matchTemplateSection("L4–L5 disc", LS)).toBe("L4-L5"); // en-dash
+    expect(matchTemplateSection("L5/S1", LS)).toBe("L5-S1");
+  });
+
+  it("matches on distinctive keywords despite extra words", () => {
+    expect(matchTemplateSection("cord signal", LS)).toBe("Screening — Cord Signal");
+    expect(matchTemplateSection("vertebral marrow lesion", LS)).toBe("Screening — Vertebral Marrow");
+    expect(matchTemplateSection("conus", LS)).toBe("Conus & Cauda Equina");
+    expect(matchTemplateSection("cervical", LS)).toBe("Screening — Cervical Spine");
+  });
+
+  it("normalized-exact match ignores punctuation/case", () => {
+    expect(matchTemplateSection("alignment and curvature", LS)).toBe("Alignment & Curvature");
+    expect(matchTemplateSection("LUMBAR VERTEBRAL BODIES", LS)).toBe("Lumbar Vertebral Bodies");
+  });
+
+  it("returns null when there is no meaningful overlap", () => {
+    expect(matchTemplateSection("orbit", LS)).toBeNull();
+    expect(matchTemplateSection("liver", LS)).toBeNull();
+  });
+
+  it("does not confuse different spine levels", () => {
+    expect(matchTemplateSection("L1-L2", LS)).toBe("L1-L2");
+    expect(matchTemplateSection("L2/3", LS)).toBe("L2-L3");
+    expect(matchTemplateSection("L2-L3", LS)).not.toBe("L1-L2");
   });
 });
