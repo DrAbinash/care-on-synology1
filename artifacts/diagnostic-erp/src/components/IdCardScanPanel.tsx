@@ -14,7 +14,7 @@
  * PRESERVED (unchanged):
  *   - onSave({ originalBase64, croppedBase64, mimeType }) callback interface
  *   - autoCropEnabled, cropPadding, jpegQuality, maxWidth props
- *   - Manual drag-crop (move + resize-br)
+ *   - Manual drag-crop (move + resize from all 4 corners and 4 edges)
  *   - Rotate left/right
  *   - Restore original
  *   - All existing FormF.tsx scan panel open/close logic
@@ -59,6 +59,23 @@ export type EnhancementMode =
  *  and Bank (cheque/passbook) each start on the right preset. */
 export type ScanDocType = "id-card" | "receipt" | "document";
 
+/** Manual-crop drag handle: whole-box move, a corner, or an edge. The corner /
+ *  edge codes contain the sides they move ("tl" moves top+left), so the resize
+ *  math can test them with `.includes`. */
+type DragMode = "move" | "tl" | "tr" | "bl" | "br" | "t" | "b" | "l" | "r" | null;
+
+/** CSS cursor matching the active (or idle) crop drag handle. */
+function cursorForDrag(mode: DragMode): string {
+  switch (mode) {
+    case "tl": case "br": return "nwse-resize";
+    case "tr": case "bl": return "nesw-resize";
+    case "t":  case "b":  return "ns-resize";
+    case "l":  case "r":  return "ew-resize";
+    case "move": return "move";
+    default: return "crosshair";
+  }
+}
+
 export interface IdCardScanPanelProps {
   imageBase64: string;
   mimeType: string;
@@ -92,11 +109,11 @@ const MODE_LABELS: Record<EnhancementMode, string> = {
   bw:           "B&W Scan",
 };
 
-/** Default enhancement mode per document type. Indian ID cards (Aadhaar/PAN)
- *  are almost always laminated, so the ID-card editor opens on the anti-glare
- *  laminated preset by default rather than plain Auto. */
+/** Default enhancement mode per document type. ID cards open on **Original**
+ *  (no processing) — the enhancement presets are opt-in from the mode row, so a
+ *  clean scan is never altered unless staff choose to. */
 const DEFAULT_MODE_FOR_DOC: Record<ScanDocType, EnhancementMode> = {
-  "id-card": "laminated",
+  "id-card": "original",
   receipt: "receipt",
   document: "document",
 };
@@ -387,10 +404,11 @@ export default function IdCardScanPanel({
   const [statusMsg, setStatusMsg]           = useState("");
   const [statusType, setStatusType]         = useState<"ok" | "warn" | "info">("info");
 
-  // Manual crop drag state
+  // Manual crop drag state. Handles: 4 corners (tl/tr/bl/br), 4 edges
+  // (t/b/l/r) and whole-box move.
   const containerRef   = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging]   = useState(false);
-  const [dragMode, setDragMode]       = useState<"move" | "resize-br" | null>(null);
+  const [dragMode, setDragMode]       = useState<DragMode>(null);
   const [dragStart, setDragStart]     = useState({ x: 0, y: 0 });
 
   // ── Status helper ──────────────────────────────────────────────────────────
@@ -427,86 +445,87 @@ export default function IdCardScanPanel({
       return { x: 0, y: 0, w, h, confidence: "low" };
     }
 
-    const imageData = ctx.getImageData(0, 0, w, h);
-    const data = imageData.data;
+    // Work on a downscaled copy (≤ 480 px long edge). Faster, and the blur of
+    // downscaling suppresses per-pixel noise so the card edge dominates.
+    const scale = Math.min(1, 480 / Math.max(w, h));
+    const sw = Math.max(1, Math.round(w * scale));
+    const sh = Math.max(1, Math.round(h * scale));
+    const small = document.createElement("canvas");
+    small.width = sw; small.height = sh;
+    const sctx = small.getContext("2d");
+    if (!sctx) return { x: 0, y: 0, w, h, confidence: "low" };
+    sctx.drawImage(canvas, 0, 0, sw, sh);
+    const data = sctx.getImageData(0, 0, sw, sh).data;
 
-    // ── Step 1: Estimate background colour from the four corners (8×8 px each) ──
-    // Take each corner's own mean, then the component-wise MEDIAN of the four.
-    // A single corner ruined by lamination glare (a blown-out white patch) or a
-    // finger/shadow would otherwise drag a pooled mean far off the true
-    // background and blow up the crop box; the median ignores that one outlier.
-    const cornerSize = Math.min(8, Math.floor(Math.min(w, h) * 0.05));
-    const sampleCorners = [
-      [0, 0], [w - cornerSize, 0],
-      [0, h - cornerSize], [w - cornerSize, h - cornerSize],
-    ];
-    const cornerR: number[] = [], cornerG: number[] = [], cornerB: number[] = [];
-    for (const [cx, cy] of sampleCorners) {
-      let r = 0, g = 0, b = 0, n = 0;
-      for (let py = cy; py < cy + cornerSize && py < h; py++) {
-        for (let px = cx; px < cx + cornerSize && px < w; px++) {
-          const i = (py * w + px) * 4;
-          r += data[i]; g += data[i + 1]; b += data[i + 2]; n++;
+    // Per-pixel luma (reused by the gradient test).
+    const lum = new Float32Array(sw * sh);
+    for (let p = 0; p < sw * sh; p++) {
+      const i = p * 4;
+      lum[p] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    }
+
+    // ── Step 1: Background = MEDIAN colour of the outer border frame ──
+    // Sampling the whole ~6% frame (not four tiny corners) is robust when the
+    // card is offset or rotated so a corner lands on it. The median resists a
+    // glare patch or a finger in the border.
+    const band = Math.max(2, Math.round(Math.min(sw, sh) * 0.06));
+    const bR: number[] = [], bG: number[] = [], bB: number[] = [];
+    for (let y = 0; y < sh; y++) {
+      const edgeRow = y < band || y >= sh - band;
+      for (let x = 0; x < sw; x++) {
+        if (edgeRow || x < band || x >= sw - band) {
+          const i = (y * sw + x) * 4;
+          bR.push(data[i]); bG.push(data[i + 1]); bB.push(data[i + 2]);
         }
       }
-      if (n > 0) { cornerR.push(r / n); cornerG.push(g / n); cornerB.push(b / n); }
     }
     const medianOf = (vals: number[]): number => {
       if (vals.length === 0) return 255;
-      const s = [...vals].sort((a, b) => a - b);
+      const s = vals.slice().sort((a, b) => a - b);
       const m = s.length >> 1;
       return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
     };
-    let bgR = medianOf(cornerR), bgG = medianOf(cornerG), bgB = medianOf(cornerB);
+    const bgR = medianOf(bR), bgG = medianOf(bG), bgB = medianOf(bB);
 
-    // ── Step 2: Mark each pixel as content vs background ──
-    // Threshold: pixel differs from background by more than 20 in any channel
-    // OR has significant colour saturation (catches coloured cards on grey tables)
-    const DIFF_THRESH = 22;
-    const SAT_THRESH  = 25;
-
-    function isContent(i: number): boolean {
-      const r = data[i], g = data[i + 1], b = data[i + 2];
-      if (
-        Math.abs(r - bgR) > DIFF_THRESH ||
-        Math.abs(g - bgG) > DIFF_THRESH ||
-        Math.abs(b - bgB) > DIFF_THRESH
-      ) return true;
-      // Also catch saturated pixels (colour card on neutral background)
-      const maxC = Math.max(r, g, b);
-      const minC = Math.min(r, g, b);
-      return (maxC - minC) > SAT_THRESH;
-    }
-
-    // ── Step 3: Build row and column histograms ──
-    // Sample every 2nd pixel for speed (still accurate enough)
-    const rowHist    = new Float32Array(h);   // fraction of row pixels that are content
-    const colHist    = new Float32Array(w);   // fraction of col pixels that are content
-
-    for (let y = 0; y < h; y += 2) {
-      let cnt = 0;
-      for (let x = 0; x < w; x += 2) {
-        if (isContent((y * w + x) * 4)) cnt++;
+    // ── Step 2: Content mask = differs from background OR sits on a strong edge ──
+    // The colour test finds the card body; the gradient (edge/text) test finds
+    // the card even when its interior tone is close to the background, and locks
+    // onto the card border and printed text — the single biggest robustness win
+    // over the old colour-only detector.
+    const COLOR_THRESH = 60;   // summed |Δ| across R,G,B
+    const GRAD_THRESH  = 22;   // |dx|+|dy| on luma
+    const content = new Uint8Array(sw * sh);
+    for (let y = 0; y < sh; y++) {
+      for (let x = 0; x < sw; x++) {
+        const p = y * sw + x;
+        const i = p * 4;
+        const cd = Math.abs(data[i] - bgR) + Math.abs(data[i + 1] - bgG) + Math.abs(data[i + 2] - bgB);
+        let isC = cd > COLOR_THRESH;
+        if (!isC && x > 0 && x < sw - 1 && y > 0 && y < sh - 1) {
+          const gx = Math.abs(lum[p + 1] - lum[p - 1]);
+          const gy = Math.abs(lum[p + sw] - lum[p - sw]);
+          if (gx + gy > GRAD_THRESH) isC = true;
+        }
+        content[p] = isC ? 1 : 0;
       }
-      rowHist[y] = cnt / (w / 2);
-      if (y + 1 < h) rowHist[y + 1] = rowHist[y]; // duplicate for skipped row
-    }
-    for (let x = 0; x < w; x += 2) {
-      let cnt = 0;
-      for (let y = 0; y < h; y += 2) {
-        if (isContent((y * w + x) * 4)) cnt++;
-      }
-      colHist[x] = cnt / (h / 2);
-      if (x + 1 < w) colHist[x + 1] = colHist[x];
     }
 
-    // ── Step 4: Find content boundary — first/last row/col above threshold ──
-    // Use a low threshold (5%) so even sparse card edges are detected.
-    // Smooth over a 5px window to ignore single-pixel noise.
-    const ROW_THRESH = 0.05;
-    const COL_THRESH = 0.05;
+    // ── Step 3: Row / column content projections (fraction per line) ──
+    const rowP = new Float32Array(sh);
+    const colP = new Float32Array(sw);
+    for (let y = 0; y < sh; y++) {
+      let c = 0;
+      for (let x = 0; x < sw; x++) c += content[y * sw + x];
+      rowP[y] = c / sw;
+    }
+    for (let x = 0; x < sw; x++) {
+      let c = 0;
+      for (let y = 0; y < sh; y++) c += content[y * sw + x];
+      colP[x] = c / sh;
+    }
 
-    function smoothed(hist: Float32Array, i: number, half = 3): number {
+    const smoothHalf = Math.max(1, Math.round(Math.min(sw, sh) * 0.012));
+    function smoothed(hist: Float32Array, i: number, half = smoothHalf): number {
       let s = 0, n = 0;
       for (let k = Math.max(0, i - half); k <= Math.min(hist.length - 1, i + half); k++) {
         s += hist[k]; n++;
@@ -514,30 +533,40 @@ export default function IdCardScanPanel({
       return s / (n || 1);
     }
 
-    let top = 0, bottom = h - 1, left = 0, right = w - 1;
+    // ── Step 4: Adaptive threshold — a fraction of each projection's own peak ──
+    // so the boundary tracks the card whether it's dense with print or sparse,
+    // rather than a fixed 5% that mis-fires on both.
+    let rowPeak = 0, colPeak = 0;
+    for (let y = 0; y < sh; y++) rowPeak = Math.max(rowPeak, smoothed(rowP, y));
+    for (let x = 0; x < sw; x++) colPeak = Math.max(colPeak, smoothed(colP, x));
+    const rowT = Math.max(0.04, rowPeak * 0.16);
+    const colT = Math.max(0.04, colPeak * 0.16);
 
-    for (let y = 0; y < h; y++) {
-      if (smoothed(rowHist, y) > ROW_THRESH) { top = y; break; }
-    }
-    for (let y = h - 1; y >= 0; y--) {
-      if (smoothed(rowHist, y) > ROW_THRESH) { bottom = y; break; }
-    }
-    for (let x = 0; x < w; x++) {
-      if (smoothed(colHist, x) > COL_THRESH) { left = x; break; }
-    }
-    for (let x = w - 1; x >= 0; x--) {
-      if (smoothed(colHist, x) > COL_THRESH) { right = x; break; }
-    }
+    let top = 0, bottom = sh - 1, left = 0, right = sw - 1;
+    for (let y = 0; y < sh; y++)      { if (smoothed(rowP, y) > rowT) { top = y; break; } }
+    for (let y = sh - 1; y >= 0; y--) { if (smoothed(rowP, y) > rowT) { bottom = y; break; } }
+    for (let x = 0; x < sw; x++)      { if (smoothed(colP, x) > colT) { left = x; break; } }
+    for (let x = sw - 1; x >= 0; x--) { if (smoothed(colP, x) > colT) { right = x; break; } }
 
-    // ── Step 5: Add padding, clamp to canvas ──
-    const pad = Math.max(padding, 4);
-    left   = Math.max(0, left   - pad);
-    top    = Math.max(0, top    - pad);
-    right  = Math.min(w - 1, right  + pad);
-    bottom = Math.min(h - 1, bottom + pad);
+    // Nothing found (blank / uniform frame) → keep the whole image.
+    if (right <= left || bottom <= top) { left = 0; top = 0; right = sw - 1; bottom = sh - 1; }
 
-    const cropW = right - left;
-    const cropH = bottom - top;
+    // ── Step 5: Pad (padding is full-res px → scale down), then map back up ──
+    const padS = Math.max(padding, 4) * scale;
+    left   = Math.max(0, left - padS);
+    top    = Math.max(0, top - padS);
+    right  = Math.min(sw - 1, right + padS);
+    bottom = Math.min(sh - 1, bottom + padS);
+
+    const inv = 1 / scale;
+    let X = Math.round(left * inv);
+    let Y = Math.round(top * inv);
+    let cropW = Math.round((right - left) * inv);
+    let cropH = Math.round((bottom - top) * inv);
+    X = Math.max(0, Math.min(X, w - 1));
+    Y = Math.max(0, Math.min(Y, h - 1));
+    cropW = Math.max(10, Math.min(cropW, w - X));
+    cropH = Math.max(10, Math.min(cropH, h - Y));
 
     // Minimum crop size sanity check
     if (cropW < 40 || cropH < 20) {
@@ -545,23 +574,14 @@ export default function IdCardScanPanel({
     }
 
     // ── Step 6: Confidence based on how much we cropped ──
-    // If crop is < 90% of original in both dimensions → we found real margins → high
-    // If crop ≈ full image → card fills frame or detection uncertain → medium
     const wRatio = cropW / w;
     const hRatio = cropH / h;
     const aspect = cropW / (cropH || 1);
     const goodAspect = aspect >= 1.0 && aspect <= 2.5; // ID cards are landscape usually
+    const confidence: "high" | "medium" | "low" =
+      wRatio < 0.94 && hRatio < 0.94 && goodAspect ? "high" : "medium";
 
-    let confidence: "high" | "medium" | "low";
-    if (wRatio < 0.92 && hRatio < 0.92 && goodAspect) {
-      confidence = "high";   // cropped meaningful margins on all sides
-    } else if (wRatio < 0.98 || hRatio < 0.98) {
-      confidence = "medium"; // cropped some margins
-    } else {
-      confidence = "medium"; // card fills frame — crop = full image, still valid
-    }
-
-    return { x: left, y: top, w: cropW, h: cropH, confidence };
+    return { x: X, y: Y, w: cropW, h: cropH, confidence };
   }
 
   // ── Apply crop to produce a cropped canvas ─────────────────────────────────
@@ -622,12 +642,33 @@ export default function IdCardScanPanel({
     ctx.lineWidth = 2;
     ctx.strokeRect(rect.x + 1, rect.y + 1, rect.w - 2, rect.h - 2);
 
-    // Corner handles
-    const hs = 10;
-    ctx.fillStyle = "#3b82f6";
-    [[rect.x, rect.y], [rect.x + rect.w - hs, rect.y],
-     [rect.x, rect.y + rect.h - hs], [rect.x + rect.w - hs, rect.y + rect.h - hs]
-    ].forEach(([hx, hy]) => ctx.fillRect(hx, hy, hs, hs));
+    // Thirds guides (rule-of-thirds) — faint, help line the card up
+    ctx.strokeStyle = "rgba(59,130,246,0.35)";
+    ctx.lineWidth = 1;
+    for (let k = 1; k <= 2; k++) {
+      const gx = rect.x + (rect.w * k) / 3;
+      const gy = rect.y + (rect.h * k) / 3;
+      ctx.beginPath(); ctx.moveTo(gx, rect.y); ctx.lineTo(gx, rect.y + rect.h); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(rect.x, gy); ctx.lineTo(rect.x + rect.w, gy); ctx.stroke();
+    }
+
+    // Handles — 4 corners + 4 edge midpoints. Scale the handle to the image so
+    // it stays grabbable on a downscaled preview.
+    const hs = Math.max(10, Math.round(Math.min(overlay.width, overlay.height) * 0.028));
+    const cx = rect.x + rect.w / 2;
+    const cy = rect.y + rect.h / 2;
+    const handles: [number, number][] = [
+      [rect.x, rect.y], [rect.x + rect.w, rect.y],           // tl, tr
+      [rect.x, rect.y + rect.h], [rect.x + rect.w, rect.y + rect.h], // bl, br
+      [cx, rect.y], [cx, rect.y + rect.h],                   // t, b
+      [rect.x, cy], [rect.x + rect.w, cy],                   // l, r
+    ];
+    for (const [hx, hy] of handles) {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs);
+      ctx.fillStyle = "#3b82f6";
+      ctx.fillRect(hx - hs / 2 + 2, hy - hs / 2 + 2, hs - 4, hs - 4);
+    }
   }
 
   // ── Full pipeline: detect → deskew → crop → enhance ───────────────────────
@@ -893,20 +934,35 @@ export default function IdCardScanPanel({
     return { x: cx * scaleX, y: cy * scaleY };
   }
 
+  // Pick which handle (if any) the pointer grabbed. Corners win over edges,
+  // edges over move. Hit area scales with the image so it's grabbable on the
+  // downscaled preview and on touch.
+  function hitTestHandle(px: number, py: number): DragMode {
+    const L = cropRect.x, T = cropRect.y, R = cropRect.x + cropRect.w, B = cropRect.y + cropRect.h;
+    const hit = Math.max(16, Math.round(Math.min(imgSize.w, imgSize.h) * 0.04));
+    const near = (a: number, b: number) => Math.abs(a - b) <= hit;
+    const onXband = px >= L - hit && px <= R + hit;
+    const onYband = py >= T - hit && py <= B + hit;
+    // Corners
+    if (near(px, L) && near(py, T)) return "tl";
+    if (near(px, R) && near(py, T)) return "tr";
+    if (near(px, L) && near(py, B)) return "bl";
+    if (near(px, R) && near(py, B)) return "br";
+    // Edges
+    if (near(py, T) && onXband) return "t";
+    if (near(py, B) && onXband) return "b";
+    if (near(px, L) && onYband) return "l";
+    if (near(px, R) && onYband) return "r";
+    // Inside → move
+    if (px >= L && px <= R && py >= T && py <= B) return "move";
+    return null;
+  }
+
   function handlePointerDown(e: React.MouseEvent | React.TouchEvent) {
     const pos = getPointerPos(e);
-    const hs = 20; // handle hit area
-    const br = { x: cropRect.x + cropRect.w - hs, y: cropRect.y + cropRect.h - hs };
-    if (pos.x >= br.x && pos.y >= br.y) {
-      setDragMode("resize-br");
-    } else if (
-      pos.x >= cropRect.x && pos.x <= cropRect.x + cropRect.w &&
-      pos.y >= cropRect.y && pos.y <= cropRect.y + cropRect.h
-    ) {
-      setDragMode("move");
-    } else {
-      return;
-    }
+    const mode = hitTestHandle(pos.x, pos.y);
+    if (!mode) return;
+    setDragMode(mode);
     setIsDragging(true);
     setDragStart({ x: pos.x, y: pos.y });
   }
@@ -916,20 +972,24 @@ export default function IdCardScanPanel({
     const pos = getPointerPos(e);
     const dx = pos.x - dragStart.x;
     const dy = pos.y - dragStart.y;
+    const MIN = 40;
 
-    if (dragMode === "move") {
-      setCropRect((prev) => ({
-        ...prev,
-        x: Math.max(0, Math.min(prev.x + dx, imgSize.w - prev.w)),
-        y: Math.max(0, Math.min(prev.y + dy, imgSize.h - prev.h)),
-      }));
-    } else if (dragMode === "resize-br") {
-      setCropRect((prev) => ({
-        ...prev,
-        w: Math.max(50, Math.min(prev.w + dx, imgSize.w - prev.x)),
-        h: Math.max(50, Math.min(prev.h + dy, imgSize.h - prev.y)),
-      }));
-    }
+    setCropRect((prev) => {
+      if (dragMode === "move") {
+        return {
+          ...prev,
+          x: Math.max(0, Math.min(prev.x + dx, imgSize.w - prev.w)),
+          y: Math.max(0, Math.min(prev.y + dy, imgSize.h - prev.h)),
+        };
+      }
+      // Resize: work in edge coordinates, move only the edges named by dragMode.
+      let left = prev.x, top = prev.y, right = prev.x + prev.w, bottom = prev.y + prev.h;
+      if (dragMode.includes("l")) left = Math.max(0, Math.min(left + dx, right - MIN));
+      if (dragMode.includes("r")) right = Math.min(imgSize.w, Math.max(right + dx, left + MIN));
+      if (dragMode.includes("t")) top = Math.max(0, Math.min(top + dy, bottom - MIN));
+      if (dragMode.includes("b")) bottom = Math.min(imgSize.h, Math.max(bottom + dy, top + MIN));
+      return { x: left, y: top, w: right - left, h: bottom - top };
+    });
     setDragStart({ x: pos.x, y: pos.y });
   }
 
@@ -1029,7 +1089,7 @@ export default function IdCardScanPanel({
               <div
                 ref={containerRef}
                 className="relative bg-gray-100 rounded-lg overflow-hidden border border-gray-200 select-none"
-                style={{ cursor: isDragging ? (dragMode === "resize-br" ? "nwse-resize" : "move") : "crosshair", maxHeight: 340, display: "flex", justifyContent: "center" }}
+                style={{ cursor: cursorForDrag(dragMode), maxHeight: 340, display: "flex", justifyContent: "center" }}
                 onMouseDown={handlePointerDown}
                 onMouseMove={handlePointerMove}
                 onMouseUp={handlePointerUp}
@@ -1041,7 +1101,7 @@ export default function IdCardScanPanel({
                 <canvas ref={overlayCanvasRef} className="max-w-full max-h-[340px]" />
               </div>
               <div className="text-[9px] text-gray-400 mt-1">
-                Drag inside blue box to move · Bottom-right corner to resize
+                Drag inside to move · drag any corner or edge to resize
               </div>
             </div>
 
