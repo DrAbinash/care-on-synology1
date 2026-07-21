@@ -388,6 +388,11 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   // RadiologyReportingWorkspace continues to serve every USG study until this
   // is enabled, so there is no regression when the flag is off.
   ff_radiology_usg_workspace: false,
+  // USG Companion P2 — continuous readiness, insert-all-approved measurements,
+  // persistent organ states, preset-aware normals, expanded finding library,
+  // report/impression reconciliation, keyboard workflow. Off by default; only
+  // active inside the dedicated USG workspace when both flags are on.
+  ff_radiology_usg_companion_p2: false,
 };
 
 const RADIOLOGY_FLAG_PREFIX = "ff_radiology_";
