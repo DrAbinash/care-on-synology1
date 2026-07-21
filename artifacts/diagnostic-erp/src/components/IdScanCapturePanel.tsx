@@ -17,14 +17,14 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
 import {
   Camera, ScanLine, Upload, Settings2, CheckCircle2, ChevronRight,
-  Sparkles, FolderOpen, UploadCloud,
+  Sparkles, FolderOpen, UploadCloud, Smartphone,
 } from "lucide-react";
 import UnifiedScanCapture, { type ScanCaptureResult, type ScanSource, type ScanSide } from "@/components/UnifiedScanCapture";
 import { checkScanBridgeHealth, type ScanBridgeState } from "@/lib/scanBridgeClient";
 import { getPreferredTvsDeviceId, getPreferredTvsDeviceLabel } from "@/lib/tvsDeviceProfile";
 import { isSecureCameraContext } from "@/lib/cameraDiagnostics";
 
-type CaptureMethod = "camera" | "bridge" | "upload";
+type CaptureMethod = "camera" | "bridge" | "mobile" | "upload";
 
 const ACCEPTED_UPLOAD_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf"];
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB, matches the panel's stated limit
@@ -90,6 +90,7 @@ export default function IdScanCapturePanel({
   const methods: { key: CaptureMethod; label: string; sub: string; icon: typeof Camera; dot?: boolean }[] = [
     { key: "camera", label: primaryLabel, sub: "Primary", icon: Camera, dot: cameraReady },
     { key: "bridge", label: "Scanner", sub: "Bridge", icon: ScanLine, dot: bridgeOk },
+    { key: "mobile", label: "Mobile", sub: "Scan via phone", icon: Smartphone },
     { key: "upload", label: "Upload", sub: "If needed", icon: Upload },
   ];
 
@@ -122,7 +123,7 @@ export default function IdScanCapturePanel({
       </div>
 
       {/* ── Method switcher ── */}
-      <div className="grid grid-cols-3 gap-2 mt-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
         {methods.map((m) => {
           const active = method === m.key;
           const Icon = m.icon;
@@ -152,12 +153,18 @@ export default function IdScanCapturePanel({
         })}
       </div>
 
-      {/* ── Capture with the active camera / scanner method ── */}
-      {method !== "upload" && (
+      {/* ── Capture with the active camera / scanner / mobile method ── */}
+      {method !== "upload" && (() => {
+        // Which capture source each side-tile launches, plus its tile icon.
+        const captureSource: ScanSource = method === "bridge" ? "bridge" : method === "mobile" ? "mobile" : cameraSource;
+        const tileIcon = method === "mobile" ? Smartphone : Camera;
+        const tileDisabled = (method === "bridge" && !bridgeOk) || (method === "camera" && !cameraReady);
+        const sectionLabel = method === "bridge" ? "Existing Scanner" : method === "mobile" ? "Mobile Phone" : primaryLabel;
+        return (
         <div className="mt-3 pt-3 border-t border-gray-100">
           <div className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-2">
             <span className="w-1.5 h-1.5 rounded-full bg-violet-400" />
-            Capture with {method === "bridge" ? "Existing Scanner" : primaryLabel}
+            Capture with {sectionLabel}
           </div>
           {method === "bridge" && !bridgeOk && (
             <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5 mb-2">
@@ -169,24 +176,28 @@ export default function IdScanCapturePanel({
               Webcam capture needs HTTPS (or localhost). Use the Existing Scanner or Upload instead.
             </p>
           )}
+          {method === "mobile" && (
+            <p className="text-[11px] text-gray-500 bg-gray-50 border border-gray-200 rounded-md px-2 py-1.5 mb-2">
+              Opens a QR code (or pings a paired phone) — capture the ID on the phone and it lands here automatically.
+            </p>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <SideCaptureTile
               side="front" title="Front" subtitle="Capture front side"
-              done={frontDone} busy={busy}
-              disabled={(method === "bridge" && !bridgeOk) || (method === "camera" && !cameraReady)}
-              autoStart={method === "bridge" ? "bridge" : cameraSource}
+              done={frontDone} busy={busy} disabled={tileDisabled}
+              icon={tileIcon} autoStart={captureSource}
               onCapture={onCapture} onError={onError}
             />
             <SideCaptureTile
               side="back" title="Back" subtitle="Capture back side"
-              done={backDone} busy={busy}
-              disabled={(method === "bridge" && !bridgeOk) || (method === "camera" && !cameraReady)}
-              autoStart={method === "bridge" ? "bridge" : cameraSource}
+              done={backDone} busy={busy} disabled={tileDisabled}
+              icon={tileIcon} autoStart={captureSource}
               onCapture={onCapture} onError={onError}
             />
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* ── Upload from device (always available) ── */}
       <div className="mt-3 pt-3 border-t border-gray-100">
@@ -232,9 +243,9 @@ export default function IdScanCapturePanel({
   );
 }
 
-/** A large per-side capture tile for the active camera / scanner method. */
+/** A large per-side capture tile for the active camera / scanner / mobile method. */
 function SideCaptureTile({
-  side, title, subtitle, done, busy, disabled, autoStart, onCapture, onError,
+  side, title, subtitle, done, busy, disabled, autoStart, icon: Icon, onCapture, onError,
 }: {
   side: ScanSide;
   title: string;
@@ -243,6 +254,7 @@ function SideCaptureTile({
   busy: boolean;
   disabled: boolean;
   autoStart: ScanSource;
+  icon: typeof Camera;
   onCapture: (r: ScanCaptureResult) => void;
   onError?: (m: string) => void;
 }) {
@@ -266,7 +278,7 @@ function SideCaptureTile({
           }`}
         >
           <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${done ? "bg-emerald-100" : "bg-violet-100 group-hover:bg-violet-200"}`}>
-            {done ? <CheckCircle2 size={18} className="text-emerald-600" /> : <Camera size={18} className="text-violet-600" />}
+            {done ? <CheckCircle2 size={18} className="text-emerald-600" /> : <Icon size={18} className="text-violet-600" />}
           </div>
           <div className="flex-1 min-w-0">
             <div className={`text-sm font-semibold leading-tight ${done ? "text-emerald-800" : "text-gray-800"}`}>
