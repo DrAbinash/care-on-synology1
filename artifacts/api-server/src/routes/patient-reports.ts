@@ -10,6 +10,7 @@ import {
   reportTemplatesTable,
   radiologyStudiesTable,
   radiologyInstitutionalStylesTable,
+  pacsSettingsTable,
 } from "@workspace/db/schema";
 import { eq, and, desc, sql, ilike, or, isNull, isNotNull, inArray } from "drizzle-orm";
 import {
@@ -58,6 +59,12 @@ import {
   type ReportDocumentModel, type ReportKeyImageModel, type ReportParameterRow, type ReportSignatureModel,
 } from "../lib/reportPresentation";
 import { resolveReportKeyImages } from "../lib/reportImages";
+import {
+  buildLetterheadScaleCss,
+  REPORT_HEADER_SCALE_KEY,
+  REPORT_LOGO_SCALE_KEY,
+  REPORT_FOOTER_SCALE_KEY,
+} from "../lib/reportLetterheadScale";
 import {
   materializeFindings,
   CatalogStoreFindingResolver,
@@ -2565,6 +2572,29 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
         body { height: 50% !important; border: 1px dashed #ccc !important; padding: 10px !important; }
       `;
     }
+  }
+
+  // Letterhead sizing (pacs_settings key/value; presentation-only). Read the
+  // three scale keys and append the sizing overrides so they win over the
+  // template seed via `!important` + cascade order. Defaults ship "large" so
+  // header/logo/address/footer are bigger out of the box; the draft preview
+  // path reads the SAME keys so drafts and finals match. Never blocks printing.
+  try {
+    const scaleRows = await db.select({ key: pacsSettingsTable.key, value: pacsSettingsTable.value })
+      .from(pacsSettingsTable)
+      .where(and(
+        inArray(pacsSettingsTable.key, [REPORT_HEADER_SCALE_KEY, REPORT_LOGO_SCALE_KEY, REPORT_FOOTER_SCALE_KEY]),
+        eq(pacsSettingsTable.category, "report"),
+      ));
+    const scaleVal = (k: string) => scaleRows.find((row) => row.key === k)?.value;
+    customStyles += buildLetterheadScaleCss({
+      headerScale: scaleVal(REPORT_HEADER_SCALE_KEY),
+      logoScale: scaleVal(REPORT_LOGO_SCALE_KEY),
+      footerScale: scaleVal(REPORT_FOOTER_SCALE_KEY),
+    });
+  } catch {
+    // pacs_settings unreadable → apply the (bigger) defaults anyway
+    customStyles += buildLetterheadScaleCss();
   }
 
   // D8 — visual safeguards for the served version (empty strings when the
