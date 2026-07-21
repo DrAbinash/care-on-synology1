@@ -116,30 +116,48 @@ describe("Reference finding 2 — cholelithiasis", () => {
 });
 
 describe("Reference finding 3 — prostatomegaly / volume", () => {
-  it("computes ellipsoid volume ~13 cc (NOT 35) and does not label prostatomegaly", () => {
+  it("computes ellipsoid volume ~13 cc (NOT 35) and states the measurement, no diagnosis", () => {
     const o = prostate({ ap: "3.4", tr: "3.1", cc: "2.4" });
     expect(o.findingText).toBe("Prostate measures 3.4 × 3.1 × 2.4 cm with a calculated volume of approximately 13 cc.");
-    expect(o.impressionText).toBe(""); // 13 cc < 30 → no prostatomegaly label
+    expect(o.impressionText).toBe(""); // measurement only; no clinical finding written
     const vol = o.derived.find((d) => d.key === "volume")!;
     expect(vol.value).toBeCloseTo(13.23, 2);
     expect(vol.source).toBe("calculated");
-    expect(o.warnings).toEqual([]);
+    expect(vol.calculated).toBeCloseTo(13.23, 2);
+    expect(o.warnings).toEqual([]); // 13 cc < 30 → no suggestion
   });
 
-  it("labels prostatomegaly only above the enlargement threshold", () => {
+  it("above threshold: SUGGESTS but does NOT auto-diagnose (impression stays empty until confirmed)", () => {
     const o = prostate({ ap: "5", tr: "4.5", cc: "4" }); // 50×45×40 → ~47 cc
-    expect(o.impressionText).toContain("Prostatomegaly (volume approximately");
+    // No silent impression — default clinical finding is 'Awaiting radiologist'.
+    expect(o.impressionText).toBe("");
+    expect(o.warnings.join(" ")).toMatch(/exceeds the prostatomegaly threshold/i);
     const vol = o.derived.find((d) => d.key === "volume")!;
     expect(vol.value as number).toBeGreaterThanOrEqual(PROSTATE_ENLARGEMENT_ML);
   });
 
-  it("manual volume WITH a reason is used but flagged when it differs materially", () => {
-    const o = prostate({ ap: "3.4", tr: "3.1", cc: "2.4", manual_volume: "35", override_reason: "on-cart measurement" });
+  it("writes the impression only when the radiologist confirms the clinical finding", () => {
+    const mega = prostate({ ap: "5", tr: "4.5", cc: "4", clinical_finding: "Prostatomegaly" });
+    expect(mega.impressionText).toContain("Prostatomegaly (volume approximately");
+    expect(mega.warnings).toEqual([]); // confirmed → no outstanding suggestion
+
+    const normal = prostate({ ap: "3.4", tr: "3.1", cc: "2.4", clinical_finding: "Normal prostate" });
+    expect(normal.impressionText).toContain("Prostate normal in size");
+
+    const indet = prostate({ ap: "3.4", tr: "3.1", cc: "2.4", clinical_finding: "Indeterminate" });
+    expect(indet.impressionText).toMatch(/clinical significance to be correlated/i);
+  });
+
+  it("manual volume WITH a reason is used, flagged, and keeps calculated-vs-entered + reason", () => {
+    const o = prostate({ ap: "3.4", tr: "3.1", cc: "2.4", manual_volume: "35", override_reason: "on-cart measurement", clinical_finding: "Prostatomegaly" });
     const vol = o.derived.find((d) => d.key === "volume")!;
     expect(vol.value).toBe(35);
     expect(vol.source).toBe("manual");
+    expect(vol.entered).toBe(35);
+    expect(vol.calculated).toBeCloseTo(13.23, 2);
+    expect(vol.reason).toBe("on-cart measurement");
     expect(o.warnings.join(" ")).toMatch(/differs materially/i);
-    // 35 cc ≥ 30 → now labelled prostatomegaly off the overridden volume
+    // Impression reflects the radiologist-confirmed finding, off the overridden volume.
     expect(o.impressionText).toContain("Prostatomegaly");
   });
 

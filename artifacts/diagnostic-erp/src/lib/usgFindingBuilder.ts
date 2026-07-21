@@ -132,6 +132,12 @@ export interface DerivedValue {
   unit?: string;
   source: "calculated" | "manual";
   provenance?: string;         // e.g. "AP × TR × CC ellipsoid (0.523)"
+  // Manual-override audit trail: keep both numbers + the reason so a reviewer
+  // always sees calculated-vs-entered. Author + timestamp live on the parent
+  // UsgFindingObject.
+  calculated?: number | null;
+  entered?: number | null;
+  reason?: string | null;
 }
 
 export interface DeriveResult {

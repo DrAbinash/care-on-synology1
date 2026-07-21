@@ -18,15 +18,19 @@ import {
   type DeriveResult,
   type DerivedValue,
 } from "./usgFindingBuilder";
+import {
+  PROSTATE_CLINICAL_OPTIONS,
+  suggestProstatomegaly,
+} from "./usgProstateConfig";
 
-// ── Clinical thresholds (named, referenced — never magic numbers) ────────────
+// ── Thresholds ───────────────────────────────────────────────────────────────
 /** A calculated manual-volume delta beyond this fraction is flagged to the
  *  radiologist rather than accepted silently. */
 export const VOLUME_MISMATCH_REL = 0.2;
-/** Prostate volume (mL) at/above which the report may state prostatomegaly.
- *  ~30 mL is the widely-referenced upper limit of normal; this is a size
- *  statement, NOT an invented numeric grade. */
-export const PROSTATE_ENLARGEMENT_ML = 30;
+// NOTE: the prostatomegaly volume threshold lives in usgProstateConfig.ts (one
+// place), NOT here — finding definitions must not carry clinical-decision
+// thresholds. Re-exported for backwards-compatible imports only.
+export { PROSTATE_ENLARGEMENT_THRESHOLD_ML as PROSTATE_ENLARGEMENT_ML } from "./usgProstateConfig";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Organ model + presets
@@ -279,7 +283,14 @@ const PROSTATOMEGALY: UsgFindingDef = {
     { key: "median_lobe", label: "Median lobe projection", type: "yesno", presentText: "median lobe projection into the bladder base", default: "Absent", sortOrder: 6 },
     { key: "calcification", label: "Prostatic calcification", type: "yesno", presentText: "parenchymal calcification", default: "Absent", sortOrder: 7 },
     { key: "pvr", label: "Post-void residual urine", type: "number", unit: "ml", units: ["ml", "cc"], normalizeTo: "ml", sortOrder: 8 },
+    // Clinical decision is SEPARATE from the measurement and defaults to
+    // "Awaiting radiologist" — the impression is not written until a human
+    // confirms. The builder only *suggests* an outcome from the volume.
+    { key: "clinical_finding", label: "Clinical finding", type: "select", options: [...PROSTATE_CLINICAL_OPTIONS], default: "Awaiting radiologist", sortOrder: 9 },
   ],
+  // The finding text always states the MEASUREMENT (dimensions + calculated
+  // volume). The clinical interpretation goes only into the impression, and only
+  // when the radiologist has chosen one.
   findingText:
     "Prostate measures {dims} cm, with a calculated volume of approximately {vol_cc} cc.[ There is {median_lobe}.][ There is {calcification}.][ Post-void residual urine measures {pvr}.]",
   impressionText: "{prostate_impression}",
@@ -297,6 +308,7 @@ const PROSTATOMEGALY: UsgFindingDef = {
     let effective = calcVol;
     let volSource: DerivedValue["source"] = "calculated";
     let provenance = "AP × TR × CC ellipsoid (0.523)";
+    let overrideReason: string | null = null;
 
     if (manualVol != null) {
       if (!reason) {
@@ -305,6 +317,7 @@ const PROSTATOMEGALY: UsgFindingDef = {
       } else {
         effective = manualVol;
         volSource = "manual";
+        overrideReason = reason;
         provenance = `manual override (${reason})`;
         if (calcVol != null && relDiff(manualVol, calcVol) > VOLUME_MISMATCH_REL) {
           warnings.push(
@@ -318,18 +331,34 @@ const PROSTATOMEGALY: UsgFindingDef = {
       ? `${fmt1(ap.normalized / 10)} × ${fmt1(tr.normalized / 10)} × ${fmt1(cc.normalized / 10)}`
       : "";
     const volDisplay = effective != null ? String(Math.round(effective)) : "";
-    const prostatomegaly = effective != null && effective >= PROSTATE_ENLARGEMENT_ML;
+
+    // Suggestion only — never a decision, never silently written to the report.
+    const suggestion = suggestProstatomegaly(effective);
+    const clinical = (v.clinical_finding ?? "Awaiting radiologist").trim();
+    if (suggestion.suggestsProstatomegaly && clinical === "Awaiting radiologist") {
+      warnings.push(
+        `Calculated volume ${volDisplay} cc exceeds the prostatomegaly threshold (${suggestion.thresholdMl} cc) — set the clinical finding to confirm. (No impression is written until you do.)`,
+      );
+    }
+
+    // Impression is driven ONLY by the radiologist's clinical finding. Never a
+    // numeric grade (no approved grading configuration exists).
+    let prostateImpression = "";
+    if (clinical === "Prostatomegaly") {
+      prostateImpression = `Prostatomegaly (volume approximately ${volDisplay} cc).`;
+    } else if (clinical === "Normal prostate") {
+      prostateImpression = `Prostate normal in size (volume approximately ${volDisplay} cc).`;
+    } else if (clinical === "Indeterminate") {
+      prostateImpression = `Prostate volume approximately ${volDisplay} cc; clinical significance to be correlated.`;
+    } // "Awaiting radiologist" → no impression contribution.
 
     const derived: DerivedValue[] = [{
       key: "volume", label: "Prostate volume", value: effective, unit: "cc", source: volSource, provenance,
+      calculated: calcVol, entered: manualVol, reason: overrideReason,
     }];
 
     return {
-      render: {
-        dims,
-        vol_cc: volDisplay,
-        prostate_impression: prostatomegaly ? `Prostatomegaly (volume approximately ${volDisplay} cc).` : "",
-      },
+      render: { dims, vol_cc: volDisplay, prostate_impression: prostateImpression },
       derived,
       warnings,
     };
