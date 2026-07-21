@@ -222,6 +222,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
     };
   });
   const [selTests, setSelTests] = useState<Set<number>>(new Set());
+  const [quickTab, setQuickTab] = useState("All");
   const [selPkgs, setSelPkgs] = useState<Set<number>>(new Set());
 
   // Prefill tests/packages in QR mode or if available
@@ -862,24 +863,49 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                 return resolveAssetUrl(raw);
               };
 
+              const quickCategories = Array.from(
+                new Set(quickTests.map((t) => t.category || "Other"))
+              ).sort();
+              const quickTabs = ["All", ...quickCategories];
+              const visibleQuickTests = quickTab === "All"
+                ? quickTests
+                : quickTests.filter((t) => (t.category || "Other") === quickTab);
+
               return (
                 <div style={{ marginBottom: "1.5rem" }}>
                   <h3 style={{ fontWeight: 700, fontSize: "1rem", marginBottom: "0.75rem", color: "hsl(var(--cd-slate))", display: "flex", alignItems: "center", gap: ".4rem" }}>
                     ⚡ Quick Select Tests
                   </h3>
+                  {quickTabs.length > 2 && (
+                    <div className="cd-tab-row" style={{ justifyContent: "flex-start", marginBottom: "1rem" }}>
+                      {quickTabs.map((cat) => (
+                        <button
+                          key={cat}
+                          type="button"
+                          role="tab"
+                          aria-selected={quickTab === cat}
+                          onClick={() => setQuickTab(cat)}
+                          className={`cd-tab-btn ${quickTab === cat ? "active" : ""}`}
+                        >
+                          {cat}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "0.75rem" }}>
-                    {quickTests.map((test) => {
+                    {visibleQuickTests.map((test) => {
                       const sel = selTests.has(test.id);
                       const categoryColor = getCategoryColor(test.category);
                       const categoryImage = getCategoryImage(test.category);
                       const washColor = sel ? "hsl(var(--cd-teal))" : "255,255,255";
                       const background = categoryImage
                         ? sel
-                          ? `linear-gradient(135deg, hsl(var(--cd-teal) / .55), hsl(var(--cd-teal) / .4)), url('${categoryImage}')`
-                          : `linear-gradient(135deg, rgba(${washColor},${tileOverlayAlpha}), rgba(${washColor},${tileOverlayAlpha})), url('${categoryImage}')`
+                          ? `linear-gradient(to top, rgba(0,0,0,.65), rgba(0,0,0,.15)), linear-gradient(135deg, hsl(var(--cd-teal) / .55), hsl(var(--cd-teal) / .4)), url('${categoryImage}')`
+                          : `linear-gradient(to top, rgba(0,0,0,.6), rgba(0,0,0,.1)), linear-gradient(135deg, rgba(${washColor},${tileOverlayAlpha}), rgba(${washColor},${tileOverlayAlpha})), url('${categoryImage}')`
                         : sel
                           ? "linear-gradient(135deg, hsl(var(--cd-teal) / .25), hsl(var(--cd-teal) / .15))"
                           : categoryColor;
+                      const onImage = !!categoryImage;
                       return (
                         <button
                           key={test.id}
@@ -898,21 +924,35 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                             cursor: "pointer",
                             transition: "all .2s cubic-bezier(0.4, 0, 0.2, 1)",
                             textAlign: "center",
-                            color: sel ? "hsl(var(--cd-teal))" : "#1f2937",
+                            color: onImage ? "#ffffff" : sel ? "hsl(var(--cd-teal))" : "#1f2937",
                             display: "flex",
                             flexDirection: "column",
                             alignItems: "center",
-                            justifyContent: "center",
+                            justifyContent: onImage ? "flex-end" : "center",
                             boxShadow: sel
                               ? "0 10px 25px -5px hsl(var(--cd-teal) / .2), inset 0 1px 0 rgba(255,255,255,0.5)"
                               : "0 2px 8px rgba(0,0,0,.08)",
                             transform: sel ? "scale(1.03)" : "scale(1)",
                           }}
                         >
-                          <div style={{ fontSize: "1.05rem", fontWeight: 900, letterSpacing: "0.5px", lineHeight: 1.25 }}>
+                          <div style={{
+                            fontSize: "1.15rem",
+                            fontWeight: 900,
+                            letterSpacing: "0.3px",
+                            lineHeight: 1.25,
+                            textShadow: onImage ? "0 1px 3px rgba(0,0,0,.85), 0 0 12px rgba(0,0,0,.5)" : "none",
+                          }}>
                             {test.name}
                           </div>
-                          <div style={{ fontSize: "0.75rem", color: "rgba(0,0,0,0.5)", marginTop: "0.4rem", fontWeight: 600 }}>
+                          <div style={{
+                            fontSize: "0.75rem",
+                            color: onImage ? "rgba(255,255,255,0.85)" : "rgba(0,0,0,0.5)",
+                            marginTop: "0.4rem",
+                            fontWeight: 700,
+                            textTransform: "uppercase",
+                            letterSpacing: "0.5px",
+                            textShadow: onImage ? "0 1px 2px rgba(0,0,0,.7)" : "none",
+                          }}>
                             {test.category}
                           </div>
                           {sel && (
