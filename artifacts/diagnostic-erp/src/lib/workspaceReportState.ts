@@ -289,7 +289,12 @@ export type WorkspaceShortcut =
   | "next-study" | "previous-study" | "park-study"
   // R2.0 — USG practical-template quick-select (Ctrl+1..6).
   | "select-template-1" | "select-template-2" | "select-template-3"
-  | "select-template-4" | "select-template-5" | "select-template-6";
+  | "select-template-4" | "select-template-5" | "select-template-6"
+  // Layout redesign — collapse/expand the two side panels and toggle the
+  // embedded viewer without leaving the keyboard. Alt-based so they never
+  // produce text and are safe to fire while the findings editor is focused
+  // (a radiologist commonly wants more editor width mid-dictation).
+  | "toggle-left-panel" | "toggle-right-panel" | "toggle-viewer";
 
 export function matchWorkspaceShortcut(e: {
   key: string;
@@ -326,6 +331,13 @@ export function matchWorkspaceShortcut(e: {
     }
   }
   if (e.altKey && !mod && key === "o") return "open-study";
+  // Layout redesign — Alt+[ / Alt+] collapse-toggle the left (patient) and
+  // right (tools) panels; Alt+\ toggles the embedded viewer. Alt combos
+  // produce no text, so (unlike "/" and Ctrl+1..6 below) they are allowed
+  // even while an INPUT/TEXTAREA is focused.
+  if (e.altKey && !mod && key === "[") return "toggle-left-panel";
+  if (e.altKey && !mod && key === "]") return "toggle-right-panel";
+  if (e.altKey && !mod && key === "\\") return "toggle-viewer";
   if (key === "escape") return "escape";
   // "/" focuses quick-select search ONLY outside text inputs — typing a
   // slash into the findings editor must never steal focus.

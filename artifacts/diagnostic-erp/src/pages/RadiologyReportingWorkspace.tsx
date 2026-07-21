@@ -280,8 +280,8 @@ type RightTab = "copilot" | "quickselect" | "templates" | "followup" | "prior" |
 // used to be a single left-panel collapse icon. Doesn't depend on component
 // state, so it's a module-level constant rather than rebuilt every render.
 const LAYOUT_MODE_OPTIONS: Array<{ mode: WorkspaceLayoutMode; label: string; title: string; icon: ReactNode }> = [
-  { mode: "reportFocus", label: "Report", title: "Report Focus — viewer hidden, editor gets maximum width", icon: <Maximize2 size={13} /> },
-  { mode: "split", label: "Split", title: "Split View — viewer and editor share the screen (laptop/remote default)", icon: <Columns2 size={13} /> },
+  { mode: "reportFocus", label: "Report", title: "Report Focus — viewer hidden, editor gets maximum width (toggle viewer: Alt+\\)", icon: <Maximize2 size={13} /> },
+  { mode: "split", label: "Split", title: "Split View — viewer and editor share the screen (laptop/remote default; toggle viewer: Alt+\\)", icon: <Columns2 size={13} /> },
   { mode: "viewerFocus", label: "Viewer", title: "Viewer Focus — embedded viewer gets more width for close image review", icon: <Monitor size={13} /> },
   { mode: "dualScreen", label: "Dual", title: "Dual Screen — open the viewer in a separate window/monitor, editor uses the full primary screen", icon: <AppWindow size={13} /> },
 ];
@@ -3057,6 +3057,29 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         closeTopPanel();
         return;
       }
+      // Layout redesign — panel/viewer toggles route to the resizable-panel
+      // handles + layout mode directly (component-local refs/state), not the
+      // command dispatcher.
+      if (shortcut === "toggle-left-panel") {
+        e.preventDefault();
+        if (isLeftPanelCollapsed) leftPanelRef.current?.expand();
+        else leftPanelRef.current?.collapse();
+        return;
+      }
+      if (shortcut === "toggle-right-panel") {
+        e.preventDefault();
+        if (isRightPanelCollapsed) rightPanelRef.current?.expand();
+        else rightPanelRef.current?.collapse();
+        return;
+      }
+      if (shortcut === "toggle-viewer") {
+        e.preventDefault();
+        // Show the embedded viewer (Split) when it's currently hidden,
+        // otherwise hide it (Report Focus). Mirrors the mode selector — one
+        // source of truth (layoutMode), no parallel viewer-visibility flag.
+        setLayoutMode(showEmbeddedViewer ? "reportFocus" : "split");
+        return;
+      }
       e.preventDefault();
       const command =
         shortcut === "quickselect" ? "focus-quick-search"
@@ -4338,7 +4361,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         </div>
         <button
           type="button"
-          title={isLeftPanelCollapsed ? "Expand patient panel" : "Collapse patient panel"}
+          title={`${isLeftPanelCollapsed ? "Expand" : "Collapse"} patient panel (Alt+[)`}
           data-testid="toggle-left-panel"
           onClick={() => { if (isLeftPanelCollapsed) leftPanelRef.current?.expand(); else leftPanelRef.current?.collapse(); }}
           className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:bg-muted transition-colors"
@@ -4347,7 +4370,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         </button>
         <button
           type="button"
-          title={isRightPanelCollapsed ? "Expand tool drawer" : "Collapse tool drawer"}
+          title={`${isRightPanelCollapsed ? "Expand" : "Collapse"} tool drawer (Alt+])`}
           data-testid="toggle-right-panel"
           onClick={() => { if (isRightPanelCollapsed) rightPanelRef.current?.expand(); else rightPanelRef.current?.collapse(); }}
           className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:bg-muted transition-colors"
