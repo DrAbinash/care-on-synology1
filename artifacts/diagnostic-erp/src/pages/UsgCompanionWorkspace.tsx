@@ -45,6 +45,9 @@ import {
   type UsgOrganSection,
 } from "@/lib/usgReportComposer";
 import { effectiveFindingText, type UsgFindingObject } from "@/lib/usgFindingBuilder";
+import { computeReadiness } from "@/lib/usgReadiness";
+import ReadinessBar from "@/components/radiology/usg/ReadinessBar";
+import ShortcutOverlay from "@/components/radiology/usg/ShortcutOverlay";
 
 // Minimal shape of the canonical worklist entry (the full type is internal to
 // RadiologyReportingWorkspace; we only read what the shell needs).
@@ -86,6 +89,8 @@ export default function UsgCompanionWorkspace({ studyId }: { studyId?: number })
   const { toast } = useToast();
   const session = useMemo(() => readStaffSession(), []);
   const flagOn = isFeatureEnabled("ff_radiology_usg_workspace");
+  const p2 = isFeatureEnabled("ff_radiology_usg_companion_p2");
+  const [showHelp, setShowHelp] = useState(false);
 
   // Flag off → this dedicated surface is unavailable; fall back to canonical.
   useEffect(() => {
@@ -259,6 +264,7 @@ export default function UsgCompanionWorkspace({ studyId }: { studyId?: number })
       if (mod && (e.key === "s" || e.key === "S")) { e.preventDefault(); void handleSave(); return; }
       if (mod && e.key === "Enter") { e.preventDefault(); void handleFinalize(); return; }
       if (typing) return; // plain-key shortcuts never fire inside a field
+      if (p2 && e.key === "?") { e.preventDefault(); setShowHelp((v) => !v); return; }
       if (e.shiftKey && (e.key === "N" || e.key === "n")) { e.preventDefault(); onNormalAllRemaining(); return; }
       if (e.key === "n" || e.key === "N") {
         if (activeOrgan) updateSection(activeOrgan, (s) => markNormal(s, normalByOrgan[activeOrgan] ?? ""));
@@ -269,7 +275,7 @@ export default function UsgCompanionWorkspace({ studyId }: { studyId?: number })
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleSave, handleFinalize, onNormalAllRemaining, activeOrgan, updateSection, normalByOrgan, organs]);
+  }, [handleSave, handleFinalize, onNormalAllRemaining, activeOrgan, updateSection, normalByOrgan, organs, p2]);
 
   const viewerRef = useRef<EmbeddedViewerHandle>(null);
   const [knowledgePanel] = useState<string>("packs");
@@ -292,8 +298,20 @@ export default function UsgCompanionWorkspace({ studyId }: { studyId?: number })
   const isObstetric = isObstetricUsgStudy(entry.modality, entry.studyDescription);
   const railItems = organs.map((o) => ({ key: o.key, label: o.label, hotkey: HOTKEYS[o.key] }));
 
+  // P2.1 — continuous readiness (advisory; computed deterministically each render).
+  const readiness = p2
+    ? computeReadiness({
+        sections,
+        expectedOrganKeys: organs.map((o) => o.key),
+        impressionLines: impressionEdited ? impressionText.split("\n").map((l) => l.trim()).filter(Boolean) : composeImpression(sections),
+        lockStatus: lock.status,
+        pcpndt: isObstetric ? { applicable: true, compliant: null } : null,
+      })
+    : null;
+
   return (
     <div className="flex flex-col h-full min-h-0 bg-slate-50 dark:bg-slate-950" data-testid="usg-companion-workspace">
+      {p2 && <ShortcutOverlay open={showHelp} onClose={() => setShowHelp(false)} />}
       {/* Top bar */}
       <div className="flex items-center gap-3 px-4 py-2 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
         <span className="font-semibold text-slate-800 dark:text-slate-100">{entry.patientName}</span>
@@ -305,6 +323,11 @@ export default function UsgCompanionWorkspace({ studyId }: { studyId?: number })
         {lockedByOther && <span className="text-xs text-rose-600">🔒 {lock.ownerName ?? "Locked"}</span>}
         {isObstetric && <span className="text-xs text-amber-600" title="PCPNDT / Form F enforced on finalize (server-side)">PCPNDT applies</span>}
         <div className="flex-1" />
+        {p2 && readiness && <ReadinessBar readiness={readiness} />}
+        {p2 && (
+          <button type="button" onClick={() => setShowHelp(true)} title="Keyboard shortcuts (?)"
+            className="rounded-md px-2 py-1.5 text-sm bg-slate-100 dark:bg-slate-800 text-slate-500">?</button>
+        )}
         <button onClick={() => void handleSave()} disabled={saving || lockedByOther}
           className="rounded-md px-3 py-1.5 text-sm bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 disabled:opacity-50">
           Save <kbd className="text-[10px] font-mono">⌘S</kbd>
