@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { api } from "@/lib/fetchApi";
-import { readStaffSession, ERP_SESSION_KEY, canAccess, normalizeRole } from "@/lib/staffSession";
+import { readStaffSession, ERP_SESSION_KEY, canAccess, normalizeRole, isFeatureEnabled } from "@/lib/staffSession";
 import { toUnifiedStatus, worklistRoleView, priorityInfo, type WorklistRoleView } from "@/lib/radiologyStatus";
 import { launchViewer } from "@/lib/viewerService";
 import { normalizeModality, isUltrasoundModality } from "@/lib/usgModality";
@@ -1256,7 +1256,13 @@ export default function RadiologyWorklist() {
                               <Button
                                 size="sm"
                                 className="h-7 px-2 text-xs bg-indigo-600 hover:bg-indigo-700 text-white"
-                                onClick={() => navigate(`/radiology/report/${entry.id}`)}
+                                onClick={() =>
+                                  navigate(
+                                    isFeatureEnabled("ff_radiology_usg_workspace") && isUltrasoundModality(entry.modality)
+                                      ? `/radiology/usg/${entry.id}`        // dedicated USG shell (flag on)
+                                      : `/radiology/report/${entry.id}`,    // canonical workspace (default)
+                                  )
+                                }
                                 title="Open in the Reporting Workspace"
                               >
                                 <Stethoscope className="h-3 w-3 mr-1" />

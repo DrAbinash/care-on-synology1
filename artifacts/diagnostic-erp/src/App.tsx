@@ -95,6 +95,7 @@ const RadiologyWorklist = lazy(() => import("@/pages/RadiologyWorklist"));
 const RadiologyReportEditor = lazy(() => import("@/pages/RadiologyReportEditor"));
 const RadiologyReportGen = lazy(() => import("@/pages/RadiologyReportGenerator"));
 const RadiologyReportingWorkspace = lazy(() => import("@/pages/RadiologyReportingWorkspace"));
+const UsgCompanionWorkspace = lazy(() => import("@/pages/UsgCompanionWorkspace"));
 const PacsDashboard         = lazy(() => import("@/pages/PacsDashboard"));
 const RadiologySettingsCenter = lazy(() => import("@/pages/RadiologySettingsCenter"));
 const RadiologyFlightDeck = lazy(() => import("@/pages/RadiologyFlightDeck"));
@@ -422,6 +423,13 @@ function Router() {
                   (resurrected by the V2 merge) was removed again. */}
               <Route path="/radiology/report/:studyId">
                 {(params) => <RadiologyReportingWorkspace studyId={Number(params.studyId)} />}
+              </Route>
+              {/* Dedicated USG Companion Workspace (P0/P1), behind
+                  ff_radiology_usg_workspace. The page itself redirects to the
+                  canonical /radiology/report route when the flag is off, so this
+                  surface is safely unavailable by default. */}
+              <Route path="/radiology/usg/:studyId">
+                {(params) => <UsgCompanionWorkspace studyId={Number(params.studyId)} />}
               </Route>
               <Route path="/radiology/report-legacy/:studyId">
                 {(params) => <RadiologyReportEditor studyId={Number(params.studyId)} />}
