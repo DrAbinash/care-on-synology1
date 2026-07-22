@@ -117,6 +117,18 @@ export const RADIOLOGY_FLAG_REGISTRY: RadiologyFlagEntry[] = [
     key: "ff_radiology_scale_partition", defaultValue: false, dependsOn: [], enableOrder: 8, wired: false,
     purpose: "Strand N — partitioning + read replicas", rollbackEffect: "inert today", ownerSubsystem: "scale",
   },
+  {
+    key: "ff_radiology_usg_dicom_extraction", defaultValue: false, dependsOn: [], enableOrder: 9, wired: false,
+    purpose: "USG P3 — DICOM-native SR content-tree extraction (parser + extraction hierarchy)",
+    rollbackEffect: "disable → extraction falls back to the legacy shallow SR parse; no data change",
+    ownerSubsystem: "usg extraction",
+  },
+  {
+    key: "ff_radiology_usg_exact_provenance", defaultValue: false, dependsOn: ["ff_radiology_usg_dicom_extraction"], enableOrder: 10, wired: false,
+    purpose: "USG P3 — exact frame/SCOORD-caliper provenance → populate viewer_measurements + frame-level viewer navigation",
+    rollbackEffect: "disable → provenance degrades to series/SR-document level; viewer_measurements not populated from SR",
+    ownerSubsystem: "usg provenance",
+  },
 ];
 
 export interface FlagDependencyViolation {
