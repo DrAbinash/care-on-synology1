@@ -94,6 +94,7 @@ const RadiologyLegacy = lazy(() => import("@/pages/RadiologyLegacy"));
 const RadiologyWorklist = lazy(() => import("@/pages/RadiologyWorklist"));
 const RadiologyReportEditor = lazy(() => import("@/pages/RadiologyReportEditor"));
 const RadiologyReportGen = lazy(() => import("@/pages/RadiologyReportGenerator"));
+const RadiologyReportBuilder = lazy(() => import("@/pages/RadiologyReportBuilder"));
 const RadiologyReportingWorkspace = lazy(() => import("@/pages/RadiologyReportingWorkspace"));
 const UsgCompanionWorkspace = lazy(() => import("@/pages/UsgCompanionWorkspace"));
 const PacsDashboard         = lazy(() => import("@/pages/PacsDashboard"));
@@ -238,7 +239,7 @@ const queryClient = new QueryClient({
 
 const ERP_NAV_ORDER = [
   "/", "/dashboard", "/my-daily-summary", "/reception-command-center", "/daily-summary", "/patients", "/appointments", "/queue", "/online-bookings",
-  "/radiology", "/radiology/legacy", "/radiology/worklist", "/radiology/report-generator", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/operational-health", "/radiology/pacs-settings", "/radiology/network-control-center", "/radiology/pacs-logs",
+  "/radiology", "/radiology/legacy", "/radiology/worklist", "/radiology/report-generator", "/radiology/report-builder", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/operational-health", "/radiology/pacs-settings", "/radiology/network-control-center", "/radiology/pacs-logs",
   "/radiology/dicom-agent-dashboard", "/radiology/modality-management",
   "/radiology/agent-setup", "/radiology/ai-reporting-settings", "/radiology/ai-prompt-templates", "/radiology/ai-model-routing", "/radiology/structured-report-templates", "/radiology/ai-audit-log",
   "/radiology/viewer", "/radiology/archive-lifecycle", "/radiology/watchdog", "/radiology/ai-inference-settings", "/radiology/hl7-settings", "/teleradiology",
@@ -399,6 +400,8 @@ function Router() {
               <Route path="/radiology/report-generator/:studyId">
                 {(params) => <RadiologyReportGen studyId={Number(params.studyId)} />}
               </Route>
+              <Route path="/radiology/report-builder" component={RadiologyReportBuilder} />
+
               {/* M1.1 canonical workspace consolidation (July 2026), RESTORED
                   after the Radiology V2 merge briefly rerouted these to the
                   cockpit (which lacked draft identity — every save created a
