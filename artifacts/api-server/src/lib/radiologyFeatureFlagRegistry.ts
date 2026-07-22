@@ -172,7 +172,7 @@ export const RADIOLOGY_FLAG_REGISTRY: RadiologyFlagEntry[] = [
     ownerSubsystem: "usg ai",
   },
   {
-    key: "ff_radiology_usg_ai_growth", defaultValue: false, dependsOn: ["ff_radiology_usg_ai_assistant", "ff_radiology_usg_pregnancy_timeline"], enableOrder: 18, wired: false,
+    key: "ff_radiology_usg_ai_growth", defaultValue: false, dependsOn: ["ff_radiology_usg_ai_assistant", "ff_radiology_usg_pregnancy_timeline"], enableOrder: 18, wired: true,
     purpose: "USG P8 — AI growth-note suggestions over the P4 pregnancy timeline (advisory; never auto-classifies IUGR/macrosomia)",
     rollbackEffect: "disable → no AI growth notes; the timeline and manual interpretation are unaffected; no data change",
     ownerSubsystem: "usg ai",

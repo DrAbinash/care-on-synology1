@@ -16,6 +16,7 @@
     "db:manage": "pnpm --filter @workspace/db run manage",
     "db:check-migration-order": "node scripts/check-migration-order.cjs",
     "db:smoke": "node scripts/migration-bootstrap-smoke.mjs",
+    "operations:verify-deployment": "node scripts/verify-deployment.mjs",
     "validate:radiology-content": "pnpm --filter @workspace/scripts run validate:radiology-content",
     "smoke:production": "pnpm --filter @workspace/api-server run smoke",
     "test": "vitest run"
