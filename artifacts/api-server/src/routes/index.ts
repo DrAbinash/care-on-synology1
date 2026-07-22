@@ -131,6 +131,7 @@ import usgPacsReturnRouter from "./usgPacsReturn";
 import usgAdminRouter from "./usgAdmin";
 import usgPriorRouter from "./usgPrior";
 import usgObDopplerRouter from "./usgObDoppler";
+import usgAiRouter from "./usgAi";
 import { radiologyKnowledgePacksRouter } from "./radiologyKnowledgePacks";
 import echoCardiologyRouter from "./echoCardiology";
 import fetalUsgLevel4Router from "./fetalUsgLevel4";
@@ -627,6 +628,11 @@ router.use("/usg-ob-doppler", requireStaffAuth, requireStaffPermission("/radiolo
 // (404 when OFF). The actual push is the canonical archiveReportToPacs; drafts
 // and superseded / PCPNDT-non-compliant reports are never enqueued.
 router.use("/usg-pacs-return", requireStaffAuth, requireStaffPermission("/radiology"), usgPacsReturnRouter);
+
+// USG P8 advisory AI — suggestion-only; accept-only; honest unavailable state
+// when no model gateway. Flag-gated (404 when OFF). AI can never reach a signed
+// report (write-guard throws on any non-draft target).
+router.use("/usg-ai", requireStaffAuth, requireStaffPermission("/radiology"), usgAiRouter);
 
 // CARE Knowledge Pack Engine — a registry/loader/validator over the existing
 // per-study-type content (quick findings / protocols / history / measurements /
