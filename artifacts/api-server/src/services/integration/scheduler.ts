@@ -1,0 +1,58 @@
+// ============================================================================
+// Integration background workers (outbox dispatch + results reconcile).
+// Self-contained so the large cron.ts is left untouched. Started from index.ts
+// alongside startCronScheduler(), only when ENABLE_SCHEDULERS is set. Each tick
+// is a no-op unless the ff_hope_care_referrals feature flag is enabled, so the
+// integration is fully dark until deliberately turned on.
+//
+// On autoscale hosts (ENABLE_SCHEDULERS off) the same two functions are exposed
+// through /api/internal/cron for external CRON_SECRET-authenticated triggering.
+// ============================================================================
+import cron from "node-cron";
+import { eq } from "drizzle-orm";
+import { db, featureFlagsTable } from "@workspace/db";
+import { dispatchPendingOutbox } from "./outbox";
+import { reconcileResults } from "./resultsEmitter";
+
+let flagCache: { value: boolean; at: number } | null = null;
+export async function integrationEnabled(): Promise<boolean> {
+  if (process.env["HOPE_CARE_INTEGRATION_FORCE"] === "1") return true;
+  if (flagCache && Date.now() - flagCache.at < 60_000) return flagCache.value;
+  try {
+    const [f] = await db.select().from(featureFlagsTable).where(eq(featureFlagsTable.key, "ff_hope_care_referrals")).limit(1);
+    const value = !!f?.enabled;
+    flagCache = { value, at: Date.now() };
+    return value;
+  } catch {
+    return false;
+  }
+}
+
+export async function tickOutbox(): Promise<void> {
+  if (!(await integrationEnabled())) return;
+  try {
+    const r = await dispatchPendingOutbox({ limit: 50 });
+    if (r.claimed) console.log("[integration] outbox dispatch", r);
+  } catch (e) {
+    console.error("[integration] outbox dispatch failed:", (e as Error)?.message);
+  }
+}
+
+export async function tickReconcile(): Promise<void> {
+  if (!(await integrationEnabled())) return;
+  try {
+    const r = await reconcileResults({ limit: 100 });
+    if (r.emitted) console.log("[integration] results reconcile", r);
+  } catch (e) {
+    console.error("[integration] results reconcile failed:", (e as Error)?.message);
+  }
+}
+
+let started = false;
+export function startIntegrationScheduler(): void {
+  if (started) return;
+  started = true;
+  cron.schedule("* * * * *", tickOutbox); // outbox dispatch — every minute
+  cron.schedule("*/5 * * * *", tickReconcile); // results reconcile — every 5 min
+  console.log("[integration] scheduler started (outbox dispatch + results reconcile)");
+}

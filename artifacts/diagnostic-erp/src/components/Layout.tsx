@@ -150,6 +150,7 @@ const isLeafActive = (path: string, location: string) => {
 const navItems: NavEntry[] = [
   { path: "/", icon: Zap, label: "Billing Desk" },
   { path: "/my-daily-summary", icon: BarChart2, label: "My Daily Summary" },
+  { path: "/hope-referrals", icon: Inbox, label: "HOPE Referrals", featureFlag: "hopeReferralsInbox" },
   {
     id: "billing-grp",
     icon: Receipt,

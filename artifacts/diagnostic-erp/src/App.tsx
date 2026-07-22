@@ -71,6 +71,7 @@ const Reports         = lazy(() => import("@/pages/Reports"));
 const ReportGenerator = lazy(() => import("@/pages/ReportGenerator"));
 const Inventory       = lazy(() => import("@/pages/Inventory"));
 const Referrals       = lazy(() => import("@/pages/Referrals"));
+const HopeReferrals   = lazy(() => import("@/pages/HopeReferrals"));
 const Accounting      = lazy(() => import("@/pages/Accounting"));
 const Banking         = lazy(() => import("@/pages/Banking"));
 const Register        = lazy(() => import("@/pages/Register"));
@@ -353,6 +354,7 @@ function Router() {
               <Route path="/home" component={BillingDesk} />
               <Route path="/" component={BillingDesk} />
               <Route path="/dashboard" component={Dashboard} />
+              <Route path="/hope-referrals" component={HopeReferrals} />
               <Route path="/diagnostics" component={Diagnostics} />
               <Route path="/measurement-registry" component={MeasurementRegistryManager} />
               <Route path="/patients" component={Patients} />
