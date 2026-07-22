@@ -40,6 +40,7 @@ import DynamicFindingBuilder from "@/components/radiology/usg/DynamicFindingBuil
 import OrganReportSection from "@/components/radiology/usg/OrganReportSection";
 import UsgPriorComparison from "@/components/radiology/usg/UsgPriorComparison";
 import UsgObDopplerPanel from "@/components/radiology/usg/UsgObDopplerPanel";
+import UsgPregnancyTimeline from "@/components/radiology/usg/UsgPregnancyTimeline";
 import { organsForStudy, organByKey, findingDefsForOrgan, type UsgPreset } from "@/lib/usgOrganLibrary";
 import {
   emptySection, markNormal, addFinding, removeFinding, applyNormalToRemaining,
@@ -442,6 +443,15 @@ export default function UsgCompanionWorkspace({ studyId }: { studyId?: number })
               studyId={studyId ?? null}
               onInsertFindings={appendToActive}
               onInsertImpression={(t) => { setImpressionEdited(true); setImpressionText((prev) => (prev ? `${prev}\n${t}` : t)); }}
+            />
+          </div>
+          {/* P4 pregnancy timeline — flag-gated + obstetric-only inside the component;
+              "Accept summary" appends to the CURRENT draft's impression only. */}
+          <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2">
+            <UsgPregnancyTimeline
+              patientId={entry.patientId}
+              isObstetric={isObstetric}
+              onAccept={(t) => { setImpressionEdited(true); setImpressionText((prev) => (prev ? `${prev}\n${t}` : t)); }}
             />
           </div>
           <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2">

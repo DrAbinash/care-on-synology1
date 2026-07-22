@@ -6,6 +6,15 @@ const scan = (over: Partial<TimelineScanInput>): TimelineScanInput => ({
 });
 
 describe("P4.4 usgPregnancyTimeline", () => {
+  it("carries CRL / placenta / presentation through to the timeline point (GAP 2 UI fields)", () => {
+    const t = buildPregnancyTimeline([
+      scan({ studyInstanceUID: "a", studyDate: "20240301", crlMm: 62, placenta: "Anterior", presentation: "Cephalic" }),
+    ]);
+    expect(t.points[0].crlMm).toBe(62);
+    expect(t.points[0].placenta).toBe("Anterior");
+    expect(t.points[0].presentation).toBe("Cephalic");
+  });
+
   it("establishes GA once from the earliest CRL scan and projects it forward", () => {
     const t = buildPregnancyTimeline([
       scan({ studyInstanceUID: "dating", studyDate: "20240101", crlMm: 60 }),

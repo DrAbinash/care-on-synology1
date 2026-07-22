@@ -177,6 +177,8 @@ export async function pregnancyTimelineForPatient(patientId: number): Promise<Ti
       studyInstanceUID: uid, studyDate,
       crlMm: num(row.crl), bpdMm: num(row.bpd), hcMm: num(row.hc), acMm: num(row.ac), flMm: num(row.fl),
       afiCm: num(row.liquorAfi), efwGrams: num(row.efw), lmp: null,
+      placenta: (row.placentaPosition as string) ?? null,
+      presentation: (row.fetalPresentation as string) ?? null,
     });
     obScans.push({ studyInstanceUID: uid, studyDate, edd: (row.edd as string) ?? null, gaDays: null });
   }
