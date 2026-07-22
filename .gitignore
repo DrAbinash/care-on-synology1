@@ -95,3 +95,6 @@ attached_assets/
 @tmp/
 .DS_Store
 Thumbs.db
+
+# Local test Postgres data directory (created by the DB test harness)
+.pgtest/
