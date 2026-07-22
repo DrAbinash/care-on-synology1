@@ -88,6 +88,7 @@ import {
   Baby,
   GraduationCap,
   Gauge,
+  Combine,
 } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -170,6 +171,7 @@ const navItems: NavEntry[] = [
       // which opens the existing Reporting Worklist / Workspace.
       { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist Hub" },
       { path: "/radiology/reporting-workspace", icon: FilePen,        label: "Reporting Workspace" },
+      { path: "/radiology/report-builder",      icon: Combine,        label: "Report Builder" },
       { path: "/radiology/operations-dashboard", icon: Gauge,          label: "Operations Dashboard" },
       { path: "/radiology/operational-health",   icon: Activity,       label: "Operational Health", ownerOnly: true },
       { path: "/radiology/my-analytics",         icon: BarChart3,      label: "My Analytics" },
