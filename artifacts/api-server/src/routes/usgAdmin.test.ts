@@ -154,7 +154,7 @@ describe("admin-role guard", () => {
     for (const path of ["/flags/:key/enable", "/flags/:key/disable", "/kill-switch"]) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const layer = router.stack.find((l: any) => l.route && l.route.path === path && l.route.methods.post);
-      expect(layer, `${path} missing`).toBeTruthy();
+      if (!layer || !layer.route) throw new Error(`${path} missing`);
       expect(layer.route.stack).toHaveLength(2); // [requireAdminRole, handler]
     }
   });
