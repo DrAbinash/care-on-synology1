@@ -14,8 +14,8 @@ live Orthanc / model gateway / staging in this environment).
 | **P9** admin/rollout | ✅ | ✅ `/api/usg-admin` | ✅ `/radiology/usg-rollout` | ✅ feature_flags + usg_audit_log | ✅ real DB tests | ❌ | control-plane (admin role) | **VERTICAL INTEGRATION COMPLETE** |
 | **P4** prior comparison | ✅ | ✅ `/api/usg-prior` | ✅ workspace right-rail panel | ✅ reads studies/measurements/reports | ✅ real-Postgres integration | ❌ | `ff_radiology_usg_prior_intelligence` **wired** | **VERTICAL INTEGRATION COMPLETE** |
 | **P4** pregnancy timeline | ✅ | ✅ `/api/usg-prior/.../timeline` | ⛔ pending | ✅ reads OB measurements | ✅ real-DB (service) | ❌ | `ff_radiology_usg_pregnancy_timeline` (server-gated; UI pending) | **PARTIAL — UI PENDING** |
-| **P5** OB canonical | ✅ | ⛔ pending | ⛔ pending | (canonical draft) | ⛔ | ❌ | `ff_radiology_usg_ob_canonical` | **CORE COMPLETE** |
-| **P5** Doppler canonical | ✅ | ⛔ pending | ⛔ pending | (canonical draft) | ⛔ | ❌ | `ff_radiology_usg_doppler_canonical` | **CORE COMPLETE** |
+| **P5** OB canonical | ✅ | ✅ `/api/usg-ob-doppler` | ✅ workspace OB/Doppler panel | ✅ reads measurements → canonical draft | ✅ real-DB integration | ❌ | `ff_radiology_usg_ob_canonical` **wired** | **VERTICAL INTEGRATION COMPLETE** (partial parity — see P5-OB-PARITY.md) |
+| **P5** Doppler canonical | ✅ | ✅ `/api/usg-ob-doppler` | ✅ workspace OB/Doppler panel | ✅ reads doppler rows → canonical draft | ✅ real-DB integration | ❌ | `ff_radiology_usg_doppler_canonical` **wired** | **VERTICAL INTEGRATION COMPLETE** |
 | **P3** extraction + provenance | ✅ | ◐ existing `/api/usg-extraction`; SR-core wiring pending | ◐ existing review panel; provenance UI pending | ✅ usg_measurements / viewer_measurements | ⛔ needs Orthanc fixtures | ❌ | `ff_radiology_usg_dicom_extraction`, `_exact_provenance` | **CORE COMPLETE** |
 | **P6** report→PACS | ✅ | ⛔ worker wiring pending | ⛔ status UI pending | ✅ pacs_archive_revisions | ⛔ needs Orthanc | ❌ | `ff_radiology_usg_report_to_pacs` | **CORE COMPLETE** |
 | **P7** cine | ✅ | ⛔ pending | ⛔ viewer wiring pending | ✅ usg_key_images | ⛔ needs viewer | ❌ | `ff_radiology_usg_cine` | **CORE COMPLETE** |
@@ -27,8 +27,9 @@ Legend: ✅ done · ◐ partially exists · ⛔ pending · ❌ not done/not poss
 
 | Slice | PR | Scope |
 |---|---|---|
-| 1 | #167 | P9 admin/rollout control plane (readiness matrix, server-enforced enable/disable/kill-switch, audit) |
-| 2 | #168 | P4 prior intelligence (prior match, structured comparison, comparison suggestions) — API + UI + real-DB tests |
+| 1 | #167 (merged) | P9 admin/rollout control plane (readiness matrix, server-enforced enable/disable/kill-switch, audit) |
+| 2 | #168 (merged) | P4 prior intelligence (prior match, structured comparison, comparison suggestions) — API + UI + real-DB tests |
+| 3 | this branch `claude/usg-int-p5-ob-doppler` | P5 OB & Doppler canonical sections — API + workspace panel + Form-F status + real-DB tests + parity report |
 
 ## Remaining integration (exact steps)
 
