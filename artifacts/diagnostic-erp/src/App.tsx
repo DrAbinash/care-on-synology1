@@ -165,6 +165,7 @@ const BackupReplication     = lazy(() => import("@/pages/BackupReplication"));
 const UsgMeasurementReview  = lazy(() => import("@/pages/UsgMeasurementReview"));
 const UsgAdminSettings      = lazy(() => import("@/pages/UsgAdminSettings"));
 const UsgAdminReadiness     = lazy(() => import("@/pages/UsgAdminReadiness"));
+const UsgDemoMode           = lazy(() => import("@/pages/UsgDemoMode"));
 const UsgDoppler            = lazy(() => import("@/pages/UsgDoppler"));
 const UsgReporting          = lazy(() => import("@/pages/UsgReporting"));
 const UsgDopplerReporting   = lazy(() => import("@/pages/UsgDopplerReporting"));
@@ -241,7 +242,7 @@ const ERP_NAV_ORDER = [
   "/radiology/dicom-agent-dashboard", "/radiology/modality-management",
   "/radiology/agent-setup", "/radiology/ai-reporting-settings", "/radiology/ai-prompt-templates", "/radiology/ai-model-routing", "/radiology/structured-report-templates", "/radiology/ai-audit-log",
   "/radiology/viewer", "/radiology/archive-lifecycle", "/radiology/watchdog", "/radiology/ai-inference-settings", "/radiology/hl7-settings", "/teleradiology",
-  "/radiology/usg-measurements", "/radiology/usg-admin-settings", "/radiology/usg-rollout",
+  "/radiology/usg-measurements", "/radiology/usg-admin-settings", "/radiology/usg-rollout", "/radiology/usg-demo",
   "/usg", "/usg/worklist", "/usg/measurements", "/usg/reporting", "/usg/doppler", "/usg/key-images", "/usg/settings", "/usg/critical", "/usg/analytics",
   "/teaching-cases", "/teaching-collections", "/teaching-favorites", "/teaching-ai", "/teaching-research", "/teaching-mode", "/teaching-analytics", "/teaching-presentation",
   "/echo", "/fetal-echo", "/fetal-usg", "/fetal-usg/:studyId",
@@ -530,6 +531,7 @@ function Router() {
               <Route path="/radiology/usg-measurements" component={UsgMeasurementReview} />
               <Route path="/radiology/usg-admin-settings" component={UsgAdminSettings} />
               <Route path="/radiology/usg-rollout" component={UsgAdminReadiness} />
+              <Route path="/radiology/usg-demo" component={UsgDemoMode} />
               {/* USG / DOPPLER module */}
               <Route path="/usg" component={UsgDoppler} />
               <Route path="/usg/worklist" component={RedirectToUnifiedWorklist} />
