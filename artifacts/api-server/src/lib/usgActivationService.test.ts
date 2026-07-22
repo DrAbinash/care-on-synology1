@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   buildActivationView, groupBActivatable, GROUP_A_FLAGS, GROUP_B_FLAGS,
-  USG_ACTIVATION_PLAN, type InfraHealth,
+  USG_ACTIVATION_PLAN, INFRA_SETUP, type InfraHealth,
 } from "./usgActivationService";
 
 const health = (over: Partial<InfraHealth> = {}): InfraHealth => ({
@@ -52,6 +52,17 @@ describe("buildActivationView — status + activatability", () => {
   it("shows an enabled flag as Live", () => {
     const view = buildActivationView({ ff_radiology_usg_workspace: true }, health());
     expect(view.find((v) => v.flag === "ff_radiology_usg_workspace")!.status).toBe("Live");
+  });
+});
+
+describe("INFRA_SETUP — in-app connection guide", () => {
+  it("covers each infra kind with env vars/steps and what it unlocks", () => {
+    const kinds = INFRA_SETUP.map((g) => g.kind).sort();
+    expect(kinds).toEqual(["ai_gateway", "orthanc", "viewer"]);
+    const orthanc = INFRA_SETUP.find((g) => g.kind === "orthanc")!;
+    expect(orthanc.envVars.some((v) => v.startsWith("ORTHANC_URL="))).toBe(true);
+    expect(orthanc.steps.length).toBeGreaterThan(0);
+    expect(INFRA_SETUP.find((g) => g.kind === "ai_gateway")!.envVars.some((v) => v.includes("USG_AI_GATEWAY_URL"))).toBe(true);
   });
 });
 

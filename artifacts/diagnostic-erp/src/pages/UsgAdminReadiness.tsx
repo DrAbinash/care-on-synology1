@@ -76,11 +76,13 @@ export default function UsgAdminReadiness() {
   });
 
   // ── Production activation (Group A safe / Group B health-gated) ──
+  interface InfraSetup { kind: string; title: string; unlocks: string; envVars: string[]; steps: string[]; health: HealthResult }
   interface ActivationResp {
     health: { orthanc: HealthResult; viewer: HealthResult; ai_gateway: HealthResult };
     flags: { flag: string; group: "A" | "B"; label: string; status: string; enabled: boolean; activatable: boolean; remediation: string | null }[];
     safetyControls: string[];
     groupBActivatable: string[];
+    infraSetup: InfraSetup[];
   }
   const actQ = useQuery<ActivationResp>({
     queryKey: ["usg-activation"],
@@ -164,6 +166,33 @@ export default function UsgAdminReadiness() {
           {actQ.data && <p className="text-[10px] text-muted-foreground">Always-on safety controls (never flag-toggled): {actQ.data.safetyControls.join(" · ")}</p>}
         </CardContent>
       </Card>
+
+      {/* Infrastructure setup — what to connect to unlock the Group-B features */}
+      {actQ.data?.infraSetup?.length ? (
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-base">Infrastructure setup</CardTitle>
+            <CardDescription>Connect these to unlock the infra-dependent features. Each turns green when its health check passes.</CardDescription></CardHeader>
+          <CardContent className="space-y-3">
+            {actQ.data.infraSetup.map((g) => (
+              <div key={g.kind} className="text-xs border rounded p-2 space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className={`w-2 h-2 rounded-full ${g.health.ok ? "bg-emerald-500" : "bg-amber-500"}`} />
+                  <span className="font-medium text-sm">{g.title}</span>
+                  <Badge variant="outline">{g.health.ok ? "connected" : (g.health.checkedServerSide ? "not connected" : "browser-checked")}</Badge>
+                  <span className="text-muted-foreground ml-auto">unlocks: {g.unlocks}</span>
+                </div>
+                {g.envVars.length > 0 && (
+                  <pre className="bg-muted/40 rounded p-1.5 overflow-x-auto whitespace-pre-wrap">{g.envVars.join("\n")}</pre>
+                )}
+                <ol className="list-decimal pl-4 text-muted-foreground space-y-0.5">
+                  {g.steps.map((s, i) => <li key={i}>{s}</li>)}
+                </ol>
+                {!g.health.ok && g.health.message && <p className="text-amber-600">Status: {g.health.message}</p>}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading readiness matrix…</p>}
       {isError && <p className="text-sm text-destructive">Failed to load readiness. <button className="underline" onClick={() => refetch()}>Retry</button></p>}

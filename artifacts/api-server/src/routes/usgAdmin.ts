@@ -27,7 +27,7 @@ import {
 } from "../lib/usgReadinessService";
 import {
   checkInfraHealth, buildActivationView, groupAActivationOrder, groupBActivatable,
-  GROUP_C_SAFETY_CONTROLS,
+  GROUP_C_SAFETY_CONTROLS, INFRA_SETUP,
 } from "../lib/usgActivationService";
 
 const router = Router();
@@ -73,6 +73,8 @@ router.get("/activation", async (_req, res) => {
     flags: buildActivationView(live, health),
     safetyControls: GROUP_C_SAFETY_CONTROLS,
     groupBActivatable: groupBActivatable(health),
+    // In-app setup guide, each annotated with its live health status.
+    infraSetup: INFRA_SETUP.map((g) => ({ ...g, health: health[g.kind === "none" ? "orthanc" : g.kind] })),
   });
 });
 
