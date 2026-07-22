@@ -103,6 +103,46 @@ export default function UsgDemoMode() {
           <p>Suggestion: “Hepatomegaly (liver span 17 cm).” — accept-only; radiologist must approve. AI never signs/finalizes/writes the report and never outputs fetal sex.</p>
         </Sample>
 
+        <Sample title="Female pelvis / fibroid" tag="illustrative">
+          <p>Uterus bulky (10.2 × 6.1 × 5.4 cm); an intramural fibroid 3.2 cm in the fundus; endometrium 8 mm; both ovaries normal; no adnexal mass; no free fluid.</p>
+          <p className="text-muted-foreground">Impression: Intramural fibroid; otherwise unremarkable pelvis.</p>
+        </Sample>
+
+        <Sample title="Early pregnancy" tag="illustrative">
+          <p>Single intrauterine gestational sac; CRL 12 mm → GA 7w2d; cardiac activity present (FHR 142 bpm); yolk sac normal; no subchorionic collection.</p>
+          <p className="text-muted-foreground">Reference dating: CRL (Robinson–Fleming). No fetal sex assessed or recorded.</p>
+        </Sample>
+
+        <Sample title="NT / NB" tag="illustrative">
+          <p>11–13⁺⁶ week scan: NT 1.6 mm (within normal for CRL); nasal bone present; ductus venosus a-wave positive.</p>
+          <p className="text-muted-foreground">Screening measurements only; risk calculation is external. Fetal sex never reported (PCPNDT).</p>
+        </Sample>
+
+        <Sample title="Anomaly checklist" tag="illustrative">
+          <p>Second-trimester survey: skull/brain, spine, 4-chamber heart + outflows, stomach, kidneys/bladder, abdominal wall, limbs — all documented as seen/normal; placenta anterior, not low.</p>
+          <p className="text-muted-foreground">Structured checklist; every item is an explicit seen/not-seen entry. No sex determination.</p>
+        </Sample>
+
+        <Sample title="Twins" tag="illustrative">
+          <p>DCDA twins. Twin A: EFW 1180 g, AFI 12 cm. Twin B: EFW 1090 g, AFI 11 cm. Inter-twin EFW discordance 8% (&lt;20%). Separate growth tracks maintained.</p>
+          <p className="text-muted-foreground">Each fetus tracked independently; timelines never merged.</p>
+        </Sample>
+
+        <Sample title="Venous Doppler" tag="illustrative">
+          <p>Lower-limb venous study: common femoral, popliteal veins — compressible, phasic flow, augmentation present; no intraluminal thrombus.</p>
+          <p className="text-muted-foreground">Impression: No evidence of deep vein thrombosis.</p>
+        </Sample>
+
+        <Sample title="AI unavailable" tag="illustrative">
+          <p className="text-amber-600">AI provider unreachable (Ollama timeout). AI suggestion controls show an “unavailable” state.</p>
+          <p className="text-muted-foreground">Manual reporting is fully usable — the workspace never blocks on AI. Deterministic notes (e.g. growth) may still appear.</p>
+        </Sample>
+
+        <Sample title="PACS dry run" tag="illustrative">
+          <p>Simulated SR export to PACS <strong>AE CARE_PACS</strong>: payload built, destination resolved — <span className="text-amber-600">DRY RUN, not sent</span>. No C-STORE performed.</p>
+          <p className="text-muted-foreground">A real finalized report queues an SR export with a persistent retry queue; nothing is pushed in demo mode.</p>
+        </Sample>
+
         <Sample title="PCPNDT blocked-state simulation">
           <p className="text-red-600">Finalize blocked (409 pcpndt_compliance_required): Form F incomplete — ID card not verified.</p>
           <p className="text-muted-foreground">The real finalize gate is fail-closed server-side; this is a synthetic reproduction of the blocked state.</p>

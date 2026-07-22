@@ -25,6 +25,7 @@ function ctx(overrides: Partial<OpsCtx> = {}): OpsCtx {
     version: { version: "2.0.0", build: "1", releaseName: "Radiology Stability", commit: "abc12345", branch: "main", buildTime: "2026-07-20", nodeEnv: "production", uptimeSeconds: 42 },
     poolStats: null,
     orthanc: { baseUrl: null, headers: {}, configured: false },
+    ollama: { baseUrl: null, model: "qwen3:14b", configured: false },
     ohifUrl: null,
     publicBaseUrl: null,
     displayToken: "tok",
@@ -219,5 +220,53 @@ describe("buildOperationsReport — end to end with a fake ctx", () => {
     expect(report.overall).toBe("PASS");
     expect(report.summary.fail).toBe(0);
     expect(report.checks.find((c) => c.id === "orthanc.reachable")!.status).toBe("PASS");
+  });
+});
+
+describe("AI / radiology operational checks (§8 dashboard integration)", () => {
+  it("ai.ollama SKIPPED when not configured (manual reporting unaffected)", async () => {
+    const c = await run("ai.ollama", ctx());
+    expect(c.status).toBe("SKIPPED");
+  });
+
+  it("ai.ollama PASS when reachable and the configured model is pulled", async () => {
+    const c = await run("ai.ollama", ctx({
+      ollama: { baseUrl: "http://172.16.1.140:11434", model: "qwen3:14b", configured: true },
+      probe: async () => ({ ok: true, status: 200, ms: 5, json: { models: [{ name: "qwen3:14b" }, { name: "gpt-oss:20b" }] } }),
+    }));
+    expect(c.status).toBe("PASS");
+    expect(c.message).toContain("qwen3:14b");
+  });
+
+  it("ai.ollama WARNING when reachable but the configured model is not pulled", async () => {
+    const c = await run("ai.ollama", ctx({
+      ollama: { baseUrl: "http://172.16.1.140:11434", model: "qwen3:14b", configured: true },
+      probe: async () => ({ ok: true, status: 200, ms: 5, json: { models: [{ name: "gpt-oss:20b" }] } }),
+    }));
+    expect(c.status).toBe("WARNING");
+    expect(c.recommendedAction).toContain("ollama pull qwen3:14b");
+  });
+
+  it("ai.ollama WARNING (not FAIL) when unreachable — reporting must keep working", async () => {
+    const c = await run("ai.ollama", ctx({
+      ollama: { baseUrl: "http://172.16.1.140:11434", model: "qwen3:14b", configured: true },
+      probe: async () => ({ ok: false, status: null, ms: 5000, error: "timeout" }),
+    }));
+    expect(c.status).toBe("WARNING");
+    expect(c.required).toBe(false);
+  });
+
+  it("queue/lock checks WARN on failures and are UNKNOWN when the table is absent", async () => {
+    const withFailures = ctx({ query: async () => [{ n: 3 }] });
+    expect((await run("ai.job_queue", withFailures)).status).toBe("WARNING");
+    expect((await run("radiology.pacs_return", withFailures)).status).toBe("WARNING");
+    expect((await run("radiology.study_locks", withFailures)).status).toBe("WARNING");
+
+    const clean = ctx({ query: async () => [{ n: 0 }] });
+    expect((await run("ai.job_queue", clean)).status).toBe("PASS");
+    expect((await run("radiology.pacs_return", clean)).status).toBe("PASS");
+
+    const noTable = ctx({ query: async () => { throw new Error('relation "ai_job_queue" does not exist'); } });
+    expect((await run("ai.job_queue", noTable)).status).toBe("UNKNOWN");
   });
 });
