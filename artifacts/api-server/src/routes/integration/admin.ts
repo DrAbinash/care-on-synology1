@@ -22,6 +22,7 @@ import { normalizeTestName } from "../../services/integration/normalize";
 import { retryOutboxEvent, dispatchPendingOutbox } from "../../services/integration/outbox";
 import { reconcileResults } from "../../services/integration/resultsEmitter";
 import { reconcileStatuses } from "../../services/integration/statusReconciler";
+import { escalateCriticalResults } from "../../services/integration/criticalEscalation";
 
 export const integrationAdminRouter = Router();
 const staffName = (req: StaffAuthRequest) => req.staffSession?.subjectName ?? "admin";
@@ -186,5 +187,6 @@ integrationAdminRouter.post("/dispatch-outbox", async (_req, res) => {
 integrationAdminRouter.post("/reconcile-results", async (_req, res) => {
   const statuses = await reconcileStatuses({ limit: 100 });
   const results = await reconcileResults({ limit: 100 });
-  res.json({ statuses, results });
+  const escalations = await escalateCriticalResults({ limit: 50 });
+  res.json({ statuses, results, escalations });
 });
