@@ -125,7 +125,7 @@ async function getOllamaConfig(): Promise<OllamaConfig | null> {
       baseUrl: _endpointCache.url,
       primaryUrl: primaryOrigin,
       fallbackUrl: fallbackOrigin,
-      model: row.ollamaModel ?? "llama3",
+      model: row.ollamaModel ?? "qwen3:14b",
       localOnly,
       timeoutMs,
       auditEnabled,
@@ -139,7 +139,7 @@ async function getOllamaConfig(): Promise<OllamaConfig | null> {
     _endpointCache = { url: primaryOrigin, expiresAt: now + 5 * 60 * 1000 };
     return {
       baseUrl: primaryOrigin, primaryUrl: primaryOrigin, fallbackUrl: fallbackOrigin,
-      model: row.ollamaModel ?? "llama3", localOnly, timeoutMs, auditEnabled,
+      model: row.ollamaModel ?? "qwen3:14b", localOnly, timeoutMs, auditEnabled,
       endpointSource: "primary",
     };
   }
@@ -149,7 +149,7 @@ async function getOllamaConfig(): Promise<OllamaConfig | null> {
     _endpointCache = { url: fallbackOrigin, expiresAt: now + 5 * 60 * 1000 };
     return {
       baseUrl: fallbackOrigin, primaryUrl: primaryOrigin, fallbackUrl: fallbackOrigin,
-      model: row.ollamaModel ?? "llama3", localOnly, timeoutMs, auditEnabled,
+      model: row.ollamaModel ?? "qwen3:14b", localOnly, timeoutMs, auditEnabled,
       endpointSource: "fallback",
     };
   }
@@ -157,7 +157,7 @@ async function getOllamaConfig(): Promise<OllamaConfig | null> {
   // Both endpoints unreachable — return config with primary URL for error reporting
   return {
     baseUrl: primaryOrigin, primaryUrl: primaryOrigin, fallbackUrl: fallbackOrigin,
-    model: row.ollamaModel ?? "llama3", localOnly, timeoutMs, auditEnabled,
+    model: row.ollamaModel ?? "qwen3:14b", localOnly, timeoutMs, auditEnabled,
     endpointSource: "primary",
   };
 }
@@ -388,7 +388,7 @@ radiologyOllamaRouter.post("/test", async (req, res): Promise<void> => {
   if (!canUseAi(req as StaffAuthRequest)) { res.status(403).json({ ok: false, error: "AI reporting permission required" }); return; }
   const b = (req.body ?? {}) as Record<string, unknown>;
   const rawUrl = b.baseUrl ? String(b.baseUrl).trim() : "";
-  const model = b.model ? String(b.model).trim() : "llama3";
+  const model = b.model ? String(b.model).trim() : "qwen3:14b";
   // `allowLocal` comes from the saved admin policy (`ollamaLocalOnly`), NEVER the
   // request body: a client-controlled flag here let any caller opt out of the
   // private/LAN SSRF guard (P5 fix).
