@@ -41,6 +41,9 @@ import OrganReportSection from "@/components/radiology/usg/OrganReportSection";
 import UsgPriorComparison from "@/components/radiology/usg/UsgPriorComparison";
 import UsgObDopplerPanel from "@/components/radiology/usg/UsgObDopplerPanel";
 import UsgPregnancyTimeline from "@/components/radiology/usg/UsgPregnancyTimeline";
+import UsgPacsReturnPanel from "@/components/radiology/usg/UsgPacsReturnPanel";
+import UsgCinePanel from "@/components/radiology/usg/UsgCinePanel";
+import UsgAiPanel from "@/components/radiology/usg/UsgAiPanel";
 import { organsForStudy, organByKey, findingDefsForOrgan, type UsgPreset } from "@/lib/usgOrganLibrary";
 import {
   emptySection, markNormal, addFinding, removeFinding, applyNormalToRemaining,
@@ -453,6 +456,21 @@ export default function UsgCompanionWorkspace({ studyId }: { studyId?: number })
               isObstetric={isObstetric}
               onAccept={(t) => { setImpressionEdited(true); setImpressionText((prev) => (prev ? `${prev}\n${t}` : t)); }}
             />
+          </div>
+          {/* P8 AI assistant — flag-gated inside; accepts append to impression only. */}
+          <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2">
+            <UsgAiPanel
+              studyId={studyId ?? null}
+              onAccept={(t) => { setImpressionEdited(true); setImpressionText((prev) => (prev ? `${prev}\n${t}` : t)); }}
+            />
+          </div>
+          {/* P7 cine key frames — flag-gated inside; playback/capture via the viewer. */}
+          <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2">
+            <UsgCinePanel studyInstanceUID={entry.studyInstanceUID} />
+          </div>
+          {/* P6 report → PACS — flag-gated inside; never sends a draft. */}
+          <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2">
+            <UsgPacsReturnPanel studyId={studyId ?? null} />
           </div>
           <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2">
             <RadiologyKnowledgePanel activePanel={knowledgePanel} onInsert={appendToActive} />
