@@ -152,7 +152,7 @@ import { useReportingWorkflow } from "@/hooks/useReportingWorkflow";
 import { useStudyLock } from "@/hooks/useStudyLock";
 import { lockStatusMessage, QUEUE_SCOPE_LABELS, parseQueueScope, assignmentCategoryOf, type QueueScope } from "@/lib/studyLockState";
 import type { StudyLaunchResult } from "@/lib/studyLaunchService";
-import { ChevronLeft, ChevronRight, PauseCircle, Lock, TrendingUp, TrendingDown, Minus, CalendarDays } from "lucide-react";
+import { ChevronLeft, ChevronRight, PauseCircle, Lock, TrendingUp, TrendingDown, Minus, CalendarDays, Library } from "lucide-react";
 import { DATE_PRESETS, toISTDateStr } from "@/lib/dateRangePresets";
 // M1.6B2 — the ONE voice pipeline (providers/grammar/safety live in libs; the
 // hook executes through THIS page's adapter → the M1.5 command dispatcher).
@@ -166,6 +166,7 @@ import {
 } from "@/lib/voiceTranscription";
 import type { EmbeddedViewerHandle } from "@/components/EmbeddedWadoViewer";
 import { AiDraftPanel } from "@/components/ai/AiDraftPanel";
+import FindingsLibraryPanel from "@/components/radiology/FindingsLibraryPanel";
 import { appendToFindings } from "@/lib/aiDraftBinding";
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -274,7 +275,7 @@ type StylePreferences = {
   includeMeasurements: boolean;
 };
 
-type RightTab = "copilot" | "quickselect" | "templates" | "followup" | "prior" | "ai" | "measurements" | "teaching" | "knowledge" | "diff" | "print";
+type RightTab = "copilot" | "quickselect" | "library" | "templates" | "followup" | "prior" | "ai" | "measurements" | "teaching" | "knowledge" | "diff" | "print";
 
 // Workspace layout mode selector (Phase 2) — the upper-right control that
 // used to be a single left-panel collapse icon. Doesn't depend on component
@@ -4320,6 +4321,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const RIGHT_TABS = [
     ...(copilotPrefs.enabled ? [{ id: "copilot", label: "Copilot", icon: <Sparkles size={14} />, badge: copilotAlerts }] : []),
     { id: "quickselect", label: "Quick", icon: <Zap size={14} /> },
+    { id: "library", label: "Library", icon: <Library size={14} /> },
     { id: "templates", label: "Templates", icon: <LayoutTemplate size={14} /> },
     { id: "followup", label: "Follow-up", icon: <RefreshCw size={14} /> },
     { id: "prior", label: "Prior", icon: <ClipboardList size={14} /> },
@@ -6158,6 +6160,21 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 disabled={isLocked}
                 initialStudyHint={`${entry?.modality ?? ""} ${entry?.studyDescription ?? ""}`}
                 isAdmin={isOwnerRole(session)}
+              />
+            )}
+            {rightTab === "library" && (
+              <FindingsLibraryPanel
+                modalityHint={entry?.modality ?? ""}
+                onInsertFindings={handleInsertNormals}
+                onInsertImpression={(lines) =>
+                  setImpression((prev) => {
+                    const seen = new Set(prev.map((l) => l.trim().toLowerCase()));
+                    const add = lines.filter((l) => l.trim() && !seen.has(l.trim().toLowerCase()));
+                    return [...prev.filter(Boolean), ...add];
+                  })
+                }
+                onInsertTechnique={(text) => setTechnique((prev) => (prev.trim() ? prev : text))}
+                disabled={isLocked}
               />
             )}
             {rightTab === "templates" && <TemplatesTab />}
