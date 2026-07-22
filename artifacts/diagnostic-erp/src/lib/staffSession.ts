@@ -423,6 +423,9 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   // radiologist text silently. Reuses the canonical AI enablement policy.
   ff_radiology_usg_ai_assistant: false,
   ff_radiology_usg_ai_growth: false,
+  // USG Companion P9 — curated single-radiologist rollout ("Sugandha mode").
+  // Off by default; it is a rollout profile only and enables nothing on its own.
+  ff_radiology_usg_sugandha_mode: false,
 };
 
 const RADIOLOGY_FLAG_PREFIX = "ff_radiology_";

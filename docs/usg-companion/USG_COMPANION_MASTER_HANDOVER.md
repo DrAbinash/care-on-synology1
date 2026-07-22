@@ -1,6 +1,6 @@
 # USG Companion — Master Handover
 
-Living handover for the USG Companion project. Updated through **Phase P2**.
+Living handover for the USG Companion project. Updated through **Phase P9**.
 
 ## What is built
 
@@ -9,8 +9,20 @@ Living handover for the USG Companion project. Updated through **Phase P2**.
 | **P0** dedicated USG workspace shell | **Merged** (PR #152) | `pages/UsgCompanionWorkspace.tsx`, `components/radiology/usg/*` |
 | **P1** Dynamic Finding Builder + 3 reference findings | **Merged** (PR #152) | `lib/usgFindingBuilder.ts`, `lib/usgOrganLibrary.ts`, `lib/usgProstateConfig.ts` |
 | P0/P1 hardening (shared volume, prostatomegaly separation) | **Merged** (PR #152) | `lib/measurements/src/volume.ts` |
-| **P2** daily-reporting workflow | **Code complete — clinic validation pending** | this branch `claude/usg-companion-p2-workflow` |
-| P3–P9 | **Not started** | — |
+| **P2** daily-reporting workflow | **Merged** (PR #157) | `lib/usg*` composer/presets/readiness/consistency |
+| **P3** DICOM SR extraction + exact provenance (core) | **PR #158 (open)** | `lib/usgSrContentTree.ts`, `usgProvenance.ts`, `usgExtractionHierarchy.ts`, `usgSrProvenanceBuilder.ts` |
+| **P4** prior intelligence + pregnancy timeline (core) | **PR #160 (open)** | `lib/usgPriorMatch.ts`, `usgStructuredComparison.ts`, `usgPregnancyEpisodes.ts`, `usgPregnancyTimeline.ts`, `usgComparisonText.ts` |
+| **P5** OB & Doppler consolidation (core) | **PR #161 (open)** | `lib/usgObSection.ts`, `usgDopplerSection.ts` |
+| **P6** report return to PACS — fail-closed policy (core) | **PR #162 (open)** | `lib/usgPacsReturnPolicy.ts` (gates canonical `pacsArchive.ts`) |
+| **P7** cine-loop key-frame (core) | **PR #163 (open)** | `lib/usgCineClip.ts` |
+| **P8** advisory AI assistant (safety core) | **PR #164 (open)** | `lib/usgAiAssistant.ts` (reuses `ai/aiPolicy.ts`) |
+| **P9** production-readiness evaluator (core) | **this branch `claude/usg-companion-p9-production`** | `lib/usgProductionReadiness.ts` |
+
+All P3–P9 are **code-complete pure cores with flags OFF** — integration wiring and
+real staging/clinic validation are the documented, pending human steps (each
+phase's `Px-IMPLEMENTATION-REPORT.md` has its checklist). No phase is
+clinic-validated; `evaluateUsgReadiness()` truthfully reports the workspace as
+**not production-ready**.
 
 ## What is enabled
 
@@ -23,20 +35,22 @@ Living handover for the USG Companion project. Updated through **Phase P2**.
 |---|---|---|---|
 | `ff_radiology_usg_workspace` | P0/P1 | OFF | Enables the dedicated `/radiology/usg/:studyId` route + worklist routing for US studies. Off → redirects to canonical. |
 | `ff_radiology_usg_companion_p2` | P2 | OFF | Adds readiness bar, shortcut overlay, organ states, preset-aware normals, expanded findings, consistency, insert-all logic. Inert when off. |
-| `ff_radiology_usg_dicom_extraction` | P3 | OFF | (reserved — not implemented) |
-| `ff_radiology_usg_exact_provenance` | P3 | OFF | (reserved) |
-| `ff_radiology_usg_prior_intelligence` | P4 | OFF | (reserved) |
-| `ff_radiology_usg_pregnancy_timeline` | P4 | OFF | (reserved) |
-| `ff_radiology_usg_ob_canonical` | P5 | OFF | (reserved) |
-| `ff_radiology_usg_doppler_canonical` | P5 | OFF | (reserved) |
-| `ff_radiology_usg_report_to_pacs` | P6 | OFF | (reserved) |
-| `ff_radiology_usg_cine` | P7 | OFF | (reserved) |
-| `ff_radiology_usg_ai_assistant` / `_ai_growth` | P8 | OFF | (reserved) |
-| `ff_radiology_usg_sugandha_mode` | P9 | OFF | (reserved) |
+| `ff_radiology_usg_dicom_extraction` | P3 | OFF | DICOM-native SR content-tree extraction (parser core). |
+| `ff_radiology_usg_exact_provenance` | P3 | OFF | Exact frame/SCOORD-caliper provenance → `viewer_measurements`. Depends on extraction. |
+| `ff_radiology_usg_prior_intelligence` | P4 | OFF | Same-patient prior matching + structured comparison (suggestion-only). |
+| `ff_radiology_usg_pregnancy_timeline` | P4 | OFF | Pregnancy-episode grouping + GA/EFW timeline. Depends on prior intelligence. |
+| `ff_radiology_usg_ob_canonical` | P5 | OFF | Canonical OB section via the one obstetric engine (PCPNDT-safe, no sex). |
+| `ff_radiology_usg_doppler_canonical` | P5 | OFF | Canonical Doppler section (RI/PI/S-D/CPR via the engine). |
+| `ff_radiology_usg_report_to_pacs` | P6 | OFF | Fail-closed PACS-return policy gating canonical `archiveReportToPacs`. |
+| `ff_radiology_usg_cine` | P7 | OFF | Cine key-frame selection (reuses P3 `SrImageRef`). Depends on extraction. |
+| `ff_radiology_usg_ai_assistant` | P8 | OFF | Advisory AI (draft-only, accept-only, PCPNDT-safe). |
+| `ff_radiology_usg_ai_growth` | P8 | OFF | AI growth notes over the P4 timeline. Depends on assistant + timeline. |
+| `ff_radiology_usg_sugandha_mode` | P9 | OFF | Curated single-radiologist rollout profile; enables nothing on its own. |
 
-*Reserved flags are named for the roadmap but are only registered when their
-phase lands. Only `ff_radiology_usg_workspace` and `ff_radiology_usg_companion_p2`
-exist in `staffSession.ts` today.*
+*All flags above are now **registered** — in `staffSession.ts` (frontend
+defaults) and `radiologyFeatureFlagRegistry.ts` (server, `wired:false`) — with
+correct dependency ordering. Every one defaults OFF. `evaluateUsgReadiness()` /
+`canEnableFlag()` (P9) are the gate for turning any of them on.*
 
 ## Routes
 
