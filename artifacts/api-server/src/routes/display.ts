@@ -154,9 +154,9 @@ async function fetchQueueData(opts: {
   const mappedRows = rows.map((r) => {
     let patientLabel = "";
     if (privacyMode === "none") {
-      patientLabel = `${r.firstName || ""} ${r.lastName || ""}`.trim();
+      patientLabel = `${r.firstName || ""} ${r.lastName || ""}`.trim().toUpperCase();
     } else if (privacyMode === "masked") {
-      patientLabel = `${maskWord(r.firstName || "")} ${maskWord(r.lastName || "")}`.trim();
+      patientLabel = `${maskWord(r.firstName || "")} ${maskWord(r.lastName || "")}`.trim().toUpperCase();
     } else { // "token_only"
       patientLabel = `Patient #${r.tokenNo}`;
     }

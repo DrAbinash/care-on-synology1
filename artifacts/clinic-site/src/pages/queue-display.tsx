@@ -41,6 +41,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { QRCodeSVG } from "qrcode.react";
 import { api } from "../api";
 import { useKioskMode } from "../hooks/useKioskMode";
 
@@ -420,15 +421,29 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
           </section>
         )}
 
-        {s.showQrBooking && s.qrImageUrl && (
-          <section className="qr-card">
-            <h3>{s.qrHeading}</h3>
-            <h2>{s.qrSubheading}</h2>
-            <p>{s.qrDescription}</p>
-            <img src={s.qrImageUrl} className="qr" alt="Booking QR code" />
-            <div className="qr-btn">{s.qrButtonText}</div>
-          </section>
-        )}
+        {s.showQrBooking && (() => {
+          // Fall back to auto-generated QR pointing to the clinic's booking
+          // page (website + /book) when no QR image has been uploaded — the
+          // card previously vanished entirely, which read as "QR not showing".
+          const fallbackTarget = s.website
+            ? (s.website.startsWith("http") ? s.website : `https://${s.website}`).replace(/\/+$/, "") + "/book"
+            : `${window.location.origin}/book`;
+          return (
+            <section className="qr-card">
+              {s.qrHeading && <h3>{s.qrHeading}</h3>}
+              {s.qrSubheading && <h2>{s.qrSubheading}</h2>}
+              {s.qrDescription && <p>{s.qrDescription}</p>}
+              {s.qrImageUrl ? (
+                <img src={s.qrImageUrl} className="qr" alt="Booking QR code" />
+              ) : (
+                <div className="qr qr-auto">
+                  <QRCodeSVG value={fallbackTarget} size={256} level="M" includeMargin={false} />
+                </div>
+              )}
+              {s.qrButtonText && <div className="qr-btn">{s.qrButtonText}</div>}
+            </section>
+          );
+        })()}
 
         {enabledInstructions.length > 0 && (
           <section className="instruction-row" style={{ gridTemplateColumns: `repeat(${Math.min(enabledInstructions.length, 3)}, 1fr)` }}>
@@ -508,7 +523,7 @@ const DISPLAY_CSS = `
 .blue-bar { background: var(--secondary-color, #075fe0); font-size: 2.3vh; font-weight: 900; padding: 1.2vh; text-align: center; }
 .now-card { background: white; color: #00143d; text-align: center; flex: 1.6; display: flex; flex-direction: column; justify-content: center; min-height: 0; }
 .now-card h3 { font-size: 9vh; margin: 1.4vh 0 0.2vh; line-height: 1; font-weight: 900; }
-.now-card h4 { font-size: 3.6vh; margin: 0 0 1.2vh; font-weight: 800; }
+.now-card h4 { font-size: 3.6vh; margin: 0 0 1.2vh; font-weight: 800; text-transform: uppercase; }
 .now-card p { font-size: 1.9vh; font-weight: 700; min-height: 2.4vh; margin: 0 0 1vh; }
 .now-card p span { color: #d97706; margin-left: 10px; }
 .no-serving { font-size: 3vh; font-weight: 700; color: #64748b; padding: 6vh 0; }
@@ -528,13 +543,15 @@ const DISPLAY_CSS = `
 .next-row:last-child { border-bottom: none; }
 .next-empty { background: white; color: #64748b; text-align: center; padding: 3vh; font-size: 2vh; }
 .next-row b { background: var(--secondary-color, #075fe0); color: white; border-radius: 8px; padding: 0.6vh; text-align: center; font-size: 2vh; }
-.next-row span { font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.next-row span { font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: uppercase; }
 .next-row em { font-style: normal; text-align: right; opacity: 0.7; font-size: 1.6vh; white-space: nowrap; }
 .qr-card { text-align: center; padding: 1.6vh; flex: 2.4; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 0; }
 .qr-card h3 { color: var(--primary-color, #60e243); font-size: 2.2vh; margin: 0; letter-spacing: 0.04em; }
 .qr-card h2 { font-size: 3.4vh; margin: 0.4vh 0 0.8vh; font-weight: 900; }
 .qr-card p { font-size: 1.7vh; margin: 0 0 1.2vh; opacity: 0.9; max-width: 80%; }
 .qr { width: min(32vh, 60vw); height: min(32vh, 60vw); background: white; padding: 1.2vh; border-radius: 14px; }
+.qr-auto { display: flex; align-items: center; justify-content: center; }
+.qr-auto svg { width: 100%; height: 100%; }
 .qr-btn {
   margin-top: 1.2vh;
   background: var(--primary-color, #44c72f);
