@@ -124,8 +124,8 @@ export const RADIOLOGY_FLAG_REGISTRY: RadiologyFlagEntry[] = [
     ownerSubsystem: "usg extraction",
   },
   {
-    key: "ff_radiology_usg_exact_provenance", defaultValue: false, dependsOn: ["ff_radiology_usg_dicom_extraction"], enableOrder: 10, wired: false,
-    purpose: "USG P3 — exact frame/SCOORD-caliper provenance → populate viewer_measurements + frame-level viewer navigation",
+    key: "ff_radiology_usg_exact_provenance", defaultValue: false, dependsOn: ["ff_radiology_usg_dicom_extraction"], enableOrder: 10, wired: true,
+    purpose: "USG P3 — exact frame/SCOORD-caliper provenance. Wired: extraction ingests SR rows into viewer_measurements (real frame, never fabricated; idempotent). Frame-level VIEWER NAVIGATION UI still needs the live OHIF viewer.",
     rollbackEffect: "disable → provenance degrades to series/SR-document level; viewer_measurements not populated from SR",
     ownerSubsystem: "usg provenance",
   },

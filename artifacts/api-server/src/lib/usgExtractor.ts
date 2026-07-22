@@ -23,6 +23,8 @@ import {
 } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
 import { logger } from "./logger";
+import { isFeatureEnabledServer } from "./featureFlags";
+import { ingestSrProvenance } from "./usgProvenanceIngest";
 import { geminiUsgOcr, geminiNormalizeMeasurements, type UsgMeasurementJson } from "@workspace/integrations-gemini-ai";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -630,6 +632,23 @@ export async function runUsgExtraction(input: UsgExtractionInput): Promise<UsgEx
 
     const srMapped = mapSrToJson(srMeasurements);
     const srFound = srMeasurements.length > 0;
+
+    // ── Step 2.6: P3 exact-provenance ingest — ADDITIVE, fail-safe, flag-gated ─
+    // Writes SR-derived rows (real SOP + frame + caliper; frame never fabricated)
+    // into the shared viewer_measurements table. Wrapped so it can NEVER break
+    // the existing extraction, and gated by ff_radiology_usg_exact_provenance.
+    if (dicomMetadataJson && patientId != null) {
+      try {
+        if (await isFeatureEnabledServer("ff_radiology_usg_exact_provenance")) {
+          const prov = await ingestSrProvenance(dicomMetadataJson, {
+            studyInstanceUID, patientId, studyId: studyId ?? null,
+          });
+          logger.info({ logId, ...prov }, "USG: SR exact-provenance ingested into viewer_measurements");
+        }
+      } catch (err) {
+        logger.warn({ logId, err }, "USG: SR provenance ingest failed (non-fatal)");
+      }
+    }
 
     // ── Step 2.5: GE Private Tags parse ──────────────────────────────────────
     const gePrivateResult = dicomMetadataJson ? parseGePrivateTagsWithProvenance(dicomMetadataJson) : { mapped: {}, provenance: {} };
