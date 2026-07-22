@@ -177,6 +177,12 @@ export const RADIOLOGY_FLAG_REGISTRY: RadiologyFlagEntry[] = [
     rollbackEffect: "disable → no AI growth notes; the timeline and manual interpretation are unaffected; no data change",
     ownerSubsystem: "usg ai",
   },
+  {
+    key: "ff_radiology_usg_sugandha_mode", defaultValue: false, dependsOn: [], enableOrder: 19, wired: false,
+    purpose: "USG P9 — curated single-radiologist rollout profile (validated P0–P2 baseline); enables nothing on its own",
+    rollbackEffect: "disable → the rollout profile is inert; per-flag enablement is unaffected; no data change",
+    ownerSubsystem: "usg rollout",
+  },
 ];
 
 export interface FlagDependencyViolation {
