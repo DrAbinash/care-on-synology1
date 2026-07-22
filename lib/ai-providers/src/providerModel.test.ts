@@ -117,9 +117,11 @@ describe("Ollama — selected model reaches the client unchanged", () => {
     expect(openaiCreate).toHaveBeenCalledWith(expect.objectContaining({ model: "qwen3:14b" }));
     expect(openaiCreate).not.toHaveBeenCalledWith(expect.objectContaining({ model: "gpt-oss:20b" }));
   });
-  it("uses the gpt-oss:20b probe ONLY when no model is supplied", async () => {
+  it("uses the qwen3:14b default probe ONLY when no model is supplied", async () => {
+    // qwen3:14b is the approved default reporting model — the built-in fallback
+    // when neither an explicit model nor a stored provider default is set.
     const p = await createAiProvider("ollama", undefined, "http://172.16.1.140:11434");
     await p!.testConnection();
-    expect(openaiCreate).toHaveBeenCalledWith(expect.objectContaining({ model: "gpt-oss:20b" }));
+    expect(openaiCreate).toHaveBeenCalledWith(expect.objectContaining({ model: "qwen3:14b" }));
   });
 });

@@ -185,6 +185,20 @@ async function run() {
       console.log("\n✓  Seeding complete.\n");
     }
 
+    // 3e-bis. Clean-boot compatibility pre-seed (admin_sessions).
+    // Drizzle 0006_jazzy_mojo.sql does ALTER + DROP TABLE "admin_sessions" to
+    // remove a legacy pre-Drizzle table. No migration CREATEs it, so on a
+    // completely empty database those statements raise "relation does not
+    // exist" and — because this path runs the transactional Drizzle migrator —
+    // abort the whole migration. On a CLEAN boot only (no core tables yet),
+    // create a minimal placeholder so 0006 removes it cleanly. On an existing
+    // database this is skipped, so the deprecated table is never resurrected.
+    // Mirrors docker/db-patch-entrypoint.sh (the authoritative production path).
+    if (!hasCoreTables) {
+      console.log("ℹ️   Clean boot — pre-seeding legacy admin_sessions placeholder so migration 0006 can drop it cleanly.");
+      await client.query(`CREATE TABLE IF NOT EXISTS "public"."admin_sessions" ("id" serial PRIMARY KEY);`);
+    }
+
     // 3f. Run Drizzle file-based migrator — applies any pending .sql files
     // CRITICAL FIX (2026-06-30): Execute migrations with autocommit (no transaction wrapper).
     // If any migration contains CREATE INDEX CONCURRENTLY, it MUST run outside a transaction.

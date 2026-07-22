@@ -81,8 +81,11 @@ export const BUILTIN_PROVIDER_CONFIGS: Record<string, AiProviderConfig> = {
     label: "Ollama (Local)",
     needsApiKey: false,
     needsEndpointUrl: true,
-    defaultModels: ["gpt-oss:20b", "gemma3:12b"],
-    placeholder: "http://100.79.100.41:11434",
+    // Approved on-prem Ollama models. qwen3:14b is the default reporting model
+    // and MUST be listed first so it is the built-in fallback and the top of the
+    // model picker; gpt-oss:20b and gemma3:12b are the other two approved models.
+    defaultModels: ["qwen3:14b", "gpt-oss:20b", "gemma3:12b"],
+    placeholder: "http://172.16.1.140:11434",
   },
 };
 
@@ -278,7 +281,7 @@ class OllamaProvider implements AiProvider {
         content.push({ type: "image_url", image_url: { url: `data:image/jpeg;base64,${img}` } });
       }
       const resp = await client.chat.completions.create({
-        model: opts.model || "gpt-oss:20b",
+        model: opts.model || "qwen3:14b",
         messages: [{ role: "user", content }],
         max_tokens: opts.maxTokens ?? 4096,
       });
@@ -300,7 +303,7 @@ class OllamaProvider implements AiProvider {
       const models = tagsData.models?.map((m) => m.name) ?? [];
       // Test chat completion with the selected model (fallback only when omitted)
       const chatResult = await this.query({
-        model: model || "gpt-oss:20b",
+        model: model || "qwen3:14b",
         prompt: "Reply with exactly the word: CONNECTED",
         images: [],
       });

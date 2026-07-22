@@ -232,6 +232,31 @@ psql_q -c '
 
 ok "Migration tracking ready"
 
+# ── Step 2b: Clean-boot compatibility pre-seed (admin_sessions) ──────────────
+# Drizzle migration 0006_jazzy_mojo.sql contains:
+#     ALTER TABLE "admin_sessions" DISABLE ROW LEVEL SECURITY;
+#     DROP TABLE "admin_sessions" CASCADE;
+# to remove a legacy table that existed in the PRE-Drizzle production schema.
+# No migration ever CREATEs "admin_sessions", so on a COMPLETELY EMPTY database
+# these two statements hit a table that never existed and raise
+#     ERROR: relation "admin_sessions" does not exist
+# (harmless here because the Drizzle step below runs with ON_ERROR_STOP=0, but
+# it pollutes the log and makes a clean boot look like it failed; the manual
+# care-migrate path (db-deploy.ts) — which runs the transactional Drizzle
+# migrator — would actually abort on it).
+#
+# Fix: on a CLEAN boot only (detected by the absence of the "users" table,
+# which every real deployment already has), create a minimal placeholder so
+# 0006's ALTER/DROP execute cleanly and remove it again — net no-op, no error.
+# Gated on clean-boot so an existing/production database (0006 long applied,
+# admin_sessions long gone) is never touched and the table is never resurrected.
+is_clean_boot=$(psql_val "SELECT (to_regclass('public.users') IS NULL)::text;")
+if [ "${is_clean_boot}" = "true" ]; then
+  info "Clean boot detected — pre-seeding legacy admin_sessions placeholder so 0006 drops it cleanly…"
+  psql_q -c 'CREATE TABLE IF NOT EXISTS "public"."admin_sessions" ("id" serial PRIMARY KEY);'
+  ok "admin_sessions placeholder created (Drizzle 0006 will remove it)"
+fi
+
 # ── Step 3: Auto-apply Drizzle migrations from journal ───────────────────────
 echo ""
 info "Reading Drizzle journal from ${JOURNAL}…"
