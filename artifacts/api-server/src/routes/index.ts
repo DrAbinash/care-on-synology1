@@ -132,6 +132,7 @@ import usgAdminRouter from "./usgAdmin";
 import usgPriorRouter from "./usgPrior";
 import usgObDopplerRouter from "./usgObDoppler";
 import usgAiRouter from "./usgAi";
+import usgCineRouter from "./usgCine";
 import { radiologyKnowledgePacksRouter } from "./radiologyKnowledgePacks";
 import echoCardiologyRouter from "./echoCardiology";
 import fetalUsgLevel4Router from "./fetalUsgLevel4";
@@ -633,6 +634,10 @@ router.use("/usg-pacs-return", requireStaffAuth, requireStaffPermission("/radiol
 // when no model gateway. Flag-gated (404 when OFF). AI can never reach a signed
 // report (write-guard throws on any non-draft target).
 router.use("/usg-ai", requireStaffAuth, requireStaffPermission("/radiology"), usgAiRouter);
+
+// USG P7 cine — capture key frames (DICOM references) from multi-frame clips.
+// Flag-gated (404 when OFF); DICOM references only, never a fabricated frame.
+router.use("/usg-cine", requireStaffAuth, requireStaffPermission("/radiology"), usgCineRouter);
 
 // CARE Knowledge Pack Engine — a registry/loader/validator over the existing
 // per-study-type content (quick findings / protocols / history / measurements /
