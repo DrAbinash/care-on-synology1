@@ -160,7 +160,7 @@ export const RADIOLOGY_FLAG_REGISTRY: RadiologyFlagEntry[] = [
     ownerSubsystem: "usg pacs return",
   },
   {
-    key: "ff_radiology_usg_cine", defaultValue: false, dependsOn: ["ff_radiology_usg_dicom_extraction"], enableOrder: 16, wired: false,
+    key: "ff_radiology_usg_cine", defaultValue: false, dependsOn: ["ff_radiology_usg_dicom_extraction"], enableOrder: 16, wired: true,
     purpose: "USG P7 — cine-loop (multi-frame US) key-frame selection + playback capability, reusing the P3 SrImageRef provenance model",
     rollbackEffect: "disable → cine key-frame capture/playback hidden; single-frame extraction unaffected; no data change",
     ownerSubsystem: "usg cine",
