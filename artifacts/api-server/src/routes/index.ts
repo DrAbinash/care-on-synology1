@@ -99,6 +99,7 @@ import barcodeResolverRouter from "./barcode-resolver";
 import { uploadsRouter } from "./uploads";
 import { scansRouter } from "./scans";
 import { radiologyReportGeneratorRouter } from "./radiology-report-generator";
+import { radiologyFindingLibraryRouter } from "./radiology-finding-library";
 import { structuredReportTemplatesRouter } from "./structuredReportTemplates";
 import { floorsRouter, roomsRouter, modalitiesRouter } from "./locations";
 import { aiReportingRouter } from "./aiReporting";
@@ -701,6 +702,15 @@ router.use(
   requireStaffAuth,
   requireStaffPermission("/radiology"),
   radiologyReportGeneratorRouter,
+);
+
+// Editable findings library (Report Builder) — add/modify/delete abnormal
+// findings per modality + organ; seeded once from the mined house catalogue.
+router.use(
+  "/radiology/finding-library",
+  requireStaffAuth,
+  requireStaffPermission("/radiology"),
+  radiologyFindingLibraryRouter,
 );
 
 // Structured report templates — open to all authenticated staff for reading.

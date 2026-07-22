@@ -11,30 +11,14 @@
  *      report being edited.
  */
 import { useMemo, useState, useEffect, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
 import { composeReport, type BaseSection } from "@/lib/findingsCompose";
+import { useFindingsLibrary, type Finding, type StudyTemplate } from "@/hooks/useFindingsLibrary";
 import { Search, Check, Trash2, FileCheck2, AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
-
-interface Finding {
-  id: string; text: string; modality: string; region: string; section: string;
-  impression: boolean; abnormal: boolean; frequency: number; keywords: string[];
-}
-interface TemplateSection { section: string; normal: string }
-interface StudyTemplate {
-  id: string; modality: string; region: string; label: string;
-  technique: string; sections: TemplateSection[]; normalImpression: string;
-  sampleCount: number; normalCount: number;
-}
-interface Library {
-  modalities: string[]; regions: { key: string; label: string }[];
-  stats: { findings: number; templates: number };
-  templates: StudyTemplate[]; findings: Finding[];
-}
 
 const MODALITY_STYLE: Record<string, string> = {
   CT: "bg-sky-100 text-sky-800 dark:bg-sky-900/50 dark:text-sky-200",
@@ -77,15 +61,7 @@ export default function FindingsLibraryPanel({ modalityHint, studyHint, onApplyR
   const { toast } = useToast();
   const searchRef = useRef<HTMLInputElement>(null);
 
-  const { data: lib, isLoading, isError } = useQuery<Library>({
-    queryKey: ["radiology-findings-library"],
-    queryFn: async () => {
-      const res = await fetch(`${import.meta.env.BASE_URL}data/radiology-findings-library.json`);
-      if (!res.ok) throw new Error(`Failed to load findings library (${res.status})`);
-      return res.json() as Promise<Library>;
-    },
-    staleTime: Infinity,
-  });
+  const { templates, regions, modalities, findings: allFindings, isLoading, isError } = useFindingsLibrary();
 
   const hintModality = normalizeModality(modalityHint);
   const [baseId, setBaseId] = useState("");
@@ -97,23 +73,22 @@ export default function FindingsLibraryPanel({ modalityHint, studyHint, onApplyR
   useEffect(() => { searchRef.current?.focus(); }, []);
   // auto-select the base format once the library is available
   useEffect(() => {
-    if (lib && !baseId) setBaseId(pickBase(lib.templates, hintModality, studyHint));
-  }, [lib, baseId, hintModality, studyHint]);
+    if (templates.length && !baseId) setBaseId(pickBase(templates, hintModality, studyHint));
+  }, [templates, baseId, hintModality, studyHint]);
 
-  const base = useMemo(() => lib?.templates.find((t) => t.id === baseId) ?? null, [lib, baseId]);
+  const base = useMemo(() => templates.find((t) => t.id === baseId) ?? null, [templates, baseId]);
   const modality = base?.modality || hintModality;
 
   const regionLabel = useMemo(() => {
     const m = new Map<string, string>();
-    lib?.regions.forEach((r) => m.set(r.key, r.label));
+    regions.forEach((r) => m.set(r.key, r.label));
     return (k: string) => m.get(k) ?? k;
-  }, [lib]);
+  }, [regions]);
 
   const results = useMemo(() => {
-    if (!lib) return [] as Finding[];
     const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
     const out: Finding[] = [];
-    for (const f of lib.findings) {
+    for (const f of allFindings) {
       if (modality && f.modality !== modality) continue;
       if (base && f.region !== base.region && !terms.length) continue; // scope to study region when just browsing
       if (abnormalOnly && !f.abnormal) continue;
@@ -125,7 +100,7 @@ export default function FindingsLibraryPanel({ modalityHint, studyHint, onApplyR
     }
     out.sort((a, b) => b.frequency - a.frequency);
     return out;
-  }, [lib, q, modality, base, abnormalOnly]);
+  }, [allFindings, q, modality, base, abnormalOnly]);
 
   const grouped = useMemo(() => {
     const map = new Map<string, Finding[]>();
@@ -178,7 +153,7 @@ export default function FindingsLibraryPanel({ modalityHint, studyHint, onApplyR
           title="Base normal format"
         >
           <option value="">No base (compose from selection)</option>
-          {(lib?.templates ?? [])
+          {templates
             .filter((t) => !modality || t.modality === modality)
             .sort((a, b) => b.sampleCount - a.sampleCount)
             .map((t) => <option key={t.id} value={t.id}>{t.label} — normal</option>)}

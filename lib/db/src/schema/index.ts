@@ -66,6 +66,7 @@ export {
 export * from "./reportDeliveryLogs";
 export * from "./whatsapp";
 export * from "./structuredReportTemplates";
+export * from "./radiologyFindingLibrary";
 export * from "./teleradiologyUsers";
 export * from "./hl7Schema";
 export * from "./whatsappConversations";

@@ -9,7 +9,6 @@
  */
 import { useMemo, useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
-import { useQuery } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import PageHeader from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -18,23 +17,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { composeReport, type BaseSection } from "@/lib/findingsCompose";
-import { Search, Check, Copy, Trash2, FileCheck2, AlertTriangle, ExternalLink } from "lucide-react";
-
-interface Finding {
-  id: string; text: string; modality: string; region: string; section: string;
-  impression: boolean; abnormal: boolean; frequency: number; keywords: string[];
-}
-interface TemplateSection { section: string; normal: string }
-interface StudyTemplate {
-  id: string; modality: string; region: string; label: string;
-  technique: string; sections: TemplateSection[]; normalImpression: string;
-  sampleCount: number; normalCount: number;
-}
-interface Library {
-  modalities: string[]; regions: { key: string; label: string }[];
-  stats: { sourceReports: number; findings: number; templates: number };
-  templates: StudyTemplate[]; findings: Finding[];
-}
+import { useFindingsLibrary, type Finding } from "@/hooks/useFindingsLibrary";
+import { Search, Check, Copy, Trash2, FileCheck2, AlertTriangle, ExternalLink, Settings2 } from "lucide-react";
 
 const MODALITY_STYLE: Record<string, string> = {
   CT: "bg-sky-100 text-sky-800 dark:bg-sky-900/50 dark:text-sky-200",
@@ -49,15 +33,7 @@ export default function RadiologyReportBuilder() {
   const [, navigate] = useLocation();
   const searchRef = useRef<HTMLInputElement>(null);
 
-  const { data: lib, isLoading, isError } = useQuery<Library>({
-    queryKey: ["radiology-findings-library"],
-    queryFn: async () => {
-      const res = await fetch(`${import.meta.env.BASE_URL}data/radiology-findings-library.json`);
-      if (!res.ok) throw new Error(`Failed to load findings library (${res.status})`);
-      return res.json() as Promise<Library>;
-    },
-    staleTime: Infinity,
-  });
+  const { templates, findings: allFindings, seeded, isLoading, isError } = useFindingsLibrary();
 
   const [modality, setModality] = useState("");
   const [baseId, setBaseId] = useState("");
@@ -68,21 +44,20 @@ export default function RadiologyReportBuilder() {
 
   useEffect(() => { searchRef.current?.focus(); }, []);
 
-  const base = useMemo(() => lib?.templates.find((t) => t.id === baseId) ?? null, [lib, baseId]);
+  const base = useMemo(() => templates.find((t) => t.id === baseId) ?? null, [templates, baseId]);
   const effModality = base?.modality || modality;
 
   // when a base is chosen, sync title + modality
   function chooseBase(id: string) {
     setBaseId(id);
-    const t = lib?.templates.find((x) => x.id === id);
+    const t = templates.find((x) => x.id === id);
     if (t) { setModality(t.modality); if (!title.trim()) setTitle(t.label.toUpperCase()); }
   }
 
   const results = useMemo(() => {
-    if (!lib) return [] as Finding[];
     const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
     const out: Finding[] = [];
-    for (const f of lib.findings) {
+    for (const f of allFindings) {
       if (effModality && f.modality !== effModality) continue;
       if (base && f.region !== base.region && !terms.length) continue;
       if (abnormalOnly && !f.abnormal) continue;
@@ -94,7 +69,7 @@ export default function RadiologyReportBuilder() {
     }
     out.sort((a, b) => b.frequency - a.frequency);
     return out;
-  }, [lib, q, effModality, base, abnormalOnly]);
+  }, [allFindings, q, effModality, base, abnormalOnly]);
 
   const grouped = useMemo(() => {
     const map = new Map<string, Finding[]>();
@@ -144,10 +119,16 @@ export default function RadiologyReportBuilder() {
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      <PageHeader
-        title="Report Builder"
-        subtitle={lib ? `Pick a normal format, tick the abnormal findings — they replace that organ's normal line and build the impression` : "Loading…"}
-      />
+      <div className="flex items-start justify-between gap-3">
+        <PageHeader
+          title="Report Builder"
+          subtitle={isLoading ? "Loading…" : `Pick a normal format, tick the abnormal findings — they replace that organ's normal line and build the impression`}
+        />
+        <Button variant="outline" size="sm" onClick={() => navigate("/radiology/findings-manager")} className="mt-1 shrink-0">
+          <Settings2 className="mr-1 h-4 w-4" /> Manage findings
+          {!seeded && <span className="ml-1 rounded bg-amber-100 px-1 text-[10px] text-amber-700 dark:bg-amber-900/40 dark:text-amber-200">starter</span>}
+        </Button>
+      </div>
       {isError && <Card><CardContent className="p-4 text-sm text-destructive">Could not load the findings library.</CardContent></Card>}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.4fr_1fr]">
@@ -161,7 +142,7 @@ export default function RadiologyReportBuilder() {
               <select value={baseId} onChange={(e) => chooseBase(e.target.value)}
                 className="h-8 min-w-[200px] flex-1 rounded border bg-background px-2 text-xs">
                 <option value="">— select a study —</option>
-                {[...(lib?.templates ?? [])].sort((a, b) => b.sampleCount - a.sampleCount).map((t) => (
+                {[...templates].sort((a, b) => b.sampleCount - a.sampleCount).map((t) => (
                   <option key={t.id} value={t.id}>{t.label} — normal ({t.sampleCount})</option>
                 ))}
               </select>
