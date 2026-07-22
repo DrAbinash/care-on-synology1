@@ -463,6 +463,7 @@ export const AI_TASK_CATALOG: AiTaskDef[] = [
   { key: "echo_draft", label: "Echo Cardiology AI Draft", description: "AI-assisted 2D echocardiography report drafting from measurements and valve assessment.", vision: false },
   { key: "fetal_echo_draft", label: "Fetal Echo AI Draft", description: "AI-assisted fetal echocardiography report drafting from fetal echo parameters.", vision: false },
   { key: "fetal_usg_draft", label: "Fetal USG Level-4 AI Draft", description: "AI-assisted fetal ultrasound report drafting from biometry and anomaly scan data.", vision: false },
+  { key: "usg_ai_assistant", label: "USG AI Assistant", description: "Advisory USG reporting suggestions (findings/impression) for the USG Companion workspace. Text-only; runs through the safety filter (never outputs fetal sex, accept-only, draft-only). Route to a local (Ollama) model to keep PHI on-prem.", vision: false },
   { key: "echo_report_delivery", label: "Echo Report Delivery Message", description: "Draft patient-facing message for echo report delivery.", vision: false },
   { key: "fetal_usg_report_delivery", label: "Fetal USG Report Delivery Message", description: "Draft patient-facing message for fetal USG report delivery.", vision: false },
   // Phase 7A: Advanced Multi-AI Tasks

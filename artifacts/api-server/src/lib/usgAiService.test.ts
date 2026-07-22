@@ -49,6 +49,26 @@ describe("P8 usgAiService — visibility + availability (honest states)", () => 
     expect(r.suggestions.length).toBe(1); // only the safe one
     expect(r.suggestions[0].text).toBe("Hepatomegaly.");
   });
+
+  it("shows deterministic notes even when the model gateway is unavailable", async () => {
+    const note: RawAiSuggestion = { kind: "growth_note", section: "Growth", text: "EFW increased 200 g.", rationale: "interval", confidence: 0.6 };
+    const r = await generateUsgSuggestions(provider([RAW], false), enablement(true), {}, [note]);
+    expect(r.available).toBe(false); // model still down
+    expect(r.suggestions.map((s) => s.text)).toEqual(["EFW increased 200 g."]);
+    expect(r.reason).toMatch(/deterministic notes only/i);
+  });
+
+  it("merges deterministic notes before model suggestions when available", async () => {
+    const note: RawAiSuggestion = { kind: "growth_note", text: "Serial trend available.", rationale: "n", confidence: 0.4 };
+    const r = await generateUsgSuggestions(provider([RAW]), enablement(true), {}, [note]);
+    expect(r.suggestions.map((s) => s.text)).toEqual(["Serial trend available.", "Hepatomegaly."]);
+  });
+
+  it("still drops a fetal-sex DETERMINISTIC note (safety filter applies to both)", async () => {
+    const bad: RawAiSuggestion = { kind: "growth_note", text: "Male fetus growing.", rationale: "r", confidence: 0.5 };
+    const r = await generateUsgSuggestions(provider([], false), enablement(true), {}, [bad]);
+    expect(r.suggestions).toEqual([]);
+  });
 });
 
 describe("P8 usgAiService — accept boundary (the ONLY write path)", () => {

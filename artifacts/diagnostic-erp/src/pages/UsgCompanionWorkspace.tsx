@@ -461,6 +461,7 @@ export default function UsgCompanionWorkspace({ studyId }: { studyId?: number })
           <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2">
             <UsgAiPanel
               studyId={studyId ?? null}
+              patientId={entry.patientId ?? null}
               onAccept={(t) => { setImpressionEdited(true); setImpressionText((prev) => (prev ? `${prev}\n${t}` : t)); }}
             />
           </div>

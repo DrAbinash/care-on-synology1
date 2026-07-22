@@ -56,24 +56,41 @@ export async function generateUsgSuggestions(
   provider: UsgAiProvider,
   enablement: Enablement,
   context: Record<string, unknown>,
+  deterministic: RawAiSuggestion[] = [],
 ): Promise<SuggestResult> {
   const vis = gateUsgAiVisibility(enablement);
   if (!vis.visible) return { visible: false, available: false, reason: vis.reason, suggestions: [] };
 
-  if (!(await provider.available())) {
-    return { visible: true, available: false, reason: "AI model gateway unavailable — manual reporting unaffected", suggestions: [] };
+  const safe = (raw: RawAiSuggestion[]): UsgAiSuggestion[] => {
+    const out: UsgAiSuggestion[] = [];
+    for (const r of raw) {
+      try {
+        out.push(buildUsgAiSuggestion(r)); // throws on fetal-sex / gender content → dropped
+      } catch {
+        // A suggestion that fails the safety guard is silently dropped, never shown.
+      }
+    }
+    return out;
+  };
+
+  // Deterministic notes (e.g. growth notes) do NOT depend on the model gateway,
+  // so they are produced even when the gateway is unavailable.
+  const deterministicSafe = safe(deterministic);
+
+  const available = await provider.available();
+  if (!available) {
+    return {
+      visible: true,
+      available: false,
+      reason: deterministicSafe.length
+        ? "AI model gateway unavailable — showing deterministic notes only; manual reporting unaffected"
+        : "AI model gateway unavailable — manual reporting unaffected",
+      suggestions: deterministicSafe,
+    };
   }
 
-  const raw = await provider.generate(context);
-  const suggestions: UsgAiSuggestion[] = [];
-  for (const r of raw) {
-    try {
-      suggestions.push(buildUsgAiSuggestion(r)); // throws on fetal-sex / gender content → dropped
-    } catch {
-      // A suggestion that fails the safety guard is silently dropped, never shown.
-    }
-  }
-  return { visible: true, available: true, reason: vis.reason, suggestions };
+  const modelSafe = safe(await provider.generate(context));
+  return { visible: true, available: true, reason: vis.reason, suggestions: [...deterministicSafe, ...modelSafe] };
 }
 
 /**
