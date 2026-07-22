@@ -206,6 +206,38 @@ const pacsRearchiveHandler: RadiologyJobHandler = async (job) => {
     : { ok: false, detail: result.error ?? "archive failed" };
 };
 
+export const USG_PACS_RETURN_JOB = "usg_pacs_return";
+
+/** USG P6 — return a signed USG report to PACS. Re-evaluates the fail-closed
+ *  eligibility policy at EXECUTION time (not just at enqueue), so a report that
+ *  became superseded / lost Form-F compliance in the interim is never pushed.
+ *  Then delegates to the canonical archiveReportToPacs. Duplicate-effect safe. */
+const usgPacsReturnHandler: RadiologyJobHandler = async (job) => {
+  const payload = (job.payload ?? {}) as { studyId?: number; reportId?: number };
+  const studyId = Number(payload.studyId);
+  if (!Number.isInteger(studyId) || studyId <= 0) return { ok: false, detail: "invalid payload: studyId required" };
+
+  // Duplicate-effect guard: already archived successfully → no-op.
+  if (payload.reportId) {
+    const [rev] = await db
+      .select({ status: radiologyPacsArchiveRevisionsTable.status })
+      .from(radiologyPacsArchiveRevisionsTable)
+      .where(eq(radiologyPacsArchiveRevisionsTable.reportId, Number(payload.reportId)));
+    if (rev?.status === "success") return { ok: true, detail: "revision already archived — no-op" };
+  }
+
+  const { evaluateUsgPacsReturn } = await import("./usgPacsReturnService");
+  const evaln = await evaluateUsgPacsReturn(studyId);
+  if ("error" in evaln) return { ok: false, detail: evaln.error };
+  if (!evaln.eligible) return { ok: false, detail: `ineligible: ${evaln.blockReasons.join(",")}` };
+
+  const { archiveReportToPacs } = await import("./pacsArchive");
+  const result = await archiveReportToPacs(studyId);
+  return result.success
+    ? { ok: true, detail: `usg report returned to PACS (instance ${result.instanceId ?? "?"})` }
+    : { ok: false, detail: result.error ?? "archive failed" };
+};
+
 export const RESTORE_VERIFY_JOB = "radiology_restore_verify";
 
 /** BEND-1 Phase 8 — restore-verification proof, run as a durable job (it is
@@ -226,6 +258,7 @@ const restoreVerifyHandler: RadiologyJobHandler = async (job) => {
 export const RADIOLOGY_JOB_HANDLERS: Record<string, RadiologyJobHandler> = {
   [REDELIVERY_SEND_JOB]: redeliverySendHandler,
   [PACS_REARCHIVE_JOB]: pacsRearchiveHandler,
+  [USG_PACS_RETURN_JOB]: usgPacsReturnHandler,
   [RESTORE_VERIFY_JOB]: restoreVerifyHandler,
   // Phase P1/P2 (shadow): the AI execution pipeline runs on this same engine —
   // no new scheduler, no new worker, no new queue. P2 injects the AI Gateway

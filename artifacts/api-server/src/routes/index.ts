@@ -127,6 +127,7 @@ import { usgReportsRouter } from "./usgReports";
 import { usgCriticalAlertsRouter } from "./usgCriticalAlerts";
 import { usgAnalyticsRouter } from "./usgAnalytics";
 import { careUsgCompanionRouter } from "./careUsgCompanion";
+import usgPacsReturnRouter from "./usgPacsReturn";
 import usgAdminRouter from "./usgAdmin";
 import usgPriorRouter from "./usgPrior";
 import usgObDopplerRouter from "./usgObDoppler";
@@ -620,6 +621,12 @@ router.use("/usg-prior", requireStaffAuth, requireStaffPermission("/radiology"),
 // impression payloads the workspace merges into the draft. No fetal sex; Form-F
 // is display-only (the finalize gate stays fail-closed).
 router.use("/usg-ob-doppler", requireStaffAuth, requireStaffPermission("/radiology"), usgObDopplerRouter);
+
+// USG P6 report→PACS return — fail-closed eligibility + enqueue of the durable
+// USG_PACS_RETURN_JOB (drained by the existing per-minute cron). Flag-gated
+// (404 when OFF). The actual push is the canonical archiveReportToPacs; drafts
+// and superseded / PCPNDT-non-compliant reports are never enqueued.
+router.use("/usg-pacs-return", requireStaffAuth, requireStaffPermission("/radiology"), usgPacsReturnRouter);
 
 // CARE Knowledge Pack Engine — a registry/loader/validator over the existing
 // per-study-type content (quick findings / protocols / history / measurements /
