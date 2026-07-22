@@ -129,6 +129,18 @@ export const RADIOLOGY_FLAG_REGISTRY: RadiologyFlagEntry[] = [
     rollbackEffect: "disable → provenance degrades to series/SR-document level; viewer_measurements not populated from SR",
     ownerSubsystem: "usg provenance",
   },
+  {
+    key: "ff_radiology_usg_prior_intelligence", defaultValue: false, dependsOn: [], enableOrder: 11, wired: false,
+    purpose: "USG P4 — prior-study matching + structured current-vs-prior comparison (suggestion-only, same-patient guarded)",
+    rollbackEffect: "disable → no automatic prior suggestions surfaced; manual comparison unaffected; no data change",
+    ownerSubsystem: "usg comparison",
+  },
+  {
+    key: "ff_radiology_usg_pregnancy_timeline", defaultValue: false, dependsOn: ["ff_radiology_usg_prior_intelligence"], enableOrder: 12, wired: false,
+    purpose: "USG P4 — pregnancy-episode grouping + GA/EFW trend timeline (reuses canonical obstetric engine)",
+    rollbackEffect: "disable → timeline panel hidden; per-scan obstetric calculations unaffected; no data change",
+    ownerSubsystem: "usg obstetrics",
+  },
 ];
 
 export interface FlagDependencyViolation {
