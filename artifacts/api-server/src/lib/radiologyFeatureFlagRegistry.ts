@@ -165,6 +165,18 @@ export const RADIOLOGY_FLAG_REGISTRY: RadiologyFlagEntry[] = [
     rollbackEffect: "disable → cine key-frame capture/playback hidden; single-frame extraction unaffected; no data change",
     ownerSubsystem: "usg cine",
   },
+  {
+    key: "ff_radiology_usg_ai_assistant", defaultValue: false, dependsOn: [], enableOrder: 17, wired: false,
+    purpose: "USG P8 — advisory AI assistant (suggestion-only; never signs/finalizes, never writes patient_reports, never bypasses Form F, never emits fetal sex; reuses the canonical AI enablement policy)",
+    rollbackEffect: "disable → no AI suggestions surfaced; manual reporting unaffected; no data change",
+    ownerSubsystem: "usg ai",
+  },
+  {
+    key: "ff_radiology_usg_ai_growth", defaultValue: false, dependsOn: ["ff_radiology_usg_ai_assistant", "ff_radiology_usg_pregnancy_timeline"], enableOrder: 18, wired: false,
+    purpose: "USG P8 — AI growth-note suggestions over the P4 pregnancy timeline (advisory; never auto-classifies IUGR/macrosomia)",
+    rollbackEffect: "disable → no AI growth notes; the timeline and manual interpretation are unaffected; no data change",
+    ownerSubsystem: "usg ai",
+  },
 ];
 
 export interface FlagDependencyViolation {
