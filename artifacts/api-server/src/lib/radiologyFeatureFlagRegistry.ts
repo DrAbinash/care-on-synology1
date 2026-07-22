@@ -141,6 +141,18 @@ export const RADIOLOGY_FLAG_REGISTRY: RadiologyFlagEntry[] = [
     rollbackEffect: "disable → timeline panel hidden; per-scan obstetric calculations unaffected; no data change",
     ownerSubsystem: "usg obstetrics",
   },
+  {
+    key: "ff_radiology_usg_ob_canonical", defaultValue: false, dependsOn: [], enableOrder: 13, wired: false,
+    purpose: "USG P5 — canonical obstetric section builder (GA/EDD/EFW/AFI via the one obstetric engine; PCPNDT-safe, no fetal sex)",
+    rollbackEffect: "disable → OB reporting uses the legacy autofill text; no data change",
+    ownerSubsystem: "usg obstetrics",
+  },
+  {
+    key: "ff_radiology_usg_doppler_canonical", defaultValue: false, dependsOn: [], enableOrder: 14, wired: false,
+    purpose: "USG P5 — canonical Doppler section builder (RI/PI/S-D/CPR via the one obstetric engine; descriptive flags only)",
+    rollbackEffect: "disable → Doppler reporting uses the legacy autofill text; no data change",
+    ownerSubsystem: "usg doppler",
+  },
 ];
 
 export interface FlagDependencyViolation {

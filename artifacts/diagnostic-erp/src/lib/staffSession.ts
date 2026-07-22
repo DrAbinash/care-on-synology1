@@ -404,6 +404,11 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   // clinical progression on its own.
   ff_radiology_usg_prior_intelligence: false,
   ff_radiology_usg_pregnancy_timeline: false,
+  // USG Companion P5 — canonical OB & Doppler section builders. Off by default;
+  // both reuse the canonical obstetric engine and emit canonical structured
+  // sections/impressions only. No fetal sex is ever produced (PCPNDT-safe).
+  ff_radiology_usg_ob_canonical: false,
+  ff_radiology_usg_doppler_canonical: false,
 };
 
 const RADIOLOGY_FLAG_PREFIX = "ff_radiology_";
