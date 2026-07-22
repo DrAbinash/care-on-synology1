@@ -86,6 +86,7 @@ export const PERMISSIONED_PATHS: ReadonlySet<string> = new Set([
   "/signatures",
   "/banking",
   "/samples",
+  "/hope-referrals",
   "/radiology",
   "/dicom-studies",
   "/dicom-workflow",
@@ -354,6 +355,10 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   caseOfMonth: false,
   annotationLayer: false,
   hideDeprecatedNav: false,
+  // HOPE → CARE diagnostic referral inbox nav item. Off by default; enable per
+  // browser for pilot, or globally once the ff_hope_care_referrals server flag
+  // and an integration partner are provisioned.
+  hopeReferralsInbox: false,
   billingDeskStepped: false,
   // Billing Desk display preferences (all apply immediately without page refresh)
   billingDeskQuickTests: true,       // Show quick test slots

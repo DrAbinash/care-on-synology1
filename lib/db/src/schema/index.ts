@@ -150,3 +150,12 @@ export * from "./aiEvaluation";
 export * from "./aiClinicalConfig";
 export * from "./aiInterop";
 export * from "./operationalHealthRuns";
+// ── HOPE → CARE diagnostic referral integration (additive; see
+// docs/hope-care-integration/) ──────────────────────────────────────────────
+export * from "./integrationPartners";
+export * from "./externalPatientLinks";
+export * from "./externalProviderLinks";
+export * from "./serviceCatalogueMappings";
+export * from "./diagnosticReferrals";
+export * from "./integrationOutbox";
+export * from "./externalResultLinks";

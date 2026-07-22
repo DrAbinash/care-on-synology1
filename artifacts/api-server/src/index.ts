@@ -23,6 +23,7 @@ initializePluginLoader(app);
 import { logger } from "./lib/logger";
 import { NETWORK_LAN_HOST } from "./lib/networkDefaults";
 import { startCronScheduler } from "./cron";
+import { startIntegrationScheduler } from "./services/integration/scheduler";
 import { ensureDefaultLedger } from "./routes/ledgers";
 import { backfillExpirePublicTokens } from "./routes/patient-reports";
 import { db, usersTable } from "@workspace/db";
@@ -2733,6 +2734,7 @@ const server = app.listen({ port, exclusive: true }, () => {
   // local dev, or the Windows desktop bundle) by setting ENABLE_SCHEDULERS=1.
   if (process.env["ENABLE_SCHEDULERS"] === "1" || process.env["ENABLE_SCHEDULERS"] === "true") {
     startCronScheduler();
+    startIntegrationScheduler();
     logger.info("Cron schedulers enabled (ENABLE_SCHEDULERS set)");
   } else {
     logger.info("Cron schedulers disabled (set ENABLE_SCHEDULERS=1 to enable)");

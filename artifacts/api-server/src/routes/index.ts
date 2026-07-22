@@ -18,6 +18,10 @@ import aiRouter from "./ai";
 import pacsRouter from "./pacs";
 import dicomRouter from "./dicom";
 import samplesRouter from "./samples";
+// HOPE → CARE diagnostic referral integration (additive; docs/hope-care-integration/)
+import { integrationInboundRouter } from "./integration/inbound";
+import { hopeReferralsRouter } from "./integration/hopeReferrals";
+import { integrationAdminRouter } from "./integration/admin";
 import { appointmentsRouter } from "./appointments";
 import { packagesRouter } from "./packages";
 import { expensesRouter } from "./expenses";
@@ -274,6 +278,12 @@ router.use("/whatsapp/webhook", whatsappWebhookRouter);
 // unauthenticated public requests are not intercepted by requireStaffAuth.
 router.use("/website", websiteRouter);
 
+// HOPE → CARE inbound inter-org API (versioned). Mounted public like other
+// server-to-server integrations; each route self-applies
+// requireIntegrationPartnerAuth with a hashed partner key. Nothing flows until
+// an active integration partner is provisioned via the admin console.
+router.use("/integration/v1", integrationInboundRouter);
+
 // ─── Staff-authenticated ERP routes ──────────────────────────────────────────
 // Each route requiring a module permission is gated with requireStaffPermission
 // immediately after requireStaffAuth so that low-privilege staff cannot access
@@ -310,6 +320,16 @@ router.use(
   },
   testsRouter,
 );
+
+// HOPE Referrals inbox — CARE staff workflow (verify patient → verify/map tests
+// → create CARE order → hand off to existing billing). New /hope-referrals
+// permission; admin/super_admin always have access. Additive — creates orders
+// via the canonical path and NEVER writes a bill.
+router.use("/hope-referrals", requireStaffAuth, requireStaffPermission("/hope-referrals"), hopeReferralsRouter);
+
+// Integration admin console — partner provisioning, catalogue mappings, failed
+// integrations / outbox. Admin / super_admin only.
+router.use("/integration/admin", requireStaffAuth, requireAdminRole, integrationAdminRouter);
 
 // [ZONE: billing] PROTECTED — orders, bills, payments, reports, inventory,
 // accounting, discounts, expenses, ledgers, day-close, books-sanity.
