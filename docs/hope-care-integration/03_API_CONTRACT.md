@@ -127,13 +127,15 @@ Envelope (POST body to the partner callback URL):
 | `diagnostic_referral.received` | CARE stored the referral | referralUuid, status, matchStatus, mappingStatus |
 | `diagnostic_order.created` | staff accepted → CARE order made | referralUuid, careOrderId, careOrderNumber, status, acceptedItems[] |
 | `diagnostic_referral.cancelled` | referral cancelled at CARE | referralUuid, reason |
-| `diagnostic_report.finalised` | patient_report verified/delivered | referralUuid, careOrderId, careReportId, reportNumber, resultType, reportStatus, isCritical, finalisedAt, finalisingDoctor, title, impression |
+| `diagnostic_sample.collected` | *(Phase 2)* pathology sample collected for the order | referralUuid, careOrderId, status |
+| `diagnostic_study.completed` | *(Phase 2)* radiology study performed | referralUuid, careOrderId, status |
+| `diagnostic_order.item_status_changed` | *(Phase 2)* referral header advanced a milestone | referralUuid, careOrderId, status |
+| `diagnostic_report.finalised` | patient_report verified/delivered | referralUuid, careOrderId, careReportId, reportNumber, resultType, reportStatus, isCritical, finalisedAt, finalisingDoctor, title, impression, reportRef, reportToken *(Phase 2)* |
 | `diagnostic_result.critical` | a finalised report flagged critical | referralUuid, careReportId, reportNumber, criticalNote, resultLinkId, finalisingDoctor |
 
 Reserved for later phases (same envelope): `diagnostic_referral.updated`,
-`diagnostic_order.item_status_changed`, `diagnostic_invoice.created`,
-`diagnostic_payment.received`, `diagnostic_sample.collected`,
-`diagnostic_study.completed`, `diagnostic_report.amended`, `diagnostic_result.acknowledged`.
+`diagnostic_invoice.created`, `diagnostic_payment.received`,
+`diagnostic_report.amended`, `diagnostic_result.acknowledged`.
 
 Delivery guarantees: at-least-once with idempotent receiver; exponential backoff
 (30s→…→1h), `maxAttempts` then dead-letter; every attempt logged to

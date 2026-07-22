@@ -23,8 +23,8 @@ const TRANSITIONS: Record<ReferralStatus, ReferralStatus[]> = {
   PARTIALLY_BOOKED: ["CARE_ORDER_CREATED", "BILLED", "CANCELLED"],
   BILLED: ["PAID", "SAMPLE_COLLECTED", "STUDY_SCHEDULED", "IN_PROGRESS", "PARTIALLY_BOOKED", "CANCELLED"],
   PAID: ["SAMPLE_COLLECTED", "STUDY_SCHEDULED", "IN_PROGRESS", "CANCELLED"],
-  SAMPLE_COLLECTED: ["IN_PROGRESS", "COMPLETED", "STUDY_SCHEDULED", "CANCELLED"],
-  STUDY_SCHEDULED: ["IN_PROGRESS", "COMPLETED", "SAMPLE_COLLECTED", "CANCELLED"],
+  SAMPLE_COLLECTED: ["IN_PROGRESS", "COMPLETED", "REPORTED", "STUDY_SCHEDULED", "CANCELLED"],
+  STUDY_SCHEDULED: ["IN_PROGRESS", "COMPLETED", "REPORTED", "SAMPLE_COLLECTED", "CANCELLED"],
   IN_PROGRESS: ["COMPLETED", "REPORTED", "CANCELLED"],
   COMPLETED: ["REPORTED", "DELIVERED"],
   REPORTED: ["DELIVERED", "COMPLETED"], // COMPLETED again = amendment in progress
@@ -55,6 +55,31 @@ export function assertTransition(from: ReferralStatus, to: ReferralStatus): void
 
 export function nextStates(from: ReferralStatus): ReferralStatus[] {
   return TRANSITIONS[from] ?? [];
+}
+
+/**
+ * Shortest legal path of transitions from `from` to `to` (BFS over the
+ * transition graph), inclusive of `to`, or null if unreachable. Used by the
+ * Phase-2 status reconciler to advance a referral through intermediate states
+ * (e.g. CARE_ORDER_CREATED → SAMPLE_COLLECTED → IN_PROGRESS → REPORTED) without
+ * ever taking an illegal jump. Returns [] when already at the target.
+ */
+export function shortestPath(from: ReferralStatus, to: ReferralStatus): ReferralStatus[] | null {
+  if (from === to) return [];
+  const queue: ReferralStatus[][] = [[from]];
+  const seen = new Set<ReferralStatus>([from]);
+  while (queue.length) {
+    const path = queue.shift()!;
+    const last = path[path.length - 1];
+    for (const next of TRANSITIONS[last] ?? []) {
+      if (seen.has(next)) continue;
+      const extended = [...path, next];
+      if (next === to) return extended.slice(1); // drop `from`
+      seen.add(next);
+      queue.push(extended);
+    }
+  }
+  return null;
 }
 
 // ── Per-item status machine (looser; tracks the individual test journey) ─────

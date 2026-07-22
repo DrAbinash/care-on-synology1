@@ -21,6 +21,7 @@ import { generateIntegrationKey, hashApiKey, ALLOWED_INTEGRATION_PERMISSIONS } f
 import { normalizeTestName } from "../../services/integration/normalize";
 import { retryOutboxEvent, dispatchPendingOutbox } from "../../services/integration/outbox";
 import { reconcileResults } from "../../services/integration/resultsEmitter";
+import { reconcileStatuses } from "../../services/integration/statusReconciler";
 
 export const integrationAdminRouter = Router();
 const staffName = (req: StaffAuthRequest) => req.staffSession?.subjectName ?? "admin";
@@ -183,6 +184,7 @@ integrationAdminRouter.post("/dispatch-outbox", async (_req, res) => {
   res.json(r);
 });
 integrationAdminRouter.post("/reconcile-results", async (_req, res) => {
-  const r = await reconcileResults({ limit: 100 });
-  res.json(r);
+  const statuses = await reconcileStatuses({ limit: 100 });
+  const results = await reconcileResults({ limit: 100 });
+  res.json({ statuses, results });
 });
