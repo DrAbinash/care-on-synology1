@@ -41,7 +41,12 @@ export interface AiQueryResult {
 export interface AiProvider {
   readonly config: AiProviderConfig;
   query(opts: AiQueryOptions): Promise<AiQueryResult>;
-  testConnection(): Promise<{ ok: boolean; message: string; availableModels?: string[] }>;
+  /**
+   * Verify connectivity. When `model` is provided it is used verbatim — the
+   * caller's selected model must reach the SDK unchanged; only when it is
+   * omitted does each provider fall back to its lightweight built-in probe model.
+   */
+  testConnection(model?: string): Promise<{ ok: boolean; message: string; availableModels?: string[] }>;
 }
 
 // ─── Built-in Provider Metadata ─────────────────────────────────────────────
@@ -82,6 +87,38 @@ export const BUILTIN_PROVIDER_CONFIGS: Record<string, AiProviderConfig> = {
 };
 
 export const BUILTIN_PROVIDER_NAMES = Object.keys(BUILTIN_PROVIDER_CONFIGS);
+
+/**
+ * Model-family patterns per cloud provider, so a newly released model (e.g.
+ * gemini-2.0-flash, gpt-4.1) is accepted without waiting for the built-in list
+ * to be updated, while an obvious cross-provider mismatch (gpt-4o sent to
+ * gemini) is rejected cleanly. Ollama accepts any pulled model name.
+ */
+const MODEL_FAMILY_PATTERNS: Record<string, RegExp> = {
+  gemini: /^gemini[-.]/i,
+  openai: /^(gpt[-.]|o1|o3|o4|chatgpt|text-)/i,
+  anthropic: /^claude[-.]/i,
+};
+
+export interface ModelValidation { ok: boolean; message?: string }
+
+/**
+ * Validate a provider/model combination WITHOUT calling the provider. Empty
+ * model → invalid. Unknown provider → invalid. Otherwise valid if the model is a
+ * known default, matches the provider's family pattern, or the provider is
+ * Ollama (arbitrary pulled names). Pure + testable.
+ */
+export function validateProviderModel(provider: string, model: string): ModelValidation {
+  if (!BUILTIN_PROVIDER_NAMES.includes(provider)) return { ok: false, message: `Unknown provider: ${provider}` };
+  const m = (model ?? "").trim();
+  if (!m) return { ok: false, message: "Model cannot be empty." };
+  if (provider === "ollama") return { ok: true }; // pulled model names are arbitrary
+  const known = BUILTIN_PROVIDER_CONFIGS[provider]?.defaultModels ?? [];
+  if (known.includes(m)) return { ok: true };
+  const pattern = MODEL_FAMILY_PATTERNS[provider];
+  if (pattern && pattern.test(m)) return { ok: true };
+  return { ok: false, message: `"${m}" is not a recognized ${provider} model.` };
+}
 
 // ─── Lazy-loaded SDKs ───────────────────────────────────────────────────────
 
@@ -133,11 +170,11 @@ class OpenAIProvider implements AiProvider {
     }
   }
 
-  async testConnection(): Promise<{ ok: boolean; message: string; availableModels?: string[] }> {
+  async testConnection(model?: string): Promise<{ ok: boolean; message: string; availableModels?: string[] }> {
     try {
       const client = await getOpenAIClient(this.apiKey);
       const resp = await client.chat.completions.create({
-        model: "gpt-4o-mini",
+        model: model || "gpt-4o-mini",
         messages: [{ role: "user", content: "Reply with exactly the word: CONNECTED" }],
         max_tokens: 10,
       });
@@ -167,10 +204,12 @@ class GeminiProvider implements AiProvider {
     }
   }
 
-  async testConnection(): Promise<{ ok: boolean; message: string; availableModels?: string[] }> {
+  async testConnection(model?: string): Promise<{ ok: boolean; message: string; availableModels?: string[] }> {
     try {
-      const model = await getGeminiModel(this.apiKey, "gemini-1.5-flash");
-      const result = await model.generateContent("Reply with exactly the word: CONNECTED");
+      // Use the caller's selected model verbatim; only fall back to the
+      // lightweight probe model when no model was supplied.
+      const gm = await getGeminiModel(this.apiKey, model || "gemini-1.5-flash");
+      const result = await gm.generateContent("Reply with exactly the word: CONNECTED");
       return { ok: true, message: result.response.text() };
     } catch (err: unknown) {
       return { ok: false, message: err instanceof Error ? err.message : "Gemini connection failed" };
@@ -208,11 +247,11 @@ class AnthropicProvider implements AiProvider {
     }
   }
 
-  async testConnection(): Promise<{ ok: boolean; message: string; availableModels?: string[] }> {
+  async testConnection(model?: string): Promise<{ ok: boolean; message: string; availableModels?: string[] }> {
     try {
       const client = await getAnthropicClient(this.apiKey);
       const resp = await client.messages.create({
-        model: "claude-3-5-haiku-20241022",
+        model: model || "claude-3-5-haiku-20241022",
         max_tokens: 10,
         messages: [{ role: "user", content: "Reply with exactly the word: CONNECTED" }],
       });
@@ -249,7 +288,7 @@ class OllamaProvider implements AiProvider {
     }
   }
 
-  async testConnection(): Promise<{ ok: boolean; message: string; availableModels?: string[] }> {
+  async testConnection(model?: string): Promise<{ ok: boolean; message: string; availableModels?: string[] }> {
     try {
       // List models
       const url = `${this.endpointUrl.replace(/\/$/, "")}/api/tags`;
@@ -259,9 +298,9 @@ class OllamaProvider implements AiProvider {
       }
       const tagsData = await tagsResp.json() as { models?: Array<{ name: string; size?: number }> };
       const models = tagsData.models?.map((m) => m.name) ?? [];
-      // Test chat completion
+      // Test chat completion with the selected model (fallback only when omitted)
       const chatResult = await this.query({
-        model: "gpt-oss:20b",
+        model: model || "gpt-oss:20b",
         prompt: "Reply with exactly the word: CONNECTED",
         images: [],
       });
@@ -428,8 +467,17 @@ export async function generateAiResponse(
   if (!provider) {
     return { text: "", success: false, error: `Provider ${providerName} is not configured.` };
   }
+  // Model precedence: explicit option → admin-configured stored default →
+  // the provider's own built-in default (via query's `|| default`). This keeps
+  // generation consistent with the saved provider default instead of silently
+  // using a hard-coded model when no model is passed.
+  let model = options?.model?.trim() || "";
+  if (!model) {
+    const cfg = await loadProviderConfig(providerName);
+    model = cfg?.defaultModel ?? "";
+  }
   return provider.query({
-    model: options?.model ?? "",
+    model,
     prompt,
     images: images ?? [],
     maxTokens: options?.maxTokens,

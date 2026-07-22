@@ -55,6 +55,7 @@ import {
   getDefaultProviderName,
 } from "@workspace/ai-providers";
 import { radiologyWorklistTable } from "@workspace/db/schema";
+import { resolveTestModel } from "../lib/ai/testProviderModel";
 
 // ─── Prompt template presets ──────────────────────────────────────────────────
 export const AI_PROMPT_TEMPLATES: Record<string, string> = {
@@ -429,14 +430,24 @@ router.post("/test-provider", async (req, res): Promise<void> => {
     }
   }
 
+  // Resolve which model to test — submitted (validated, verbatim) or the stored
+  // default when omitted. Never a hard-coded probe model when a model is given.
+  const hasModelField = Object.prototype.hasOwnProperty.call((req.body ?? {}) as object, "model");
+  const stored = hasModelField ? null : await loadProviderConfig(provider);
+  const resolution = resolveTestModel({ provider, hasModelField, submitted: model, storedDefault: stored?.defaultModel ?? null });
+  if ("error" in resolution) { res.status(400).json({ error: resolution.error }); return; }
+  const modelToTest = resolution.model;
+
   const instance = await createAiProvider(provider, key || undefined, url || undefined);
   if (!instance) {
     res.status(400).json({ error: "Could not create provider instance." }); return;
   }
 
-  const result = await instance.testConnection();
+  const result = await instance.testConnection(modelToTest);
   res.json({
     success: result.ok,
+    // Echo the model actually tested so the UI can confirm the selection was honoured.
+    model: modelToTest ?? null,
     response: result.message.substring(0, 200),
     availableModels: result.availableModels,
     error: result.ok ? undefined : result.message,
