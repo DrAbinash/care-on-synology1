@@ -157,38 +157,39 @@ export default function IdScanCapturePanel({
         </div>
       </div>
 
-      {/* ── Body: capture (left) + upload (right) ── */}
-      <div className={`grid gap-2.5 mt-2.5 ${showCapture ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1"}`}>
+      {/* ── Body: capture (left) + upload (right). Both columns stretch to the
+          same height so the drop zone matches the Front/Back tiles. ── */}
+      <div className={`grid gap-2.5 mt-2.5 items-stretch ${showCapture ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1"}`}>
         {showCapture && (
-          <div>
+          <div className="flex flex-col">
             <SectLabel>Capture with {captureLabel}</SectLabel>
             {tileDisabled ? (
-              <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
+              <p className="flex-1 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
                 {method === "bridge"
                   ? "Scanner Bridge not detected — start it, or use Mobile / Upload."
                   : "Webcam needs HTTPS (or localhost) — use Scanner / Mobile / Upload."}
               </p>
             ) : (
-              <>
+              <div className="flex flex-col flex-1">
                 {method === "mobile" && (
                   <p className="text-[10px] text-gray-500 mb-1.5">Opens a QR / pings a paired phone — the capture lands here automatically.</p>
                 )}
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-2 gap-2 flex-1">
                   <SideCaptureTile side="front" title="Front" subtitle="Front side" done={frontDone} busy={busy} disabled={tileDisabled} icon={tileIcon} autoStart={captureSource} onCapture={onCapture} onError={onError} />
                   <SideCaptureTile side="back" title="Back" subtitle="Back side" done={backDone} busy={busy} disabled={tileDisabled} icon={tileIcon} autoStart={captureSource} onCapture={onCapture} onError={onError} />
                 </div>
-              </>
+              </div>
             )}
           </div>
         )}
 
-        <div>
+        <div className="flex flex-col">
           <SectLabel>{showCapture ? "Or upload from device" : "Upload from device"}</SectLabel>
           <div
             onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
             onDragLeave={() => setDragOver(false)}
             onDrop={(e) => { e.preventDefault(); setDragOver(false); acceptDroppedFile(e.dataTransfer.files?.[0]); }}
-            className={`flex items-center gap-2.5 rounded-lg border-2 border-dashed px-2.5 py-2 transition-colors ${
+            className={`flex flex-1 items-center gap-2.5 rounded-lg border-2 border-dashed px-2.5 py-2 transition-colors ${
               dragOver ? "border-violet-400 bg-violet-50" : "border-gray-200 bg-white"
             }`}
           >
@@ -196,8 +197,8 @@ export default function IdScanCapturePanel({
               <UploadCloud size={16} className="text-violet-500" />
             </div>
             <div className="flex-1 min-w-0">
-              <div className="text-[11px] font-medium text-gray-700 leading-tight">Drag &amp; drop or use buttons</div>
-              <div className="text-[9px] text-gray-400 leading-tight">JPG, PNG, PDF · Max 10 MB</div>
+              <div className="text-[11px] font-medium text-gray-700 leading-tight truncate">Drag &amp; drop or use buttons</div>
+              <div className="text-[9px] text-gray-400 leading-tight truncate">JPG, PNG, PDF · Max 10 MB</div>
             </div>
             <div className="flex gap-1.5 shrink-0">
               <UploadTile side="front" label="Front" busy={busy} onCapture={onCapture} onError={onError} />
@@ -261,7 +262,7 @@ function SideCaptureTile({
           type="button"
           onClick={launch}
           disabled={busy || disabled}
-          className={`group w-full flex items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+          className={`group w-full h-full flex items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
             done
               ? "border-emerald-200 bg-emerald-50/70 hover:border-emerald-300"
               : "border-gray-200 bg-white hover:border-violet-300 hover:bg-violet-50/50 hover:shadow-sm"
