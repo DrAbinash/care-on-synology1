@@ -130,8 +130,8 @@ export const RADIOLOGY_FLAG_REGISTRY: RadiologyFlagEntry[] = [
     ownerSubsystem: "usg provenance",
   },
   {
-    key: "ff_radiology_usg_prior_intelligence", defaultValue: false, dependsOn: [], enableOrder: 11, wired: false,
-    purpose: "USG P4 — prior-study matching + structured current-vs-prior comparison (suggestion-only, same-patient guarded)",
+    key: "ff_radiology_usg_prior_intelligence", defaultValue: false, dependsOn: [], enableOrder: 11, wired: true,
+    purpose: "USG P4 — prior-study matching + structured current-vs-prior comparison (suggestion-only, same-patient guarded). Wired: /api/usg-prior gates on this flag; the workspace comparison panel is live.",
     rollbackEffect: "disable → no automatic prior suggestions surfaced; manual comparison unaffected; no data change",
     ownerSubsystem: "usg comparison",
   },
