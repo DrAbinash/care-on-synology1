@@ -14,7 +14,7 @@
 import { db } from "@workspace/db";
 import { usgKeyImagesTable } from "@workspace/db/schema";
 import { and, eq } from "drizzle-orm";
-import { parseCineClip, selectKeyFrame, cineFrameRef, cinePlaybackCapability, type CinePlaybackCapability } from "./usgCineClip";
+import { parseCineClip, selectKeyFrame, cineFrameRef, cinePlaybackCapability, cinePlaybackPlan, type CinePlaybackCapability, type CinePlaybackPlan } from "./usgCineClip";
 
 export interface CineKeyFrameContext {
   studyInstanceUID: string;
@@ -29,16 +29,22 @@ export interface CineDescription {
   isCine: boolean;
   numberOfFrames: number;
   playback: CinePlaybackCapability;
+  /** Ordered-frame + timing plan the in-panel player consumes. */
+  plan: CinePlaybackPlan;
   suggestedKeyFrame: number | null;
 }
 
-/** Describe a multi-frame clip for the UI (playable? how many frames?). */
-export function describeCineClip(clipDataset: string | Record<string, unknown>): CineDescription {
+/** Describe a multi-frame clip for the UI (playable? how many frames? plan?). */
+export function describeCineClip(
+  clipDataset: string | Record<string, unknown>,
+  opts: { fps?: number | null; maxFrames?: number | null } = {},
+): CineDescription {
   const clip = parseCineClip(clipDataset as never);
   return {
     isCine: clip.isCine,
     numberOfFrames: clip.numberOfFrames,
     playback: cinePlaybackCapability(clip),
+    plan: cinePlaybackPlan(clip, opts),
     suggestedKeyFrame: clip.isCine ? selectKeyFrame(clip) : null,
   };
 }

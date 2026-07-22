@@ -20,8 +20,8 @@ interface Suggestion {
 interface SuggestResult { visible: boolean; available: boolean; reason: string; suggestions: Suggestion[] }
 
 export default function UsgAiPanel({
-  studyId, onAccept,
-}: { studyId: number | null | undefined; onAccept: (t: string) => void }) {
+  studyId, patientId, onAccept,
+}: { studyId: number | null | undefined; patientId?: number | null; onAccept: (t: string) => void }) {
   const enabled = isFeatureEnabled("ff_radiology_usg_ai_assistant") && studyId != null;
   const [state, setState] = useState<SuggestResult | null>(null);
   const [busy, setBusy] = useState(false);
@@ -32,12 +32,14 @@ export default function UsgAiPanel({
   const generate = async () => {
     setBusy(true);
     try {
-      const r = await api.post<SuggestResult>(`/api/usg-ai/studies/${studyId}/suggest`, {});
+      const r = await api.post<SuggestResult>(`/api/usg-ai/studies/${studyId}/suggest`, { patientId: patientId ?? undefined });
       setState(r); setDismissed(new Set());
     } catch {
       setState({ visible: true, available: false, reason: "AI gateway unavailable", suggestions: [] });
     } finally { setBusy(false); }
   };
+
+  const visibleSuggestions = state?.suggestions.filter((s) => !dismissed.has(s.text)) ?? [];
 
   const accept = async (s: Suggestion) => {
     try {
@@ -57,10 +59,14 @@ export default function UsgAiPanel({
       </div>
 
       {state && !state.visible && <p className="text-muted-foreground">AI is not enabled for you.</p>}
-      {state && state.visible && !state.available && <p className="text-amber-600">AI unavailable — gateway not connected. Reporting is unaffected.</p>}
-      {state && state.available && state.suggestions.length === 0 && <p className="text-muted-foreground">No suggestions.</p>}
+      {/* Model unavailable, but deterministic notes (e.g. growth) may still be present. */}
+      {state && state.visible && !state.available && visibleSuggestions.length === 0 &&
+        <p className="text-amber-600">AI model not connected — configure a provider in AI Provider Settings. Reporting is unaffected.</p>}
+      {state && state.visible && !state.available && visibleSuggestions.length > 0 &&
+        <p className="text-muted-foreground">Model not connected — showing deterministic notes only.</p>}
+      {state && state.available && visibleSuggestions.length === 0 && <p className="text-muted-foreground">No suggestions.</p>}
 
-      {state?.suggestions.filter((s) => !dismissed.has(s.text)).map((s, i) => (
+      {visibleSuggestions.map((s, i) => (
         <div key={s.key ?? i} className="p-1.5 rounded border border-border space-y-1">
           <div className="flex items-start gap-2">
             <span className="flex-1">{s.text}{s.needsReview && <span className="text-amber-600"> ⚠ review</span>}</span>

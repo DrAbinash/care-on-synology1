@@ -15,10 +15,13 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import {
-  generateUsgSuggestions, acceptUsgSuggestion, type UsgAiProvider, type RawAiSuggestion,
+  generateUsgSuggestions, acceptUsgSuggestion, type RawAiSuggestion,
 } from "../lib/usgAiService";
 import { AiWriteViolationError, type UsgAiSuggestion } from "../lib/usgAiAssistant";
 import { resolveAiEnablementForUser } from "../lib/ai/clinicalConfigService";
+import { usgGatewayProvider } from "../lib/ai/usgGatewayProvider";
+import { buildGrowthNotes } from "../lib/usgGrowthAssistant";
+import { pregnancyTimelineForPatient } from "../lib/usgPriorDataService";
 import { logger } from "../lib/logger";
 
 const router = Router();
@@ -28,36 +31,31 @@ router.use(async (_req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-/** Canonical gateway-backed provider. Honestly reports unavailable unless a
- *  model gateway is configured — this environment has none, so /suggest returns
- *  the unavailable state and manual reporting is unaffected. */
-const gatewayProvider: UsgAiProvider = {
-  async available() {
-    // Visibility (which reuses the canonical AI master + policies) has already
-    // been checked before this runs; here we only need a configured gateway.
-    return !!process.env.USG_AI_GATEWAY_URL;
-  },
-  async generate(context) {
-    try {
-      const resp = await fetch(`${process.env.USG_AI_GATEWAY_URL}/usg/suggest`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(context),
-      });
-      if (!resp.ok) return [];
-      const data = await resp.json() as { suggestions?: RawAiSuggestion[] };
-      return Array.isArray(data.suggestions) ? data.suggestions : [];
-    } catch (err) {
-      logger.warn({ err }, "usg ai gateway generate failed");
-      return [];
-    }
-  },
-};
+/**
+ * Deterministic growth notes over the P4 timeline — gated by the growth flag and
+ * requiring a patientId to build the timeline. Never throws into the request.
+ */
+async function growthNotesFor(patientId: number | null | undefined): Promise<RawAiSuggestion[]> {
+  if (!patientId) return [];
+  if (!(await isFeatureEnabledServer("ff_radiology_usg_ai_growth"))) return [];
+  try {
+    const { timeline } = await pregnancyTimelineForPatient(patientId);
+    return buildGrowthNotes(timeline);
+  } catch (err) {
+    logger.warn({ err }, "usg growth notes failed");
+    return [];
+  }
+}
 
 router.post("/studies/:studyId/suggest", async (req, res) => {
   const staff = (req as Request & { staffSession?: { subjectId?: number; role?: string } }).staffSession ?? {};
-  const context = (req.body ?? {}) as Record<string, unknown>;
+  const body = (req.body ?? {}) as Record<string, unknown> & { patientId?: number };
   // Canonical enablement (AI master flag + per-scope policies), not a raw literal.
   const enablement = await resolveAiEnablementForUser({ staffId: staff.subjectId ?? null, modality: "US" });
-  const result = await generateUsgSuggestions(gatewayProvider, enablement, context);
+  const deterministic = await growthNotesFor(body.patientId);
+  // The provider routes through the canonical AI provider layer (Ollama/OpenAI/…
+  // as configured in AI Provider Settings + Model Routing); no bespoke gateway.
+  const result = await generateUsgSuggestions(usgGatewayProvider, enablement, body, deterministic);
   res.json(result);
 });
 

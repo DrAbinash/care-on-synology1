@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  parseCineClip, selectKeyFrame, cineFrameRef, cinePlaybackCapability,
-  US_MULTIFRAME_SOP_CLASS,
+  parseCineClip, selectKeyFrame, cineFrameRef, cinePlaybackCapability, cinePlaybackPlan,
+  US_MULTIFRAME_SOP_CLASS, CINE_MAX_FPS, CINE_MIN_FPS, CINE_DEFAULT_FPS,
 } from "./usgCineClip";
 
 const clipDs = (over: Record<string, unknown> = {}) => ({
@@ -78,5 +78,43 @@ describe("P7.1 usgCineClip — canonical provenance reuse", () => {
     const still = cinePlaybackCapability(parseCineClip(clipDs({ "00280008": { Value: [1] } })));
     expect(still.canPlay).toBe(false);
     expect(still.fps).toBeNull();
+  });
+});
+
+describe("P7.1 usgCineClip — in-panel playback plan", () => {
+  it("builds an ordered 1-based frame list for the whole clip", () => {
+    const plan = cinePlaybackPlan(parseCineClip(clipDs())); // 60 frames @ 30fps
+    expect(plan.canPlay).toBe(true);
+    expect(plan.orderedFrames[0]).toBe(1);
+    expect(plan.orderedFrames.at(-1)).toBe(60);
+    expect(plan.orderedFrames.length).toBe(60);
+    expect(plan.fps).toBe(30);
+    expect(plan.frameDelayMs).toBe(Math.round(1000 / 30));
+    expect(plan.loop).toBe(true);
+    expect(plan.sopInstanceUID).toBe("1.2.sop");
+    expect(plan.seriesInstanceUID).toBe("1.2.series");
+  });
+
+  it("clamps an absurd DICOM CineRate into a renderable range", () => {
+    const fast = cinePlaybackPlan(parseCineClip(clipDs({ "00180040": { Value: [500] } })));
+    expect(fast.fps).toBe(CINE_MAX_FPS);
+    const zero = cinePlaybackPlan(parseCineClip(clipDs({ "00180040": { Value: [0] }, "00181063": undefined })));
+    // 0fps is not renderable → falls back to the default, never 0.
+    expect(zero.fps).toBe(CINE_DEFAULT_FPS);
+    expect(zero.fps).toBeGreaterThanOrEqual(CINE_MIN_FPS);
+  });
+
+  it("honours a caller fps override and a frame cap", () => {
+    const plan = cinePlaybackPlan(parseCineClip(clipDs()), { fps: 8, maxFrames: 10 });
+    expect(plan.fps).toBe(8);
+    expect(plan.orderedFrames).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+
+  it("yields a non-playable, empty plan for a single-frame image (no fabricated loop)", () => {
+    const plan = cinePlaybackPlan(parseCineClip(clipDs({ "00280008": { Value: [1] } })));
+    expect(plan.canPlay).toBe(false);
+    expect(plan.orderedFrames).toEqual([]);
+    expect(plan.fps).toBe(0);
+    expect(plan.frameDelayMs).toBe(0);
   });
 });

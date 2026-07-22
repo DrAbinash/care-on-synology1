@@ -62,4 +62,14 @@ describe("P7 usg-cine router", () => {
     const res = await runChain(router, "post", "/studies/:studyId/key-frame", { params: { studyId: "1" }, body: { clip: {} }, staffSession: {} });
     expect(res.statusCode).toBe(400);
   });
+
+  test("describe forwards fps/maxFrames opts and returns the playback plan", async () => {
+    describeCineClip.mockReturnValue({ isCine: true, numberOfFrames: 60, plan: { canPlay: true, orderedFrames: [1, 2], fps: 8, frameDelayMs: 125, loop: true, totalFrames: 60 }, suggestedKeyFrame: 30 });
+    const { default: router } = await import("./usgCine");
+    const res = await runChain(router, "post", "/describe", { body: { clip: { "00280008": { Value: [60] } }, fps: 8, maxFrames: 2 } });
+    expect(res.statusCode).toBe(200);
+    expect(describeCineClip).toHaveBeenCalledWith({ "00280008": { Value: [60] } }, { fps: 8, maxFrames: 2 });
+    expect(res.body.plan.canPlay).toBe(true);
+    expect(res.body.plan.fps).toBe(8);
+  });
 });

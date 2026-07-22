@@ -78,12 +78,26 @@ export async function checkInfraHealth(): Promise<InfraHealth> {
     orthanc = { ok: false, message: err instanceof Error ? err.message : "probe failed", checkedServerSide: true };
   }
 
-  // AI gateway — configured URL is the server-side precondition; the deeper
-  // authenticated health is confirmed by the AI subsystem at use time.
-  const gatewayUrl = process.env.USG_AI_GATEWAY_URL || "";
-  const ai_gateway: HealthResult = gatewayUrl
-    ? { ok: true, message: "USG_AI_GATEWAY_URL configured", checkedServerSide: true }
-    : { ok: false, message: "USG_AI_GATEWAY_URL not set — AI gateway not connected", checkedServerSide: true };
+  // AI — the USG assistant routes through the canonical AI provider layer
+  // (AI Provider Settings + Model Routing), so "connected" means a provider is
+  // actually enabled (e.g. Ollama), not that a legacy env var is set. The
+  // deeper authenticated health is confirmed by the AI subsystem at use time.
+  let ai_gateway: HealthResult;
+  try {
+    const { loadProviderConfigs } = await import("@workspace/ai-providers");
+    const configs = await loadProviderConfigs();
+    const enabled = configs.filter((c) => c.isEnabled).map((c) => c.provider);
+    if (enabled.length > 0) {
+      ai_gateway = { ok: true, message: `AI provider configured: ${enabled.join(", ")}`, checkedServerSide: true };
+    } else if (process.env.USG_AI_GATEWAY_URL) {
+      // Legacy override still honoured.
+      ai_gateway = { ok: true, message: "USG_AI_GATEWAY_URL configured (legacy)", checkedServerSide: true };
+    } else {
+      ai_gateway = { ok: false, message: "No AI provider enabled — configure one in AI Provider Settings (e.g. Ollama)", checkedServerSide: true };
+    }
+  } catch (err) {
+    ai_gateway = { ok: false, message: err instanceof Error ? err.message : "AI provider check failed", checkedServerSide: true };
+  }
 
   // Viewer capability is a browser-side property of the installed OHIF build;
   // the server cannot assert it. Report honestly as client-checked.

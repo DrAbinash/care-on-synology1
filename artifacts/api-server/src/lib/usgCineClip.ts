@@ -120,3 +120,60 @@ export function cinePlaybackCapability(clip: CineClip): CinePlaybackCapability {
     durationSeconds: clip.durationSeconds,
   };
 }
+
+/** Effective-fps bounds for in-panel playback. A DICOM CineRate can be absurd
+ *  (0, or hundreds); clamp to a range a browser can actually render. */
+export const CINE_DEFAULT_FPS = 15;
+export const CINE_MIN_FPS = 1;
+export const CINE_MAX_FPS = 60;
+
+export interface CinePlaybackPlan {
+  canPlay: boolean;
+  /** 1-based frame numbers in display order — what the player fetches/renders. */
+  orderedFrames: number[];
+  /** Effective playback fps after clamping (0 when not playable). */
+  fps: number;
+  /** Inter-frame delay for a setInterval/RAF loop (0 when not playable). */
+  frameDelayMs: number;
+  loop: boolean;
+  seriesInstanceUID: string | null;
+  sopInstanceUID: string | null;
+  totalFrames: number;
+}
+
+/**
+ * Deterministic playback plan for the in-panel cine player. Turns a parsed clip
+ * into the ordered frame list + a clamped, renderable fps. A single-frame image
+ * yields a non-playable plan (empty frame list) — never a fabricated loop.
+ *
+ * The player renders each frame via WADO-RS
+ * `/instances/{sop}/frames/{n}/rendered`, so this plan intentionally carries no
+ * URLs — only the frame ordering + timing, which is pure and testable.
+ */
+export function cinePlaybackPlan(
+  clip: CineClip,
+  opts: { fps?: number | null; maxFrames?: number | null } = {},
+): CinePlaybackPlan {
+  const base = {
+    seriesInstanceUID: clip.seriesInstanceUID,
+    sopInstanceUID: clip.sopInstanceUID,
+    totalFrames: clip.numberOfFrames,
+  };
+  if (!clip.isCine) {
+    return { canPlay: false, orderedFrames: [], fps: 0, frameDelayMs: 0, loop: false, ...base };
+  }
+  const requested = opts.fps ?? clip.frameRate ?? CINE_DEFAULT_FPS;
+  const fps = Math.min(CINE_MAX_FPS, Math.max(CINE_MIN_FPS, Math.round(requested) || CINE_DEFAULT_FPS));
+  const cap = opts.maxFrames && opts.maxFrames > 0
+    ? Math.min(clip.numberOfFrames, Math.floor(opts.maxFrames))
+    : clip.numberOfFrames;
+  const orderedFrames = Array.from({ length: cap }, (_, i) => i + 1);
+  return {
+    canPlay: true,
+    orderedFrames,
+    fps,
+    frameDelayMs: Math.round(1000 / fps),
+    loop: true,
+    ...base,
+  };
+}

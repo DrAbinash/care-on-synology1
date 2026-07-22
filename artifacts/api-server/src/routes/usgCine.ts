@@ -25,9 +25,9 @@ router.use(async (_req: Request, res: Response, next: NextFunction) => {
 function staff(req: Request) { return (req as Request & { staffSession?: { subjectId?: number; subjectName?: string } }).staffSession ?? {}; }
 
 router.post("/describe", (req, res) => {
-  const body = (req.body ?? {}) as { clip?: unknown };
+  const body = (req.body ?? {}) as { clip?: unknown; fps?: number; maxFrames?: number };
   if (!body.clip) { res.status(400).json({ error: "clip_required" }); return; }
-  res.json(describeCineClip(body.clip as Record<string, unknown>));
+  res.json(describeCineClip(body.clip as Record<string, unknown>, { fps: body.fps ?? null, maxFrames: body.maxFrames ?? null }));
 });
 
 router.post("/studies/:studyId/key-frame", async (req, res) => {
