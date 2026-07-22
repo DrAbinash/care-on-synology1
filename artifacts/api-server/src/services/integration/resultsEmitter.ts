@@ -15,6 +15,7 @@ import {
   diagnosticReferralItemsTable,
   externalResultLinksTable,
   patientReportsTable,
+  patientReportAmendmentsTable,
 } from "@workspace/db";
 import { writeReferralEvent } from "./audit";
 import { enqueueOutboxEvent } from "./outbox";
@@ -52,6 +53,26 @@ export async function reconcileResults(opts: { limit?: number } = {}): Promise<{
       if (linked) continue;
 
       const referralItemId = rep.orderTestId ? itemByOrderTest.get(rep.orderTestId) ?? null : null;
+
+      // Phase 3: an AMENDMENT is a fresh signed patient_reports row (new id), so
+      // the idempotency guard above never matches it. Detect it via the
+      // amendment linkage table and emit diagnostic_report.amended (not
+      // finalised) so HOPE supersedes the prior version instead of duplicating.
+      const [amendment] = await db
+        .select()
+        .from(patientReportAmendmentsTable)
+        .where(eq(patientReportAmendmentsTable.amendedReportId, rep.id))
+        .limit(1);
+      let originalReportNumber: string | null = null;
+      if (amendment) {
+        const [orig] = await db
+          .select({ reportNumber: patientReportsTable.reportNumber })
+          .from(patientReportsTable)
+          .where(eq(patientReportsTable.id, amendment.originalReportId))
+          .limit(1);
+        originalReportNumber = orig?.reportNumber ?? null;
+      }
+
       await db.transaction(async (tx) => {
         const [link] = await tx.insert(externalResultLinksTable).values({
           referralId: ref.id,
@@ -61,7 +82,7 @@ export async function reconcileResults(opts: { limit?: number } = {}): Promise<{
           resultType: rep.type,
           sourceSystem: ref.sourceOrg,
           sourceOrderId: ref.sourcePrescriptionId ?? null,
-          reportStatus: rep.status === "delivered" ? "final" : "final",
+          reportStatus: amendment ? "amended" : "final",
           isCritical: rep.isCritical,
           criticalAckStatus: rep.isCritical ? "pending" : null,
           finalisedAt: rep.verifiedAt ?? rep.updatedAt,
@@ -71,17 +92,26 @@ export async function reconcileResults(opts: { limit?: number } = {}): Promise<{
         if (!link) return; // unique race — another worker linked it
 
         const finalisedEvent = await enqueueOutboxEvent(tx, {
-          eventType: "diagnostic_report.finalised",
-          idempotencyKey: `diagnostic_report.finalised:${ref.referralUuid}:${rep.id}`,
+          eventType: amendment ? "diagnostic_report.amended" : "diagnostic_report.finalised",
+          idempotencyKey: `${amendment ? "diagnostic_report.amended" : "diagnostic_report.finalised"}:${ref.referralUuid}:${rep.id}`,
           correlationId: ref.referralUuid, aggregateId: ref.referralUuid, partnerId: ref.createdByPartnerId ?? null,
           payload: {
             referralUuid: ref.referralUuid, careOrderId: ref.careOrderId, careReportId: rep.id,
-            reportNumber: rep.reportNumber, resultType: rep.type, reportStatus: rep.status,
+            reportNumber: rep.reportNumber, resultType: rep.type, reportStatus: amendment ? "amended" : rep.status,
             isCritical: rep.isCritical, finalisedAt: rep.verifiedAt ?? rep.updatedAt, finalisingDoctor: rep.verifiedByName ?? rep.signedByName ?? null,
             title: rep.title, impression: rep.impression ?? null,
             // Phase 2: a tokenized public report reference (when one exists), so
             // HOPE can deep-link the finalised report from the patient record.
             reportRef: rep.reportNumber, reportToken: rep.publicToken ?? null,
+            // Phase 3: amendment provenance — lets HOPE supersede the prior
+            // version and surface the mandatory amendment reason (medico-legal).
+            ...(amendment ? {
+              amended: true,
+              supersedesReportNumber: originalReportNumber,
+              amendmentReason: amendment.reason,
+              amendmentSequence: amendment.sequenceNumber,
+              amendedByName: amendment.amendedByName,
+            } : {}),
           },
         });
         await tx.update(externalResultLinksTable).set({ emittedOutboxId: finalisedEvent.id }).where(eq(externalResultLinksTable.id, link.id));
@@ -101,7 +131,7 @@ export async function reconcileResults(opts: { limit?: number } = {}): Promise<{
         if (referralItemId) {
           await tx.update(diagnosticReferralItemsTable).set({ itemStatus: "reported" }).where(eq(diagnosticReferralItemsTable.id, referralItemId));
         }
-        await writeReferralEvent(tx, { referralId: ref.id, itemId: referralItemId, eventType: "report.finalised", actorType: "system", organisation: "CARE", payload: { careReportId: rep.id, reportNumber: rep.reportNumber, isCritical: rep.isCritical } });
+        await writeReferralEvent(tx, { referralId: ref.id, itemId: referralItemId, eventType: amendment ? "report.amended" : "report.finalised", actorType: "system", organisation: "CARE", payload: { careReportId: rep.id, reportNumber: rep.reportNumber, isCritical: rep.isCritical, ...(amendment ? { supersedesReportNumber: originalReportNumber, amendmentSequence: amendment.sequenceNumber } : {}) } });
       });
       emitted++;
       if (rep.isCritical) critical++;

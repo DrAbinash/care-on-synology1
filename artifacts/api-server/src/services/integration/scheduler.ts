@@ -14,6 +14,7 @@ import { db, featureFlagsTable } from "@workspace/db";
 import { dispatchPendingOutbox } from "./outbox";
 import { reconcileResults } from "./resultsEmitter";
 import { reconcileStatuses } from "./statusReconciler";
+import { escalateCriticalResults } from "./criticalEscalation";
 
 let flagCache: { value: boolean; at: number } | null = null;
 export async function integrationEnabled(): Promise<boolean> {
@@ -47,6 +48,9 @@ export async function tickReconcile(): Promise<void> {
     if (s.sampleEvents || s.studyEvents) console.log("[integration] status reconcile", s);
     const r = await reconcileResults({ limit: 100 });
     if (r.emitted) console.log("[integration] results reconcile", r);
+    // Phase 3: re-notify critical results HOPE has not acknowledged in time.
+    const e2 = await escalateCriticalResults({ limit: 50 });
+    if (e2.escalated) console.log("[integration] critical escalation", e2);
   } catch (e) {
     console.error("[integration] reconcile failed:", (e as Error)?.message);
   }

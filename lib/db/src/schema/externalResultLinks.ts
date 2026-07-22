@@ -29,6 +29,9 @@ export const externalResultLinksTable = pgTable("external_result_links", {
   criticalAckStatus: text("critical_ack_status"),
   criticalAckBy: text("critical_ack_by"),
   criticalAckAt: timestamp("critical_ack_at", { withTimezone: true }),
+  // Phase 3: critical-result escalation tracking (re-notify if unacknowledged).
+  escalationAttempts: integer("escalation_attempts").notNull().default(0),
+  lastEscalatedAt: timestamp("last_escalated_at", { withTimezone: true }),
   finalisedAt: timestamp("finalised_at", { withTimezone: true }),
   finalisingDoctor: text("finalising_doctor"),
   reportRef: text("report_ref"), // secure report URL or internal ref
