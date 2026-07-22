@@ -36,6 +36,7 @@ interface ReadinessMatrix {
   flags: FlagStatus[];
   enabledFlags: string[];
 }
+interface HealthResult { ok: boolean; message: string; checkedServerSide: boolean }
 
 const SHORT = (f: string) => f.replace(/^ff_radiology_usg_/, "");
 
@@ -74,6 +75,28 @@ export default function UsgAdminReadiness() {
     onSuccess: (r: any) => { toast({ title: "Kill switch applied", description: `Disabled: ${(r?.disabled ?? []).map(SHORT).join(", ") || "none"}` }); qc.invalidateQueries({ queryKey: ["usg-readiness"] }); },
   });
 
+  // ── Production activation (Group A safe / Group B health-gated) ──
+  interface ActivationResp {
+    health: { orthanc: HealthResult; viewer: HealthResult; ai_gateway: HealthResult };
+    flags: { flag: string; group: "A" | "B"; label: string; status: string; enabled: boolean; activatable: boolean; remediation: string | null }[];
+    safetyControls: string[];
+    groupBActivatable: string[];
+  }
+  const actQ = useQuery<ActivationResp>({
+    queryKey: ["usg-activation"],
+    queryFn: () => fetchApi("/api/usg-admin/activation"),
+    enabled: isAdmin,
+  });
+  const activateSafeM = useMutation({
+    mutationFn: () => fetchApi("/api/usg-admin/activate-safe", { method: "POST", body: JSON.stringify({}) }),
+    onSuccess: () => { toast({ title: "Safe (Group A) features enabled" }); qc.invalidateQueries({ queryKey: ["usg-readiness"] }); qc.invalidateQueries({ queryKey: ["usg-activation"] }); },
+  });
+  const activateInfraM = useMutation({
+    mutationFn: () => fetchApi("/api/usg-admin/activate-infra", { method: "POST", body: JSON.stringify({}) }),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    onSuccess: (r: any) => { toast({ title: "Infra features enabled where healthy", description: `Enabled: ${(r?.enabled ?? []).map(SHORT).join(", ") || "none"}` }); qc.invalidateQueries({ queryKey: ["usg-readiness"] }); qc.invalidateQueries({ queryKey: ["usg-activation"] }); },
+  });
+
   if (!isAdmin) {
     return (
       <div className="p-8 max-w-lg mx-auto text-center">
@@ -103,6 +126,42 @@ export default function UsgAdminReadiness() {
           <Button size="sm" variant="destructive" onClick={() => { if (confirm("Disable ALL enabled USG flags now?")) killM.mutate(); }} disabled={killM.isPending || !(data?.enabledFlags?.length)}>
             <PowerOff className="w-4 h-4 mr-1" />Kill switch{data?.enabledFlags?.length ? ` (${data.enabledFlags.length} on)` : ""}
           </Button>
+        </CardContent>
+      </Card>
+
+      {/* Production activation — safe (Group A) one-click + infra (Group B) health-gated */}
+      <Card>
+        <CardHeader className="pb-2"><CardTitle className="text-base">Production activation</CardTitle>
+          <CardDescription>Enable the safe features for owner review in one click; infra features enable only when their health check passes.</CardDescription></CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" onClick={() => activateSafeM.mutate()} disabled={activateSafeM.isPending}><Power className="w-4 h-4 mr-1" />Enable safe features (Group A)</Button>
+            <Button size="sm" variant="outline" onClick={() => activateInfraM.mutate()} disabled={activateInfraM.isPending || !(actQ.data?.groupBActivatable?.length)}>
+              <Power className="w-4 h-4 mr-1" />Enable infra features where healthy{actQ.data?.groupBActivatable?.length ? ` (${actQ.data.groupBActivatable.length})` : ""}
+            </Button>
+          </div>
+          {/* Infra health */}
+          {actQ.data && (
+            <div className="flex flex-wrap gap-2 text-xs">
+              {(["orthanc", "ai_gateway", "viewer"] as const).map((k) => {
+                const h = actQ.data!.health[k];
+                return <span key={k} className={`px-2 py-0.5 rounded border ${h.ok ? "text-emerald-600 border-emerald-500/40" : "text-amber-600 border-amber-500/40"}`} title={h.message}>{k}: {h.ok ? "healthy" : (h.checkedServerSide ? "unavailable" : "browser-checked")}</span>;
+              })}
+            </div>
+          )}
+          {/* Per-flag activation status */}
+          {actQ.data && (
+            <div className="grid gap-1 md:grid-cols-2 text-xs">
+              {actQ.data.flags.map((f) => (
+                <div key={f.flag} className="flex items-center gap-2">
+                  <Badge variant="outline">{f.group}</Badge>
+                  <span className="flex-1">{f.label}</span>
+                  <span className={f.status === "Live" ? "text-emerald-600" : f.status === "Available" ? "text-sky-600" : "text-amber-600"}>{f.status}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {actQ.data && <p className="text-[10px] text-muted-foreground">Always-on safety controls (never flag-toggled): {actQ.data.safetyControls.join(" · ")}</p>}
         </CardContent>
       </Card>
 
