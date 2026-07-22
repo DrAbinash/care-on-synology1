@@ -413,6 +413,10 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   // gates the canonical archiveReportToPacs with a fail-closed eligibility
   // policy (finalized only, latest version, PCPNDT-compliant for OB studies).
   ff_radiology_usg_report_to_pacs: false,
+  // USG Companion P7 — cine-loop (multi-frame US) key-frame support. Off by
+  // default; reuses the P3 SrImageRef provenance model, never fabricates frame
+  // counts, and adds no new store.
+  ff_radiology_usg_cine: false,
 };
 
 const RADIOLOGY_FLAG_PREFIX = "ff_radiology_";
