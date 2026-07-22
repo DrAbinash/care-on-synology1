@@ -27,6 +27,10 @@
  *   - CREATE INDEX ... ON <table> where <table> is not yet created
  *   - CREATE TRIGGER ... ON <table> where <table> is not yet created
  *   - ... REFERENCES <table> (foreign keys) where <table> is not yet created
+ *   - INSERT INTO / UPDATE / DELETE FROM <table> where <table> is not yet
+ *     created (DML seed statements — the class of bug that made
+ *     add_ai_clinical_config.sql INSERT into feature_flags before
+ *     add_radiology_feature_flags.sql created it, hard-stopping a clean boot)
  *   - ALTER TABLE ... RENAME TO tracked, so later files see the new name
  *   - DROP TABLE tracked, so later files correctly see it as gone
  *
@@ -81,6 +85,13 @@ const PATTERNS = [
   { type: "CREATE_INDEX_ON", re: new RegExp(`\\bCREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+(?:CONCURRENTLY\\s+)?(?:IF\\s+NOT\\s+EXISTS\\s+)?\\S+\\s+ON\\s+${IDENT}`, "gi") },
   { type: "CREATE_TRIGGER_ON", re: new RegExp(`\\bCREATE\\s+TRIGGER\\b[^;]*?\\bON\\s+${IDENT}`, "gis") },
   { type: "REFERENCES", re: new RegExp(`\\bREFERENCES\\s+${IDENT}`, "gi") },
+  // DML seed statements that target a table. INSERT INTO / DELETE FROM are
+  // unambiguous. UPDATE is pinned to a statement boundary (start-of-file or
+  // after a ';') so it never mis-fires on a "SELECT ... FOR UPDATE OF x" row
+  // lock, whose "UPDATE" is mid-statement.
+  { type: "INSERT_INTO", re: new RegExp(`\\bINSERT\\s+INTO\\s+${IDENT}`, "gi") },
+  { type: "DELETE_FROM", re: new RegExp(`\\bDELETE\\s+FROM\\s+${IDENT}`, "gi") },
+  { type: "UPDATE_TABLE", re: new RegExp(`(?:^|;)\\s*UPDATE\\s+${IDENT}`, "gim") },
 ];
 
 // Anonymous PL/pgSQL blocks: DO $$ ... $$;  or DO $tag$ ... $tag$;
@@ -185,6 +196,9 @@ function checkFeatureMigrations(known) {
         s.type === "CREATE_INDEX_ON" ||
         s.type === "CREATE_TRIGGER_ON" ||
         s.type === "REFERENCES" ||
+        s.type === "INSERT_INTO" ||
+        s.type === "DELETE_FROM" ||
+        s.type === "UPDATE_TABLE" ||
         s.type === "RENAME_TABLE";
 
       if (requiresExisting && !s.guarded && !known.has(s.table)) {
