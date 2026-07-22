@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Link } from "wouter";
 import {
   useCreateBill,
@@ -134,6 +134,33 @@ export default function Billing() {
   const onSubmit = (data: BillForm) => {
     createBill.mutate({ data: { orderId: Number(data.orderId), discount: data.discount ? Number(data.discount) : undefined, dueDate: data.dueDate || undefined } });
   };
+
+  // ── Referral hand-off prefill (additive; brief §8 "billing pre-population") ──
+  // When the HOPE Referrals inbox navigates here with ?orderId=<id>, preselect
+  // that referral-created order in the Generate Bill dialog and open it. Bills
+  // the EXISTING order via the unchanged createBill({orderId}) path — no
+  // duplicate order and no change to the save/money logic. Run-once, opens the
+  // dialog only (never auto-submits), and is a no-op without billing permission.
+  const prefillRan = useRef(false);
+  const [prefillOrderId, setPrefillOrderId] = useState<number | null>(null);
+  const { data: prefillOrder } = useQuery<{ id: number; orderNumber: string; totalAmount: number | string; patient?: { firstName?: string; lastName?: string } | null }>({
+    queryKey: ["billing-prefill-order", prefillOrderId],
+    queryFn: () => api.get(`/api/orders/${prefillOrderId}`),
+    enabled: prefillOrderId != null && canCreateBill,
+  });
+  useEffect(() => {
+    if (prefillRan.current || !canCreateBill) return;
+    const oid = Number(new URLSearchParams(window.location.search).get("orderId"));
+    if (Number.isFinite(oid) && oid > 0) {
+      prefillRan.current = true;
+      setPrefillOrderId(oid);
+      setValue("orderId", oid);
+      setOpen(true);
+      // Drop the param so a later remount / New Bill click starts clean.
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setValue]);
 
   const formatCurrency = (n: number) =>
     new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 }).format(n);
@@ -406,9 +433,14 @@ export default function Billing() {
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
             <div>
               <Label>Select Order *</Label>
-              <Select onValueChange={(v) => setValue("orderId", Number(v))}>
+              <Select value={watch("orderId") ? String(watch("orderId")) : undefined} onValueChange={(v) => setValue("orderId", Number(v))}>
                 <SelectTrigger className="mt-1"><SelectValue placeholder="Select completed order..." /></SelectTrigger>
                 <SelectContent>
+                  {prefillOrder && !orders?.orders?.some((o) => o.id === prefillOrder.id) && (
+                    <SelectItem value={String(prefillOrder.id)}>
+                      {prefillOrder.orderNumber} — {prefillOrder.patient?.firstName} {prefillOrder.patient?.lastName} (₹{Number(prefillOrder.totalAmount).toFixed(0)}) · HOPE referral
+                    </SelectItem>
+                  )}
                   {orders?.orders?.map((o) => (
                     <SelectItem key={o.id} value={String(o.id)}>
                       {o.orderNumber} — {o.patient?.firstName} {o.patient?.lastName} (₹{Number(o.totalAmount).toFixed(0)})

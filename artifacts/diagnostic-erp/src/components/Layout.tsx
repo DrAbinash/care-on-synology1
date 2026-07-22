@@ -19,6 +19,7 @@ import {
   Settings2,
   KeyRound,
   Inbox,
+  Plug,
   Tag,
   Ticket,
   Monitor,
@@ -152,6 +153,7 @@ const navItems: NavEntry[] = [
   { path: "/", icon: Zap, label: "Billing Desk" },
   { path: "/my-daily-summary", icon: BarChart2, label: "My Daily Summary" },
   { path: "/hope-referrals", icon: Inbox, label: "HOPE Referrals", featureFlag: "hopeReferralsInbox" },
+  { path: "/diagnostic-integration", icon: Plug, label: "Diagnostic Integration", ownerOnly: true, featureFlag: "hopeReferralsInbox" },
   {
     id: "billing-grp",
     icon: Receipt,
