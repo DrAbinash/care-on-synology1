@@ -22,6 +22,7 @@ import {
   PROSTATE_CLINICAL_OPTIONS,
   suggestProstatomegaly,
 } from "./usgProstateConfig";
+import { EXTENDED_FINDING_DEFS, EXTENDED_ORGAN_FINDINGS } from "./usgFindingLibraryExtended";
 
 // ── Thresholds ───────────────────────────────────────────────────────────────
 /** A calculated manual-volume delta beyond this fraction is flagged to the
@@ -365,18 +366,27 @@ const PROSTATOMEGALY: UsgFindingDef = {
   },
 };
 
-export const USG_FINDING_DEFS: UsgFindingDef[] = [RENAL_CALCULUS, CHOLELITHIASIS, PROSTATOMEGALY];
+export const USG_FINDING_DEFS: UsgFindingDef[] = [
+  RENAL_CALCULUS, CHOLELITHIASIS, PROSTATOMEGALY,
+  ...EXTENDED_FINDING_DEFS,   // P2.6 expanded library
+];
 
 const DEF_BY_ID = new Map(USG_FINDING_DEFS.map((d) => [d.id, d]));
 export function findingDefById(id: string): UsgFindingDef | undefined {
   return DEF_BY_ID.get(id);
 }
 
+/** All finding ids applicable to an organ: base + P2.6 extended (deduped). */
+function organFindingIds(organKey: string): string[] {
+  const organ = USG_ORGANS.find((o) => o.key === organKey);
+  const base = organ?.findingDefIds ?? [];
+  const extended = EXTENDED_ORGAN_FINDINGS[organKey] ?? [];
+  return Array.from(new Set([...base, ...extended]));
+}
+
 /** The finding definitions applicable to an organ (resolves the organ's ids). */
 export function findingDefsForOrgan(organKey: string): UsgFindingDef[] {
-  const organ = USG_ORGANS.find((o) => o.key === organKey);
-  if (!organ) return [];
-  return organ.findingDefIds.map((id) => DEF_BY_ID.get(id)).filter((d): d is UsgFindingDef => !!d);
+  return organFindingIds(organKey).map((id) => DEF_BY_ID.get(id)).filter((d): d is UsgFindingDef => !!d);
 }
 
 export function organByKey(key: string): UsgOrganDef | undefined {

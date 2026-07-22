@@ -39,8 +39,9 @@ describe("organ gating by sex and preset", () => {
     expect(keys).toEqual(["right_kidney", "left_kidney", "urinary_bladder", "prostate"]);
   });
   it("kidney organs resolve the renal-calculus finding", () => {
-    expect(findingDefsForOrgan("right_kidney").map((d) => d.id)).toEqual(["renal_calculus"]);
-    expect(findingDefsForOrgan("gallbladder").map((d) => d.id)).toEqual(["gb_cholelithiasis"]);
+    // base P1 finding is present (organ also carries P2.6 extended findings).
+    expect(findingDefsForOrgan("right_kidney").map((d) => d.id)).toContain("renal_calculus");
+    expect(findingDefsForOrgan("gallbladder").map((d) => d.id)).toContain("gb_cholelithiasis");
   });
 });
 

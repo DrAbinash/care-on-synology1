@@ -14,7 +14,21 @@
 import { mergeBlock, mergeImpression } from "./quickFindingsMerge";
 import { effectiveFindingText, type UsgFindingObject } from "./usgFindingBuilder";
 
-export type OrganStatus = "untouched" | "normal" | "abnormal" | "incomplete";
+export type OrganStatus =
+  | "untouched"
+  | "normal"
+  | "abnormal"
+  | "incomplete"
+  | "not_visualized"
+  | "surgically_absent"
+  | "not_applicable";
+
+/** Explicit statuses a radiologist sets directly (P2.4); the rest are derived. */
+export const EXPLICIT_ORGAN_STATUSES: OrganStatus[] = [
+  "incomplete", "not_visualized", "surgically_absent", "not_applicable",
+];
+/** Statuses that must emit NO report text. */
+const NO_TEXT_STATUSES = new Set<OrganStatus>(["not_applicable"]);
 
 export interface UsgOrganSection {
   organ: string;                 // organ key
@@ -22,12 +36,15 @@ export interface UsgOrganSection {
   normal: boolean;
   text: string;                  // report prose (radiologist-editable)
   findings: UsgFindingObject[];  // structured Finding Objects
+  /** Explicit P2.4 status override (persisted); undefined = derive from content. */
+  status?: OrganStatus;
 }
 
 /** The exact object stored per section inside the canonical `findings_sections`. */
 export interface StoredOrganSection {
   normal: boolean;
   text: string;
+  status?: OrganStatus;
   findings?: UsgFindingObject[];
 }
 
@@ -35,12 +52,45 @@ export function emptySection(organ: string, label: string): UsgOrganSection {
   return { organ, label, normal: false, text: "", findings: [] };
 }
 
-/** Derive the organ's rail status from its section state. */
+/** Derive the organ's rail status. Findings always dominate (→ abnormal); an
+ *  explicit P2.4 status is honoured only when there are no findings. */
 export function organStatus(section: UsgOrganSection): OrganStatus {
   if (section.findings.length > 0) return "abnormal";
+  if (section.status && section.status !== "untouched" && section.status !== "normal") return section.status;
   if (section.normal) return "normal";
   if (section.text.trim()) return "abnormal";
   return "untouched";
+}
+
+/**
+ * Set an explicit organ status (P2.4). Deterministic wording rules:
+ *  - not_applicable    → no report text at all;
+ *  - surgically_absent → the clinically-appropriate statement (required);
+ *  - not_visualized    → the configured statement, or "" when not configured;
+ *  - normal            → delegate to markNormal (needs the normal statement);
+ *  - incomplete/untouched → keep any typed text, just flag the state.
+ * Never silently discards radiologist-typed prose except for the states whose
+ * whole meaning is "no findings here" (absent / N/A / not visualized).
+ */
+export function setOrganStatus(
+  section: UsgOrganSection,
+  status: OrganStatus,
+  statement?: string,
+): UsgOrganSection {
+  if (status === "not_applicable") {
+    return { ...section, status, normal: false, findings: [], text: "" };
+  }
+  if (status === "surgically_absent") {
+    return { ...section, status, normal: false, findings: [], text: (statement ?? "").trim() };
+  }
+  if (status === "not_visualized") {
+    return { ...section, status, normal: false, findings: [], text: (statement ?? "").trim() };
+  }
+  if (status === "normal") {
+    return { ...section, status: undefined, normal: true, findings: [], text: statement ?? section.text };
+  }
+  // incomplete / untouched — keep content, record the flag.
+  return { ...section, status, normal: false };
 }
 
 // ── Mutations (all pure — return a new section, never mutate in place) ────────
@@ -48,7 +98,7 @@ export function organStatus(section: UsgOrganSection): OrganStatus {
 /** Mark an organ normal: explicit action — sets the baseline normal statement
  *  and clears any structured findings for that organ. */
 export function markNormal(section: UsgOrganSection, normalText: string): UsgOrganSection {
-  return { ...section, normal: true, findings: [], text: normalText };
+  return { ...section, status: undefined, normal: true, findings: [], text: normalText };
 }
 
 /** Add a structured finding to an organ, non-destructively appending its prose.
@@ -56,7 +106,7 @@ export function markNormal(section: UsgOrganSection, normalText: string): UsgOrg
 export function addFinding(section: UsgOrganSection, obj: UsgFindingObject): UsgOrganSection {
   const base = section.normal ? "" : section.text;   // drop the normal statement
   const text = mergeBlock(base, effectiveFindingText(obj));
-  return { ...section, normal: false, findings: [...section.findings, obj], text };
+  return { ...section, status: undefined, normal: false, findings: [...section.findings, obj], text };
 }
 
 /** Remove a structured finding (by index) and rebuild the prose from what
@@ -104,10 +154,12 @@ export function composeImpression(sections: UsgOrganSection[]): string[] {
 export function composeFindingsSections(sections: UsgOrganSection[]): Record<string, StoredOrganSection> {
   const out: Record<string, StoredOrganSection> = {};
   for (const s of sections) {
-    if (organStatus(s) === "untouched") continue;         // don't persist blank organs
+    const st = organStatus(s);
+    if (st === "untouched") continue;                     // don't persist blank organs
     out[s.label] = {
       normal: s.normal,
       text: s.text,
+      ...(s.status && s.status !== "untouched" ? { status: s.status } : {}),
       ...(s.findings.length ? { findings: s.findings } : {}),
     };
   }
@@ -118,7 +170,8 @@ export function composeFindingsSections(sections: UsgOrganSection[]): Record<str
 export function composeRawFindings(sections: UsgOrganSection[]): string {
   const blocks: string[] = [];
   for (const s of sections) {
-    if (organStatus(s) === "untouched") continue;
+    const st = organStatus(s);
+    if (st === "untouched" || NO_TEXT_STATUSES.has(st)) continue;  // N/A emits no text
     const text = s.text.trim();
     if (text) blocks.push(`${s.label.toUpperCase()}: ${text}`);
   }
@@ -141,12 +194,14 @@ export function parseFindingsSections(
     const key = organLabelToKey[label] ?? label;
     if (raw && typeof raw === "object") {
       const r = raw as Record<string, unknown>;
+      const status = typeof r.status === "string" ? (r.status as OrganStatus) : undefined;
       sections.push({
         organ: key,
         label,
         normal: r.normal === true,
         text: typeof r.text === "string" ? r.text : "",
         findings: Array.isArray(r.findings) ? (r.findings as UsgFindingObject[]) : [],
+        ...(status ? { status } : {}),
       });
     } else if (typeof raw === "string") {
       // legacy shape: section → plain string

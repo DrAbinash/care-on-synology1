@@ -23,6 +23,9 @@ const PILL: Record<OrganStatus, string> = {
   normal: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300",
   abnormal: "bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300",
   incomplete: "bg-sky-100 text-sky-700 dark:bg-sky-950/50 dark:text-sky-300",
+  not_visualized: "bg-violet-100 text-violet-700 dark:bg-violet-950/50 dark:text-violet-300",
+  surgically_absent: "bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300",
+  not_applicable: "bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500",
 };
 
 export default function OrganReportSection({
