@@ -28,6 +28,7 @@ vi.mock("../lib/usgActivationService", () => ({
   groupAActivationOrder: () => ["ff_radiology_usg_workspace", "ff_radiology_usg_ob_canonical"],
   groupBActivatable: () => ["ff_radiology_usg_report_to_pacs"], // only Orthanc-backed passes
   GROUP_C_SAFETY_CONTROLS: ["PCPNDT fail-closed"],
+  INFRA_SETUP: [{ kind: "orthanc", title: "Orthanc (PACS)", unlocks: "extraction + PACS", envVars: ["ORTHANC_URL=..."], steps: ["run it"] }],
 }));
 vi.mock("../lib/usgReadinessService", () => ({
   loadLiveFlags: async () => ({}),
@@ -63,6 +64,9 @@ describe("GET /api/usg-admin/activation", () => {
     expect(res.body.health.orthanc.ok).toBe(true);
     expect(res.body.safetyControls).toContain("PCPNDT fail-closed");
     expect(res.body.groupBActivatable).toContain("ff_radiology_usg_report_to_pacs");
+    // In-app setup guide is annotated with each infra's live health.
+    expect(res.body.infraSetup[0].kind).toBe("orthanc");
+    expect(res.body.infraSetup[0].health.ok).toBe(true);
   });
 });
 

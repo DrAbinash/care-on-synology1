@@ -44,6 +44,57 @@ export const USG_ACTIVATION_PLAN: ActivationEntry[] = [
   { flag: "ff_radiology_usg_ai_growth",          group: "B", infra: "ai_gateway", label: "AI growth assistant" },
 ];
 
+export interface InfraSetupGuide {
+  kind: InfraKind;
+  title: string;
+  unlocks: string;
+  envVars: string[];
+  steps: string[];
+}
+
+/** In-app setup guide for the infrastructure that Group-B features need. Shown
+ *  on the Admin rollout page next to the live health chips. */
+export const INFRA_SETUP: InfraSetupGuide[] = [
+  {
+    kind: "orthanc",
+    title: "Orthanc (PACS)",
+    unlocks: "Auto-measurement extraction + Report-to-PACS return",
+    envVars: ["ORTHANC_URL=http://<orthanc-host>:8042", "ORTHANC_USERNAME=<user>", "ORTHANC_PASSWORD=<pass>"],
+    steps: [
+      "Run Orthanc and make it reachable from the care-api container.",
+      "Enable the Orthanc DICOMweb plugin (extraction + WADO frame fetch use it).",
+      "Set the env vars on care-api (Container Manager → Environment), or the DICOMweb URL in PACS settings.",
+      "Point the GE Voluson to send studies to the Orthanc AE title.",
+      "When the Orthanc chip turns green, use “Enable infra features where healthy”.",
+    ],
+  },
+  {
+    kind: "viewer",
+    title: "Embedded OHIF viewer",
+    unlocks: "Exact frame navigation + cine playback",
+    envVars: [],
+    steps: [
+      "Confirm the embedded OHIF viewer is deployed and reachable (reads the same Orthanc DICOMweb).",
+      "Ensure it serves multi-frame ultrasound studies.",
+      "Viewer capability is verified in the browser — the server cannot assert it.",
+      "Frame-navigation commands + multi-frame playback need a final wiring pass against the live viewer.",
+    ],
+  },
+  {
+    kind: "ai_gateway",
+    title: "AI gateway",
+    unlocks: "AI suggestions + growth notes",
+    envVars: ["USG_AI_GATEWAY_URL=https://<your-ai-gateway>"],
+    steps: [
+      "Stand up the CARE AI gateway (or point at your model endpoint).",
+      "Set USG_AI_GATEWAY_URL on care-api.",
+      "Turn on the global AI master flag (ff_radiology_ai) in AI settings.",
+      "Set the per-radiologist AI policy to pilot/production.",
+      "When the AI-gateway chip turns green, the AI panel generates instead of showing “unavailable”.",
+    ],
+  },
+];
+
 /** GROUP C — always-active safety controls (documented; never flag-toggled). */
 export const GROUP_C_SAFETY_CONTROLS = [
   "PCPNDT / Form-F server-side finalization (fail-closed)",
