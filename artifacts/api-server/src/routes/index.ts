@@ -127,6 +127,7 @@ import { usgReportsRouter } from "./usgReports";
 import { usgCriticalAlertsRouter } from "./usgCriticalAlerts";
 import { usgAnalyticsRouter } from "./usgAnalytics";
 import { careUsgCompanionRouter } from "./careUsgCompanion";
+import usgAdminRouter from "./usgAdmin";
 import { radiologyKnowledgePacksRouter } from "./radiologyKnowledgePacks";
 import echoCardiologyRouter from "./echoCardiology";
 import fetalUsgLevel4Router from "./fetalUsgLevel4";
@@ -600,6 +601,12 @@ router.use("/usg-analytics", requireStaffAuth, requireStaffPermission("/radiolog
 // engine). Study/assembly responses are shared resources (keyed by study), so
 // they are safe for the service worker to cache — no personal-identity scoping.
 router.use("/care-usg-companion", requireStaffAuth, requireStaffPermission("/radiology"), careUsgCompanionRouter);
+
+// USG Companion admin / rollout control plane (P9). Readiness matrix is readable
+// by any radiology staff; flag enable/disable/kill-switch are admin-only and
+// server-enforced (dependency + clinic-validation gates), and every change is
+// audited. This is the one surface that turns USG phase flags on/off.
+router.use("/usg-admin", requireStaffAuth, requireStaffPermission("/radiology"), usgAdminRouter);
 
 // CARE Knowledge Pack Engine — a registry/loader/validator over the existing
 // per-study-type content (quick findings / protocols / history / measurements /
