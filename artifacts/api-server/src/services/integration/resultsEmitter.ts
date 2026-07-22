@@ -79,6 +79,9 @@ export async function reconcileResults(opts: { limit?: number } = {}): Promise<{
             reportNumber: rep.reportNumber, resultType: rep.type, reportStatus: rep.status,
             isCritical: rep.isCritical, finalisedAt: rep.verifiedAt ?? rep.updatedAt, finalisingDoctor: rep.verifiedByName ?? rep.signedByName ?? null,
             title: rep.title, impression: rep.impression ?? null,
+            // Phase 2: a tokenized public report reference (when one exists), so
+            // HOPE can deep-link the finalised report from the patient record.
+            reportRef: rep.reportNumber, reportToken: rep.publicToken ?? null,
           },
         });
         await tx.update(externalResultLinksTable).set({ emittedOutboxId: finalisedEvent.id }).where(eq(externalResultLinksTable.id, link.id));

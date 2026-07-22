@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   canTransition, assertTransition, nextStates, TERMINAL_STATUSES, isReferralStatus,
-  canItemTransition, isItemTerminal, isItemStatus,
+  canItemTransition, isItemTerminal, isItemStatus, shortestPath,
 } from "./referralStateMachine";
 import { REFERRAL_STATUSES, type ReferralStatus } from "@workspace/db/schema";
 
@@ -55,6 +55,29 @@ describe("referral state machine", () => {
   it("only knows declared statuses", () => {
     expect(isReferralStatus("RECEIVED_BY_CARE")).toBe(true);
     expect(isReferralStatus("NONSENSE")).toBe(false);
+  });
+});
+
+describe("shortestPath (Phase 2 status advancement)", () => {
+  it("returns [] when already at target", () => {
+    expect(shortestPath("REPORTED", "REPORTED")).toEqual([]);
+  });
+  it("finds a fully-legal path and every step is a valid transition", () => {
+    const path = shortestPath("CARE_ORDER_CREATED", "REPORTED");
+    expect(path).not.toBeNull();
+    let from: ReferralStatus = "CARE_ORDER_CREATED";
+    for (const step of path!) { expect(canTransition(from, step)).toBe(true); from = step; }
+    expect(from).toBe("REPORTED");
+  });
+  it("reaches REPORTED directly from SAMPLE_COLLECTED (Phase 2 relaxation)", () => {
+    expect(canTransition("SAMPLE_COLLECTED", "REPORTED")).toBe(true);
+    expect(shortestPath("SAMPLE_COLLECTED", "REPORTED")).toEqual(["REPORTED"]);
+  });
+  it("returns null when the target is unreachable (e.g. out of a terminal state)", () => {
+    expect(shortestPath("CANCELLED", "RECEIVED_BY_CARE")).toBeNull();
+  });
+  it("advances CARE_ORDER_CREATED → SAMPLE_COLLECTED in one legal step", () => {
+    expect(shortestPath("CARE_ORDER_CREATED", "SAMPLE_COLLECTED")).toEqual(["SAMPLE_COLLECTED"]);
   });
 });
 

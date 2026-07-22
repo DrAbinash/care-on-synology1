@@ -13,6 +13,7 @@ import { eq } from "drizzle-orm";
 import { db, featureFlagsTable } from "@workspace/db";
 import { dispatchPendingOutbox } from "./outbox";
 import { reconcileResults } from "./resultsEmitter";
+import { reconcileStatuses } from "./statusReconciler";
 
 let flagCache: { value: boolean; at: number } | null = null;
 export async function integrationEnabled(): Promise<boolean> {
@@ -41,10 +42,13 @@ export async function tickOutbox(): Promise<void> {
 export async function tickReconcile(): Promise<void> {
   if (!(await integrationEnabled())) return;
   try {
+    // Phase 2: advance per-item sample/study status first, then results.
+    const s = await reconcileStatuses({ limit: 100 });
+    if (s.sampleEvents || s.studyEvents) console.log("[integration] status reconcile", s);
     const r = await reconcileResults({ limit: 100 });
     if (r.emitted) console.log("[integration] results reconcile", r);
   } catch (e) {
-    console.error("[integration] results reconcile failed:", (e as Error)?.message);
+    console.error("[integration] reconcile failed:", (e as Error)?.message);
   }
 }
 
