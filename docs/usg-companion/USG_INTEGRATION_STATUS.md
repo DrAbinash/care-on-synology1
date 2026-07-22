@@ -16,7 +16,8 @@ live Orthanc / model gateway / staging in this environment).
 | **P4** pregnancy timeline | ✅ | ✅ `/api/usg-prior/.../timeline` | ⛔ pending | ✅ reads OB measurements | ✅ real-DB (service) | ❌ | `ff_radiology_usg_pregnancy_timeline` (server-gated; UI pending) | **PARTIAL — UI PENDING** |
 | **P5** OB canonical | ✅ | ✅ `/api/usg-ob-doppler` | ✅ workspace OB/Doppler panel | ✅ reads measurements → canonical draft | ✅ real-DB integration | ❌ | `ff_radiology_usg_ob_canonical` **wired** | **VERTICAL INTEGRATION COMPLETE** (partial parity — see P5-OB-PARITY.md) |
 | **P5** Doppler canonical | ✅ | ✅ `/api/usg-ob-doppler` | ✅ workspace OB/Doppler panel | ✅ reads doppler rows → canonical draft | ✅ real-DB integration | ❌ | `ff_radiology_usg_doppler_canonical` **wired** | **VERTICAL INTEGRATION COMPLETE** |
-| **P3** extraction + provenance | ✅ | ◐ existing `/api/usg-extraction`; SR-core wiring pending | ◐ existing review panel; provenance UI pending | ✅ usg_measurements / viewer_measurements | ⛔ needs Orthanc fixtures | ❌ | `ff_radiology_usg_dicom_extraction`, `_exact_provenance` | **CORE COMPLETE** |
+| **P3** exact provenance | ✅ | ✅ ingest wired into `runUsgExtraction` (fail-safe, flag-gated) | ⛔ viewer-nav UI needs live viewer | ✅ writes viewer_measurements (real frame, idempotent) | ✅ fixture + real-DB tests | ❌ | `ff_radiology_usg_exact_provenance` **wired** | **VERTICAL INTEGRATION COMPLETE (server)** — viewer-nav UI pending |
+| **P3** SR-primary extraction | ✅ | ◐ shallow parse still primary; SR-core swap pending | ◐ existing review panel | ✅ usg_measurements | ⛔ needs Orthanc | ❌ | `ff_radiology_usg_dicom_extraction` | **CORE COMPLETE** |
 | **P6** report→PACS | ✅ | ⛔ worker wiring pending | ⛔ status UI pending | ✅ pacs_archive_revisions | ⛔ needs Orthanc | ❌ | `ff_radiology_usg_report_to_pacs` | **CORE COMPLETE** |
 | **P7** cine | ✅ | ⛔ pending | ⛔ viewer wiring pending | ✅ usg_key_images | ⛔ needs viewer | ❌ | `ff_radiology_usg_cine` | **CORE COMPLETE** |
 | **P8** AI assistant | ✅ | ⛔ gateway wiring pending | ⛔ pending | ✅ ai_shadow_drafts / ai_evidence | ⛔ needs model gateway | ❌ | `ff_radiology_usg_ai_assistant`, `_ai_growth` | **CORE COMPLETE** |
@@ -29,7 +30,8 @@ Legend: ✅ done · ◐ partially exists · ⛔ pending · ❌ not done/not poss
 |---|---|---|
 | 1 | #167 (merged) | P9 admin/rollout control plane (readiness matrix, server-enforced enable/disable/kill-switch, audit) |
 | 2 | #168 (merged) | P4 prior intelligence (prior match, structured comparison, comparison suggestions) — API + UI + real-DB tests |
-| 3 | this branch `claude/usg-int-p5-ob-doppler` | P5 OB & Doppler canonical sections — API + workspace panel + Form-F status + real-DB tests + parity report |
+| 3 | #171 (merged) | P5 OB & Doppler canonical sections — API + workspace panel + Form-F status + real-DB tests + parity report |
+| 4 | this branch `claude/usg-int-p3-extraction` | P3 exact-provenance ingest into viewer_measurements (fail-safe, idempotent, no fabricated frame) — fixture + real-DB tests |
 
 ## Remaining integration (exact steps)
 
