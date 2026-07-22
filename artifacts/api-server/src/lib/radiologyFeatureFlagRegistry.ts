@@ -153,6 +153,12 @@ export const RADIOLOGY_FLAG_REGISTRY: RadiologyFlagEntry[] = [
     rollbackEffect: "disable → Doppler reporting uses the legacy autofill text; no data change",
     ownerSubsystem: "usg doppler",
   },
+  {
+    key: "ff_radiology_usg_report_to_pacs", defaultValue: false, dependsOn: [], enableOrder: 15, wired: false,
+    purpose: "USG P6 — return the signed USG report to PACS via the canonical archiveReportToPacs, gated by a fail-closed eligibility policy (finalized + latest version + PCPNDT-compliant for OB)",
+    rollbackEffect: "disable → no automated USG report-to-PACS return; manual archive path unchanged; no data change",
+    ownerSubsystem: "usg pacs return",
+  },
 ];
 
 export interface FlagDependencyViolation {

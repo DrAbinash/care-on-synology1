@@ -409,6 +409,10 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   // sections/impressions only. No fetal sex is ever produced (PCPNDT-safe).
   ff_radiology_usg_ob_canonical: false,
   ff_radiology_usg_doppler_canonical: false,
+  // USG Companion P6 — return the signed USG report to PACS. Off by default;
+  // gates the canonical archiveReportToPacs with a fail-closed eligibility
+  // policy (finalized only, latest version, PCPNDT-compliant for OB studies).
+  ff_radiology_usg_report_to_pacs: false,
 };
 
 const RADIOLOGY_FLAG_PREFIX = "ff_radiology_";
