@@ -23,6 +23,8 @@ export interface TimelineScanInput {
   flMm?: number | null;
   afiCm?: number | null;
   efwGrams?: number | null;
+  placenta?: string | null;
+  presentation?: string | null;
 }
 
 export interface TimelinePoint {
@@ -32,11 +34,14 @@ export interface TimelinePoint {
   gaByUltrasoundDays: number | null;
   gaDisplay: string | null;         // "28w 3d"
   efwGrams: number | null;
+  crlMm: number | null;
   bpdMm: number | null;
   hcMm: number | null;
   acMm: number | null;
   flMm: number | null;
   afiCm: number | null;
+  placenta: string | null;
+  presentation: string | null;
 }
 
 export interface Trend {
@@ -97,11 +102,14 @@ export function buildPregnancyTimeline(scans: TimelineScanInput[]): PregnancyTim
       gaByUltrasoundDays: gaByUs,
       gaDisplay: gaDisplay(gaByUs ?? gaByDates),
       efwGrams: efw,
+      crlMm: s.crlMm ?? null,
       bpdMm: s.bpdMm ?? null,
       hcMm: s.hcMm ?? null,
       acMm: s.acMm ?? null,
       flMm: s.flMm ?? null,
       afiCm: s.afiCm ?? null,
+      placenta: s.placenta ?? null,
+      presentation: s.presentation ?? null,
     };
   });
 

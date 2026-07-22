@@ -136,7 +136,7 @@ export const RADIOLOGY_FLAG_REGISTRY: RadiologyFlagEntry[] = [
     ownerSubsystem: "usg comparison",
   },
   {
-    key: "ff_radiology_usg_pregnancy_timeline", defaultValue: false, dependsOn: ["ff_radiology_usg_prior_intelligence"], enableOrder: 12, wired: false,
+    key: "ff_radiology_usg_pregnancy_timeline", defaultValue: false, dependsOn: ["ff_radiology_usg_prior_intelligence"], enableOrder: 12, wired: true,
     purpose: "USG P4 — pregnancy-episode grouping + GA/EFW trend timeline (reuses canonical obstetric engine)",
     rollbackEffect: "disable → timeline panel hidden; per-scan obstetric calculations unaffected; no data change",
     ownerSubsystem: "usg obstetrics",
