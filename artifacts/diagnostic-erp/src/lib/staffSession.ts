@@ -398,6 +398,12 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   // populates viewer_measurements / exact-frame navigation when enabled.
   ff_radiology_usg_dicom_extraction: false,
   ff_radiology_usg_exact_provenance: false,
+  // USG Companion P4 — prior-study intelligence + pregnancy timeline. Off by
+  // default; the deterministic prior-match / comparison / timeline core is
+  // additive, suggestion-only, and never writes to reports or classifies
+  // clinical progression on its own.
+  ff_radiology_usg_prior_intelligence: false,
+  ff_radiology_usg_pregnancy_timeline: false,
 };
 
 const RADIOLOGY_FLAG_PREFIX = "ff_radiology_";
