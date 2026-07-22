@@ -1,24 +1,32 @@
 /**
- * findingsCompose.ts — client-side composition used by the Findings Library
- * panel inside the Reporting Workspace.
+ * findingsCompose.ts — template-driven report composition for the Findings
+ * Library (Reporting Workspace + Report Builder).
  *
- * Turns a set of selected findings into (a) a findings text block grouped by
- * organ/section in anatomical order, and (b) impression lines (from the abnormal
- * ones). These map directly onto the workspace's `rawFindings` (string, appended
- * via mergeBlock) and `impression` (string[]). Pure & deterministic.
+ * The real radiology workflow: start from an all-normal study template, then for
+ * each abnormal organ the abnormal finding *replaces* that organ's normal line
+ * in the body — and also becomes an Impression line. Organs with no abnormal
+ * stay normal. `composeReport` implements exactly that.
  *
- * The backend has an equivalent full-report merge (findingsMerge.ts); this
- * client copy exists because the workspace appends incrementally into its own
- * state shapes rather than producing a standalone report document.
+ * Output maps onto the workspace state: `findingsText` → rawFindings (replace),
+ * `impressionLines` → impression[]. Pure & deterministic.
  */
 
-export interface ComposeFinding {
+export interface BaseSection {
+  section: string;
+  normal: string;
+}
+export interface SelFinding {
   text: string;
   section?: string;
   abnormal?: boolean;
 }
-
-export interface Composed {
+export interface ReportLine {
+  section: string;
+  text: string;
+  abnormal: boolean;
+}
+export interface ComposedReport {
+  lines: ReportLine[];
   findingsText: string;
   impressionLines: string[];
 }
@@ -38,7 +46,6 @@ export const SECTION_ORDER = [
 
 const clip = (s: string): string => s.replace(/\s+/g, " ").trim();
 const dedupeKey = (s: string): string => clip(s).toLowerCase().replace(/[.;,]+$/g, "");
-
 function asSentence(s: string): string {
   const t = clip(s).replace(/[.;,\s]+$/g, "");
   return t ? `${t}.` : t;
@@ -46,43 +53,76 @@ function asSentence(s: string): string {
 function stripLabel(s: string): string {
   return asSentence(s).replace(/^([A-Z][A-Za-z /&()-]{2,24})\s*[:-]\s*/, "");
 }
+function orderIndex(section: string): number {
+  const i = SECTION_ORDER.indexOf(section);
+  return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+}
+function dedupe(arr: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const s of arr) {
+    const k = dedupeKey(s);
+    if (k && !seen.has(k)) { seen.add(k); out.push(s); }
+  }
+  return out;
+}
 
-export function composeFindings(findings: ComposeFinding[]): Composed {
-  const bySection = new Map<string, { lines: string[]; seen: Set<string> }>();
-  const impSeen = new Set<string>();
-  const impressionLines: string[] = [];
+/**
+ * Compose a report from an optional normal base template and a set of selected
+ * findings. Abnormal findings replace their organ's normal line; abnormal
+ * findings also drive the impression. Organs with no abnormal stay normal.
+ */
+export function composeReport(base: BaseSection[] | undefined, selected: SelFinding[]): ComposedReport {
+  const baseList = base ?? [];
 
-  for (const f of findings) {
+  // group selection by section
+  const sel = new Map<string, { abn: string[]; nml: string[] }>();
+  for (const f of selected) {
     const text = asSentence(f.text || "");
     if (!text) continue;
     const section = clip(f.section || "General") || "General";
-    if (!bySection.has(section)) bySection.set(section, { lines: [], seen: new Set() });
-    const grp = bySection.get(section)!;
-    const key = dedupeKey(text);
-    if (!grp.seen.has(key)) {
-      grp.seen.add(key);
-      grp.lines.push(text);
-    }
-    if (f.abnormal) {
-      const line = stripLabel(f.text || "");
-      const ik = dedupeKey(line);
-      if (line && !impSeen.has(ik)) {
-        impSeen.add(ik);
-        impressionLines.push(line);
-      }
+    if (!sel.has(section)) sel.set(section, { abn: [], nml: [] });
+    (f.abnormal ? sel.get(section)!.abn : sel.get(section)!.nml).push(text);
+  }
+
+  const baseSections = baseList.map((b) => clip(b.section));
+  const baseMap = new Map(baseList.map((b) => [clip(b.section), asSentence(b.normal)]));
+  const extra = [...sel.keys()]
+    .filter((s) => !baseSections.includes(s))
+    .sort((a, b) => orderIndex(a) - orderIndex(b));
+  const order = [...baseSections, ...extra];
+
+  const lines: ReportLine[] = [];
+  const seen = new Set<string>();
+  for (const section of order) {
+    if (seen.has(section)) continue;
+    seen.add(section);
+    const s = sel.get(section);
+    if (s && s.abn.length) {
+      // abnormal replaces the normal line for this organ
+      lines.push({ section, text: dedupe(s.abn).join(" "), abnormal: true });
+    } else if (baseMap.has(section)) {
+      // keep normal, optionally appending any extra normal sentences the user added
+      const extraNml = s ? dedupe(s.nml) : [];
+      lines.push({ section, text: dedupe([baseMap.get(section)!, ...extraNml]).join(" "), abnormal: false });
+    } else if (s && s.nml.length) {
+      lines.push({ section, text: dedupe(s.nml).join(" "), abnormal: false });
     }
   }
 
-  const sections = [...bySection.keys()].sort((a, b) => {
-    const ra = SECTION_ORDER.indexOf(a); const rb = SECTION_ORDER.indexOf(b);
-    const na = ra === -1 ? Number.MAX_SAFE_INTEGER : ra;
-    const nb = rb === -1 ? Number.MAX_SAFE_INTEGER : rb;
-    return na - nb;
-  });
+  const findingsText = lines.map((l) => `${l.section}: ${l.text}`).join("\n");
 
-  const findingsText = sections
-    .map((s) => `${s}: ${bySection.get(s)!.lines.join(" ")}`)
-    .join("\n");
+  // impression: abnormal findings only, label-stripped, de-duplicated, in body order
+  const impSeen = new Set<string>();
+  const impressionLines: string[] = [];
+  for (const l of lines) {
+    if (!l.abnormal) continue;
+    for (const part of (sel.get(l.section)?.abn ?? [])) {
+      const line = stripLabel(part);
+      const k = dedupeKey(line);
+      if (line && !impSeen.has(k)) { impSeen.add(k); impressionLines.push(line); }
+    }
+  }
 
-  return { findingsText, impressionLines };
+  return { lines, findingsText, impressionLines };
 }

@@ -6165,15 +6165,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             {rightTab === "library" && (
               <FindingsLibraryPanel
                 modalityHint={entry?.modality ?? ""}
-                onInsertFindings={handleInsertNormals}
-                onInsertImpression={(lines) =>
-                  setImpression((prev) => {
-                    const seen = new Set(prev.map((l) => l.trim().toLowerCase()));
-                    const add = lines.filter((l) => l.trim() && !seen.has(l.trim().toLowerCase()));
-                    return [...prev.filter(Boolean), ...add];
-                  })
-                }
-                onInsertTechnique={(text) => setTechnique((prev) => (prev.trim() ? prev : text))}
+                studyHint={`${entry?.modality ?? ""} ${entry?.studyDescription ?? ""}`}
+                onApplyReport={({ findingsText, impressionLines, technique }) => {
+                  // Template-driven: the composed report (normal base with abnormal
+                  // organs swapped in) becomes the report's Findings + Impression.
+                  setRawFindings(findingsText);
+                  setImpression(impressionLines.length ? impressionLines : [""]);
+                  if (technique) setTechnique((prev) => (prev.trim() ? prev : technique));
+                }}
                 disabled={isLocked}
               />
             )}

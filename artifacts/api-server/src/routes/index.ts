@@ -99,7 +99,6 @@ import barcodeResolverRouter from "./barcode-resolver";
 import { uploadsRouter } from "./uploads";
 import { scansRouter } from "./scans";
 import { radiologyReportGeneratorRouter } from "./radiology-report-generator";
-import { radiologyFindingsLibraryRouter } from "./radiology-findings-library";
 import { structuredReportTemplatesRouter } from "./structuredReportTemplates";
 import { floorsRouter, roomsRouter, modalitiesRouter } from "./locations";
 import { aiReportingRouter } from "./aiReporting";
@@ -702,15 +701,6 @@ router.use(
   requireStaffAuth,
   requireStaffPermission("/radiology"),
   radiologyReportGeneratorRouter,
-);
-
-// Report Builder — searchable findings catalogue (static asset) + server-side
-// merge of several selected findings into one house-style report.
-router.use(
-  "/radiology/findings-library",
-  requireStaffAuth,
-  requireStaffPermission("/radiology"),
-  radiologyFindingsLibraryRouter,
 );
 
 // Structured report templates — open to all authenticated staff for reading.

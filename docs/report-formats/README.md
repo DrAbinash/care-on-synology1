@@ -24,13 +24,22 @@ searchable, de-identified findings catalogue mined from these samples:
 3. Sentences were cleaned, de-duplicated, measurement values collapsed to
    placeholders (e.g. `___ cm`), and classified by study title.
 
-### Merging findings into one report
+### Building a report (template-driven)
 
-`POST /api/radiology/findings-library/merge` combines several selected findings
-into one house-style report — Findings grouped by organ in anatomical order and
-a numbered Impression built from the abnormal ones. It is pure and deterministic
-(`artifacts/api-server/src/lib/findingsMerge.ts`); an optional `mode: "ai"`
-smooths the prose without adding or removing any finding.
+The workflow mirrors how radiologists actually report:
+
+1. A **base normal format** is auto-selected from the study (or picked).
+2. The radiologist searches and ticks the **abnormal findings** that apply.
+3. Each abnormal **replaces that organ's normal line** in the Findings body and
+   adds an **Impression line**; every other organ stays normal.
+
+This composition is pure and deterministic
+(`artifacts/diagnostic-erp/src/lib/findingsCompose.ts`, `composeReport`) and runs
+client-side for instant preview. It powers two surfaces:
+
+- the standalone **Report Builder** page (`/radiology/report-builder`), and
+- the **Library** tab inside the Reporting Workspace, whose "Apply to report"
+  writes the composed Findings + Impression straight into the report being edited.
 
 The Report Builder is a **drafting aid** — every report is reviewed and signed
 in the reporting workspace.
