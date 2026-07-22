@@ -417,6 +417,12 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   // default; reuses the P3 SrImageRef provenance model, never fabricates frame
   // counts, and adds no new store.
   ff_radiology_usg_cine: false,
+  // USG Companion P8 — advisory AI assistant. Off by default. AI is
+  // suggestion-only: it never signs/finalizes, never writes to patient_reports,
+  // never bypasses Form F, never emits fetal sex, and never overwrites
+  // radiologist text silently. Reuses the canonical AI enablement policy.
+  ff_radiology_usg_ai_assistant: false,
+  ff_radiology_usg_ai_growth: false,
 };
 
 const RADIOLOGY_FLAG_PREFIX = "ff_radiology_";
