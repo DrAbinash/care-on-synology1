@@ -54,6 +54,32 @@ function isSessionAuthPath(path: string): boolean {
   return SESSION_AUTH_PATHS.some(p => path.includes(p));
 }
 
+// Server error messages that unambiguously mean the STAFF SESSION ITSELF is
+// dead — the token is invalid, expired, idle-timed-out, or the underlying
+// account was deactivated (see api-server requireStaffAuth). When the server
+// returns any of these on ANY endpoint, every subsequent authenticated
+// request will fail the same way, so the only correct response is to clear
+// the session and send the user back to the login page — regardless of which
+// endpoint surfaced it. Without this, a stale token in localStorage lets the
+// app render the authenticated shell (which then fails to load its data with
+// an inline "please log in again" error) instead of showing the login page.
+//
+// This is deliberately distinct from a permission error (403) or an
+// auth-layer-mismatch 401 (e.g. "Staff authentication required" from a route
+// that mounts the wrong middleware): those must NOT destroy the session, so
+// they are matched by neither the path allowlist nor these markers.
+const SESSION_DEAD_MARKERS = [
+  "invalid or expired staff session",
+  "session expired due to inactivity",
+  "staff account is inactive or no longer exists",
+];
+
+export function isSessionDeadMessage(message: string | null | undefined): boolean {
+  if (!message) return false;
+  const m = message.toLowerCase();
+  return SESSION_DEAD_MARKERS.some(marker => m.includes(marker));
+}
+
 // ── Network retry helpers ────────────────────────────────────────────────────
 //
 // fetchApi retries automatically on transient network failures (fetch throws,
@@ -162,13 +188,22 @@ export async function fetchApi<T = unknown>(path: string, init?: RequestInit): P
         continue;
       }
 
-      if (res.status === 401) {
-        if (isSessionAuthPath(path)) handleSessionExpiry();
-      }
       const text = await res.text();
       let parsed: { error?: string; message?: string } = {};
       try { parsed = JSON.parse(text); } catch { /* empty body or non-JSON error */ }
-      throw new Error(parsed.error || parsed.message || text || res.statusText);
+      const message = parsed.error || parsed.message || text || res.statusText;
+
+      // A 401 expires the session when it comes from a genuine session
+      // endpoint OR when the server explicitly signals the session is dead
+      // (via the error body) on ANY other endpoint. The latter covers the
+      // stale-tab case: a leftover token in localStorage passes the client
+      // guard, but the first authenticated request the page fires comes back
+      // "invalid or expired staff session" — we clear it and redirect to the
+      // login page rather than leaving the stale authenticated shell up.
+      if (res.status === 401 && (isSessionAuthPath(path) || isSessionDeadMessage(message))) {
+        handleSessionExpiry();
+      }
+      throw new Error(message);
     }
 
     // Success
