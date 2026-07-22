@@ -51,7 +51,12 @@ type EmailSettings = {
   smtpHost: string; smtpPort: string; smtpUser: string; smtpPassword: string;
   smtpSecure: boolean; fromAddress: string; fromName: string;
   adminEmail: string; extraRecipients: string;
-  billEditEnabled: boolean; dailySummaryEnabled: boolean; dailySummaryTime: string;
+  billEditEnabled: boolean; dailySummaryEnabled: boolean;
+  // Raw JSON array string as persisted server-side, e.g. '["09:00","17:00"]'.
+  dailySummaryTimes: string;
+  // Form-only fields: up to 3 discrete time inputs, derived from/converted
+  // back to dailySummaryTimes on load/save (2nd and 3rd are optional).
+  dailySummaryTime1: string; dailySummaryTime2: string; dailySummaryTime3: string;
 };
 
 type ManualSection = {
@@ -3618,13 +3623,27 @@ function EmailTab() {
     } catch {
       recips = settings.extraRecipients || "";
     }
-    reset({ ...settings, extraRecipients: recips });
+    let times: string[] = [];
+    try {
+      const arr = JSON.parse(settings.dailySummaryTimes || "[]");
+      if (Array.isArray(arr)) times = arr.filter((t): t is string => typeof t === "string");
+    } catch { /* fall through to default */ }
+    reset({
+      ...settings,
+      extraRecipients: recips,
+      dailySummaryTime1: times[0] || "17:00",
+      dailySummaryTime2: times[1] || "",
+      dailySummaryTime3: times[2] || "",
+    });
   }, [settings, reset]);
 
   const save = useMutation({
     mutationFn: (body: EmailSettings) => {
       const extra = String(body.extraRecipients || "").split(",").map(s => s.trim()).filter(Boolean);
-      return api.post("/api/email-settings", { ...body, extraRecipients: extra });
+      const times = [body.dailySummaryTime1, body.dailySummaryTime2, body.dailySummaryTime3]
+        .map(t => String(t || "").trim())
+        .filter(Boolean);
+      return api.post("/api/email-settings", { ...body, extraRecipients: extra, dailySummaryTimes: times });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["email-settings"] });
@@ -3713,9 +3732,13 @@ function EmailTab() {
           </div>
           {dailySummaryEnabled && (
             <div className="pl-1">
-              <Label>Send daily summary at</Label>
-              <Input type="time" {...register("dailySummaryTime")} className="mt-1 w-40" />
-              <p className="text-[11px] text-muted-foreground mt-1">Server local time. The summary is sent automatically once per day at this time.</p>
+              <Label>Send daily summary at (up to 3 times a day)</Label>
+              <div className="flex flex-wrap items-center gap-3 mt-1">
+                <Input type="time" {...register("dailySummaryTime1")} className="w-40" />
+                <Input type="time" {...register("dailySummaryTime2")} className="w-40" placeholder="Optional" />
+                <Input type="time" {...register("dailySummaryTime3")} className="w-40" placeholder="Optional" />
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1">India Standard Time (IST). The first time is required; leave the 2nd/3rd blank to send once a day. Each configured time sends automatically, at most once per day.</p>
             </div>
           )}
         </div>

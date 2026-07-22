@@ -20,7 +20,7 @@ import {
 import { runRadiologyJobTick } from "./lib/radiologyJobs";
 import { RADIOLOGY_JOB_HANDLERS } from "./lib/radiologyJobHandlers";
 import { runScheduledAuditChainVerification } from "./lib/auditVerification";
-import { todayIST } from "./lib/istDate";
+import { todayIST, istHourMinute } from "./lib/istDate";
 import { classifyPaymentMethod, isDigitalSettlement, isPhysicalCash } from "./lib/paymentMethodClassifier";
 
 let currentTask: ReturnType<typeof cron.schedule> | null = null;
@@ -597,36 +597,60 @@ async function fireDicomAutoPull() {
   }
 }
 
-// Catch-up safe: fires as soon as the configured time has passed on any day
-// the container happens to be up, as long as today (IST) isn't already the
-// persisted dailySummaryLastSentDate. Unlike the old exact-minute-match +
-// in-memory Set approach, a redeploy/crash during the configured minute no
-// longer permanently skips that day's email — the very next tick after
-// restart catches up. dailySummaryLastSentDate is only stamped by a
+// Catch-up safe: fires as soon as each configured slot's time has passed on
+// any day the container happens to be up, as long as today (IST) isn't
+// already the persisted slot's last-sent date. Unlike the old exact-minute-
+// match + in-memory Set approach, a redeploy/crash during the configured
+// minute no longer permanently skips that slot's email — the very next tick
+// after restart catches up. dailySummaryLastSentSlots is only stamped by a
 // successful SCHEDULED send (inside fireDailySummary), never by the manual
 // "Send Summary Now" button, so a manual test-send never blocks the real
-// scheduled send later that day.
+// scheduled sends later that day.
+//
+// Up to 3 times/day are supported via dailySummaryTimes (a JSON array of
+// "HH:MM" strings). Times are compared in IST — the same timezone the rest
+// of the ERP's "today" logic uses (see istDate.ts) — rather than the
+// server process's own local time (which defaults to UTC in this
+// container), since comparing in server-local time was the reason the
+// scheduled send silently fired 5.5 hours off from what admins configured.
 function scheduleDaily() {
   cron.schedule("* * * * *", async () => {
     try {
       const [settings] = await db.select().from(emailSettingsTable).limit(1);
       if (!settings || !settings.dailySummaryEnabled) return;
 
-      const now = new Date();
-      const [hour, minute] = settings.dailySummaryTime.split(":").map(Number);
-      const todayStr = todayIST(now);
-      const scheduledTimePassed =
-        now.getHours() > hour || (now.getHours() === hour && now.getMinutes() >= minute);
+      let times: string[] = [];
+      try {
+        const parsed = JSON.parse(settings.dailySummaryTimes || "[]");
+        if (Array.isArray(parsed)) times = parsed.filter((t): t is string => typeof t === "string" && /^\d{1,2}:\d{2}$/.test(t));
+      } catch { /* malformed — treat as no configured times */ }
+      if (times.length === 0) return;
 
-      if (scheduledTimePassed && settings.dailySummaryLastSentDate !== todayStr) {
-        await fireDailySummary({ scheduled: true });
+      let lastSentSlots: Record<string, string> = {};
+      try {
+        const parsed = JSON.parse(settings.dailySummaryLastSentSlots || "{}");
+        if (parsed && typeof parsed === "object") lastSentSlots = parsed;
+      } catch { /* malformed — treat as never sent */ }
+
+      const now = new Date();
+      const todayStr = todayIST(now);
+      const { hour: nowHour, minute: nowMinute } = istHourMinute(now);
+
+      for (const time of times) {
+        const [hour, minute] = time.split(":").map(Number);
+        const scheduledTimePassed =
+          nowHour > hour || (nowHour === hour && nowMinute >= minute);
+
+        if (scheduledTimePassed && lastSentSlots[time] !== todayStr) {
+          await fireDailySummary({ scheduled: true, slot: time });
+        }
       }
     } catch (err) {
       console.error("[cron] daily summary check failed:", err);
     }
   });
 
-  console.log("[cron] Daily summary scheduler started (checks every minute, catch-up safe)");
+  console.log("[cron] Daily summary scheduler started (checks every minute, catch-up safe, IST-based, up to 3 sends/day)");
 }
 
 // ── WhatsApp reminder scheduler ───────────────────────────────────────────────
@@ -714,7 +738,7 @@ function scheduleMonthEndCommission() {
 }
 
 // force=true bypasses the dailySummaryEnabled toggle, used by the manual
-// "Send Summary Now" admin button — it never stamps dailySummaryLastSentDate
+// "Send Summary Now" admin button — it never stamps dailySummaryLastSentSlots
 // (scheduled stays false), so a manual preview never blocks the real
 // scheduled send later that day.
 export async function runDailySummary(force = false) {
@@ -725,7 +749,7 @@ export async function runMonthEndCommission(now: Date = new Date()) {
   return fireMonthEndCommission(now);
 }
 
-async function fireDailySummary(opts: { scheduled: boolean; force?: boolean }) {
+async function fireDailySummary(opts: { scheduled: boolean; force?: boolean; slot?: string }) {
   try {
     const now = new Date();
     const todayStart = new Date();
@@ -869,12 +893,21 @@ async function fireDailySummary(opts: { scheduled: boolean; force?: boolean }) {
       discountDetails,
     }, { force: opts.force });
 
-    if (opts.scheduled) {
-      const [settingsRow] = await db.select({ id: emailSettingsTable.id }).from(emailSettingsTable).limit(1);
+    if (opts.scheduled && opts.slot) {
+      const [settingsRow] = await db
+        .select({ id: emailSettingsTable.id, dailySummaryLastSentSlots: emailSettingsTable.dailySummaryLastSentSlots })
+        .from(emailSettingsTable)
+        .limit(1);
       if (settingsRow) {
+        let slots: Record<string, string> = {};
+        try {
+          const parsed = JSON.parse(settingsRow.dailySummaryLastSentSlots || "{}");
+          if (parsed && typeof parsed === "object") slots = parsed;
+        } catch { /* malformed — start fresh */ }
+        slots[opts.slot] = todayIST(now);
         await db
           .update(emailSettingsTable)
-          .set({ dailySummaryLastSentDate: todayIST(now) })
+          .set({ dailySummaryLastSentSlots: JSON.stringify(slots) })
           .where(eq(emailSettingsTable.id, settingsRow.id));
       }
     }

@@ -25,7 +25,7 @@ router.get("/", async (_req, res) => {
 
 router.post("/", async (req, res) => {
   const { smtpHost, smtpPort, smtpUser, smtpPassword, smtpSecure, fromAddress, fromName,
-    adminEmail, extraRecipients, billEditEnabled, dailySummaryEnabled, dailySummaryTime } = req.body;
+    adminEmail, extraRecipients, billEditEnabled, dailySummaryEnabled, dailySummaryTimes } = req.body;
 
   if (smtpHost) {
     const check = await resolveAndCheckHost(String(smtpHost));
@@ -51,7 +51,16 @@ router.post("/", async (req, res) => {
     extraRecipients: JSON.stringify(Array.isArray(extraRecipients) ? extraRecipients : []),
     billEditEnabled: billEditEnabled ?? true,
     dailySummaryEnabled: dailySummaryEnabled ?? true,
-    dailySummaryTime: dailySummaryTime ?? "17:00",
+    dailySummaryTimes: JSON.stringify(
+      (() => {
+        // "HH:MM" strings, in IST, up to 3 per day; falls back to the
+        // previous single-time default if none/invalid were provided.
+        const valid = (Array.isArray(dailySummaryTimes) ? dailySummaryTimes : [])
+          .filter((t: unknown): t is string => typeof t === "string" && /^\d{1,2}:\d{2}$/.test(t))
+          .slice(0, 3);
+        return valid.length > 0 ? valid : ["17:00"];
+      })(),
+    ),
   };
 
   let saved;
@@ -106,7 +115,7 @@ router.post("/test", async (_req, res) => {
 // via `force`) so an admin can preview the report on demand. Reuses the same
 // enriched aggregation as the scheduled send (cron.ts's fireDailySummary) so
 // the manual preview and the real scheduled email never drift apart. Does
-// NOT stamp dailySummaryLastSentDate, so it never blocks the scheduled send.
+// NOT stamp dailySummaryLastSentSlots, so it never blocks the scheduled send.
 router.post("/send-summary", async (_req, res) => {
   try {
     const [settings] = await db.select().from(emailSettingsTable).limit(1);

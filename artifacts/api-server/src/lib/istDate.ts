@@ -28,3 +28,18 @@ export function nowIST(): Date {
   const s = new Date().toLocaleString("en-CA", { timeZone: "Asia/Kolkata" });
   return new Date(s.replace(",", "T") + ":00+05:30");
 }
+
+// Current hour/minute in IST, independent of the server process's own
+// timezone. Uses hourCycle "h23" (not hour12: false) to avoid the Intl
+// quirk where some engines report midnight as hour "24" instead of "00".
+export function istHourMinute(d: Date = new Date()): { hour: number; minute: number } {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(d);
+  const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
+  const minute = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
+  return { hour, minute };
+}
