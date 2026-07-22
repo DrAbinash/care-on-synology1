@@ -71,6 +71,13 @@
       "when": 1782705414048,
       "tag": "0009_report_quality_findings",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1782705414049,
+      "tag": "0010_daily_summary_multi_time",
+      "breakpoints": true
     }
   ]
 }
