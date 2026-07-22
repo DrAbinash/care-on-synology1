@@ -129,6 +129,7 @@ import { usgAnalyticsRouter } from "./usgAnalytics";
 import { careUsgCompanionRouter } from "./careUsgCompanion";
 import usgAdminRouter from "./usgAdmin";
 import usgPriorRouter from "./usgPrior";
+import usgObDopplerRouter from "./usgObDoppler";
 import { radiologyKnowledgePacksRouter } from "./radiologyKnowledgePacks";
 import echoCardiologyRouter from "./echoCardiology";
 import fetalUsgLevel4Router from "./fetalUsgLevel4";
@@ -613,6 +614,12 @@ router.use("/usg-admin", requireStaffAuth, requireStaffPermission("/radiology"),
 // pregnancy timeline. Read-only; each endpoint is flag-gated (404 when OFF) and
 // same-patient guarded at both the SQL and the matcher layer.
 router.use("/usg-prior", requireStaffAuth, requireStaffPermission("/radiology"), usgPriorRouter);
+
+// USG P5 OB & Doppler — canonical sections built via the one obstetric engine.
+// Each endpoint is flag-gated (404 when OFF); responses are canonical section +
+// impression payloads the workspace merges into the draft. No fetal sex; Form-F
+// is display-only (the finalize gate stays fail-closed).
+router.use("/usg-ob-doppler", requireStaffAuth, requireStaffPermission("/radiology"), usgObDopplerRouter);
 
 // CARE Knowledge Pack Engine — a registry/loader/validator over the existing
 // per-study-type content (quick findings / protocols / history / measurements /

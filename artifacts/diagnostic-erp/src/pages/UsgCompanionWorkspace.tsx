@@ -39,6 +39,7 @@ import OrganRail from "@/components/radiology/usg/OrganRail";
 import DynamicFindingBuilder from "@/components/radiology/usg/DynamicFindingBuilder";
 import OrganReportSection from "@/components/radiology/usg/OrganReportSection";
 import UsgPriorComparison from "@/components/radiology/usg/UsgPriorComparison";
+import UsgObDopplerPanel from "@/components/radiology/usg/UsgObDopplerPanel";
 import { organsForStudy, organByKey, findingDefsForOrgan, type UsgPreset } from "@/lib/usgOrganLibrary";
 import {
   emptySection, markNormal, addFinding, removeFinding, applyNormalToRemaining,
@@ -432,6 +433,15 @@ export default function UsgCompanionWorkspace({ studyId }: { studyId?: number })
             <UsgPriorComparison
               studyId={studyId ?? null}
               onAccept={(t) => { setImpressionEdited(true); setImpressionText((prev) => (prev ? `${prev}\n${t}` : t)); }}
+            />
+          </div>
+          {/* P5 OB/Doppler canonical sections — flag-gated inside the component;
+              inserts append to the active section / impression (never auto-insert). */}
+          <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2">
+            <UsgObDopplerPanel
+              studyId={studyId ?? null}
+              onInsertFindings={appendToActive}
+              onInsertImpression={(t) => { setImpressionEdited(true); setImpressionText((prev) => (prev ? `${prev}\n${t}` : t)); }}
             />
           </div>
           <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2">
