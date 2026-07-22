@@ -38,6 +38,7 @@ import RadiologyKnowledgePanel from "@/components/RadiologyKnowledgePanel";
 import OrganRail from "@/components/radiology/usg/OrganRail";
 import DynamicFindingBuilder from "@/components/radiology/usg/DynamicFindingBuilder";
 import OrganReportSection from "@/components/radiology/usg/OrganReportSection";
+import UsgPriorComparison from "@/components/radiology/usg/UsgPriorComparison";
 import { organsForStudy, organByKey, findingDefsForOrgan, type UsgPreset } from "@/lib/usgOrganLibrary";
 import {
   emptySection, markNormal, addFinding, removeFinding, applyNormalToRemaining,
@@ -425,6 +426,14 @@ export default function UsgCompanionWorkspace({ studyId }: { studyId?: number })
             onInsertImpression={(t) => { setImpressionEdited(true); setImpressionText((prev) => (prev ? `${prev}\n${t}` : t)); }}
             onSelectPrior={() => { /* prior selection surfaced by the panel; P4 wires deltas */ }}
           />
+          {/* P4 structured prior comparison — flag-gated inside the component;
+              accepted suggestions append to the CURRENT draft's impression only. */}
+          <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2">
+            <UsgPriorComparison
+              studyId={studyId ?? null}
+              onAccept={(t) => { setImpressionEdited(true); setImpressionText((prev) => (prev ? `${prev}\n${t}` : t)); }}
+            />
+          </div>
           <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2">
             <RadiologyKnowledgePanel activePanel={knowledgePanel} onInsert={appendToActive} />
           </div>

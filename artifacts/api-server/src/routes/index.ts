@@ -128,6 +128,7 @@ import { usgCriticalAlertsRouter } from "./usgCriticalAlerts";
 import { usgAnalyticsRouter } from "./usgAnalytics";
 import { careUsgCompanionRouter } from "./careUsgCompanion";
 import usgAdminRouter from "./usgAdmin";
+import usgPriorRouter from "./usgPrior";
 import { radiologyKnowledgePacksRouter } from "./radiologyKnowledgePacks";
 import echoCardiologyRouter from "./echoCardiology";
 import fetalUsgLevel4Router from "./fetalUsgLevel4";
@@ -607,6 +608,11 @@ router.use("/care-usg-companion", requireStaffAuth, requireStaffPermission("/rad
 // server-enforced (dependency + clinic-validation gates), and every change is
 // audited. This is the one surface that turns USG phase flags on/off.
 router.use("/usg-admin", requireStaffAuth, requireStaffPermission("/radiology"), usgAdminRouter);
+
+// USG P4 prior-study intelligence — comparable priors, structured comparison,
+// pregnancy timeline. Read-only; each endpoint is flag-gated (404 when OFF) and
+// same-patient guarded at both the SQL and the matcher layer.
+router.use("/usg-prior", requireStaffAuth, requireStaffPermission("/radiology"), usgPriorRouter);
 
 // CARE Knowledge Pack Engine — a registry/loader/validator over the existing
 // per-study-type content (quick findings / protocols / history / measurements /
