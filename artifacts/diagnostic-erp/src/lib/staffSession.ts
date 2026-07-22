@@ -393,6 +393,11 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   // report/impression reconciliation, keyboard workflow. Off by default; only
   // active inside the dedicated USG workspace when both flags are on.
   ff_radiology_usg_companion_p2: false,
+  // USG Companion P3 — DICOM-native SR extraction + exact frame/caliper provenance.
+  // Off by default; the deterministic parser/provenance core is additive and only
+  // populates viewer_measurements / exact-frame navigation when enabled.
+  ff_radiology_usg_dicom_extraction: false,
+  ff_radiology_usg_exact_provenance: false,
 };
 
 const RADIOLOGY_FLAG_PREFIX = "ff_radiology_";
