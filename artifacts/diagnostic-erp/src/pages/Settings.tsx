@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef, useDeferredValue } from "react";
 import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
@@ -4640,34 +4640,92 @@ const BillPrintToggleRow = ({ label, value, onChange }: { label: string; value: 
 // null when unset (falls back to the built-in tuned default shown as
 // placeholder text). Typing a number applies a fixed override regardless
 // of paper size; "Reset" clears back to null (built-in default).
-const NumberOverrideField = ({ label, value, defaultLabel, unit, min, max, onChange }: {
-  label: string; value: number | null; defaultLabel: string; unit: string;
-  min: number; max: number; onChange: (v: number | null) => void;
-}) => (
-  <div>
-    <p className="text-xs font-medium mb-1">{label}</p>
-    <div className="flex items-center gap-2">
-      <input
-        type="number" min={min} max={max}
-        value={value ?? ""}
-        placeholder={`Default: ${defaultLabel}`}
-        onChange={(e) => {
-          const raw = e.target.value;
-          if (raw === "") { onChange(null); return; }
-          const n = Number(raw);
-          if (Number.isFinite(n)) onChange(Math.max(min, Math.min(max, n)));
-        }}
-        className="w-full h-8 text-sm border border-input rounded-md px-2 bg-background"
-      />
-      <span className="text-xs text-muted-foreground shrink-0">{unit}</span>
-      {value != null && (
-        <button type="button" onClick={() => onChange(null)} className="text-xs text-muted-foreground hover:text-foreground underline shrink-0">
-          Reset
+// A layout/typography field that can be adjusted either by DRAGGING the
+// range slider (visual, WYSIWYG — the preview iframe updates as you drag)
+// or by typing an exact number. Both controls are bound to the same value
+// so they stay in sync. `sliderDefault` is where the slider rests when the
+// stored value is null (using an override) — it is chosen per field as the
+// A5 built-in default so a user who has never touched the section sees the
+// slider positioned at the value the bill is already printing at, not at 0.
+// The reset arrow clears back to null (built-in default).
+const NumberOverrideField = ({
+  label, value, defaultLabel, sliderDefault, unit, min, max, onChange,
+}: {
+  label: string; value: number | null; defaultLabel: string; sliderDefault: number;
+  unit: string; min: number; max: number; onChange: (v: number | null) => void;
+}) => {
+  const isOverride = value != null;
+  const effective = value ?? sliderDefault;
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1 gap-2">
+        <p className="text-xs font-medium truncate">{label}</p>
+        <span
+          className={`text-[10px] tabular-nums shrink-0 ${isOverride ? "text-blue-600 font-semibold" : "text-muted-foreground"}`}
+          title={isOverride ? "Custom override — will be sent to every counter" : `Built-in default: ${defaultLabel}`}
+        >
+          {effective}{unit}{isOverride ? "" : " · default"}
+        </span>
+      </div>
+      <div className="flex items-center gap-2">
+        <input
+          type="range" min={min} max={max} step={1}
+          value={effective}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="flex-1 h-2 accent-blue-600 cursor-ew-resize"
+          title={`Drag left/right to shrink or stretch ${label.toLowerCase()} — the live preview follows`}
+        />
+        <input
+          type="number" min={min} max={max}
+          value={value ?? ""}
+          placeholder={`${sliderDefault}`}
+          title={`Type an exact value or drag the slider · Built-in default: ${defaultLabel}`}
+          onChange={(e) => {
+            const raw = e.target.value;
+            if (raw === "") { onChange(null); return; }
+            const n = Number(raw);
+            if (Number.isFinite(n)) onChange(Math.max(min, Math.min(max, n)));
+          }}
+          className="w-14 h-7 text-xs border border-input rounded-md px-1.5 bg-background text-center"
+        />
+        <span className="text-[10px] text-muted-foreground shrink-0 w-5">{unit}</span>
+        <button
+          type="button"
+          onClick={() => onChange(null)}
+          disabled={!isOverride}
+          className="text-sm text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed shrink-0 leading-none"
+          title={isOverride ? "Reset to built-in default" : "No override set — nothing to reset"}
+        >
+          ↺
         </button>
-      )}
+      </div>
     </div>
-  </div>
-);
+  );
+};
+
+// Quick-preset bundles for the Layout & Typography section — set all nine
+// fields at once so users can start from a working baseline and then
+// fine-tune the sliders. "Normal" clears every override back to null (the
+// built-in size, which is already tuned separately per paper size).
+const LAYOUT_PRESETS = {
+  compact: {
+    printMarginMm: 5,
+    printTitleFontPx: 16, printPatientNameFontPx: 12, printBodyFontPx: 12,
+    printHeaderFontPx: 9,  printTableFontPx: 10, printTotalFontPx: 11,
+    printFooterFontPx: 9,  printTinyFontPx: 8,
+  },
+  normal: {
+    printMarginMm: null, printTitleFontPx: null, printPatientNameFontPx: null,
+    printBodyFontPx: null, printHeaderFontPx: null, printTableFontPx: null,
+    printTotalFontPx: null, printFooterFontPx: null, printTinyFontPx: null,
+  },
+  comfortable: {
+    printMarginMm: 12,
+    printTitleFontPx: 22, printPatientNameFontPx: 18, printBodyFontPx: 15,
+    printHeaderFontPx: 12, printTableFontPx: 14, printTotalFontPx: 15,
+    printFooterFontPx: 12, printTinyFontPx: 11,
+  },
+} as const;
 
 const billFormats: { id: string; label: string }[] = [
   { id: "classic",     label: "Classic Format (Existing)" },
@@ -4740,10 +4798,17 @@ function BillingPrintTab() {
     return () => { cancelled = true; };
   }, []);
 
+  // Rebuilding the ~30 KB preview HTML on every slider tick — and reloading
+  // an iframe with it — is heavy enough to jank the drag on slower machines.
+  // useDeferredValue lets React keep the sliders responsive by rendering the
+  // preview against the previous settings while a newer settings render is
+  // in flight; it catches up as soon as React is idle. No visible lag on
+  // typed changes, no jank when dragging.
+  const deferredSettings = useDeferredValue(settings);
   const previewHtml = useMemo(() => {
-    if (!settings) return "";
-    const orientation: "portrait" | "landscape" = settings.defaultPaperSize === "A5-landscape" ? "landscape" : "portrait";
-    const paperSize: "A4" | "A5" = settings.defaultPaperSize === "A4" ? "A4" : "A5";
+    if (!deferredSettings) return "";
+    const orientation: "portrait" | "landscape" = deferredSettings.defaultPaperSize === "A5-landscape" ? "landscape" : "portrait";
+    const paperSize: "A4" | "A5" = deferredSettings.defaultPaperSize === "A4" ? "A4" : "A5";
     return buildBillPrintHtml({
       bill: BILL_PREVIEW_SAMPLE,
       clinic: previewClinic ?? BILL_PREVIEW_FALLBACK_CLINIC,
@@ -4751,30 +4816,30 @@ function BillingPrintTab() {
       orientation,
       isBW: effectivePreviewIsBW,
       qrDataUrl: previewQrUrl,
-      format: settings.defaultFormat,
-      showQr: settings.showQrCode,
-      showAmountInWords: settings.showAmountInWords,
-      showSignatureLine: settings.showSignatureLine,
-      showComputerGenerated: settings.showComputerGenerated,
-      showReportMessage: settings.showReportMessage,
-      showServiceFooter: settings.showServiceFooter,
-      showBrandingFooter: settings.showBrandingFooter,
-      showBarcode: settings.showBarcode,
-      showWatermark: settings.showWatermark,
-      showPatientInstructions: settings.showPatientInstructions,
-      showSystemInfo: settings.showSystemInfo,
-      showQueueToken: settings.showQueueTokenOnBill,
-      printMarginMm: settings.printMarginMm,
-      printTitleFontPx: settings.printTitleFontPx,
-      printPatientNameFontPx: settings.printPatientNameFontPx,
-      printBodyFontPx: settings.printBodyFontPx,
-      printHeaderFontPx: settings.printHeaderFontPx,
-      printTableFontPx: settings.printTableFontPx,
-      printTotalFontPx: settings.printTotalFontPx,
-      printFooterFontPx: settings.printFooterFontPx,
-      printTinyFontPx: settings.printTinyFontPx,
+      format: deferredSettings.defaultFormat,
+      showQr: deferredSettings.showQrCode,
+      showAmountInWords: deferredSettings.showAmountInWords,
+      showSignatureLine: deferredSettings.showSignatureLine,
+      showComputerGenerated: deferredSettings.showComputerGenerated,
+      showReportMessage: deferredSettings.showReportMessage,
+      showServiceFooter: deferredSettings.showServiceFooter,
+      showBrandingFooter: deferredSettings.showBrandingFooter,
+      showBarcode: deferredSettings.showBarcode,
+      showWatermark: deferredSettings.showWatermark,
+      showPatientInstructions: deferredSettings.showPatientInstructions,
+      showSystemInfo: deferredSettings.showSystemInfo,
+      showQueueToken: deferredSettings.showQueueTokenOnBill,
+      printMarginMm: deferredSettings.printMarginMm,
+      printTitleFontPx: deferredSettings.printTitleFontPx,
+      printPatientNameFontPx: deferredSettings.printPatientNameFontPx,
+      printBodyFontPx: deferredSettings.printBodyFontPx,
+      printHeaderFontPx: deferredSettings.printHeaderFontPx,
+      printTableFontPx: deferredSettings.printTableFontPx,
+      printTotalFontPx: deferredSettings.printTotalFontPx,
+      printFooterFontPx: deferredSettings.printFooterFontPx,
+      printTinyFontPx: deferredSettings.printTinyFontPx,
     });
-  }, [settings, previewClinic, previewQrUrl, effectivePreviewIsBW]);
+  }, [deferredSettings, previewClinic, previewQrUrl, effectivePreviewIsBW]);
 
   // Initialize once the clinic-wide server blob is known (success OR error —
   // on error we degrade to defaults + this browser's local overrides, same as
@@ -4910,69 +4975,65 @@ function BillingPrintTab() {
         </p>
       </SectionCard>
 
-      <SectionCard title="Layout &amp; Typography" subtitle="Fine-tune the printed bill's page margin and font sizes (Classic format). Leave blank to use the built-in size — it's already tuned separately for A5 vs A4 paper.">
+      <SectionCard
+        title="Layout &amp; Typography"
+        subtitle="Drag any slider — the Live Preview on the right updates instantly. Type an exact number for precise tuning. Empty = built-in default (already tuned per paper size). Click ↺ to reset a single field, or use a Quick preset to reset/adjust all nine at once."
+      >
+        {/* Quick presets — one click applies a whole preset to every field.
+            "Normal" clears every override back to null (built-in defaults). */}
+        <div className="flex items-center gap-2 flex-wrap pb-3 mb-1 border-b border-border/50">
+          <span className="text-xs font-medium text-muted-foreground">Quick preset:</span>
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => update(LAYOUT_PRESETS.compact)}>Compact</Button>
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => update(LAYOUT_PRESETS.normal)}>Normal (built-in default)</Button>
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => update(LAYOUT_PRESETS.comfortable)}>Comfortable (larger)</Button>
+        </div>
         <NumberOverrideField
-          label="Page Margin" unit="mm" min={2} max={25}
+          label="Page Margin" unit="mm" min={2} max={25} sliderDefault={10}
           value={settings.printMarginMm} defaultLabel="10mm (A5) / 8mm (A4)"
           onChange={(v) => update({ printMarginMm: v })}
         />
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-2">
           <NumberOverrideField
-            label="Title Font Size (INVOICE/RECEIPT)" unit="px" min={8} max={40}
+            label="Title (INVOICE/RECEIPT)" unit="px" min={8} max={40} sliderDefault={19}
             value={settings.printTitleFontPx} defaultLabel="19px (A5) / 20px (A4)"
             onChange={(v) => update({ printTitleFontPx: v })}
           />
           <NumberOverrideField
-            label="Patient/Date Font Size" unit="px" min={8} max={32}
+            label="Patient / Date" unit="px" min={8} max={32} sliderDefault={14}
             value={settings.printPatientNameFontPx} defaultLabel="14px (A5) / 18px (A4)"
             onChange={(v) => update({ printPatientNameFontPx: v })}
           />
           <NumberOverrideField
-            label="Tagline Font Size" unit="px" min={8} max={28}
+            label="Tagline" unit="px" min={8} max={28} sliderDefault={14}
             value={settings.printBodyFontPx} defaultLabel="14px (A5) / 13px (A4)"
             onChange={(v) => update({ printBodyFontPx: v })}
           />
           <NumberOverrideField
-            label="Clinic Contact Info Font Size" unit="px" min={6} max={24}
+            label="Clinic Contact Info" unit="px" min={6} max={24} sliderDefault={11}
             value={settings.printHeaderFontPx} defaultLabel="11px (A5) / 10px (A4)"
             onChange={(v) => update({ printHeaderFontPx: v })}
           />
           <NumberOverrideField
-            label="Test Table Font Size" unit="px" min={8} max={24}
+            label="Test Table" unit="px" min={8} max={24} sliderDefault={12}
             value={settings.printTableFontPx} defaultLabel="12px"
             onChange={(v) => update({ printTableFontPx: v })}
           />
           <NumberOverrideField
-            label="Totals Font Size" unit="px" min={8} max={24}
+            label="Totals" unit="px" min={8} max={24} sliderDefault={13}
             value={settings.printTotalFontPx} defaultLabel="13px"
             onChange={(v) => update({ printTotalFontPx: v })}
           />
           <NumberOverrideField
-            label="Footer Message Font Size" unit="px" min={6} max={20}
+            label="Footer Message" unit="px" min={6} max={20} sliderDefault={11}
             value={settings.printFooterFontPx} defaultLabel="11px"
             onChange={(v) => update({ printFooterFontPx: v })}
           />
           <NumberOverrideField
-            label="Fine Print Font Size" unit="px" min={6} max={18}
+            label="Fine Print" unit="px" min={6} max={18} sliderDefault={10}
             value={settings.printTinyFontPx} defaultLabel="10px"
             onChange={(v) => update({ printTinyFontPx: v })}
           />
         </div>
-        {(settings.printMarginMm != null || settings.printTitleFontPx != null || settings.printPatientNameFontPx != null
-          || settings.printBodyFontPx != null || settings.printHeaderFontPx != null || settings.printTableFontPx != null
-          || settings.printTotalFontPx != null || settings.printFooterFontPx != null || settings.printTinyFontPx != null) && (
-          <button
-            type="button"
-            onClick={() => update({
-              printMarginMm: null, printTitleFontPx: null, printPatientNameFontPx: null,
-              printBodyFontPx: null, printHeaderFontPx: null, printTableFontPx: null,
-              printTotalFontPx: null, printFooterFontPx: null, printTinyFontPx: null,
-            })}
-            className="text-xs text-muted-foreground hover:text-foreground underline"
-          >
-            Reset all layout overrides to defaults
-          </button>
-        )}
       </SectionCard>
 
       <SectionCard title="Print Action" subtitle="Default action when saving a bill.">
