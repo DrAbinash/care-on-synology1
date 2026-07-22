@@ -25,6 +25,10 @@ import { logger } from "../lib/logger";
 import {
   loadLiveFlags, buildReadinessMatrix, decideEnable, killSwitchTargets, usgPhaseFlags,
 } from "../lib/usgReadinessService";
+import {
+  checkInfraHealth, buildActivationView, groupAActivationOrder, groupBActivatable,
+  GROUP_C_SAFETY_CONTROLS,
+} from "../lib/usgActivationService";
 
 const router = Router();
 
@@ -59,6 +63,38 @@ async function setFlag(key: string, enabled: boolean, actor: string) {
 router.get("/readiness", async (_req, res) => {
   const live = await loadLiveFlags();
   res.json(buildReadinessMatrix(live));
+});
+
+// ── GET /activation — group A/B/C view + live infrastructure health ─────────────
+router.get("/activation", async (_req, res) => {
+  const [live, health] = await Promise.all([loadLiveFlags(), checkInfraHealth()]);
+  res.json({
+    health,
+    flags: buildActivationView(live, health),
+    safetyControls: GROUP_C_SAFETY_CONTROLS,
+    groupBActivatable: groupBActivatable(health),
+  });
+});
+
+// ── POST /activate-safe — admin: enable all GROUP A (no-infra) features at once ──
+// Revised production policy: Group A is enabled after build/route tests (not
+// clinic validation). Enabled in dependency order; every flag audited.
+router.post("/activate-safe", requireAdminRole, async (req: Request, res) => {
+  const actor = staffOf(req).subjectName ?? "system";
+  const enabled: string[] = [];
+  for (const flag of groupAActivationOrder()) { await setFlag(flag, true, actor); enabled.push(flag); }
+  audit(req, "usg_activate_group_a", { enabled, policy: "owner_review_activation" });
+  res.json({ enabled, matrix: buildReadinessMatrix(await loadLiveFlags()) });
+});
+
+// ── POST /activate-infra — admin: enable GROUP B flags whose health passes ──────
+router.post("/activate-infra", requireAdminRole, async (req: Request, res) => {
+  const actor = staffOf(req).subjectName ?? "system";
+  const health = await checkInfraHealth();
+  const candidates = groupBActivatable(health);
+  for (const flag of candidates) await setFlag(flag, true, actor);
+  audit(req, "usg_activate_group_b", { enabled: candidates, health });
+  res.json({ enabled: candidates, skipped: "flags whose infra health did not pass stay OFF", health, activation: buildActivationView(await loadLiveFlags(), health) });
 });
 
 // ── POST /flags/:key/enable — admin only, dependency + validation enforced ──────
