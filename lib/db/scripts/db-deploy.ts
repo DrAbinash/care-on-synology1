@@ -208,6 +208,67 @@ async function run() {
     const db = drizzle(client);
     await migrate(db, { migrationsFolder, disableTransactions: true });
 
+    // 3g. Stamp schema_deploy_state so this emergency care-migrate run leaves the
+    // database in the SAME readiness state as care-db-patch-v2. Without this,
+    // migrations succeed here but the API's /api/health/schema probe keeps
+    // returning 503 ("db-patch-v2 did not complete") because db_patch_ok /
+    // schema_verify_status were never recorded — the exact gap behind a
+    // "schema_deploy_state absent" warning after a manual recovery. We verify the
+    // core tables ourselves (honest sql_pass), mirroring the entrypoint's step 6.
+    const CORE_TABLES = [
+      "users", "clinic_settings", "patients", "bills", "payments", "orders",
+      "order_tests", "diagnostic_tests", "doctors", "ledgers", "radiology_worklist",
+    ];
+    const { rows: coreRows } = await client.query<{ missing: string[] | null }>(
+      `SELECT array_agg(t) AS missing FROM unnest($1::text[]) AS t
+       WHERE to_regclass('public.' || t) IS NULL`,
+      [CORE_TABLES],
+    );
+    const missingCore = coreRows[0]?.missing ?? null;
+    const coreOk = !(missingCore && missingCore.length);
+    if (!coreOk) {
+      console.warn(`⚠️   Core tables missing after migration: ${missingCore!.join(", ")} — recording db_patch_ok=false / schema_verify_status=sql_fail so /api/health/schema fails loudly instead of hiding it.`);
+    }
+    let drizzleCount = 0;
+    try {
+      const r = await client.query<{ n: string }>(`SELECT count(*)::text AS n FROM drizzle.__drizzle_migrations`);
+      drizzleCount = parseInt(r.rows[0]?.n ?? "0", 10) || 0;
+    } catch { /* tracking table may not exist on a very old schema */ }
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS public.schema_deploy_state (
+        key        TEXT PRIMARY KEY,
+        value      TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );`);
+    await client.query(
+      `INSERT INTO public.schema_deploy_state (key, value) VALUES
+         ('db_patch_ok',          $1),
+         ('schema_verify_status', $2),
+         ('total_migrations',     $3),
+         ('applied_by',           'care-migrate'),
+         ('patch_version',        to_char(now() AT TIME ZONE 'utc', 'YYYYMMDDHH24MISS')),
+         ('erp_version',          $4),
+         ('build_number',         $5),
+         ('git_commit',           $6),
+         ('git_branch',           $7),
+         ('git_tag',              $8),
+         ('build_date',           $9)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();`,
+      [
+        coreOk ? "true" : "false",
+        coreOk ? "sql_pass" : "sql_fail",
+        String(drizzleCount),
+        process.env.ERP_VERSION ?? "unknown",
+        process.env.BUILD_NUMBER ?? "0",
+        process.env.GIT_COMMIT ?? "unknown",
+        process.env.GIT_BRANCH ?? "unknown",
+        process.env.GIT_TAG ?? "unknown",
+        process.env.BUILD_DATE ?? new Date().toISOString(),
+      ],
+    );
+    console.log(`🧾  Recorded schema_deploy_state (db_patch_ok=${coreOk}, schema_verify_status=${coreOk ? "sql_pass" : "sql_fail"}, ${drizzleCount} drizzle migrations, applied_by=care-migrate).`);
+
     console.log("\n==========================================");
     console.log("✅  DATABASE DEPLOYMENT COMPLETE");
     console.log("==========================================\n");
