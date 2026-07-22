@@ -94,6 +94,9 @@ export async function buildOpsContext(input: BuildCtxInput): Promise<OpsCtx> {
 
   const orthancBase = stripSlash(env.ORTHANC_INTERNAL_URL || env.ORTHANC_URL || pacs["orthanc_url"]);
   const ohif = stripSlash(env.OHIF_URL || pacs["ohif_base_url"]);
+  const ollamaBase = stripSlash(env.OLLAMA_URL || env.OLLAMA_PRIMARY_URL || env.OLLAMA_FALLBACK_URL || pacs["ollama_url"]);
+  // Default reporting model — approved set is qwen3:14b (default), gpt-oss:20b, gemma3:12b.
+  const ollamaModel = env.OLLAMA_DEFAULT_MODEL || pacs["ollama_model"] || "qwen3:14b";
   const publicBase = stripSlash(env.PUBLIC_BASE_URL || (env.NETWORK_PUBLIC_DOMAIN ? `https://${env.NETWORK_PUBLIC_DOMAIN}` : null));
 
   const version = resolveVersionInfo(env);
@@ -138,6 +141,7 @@ export async function buildOpsContext(input: BuildCtxInput): Promise<OpsCtx> {
     version,
     poolStats: input.poolStats ?? null,
     orthanc: { baseUrl: orthancBase, headers: orthancHeaders(env), configured: !!orthancBase },
+    ollama: { baseUrl: ollamaBase, model: ollamaModel, configured: !!ollamaBase },
     ohifUrl: ohif,
     publicBaseUrl: publicBase,
     displayToken,

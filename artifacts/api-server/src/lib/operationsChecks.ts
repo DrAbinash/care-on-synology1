@@ -59,6 +59,8 @@ export interface OpsCtx {
   /** Live pool stats, server mode only. */
   poolStats: (() => { total: number; idle: number; waiting: number } | null) | null;
   orthanc: { baseUrl: string | null; headers: Record<string, string>; configured: boolean };
+  /** On-prem Ollama LLM endpoint + the configured/default reporting model. */
+  ollama: { baseUrl: string | null; model: string; configured: boolean };
   ohifUrl: string | null;
   publicBaseUrl: string | null;
   displayToken: string | null;
@@ -375,6 +377,58 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
       return r.status < 500
         ? { status: "PASS", message: `radiology API mounted (${r.status})` }
         : { status: "WARNING", message: `radiology API returned ${r.status}` };
+    },
+  },
+
+  // ── E2. AI (Ollama / CARE AI Gateway) + radiology operational queues ────────
+  {
+    id: "ai.ollama", name: "Ollama AI endpoint + model", category: "radiology_pacs", required: false, optional: true,
+    run: async (ctx) => {
+      if (!ctx.ollama.configured || !ctx.ollama.baseUrl) return { status: "SKIPPED", message: "Ollama not configured (OLLAMA_URL unset) — AI reporting off, manual reporting unaffected" };
+      const r = await ctx.probe(`${ctx.ollama.baseUrl}/api/tags`, { parseJson: true });
+      if (r.status == null) return { status: "WARNING", message: "Ollama unreachable — AI controls show unavailable; manual reporting continues", recommendedAction: "Check the Ollama host is up and LAN-reachable (ALLOW_PRIVATE_IPS=true)." };
+      if (!r.ok) return { status: "WARNING", message: `Ollama returned ${r.status}` };
+      const models = ((r.json as { models?: Array<{ name?: string; model?: string }> } | undefined)?.models ?? []).map((m) => m.name || m.model || "");
+      const has = models.some((n) => n === ctx.ollama.model || n.startsWith(ctx.ollama.model));
+      return has
+        ? { status: "PASS", message: `Ollama reachable; configured model ${ctx.ollama.model} available (${models.length} model(s))`, metadata: { model: ctx.ollama.model, modelCount: models.length } }
+        : { status: "WARNING", message: `Ollama reachable but configured model ${ctx.ollama.model} is NOT pulled`, recommendedAction: `On the Ollama host run: ollama pull ${ctx.ollama.model}`, metadata: { model: ctx.ollama.model, available: models.slice(0, 5) } };
+    },
+  },
+  {
+    id: "ai.job_queue", name: "AI job queue", category: "radiology_pacs", required: false,
+    run: async (ctx) => {
+      let rows: Array<Record<string, unknown>>;
+      try { rows = await ctx.query("SELECT count(*)::int AS n FROM ai_job_queue WHERE status IN ('failed','error') AND retry_count >= COALESCE(max_retries, 3)"); }
+      catch { return { status: "UNKNOWN", message: "ai_job_queue not present" }; }
+      const n = Number(rows[0]?.n ?? 0);
+      return n > 0
+        ? { status: "WARNING", message: `${n} permanently-failed AI job(s)`, recommendedAction: "Review Admin → AI jobs; re-queue after fixing the provider.", metadata: { failed: n } }
+        : { status: "PASS", message: "no permanently-failed AI jobs" };
+    },
+  },
+  {
+    id: "radiology.pacs_return", name: "PACS-return (SR) queue", category: "radiology_pacs", required: false,
+    run: async (ctx) => {
+      let rows: Array<Record<string, unknown>>;
+      try { rows = await ctx.query("SELECT count(*)::int AS n FROM dicom_sr_export_queue WHERE export_status IN ('failed','error')"); }
+      catch { return { status: "UNKNOWN", message: "dicom_sr_export_queue not present" }; }
+      const n = Number(rows[0]?.n ?? 0);
+      return n > 0
+        ? { status: "WARNING", message: `${n} failed PACS-return export(s) — finalized reports are safe; retry from Admin`, recommendedAction: "Fix the PACS destination, then retry the export queue from Admin.", metadata: { failed: n } }
+        : { status: "PASS", message: "no failed PACS-return exports" };
+    },
+  },
+  {
+    id: "radiology.study_locks", name: "Stale study locks", category: "radiology_pacs", required: false,
+    run: async (ctx) => {
+      let rows: Array<Record<string, unknown>>;
+      try { rows = await ctx.query("SELECT count(*)::int AS n FROM radiology_study_locks WHERE COALESCE(last_activity_at, lock_time) < now() - interval '2 hours'"); }
+      catch { return { status: "UNKNOWN", message: "radiology_study_locks not present" }; }
+      const n = Number(rows[0]?.n ?? 0);
+      return n > 0
+        ? { status: "WARNING", message: `${n} study lock(s) idle >2h — may block reporting`, recommendedAction: "Clear stale locks from Admin (study locks) once confirmed idle.", metadata: { stale: n } }
+        : { status: "PASS", message: "no stale study locks" };
     },
   },
 
