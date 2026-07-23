@@ -92,6 +92,7 @@ const ReconciliationCenter = lazy(() => import("@/pages/ReconciliationCenter"));
 const Staff           = lazy(() => import("@/pages/Staff"));
 const People          = lazy(() => import("@/pages/People"));
 const AttendanceDevices = lazy(() => import("@/pages/AttendanceDevices"));
+const Performance     = lazy(() => import("@/pages/Performance"));
 const HRForms         = lazy(() => import("@/pages/HRForms"));
 const QueuePage       = lazy(() => import("@/pages/Queue"));
 const Radiology       = lazy(() => import("@/pages/Radiology"));
@@ -584,6 +585,7 @@ function Router() {
               <Route path="/staff" component={Staff} />
               <Route path="/people" component={People} />
               <Route path="/attendance-devices" component={AttendanceDevices} />
+              <Route path="/performance" component={Performance} />
               <Route path="/hr-forms" component={HRForms} />
               <Route path="/form-f" component={FormF} />
               <Route path="/machines" component={Machines} />
