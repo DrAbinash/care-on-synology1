@@ -76,9 +76,9 @@ vi.mock("@workspace/db/schema", () => ({
   selfReferralPrescriptionsTable: { __name: "self_referral_prescriptions", id: "id", formFRecordId: "form_f_record_id", signedAt: "signed_at" },
 }));
 
-const ensureSelfReferralPrescriptions = vi.fn(async () => {});
+const ensureSelfReferralPrescriptions = vi.fn(async (_records: Array<{ id: number }>) => {});
 vi.mock("../lib/selfReferralPrescriptions", () => ({
-  ensureSelfReferralPrescriptions: (records: unknown[]) => ensureSelfReferralPrescriptions(records as never),
+  ensureSelfReferralPrescriptions: (records: Array<{ id: number }>) => ensureSelfReferralPrescriptions(records),
 }));
 
 vi.mock("../middleware/requireStaffAuth", () => ({
@@ -296,7 +296,7 @@ describe("GET /form-f/register/self-referral-opd", () => {
     // Auto-prescription: every qualifying record is ensured (auto-saved,
     // idempotent), and saved prescriptions link into the rows.
     expect(ensureSelfReferralPrescriptions).toHaveBeenCalledTimes(1);
-    expect((ensureSelfReferralPrescriptions.mock.calls[0][0] as Array<{ id: number }>).map((r) => r.id)).toEqual([61, 63]);
+    expect(ensureSelfReferralPrescriptions.mock.calls[0][0].map((r) => r.id)).toEqual([61, 63]);
     expect(res.body.rows[0].prescriptionId).toBe(500);
     expect(res.body.rows[1].prescriptionId).toBeNull();
   });
