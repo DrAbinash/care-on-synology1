@@ -933,22 +933,20 @@ export default function IdCardScanPanel({
   // ── Manual crop drag ──────────────────────────────────────────────────────
 
   function getPointerPos(e: React.MouseEvent | React.TouchEvent) {
-    const container = containerRef.current;
-    if (!container) return { x: 0, y: 0 };
-    const rect = container.getBoundingClientRect();
-    const cw = overlayCanvasRef.current?.width ?? 1;
-    const ch = overlayCanvasRef.current?.height ?? 1;
-    const scaleX = cw / rect.width;
-    const scaleY = ch / rect.height;
-    let cx = 0; let cy = 0;
-    if ("touches" in e) {
-      cx = e.touches[0].clientX - rect.left;
-      cy = e.touches[0].clientY - rect.top;
-    } else {
-      cx = e.clientX - rect.left;
-      cy = e.clientY - rect.top;
-    }
-    return { x: cx * scaleX, y: cy * scaleY };
+    // Measure against the CANVAS, not its container. The canvas is centered in
+    // the container (flex, justify-center), so a portrait image (e.g. a mobile
+    // phone photo) is letterboxed — narrower than the container — and using the
+    // container's rect would give both a wrong offset and a wrong scale, so the
+    // crop handles never line up under the pointer. A landscape image fills the
+    // container width, which is why it happened to work there.
+    const canvas = overlayCanvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / (rect.width || 1);
+    const scaleY = canvas.height / (rect.height || 1);
+    const pt = "touches" in e ? (e.touches[0] ?? e.changedTouches[0]) : e;
+    if (!pt) return { x: 0, y: 0 };
+    return { x: (pt.clientX - rect.left) * scaleX, y: (pt.clientY - rect.top) * scaleY };
   }
 
   // Pick which handle (if any) the pointer grabbed. Corners win over edges,
@@ -1106,7 +1104,9 @@ export default function IdCardScanPanel({
               <div
                 ref={containerRef}
                 className="relative bg-gray-100 rounded-lg overflow-hidden border border-gray-200 select-none"
-                style={{ cursor: cursorForDrag(dragMode), maxHeight: 340, display: "flex", justifyContent: "center" }}
+                // touchAction:none so a touch-drag on a handle resizes the crop
+                // instead of scrolling/zooming the page on phones and tablets.
+                style={{ cursor: cursorForDrag(dragMode), maxHeight: 340, display: "flex", justifyContent: "center", touchAction: "none" }}
                 onMouseDown={handlePointerDown}
                 onMouseMove={handlePointerMove}
                 onMouseUp={handlePointerUp}
