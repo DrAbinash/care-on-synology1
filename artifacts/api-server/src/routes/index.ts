@@ -8,6 +8,7 @@ import { ordersRouter } from "./orders";
 import { billsRouter, paymentsRouter } from "./bills";
 import { reportsRouter } from "./reports";
 import inventoryRouter from "./inventory";
+import inventoryBatchesRouter from "./inventoryBatches";
 import accountingRouter from "./accounting";
 import usersRouter from "./users";
 import emailSettingsRouter from "./email-settings";
@@ -372,6 +373,8 @@ router.use("/pathology-registry", requireStaffAuth, requireAdminRole, pathologyR
 
 // Inventory — /inventory permission
 router.use("/inventory", requireStaffAuth, requireStaffPermission("/inventory"), inventoryRouter);
+// Reagent batch/lot + expiry + auto-reorder — additive, same /inventory prefix + guards.
+router.use("/inventory", requireStaffAuth, requireStaffPermission("/inventory"), inventoryBatchesRouter);
 
 // Accounting — /accounting permission (vouchers, accounts, ledger entries)
 router.use("/accounting", requireStaffAuth, requireStaffPermission("/accounting"), accountingRouter);
