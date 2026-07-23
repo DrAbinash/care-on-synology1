@@ -175,6 +175,7 @@ import fhirRouter from "./fhir";
 // ABDM / ABHA national health stack — management (staff auth) + gateway callbacks
 // (public transport, ABDM_CALLBACK_SECRET). Off until ABDM_ENABLED=true.
 import abdmRouter, { callbackRouter as abdmCallbackRouter } from "./abdm";
+import abdmExtRouter from "./abdmExt";
 
 const router: IRouter = Router();
 
@@ -408,6 +409,12 @@ router.use("/inventory", requireStaffAuth, requireStaffPermission("/inventory"),
 // ABDM / ABHA management — /settings permission. Callbacks are mounted publicly
 // above (/abdm/callback); this staff-gated router handles the rest of /abdm.
 router.use("/abdm", requireStaffAuth, requireStaffPermission("/settings"), abdmRouter);
+// ABDM/ABHA consent-request lifecycle + ABHA enrolment (additive extension).
+// Mounted at a DISTINCT /abha prefix (not a second /abdm router): the existing
+// abdmRouter's ABDM_ENABLED gate 503s every /abdm/* request when ABDM is off,
+// which would block these routes in Shadow Mode. This router is gated by
+// ff_abdm_abha instead (real gateway calls still require ABDM_ENABLED inside).
+router.use("/abha", requireStaffAuth, requireStaffPermission("/settings"), abdmExtRouter);
 
 // Accounting — /accounting permission (vouchers, accounts, ledger entries)
 router.use("/accounting", requireStaffAuth, requireStaffPermission("/accounting"), accountingRouter);

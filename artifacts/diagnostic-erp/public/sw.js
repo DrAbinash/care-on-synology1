@@ -69,6 +69,9 @@ const NETWORK_ONLY_PREFIXES = [
   // Bill payment links — paid/unpaid status is derived live from the gateway
   // logs + bill balance, so it must never be served stale from cache.
   "/api/bill-payment-links/",
+  // ABDM/ABHA consent + enrolment status changes with gateway callbacks — always fresh.
+  "/api/abdm/",
+  "/api/abha/",
 
   // Patient portal (mobile app): every endpoint is scoped to the verified
   // patient session (my-bookings, my-reports, report links). Same shared-
