@@ -31,6 +31,8 @@ export interface StaffPunchInput {
   deviceId?: string | null;
   templateId?: number | null;
   score?: number | null;
+  /** Provenance payload preserved on the raw punch (e.g. GPS {lat,lng}). */
+  raw?: unknown;
 }
 
 export interface StaffPunchResult {
@@ -87,6 +89,7 @@ export async function recordStaffPunch(
           templateId: input.templateId ?? null,
           score: input.score ?? null,
           dedupeKey,
+          raw: input.raw ?? null,
         })
         .onConflictDoNothing({ target: attendanceRawPunchesTable.dedupeKey })
         .returning({ id: attendanceRawPunchesTable.id });

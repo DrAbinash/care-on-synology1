@@ -54,6 +54,10 @@ import peopleRouter from "./people";
 import performanceRouter from "./performance";
 import recognitionRouter from "./recognition";
 import appraisalRouter from "./appraisal";
+import rosterRouter from "./roster";
+import leaveRouter from "./leave";
+import disciplinaryRouter from "./disciplinary";
+import mySelfServiceRouter from "./mySelfService";
 import storageRouter from "./storage";
 import { bridgeRouter } from "./bridge";
 import { reportTemplatesRouter } from "./report-templates";
@@ -463,6 +467,12 @@ router.use("/performance", requireStaffAuth, requireStaffSubPermission("/setting
 router.use("/recognition", requireStaffAuth, requireStaffSubPermission("/settings", "users"), recognitionRouter);
 // Appraisal, increment recommendations & PIP (advisory); gated by ff_hr_annual_appraisals inside.
 router.use("/appraisal", requireStaffAuth, requireStaffSubPermission("/settings", "users"), appraisalRouter);
+// Duty roster, leave & disciplinary (HR-gated; per-feature ff_hr_* flags inside).
+router.use("/roster", requireStaffAuth, requireStaffSubPermission("/settings", "users"), rosterRouter);
+router.use("/leave", requireStaffAuth, requireStaffSubPermission("/settings", "users"), leaveRouter);
+router.use("/disciplinary", requireStaffAuth, requireStaffSubPermission("/settings", "users"), disciplinaryRouter);
+// Employee self-service (self-scoped to the caller's own staff record — requireStaffAuth only).
+router.use("/self-service", requireStaffAuth, mySelfServiceRouter);
 
 // Object storage (presigned URL request + object serving). Today the only
 // consumer is the HR re-joining form photo uploader, which contains PII
