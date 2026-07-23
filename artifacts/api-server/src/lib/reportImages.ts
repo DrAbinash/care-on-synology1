@@ -12,6 +12,11 @@
  *
  * Read-only; failures degrade gracefully (the report renders without the
  * failed image — a report must never fail to print because the PACS is slow).
+ *
+ * fetchPrintImageBytes below serves a second consumer of the same "get pixels
+ * for a reference from Orthanc, from the server" responsibility: the DICOM
+ * print bridge integration (routes/pacsEnterprise.ts POST /print-images),
+ * which wants raw bytes to forward rather than an inlined data: URL.
  */
 
 import { db } from "@workspace/db";
@@ -140,6 +145,43 @@ async function fetchRenderedDataUrl(path: string, viewport: number): Promise<str
     const dataUrl = `data:${mime};base64,${buf.toString("base64")}`;
     cachePut(key, dataUrl);
     return dataUrl;
+  } catch {
+    return null;
+  }
+}
+
+const PRINT_FETCH_TIMEOUT_MS = 8000;
+const PRINT_VIEWPORT_PX = 2000; // photo-paper print quality needs more than a report thumbnail
+// Exported so routes/pacsEnterprise.ts can reserve against the SAME per-image
+// worst case when budgeting the total request size sent to the print bridge.
+export const PRINT_MAX_IMAGE_BYTES = 3_000_000;
+
+/** Fetch a single instance/frame as raw rendered-JPEG bytes for the DICOM
+ *  print bridge (drabinash/dicomtowindows) to forward as-is — not an inlined
+ *  data: URL (that's what fetchRenderedDataUrl above is for) and not routed
+ *  through the report-thumbnail cache above (print images are fetched at
+ *  print-quality resolution, one-shot, so sharing that small cache's budget
+ *  here would just evict real report thumbnails for no benefit). */
+export async function fetchPrintImageBytes(ref: {
+  studyInstanceUid: string | null;
+  seriesInstanceUid: string | null;
+  sopInstanceUid: string | null;
+  frameNumber: number | null;
+}): Promise<{ bytes: Buffer; mime: string } | null> {
+  const path = renderedPathForReference(ref);
+  if (!path) return null;
+  const base = await orthancServerBase();
+  if (!base) return null;
+  try {
+    const res = await fetch(`${base}${path}?quality=95&viewport=${PRINT_VIEWPORT_PX},${PRINT_VIEWPORT_PX}`, {
+      headers: { ...orthancAuthHeaders(), Accept: "image/jpeg" },
+      signal: AbortSignal.timeout(PRINT_FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const bytes = Buffer.from(await res.arrayBuffer());
+    if (bytes.length === 0 || bytes.length > PRINT_MAX_IMAGE_BYTES) return null;
+    const mime = res.headers.get("content-type")?.split(";")[0] || "image/jpeg";
+    return { bytes, mime };
   } catch {
     return null;
   }

@@ -55,6 +55,12 @@ export interface RadiologyConfig {
     internalApiUrl: string;
     hasApiKey: boolean;
   };
+  // DICOM Print Bridge Settings (the NAS-side print-to-photo-paper container;
+  // see drabinash/dicomtowindows) - env-only, no DB-backed settings row yet.
+  printBridge: {
+    url: string;
+    hasSecret: boolean;
+  };
   // OHIF Settings
   ohif: {
     baseUrl: string;
@@ -170,6 +176,10 @@ export async function getRadiologyConfig(): Promise<RadiologyConfig> {
       internalApiUrl: getVal("erp_internal_api_url", "erp") || `${erpBase}/api/internal`,
       hasApiKey: !!(process.env.INTERNAL_API_KEY || getVal("erp_internal_api_key", "erp")),
     },
+    printBridge: {
+      url: (process.env.PRINT_BRIDGE_URL || "").replace(/\/+$/, ""),
+      hasSecret: !!process.env.PRINT_BRIDGE_SECRET,
+    },
     ohif: {
       baseUrl: getVal("ohif_base_url", "viewer") || ohifPublicUrlEnv || `http://${defaultHost}:3010`,
       studyLaunchTemplate: getVal("ohif_study_url_template", "viewer") || "{OHIF_BASE_URL}/viewer?StudyInstanceUIDs={studyInstanceUID}",
@@ -247,6 +257,9 @@ export async function validateRadiologyConfig(): Promise<string[]> {
   }
   if (!cfg.erp.hasApiKey) {
     warnings.push("INTERNAL_API_KEY is not set. Hook sync from Orthanc/Conquest will fail authorization.");
+  }
+  if (cfg.printBridge.url && !cfg.printBridge.hasSecret) {
+    warnings.push("PRINT_BRIDGE_URL is set but PRINT_BRIDGE_SECRET is not — printing from the workspace will fail until both are configured.");
   }
 
   return warnings;

@@ -37,6 +37,7 @@ import {
   type ModeLayoutState, type WorkspaceLayoutMode, type WorkspaceLayoutPrefs,
 } from "@/lib/workspaceLayoutPrefs";
 import ReportImagePicker from "@/components/radiology/ReportImagePicker";
+import PrintImagePicker from "@/components/radiology/PrintImagePicker";
 import RadiologyCopilotPanel from "@/components/RadiologyCopilotPanel";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { FindingsHighlightEditor, type FindingsHighlightEditorHandle } from "@/components/FindingsHighlightEditor";
@@ -4913,10 +4914,17 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
           {/* R1.1 — selected report images: persisted as DICOM references,
               rendered into every artifact by the shared presentation layer. */}
-          <div className="shrink-0 p-2 border-t overflow-y-auto max-h-64">
+          <div className="shrink-0 p-2 border-t overflow-y-auto max-h-64 space-y-2">
             <ReportImagePicker
               draftId={draftId}
               studyId={entry?.studyId ?? null}
+              studyInstanceUID={entry?.studyInstanceUID ?? null}
+              disabled={isLocked}
+            />
+            {/* Print-from-workspace bridge: a SEPARATE, unpersisted selection
+                for the clinic's glossy-photo printer — independent of what's
+                in the report above. */}
+            <PrintImagePicker
               studyInstanceUID={entry?.studyInstanceUID ?? null}
               disabled={isLocked}
             />
@@ -5690,12 +5698,21 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 id="report-images"
                 title="Report Images (DICOM)"
               >
-                <ReportImagePicker
-                  draftId={draftId}
-                  studyId={entry?.studyId ?? null}
-                  studyInstanceUID={entry?.studyInstanceUID ?? null}
-                  disabled={isLocked}
-                />
+                <div className="space-y-2">
+                  <ReportImagePicker
+                    draftId={draftId}
+                    studyId={entry?.studyId ?? null}
+                    studyInstanceUID={entry?.studyInstanceUID ?? null}
+                    disabled={isLocked}
+                  />
+                  {/* Print-from-workspace bridge: a SEPARATE, unpersisted
+                      selection for the clinic's glossy-photo printer —
+                      independent of what's in the report above. */}
+                  <PrintImagePicker
+                    studyInstanceUID={entry?.studyInstanceUID ?? null}
+                    disabled={isLocked}
+                  />
+                </div>
               </CollapsibleSection>
             )}
 
