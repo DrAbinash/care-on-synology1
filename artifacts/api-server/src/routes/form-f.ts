@@ -1,14 +1,28 @@
 import { Router } from "express";
 import { db, billsTable, patientsTable, formFRecordsTable, clinicSettingsTable } from "@workspace/db";
-import { eq, or, ilike, inArray, isNotNull, desc, and, gte, lt } from "drizzle-orm";
+import { eq, or, ilike, inArray, isNotNull, desc, and, gte, lt, asc } from "drizzle-orm";
 import { ordersTable, orderTestsTable, testsTable, doctorsTable } from "@workspace/db";
 import { whatsappConversationsTable, whatsappSettingsTable, usgMeasurementsTable, radiologyStudiesTable, fetalUsgStudiesTable, fetalUsgMeasurementsTable, fetalUsgReportsTable, fetalUsgChecklistsTable } from "@workspace/db/schema";
 import { dateToISTString } from "../lib/istDate";
 import { type IdCardOcrResult } from "@workspace/integrations-gemini-ai";
 import { runIdCardOcrPipeline, SERVER_BLUR_WARNING_THRESHOLD } from "../lib/ocr/idCardPipeline";
 import { resolveOcrProvider, maskEndpointUrl, type OcrUnavailableReason } from "../lib/ocr/ocrProviderResolver";
-import { requireStaffPermission } from "../middleware/requireStaffAuth";
+import { requireStaffPermission, requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { sendTextMessageRaw, resolveNumber, normalizePhone } from "./whatsapp";
+import { auditFromRequest } from "../lib/audit";
+import { ensureSelfReferralPrescriptions } from "../lib/selfReferralPrescriptions";
+import { selfReferralPrescriptionsTable } from "@workspace/db/schema";
+import {
+  parseRegisterQuery,
+  istMonthWindowUtc,
+  buildRegisterRows,
+  registerRowsToCsv,
+  isSelfReferralRecord,
+  buildOpdRegisterRows,
+  SELF_REFERRAL_OPD_DOCTOR,
+  SELF_REFERRAL_OPD_SERVICE,
+  SELF_REFERRAL_OPD_FEES,
+} from "../lib/formFRegister";
 
 const formFRouter = Router();
 
@@ -392,6 +406,24 @@ formFRouter.post("/save", async (req, res) => {
     };
 
     const [saved] = await db.insert(formFRecordsTable).values(record).returning();
+
+    // Auto-prescription hook: a self-referral/walk-in Form F TEST patient
+    // (same both-criteria rule as the OPD register) gets the digitally
+    // signed obstetrical-checkup advice prescription at save time.
+    // Fire-and-forget with its own error log — a prescription problem must
+    // never fail the statutory Form F save, and the OPD register re-ensures
+    // idempotently as a safety net.
+    if (isSelfReferralRecord(saved)) {
+      void (async () => {
+        const tests = await resolveFormFTestsByBillId(saved.billId != null ? [saved.billId] : []);
+        if (hasFormFTestEvidence(saved.billId, tests)) {
+          await ensureSelfReferralPrescriptions([saved]);
+        }
+      })().catch((err) =>
+        console.error("[form-f] auto-prescription failed (will retry on register view):", err),
+      );
+    }
+
     res.json(saved);
   } catch (err) {
     console.error("[form-f] save error:", err);
@@ -598,6 +630,256 @@ formFRouter.get("/list", async (req, res) => {
   } catch (err) {
     console.error("[form-f] list error:", err);
     res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ─── Monthly PCPNDT register (Appropriate Authority submission/inspection) ───
+//
+// Management-authorized (requireAdminRole on top of the /form-f mount gate):
+// the register is the statutory month-wise listing of EVERY Form F record —
+// incomplete records are included and graded, never silently omitted, using
+// the same completeness engine as the finalize gates (lib/pcpndtCompliance).
+// Ordering is deterministic (created_at ASC, id ASC) and the serial is the
+// record's position in that order within the IST month (the schema captures
+// no statutory serial field; see docs/PCPNDT_MONTHLY_REGISTER.md).
+//
+// NOTE: these routes are registered BEFORE GET /:id — Express matches in
+// order, and /:id would otherwise swallow /register.
+
+/** Form-F-designated billed test names per billId for the register's linkage
+ *  column. Covers Form-F tests of ANY modality/procedure — the designation is
+ *  the admin-configured clinic_settings.formFTestIds list, the SAME
+ *  definition the /pending queue uses — while other (non-Form-F) tests on the
+ *  bill are deliberately excluded from the statutory register. Four batched
+ *  queries total regardless of month size — no N+1. */
+async function resolveFormFTestsByBillId(billIds: number[]): Promise<Map<number, string[]>> {
+  const map = new Map<number, string[]>();
+  const uniqueBillIds = [...new Set(billIds)];
+  if (uniqueBillIds.length === 0) return map;
+
+  const [settings] = await db.select().from(clinicSettingsTable).limit(1);
+  const formFTestIds: number[] = JSON.parse(settings?.formFTestIds ?? "[]");
+  if (formFTestIds.length === 0) return map;
+
+  const bills = await db
+    .select({ id: billsTable.id, orderId: billsTable.orderId })
+    .from(billsTable)
+    .where(inArray(billsTable.id, uniqueBillIds));
+  const orderIds = [...new Set(bills.map((b) => b.orderId).filter((v): v is number => v != null))];
+  if (orderIds.length === 0) return map;
+
+  const orderTests = await db
+    .select({ orderId: orderTestsTable.orderId, testId: orderTestsTable.testId, testName: testsTable.name })
+    .from(orderTestsTable)
+    .leftJoin(testsTable, eq(orderTestsTable.testId, testsTable.id))
+    .where(inArray(orderTestsTable.orderId, orderIds));
+  const testsByOrder = new Map<number, string[]>();
+  for (const ot of orderTests) {
+    if (!ot.testName || !ot.testId || !formFTestIds.includes(ot.testId)) continue;
+    if (!testsByOrder.has(ot.orderId)) testsByOrder.set(ot.orderId, []);
+    testsByOrder.get(ot.orderId)!.push(ot.testName);
+  }
+  for (const b of bills) {
+    if (b.orderId != null) map.set(b.id, testsByOrder.get(b.orderId) ?? []);
+  }
+  return map;
+}
+
+// The two statutory registers PARTITION the month's Form F records by
+// referral: a record with a named referring doctor belongs in the Rule 9(1)
+// register; a self-referral/walk-in record belongs in the Self-Referral OPD
+// register instead (where the clinic's own obstetrical checkup is the lawful
+// referral). Each register's serials are continuous within itself.
+async function fetchMonthFormFRecords(year: number, month: number) {
+  const { start, end } = istMonthWindowUtc(year, month);
+  return db
+    .select()
+    .from(formFRecordsTable)
+    .where(and(gte(formFRecordsTable.createdAt, start), lt(formFRecordsTable.createdAt, end)))
+    .orderBy(asc(formFRecordsTable.createdAt), asc(formFRecordsTable.id));
+}
+
+formFRouter.get("/register", requireAdminRole, async (req, res) => {
+  try {
+    const parsed = parseRegisterQuery(req.query as Record<string, unknown>);
+    if (!parsed.ok) {
+      res.status(400).json({ error: `Invalid register query: ${parsed.error}` });
+      return;
+    }
+    const { month, year, page, pageSize } = parsed.value;
+
+    // Doctor-referred records only — self/walk-in entries live in the
+    // Self-Referral OPD register (see partition note above). Filtering and
+    // pagination happen in-process on the month's rows (statutory monthly
+    // volumes) so serials stay continuous within THIS register.
+    const doctorReferred = (await fetchMonthFormFRecords(year, month)).filter((r) => !isSelfReferralRecord(r));
+    const offset = (page - 1) * pageSize;
+    const pageRecords = doctorReferred.slice(offset, offset + pageSize);
+
+    const testsByBillId = await resolveFormFTestsByBillId(pageRecords.map((r) => r.billId).filter((v): v is number => v != null));
+    const rows = buildRegisterRows(pageRecords, offset + 1, testsByBillId);
+    res.json({
+      month,
+      year,
+      rows,
+      incompleteCount: rows.filter((r) => r.completionStatus === "incomplete").length,
+      pagination: {
+        page,
+        pageSize,
+        total: doctorReferred.length,
+        totalPages: Math.max(1, Math.ceil(doctorReferred.length / pageSize)),
+      },
+    });
+  } catch (err) {
+    console.error("[form-f] register error:", err);
+    res.status(500).json({ error: "Failed to load Form F register" });
+  }
+});
+
+formFRouter.get("/register/export", requireAdminRole, async (req, res) => {
+  try {
+    const parsed = parseRegisterQuery({ ...req.query, page: "1", pageSize: "500" });
+    if (!parsed.ok) {
+      res.status(400).json({ error: `Invalid register query: ${parsed.error}` });
+      return;
+    }
+    const { month, year } = parsed.value;
+
+    // Full month, no pagination — a statutory export must be complete.
+    // Same partition as GET /register: doctor-referred records only.
+    const records = (await fetchMonthFormFRecords(year, month)).filter((r) => !isSelfReferralRecord(r));
+
+    const testsByBillId = await resolveFormFTestsByBillId(records.map((r) => r.billId).filter((v): v is number => v != null));
+    const rows = buildRegisterRows(records, 1, testsByBillId);
+    const csv = registerRowsToCsv(rows);
+
+    // Statutory-data export is always audited (tamper-evident chain).
+    const session = (req as StaffAuthRequest).staffSession;
+    await auditFromRequest(req, {
+      userId: session?.subjectId ?? null,
+      userName: session?.subjectName ?? "system",
+      role: session?.role ?? "system",
+      action: "export",
+      module: "reports",
+      entityType: "form_f_register",
+      entityId: `${year}-${String(month).padStart(2, "0")}`,
+      newValue: JSON.stringify({ records: rows.length, incomplete: rows.filter((r) => r.completionStatus === "incomplete").length }),
+      reason: "PCPNDT monthly Form F register export",
+    });
+
+    const filename = `form-f-register-${year}-${String(month).padStart(2, "0")}.csv`;
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(csv);
+  } catch (err) {
+    console.error("[form-f] register export error:", err);
+    res.status(500).json({ error: "Failed to export Form F register" });
+  }
+});
+
+// ─── Self-referral OPD register (Form 25 replica) ────────────────────────────
+// The separate obstetrical-checkup record required before a self-referred
+// pregnant woman may be scanned: the month's self-referral/walk-in Form F
+// patients only, examined by the clinic's sonologist as a complimentary OPD
+// checkup. Same management gate and IST month window as /register; the whole
+// month is fetched and filtered in-process (statutory monthly volumes),
+// keeping serials continuous among self-referrals.
+/** Criterion 2 of the OPD register: the linked bill carries a Form-F-
+ *  designated test. No bill linkage, or no designation configured (resolver
+ *  returns an empty map ⇒ `get` is undefined), counts as evidenced — the
+ *  Form F record itself is the evidence. */
+function hasFormFTestEvidence(billId: number | null, testsByBillId: Map<number, string[]>): boolean {
+  if (billId == null) return true;
+  const designated = testsByBillId.get(billId);
+  return designated === undefined || designated.length > 0;
+}
+
+formFRouter.get("/register/self-referral-opd", requireAdminRole, async (req, res) => {
+  try {
+    const parsed = parseRegisterQuery(req.query as Record<string, unknown>);
+    if (!parsed.ok) {
+      res.status(400).json({ error: `Invalid register query: ${parsed.error}` });
+      return;
+    }
+    const { month, year, page, pageSize } = parsed.value;
+
+    // BOTH criteria must hold (partition counterpart of /register):
+    //  1. the referral is self/walk-in (no named referring doctor), AND
+    //  2. the patient is a Form F TEST patient — the linked bill carries a
+    //     Form-F-designated test (clinic_settings.formFTestIds). A record
+    //     with no bill linkage (e.g. WhatsApp intake) or with no designation
+    //     configured counts: the Form F record itself evidences the test.
+    const monthRecords = await fetchMonthFormFRecords(year, month);
+    const selfCandidates = monthRecords.filter(isSelfReferralRecord);
+    const candidateTests = await resolveFormFTestsByBillId(
+      selfCandidates.map((r) => r.billId).filter((v): v is number => v != null),
+    );
+    const selfReferrals = selfCandidates.filter((r) => hasFormFTestEvidence(r.billId, candidateTests));
+    // Auto-save the digitally signed advice prescriptions for every
+    // qualifying patient of the month (idempotent — signs only missing ones).
+    await ensureSelfReferralPrescriptions(selfReferrals);
+    const prescriptions = selfReferrals.length
+      ? await db
+          .select({
+            id: selfReferralPrescriptionsTable.id,
+            formFRecordId: selfReferralPrescriptionsTable.formFRecordId,
+            signedAt: selfReferralPrescriptionsTable.signedAt,
+          })
+          .from(selfReferralPrescriptionsTable)
+          .where(inArray(selfReferralPrescriptionsTable.formFRecordId, selfReferrals.map((r) => r.id)))
+      : [];
+    const prescriptionByRecord = new Map(prescriptions.map((p) => [p.formFRecordId, p]));
+
+    const offset = (page - 1) * pageSize;
+    const rows = buildOpdRegisterRows(selfReferrals.slice(offset, offset + pageSize), offset + 1).map((row) => ({
+      ...row,
+      prescriptionId: prescriptionByRecord.get(row.recordId)?.id ?? null,
+      prescriptionSignedAt: prescriptionByRecord.get(row.recordId)?.signedAt ?? null,
+    }));
+
+    res.json({
+      month,
+      year,
+      doctor: SELF_REFERRAL_OPD_DOCTOR,
+      natureOfService: SELF_REFERRAL_OPD_SERVICE,
+      fees: SELF_REFERRAL_OPD_FEES,
+      rows,
+      pagination: {
+        page,
+        pageSize,
+        total: selfReferrals.length,
+        totalPages: Math.max(1, Math.ceil(selfReferrals.length / pageSize)),
+      },
+    });
+  } catch (err) {
+    console.error("[form-f] self-referral OPD register error:", err);
+    res.status(500).json({ error: "Failed to load the self-referral OPD register" });
+  }
+});
+
+// The saved, digitally signed prescription for one self-referral patient —
+// used by the OPD register's per-row prescription print. Registered before
+// GET /:id (route order matters on this router).
+formFRouter.get("/register/self-referral-opd/prescription/:recordId", requireAdminRole, async (req, res) => {
+  try {
+    const recordId = Number(req.params.recordId);
+    if (!Number.isInteger(recordId) || recordId <= 0) {
+      res.status(400).json({ error: "Invalid record id" });
+      return;
+    }
+    const [prescription] = await db
+      .select()
+      .from(selfReferralPrescriptionsTable)
+      .where(eq(selfReferralPrescriptionsTable.formFRecordId, recordId))
+      .limit(1);
+    if (!prescription) {
+      res.status(404).json({ error: "No prescription exists for this record" });
+      return;
+    }
+    res.json({ prescription });
+  } catch (err) {
+    console.error("[form-f] prescription fetch error:", err);
+    res.status(500).json({ error: "Failed to load the prescription" });
   }
 });
 

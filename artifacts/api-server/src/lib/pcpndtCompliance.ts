@@ -47,6 +47,42 @@ export interface PcpndtComplianceResult {
   formFCreatedAt: string | null;
 }
 
+/** The subset of a form_f_records row the completeness rule reads. */
+export interface FormFCompletenessInput {
+  idCardVerified: boolean | null;
+  husbandFatherName: string | null;
+  address: string | null;
+  consentDate: string | null;
+  procedureDate: string | null;
+}
+
+/**
+ * Pure completeness evaluation for ONE Form F record — the exact four
+ * predicates of the compliance rule, extracted so the finalize gates and the
+ * monthly PCPNDT register grade records with the same engine (never two
+ * drifting copies of a statutory rule). Wording unchanged from the legacy
+ * gate (UI compatibility).
+ */
+export function evaluateFormFCompleteness(record: FormFCompletenessInput): {
+  complete: boolean;
+  missing: string[];
+} {
+  const missing: string[] = [];
+  if (!record.idCardVerified) {
+    missing.push("ID Card must be verified.");
+  }
+  if (!record.husbandFatherName?.trim()) {
+    missing.push("Husband/Father Name is required.");
+  }
+  if (!record.address?.trim()) {
+    missing.push("Address is required.");
+  }
+  if (!record.consentDate?.trim() && !record.procedureDate?.trim()) {
+    missing.push("Consent Date or Procedure Date is required.");
+  }
+  return { complete: missing.length === 0, missing };
+}
+
 export async function checkPcpndtFormFCompliance(
   patientId: number | null | undefined,
 ): Promise<PcpndtComplianceResult> {
@@ -77,23 +113,11 @@ export async function checkPcpndtFormFCompliance(
     };
   }
 
-  const errors: string[] = [];
-  if (!formF.idCardVerified) {
-    errors.push("ID Card must be verified.");
-  }
-  if (!formF.husbandFatherName?.trim()) {
-    errors.push("Husband/Father Name is required.");
-  }
-  if (!formF.address?.trim()) {
-    errors.push("Address is required.");
-  }
-  if (!formF.consentDate?.trim() && !formF.procedureDate?.trim()) {
-    errors.push("Consent Date or Procedure Date is required.");
-  }
+  const { complete, missing: errors } = evaluateFormFCompleteness(formF);
 
   return {
-    compliant: errors.length === 0,
-    reason: errors.length === 0 ? "compliant" : "incomplete_form_f",
+    compliant: complete,
+    reason: complete ? "compliant" : "incomplete_form_f",
     errors,
     formFId: formF.id,
     formFCreatedAt: formF.createdAt ? new Date(formF.createdAt).toISOString() : null,

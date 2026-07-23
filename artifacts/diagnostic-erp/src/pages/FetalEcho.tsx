@@ -164,10 +164,17 @@ export default function FetalEcho() {
       setData((prev) => ({ ...prev, status: "final" }));
       toast({ title: "Finalized" });
     } catch (e: any) {
-      if (e?.error?.includes("Critical")) {
-        toast({ variant: "destructive", title: "Critical alerts", description: e.error });
+      // api.post throws Error(message) where message is the server's `error`
+      // field, so branch on the message text, not a nonexistent e.error.
+      const message = e instanceof Error ? e.message : String(e);
+      if (/PCPNDT|Form F/i.test(message)) {
+        // PR 2 compliance gate: the server's message already lists the exact
+        // missing Form F fields — surface it verbatim, never as an opaque toast.
+        toast({ variant: "destructive", title: "PCPNDT Form F required", description: message });
+      } else if (/Critical/i.test(message)) {
+        toast({ variant: "destructive", title: "Critical alerts", description: message });
       } else {
-        toast({ variant: "destructive", title: "Failed", description: String(e) });
+        toast({ variant: "destructive", title: "Failed", description: message });
       }
     }
   }

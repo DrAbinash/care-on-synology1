@@ -102,6 +102,13 @@ const NETWORK_ONLY_PREFIXES = [
   "/api/dashboard/reconciliation",                   // owner-only reconciliation exceptions — same URL for every
                                                       // owner, so a cached 200 could be served to a lower-privilege
                                                       // user on a shared terminal before their own (403) resolves
+  "/api/form-f/register",                            // PCPNDT monthly Form F register + /export CSV: admin-only
+                                                      // statutory PHI — same shared-terminal risk as
+                                                      // /api/dashboard/reconciliation (a cached admin 200 must never
+                                                      // be served to non-admin staff), and a statutory register/export
+                                                      // must never be answered stale from Cache Storage. Prefix covers
+                                                      // both /register and /register/export; the form-f router's other
+                                                      // GETs stay cacheable as before.
 ];
 
 // Guardrail: artifacts/api-server/src/routes/personalEndpointCacheGuard.test.ts

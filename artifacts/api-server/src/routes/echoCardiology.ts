@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { db } from "@workspace/db";
 import {
   echoMeasurementsTable,
@@ -8,11 +8,13 @@ import {
   echoAuditLogsTable,
   fetalEchoStudiesTable,
   fetalEchoAuditLogsTable,
+  radiologyStudiesTable,
 } from "@workspace/db/schema";
 import { eq, and, desc } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { generateAiForTask } from "@workspace/ai-providers";
+import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
 
 const router = Router();
 
@@ -402,6 +404,25 @@ router.post("/fetal/:studyId", async (req, res) => {
     .from(fetalEchoStudiesTable)
     .where(eq(fetalEchoStudiesTable.studyId, studyId))
     .limit(1);
+  // Equivalent-finalization guard (PCPNDT): this save endpoint used to accept
+  // any client-supplied status, so posting status:"final" finalized a fetal
+  // echo without review, critical-alert or Form F checks. A save may echo an
+  // already-final status back, but may never ESCALATE a study to final —
+  // that transition exists only via POST /fetal/:studyId/finalize (gated).
+  const requestedStatus = b.status ? String(b.status) : "draft";
+  if (requestedStatus === "final" && existing[0]?.status !== "final") {
+    audit(sReq, {
+      entityType: "fetal_echo",
+      entityId: studyId,
+      action: "pcpndt_blocked",
+      details: "attempted=status_escalation_via_save; save endpoint may not set status=final",
+    });
+    res.status(409).json({
+      error: "A fetal echo cannot be marked final from the save endpoint. Use the Finalize action, which runs the PCPNDT Form F compliance check.",
+      code: "finalize_endpoint_required",
+    });
+    return;
+  }
   const payload = {
     studyId,
     patientId: b.patientId ? Number(b.patientId) : null,
@@ -498,6 +519,13 @@ router.post("/fetal/:studyId/finalize", async (req, res) => {
     res.status(400).json({ error: "Critical alerts not acknowledged", alerts: critical });
     return;
   }
+  // PCPNDT Form F gate — a fetal echo is by definition a prenatal study, so
+  // finalization runs the same ONE shared verification as the fetalUsgLevel4
+  // final-sign and the canonical patient-reports gates (lib/pcpndtCompliance),
+  // with the identical audited admin/super_admin override contract. This path
+  // historically had NO Form F check (whole-platform gap audit, PR 2).
+  const pcpndtGate = await enforceFetalEchoPcpndtGate(sReq, res, studyId, existing[0].patientId, "finalize");
+  if (!pcpndtGate.allowed) return;
   const [row] = await db
     .update(fetalEchoStudiesTable)
     .set({
@@ -511,6 +539,68 @@ router.post("/fetal/:studyId/finalize", async (req, res) => {
   audit(sReq, { entityType: "fetal_echo", entityId: studyId, action: "finalized", details: "report_finalized" });
   res.json({ success: true, data: row });
 });
+
+/**
+ * Server-side PCPNDT Form F enforcement for fetal-echo finalization.
+ *
+ * Resolves the patient from the fetal-echo row, falling back to the linked
+ * radiology_studies row (fetal_echo_studies.study_id → radiology_studies.id)
+ * so a missing denormalized patientId cannot fail the check open OR falsely
+ * block a resolvable study. Fails closed: no resolvable patient → blocked.
+ *
+ * Blocked attempts AND overrides are both written to the fetal-echo audit log
+ * (existing infrastructure) — a statutory block must leave a trace.
+ * Returns { allowed } and has already sent the 409 response when blocked.
+ */
+async function enforceFetalEchoPcpndtGate(
+  sReq: StaffAuthRequest,
+  res: Response,
+  studyId: number,
+  rowPatientId: number | null,
+  attemptedAction: string,
+): Promise<{ allowed: boolean }> {
+  let patientId: number | null | undefined = rowPatientId;
+  if (!patientId) {
+    const [study] = await db
+      .select({ patientId: radiologyStudiesTable.patientId })
+      .from(radiologyStudiesTable)
+      .where(eq(radiologyStudiesTable.id, studyId))
+      .limit(1);
+    patientId = study?.patientId;
+  }
+  const compliance = await checkPcpndtFormFCompliance(patientId);
+  if (compliance.compliant) return { allowed: true };
+
+  const body = (sReq.body ?? {}) as { pcpndtOverride?: boolean; pcpndtOverrideReason?: string };
+  const overrideReason = typeof body.pcpndtOverrideReason === "string" ? body.pcpndtOverrideReason.trim() : "";
+  const role = staffOf(sReq).role ?? "";
+  if (body.pcpndtOverride === true && PCPNDT_OVERRIDE_ROLES.has(role) && overrideReason.length >= 3) {
+    audit(sReq, {
+      entityType: "fetal_echo",
+      entityId: studyId,
+      action: "pcpndt_override_finalize",
+      details: `reason=${overrideReason}; missing=${compliance.errors.join(" | ")}`,
+    });
+    return { allowed: true };
+  }
+
+  audit(sReq, {
+    entityType: "fetal_echo",
+    entityId: studyId,
+    action: "pcpndt_blocked",
+    details: `attempted=${attemptedAction}; reason=${compliance.reason}; missing=${compliance.errors.join(" | ")}`,
+  });
+  res.status(409).json({
+    // Human-readable first: the ERP error toaster surfaces `error` verbatim,
+    // so this must be understandable to the sonologist, not a machine code.
+    error: `PCPNDT Form F required: a fetal echo report cannot be finalized without a complete, verified Form F for this patient. ${compliance.errors.join(" ")}`,
+    code: "pcpndt_compliance_required",
+    validationErrors: compliance.errors,
+    formFId: compliance.formFId,
+    overrideHint: "An admin/super_admin may override with pcpndtOverride + a documented pcpndtOverrideReason.",
+  });
+  return { allowed: false };
+}
 
 async function detectFetalEchoCritical(studyId: number): Promise<string[]> {
   const alerts: string[] = [];
