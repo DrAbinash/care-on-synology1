@@ -24,6 +24,8 @@ import {
 import { eq, and, desc, sql, asc, gte, lte, isNull, ne, count } from "drizzle-orm";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { resolveRadiologyStudyId, ensureCanonicalStudy } from "../lib/canonicalStudy";
+import { acknowledgeFinding, notifyClinician } from "../lib/criticalFindingsAlert";
+import { auditFromRequest } from "../lib/audit";
 
 const router = Router();
 
@@ -390,6 +392,76 @@ router.post("/critical-alerts", async (req, res) => {
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues }); return; }
   const [row] = await db.insert(radiologyCriticalFindingsTable).values(parsed.data as any).returning();
   res.status(201).json(row);
+});
+
+// PR 3 — the acknowledge endpoint the CriticalAlertsManager UI has always
+// PATCHed (it 404'd before this route existed). Identity comes from the
+// authenticated session, never the client; acknowledgement is idempotent
+// (the engine's first-ack-wins update); both outcomes are audited.
+router.patch("/critical-alerts/:id/acknowledge", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) { res.status(400).json({ error: "Invalid finding id" }); return; }
+  const parsed = z.object({ note: z.string().max(2000).optional() }).safeParse(req.body ?? {});
+  if (!parsed.success) { res.status(400).json({ error: "Invalid body: note must be a string" }); return; }
+
+  const s = staffOf(req);
+  const result = await acknowledgeFinding(id, {
+    name: s.subjectName ?? `staff#${s.subjectId}`,
+    role: s.role ?? "staff",
+    note: parsed.data.note,
+  });
+  if (result.outcome === "not_found") { res.status(404).json({ error: "Critical finding not found" }); return; }
+
+  if (result.outcome === "acknowledged") {
+    await auditFromRequest(req, {
+      userId: s.subjectId ?? null,
+      userName: s.subjectName ?? "staff",
+      role: s.role ?? "staff",
+      action: "acknowledge",
+      module: "radiology",
+      entityType: "critical_finding",
+      entityId: String(id),
+      newValue: JSON.stringify({ note: parsed.data.note ?? null }),
+    });
+  }
+  res.json({ ok: true, outcome: result.outcome, finding: result.row });
+});
+
+// PR 3 — Notify: records a REAL clinician-notification event (who was
+// contacted, how, by whom — session identity) instead of the old dead
+// button. No external channel is wired for these findings today, so this
+// records the internal/manual attempt; notification_delivered stays NULL
+// (never pretends delivery). Audited.
+router.post("/critical-alerts/:id/notify", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) { res.status(400).json({ error: "Invalid finding id" }); return; }
+  const parsed = z.object({
+    clinicianName: z.string().min(1).max(200),
+    method: z.enum(["phone", "whatsapp", "email", "in_person", "other"]),
+    note: z.string().max(2000).optional(),
+  }).safeParse(req.body ?? {});
+  if (!parsed.success) { res.status(400).json({ error: "clinicianName and a valid method (phone|whatsapp|email|in_person|other) are required" }); return; }
+
+  const s = staffOf(req);
+  const row = await notifyClinician(id, {
+    clinicianName: parsed.data.clinicianName,
+    method: parsed.data.method,
+    note: parsed.data.note,
+    recordedBy: s.subjectName ?? `staff#${s.subjectId}`,
+  });
+  if (!row) { res.status(404).json({ error: "Critical finding not found" }); return; }
+
+  await auditFromRequest(req, {
+    userId: s.subjectId ?? null,
+    userName: s.subjectName ?? "staff",
+    role: s.role ?? "staff",
+    action: "notify",
+    module: "radiology",
+    entityType: "critical_finding",
+    entityId: String(id),
+    newValue: JSON.stringify({ clinician: parsed.data.clinicianName, method: parsed.data.method, note: parsed.data.note ?? null }),
+  });
+  res.json({ ok: true, finding: row });
 });
 
 // ── 6. PACS Storage Lifecycle ────────────────────────────────────────────────────────────────────────────────────────────────────

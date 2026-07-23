@@ -8,7 +8,7 @@ import {
   radiologyCriticalFindingsTable,
   radiologyStudiesTable,
 } from "@workspace/db/schema";
-import { eq, desc, isNull } from "drizzle-orm";
+import { and, eq, desc, isNull } from "drizzle-orm";
 
 export type CriticalFindingInput = {
   studyId: number;
@@ -30,22 +30,78 @@ export async function flagCriticalFinding(input: CriticalFindingInput): Promise<
   return row;
 }
 
+export type NotifyClinicianInput = {
+  /** The clinician who was contacted about the finding. */
+  clinicianName: string;
+  /** phone | whatsapp | email | in_person | other. */
+  method: string;
+  /** Who recorded the attempt — the authenticated session identity. */
+  recordedBy: string;
+  note?: string;
+  /** Only set true when the channel VERIFIED delivery. Phone/in-person
+   *  attempts must leave this undefined (stored NULL) — recording an
+   *  internal/manual event is honest; pretending delivery is not. */
+  delivered?: boolean;
+};
+
+/** Record a clinician-notification attempt for a finding. Returns the
+ *  updated row, or null when the finding does not exist. */
 export async function notifyClinician(
   findingId: number,
-  clinicianName: string,
-  method: string,
-): Promise<void> {
-  await db
+  input: NotifyClinicianInput,
+): Promise<typeof radiologyCriticalFindingsTable.$inferSelect | null> {
+  const [row] = await db
     .update(radiologyCriticalFindingsTable)
-    .set({ notifiedClinician: clinicianName, notifiedAt: new Date(), notificationMethod: method })
-    .where(eq(radiologyCriticalFindingsTable.id, findingId));
+    .set({
+      notifiedClinician: input.clinicianName,
+      notifiedAt: new Date(),
+      notificationMethod: input.method,
+      notifiedBy: input.recordedBy,
+      notificationNote: input.note ?? null,
+      notificationDelivered: input.delivered ?? null,
+    })
+    .where(eq(radiologyCriticalFindingsTable.id, findingId))
+    .returning();
+  return row ?? null;
 }
 
-export async function acknowledgeFinding(findingId: number, clinicianName: string): Promise<void> {
-  await db
+export type AcknowledgeInput = {
+  /** Authenticated session identity — never client-supplied. */
+  name: string;
+  role: string;
+  note?: string;
+};
+
+export type AcknowledgeResult =
+  | { outcome: "acknowledged"; row: typeof radiologyCriticalFindingsTable.$inferSelect }
+  | { outcome: "already_acknowledged"; row: typeof radiologyCriticalFindingsTable.$inferSelect }
+  | { outcome: "not_found" };
+
+/** Idempotent acknowledge: the first acknowledgement wins and is never
+ *  overwritten by a repeat click / concurrent second acknowledger. */
+export async function acknowledgeFinding(
+  findingId: number,
+  who: AcknowledgeInput,
+): Promise<AcknowledgeResult> {
+  const [updated] = await db
     .update(radiologyCriticalFindingsTable)
-    .set({ acknowledgedBy: clinicianName, acknowledgedAt: new Date() })
-    .where(eq(radiologyCriticalFindingsTable.id, findingId));
+    .set({
+      acknowledgedBy: who.name,
+      acknowledgedRole: who.role,
+      acknowledgedNote: who.note ?? null,
+      acknowledgedAt: new Date(),
+    })
+    .where(and(eq(radiologyCriticalFindingsTable.id, findingId), isNull(radiologyCriticalFindingsTable.acknowledgedAt)))
+    .returning();
+  if (updated) return { outcome: "acknowledged", row: updated };
+
+  const [existing] = await db
+    .select()
+    .from(radiologyCriticalFindingsTable)
+    .where(eq(radiologyCriticalFindingsTable.id, findingId))
+    .limit(1);
+  if (!existing) return { outcome: "not_found" };
+  return { outcome: "already_acknowledged", row: existing };
 }
 
 export async function getCriticalFindingsForStudy(studyId: number): Promise<typeof radiologyCriticalFindingsTable.$inferSelect[]> {
