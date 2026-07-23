@@ -24,6 +24,7 @@ export * from "./whatsappSettings";
 export * from "./whatsappNumbers";
 export * from "./printerSettings";
 export * from "./staff";
+export * from "./staffHr";
 export * from "./reportTemplates";
 export * from "./abnormalFindings";
 export * from "./formF";
