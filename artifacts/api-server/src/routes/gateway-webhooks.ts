@@ -36,7 +36,7 @@ import {
   paymentLogsTable,
   clinicSettingsTable,
 } from "@workspace/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, or, inArray } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { PaymentEngine } from "../lib/payments/PaymentEngine";
@@ -82,18 +82,31 @@ export function verifyHdfcWebhookSignature(
 
 /**
  * Settle a bill from a confirmed gateway payment.
- * Idempotent — checks for existing payment with same referenceNumber before inserting.
+ *
+ * F1 canonical idempotency: reference_number is OUR merchant reference
+ * (BILLPAY-… / booking ref) — the SAME key the callback and polling paths
+ * key on — and the provider's transaction id goes into gateway_txn_id.
+ * (Previously this path keyed reference_number by the provider txnID, so
+ * a webhook and a callback could post the SAME payment twice under two
+ * different keys.) The guard matches on either identifier in either column
+ * so rows recorded before this change still dedupe.
  */
 async function settleBill(opts: {
   billId: number;
   amount: number;
   method: string;
+  /** Our merchant reference (merchantTxnNo / BILLPAY ref). */
+  merchantRef: string;
+  /** The provider's transaction id (may be empty when not supplied). */
   gatewayTxnId: string;
   gatewayName: string;
   patientName?: string | null;
   performedBy?: string;
 }): Promise<{ settled: boolean; alreadySettled: boolean }> {
-  const { billId, amount, method, gatewayTxnId, gatewayName, patientName, performedBy = "Gateway Webhook" } = opts;
+  const { billId, amount, method, merchantRef, gatewayTxnId, gatewayName, patientName, performedBy = "Gateway Webhook" } = opts;
+
+  const referenceNumber = merchantRef || gatewayTxnId;
+  const knownRefs = [merchantRef, gatewayTxnId].filter((r): r is string => Boolean(r));
 
   return await db.transaction(async (tx) => {
     const [bill] = await tx
@@ -104,14 +117,21 @@ async function settleBill(opts: {
       .limit(1);
     if (!bill) return { settled: false, alreadySettled: false };
 
-    // Idempotency guard — don't double-post the same gateway transaction
+    // Idempotency guard — don't double-post the same gateway transaction,
+    // whichever path (webhook/callback/poll) or era (pre/post-F1 keying)
+    // recorded it first. The bill row-lock above serializes same-bill races;
+    // the (bill_id, reference_number) and (bill_id, gateway_txn_id) unique
+    // indexes are the DB-level backstop.
     const [existing] = await tx
       .select({ id: paymentsTable.id })
       .from(paymentsTable)
       .where(
         and(
           eq(paymentsTable.billId, billId),
-          eq(paymentsTable.referenceNumber, gatewayTxnId),
+          or(
+            inArray(paymentsTable.referenceNumber, knownRefs),
+            inArray(paymentsTable.gatewayTxnId, knownRefs),
+          ),
         ),
       )
       .limit(1);
@@ -123,8 +143,10 @@ async function settleBill(opts: {
       billId,
       amount: amount.toFixed(2),
       method,
-      referenceNumber: gatewayTxnId,
-      notes: `Settled via ${gatewayName} S2S webhook. Ref: ${gatewayTxnId}`,
+      referenceNumber,
+      gatewayTxnId: gatewayTxnId || null,
+      settlementStatus: "captured",
+      notes: `Settled via ${gatewayName} S2S webhook. Ref: ${referenceNumber}${gatewayTxnId ? ` / gateway txn ${gatewayTxnId}` : ""}`,
       recordedByName: performedBy,
     });
 
@@ -261,7 +283,8 @@ gatewayWebhookRouter.post("/icici-webhook", async (req, res): Promise<void> => {
       billId,
       amount,
       method: "Online (ICICI Orange Pay)",
-      gatewayTxnId: txnID || merchantTxnNo,
+      merchantRef: merchantTxnNo,
+      gatewayTxnId: txnID,
       gatewayName: "ICICI Orange Pay",
       performedBy: "ICICI S2S Webhook",
     });
@@ -391,7 +414,8 @@ gatewayWebhookRouter.post("/hdfc-webhook", async (req, res): Promise<void> => {
       billId,
       amount,
       method: "Online (HDFC SmartGateway)",
-      gatewayTxnId: txnId || orderId,
+      merchantRef: orderId,
+      gatewayTxnId: txnId,
       gatewayName: "HDFC SmartGateway",
       performedBy: "HDFC S2S Webhook",
     });
@@ -518,7 +542,8 @@ gatewayWebhookRouter.post("/reconcile", requireStaffAuth, async (req, res): Prom
         billId,
         amount,
         method: `Online (${provider.displayName})`,
-        gatewayTxnId: bookingRef,
+        merchantRef: bookingRef,
+        gatewayTxnId: "",
         gatewayName: provider.displayName,
         performedBy: "Manual Reconciliation",
       });

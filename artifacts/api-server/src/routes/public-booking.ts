@@ -15,7 +15,7 @@ import {
   doctorsTable,
   DEFAULT_BOOKING_TIME_SLOTS,
 } from "@workspace/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, or, inArray } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { PaymentEngine } from "../lib/payments/PaymentEngine";
 import { resolveActiveGateway } from "../lib/payments/resolveActiveGateway";
@@ -1391,9 +1391,19 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
 
       if (verification.success && verification.status === "paid") {
         await db.transaction(async (tx) => {
+          // F1 canonical idempotency: key by our merchant reference, but also
+          // match the provider txnID in either column so payments recorded by
+          // the S2S webhook (including pre-F1 rows keyed by txnID) dedupe.
+          const knownRefs = [merchantTxnNo, txnID].filter((r): r is string => Boolean(r));
           const [existingPayment] = await tx.select()
             .from(paymentsTable)
-            .where(and(eq(paymentsTable.billId, billId), eq(paymentsTable.referenceNumber, merchantTxnNo)))
+            .where(and(
+              eq(paymentsTable.billId, billId),
+              or(
+                inArray(paymentsTable.referenceNumber, knownRefs),
+                inArray(paymentsTable.gatewayTxnId, knownRefs),
+              ),
+            ))
             .limit(1);
 
           if (!existingPayment) {
@@ -1402,6 +1412,8 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
               amount: collectAmount.toFixed(2),
               method: `Online (${provider.displayName})`,
               referenceNumber: merchantTxnNo,
+              gatewayTxnId: txnID || null,
+              settlementStatus: "captured",
               notes: `Paid online via ${provider.displayName}. txnID: ${txnID || ""}`,
               recordedByName: "Super Admin",
             });

@@ -50,7 +50,23 @@ export const paymentsTable = pgTable("payments", {
   billId: integer("bill_id").notNull().references(() => billsTable.id),
   amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
   method: text("method").notNull(),
+  // Canonical identifier model (financial stabilization F1):
+  //   reference_number — OUR merchant reference (BILLPAY-<billId>-XXXXXX /
+  //     booking ref). The single idempotency key across webhook, callback
+  //     and polling settle paths: (bill_id, reference_number) unique.
+  //   gateway_txn_id — the PROVIDER's transaction id (ICICI txnID, Razorpay
+  //     payment_id, …). Secondary duplicate guard: (bill_id, gateway_txn_id)
+  //     unique; also what refunds are executed against.
   referenceNumber: text("reference_number"),
+  gatewayTxnId: text("gateway_txn_id"),
+  // captured | settled | superseded | refund_pending | refunded | refund_failed.
+  // NULL for legacy/cash rows. "settled" is set only by bank-transaction
+  // matching — never assumed.
+  settlementStatus: text("settlement_status"),
+  // Supersession/void semantics: a duplicate posting is NEVER deleted — it is
+  // marked superseded in favor of the surviving payment id, with a reversal
+  // voucher (reference REV-PAY-<id>) restoring the books.
+  supersededBy: integer("superseded_by"),
   notes: text("notes"),
   recordedByName: text("recorded_by_name"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
