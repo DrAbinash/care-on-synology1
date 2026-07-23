@@ -7,12 +7,14 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import crypto from "crypto";
 import { db } from "@workspace/db";
 import {
-  staffTable, staffAttendanceTable,
+  staffTable,
   bridgeFingerprintTemplatesTable, userSessionsTable,
   usersTable, portalSessionsTable,
 } from "@workspace/db/schema";
-import { eq, and, sql, desc, gt } from "drizzle-orm";
-import { todayIST } from "../lib/istDate";
+import { eq, and, desc, gt } from "drizzle-orm";
+import { isFeatureEnabledServer } from "../lib/featureFlags";
+import { auditFromRequest } from "../lib/audit";
+import { recordStaffPunch } from "../lib/attendance/attendanceIngestion";
 
 export const bridgeRouter = Router();
 
@@ -33,6 +35,17 @@ function requireBridgeAuth(req: Request, res: Response, next: NextFunction) {
     return;
   }
   next();
+}
+
+// Shadow-mode gate for attendance ingestion: even with the bridge secret set,
+// fingerprint punches only reach the attendance tables once an admin enables
+// ff_hr_biometric_attendance. Keeps the whole feature dormant-but-ready.
+async function requireBiometricAttendanceFlag(_req: Request, res: Response, next: NextFunction) {
+  if (await isFeatureEnabledServer("ff_hr_biometric_attendance")) {
+    next();
+    return;
+  }
+  res.status(503).json({ error: "Biometric attendance is disabled. Enable the ff_hr_biometric_attendance feature flag." });
 }
 
 // ── Challenge token stores ────────────────────────
@@ -327,6 +340,17 @@ bridgeRouter.post("/enroll", requireBridgeAuth, async (req, res) => {
     fingerName: bridgeFingerprintTemplatesTable.fingerName,
     enrolledAt: bridgeFingerprintTemplatesTable.enrolledAt,
   });
+  await auditFromRequest(req, {
+    userId: null,
+    userName: "usb-bridge",
+    role: "system",
+    action: "create",
+    module: "attendance",
+    entityType: "biometric_template",
+    entityId: String(row.id),
+    newValue: JSON.stringify({ scope: row.scope, scopeId: row.scopeId, vendor: row.vendor, fingerName: row.fingerName }),
+    reason: "Fingerprint template enrolled via USB bridge",
+  });
   res.status(201).json(row);
 });
 
@@ -364,7 +388,22 @@ bridgeRouter.get("/templates/list", requireBridgeAuth, async (req, res) => {
 });
 
 bridgeRouter.delete("/templates/:id", requireBridgeAuth, async (req, res) => {
-  await db.delete(bridgeFingerprintTemplatesTable).where(eq(bridgeFingerprintTemplatesTable.id, Number(req.params.id)));
+  const id = Number(req.params.id);
+  const [existing] = await db.select().from(bridgeFingerprintTemplatesTable).where(eq(bridgeFingerprintTemplatesTable.id, id));
+  await db.delete(bridgeFingerprintTemplatesTable).where(eq(bridgeFingerprintTemplatesTable.id, id));
+  if (existing) {
+    await auditFromRequest(req, {
+      userId: null,
+      userName: "usb-bridge",
+      role: "system",
+      action: "delete",
+      module: "attendance",
+      entityType: "biometric_template",
+      entityId: String(id),
+      oldValue: JSON.stringify({ scope: existing.scope, scopeId: existing.scopeId, vendor: existing.vendor }),
+      reason: "Fingerprint template deleted via bridge",
+    });
+  }
   res.json({ ok: true });
 });
 
@@ -373,14 +412,14 @@ bridgeRouter.delete("/templates/:id", requireBridgeAuth, async (req, res) => {
 // Requires x-punch-token issued by POST /api/bridge/punch-challenge, which in
 // turn requires a valid staff session — so only authenticated ERP users can
 // trigger an attendance punch.
-bridgeRouter.post("/staff-punch", requireBridgeAuth, async (req, res) => {
+bridgeRouter.post("/staff-punch", requireBridgeAuth, requireBiometricAttendanceFlag, async (req, res) => {
   const punchCheck = consumeChallenge(punchChallenges, String(req.headers["x-punch-token"] ?? ""));
   if (!punchCheck.ok) {
     res.status(punchCheck.status).json({ error: punchCheck.error });
     return;
   }
 
-  const body = req.body as { templateId?: number; action?: string };
+  const body = req.body as { templateId?: number; action?: string; deviceId?: string; score?: number };
   const templateId = Number(body.templateId);
   if (!templateId) {
     res.status(400).json({ error: "templateId required" });
@@ -401,48 +440,28 @@ bridgeRouter.post("/staff-punch", requireBridgeAuth, async (req, res) => {
     return;
   }
 
-  const today = todayIST();
-  const now = new Date();
+  // Delegate to the ingestion service: preserves an immutable raw punch
+  // (idempotent via dedupe_key) and reflects the same smart in/out toggle into
+  // the daily staff_attendance summary. No payroll, no auto-salary.
+  const result = await recordStaffPunch(req, {
+    staff,
+    requestedAction: action,
+    sourceKind: "usb_bridge",
+    deviceId: typeof body.deviceId === "string" ? body.deviceId : null,
+    templateId,
+    score: typeof body.score === "number" ? body.score : null,
+  });
 
-  // Smart toggle: if action='in' but already punched in (no out), treat as out
-  const [existing] = await db.select().from(staffAttendanceTable)
-    .where(and(eq(staffAttendanceTable.staffId, staff.id), eq(staffAttendanceTable.attendanceDate, today)));
-  const resolved = action === "in" && existing?.punchIn && !existing.punchOut ? "out" : action;
-
-  const result = await db.transaction(async (tx) => {
-    if (resolved === "in") {
-      const inserted = await tx.insert(staffAttendanceTable)
-        .values({ staffId: staff.id, attendanceDate: today, punchIn: now, source: "usb-bridge" })
-        .onConflictDoNothing({ target: [staffAttendanceTable.staffId, staffAttendanceTable.attendanceDate] })
-        .returning();
-      if (inserted.length > 0) return inserted[0];
-      const updated = await tx.update(staffAttendanceTable)
-        .set({ punchIn: now, source: "usb-bridge" })
-        .where(and(
-          eq(staffAttendanceTable.staffId, staff.id),
-          eq(staffAttendanceTable.attendanceDate, today),
-          sql`${staffAttendanceTable.punchIn} IS NULL`,
-        ))
-        .returning();
-      if (updated.length > 0) return updated[0];
-      throw new Error("Already punched in today");
-    } else {
-      const updated = await tx.update(staffAttendanceTable)
-        .set({ punchOut: now })
-        .where(and(
-          eq(staffAttendanceTable.staffId, staff.id),
-          eq(staffAttendanceTable.attendanceDate, today),
-          sql`${staffAttendanceTable.punchIn} IS NOT NULL`,
-          sql`${staffAttendanceTable.punchOut} IS NULL`,
-        ))
-        .returning();
-      if (updated.length === 0) throw new Error("Must punch in first");
-      return updated[0];
-    }
-  }).catch((e: Error) => ({ error: e.message }));
-
-  if ("error" in result) return res.status(409).json({ error: result.error, staff });
-  return res.json({ staff: { id: staff.id, name: `${staff.firstName} ${staff.lastName}`, staffId: staff.staffId, role: staff.role }, attendance: result, action: resolved });
+  if (!result.ok) {
+    res.status(409).json({ error: result.error, staff });
+    return;
+  }
+  res.json({
+    staff: { id: staff.id, name: `${staff.firstName} ${staff.lastName}`, staffId: staff.staffId, role: staff.role },
+    attendance: result.attendance,
+    action: result.action,
+    duplicate: result.duplicate,
+  });
 });
 
 // ── Identify user and create login session ────────
