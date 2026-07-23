@@ -2339,9 +2339,18 @@ billsRouter.get("/gateway-payment-status/:txnRef", async (req, res): Promise<voi
     if (verification.success && verification.status === "paid") {
       // Reconcile and save payment
       await db.transaction(async (tx) => {
+        // F1 canonical idempotency: match our merchant reference in either
+        // identifier column so a payment recorded by the S2S webhook
+        // (including pre-F1 rows keyed by the provider txnID) dedupes here.
         const [existingPayment] = await tx.select()
           .from(paymentsTable)
-          .where(and(eq(paymentsTable.billId, billId), eq(paymentsTable.referenceNumber, txnRef)))
+          .where(and(
+            eq(paymentsTable.billId, billId),
+            or(
+              eq(paymentsTable.referenceNumber, txnRef),
+              eq(paymentsTable.gatewayTxnId, txnRef),
+            ),
+          ))
           .limit(1);
 
         if (!existingPayment) {
@@ -2351,6 +2360,7 @@ billsRouter.get("/gateway-payment-status/:txnRef", async (req, res): Promise<voi
             amount: collectAmount.toFixed(2),
             method: `Online (${provider.displayName})`,
             referenceNumber: txnRef,
+            settlementStatus: "captured",
             notes: `Paid online via ${provider.displayName} at Billing Desk.`,
             recordedByName: "Super Admin",
           });

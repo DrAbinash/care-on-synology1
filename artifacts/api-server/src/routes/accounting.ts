@@ -7,6 +7,8 @@ import { apiError, apiErrorFromZod } from "../lib/api-error";
 import { geminiParseBankStatement, type BankTransaction } from "@workspace/integrations-gemini-ai";
 import { todayIST } from "../lib/istDate";
 import { auditFromRequest } from "../lib/audit";
+import { autoVoucherForPayment } from "../lib/auto-voucher";
+import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { buildTrialBalance, buildProfitLoss, buildBalanceSheet, type AmountMap } from "../lib/accounting/reportBuilders";
 
 const router = Router();
@@ -972,6 +974,125 @@ router.post("/setup-defaults", async (req, res) => {
 });
 
 // ─── Sync Billing Payments → Receipt Vouchers ─────────────────────────────────
+
+// ─── F1: settlement reconciliation — duplicate suspects + supersession ───────
+//
+// Historical double-posts (same gateway payment recorded by two settle paths
+// under different reference keys) are NEVER deleted. This report surfaces
+// suspects; the supersede action voids the duplicate reversibly: marks it
+// superseded in favor of the surviving payment, restores the bill's paid/
+// balance, and posts a reversal voucher through the existing auto-voucher
+// engine (negative-amount path) — books stay consistent and traceable.
+
+router.get("/duplicate-payment-suspects", requireAdminRole, async (req, res) => {
+  const days = Math.min(Math.max(Number(req.query.days ?? 90) || 90, 1), 730);
+  const suspects = await db.execute<{
+    bill_id: number; bill_number: string; patient_name: string;
+    payment_a: number; ref_a: string; gateway_txn_a: string | null; created_a: string;
+    payment_b: number; ref_b: string; gateway_txn_b: string | null; created_b: string;
+    amount: string;
+  }>(sql`
+    SELECT a.bill_id,
+           b2.bill_number,
+           COALESCE(pt.first_name || ' ' || pt.last_name, '') AS patient_name,
+           a.id AS payment_a, a.reference_number AS ref_a, a.gateway_txn_id AS gateway_txn_a, a.created_at::text AS created_a,
+           b.id AS payment_b, b.reference_number AS ref_b, b.gateway_txn_id AS gateway_txn_b, b.created_at::text AS created_b,
+           a.amount::text AS amount
+    FROM payments a
+    JOIN payments b
+      ON b.bill_id = a.bill_id
+     AND b.id > a.id
+     AND b.amount = a.amount
+     AND ABS(EXTRACT(EPOCH FROM (b.created_at - a.created_at))) <= 900
+     AND COALESCE(b.reference_number, '') <> COALESCE(a.reference_number, '')
+    JOIN bills b2 ON b2.id = a.bill_id
+    LEFT JOIN patients pt ON pt.id = b2.patient_id
+    WHERE a.method ILIKE 'online%'
+      AND b.method ILIKE 'online%'
+      AND COALESCE(a.settlement_status, '') <> 'superseded'
+      AND COALESCE(b.settlement_status, '') <> 'superseded'
+      AND a.amount > 0 AND b.amount > 0
+      AND a.created_at >= NOW() - make_interval(days => ${days})
+    ORDER BY a.created_at DESC
+    LIMIT 200
+  `);
+  res.json({ suspects: suspects.rows ?? [], days });
+});
+
+router.post("/payments/:id/supersede", requireAdminRole, async (req, res) => {
+  const duplicateId = Number(req.params.id);
+  const parsed = z.object({
+    duplicateOfPaymentId: z.number().int().positive(),
+    reason: z.string().min(5).max(1000),
+  }).safeParse(req.body ?? {});
+  if (!Number.isInteger(duplicateId) || duplicateId <= 0 || !parsed.success) {
+    return apiError(res, 400, "duplicateOfPaymentId and a reason (min 5 chars) are required");
+  }
+  const { duplicateOfPaymentId: survivorId, reason } = parsed.data;
+  if (survivorId === duplicateId) return apiError(res, 400, "A payment cannot supersede itself");
+
+  const session = (req as StaffAuthRequest).staffSession;
+  try {
+    const outcome = await db.transaction(async (tx) => {
+      const [dup] = await tx.select().from(paymentsTable).where(eq(paymentsTable.id, duplicateId)).limit(1);
+      const [survivor] = await tx.select().from(paymentsTable).where(eq(paymentsTable.id, survivorId)).limit(1);
+      if (!dup || !survivor) return { error: "Payment not found" };
+      if (dup.billId !== survivor.billId) return { error: "Payments belong to different bills" };
+      if (Number(dup.amount) !== Number(survivor.amount)) return { error: "Payments differ in amount — not a duplicate pair" };
+      if (dup.settlementStatus === "superseded" || dup.supersededBy != null) return { error: "Payment is already superseded" };
+      if (survivor.settlementStatus === "superseded") return { error: "The surviving payment is itself superseded" };
+      if (!String(dup.method).toLowerCase().startsWith("online")) return { error: "Only online gateway payments can be superseded here" };
+
+      const [bill] = await tx.select().from(billsTable).where(eq(billsTable.id, dup.billId)).for("update").limit(1);
+      if (!bill) return { error: "Bill not found" };
+
+      await tx.update(paymentsTable)
+        .set({ settlementStatus: "superseded", supersededBy: survivorId })
+        .where(eq(paymentsTable.id, duplicateId));
+
+      const amount = Number(dup.amount);
+      const newPaid = Math.max(0, Number(bill.paidAmount) - amount);
+      const refund = Number(bill.refundAmount ?? 0);
+      const newBalance = Math.max(0, Number(bill.totalAmount) - newPaid - refund);
+      const newStatus = newBalance <= 0.01 ? "paid" : newPaid > 0 ? "partial" : "pending";
+      await tx.update(billsTable)
+        .set({ paidAmount: newPaid.toFixed(2), balanceAmount: newBalance.toFixed(2), status: newStatus, updatedAt: new Date() })
+        .where(eq(billsTable.id, bill.id));
+
+      return { bill, amount, method: dup.method };
+    });
+
+    if ("error" in outcome && outcome.error) return apiError(res, 409, outcome.error);
+    const ok = outcome as { bill: typeof billsTable.$inferSelect; amount: number; method: string };
+
+    // Reversal voucher through the existing auto-voucher engine (negative
+    // amount = payment-voucher reversal: debit revenue, credit method acct).
+    await autoVoucherForPayment({
+      billId: ok.bill.id,
+      amount: -ok.amount,
+      method: ok.method,
+      billNumber: ok.bill.billNumber,
+      performedBy: session?.subjectName ?? "admin",
+    });
+
+    await auditFromRequest(req, {
+      userId: session?.subjectId ?? null,
+      userName: session?.subjectName ?? "admin",
+      role: session?.role ?? "admin",
+      action: "void",
+      module: "accounting",
+      entityType: "payment",
+      entityId: String(duplicateId),
+      newValue: JSON.stringify({ supersededBy: survivorId, amount: ok.amount }),
+      reason,
+    });
+
+    return res.json({ ok: true, supersededPaymentId: duplicateId, survivingPaymentId: survivorId });
+  } catch (err) {
+    console.error("[accounting] supersede failed:", err);
+    return apiError(res, 500, "Supersession failed — no changes were committed");
+  }
+});
 
 router.post("/sync-billing", async (req, res) => {
   const allAccounts = await db.select().from(accountsTable);
