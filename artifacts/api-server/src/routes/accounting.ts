@@ -7,6 +7,7 @@ import { apiError, apiErrorFromZod } from "../lib/api-error";
 import { geminiParseBankStatement, type BankTransaction } from "@workspace/integrations-gemini-ai";
 import { todayIST } from "../lib/istDate";
 import { auditFromRequest } from "../lib/audit";
+import { buildTrialBalance, buildProfitLoss, buildBalanceSheet, type AmountMap } from "../lib/accounting/reportBuilders";
 
 const router = Router();
 
@@ -456,53 +457,32 @@ router.get("/trial-balance", async (req, res) => {
   `);
 
   // Build a per-account-id map from the SQL result
-  const drMap  = new Map<string, number>();
-  const crMap  = new Map<string, number>();
-  for (const row of aggRows.rows ?? []) {
-    const drAmt = Number(row.total_dr ?? 0);
-    const crAmt = Number(row.total_cr ?? 0);
-    if (row.debit_account_id) {
-      drMap.set(row.debit_account_id, (drMap.get(row.debit_account_id) ?? 0) + drAmt);
-    }
-    if (row.credit_account_id) {
-      crMap.set(row.credit_account_id, (crMap.get(row.credit_account_id) ?? 0) + crAmt);
-    }
-  }
+  const drMap = mapFromAgg(aggRows.rows, "dr");
+  const crMap = mapFromAgg(aggRows.rows, "cr");
 
-  const rows = allAccounts.map((account) => {
-    const accIdStr  = account.id.toString();
-    const openBal   = Number(account.openingBalance || 0);
-    const openType  = account.openingBalanceType || "Dr";
-    const openDr    = openType === "Dr" ? openBal : 0;
-    const openCr    = openType === "Cr" ? openBal : 0;
-
-    const dr      = openDr + (drMap.get(accIdStr) ?? 0);
-    const cr      = openCr + (crMap.get(accIdStr) ?? 0);
-    const balance = dr - cr;
-
-    const tallyGroup = account.tallyGroup || account.type;
-    const parent     = TALLY_PARENT[tallyGroup] || account.type;
-
-    return {
-      id: account.id,
-      name: account.name,
-      type: account.type,
-      tallyGroup,
-      parent,
-      dr:        Math.round(dr      * 100) / 100,
-      cr:        Math.round(cr      * 100) / 100,
-      balance:   Math.round(balance * 100) / 100,
-      balanceDr: balance > 0 ? Math.round(balance * 100) / 100 : 0,
-      balanceCr: balance < 0 ? Math.round(Math.abs(balance) * 100) / 100 : 0,
-    };
-  }).filter(r => r.dr > 0 || r.cr > 0);
-
-  const totalDr = Math.round(rows.reduce((s, r) => s + r.balanceDr, 0) * 100) / 100;
-  const totalCr = Math.round(rows.reduce((s, r) => s + r.balanceCr, 0) * 100) / 100;
-
-  res.json({ rows, totalDr, totalCr, balanced: Math.abs(totalDr - totalCr) < 0.01 });
+  // Pure builder (see lib/accounting/reportBuilders.ts) — unit-tested without a DB.
+  res.json(buildTrialBalance(allAccounts, drMap, crMap, TALLY_PARENT));
   return;
 });
+
+// Fold the grouped debit/credit aggregation rows into a per-account-id map.
+// Shared by trial-balance, profit-loss and balance-sheet so all three feed the
+// pure report builders from an identical shape.
+function mapFromAgg(
+  rows: { debit_account_id: string; credit_account_id: string; total_dr: string; total_cr: string }[] | undefined,
+  which: "dr" | "cr",
+): AmountMap {
+  const map: AmountMap = new Map();
+  for (const row of rows ?? []) {
+    if (which === "dr" && row.debit_account_id) {
+      map.set(row.debit_account_id, (map.get(row.debit_account_id) ?? 0) + Number(row.total_dr ?? 0));
+    }
+    if (which === "cr" && row.credit_account_id) {
+      map.set(row.credit_account_id, (map.get(row.credit_account_id) ?? 0) + Number(row.total_cr ?? 0));
+    }
+  }
+  return map;
+}
 
 // ─── Profit & Loss ────────────────────────────────────────────────────────────
 
@@ -531,42 +511,10 @@ router.get("/profit-loss", async (req, res) => {
     GROUP BY debit_account_id, credit_account_id
   `);
 
-  const drMap = new Map<string, number>();
-  const crMap = new Map<string, number>();
-  for (const row of aggRows.rows ?? []) {
-    const drAmt = Number(row.total_dr ?? 0);
-    const crAmt = Number(row.total_cr ?? 0);
-    if (row.debit_account_id)  drMap.set(row.debit_account_id,  (drMap.get(row.debit_account_id)  ?? 0) + drAmt);
-    if (row.credit_account_id) crMap.set(row.credit_account_id, (crMap.get(row.credit_account_id) ?? 0) + crAmt);
-  }
+  const drMap = mapFromAgg(aggRows.rows, "dr");
+  const crMap = mapFromAgg(aggRows.rows, "cr");
 
-  const income:   { name: string; group: string; amount: number }[] = [];
-  const expenses: { name: string; group: string; amount: number }[] = [];
-
-  for (const account of allAccounts) {
-    const grp      = account.tallyGroup || "";
-    const isIncome  = grp.includes("Income")  || account.type === "income";
-    const isExpense = grp.includes("Expense") || account.type === "expense";
-    if (!isIncome && !isExpense) continue;
-
-    const accId = account.id.toString();
-    const dr = Math.round((drMap.get(accId) ?? 0) * 100) / 100;
-    const cr = Math.round((crMap.get(accId) ?? 0) * 100) / 100;
-
-    if (isIncome) {
-      const amount = Math.round((cr - dr) * 100) / 100;
-      if (amount !== 0) income.push({ name: account.name, group: grp || "Income", amount });
-    } else {
-      const amount = Math.round((dr - cr) * 100) / 100;
-      if (amount !== 0) expenses.push({ name: account.name, group: grp || "Expenses", amount });
-    }
-  }
-
-  const totalIncome   = Math.round(income.reduce((s, r)   => s + r.amount, 0) * 100) / 100;
-  const totalExpenses = Math.round(expenses.reduce((s, r) => s + r.amount, 0) * 100) / 100;
-  const netProfit     = Math.round((totalIncome - totalExpenses) * 100) / 100;
-
-  res.json({ income, expenses, totalIncome, totalExpenses, netProfit });
+  res.json(buildProfitLoss(allAccounts, drMap, crMap));
   return;
 });
 
@@ -595,63 +543,14 @@ router.get("/balance-sheet", async (req, res) => {
     GROUP BY debit_account_id, credit_account_id
   `);
 
-  const drMapBS = new Map<string, number>();
-  const crMapBS = new Map<string, number>();
-  for (const row of aggRowsBS.rows ?? []) {
-    const drAmt = Number(row.total_dr ?? 0);
-    const crAmt = Number(row.total_cr ?? 0);
-    if (row.debit_account_id)  drMapBS.set(row.debit_account_id,  (drMapBS.get(row.debit_account_id)  ?? 0) + drAmt);
-    if (row.credit_account_id) crMapBS.set(row.credit_account_id, (crMapBS.get(row.credit_account_id) ?? 0) + crAmt);
-  }
+  const drMapBS = mapFromAgg(aggRowsBS.rows, "dr");
+  const crMapBS = mapFromAgg(aggRowsBS.rows, "cr");
 
-
-
-  const assets:      { name: string; group: string; amount: number }[] = [];
-  const liabilities: { name: string; group: string; amount: number }[] = [];
-
-  let netIncomeTotal  = 0;
-  let netExpenseTotal = 0;
-
-  for (const account of allAccounts) {
-    const grp    = account.tallyGroup || "";
-    const accId  = account.id.toString();
-    const openBal  = Number(account.openingBalance || 0);
-    const openType = account.openingBalanceType || "Dr";
-    const openDr   = openType === "Dr" ? openBal : 0;
-    const openCr   = openType === "Cr" ? openBal : 0;
-    const dr      = Math.round((openDr + (drMapBS.get(accId) ?? 0)) * 100) / 100;
-    const cr      = Math.round((openCr + (crMapBS.get(accId) ?? 0)) * 100) / 100;
-    const balance = Math.round((dr - cr) * 100) / 100;
-
-    const isIncome = grp.includes("Income") || account.type === "income";
-    const isExpense = grp.includes("Expense") || account.type === "expense";
-    const isAsset = !isIncome && !isExpense && (grp.includes("Asset") || grp.includes("Debtors") || grp === "Cash-in-Hand" || grp === "Bank Accounts" || account.type === "asset" || account.type === "cash" || account.type === "bank");
-    const isLiability = !isIncome && !isExpense && (grp.includes("Liabilities") || grp.includes("Creditors") || grp.includes("Capital") || grp.includes("Reserves") || account.type === "liability");
-
-    if (isIncome) {
-      netIncomeTotal  = Math.round((netIncomeTotal  + (cr - dr)) * 100) / 100;
-    } else if (isExpense) {
-      netExpenseTotal = Math.round((netExpenseTotal + (dr - cr)) * 100) / 100;
-    } else if (balance === 0) {
-      continue;
-    } else if (isAsset && balance > 0) {
-      assets.push({ name: account.name, group: grp || account.type, amount: balance });
-    } else if (isLiability && balance < 0) {
-      liabilities.push({ name: account.name, group: grp || account.type, amount: Math.abs(balance) });
-    }
-  }
-
-  const netProfit = Math.round((netIncomeTotal - netExpenseTotal) * 100) / 100;
-  if (netProfit > 0) {
-    liabilities.push({ name: "Net Profit for the Period", group: "Capital Account", amount: netProfit });
-  } else if (netProfit < 0) {
-    assets.push({ name: "Net Loss for the Period", group: "Capital Account", amount: Math.abs(netProfit) });
-  }
-
-  const totalAssets      = Math.round(assets.reduce((s, r)      => s + r.amount, 0) * 100) / 100;
-  const totalLiabilities = Math.round(liabilities.reduce((s, r) => s + r.amount, 0) * 100) / 100;
-
-  res.json({ assets, liabilities, totalAssets, totalLiabilities, netProfit, balanced: Math.abs(totalAssets - totalLiabilities) < 0.01 });
+  // Pure builder (see lib/accounting/reportBuilders.ts). Places every non-P&L
+  // account by the SIGN of its closing balance, so the sheet balances for any
+  // sequence of balanced vouchers — the previous "Difference" bug (silently
+  // dropping abnormal-sign / unmapped accounts) can no longer occur.
+  res.json(buildBalanceSheet(allAccounts, drMapBS, crMapBS));
   return;
 });
 
