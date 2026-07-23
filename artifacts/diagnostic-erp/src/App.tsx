@@ -94,6 +94,12 @@ const People          = lazy(() => import("@/pages/People"));
 const AttendanceDevices = lazy(() => import("@/pages/AttendanceDevices"));
 const Performance     = lazy(() => import("@/pages/Performance"));
 const MyPortal        = lazy(() => import("@/pages/MyPortal"));
+const ReportDeliveryTracking = lazy(() => import("@/pages/ReportDeliveryTracking"));
+const Recall          = lazy(() => import("@/pages/Recall"));
+const FeedbackDashboard = lazy(() => import("@/pages/FeedbackDashboard"));
+const PaymentLinks    = lazy(() => import("@/pages/PaymentLinks"));
+const AbdmConsent     = lazy(() => import("@/pages/AbdmConsent"));
+const OpsCockpit      = lazy(() => import("@/pages/OpsCockpit"));
 const HRForms         = lazy(() => import("@/pages/HRForms"));
 const QueuePage       = lazy(() => import("@/pages/Queue"));
 const Radiology       = lazy(() => import("@/pages/Radiology"));
@@ -588,6 +594,12 @@ function Router() {
               <Route path="/attendance-devices" component={AttendanceDevices} />
               <Route path="/performance" component={Performance} />
               <Route path="/my-portal" component={MyPortal} />
+              <Route path="/report-delivery-tracking" component={ReportDeliveryTracking} />
+              <Route path="/recall" component={Recall} />
+              <Route path="/feedback" component={FeedbackDashboard} />
+              <Route path="/payment-links" component={PaymentLinks} />
+              <Route path="/abdm-abha" component={AbdmConsent} />
+              <Route path="/ops-cockpit" component={OpsCockpit} />
               <Route path="/hr-forms" component={HRForms} />
               <Route path="/form-f" component={FormF} />
               <Route path="/machines" component={Machines} />

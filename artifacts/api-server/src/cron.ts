@@ -41,6 +41,9 @@ export function startCronScheduler() {
   scheduleAuditLogPurge();
   schedulePacsPullerWatchdog();
   scheduleWhatsappReminders();
+  scheduleRecall();
+  scheduleFeedbackInvites();
+  scheduleOpsAnomalyScan();
   scheduleRadiologyJobs();
   scheduleAuditChainVerify();
   scheduleAiSchedulerModes();
@@ -751,6 +754,20 @@ function scheduleWhatsappReminders() {
           console.log(`[cron] WhatsApp dues reminders: sent=${r.sent} failed=${r.failed} total=${r.total}${r.skipped ? ` (skipped: ${r.reason})` : ""}`);
         }
       }
+
+      // Report-delivery unread reminders — reminds ONLY reports staff explicitly
+      // sent (not a bulk scan) that remain unread after 24h, capped at one. Fixed
+      // daily pass at 12:00 server time; the worker no-ops unless
+      // ff_report_delivery_receipts is enabled.
+      {
+        const key = `wa-report-delivery-${dateKey}`;
+        if (now.getHours() === 12 && now.getMinutes() === 0 && !firedToday.has(key)) {
+          firedToday.add(key);
+          const { runReportDeliveryReminders } = await import("./routes/reportDeliveryTracking");
+          const r = await runReportDeliveryReminders();
+          console.log(`[cron] WhatsApp report-delivery reminders: sent=${r.sent} failed=${r.failed} total=${r.total}${r.skipped ? ` (skipped: ${r.reason})` : ""}`);
+        }
+      }
     } catch (err) {
       console.error("[cron] WhatsApp reminder check failed:", err);
     }
@@ -768,6 +785,91 @@ export async function runWhatsappAppointmentReminders() {
 export async function runWhatsappDuesReminders() {
   const { runDuesReminders } = await import("./routes/whatsapp");
   return runDuesReminders();
+}
+
+export async function runWhatsappReportDeliveryReminders() {
+  const { runReportDeliveryReminders } = await import("./routes/reportDeliveryTracking");
+  return runReportDeliveryReminders();
+}
+
+// Recall / follow-up engine — once daily at 10:00 server time: derive due
+// recalls from recently-delivered reports, then WhatsApp the due ones. Both
+// steps no-op unless ff_recall_engine is enabled. Idempotent generation.
+function scheduleRecall() {
+  cron.schedule("* * * * *", async () => {
+    try {
+      const now = new Date();
+      const dateKey = now.toISOString().split("T")[0];
+      const key = `recall-${dateKey}`;
+      if (now.getHours() === 10 && now.getMinutes() === 0 && !firedToday.has(key)) {
+        firedToday.add(key);
+        const { runRecallGeneration, runRecallSends } = await import("./routes/recall");
+        const gen = await runRecallGeneration();
+        const sent = await runRecallSends();
+        console.log(`[cron] Recall: queued=${gen.queued} scanned=${gen.scanned} sent=${sent.sent} failed=${sent.failed}${sent.skipped ? ` (skipped: ${sent.reason})` : ""}`);
+      }
+    } catch (err) {
+      console.error("[cron] Recall check failed:", err);
+    }
+  });
+  console.log("[cron] Recall scheduler started (checks every minute)");
+}
+
+export async function runRecallNow() {
+  const { runRecallGeneration, runRecallSends } = await import("./routes/recall");
+  const generated = await runRecallGeneration();
+  const sent = await runRecallSends();
+  return { generated, sent };
+}
+
+// Post-report feedback / NPS invites — once daily at 10:30 server time. Mints
+// tokenized links for recently-delivered reports and WhatsApps them. No-ops
+// unless ff_feedback_nps is enabled. Idempotent (unique report_id).
+function scheduleFeedbackInvites() {
+  cron.schedule("* * * * *", async () => {
+    try {
+      const now = new Date();
+      const dateKey = now.toISOString().split("T")[0];
+      const key = `feedback-${dateKey}`;
+      if (now.getHours() === 10 && now.getMinutes() === 30 && !firedToday.has(key)) {
+        firedToday.add(key);
+        const { runFeedbackInvites } = await import("./routes/feedback");
+        const r = await runFeedbackInvites();
+        console.log(`[cron] Feedback invites: created=${r.created} sent=${r.sent} failed=${r.failed}${r.skipped ? ` (skipped: ${r.reason})` : ""}`);
+      }
+    } catch (err) {
+      console.error("[cron] Feedback invite check failed:", err);
+    }
+  });
+  console.log("[cron] Feedback invite scheduler started (checks every minute)");
+}
+
+export async function runFeedbackInvitesNow() {
+  const { runFeedbackInvites } = await import("./routes/feedback");
+  return runFeedbackInvites();
+}
+
+// Operational-health anomaly scan — every 30 minutes. Evaluates live metrics
+// against thresholds and raises anomaly_alerts (deduped) + notifies admins.
+// No-ops unless ff_ops_cockpit is enabled.
+function scheduleOpsAnomalyScan() {
+  cron.schedule("*/30 * * * *", async () => {
+    try {
+      const { runOpsAnomalyScan } = await import("./routes/opsCockpit");
+      const r = await runOpsAnomalyScan();
+      if (!r.skipped && (r.created > 0 || r.scanned > 0)) {
+        console.log(`[cron] Ops anomaly scan: scanned=${r.scanned} created=${r.created} deduped=${r.deduped}`);
+      }
+    } catch (err) {
+      console.error("[cron] Ops anomaly scan failed:", err);
+    }
+  });
+  console.log("[cron] Ops anomaly scanner started (every 30 min)");
+}
+
+export async function runOpsAnomalyScanNow() {
+  const { runOpsAnomalyScan } = await import("./routes/opsCockpit");
+  return runOpsAnomalyScan();
 }
 
 function scheduleMonthEndCommission() {

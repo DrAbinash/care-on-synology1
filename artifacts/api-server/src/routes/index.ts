@@ -58,6 +58,12 @@ import rosterRouter from "./roster";
 import leaveRouter from "./leave";
 import disciplinaryRouter from "./disciplinary";
 import mySelfServiceRouter from "./mySelfService";
+import reportDeliveryTrackingRouter from "./reportDeliveryTracking";
+import recallRouter from "./recall";
+import feedbackRouter from "./feedback";
+import publicFeedbackRouter from "./publicFeedback";
+import billPaymentLinksRouter from "./billPaymentLinks";
+import opsCockpitRouter from "./opsCockpit";
 import storageRouter from "./storage";
 import { bridgeRouter } from "./bridge";
 import { reportTemplatesRouter } from "./report-templates";
@@ -170,6 +176,7 @@ import fhirRouter from "./fhir";
 // ABDM / ABHA national health stack — management (staff auth) + gateway callbacks
 // (public transport, ABDM_CALLBACK_SECRET). Off until ABDM_ENABLED=true.
 import abdmRouter, { callbackRouter as abdmCallbackRouter } from "./abdm";
+import abdmExtRouter from "./abdmExt";
 
 const router: IRouter = Router();
 
@@ -256,6 +263,9 @@ router.use("/payment-display", paymentDisplayRouter);
 router.use("/bridge", bridgeRouter);
 // Public tokenized PDF download for patient WhatsApp links — no staff auth.
 router.use("/p/r", publicReportsRouter);
+// Public tokenized patient feedback / NPS form — no staff auth. Serves a
+// self-contained HTML page and records the response. Gated by ff_feedback_nps.
+router.use("/f", publicFeedbackRouter);
 // Public tele-radiology share viewer (token-gated) — no staff auth.
 router.use("/teleradiology", teleradiologyRouter);
 // Public bill-verification page — the QR code on every printed bill links
@@ -384,6 +394,10 @@ router.use("/diagnostics", requireStaffAuth, requireAdminRole, diagnosticsRouter
 // queue/integrations/storage checks + persisted run history).
 router.use("/admin/operations", requireStaffAuth, requireAdminRole, adminOperationsRouter);
 
+// Unified operational-health cockpit + proactive alerts (admin-only). Gated
+// additionally by ff_ops_cockpit (Shadow Mode) inside the router.
+router.use("/ops-cockpit", requireStaffAuth, requireAdminRole, opsCockpitRouter);
+
 // Admin-only Universal Measurement Registry manager (read-only console +
 // live impact analysis over quick measurements / protocols / packs / rules).
 router.use("/measurement-registry", requireStaffAuth, requireAdminRole, measurementRegistryRouter);
@@ -400,6 +414,12 @@ router.use("/inventory", requireStaffAuth, requireStaffPermission("/inventory"),
 // ABDM / ABHA management — /settings permission. Callbacks are mounted publicly
 // above (/abdm/callback); this staff-gated router handles the rest of /abdm.
 router.use("/abdm", requireStaffAuth, requireStaffPermission("/settings"), abdmRouter);
+// ABDM/ABHA consent-request lifecycle + ABHA enrolment (additive extension).
+// Mounted at a DISTINCT /abha prefix (not a second /abdm router): the existing
+// abdmRouter's ABDM_ENABLED gate 503s every /abdm/* request when ABDM is off,
+// which would block these routes in Shadow Mode. This router is gated by
+// ff_abdm_abha instead (real gateway calls still require ABDM_ENABLED inside).
+router.use("/abha", requireStaffAuth, requireStaffPermission("/settings"), abdmExtRouter);
 
 // Accounting — /accounting permission (vouchers, accounts, ledger entries)
 router.use("/accounting", requireStaffAuth, requireStaffPermission("/accounting"), accountingRouter);
@@ -838,6 +858,17 @@ router.use(
 router.use("/form-f", requireStaffAuth, requireStaffPermission("/form-f"), formFRouter);
 router.use("/patient-reports", requireStaffAuth, requireStaffPermission("/reports"), patientReportsRouter);
 router.use("/signatures", requireStaffAuth, requireStaffPermission("/reports"), signaturesRouter);
+// Staff-selected WhatsApp report delivery + read-receipt tracking + reminders.
+// Gated additionally by ff_report_delivery_receipts (Shadow Mode) inside the router.
+router.use("/report-delivery-tracking", requireStaffAuth, requireStaffPermission("/reports"), reportDeliveryTrackingRouter);
+// Recall / follow-up engine. Gated additionally by ff_recall_engine (Shadow Mode) inside the router.
+router.use("/recall", requireStaffAuth, requireStaffPermission("/reports"), recallRouter);
+// Patient feedback / NPS dashboard (staff). Gated additionally by ff_feedback_nps (Shadow Mode) inside the router.
+router.use("/feedback", requireStaffAuth, requireStaffPermission("/reports"), feedbackRouter);
+// Online payment links for bills — additive scaffolding that reuses the
+// sanctioned gateway/webhook path (no writes to bills/payments/vouchers). Gated
+// additionally by ff_online_payment_links (Shadow Mode, disabled) inside the router.
+router.use("/bill-payment-links", requireStaffAuth, requireStaffPermission("/billing"), billPaymentLinksRouter);
 
 // AI Radiology Reporting — encrypted API keys, audit logging, draft management
 router.use("/ai-reporting", requireStaffAuth, aiReportingRouter);

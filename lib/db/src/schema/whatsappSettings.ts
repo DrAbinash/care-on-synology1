@@ -9,6 +9,12 @@ export const whatsappSettingsTable = pgTable("whatsapp_settings", {
   templateLang: text("template_lang").notNull().default("en"),
   defaultCountryCode: text("default_country_code").notNull().default("91"),
   autoSendOnVerify: boolean("auto_send_on_verify").notNull().default(false),
+  // Report delivery mode: 'manual' (staff selects reports bill/test-wise from
+  // the delivery-tracking screen) or 'auto' (report auto-sends on verify). Kept
+  // in sync with autoSendOnVerify by the report-delivery-tracking settings
+  // endpoint so the existing on-verify auto-send path needs no change. Defaults
+  // to 'manual' — the clinic sends selected reports, not every report.
+  reportDeliveryMode: text("report_delivery_mode").notNull().default("manual"),
   reportMessageTemplate: text("report_message_template").notNull().default(""),
   includeViewerLink: boolean("include_viewer_link").notNull().default(true),
   // ── Automation triggers ────────────────────────────────────────────────

@@ -253,6 +253,14 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   ff_hr_roster: false,
   ff_hr_leave: false,
   ff_hr_disciplinary: false,
+  // Patient engagement + operations platform (all server-backed, hydrated via
+  // useServerFeatureFlags; default OFF = Shadow Mode).
+  ff_report_delivery_receipts: false, // WhatsApp report delivery receipts + reminders
+  ff_recall_engine: false,            // Recall / follow-up engine
+  ff_feedback_nps: false,             // Post-report feedback / NPS
+  ff_online_payment_links: false,     // Online payment links / partial payments
+  ff_abdm_abha: false,                // ABDM / ABHA health-ID + consent
+  ff_ops_cockpit: false,              // Unified operational-health cockpit + alerts
   showUnifiedReporting: false,
   // Phase 2B radiology feature flags (legacy names, kept for backward compatibility)
   showMeasurementPanel: false,

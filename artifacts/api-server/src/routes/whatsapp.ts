@@ -9,6 +9,7 @@ import { encryptSecret, decryptSecretTolerant } from "../lib/cryptoUtils";
 import { todayIST } from "../lib/istDate";
 import { getWhatsAppService } from "../services/whatsapp/WhatsAppService";
 import { WhatsAppBotEngine } from "../services/whatsapp/WhatsAppBotEngine";
+import { applyReportDeliveryReceiptStatuses } from "../lib/reportDeliveryReceipts";
 
 // Shared with routes/waChatbot.ts's webhook — see the note above
 // handleAiReply below for why this webhook now delegates to the same
@@ -281,6 +282,16 @@ whatsappWebhookRouter.post("/", async (req: Request, res: Response): Promise<voi
       for (const change of entry.changes ?? []) {
         if (change.field !== "messages") continue;
         const value = change.value;
+
+        // Delivery/read receipts (sent|delivered|read|failed) for staff-tracked
+        // report sends — Meta posts these under value.statuses[], which the
+        // message-handling below never reads. Additive, fire-and-forget; a
+        // no-op unless a tracked receipt matches the provider message id.
+        const statuses = (value as { statuses?: unknown }).statuses;
+        if (Array.isArray(statuses)) {
+          void applyReportDeliveryReceiptStatuses(statuses as Parameters<typeof applyReportDeliveryReceiptStatuses>[0]).catch(() => {});
+        }
+
         // Meta includes the receiving phone number ID in metadata
         const receivingPhoneNumberId = (value.metadata as { phone_number_id?: string } | undefined)?.phone_number_id ?? "";
 
