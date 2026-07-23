@@ -332,7 +332,52 @@ router.patch("/vouchers/:id", async (req, res) => {
 router.delete("/vouchers/:id", async (req, res) => {
   const id = parseId(req.params.id, res);
   if (id === null) return;
+
+  // Audit gap fix: a bare hard-delete let any receipt/payment voucher vanish
+  // with no trace, while PATCH requires reason + audits every field.
+  // Now: reason is mandatory; auto-generated (bill/payment-linked) vouchers
+  // are NOT deletable (correct them at source, or void via a reversing entry);
+  // and every deletion writes a tamper-evident audit row.
+  const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+  if (reason.length < 5) {
+    res.status(400).json({ error: "A reason (min 5 chars) is required to delete a voucher" });
+    return;
+  }
+
+  const [existing] = await db.select().from(vouchersTable).where(eq(vouchersTable.id, id));
+  if (!existing) { res.status(404).json({ error: "Voucher not found" }); return; }
+
+  if (existing.paymentId != null || existing.billId != null) {
+    res.status(409).json({
+      error: "This voucher is auto-generated from a bill/payment and cannot be deleted. Reverse it via a compensating entry or correct the source payment.",
+    });
+    return;
+  }
+
+  const session = (req as StaffAuthRequest).staffSession;
+  await db.insert(voucherAuditsTable).values({
+    voucherId: id,
+    voucherNumber: existing.voucherNumber,
+    editedBy: session?.subjectName ?? "admin",
+    reason,
+    changeType: "deleted",
+    oldValue: JSON.stringify({ type: existing.type, amount: existing.amount, date: existing.date, particular: existing.particular, reference: existing.reference }),
+    newValue: null,
+  });
   await db.delete(vouchersTable).where(eq(vouchersTable.id, id));
+
+  await auditFromRequest(req, {
+    userId: session?.subjectId ?? null,
+    userName: session?.subjectName ?? "admin",
+    role: session?.role ?? "admin",
+    action: "delete",
+    module: "accounting",
+    entityType: "voucher",
+    entityId: String(id),
+    oldValue: JSON.stringify({ voucherNumber: existing.voucherNumber, amount: existing.amount }),
+    reason,
+  });
+
   res.json({ ok: true });
   return;
 });
