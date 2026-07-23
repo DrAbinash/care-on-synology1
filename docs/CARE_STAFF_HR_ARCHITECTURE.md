@@ -26,14 +26,15 @@ implementations.*
 
 ---
 
-## 2. Identity model (decision required — see Open Issues #1)
+## 2. Identity model (RESOLVED — strict 1:1)
 
-`users` (login) and `staff` (HR master) are separate with no FK (`CARE_STAFF_HR_AUDIT.md` §4).
-Recommended approach (**additive, reversible**): add a nullable `users.staff_id → staff.id`
-(or a link table `staff_user_links`) so a logged-in user can be resolved to a staff record for
-**self-service** ("my attendance / my score"). Until this decision is ratified, self-service stays
-behind `ff_hr_employee_self_service` (disabled) and no self-scoped endpoint ships. Actor attribution
-for HR mutations uses `req.staffSession.subjectId` (a `users.id`) exactly as `hr-forms.ts` already does.
+Owner decision: **strict one-to-one** `staff` ↔ `users`; one employee = one ERP identity; no parallel
+employee concept. **Implemented additively** via `staff_user_links` (`UNIQUE(staff_id)`,
+`UNIQUE(user_id)`) — this leaves the protected `staff.ts`/`users.ts` schema files untouched. The
+employee **profile is the single source of truth**; every module references `staff.id`. Self-service
+("my attendance / my score") reads gate on `ff_hr_employee_self_service` (disabled) and the link;
+until then no self-scoped endpoint ships. Actor attribution uses `req.staffSession.subjectId` (a
+`users.id`) as `hr-forms.ts` already does. See `CARE_PEOPLE_MANAGEMENT_PLATFORM.md`.
 
 ---
 
@@ -61,10 +62,17 @@ Reuse `middleware/requireStaffAuth.ts` primitives verbatim — no parallel frame
 `staff`, `departments`, `staff_attendance` (+ its `source` column), `staff_biometric_credentials`,
 `bridge_fingerprint_templates`, `hr_rejoining_forms`, `users`, `audit_logs`, `feature_flags`.
 
-### 4.2 Landed now (Phase 1, additive, inert — `schema/staffHr.ts` + `migrations/staff_hr_foundation.sql`)
-`designations`, `staff_status_history`, `staff_reporting_lines`, `staff_documents`.
+### 4.2 Landed (Phase 1, additive, inert — `schema/staffHr.ts`)
+- **Merged (PR #205, `migrations/staff_hr_foundation.sql`):** `designations`, `staff_status_history`,
+  `staff_reporting_lines`, `staff_documents`.
+- **People-platform foundation (`migrations/staff_hr_people_platform.sql`):** `staff_user_links` (strict
+  1:1 identity), `skills` + `staff_skills` (skill matrix), `staff_timeline_events` (auto-generated 360°
+  activity timeline — every future module appends via `source_module`/`ref_type`/`ref_id`).
+
 FKs: owning-staff = `ON DELETE RESTRICT`; actor(users)/department = `ON DELETE SET NULL` (per DB-audit
-recommendation; never `CASCADE` for HR/legal records).
+recommendation; never `CASCADE` for HR/legal records). The **organizational chart** is derived from
+`staff_reporting_lines` + `departments` + `designations` — no new table. See
+`CARE_PEOPLE_MANAGEMENT_PLATFORM.md`.
 
 ### 4.3 Proposed for later phases (change-controlled; not in this PR)
 - **Attendance:** `attendance_raw_punches` (immutable device/manual punches), `attendance_daily_summaries`
@@ -86,8 +94,14 @@ All future migrations: additive, idempotent, filename-ordered, verified by `chec
 
 ## 5. Attendance ingestion abstraction
 
-A device-independent provider model over the existing `staff_attendance.source` column. Sources:
-`manual | fingerprint | usb-bridge | csv_import | api_import | admin_correction | system_generated`.
+A device-independent provider model over the existing `staff_attendance.source` column, **shipped inert**
+as `artifacts/api-server/src/lib/attendance/attendanceSource.ts` (pure types + source registry +
+`toAttendanceEvent` normalizer; no hardware, no DB, no wiring). Every source produces the **same**
+canonical `AttendanceEvent`; adding hardware = adding a **provider** (owner decision). Source kinds:
+`manual · usb_bridge · webauthn · fingerprint_device · csv_import · api_import · face_recognition · rfid ·
+mobile_gps · admin_correction · system_generated`, each mapped to its existing `staff_attendance.source`
+string (`manual`/`fingerprint`/`usb-bridge` today). The dormant USB bridge becomes `UsbBridgeProvider`
+in Phase 2 and is **not rewritten**.
 
 ```
 AttendanceProvider (interface)

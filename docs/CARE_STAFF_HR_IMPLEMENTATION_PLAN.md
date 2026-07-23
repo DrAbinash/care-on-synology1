@@ -1,30 +1,32 @@
 # CARE Staff/HR Module — Phased Implementation Plan
 
-**Status:** Phase 0 complete; Phase 1 foundation in this PR · **Date:** 2026-07-23
+**Status:** Phase 0 merged (PR #205); Phase 1 People-platform foundation in progress · **Date:** 2026-07-23
 
 Small, reviewable PRs — never one uncontrolled rewrite. Every phase is additive, feature-flagged, and
 avoids the Financial Freeze unless routed through `FINANCIAL_CHANGE_CONTROL.md` with owner sign-off.
+Owner review reframed this as the **People Management platform** (`CARE_PEOPLE_MANAGEMENT_PLATFORM.md`).
 
 ---
 
-## Phase 0 — Audit & design ✅ (this PR)
+## Phase 0 — Audit & design ✅ (merged, PR #205)
 - Repository audit, fingerprint audit, architecture, policy config, rollout, open issues, ADR-003.
-- No feature activation.
+- Foundation tables (`designations`, `staff_status_history`, `staff_reporting_lines`, `staff_documents`),
+  `ff_hr_*` flags (disabled), pure score engine. No feature activation.
 
-## Phase 1 — Enhanced Staff foundation (in progress)
-**Landed in this PR (safe, inert):**
-- New schema `lib/db/src/schema/staffHr.ts` + `migrations/staff_hr_foundation.sql`: `designations`,
-  `staff_status_history`, `staff_reporting_lines`, `staff_documents` (RESTRICT/SET NULL).
-- `ff_hr_*` flags seeded disabled (shadow mode).
-- Pure, unit-tested score engine `artifacts/api-server/src/lib/performance/scoreEngine.ts`.
+## Phase 1 — People-platform foundation (in progress)
+**Landed in the follow-up (safe, inert, additive):**
+- `staff_user_links` — strict **1:1** `staff↔users` identity (owner decision), single source of truth.
+- `skills` + `staff_skills` — skill matrix. `staff_timeline_events` — auto-generated 360° activity timeline.
+- `attendanceSource.ts` — inert attendance-source **abstraction** (one interface, one event; no hardware).
+- Design docs updated to the People Management platform + 360° profile; five owner decisions recorded.
 
 **Follow-up PRs (reviewed):**
-- Decide + implement the `users↔staff` link (Open Issues #1); register `staff`/`hr` permission modules via
-  change control.
-- Read/write routes for designations, status history, reporting lines, documents (reuse `auditFromRequest`,
-  presigned uploads, zod). *Files:* new `routes/staffHr.ts`; mount in `routes/index.ts`.
-- Frontend: enhance `/staff` directory + profile tabs (Overview/Employment/Documents/Reporting/Audit),
-  standardise on `ui/table.tsx`; gate with `ff_hr_staff_enhanced`.
+- Register `staff`/`hr`/`people` permission modules by **extending** the existing matrix (owner decision).
+- Read/write routes for designations, skills, reporting lines, documents, timeline (reuse
+  `auditFromRequest`, presigned uploads, zod). *Files:* new `routes/staffHr.ts`; mount in `routes/index.ts`.
+- Frontend: premium **CRM-style 360° profile** (Overview/Employment/Attendance/Performance/Recognition/
+  Documents/Payroll/Training/Warnings/Timeline/Audit tabs) + directory; standardise on `ui/table.tsx`;
+  gate with `ff_hr_staff_enhanced`. Derived **org chart** from `staff_reporting_lines`.
 
 ## Phase 2 — Attendance foundation
 - Manual attendance (exists) + shift/roster model + `attendance_raw_punches` + `attendance_daily_summaries`

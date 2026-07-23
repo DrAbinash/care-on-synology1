@@ -1,7 +1,9 @@
 # ADR-003: Staff, Attendance, Performance & Recognition Module
 
 ## Status
-Accepted (Phase 0/1) — later phases pending decisions in `docs/CARE_STAFF_HR_OPEN_ISSUES.md`
+Accepted. Phase 0 merged (PR #205). Owner review (2026-07-23) reframed the module as the CARE
+**People Management platform** and resolved all five pending decisions (see below); Phase 1 foundation
+proceeding additively.
 
 ## Date
 2026-07-23
@@ -66,9 +68,26 @@ updated with the new modules/roles; (c) fingerprint hardware is selected; (d) an
 is proposed (must enter Change Control). Re-evaluate the dual-tracking migration approach if the
 performance/attendance table sets grow large.
 
+## Owner decisions (2026-07-23) — now binding
+
+1. **Identity:** strict **1:1** `staff` ↔ `users` (via additive `staff_user_links`); one employee =
+   one ERP identity; no parallel employee concept.
+2. **Permissions:** **extend** the existing RBAC only; no second framework.
+3. **Payroll:** performance is **advisory** — no automatic payroll/deduction/increment; all
+   management-approved.
+4. **Fingerprint hardware:** keep the source **abstraction**; add a **provider** when hardware is
+   finalized; do **not** rewrite the dormant bridge or add vendor code now.
+5. **Scoring:** fully **configurable**; no hard-coded policy.
+
+Additional owner direction: treat this as the **People Management platform** (single source of truth,
+360° profile, pluggable future modules — see `CARE_PEOPLE_MANAGEMENT_PLATFORM.md`), including an
+auto-generated activity timeline, skill matrix, and derived organizational chart. Attendance is
+abstracted behind one source interface; enterprise attendance (shifts/grace/holiday/OT/comp-off) and
+leave are designed but not activated; payroll remains inactive.
+
 ## Notes
 
-- Companion docs: `CARE_STAFF_HR_AUDIT.md`, `CARE_STAFF_HR_ARCHITECTURE.md`,
+- Companion docs: `CARE_PEOPLE_MANAGEMENT_PLATFORM.md`, `CARE_STAFF_HR_AUDIT.md`, `CARE_STAFF_HR_ARCHITECTURE.md`,
   `CARE_STAFF_HR_IMPLEMENTATION_PLAN.md`, `FINGERPRINT_ATTENDANCE_INTEGRATION.md`,
   `CARE_PERFORMANCE_POLICY_CONFIGURATION.md`, `CARE_STAFF_HR_ROLLOUT.md`,
   `CARE_STAFF_HR_OPEN_ISSUES.md`.

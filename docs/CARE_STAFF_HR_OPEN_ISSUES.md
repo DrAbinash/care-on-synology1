@@ -2,42 +2,39 @@
 
 **Date:** 2026-07-23
 
-Decisions that genuinely need management/owner input before certain phases proceed, plus known
-limitations of the current codebase. Nothing here is blocking Phase 0/1 (docs + inert foundation).
+Known limitations of the current codebase, plus the previously-open decisions — **all five now
+RESOLVED by the owner (2026-07-23)**. Nothing here blocks the additive, Shadow-Mode foundation.
 
 ---
 
-## A. Decisions requiring management input
+## A. Decisions — RESOLVED by owner (2026-07-23)
 
-### 1. Identity link: `users` (login) ↔ `staff` (HR master) — **needs a decision**
-Today they are separate with no FK. Employee self-service ("my score/attendance") and correct actor
-attribution need a link. **Recommendation:** add a nullable, additive `users.staff_id → staff.id` (or a
-`staff_user_links` table), reversible, gated by `ff_hr_employee_self_service`. *Decision needed:* approve the
-link approach and the mapping rule (who maps a user to a staff record, and whether every user must map).
+### 1. Identity link: `users` ↔ `staff` — ✅ RESOLVED
+**Decision:** strict **one-to-one** mapping; every staff member has at most one ERP identity; no
+duplicate identity systems. **Implemented:** additive `staff_user_links` table with `UNIQUE(staff_id)`
+and `UNIQUE(user_id)` (does not touch protected `staff.ts`/`users.ts`). Self-service reads gate on
+`ff_hr_employee_self_service`.
 
-### 2. Permission model — new modules & the off-repo matrix
-The real role→permission grants live in an **off-repo USB plugin**; the in-repo `role-permissions.ts` is a
-stub. We propose new modules (`staff`, `hr`, `attendance`, `performance`, `recognition`, `allowances`,
-`appraisals`). *Decision needed:* who updates the off-repo matrix, and the intended grants per role
-(especially: which role = "Supervisor", "HR/Manager", "Director"? Current `ERP_ROLES` has `manager` but no
-`hr`/`supervisor`/`director`). Segregation of duties (submitter ≠ approver) will be enforced server-side.
+### 2. Permissions — ✅ RESOLVED
+**Decision:** **extend the existing** permission framework only; do **not** build a second RBAC.
+**Approach:** new modules registered in the existing `role_permissions` matrix; segregation of duties
+(submitter ≠ approver) enforced server-side via `req.staffSession.subjectId`. Actual grants applied via
+the off-repo matrix owner.
 
-### 3. Financial boundary — payroll, allowances, increments
-The master audit *wishes* payroll were derived from attendance, but `staff_salary_payments` is under the
-Financial Freeze. **Recommendation:** keep performance/allowance/increment outputs **advisory** (human
-approval; never auto-payroll). *Decision needed:* if/when attendance→payroll or allowance→payroll is ever
-wired, it must go through `FINANCIAL_CHANGE_CONTROL.md` + owner sign-off. Confirm this stays out of scope for
-now.
+### 3. Financial boundary — ✅ RESOLVED
+**Decision (confirmed):** performance stays **advisory**. **No** automatic payroll, **no** automatic
+deduction, **no** automatic increment — everything management-approved. Any future payroll linkage must
+go through `FINANCIAL_CHANGE_CONTROL.md` + owner sign-off.
 
-### 4. Fingerprint hardware
-USB attendance is dormant pending a device. *Decision needed:* target vendor (Mantra MFS100 is closest to
-working — only its matcher is missing), number of workstations, and whether biometric login (not just
-attendance) is wanted. No vendor-specific integration will be invented without real hardware details.
+### 4. Fingerprint hardware — ✅ RESOLVED
+**Decision:** do **not** implement vendor-specific code; keep the abstraction. When hardware is
+finalized, **only a provider is added**. **Implemented:** `attendanceSource.ts` abstraction (inert); the
+dormant USB bridge is documented as a future provider and is **not rewritten**.
 
-### 5. Data-privacy / policy sign-off
-Performance events touch employee reputation. *Decision needed:* approve the default rule points and
-disqualifier list (`CARE_PERFORMANCE_POLICY_CONFIGURATION.md`), confidentiality of complainant identity, and
-that approved/medical leave never incurs an attendance penalty.
+### 5. Scoring rules — ✅ RESOLVED
+**Decision:** implement exactly as **configurable**; **no hard-coded business policy** — everything
+editable by management. The pure engine already computes from configurable categories/rules; policy
+tables land in Phase 3 with per-cycle rule snapshots.
 
 ---
 
