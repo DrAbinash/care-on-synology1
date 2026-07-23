@@ -12,6 +12,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { readStaffSession, normalizeRole } from "@/lib/staffSession";
 import { api } from "@/lib/fetchApi";
+import { queryAiReporting } from "@/lib/aiReportingClient";
 // Cockpit→Workspace merge: shared status/priority/role helpers (already used by
 // RadiologyWorklist and the deprecated Cockpit) — reused, not duplicated.
 import { toUnifiedStatus, priorityInfo, worklistRoleView } from "@/lib/radiologyStatus";
@@ -2071,8 +2072,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     setAiCopilotBusy(true);
     try {
       const items = await runAiModules(copilotContext, async (promptText) => {
-        // Reuse the EXISTING AI endpoint — provider selection + fallback live there.
-        const res = await api.post<{ aiResponse: string }>("/api/ai-reporting/query", {
+        // Reuse the EXISTING AI endpoint — provider selection + fallback live
+        // there — through the canonical typed contract (promptText).
+        const res = await queryAiReporting({
           promptText,
           studyInstanceUID: entry.studyInstanceUID,
           accessionNumber: entry.accessionNumber,
@@ -3372,7 +3374,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     mutationFn: async () => {
       if (!entry) throw new Error("No study loaded");
       setAiLoading(true);
-      const res = await api.post<{ aiResponse: string }>("/api/ai-reporting/query", {
+      const res = await queryAiReporting({
         promptText: `As a radiologist, generate a numbered, clinically relevant impression from these findings. Be concise.\n\nFindings:\n${findingsAsText()}\n\nClinical History: ${clinicalHistory}\nModality: ${entry.modality}\nStyle: ${stylePrefs.impressionStyle}`,
         studyInstanceUID: entry.studyInstanceUID,
         accessionNumber: entry.accessionNumber,
@@ -6274,6 +6276,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                     existing prior/AI-impression panel (same tab, no duplicate). */}
                 <ComparisonPanel
                   patientId={entry?.patientId ?? undefined}
+                  excludeStudyId={entry?.studyId ?? undefined}
                   currentModality={entry?.modality ?? ""}
                   currentStudyDescription={entry?.studyDescription ?? ""}
                   currentFindings={useStructured ? findingsAsText() : rawFindings}

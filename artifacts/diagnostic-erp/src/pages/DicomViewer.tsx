@@ -2,6 +2,7 @@ import { useState, useRef } from "react";
 import { useParams } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { queryAiReporting, type AiReportingQueryRequest } from "@/lib/aiReportingClient";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -148,14 +149,14 @@ function AiDrawer({
   const noProviders = aiSettings?.global.enabled && enabledProviders.length === 0;
   const canQuery = !notEnabled && !noProviders;
 
-  function buildPayload(overridePrompt?: string) {
+  function buildPayload(overridePrompt?: string): AiReportingQueryRequest {
     return {
       studyInstanceUID,
       accessionNumber,
       patientId,
       scope,
       provider,
-      prompt: overridePrompt ?? customPrompt.trim(),
+      promptText: (overridePrompt ?? customPrompt.trim()) || undefined,
       templateName: !overridePrompt && !customPrompt.trim() ? selectedTemplate || undefined : undefined,
       clinicalHistory: clinicalHistory.trim() || undefined,
       anonymize,
@@ -164,8 +165,7 @@ function AiDrawer({
   }
 
   const queryMutation = useMutation({
-    mutationFn: (payload: object) =>
-      api.post<{ aiResponse: string; provider: string; numImages: number }>("/api/ai-reporting/query", payload),
+    mutationFn: (payload: AiReportingQueryRequest) => queryAiReporting(payload),
     onSuccess: (data) => {
       setAiResponse(data.aiResponse);
       setDraftText(data.aiResponse);

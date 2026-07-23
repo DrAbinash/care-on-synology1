@@ -3,10 +3,15 @@ import { db } from "@workspace/db";
 import {
   radiologyCopilotLogsTable,
   radiologyUserCopilotProfilesTable,
+  radiologyStudiesTable,
+  patientReportsTable,
+  testsTable,
 } from "@workspace/db/schema";
-import { eq } from "drizzle-orm";
-import { type StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { type StaffAuthRequest, requireStaffPermission } from "../middleware/requireStaffAuth";
 import { z } from "zod";
+import { PriorStudiesQuerySchema, type PriorStudiesResponse } from "@workspace/api-zod";
+import { mergePriorStudies, type PriorReportRow } from "../lib/priorStudies";
 
 export const radiologyCoPilotRouter = Router();
 
@@ -23,6 +28,86 @@ const profileUpdateSchema = z.object({
   favoriteTemplates: z.array(z.string()).optional(),
   favoriteChocolateBox: z.array(z.string()).optional(),
 });
+
+// ── GET /api/radiology-copilot/prior-studies ──
+// Prior studies for the same canonical patient, for the reporting workspace's
+// Prior Reports comparison panels. Read-only; radiology-permission gated
+// (mount provides requireStaffAuth; full-access roles bypass per convention).
+// Two queries total (studies + linked reports) — no N+1.
+radiologyCoPilotRouter.get(
+  "/prior-studies",
+  requireStaffPermission("/radiology"),
+  async (req, res) => {
+    const parsed = PriorStudiesQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      return res.status(400).json({
+        error: `Invalid prior-studies query: ${first ? `${first.path.join(".") || "query"} — ${first.message}` : "malformed query"}`,
+      });
+    }
+    const { patientId, limit, excludeStudyId } = parsed.data;
+
+    try {
+      const filters = [
+        eq(radiologyStudiesTable.patientId, patientId),
+        ne(radiologyStudiesTable.status, "cancelled"),
+      ];
+      if (excludeStudyId) filters.push(ne(radiologyStudiesTable.id, excludeStudyId));
+
+      const studies = await db
+        .select({
+          id: radiologyStudiesTable.id,
+          accessionNumber: radiologyStudiesTable.accessionNumber,
+          modality: radiologyStudiesTable.modality,
+          bodyPart: radiologyStudiesTable.bodyPart,
+          studyDate: radiologyStudiesTable.studyDate,
+          status: radiologyStudiesTable.status,
+          testName: testsTable.name,
+          testCode: testsTable.code,
+          finalReport: radiologyStudiesTable.finalReport,
+          finalReportedBy: radiologyStudiesTable.finalReportedBy,
+          finalReportedAt: radiologyStudiesTable.finalReportedAt,
+          prelimReport: radiologyStudiesTable.prelimReport,
+          prelimReportedBy: radiologyStudiesTable.prelimReportedBy,
+          prelimReportedAt: radiologyStudiesTable.prelimReportedAt,
+          studyDescription: radiologyStudiesTable.studyDescription,
+        })
+        .from(radiologyStudiesTable)
+        .leftJoin(testsTable, eq(radiologyStudiesTable.testId, testsTable.id))
+        .where(and(...filters))
+        .orderBy(desc(radiologyStudiesTable.studyDate), desc(radiologyStudiesTable.id))
+        .limit(limit);
+
+      let reports: PriorReportRow[] = [];
+      const studyIds = studies.map((s) => s.id);
+      if (studyIds.length > 0) {
+        reports = await db
+          .select({
+            id: patientReportsTable.id,
+            studyId: patientReportsTable.studyId,
+            status: patientReportsTable.status,
+            impression: patientReportsTable.impression,
+            body: patientReportsTable.body,
+            createdAt: patientReportsTable.createdAt,
+          })
+          .from(patientReportsTable)
+          .where(
+            and(
+              eq(patientReportsTable.patientId, patientId),
+              eq(patientReportsTable.type, "radiology"),
+              inArray(patientReportsTable.studyId, studyIds),
+            ),
+          );
+      }
+
+      const response: PriorStudiesResponse = { studies: mergePriorStudies(studies, reports) };
+      return res.json(response);
+    } catch (err) {
+      req.log.error({ err }, "radiology-copilot: failed to load prior studies");
+      return res.status(500).json({ error: "Failed to load prior studies" });
+    }
+  },
+);
 
 // ── POST /api/radiology-copilot/log ──
 radiologyCoPilotRouter.post("/log", async (req, res) => {

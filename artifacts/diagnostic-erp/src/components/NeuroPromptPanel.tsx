@@ -18,6 +18,7 @@
 import { useState, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { queryAiReporting } from "@/lib/aiReportingClient";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -186,7 +187,7 @@ export default function NeuroPromptPanel({
     ].filter(Boolean).join("\n\n");
 
     try {
-      const res = await api.post<{ aiResponse: string }>("/api/ai-reporting/query", {
+      const res = await queryAiReporting({
         promptText: fullPrompt,
         studyInstanceUID: (study as any)?.studyInstanceUID,
         accessionNumber: (study as any)?.accessionNumber,
