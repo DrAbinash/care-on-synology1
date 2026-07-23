@@ -829,18 +829,27 @@ billsRouter.put("/:id", requireStaffSubPermission("/billing", "edit"), async (re
     } catch { /* never block edit on advisory check */ }
   }
 
-  // Audit trail + email notification
-  const { editedBy, reason } = req.body;
-  if (editedBy && reason) {
+  // Audit trail + email notification.
+  // The actor is taken from the authenticated session, never trusted from the
+  // request body. Previously the whole block was gated on a client-supplied
+  // `editedBy`, so a bill status/discount change could be misattributed (spoofed
+  // editedBy) or — worse — skip auditing entirely simply by omitting the field.
+  // A real status/discount change is now ALWAYS audited under the session actor;
+  // `reason` falls back to a default when the caller omits one.
+  const editActor = req.staffSession?.subjectName?.trim()
+    || (req.body?.editedBy as string | undefined)?.trim()
+    || (req.staffSession ? `staff:${req.staffSession.id}` : "unknown");
+  const editReason = (req.body?.reason as string | undefined)?.trim() || "bill edit";
+  {
     const auditEntries: { billId: number; editedBy: string; reason: string; changeType: string; oldValue: string | null; newValue: string | null }[] = [];
     const emailChanges: { field: string; from: string | null; to: string | null }[] = [];
 
     if (status !== undefined && status !== existingBill.status) {
-      auditEntries.push({ billId: paramsParsed.data.id, editedBy, reason, changeType: "status", oldValue: existingBill.status, newValue: status });
+      auditEntries.push({ billId: paramsParsed.data.id, editedBy: editActor, reason: editReason, changeType: "status", oldValue: existingBill.status, newValue: status });
       emailChanges.push({ field: "Status", from: existingBill.status, to: status });
     }
     if (discount !== undefined && String(discount) !== existingBill.discount) {
-      auditEntries.push({ billId: paramsParsed.data.id, editedBy, reason, changeType: "discount", oldValue: existingBill.discount, newValue: String(discount) });
+      auditEntries.push({ billId: paramsParsed.data.id, editedBy: editActor, reason: editReason, changeType: "discount", oldValue: existingBill.discount, newValue: String(discount) });
       emailChanges.push({ field: "Discount (₹)", from: existingBill.discount, to: String(discount) });
     }
     if (auditEntries.length > 0) {
@@ -855,8 +864,8 @@ billsRouter.put("/:id", requireStaffSubPermission("/billing", "edit"), async (re
       sendBillEditEmail({
         billNumber: updated.billNumber,
         patientName,
-        editedBy,
-        reason,
+        editedBy: editActor,
+        reason: editReason,
         changes: emailChanges,
       }).catch(err => console.error("[email] bill edit notification failed:", err));
     }
