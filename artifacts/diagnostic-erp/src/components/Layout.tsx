@@ -271,6 +271,7 @@ const navItems: NavEntry[] = [
     label: "Administration",
     children: [
       { path: "/dashboard", icon: LayoutDashboard, label: "Owner Dashboard", ownerOnly: true },
+      { path: "/reconciliation", icon: ClipboardCheck, label: "Reconciliation Center", ownerOnly: true },
       { path: "/diagnostics", icon: Activity, label: "API Diagnostics", ownerOnly: true },
       { path: "/reports", icon: BarChart3, label: "Reports" },
       { path: "/expenses", icon: TrendingDown, label: "Expenses" },

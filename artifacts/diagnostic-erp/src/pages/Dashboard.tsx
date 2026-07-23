@@ -1032,6 +1032,7 @@ export default function Dashboard() {
             <QuickActionCard icon={Users} label="Register Patient" description="Add a new patient to the system" href="/patients" color="bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" />
             <QuickActionCard icon={BarChart3} label="Daily Summary" description="View today's detailed financial report" href="/daily-summary" color="bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400" />
             <QuickActionCard icon={Package} label="Test Catalog" description="Manage diagnostic test inventory" href="/tests" color="bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400" />
+            <QuickActionCard icon={ShieldAlert} label="Reconciliation Center" description="All open financial & operational exceptions" href="/reconciliation" color="bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400" />
             {overdueAlerts.length > 0 && (
               <div className="mt-2 space-y-1.5">
                 <div className="flex items-center gap-2">
