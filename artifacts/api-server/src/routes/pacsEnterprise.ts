@@ -3549,4 +3549,92 @@ router.post("/print-images", async (req, res): Promise<void> => {
   }
 });
 
+interface PrintJobStatusResponse {
+  jobKey?: string;
+  status?: "queued" | "processing" | "completed" | "failed";
+  pages?: number;
+  images?: number;
+  copies?: number;
+  error?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+// GET /api/radiology/print-jobs/:jobKey/status
+// A print-jobs POST responds as soon as the bridge accepts the job, before
+// it's actually printed - this is how the workspace finds out whether it
+// went through, failed, or is still in flight, instead of "202" being the
+// last word. Just a thin proxy: the bearer secret stays server-side, never
+// reaching the browser.
+router.get("/print-jobs/:jobKey/status", async (req, res): Promise<void> => {
+  const jobKey = req.params.jobKey;
+  if (!jobKey) {
+    res.status(400).json({ error: "jobKey required" });
+    return;
+  }
+
+  const cfg = await getRadiologyConfig();
+  if (!cfg.printBridge.url || !cfg.printBridge.hasSecret) {
+    res.status(503).json({ error: "The print bridge isn't configured" });
+    return;
+  }
+
+  try {
+    const statusRes = await fetch(`${cfg.printBridge.url}/api/v1/print-jobs/${encodeURIComponent(jobKey)}`, {
+      headers: { Authorization: `Bearer ${process.env.PRINT_BRIDGE_SECRET}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    const statusData = (await statusRes.json().catch(() => null)) as PrintJobStatusResponse | null;
+
+    if (statusRes.status === 404) {
+      res.status(404).json({ error: "Unknown print job" });
+      return;
+    }
+    if (!statusRes.ok) {
+      res.status(502).json({ error: statusData?.error || `Print bridge returned HTTP ${statusRes.status}` });
+      return;
+    }
+
+    res.json(statusData ?? {});
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Could not reach the print bridge";
+    res.status(502).json({ error: msg });
+  }
+});
+
+// GET /api/radiology/print-bridge/health
+// Live printer/bridge reachability for a small indicator in the print
+// picker, so staff see upfront that the printer is offline instead of only
+// discovering it after selecting images and clicking Print. Always 200 -
+// "reachable"/"printerStatus" in the body carry the actual condition, the
+// same convention the bridge's own /api/v1/health uses.
+router.get("/print-bridge/health", async (_req, res): Promise<void> => {
+  const cfg = await getRadiologyConfig();
+  if (!cfg.printBridge.url) {
+    res.json({ configured: false, reachable: false, printerStatus: null, printerInfo: null });
+    return;
+  }
+
+  try {
+    const healthRes = await fetch(`${cfg.printBridge.url}/api/v1/health`, { signal: AbortSignal.timeout(5000) });
+    if (!healthRes.ok) {
+      res.json({
+        configured: true, reachable: false, printerStatus: null,
+        printerInfo: `Bridge returned HTTP ${healthRes.status}`,
+      });
+      return;
+    }
+    const data = (await healthRes.json().catch(() => null)) as { printerStatus?: string; printerInfo?: string } | null;
+    res.json({
+      configured: true,
+      reachable: true,
+      printerStatus: data?.printerStatus ?? null,
+      printerInfo: data?.printerInfo ?? null,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Could not reach the print bridge";
+    res.json({ configured: true, reachable: false, printerStatus: null, printerInfo: msg });
+  }
+});
+
 export const pacsEnterpriseRouter = router;
