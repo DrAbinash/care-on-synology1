@@ -24,7 +24,7 @@ import {
   Sparkles, Activity, Gauge, Clock, Image as ImageIcon, Stethoscope,
   CheckCircle2, AlertTriangle, ChevronDown, ChevronRight, History,
   ClipboardList, FileText, Wand2, ArrowRight, Cpu, Lightbulb, ListChecks,
-  TrendingUp, TrendingDown, Minus, ShieldCheck, Circle,
+  TrendingUp, TrendingDown, Minus, ShieldCheck, Circle, SlidersHorizontal,
 } from "lucide-react";
 import { api } from "@/lib/fetchApi";
 import { retryWithBackoff, isTransientError } from "@/lib/reliability";
@@ -175,6 +175,20 @@ function checklistIcon(status: ChecklistItem["status"]) {
 export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
   const { studyInstanceUID } = props;
   const [collapsed, setCollapsed] = useState(false);
+  // Progressive disclosure (§9 owner-review simplification). Basic (default)
+  // shows only the clinical essentials; Advanced additionally reveals the
+  // technical detail — the provenance ledger (what came from where), the
+  // completeness/confidence metrics, and the companion pipeline timeline.
+  // Persisted per-browser so a radiologist's choice sticks. Capability is never
+  // removed — it is one click away.
+  const [advanced, setAdvanced] = useState<boolean>(() => {
+    try { return localStorage.getItem("usg-companion-advanced") === "1"; } catch { return false; }
+  });
+  const toggleAdvanced = () => setAdvanced((a) => {
+    const next = !a;
+    try { localStorage.setItem("usg-companion-advanced", next ? "1" : "0"); } catch { /* ignore */ }
+    return next;
+  });
   const postedRef = useRef<string>("");
 
   const { data, isLoading, isError } = useQuery<CompanionAssembly>({
@@ -417,6 +431,13 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
             <div className="text-[9px] text-gray-400">readiness</div>
           </div>
           <ReadinessRing score={readiness.score} />
+          <button onClick={toggleAdvanced}
+            className={`text-[10px] font-semibold px-2 py-1 rounded-md border inline-flex items-center gap-1 ${advanced ? "border-indigo-300 text-indigo-700 bg-indigo-50" : "border-gray-200 text-gray-500 bg-white hover:bg-gray-50"}`}
+            title={advanced ? "Hide technical detail — switch to Basic view" : "Show technical detail — switch to Advanced view"}
+            aria-pressed={advanced}
+            data-testid="companion-advanced-toggle">
+            <SlidersHorizontal size={11} /> {advanced ? "Advanced" : "Basic"}
+          </button>
           <button onClick={() => setCollapsed((c) => !c)} className="text-gray-400 hover:text-gray-600 p-1"
             aria-label={collapsed ? "Expand companion" : "Collapse companion"}>
             {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
@@ -468,6 +489,11 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
                     ? `Ready to populate ${plan.blocks.length} section(s) from machine measurements, template normals and protocol — non-destructive, never overwriting your text.`
                     : (plan.reasons[0] ?? "Waiting for machine information.")}
                 </p>
+              ) : !advanced ? (
+                <p className="text-[10.5px] text-gray-500 mt-1.5">
+                  {ledger.length} section(s) auto-populated · {edits} edited by you. Your typed text is never overwritten.
+                  <span className="text-gray-400"> Switch to Advanced to see the source of each.</span>
+                </p>
               ) : (
                 <div className="mt-2 flex flex-col gap-1">
                   <div className="text-[10px] text-gray-400">{ledger.length} auto-generated item(s) · {edits} edited by you</div>
@@ -491,8 +517,8 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
             </div>
           )}
 
-          {/* ── Phase 2: Report Confidence ── */}
-          {data && (
+          {/* ── Phase 2: Report Confidence (Advanced — workflow completeness metrics) ── */}
+          {advanced && data && (
             <div>
               <div className="flex items-center gap-1.5 mb-1.5">
                 <ShieldCheck size={13} className="text-indigo-500" />
@@ -528,14 +554,16 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
             </div>
           )}
 
-          {/* Timeline */}
-          <div>
-            <div className="flex items-center gap-1.5 mb-1">
-              <Clock size={13} className="text-indigo-500" />
-              <span className="text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Companion Timeline</span>
+          {/* Timeline (Advanced — companion pipeline stages) */}
+          {advanced && (
+            <div>
+              <div className="flex items-center gap-1.5 mb-1">
+                <Clock size={13} className="text-indigo-500" />
+                <span className="text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Companion Timeline</span>
+              </div>
+              <TimelineRow stages={timeline} />
             </div>
-            <TimelineRow stages={timeline} />
-          </div>
+          )}
 
           {/* Machine measurements */}
           {measurements && (measurements.expectedCount > 0 || foundChips.length > 0 || extras.length > 0) && (
