@@ -424,6 +424,7 @@ export default function UsgCompanionWorkspace({ studyId }: { studyId?: number })
           </div>
           <ComparisonPanel
             patientId={entry.patientId ?? undefined}
+            excludeStudyId={studyId ?? undefined}
             currentModality={entry.modality}
             currentStudyDescription={entry.studyDescription ?? ""}
             currentFindings={sections.map((s) => s.text).filter(Boolean).join("\n")}

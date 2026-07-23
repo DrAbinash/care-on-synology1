@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { isFeatureEnabled } from "@/lib/staffSession";
 import { api } from "@/lib/fetchApi";
+import { buildPriorStudiesPath } from "@/lib/priorStudiesPanelState";
 import {
   History,
   Brain,
@@ -50,6 +51,8 @@ interface PriorStudy {
   reportedBy: string | null;
   reportedAt: string | null;
   status: string;
+  reportId?: number | null;
+  reportStatus?: string | null;
 }
 
 interface ConsistencyIssue {
@@ -176,6 +179,7 @@ export default function RadiologyCopilotPanel({
   const [activeTab, setActiveTab] = useState<"prior" | "impression" | "consistency" | "followup" | "dicom" | "compare" | "changes" | "organ">(initialTab ?? "prior");
   const [priorStudies, setPriorStudies] = useState<PriorStudy[]>([]);
   const [loadingPrior, setLoadingPrior] = useState(false);
+  const [priorError, setPriorError] = useState(false);
   const [expandedStudy, setExpandedStudy] = useState<number | null>(null);
   const [suggestedImpression, setSuggestedImpression] = useState("");
   const [loadingImpression, setLoadingImpression] = useState(false);
@@ -201,18 +205,27 @@ export default function RadiologyCopilotPanel({
   }>(null);
   const [loadingChanges, setLoadingChanges] = useState(false);
 
-  // Fetch prior studies when patientId changes
-  useEffect(() => {
+  // Fetch prior studies when the patient (or current study) changes — through
+  // the authenticated api helper on the canonical /api path, excluding the
+  // current study server-side.
+  const loadPriorStudies = useCallback(() => {
     if (!patientId) return;
     setLoadingPrior(true);
-    fetch(`/radiology-copilot/prior-studies?patientId=${patientId}&limit=20`)
-      .then((r) => r.json())
+    setPriorError(false);
+    api.get<{ studies: PriorStudy[] }>(buildPriorStudiesPath({ patientId, limit: 20, excludeStudyId: studyId }))
       .then((data) => {
         setPriorStudies(data.studies ?? []);
       })
-      .catch(() => toast({ title: "Could not load prior studies", variant: "destructive" }))
+      .catch(() => {
+        setPriorError(true);
+        toast({ title: "Could not load prior studies", variant: "destructive" });
+      })
       .finally(() => setLoadingPrior(false));
-  }, [patientId, toast]);
+  }, [patientId, studyId, toast]);
+
+  useEffect(() => {
+    loadPriorStudies();
+  }, [loadPriorStudies]);
 
   // Smart impression suggestion
   const generateImpression = useCallback(async () => {
@@ -469,6 +482,13 @@ export default function RadiologyCopilotPanel({
           <>
             {loadingPrior ? (
               <div className="text-center py-4 text-xs text-muted-foreground">Loading prior studies...</div>
+            ) : priorError ? (
+              <div className="text-center py-4 text-xs space-y-2" data-testid="copilot-prior-error">
+                <p className="text-destructive flex items-center justify-center gap-1">
+                  <AlertTriangle size={12} /> Couldn't load prior studies.
+                </p>
+                <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={loadPriorStudies}>Retry</Button>
+              </div>
             ) : priorStudies.length === 0 ? (
               <div className="text-center py-4 text-xs text-muted-foreground">
                 {patientId ? "No prior studies found for this patient." : "Select a patient to see prior studies."}

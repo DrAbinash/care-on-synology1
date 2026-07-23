@@ -56,6 +56,11 @@ import {
 } from "@workspace/ai-providers";
 import { radiologyWorklistTable } from "@workspace/db/schema";
 import { resolveTestModel } from "../lib/ai/testProviderModel";
+import {
+  AiReportingQueryRequestSchema,
+  type AiPromptSource,
+  type AiReportingQueryResponse,
+} from "@workspace/api-zod";
 
 // ─── Prompt template presets ──────────────────────────────────────────────────
 export const AI_PROMPT_TEMPLATES: Record<string, string> = {
@@ -471,6 +476,15 @@ router.post("/query", async (req, res): Promise<void> => {
 
   const user = sReq.staffSession!;
 
+  const parsedBody = AiReportingQueryRequestSchema.safeParse(req.body);
+  if (!parsedBody.success) {
+    const first = parsedBody.error.issues[0];
+    res.status(400).json({
+      error: `Invalid AI query request: ${first ? `${first.path.join(".") || "body"} — ${first.message}` : "malformed body"}`,
+    });
+    return;
+  }
+
   const {
     studyInstanceUID,
     accessionNumber,
@@ -479,27 +493,14 @@ router.post("/query", async (req, res): Promise<void> => {
     scope = "study",
     provider: providerReq,
     model: modelReq,
+    promptText,
     prompt,
     templateName,
     clinicalHistory,
     anonymize,
     includeDemographics = globalSettings.includeDemographics,
     maxImages = 6,
-  } = req.body as {
-    studyInstanceUID?: string;
-    accessionNumber?: string;
-    patientId?: number;
-    seriesUIDs?: string[];
-    scope?: string;
-    provider?: string;
-    model?: string;
-    prompt?: string;
-    templateName?: string;
-    clinicalHistory?: string;
-    anonymize?: boolean;
-    includeDemographics?: boolean;
-    maxImages?: number;
-  };
+  } = parsedBody.data;
 
   const shouldAnonymize = anonymize ?? globalSettings.anonymize;
   // Phase 4: when the caller does not explicitly pick a provider, consult the
@@ -519,8 +520,12 @@ router.post("/query", async (req, res): Promise<void> => {
 
   const model = modelReq ?? taskRoute?.model ?? provConfig.defaultModel ?? "";
 
-  // Build prompt
-  let finalPrompt = prompt?.trim() ?? "";
+  // Build prompt. `promptText` is the canonical field; `prompt` is the legacy
+  // alias — an empty effective prompt is a validation error, never a silent
+  // fall-through to a generic draft (that fall-through is exactly how the
+  // workstation's findings used to get dropped without anyone noticing).
+  let finalPrompt = (promptText ?? prompt)?.trim() ?? "";
+  let promptSource: AiPromptSource = "request";
   // Phase 1: prefer the DB-backed (editable) prompt template library, then fall
   // back to the legacy hardcoded presets for backward compatibility.
   if (!finalPrompt && templateName) {
@@ -537,12 +542,21 @@ router.post("/query", async (req, res): Promise<void> => {
       .limit(1);
     if (dbTpl[0]?.promptContent) {
       finalPrompt = dbTpl[0].promptContent;
+      promptSource = "template";
     } else if (AI_PROMPT_TEMPLATES[templateName]) {
       finalPrompt = AI_PROMPT_TEMPLATES[templateName];
+      promptSource = "template";
     }
   }
+  if (!finalPrompt && (globalSettings.defaultPrompt ?? "").trim()) {
+    finalPrompt = globalSettings.defaultPrompt.trim();
+    promptSource = "settings-default";
+  }
   if (!finalPrompt) {
-    finalPrompt = globalSettings.defaultPrompt || "Provide a detailed radiology report for the provided images.";
+    res.status(400).json({
+      error: "No prompt provided. Type findings or a question, pick a template, or configure a default prompt in AI Reporting Settings.",
+    });
+    return;
   }
   if (clinicalHistory?.trim()) {
     finalPrompt += `\n\nClinical History: ${clinicalHistory.trim()}`;
@@ -574,9 +588,10 @@ router.post("/query", async (req, res): Promise<void> => {
     finalPrompt = `[Note: Patient identifiers have been removed from images for privacy.]\n\n${finalPrompt}`;
   }
 
-  // Fetch images
+  // Fetch images — server-side only, resolved from Orthanc by UID.
+  // maxImages 0 means an explicit text-only query: skip Orthanc entirely.
   let images: string[] = [];
-  if (studyInstanceUID) {
+  if (studyInstanceUID && maxImages > 0) {
     images = await fetchStudyImages({
       studyInstanceUID,
       seriesUIDs: scope === "series" ? seriesUIDs : undefined,
@@ -612,7 +627,16 @@ router.post("/query", async (req, res): Promise<void> => {
     res.status(502).json({ error: errorMsg ?? "AI provider error" }); return;
   }
 
-  res.json({ aiResponse, provider: providerName, model: model || null, numImages: images.length, anonymized: shouldAnonymize });
+  const response: AiReportingQueryResponse = {
+    aiResponse: aiResponse ?? "",
+    provider: providerName,
+    model: model || null,
+    numImages: images.length,
+    anonymized: shouldAnonymize,
+    promptSource,
+    promptChars: finalPrompt.length,
+  };
+  res.json(response);
 });
 
 /**

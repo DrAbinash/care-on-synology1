@@ -19,6 +19,7 @@ import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
 import { api } from "@/lib/fetchApi";
+import { queryAiReporting } from "@/lib/aiReportingClient";
 import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 import { finalizeRadiologyReport, saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
 import DeprecatedSurfaceBanner from "@/components/radiology/DeprecatedSurfaceBanner";
@@ -902,7 +903,7 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
     }
 
     try {
-      const res = await api.post<{ aiResponse: string }>("/api/ai-reporting/query", {
+      const res = await queryAiReporting({
         promptText: `As a radiologist, generate a professional draft report for this ${study.modality} study. Clinical History: ${clinicalHistory}. Findings/Observations: ${rawFindings}.${structuredContext}`,
         studyInstanceUID: study.studyInstanceUID,
         accessionNumber: study.accessionNumber,
@@ -912,7 +913,12 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
         maxImages: 0,
       });
       setAiOutput(res.aiResponse);
-      setRawFindings(res.aiResponse);
+      // AI output stays advisory: never silently replace findings the
+      // radiologist has already typed (same rule as insertAiOutput's guard).
+      if (!rawFindings.trim() ||
+          window.confirm("Replace your current findings with the AI draft? Your typed findings will be overwritten.")) {
+        setRawFindings(res.aiResponse);
+      }
       toast({ title: "AI Draft Loaded" });
     } catch (e: any) {
       toast({ title: "AI Generation Failed", description: e.message, variant: "destructive" });

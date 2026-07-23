@@ -3,11 +3,12 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { GitCompare, FileText, ChevronDown, ChevronRight } from "lucide-react";
+import { GitCompare, FileText, ChevronDown, ChevronRight, AlertTriangle } from "lucide-react";
 import {
   INTERVAL_CHANGES, type IntervalChange, buildComparisonSentence, comparisonBanner,
   formatStudyDate, extractMeasurements, compareMeasurementRows,
 } from "@/lib/radiologyComparison";
+import { buildPriorStudiesPath, derivePriorPanelState } from "@/lib/priorStudiesPanelState";
 
 /**
  * ComparisonPanel — structured previous-study comparison (MRI PR 1).
@@ -23,6 +24,7 @@ interface PriorStudy {
   id: number; accessionNumber: string; modality: string; bodyPart: string | null;
   studyDate: string; testName: string; testCode: string | null; impression: string | null;
   finalReport: string | null; reportedBy: string | null; reportedAt: string | null; status: string;
+  reportId?: number | null; reportStatus?: string | null;
 }
 
 export interface SelectedPrior {
@@ -32,6 +34,8 @@ export interface SelectedPrior {
 
 interface Props {
   patientId?: number;
+  /** Current study's radiology_studies id — excluded server-side so a study never compares against itself. */
+  excludeStudyId?: number;
   currentModality: string;
   currentStudyDescription: string;
   currentFindings: string;
@@ -59,11 +63,11 @@ function isCompatible(prior: PriorStudy, curMod: string, curDesc: string): boole
 }
 
 export default function ComparisonPanel({
-  patientId, currentModality, currentStudyDescription, currentFindings, onInsertFindings, onInsertImpression, onSelectPrior,
+  patientId, excludeStudyId, currentModality, currentStudyDescription, currentFindings, onInsertFindings, onInsertImpression, onSelectPrior,
 }: Props) {
-  const { data, isLoading } = useQuery<{ studies: PriorStudy[] }>({
-    queryKey: ["radiology-prior-studies", patientId],
-    queryFn: () => api.get(`/api/radiology-copilot/prior-studies?patientId=${patientId}&limit=20`),
+  const { data, isLoading, isError, refetch } = useQuery<{ studies: PriorStudy[] }>({
+    queryKey: ["radiology-prior-studies", patientId, excludeStudyId ?? null],
+    queryFn: () => api.get(buildPriorStudiesPath({ patientId: patientId!, limit: 20, excludeStudyId })),
     enabled: !!patientId,
     staleTime: 120_000,
   });
@@ -114,9 +118,20 @@ export default function ComparisonPanel({
     }));
   };
 
-  if (!patientId) return <p className="p-3 text-[11px] text-muted-foreground">No patient context for comparison.</p>;
-  if (isLoading) return <p className="p-3 text-[11px] text-muted-foreground">Loading prior studies…</p>;
-  if (ranked.length === 0) return (
+  // Four distinct user-visible states — an error must never masquerade as
+  // "no prior studies" (that silence hid the dead endpoint for months).
+  const panelState = derivePriorPanelState({ patientId, isLoading, isError, studyCount: ranked.length });
+  if (panelState === "no-patient") return <p className="p-3 text-[11px] text-muted-foreground">No patient context for comparison.</p>;
+  if (panelState === "loading") return <p className="p-3 text-[11px] text-muted-foreground" data-testid="comparison-panel-loading">Loading prior studies…</p>;
+  if (panelState === "error") return (
+    <div className="p-3 text-[11px] space-y-1.5" data-testid="comparison-panel-error">
+      <p className="text-destructive flex items-center gap-1">
+        <AlertTriangle size={12} /> Couldn't load prior studies.
+      </p>
+      <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={() => refetch()}>Retry</Button>
+    </div>
+  );
+  if (panelState === "empty") return (
     <div className="p-3 text-[11px] text-muted-foreground" data-testid="comparison-panel">
       <GitCompare size={12} className="mr-1 inline" /> No prior studies found for this patient.
     </div>
