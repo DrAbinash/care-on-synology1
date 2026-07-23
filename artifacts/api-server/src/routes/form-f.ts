@@ -1,14 +1,21 @@
 import { Router } from "express";
 import { db, billsTable, patientsTable, formFRecordsTable, clinicSettingsTable } from "@workspace/db";
-import { eq, or, ilike, inArray, isNotNull, desc, and, gte, lt } from "drizzle-orm";
+import { eq, or, ilike, inArray, isNotNull, desc, and, gte, lt, asc, count } from "drizzle-orm";
 import { ordersTable, orderTestsTable, testsTable, doctorsTable } from "@workspace/db";
 import { whatsappConversationsTable, whatsappSettingsTable, usgMeasurementsTable, radiologyStudiesTable, fetalUsgStudiesTable, fetalUsgMeasurementsTable, fetalUsgReportsTable, fetalUsgChecklistsTable } from "@workspace/db/schema";
 import { dateToISTString } from "../lib/istDate";
 import { type IdCardOcrResult } from "@workspace/integrations-gemini-ai";
 import { runIdCardOcrPipeline, SERVER_BLUR_WARNING_THRESHOLD } from "../lib/ocr/idCardPipeline";
 import { resolveOcrProvider, maskEndpointUrl, type OcrUnavailableReason } from "../lib/ocr/ocrProviderResolver";
-import { requireStaffPermission } from "../middleware/requireStaffAuth";
+import { requireStaffPermission, requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { sendTextMessageRaw, resolveNumber, normalizePhone } from "./whatsapp";
+import { auditFromRequest } from "../lib/audit";
+import {
+  parseRegisterQuery,
+  istMonthWindowUtc,
+  buildRegisterRows,
+  registerRowsToCsv,
+} from "../lib/formFRegister";
 
 const formFRouter = Router();
 
@@ -598,6 +605,105 @@ formFRouter.get("/list", async (req, res) => {
   } catch (err) {
     console.error("[form-f] list error:", err);
     res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ─── Monthly PCPNDT register (Appropriate Authority submission/inspection) ───
+//
+// Management-authorized (requireAdminRole on top of the /form-f mount gate):
+// the register is the statutory month-wise listing of EVERY Form F record —
+// incomplete records are included and graded, never silently omitted, using
+// the same completeness engine as the finalize gates (lib/pcpndtCompliance).
+// Ordering is deterministic (created_at ASC, id ASC) and the serial is the
+// record's position in that order within the IST month (the schema captures
+// no statutory serial field; see docs/PCPNDT_MONTHLY_REGISTER.md).
+//
+// NOTE: these routes are registered BEFORE GET /:id — Express matches in
+// order, and /:id would otherwise swallow /register.
+
+formFRouter.get("/register", requireAdminRole, async (req, res) => {
+  try {
+    const parsed = parseRegisterQuery(req.query as Record<string, unknown>);
+    if (!parsed.ok) {
+      res.status(400).json({ error: `Invalid register query: ${parsed.error}` });
+      return;
+    }
+    const { month, year, page, pageSize } = parsed.value;
+    const { start, end } = istMonthWindowUtc(year, month);
+    const monthFilter = and(
+      gte(formFRecordsTable.createdAt, start),
+      lt(formFRecordsTable.createdAt, end),
+    );
+
+    const [{ total }] = await db
+      .select({ total: count() })
+      .from(formFRecordsTable)
+      .where(monthFilter);
+
+    const offset = (page - 1) * pageSize;
+    const records = await db
+      .select()
+      .from(formFRecordsTable)
+      .where(monthFilter)
+      .orderBy(asc(formFRecordsTable.createdAt), asc(formFRecordsTable.id))
+      .limit(pageSize)
+      .offset(offset);
+
+    const rows = buildRegisterRows(records, offset + 1);
+    res.json({
+      month,
+      year,
+      rows,
+      incompleteCount: rows.filter((r) => r.completionStatus === "incomplete").length,
+      pagination: { page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) },
+    });
+  } catch (err) {
+    console.error("[form-f] register error:", err);
+    res.status(500).json({ error: "Failed to load Form F register" });
+  }
+});
+
+formFRouter.get("/register/export", requireAdminRole, async (req, res) => {
+  try {
+    const parsed = parseRegisterQuery({ ...req.query, page: "1", pageSize: "500" });
+    if (!parsed.ok) {
+      res.status(400).json({ error: `Invalid register query: ${parsed.error}` });
+      return;
+    }
+    const { month, year } = parsed.value;
+    const { start, end } = istMonthWindowUtc(year, month);
+
+    // Full month, no pagination — a statutory export must be complete.
+    const records = await db
+      .select()
+      .from(formFRecordsTable)
+      .where(and(gte(formFRecordsTable.createdAt, start), lt(formFRecordsTable.createdAt, end)))
+      .orderBy(asc(formFRecordsTable.createdAt), asc(formFRecordsTable.id));
+
+    const rows = buildRegisterRows(records, 1);
+    const csv = registerRowsToCsv(rows);
+
+    // Statutory-data export is always audited (tamper-evident chain).
+    const session = (req as StaffAuthRequest).staffSession;
+    await auditFromRequest(req, {
+      userId: session?.subjectId ?? null,
+      userName: session?.subjectName ?? "system",
+      role: session?.role ?? "system",
+      action: "export",
+      module: "reports",
+      entityType: "form_f_register",
+      entityId: `${year}-${String(month).padStart(2, "0")}`,
+      newValue: JSON.stringify({ records: rows.length, incomplete: rows.filter((r) => r.completionStatus === "incomplete").length }),
+      reason: "PCPNDT monthly Form F register export",
+    });
+
+    const filename = `form-f-register-${year}-${String(month).padStart(2, "0")}.csv`;
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(csv);
+  } catch (err) {
+    console.error("[form-f] register export error:", err);
+    res.status(500).json({ error: "Failed to export Form F register" });
   }
 });
 
