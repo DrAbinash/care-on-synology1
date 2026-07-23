@@ -5,7 +5,7 @@ import { eq, desc, and, gte, lte, like, sql } from "drizzle-orm";
 import { z } from "zod/v4";
 import { apiError, apiErrorFromZod } from "../lib/api-error";
 import { geminiParseBankStatement, type BankTransaction } from "@workspace/integrations-gemini-ai";
-import { todayIST } from "../lib/istDate";
+import { todayIST, dateToISTString } from "../lib/istDate";
 import { auditFromRequest } from "../lib/audit";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
@@ -1094,7 +1094,23 @@ router.post("/payments/:id/supersede", requireAdminRole, async (req, res) => {
   }
 });
 
-router.post("/sync-billing", async (req, res) => {
+// POST /api/accounting/sync-billing  (admin only; F2)
+//
+// Backfills receipt vouchers for payments that were never vouchered at
+// capture time. F2 hardening:
+//   - admin-gated and no longer auto-run on the Accounting page; the UI calls
+//     it as an explicit action, defaulting to a DRY RUN (body/query dryRun)
+//     that reports what WOULD be created without writing;
+//   - only POSITIVE, non-superseded payments (refunds/reversals have their own
+//     'payment'-type vouchers — this used to post negative "receipt" vouchers
+//     for them);
+//   - dedup that recognises BOTH capture-time vouchers linked by payment_id
+//     AND legacy real-time vouchers (matched per bill by receipt amount), so
+//     it never re-vouchers an already-vouchered payment (the desk doubling);
+//   - IST payment date and the created voucher is linked via payment_id.
+router.post("/sync-billing", requireAdminRole, async (req, res) => {
+  const dryRun = req.body?.dryRun === true || req.query?.dryRun === "true";
+
   const allAccounts = await db.select().from(accountsTable);
   const cashAcc  = allAccounts.find(a => a.tallyGroup === "Cash-in-Hand" || a.type === "cash");
   const bankAcc  = allAccounts.find(a => a.tallyGroup === "Bank Accounts" || a.type === "bank");
@@ -1106,45 +1122,105 @@ router.post("/sync-billing", async (req, res) => {
 
   const payments = await db.select({ p: paymentsTable, b: billsTable })
     .from(paymentsTable)
-    .leftJoin(billsTable, eq(paymentsTable.billId, billsTable.id));
+    .leftJoin(billsTable, eq(paymentsTable.billId, billsTable.id))
+    .orderBy(paymentsTable.id);
 
-  const existingRefs = new Set(
-    (await db.select({ ref: vouchersTable.reference }).from(vouchersTable))
-      .map(v => v.ref).filter(Boolean)
-  );
+  // Existing vouchers → two dedup indexes: exact by payment_id, and a
+  // consumable per-bill receipt multiset keyed by amount (catches legacy
+  // real-time vouchers that predate payment_id linkage).
+  const vouchers = await db.select({
+    paymentId: vouchersTable.paymentId,
+    billId: vouchersTable.billId,
+    amount: vouchersTable.amount,
+    type: vouchersTable.type,
+  }).from(vouchersTable);
+
+  const vouchedPaymentIds = new Set<number>();
+  const receiptPool = new Map<string, number>(); // key `${billId}|${amount}` → count
+  const amt = (v: string | number | null) => Number(v ?? 0).toFixed(2);
+  for (const v of vouchers) {
+    if (v.paymentId != null) vouchedPaymentIds.add(v.paymentId);
+    if (v.type === "receipt" && v.billId != null) {
+      const key = `${v.billId}|${amt(v.amount)}`;
+      receiptPool.set(key, (receiptPool.get(key) ?? 0) + 1);
+    }
+  }
+
+  const prefix = "RV";
+  const monthCounts = new Map<string, number>();
+  const toCreate: Array<{ paymentId: number; billId: number | null; amount: string; date: string; method: string; billNumber: string }> = [];
+
+  for (const { p, b } of payments) {
+    if (Number(p.amount) <= 0) continue;                    // refunds/reversals not synced here
+    if (p.settlementStatus === "superseded") continue;      // F1 voided duplicate
+    if (vouchedPaymentIds.has(p.id)) continue;              // capture-time voucher exists
+
+    // Legacy real-time voucher on the same bill for the same amount → consume it.
+    const poolKey = `${p.billId}|${amt(p.amount)}`;
+    const pooled = receiptPool.get(poolKey) ?? 0;
+    if (pooled > 0) { receiptPool.set(poolKey, pooled - 1); continue; }
+
+    const dateStr = dateToISTString(p.createdAt);
+    toCreate.push({
+      paymentId: p.id,
+      billId: p.billId,
+      amount: amt(p.amount),
+      date: dateStr,
+      method: (p.method || "cash").toLowerCase(),
+      billNumber: (b as { billNumber?: string } | null)?.billNumber ?? `Bill #${p.billId}`,
+    });
+  }
+
+  if (dryRun) {
+    return res.json({
+      dryRun: true,
+      wouldCreate: toCreate.length,
+      preview: toCreate.slice(0, 100),
+      message: `${toCreate.length} payment(s) would be vouchered. Nothing was written.`,
+    });
+  }
 
   let created = 0;
-  for (const { p, b } of payments) {
-    const ref = `PAY-${p.id}`;
-    if (existingRefs.has(ref)) continue;
-
-     const method = (p.method || "cash").toLowerCase();
-    const isBankMethod = ["upi", "card", "credit_card", "debit_card", "neft", "rtgs", "imps", "bank_transfer", "cheque"].includes(method) || method.startsWith("online");
+  for (const item of toCreate) {
+    const isBankMethod = ["upi", "card", "credit_card", "debit_card", "neft", "rtgs", "imps", "bank_transfer", "cheque"].includes(item.method) || item.method.startsWith("online");
     const debitAcc = isBankMethod && bankAcc ? bankAcc : cashAcc;
-
-    const dateStr  = p.createdAt.toISOString().split("T")[0];
-    const billNum  = (b as { billNumber?: string } | null)?.billNumber ?? `Bill #${p.billId}`;
-
-    const prefix   = "RV";
-    const monthKey = dateStr.slice(0, 7).replace("-", "");
-    const monthCount = (await db.select().from(vouchersTable).where(like(vouchersTable.voucherNumber, `${prefix}-${monthKey}%`))).length;
-    const voucherNumber = `${prefix}-${monthKey}-${String(monthCount + 1 + created).padStart(4, "0")}`;
+    const monthKey = item.date.slice(0, 7).replace("-", "");
+    if (!monthCounts.has(monthKey)) {
+      monthCounts.set(monthKey, (await db.select().from(vouchersTable).where(like(vouchersTable.voucherNumber, `${prefix}-${monthKey}%`))).length);
+    }
+    const seq = (monthCounts.get(monthKey) ?? 0) + 1;
+    monthCounts.set(monthKey, seq);
+    const voucherNumber = `${prefix}-${monthKey}-${String(seq).padStart(4, "0")}`;
 
     await db.insert(vouchersTable).values({
       voucherNumber,
       type:            "receipt",
-      date:            dateStr,
+      date:            item.date,
       debitAccountId:  String(debitAcc.id),
       creditAccountId: String(revAcc.id),
-      amount:          p.amount,
-      particular:      `Payment received — ${billNum}`,
-      reference:       ref,
-      narration:       `${method.toUpperCase()} payment`,
-      billId:          p.billId,
-      performedBy:     method.startsWith("online") ? "Super Admin" : "System (Sync)",
+      amount:          item.amount,
+      particular:      `Payment received — ${item.billNumber}`,
+      reference:       item.billNumber,
+      narration:       `${item.method.toUpperCase()} payment (sync)`,
+      billId:          item.billId,
+      paymentId:       item.paymentId,
+      performedBy:     "System (Sync)",
     });
     created++;
   }
+
+  const session = (req as StaffAuthRequest).staffSession;
+  await auditFromRequest(req, {
+    userId: session?.subjectId ?? null,
+    userName: session?.subjectName ?? "admin",
+    role: session?.role ?? "admin",
+    action: "create",
+    module: "accounting",
+    entityType: "voucher",
+    entityId: "sync-billing",
+    newValue: JSON.stringify({ created }),
+    reason: "sync-billing backfill",
+  });
 
   return res.json({ message: `Synced ${created} new payments to accounting`, created });
 });
