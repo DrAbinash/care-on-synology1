@@ -71,13 +71,32 @@ Runs on each workstation next to the scanner (browsers cannot talk to USB biomet
 
 ---
 
-## 3. What remains incomplete
+## 3. Stabilization status
 
-1. **No real vendor adapter** — only `mock` fully works. `mantra` can capture but cannot match; `zkteco`/`morpho` are stubs. Enabling a real device requires implementing one adapter's `capture()`+`match()`.
-2. **Frontend not wired** — client hook `artifacts/diagnostic-erp/src/hooks/useBridge.ts` exists (targets `127.0.0.1:8765`) but is **imported by zero pages**. No enroll/punch UI drives the USB path yet.
-3. **Broken duplicate** — `desktop/bridge/` is byte-identical to `bridge-service/` but **missing `src/adapters/`**, so it crashes on startup (`import ./adapters/index.js` unresolved). Reconcile or delete; the canonical copy is `bridge-service/`.
-4. **No raw-punch preservation / import ledger / correction workflow / audit** on bridge writes (see architecture §5) — bridge punches land directly in `staff_attendance` with `source="usb-bridge"` but write no `audit_logs` row.
-5. **No shift model** — a punch cannot yet be classified late/early/overnight (no roster).
+**Done (this increment):**
+- ✅ **Raw-punch preservation + idempotency.** Every bridge punch now writes an immutable
+  `attendance_raw_punches` row (`UNIQUE(dedupe_key)` → re-sends are no-ops) before the per-day
+  `staff_attendance` summary is updated. Logic lives in the tested ingestion service
+  `artifacts/api-server/src/lib/attendance/attendanceIngestion.ts` (`recordStaffPunch`).
+- ✅ **Import-run ledger** table `attendance_import_runs` (for future CSV/device batch imports).
+- ✅ **Audit** on sensitive admin actions — `/enroll` and `DELETE /templates/:id` write hash-chained
+  `audit_logs` rows (routine high-volume punches are captured by the immutable raw log instead).
+- ✅ **Shadow-mode gate.** `/staff-punch` now requires `ff_hr_biometric_attendance` **and** the bridge
+  secret — implemented but dormant until an admin enables the flag.
+- ✅ **Adapter contract validation.** `bridge-service` `loadAdapter()` now fails fast (clear message) on a
+  half-implemented vendor adapter; a runnable `mock.test.js` covers the contract + mock behaviour.
+- ✅ **Source abstraction.** Every source maps through `attendanceSource.ts`; the bridge is the
+  `usb_bridge` provider (source string `"usb-bridge"`), not a rewrite.
+
+**Still open (owner decisions / later phases):**
+1. **No real vendor adapter** — only `mock` fully works (per owner: no vendor code until hardware is
+   finalized; then implement one adapter's `capture()`+`match()`, Mantra closest). 
+2. **Frontend not wired** — `artifacts/diagnostic-erp/src/hooks/useBridge.ts` exists but is imported by
+   zero pages; the enrollment/punch UI is the next increment (gated by `ff_hr_biometric_attendance`).
+3. **Broken duplicate** — `desktop/bridge/` is missing `src/adapters/` and crashes on startup; unreferenced
+   by any build/deploy. Recommend consolidating to the canonical `bridge-service/` (owner decision, OPEN_ISSUES B6).
+4. **No correction workflow** yet (`attendance_corrections`) and **no shift model** — a punch cannot yet be
+   classified late/early/overnight (Phase 2).
 
 ---
 

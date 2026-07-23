@@ -7,6 +7,7 @@ import {
   boolean,
   bigint,
   timestamp,
+  jsonb,
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
@@ -165,7 +166,143 @@ export const staffDocumentsTable = pgTable(
   }),
 );
 
+// ── Identity link: staff ↔ users (STRICT one-to-one) ─────────────────────────
+// Owner decision (ADR-003): every staff member maps to at most one ERP login
+// (users) identity, and vice-versa. Enforced additively via a link table with
+// UNIQUE(staff_id) and UNIQUE(user_id) so we never touch the protected staff.ts
+// / users.ts schema files and never create a parallel employee identity. This
+// is what lets the employee profile become the single source of truth and
+// powers employee self-service ("my attendance / my performance").
+export const staffUserLinksTable = pgTable(
+  "staff_user_links",
+  {
+    id: serial("id").primaryKey(),
+    staffId: integer("staff_id")
+      .notNull()
+      .references(() => staffTable.id, { onDelete: "restrict" }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "restrict" }),
+    isPrimary: boolean("is_primary").notNull().default(true),
+    linkedByUserId: integer("linked_by_user_id").references(() => usersTable.id, {
+      onDelete: "set null",
+    }),
+    linkedByName: text("linked_by_name"),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (t) => ({
+    staffUq: uniqueIndex("staff_user_links_staff_uq").on(t.staffId),
+    userUq: uniqueIndex("staff_user_links_user_uq").on(t.userId),
+  }),
+);
+
+// ── Skills master ────────────────────────────────────────────────────────────
+// Configurable catalogue (Reception, MRI, CT, USG, Billing, Phlebotomy, ICU,
+// Nursing, Accounts, HR, IT, Housekeeping, Driver, …). category groups them for
+// the skill-matrix UI. Additive; not wired to any staffing/promotion logic yet.
+export const skillsTable = pgTable(
+  "skills",
+  {
+    id: serial("id").primaryKey(),
+    name: text("name").notNull().unique(),
+    category: text("category"), // clinical | technical | administrative | support | other
+    description: text("description"),
+    isActive: boolean("is_active").notNull().default(true),
+    sortOrder: integer("sort_order"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (t) => ({
+    categoryIdx: index("skills_category_idx").on(t.category),
+  }),
+);
+
+// ── Staff skill matrix ───────────────────────────────────────────────────────
+// Per-employee proficiency. level: beginner | intermediate | advanced | trainer.
+export const staffSkillsTable = pgTable(
+  "staff_skills",
+  {
+    id: serial("id").primaryKey(),
+    staffId: integer("staff_id")
+      .notNull()
+      .references(() => staffTable.id, { onDelete: "restrict" }),
+    skillId: integer("skill_id")
+      .notNull()
+      .references(() => skillsTable.id, { onDelete: "restrict" }),
+    level: text("level").notNull().default("beginner"),
+    certified: boolean("certified").notNull().default(false),
+    assessedByUserId: integer("assessed_by_user_id").references(() => usersTable.id, {
+      onDelete: "set null",
+    }),
+    assessedAt: timestamp("assessed_at", { withTimezone: true }),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (t) => ({
+    staffIdx: index("staff_skills_staff_idx").on(t.staffId),
+    skillIdx: index("staff_skills_skill_idx").on(t.skillId),
+    uniq: uniqueIndex("staff_skills_staff_skill_uq").on(t.staffId, t.skillId),
+  }),
+);
+
+// ── Activity timeline (single source of truth for the 360° profile) ──────────
+// Append-only lifecycle log. ANY future module (attendance, performance,
+// recognition, training, appraisal, exit) writes a row here referencing its own
+// record via (source_module, ref_type, ref_id), so an employee's whole story is
+// on one screen and available at appraisal time. Never deleted.
+export const staffTimelineEventsTable = pgTable(
+  "staff_timeline_events",
+  {
+    id: serial("id").primaryKey(),
+    staffId: integer("staff_id")
+      .notNull()
+      .references(() => staffTable.id, { onDelete: "restrict" }),
+    // e.g. joined | probation_completed | status_change | attendance_correction |
+    // warning | appreciation | award | allowance_approved | training_completed |
+    // promotion | increment | performance_review | resignation | exit | note
+    eventType: text("event_type").notNull(),
+    title: text("title").notNull(),
+    description: text("description"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+    sourceModule: text("source_module").notNull().default("staff"),
+    refType: text("ref_type"),
+    refId: text("ref_id"),
+    // internal | employee_visible — controls whether it appears on self-service.
+    visibility: text("visibility").notNull().default("internal"),
+    metadata: jsonb("metadata"),
+    createdByUserId: integer("created_by_user_id").references(() => usersTable.id, {
+      onDelete: "set null",
+    }),
+    createdByName: text("created_by_name"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    staffIdx: index("staff_timeline_events_staff_idx").on(t.staffId),
+    staffOccurredIdx: index("staff_timeline_events_staff_occurred_idx").on(
+      t.staffId,
+      t.occurredAt,
+    ),
+    typeIdx: index("staff_timeline_events_type_idx").on(t.eventType),
+  }),
+);
+
 export type Designation = typeof designationsTable.$inferSelect;
 export type StaffStatusHistory = typeof staffStatusHistoryTable.$inferSelect;
 export type StaffReportingLine = typeof staffReportingLinesTable.$inferSelect;
 export type StaffDocument = typeof staffDocumentsTable.$inferSelect;
+export type StaffUserLink = typeof staffUserLinksTable.$inferSelect;
+export type Skill = typeof skillsTable.$inferSelect;
+export type StaffSkill = typeof staffSkillsTable.$inferSelect;
+export type StaffTimelineEvent = typeof staffTimelineEventsTable.$inferSelect;
