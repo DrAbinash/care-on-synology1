@@ -1,0 +1,40 @@
+# PCPNDT monthly Form F register
+
+**Status:** implemented (stabilization PR 2). A management-authorized, month-wise listing of **every** Form F record, for submission to / inspection by the Appropriate Authority.
+
+## Endpoints
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/form-f/register?month&year&page&pageSize` | Paginated JSON register for the UI |
+| `GET /api/form-f/register/export?month&year` | Complete-month CSV download (audited) |
+
+Both sit behind the `/form-f` staff-permission mount **plus** `requireAdminRole` (management only), and are registered before the router's `/:id` catch-all. Both are excluded from the service-worker cache (`/api/form-f/register` prefix in `public/sw.js`; enforced by `personalEndpointCacheGuard.test.ts`) — statutory PHI must never be served from Cache Storage, and a cached admin 200 must never reach non-admin staff on a shared terminal.
+
+## Semantics
+
+- **Month window:** the clinic's month — IST (UTC+05:30, no DST) applied to `form_f_records.created_at` (`istMonthWindowUtc`). Month/year/page are validated; bad input is a 400, never an empty-but-200 lie.
+- **Ordering & statutory serial:** deterministic `created_at ASC, id ASC`; the serial is the record's 1-based position in that order within the month, stable across pages (serial = pagination offset + row position). The schema captures **no** statutory serial column, so the serial is **derived** — a presentation of stable ordering, not an invented stored field (see "Open issues").
+- **No silent omission:** every record of the month appears. Each is graded with `evaluateFormFCompleteness` — the exact four predicates of the finalize gates (`lib/pcpndtCompliance.ts`), extracted so gates and register can never drift apart. Incomplete records carry `completionStatus: "incomplete"` plus the missing-field messages; the response also returns `incompleteCount`.
+- **Test linkage — Form-F tests of all kinds, only Form-F tests:** each record's `linkedTests` lists the **Form-F-designated** tests billed on its linked order — the designation is the admin-configured `clinic_settings.formFTestIds` (the same definition the pending queue uses), so any modality/procedure designated as Form-F-requiring appears (never fetal/echo-only), while non-Form-F tests on the same bill are deliberately excluded from the statutory register. Resolution is batched (settings + bills + order_tests joins), no N+1. Records without a bill linkage (e.g. WhatsApp intake) or with no designation configured show an empty list; the UI falls back to the form's free-text `procedure` field for display.
+- **Fields:** only data the application already captures on `form_f_records` (patient identifiers, husband/father name, address, referrer, doctor, procedure/purpose/basis, GA, ultrasound result, abnormality, consent/procedure dates, result conveyed, ID-verification state, bill number, fetal-USG study linkage, timestamps).
+
+## Export & audit
+
+The CSV export always covers the **complete month** (no pagination), uses the repo's standard CSV escaping, and is written to the tamper-evident hash-chained audit log (`auditFromRequest`: `action: "export"`, `entityType: "form_f_register"`, `entityId: "YYYY-MM"`, record + incomplete counts in `newValue`). An invalid request never produces an audit entry.
+
+## UI
+
+FormF page → **Monthly Register** tab (rendered only for management roles, matching the API gate): month/year picker, graded table with incomplete-field callouts, pagination, **Export CSV** (server-generated, audited) and **Print Register** — the print fetches every page first so the printed document also covers the complete month, using the existing Form F window-print pattern (A4 landscape).
+
+## Tests
+
+`lib/formFRegister.test.ts` (window boundaries, validation, serial stability, grading, Form-F-test linkage, CSV escaping, empty month), `routes/form-f.register.test.ts` (admin gate attached, 400s, offset-stable serials, designation filtering — a non-Form-F test on the bill never appears, empty-designation semantics, audited export, empty month) and the source contracts in `formFRegisterContract.test.ts`.
+
+## Open issues — statutory data the application does not currently capture
+
+Stated plainly rather than fabricated (per the stabilization brief):
+
+1. **Stored statutory serial:** the Government register format expects a persistent serial per Form F entry; today's serial is derived from stable ordering. Backdated inserts cannot occur (`created_at` is server-set), so derived serials are stable in practice — but a stored, gap-free statutory serial column (assigned at record creation) would make the register robust to any future data correction. Needs a migration + numbering policy decision.
+2. **Result-conveyed date** is a free-text field; the statutory format wants an explicit date.
+3. **Declaration blocks** (the doctor's and the pregnant woman's declarations with signatures) exist only on the per-record printed Form F, not as structured register data.

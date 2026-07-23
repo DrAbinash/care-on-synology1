@@ -83,6 +83,14 @@ export interface RegisterSourceRecord extends FormFCompletenessInput {
 export interface RegisterRow {
   serial: number;
   recordId: number;
+  /** Form-F-designated tests billed on the record's linked order — the
+   *  admin-configured clinic_settings.formFTestIds designation (any
+   *  modality/procedure, never fetal/echo-only), matching the /pending
+   *  queue's definition. Non-Form-F tests on the same bill are deliberately
+   *  excluded from the statutory register. Empty when the record has no bill
+   *  linkage (e.g. WhatsApp intake before billing) or no designation is
+   *  configured. */
+  linkedTests: string[];
   createdAtIst: string;
   formDate: string;
   registrationNo: string;
@@ -125,9 +133,14 @@ function istDateTimeString(value: Date | string | null): string {
  * Grade + serialize records into register rows. `records` must already be in
  * the canonical order (created_at ASC, id ASC); `firstSerial` is the 1-based
  * serial of the first record (pagination offset + 1), so serials stay stable
- * across pages of the same month.
+ * across pages of the same month. `testsByBillId` maps a record's billId to
+ * the billed test names on that order (all test types).
  */
-export function buildRegisterRows(records: RegisterSourceRecord[], firstSerial: number): RegisterRow[] {
+export function buildRegisterRows(
+  records: RegisterSourceRecord[],
+  firstSerial: number,
+  testsByBillId?: Map<number, string[]>,
+): RegisterRow[] {
   return records.map((r, i) => {
     const completeness = evaluateFormFCompleteness(r);
     const gaWeeks = r.gestationalAgeWeeks?.trim() ?? "";
@@ -135,6 +148,7 @@ export function buildRegisterRows(records: RegisterSourceRecord[], firstSerial: 
     return {
       serial: firstSerial + i,
       recordId: r.id,
+      linkedTests: (r.billId != null ? testsByBillId?.get(r.billId) : undefined) ?? [],
       createdAtIst: istDateTimeString(r.createdAt),
       formDate: r.date?.trim() || "",
       registrationNo: r.registrationNo ?? "",
@@ -178,6 +192,7 @@ const CSV_COLUMNS: Array<{ header: string; value: (r: RegisterRow) => string }> 
   { header: "Referred By", value: (r) => r.referredBy },
   { header: "Doctor", value: (r) => r.doctorName },
   { header: "Procedure", value: (r) => r.procedure },
+  { header: "Form F Tests", value: (r) => r.linkedTests.join("; ") },
   { header: "Purpose", value: (r) => r.procedurePurpose },
   { header: "Basis/Indication", value: (r) => r.basisDiagnosis },
   { header: "Gestational Age", value: (r) => r.gestationalAge },

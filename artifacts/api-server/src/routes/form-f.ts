@@ -621,6 +621,45 @@ formFRouter.get("/list", async (req, res) => {
 // NOTE: these routes are registered BEFORE GET /:id — Express matches in
 // order, and /:id would otherwise swallow /register.
 
+/** Form-F-designated billed test names per billId for the register's linkage
+ *  column. Covers Form-F tests of ANY modality/procedure — the designation is
+ *  the admin-configured clinic_settings.formFTestIds list, the SAME
+ *  definition the /pending queue uses — while other (non-Form-F) tests on the
+ *  bill are deliberately excluded from the statutory register. Four batched
+ *  queries total regardless of month size — no N+1. */
+async function resolveFormFTestsByBillId(billIds: number[]): Promise<Map<number, string[]>> {
+  const map = new Map<number, string[]>();
+  const uniqueBillIds = [...new Set(billIds)];
+  if (uniqueBillIds.length === 0) return map;
+
+  const [settings] = await db.select().from(clinicSettingsTable).limit(1);
+  const formFTestIds: number[] = JSON.parse(settings?.formFTestIds ?? "[]");
+  if (formFTestIds.length === 0) return map;
+
+  const bills = await db
+    .select({ id: billsTable.id, orderId: billsTable.orderId })
+    .from(billsTable)
+    .where(inArray(billsTable.id, uniqueBillIds));
+  const orderIds = [...new Set(bills.map((b) => b.orderId).filter((v): v is number => v != null))];
+  if (orderIds.length === 0) return map;
+
+  const orderTests = await db
+    .select({ orderId: orderTestsTable.orderId, testId: orderTestsTable.testId, testName: testsTable.name })
+    .from(orderTestsTable)
+    .leftJoin(testsTable, eq(orderTestsTable.testId, testsTable.id))
+    .where(inArray(orderTestsTable.orderId, orderIds));
+  const testsByOrder = new Map<number, string[]>();
+  for (const ot of orderTests) {
+    if (!ot.testName || !ot.testId || !formFTestIds.includes(ot.testId)) continue;
+    if (!testsByOrder.has(ot.orderId)) testsByOrder.set(ot.orderId, []);
+    testsByOrder.get(ot.orderId)!.push(ot.testName);
+  }
+  for (const b of bills) {
+    if (b.orderId != null) map.set(b.id, testsByOrder.get(b.orderId) ?? []);
+  }
+  return map;
+}
+
 formFRouter.get("/register", requireAdminRole, async (req, res) => {
   try {
     const parsed = parseRegisterQuery(req.query as Record<string, unknown>);
@@ -649,7 +688,8 @@ formFRouter.get("/register", requireAdminRole, async (req, res) => {
       .limit(pageSize)
       .offset(offset);
 
-    const rows = buildRegisterRows(records, offset + 1);
+    const testsByBillId = await resolveFormFTestsByBillId(records.map((r) => r.billId).filter((v): v is number => v != null));
+    const rows = buildRegisterRows(records, offset + 1, testsByBillId);
     res.json({
       month,
       year,
@@ -680,7 +720,8 @@ formFRouter.get("/register/export", requireAdminRole, async (req, res) => {
       .where(and(gte(formFRecordsTable.createdAt, start), lt(formFRecordsTable.createdAt, end)))
       .orderBy(asc(formFRecordsTable.createdAt), asc(formFRecordsTable.id));
 
-    const rows = buildRegisterRows(records, 1);
+    const testsByBillId = await resolveFormFTestsByBillId(records.map((r) => r.billId).filter((v): v is number => v != null));
+    const rows = buildRegisterRows(records, 1, testsByBillId);
     const csv = registerRowsToCsv(rows);
 
     // Statutory-data export is always audited (tamper-evident chain).
