@@ -26,6 +26,19 @@ function todayISO(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+// Pure (exported for tests and for the settings UI's "send test ping" action
+// in routes/queueDisplaySettings.ts, so a test message is worded IDENTICALLY
+// to a real one instead of drifting from a copy-pasted template).
+export function buildPingMessage(opts: {
+  roomTitle: string | null;
+  roomKey: string;
+  tokenLabel: string;
+  firstName?: string | null;
+}): string {
+  const name = opts.firstName ? `, ${opts.firstName}` : "";
+  return `Hi${name}! You're almost up at ${opts.roomTitle || opts.roomKey} — token #${opts.tokenLabel}. Please make your way to the waiting area.`;
+}
+
 export async function runPatientPingSweep(): Promise<{ pinged: number }> {
   const rooms = await db.select().from(queueDisplaySettingsTable).where(eq(queueDisplaySettingsTable.patientPingEnabled, true));
   if (rooms.length === 0) return { pinged: 0 };
@@ -69,8 +82,10 @@ export async function runPatientPingSweep(): Promise<{ pinged: number }> {
       if (pingedTokens.has(dedupeKey)) continue;
 
       const phone = service.normalizePhone(token.phone);
-      const name = token.firstName ? `, ${token.firstName}` : "";
-      const text = `Hi${name}! You're almost up at ${room.roomTitle || room.roomKey} — token #${token.tokenNo}. Please make your way to the waiting area.`;
+      const text = buildPingMessage({
+        roomTitle: room.roomTitle, roomKey: room.roomKey,
+        tokenLabel: String(token.tokenNo), firstName: token.firstName,
+      });
       try {
         const result = await service.sendText(phone, text);
         pingedTokens.add(dedupeKey); // mark attempted either way — don't retry-storm a bad number

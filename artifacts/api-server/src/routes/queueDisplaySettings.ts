@@ -30,6 +30,8 @@ import fs from "node:fs/promises";
 import multer from "multer";
 import { displayCommandBroadcaster, type DisplayCommand } from "../lib/displayCommandBroadcast";
 import { displayHeartbeatTracker } from "../lib/displayHeartbeatTracker";
+import { buildPingMessage } from "../lib/queueDisplayPingScheduler";
+import { getWhatsAppService } from "../services/whatsapp/WhatsAppService";
 
 export const queueDisplaySettingsRouter: IRouter = Router();
 
@@ -434,6 +436,50 @@ queueDisplaySettingsRouter.post("/:roomKey/command", requireStaffAuth, (req, res
   }
   displayCommandBroadcaster.send(roomKey, command);
   res.json({ success: true });
+});
+
+// ─── POST /api/settings/queue-display/:roomKey/test-ping (staff auth) ────
+// Sends the SAME "you're almost up" message the real scheduler would send
+// (see lib/queueDisplayPingScheduler.ts's shared buildPingMessage), to a
+// phone number the admin supplies, so a room can be verified end-to-end
+// before Patient Notifications is switched on for real patients. Reports
+// whether WHATSAPP_PROVIDER is actually configured to a real provider: the
+// mock provider always reports success, so without this an admin could
+// enable patient pings believing they work when nothing is really being
+// sent.
+
+queueDisplaySettingsRouter.post("/:roomKey/test-ping", requireStaffAuth, async (req, res): Promise<void> => {
+  const roomKey = String(req.params.roomKey || "").trim().toLowerCase();
+  if (!roomKey || !/^[a-z0-9-]+$/.test(roomKey)) {
+    res.status(400).json({ error: "roomKey must contain only lowercase letters, numbers, and hyphens" });
+    return;
+  }
+  const phone = String(req.body?.phone || "").trim();
+  if (!phone) {
+    res.status(400).json({ error: "phone is required" });
+    return;
+  }
+
+  try {
+    const room = await getOrCreate(roomKey);
+    const service = getWhatsAppService();
+    const normalizedPhone = service.normalizePhone(phone);
+    const text = `[TEST MESSAGE] ${buildPingMessage({
+      roomTitle: room.roomTitle, roomKey: room.roomKey, tokenLabel: "TEST",
+    })}`;
+    const result = await service.sendText(normalizedPhone, text);
+    const provider = (process.env.WHATSAPP_PROVIDER || "mock").toLowerCase();
+    res.json({
+      success: result.ok,
+      error: result.error,
+      provider,
+      usedMockProvider: provider === "mock",
+      message: text,
+    });
+  } catch (err) {
+    req.log?.error?.({ err }, "queue-display-settings TEST-PING error");
+    res.status(500).json({ error: err instanceof Error ? err.message : "Failed to send test ping" });
+  }
 });
 
 // ─── POST /api/settings/queue-display/:roomKey/heartbeat (readAuth) ──────

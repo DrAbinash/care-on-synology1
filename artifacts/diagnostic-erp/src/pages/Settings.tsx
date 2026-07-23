@@ -8402,6 +8402,7 @@ function QueueDisplaySettingsTab() {
   const [previewKey, setPreviewKey] = useState(0); // bump to force iframe reload
   const [addingRoom, setAddingRoom] = useState(false);
   const [newRoomName, setNewRoomName] = useState("");
+  const [testPingPhone, setTestPingPhone] = useState("");
 
   // List of all configured displays (MRI, CT, X-Ray, USG, Reception, etc.)
   // — fully dynamic, no fixed list. Doctors add rooms from here; each gets
@@ -8480,6 +8481,30 @@ function QueueDisplaySettingsTab() {
     mutationFn: (command: "reload") => api.post(`/api/settings/queue-display/${roomKey}/command`, { command }),
     onSuccess: () => toast({ title: "Reload command sent" }),
     onError: (err: any) => toast({ title: "Could not send command", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
+  });
+
+  // Lets an admin verify the Patient Notifications ping actually reaches a
+  // real phone (and whether WHATSAPP_PROVIDER is even configured to a real
+  // provider) BEFORE switching it on for real patients — see the amber
+  // warning right below this card in the JSX.
+  const testPing = useMutation({
+    mutationFn: (phone: string) =>
+      api.post<{ success: boolean; error?: string; provider: string; usedMockProvider: boolean }>(
+        `/api/settings/queue-display/${roomKey}/test-ping`, { phone },
+      ),
+    onSuccess: (res) => {
+      if (res.usedMockProvider) {
+        toast({
+          title: "Test ping simulated — no real message sent",
+          description: `WHATSAPP_PROVIDER is "${res.provider}" (mock/test mode), not a real provider. Configure a real provider before relying on this for patients.`,
+        });
+      } else if (res.success) {
+        toast({ title: "Test ping sent", description: `Check WhatsApp on ${testPingPhone} for the message.` });
+      } else {
+        toast({ title: "Test ping failed", description: res.error || "The WhatsApp provider rejected the message", variant: "destructive" });
+      }
+    },
+    onError: (err: any) => toast({ title: "Test ping failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }),
   });
 
   const cloneSettings = useMutation({
@@ -9036,6 +9061,26 @@ function QueueDisplaySettingsTab() {
             )}
             <p className="text-[11px] text-amber-600 dark:text-amber-500">
               Off by default. This sends a real WhatsApp message to real patients — test it carefully before turning it on for a busy room.
+            </p>
+            <div className="flex items-center gap-2 mt-2">
+              <Input
+                value={testPingPhone}
+                onChange={(e) => setTestPingPhone(e.target.value)}
+                placeholder="Your WhatsApp number, e.g. 9876543210"
+                className="flex-1"
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={!testPingPhone.trim() || testPing.isPending}
+                onClick={() => testPing.mutate(testPingPhone.trim())}
+              >
+                {testPing.isPending ? "Sending…" : "Send test ping"}
+              </Button>
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-1">
+              Sends the exact wording a real patient would get, marked "[TEST MESSAGE]", to the number above — works whether or not the toggle above is on, so you can verify a room before switching it on for real.
             </p>
           </SettingsCard>
 
