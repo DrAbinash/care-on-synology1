@@ -67,7 +67,15 @@ Owner review reframed this as the **People Management platform** (`CARE_PEOPLE_M
   build the `notifications` table + emit helper + unread endpoint (none exists today).
 - Flags: `ff_hr_staff_awards`, `ff_hr_performance_allowances`, `ff_hr_performance_appeals`.
 
-## Phase 5 — Appraisal & improvement
+## Phase 5 — Appraisal & improvement — backend ✅ landed
+- ✅ Schema `appraisal_cycles`, `employee_appraisals`, `performance_improvement_plans` + migration.
+- ✅ Pure, unit-tested **increment engine** (annual score → advisory band; never alters payroll) +
+  `routes/appraisal.ts` (`/api/appraisal`, gated `ff_hr_annual_appraisals`): cycles, appraisals
+  (auto-computes annual average from finalized scores + increment recommendation), decisions (notified),
+  and confidential PIPs. Audited + zod.
+- Remaining: appraisal/PIP UI + trend/department analytics.
+
+### (original)
 - Annual appraisal + increment **recommendations** (never auto-payroll), PIPs, trend & department analytics.
 - Flag: `ff_hr_annual_appraisals`. Any payroll linkage → Change Control + owner sign-off.
 
