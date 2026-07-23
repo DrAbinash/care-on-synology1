@@ -170,15 +170,26 @@ function buildBalanceSheetRows(
   return rows;
 }
 
+// Expense partition — each expense lands in EXACTLY ONE bucket, so the five
+// expense lines always sum to the server's `totalExpenses`. Employee /
+// depreciation / finance are named line items in Schedule III regardless of the
+// ledger's Direct/Indirect group, so they take priority over the group-based
+// "Direct Expenses" bucket; anything left over is "Other expenses". (Overlapping
+// independent filters would double-count e.g. a "Wages" account grouped under
+// Direct Expenses.)
+type ExpBucket = "emp" | "dep" | "fin" | "dir" | "oth";
+function expenseBucket(e: PLLine): ExpBucket {
+  if (/salar|wage|staff|employee|bonus|pf|esi/i.test(e.name)) return "emp";
+  if (/deprec|amortis|amortiz/i.test(e.name)) return "dep";
+  if (/interest|finance|bank charge|loan charge/i.test(e.name)) return "fin";
+  if ((e.group || "").includes("Direct")) return "dir";
+  return "oth";
+}
+
 function buildProfitLossRows(cur?: ProfitLossResp, prev?: ProfitLossResp): StmtRow[] {
   const revOps = (pl?: ProfitLossResp) => (pl?.income ?? []).filter((i) => (i.group || "").includes("Direct")).reduce((s, i) => s + i.amount, 0);
   const othInc = (pl?: ProfitLossResp) => (pl?.income ?? []).filter((i) => !(i.group || "").includes("Direct")).reduce((s, i) => s + i.amount, 0);
-  const expBy = (pl: ProfitLossResp | undefined, pred: (e: PLLine) => boolean) => (pl?.expenses ?? []).filter(pred).reduce((s, e) => s + e.amount, 0);
-  const isEmp = (e: PLLine) => /salar|wage|staff|employee|bonus|pf|esi/i.test(e.name);
-  const isDep = (e: PLLine) => /deprec|amortis|amortiz/i.test(e.name);
-  const isFin = (e: PLLine) => /interest|finance|bank charge|loan charge/i.test(e.name);
-  const isDir = (e: PLLine) => (e.group || "").includes("Direct");
-  const isOth = (e: PLLine) => !isEmp(e) && !isDep(e) && !isFin(e) && !isDir(e);
+  const expBy = (pl: ProfitLossResp | undefined, bucket: ExpBucket) => (pl?.expenses ?? []).filter((e) => expenseBucket(e) === bucket).reduce((s, e) => s + e.amount, 0);
 
   const r = (label: string, note: string, c?: number, p?: number, o?: { bold?: boolean; top?: boolean; strong?: boolean }): StmtRow => ({
     cells: [{ text: label }, { text: note, align: "center" }, { text: money(c), align: "right" }, { text: money(p), align: "right" }],
@@ -190,11 +201,11 @@ function buildProfitLossRows(cur?: ProfitLossResp, prev?: ProfitLossResp): StmtR
     r("Other income", "3.2", othInc(cur), othInc(prev)),
     r("Total Revenue", "", cur?.totalIncome, prev?.totalIncome, { bold: true, top: true }),
     { cells: [{ text: "Expenses", colspan: 4 }], bold: true },
-    r("Direct Expenses", "3.3", expBy(cur, isDir), expBy(prev, isDir)),
-    r("Employee benefits expense", "3.4", expBy(cur, isEmp), expBy(prev, isEmp)),
-    r("Depreciation and amortization expense", "3.5", expBy(cur, isDep), expBy(prev, isDep)),
-    r("Finance costs", "3.6", expBy(cur, isFin), expBy(prev, isFin)),
-    r("Other expenses", "3.7", expBy(cur, isOth), expBy(prev, isOth)),
+    r("Direct Expenses", "3.3", expBy(cur, "dir"), expBy(prev, "dir")),
+    r("Employee benefits expense", "3.4", expBy(cur, "emp"), expBy(prev, "emp")),
+    r("Depreciation and amortization expense", "3.5", expBy(cur, "dep"), expBy(prev, "dep")),
+    r("Finance costs", "3.6", expBy(cur, "fin"), expBy(prev, "fin")),
+    r("Other expenses", "3.7", expBy(cur, "oth"), expBy(prev, "oth")),
     r("Total expenses", "", cur?.totalExpenses, prev?.totalExpenses, { bold: true, top: true }),
     r("Profit before exceptional and extraordinary items and tax", "", pbtC, pbtP, { top: true }),
     r("Exceptional items", "", undefined, undefined),
@@ -342,7 +353,9 @@ export default function FinancialStatements() {
           body * { visibility: hidden !important; }
           #fin-stmt-print, #fin-stmt-print * { visibility: visible !important; }
           #fin-stmt-print { position: absolute; left: 0; top: 0; width: 100%; max-width: 100%; box-sizing: border-box; }
-          .stmt-sheet { page-break-after: always; }
+          /* Inter-sheet separation is handled by each sheet's inline
+             page-break-before (sheets 2+). A page-break-after on the last sheet
+             would emit a trailing blank page, so we deliberately don't set one. */
           @page { size: A4; margin: 8mm; }
         }
       `}</style>

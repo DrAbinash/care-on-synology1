@@ -69,6 +69,12 @@ export async function exportStatementsPDF(model: StmtDoc): Promise<void> {
   const pageW = doc.internal.pageSize.getWidth();
   const usableW = pageW - 24; // 12mm margins each side
 
+  // jsPDF's built-in "times" font uses WinAnsi encoding, which has no glyph for
+  // the Indian Rupee sign (U+20B9) — it would render as garbage. We don't embed
+  // a Unicode TTF, so substitute "Rs." in the PDF path only (HTML and Word keep
+  // the ₹ symbol, which they render correctly).
+  const san = (s: string) => s.replace(/₹/g, "Rs.");
+
   model.sheets.forEach((sheet, si) => {
     if (si > 0) doc.addPage();
     let y = 16;
@@ -77,7 +83,7 @@ export async function exportStatementsPDF(model: StmtDoc): Promise<void> {
     sheet.headerLines.forEach((ln, i) => {
       doc.setFont("times", i === 0 ? "bold" : "normal");
       doc.setFontSize(i === 0 ? 14 : 10);
-      doc.text(ln, pageW / 2, y, { align: "center" });
+      doc.text(san(ln), pageW / 2, y, { align: "center" });
       y += i === 0 ? 6 : 4.4;
     });
     y += 2;
@@ -85,19 +91,19 @@ export async function exportStatementsPDF(model: StmtDoc): Promise<void> {
     // Statement title
     doc.setFont("times", "bold");
     doc.setFontSize(12);
-    doc.text(sheet.title, pageW / 2, y, { align: "center" });
+    doc.text(san(sheet.title), pageW / 2, y, { align: "center" });
     y += 5;
 
     if (sheet.noteLine) {
       doc.setFont("times", "italic");
       doc.setFontSize(9);
-      doc.text(sheet.noteLine, pageW - 12, y, { align: "right" });
+      doc.text(san(sheet.noteLine), pageW - 12, y, { align: "right" });
       y += 2;
     }
 
     const body = sheet.rows.map((r) =>
       r.cells.map((c) => ({
-        content: c.text + (c.small ? `  (${c.small})` : ""),
+        content: san(c.text + (c.small ? `  (${c.small})` : "")),
         colSpan: c.colspan ?? 1,
         styles: {
           halign: c.align ?? "left",
@@ -109,7 +115,7 @@ export async function exportStatementsPDF(model: StmtDoc): Promise<void> {
 
     autoTable(doc, {
       startY: y,
-      head: [sheet.columns.map((c) => ({ content: c.header, styles: { halign: c.align ?? "left" } }))],
+      head: [sheet.columns.map((c) => ({ content: san(c.header), styles: { halign: c.align ?? "left" } }))],
       body,
       theme: "grid",
       styles: { font: "times", fontSize: 9, cellPadding: 1.4, lineColor: [0, 0, 0], lineWidth: 0.1, textColor: [0, 0, 0] },
@@ -128,13 +134,13 @@ export async function exportStatementsPDF(model: StmtDoc): Promise<void> {
       doc.setFont("times", "normal");
       doc.setFontSize(9);
       let fy = footTop;
-      sheet.footerLeft.forEach((ln) => { doc.text(ln, 14, fy); fy += 5; });
+      sheet.footerLeft.forEach((ln) => { doc.text(san(ln), 14, fy); fy += 5; });
     }
     if (sheet.footerRight?.length) {
       doc.setFont("times", "normal");
       doc.setFontSize(9);
       let fy = footTop;
-      sheet.footerRight.forEach((ln) => { doc.text(ln, pageW - 14, fy, { align: "right" }); fy += 5; });
+      sheet.footerRight.forEach((ln) => { doc.text(san(ln), pageW - 14, fy, { align: "right" }); fy += 5; });
     }
   });
 
