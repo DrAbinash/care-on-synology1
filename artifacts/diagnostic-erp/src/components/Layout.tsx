@@ -275,6 +275,7 @@ const navItems: NavEntry[] = [
       { path: "/dashboard", icon: LayoutDashboard, label: "Owner Dashboard", ownerOnly: true },
       { path: "/reconciliation", icon: ClipboardCheck, label: "Reconciliation Center", ownerOnly: true },
       { path: "/diagnostics", icon: Activity, label: "API Diagnostics", ownerOnly: true },
+      { path: "/ops-cockpit", icon: Activity, label: "Operations Cockpit", ownerOnly: true, featureFlag: "ff_ops_cockpit" },
       { path: "/reports", icon: BarChart3, label: "Reports" },
       { path: "/report-delivery-tracking", icon: MessageSquare, label: "Report Delivery", featureFlag: "ff_report_delivery_receipts" },
       { path: "/recall", icon: Bell, label: "Recall & Follow-up", featureFlag: "ff_recall_engine" },

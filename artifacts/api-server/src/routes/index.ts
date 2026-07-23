@@ -63,6 +63,7 @@ import recallRouter from "./recall";
 import feedbackRouter from "./feedback";
 import publicFeedbackRouter from "./publicFeedback";
 import billPaymentLinksRouter from "./billPaymentLinks";
+import opsCockpitRouter from "./opsCockpit";
 import storageRouter from "./storage";
 import { bridgeRouter } from "./bridge";
 import { reportTemplatesRouter } from "./report-templates";
@@ -392,6 +393,10 @@ router.use("/diagnostics", requireStaffAuth, requireAdminRole, diagnosticsRouter
 // post-rebuild verification: application/db/auth/core-erp/radiology-pacs/
 // queue/integrations/storage checks + persisted run history).
 router.use("/admin/operations", requireStaffAuth, requireAdminRole, adminOperationsRouter);
+
+// Unified operational-health cockpit + proactive alerts (admin-only). Gated
+// additionally by ff_ops_cockpit (Shadow Mode) inside the router.
+router.use("/ops-cockpit", requireStaffAuth, requireAdminRole, opsCockpitRouter);
 
 // Admin-only Universal Measurement Registry manager (read-only console +
 // live impact analysis over quick measurements / protocols / packs / rules).

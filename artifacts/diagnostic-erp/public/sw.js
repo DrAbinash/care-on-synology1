@@ -72,6 +72,8 @@ const NETWORK_ONLY_PREFIXES = [
   // ABDM/ABHA consent + enrolment status changes with gateway callbacks — always fresh.
   "/api/abdm/",
   "/api/abha/",
+  // Operational cockpit — live KPI rollup + open alerts, must never be stale.
+  "/api/ops-cockpit/",
 
   // Patient portal (mobile app): every endpoint is scoped to the verified
   // patient session (my-bookings, my-reports, report links). Same shared-

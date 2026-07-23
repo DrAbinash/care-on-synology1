@@ -41,6 +41,7 @@ export function startCronScheduler() {
   scheduleWhatsappReminders();
   scheduleRecall();
   scheduleFeedbackInvites();
+  scheduleOpsAnomalyScan();
   scheduleRadiologyJobs();
   scheduleAuditChainVerify();
   scheduleAiSchedulerModes();
@@ -784,6 +785,29 @@ function scheduleFeedbackInvites() {
 export async function runFeedbackInvitesNow() {
   const { runFeedbackInvites } = await import("./routes/feedback");
   return runFeedbackInvites();
+}
+
+// Operational-health anomaly scan — every 30 minutes. Evaluates live metrics
+// against thresholds and raises anomaly_alerts (deduped) + notifies admins.
+// No-ops unless ff_ops_cockpit is enabled.
+function scheduleOpsAnomalyScan() {
+  cron.schedule("*/30 * * * *", async () => {
+    try {
+      const { runOpsAnomalyScan } = await import("./routes/opsCockpit");
+      const r = await runOpsAnomalyScan();
+      if (!r.skipped && (r.created > 0 || r.scanned > 0)) {
+        console.log(`[cron] Ops anomaly scan: scanned=${r.scanned} created=${r.created} deduped=${r.deduped}`);
+      }
+    } catch (err) {
+      console.error("[cron] Ops anomaly scan failed:", err);
+    }
+  });
+  console.log("[cron] Ops anomaly scanner started (every 30 min)");
+}
+
+export async function runOpsAnomalyScanNow() {
+  const { runOpsAnomalyScan } = await import("./routes/opsCockpit");
+  return runOpsAnomalyScan();
 }
 
 function scheduleMonthEndCommission() {
