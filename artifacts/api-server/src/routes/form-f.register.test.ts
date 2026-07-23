@@ -241,8 +241,12 @@ describe("GET /form-f/register/export", () => {
     const lines = String(res.body).split("\n");
     expect(lines).toHaveLength(3); // header + BOTH records — incomplete one included
     expect(lines[0]).toContain("Completion");
-    expect(lines[2]).toContain('"Asha, ""junior"""');
+    // Rule 9(1) Column 3 combines patient + spouse/father in one cell:
+    expect(lines[2]).toContain('"Asha, ""junior"" — Spouse/Father: R. Kumar"');
     expect(lines[2]).toContain("incomplete");
+    // Rule 9(1) columns lead the header in the prescribed order:
+    expect(lines[0].indexOf("Serial Number")).toBe(0);
+    expect(lines[0].indexOf("Date of Procedure")).toBeLessThan(lines[0].indexOf("Name of the Patient"));
 
     expect(auditCalls).toHaveLength(1);
     expect(auditCalls[0]).toMatchObject({

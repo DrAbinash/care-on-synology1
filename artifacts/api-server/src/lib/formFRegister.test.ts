@@ -131,7 +131,39 @@ describe("buildRegisterRows", () => {
   });
 });
 
-describe("registerRowsToCsv", () => {
+describe("registerRowsToCsv — Rule 9(1) structure leads", () => {
+  test("the five prescribed Rule 9(1) columns come FIRST, in the prescribed order", () => {
+    const csv = registerRowsToCsv(buildRegisterRows([record({ id: 1 })], 1));
+    const headers = csv.split("\n")[0];
+    const idx = (h: string) => headers.indexOf(h);
+    const statutory = [
+      "Serial Number",
+      "Date of Procedure",
+      "Name of the Patient & Spouse/Father",
+      "Full Address & Contact Details",
+      "Name of Referring Doctor / Self-Referral",
+    ];
+    for (const h of statutory) expect(idx(h)).toBeGreaterThan(-1);
+    for (let i = 1; i < statutory.length; i++) {
+      expect(idx(statutory[i])).toBeGreaterThan(idx(statutory[i - 1]));
+    }
+    // Supplementary data follows the statutory block:
+    expect(idx("Form F Tests")).toBeGreaterThan(idx(statutory[4]));
+  });
+
+  test("statutory cells combine name+spouse and address+phone; referrer resolves doctor-name first, then Self", () => {
+    const rows = buildRegisterRows(
+      [record({ id: 1, doctorName: "", referredBy: "" }), record({ id: 2, doctorName: "Dr. R. Gupta" })],
+      1,
+    );
+    const csv = registerRowsToCsv(rows);
+    const lines = csv.split("\n");
+    expect(lines[1]).toContain("Priya Test — Spouse/Father: R. Kumar");
+    expect(lines[1]).toContain('"12 MG Road, Ph: 9999900001"');
+    expect(lines[1]).toContain("Self");
+    expect(lines[2]).toContain("Dr. R. Gupta");
+  });
+
   test("emits a header plus one line per row, with commas/quotes escaped", () => {
     const rows = buildRegisterRows(
       [record({ id: 1, address: '12, "A" Block', billId: 10 })],
@@ -141,13 +173,24 @@ describe("registerRowsToCsv", () => {
     const csv = registerRowsToCsv(rows);
     const lines = csv.split("\n");
     expect(lines).toHaveLength(2);
-    expect(lines[0]).toContain("Sl No");
+    expect(lines[0]).toContain("Serial Number");
     expect(lines[0]).toContain("Form F Tests");
-    expect(lines[1]).toContain('"12, ""A"" Block"');
+    expect(lines[1]).toContain('"12, ""A"" Block');
     expect(lines[1]).toContain("USG OB; Fetal Echo");
   });
 
   test("empty month produces a header-only CSV (valid, no silent failure)", () => {
     expect(registerRowsToCsv([]).split("\n")).toHaveLength(1);
+  });
+});
+
+describe("dateOfProcedure (Rule 9(1) Column 2) resolution", () => {
+  test("uses procedureDate, falls back to the form's date, and stays BLANK when neither exists (never fabricated)", () => {
+    const a = buildRegisterRows([record({ id: 1, procedureDate: "2026-07-04", date: "2026-07-05" })], 1)[0];
+    expect(a.dateOfProcedure).toBe("2026-07-04");
+    const b = buildRegisterRows([record({ id: 2, procedureDate: "", date: "2026-07-05" })], 1)[0];
+    expect(b.dateOfProcedure).toBe("2026-07-05");
+    const c = buildRegisterRows([record({ id: 3, procedureDate: "", date: "" })], 1)[0];
+    expect(c.dateOfProcedure).toBe("");
   });
 });

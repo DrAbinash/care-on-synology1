@@ -11,6 +11,20 @@
 
 Both sit behind the `/form-f` staff-permission mount **plus** `requireAdminRole` (management only), and are registered before the router's `/:id` catch-all. Both are excluded from the service-worker cache (`/api/form-f/register` prefix in `public/sw.js`; enforced by `personalEndpointCacheGuard.test.ts`) — statutory PHI must never be served from Cache Storage, and a cached admin 200 must never reach non-admin staff on a shared terminal.
 
+## Rule 9(1) structure
+
+The register follows the permanent-clinic-register structure prescribed by Rule 9(1) of the PC-PNDT Act. The **print reproduces exactly these five columns**; the CSV leads with them (supplementary operational columns follow); the on-screen table shows them first.
+
+| # | Prescribed header | Source data |
+| --- | --- | --- |
+| 1 | Serial Number | Derived continuous serial for the month (see below) |
+| 2 | Date of Procedure | `procedure_date`, falling back to the form's `date`; left **blank** when neither was captured — never back-filled from record timestamps (the completeness grading flags it) |
+| 3 | Name of the Patient & Spouse/Father | `patient_name` + `husband_father_name` |
+| 4 | Full Address & Contact Details | `address` + `mobile` |
+| 5 | Name of Referring Doctor / Self-Referral | `doctor_name`, else `referred_by`, else "Self" |
+
+"Updated daily" (Rule 9(1)) is satisfied operationally: the register is a live view over `form_f_records`, which are created at billing/registration — any day's records appear the moment they are saved.
+
 ## Semantics
 
 - **Month window:** the clinic's month — IST (UTC+05:30, no DST) applied to `form_f_records.created_at` (`istMonthWindowUtc`). Month/year/page are validated; bad input is a 400, never an empty-but-200 lie.

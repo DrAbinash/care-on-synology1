@@ -81,8 +81,14 @@ export interface RegisterSourceRecord extends FormFCompletenessInput {
 }
 
 export interface RegisterRow {
+  /** Rule 9(1) Column 1 — continuous sequential number for the month/year. */
   serial: number;
   recordId: number;
+  /** Rule 9(1) Column 2 — the date the procedure was performed. Resolved as
+   *  procedureDate, falling back to the form's own date field; left BLANK
+   *  when neither was captured (never fabricated from record timestamps —
+   *  the completeness grading already flags the missing date). */
+  dateOfProcedure: string;
   /** Form-F-designated tests billed on the record's linked order — the
    *  admin-configured clinic_settings.formFTestIds designation (any
    *  modality/procedure, never fetal/echo-only), matching the /pending
@@ -148,6 +154,7 @@ export function buildRegisterRows(
     return {
       serial: firstSerial + i,
       recordId: r.id,
+      dateOfProcedure: r.procedureDate?.trim() || r.date?.trim() || "",
       linkedTests: (r.billId != null ? testsByBillId?.get(r.billId) : undefined) ?? [],
       createdAtIst: istDateTimeString(r.createdAt),
       formDate: r.date?.trim() || "",
@@ -179,18 +186,31 @@ export function buildRegisterRows(
   });
 }
 
-const CSV_COLUMNS: Array<{ header: string; value: (r: RegisterRow) => string }> = [
-  { header: "Sl No", value: (r) => String(r.serial) },
-  { header: "Record Created (IST)", value: (r) => r.createdAtIst },
-  { header: "Form Date", value: (r) => r.formDate },
-  { header: "Registration No", value: (r) => r.registrationNo },
-  { header: "Patient Name", value: (r) => r.patientName },
+/** Rule 9(1), PC-PNDT Act — the five prescribed structural columns of the
+ *  permanent clinic register, in the prescribed order. These lead the CSV
+ *  and are the entire statutory print. */
+export const RULE_9_1_COLUMNS: Array<{ header: string; value: (r: RegisterRow) => string }> = [
+  { header: "Serial Number", value: (r) => String(r.serial) },
+  { header: "Date of Procedure", value: (r) => r.dateOfProcedure },
+  {
+    header: "Name of the Patient & Spouse/Father",
+    value: (r) => [r.patientName, r.husbandFatherName && `Spouse/Father: ${r.husbandFatherName}`].filter(Boolean).join(" — "),
+  },
+  {
+    header: "Full Address & Contact Details",
+    value: (r) => [r.address, r.mobile && `Ph: ${r.mobile}`].filter(Boolean).join(", "),
+  },
+  {
+    header: "Name of Referring Doctor / Self-Referral",
+    value: (r) => r.doctorName || r.referredBy || "Self",
+  },
+];
+
+// Supplementary (non-statutory) columns — clinic operations + QA data, kept
+// AFTER the Rule 9(1) block in the CSV so the statutory structure leads.
+const SUPPLEMENTARY_COLUMNS: Array<{ header: string; value: (r: RegisterRow) => string }> = [
   { header: "Age", value: (r) => r.age },
-  { header: "Husband/Father Name", value: (r) => r.husbandFatherName },
-  { header: "Address", value: (r) => r.address },
-  { header: "Mobile", value: (r) => r.mobile },
-  { header: "Referred By", value: (r) => r.referredBy },
-  { header: "Doctor", value: (r) => r.doctorName },
+  { header: "Registration No", value: (r) => r.registrationNo },
   { header: "Procedure", value: (r) => r.procedure },
   { header: "Form F Tests", value: (r) => r.linkedTests.join("; ") },
   { header: "Purpose", value: (r) => r.procedurePurpose },
@@ -199,7 +219,6 @@ const CSV_COLUMNS: Array<{ header: string; value: (r: RegisterRow) => string }> 
   { header: "Ultrasound Result", value: (r) => r.ultrasoundResult },
   { header: "Abnormality", value: (r) => r.abnormality },
   { header: "Consent Date", value: (r) => r.consentDate },
-  { header: "Procedure Date", value: (r) => r.procedureDate },
   { header: "Result Conveyed", value: (r) => r.resultConveyed },
   { header: "ID Verified", value: (r) => (r.idCardVerified ? "yes" : "no") },
   { header: "Completion", value: (r) => r.completionStatus },
@@ -207,7 +226,10 @@ const CSV_COLUMNS: Array<{ header: string; value: (r: RegisterRow) => string }> 
   { header: "Bill No", value: (r) => r.billNumber },
   { header: "Fetal USG Study Id", value: (r) => (r.fetalUsgStudyId == null ? "" : String(r.fetalUsgStudyId)) },
   { header: "Record Id", value: (r) => String(r.recordId) },
+  { header: "Record Created (IST)", value: (r) => r.createdAtIst },
 ];
+
+const CSV_COLUMNS = [...RULE_9_1_COLUMNS, ...SUPPLEMENTARY_COLUMNS];
 
 function csvEscape(v: string): string {
   return v.includes(",") || v.includes('"') || v.includes("\n") ? `"${v.replace(/"/g, '""')}"` : v;

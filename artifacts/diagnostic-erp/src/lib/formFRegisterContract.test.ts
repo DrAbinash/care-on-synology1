@@ -88,6 +88,25 @@ describe("FormF page + register component", () => {
     expect(component).toContain("totalPagesToFetch"); // print loops every page
     expect(component).toContain("formf-register-error"); // distinct error state with retry
   });
+
+  it("print + table carry the five Rule 9(1) prescribed columns, and the print is exactly that structure", () => {
+    for (const header of [
+      "Serial Number",
+      "Date of Procedure",
+      "Name of the Patient",
+      "Full Address",
+      "Referring Doctor / Self-Referral",
+    ]) {
+      expect(component).toContain(header);
+    }
+    expect(component).toContain("Rule 9(1)");
+    // The statutory print never back-fills a missing procedure date:
+    expect(component).not.toMatch(/dateOfProcedure \|\| r\.createdAtIst/);
+    // And the server lib pins the CSV order:
+    const lib = read(resolve(REPO, "artifacts/api-server/src/lib/formFRegister.ts"));
+    expect(lib).toContain("RULE_9_1_COLUMNS");
+    expect(lib).toMatch(/CSV_COLUMNS = \[\.\.\.RULE_9_1_COLUMNS, \.\.\.SUPPLEMENTARY_COLUMNS\]/);
+  });
 });
 
 describe("FetalEcho compliance-error surfacing", () => {

@@ -21,6 +21,7 @@ import { AlertTriangle, Download, Printer, RefreshCw, BookOpen } from "lucide-re
 interface RegisterRow {
   serial: number;
   recordId: number;
+  dateOfProcedure: string;
   createdAtIst: string;
   formDate: string;
   patientName: string;
@@ -127,47 +128,50 @@ export default function FormFMonthlyRegister() {
       return;
     }
 
+    // Print reproduces the Rule 9(1) permanent-register structure EXACTLY:
+    // the five prescribed columns, in the prescribed order, nothing else.
+    // A blank Date of Procedure stays blank (flagged incomplete on screen /
+    // in the CSV) — never back-filled from record timestamps.
     const bodyRows = all.map((r) => `
       <tr>
         <td>${r.serial}</td>
-        <td>${esc(r.formDate || r.createdAtIst.slice(0, 10))}</td>
-        <td>${esc(r.patientName)}<br/><small>${esc([r.age && `${r.age}y`, r.mobile].filter(Boolean).join(" · "))}</small></td>
-        <td>${esc(r.husbandFatherName)}</td>
-        <td>${esc(r.address)}</td>
-        <td>${esc(r.referredBy || r.doctorName)}</td>
-        <td>${esc(r.linkedTests.length ? r.linkedTests.join(", ") : r.procedure)}</td>
-        <td>${esc(r.gestationalAge)}</td>
-        <td>${esc(r.ultrasoundResult)}${r.abnormality ? `<br/><small>${esc(r.abnormality)}</small>` : ""}</td>
-        <td>${esc(r.consentDate || r.procedureDate)}</td>
-        <td>${esc(r.billNumber)}</td>
-        <td>${r.completionStatus === "complete" ? "Complete" : `Incomplete:<br/><small>${esc(r.missingFields.join("; "))}</small>`}</td>
+        <td>${esc(r.dateOfProcedure)}</td>
+        <td>${esc(r.patientName)}${r.husbandFatherName ? `<br/><small>Spouse/Father: ${esc(r.husbandFatherName)}</small>` : ""}</td>
+        <td>${esc(r.address)}${r.mobile ? `<br/><small>Ph: ${esc(r.mobile)}</small>` : ""}</td>
+        <td>${esc(r.doctorName || r.referredBy || "Self")}</td>
       </tr>`).join("");
+    const incompleteCountAll = all.filter((r) => r.completionStatus === "incomplete").length;
 
     const w = window.open("", "_blank", "width=1100,height=750");
     if (!w) return;
     w.document.write(`
       <!DOCTYPE html><html><head>
-      <title>PCPNDT Form F Register — ${MONTH_NAMES[month - 1]} ${year}</title>
+      <title>Form F Register (Rule 9(1)) — ${MONTH_NAMES[month - 1]} ${year}</title>
       <style>
-        @page { size: A4 landscape; margin: 10mm; }
-        body { margin: 0; font-family: Arial, sans-serif; font-size: 10px; }
+        @page { size: A4; margin: 12mm; }
+        body { margin: 0; font-family: Arial, sans-serif; font-size: 11px; }
         table { border-collapse: collapse; width: 100%; }
-        th, td { border: 1px solid #444; padding: 3px 4px; text-align: left; vertical-align: top; }
+        th, td { border: 1px solid #444; padding: 4px 5px; text-align: left; vertical-align: top; }
         th { background: #eee; }
-        h1 { font-size: 14px; text-align: center; margin: 4px 0; }
+        h1 { font-size: 14px; text-align: center; margin: 4px 0 2px; }
         p.meta { text-align: center; margin: 2px 0 8px; }
+        p.foot { margin-top: 8px; font-size: 9px; color: #333; }
         * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
       </style>
       </head><body>
-      <h1>PCPNDT Form F Register</h1>
+      <h1>Permanent Clinic Register — Form F (Rule 9(1), PC-PNDT Act)</h1>
       <p class="meta">${MONTH_NAMES[month - 1]} ${year} — ${all.length} record(s), generated ${esc(new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }))}</p>
       <table>
         <thead><tr>
-          <th>Sl</th><th>Date</th><th>Patient</th><th>Husband/Father</th><th>Address</th><th>Referred By</th>
-          <th>Form F Tests</th><th>GA</th><th>Result</th><th>Consent/Proc. Date</th><th>Bill</th><th>Status</th>
+          <th style="width:7%">Serial Number</th>
+          <th style="width:13%">Date of Procedure</th>
+          <th style="width:27%">Name of the Patient &amp; Spouse/Father</th>
+          <th style="width:33%">Full Address &amp; Contact Details</th>
+          <th style="width:20%">Name of Referring Doctor / Self-Referral</th>
         </tr></thead>
         <tbody>${bodyRows}</tbody>
       </table>
+      ${incompleteCountAll > 0 ? `<p class="foot">${incompleteCountAll} record(s) in this month have incomplete Form F data (details in the audited CSV export / on-screen register); none are omitted above.</p>` : ""}
       <script>window.onload=()=>{window.print();window.close();}<\/script>
       </body></html>`);
     w.document.close();
@@ -224,16 +228,16 @@ export default function FormFMonthlyRegister() {
           <div className="overflow-x-auto border rounded-lg bg-white">
             <table className="w-full text-[11px]">
               <thead>
+                {/* Columns 1-5 are the Rule 9(1) prescribed register structure,
+                    in the prescribed order; the last two are on-screen
+                    operational extras (also in the CSV, after the statutory block). */}
                 <tr className="bg-gray-50 text-gray-600">
-                  <th className="px-2 py-1.5 text-left">Sl</th>
-                  <th className="px-2 py-1.5 text-left">Date</th>
-                  <th className="px-2 py-1.5 text-left">Patient</th>
-                  <th className="px-2 py-1.5 text-left">Husband/Father</th>
-                  <th className="px-2 py-1.5 text-left">Referred By</th>
+                  <th className="px-2 py-1.5 text-left">Serial Number</th>
+                  <th className="px-2 py-1.5 text-left">Date of Procedure</th>
+                  <th className="px-2 py-1.5 text-left">Name of the Patient &amp; Spouse/Father</th>
+                  <th className="px-2 py-1.5 text-left">Full Address &amp; Contact Details</th>
+                  <th className="px-2 py-1.5 text-left">Referring Doctor / Self-Referral</th>
                   <th className="px-2 py-1.5 text-left">Form F Tests</th>
-                  <th className="px-2 py-1.5 text-left">GA</th>
-                  <th className="px-2 py-1.5 text-left">Result</th>
-                  <th className="px-2 py-1.5 text-left">Bill</th>
                   <th className="px-2 py-1.5 text-left">Status</th>
                 </tr>
               </thead>
@@ -241,20 +245,20 @@ export default function FormFMonthlyRegister() {
                 {rows.map((r) => (
                   <tr key={r.recordId} className="border-t align-top">
                     <td className="px-2 py-1.5">{r.serial}</td>
-                    <td className="px-2 py-1.5 whitespace-nowrap">{r.formDate || r.createdAtIst.slice(0, 10)}</td>
+                    <td className="px-2 py-1.5 whitespace-nowrap">{r.dateOfProcedure || <span className="text-amber-700">— not recorded —</span>}</td>
                     <td className="px-2 py-1.5">
                       <div className="font-medium">{r.patientName || "—"}</div>
-                      <div className="text-[10px] text-muted-foreground">{[r.age && `${r.age}y`, r.mobile].filter(Boolean).join(" · ")}</div>
+                      <div className="text-[10px] text-muted-foreground">
+                        {r.husbandFatherName ? `Spouse/Father: ${r.husbandFatherName}` : "Spouse/Father: —"}
+                        {r.age ? ` · ${r.age}y` : ""}
+                      </div>
                     </td>
-                    <td className="px-2 py-1.5">{r.husbandFatherName || "—"}</td>
-                    <td className="px-2 py-1.5">{r.referredBy || "—"}</td>
-                    <td className="px-2 py-1.5">{r.linkedTests.length ? r.linkedTests.join(", ") : (r.procedure || "—")}</td>
-                    <td className="px-2 py-1.5 whitespace-nowrap">{r.gestationalAge || "—"}</td>
                     <td className="px-2 py-1.5">
-                      {r.ultrasoundResult || "—"}
-                      {r.abnormality ? <div className="text-[10px] text-rose-700">{r.abnormality}</div> : null}
+                      {r.address || "—"}
+                      <div className="text-[10px] text-muted-foreground">{r.mobile ? `Ph: ${r.mobile}` : ""}</div>
                     </td>
-                    <td className="px-2 py-1.5">{r.billNumber || "—"}</td>
+                    <td className="px-2 py-1.5">{r.doctorName || r.referredBy || "Self"}</td>
+                    <td className="px-2 py-1.5">{r.linkedTests.length ? r.linkedTests.join(", ") : (r.procedure || "—")}</td>
                     <td className="px-2 py-1.5">
                       {r.completionStatus === "complete" ? (
                         <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100 text-[10px]">Complete</Badge>
@@ -286,7 +290,8 @@ export default function FormFMonthlyRegister() {
             )}
           </div>
           <p className="text-[10px] text-muted-foreground">
-            Print and Export CSV both cover the complete statutory month regardless of pagination (the CSV export is audit-logged).
+            Print reproduces the Rule 9(1) permanent-register format (its five prescribed columns) for the complete month;
+            Export CSV leads with the same five columns and appends the supplementary data (the export is audit-logged).
           </p>
         </>
       )}
