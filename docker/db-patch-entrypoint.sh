@@ -318,10 +318,21 @@ while IFS='	 ' read -r tag when; do
   echo ""
   info "  [apply] ${tag}…"
 
-  # Strip Drizzle breakpoint comments and execute
+  # Strip Drizzle breakpoint comments and execute.
+  # ON_ERROR_STOP=0 keeps a from-scratch application going past the historical
+  # migrations that are self-inconsistent on an EMPTY database (0006 drops two
+  # dicom_nodes columns that 0002 already renamed; 0010 updates an email_settings
+  # column a later feature migration adds). Those are guaranteed no-ops here — the
+  # final schema is identical — so their "does not exist" lines are filtered out
+  # by the two EXACT patterns below (exact so a genuine "relation does not exist"
+  # from any future migration is never hidden). See HOW_TO_ADD_DB_MIGRATIONS.md
+  # ("Known-benign clean-boot Drizzle statements").
   sed 's/--> statement-breakpoint//g' "${file}" | \
     psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" \
-         -v ON_ERROR_STOP=0 -q 2>&1 | grep -v "already exists" | grep -v "^NOTICE" >&2 || true
+         -v ON_ERROR_STOP=0 -q 2>&1 \
+      | grep -v "already exists" | grep -v "^NOTICE" \
+      | grep -vE 'column "(pull_interval_minutes|pull_query_days)" of relation "dicom_nodes" does not exist' \
+      | grep -v 'column "daily_summary_last_sent_date" does not exist' >&2 || true
 
   # Record in Drizzle tracking table
   when_val="${when:-$(date +%s%3N)}"

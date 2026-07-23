@@ -1,0 +1,80 @@
+name: CI
+
+# Runs the checks that used to only run locally, so the whole class of
+# clean-boot / migration-order / type / test regressions is caught on every PR
+# instead of at deploy time. See HOW_TO_ADD_DB_MIGRATIONS.md and
+# docs/CARE_ERP_MASTER_HANDOVER.md.
+
+on:
+  push:
+    branches: [feature/website-login-redirection, main, master]
+  pull_request:
+
+# Cancel superseded runs on the same ref to save minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Fast, DB-free gates ─────────────────────────────────────────────────────
+  static:
+    name: Static checks (typecheck, migration order, grounding)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Migration order preflight (DDL + DML dependency order)
+        run: node scripts/check-migration-order.cjs
+      - name: Architecture grounding (docs match code)
+        run: node scripts/grounding-check.cjs
+      - name: Workspace typecheck
+        run: pnpm typecheck
+
+  # ── Full test suite + clean-boot proof against a real Postgres ──────────────
+  test:
+    name: Tests + migration smoke (real Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: erp
+          POSTGRES_PASSWORD: erp
+          POSTGRES_DB: care_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U erp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # DB-dependent tests read DATABASE_URL; the smoke uses a scratch DB it
+      # creates/drops under the admin URL.
+      DATABASE_URL: postgresql://erp:erp@localhost:5432/care_test
+      MIGRATION_SMOKE_ADMIN_URL: postgresql://erp:erp@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Clean-boot + upgrade-safety migration smoke
+        run: pnpm db:smoke
+      - name: Bootstrap the test database (full migration path)
+        run: pnpm db:bootstrap
+      - name: Vitest suite (sequential — one shared DB)
+        # --no-file-parallelism because the DB-dependent tests share one Postgres
+        # database; parallel files collide on rows/ids (proven flaky otherwise).
+        run: pnpm exec vitest run --no-file-parallelism
