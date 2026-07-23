@@ -689,6 +689,20 @@ function scheduleWhatsappReminders() {
           console.log(`[cron] WhatsApp dues reminders: sent=${r.sent} failed=${r.failed} total=${r.total}${r.skipped ? ` (skipped: ${r.reason})` : ""}`);
         }
       }
+
+      // Report-delivery unread reminders — reminds ONLY reports staff explicitly
+      // sent (not a bulk scan) that remain unread after 24h, capped at one. Fixed
+      // daily pass at 12:00 server time; the worker no-ops unless
+      // ff_report_delivery_receipts is enabled.
+      {
+        const key = `wa-report-delivery-${dateKey}`;
+        if (now.getHours() === 12 && now.getMinutes() === 0 && !firedToday.has(key)) {
+          firedToday.add(key);
+          const { runReportDeliveryReminders } = await import("./routes/reportDeliveryTracking");
+          const r = await runReportDeliveryReminders();
+          console.log(`[cron] WhatsApp report-delivery reminders: sent=${r.sent} failed=${r.failed} total=${r.total}${r.skipped ? ` (skipped: ${r.reason})` : ""}`);
+        }
+      }
     } catch (err) {
       console.error("[cron] WhatsApp reminder check failed:", err);
     }
@@ -706,6 +720,11 @@ export async function runWhatsappAppointmentReminders() {
 export async function runWhatsappDuesReminders() {
   const { runDuesReminders } = await import("./routes/whatsapp");
   return runDuesReminders();
+}
+
+export async function runWhatsappReportDeliveryReminders() {
+  const { runReportDeliveryReminders } = await import("./routes/reportDeliveryTracking");
+  return runReportDeliveryReminders();
 }
 
 function scheduleMonthEndCommission() {

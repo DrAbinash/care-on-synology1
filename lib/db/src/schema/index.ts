@@ -72,6 +72,7 @@ export {
   radiologySmartMacrosTable,
 } from "./radiologyReportGenerator";
 export * from "./reportDeliveryLogs";
+export * from "./reportDeliveryReceipts";
 export * from "./whatsapp";
 export * from "./structuredReportTemplates";
 export * from "./radiologyFindingLibrary";

@@ -94,6 +94,7 @@ const People          = lazy(() => import("@/pages/People"));
 const AttendanceDevices = lazy(() => import("@/pages/AttendanceDevices"));
 const Performance     = lazy(() => import("@/pages/Performance"));
 const MyPortal        = lazy(() => import("@/pages/MyPortal"));
+const ReportDeliveryTracking = lazy(() => import("@/pages/ReportDeliveryTracking"));
 const HRForms         = lazy(() => import("@/pages/HRForms"));
 const QueuePage       = lazy(() => import("@/pages/Queue"));
 const Radiology       = lazy(() => import("@/pages/Radiology"));
@@ -588,6 +589,7 @@ function Router() {
               <Route path="/attendance-devices" component={AttendanceDevices} />
               <Route path="/performance" component={Performance} />
               <Route path="/my-portal" component={MyPortal} />
+              <Route path="/report-delivery-tracking" component={ReportDeliveryTracking} />
               <Route path="/hr-forms" component={HRForms} />
               <Route path="/form-f" component={FormF} />
               <Route path="/machines" component={Machines} />

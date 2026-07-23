@@ -55,6 +55,10 @@ const NETWORK_ONLY_PREFIXES = [
   // caller's OWN staff record (attendance, score, leave, notifications). Same
   // per-identity leak risk as /api/my/*, so exclude the whole prefix.
   "/api/self-service/",
+  // Report delivery tracking — receipt status (sent/delivered/read) changes in
+  // real time as Meta posts webhooks, so a cached list would show stale states.
+  // Always network-only.
+  "/api/report-delivery-tracking/",
 
   // Patient portal (mobile app): every endpoint is scoped to the verified
   // patient session (my-bookings, my-reports, report links). Same shared-
