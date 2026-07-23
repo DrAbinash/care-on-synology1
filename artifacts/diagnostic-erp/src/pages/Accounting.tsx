@@ -226,7 +226,13 @@ export default function Accounting() {
     },
   });
 
-  // ── Auto-setup: seed defaults + sync billing when accounts are empty ─────────
+  // ── One-time account seeding (F2: no longer auto-syncs billing) ──────────────
+  //
+  // Payments are now vouchered at capture time, so the page must NOT silently
+  // run the sync-billing backfill on every load — that auto-run is exactly
+  // what re-vouchered already-vouchered desk payments (doubling revenue).
+  // Seeding the default chart of accounts when empty is still safe and needed;
+  // the backfill is an explicit, previewed admin action (the button below).
 
   const setupDone = useRef(false);
   const [syncing, setSyncing] = useState(false);
@@ -234,36 +240,40 @@ export default function Accounting() {
   useEffect(() => {
     if (accLoading || setupDone.current) return;
     setupDone.current = true;
-    setSyncing(true);
-
-    const doSync = () =>
-      api.post("/api/accounting/sync-billing", {}).then(() => {
-        qc.invalidateQueries({ queryKey: ["vouchers"] });
-        qc.invalidateQueries({ queryKey: ["ledger"] });
-        qc.invalidateQueries({ queryKey: ["trial-balance"] });
-        qc.invalidateQueries({ queryKey: ["profit-loss"] });
-        qc.invalidateQueries({ queryKey: ["balance-sheet"] });
-      });
-
-    if (accounts.length > 0) {
-      doSync().finally(() => setSyncing(false));
-    } else {
+    if (accounts.length === 0) {
+      setSyncing(true);
       api.post("/api/accounting/setup-defaults", {})
-        .then(() => doSync())
         .then(() => qc.invalidateQueries({ queryKey: ["accounts"] }))
         .finally(() => setSyncing(false));
     }
   }, [accLoading, accounts.length]);
 
+  const invalidateBooks = () => {
+    qc.invalidateQueries({ queryKey: ["vouchers"] });
+    qc.invalidateQueries({ queryKey: ["ledger"] });
+    qc.invalidateQueries({ queryKey: ["trial-balance"] });
+    qc.invalidateQueries({ queryKey: ["profit-loss"] });
+    qc.invalidateQueries({ queryKey: ["balance-sheet"] });
+  };
+
+  // Explicit backfill: dry-run first (reports what WOULD be created, writes
+  // nothing), confirm, then commit. Never runs automatically.
   const syncBilling = useMutation({
-    mutationFn: () => api.post("/api/accounting/sync-billing", {}),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["vouchers"] });
-      qc.invalidateQueries({ queryKey: ["ledger"] });
-      qc.invalidateQueries({ queryKey: ["trial-balance"] });
-      qc.invalidateQueries({ queryKey: ["profit-loss"] });
-      qc.invalidateQueries({ queryKey: ["balance-sheet"] });
+    mutationFn: async () => {
+      const preview = await api.post<{ wouldCreate: number }>("/api/accounting/sync-billing", { dryRun: true });
+      if (preview.wouldCreate === 0) {
+        toast({ title: "Already up to date", description: "Every payment is vouchered — nothing to sync." });
+        return { committed: 0 };
+      }
+      if (!window.confirm(`${preview.wouldCreate} payment(s) are not yet vouchered. Create their receipt vouchers now?`)) {
+        return { committed: 0 };
+      }
+      const result = await api.post<{ created: number }>("/api/accounting/sync-billing", {});
+      toast({ title: "Sync complete", description: `${result.created} voucher(s) created.` });
+      return { committed: result.created };
     },
+    onSuccess: () => invalidateBooks(),
+    onError: (err) => toast({ title: "Sync failed", description: err instanceof Error ? err.message : "Error", variant: "destructive" }),
   });
 
   // ── Mutations ────────────────────────────────────────────────────────────────
@@ -444,7 +454,7 @@ export default function Accounting() {
               onClick={() => syncBilling.mutate()}
             >
               <RefreshCw size={13} className={`mr-1 ${syncBilling.isPending ? "animate-spin" : ""}`} />
-              Sync from Billing
+              Sync from Billing…
             </Button>
           </div>
         }

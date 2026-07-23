@@ -1,6 +1,6 @@
 import { db } from "@workspace/db";
 import { accountsTable, vouchersTable } from "@workspace/db/schema";
-import { eq, like, sql } from "drizzle-orm";
+import { and, eq, like, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { classifyPaymentMethod } from "./paymentMethodClassifier";
 
@@ -132,10 +132,30 @@ export async function autoVoucherForPayment(opts: {
   billNumber: string;
   patientName?: string | null;
   performedBy?: string | null;
+  /**
+   * F2 — the payment this voucher records. When provided, the voucher row is
+   * linked via payment_id (the shared dedup key with sync-billing) AND this
+   * function becomes idempotent for that payment: a second call for the same
+   * paymentId is a no-op, so a real-time voucher + a later sync can never
+   * double it. `reference` still carries the bill number (Tally unchanged).
+   */
+  paymentId?: number | null;
 }): Promise<void> {
   try {
-    const { billId, amount, method, billNumber, patientName, performedBy } = opts;
+    const { billId, amount, method, billNumber, patientName, performedBy, paymentId } = opts;
     if (!Number.isFinite(amount) || amount === 0) return;
+
+    // Idempotency by payment: never post a second voucher for a payment that
+    // already has one (real-time retry, or a real-time voucher followed by a
+    // sync run).
+    if (paymentId != null) {
+      const [existing] = await db
+        .select({ id: vouchersTable.id })
+        .from(vouchersTable)
+        .where(and(eq(vouchersTable.paymentId, paymentId), eq(vouchersTable.billId, billId)))
+        .limit(1);
+      if (existing) return;
+    }
 
     const methodAccDef = resolveMethodAccount(method);
     const isRefund = amount < 0;
@@ -167,6 +187,7 @@ export async function autoVoucherForPayment(opts: {
           amount: absAmount.toFixed(2),
           particular,
           billId,
+          paymentId: paymentId ?? null,
           performedBy: performedBy ?? null,
           narration: "Auto-generated from billing system",
           reference: billNumber,

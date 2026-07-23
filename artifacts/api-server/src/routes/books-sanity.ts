@@ -168,6 +168,62 @@ export async function runBooksSanity(opts: { from: string | null; to: string | n
     });
   }
 
+  // ── F2: positive payments with no accounting voucher ──────────────────────
+  // A payment is vouchered iff a voucher links it via payment_id OR a receipt
+  // voucher on the same bill matches its amount (legacy real-time vouchers).
+  // Superseded (F1-voided) payments are excluded. Surfaces any gap left by a
+  // failed capture-time voucher — the counterpart to the sync backfill.
+  const paymentDateFilter = fromRaw && toRaw
+    ? sql`p.created_at >= ${fromRaw}::date AND p.created_at < (${toRaw}::date + INTERVAL '1 day')`
+    : sql`p.created_at >= NOW() - INTERVAL '90 days'`;
+  const noVoucher = await db.execute(sql`
+    SELECT p.id, p.bill_id, b.bill_number, p.amount, p.method, p.created_at
+      FROM payments p
+      LEFT JOIN bills b ON b.id = p.bill_id
+     WHERE p.amount > 0
+       AND COALESCE(p.settlement_status, '') <> 'superseded'
+       AND ${paymentDateFilter}
+       AND NOT EXISTS (SELECT 1 FROM vouchers v WHERE v.payment_id = p.id)
+       AND NOT EXISTS (
+         SELECT 1 FROM vouchers v
+          WHERE v.bill_id = p.bill_id AND v.type = 'receipt'
+            AND v.payment_id IS NULL
+            AND ROUND(v.amount, 2) = ROUND(p.amount, 2)
+       )
+     ORDER BY p.created_at DESC
+     LIMIT 500
+  `);
+  if (noVoucher.rows.length > 0) {
+    anomalies.push({
+      category: "Payments without an accounting voucher",
+      severity: "high",
+      count: noVoucher.rows.length,
+      totalAmount: noVoucher.rows.reduce((s, r) => s + Number(r.amount ?? 0), 0),
+      description: "Positive payments in the period with no receipt voucher (neither payment_id-linked nor amount-matched). Run Accounting → Sync from Billing to voucher them.",
+      rows: noVoucher.rows,
+    });
+  }
+
+  // ── F2: vouchers linked to a payment that no longer exists (orphans) ──────
+  const orphanVouchers = await db.execute(sql`
+    SELECT v.id, v.voucher_number, v.amount, v.payment_id, v.bill_id, v.date
+      FROM vouchers v
+     WHERE v.payment_id IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.id = v.payment_id)
+     ORDER BY v.id DESC
+     LIMIT 500
+  `);
+  if (orphanVouchers.rows.length > 0) {
+    anomalies.push({
+      category: "Vouchers linked to a missing payment",
+      severity: "medium",
+      count: orphanVouchers.rows.length,
+      totalAmount: orphanVouchers.rows.reduce((s, r) => s + Number(r.amount ?? 0), 0),
+      description: "Receipt vouchers whose payment_id points to a payment row that no longer exists. Investigate before the next Tally export.",
+      rows: orphanVouchers.rows,
+    });
+  }
+
   // ── Period totals ──────────────────────────────────────────────────────────
   const periodTotals = await db.execute(sql`
     SELECT

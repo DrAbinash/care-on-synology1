@@ -65,6 +65,10 @@ export const vouchersTable = pgTable("vouchers", {
   narration: text("narration"),
   // Optional link to a bill for filtering
   billId: integer("bill_id"),
+  // Optional link to the payment this voucher records (F2). The shared dedup
+  // key between real-time auto-vouchers and the sync-billing backfill — a
+  // payment is "already vouchered" iff a voucher row has payment_id = its id.
+  paymentId: integer("payment_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

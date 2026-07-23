@@ -18,6 +18,7 @@ import { generateBillNumber } from "../routes/bills";
 import { generateTokenForBill } from "../routes/tokens";
 import { generateTestTokensForOrder } from "../routes/test-tokens";
 import { calculateDobFromAge } from "../routes/public-booking";
+import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { generateStudiesForOrder } from "../routes/radiology";
 
 export async function generatePatientId(): Promise<string> {
@@ -177,7 +178,7 @@ export async function registerPatientSelfFlow(params: RegisterPatientSelfFlowPar
   const orderNumber = `${source.toUpperCase()}-${stamp}-${rand}`;
 
   // Create order + order_tests + bill in a transaction
-  const { billRow, orderRow } = await db.transaction(async (tx) => {
+  const { billRow, orderRow, paymentId } = await db.transaction(async (tx) => {
     const [ord] = await tx
       .insert(ordersTable)
       .values({
@@ -222,17 +223,33 @@ export async function registerPatientSelfFlow(params: RegisterPatientSelfFlowPar
       })
       .returning();
 
-    await tx.insert(paymentsTable).values({
+    const [payment] = await tx.insert(paymentsTable).values({
       billId: bill.id,
       amount: paymentAmount.toFixed(2),
       method: paymentMethod,
       referenceNumber: paymentReference,
       recordedByName: source === "kiosk" ? "Kiosk" : "Online",
       notes: `${source === "kiosk" ? "Kiosk" : "Online"} self-registration ${paymentMethod} payment`,
-    });
+    }).returning({ id: paymentsTable.id });
 
-    return { billRow: bill, orderRow: ord };
+    return { billRow: bill, orderRow: ord, paymentId: payment?.id ?? null };
   });
+
+  // F2 — voucher the prepayment AT CAPTURE (IST-dated, method-correct account,
+  // linked by payment_id), instead of leaving it for the sync-billing backfill
+  // (which posted it late, UTC-dated and misclassified). Fire-and-forget and
+  // idempotent by payment_id, so a later sync never doubles it.
+  if (paymentId != null && paymentAmount > 0) {
+    void autoVoucherForPayment({
+      billId: billRow.id,
+      amount: paymentAmount,
+      method: paymentMethod,
+      billNumber: billRow.billNumber,
+      patientName: `${firstName} ${lastName}`.trim() || undefined,
+      performedBy: source === "kiosk" ? "Kiosk" : "Online",
+      paymentId,
+    }).catch(() => { /* logged inside auto-voucher; never blocks registration */ });
+  }
 
   await db.update(patientsTable).set({ ledgerId }).where(
     sql`${patientsTable.id} = ${patientDbId} AND ${patientsTable.ledgerId} IS NULL`
