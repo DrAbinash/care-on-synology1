@@ -13,9 +13,15 @@
  * selected study/series/SOP references to POST /api/radiology/print-images,
  * which fetches full-resolution pixels from Orthanc server-side and forwards
  * them to the NAS DICOM print bridge (drabinash/dicomtowindows).
+ *
+ * A print-jobs POST only means "accepted" — printing happens in the
+ * background, so this component also polls the job's real outcome
+ * (GET /api/radiology/print-jobs/:jobKey/status) and shows a live
+ * printer-health dot (GET /api/radiology/print-bridge/health), instead of
+ * leaving "sent" as the last word on whether anything actually printed.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useCallback, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { Badge } from "@/components/ui/badge";
@@ -24,8 +30,11 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { Printer, ChevronDown, ChevronRight, Loader2, X } from "lucide-react";
 import { thumbnailRenderedUrl } from "@/lib/reportImageRefs";
+import { healthDotClass, healthTooltip, type BridgeHealth } from "@/lib/printBridgeHealth";
 
 const MAX_PRINT_IMAGES = 100; // mirrors the server route's own cap
+const JOB_POLL_INTERVAL_MS = 1500;
+const HEALTH_POLL_INTERVAL_MS = 45_000;
 
 interface LaunchData {
   ohifUrl?: string | null;
@@ -54,6 +63,14 @@ interface PrintJobResult {
   fetched?: number;
   skipped?: number;
   pages?: number;
+  jobKey?: string;
+}
+
+interface PrintJobStatus {
+  status?: "queued" | "processing" | "completed" | "failed";
+  pages?: number;
+  images?: number;
+  error?: string | null;
 }
 
 export default function PrintImagePicker({
@@ -71,6 +88,8 @@ export default function PrintImagePicker({
   const [loadingInstances, setLoadingInstances] = useState(false);
   const [selected, setSelected] = useState<Map<string, SelectedImage>>(new Map());
   const [copies, setCopies] = useState(1);
+  const [activeJobKey, setActiveJobKey] = useState<string | null>(null);
+  const jobToastRef = useRef<{ id: string; update: (p: Record<string, unknown>) => void } | null>(null);
 
   // Same launch contract + React Query cache key ReportImagePicker uses —
   // mounting both components costs one network fetch, not two.
@@ -82,14 +101,86 @@ export default function PrintImagePicker({
   });
   const dicomWebBase = launchData?.dicomWebBaseUrl ?? null;
 
+  // Live printer/bridge reachability — polls regardless of expanded state so
+  // the collapsed header's dot stays current, at a cadence light enough that
+  // leaving the workspace open all day never meaningfully adds load.
+  const { data: health } = useQuery<BridgeHealth>({
+    queryKey: ["print-bridge-health"],
+    queryFn: () => api.get("/api/radiology/print-bridge/health"),
+    refetchInterval: HEALTH_POLL_INTERVAL_MS,
+    staleTime: HEALTH_POLL_INTERVAL_MS / 2,
+  });
+
+  // Polls a submitted job's real outcome. refetchInterval returns false once
+  // the job reaches a terminal state, which stops the poll loop entirely.
+  const { data: jobStatus } = useQuery<PrintJobStatus>({
+    queryKey: ["print-job-status", activeJobKey],
+    queryFn: () => api.get(`/api/radiology/print-jobs/${encodeURIComponent(activeJobKey!)}/status`),
+    enabled: !!activeJobKey,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "completed" || status === "failed" ? false : JOB_POLL_INTERVAL_MS;
+    },
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (!activeJobKey || !jobStatus || !jobToastRef.current) return;
+    if (jobStatus.status === "completed") {
+      jobToastRef.current.update({
+        id: jobToastRef.current.id,
+        title: "Printed successfully",
+        description: `${jobStatus.images ?? "?"} image(s) across ${jobStatus.pages ?? "?"} page(s)`,
+      });
+      setActiveJobKey(null);
+    } else if (jobStatus.status === "failed") {
+      jobToastRef.current.update({
+        id: jobToastRef.current.id,
+        title: "Print failed",
+        description: jobStatus.error || "The print bridge reported a failure",
+        variant: "destructive",
+      });
+      setActiveJobKey(null);
+    }
+  }, [jobStatus, activeJobKey]);
+
+  // Give up polling after a while rather than leaving "Printing…" stuck
+  // forever if status polling never resolves (e.g. a sustained network
+  // hiccup between the ERP and the bridge). Restarts whenever a NEW job
+  // begins; cleared automatically once the completed/failed effect above
+  // clears activeJobKey before this fires.
+  useEffect(() => {
+    if (!activeJobKey) return;
+    const timer = setTimeout(() => {
+      jobToastRef.current?.update({
+        id: jobToastRef.current.id,
+        title: "Still working…",
+        description: "The print bridge hasn't confirmed this job yet — check the printer directly.",
+      });
+      setActiveJobKey(null);
+    }, 60_000);
+    return () => clearTimeout(timer);
+  }, [activeJobKey]);
+
   const printMutation = useMutation({
     mutationFn: (body: Record<string, unknown>) => api.post<PrintJobResult>("/api/radiology/print-images", body),
     onSuccess: (data) => {
       const skippedNote = data.skipped ? ` (${data.skipped} image(s) were not included — PACS fetch issue or batch too large)` : "";
-      toast({
-        title: "Sent to printer",
-        description: `${data.fetched ?? selected.size} image(s) across ${data.pages ?? "?"} page(s)${skippedNote}`,
-      });
+      if (data.jobKey) {
+        const t = toast({
+          title: "Sending to printer…",
+          description: `${data.fetched ?? selected.size} image(s) across ${data.pages ?? "?"} page(s)${skippedNote}`,
+        });
+        jobToastRef.current = t;
+        setActiveJobKey(data.jobKey);
+      } else {
+        // No jobKey came back (shouldn't happen against a conformant bridge) —
+        // fall back to the old "accepted" message rather than polling nothing.
+        toast({
+          title: "Sent to printer",
+          description: `${data.fetched ?? selected.size} image(s) across ${data.pages ?? "?"} page(s)${skippedNote}`,
+        });
+      }
       setSelected(new Map());
     },
     onError: (err: Error) => toast({ title: "Print failed", description: err.message, variant: "destructive" }),
@@ -181,6 +272,12 @@ export default function PrintImagePicker({
       >
         <Printer size={14} className="text-emerald-600 shrink-0" />
         <span className="text-xs font-semibold flex-1">Print images</span>
+        <span
+          className={`h-1.5 w-1.5 rounded-full shrink-0 ${healthDotClass(health)}`}
+          title={healthTooltip(health)}
+          data-testid="print-bridge-health-dot"
+        />
+        {activeJobKey && <Loader2 size={12} className="animate-spin text-muted-foreground" />}
         {selected.size > 0 && <Badge variant="outline" className="text-[10px]">{selected.size} selected</Badge>}
         {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
       </button>
@@ -192,6 +289,11 @@ export default function PrintImagePicker({
           )}
           {studyInstanceUID && !dicomWebBase && (
             <p className="text-[11px] text-muted-foreground">DICOMweb endpoint not configured — check viewer settings.</p>
+          )}
+          {health && !health.configured && (
+            <p className="text-[11px] text-muted-foreground">
+              Print bridge not configured — printing is unavailable until an admin sets PRINT_BRIDGE_URL.
+            </p>
           )}
 
           {selected.size > 0 && (
@@ -234,6 +336,13 @@ export default function PrintImagePicker({
                   : <Printer size={12} className="mr-1" />}
                 Print {selected.size} image{selected.size === 1 ? "" : "s"}
               </Button>
+            </div>
+          )}
+
+          {activeJobKey && (
+            <div className="flex items-center gap-2 rounded-md border bg-muted/30 p-2 text-[11px] text-muted-foreground" data-testid="print-job-progress">
+              <Loader2 size={12} className="animate-spin shrink-0" />
+              {jobStatus?.status === "processing" ? "Printing…" : "Queued for printing…"}
             </div>
           )}
 
