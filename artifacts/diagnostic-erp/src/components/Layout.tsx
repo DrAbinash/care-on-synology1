@@ -279,6 +279,7 @@ const navItems: NavEntry[] = [
       { path: "/people", icon: Users, label: "People (360°)", featureFlag: "ff_hr_staff_enhanced" },
       { path: "/attendance-devices", icon: Fingerprint, label: "Attendance Devices", featureFlag: "ff_hr_biometric_attendance" },
       { path: "/performance", icon: TrendingUp, label: "Performance", featureFlag: "ff_hr_performance_scoring" },
+      { path: "/my-portal", icon: Gauge, label: "My Portal", featureFlag: "ff_hr_employee_self_service" },
       { path: "/hr-forms", icon: FilePen, label: "HR Forms" },
       { path: "/my-day-close", icon: Clock, label: "My Day Close" },
       { path: "/accounting", icon: BookOpen, label: "Accounting" },

@@ -249,6 +249,10 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   ff_hr_staff_enhanced: false,
   ff_hr_performance_scoring: false,
   ff_hr_biometric_attendance: false,
+  ff_hr_employee_self_service: false,
+  ff_hr_roster: false,
+  ff_hr_leave: false,
+  ff_hr_disciplinary: false,
   showUnifiedReporting: false,
   // Phase 2B radiology feature flags (legacy names, kept for backward compatibility)
   showMeasurementPanel: false,

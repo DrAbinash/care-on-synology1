@@ -51,6 +51,10 @@ const NETWORK_ONLY_PREFIXES = [
   // fetch completes. Excluding the whole prefix (not just today's one
   // endpoint) means every future /api/my/* route is safe by default.
   "/api/my/",
+  // Employee self-service — every /api/self-service/* GET is scoped to the
+  // caller's OWN staff record (attendance, score, leave, notifications). Same
+  // per-identity leak risk as /api/my/*, so exclude the whole prefix.
+  "/api/self-service/",
 
   // Patient portal (mobile app): every endpoint is scoped to the verified
   // patient session (my-bookings, my-reports, report links). Same shared-
