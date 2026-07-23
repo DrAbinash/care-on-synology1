@@ -109,6 +109,16 @@ const KNOWN_PERSONAL_ENDPOINTS: KnownPersonalEndpoint[] = [
   // "HEALTHY" verdict is precisely the lie the toolkit exists to prevent.
   // The whole /api/radiology-diagnostics/ prefix is network-only in sw.js.
   { file: "radiology-diagnostics.ts", localPath: "/report", fullPath: "/api/radiology-diagnostics/report" },
+  // PCPNDT monthly Form F register (PR 2): admin-only statutory PHI. The
+  // response is month-scoped, not caller-scoped (subjectId only attributes
+  // the tamper-evident export audit entry) — but like
+  // /api/dashboard/reconciliation, the same URL answers differently by role,
+  // so a cached admin 200 on a shared front-desk terminal could be served to
+  // non-admin staff before their own 403 resolves; and a statutory register
+  // must never be answered stale from Cache Storage. The /api/form-f/register
+  // prefix in sw.js covers both rows.
+  { file: "form-f.ts", localPath: "/register", fullPath: "/api/form-f/register" },
+  { file: "form-f.ts", localPath: "/register/export", fullPath: "/api/form-f/register/export" },
 ];
 
 // GET handlers reviewed and confirmed to be SHARED clinical/administrative
