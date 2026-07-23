@@ -244,6 +244,11 @@ export function firstPermissionedPath(session: StaffSession | null, candidates: 
 // Toggle in browser console: localStorage.setItem("featureFlags", JSON.stringify({ showUnifiedReporting: true }))
 //
 const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
+  // People Management platform (server ff_hr_* flags, hydrated via
+  // useServerFeatureFlags; default OFF = Shadow Mode).
+  ff_hr_staff_enhanced: false,
+  ff_hr_performance_scoring: false,
+  ff_hr_biometric_attendance: false,
   showUnifiedReporting: false,
   // Phase 2B radiology feature flags (legacy names, kept for backward compatibility)
   showMeasurementPanel: false,

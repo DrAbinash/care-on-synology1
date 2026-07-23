@@ -276,6 +276,7 @@ const navItems: NavEntry[] = [
       { path: "/reports", icon: BarChart3, label: "Reports" },
       { path: "/expenses", icon: TrendingDown, label: "Expenses" },
       { path: "/staff", icon: Fingerprint, label: "Staff Directory" },
+      { path: "/people", icon: Users, label: "People (360°)", featureFlag: "ff_hr_staff_enhanced" },
       { path: "/hr-forms", icon: FilePen, label: "HR Forms" },
       { path: "/my-day-close", icon: Clock, label: "My Day Close" },
       { path: "/accounting", icon: BookOpen, label: "Accounting" },
