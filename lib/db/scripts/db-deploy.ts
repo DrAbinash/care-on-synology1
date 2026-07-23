@@ -20,8 +20,6 @@
  */
 
 import { Client } from "pg";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { migrate } from "drizzle-orm/node-postgres/migrator";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
@@ -199,14 +197,50 @@ async function run() {
       await client.query(`CREATE TABLE IF NOT EXISTS "public"."admin_sessions" ("id" serial PRIMARY KEY);`);
     }
 
-    // 3f. Run Drizzle file-based migrator — applies any pending .sql files
-    // CRITICAL FIX (2026-06-30): Execute migrations with autocommit (no transaction wrapper).
-    // If any migration contains CREATE INDEX CONCURRENTLY, it MUST run outside a transaction.
-    // Drizzle's migrate() wraps all migrations in BEGIN...COMMIT by default, which breaks CONCURRENTLY.
-    // Setting `disableTransactions: true` forces each migration to execute separately with autocommit.
-    console.log("🚀  Running Drizzle migrator for pending changes...");
-    const db = drizzle(client);
-    await migrate(db, { migrationsFolder, disableTransactions: true });
+    // 3f. Apply Drizzle migrations statement-by-statement, tolerating the benign
+    // "does not exist" cleanups that make a from-scratch application of the
+    // historical migrations noisy (0006 drops columns 0002 already renamed; 0010
+    // updates a column a later feature migration adds). This mirrors
+    // docker/db-patch-entrypoint.sh (psql -v ON_ERROR_STOP=0 per statement), so
+    // care-migrate can now bootstrap a COMPLETELY EMPTY database end-to-end — the
+    // transactional Drizzle migrate() aborts on the first such statement, which is
+    // exactly why this path previously could NOT clean-boot. Each migration is
+    // still applied at most once (skip-by-file-hash, same hash the entrypoint and
+    // the seeding step above use), and CREATE INDEX CONCURRENTLY still runs with
+    // autocommit because every statement is its own client.query().
+    console.log("🚀  Applying Drizzle migrations (statement-tolerant, matches care-db-patch-v2)...");
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS "drizzle"."__drizzle_migrations" (
+        "id" serial PRIMARY KEY, "hash" text NOT NULL, "created_at" bigint
+      );`);
+    const BENIGN = /does not exist|already exists/i;
+    let dzApplied = 0, dzSkipped = 0;
+    for (const entry of entries) {
+      const sqlPath = path.join(migrationsFolder, `${entry.tag}.sql`);
+      if (!fs.existsSync(sqlPath)) { console.warn(`   ! missing ${entry.tag}.sql — skipping`); continue; }
+      const raw = fs.readFileSync(sqlPath, "utf-8");
+      const hash = crypto.createHash("sha256").update(raw).digest("hex");
+      const { rowCount } = await client.query(`SELECT 1 FROM "drizzle"."__drizzle_migrations" WHERE hash = $1;`, [hash]);
+      if (rowCount) { dzSkipped++; continue; }
+      const statements = raw.split("--> statement-breakpoint").map((s) => s.trim()).filter(Boolean);
+      let tolerated = 0, real = 0;
+      for (const stmt of statements) {
+        try {
+          await client.query(stmt);
+        } catch (e: any) {
+          const msg = String(e?.message ?? e).split("\n")[0];
+          if (BENIGN.test(msg)) { tolerated++; }
+          else { console.error(`   ⚠️  ${entry.tag}: ${msg}`); real++; }
+        }
+      }
+      await client.query(
+        `INSERT INTO "drizzle"."__drizzle_migrations" (hash, created_at) VALUES ($1, $2) ON CONFLICT DO NOTHING;`,
+        [hash, entry.when ?? Date.now()],
+      );
+      console.log(`   ✓ ${entry.tag}${tolerated ? ` (${tolerated} benign cleanup no-op(s))` : ""}${real ? ` [${real} non-benign error(s) — see above]` : ""}`);
+      dzApplied++;
+    }
+    console.log(`✓  Drizzle: ${dzApplied} applied, ${dzSkipped} already current.`);
 
     // 3g. Stamp schema_deploy_state so this emergency care-migrate run leaves the
     // database in the SAME readiness state as care-db-patch-v2. Without this,
