@@ -290,8 +290,10 @@ export default function FormFMonthlyRegister() {
             )}
           </div>
           <p className="text-[10px] text-muted-foreground">
-            Print reproduces the Rule 9(1) permanent-register format (its five prescribed columns) for the complete month;
-            Export CSV leads with the same five columns and appends the supplementary data (the export is audit-logged).
+            This register contains <b>doctor-referred</b> Form F patients only — self-referred/walk-in patients are recorded in
+            the Self-Referral OPD register instead. Print reproduces the Rule 9(1) permanent-register format (its five
+            prescribed columns) for the complete month; Export CSV leads with the same five columns and appends the
+            supplementary data (the export is audit-logged).
           </p>
         </>
       )}

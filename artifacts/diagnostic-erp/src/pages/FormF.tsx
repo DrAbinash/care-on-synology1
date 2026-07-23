@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import IdCardScanPanel from "@/components/IdCardScanPanel";
 import FormFMonthlyRegister from "@/components/FormFMonthlyRegister";
+import FormFSelfReferralOpdRegister from "@/components/FormFSelfReferralOpdRegister";
 import IdScanCapturePanel from "@/components/IdScanCapturePanel";
 import { type ScanCaptureResult, type ScanSide } from "@/components/UnifiedScanCapture";
 import { decodeQrFromBlob } from "@/lib/aadhaarQr";
@@ -677,7 +678,7 @@ type PendingItem = {
 
 export default function FormF() {
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState<"pending" | "form" | "records" | "register">("pending");
+  const [activeTab, setActiveTab] = useState<"pending" | "form" | "records" | "register" | "selfRefOpd">("pending");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1402,6 +1403,17 @@ export default function FormF() {
               <BookOpen size={12} /> Monthly Register
             </button>
           )}
+          {/* Kept beside the Rule 9(1) register: the separate obstetrical-
+              checkup record for self-referred/walk-in pregnant women
+              (Form 25 replica, complimentary OPD checkup). */}
+          {isFormFAdmin && (
+            <button
+              onClick={() => setActiveTab("selfRefOpd")}
+              className={`px-3 py-1.5 text-xs font-medium flex items-center gap-1.5 transition-colors border-l border-gray-200 ${activeTab === "selfRefOpd" ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}
+            >
+              <Stethoscope size={12} /> Self-Referral OPD
+            </button>
+          )}
         </div>
 
         {activeTab === "form" && (
@@ -1673,6 +1685,15 @@ export default function FormF() {
         <div className="flex-1 overflow-y-auto">
           <div className="max-w-6xl mx-auto">
             <FormFMonthlyRegister />
+          </div>
+        </div>
+      )}
+
+      {/* ── SELF-REFERRAL OPD REGISTER TAB (management only) ── */}
+      {activeTab === "selfRefOpd" && isFormFAdmin && (
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-6xl mx-auto">
+            <FormFSelfReferralOpdRegister />
           </div>
         </div>
       )}

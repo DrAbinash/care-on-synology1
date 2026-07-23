@@ -45,6 +45,34 @@ FormF page → **Monthly Register** tab (rendered only for management roles, mat
 
 `lib/formFRegister.test.ts` (window boundaries, validation, serial stability, grading, Form-F-test linkage, CSV escaping, empty month), `routes/form-f.register.test.ts` (admin gate attached, 400s, offset-stable serials, designation filtering — a non-Form-F test on the bill never appears, empty-designation semantics, audited export, empty month) and the source contracts in `formFRegisterContract.test.ts`.
 
+## Partition rule — which register an entry belongs to
+
+The month's Form F records are **partitioned** between the two statutory books, never duplicated:
+
+- **Referral named a doctor** → the Rule 9(1) Monthly Register (above). Its JSON, CSV export and print all contain doctor-referred records only.
+- **Referral is self/walk-in** (no `doctor_name`, `referred_by` blank/"Self"/"walk-in") → the **Self-Referral OPD register** below, provided the patient is also a Form F **test** patient (both criteria).
+
+Each register's serials are continuous within itself.
+
+## Self-referral OPD register (Form 25 replica)
+
+PCPNDT rule: a sonologist may perform ultrasonography on a **self-referred** pregnant woman only when the sonologist runs an OPD, examines pregnant women, and keeps a **separate obstetrical-checkup record** of them — "self-referred by the patient or a relative" alone is not a lawful referral. The **Self-Referral OPD** tab (kept beside the Monthly Register, management-only) is that record:
+
+- `GET /api/form-f/register/self-referral-opd?month&year&page&pageSize` — same admin gate, IST month window and deterministic ordering as `/register`; auto-filled with the month's records meeting **both criteria**: (1) self-referral/walk-in per `isSelfReferralRecord`, and (2) a Form F **test** patient — the linked bill carries a `formFTestIds`-designated test; a record with no bill linkage (e.g. WhatsApp intake) or with no designation configured counts, since the Form F record itself evidences the test. Serials are continuous among the qualifying records.
+- Rendered and printed as a **FORM 25 (formerly 3C) daily case register replica** (the format already used by accounting's Form3C component): Date · Sl. No. · Patient's name (+ spouse/father) · Nature of professional services — **prefilled "General Obstetrical Checkup"** · Fees received — **"Complimentary / Free"** (total ₹0) · Date of receipt.
+- Examining doctor recorded on the sheet and signature line: **Dr. Sugandha Priyadarshini** (`SELF_REFERRAL_OPD_DOCTOR` in `lib/formFRegister.ts` — a single named constant; change it there if the examining clinician ever changes).
+- The checkup date resolves procedure date → form date → the record's creation date (the OPD examination happens at the visit, so the record's creation day *is* the attendance day — unlike the Rule 9(1) Date of Procedure, which is never back-filled).
+- Print covers the complete month; the endpoint is inside the `/api/form-f/register` network-only prefix (never cached).
+
+## Auto-prescription for self-referral patients (digitally signed)
+
+Every patient who qualifies for the Self-Referral OPD register also gets an **auto-generated advice prescription**, created idempotently (one per Form F record, `ON CONFLICT DO NOTHING` on the unique `form_f_record_id`) at Form F save time and re-ensured whenever the OPD register is viewed (covers historical records):
+
+- **Content (fixed):** "Patient for Obstetrical Examination. / Advice: Sonography for Fetal Well Being (FWB)." — prescriber **Dr. Sugandha Priyadarshini, MBBS, MD** (constants in `lib/formFRegister.ts`).
+- **Digital signature (built for this feature):** at signing time the row snapshots (1) the signer identity block incl. the registration number from the existing `signatures` master (active row matching "Sugandha"), (2) the signature **image** from that master — a snapshot, so later edits to the master never alter a signed prescription, and (3) a **SHA-256 content hash** over the canonical prescription content, making later tampering detectable. The printed sheet carries the signature image plus a "Digitally signed by … on … (IST) · Integrity SHA-256: …" block.
+- **Printing:** the OPD register's per-row **Rx** button prints an A5 prescription on the clinic letterhead (branding endpoint). Fetch endpoint: `GET /api/form-f/register/self-referral-opd/prescription/:recordId` (admin-gated, inside the network-only prefix).
+- **Storage:** `self_referral_prescriptions` (migration `migrations/self_referral_prescriptions.sql`, idempotent). If no signature image is configured in the signatures master, the prescription still saves and prints with the identity + hash block only — configure Dr. Sugandha's signature under Reports → Signatures to include the image.
+
 ## Open issues — statutory data the application does not currently capture
 
 Stated plainly rather than fabricated (per the stabilization brief):

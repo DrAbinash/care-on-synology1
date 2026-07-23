@@ -119,6 +119,9 @@ const KNOWN_PERSONAL_ENDPOINTS: KnownPersonalEndpoint[] = [
   // prefix in sw.js covers both rows.
   { file: "form-f.ts", localPath: "/register", fullPath: "/api/form-f/register" },
   { file: "form-f.ts", localPath: "/register/export", fullPath: "/api/form-f/register/export" },
+  // Self-referral OPD register (Form 25 replica) — same admin-only statutory
+  // PHI as /register; covered by the same /api/form-f/register sw.js prefix.
+  { file: "form-f.ts", localPath: "/register/self-referral-opd", fullPath: "/api/form-f/register/self-referral-opd" },
 ];
 
 // GET handlers reviewed and confirmed to be SHARED clinical/administrative

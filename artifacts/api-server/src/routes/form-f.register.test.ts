@@ -12,6 +12,7 @@ let billRows: Array<Record<string, unknown>>;
 let orderTestRows: Array<Record<string, unknown>>;
 let clinicFormFTestIds: string;
 let auditCalls: Array<Record<string, unknown>>;
+let prescriptionRows: Array<Record<string, unknown>>;
 
 vi.mock("@workspace/db", () => {
   const chainFor = (table: { __name?: string }) => {
@@ -41,6 +42,13 @@ vi.mock("@workspace/db", () => {
     if (table.__name === "clinic_settings") {
       return { limit: async () => [{ formFTestIds: clinicFormFTestIds }] };
     }
+    if (table.__name === "self_referral_prescriptions") {
+      return {
+        where: () => Object.assign(Promise.resolve(prescriptionRows), {
+          limit: async () => prescriptionRows,
+        }),
+      };
+    }
     return { where: async () => [], limit: async () => [] };
   };
   return {
@@ -65,6 +73,12 @@ vi.mock("@workspace/db/schema", () => ({
   fetalUsgMeasurementsTable: {},
   fetalUsgReportsTable: {},
   fetalUsgChecklistsTable: {},
+  selfReferralPrescriptionsTable: { __name: "self_referral_prescriptions", id: "id", formFRecordId: "form_f_record_id", signedAt: "signed_at" },
+}));
+
+const ensureSelfReferralPrescriptions = vi.fn(async () => {});
+vi.mock("../lib/selfReferralPrescriptions", () => ({
+  ensureSelfReferralPrescriptions: (records: unknown[]) => ensureSelfReferralPrescriptions(records as never),
 }));
 
 vi.mock("../middleware/requireStaffAuth", () => ({
@@ -174,6 +188,8 @@ beforeEach(() => {
   ];
   clinicFormFTestIds = JSON.stringify([201, 202]);
   auditCalls = [];
+  prescriptionRows = [];
+  ensureSelfReferralPrescriptions.mockClear();
 });
 
 describe("authorization", () => {
@@ -195,19 +211,33 @@ describe("GET /form-f/register", () => {
     }
   });
 
-  test("returns graded rows with offset-stable serials, Form-F test linkage and pagination", async () => {
-    formFRows = [RECORD, { ...RECORD, id: 52, address: "", billId: null }];
-    formFTotal = 12;
+  test("PARTITION: contains doctor-referred records only — self/walk-in entries go to the OPD register instead", async () => {
+    formFRows = [
+      RECORD, // referredBy "Dr. Mehta" — doctor-referred, stays
+      { ...RECORD, id: 52, address: "", billId: null }, // doctor-referred, incomplete — stays, graded
+      { ...RECORD, id: 53, referredBy: "Self", doctorName: "" },   // self — excluded
+      { ...RECORD, id: 54, referredBy: "", doctorName: "" },       // walk-in — excluded
+    ];
     const res = makeRes();
-    await registerHandler(makeReq({ month: "7", year: "2026", page: "2", pageSize: "10" }), res);
+    await registerHandler(makeReq({ month: "7", year: "2026" }), res);
     expect(res.statusCode).toBe(200);
-    expect(res.body.rows.map((r: { serial: number }) => r.serial)).toEqual([11, 12]);
+    expect(res.body.rows.map((r: { recordId: number }) => r.recordId)).toEqual([51, 52]);
+    expect(res.body.rows.map((r: { serial: number }) => r.serial)).toEqual([1, 2]);
     // Only the CONFIGURED Form F tests appear — never other tests on the bill.
     expect(res.body.rows[0].linkedTests).toEqual(["USG Obstetric Level 2", "Fetal Echo"]);
     expect(res.body.rows[0].linkedTests).not.toContain("CBC");
     expect(res.body.rows[1].completionStatus).toBe("incomplete");
     expect(res.body.rows[1].missingFields).toContain("Address is required.");
     expect(res.body.incompleteCount).toBe(1);
+    expect(res.body.pagination).toEqual({ page: 1, pageSize: 50, total: 2, totalPages: 1 });
+  });
+
+  test("serials stay offset-stable across pages of the partitioned register", async () => {
+    formFRows = Array.from({ length: 12 }, (_, i) => ({ ...RECORD, id: 100 + i }));
+    const res = makeRes();
+    await registerHandler(makeReq({ month: "7", year: "2026", page: "2", pageSize: "10" }), res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.rows.map((r: { serial: number }) => r.serial)).toEqual([11, 12]);
     expect(res.body.pagination).toEqual({ page: 2, pageSize: 10, total: 12, totalPages: 2 });
   });
 
@@ -230,9 +260,87 @@ describe("GET /form-f/register", () => {
   });
 });
 
+describe("GET /form-f/register/self-referral-opd", () => {
+  const opdLayer = getLayer("get", "/register/self-referral-opd");
+  const opdHandler = opdLayer.route.stack[opdLayer.route.stack.length - 1].handle;
+
+  test("carries the admin gate", () => {
+    expect(opdLayer.route.stack[0].handle.__adminGate).toBe(true);
+  });
+
+  test("BOTH criteria only: self/walk-in referral AND a Form-F test patient — Form 25 prefills, continuous serials", async () => {
+    billRows = [{ id: 10, orderId: 700 }, { id: 11, orderId: 701 }];
+    orderTestRows = [
+      { orderId: 700, testId: 201, testName: "USG Obstetric Level 2" }, // designated Form F test
+      { orderId: 701, testId: 203, testName: "CBC" },                    // NOT a Form F test
+    ];
+    formFRows = [
+      { ...RECORD, id: 61, referredBy: "Self", doctorName: "" },                 // self + Form-F test bill — included
+      { ...RECORD, id: 62, referredBy: "Dr. Mehta", doctorName: "" },            // doctor-referred — 9(1) register, excluded here
+      { ...RECORD, id: 63, referredBy: "", doctorName: "", billId: null },       // walk-in, no bill — Form F record is the evidence, included
+      { ...RECORD, id: 64, referredBy: "Self", doctorName: "Dr. R. Gupta" },     // doctor named — excluded
+      { ...RECORD, id: 65, referredBy: "Self", doctorName: "", billId: 11 },     // self BUT no Form-F test on the bill — excluded
+    ];
+    prescriptionRows = [{ id: 500, formFRecordId: 61, signedAt: new Date("2026-07-10T06:00:00Z") }];
+    const res = makeRes();
+    await opdHandler(makeReq({ month: "7", year: "2026" }), res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.doctor).toBe("Dr. Sugandha Priyadarshini");
+    expect(res.body.rows.map((r: { recordId: number }) => r.recordId)).toEqual([61, 63]);
+    expect(res.body.rows.map((r: { serial: number }) => r.serial)).toEqual([1, 2]);
+    for (const row of res.body.rows) {
+      expect(row.natureOfService).toBe("General Obstetrical Checkup");
+      expect(row.feesReceived).toBe("Complimentary / Free");
+    }
+    expect(res.body.pagination.total).toBe(2);
+    // Auto-prescription: every qualifying record is ensured (auto-saved,
+    // idempotent), and saved prescriptions link into the rows.
+    expect(ensureSelfReferralPrescriptions).toHaveBeenCalledTimes(1);
+    expect((ensureSelfReferralPrescriptions.mock.calls[0][0] as Array<{ id: number }>).map((r) => r.id)).toEqual([61, 63]);
+    expect(res.body.rows[0].prescriptionId).toBe(500);
+    expect(res.body.rows[1].prescriptionId).toBeNull();
+  });
+
+  test("prescription fetch endpoint: admin-gated, 400 on bad id, 404 when missing, 200 with the signed row", async () => {
+    const rxLayer = getLayer("get", "/register/self-referral-opd/prescription/:recordId");
+    expect(rxLayer.route.stack[0].handle.__adminGate).toBe(true);
+    const rxHandler = rxLayer.route.stack[rxLayer.route.stack.length - 1].handle;
+
+    const bad = makeRes();
+    await rxHandler({ ...makeReq({}), params: { recordId: "abc" } }, bad);
+    expect(bad.statusCode).toBe(400);
+
+    const missing = makeRes();
+    await rxHandler({ ...makeReq({}), params: { recordId: "61" } }, missing);
+    expect(missing.statusCode).toBe(404);
+
+    prescriptionRows = [{ id: 500, formFRecordId: 61, contentHash: "ab12", doctorName: "Dr. Sugandha Priyadarshini" }];
+    const ok = makeRes();
+    await rxHandler({ ...makeReq({}), params: { recordId: "61" } }, ok);
+    expect(ok.statusCode).toBe(200);
+    expect(ok.body.prescription.id).toBe(500);
+  });
+
+  test("400 on invalid month; empty month is a clean 200", async () => {
+    const bad = makeRes();
+    await opdHandler(makeReq({ month: "0", year: "2026" }), bad);
+    expect(bad.statusCode).toBe(400);
+
+    formFRows = [];
+    const empty = makeRes();
+    await opdHandler(makeReq({ month: "2", year: "2026" }), empty);
+    expect(empty.statusCode).toBe(200);
+    expect(empty.body.rows).toEqual([]);
+  });
+});
+
 describe("GET /form-f/register/export", () => {
-  test("exports the COMPLETE month as CSV and audits the export", async () => {
-    formFRows = [RECORD, { ...RECORD, id: 52, patientName: 'Asha, "junior"', address: "" }];
+  test("exports the COMPLETE month of DOCTOR-REFERRED records as CSV and audits the export", async () => {
+    formFRows = [
+      RECORD,
+      { ...RECORD, id: 52, patientName: 'Asha, "junior"', address: "" },
+      { ...RECORD, id: 53, referredBy: "Self", doctorName: "" }, // partitioned into the OPD register — excluded here
+    ];
     const res = makeRes();
     await exportHandler(makeReq({ month: "7", year: "2026" }), res);
     expect(res.statusCode).toBe(200);

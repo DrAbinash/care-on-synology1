@@ -231,6 +231,76 @@ const SUPPLEMENTARY_COLUMNS: Array<{ header: string; value: (r: RegisterRow) => 
 
 const CSV_COLUMNS = [...RULE_9_1_COLUMNS, ...SUPPLEMENTARY_COLUMNS];
 
+// ── Self-referral OPD register (Form 25 replica) ─────────────────────────────
+//
+// PCPNDT rule: a sonologist may scan a SELF-REFERRED pregnant woman only when
+// she was clinically examined in the sonologist's own OPD — "self-referred by
+// the patient/relative" alone is not a lawful referral. This register is the
+// required separate obstetrical-checkup record: the same Form 25 (formerly
+// 3C, Income-tax daily case register) structure, containing ONLY the month's
+// self-referral/walk-in Form F patients, with the examining doctor and the
+// complimentary professional charges recorded. Kept beside the Rule 9(1)
+// register in the Form F module.
+
+export const SELF_REFERRAL_OPD_DOCTOR = "Dr. Sugandha Priyadarshini";
+export const SELF_REFERRAL_OPD_DOCTOR_QUALIFICATIONS = "MBBS, MD";
+export const SELF_REFERRAL_OPD_SERVICE = "General Obstetrical Checkup";
+export const SELF_REFERRAL_OPD_FEES = "Complimentary / Free";
+/** The auto-prescription's advice — exactly the prescribed two lines. */
+export const SELF_REFERRAL_PRESCRIPTION_ADVICE =
+  "Patient for Obstetrical Examination.\nAdvice: Sonography for Fetal Well Being (FWB).";
+
+/** A record is self-referral/walk-in when it names NO referring doctor:
+ *  doctor_name blank and referred_by blank / "Self" / "walk-in". A free-text
+ *  doctor name in referred_by (e.g. "Dr. Mehta") is a doctor referral. */
+export function isSelfReferralRecord(
+  r: Pick<RegisterSourceRecord, "referredBy" | "doctorName">,
+): boolean {
+  if (r.doctorName?.trim()) return false;
+  const ref = (r.referredBy ?? "").trim().toLowerCase();
+  return ref === "" || ref === "self" || ref === "walk-in" || ref === "walkin";
+}
+
+export interface OpdRegisterRow {
+  /** Form 25 col (1) — date of the obstetrical checkup. The OPD examination
+   *  happens at the visit, so this resolves procedure date → form date →
+   *  the record's creation date (IST). */
+  date: string;
+  /** Form 25 col (2) — continuous serial among the month's self-referrals. */
+  serial: number;
+  /** Form 25 col (3) — the pregnant woman (+ spouse/father for identity). */
+  patientName: string;
+  spouseFather: string;
+  /** Form 25 col (4) — prefilled: the checkup Dr. Sugandha performs. */
+  natureOfService: string;
+  /** Form 25 col (5) — complimentary professional charges. */
+  feesReceived: string;
+  /** Form 25 col (6) — no receipt for a complimentary service. */
+  dateOfReceipt: string;
+  recordId: number;
+  mobile: string;
+  gestationalAge: string;
+}
+
+export function buildOpdRegisterRows(records: RegisterSourceRecord[], firstSerial: number): OpdRegisterRow[] {
+  return records.map((r, i) => {
+    const gaWeeks = r.gestationalAgeWeeks?.trim() ?? "";
+    const gaDays = r.gestationalAgeDays?.trim() ?? "";
+    return {
+      date: r.procedureDate?.trim() || r.date?.trim() || istDateTimeString(r.createdAt).slice(0, 10),
+      serial: firstSerial + i,
+      patientName: r.patientName ?? "",
+      spouseFather: r.husbandFatherName ?? "",
+      natureOfService: SELF_REFERRAL_OPD_SERVICE,
+      feesReceived: SELF_REFERRAL_OPD_FEES,
+      dateOfReceipt: "—",
+      recordId: r.id,
+      mobile: r.mobile ?? "",
+      gestationalAge: gaWeeks || gaDays ? `${gaWeeks || "0"}w ${gaDays || "0"}d` : "",
+    };
+  });
+}
+
 function csvEscape(v: string): string {
   return v.includes(",") || v.includes('"') || v.includes("\n") ? `"${v.replace(/"/g, '""')}"` : v;
 }

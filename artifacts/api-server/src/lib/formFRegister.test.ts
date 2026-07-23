@@ -11,6 +11,9 @@ import {
   istMonthWindowUtc,
   buildRegisterRows,
   registerRowsToCsv,
+  isSelfReferralRecord,
+  buildOpdRegisterRows,
+  SELF_REFERRAL_OPD_DOCTOR,
   type RegisterSourceRecord,
 } from "./formFRegister";
 
@@ -181,6 +184,43 @@ describe("registerRowsToCsv — Rule 9(1) structure leads", () => {
 
   test("empty month produces a header-only CSV (valid, no silent failure)", () => {
     expect(registerRowsToCsv([]).split("\n")).toHaveLength(1);
+  });
+});
+
+describe("isSelfReferralRecord — who belongs in the self-referral OPD register", () => {
+  test("blank / Self / walk-in referrals with no doctor name are self-referrals", () => {
+    for (const referredBy of ["", "  ", "Self", "self", "SELF", "Walk-in", "walkin"]) {
+      expect(isSelfReferralRecord({ referredBy, doctorName: "" })).toBe(true);
+    }
+  });
+
+  test("a named referring doctor — in either field — is NEVER a self-referral", () => {
+    expect(isSelfReferralRecord({ referredBy: "Dr. Mehta", doctorName: "" })).toBe(false);
+    expect(isSelfReferralRecord({ referredBy: "Doctor", doctorName: "" })).toBe(false);
+    expect(isSelfReferralRecord({ referredBy: "Self", doctorName: "Dr. R. Gupta" })).toBe(false);
+    expect(isSelfReferralRecord({ referredBy: null, doctorName: "Dr. R. Gupta" })).toBe(false);
+  });
+});
+
+describe("buildOpdRegisterRows — Form 25 replica prefills", () => {
+  test("nature of service, examining doctor and complimentary fees are prefilled; serials continue from the offset", () => {
+    const rows = buildOpdRegisterRows([record({ id: 1 }), record({ id: 2 })], 4);
+    expect(rows.map((r) => r.serial)).toEqual([4, 5]);
+    for (const r of rows) {
+      expect(r.natureOfService).toBe("General Obstetrical Checkup");
+      expect(r.feesReceived).toBe("Complimentary / Free");
+      expect(r.dateOfReceipt).toBe("—");
+    }
+    expect(SELF_REFERRAL_OPD_DOCTOR).toBe("Dr. Sugandha Priyadarshini");
+  });
+
+  test("checkup date resolves procedure date → form date → the record's own creation date (the OPD visit day)", () => {
+    const a = buildOpdRegisterRows([record({ id: 1, procedureDate: "2026-07-04" })], 1)[0];
+    expect(a.date).toBe("2026-07-04");
+    const b = buildOpdRegisterRows([record({ id: 2, procedureDate: "", date: "2026-07-06" })], 1)[0];
+    expect(b.date).toBe("2026-07-06");
+    const c = buildOpdRegisterRows([record({ id: 3, procedureDate: "", date: "", createdAt: new Date("2026-07-05T06:30:00Z") })], 1)[0];
+    expect(c.date).toBe("2026-07-05"); // IST date of the visit
   });
 });
 

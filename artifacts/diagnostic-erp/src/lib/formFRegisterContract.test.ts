@@ -68,6 +68,12 @@ describe("monthly register routes", () => {
     expect(formFRoute).toContain("resolveFormFTestsByBillId");
     expect(formFRoute.match(/formFTestIds/g)!.length).toBeGreaterThanOrEqual(3); // pending ×2 + register resolver
   });
+
+  it("PARTITION: the 9(1) register carries doctor-referred records only; self/walk-in go to the OPD register", () => {
+    expect(formFRoute).toContain("!isSelfReferralRecord(r)");
+    // Export applies the same partition — the two statutory books never overlap:
+    expect(formFRoute.match(/!isSelfReferralRecord/g)!.length).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe("FormF page + register component", () => {
@@ -106,6 +112,66 @@ describe("FormF page + register component", () => {
     const lib = read(resolve(REPO, "artifacts/api-server/src/lib/formFRegister.ts"));
     expect(lib).toContain("RULE_9_1_COLUMNS");
     expect(lib).toMatch(/CSV_COLUMNS = \[\.\.\.RULE_9_1_COLUMNS, \.\.\.SUPPLEMENTARY_COLUMNS\]/);
+  });
+});
+
+describe("Self-referral OPD register (Form 25 replica)", () => {
+  const component = read(resolve(ERP_SRC, "components/FormFSelfReferralOpdRegister.tsx"));
+  const page = read(resolve(ERP_SRC, "pages/FormF.tsx"));
+
+  it("route exists, admin-gated, before /:id, and filters to self-referrals via the shared predicate", () => {
+    expect(formFRoute).toMatch(/formFRouter\.get\(\s*"\/register\/self-referral-opd",\s*requireAdminRole/);
+    expect(formFRoute).toContain("isSelfReferralRecord");
+    const opdIdx = formFRoute.indexOf('"/register/self-referral-opd"');
+    const idIdx = formFRoute.indexOf('formFRouter.get("/:id"');
+    expect(opdIdx).toBeGreaterThan(-1);
+    expect(opdIdx).toBeLessThan(idIdx);
+  });
+
+  it("kept beside the Rule 9(1) register as a management-only tab", () => {
+    expect(page).toContain("FormFSelfReferralOpdRegister");
+    expect(page).toMatch(/activeTab === "selfRefOpd" && isFormFAdmin/);
+  });
+
+  it("component renders the Form 25 structure with the prescribed prefills and full-month print", () => {
+    expect(component).toContain("/api/form-f/register/self-referral-opd?month=");
+    expect(component).toContain("FORM 25 (Formerly 3C)");
+    expect(component).toContain("General Obstetrical Checkup");
+    expect(component).toContain("Complimentary / Free");
+    expect(component).toContain("Dr. Sugandha Priyadarshini");
+    expect(component).toContain("totalPagesToFetch"); // print covers the whole month
+    expect(component).toContain("formf-selfref-opd-error");
+  });
+
+  it("the server pins doctor/service/fees constants next to the register logic (single source)", () => {
+    const lib = read(resolve(REPO, "artifacts/api-server/src/lib/formFRegister.ts"));
+    expect(lib).toContain('SELF_REFERRAL_OPD_DOCTOR = "Dr. Sugandha Priyadarshini"');
+    expect(lib).toContain('SELF_REFERRAL_OPD_DOCTOR_QUALIFICATIONS = "MBBS, MD"');
+    expect(lib).toContain('SELF_REFERRAL_OPD_SERVICE = "General Obstetrical Checkup"');
+    expect(lib).toContain('SELF_REFERRAL_OPD_FEES = "Complimentary / Free"');
+    expect(lib).toContain("Sonography for Fetal Well Being (FWB)");
+  });
+
+  it("auto-prescription: signed at save time AND ensured from the register; print wired with the digital-signature block", () => {
+    // Save hook (both-criteria rule) + register-view ensure:
+    expect(formFRoute).toContain("ensureSelfReferralPrescriptions");
+    expect(formFRoute.match(/ensureSelfReferralPrescriptions/g)!.length).toBeGreaterThanOrEqual(3); // import + save hook + register
+    expect(formFRoute).toContain("hasFormFTestEvidence");
+    // Prescription endpoint registered before the /:id catch-all:
+    const rxIdx = formFRoute.indexOf('"/register/self-referral-opd/prescription/:recordId"');
+    const idIdx = formFRoute.indexOf('formFRouter.get("/:id"');
+    expect(rxIdx).toBeGreaterThan(-1);
+    expect(rxIdx).toBeLessThan(idIdx);
+    // The signing engine snapshots the signature and hashes the content:
+    const rxLib = read(resolve(REPO, "artifacts/api-server/src/lib/selfReferralPrescriptions.ts"));
+    expect(rxLib).toContain("onConflictDoNothing"); // never re-signs
+    expect(rxLib).toContain('createHash("sha256")');
+    expect(rxLib).toContain("signaturesTable");
+    // UI prints the signed prescription:
+    const component = read(resolve(ERP_SRC, "components/FormFSelfReferralOpdRegister.tsx"));
+    expect(component).toContain("printPrescription");
+    expect(component).toContain("Digitally signed by");
+    expect(component).toContain("prescriptionId");
   });
 });
 
