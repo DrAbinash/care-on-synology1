@@ -59,6 +59,7 @@ import leaveRouter from "./leave";
 import disciplinaryRouter from "./disciplinary";
 import mySelfServiceRouter from "./mySelfService";
 import reportDeliveryTrackingRouter from "./reportDeliveryTracking";
+import recallRouter from "./recall";
 import storageRouter from "./storage";
 import { bridgeRouter } from "./bridge";
 import { reportTemplatesRouter } from "./report-templates";
@@ -842,6 +843,8 @@ router.use("/signatures", requireStaffAuth, requireStaffPermission("/reports"), 
 // Staff-selected WhatsApp report delivery + read-receipt tracking + reminders.
 // Gated additionally by ff_report_delivery_receipts (Shadow Mode) inside the router.
 router.use("/report-delivery-tracking", requireStaffAuth, requireStaffPermission("/reports"), reportDeliveryTrackingRouter);
+// Recall / follow-up engine. Gated additionally by ff_recall_engine (Shadow Mode) inside the router.
+router.use("/recall", requireStaffAuth, requireStaffPermission("/reports"), recallRouter);
 
 // AI Radiology Reporting — encrypted API keys, audit logging, draft management
 router.use("/ai-reporting", requireStaffAuth, aiReportingRouter);

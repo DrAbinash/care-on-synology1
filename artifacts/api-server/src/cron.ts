@@ -39,6 +39,7 @@ export function startCronScheduler() {
   scheduleAuditLogPurge();
   schedulePacsPullerWatchdog();
   scheduleWhatsappReminders();
+  scheduleRecall();
   scheduleRadiologyJobs();
   scheduleAuditChainVerify();
   scheduleAiSchedulerModes();
@@ -725,6 +726,36 @@ export async function runWhatsappDuesReminders() {
 export async function runWhatsappReportDeliveryReminders() {
   const { runReportDeliveryReminders } = await import("./routes/reportDeliveryTracking");
   return runReportDeliveryReminders();
+}
+
+// Recall / follow-up engine — once daily at 10:00 server time: derive due
+// recalls from recently-delivered reports, then WhatsApp the due ones. Both
+// steps no-op unless ff_recall_engine is enabled. Idempotent generation.
+function scheduleRecall() {
+  cron.schedule("* * * * *", async () => {
+    try {
+      const now = new Date();
+      const dateKey = now.toISOString().split("T")[0];
+      const key = `recall-${dateKey}`;
+      if (now.getHours() === 10 && now.getMinutes() === 0 && !firedToday.has(key)) {
+        firedToday.add(key);
+        const { runRecallGeneration, runRecallSends } = await import("./routes/recall");
+        const gen = await runRecallGeneration();
+        const sent = await runRecallSends();
+        console.log(`[cron] Recall: queued=${gen.queued} scanned=${gen.scanned} sent=${sent.sent} failed=${sent.failed}${sent.skipped ? ` (skipped: ${sent.reason})` : ""}`);
+      }
+    } catch (err) {
+      console.error("[cron] Recall check failed:", err);
+    }
+  });
+  console.log("[cron] Recall scheduler started (checks every minute)");
+}
+
+export async function runRecallNow() {
+  const { runRecallGeneration, runRecallSends } = await import("./routes/recall");
+  const generated = await runRecallGeneration();
+  const sent = await runRecallSends();
+  return { generated, sent };
 }
 
 function scheduleMonthEndCommission() {

@@ -275,6 +275,7 @@ const navItems: NavEntry[] = [
       { path: "/diagnostics", icon: Activity, label: "API Diagnostics", ownerOnly: true },
       { path: "/reports", icon: BarChart3, label: "Reports" },
       { path: "/report-delivery-tracking", icon: MessageSquare, label: "Report Delivery", featureFlag: "ff_report_delivery_receipts" },
+      { path: "/recall", icon: Bell, label: "Recall & Follow-up", featureFlag: "ff_recall_engine" },
       { path: "/expenses", icon: TrendingDown, label: "Expenses" },
       { path: "/staff", icon: Fingerprint, label: "Staff Directory" },
       { path: "/people", icon: Users, label: "People (360°)", featureFlag: "ff_hr_staff_enhanced" },
