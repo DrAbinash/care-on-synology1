@@ -122,7 +122,19 @@ async function main() {
       else add("Schema", "migration state", F, `db_patch_ok=${map.db_patch_ok}`, { blocking: true, remediation: "care-db-patch-v2 did not complete — inspect its container logs" });
       if (map.git_commit && map.git_commit !== "unknown") add("Schema", "deployed version", P, `commit ${String(map.git_commit).slice(0,12)} branch ${map.git_branch || "?"} @ ${map.build_date || "?"}`);
     } else {
-      add("Schema", "migration state", W, "schema_deploy_state absent — db-patch-v2 has not run against this DB yet", { remediation: "First deploy: care-db-patch-v2 creates it. If this is an existing DB, check the migration container ran." });
+      // schema_deploy_state is stamped as the FINAL step of a successful migration
+      // by care-db-patch-v2 (and now care-migrate). Its absence CANNOT hide a
+      // failed migration: care-db-patch-v2 runs under `set -e` and only writes
+      // db_patch_ok=true at the very end, so a failure exits non-zero (care-api
+      // never starts) with the stamp absent — absence is the signal, not a
+      // cover-up — and the API's /api/health/schema probe independently 503s
+      // while it is missing. So distinguish two benign cases:
+      const migrated = await tableExists("users"); // proxy: has the schema been built at all?
+      if (migrated) {
+        add("Schema", "migration state", W, "core tables present but schema_deploy_state absent — this DB was migrated by a non-standard path (manual psql / an older care-migrate), not care-db-patch-v2. /api/health/schema will 503 until it is stamped.", { remediation: "Re-run the standard path: `docker compose up -d --build` (care-db-patch-v2), or `docker compose run --rm care-migrate` (now stamps schema_deploy_state itself)." });
+      } else {
+        add("Schema", "migration state", S, "no schema_deploy_state and no core tables — a genuinely empty database (nothing deployed yet)");
+      }
     }
     const migLogExists = await tableExists("schema_migrations_log");
     if (migLogExists) {
