@@ -35,6 +35,8 @@ export function startCronScheduler() {
   scheduleBankingAutoSync();
   scheduleFraudDetection();
   scheduleAutomatedBackups();
+  scheduleRestoreVerification();
+  scheduleBackupDeadMan();
   scheduleSessionIdleSweep();
   scheduleAuditLogPurge();
   schedulePacsPullerWatchdog();
@@ -138,6 +140,66 @@ function scheduleAutomatedBackups() {
     }
   });
   console.log("[cron] Automated backup scheduler started (checks every minute)");
+}
+
+// Restore-verification: prove backups are actually restorable, automatically.
+// The engine (lib/restoreVerification) restores a fresh pg_dump into a
+// throwaway DB and records the result to radiology_ops_checks. It existed but
+// was never scheduled and had no trigger, so backups were never proven.
+// Weekly, Monday 03:30 (after the nightly backup window).
+function scheduleRestoreVerification() {
+  cron.schedule("30 3 * * 1", async () => {
+    try {
+      const { runRestoreVerification } = await import("./lib/restoreVerification");
+      const r = await runRestoreVerification({ ranBy: "cron" });
+      console.log(`[cron] Restore verification: ${r.ok ? "PASS" : "FAIL"}`);
+      if (!r.ok) {
+        const { sendAlertEmail } = await import("./email");
+        await sendAlertEmail({
+          subject: "⚠️ CARE backup restore-verification FAILED",
+          html: `<p>The weekly automated restore test could not restore the latest backup.</p><pre>${(r.steps ?? []).map((s) => `${s.ok ? "✓" : "✗"} ${s.name}: ${s.detail}`).join("\n")}</pre>`,
+        });
+      }
+    } catch (err) {
+      console.error("[cron] Restore verification failed to run:", err);
+    }
+  });
+  console.log("[cron] Restore-verification scheduler started (weekly)");
+}
+
+// Dead-man switch: alert when there is NO recent successful backup — fires
+// even if no backup job ran (down container / all-disabled schedule), which
+// the per-job failure email cannot catch. Every 6 hours.
+function scheduleBackupDeadMan() {
+  cron.schedule("7 */6 * * *", async () => {
+    try {
+      const { backupJobLogsTable } = await import("@workspace/db/schema");
+      const { evaluateBackupFreshness, shouldAlertOnBackup } = await import("./lib/backupHealth");
+      const { desc, eq } = await import("drizzle-orm");
+      const [latest] = await db
+        .select({ completedAt: backupJobLogsTable.completedAt })
+        .from(backupJobLogsTable)
+        .where(eq(backupJobLogsTable.status, "success"))
+        .orderBy(desc(backupJobLogsTable.completedAt))
+        .limit(1);
+      const thresholdHours = Number(process.env["BACKUP_DEADMAN_MAX_AGE_HOURS"] || 26);
+      const freshness = evaluateBackupFreshness(latest?.completedAt ?? null, new Date(), thresholdHours);
+      if (shouldAlertOnBackup(freshness)) {
+        const { sendAlertEmail } = await import("./email");
+        const detail = freshness.status === "never"
+          ? "No successful backup has ever been recorded."
+          : `The last successful backup was ${freshness.ageHours.toFixed(1)}h ago (threshold ${thresholdHours}h).`;
+        await sendAlertEmail({
+          subject: "🛑 CARE backups have stopped",
+          html: `<p><b>Backup dead-man alert.</b> ${detail}</p><p>Check the backup scheduler, the container, and the /app/data volume.</p>`,
+        });
+        console.warn(`[cron] Backup dead-man alert sent: ${freshness.status}`);
+      }
+    } catch (err) {
+      console.error("[cron] Backup dead-man check failed:", err);
+    }
+  });
+  console.log("[cron] Backup dead-man scheduler started (every 6h)");
 }
 
 export async function fireScheduledBackups() {

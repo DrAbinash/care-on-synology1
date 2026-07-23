@@ -13,6 +13,7 @@ import JSZip from "jszip";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
 import { auditFromRequest } from "../lib/audit";
 import { logger } from "../lib/logger";
+import { resolveBackupDataFolders } from "../lib/backupHealth";
 
 export const backupReplicationRouter = Router();
 
@@ -30,13 +31,11 @@ const PROTECTED_FILES = new Set([
   "synology-compose.yml", "synology-compose.yaml",
 ]);
 
-// Folders to include in uploaded files export
-const UPLOAD_FOLDERS = [
-  "artifacts/api-server/data/uploads",
-  "artifacts/api-server/data/reports",
-  "attached_assets",
-  "artifacts/api-server/public/uploads",
-];
+// Folders to include in the uploaded-files export — resolved to the REAL
+// runtime data dir (CWD/data, i.e. /app/data in Docker) rather than the old
+// repo-relative paths that silently resolved to a nonexistent
+// /app/artifacts/... under the container and zipped nothing. See
+// lib/backupHealth.resolveBackupDataFolders.
 
 function requireAdmin(req: StaffAuthRequest, res: { status: (n: number) => { json: (d: unknown) => void } }, next: () => void): void {
   if (!req.staffSession || !FULL_ACCESS_ROLES.has(req.staffSession.role)) {
@@ -307,20 +306,20 @@ export async function verifyBackupChecksum(filePath: string, expectedChecksumHex
   }
 }
 
-async function exportFilesZip(): Promise<{ filePath: string; sizeBytes: number; includedFolders: string[] }> {
+async function exportFilesZip(): Promise<{ filePath: string; sizeBytes: number; includedFolders: string[]; missingFolders: string[]; fileCount: number }> {
   const dir = ensureBackupDir();
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 16);
   const filePath = path.join(dir, `caredeoghar-files-${timestamp}.zip`);
 
   const zip = new JSZip();
   const includedFolders: string[] = [];
+  const missingFolders: string[] = [];
+  let fileCount = 0;
 
-  for (const folder of UPLOAD_FOLDERS) {
-    const absPath = path.resolve(folder);
-    if (!existsSync(absPath)) continue;
-    includedFolders.push(folder);
-    const folderName = path.basename(folder);
-    const zipFolder = zip.folder(folderName);
+  for (const folder of resolveBackupDataFolders()) {
+    if (!existsSync(folder.path)) { missingFolders.push(folder.label); continue; }
+    includedFolders.push(folder.label);
+    const zipFolder = zip.folder(folder.label);
     if (!zipFolder) continue;
 
     function addFiles(currentPath: string, zipParent: JSZip) {
@@ -333,15 +332,16 @@ async function exportFilesZip(): Promise<{ filePath: string; sizeBytes: number; 
         } else {
           const data = readFileSync(fullPath);
           zipParent.file(entry.name, data);
+          fileCount++;
         }
       }
     }
-    addFiles(absPath, zipFolder);
+    addFiles(folder.path, zipFolder);
   }
 
   const buffer = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
   await fs.writeFile(filePath, buffer);
-  return { filePath, sizeBytes: buffer.length, includedFolders };
+  return { filePath, sizeBytes: buffer.length, includedFolders, missingFolders, fileCount };
 }
 
 async function exportFullSnapshot(): Promise<{ filePath: string; sizeBytes: number; metadata: Record<string, unknown> }> {
@@ -370,8 +370,19 @@ async function exportFullSnapshot(): Promise<{ filePath: string; sizeBytes: numb
     dbExportSize: dbResult.sizeBytes,
     filesExportSize: filesResult.sizeBytes,
     includedFolders: filesResult.includedFolders,
+    missingFolders: filesResult.missingFolders,
+    fileCount: filesResult.fileCount,
+    // Loud, recorded signal instead of silent success: a snapshot whose files
+    // portion captured zero files is almost certainly a misconfigured data
+    // path, not an empty clinic.
+    filesWarning: filesResult.fileCount === 0
+      ? `No files captured (missing folders: ${filesResult.missingFolders.join(", ") || "none"}). Check CARE_DATA_DIR / the /app/data volume mount.`
+      : null,
     pgDumpUsed: true,
   };
+  if (filesResult.fileCount === 0) {
+    logger.warn({ missingFolders: filesResult.missingFolders }, "[backup] files snapshot captured ZERO files — data path likely misconfigured");
+  }
 
   // 4. Assemble ZIP
   const zip = new JSZip();
