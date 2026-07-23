@@ -8,6 +8,7 @@ import { ordersRouter } from "./orders";
 import { billsRouter, paymentsRouter } from "./bills";
 import { reportsRouter } from "./reports";
 import inventoryRouter from "./inventory";
+import inventoryBatchesRouter from "./inventoryBatches";
 import accountingRouter from "./accounting";
 import usersRouter from "./users";
 import emailSettingsRouter from "./email-settings";
@@ -156,6 +157,11 @@ import { scanSessionsRouter } from "./scan-sessions";
 // Federated Radiology Service — boundary API (additive, server-to-server only)
 import boundaryRouter from "./boundary";
 import { gatewayWebhookRouter } from "./gateway-webhooks";
+// FHIR R4 read façade — self-authenticating (Bearer FHIR_API_KEY), off until configured.
+import fhirRouter from "./fhir";
+// ABDM / ABHA national health stack — management (staff auth) + gateway callbacks
+// (public transport, ABDM_CALLBACK_SECRET). Off until ABDM_ENABLED=true.
+import abdmRouter, { callbackRouter as abdmCallbackRouter } from "./abdm";
 
 const router: IRouter = Router();
 
@@ -216,6 +222,13 @@ router.use(systemRouter);
 // not staff session. Mounted before staff-auth routes so the radiology
 // service can reach it server-to-server without a staff login.
 router.use("/boundary", boundaryRouter);
+// FHIR R4 read façade — Bearer FHIR_API_KEY (server-to-server), not staff session.
+// Returns 503 until FHIR_API_KEY is configured, so patient data stays unexposed by default.
+router.use("/fhir", fhirRouter);
+// ABDM gateway callbacks — public transport, gated by ABDM_ENABLED + a shared
+// ABDM_CALLBACK_SECRET (fail-closed). Mounted before the staff-auth management
+// router so gateway callbacks reach it without a staff login.
+router.use("/abdm/callback", abdmCallbackRouter);
 // Internal cron trigger endpoints — auth via CRON_SECRET bearer token, not staff session.
 // Hit by a Replit Scheduled deployment (see scripts/src/trigger-cron.ts) so cron emails
 // keep firing on autoscale where in-process schedulers are disabled.
@@ -373,6 +386,12 @@ router.use("/pathology-registry", requireStaffAuth, requireAdminRole, pathologyR
 
 // Inventory — /inventory permission
 router.use("/inventory", requireStaffAuth, requireStaffPermission("/inventory"), inventoryRouter);
+// Reagent batch/lot + expiry + auto-reorder — additive, same /inventory prefix + guards.
+router.use("/inventory", requireStaffAuth, requireStaffPermission("/inventory"), inventoryBatchesRouter);
+
+// ABDM / ABHA management — /settings permission. Callbacks are mounted publicly
+// above (/abdm/callback); this staff-gated router handles the rest of /abdm.
+router.use("/abdm", requireStaffAuth, requireStaffPermission("/settings"), abdmRouter);
 
 // Accounting — /accounting permission (vouchers, accounts, ledger entries)
 router.use("/accounting", requireStaffAuth, requireStaffPermission("/accounting"), accountingRouter);
