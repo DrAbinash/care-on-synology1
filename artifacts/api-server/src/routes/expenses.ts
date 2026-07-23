@@ -11,6 +11,8 @@ import { geminiOcrBill } from "@workspace/integrations-gemini-ai";
 import { getProviderApiKey } from "@workspace/ai-providers";
 import { autoVoucherForExpense } from "../lib/auto-voucher";
 import { preprocessScanImage } from "../lib/ocr/idCardPipeline";
+import { auditFromRequest } from "../lib/audit";
+import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 
 const router = Router();
 
@@ -172,6 +174,10 @@ router.patch("/:id", async (req, res) => {
   if (Object.keys(updates).length === 0) {
     return res.status(400).json({ error: "No valid fields to update" });
   }
+  // Snapshot the pre-edit row so the audit trail records what actually changed.
+  const [before] = await db.select().from(expensesTable).where(eq(expensesTable.id, paramsParsed.data.id));
+  if (!before) return res.status(404).json({ error: "Expense not found" });
+
   const [expense] = await db
     .update(expensesTable)
     .set(updates)
@@ -179,22 +185,31 @@ router.patch("/:id", async (req, res) => {
     .returning();
   if (!expense) return res.status(404).json({ error: "Expense not found" });
 
-  // If amount or payment mode changed, generate a corrective voucher note.
-  // We fire a new PV for the updated amount (the original PV remains for audit).
-  const updatedAmount = Number((expense as unknown as Record<string, unknown>).amount ?? 0);
-  const updatedMode   = String((expense as unknown as Record<string, unknown>).paymentMode ?? "cash");
-  const updatedCat    = String((expense as unknown as Record<string, unknown>).category ?? "General");
-  const updatedDesc   = String((expense as unknown as Record<string, unknown>).description ?? "");
-  const updatedExpId  = String((expense as unknown as Record<string, unknown>).expenseId ?? "");
-  if (bodyParsed.data.amount !== undefined || bodyParsed.data.paymentMode !== undefined) {
-    autoVoucherForExpense({
-      expenseId: updatedExpId + "-edit",
-      amount: updatedAmount,
-      paymentMode: updatedMode,
-      category: updatedCat,
-      description: `[EDIT] ${updatedDesc}`,
-      performedBy: null,
-    }).catch(() => {/* already logged inside */});
+  // Amount / payment-mode edits are recorded in the tamper-evident audit trail
+  // rather than auto-posting another voucher. The previous behaviour fired a
+  // second FULL-amount payment voucher on every edit while leaving the original
+  // PV in place, so a ₹1000→₹1200 edit left ₹2200 in the ledger (double-count).
+  // The ledger correction (reverse the original PV + post the corrected amount)
+  // needs a reversing-voucher path against the locked vouchers table and is a
+  // separate change; capturing the edit here means the discrepancy is never
+  // silent in the meantime.
+  const session = (req as StaffAuthRequest).staffSession;
+  const amountChanged = bodyParsed.data.amount !== undefined && Number(bodyParsed.data.amount) !== Number(before.amount);
+  const modeChanged   = bodyParsed.data.paymentMode !== undefined && bodyParsed.data.paymentMode !== before.paymentMode;
+  if (amountChanged || modeChanged) {
+    await auditFromRequest(req, {
+      userId: session?.subjectId ?? null,
+      userName: session?.subjectName ?? "staff",
+      role: session?.role ?? "staff",
+      action: "edit",
+      module: "accounting",
+      entityType: "expense",
+      entityId: before.expenseId,
+      oldValue: JSON.stringify({ amount: before.amount, paymentMode: before.paymentMode }),
+      newValue: JSON.stringify({ amount: expense.amount, paymentMode: expense.paymentMode }),
+      reason: (typeof req.body?.reason === "string" && req.body.reason.trim())
+        || "expense edited (ledger voucher correction pending)",
+    });
   }
 
   return res.json(toNum(expense as unknown as Record<string, unknown>));
@@ -243,6 +258,32 @@ router.delete("/:id", async (req, res) => {
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid id" });
   const [expense] = await db.delete(expensesTable).where(eq(expensesTable.id, id)).returning();
   if (!expense) return res.status(404).json({ error: "Expense not found" });
+
+  // Deleting an expense previously left no trace and orphaned its payment
+  // voucher in the ledger. Record who deleted what — including the still-posted
+  // voucherId — in the tamper-evident audit trail so the deletion is
+  // attributable and the orphaned PV is traceable for reversal. (Auto-posting
+  // the reversing voucher needs the locked-vouchers reversal path and is a
+  // separate change.)
+  const session = (req as StaffAuthRequest).staffSession;
+  await auditFromRequest(req, {
+    userId: session?.subjectId ?? null,
+    userName: session?.subjectName ?? "staff",
+    role: session?.role ?? "staff",
+    action: "delete",
+    module: "accounting",
+    entityType: "expense",
+    entityId: expense.expenseId,
+    oldValue: JSON.stringify({
+      amount: expense.amount,
+      paymentMode: expense.paymentMode,
+      category: expense.category,
+      voucherId: expense.voucherId ?? null,
+    }),
+    reason: (typeof req.body?.reason === "string" && req.body.reason.trim())
+      || "expense deleted (ledger voucher reversal pending)",
+  });
+
   return res.json({ success: true });
 });
 
