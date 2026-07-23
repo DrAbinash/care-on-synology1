@@ -1308,14 +1308,18 @@ billsRouter.post("/:id/change-doctor", async (req: StaffAuthRequest, res) => {
   const bodyParsed = z.object({
     newDoctorId: z.union([z.coerce.number().positive(), z.literal(0), z.null()]),
     reason: z.string().min(1),
-    performedBy: z.string().min(1),
+    // Actor is taken from the authenticated session, not trusted from the body
+    // (this endpoint redirects a referrer's commission, so a spoofed actor
+    // hid who reassigned it). Kept optional as a legacy fallback only.
+    performedBy: z.string().min(1).optional(),
   }).safeParse(req.body);
   if (!paramsParsed.success || !bodyParsed.success) {
     res.status(400).json({ error: "Invalid request", details: [...(paramsParsed.error?.issues ?? []), ...(bodyParsed.error?.issues ?? [])] });
     return;
   }
   const id = paramsParsed.data.id;
-  const { newDoctorId, reason, performedBy } = bodyParsed.data;
+  const { newDoctorId, reason } = bodyParsed.data;
+  const actor = req.staffSession?.subjectName?.trim() || bodyParsed.data.performedBy?.trim() || "unknown";
 
   const [bill] = await db.select().from(billsTable).where(eq(billsTable.id, id));
   if (!bill) { res.status(404).json({ error: "Bill not found" }); return; }
@@ -1339,7 +1343,7 @@ billsRouter.post("/:id/change-doctor", async (req: StaffAuthRequest, res) => {
     // Audit
     await tx.insert(billAuditsTable).values({
       billId: id,
-      editedBy: performedBy,
+      editedBy: actor,
       reason,
       changeType: "referral",
       oldValue: oldDoctor?.name ?? "(none)",
