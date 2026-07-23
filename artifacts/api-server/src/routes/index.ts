@@ -52,6 +52,7 @@ import { staffRouter } from "./staff";
 import hrFormsRouter, { staffScopedHrFormsHandler } from "./hr-forms";
 import peopleRouter from "./people";
 import performanceRouter from "./performance";
+import recognitionRouter from "./recognition";
 import storageRouter from "./storage";
 import { bridgeRouter } from "./bridge";
 import { reportTemplatesRouter } from "./report-templates";
@@ -457,6 +458,8 @@ router.use("/people", requireStaffAuth, requireStaffSubPermission("/settings", "
 // Performance module (advisory, shadow-mode); gated additionally by
 // ff_hr_performance_scoring inside the router.
 router.use("/performance", requireStaffAuth, requireStaffSubPermission("/settings", "users"), performanceRouter);
+// Recognition, allowances & notifications (advisory); per-feature flags inside.
+router.use("/recognition", requireStaffAuth, requireStaffSubPermission("/settings", "users"), recognitionRouter);
 
 // Object storage (presigned URL request + object serving). Today the only
 // consumer is the HR re-joining form photo uploader, which contains PII

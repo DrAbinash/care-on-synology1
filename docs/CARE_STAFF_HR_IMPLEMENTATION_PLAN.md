@@ -52,7 +52,17 @@ Owner review reframed this as the **People Management platform** (`CARE_PEOPLE_M
   scoring, appeals. Audited + zod.
 - Remaining: employee/manager **dashboards** (trends/radar) + jsPDF **scorecard** (frontend).
 
-## Phase 4 — Recognition & allowances
+## Phase 4 — Recognition, allowances & notifications — backend ✅ landed
+- ✅ Schema `notifications` (first in-app inbox), `award_types` (+ seeded catalogue), `award_winners`,
+  `allowance_eligibility` (`schema/recognition.ts` + migration).
+- ✅ Pure, unit-tested **eligibility engine** (`eligibilityEngine.ts`): configurable travel/food allowance +
+  award shortlisting with explainable reasons and disqualifiers. `notify()` helper (`lib/notifications.ts`).
+- ✅ API `routes/recognition.ts` (`/api/recognition`): notifications (list/unread/read), award types +
+  winners (management-approved, gated `ff_hr_staff_awards`), allowance evaluate/persist/decide (gated
+  `ff_hr_performance_allowances`). Advisory only — no payroll effect. Audited + zod; notifies the employee.
+- Remaining: recognition/allowance **UI** + shortlist dashboards.
+
+### (original plan)
 - Employee of Week/Month/Year; Travel/Food allowance eligibility engines (advisory, management-approved);
   build the `notifications` table + emit helper + unread endpoint (none exists today).
 - Flags: `ff_hr_staff_awards`, `ff_hr_performance_allowances`, `ff_hr_performance_appeals`.

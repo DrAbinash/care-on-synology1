@@ -27,6 +27,7 @@ export * from "./staff";
 export * from "./staffHr";
 export * from "./attendance";
 export * from "./performance";
+export * from "./recognition";
 export * from "./reportTemplates";
 export * from "./abnormalFindings";
 export * from "./formF";
