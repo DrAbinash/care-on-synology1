@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useOnlineStatus } from "./useOnlineStatus";
 import { api } from "@/lib/fetchApi";
+import { getQueuedBills, flushQueuedBills, OFFLINE_BILL_QUEUE_KEY } from "@/lib/offlineBillingQueue";
 
 type SyncState = {
   pendingCount: number;
@@ -9,88 +10,74 @@ type SyncState = {
   lastError: string | null;
 };
 
+// Only lastSyncedAt/lastError persist here — pendingCount is derived fresh
+// from the offline bill queue itself (see offlineBillingQueue.ts) every time,
+// never cached, since that queue is the actual source of truth.
 const SYNC_STORAGE_KEY = "erp_sync_state";
-const PENDING_KEY = "erp_pending_sync_count";
 
-function readPersistedState(): SyncState {
+type PersistedFields = Pick<SyncState, "lastSyncedAt" | "lastError">;
+
+function readPersisted(): PersistedFields {
   try {
     const raw = window.localStorage.getItem(SYNC_STORAGE_KEY);
-    if (!raw) return { pendingCount: 0, lastSyncedAt: null, isSyncing: false, lastError: null };
-    return JSON.parse(raw) as SyncState;
+    if (!raw) return { lastSyncedAt: null, lastError: null };
+    const parsed = JSON.parse(raw) as Partial<PersistedFields>;
+    return { lastSyncedAt: parsed.lastSyncedAt ?? null, lastError: parsed.lastError ?? null };
   } catch {
-    return { pendingCount: 0, lastSyncedAt: null, isSyncing: false, lastError: null };
+    return { lastSyncedAt: null, lastError: null };
   }
 }
 
-function writePersistedState(state: SyncState) {
+function readState(): SyncState {
+  return { ...readPersisted(), pendingCount: getQueuedBills().length, isSyncing: false };
+}
+
+function writePersisted(fields: PersistedFields) {
   try {
-    window.localStorage.setItem(SYNC_STORAGE_KEY, JSON.stringify(state));
+    window.localStorage.setItem(SYNC_STORAGE_KEY, JSON.stringify(fields));
   } catch { /* quota exceeded or private mode */ }
-}
-
-function updatePending(delta: number) {
-  const raw = window.localStorage.getItem(PENDING_KEY);
-  const current = raw ? Math.max(0, parseInt(raw, 10) || 0) : 0;
-  const next = Math.max(0, current + delta);
-  window.localStorage.setItem(PENDING_KEY, String(next));
-  // Broadcast to other tabs
-  try {
-    window.dispatchEvent(new StorageEvent("storage", { key: PENDING_KEY, newValue: String(next) }));
-  } catch { /* ignore */ }
-  return next;
-}
-
-/**
- * Mark a new local mutation that should eventually sync to the cloud.
- * Call this from billing, orders, and tests mutations when offline
- * (or always — the sync engine will skip already-synced rows).
- */
-export function incrementPendingSyncCount(n = 1): number {
-  return updatePending(n);
-}
-
-/**
- * Decrement after a successful sync batch.
- */
-export function decrementPendingSyncCount(n = 1): number {
-  return updatePending(-n);
 }
 
 /**
  * Hook that tracks sync status across the ERP UI.
  *
- * In the current web build it polls a lightweight endpoint
- * (`GET /api/sync/status`) and uses localStorage as the cross-tab
- * signal for pending changes. In the Electron/Windows build the
- * same hook is wired to IPC calls into the local sync engine.
+ * "Pending" means bills created while the NAS was unreachable, queued
+ * locally, and not yet replayed (see offlineBillingQueue.ts). A flush is
+ * attempted opportunistically whenever we have real evidence the API is
+ * reachable — a successful /api/sync/status poll, or the browser's "online"
+ * event — and manually via triggerSync() (the sidebar's "Sync now" button).
  */
 export function useSyncStatus() {
   const isOnline = useOnlineStatus();
-  const [state, setState] = useState<SyncState>(readPersistedState);
-  const abortRef = useRef<AbortController | null>(null);
+  const [state, setState] = useState<SyncState>(readState);
+
+  const flushQueue = useCallback(async () => {
+    if (getQueuedBills().length === 0) return;
+    setState((prev) => ({ ...prev, isSyncing: true }));
+    const { remaining, lastError } = await flushQueuedBills();
+    const persisted: PersistedFields = {
+      lastSyncedAt: remaining === 0 ? new Date().toISOString() : readPersisted().lastSyncedAt,
+      lastError: remaining > 0 ? lastError : null,
+    };
+    writePersisted(persisted);
+    setState({ ...persisted, pendingCount: remaining, isSyncing: false });
+  }, []);
 
   const fetchStatus = useCallback(async () => {
     if (!isOnline) return;
     try {
-      const data = await api.get<{ pending?: number; lastSyncedAt?: string | null; error?: string | null }>(
-        "/api/sync/status"
-      );
-      setState((prev) => {
-        const next: SyncState = {
-          pendingCount: data.pending ?? prev.pendingCount,
-          lastSyncedAt: data.lastSyncedAt ?? prev.lastSyncedAt,
-          isSyncing: prev.isSyncing,
-          lastError: data.error ?? prev.lastError,
-        };
-        writePersistedState(next);
-        return next;
-      });
+      await api.get("/api/sync/status");
+      // A successful round-trip proves the API is reachable even when
+      // navigator.onLine can't be trusted — LAN-only clinic PCs routinely
+      // misreport "offline" with no internet uplink. That's what actually
+      // gates a queue flush, not the browser's own online/offline events.
+      await flushQueue();
     } catch {
-      // Network hiccup — keep previous state
+      // Network hiccup — leave state as-is; the next poll or "online" event will retry.
     }
-  }, [isOnline]);
+  }, [isOnline, flushQueue]);
 
-  // Poll every 15 s when online
+  // Poll every 15 s when online.
   useEffect(() => {
     if (!isOnline) return;
     fetchStatus();
@@ -98,11 +85,22 @@ export function useSyncStatus() {
     return () => clearInterval(id);
   }, [isOnline, fetchStatus]);
 
-  // Listen for localStorage changes from other tabs
+  // Also flush the instant the browser fires "online" — no need to wait for
+  // the next 15s poll tick.
+  useEffect(() => {
+    const handler = () => { void flushQueue(); };
+    window.addEventListener("online", handler);
+    return () => window.removeEventListener("online", handler);
+  }, [flushQueue]);
+
+  // Cross-tab: pick up queue/state changes made in another tab (or by
+  // BillingDesk enqueueing in this same tab — see offlineBillingQueue.ts's
+  // manual StorageEvent dispatch, since real "storage" events skip the
+  // origin tab).
   useEffect(() => {
     const handler = (e: StorageEvent) => {
-      if (e.key === PENDING_KEY || e.key === SYNC_STORAGE_KEY) {
-        setState(readPersistedState());
+      if (e.key === SYNC_STORAGE_KEY || e.key === OFFLINE_BILL_QUEUE_KEY) {
+        setState(readState());
       }
     };
     window.addEventListener("storage", handler);
@@ -110,19 +108,9 @@ export function useSyncStatus() {
   }, []);
 
   const triggerSync = useCallback(async () => {
-    if (!isOnline || state.isSyncing) return;
-    setState((prev) => ({ ...prev, isSyncing: true }));
-    try {
-      await api.post("/api/sync/trigger", {});
-      await fetchStatus();
-    } catch (err) {
-      setState((prev) => ({
-        ...prev,
-        isSyncing: false,
-        lastError: err instanceof Error ? err.message : "Sync request failed",
-      }));
-    }
-  }, [isOnline, state.isSyncing, fetchStatus]);
+    if (state.isSyncing) return;
+    await flushQueue();
+  }, [state.isSyncing, flushQueue]);
 
   return { ...state, triggerSync };
 }

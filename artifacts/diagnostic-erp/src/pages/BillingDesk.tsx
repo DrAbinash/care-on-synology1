@@ -2,9 +2,9 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import "@/styles/billingDeskModern.css"; // Modern Pro skin (presentation only)
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
-import { api } from "@/lib/fetchApi";
+import { api, NetworkError } from "@/lib/fetchApi";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
-import { incrementPendingSyncCount } from "@/hooks/useSyncStatus";
+import { enqueueBill, QueuedForSyncError } from "@/lib/offlineBillingQueue";
 import { readStaffSession, isFeatureEnabled, isOwnerRole } from "@/lib/staffSession";
 import { genUUID } from "@/lib/utils";
 import { getBillPaperSize } from "@/lib/billPrintLayout";
@@ -1230,35 +1230,29 @@ export default function BillingDesk() {
       // (after resetAll) generates a fresh UUID, which is the correct behaviour.
       const clientRef = genUUID();
 
-      // 1. Create order (with custom per-test prices to preserve package discounts
+      // Built up front (not inline in the api.post() calls below) so the exact
+      // same payloads can be handed to enqueueBill() for later offline replay
+      // if either request below fails with a NetworkError.
+      //
+      // 1. Order body (with custom per-test prices to preserve package discounts
       //    AND VIP surcharge — same approach self-registration.ts uses for Online
       //    Booking: inflate each test's price by the VIP multiplier so the bill
       //    total the backend computes naturally includes the surcharge without
       //    any backend changes).
       const vipMultiplier = isVipActive ? 1 + (vipPercentage / 100) : 1;
-      const order = await api.post<{ id: number; orderNumber: string }>("/api/orders", {
+      const orderBody = {
         patientId: selectedPatient.id,
         doctorId: doctorId ?? undefined,
         notes: notes || undefined,
         tests: selectedTests.map((t) => ({ testId: t.testId, price: t.price * vipMultiplier })),
         clientRef,
-      });
+      };
 
-      // 2. Create bill (inline payments are processed server-side within /billing permission)
+      // 2. Bill body (inline payments are processed server-side within /billing permission)
       const paymentRows = payNow
         ? paymentSplits.filter((s) => Number(s.amount) > 0).map((s) => ({ amount: Number(s.amount), method: s.mode }))
         : [];
-      const bill = await api.post<{
-        id: number;
-        billNumber: string;
-        token?: { tokenNo: number; tokenDate: string } | null;
-        testTokens?: Array<{ orderTestId: number; testName: string; department: string; roomNumber: string; floorLabel: string; tokenNo: number }>;
-        needsFormFData?: boolean;
-        needsOnlinePayment?: boolean;
-        onlineAmount?: number;
-        _idempotent?: boolean;
-      }>("/api/bills", {
-        orderId: order.id,
+      const billBody = {
         clientRef,
         discount: discountAmt,
         discountReason: discountAmt > 0 ? discountReason || null : null,
@@ -1273,9 +1267,39 @@ export default function BillingDesk() {
             referringDoctor: dicomReferringDoc.trim(),
           },
         } : {}),
-      });
+      };
 
-      return bill;
+      type BillResponse = {
+        id: number;
+        billNumber: string;
+        token?: { tokenNo: number; tokenDate: string } | null;
+        testTokens?: Array<{ orderTestId: number; testName: string; department: string; roomNumber: string; floorLabel: string; tokenNo: number }>;
+        needsFormFData?: boolean;
+        needsOnlinePayment?: boolean;
+        onlineAmount?: number;
+        _idempotent?: boolean;
+      };
+
+      // order is set as soon as its POST succeeds, so a NetworkError on the
+      // *bill* POST below still queues with "stage: bill" (order already
+      // exists — replay must only redo the bill, not double-create the order).
+      let order: { id: number; orderNumber: string } | undefined;
+      try {
+        order = await api.post<{ id: number; orderNumber: string }>("/api/orders", orderBody);
+        const bill = await api.post<BillResponse>("/api/bills", { ...billBody, orderId: order.id });
+        return bill;
+      } catch (err) {
+        if (err instanceof NetworkError) {
+          enqueueBill({
+            clientRef,
+            orderBody,
+            billBody,
+            ...(order ? { stage: "bill" as const, orderId: order.id, orderNumber: order.orderNumber } : {}),
+          });
+          throw new QueuedForSyncError();
+        }
+        throw err;
+      }
     },
     onSuccess: async (bill) => {
       if (!selectedPatient) return;
@@ -1297,7 +1321,6 @@ export default function BillingDesk() {
       setLastBill(lastBillLocal);
       lastBillRef.current = lastBillLocal;
       lastBillLocalRef.current = lastBillLocal;
-      incrementPendingSyncCount(2); // order + bill
 
       if (bill.needsOnlinePayment) {
         setGatewayPaymentStatus("pending");
@@ -1449,6 +1472,16 @@ export default function BillingDesk() {
     },
     onError: (err: Error) => {
       printAfterSaveRef.current = false;
+      if (err instanceof QueuedForSyncError) {
+        // Not a real failure from the user's point of view — the bill is
+        // saved locally and will go out on its own. No receipt/token to show
+        // yet (the real order/bill don't exist until it syncs), so reset the
+        // desk immediately rather than leaving a stale draft that could be
+        // resubmitted as a second, distinct queued entry.
+        toast({ title: "No connection — bill saved locally", description: "It'll sync automatically once the network is back. See the sync panel in the sidebar." });
+        resetAll();
+        return;
+      }
       toast({ title: err.message || "Failed to generate bill", variant: "destructive" });
     },
     onSettled: () => {
