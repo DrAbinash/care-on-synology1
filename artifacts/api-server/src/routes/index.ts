@@ -60,6 +60,8 @@ import disciplinaryRouter from "./disciplinary";
 import mySelfServiceRouter from "./mySelfService";
 import reportDeliveryTrackingRouter from "./reportDeliveryTracking";
 import recallRouter from "./recall";
+import feedbackRouter from "./feedback";
+import publicFeedbackRouter from "./publicFeedback";
 import storageRouter from "./storage";
 import { bridgeRouter } from "./bridge";
 import { reportTemplatesRouter } from "./report-templates";
@@ -258,6 +260,9 @@ router.use("/payment-display", paymentDisplayRouter);
 router.use("/bridge", bridgeRouter);
 // Public tokenized PDF download for patient WhatsApp links — no staff auth.
 router.use("/p/r", publicReportsRouter);
+// Public tokenized patient feedback / NPS form — no staff auth. Serves a
+// self-contained HTML page and records the response. Gated by ff_feedback_nps.
+router.use("/f", publicFeedbackRouter);
 // Public tele-radiology share viewer (token-gated) — no staff auth.
 router.use("/teleradiology", teleradiologyRouter);
 // Public bill-verification page — the QR code on every printed bill links
@@ -845,6 +850,8 @@ router.use("/signatures", requireStaffAuth, requireStaffPermission("/reports"), 
 router.use("/report-delivery-tracking", requireStaffAuth, requireStaffPermission("/reports"), reportDeliveryTrackingRouter);
 // Recall / follow-up engine. Gated additionally by ff_recall_engine (Shadow Mode) inside the router.
 router.use("/recall", requireStaffAuth, requireStaffPermission("/reports"), recallRouter);
+// Patient feedback / NPS dashboard (staff). Gated additionally by ff_feedback_nps (Shadow Mode) inside the router.
+router.use("/feedback", requireStaffAuth, requireStaffPermission("/reports"), feedbackRouter);
 
 // AI Radiology Reporting — encrypted API keys, audit logging, draft management
 router.use("/ai-reporting", requireStaffAuth, aiReportingRouter);

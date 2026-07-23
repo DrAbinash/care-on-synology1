@@ -62,6 +62,10 @@ const NETWORK_ONLY_PREFIXES = [
   // Recall queue status (pending/sent) changes as the daily job runs — keep it
   // fresh so staff never act on a stale queue.
   "/api/recall/",
+  // Patient feedback / NPS: staff dashboard (live responses) + the public
+  // tokenized feedback page (single-use HTML, must never be served from cache).
+  "/api/feedback/",
+  "/api/f/",
 
   // Patient portal (mobile app): every endpoint is scoped to the verified
   // patient session (my-bookings, my-reports, report links). Same shared-

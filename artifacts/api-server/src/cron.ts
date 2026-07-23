@@ -40,6 +40,7 @@ export function startCronScheduler() {
   schedulePacsPullerWatchdog();
   scheduleWhatsappReminders();
   scheduleRecall();
+  scheduleFeedbackInvites();
   scheduleRadiologyJobs();
   scheduleAuditChainVerify();
   scheduleAiSchedulerModes();
@@ -756,6 +757,33 @@ export async function runRecallNow() {
   const generated = await runRecallGeneration();
   const sent = await runRecallSends();
   return { generated, sent };
+}
+
+// Post-report feedback / NPS invites — once daily at 10:30 server time. Mints
+// tokenized links for recently-delivered reports and WhatsApps them. No-ops
+// unless ff_feedback_nps is enabled. Idempotent (unique report_id).
+function scheduleFeedbackInvites() {
+  cron.schedule("* * * * *", async () => {
+    try {
+      const now = new Date();
+      const dateKey = now.toISOString().split("T")[0];
+      const key = `feedback-${dateKey}`;
+      if (now.getHours() === 10 && now.getMinutes() === 30 && !firedToday.has(key)) {
+        firedToday.add(key);
+        const { runFeedbackInvites } = await import("./routes/feedback");
+        const r = await runFeedbackInvites();
+        console.log(`[cron] Feedback invites: created=${r.created} sent=${r.sent} failed=${r.failed}${r.skipped ? ` (skipped: ${r.reason})` : ""}`);
+      }
+    } catch (err) {
+      console.error("[cron] Feedback invite check failed:", err);
+    }
+  });
+  console.log("[cron] Feedback invite scheduler started (checks every minute)");
+}
+
+export async function runFeedbackInvitesNow() {
+  const { runFeedbackInvites } = await import("./routes/feedback");
+  return runFeedbackInvites();
 }
 
 function scheduleMonthEndCommission() {
