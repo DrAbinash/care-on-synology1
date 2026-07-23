@@ -4,6 +4,35 @@ Notable, reviewable changes to CARE ERP. Newest first.
 
 ## [Unreleased]
 
+### Accounting — Balance Sheet correctness + printable Schedule III statements — 2026-07-23
+
+Fixes a real double-entry defect and adds filing-ready financial statements. **No change to voucher
+wiring, bill balances, or the zero-sum ledger invariant** — this is a reporting-layer fix plus new UI.
+
+**Fixed**
+- **Balance Sheet never balanced when an account's sign was "abnormal" (HIGH).** The `/api/accounting/balance-sheet`
+  builder only placed an account on the sheet when its balance sign matched a hard-coded expectation
+  (asset ⇒ debit, liability ⇒ credit) **and** its Tally group was recognised; every other non-zero account
+  — e.g. a Cash-in-Hand ledger driven to a *credit* (overdrawn) balance, or an account with an unmapped
+  group — was silently dropped. Since the ledger is zero-sum, dropping any balance breaks the identity, which
+  is why the UI showed `Difference: ₹19,515 / Liabilities ₹0.00`. The builder now places every non-P&L
+  account by the **sign** of its closing balance (debit → assets, credit → liabilities & capital) and drops
+  nothing, so `totalAssets === totalLiabilities` for any sequence of balanced vouchers.
+- Report math extracted to a pure, database-free, unit-tested module
+  (`api-server/src/lib/accounting/reportBuilders.ts`, 10 tests) covering the invariant and the exact reported
+  scenario; the Trial Balance and P&L endpoints were rewired to the same builders with **identical** behaviour.
+
+**Added**
+- **Financial Statements tab** (`diagnostic-erp/.../accounting/FinancialStatements.tsx`) — Schedule III (Revised)
+  Balance Sheet + Statement of Profit and Loss + Trial Balance, with comparative prior-year columns, a
+  Note No. column, "In ₹", grouped line items and grand totals, matching the auditor-filed format.
+- **Print · PDF · Word** export, each report on its **own separate sheet** (`diagnostic-erp/src/lib/statementExport.ts`,
+  reusing the app's jsPDF/docx export stack). One shared row model drives the screen view and both exports.
+
+**Changed**
+- The Trial Balance / P&L / Balance Sheet queries now use the shared `FINANCIAL_QUERY_OPTIONS` (immediate
+  refetch on open + 15s live refresh), so opening a report tab no longer shows stale cached numbers.
+
 ### Radiology AI Platform — Phase P5 (Production Hardening & End-to-End Validation) — 2026-07-18
 
 Feature-complete hardening pass — **no new features**. A three-front adversarial review (AI backend seams,

@@ -25,6 +25,7 @@ import {
   CreditCard, Filter, Camera, Upload, ScanLine, Banknote, X, Check,
 } from "lucide-react";
 import Form3C from "@/components/accounting/Form3C";
+import FinancialStatements from "@/components/accounting/FinancialStatements";
 import BillReceiptScannerPanel from "@/components/BillReceiptScannerPanel";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -192,17 +193,26 @@ export default function Accounting() {
     queryFn: () => api.get("/api/accounting/ledger"),
     ...FINANCIAL_QUERY_OPTIONS,
   });
+  // Reports use the shared FINANCIAL_QUERY_OPTIONS like the rest of this page:
+  // staleTime 0 forces a fresh fetch the moment the page/tab is opened (so the
+  // first view is never a stale cached sheet), plus a 15s live refresh and
+  // refetch-on-focus. Previously these three inherited the global 5-min
+  // staleTime, so opening Balance Sheet/P&L/Trial Balance could show numbers
+  // minutes out of date until a manual "Refresh".
   const { data: trialBalance, refetch: refetchTB, isFetching: tbFetching } = useQuery<TrialBalance>({
     queryKey: ["trial-balance", rptFrom, rptTo],
     queryFn: () => api.get(`/api/accounting/trial-balance?from=${rptFrom}&to=${rptTo}`),
+    ...FINANCIAL_QUERY_OPTIONS,
   });
   const { data: profitLoss, refetch: refetchPL, isFetching: plFetching } = useQuery<ProfitLoss>({
     queryKey: ["profit-loss", rptFrom, rptTo],
     queryFn: () => api.get(`/api/accounting/profit-loss?from=${rptFrom}&to=${rptTo}`),
+    ...FINANCIAL_QUERY_OPTIONS,
   });
   const { data: balanceSheet, refetch: refetchBS, isFetching: bsFetching } = useQuery<BalanceSheet>({
     queryKey: ["balance-sheet", rptTo],
     queryFn: () => api.get(`/api/accounting/balance-sheet?asOf=${rptTo}`),
+    ...FINANCIAL_QUERY_OPTIONS,
   });
   const { data: voucherAudits = [], isFetching: auditFetching, refetch: refetchAudits } = useQuery<VoucherAudit[]>({
     queryKey: ["voucher-audits", auditFilters],
@@ -450,6 +460,7 @@ export default function Accounting() {
             <TabsTrigger value="trial-balance">Trial Balance</TabsTrigger>
             <TabsTrigger value="pnl">P&amp;L</TabsTrigger>
             <TabsTrigger value="balance-sheet">Balance Sheet</TabsTrigger>
+            <TabsTrigger value="statements" data-testid="tab-statements">Financial Statements</TabsTrigger>
             <TabsTrigger value="voucher-edits">Voucher Edits</TabsTrigger>
             <TabsTrigger value="export">Tally Export</TabsTrigger>
             <TabsTrigger value="form-3c" data-testid="tab-form-3c">Form 3C</TabsTrigger>
@@ -1068,6 +1079,11 @@ export default function Accounting() {
                 </div>
               </>
             )}
+          </TabsContent>
+
+          {/* ── Financial Statements (Schedule III, printable) Tab ── */}
+          <TabsContent value="statements">
+            <FinancialStatements />
           </TabsContent>
 
           {/* ── Voucher Edits Report Tab ── */}
