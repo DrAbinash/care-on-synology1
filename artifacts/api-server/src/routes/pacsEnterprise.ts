@@ -15,6 +15,8 @@ import { testNodeConnection } from "../services/dicom-pull-agent/dimse-agent";
 import { getRadiologyConfig, validateRadiologyConfig, isDockerBridgeIp } from "../lib/pacs/pacsConfig.js";
 import { writeWorklistFile, removeWorklistFile, syncWorklistForStatus, isMwlEnabled, MWL_TERMINAL_STATUSES } from "../lib/pacs/mwlWorklistWriter.js";
 import { NETWORK_LAN_HOST, DEFAULT_OHIF_BASE_URL, DEFAULT_WADO_URL, OHIF_HTTP_PORT } from "../lib/networkDefaults";
+import { fetchPrintImageBytes, PRINT_MAX_IMAGE_BYTES } from "../lib/reportImages";
+import { buildPrintClinic } from "../lib/buildPrintClinic";
 import {
   dicomRoutingRulesTable,
   dicomPulledStudiesTable,
@@ -28,6 +30,7 @@ import {
   radiologyStudiesTable,
   patientsTable,
   radiologyConfigChangesTable,
+  clinicSettingsTable,
 } from "@workspace/db/schema";
 import { and, asc, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
 
@@ -3368,6 +3371,182 @@ end
   res.setHeader("Content-Disposition", "attachment; filename=orthanc_erp_notify.lua");
   res.setHeader("Content-Type", "text/plain");
   res.send(hookContent);
+});
+
+// ─── Print bridge (drabinash/dicomtowindows) ─────────────────────────────────
+//
+// POST /api/radiology/print-images
+// Print a caller-chosen set of images directly to the clinic's glossy-photo
+// printer via the NAS-side DICOM print bridge's HTTP API. This is a SEPARATE
+// selection from a report's own key images (radiology_image_references) —
+// the workspace's print picker keeps its own local, unpersisted selection;
+// nothing here is written to the database.
+
+const MAX_PRINT_IMAGES_PER_REQUEST = 100; // mirrors reportImages.ts's MAX_IMAGES_PER_REPORT
+const PRINT_FETCH_CONCURRENCY = 4;
+// Stays comfortably under the print bridge's default 60MB HTTP_MAX_BODY_BYTES
+// after base64 inflation (~4/3x): 40MB raw -> ~53MB base64 + negligible JSON
+// overhead. Without this, a large batch of print-quality images could build
+// a request the bridge flatly rejects with a 413 and nothing printed at all.
+const PRINT_TOTAL_RAW_BYTES_BUDGET = 40_000_000;
+
+interface PrintBridgeResponse {
+  status?: string;
+  jobKey?: string;
+  pages?: number;
+  images?: number;
+  error?: string;
+}
+
+type PrintClinic = ReturnType<typeof buildPrintClinic>;
+
+/** Pure helper (exported for tests): builds the POST /api/v1/print-jobs body
+ *  for the print bridge from already-fetched image data URLs, the caller's
+ *  copies/orientation/layout choices, and the clinic's branding row. Clinic
+ *  branding rides along on every request rather than relying on the print
+ *  bridge's own (possibly stale, separately-configured) header/footer env
+ *  vars — clinic_settings is the ERP's single source of truth for the
+ *  clinic's name/logo, used identically for bills/receipts. */
+export function buildPrintBridgePayload(
+  images: string[],
+  copies: unknown,
+  orientation: unknown,
+  layout: { rows?: number; cols?: number } | undefined,
+  clinic: PrintClinic | null,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    images,
+    copies: Math.max(1, Math.min(20, Math.floor(Number(copies)) || 1)),
+    orientation: orientation === "LANDSCAPE" ? "LANDSCAPE" : "PORTRAIT",
+  };
+  if (layout?.rows && layout?.cols) {
+    payload.layout = { rows: Math.max(1, Math.floor(layout.rows)), cols: Math.max(1, Math.floor(layout.cols)) };
+  }
+  if (clinic && (clinic.name || clinic.logoDataUrl)) {
+    payload.header = {
+      line1: clinic.tagline || "",
+      line2: clinic.name || "",
+      logo: clinic.logoDataUrl || undefined,
+      align: "CENTER",
+    };
+  }
+  if (clinic) {
+    const footerLine2 = [clinic.phone, clinic.email].filter(Boolean).join("  |  ");
+    if (clinic.address || footerLine2) {
+      payload.footer = { line1: clinic.address || "", line2: footerLine2, align: "CENTER" };
+    }
+  }
+  return payload;
+}
+
+router.post("/print-images", async (req, res): Promise<void> => {
+  const body = req.body as {
+    images?: Array<{
+      studyInstanceUid?: string;
+      seriesInstanceUid?: string;
+      sopInstanceUid?: string;
+      frameNumber?: number;
+    }>;
+    copies?: number;
+    layout?: { rows?: number; cols?: number };
+    orientation?: "PORTRAIT" | "LANDSCAPE";
+  };
+
+  if (!Array.isArray(body.images) || body.images.length === 0) {
+    res.status(400).json({ error: "images array required" });
+    return;
+  }
+  if (body.images.length > MAX_PRINT_IMAGES_PER_REQUEST) {
+    res.status(400).json({ error: `At most ${MAX_PRINT_IMAGES_PER_REQUEST} images are allowed per print request` });
+    return;
+  }
+
+  const cfg = await getRadiologyConfig();
+  if (!cfg.printBridge.url || !cfg.printBridge.hasSecret) {
+    res.status(503).json({
+      error: "The print bridge isn't configured yet. Set PRINT_BRIDGE_URL and PRINT_BRIDGE_SECRET in the environment.",
+    });
+    return;
+  }
+
+  // Fetch each rendered image from Orthanc with bounded concurrency (same
+  // worker-pool shape as reportImages.ts's resolveDraftKeyImages), and the
+  // same reserve-upfront/refund-after-fetch total-byte budget so the request
+  // to the print bridge can never balloon past what it'll accept — once the
+  // budget's spent, remaining images are skipped gracefully (order preserved,
+  // reported back to the caller as `skipped`) rather than the whole job
+  // failing outright.
+  const refs = body.images;
+  const fetched: Array<{ bytes: Buffer; mime: string } | null> = new Array(refs.length).fill(null);
+  let next = 0;
+  let budget = PRINT_TOTAL_RAW_BYTES_BUDGET;
+  async function worker(): Promise<void> {
+    while (next < refs.length) {
+      const i = next++;
+      if (budget < PRINT_MAX_IMAGE_BYTES) continue; // budget spent: skip gracefully, keep order
+      budget -= PRINT_MAX_IMAGE_BYTES;
+      const r = refs[i];
+      const result = await fetchPrintImageBytes({
+        studyInstanceUid: r.studyInstanceUid ?? null,
+        seriesInstanceUid: r.seriesInstanceUid ?? null,
+        sopInstanceUid: r.sopInstanceUid ?? null,
+        frameNumber: r.frameNumber ?? null,
+      });
+      if (!result) { budget += PRINT_MAX_IMAGE_BYTES; continue; }
+      budget += PRINT_MAX_IMAGE_BYTES - result.bytes.length;
+      fetched[i] = result;
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(PRINT_FETCH_CONCURRENCY, refs.length) }, () => worker()));
+
+  const images = fetched
+    .filter((f): f is { bytes: Buffer; mime: string } => f !== null)
+    .map((f) => `data:${f.mime};base64,${f.bytes.toString("base64")}`);
+
+  if (images.length === 0) {
+    res.status(502).json({ error: "Could not fetch any of the requested images from the PACS" });
+    return;
+  }
+
+  const [clinicRow] = await db.select().from(clinicSettingsTable).limit(1);
+  const clinic = clinicRow ? buildPrintClinic(clinicRow) : null;
+  const printPayload = buildPrintBridgePayload(images, body.copies, body.orientation, body.layout, clinic);
+
+  try {
+    const printRes = await fetch(`${cfg.printBridge.url}/api/v1/print-jobs`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.PRINT_BRIDGE_SECRET}`,
+      },
+      body: JSON.stringify(printPayload),
+      signal: AbortSignal.timeout(15000),
+    });
+    const printData = (await printRes.json().catch(() => null)) as PrintBridgeResponse | null;
+
+    if (!printRes.ok) {
+      res.status(502).json({ error: printData?.error || `Print bridge returned HTTP ${printRes.status}` });
+      return;
+    }
+
+    void logPacsEvent(
+      "PRINT_BRIDGE", "PRINT_REQUESTED",
+      `Sent ${images.length} image(s) to the print bridge (${printData?.pages ?? "?"} page(s))`,
+      { studyInstanceUID: refs[0]?.studyInstanceUid },
+    );
+
+    res.json({
+      success: true,
+      requested: refs.length,
+      fetched: images.length,
+      skipped: refs.length - images.length,
+      jobKey: printData?.jobKey,
+      pages: printData?.pages,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Could not reach the print bridge";
+    res.status(502).json({ error: msg });
+  }
 });
 
 export const pacsEnterpriseRouter = router;
