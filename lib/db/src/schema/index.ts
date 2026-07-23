@@ -75,6 +75,7 @@ export * from "./reportDeliveryLogs";
 export * from "./reportDeliveryReceipts";
 export * from "./recall";
 export * from "./patientFeedback";
+export * from "./billPaymentLinks";
 export * from "./whatsapp";
 export * from "./structuredReportTemplates";
 export * from "./radiologyFindingLibrary";

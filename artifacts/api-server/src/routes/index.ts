@@ -62,6 +62,7 @@ import reportDeliveryTrackingRouter from "./reportDeliveryTracking";
 import recallRouter from "./recall";
 import feedbackRouter from "./feedback";
 import publicFeedbackRouter from "./publicFeedback";
+import billPaymentLinksRouter from "./billPaymentLinks";
 import storageRouter from "./storage";
 import { bridgeRouter } from "./bridge";
 import { reportTemplatesRouter } from "./report-templates";
@@ -852,6 +853,10 @@ router.use("/report-delivery-tracking", requireStaffAuth, requireStaffPermission
 router.use("/recall", requireStaffAuth, requireStaffPermission("/reports"), recallRouter);
 // Patient feedback / NPS dashboard (staff). Gated additionally by ff_feedback_nps (Shadow Mode) inside the router.
 router.use("/feedback", requireStaffAuth, requireStaffPermission("/reports"), feedbackRouter);
+// Online payment links for bills — additive scaffolding that reuses the
+// sanctioned gateway/webhook path (no writes to bills/payments/vouchers). Gated
+// additionally by ff_online_payment_links (Shadow Mode, disabled) inside the router.
+router.use("/bill-payment-links", requireStaffAuth, requireStaffPermission("/billing"), billPaymentLinksRouter);
 
 // AI Radiology Reporting — encrypted API keys, audit logging, draft management
 router.use("/ai-reporting", requireStaffAuth, aiReportingRouter);

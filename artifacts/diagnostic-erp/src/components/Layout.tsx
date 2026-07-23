@@ -163,6 +163,7 @@ const navItems: NavEntry[] = [
       { path: "/billing", icon: Receipt, label: "Bills" },
       { path: "/dues", icon: AlertCircle, label: "Due Payments" },
       { path: "/payments", icon: CreditCard, label: "Payments" },
+      { path: "/payment-links", icon: Wallet, label: "Payment Links", featureFlag: "ff_online_payment_links" },
       { path: "/orders", icon: ClipboardList, label: "Orders" },
     ],
   },
