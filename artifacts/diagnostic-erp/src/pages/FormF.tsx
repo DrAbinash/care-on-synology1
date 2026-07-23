@@ -2317,8 +2317,11 @@ export default function FormF() {
           title={scanPanelSide === "back" ? "ID Card — Back" : "ID Card — Front"}
           autoCropEnabled={fSettings?.autoCropIdScan !== false}
           cropPadding={fSettings?.cropPadding ?? 12}
-          jpegQuality={fSettings?.jpegQuality ?? 85}
-          maxWidth={fSettings?.maxScanWidth ?? 1200}
+          // Sharper defaults: 92% JPEG (was 85 — less compression blur through
+          // the crop re-encode) and a 1600px working width (was 1200), so a card
+          // that fills only part of the frame still crops to a legible size.
+          jpegQuality={fSettings?.jpegQuality ?? 92}
+          maxWidth={fSettings?.maxScanWidth ?? 1600}
           onSave={async (result) => {
             // Prefer enhanced → cropped → original for Form F display
             const displayB64 = result.enhancedBase64 || result.croppedBase64 || result.originalBase64;
