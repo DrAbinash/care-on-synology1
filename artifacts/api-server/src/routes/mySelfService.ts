@@ -17,7 +17,7 @@ import { db } from "@workspace/db";
 import {
   staffTable, staffUserLinksTable, staffSkillsTable, skillsTable, staffTimelineEventsTable,
   staffDocumentsTable, staffAttendanceTable, staffStatusHistoryTable,
-  leaveRequestsTable, leaveBalancesTable, notificationsTable,
+  leaveRequestsTable, leaveBalancesTable, leaveTypesTable, notificationsTable,
 } from "@workspace/db/schema";
 import { and, eq, gte, lte, desc, or } from "drizzle-orm";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
@@ -84,6 +84,11 @@ mySelfServiceRouter.get("/score", async (req, res) => {
   res.json(await computeCycleScore(cycleId.data, staffId));
 });
 
+// Active leave types (read-only) — so the self-service apply form has names
+// without needing the settings permission the admin /api/leave/types requires.
+mySelfServiceRouter.get("/leave-types", async (_req, res) => {
+  res.json(await db.select({ id: leaveTypesTable.id, code: leaveTypesTable.code, name: leaveTypesTable.name }).from(leaveTypesTable).where(eq(leaveTypesTable.isActive, true)));
+});
 mySelfServiceRouter.get("/leave", async (req, res) => {
   const staffId = await requireOwnStaff(req, res); if (staffId == null) return;
   const [requests, balances] = await Promise.all([
