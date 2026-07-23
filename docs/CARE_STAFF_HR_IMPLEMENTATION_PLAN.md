@@ -19,6 +19,12 @@ Owner review reframed this as the **People Management platform** (`CARE_PEOPLE_M
 - `skills` + `staff_skills` — skill matrix. `staff_timeline_events` — auto-generated 360° activity timeline.
 - `attendanceSource.ts` — inert attendance-source **abstraction** (one interface, one event; no hardware).
 - Design docs updated to the People Management platform + 360° profile; five owner decisions recorded.
+- **Foundation API** `routes/people.ts` (mounted `/api/people`, gated by the existing HR permission +
+  `ff_hr_staff_enhanced`, audited, zod-validated): the **360° profile** assembler, designations, skills
+  master + staff skill matrix, reporting lines, **derived org chart**, status history, timeline,
+  document vault (metadata), and the 1:1 identity link. Non-financial; no salary/payroll field touched.
+- **USB fingerprint stabilized** (server): raw-punch preservation + idempotency + audit + flag gate
+  (`recordStaffPunch`, `attendance_raw_punches`); adapter contract validation + mock test.
 
 **Follow-up PRs (reviewed):**
 - Register `staff`/`hr`/`people` permission modules by **extending** the existing matrix (owner decision).
