@@ -375,8 +375,8 @@ export default function IdCardScanPanel({
   onCancel,
   autoCropEnabled = true,
   cropPadding = 12,
-  jpegQuality = 85,
-  maxWidth = 1200,
+  jpegQuality = 92,
+  maxWidth = 1600,
   docType = "id-card",
   title = "ID Card",
 }: IdCardScanPanelProps) {
@@ -465,10 +465,11 @@ export default function IdCardScanPanel({
     }
 
     // ── Step 1: Background = MEDIAN colour of the outer border frame ──
-    // Sampling the whole ~6% frame (not four tiny corners) is robust when the
-    // card is offset or rotated so a corner lands on it. The median resists a
-    // glare patch or a finger in the border.
-    const band = Math.max(2, Math.round(Math.min(sw, sh) * 0.06));
+    // A thin outermost ring (≈3%) is the most likely to be true background; a
+    // wider band gets contaminated when the card nearly fills the frame, which
+    // then makes the card's own edge read as "background" and the crop bites
+    // into it. The median resists a glare patch or a finger in the border.
+    const band = Math.max(2, Math.round(Math.min(sw, sh) * 0.03));
     const bR: number[] = [], bG: number[] = [], bB: number[] = [];
     for (let y = 0; y < sh; y++) {
       const edgeRow = y < band || y >= sh - band;
@@ -492,8 +493,10 @@ export default function IdCardScanPanel({
     // the card even when its interior tone is close to the background, and locks
     // onto the card border and printed text — the single biggest robustness win
     // over the old colour-only detector.
-    const COLOR_THRESH = 60;   // summed |Δ| across R,G,B
-    const GRAD_THRESH  = 22;   // |dx|+|dy| on luma
+    // Sensitive thresholds: better to include a sliver of background (staff can
+    // trim it with the now-full manual crop) than to shave off card content.
+    const COLOR_THRESH = 42;   // summed |Δ| across R,G,B
+    const GRAD_THRESH  = 14;   // |dx|+|dy| on luma
     const content = new Uint8Array(sw * sh);
     for (let y = 0; y < sh; y++) {
       for (let x = 0; x < sw; x++) {
@@ -539,8 +542,11 @@ export default function IdCardScanPanel({
     let rowPeak = 0, colPeak = 0;
     for (let y = 0; y < sh; y++) rowPeak = Math.max(rowPeak, smoothed(rowP, y));
     for (let x = 0; x < sw; x++) colPeak = Math.max(colPeak, smoothed(colP, x));
-    const rowT = Math.max(0.04, rowPeak * 0.16);
-    const colT = Math.max(0.04, colPeak * 0.16);
+    // A low fraction (9%) keeps the boundary out near the card edge instead of
+    // biting inward on a lower-density strip (e.g. a logo panel with little
+    // print).
+    const rowT = Math.max(0.04, rowPeak * 0.09);
+    const colT = Math.max(0.04, colPeak * 0.09);
 
     let top = 0, bottom = sh - 1, left = 0, right = sw - 1;
     for (let y = 0; y < sh; y++)      { if (smoothed(rowP, y) > rowT) { top = y; break; } }
@@ -551,7 +557,18 @@ export default function IdCardScanPanel({
     // Nothing found (blank / uniform frame) → keep the whole image.
     if (right <= left || bottom <= top) { left = 0; top = 0; right = sw - 1; bottom = sh - 1; }
 
-    // ── Step 5: Pad (padding is full-res px → scale down), then map back up ──
+    // ── Step 5: Safety margin + snap-to-edge, then pad and map back up ──
+    // A generous margin (≈2.5%) means we never crop flush to detected content —
+    // a hair of background is fine, a shaved-off letter is not. And if a
+    // boundary sits within ≈4% of the frame, snap it to the frame: the card
+    // reaches the edge there, so any remaining gap is spurious.
+    const margin = Math.round(Math.min(sw, sh) * 0.025);
+    const snap = Math.round(Math.min(sw, sh) * 0.04);
+    left   = left   < snap          ? 0      : left - margin;
+    top    = top    < snap          ? 0      : top - margin;
+    right  = right  > sw - 1 - snap ? sw - 1 : right + margin;
+    bottom = bottom > sh - 1 - snap ? sh - 1 : bottom + margin;
+
     const padS = Math.max(padding, 4) * scale;
     left   = Math.max(0, left - padS);
     top    = Math.max(0, top - padS);
@@ -916,22 +933,20 @@ export default function IdCardScanPanel({
   // ── Manual crop drag ──────────────────────────────────────────────────────
 
   function getPointerPos(e: React.MouseEvent | React.TouchEvent) {
-    const container = containerRef.current;
-    if (!container) return { x: 0, y: 0 };
-    const rect = container.getBoundingClientRect();
-    const cw = overlayCanvasRef.current?.width ?? 1;
-    const ch = overlayCanvasRef.current?.height ?? 1;
-    const scaleX = cw / rect.width;
-    const scaleY = ch / rect.height;
-    let cx = 0; let cy = 0;
-    if ("touches" in e) {
-      cx = e.touches[0].clientX - rect.left;
-      cy = e.touches[0].clientY - rect.top;
-    } else {
-      cx = e.clientX - rect.left;
-      cy = e.clientY - rect.top;
-    }
-    return { x: cx * scaleX, y: cy * scaleY };
+    // Measure against the CANVAS, not its container. The canvas is centered in
+    // the container (flex, justify-center), so a portrait image (e.g. a mobile
+    // phone photo) is letterboxed — narrower than the container — and using the
+    // container's rect would give both a wrong offset and a wrong scale, so the
+    // crop handles never line up under the pointer. A landscape image fills the
+    // container width, which is why it happened to work there.
+    const canvas = overlayCanvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / (rect.width || 1);
+    const scaleY = canvas.height / (rect.height || 1);
+    const pt = "touches" in e ? (e.touches[0] ?? e.changedTouches[0]) : e;
+    if (!pt) return { x: 0, y: 0 };
+    return { x: (pt.clientX - rect.left) * scaleX, y: (pt.clientY - rect.top) * scaleY };
   }
 
   // Pick which handle (if any) the pointer grabbed. Corners win over edges,
@@ -1089,7 +1104,9 @@ export default function IdCardScanPanel({
               <div
                 ref={containerRef}
                 className="relative bg-gray-100 rounded-lg overflow-hidden border border-gray-200 select-none"
-                style={{ cursor: cursorForDrag(dragMode), maxHeight: 340, display: "flex", justifyContent: "center" }}
+                // touchAction:none so a touch-drag on a handle resizes the crop
+                // instead of scrolling/zooming the page on phones and tablets.
+                style={{ cursor: cursorForDrag(dragMode), maxHeight: 340, display: "flex", justifyContent: "center", touchAction: "none" }}
                 onMouseDown={handlePointerDown}
                 onMouseMove={handlePointerMove}
                 onMouseUp={handlePointerUp}
