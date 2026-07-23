@@ -156,6 +156,8 @@ import { scanSessionsRouter } from "./scan-sessions";
 // Federated Radiology Service — boundary API (additive, server-to-server only)
 import boundaryRouter from "./boundary";
 import { gatewayWebhookRouter } from "./gateway-webhooks";
+// FHIR R4 read façade — self-authenticating (Bearer FHIR_API_KEY), off until configured.
+import fhirRouter from "./fhir";
 
 const router: IRouter = Router();
 
@@ -216,6 +218,9 @@ router.use(systemRouter);
 // not staff session. Mounted before staff-auth routes so the radiology
 // service can reach it server-to-server without a staff login.
 router.use("/boundary", boundaryRouter);
+// FHIR R4 read façade — Bearer FHIR_API_KEY (server-to-server), not staff session.
+// Returns 503 until FHIR_API_KEY is configured, so patient data stays unexposed by default.
+router.use("/fhir", fhirRouter);
 // Internal cron trigger endpoints — auth via CRON_SECRET bearer token, not staff session.
 // Hit by a Replit Scheduled deployment (see scripts/src/trigger-cron.ts) so cron emails
 // keep firing on autoscale where in-process schedulers are disabled.
