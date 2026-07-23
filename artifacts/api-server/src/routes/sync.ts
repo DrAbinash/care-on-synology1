@@ -3,6 +3,17 @@ import { db, syncQueueTable, syncCheckpointTable, patientsTable, ordersTable, bi
 import { eq, and, gte, desc, sql, isNull, inArray } from "drizzle-orm";
 import { z } from "zod";
 
+// NOTE on offline billing specifically: bills created while the NAS is
+// unreachable do NOT flow through this router's /push + applyChangeToCloud.
+// They queue client-side (diagnostic-erp/src/lib/offlineBillingQueue.ts) and
+// replay directly against the real POST /api/orders and POST /api/bills
+// routes, reusing the clientRef-based idempotency those already implement
+// for exactly this "retry after a network drop" case. Routing bills through
+// the generic apply-by-tableName path below would mean re-deriving VIP
+// surcharge, discount, Form-F, and token-allocation logic a second time in a
+// place that isn't the single source of truth for it — so applyChangeToCloud
+// stays a stub for "orders"/"bills" on purpose, not by oversight.
+
 export const syncRouter = Router();
 
 // ─── Schemas ────────────────────────────────────────────────────────────────
@@ -127,7 +138,11 @@ async function applyChangeToCloud(
   change: z.infer<typeof PushBody>["changes"][number],
   _clinicId: string,
 ): Promise<{ localId?: number; cloudId?: number; status: "ok" | "conflict" | "error"; message?: string }> {
-  // This is a stub — real implementation needs per-table upsert logic.
-  // For MVP, we return ok so the client can clear its queue.
-  return { localId: change.localId, status: "ok", message: "Accepted (stub)" };
+  // No table has real per-table upsert logic wired in here yet (see the
+  // NOTE above the router for why "orders"/"bills" are deliberately staying
+  // out of this generic path rather than getting one). Reporting "ok" for a
+  // change nothing actually persisted would be silent data loss for whatever
+  // eventually does call POST /push — fail loudly instead until a table is
+  // genuinely implemented.
+  return { localId: change.localId, status: "error", message: `Not implemented for table "${change.tableName}"` };
 }

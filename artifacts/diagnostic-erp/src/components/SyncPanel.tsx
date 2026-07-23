@@ -1,19 +1,34 @@
-import { useSyncStatus, incrementPendingSyncCount } from "@/hooks/useSyncStatus";
+import { useSyncStatus } from "@/hooks/useSyncStatus";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
-import { RefreshCw, WifiOff, CloudOff, AlertTriangle, CheckCircle2, Clock } from "lucide-react";
+import { getQueuedBills, discardQueuedBill, type QueuedBill } from "@/lib/offlineBillingQueue";
+import { RefreshCw, CloudOff, CheckCircle2, ChevronDown, ChevronUp, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 export function SyncPanel() {
   const isOnline = useOnlineStatus();
   const { pendingCount, lastSyncedAt, isSyncing, lastError, triggerSync } = useSyncStatus();
   const [justTriggered, setJustTriggered] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [queued, setQueued] = useState<QueuedBill[]>([]);
+
+  // Re-read the queue's contents whenever its length changes (a bill got
+  // queued or flushed) or the disclosure opens — pendingCount already tracks
+  // that same localStorage-backed queue, so this stays in lockstep with it.
+  useEffect(() => {
+    setQueued(getQueuedBills());
+  }, [pendingCount, expanded]);
 
   const handleSync = useCallback(() => {
     setJustTriggered(true);
     triggerSync();
     setTimeout(() => setJustTriggered(false), 2000);
   }, [triggerSync]);
+
+  const handleDiscard = useCallback((clientRef: string) => {
+    discardQueuedBill(clientRef);
+    setQueued(getQueuedBills());
+  }, []);
 
   const lastSyncText = lastSyncedAt
     ? new Date(lastSyncedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -32,8 +47,14 @@ export function SyncPanel() {
           <span className={isOnline ? "text-emerald-300" : "text-slate-400"}>
             {isOnline ? "Cloud connected" : "Offline"}
           </span>
-          {pendingCount > 0 && !isOnline && (
-            <span className="text-amber-300">({pendingCount} queued)</span>
+          {pendingCount > 0 && (
+            <button
+              onClick={() => setExpanded((v) => !v)}
+              className="flex items-center gap-0.5 text-amber-300 hover:text-amber-200"
+              title="Bills waiting to sync"
+            >
+              ({pendingCount} queued) {expanded ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
+            </button>
           )}
         </div>
         <button
@@ -60,6 +81,33 @@ export function SyncPanel() {
           <span className="text-red-300 truncate" title={lastError}>Sync failed</span>
         )}
       </div>
+
+      {/* Row 3 (collapsible): each queued bill, with a discard escape hatch
+          for one that can never succeed (e.g. its patient or test was
+          deleted during the outage) — otherwise it would block every bill
+          queued after it, since replay stops at the first failure to keep
+          per-department token numbers in the order patients actually arrived. */}
+      {expanded && queued.length > 0 && (
+        <div className="mt-1 space-y-1 rounded bg-black/20 p-1.5">
+          {queued.map((q) => (
+            <div key={q.clientRef} className="flex items-center justify-between gap-2 text-white/70">
+              <span className="truncate" title={q.lastError ?? undefined}>
+                {new Date(q.queuedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                {q.lastError ? ` — ${q.lastError}` : " — waiting to sync"}
+              </span>
+              {q.lastError && (
+                <button
+                  onClick={() => handleDiscard(q.clientRef)}
+                  className="shrink-0 text-white/40 hover:text-red-300"
+                  title="Discard this queued bill — it will not be retried"
+                >
+                  <X size={10} />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -120,6 +120,17 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Thrown only when every retry above was exhausted without ever getting a
+// response back (LAN/NAS unreachable) — never for a 4xx/5xx the server
+// actually answered with. Callers that need to fall back to an offline queue
+// (see offlineBillingQueue.ts) match on this instead of parsing err.message.
+export class NetworkError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NetworkError";
+  }
+}
+
 // After a NETWORK-level failure (no response at all), wait for connectivity
 // to return before burning the next retry — capped so a browser that
 // misreports navigator.onLine (common on LAN-only clinic PCs with no internet
@@ -173,7 +184,7 @@ export async function fetchApi<T = unknown>(path: string, init?: RequestInit): P
         continue;
       }
       // Last attempt or non-transient: surface the original network error
-      throw new Error(
+      throw new NetworkError(
         navigator.onLine
           ? "Server not responding — please check your connection and try again."
           : "No internet connection — waiting for network to return."
