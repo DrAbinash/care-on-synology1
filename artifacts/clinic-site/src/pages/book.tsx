@@ -155,7 +155,10 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
   const email = settings.contactEmail || EMAIL;
 
   useEffect(() => {
-    document.title = "Book a Test | Care Diagnostics";
+    const src = new URLSearchParams(window.location.search).get("source");
+    document.title = (src || "").toLowerCase() === "hope"
+      ? "Book Hope Tests | Care Diagnostics"
+      : "Book a Test | Care Diagnostics";
     window.scrollTo(0, 0);
   }, []);
 
@@ -193,6 +196,9 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
 
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
   const mode = useMemo(() => (params.get("mode") || "online") as "online" | "kiosk" | "qr", [params]);
+  // Partner deep-link (e.g. Hope: /book?source=hope&packageCode=HOPE). Drives
+  // light co-branding; the booking + payment flow is otherwise unchanged.
+  const isHope = useMemo(() => (params.get("source") || "").toLowerCase() === "hope", [params]);
 
   const [pd, setPd] = useState(() => {
     const todayStr = new Date().toISOString().slice(0, 10);
@@ -251,6 +257,36 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
     bookingGet<BookingConfig>("/api/public/booking/config")
       .then(setConfig)
       .catch(() => setConfig({ enabled: false, keyId: "", vipEnabled: false, gateway: null }));
+  }, []);
+
+  // Partner deep-links can pre-select a package/test set by STABLE code (robust
+  // across environments), e.g. /book?source=hope&packageCode=HOPE. Numeric
+  // ?package=/?tests= are handled in the prefill effect above; here we resolve
+  // codes once the catalog has loaded.
+  useEffect(() => {
+    const pkgCodeParam = params.get("packageCode") || params.get("packageCodes");
+    if (pkgCodeParam && pkgs.length) {
+      const codes = pkgCodeParam.split(",").map((c) => c.trim().toLowerCase()).filter(Boolean);
+      const ids = pkgs.filter((p) => codes.includes((p.code || "").toLowerCase())).map((p) => p.id);
+      if (ids.length) setSelPkgs((s) => { const n = new Set(s); ids.forEach((id) => n.add(id)); return n; });
+    }
+    const testCodeParam = params.get("testCode") || params.get("testCodes");
+    if (testCodeParam && tests.length) {
+      const codes = testCodeParam.split(",").map((c) => c.trim().toLowerCase()).filter(Boolean);
+      const ids = tests.filter((t) => codes.includes((t.code || "").toLowerCase())).map((t) => t.id);
+      if (ids.length) setSelTests((s) => { const n = new Set(s); ids.forEach((id) => n.add(id)); return n; });
+    }
+  }, [tests, pkgs, params]);
+
+  // Load the catalog eagerly when a deep-link pre-selects tests/packages, so the
+  // selection is already resolved by the time the user reaches "Select Tests".
+  useEffect(() => {
+    if (params.get("packageCode") || params.get("packageCodes") || params.get("testCode") || params.get("testCodes") ||
+        params.get("package") || params.get("packageId") || params.get("packages") || params.get("packageIds") ||
+        params.get("test") || params.get("testId") || params.get("tests") || params.get("testIds")) {
+      loadCatalog();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Referring-doctor list for the booking form's "Referring Doctor" picker.
@@ -690,9 +726,18 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                 style={{ height: 60, width: "auto", marginBottom: "1rem", objectFit: "contain" }}
               />
             )}
-            <h1 className="cd-display cd-book-hero-title" style={{ color: textColor }}>Book your diagnostic test</h1>
+            {isHope && (
+              <div style={{ display: "inline-flex", alignItems: "center", gap: ".4rem", padding: ".3rem .8rem", borderRadius: 9999, background: "rgba(255,255,255,.9)", color: "hsl(var(--cd-navy))", fontWeight: 700, fontSize: ".8rem", marginBottom: ".75rem" }}>
+                <Stethoscope size={14} /> Hope NeuroTrauma &amp; MultiSpeciality Hospital
+              </div>
+            )}
+            <h1 className="cd-display cd-book-hero-title" style={{ color: textColor }}>
+              {isHope ? "Book Hope's dedicated tests" : "Book your diagnostic test"}
+            </h1>
             <p className="cd-book-hero-sub" style={{ color: textColor }}>
-              MRI, CT Scan, Ultrasound, Digital X-Ray, Pathology &amp; Health Packages at Care Diagnostics, Deoghar.
+              {isHope
+                ? "Hope's selected investigations — booked and paid securely through Care Diagnostics, Deoghar."
+                : "MRI, CT Scan, Ultrasound, Digital X-Ray, Pathology & Health Packages at Care Diagnostics, Deoghar."}
             </p>
             <TrustBadges />
           </div>
