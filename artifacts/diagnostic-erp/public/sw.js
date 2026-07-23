@@ -99,6 +99,9 @@ const NETWORK_ONLY_PREFIXES = [
                                                       // guard test's marker scan looks for)
   "/api/radiology-diagnostics/",                     // M1.3 Flight Deck: live deployment diagnostics — a cached
                                                       // "HEALTHY" verdict would be a stale lie; always hit the network
+  "/api/dashboard/reconciliation",                   // owner-only reconciliation exceptions — same URL for every
+                                                      // owner, so a cached 200 could be served to a lower-privilege
+                                                      // user on a shared terminal before their own (403) resolves
 ];
 
 // Guardrail: artifacts/api-server/src/routes/personalEndpointCacheGuard.test.ts

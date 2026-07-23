@@ -668,11 +668,14 @@ async function summarizeUserWindow(
     .select({ amount: expensesTable.amount, paymentMode: expensesTable.paymentMode })
     .from(expensesTable)
     .where(expWhere);
-  const { cashExpenses } = splitCashExpenses(expRows);
-  totals.cash -= cashExpenses;
-  totals.total -= cashExpenses;
-  totals.cash -= cashExpenses;
-  totals.total -= cashExpenses;
+  // Reduce this cashier's expected physical cash by the cash expenses they
+  // approved — exactly once — by delegating to the same tested pure helper the
+  // overall path uses (applyCashExpenses). `totals` is `classified.overall`,
+  // so mutating `classified` here updates it. This previously inlined the
+  // subtraction and applied it TWICE, which understated each cashier's expected
+  // drawer cash and could mask a real shortfall as a false surplus.
+  const { cashExpenses, cashExpensesByApprover } = splitCashExpenses(expRows);
+  applyCashExpenses(classified, cashExpensesByApprover);
 
   const bWhere = from
     ? and(

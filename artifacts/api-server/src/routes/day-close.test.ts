@@ -204,6 +204,24 @@ describe("applyCashExpenses — CRITICAL FIX: Expected Cash = Cash In − Cash R
     applyCashExpenses(classified, cashExpensesByApprover);
     expect(classified.overall.cash).toBe(1550);
   });
+
+  test("per-cashier window subtracts cash expenses EXACTLY ONCE (regression: day-close double-subtract)", () => {
+    // summarizeUserWindow builds `classified` for a single staffer's window,
+    // then reduces their expected drawer cash via applyCashExpenses. A prior
+    // bug applied that subtraction twice inline, understating expected cash by
+    // 2×. This locks the correct single subtraction end-to-end.
+    const classified = classifyAndBucketPayments([
+      { id: 1, amount: "5000", method: "cash", recordedByName: "Deepa" },
+    ]);
+    const { cashExpenses, cashExpensesByApprover } = splitCashExpenses([
+      { amount: "800", paymentMode: "cash", approvedBy: "Deepa" },
+    ]);
+    applyCashExpenses(classified, cashExpensesByApprover);
+    expect(cashExpenses).toBe(800);
+    // 5000 − 800 = 4200 (NOT 5000 − 800 − 800 = 3400).
+    expect(classified.overall.cash).toBe(4200);
+    expect(classified.overall.total).toBe(4200);
+  });
 });
 
 describe("maxBoundary — Closed-Day Carry-Forward (LOCKED BUSINESS RULE #10/#11)", () => {
