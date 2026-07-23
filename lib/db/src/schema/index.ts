@@ -159,3 +159,5 @@ export * from "./serviceCatalogueMappings";
 export * from "./diagnosticReferrals";
 export * from "./integrationOutbox";
 export * from "./externalResultLinks";
+// ── ABDM / ABHA national health stack integration (additive scaffold) ────────
+export * from "./abdm";
