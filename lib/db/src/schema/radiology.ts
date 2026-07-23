@@ -194,8 +194,18 @@ export const radiologyCriticalFindingsTable = pgTable("radiology_critical_findin
   category: text("category"),           // stroke | trauma | hemorrhage | pneumothorax | etc
   notifiedClinician: text("notified_clinician"),
   notifiedAt: timestamp("notified_at", { withTimezone: true }),
-  notificationMethod: text("notification_method"), // phone | sms | whatsapp | email | in_app
+  notificationMethod: text("notification_method"), // phone | sms | whatsapp | email | in_app | in_person | other
+  // Who RECORDED the notification attempt (authenticated session identity)
+  // and the attempt's note. notification_delivered stays NULL when the
+  // channel cannot verify delivery (phone / in-person) — it is never set to
+  // pretend delivery happened.
+  notifiedBy: text("notified_by"),
+  notificationNote: text("notification_note"),
+  notificationDelivered: boolean("notification_delivered"),
   acknowledgedBy: text("acknowledged_by"),
+  // Role from the authenticated session (never client-supplied) + optional note.
+  acknowledgedRole: text("acknowledged_role"),
+  acknowledgedNote: text("acknowledged_note"),
   acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

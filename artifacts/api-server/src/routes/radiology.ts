@@ -1752,12 +1752,18 @@ radiologyRouter.post("/critical-findings", async (req, res) => {
 });
 
 // PATCH /api/radiology/critical-findings/:id/acknowledge
+// PR 3: identity now comes from the authenticated session (client-supplied
+// clinicianName is accepted only as a legacy fallback when no session name
+// exists) and the shared engine makes the acknowledge idempotent.
 radiologyRouter.patch("/critical-findings/:id/acknowledge", async (req, res) => {
   const id = Number(req.params.id);
-  const clinician = String(req.body.clinicianName || "").trim();
-  if (!clinician) { res.status(400).json({ error: "clinicianName required" }); return; }
-  await acknowledgeFinding(id, clinician);
-  res.json({ ok: true });
+  if (!Number.isInteger(id) || id <= 0) { res.status(400).json({ error: "Invalid finding id" }); return; }
+  const session = (req as StaffAuthRequest).staffSession;
+  const name = session?.subjectName?.trim() || String(req.body?.clinicianName || "").trim();
+  if (!name) { res.status(400).json({ error: "No authenticated identity available" }); return; }
+  const result = await acknowledgeFinding(id, { name, role: session?.role ?? "staff" });
+  if (result.outcome === "not_found") { res.status(404).json({ error: "Critical finding not found" }); return; }
+  res.json({ ok: true, outcome: result.outcome });
 });
 
 // ── Phase 2 — TAT tracking ──
