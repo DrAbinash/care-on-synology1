@@ -51,6 +51,7 @@ import { printersRouter } from "./printers";
 import { staffRouter } from "./staff";
 import hrFormsRouter, { staffScopedHrFormsHandler } from "./hr-forms";
 import peopleRouter from "./people";
+import performanceRouter from "./performance";
 import storageRouter from "./storage";
 import { bridgeRouter } from "./bridge";
 import { reportTemplatesRouter } from "./report-templates";
@@ -453,6 +454,9 @@ router.use("/hr-forms", requireStaffAuth, requireStaffSubPermission("/settings",
 // People Management platform (360° profile foundation). Same gate as HR;
 // additionally behind ff_hr_staff_enhanced (Shadow Mode) inside the router.
 router.use("/people", requireStaffAuth, requireStaffSubPermission("/settings", "users"), peopleRouter);
+// Performance module (advisory, shadow-mode); gated additionally by
+// ff_hr_performance_scoring inside the router.
+router.use("/performance", requireStaffAuth, requireStaffSubPermission("/settings", "users"), performanceRouter);
 
 // Object storage (presigned URL request + object serving). Today the only
 // consumer is the HR re-joining form photo uploader, which contains PII

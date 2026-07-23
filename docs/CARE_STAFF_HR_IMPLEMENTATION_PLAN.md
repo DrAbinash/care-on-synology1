@@ -41,10 +41,16 @@ Owner review reframed this as the **People Management platform** (`CARE_PEOPLE_M
   (`FINGERPRINT_ATTENDANCE_INTEGRATION.md`); node-cron poller shape from `services/integration/scheduler.ts`.
 - Flags: `ff_hr_attendance_management`, `ff_hr_biometric_attendance`.
 
-## Phase 3 — Performance MVP (shadow)
-- `performance_cycles/categories/rules/events/scores/adjustments`; wire the (already-shipped) engine to
-  persistence with **rule-set snapshots** per finalized cycle; approval workflow; employee + manager dashboards;
-  jsPDF scorecard. Flag: `ff_hr_performance_scoring` (+ `ff_hr_shadow_mode`).
+## Phase 3 — Performance MVP (shadow) — backend ✅ landed
+- ✅ Schema `performance_cycles/categories/rules/events/scores/appeals` (`schema/performance.ts` +
+  `migrations/staff_hr_zz_performance.sql`); seeds the editable **category framework only** (no penalty
+  matrix activated without review).
+- ✅ Engine wired to persistence via `performanceService.ts` (pure mappers in `performanceMapping.ts`,
+  unit-tested); finalized scores snapshot the category policy (reproducible history).
+- ✅ API `routes/performance.ts` (`/api/performance`, gated by `ff_hr_performance_scoring`): categories &
+  rules config, cycles, event workflow with **no self-approval** (segregation of duties), live + finalized
+  scoring, appeals. Audited + zod.
+- Remaining: employee/manager **dashboards** (trends/radar) + jsPDF **scorecard** (frontend).
 
 ## Phase 4 — Recognition & allowances
 - Employee of Week/Month/Year; Travel/Food allowance eligibility engines (advisory, management-approved);
