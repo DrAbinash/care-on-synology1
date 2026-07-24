@@ -154,9 +154,14 @@ describe("registerRowsToCsv — Rule 9(1) structure leads", () => {
     expect(idx("Form F Tests")).toBeGreaterThan(idx(statutory[4]));
   });
 
-  test("statutory cells combine name+spouse and address+phone; referrer resolves doctor-name first, then Self", () => {
+  test("statutory cells combine name+spouse and address+phone; referrer comes from referred_by, not the conducting doctor", () => {
     const rows = buildRegisterRows(
-      [record({ id: 1, doctorName: "", referredBy: "" }), record({ id: 2, doctorName: "Dr. R. Gupta" })],
+      [
+        record({ id: 1, doctorName: "", referredBy: "" }),
+        // Conducting doctor differs from the referrer — the column must report
+        // the referrer (referred_by), never the sonologist who scanned her.
+        record({ id: 2, doctorName: "Dr. R. Gupta", referredBy: "Doctor: Dr. Mehta" }),
+      ],
       1,
     );
     const csv = registerRowsToCsv(rows);
@@ -164,7 +169,8 @@ describe("registerRowsToCsv — Rule 9(1) structure leads", () => {
     expect(lines[1]).toContain("Priya Test — Spouse/Father: R. Kumar");
     expect(lines[1]).toContain('"12 MG Road, Ph: 9999900001"');
     expect(lines[1]).toContain("Self");
-    expect(lines[2]).toContain("Dr. R. Gupta");
+    expect(lines[2]).toContain("Dr. Mehta");
+    expect(lines[2]).not.toContain("Dr. R. Gupta");
   });
 
   test("emits a header plus one line per row, with commas/quotes escaped", () => {
@@ -194,11 +200,40 @@ describe("isSelfReferralRecord — who belongs in the self-referral OPD register
     }
   });
 
-  test("a named referring doctor — in either field — is NEVER a self-referral", () => {
+  test("a named referring doctor in referred_by is NEVER a self-referral", () => {
     expect(isSelfReferralRecord({ referredBy: "Dr. Mehta", doctorName: "" })).toBe(false);
     expect(isSelfReferralRecord({ referredBy: "Doctor", doctorName: "" })).toBe(false);
-    expect(isSelfReferralRecord({ referredBy: "Self", doctorName: "Dr. R. Gupta" })).toBe(false);
-    expect(isSelfReferralRecord({ referredBy: null, doctorName: "Dr. R. Gupta" })).toBe(false);
+    // The shape FormF.tsx actually saves for a doctor referral.
+    expect(isSelfReferralRecord({ referredBy: "Doctor: Dr. Mehta", doctorName: "" })).toBe(false);
+  });
+
+  // Regression: doctor_name is the CONDUCTING sonologist, pre-filled on every
+  // new Form F. Consulting it here made this predicate false for every real
+  // record — the Self-Referral OPD register could never contain a row, the
+  // auto-prescriptions never fired, and self-referred women were mis-filed
+  // into the Rule 9(1) register.
+  test("the conducting doctor is ignored — a self-referral stays a self-referral", () => {
+    expect(isSelfReferralRecord({ referredBy: "Self", doctorName: SELF_REFERRAL_OPD_DOCTOR })).toBe(true);
+    expect(isSelfReferralRecord({ referredBy: "", doctorName: "Dr. R. Gupta" })).toBe(true);
+    expect(isSelfReferralRecord({ referredBy: null, doctorName: "Dr. R. Gupta" })).toBe(true);
+    expect(isSelfReferralRecord({ referredBy: "Walk-in", doctorName: SELF_REFERRAL_OPD_DOCTOR })).toBe(true);
+  });
+});
+
+describe("Rule 9(1) referring-doctor column reports the REFERRER, not the sonologist", () => {
+  const referrerColumn = (r: Partial<RegisterSourceRecord>) =>
+    registerRowsToCsv(buildRegisterRows([record({ id: 1, ...r })], 1))
+      .split("\n")[1];
+
+  test("a doctor referral prints the referring doctor, never the conducting one", () => {
+    const line = referrerColumn({ referredBy: "Doctor: Dr. Mehta", doctorName: SELF_REFERRAL_OPD_DOCTOR });
+    expect(line).toContain("Dr. Mehta");
+    expect(line).not.toContain(SELF_REFERRAL_OPD_DOCTOR);
+  });
+
+  test("a doctor referral saved without a name is not reported as self-referral", () => {
+    expect(referrerColumn({ referredBy: "Doctor: ", doctorName: SELF_REFERRAL_OPD_DOCTOR }))
+      .toContain("name not recorded");
   });
 });
 
