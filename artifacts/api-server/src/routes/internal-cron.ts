@@ -1,8 +1,18 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
+import crypto from "node:crypto";
 import { runDailySummary, runMonthEndCommission, fireBankingAutoSync, runWhatsappAppointmentReminders, runWhatsappDuesReminders } from "../cron";
 import { logger } from "../lib/logger";
 
 const router = Router();
+
+/** Constant-time string compare — same helper shape as plugin-loader.ts and
+ *  requireSuperAdminUsb.ts, so secret comparison is uniform across the server. */
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ab, bb);
+}
 
 function requireCronSecret(req: Request, res: Response, next: NextFunction): void {
   const expected = process.env["CRON_SECRET"];
@@ -12,7 +22,7 @@ function requireCronSecret(req: Request, res: Response, next: NextFunction): voi
   }
   const header = req.header("authorization") ?? "";
   const provided = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (provided !== expected) {
+  if (!safeEqual(provided, expected)) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
