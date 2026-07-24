@@ -15,7 +15,7 @@ import { saAuthHeaders } from "@/lib/saApi";
 import { exportCommissionPdf } from "@/lib/exportCommissionPdf";
 import { exportCommissionExcel } from "@/lib/exportCommissionExcel";
 import { exportCommissionWord } from "@/lib/exportCommissionWord";
-import type { CommissionDoctorEntry, CommissionTestGroupRow } from "@workspace/api-client-react";
+import type { CommissionDoctorEntryX, CommissionTestGroupRowX } from "@/lib/exportCommissionPdf";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type SaDoctor = { id: number; name: string };
@@ -373,9 +373,9 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
     setCols(prev => ({ ...prev, [key]: !prev[key] }));
 
   // ── Adapter: per-patient rows → test-grouped for export helpers ──────────
-  function toExportSections(report: DoctorEntry[]): CommissionDoctorEntry[] {
+  function toExportSections(report: DoctorEntry[]): CommissionDoctorEntryX[] {
     return report.map((entry) => {
-      const byTest: Record<number, CommissionTestGroupRow> = {};
+      const byTest: Record<number, CommissionTestGroupRowX> = {};
       for (const row of entry.rows) {
         if (!byTest[row.testId]) {
           byTest[row.testId] = {
@@ -385,6 +385,7 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
             count: 0,
             revenue: 0,
             commission: 0,
+            expected: 0,
             ruleName: row.ruleName,
             ruleType: row.ruleType,
             ruleValue: row.ruleValue,
@@ -393,6 +394,7 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
         byTest[row.testId].count++;
         byTest[row.testId].revenue += row.price;
         byTest[row.testId].commission += row.commission;
+        byTest[row.testId].expected = (byTest[row.testId].expected ?? 0) + row.grossCommission;
       }
       const grouped = Object.values(byTest).sort((a, b) => b.commission - a.commission);
       const effRate = entry.totalRevenue > 0
@@ -410,9 +412,11 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
         testCount: entry.testCount,
         totalRevenue: entry.totalRevenue,
         totalCommission: entry.totalCommission,
+        totalExpected: entry.totalExpectedCommission,
+        totalDiscount: entry.totalDiscount,
         effectiveRate: effRate,
         grouped,
-      } as unknown as CommissionDoctorEntry;
+      } as unknown as CommissionDoctorEntryX;
     });
   }
 
@@ -446,6 +450,7 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
         },
         exportMode,
         cols.rate,
+        showBreakdown,
       );
     } catch (err) {
       toast({ title: "Excel export failed", description: String(err), variant: "destructive" });
@@ -473,6 +478,7 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
         },
         exportMode,
         cols.rate,
+        showBreakdown,
       );
     } catch (err) {
       toast({ title: "Word export failed", description: String(err), variant: "destructive" });
@@ -500,6 +506,8 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
         },
         exportMode,
         cols.rate,
+        undefined,
+        showBreakdown,
       );
     } catch (err) {
       toast({ title: "PDF export failed", description: String(err), variant: "destructive" });

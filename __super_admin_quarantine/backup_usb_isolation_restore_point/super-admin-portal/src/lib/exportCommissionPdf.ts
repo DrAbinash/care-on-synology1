@@ -9,7 +9,20 @@ import { loadReportOrientation, type PaperOrientation } from "@/lib/paperSize";
 const INR = (n: number) =>
   "Rs." + n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+// Referral discount given up on commission — shown as a negative amount.
+const NEGD = (d: number) => (d > 0.005 ? "-" + INR(d) : "-");
+
 const ALPHA = ["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z"];
+
+// Optional Expected/Discount/Actual breakdown fields. These are attached by the
+// Referral Report's export adapter; the Commission Report page omits them and
+// passes showBreakdown=false, so its output is unchanged.
+export type CommissionTestGroupRowX = CommissionTestGroupRow & { expected?: number; discount?: number };
+export type CommissionDoctorEntryX = Omit<CommissionDoctorEntry, "grouped"> & {
+  grouped?: CommissionTestGroupRowX[] | null;
+  totalExpected?: number;
+  totalDiscount?: number;
+};
 
 export type CommissionPdfMeta = {
   title: string;
@@ -17,17 +30,18 @@ export type CommissionPdfMeta = {
   to: string;
   doctorFilter: string;
   generatedAt: string;
-  grandTotal: { doctors: number; orders: number; revenue: number; commission: number };
+  grandTotal: { doctors: number; orders: number; revenue: number; commission: number; expectedCommission?: number; discount?: number };
 };
 
 export type CommissionReportMode = "standard" | "doctor-test" | "consolidated";
 
 export async function exportCommissionPdf(
-  report: CommissionDoctorEntry[],
+  report: CommissionDoctorEntryX[],
   meta: CommissionPdfMeta,
   mode: CommissionReportMode,
   showPercentFixed: boolean,
   orientation?: PaperOrientation,
+  showBreakdown = false,
 ): Promise<void> {
   const { default: jsPDF } = await import("jspdf");
   const { default: autoTable } = await import("jspdf-autotable");
@@ -67,29 +81,42 @@ export async function exportCommissionPdf(
   // ── Body: mode-specific ──────────────────────────────────────────────────
   if (mode === "consolidated") {
     const grandComm = report.reduce((s, e) => s + e.totalCommission, 0);
+    const grandExp = report.reduce((s, e) => s + (e.totalExpected ?? e.totalCommission), 0);
+    const grandDisc = report.reduce((s, e) => s + (e.totalDiscount ?? 0), 0);
     autoTable(doc, {
       startY: y,
-      head: [["#", "Referral Doctor Name", "Commission Amount"]],
-      body: [
-        ...report.map((e, i) => [
-          `${ALPHA[i]?.toUpperCase() ?? String(i + 1)})`,
-          e.doctor.name,
-          INR(e.totalCommission),
-        ]),
-        ["", "Grand Total", INR(grandComm)],
-      ],
+      head: showBreakdown
+        ? [["#", "Referral Doctor Name", "Expected", "Discount", "Actual"]]
+        : [["#", "Referral Doctor Name", "Commission Amount"]],
+      body: showBreakdown
+        ? [
+            ...report.map((e, i) => [
+              `${ALPHA[i]?.toUpperCase() ?? String(i + 1)})`,
+              e.doctor.name,
+              INR(e.totalExpected ?? e.totalCommission),
+              NEGD(e.totalDiscount ?? 0),
+              INR(e.totalCommission),
+            ]),
+            ["", "Grand Total", INR(grandExp), NEGD(grandDisc), INR(grandComm)],
+          ]
+        : [
+            ...report.map((e, i) => [
+              `${ALPHA[i]?.toUpperCase() ?? String(i + 1)})`,
+              e.doctor.name,
+              INR(e.totalCommission),
+            ]),
+            ["", "Grand Total", INR(grandComm)],
+          ],
       styles: { fontSize: 9, cellPadding: 3 },
       headStyles: { fillColor: [243, 244, 246], textColor: [80, 80, 80], fontStyle: "bold", fontSize: 8 },
-      columnStyles: {
-        0: { cellWidth: 16 },
-        1: { cellWidth: "auto" },
-        2: { halign: "right", cellWidth: 40 },
-      },
+      columnStyles: showBreakdown
+        ? { 0: { cellWidth: 12 }, 1: { cellWidth: "auto" }, 2: { halign: "right", cellWidth: 34 }, 3: { halign: "right", cellWidth: 30 }, 4: { halign: "right", cellWidth: 34 } }
+        : { 0: { cellWidth: 16 }, 1: { cellWidth: "auto" }, 2: { halign: "right", cellWidth: 40 } },
       willDrawCell: (data) => {
         if (data.row.index === report.length) {
           doc.setFillColor(254, 243, 199);
           doc.setFont("helvetica", "bold");
-          if (data.column.index === 2) doc.setTextColor(180, 83, 9);
+          if (data.column.index === (showBreakdown ? 4 : 2)) doc.setTextColor(180, 83, 9);
         }
       },
       margin: { left: 14, right: 14 },
@@ -99,7 +126,7 @@ export async function exportCommissionPdf(
     const grandComm = report.reduce((s, e) => s + e.totalCommission, 0);
     const bodyRows: string[][] = [];
     for (const e of report) {
-      const rows: CommissionTestGroupRow[] = Array.isArray(e.grouped) ? e.grouped : [];
+      const rows: CommissionTestGroupRowX[] = Array.isArray(e.grouped) ? e.grouped : [];
       for (const row of rows) {
         bodyRows.push([e.doctor.name, row.testName, String(row.count), INR(row.commission)]);
       }
@@ -123,7 +150,7 @@ export async function exportCommissionPdf(
         const totalRowIndices = new Set<number>();
         let idx = 0;
         for (const e of report) {
-          const rows: CommissionTestGroupRow[] = Array.isArray(e.grouped) ? e.grouped : [];
+          const rows: CommissionTestGroupRowX[] = Array.isArray(e.grouped) ? e.grouped : [];
           idx += rows.length;
           totalRowIndices.add(idx);
           idx += 1;
@@ -142,7 +169,7 @@ export async function exportCommissionPdf(
     // ── Standard: per-doctor sections ─────────────────────────────────────
     for (const [idx, section] of report.entries()) {
       const label = `${ALPHA[idx]?.toUpperCase() ?? String(idx + 1)})`;
-      const rows: CommissionTestGroupRow[] = Array.isArray(section.grouped) ? section.grouped : [];
+      const rows: CommissionTestGroupRowX[] = Array.isArray(section.grouped) ? section.grouped : [];
 
       doc.setFontSize(11);
       doc.setFont("helvetica", "bold");
@@ -158,7 +185,9 @@ export async function exportCommissionPdf(
       doc.setTextColor(0);
       y += 9;
 
-      const head = showPercentFixed
+      const head = showBreakdown
+        ? [["Test Name", "No of Tests", "Expected", "Discount", "Actual"]]
+        : showPercentFixed
         ? [["Test Name", "No of Tests", "% / Fixed", "Total Amount"]]
         : [["Test Name", "No of Tests", "Total Amount"]];
 
@@ -167,16 +196,29 @@ export async function exportCommissionPdf(
           const rateLabel = r.ruleType === "percentage"
             ? `${r.ruleValue}%`
             : INR(r.ruleValue);
-          return showPercentFixed
+          const exp = r.expected ?? r.commission;
+          return showBreakdown
+            ? [r.testName, String(r.count), INR(exp), NEGD(exp - r.commission), INR(r.commission)]
+            : showPercentFixed
             ? [r.testName, String(r.count), rateLabel, INR(r.commission)]
             : [r.testName, String(r.count), INR(r.commission)];
         }),
-        showPercentFixed
+        showBreakdown
+          ? ["", "Total \u2192", INR(section.totalExpected ?? section.totalCommission), NEGD(section.totalDiscount ?? 0), INR(section.totalCommission)]
+          : showPercentFixed
           ? ["", "", "Total \u2192", INR(section.totalCommission)]
           : ["", "Total \u2192", INR(section.totalCommission)],
       ];
 
-      const colStyles: Record<number, object> = showPercentFixed
+      const colStyles: Record<number, object> = showBreakdown
+        ? {
+            0: { cellWidth: "auto" },
+            1: { halign: "center", cellWidth: 24 },
+            2: { halign: "right", cellWidth: 32 },
+            3: { halign: "right", cellWidth: 28 },
+            4: { halign: "right", cellWidth: 32 },
+          }
+        : showPercentFixed
         ? {
             0: { cellWidth: "auto" },
             1: { halign: "center", cellWidth: 28 },
@@ -201,7 +243,7 @@ export async function exportCommissionPdf(
           if (data.row.index === rows.length) {
             doc.setFillColor(255, 251, 235);
             doc.setFont("helvetica", "bold");
-            const lastCol = showPercentFixed ? 3 : 2;
+            const lastCol = showBreakdown ? 4 : showPercentFixed ? 3 : 2;
             if (data.column.index === lastCol) doc.setTextColor(180, 83, 9);
           }
         },
