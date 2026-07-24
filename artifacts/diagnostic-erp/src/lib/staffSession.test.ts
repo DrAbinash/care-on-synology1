@@ -44,22 +44,24 @@ describe("setServerFeatureFlags", () => {
     expect(isFeatureEnabled("ff_radiology_render_v2")).toBe(true);
   });
 
-  it("hydrates non-radiology server ff_ flags (HR / Ops / Recall) so their nav items can surface", () => {
+  it("hydrates non-radiology server ff_ flags (Ops / Recall) instead of dropping them", () => {
     // Regression: previously only ff_radiology_ keys were hydrated, so an admin
-    // enabling ff_hr_staff_enhanced / ff_ops_cockpit on the server never made
-    // the sidebar links appear. Every server-managed rollout flag is ff_-prefixed.
-    expect(isFeatureEnabled("ff_hr_staff_enhanced")).toBe(false);
+    // enabling ff_ops_cockpit / ff_recall_engine on the server never made the
+    // sidebar links appear. Every server-managed rollout flag is ff_-prefixed.
     expect(isFeatureEnabled("ff_ops_cockpit")).toBe(false);
-    setServerFeatureFlags({
-      ff_hr_staff_enhanced: true,
-      ff_hr_performance_scoring: true,
-      ff_ops_cockpit: true,
-      ff_recall_engine: true,
-    });
-    expect(isFeatureEnabled("ff_hr_staff_enhanced")).toBe(true);
-    expect(isFeatureEnabled("ff_hr_performance_scoring")).toBe(true);
+    expect(isFeatureEnabled("ff_recall_engine")).toBe(false);
+    setServerFeatureFlags({ ff_ops_cockpit: true, ff_recall_engine: true });
     expect(isFeatureEnabled("ff_ops_cockpit")).toBe(true);
     expect(isFeatureEnabled("ff_recall_engine")).toBe(true);
+  });
+
+  it("keeps the server authoritative for ff_hr_* even though they now default ON", () => {
+    // Staff/HR flags graduated out of shadow mode (default ON client-side), but
+    // the feature_flags table still wins — an admin disabling one in Settings
+    // must override the client default.
+    expect(isFeatureEnabled("ff_hr_staff_enhanced")).toBe(true); // new default
+    setServerFeatureFlags({ ff_hr_staff_enhanced: false });
+    expect(isFeatureEnabled("ff_hr_staff_enhanced")).toBe(false); // server wins
   });
 
   it("a later call fully replaces the previous overlay (does not merge stale keys)", () => {

@@ -244,15 +244,19 @@ export function firstPermissionedPath(session: StaffSession | null, candidates: 
 // Toggle in browser console: localStorage.setItem("featureFlags", JSON.stringify({ showUnifiedReporting: true }))
 //
 const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
-  // People Management platform (server ff_hr_* flags, hydrated via
-  // useServerFeatureFlags; default OFF = Shadow Mode).
-  ff_hr_staff_enhanced: false,
-  ff_hr_performance_scoring: false,
-  ff_hr_biometric_attendance: false,
-  ff_hr_employee_self_service: false,
-  ff_hr_roster: false,
-  ff_hr_leave: false,
-  ff_hr_disciplinary: false,
+  // Staff/HR platform (server ff_hr_* flags, hydrated via
+  // useServerFeatureFlags). Graduated out of shadow mode — default ON — so the
+  // Staff hub pages are live with no "enable the flag" banner. The server's
+  // feature_flags table stays authoritative: migration
+  // zzzzz_enable_staff_hr_flags.sql sets these TRUE server-side, and hydration
+  // still lets an admin flip any of them back off from Settings › Feature Flags.
+  ff_hr_staff_enhanced: true,
+  ff_hr_performance_scoring: true,
+  ff_hr_biometric_attendance: true,
+  ff_hr_employee_self_service: true,
+  ff_hr_roster: true,
+  ff_hr_leave: true,
+  ff_hr_disciplinary: true,
   // Patient engagement + operations platform (all server-backed, hydrated via
   // useServerFeatureFlags; default OFF = Shadow Mode).
   ff_report_delivery_receipts: false, // WhatsApp report delivery receipts + reminders
