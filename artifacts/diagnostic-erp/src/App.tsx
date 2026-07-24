@@ -58,6 +58,7 @@ const BillingDesk     = lazy(() => import("@/pages/BillingDesk"));
 const Dashboard       = lazy(() => import("@/pages/Dashboard"));
 const Diagnostics     = lazy(() => import("@/pages/Diagnostics"));
 const MeasurementRegistryManager = lazy(() => import("@/pages/MeasurementRegistryManager"));
+const PathologyRegistry = lazy(() => import("@/pages/PathologyRegistry"));
 const Patients        = lazy(() => import("@/pages/Patients"));
 const PatientDetail   = lazy(() => import("@/pages/PatientDetail"));
 const Tests           = lazy(() => import("@/pages/Tests"));
@@ -164,7 +165,6 @@ const TrainingDataExports   = lazy(() => import("@/pages/TrainingDataExports"));
 const ReportQualityGates    = lazy(() => import("@/pages/ReportQualityGates"));
 const CriticalFindings      = lazy(() => import("@/pages/CriticalFindings"));
 const ProviderHealthMonitor = lazy(() => import("@/pages/ProviderHealthMonitor"));
-const CommandCenter         = lazy(() => import("@/pages/CommandCenter"));
 const VoiceDictation        = lazy(() => import("@/pages/VoiceDictation"));
 const PatientCommunication  = lazy(() => import("@/pages/PatientCommunication"));
 const NormalReportTemplates = lazy(() => import("@/pages/NormalReportTemplates"));
@@ -258,7 +258,7 @@ const queryClient = new QueryClient({
 });
 
 const ERP_NAV_ORDER = [
-  "/", "/dashboard", "/my-daily-summary", "/reception-command-center", "/daily-summary", "/patients", "/appointments", "/queue", "/online-bookings",
+  "/", "/dashboard", "/my-daily-summary", "/reception-command-center", "/daily-summary", "/patients", "/register", "/appointments", "/queue", "/online-bookings",
   "/radiology", "/radiology/legacy", "/radiology/worklist", "/radiology/report-generator", "/radiology/report-builder", "/radiology/findings-manager", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/operational-health", "/radiology/pacs-settings", "/radiology/network-control-center", "/radiology/pacs-logs",
   "/radiology/dicom-agent-dashboard", "/radiology/modality-management",
   "/radiology/agent-setup", "/radiology/ai-reporting-settings", "/radiology/ai-prompt-templates", "/radiology/ai-model-routing", "/radiology/structured-report-templates", "/radiology/ai-audit-log",
@@ -270,7 +270,7 @@ const ERP_NAV_ORDER = [
   "/settings/radiology", "/backup-replication",
   "/orders", "/tests", "/packages", "/billing", "/payments", "/reports",
   "/report-generator", "/report-hub", "/inventory", "/expenses", "/staff", "/people", "/performance", "/attendance-devices", "/my-portal", "/leave", "/roster", "/disciplinary", "/appraisals", "/allowances", "/awards", "/referrals",
-  "/accounting", "/discounts", "/form-f", "/machines", "/hr-forms", "/website", "/whatsapp-chatbot", "/settings", "/knowledge-base", "/ai-caller-credentials",
+  "/accounting", "/discounts", "/form-f", "/machines", "/hr-forms", "/website", "/whatsapp-chatbot", "/settings", "/pathology-registry", "/knowledge-base", "/ai-caller-credentials",
   "/samples",
   "/pacs", "/dicom-nodes",
   "/outsource/settings", "/outsource/rate-cards", "/outsource/worklist", "/outsource/reconciliation", "/outsource/ledger", "/outsource/dashboard",
@@ -286,7 +286,7 @@ function PermissionGuard() {
     }
     // Owner Dashboard is admin/super_admin only — redirect others to My Daily Summary.
     const normalizedRole = normalizeRole(session.user.role);
-    if ((location === "/dashboard" || location === "/diagnostics" || location === "/measurement-registry") && !FULL_ACCESS_ROLES.has(normalizedRole)) {
+    if ((location === "/dashboard" || location === "/diagnostics" || location === "/measurement-registry" || location === "/pathology-registry") && !FULL_ACCESS_ROLES.has(normalizedRole)) {
       navigate("/my-daily-summary", { replace: true });
       return;
     }
@@ -377,6 +377,7 @@ function Router() {
               <Route path="/diagnostic-integration" component={IntegrationAdmin} />
               <Route path="/diagnostics" component={Diagnostics} />
               <Route path="/measurement-registry" component={MeasurementRegistryManager} />
+              <Route path="/pathology-registry" component={PathologyRegistry} />
               <Route path="/patients" component={Patients} />
               <Route path="/patients/:id">
                 {(params) => <PatientDetail id={Number(params.id)} />}

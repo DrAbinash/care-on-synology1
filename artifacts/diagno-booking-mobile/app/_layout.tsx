@@ -35,6 +35,7 @@ function RootLayoutNav() {
       <Stack.Screen name="critical-alerts" options={{ headerShown: false }} />
       <Stack.Screen name="bill-desk" options={{ headerShown: false }} />
       <Stack.Screen name="bill-detail" options={{ headerShown: false }} />
+      <Stack.Screen name="command-center" options={{ headerShown: false }} />
     </Stack>
   );
 }
