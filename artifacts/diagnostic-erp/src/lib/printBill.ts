@@ -127,6 +127,7 @@ function fmt(n: number | string): string {
 import { type BillFormat, type BillPaperSize } from "./billPrintSettings";
 import { buildPremiumBillPrintHtml } from "./premiumBillPrint";
 import { buildDesignerBillPrintHtml } from "./designerBillPrint";
+import { buildModernLandscapeBillPrintHtml } from "./modernLandscapeBillPrint";
 
 export type BuildPrintHtmlOpts = {
   bill: PrintBillData;
@@ -522,10 +523,17 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 </style></head><body>${pages}</body></html>`;
 }
 
-// ── Wrapper that dispatches to classic or premium format ──
-// Backward compatible: if format is not specified, uses classic (existing behavior).
+// ── Wrapper that dispatches to a specific format renderer ─────────────────
+// Backward compatible: if `format` is not specified, uses classic (the
+// original behavior). "modern-landscape" is the recommended A5-landscape
+// format for Epson/ink printers — see modernLandscapeBillPrint.ts.
 export function buildBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const { format = "classic" } = opts;
+
+  // ── Modern A5-Landscape (recommended for ink printers) ──
+  if (format === "modern-landscape") {
+    return buildModernLandscapeBillPrintHtml(opts);
+  }
 
   // ── Designer layouts A / B / C ──
   if (format === "designer-a" || format === "designer-b" || format === "designer-c") {
