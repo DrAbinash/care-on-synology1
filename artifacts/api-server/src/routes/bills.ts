@@ -840,16 +840,42 @@ billsRouter.put("/:id", requireStaffSubPermission("/billing", "edit"), async (re
     || (req.body?.editedBy as string | undefined)?.trim()
     || (req.staffSession ? `staff:${req.staffSession.id}` : "unknown");
   const editReason = (req.body?.reason as string | undefined)?.trim() || "bill edit";
+  const statusChanged   = status !== undefined && status !== existingBill.status;
+  const discountChanged = discount !== undefined && String(discount) !== existingBill.discount;
+
+  // Post-close edit notice — reuses the SAME boundary helpers as /:id/cancel
+  // and /:id/refund, which already surface this for money-moving operations.
+  // Editing a bill that was created before the last day-close rewrites the
+  // totals of an already-signed-off period, so the edit is flagged here too.
+  // Advisory only (never blocks, matching the sibling routes), but it is also
+  // stamped into the audit reason so the trail itself records that the edit
+  // landed on a closed period.
+  let closedPeriodWarning: { billCreatedBeforeClose: boolean; lastClosureAt: string | null } | null = null;
+  if (statusChanged || discountChanged) {
+    try {
+      const boundary = await lastOverallClosureBoundary();
+      closedPeriodWarning = {
+        billCreatedBeforeClose: isBeforeClosureBoundary(new Date(updated.createdAt), boundary),
+        lastClosureAt: boundary ? boundary.toISOString() : null,
+      };
+    } catch (err) {
+      req.log?.warn?.({ err }, "Closed-period check failed — edit still succeeded, notice omitted");
+    }
+  }
+  const auditReason = closedPeriodWarning?.billCreatedBeforeClose
+    ? `${editReason} [post-close edit: period closed at ${closedPeriodWarning.lastClosureAt}]`
+    : editReason;
+
   {
     const auditEntries: { billId: number; editedBy: string; reason: string; changeType: string; oldValue: string | null; newValue: string | null }[] = [];
     const emailChanges: { field: string; from: string | null; to: string | null }[] = [];
 
-    if (status !== undefined && status !== existingBill.status) {
-      auditEntries.push({ billId: paramsParsed.data.id, editedBy: editActor, reason: editReason, changeType: "status", oldValue: existingBill.status, newValue: status });
+    if (statusChanged) {
+      auditEntries.push({ billId: paramsParsed.data.id, editedBy: editActor, reason: auditReason, changeType: "status", oldValue: existingBill.status, newValue: status });
       emailChanges.push({ field: "Status", from: existingBill.status, to: status });
     }
-    if (discount !== undefined && String(discount) !== existingBill.discount) {
-      auditEntries.push({ billId: paramsParsed.data.id, editedBy: editActor, reason: editReason, changeType: "discount", oldValue: existingBill.discount, newValue: String(discount) });
+    if (discountChanged) {
+      auditEntries.push({ billId: paramsParsed.data.id, editedBy: editActor, reason: auditReason, changeType: "discount", oldValue: existingBill.discount, newValue: String(discount) });
       emailChanges.push({ field: "Discount (₹)", from: existingBill.discount, to: String(discount) });
     }
     if (auditEntries.length > 0) {
@@ -865,13 +891,13 @@ billsRouter.put("/:id", requireStaffSubPermission("/billing", "edit"), async (re
         billNumber: updated.billNumber,
         patientName,
         editedBy: editActor,
-        reason: editReason,
+        reason: auditReason,
         changes: emailChanges,
       }).catch(err => console.error("[email] bill edit notification failed:", err));
     }
   }
 
-  res.json(await buildBill(updated));
+  res.json({ ...(await buildBill(updated)), closedPeriodWarning });
 });
 
 // ── Re-print log: insert audit + email admin/super-admin ─────────────────────

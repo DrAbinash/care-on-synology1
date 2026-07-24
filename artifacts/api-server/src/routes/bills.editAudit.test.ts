@@ -55,3 +55,35 @@ describe("PUT /bills/:id — audit actor comes from the session, not the client 
     expect(region).toContain('const editReason = (req.body?.reason as string | undefined)?.trim() || "bill edit";');
   });
 });
+
+// Finance-audit gap #7 — editing a bill from an already-closed (signed-off) day
+// silently rewrites that period's totals. The sibling money-moving routes
+// (/:id/cancel, /:id/refund) already surface a closedPeriodWarning; the edit
+// route did not. It now reuses the SAME boundary helpers (no duplicated logic),
+// stays advisory (never blocks, matching the siblings), and stamps the fact
+// into the audit reason so the trail records the post-close edit.
+describe("PUT /bills/:id — post-close edits are flagged", () => {
+  const region = putHandlerRegion();
+
+  test("reuses the existing closure-boundary helpers rather than new logic", () => {
+    expect(region).toContain("await lastOverallClosureBoundary()");
+    expect(region).toContain("isBeforeClosureBoundary(new Date(updated.createdAt), boundary)");
+  });
+
+  test("the warning is computed only when status/discount actually changed", () => {
+    expect(region).toContain("if (statusChanged || discountChanged) {");
+  });
+
+  test("a post-close edit is recorded in the audit reason", () => {
+    expect(region).toContain("closedPeriodWarning?.billCreatedBeforeClose");
+    expect(region).toContain("post-close edit: period closed at");
+    // Audit rows carry the annotated reason.
+    expect(region).toContain("reason: auditReason");
+  });
+
+  test("the notice is advisory — it is returned, never thrown or blocking", () => {
+    expect(region).toContain("res.json({ ...(await buildBill(updated)), closedPeriodWarning });");
+    // The closure lookup must not be able to fail the edit.
+    expect(region).toContain("Closed-period check failed — edit still succeeded, notice omitted");
+  });
+});
