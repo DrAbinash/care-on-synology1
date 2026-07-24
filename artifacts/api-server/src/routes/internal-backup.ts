@@ -1,24 +1,34 @@
 import { Router, type Request, type Response } from "express";
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import { logger } from "../lib/logger";
 
 const router = Router();
 
+/** Constant-time string compare — same helper shape as plugin-loader.ts and
+ *  requireSuperAdminUsb.ts, so secret comparison is uniform across the server. */
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ab, bb);
+}
+
 function requireInternalApiKey(req: Request, res: Response, next: () => void): void {
   const expected = process.env["INTERNAL_API_KEY"];
+  // Fail CLOSED in every environment. This endpoint streams full-database
+  // backups, so an unset key must never mean "no auth required": previously a
+  // box that was not explicitly NODE_ENV=production served backups to any
+  // caller that could reach the port. Matches internal-cron.ts, which has
+  // always returned 503 unconditionally when its secret is unset.
   if (!expected) {
-    if (process.env["NODE_ENV"] === "production") {
-      logger.error("INTERNAL_API_KEY is not set — internal backup endpoint disabled");
-      res.status(503).json({ error: "INTERNAL_API_KEY not configured" });
-      return;
-    }
-    logger.warn("INTERNAL_API_KEY not set — internal backup endpoint unprotected (non-production)");
-    next();
+    logger.error("INTERNAL_API_KEY is not set — internal backup endpoint disabled");
+    res.status(503).json({ error: "INTERNAL_API_KEY not configured" });
     return;
   }
   const header = req.header("authorization") ?? "";
   const provided = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (provided !== expected) {
+  if (!safeEqual(provided, expected)) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
