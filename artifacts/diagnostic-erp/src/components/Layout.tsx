@@ -153,8 +153,8 @@ const isLeafActive = (path: string, location: string) => {
 const navItems: NavEntry[] = [
   { path: "/", icon: Zap, label: "Billing Desk" },
   { path: "/my-daily-summary", icon: BarChart2, label: "My Daily Summary" },
-  { path: "/hope-referrals", icon: Inbox, label: "HOPE Referrals", featureFlag: "hopeReferralsInbox" },
-  { path: "/diagnostic-integration", icon: Plug, label: "Diagnostic Integration", ownerOnly: true, featureFlag: "hopeReferralsInbox" },
+  { path: "/hope-referrals", icon: Inbox, label: "HOPE Referrals", featureFlag: "ff_hope_care_referrals" },
+  { path: "/diagnostic-integration", icon: Plug, label: "Diagnostic Integration", ownerOnly: true, featureFlag: "ff_hope_care_referrals" },
   {
     id: "billing-grp",
     icon: Receipt,

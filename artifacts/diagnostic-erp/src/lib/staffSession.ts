@@ -376,9 +376,13 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   caseOfMonth: false,
   annotationLayer: false,
   hideDeprecatedNav: false,
-  // HOPE → CARE diagnostic referral inbox nav item. Off by default; enable per
-  // browser for pilot, or globally once the ff_hope_care_referrals server flag
-  // and an integration partner are provisioned.
+  // HOPE → CARE diagnostic referral inbox. The nav items (/hope-referrals,
+  // /diagnostic-integration) now gate on the SERVER flag ff_hope_care_referrals
+  // (toggle in Settings › Feature Flags), which matches the backend integration
+  // scheduler's own gate — so enabling it in one place reveals the inbox and
+  // activates the integration together. This client-only key is retained only
+  // for backward-compat with any browser that set it locally; it no longer
+  // gates the nav.
   hopeReferralsInbox: false,
   billingDeskStepped: false,
   // Billing Desk display preferences (all apply immediately without page refresh)
