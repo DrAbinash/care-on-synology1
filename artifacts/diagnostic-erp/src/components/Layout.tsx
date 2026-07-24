@@ -153,8 +153,8 @@ const isLeafActive = (path: string, location: string) => {
 const navItems: NavEntry[] = [
   { path: "/", icon: Zap, label: "Billing Desk" },
   { path: "/my-daily-summary", icon: BarChart2, label: "My Daily Summary" },
-  { path: "/hope-referrals", icon: Inbox, label: "HOPE Referrals", featureFlag: "hopeReferralsInbox" },
-  { path: "/diagnostic-integration", icon: Plug, label: "Diagnostic Integration", ownerOnly: true, featureFlag: "hopeReferralsInbox" },
+  { path: "/hope-referrals", icon: Inbox, label: "HOPE Referrals", featureFlag: "ff_hope_care_referrals" },
+  { path: "/diagnostic-integration", icon: Plug, label: "Diagnostic Integration", ownerOnly: true, featureFlag: "ff_hope_care_referrals" },
   {
     id: "billing-grp",
     icon: Receipt,
@@ -237,6 +237,7 @@ const navItems: NavEntry[] = [
   { path: "/day-close", icon: Lock, label: "Day Close", ownerOnly: true },
   { path: "/reception-command-center", icon: Inbox, label: "Reception Command Center" },
   { path: "/patients", icon: Users, label: "Patients" },
+  { path: "/register", icon: UserPlus, label: "Quick Register" },
   { path: "/appointments", icon: CalendarDays, label: "Appointments" },
   { path: "/online-bookings", icon: ShoppingCart, label: "Online Bookings" },
   { path: "/queue", icon: Ticket, label: "Queue Tokens" },
@@ -268,6 +269,32 @@ const navItems: NavEntry[] = [
     ],
   },
   {
+    // Unified Staff hub — one sidebar tab for every staff/HR surface. These
+    // used to be scattered across the Administration group, and four of them
+    // (People/Performance/Attendance/My Portal) were hidden behind ff_hr_*
+    // nav gates, so only "Staff Directory" and "HR Forms" were ever visible.
+    // They are surfaced unconditionally here; each page still self-guards its
+    // own backend behind its ff_hr_* flag and shows a "Shadow Mode — enable
+    // the flag in Settings › Feature Flags" banner until it's turned on.
+    id: "staff-grp",
+    icon: Users,
+    label: "Staff",
+    children: [
+      { path: "/staff", icon: UserPlus, label: "Staff Directory" },
+      { path: "/people", icon: Users, label: "People (360°)" },
+      { path: "/performance", icon: TrendingUp, label: "Performance" },
+      { path: "/attendance-devices", icon: Fingerprint, label: "Attendance Devices" },
+      { path: "/my-portal", icon: Gauge, label: "My Portal" },
+      { path: "/hr-forms", icon: FilePen, label: "HR Forms" },
+      { path: "/leave", icon: CalendarDays, label: "Leave" },
+      { path: "/roster", icon: Clock, label: "Duty Roster" },
+      { path: "/disciplinary", icon: ShieldAlert, label: "Disciplinary" },
+      { path: "/appraisals", icon: ClipboardList, label: "Appraisals" },
+      { path: "/allowances", icon: Wallet, label: "Allowances" },
+      { path: "/awards", icon: Star, label: "Awards" },
+    ],
+  },
+  {
     id: "admin-grp",
     icon: Building2,
     label: "Administration",
@@ -281,12 +308,6 @@ const navItems: NavEntry[] = [
       { path: "/recall", icon: Bell, label: "Recall & Follow-up", featureFlag: "ff_recall_engine" },
       { path: "/feedback", icon: Star, label: "Feedback / NPS", featureFlag: "ff_feedback_nps" },
       { path: "/expenses", icon: TrendingDown, label: "Expenses" },
-      { path: "/staff", icon: Fingerprint, label: "Staff Directory" },
-      { path: "/people", icon: Users, label: "People (360°)", featureFlag: "ff_hr_staff_enhanced" },
-      { path: "/attendance-devices", icon: Fingerprint, label: "Attendance Devices", featureFlag: "ff_hr_biometric_attendance" },
-      { path: "/performance", icon: TrendingUp, label: "Performance", featureFlag: "ff_hr_performance_scoring" },
-      { path: "/my-portal", icon: Gauge, label: "My Portal", featureFlag: "ff_hr_employee_self_service" },
-      { path: "/hr-forms", icon: FilePen, label: "HR Forms" },
       { path: "/my-day-close", icon: Clock, label: "My Day Close" },
       { path: "/accounting", icon: BookOpen, label: "Accounting" },
       { path: "/banking", icon: Landmark, label: "Banking" },
@@ -309,6 +330,7 @@ const navItems: NavEntry[] = [
       { path: "/settings/radiology-quick-select", icon: Zap, label: "Quick Select Buttons", ownerOnly: true },
       { path: "/settings/radiology/knowledge-packs", icon: Package, label: "Knowledge Packs", ownerOnly: true },
       { path: "/tests",                     icon: FlaskConical,   label: "Test Catalog" },
+      { path: "/pathology-registry",        icon: TestTube,       label: "Pathology Registry", ownerOnly: true },
       { path: "/outsourced-labs",           icon: Building2,      label: "Outsourced Labs" },
       { path: "/outsourced-cost-report",    icon: IndianRupee,    label: "Outsource Costs" },
       { path: "/packages",                  icon: Boxes,          label: "Packages" },

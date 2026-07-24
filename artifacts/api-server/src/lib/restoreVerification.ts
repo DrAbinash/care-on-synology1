@@ -25,6 +25,7 @@ import { db } from "@workspace/db";
 import { radiologyOpsChecksTable } from "@workspace/db/schema";
 import { sql } from "drizzle-orm";
 import { verifyChainRows } from "./audit";
+import { decryptBackupToSql } from "./backupCrypto";
 import { verifyContentSha256 } from "./structuredReport/hash";
 import type { StructuredReportDocument } from "./structuredReport/types";
 
@@ -145,16 +146,23 @@ export async function runRestoreVerification(
     step("checksum", true, `sha256:${await sha256File(backupPath)}`);
 
     // 4. Decrypt / decompress where configured.
+    //
+    // Delegated to lib/backupCrypto so this proof covers EVERY artifact the
+    // product has written. The previous inline openssl call only understood
+    // `openssl -aes-256-cbc + BACKUP_PASSPHRASE`, so it could not open the
+    // scheduler's own backups (AES-256-GCM keyed on SESSION_SECRET) and would
+    // fail the whole verification on a file that was, in fact, a valid backup.
+    // decryptBackupToSql tries both passphrases and both container formats.
     sqlPath = backupPath;
-    if (backupPath.endsWith(".enc")) {
-      const passphrase = process.env.BACKUP_PASSPHRASE;
-      if (!passphrase) return finish(step("decrypt", false, "file is .enc but BACKUP_PASSPHRASE is not set") && false);
-      const dec = backupPath.replace(/\.enc$/, "");
-      const res = await run("openssl", ["enc", "-d", "-aes-256-cbc", "-pbkdf2", "-pass", "env:BACKUP_PASSPHRASE", "-in", backupPath, "-out", dec],
-        { env: { ...process.env, BACKUP_PASSPHRASE: passphrase } });
-      tempFiles.push(dec);
-      if (!step("decrypt", res.code === 0, res.code === 0 ? "decrypted" : res.stderr)) return finish(false);
-      sqlPath = dec;
+    if (!backupPath.endsWith(".gz")) {
+      try {
+        const dec = await decryptBackupToSql(backupPath, process.env.BACKUP_TEMP_DIR || os.tmpdir());
+        if (dec.producedTempFile) tempFiles.push(dec.sqlPath);
+        sqlPath = dec.sqlPath;
+        step("decrypt", true, dec.format === "plaintext" ? "not encrypted" : `decrypted (${dec.format}, key=${dec.keySource})`);
+      } catch (err) {
+        return finish(step("decrypt", false, err instanceof Error ? err.message : String(err)) && false);
+      }
     }
     if (sqlPath.endsWith(".gz")) {
       const integrity = await run("gzip", ["-t", sqlPath]);

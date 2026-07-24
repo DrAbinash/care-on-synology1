@@ -5,10 +5,12 @@ import { setServerFeatureFlags } from "@/lib/staffSession";
 type FeatureFlagRow = { key: string; enabled: boolean };
 
 /**
- * Fetches GET /api/feature-flags once per mount and hydrates the
- * "ff_radiology_" flags in staffSession.ts so isFeatureEnabled() reflects
+ * Fetches GET /api/feature-flags once per mount and hydrates every
+ * server-managed "ff_" flag in staffSession.ts so isFeatureEnabled() reflects
  * the server's feature_flags table instead of only the client-only
  * localStorage defaults (Radiology Implementation Roadmap, Ticket T0.1).
+ * This is what lets the Feature Flags admin toggle actually reveal the
+ * HR / Ops / Recall / Feedback / ABDM nav items, not just the radiology ones.
  *
  * Deliberately lives in hooks/, not lib/staffSession.ts or lib/fetchApi.ts:
  * fetchApi.ts already imports from staffSession.ts, so importing `api` back

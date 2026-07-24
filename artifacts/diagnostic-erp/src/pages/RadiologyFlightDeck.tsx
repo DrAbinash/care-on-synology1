@@ -20,9 +20,11 @@ import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { RadiologyOpsPanel } from "@/pages/RadiologyOps";
 import {
   Activity, AlertTriangle, ChevronDown, ChevronRight, ClipboardCopy, Download,
-  FileText, Play, RefreshCw, Search, ShieldAlert,
+  FileText, Play, RefreshCw, Search, ShieldAlert, Wrench,
 } from "lucide-react";
 import {
   LIGHT_CLASSES, VERDICT_STYLE, checkToText, countByStatus, exportFileName,
@@ -134,6 +136,7 @@ export default function RadiologyFlightDeck() {
   const isAdmin = FULL_ACCESS_ROLES.has(normalizeRole(readStaffSession()?.user.role ?? ""));
   const [studyUid, setStudyUid] = useState("");
   const [copied, setCopied] = useState(false);
+  const [tab, setTab] = useState("diagnostics");
 
   const report = useQuery<DeploymentReport>({
     queryKey: ["/api/radiology-diagnostics/report"],
@@ -181,8 +184,8 @@ export default function RadiologyFlightDeck() {
     <div className="p-6 space-y-4" data-testid="flight-deck-page">
       <PageHeader
         title="Radiology Flight Deck"
-        subtitle="One screen to diagnose the complete radiology stack — read-only, changes nothing"
-        actions={
+        subtitle="Diagnose and operate the complete radiology stack — Stack Diagnostics is read-only; Backend Ops adds audited admin actions"
+        actions={tab === "diagnostics" ? (
           <div className="flex items-center gap-2">
             <Button size="sm" variant="outline" onClick={() => void report.refetch()} disabled={report.isFetching} data-testid="btn-refresh">
               <RefreshCw size={14} className={`mr-1 ${report.isFetching ? "animate-spin" : ""}`} />
@@ -204,9 +207,15 @@ export default function RadiologyFlightDeck() {
               <FileText size={14} className="mr-1" /> Markdown
             </Button>
           </div>
-        }
+        ) : undefined}
       />
 
+      <Tabs value={tab} onValueChange={setTab}>
+        <TabsList>
+          <TabsTrigger value="diagnostics"><Activity className="h-3.5 w-3.5 mr-1" />Stack Diagnostics</TabsTrigger>
+          <TabsTrigger value="ops"><Wrench className="h-3.5 w-3.5 mr-1" />Backend Ops</TabsTrigger>
+        </TabsList>
+        <TabsContent value="diagnostics" className="space-y-4 mt-4">
       {report.isLoading && (
         <div className="rounded-xl border bg-card p-6 text-sm flex items-center gap-2" data-testid="flight-deck-loading">
           <Activity size={16} className="animate-pulse text-primary" /> Running full-stack diagnostics — probing PACS, viewers and network routes…
@@ -306,6 +315,11 @@ export default function RadiologyFlightDeck() {
           </div>
         </>
       )}
+        </TabsContent>
+        <TabsContent value="ops" className="mt-4">
+          <RadiologyOpsPanel />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

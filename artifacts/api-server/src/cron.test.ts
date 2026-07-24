@@ -1,5 +1,5 @@
 import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
-import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { backupJobsTable, backupJobLogsTable } from "@workspace/db/schema";
@@ -57,8 +57,17 @@ vi.mock("./services/dicom-pull-agent/dimse-agent", () => ({
   isDimsePullAgentRunning: vi.fn(() => false),
 }));
 
-vi.mock("@workspace/crypto", () => ({
-  encryptBackup: (s: string) => `encrypted:${s}`,
+// Backups are now encrypted file→file in the openssl-compatible format via
+// lib/backupCrypto (see that file's header for why the old SESSION_SECRET/GCM
+// scheme was replaced — it produced backups nothing could decrypt). The mock
+// keeps the deterministic "encrypted:<plaintext>" shape the checksum assertions
+// below rely on, while exercising the same call contract cron uses.
+vi.mock("./lib/backupCrypto", () => ({
+  resolveBackupPassphrase: () => ({ passphrase: "test-passphrase", source: "BACKUP_PASSPHRASE" }),
+  encryptBackupFile: async (inPath: string, outPath: string) => {
+    writeFileSync(outPath, `encrypted:${readFileSync(inPath, "utf-8")}`, "utf-8");
+    return { format: "openssl-aes-256-cbc", keySource: "BACKUP_PASSPHRASE" };
+  },
 }));
 
 vi.mock("./routes/backupReplication", () => ({
@@ -67,6 +76,7 @@ vi.mock("./routes/backupReplication", () => ({
   // Real implementation (not a stub) so tests can assert the exact expected
   // hash rather than just "some value was stored" — Ticket E0.1d.
   computeSha256: (data: string) => createHash("sha256").update(data).digest("hex"),
+  CONFIG_BACKUP_TABLES: ["clinic_settings", "email_settings", "printer_settings", "pacs_settings"],
 }));
 
 function makeRealDumpFile(name: string, content: string): string {
@@ -85,7 +95,10 @@ function rejectingExport(message: string) {
 // wall-clock time (per fireScheduledBackups' own "useful for testing" case) —
 // avoids the DAILY/HOURLY/WEEKLY schedules' fixed-time-of-day gating, which
 // would make this test flaky depending on when it happens to run.
-function testJob(id: number, backupType: string, destinationPath: string | null = null) {
+// destinationPath defaults to a real directory: a scheduled backup with nowhere
+// to persist is now a FAILURE (it used to "succeed" having written nothing), so
+// the success-path tests must give the job somewhere to write.
+function testJob(id: number, backupType: string, destinationPath: string | null = path.join(TEST_DIR, "dest")) {
   return {
     id,
     jobName: `test-job-${id}`,
@@ -158,6 +171,59 @@ describe("fireScheduledBackups — success is only recorded when the export actu
     const successLog = logUpdateCalls.find((c) => c["status"] === "success");
     expect(successLog).toBeDefined();
     expect(successLog!["sizeBytes"]).toBe(2048);
+  });
+
+  test("a job with NO destinationPath is marked failed — never a phantom 'in-memory' success", async () => {
+    // Regression: this used to encrypt the dump into a local variable, discard
+    // it, and record status "success" with filePath null and notes reading
+    // "In-memory backup" — a permanently green job that never persisted a byte.
+    exportDatabaseSqlImpl = async () => ({
+      filePath: makeRealDumpFile("orphan-dump.sql", "-- dump\n"),
+      sizeBytes: 8,
+      rowCount: null,
+    });
+    exportDatabaseSqlFallbackImpl = rejectingExport("should not be called");
+    jobsSelectResult = [testJob(105, "DB", null)];
+
+    const { fireScheduledBackups } = await import("./cron");
+    await fireScheduledBackups();
+
+    expect(logUpdateCalls.some((c) => c["status"] === "success")).toBe(false);
+    const failed = logUpdateCalls.find((c) => c["status"] === "failed");
+    expect(failed).toBeDefined();
+    expect(String(failed!["errorMessage"])).toMatch(/destinationPath/i);
+  });
+
+  test("an unimplemented backup type is marked failed, not 'completed (placeholder)'", async () => {
+    exportDatabaseSqlImpl = rejectingExport("should not be called");
+    exportDatabaseSqlFallbackImpl = rejectingExport("should not be called");
+    jobsSelectResult = [testJob(106, "DICOM_METADATA")];
+
+    const { fireScheduledBackups } = await import("./cron");
+    await fireScheduledBackups();
+
+    expect(logUpdateCalls.some((c) => c["status"] === "success")).toBe(false);
+    const failed = logUpdateCalls.find((c) => c["status"] === "failed");
+    expect(failed).toBeDefined();
+    expect(String(failed!["errorMessage"])).toMatch(/not implemented/i);
+  });
+
+  test("a completed backup records encrypted=true and a real filePath", async () => {
+    exportDatabaseSqlImpl = async () => ({
+      filePath: makeRealDumpFile("enc-dump.sql", "-- dump\n"),
+      sizeBytes: 8,
+      rowCount: null,
+    });
+    exportDatabaseSqlFallbackImpl = rejectingExport("should not be called");
+    jobsSelectResult = [testJob(107, "DB")];
+
+    const { fireScheduledBackups } = await import("./cron");
+    await fireScheduledBackups();
+
+    const successLog = logUpdateCalls.find((c) => c["status"] === "success");
+    expect(successLog).toBeDefined();
+    expect(successLog!["encrypted"]).toBe(true);
+    expect(String(successLog!["filePath"])).toMatch(/\.sql\.enc$/);
   });
 
   test("a disabled or MANUAL-only job is never touched by the cron sweep", async () => {

@@ -203,3 +203,72 @@ describe("computeSha256 / verifyBackupChecksum (Ticket E0.1d)", () => {
     await expect(verifyBackupChecksum(missingPath, "any-checksum")).resolves.toBe(false);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveRestoreTarget — the uploads-restore regression.
+//
+// The import path used to do `path.basename(entryName)` and write everything
+// into one hardcoded, CWD-relative "artifacts/api-server/data/uploads". That
+// flattened the tree, merged four distinct roots into one (so same-named files
+// silently overwrote each other while BOTH were counted as restored), and
+// ignored CARE_DATA_DIR so files landed outside the mounted volume in Docker.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("resolveRestoreTarget — file restore preserves structure and root", () => {
+  const ENV = { CARE_DATA_DIR: "/data" } as NodeJS.ProcessEnv;
+  const CWD = "/app";
+
+  test("preserves nested directory structure instead of flattening it", async () => {
+    const { resolveRestoreTarget } = await import("./backupReplication");
+    const r = resolveRestoreTarget("uploads/2026/07/scan.pdf", ENV, CWD);
+    expect(r?.targetPath).toBe(path.resolve("/data/uploads/2026/07/scan.pdf"));
+    expect(r?.relativePath).toBe("2026/07/scan.pdf");
+  });
+
+  test("routes each label back to its OWN root, not all into uploads", async () => {
+    const { resolveRestoreTarget } = await import("./backupReplication");
+    expect(resolveRestoreTarget("reports/y.pdf", ENV, CWD)?.targetPath).toBe(path.resolve("/data/reports/y.pdf"));
+    expect(resolveRestoreTarget("object-storage/o.bin", ENV, CWD)?.targetPath).toBe(path.resolve("/data/object-storage/o.bin"));
+    // attached_assets is a legacy CWD-relative root, not under CARE_DATA_DIR.
+    expect(resolveRestoreTarget("attached_assets/z.png", ENV, CWD)?.targetPath).toBe(path.resolve("/app/attached_assets/z.png"));
+  });
+
+  test("two identically-named files in different folders no longer collide (the data-loss bug)", async () => {
+    const { resolveRestoreTarget } = await import("./backupReplication");
+    const a = resolveRestoreTarget("uploads/report.pdf", ENV, CWD)!;
+    const b = resolveRestoreTarget("reports/report.pdf", ENV, CWD)!;
+    expect(a.targetPath).not.toBe(b.targetPath);
+  });
+
+  test("honours CARE_DATA_DIR, and falls back to <cwd>/data when it is unset", async () => {
+    const { resolveRestoreTarget } = await import("./backupReplication");
+    expect(resolveRestoreTarget("uploads/a.pdf", ENV, CWD)?.targetPath).toBe(path.resolve("/data/uploads/a.pdf"));
+    expect(resolveRestoreTarget("uploads/a.pdf", {} as NodeJS.ProcessEnv, CWD)?.targetPath).toBe(path.resolve("/app/data/uploads/a.pdf"));
+  });
+
+  test("rejects path traversal (zip-slip) — which basename() used to prevent incidentally", async () => {
+    const { resolveRestoreTarget } = await import("./backupReplication");
+    expect(resolveRestoreTarget("uploads/../../etc/passwd", ENV, CWD)).toBeNull();
+    expect(resolveRestoreTarget("../etc/passwd", ENV, CWD)).toBeNull();
+    expect(resolveRestoreTarget("/etc/passwd", ENV, CWD)?.targetPath).toBe(path.resolve("/data/uploads/etc/passwd"));
+    expect(resolveRestoreTarget("uploads/./x/../../../y", ENV, CWD)).toBeNull();
+  });
+
+  test("an unlabelled entry keeps its structure under uploads rather than being flattened", async () => {
+    const { resolveRestoreTarget } = await import("./backupReplication");
+    const r = resolveRestoreTarget("legacy/nested/loose.pdf", ENV, CWD);
+    expect(r?.label).toBe("uploads");
+    expect(r?.targetPath).toBe(path.resolve("/data/uploads/legacy/nested/loose.pdf"));
+  });
+
+  test("directory entries and empty names are skipped", async () => {
+    const { resolveRestoreTarget } = await import("./backupReplication");
+    expect(resolveRestoreTarget("uploads/", ENV, CWD)).toBeNull();
+    expect(resolveRestoreTarget("", ENV, CWD)).toBeNull();
+    expect(resolveRestoreTarget("uploads", ENV, CWD)).toBeNull();
+  });
+
+  test("normalizes windows-style separators", async () => {
+    const { resolveRestoreTarget } = await import("./backupReplication");
+    expect(resolveRestoreTarget("uploads\\2026\\x.pdf", ENV, CWD)?.targetPath).toBe(path.resolve("/data/uploads/2026/x.pdf"));
+  });
+});
