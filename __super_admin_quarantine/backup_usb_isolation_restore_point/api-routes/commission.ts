@@ -117,10 +117,250 @@ router.delete("/rules/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
+// ─── CSV helpers (import/export) ──────────────────────────────────────────────
+const CSV_HEADER = ["doctorName", "name", "type", "value", "scope", "categories", "testIds", "isExclusive", "isActive"] as const;
+
+function csvEscape(v: unknown): string {
+  let s = String(v ?? "");
+  // CSV formula-injection guard: neutralise cells that a spreadsheet would
+  // otherwise interpret as a formula.
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+// Minimal RFC-4180-ish CSV parser → array of records (each an array of raw
+// field strings). Handles quoted fields, escaped quotes ("") and
+// commas / newlines inside quotes. Blank lines become empty records.
+function parseCsv(text: string): string[][] {
+  const records: string[][] = [];
+  let field = "";
+  let record: string[] = [];
+  let inQuotes = false;
+  const src = text.replace(/\r\n?/g, "\n"); // normalise CRLF / CR → LF
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (src[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += ch;
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ",") {
+      record.push(field); field = "";
+    } else if (ch === "\n") {
+      record.push(field); records.push(record); record = []; field = "";
+    } else {
+      field += ch;
+    }
+  }
+  if (field !== "" || record.length > 0) { record.push(field); records.push(record); }
+  return records;
+}
+
+// ─── GET /rules/export : unified commission CSV for ALL doctors ────────────────
+// Commission is configured in two places, both inside the super-admin panel:
+//   1) explicit commission_rules entries (Commission Rules → "Add Rule")
+//   2) a per-doctor defaultCommission on the doctor profile (Doctor Manager)
+// The export unifies both so every doctor with any commission info appears:
+// each explicit rule is a row, and a doctor whose profile carries a default
+// (and has no active catch-all rule to supersede it) gets one synthesised
+// "Profile Default" row (scope="all"). Optional ?doctorId= limits to one doctor.
+router.get("/rules/export", async (req, res) => {
+  const { doctorId } = req.query as Record<string, string>;
+  const wantDoctorId = doctorId ? Number(doctorId) : null;
+
+  const doctors = await db.select().from(doctorsTable);
+  const rules = await db.select().from(commissionRulesTable).orderBy(desc(commissionRulesTable.createdAt));
+
+  const rulesByDoctor = new Map<number, RuleInfo[]>();
+  for (const r of rules) {
+    if (!rulesByDoctor.has(r.doctorId)) rulesByDoctor.set(r.doctorId, []);
+    rulesByDoctor.get(r.doctorId)!.push(r);
+  }
+
+  const line = (
+    doctorName: string, name: string, type: string, value: number, scope: string,
+    categories: string, testIds: string, isExclusive: boolean, isActive: boolean,
+  ) => [
+    csvEscape(doctorName), csvEscape(name), csvEscape(type), csvEscape(value), csvEscape(scope),
+    csvEscape(categories), csvEscape(testIds), csvEscape(isExclusive ? "true" : "false"), csvEscape(isActive ? "true" : "false"),
+  ].join(",");
+
+  const lines = [CSV_HEADER.join(",")];
+  const doctorList = doctors
+    .filter(d => wantDoctorId == null || d.id === wantDoctorId)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  for (const d of doctorList) {
+    const dRules = rulesByDoctor.get(d.id) ?? [];
+    for (const r of dRules) {
+      lines.push(line(
+        d.name, r.name, r.type, Number(r.value), r.scope,
+        safeParseArray<string>(r.categories).join(";"),
+        safeParseArray<number>(r.testIds).join(";"),
+        r.isExclusive, r.isActive,
+      ));
+    }
+    const defVal = Number(d.defaultCommission ?? 0);
+    const hasActiveCatchAll = dRules.some(r => r.isActive && r.scope === "all");
+    if (defVal > 0 && !hasActiveCatchAll) {
+      lines.push(line(d.name, "Profile Default", d.defaultCommissionType || "percentage", defVal, "all", "", "", false, true));
+    }
+  }
+
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="commission_rules_${wantDoctorId ?? "all"}.csv"`);
+  res.send(lines.join("\n"));
+});
+
+// ─── POST /rules/import : create rules row-by-row from CSV text ────────────────
+// Accepts { csv } JSON (or a raw text body). Matches doctors by name
+// case-insensitively, validates each row, and creates commission_rules
+// entries — reporting per-row skips so a partial file still imports the good
+// rows. A row named "Profile Default"/scope="all" imports as an ordinary
+// catch-all rule (materialising the profile default into the super-admin
+// panel), which round-trips the unified export.
+router.post("/rules/import", async (req, res) => {
+  const csv: string = typeof req.body === "string"
+    ? req.body
+    : (typeof req.body?.csv === "string" ? req.body.csv : "");
+  if (!csv.trim()) {
+    res.status(400).json({ error: "CSV text is required (send JSON { csv } or a text/csv body)." });
+    return;
+  }
+
+  const records = parseCsv(csv);
+  // Keep every record (don't pre-filter) so reported line numbers match the
+  // original file; blank data rows are skipped inside the loop below.
+  const hasDataRow = records.slice(1).some(rec => rec.some(c => (c ?? "").trim() !== ""));
+  if (records.length < 2 || !hasDataRow) {
+    res.status(400).json({ error: "CSV must have a header row and at least one data row." });
+    return;
+  }
+
+  const header = records[0].map(h => h.trim().toLowerCase());
+  const col = (name: string) => header.indexOf(name.toLowerCase());
+  const idx = {
+    doctorName: col("doctorName"), name: col("name"), type: col("type"), value: col("value"),
+    scope: col("scope"), categories: col("categories"), testIds: col("testIds"),
+    isExclusive: col("isExclusive"), isActive: col("isActive"),
+  };
+  if (idx.doctorName < 0 || idx.name < 0 || idx.value < 0) {
+    res.status(400).json({ error: "CSV header must include at least doctorName, name and value." });
+    return;
+  }
+
+  const doctors = await db.select({ id: doctorsTable.id, name: doctorsTable.name }).from(doctorsTable);
+  const doctorIdByName = new Map<string, number>();
+  for (const d of doctors) doctorIdByName.set(d.name.trim().toLowerCase(), d.id);
+
+  const parseBool = (v: string, dflt: boolean) => (v.trim() === "" ? dflt : /^(true|1|yes|y)$/i.test(v.trim()));
+  const splitList = (v: string) => v.split(/[;,]/).map(s => s.trim()).filter(Boolean);
+
+  const toInsert: (typeof commissionRulesTable.$inferInsert)[] = [];
+  const errors: { line: number; doctorName: string; error: string }[] = [];
+
+  for (let i = 1; i < records.length; i++) {
+    const rec = records[i];
+    if (rec.every(c => (c ?? "").trim() === "")) continue; // skip blank lines
+    const lineNo = i + 1; // human-facing line number (1-based, header is line 1)
+    const at = (c: number) => (c >= 0 ? (rec[c] ?? "").trim() : "");
+    const doctorName = at(idx.doctorName);
+    const name = at(idx.name);
+    const type = (at(idx.type) || "percentage").toLowerCase();
+    const valueRaw = at(idx.value);
+    const scope = (at(idx.scope) || "all").toLowerCase();
+
+    if (!doctorName) { errors.push({ line: lineNo, doctorName, error: "Missing doctorName" }); continue; }
+    const dId = doctorIdByName.get(doctorName.toLowerCase());
+    if (dId == null) { errors.push({ line: lineNo, doctorName, error: `No doctor matches "${doctorName}"` }); continue; }
+    if (!name) { errors.push({ line: lineNo, doctorName, error: "Missing rule name" }); continue; }
+    if (type !== "percentage" && type !== "fixed") { errors.push({ line: lineNo, doctorName, error: `Invalid type "${type}" (expected percentage or fixed)` }); continue; }
+    const value = Number(valueRaw);
+    if (!Number.isFinite(value)) { errors.push({ line: lineNo, doctorName, error: `Invalid value "${valueRaw}"` }); continue; }
+    if (scope !== "all" && scope !== "category" && scope !== "test") { errors.push({ line: lineNo, doctorName, error: `Invalid scope "${scope}" (expected all, category or test)` }); continue; }
+
+    const categories = scope === "category" ? splitList(at(idx.categories)) : [];
+    const testIds = scope === "test" ? splitList(at(idx.testIds)).map(Number).filter(n => Number.isFinite(n)) : [];
+
+    toInsert.push({
+      doctorId: dId,
+      name,
+      type,
+      value: value.toString(),
+      scope,
+      categories: categories.length ? JSON.stringify(categories) : null,
+      testIds: testIds.length ? JSON.stringify(testIds) : null,
+      isExclusive: parseBool(at(idx.isExclusive), false),
+      isActive: parseBool(at(idx.isActive), true),
+    });
+  }
+
+  let created = 0;
+  if (toInsert.length) {
+    const inserted = await db.insert(commissionRulesTable).values(toInsert).returning({ id: commissionRulesTable.id });
+    created = inserted.length;
+  }
+
+  // 400 only when nothing at all could be imported; otherwise 200 with a
+  // per-row error list so the UI can report partial success.
+  res.status(created === 0 && errors.length > 0 ? 400 : 200).json({
+    ok: errors.length === 0,
+    created,
+    skipped: errors.length,
+    total: records.length - 1,
+    errors,
+  });
+});
+
 // ─── Commission calculation helper ────────────────────────────────────────────
 type TestInfo = { id: number; name: string; category: string | null; price: number };
 type RuleInfo = typeof import("@workspace/db/schema").commissionRulesTable.$inferSelect;
 type DoctorInfo = typeof import("@workspace/db/schema").doctorsTable.$inferSelect;
+
+function safeParseArray<T = unknown>(s: string | null | undefined): T[] {
+  if (!s) return [];
+  try {
+    const v = JSON.parse(s);
+    return Array.isArray(v) ? (v as T[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+// Single source of truth for "which rule applies to this test line".
+//
+// Precedence (must stay in lock-step with every report that displays the
+// matched rule's value/type — otherwise the UI shows a rule the calculation
+// never used, which is exactly the "rule not selected" bug):
+//   1) exclusive test/category rule
+//   2) non-exclusive test/category rule
+//   3) catch-all (scope="all") rule
+// Returns undefined when nothing matches (caller falls back to the doctor's
+// profile default).
+//
+// `category` is the test's category, or null when the test row is unknown —
+// in which case category-scoped rules never match (mirrors the old guard that
+// required `test` to be defined before comparing categories).
+function findMatchingRule(
+  testId: number,
+  category: string | null,
+  rules: RuleInfo[],
+): RuleInfo | undefined {
+  const testMatch = (r: RuleInfo) => !!r.testIds && safeParseArray<number>(r.testIds).includes(testId);
+  const catMatch = (r: RuleInfo) => category !== null && !!r.categories && safeParseArray<string>(r.categories).includes(category || "");
+  const specific = (r: RuleInfo) => (r.scope === "test" && testMatch(r)) || (r.scope === "category" && catMatch(r));
+
+  // 1) Exclusive specific rules (test-scoped or category-scoped)
+  let matched = rules.find(r => r.isActive && r.isExclusive && specific(r));
+  // 2) Non-exclusive specific rules
+  if (!matched) matched = rules.find(r => r.isActive && specific(r));
+  // 3) Catch-all rule
+  if (!matched) matched = rules.find(r => r.isActive && r.scope === "all");
+  return matched;
+}
 
 function calcTestCommission(
   ot: { id?: number; testId: number; price: string },
@@ -129,51 +369,36 @@ function calcTestCommission(
   doctor: DoctorInfo,
   vipOrderTestIds?: Set<number>,
   vipPct?: number,
-): { commission: number; ruleName: string } {
+): { commission: number; ruleName: string; ruleType: string; ruleValue: number } {
   let price = Number(ot.price);
   if (ot.id && vipOrderTestIds?.has(ot.id) && vipPct) {
     price = price / (1 + vipPct / 100);
   }
 
-  // 1) Exclusive rules first (test-scoped then category-scoped)
-  let matched = rules.find(r => {
-    if (!r.isExclusive || !r.isActive) return false;
-    if (r.scope === "test" && r.testIds) return (JSON.parse(r.testIds) as number[]).includes(ot.testId);
-    if (r.scope === "category" && r.categories && test) return (JSON.parse(r.categories) as string[]).includes(test.category || "");
-    return false;
-  });
-
-  // 2) Non-exclusive specific rules
-  if (!matched) {
-    matched = rules.find(r => {
-      if (!r.isActive) return false;
-      if (r.scope === "test" && r.testIds) return (JSON.parse(r.testIds) as number[]).includes(ot.testId);
-      if (r.scope === "category" && r.categories && test) return (JSON.parse(r.categories) as string[]).includes(test.category || "");
-      return false;
-    });
-  }
-
-  // 3) Catch-all rule
-  if (!matched) matched = rules.find(r => r.isActive && r.scope === "all");
-
+  const matched = findMatchingRule(ot.testId, test ? (test.category ?? "") : null, rules);
   if (matched) {
     const val = Number(matched.value);
     return {
       commission: matched.type === "percentage" ? (price * val) / 100 : val,
       ruleName: matched.name,
+      ruleType: matched.type,
+      ruleValue: val,
     };
   }
 
-  // 4) Doctor default
+  // Doctor default
   const defVal = Number(doctor.defaultCommission);
+  const defType = doctor.defaultCommissionType || "percentage";
   if (defVal > 0) {
     return {
-      commission: doctor.defaultCommissionType === "percentage" ? (price * defVal) / 100 : defVal,
+      commission: defType === "percentage" ? (price * defVal) / 100 : defVal,
       ruleName: "Default",
+      ruleType: defType,
+      ruleValue: defVal,
     };
   }
 
-  return { commission: 0, ruleName: "None" };
+  return { commission: 0, ruleName: "None", ruleType: defType, ruleValue: 0 };
 }
 
 // ── Commission discount deduction helper ──────────────────────────────────────
@@ -350,6 +575,7 @@ router.get("/report-detailed", async (req, res) => {
       testId: number; testName: string; category: string;
       orderId: number; orderNumber: string; orderDate: string;
       price: number; commission: number; ruleName: string;
+      ruleType: string; ruleValue: number;
     };
     const testRows: TestRow[] = [];
 
@@ -357,7 +583,7 @@ router.get("/report-detailed", async (req, res) => {
       const ots = orderTests.filter(ot => ot.orderId === order.id);
       for (const ot of ots) {
         const test = testMap.get(ot.testId);
-        const { commission, ruleName } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct);
+        const { commission, ruleName, ruleType, ruleValue } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct);
         testRows.push({
           testId: ot.testId,
           testName: test?.name ?? "Unknown",
@@ -368,6 +594,8 @@ router.get("/report-detailed", async (req, res) => {
           price: Number(ot.price),
           commission,
           ruleName,
+          ruleType,
+          ruleValue,
         });
       }
     }
@@ -398,18 +626,12 @@ router.get("/report-detailed", async (req, res) => {
       const byTest: Record<number, { testId: number; testName: string; category: string; count: number; revenue: number; commission: number; ruleName: string; ruleValue: number; ruleType: string }> = {};
       for (const row of testRows) {
         if (!byTest[row.testId]) {
-          // Find the matching rule to get its value and type
-          const matchedRule = rules.find(r => {
-            if (!r.isActive) return false;
-            if (r.isExclusive && r.scope === "test" && r.testIds) return (JSON.parse(r.testIds) as number[]).includes(row.testId);
-            if (r.isExclusive && r.scope === "category" && r.categories) return (JSON.parse(r.categories) as string[]).includes(row.category);
-            if (r.scope === "test" && r.testIds) return (JSON.parse(r.testIds) as number[]).includes(row.testId);
-            if (r.scope === "category" && r.categories) return (JSON.parse(r.categories) as string[]).includes(row.category);
-            return r.scope === "all";
-          });
-          const ruleValue = matchedRule ? Number(matchedRule.value) : Number(doctor.defaultCommission);
-          const ruleType = matchedRule ? matchedRule.type : (doctor.defaultCommissionType || "percentage");
-          byTest[row.testId] = { testId: row.testId, testName: row.testName, category: row.category, count: 0, revenue: 0, commission: 0, ruleName: row.ruleName, ruleValue, ruleType };
+          // ruleType/ruleValue come straight from calcTestCommission's actual
+          // decision (row.ruleType / row.ruleValue), so the displayed rate is
+          // always the one that produced this commission. (Previously a
+          // separate rules.find() re-derived it with different precedence and
+          // could show a catch-all rule that was never applied.)
+          byTest[row.testId] = { testId: row.testId, testName: row.testName, category: row.category, count: 0, revenue: 0, commission: 0, ruleName: row.ruleName, ruleValue: row.ruleValue, ruleType: row.ruleType };
         }
         byTest[row.testId].count++;
         byTest[row.testId].revenue += row.price;
@@ -521,13 +743,13 @@ router.get("/report-by-patient", async (req, res) => {
 
   const billsForOrders = orderIds.length
     ? await db
-        .select({ orderId: billsTable.orderId, billNumber: billsTable.billNumber, discount: billsTable.discount })
+        .select({ orderId: billsTable.orderId, billNumber: billsTable.billNumber, discount: billsTable.discount, subtotal: billsTable.subtotal })
         .from(billsTable).where(inArray(billsTable.orderId, orderIds))
     : [];
 
-  const billByOrderId = new Map<number, { billNumber: string; discount: number }>();
+  const billByOrderId = new Map<number, { billNumber: string; discount: number; subtotal: number }>();
   for (const b of billsForOrders) {
-    if (b.orderId != null) billByOrderId.set(b.orderId, { billNumber: b.billNumber, discount: Number(b.discount ?? 0) });
+    if (b.orderId != null) billByOrderId.set(b.orderId, { billNumber: b.billNumber, discount: Number(b.discount ?? 0), subtotal: Number(b.subtotal ?? 0) });
   }
 
   const tokens = orderIds.length
@@ -551,6 +773,10 @@ router.get("/report-by-patient", async (req, res) => {
     category: string;
     price: number;
     commission: number;
+    // Bill-level discount context (repeated on each test row of the bill) so
+    // the report can offer a selectable Discount column shown as % or ₹.
+    billDiscount: number;
+    billSubtotal: number;
     ruleType: string;
     ruleValue: number;
     ruleName: string;
@@ -578,15 +804,10 @@ router.get("/report-by-patient", async (req, res) => {
 
       for (const ot of ots) {
         const test = testMap.get(ot.testId);
-        const { commission: rawComm, ruleName } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct);
-        const matchedRule = rules.find(r => {
-          if (!r.isActive) return false;
-          if (r.isExclusive && r.scope === "test" && r.testIds) return (JSON.parse(r.testIds) as number[]).includes(ot.testId);
-          if (r.isExclusive && r.scope === "category" && r.categories && test) return (JSON.parse(r.categories) as string[]).includes(test.category ?? "");
-          if (r.scope === "test" && r.testIds) return (JSON.parse(r.testIds) as number[]).includes(ot.testId);
-          if (r.scope === "category" && r.categories && test) return (JSON.parse(r.categories) as string[]).includes(test.category ?? "");
-          return r.scope === "all";
-        });
+        // ruleType/ruleValue come from the same decision that produced the
+        // commission (calcTestCommission → findMatchingRule), so the displayed
+        // rate always reflects the rule actually applied.
+        const { commission: rawComm, ruleName, ruleType, ruleValue } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct);
         rows.push({
           date: order.orderDate.toISOString().split("T")[0],
           patientName: `${order.patientFirstName} ${order.patientLastName}`.trim().toUpperCase(),
@@ -599,8 +820,10 @@ router.get("/report-by-patient", async (req, res) => {
           category: test?.category ?? "Other",
           price: Number(ot.price),
           commission: rawComm * ratio,
-          ruleType: matchedRule ? matchedRule.type : (doctor.defaultCommissionType || "percentage"),
-          ruleValue: matchedRule ? Number(matchedRule.value) : Number(doctor.defaultCommission),
+          billDiscount: bill?.discount ?? 0,
+          billSubtotal: bill?.subtotal ?? 0,
+          ruleType,
+          ruleValue,
           ruleName,
         });
       }

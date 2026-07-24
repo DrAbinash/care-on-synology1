@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/select";
 import { useForm } from "react-hook-form";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Plus, Trash2, Stethoscope, Star, Percent, Search } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Stethoscope, Star, Percent, Search, Download, Upload } from "lucide-react";
 import {
   useListCommissionRules,
   useCreateCommissionRule,
@@ -120,6 +120,8 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
   const [ruleOpen, setRuleOpen] = useState(false);
   const [editRule, setEditRule] = useState<CommissionRule | null>(null);
   const [discountModeSaving, setDiscountModeSaving] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const { data: doctorsData } = useQuery({
     queryKey: SA_DOCTORS_KEY,
@@ -271,6 +273,69 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
 
   const isSaving = createMutation.isPending || updateMutation.isPending;
 
+  // ── CSV export ──────────────────────────────────────────────────────────────
+  // Uses a raw fetch (not a generated hook) because the endpoint streams a
+  // text/csv file. The unified export covers ALL doctors with commission info —
+  // explicit rules AND doctors who only carry a profile default commission.
+  // Passing doctorId scopes it to the currently selected doctor; "All Doctors"
+  // exports everyone.
+  const handleExport = async () => {
+    try {
+      const params = new URLSearchParams();
+      if (selectedDoctorId != null) params.set("doctorId", String(selectedDoctorId));
+      const qs = params.toString();
+      const res = await fetch(`/api/commission/rules/export${qs ? `?${qs}` : ""}`, { headers: saAuthHeaders() });
+      if (!res.ok) throw new Error(`Export failed: ${res.status} ${res.statusText}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const who = selectedDoctorId != null
+        ? (doctors.find((d) => d.id === selectedDoctorId)?.name.replace(/[^a-z0-9]+/gi, "_") ?? "doctor")
+        : "all";
+      a.download = `commission_rules_${who}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      toast({ title: "Export failed", description: String(e), variant: "destructive" });
+    }
+  };
+
+  // ── CSV import ──────────────────────────────────────────────────────────────
+  const handleImportFile = async (file: File) => {
+    setImporting(true);
+    try {
+      const text = await file.text();
+      const res = await fetch("/api/commission/rules/import", {
+        method: "POST",
+        headers: { ...saAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ csv: text }),
+      });
+      const body = await res.json().catch(() => ({} as Record<string, unknown>));
+      const created = Number((body as { created?: number }).created ?? 0);
+      const skipped = Number((body as { skipped?: number }).skipped ?? 0);
+      if (!res.ok && created === 0) {
+        throw new Error((body as { error?: string }).error ?? `Import failed: ${res.status}`);
+      }
+      const errs = ((body as { errors?: { line: number; error: string }[] }).errors ?? []);
+      toast({
+        title: `Imported ${created} rule${created === 1 ? "" : "s"}`,
+        description: skipped
+          ? `${skipped} row${skipped === 1 ? "" : "s"} skipped — ${errs.slice(0, 3).map((e) => `line ${e.line}: ${e.error}`).join("; ")}${errs.length > 3 ? " …" : ""}`
+          : "All rows imported successfully.",
+        variant: skipped ? "destructive" : undefined,
+      });
+      queryClient.invalidateQueries({ queryKey: rulesQueryKey });
+      queryClient.invalidateQueries({ queryKey: SA_DOCTORS_KEY });
+    } catch (e) {
+      toast({ title: "Import failed", description: String(e), variant: "destructive" });
+    } finally {
+      setImporting(false);
+    }
+  };
+
   return (
     <div className="min-h-screen w-full bg-background">
       <div className="max-w-6xl mx-auto p-4 sm:p-6 space-y-5">
@@ -338,11 +403,26 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
               </SelectContent>
             </Select>
           </div>
-          {selectedDoctorId && (
-            <Button onClick={() => { setEditRule(null); reset({ type: "percentage", scope: "all", isExclusive: "false" }); setRuleOpen(true); }}>
-              <Plus size={14} className="mr-1" /> Add Rule
+          <div className="flex flex-wrap gap-2 items-center">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleImportFile(f); e.target.value = ""; }}
+            />
+            <Button variant="outline" size="sm" onClick={handleExport} className="gap-1.5">
+              <Download size={14} /> Export CSV
             </Button>
-          )}
+            <Button variant="outline" size="sm" disabled={importing} onClick={() => fileInputRef.current?.click()} className="gap-1.5">
+              <Upload size={14} /> {importing ? "Importing…" : "Import CSV"}
+            </Button>
+            {selectedDoctorId && (
+              <Button onClick={() => { setEditRule(null); reset({ type: "percentage", scope: "all", isExclusive: "false" }); setRuleOpen(true); }}>
+                <Plus size={14} className="mr-1" /> Add Rule
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* Doctor cards / rules table */}

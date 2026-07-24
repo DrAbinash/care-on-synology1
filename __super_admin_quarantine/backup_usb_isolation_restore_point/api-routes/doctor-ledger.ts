@@ -11,7 +11,7 @@ import {
   clinicSettingsTable,
   testTokensTable,
 } from "@workspace/db/schema";
-import { eq, desc, and, gte, lte, inArray, sql } from "drizzle-orm";
+import { eq, desc, and, gte, lte, inArray, ne, sql } from "drizzle-orm";
 import {
   CreateDoctorPayoutBody,
   CreateDoctorPayoutParams,
@@ -96,7 +96,9 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
 
   const orders = await db.select().from(ordersTable).where(conditions.length ? and(...conditions) : undefined);
   const orderIds = orders.map(o => o.id);
-  const orderTests = orderIds.length ? await db.select().from(orderTestsTable).where(inArray(orderTestsTable.orderId, orderIds)) : [];
+  // Exclude cancelled tests from commission — matches commission.ts / the other
+  // report endpoints, otherwise cancelled tests inflate the ledger's earned total.
+  const orderTests = orderIds.length ? await db.select().from(orderTestsTable).where(and(inArray(orderTestsTable.orderId, orderIds), ne(orderTestsTable.status, "cancelled"))) : [];
 
   const tokens = orderIds.length
     ? await db.select({ orderTestId: testTokensTable.orderTestId })

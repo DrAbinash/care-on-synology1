@@ -170,6 +170,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       patientLastName: patientsTable.lastName,
       referringDoctor: doctorsTable.name,
       createdByName: billsTable.createdByName,
+      recordedByName: paymentsTable.recordedByName,
     })
     .from(paymentsTable)
     .innerJoin(billsTable, eq(paymentsTable.billId, billsTable.id))
@@ -528,7 +529,16 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       const sDigitalExp = digitalExpPerPerson[name] ?? 0;
       const sTotalExp = sCashExp + sDigitalExp;
       const sPhysCash = sNetCash - sCashExp;
-      const sDues = duesBills.filter((d) => d.createdByName === name).reduce((s, d) => s + d.duesCollected, 0);
+      // Dues collected belongs to the staff who RECORDED the dues payment (whose
+      // drawer received it today), not whoever created the original bill. This
+      // must be summed from the raw dues payment rows by recordedByName — the
+      // per-bill duesBills aggregate carries only the bill creator and can't
+      // attribute a bill whose dues were collected by several people. Using the
+      // recorder also keeps the all-staff breakdown consistent with the
+      // single-staff view (which filters dues by paymentsTable.recordedByName).
+      const sDues = duesPaymentRows
+        .filter((d) => d.recordedByName === name)
+        .reduce((s, d) => s + Number(d.paymentAmount), 0);
       const sDiscounts = sactive.reduce((s, r) => s + Number(r.discount ?? 0), 0);
 
       return {

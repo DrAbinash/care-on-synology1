@@ -32,10 +32,15 @@ type PatientRow = {
   category: string;
   price: number;
   commission: number;
+  // Bill-level discount (repeated on each test row of the same bill)
+  billDiscount: number;
+  billSubtotal: number;
   ruleType: string;
   ruleValue: number;
   ruleName: string;
 };
+
+type DiscountFmt = "fixed" | "percent";
 
 type DoctorEntry = {
   doctor: { id: number; name: string; specialization: string | null };
@@ -65,6 +70,30 @@ const fmtDate = (iso: string) => {
 
 const fmtRate = (ruleType: string, ruleValue: number) =>
   ruleType === "percentage" ? `${ruleValue}%` : inr(ruleValue);
+
+// Format a bill discount either as a fixed ₹ amount or as a percentage of the
+// bill subtotal, depending on the selected discount display format.
+const fmtDiscount = (fmt: DiscountFmt, discount: number, subtotal: number): string => {
+  if (fmt === "percent") {
+    const pct = subtotal > 0 ? (discount / subtotal) * 100 : 0;
+    return `${pct % 1 === 0 ? pct.toFixed(0) : pct.toFixed(1)}%`;
+  }
+  return inr(discount);
+};
+
+// Discount is a bill-level figure repeated on every test row of that bill, so
+// dedupe by orderId before summing for any total.
+const uniqueBillDiscount = (rows: PatientRow[]): { discount: number; subtotal: number } => {
+  const seen = new Set<number>();
+  let discount = 0, subtotal = 0;
+  for (const r of rows) {
+    if (seen.has(r.orderId)) continue;
+    seen.add(r.orderId);
+    discount += r.billDiscount;
+    subtotal += r.billSubtotal;
+  }
+  return { discount, subtotal };
+};
 
 const ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
@@ -98,6 +127,7 @@ function buildPrintHtml(
   from: string, to: string,
   doctorLabel: string,
   cols: ColFlags,
+  discountFmt: DiscountFmt,
 ) {
   const colCount = 3
     + (cols.billNo ? 1 : 0)
@@ -105,7 +135,11 @@ function buildPrintHtml(
     + (cols.category ? 1 : 0)
     + (cols.rate ? 1 : 0)
     + (cols.billAmount ? 1 : 0)
+    + (cols.discount ? 1 : 0)
     + 1; // commission always shown
+
+  // Numeric columns rendered at the right end, each with its own total cell.
+  const trailingCells = (cols.billAmount ? 1 : 0) + (cols.discount ? 1 : 0) + 1;
 
   const thead = `<thead><tr>
     <th>Date</th>
@@ -116,6 +150,7 @@ function buildPrintHtml(
     ${cols.category ? "<th>Category</th>" : ""}
     ${cols.rate ? "<th class='center'>Rate</th>" : ""}
     ${cols.billAmount ? "<th class='right'>Bill Amt</th>" : ""}
+    ${cols.discount ? `<th class='center'>Discount${discountFmt === "percent" ? " %" : ""}</th>` : ""}
     <th class='right'>Commission</th>
   </tr></thead>`;
 
@@ -128,13 +163,21 @@ function buildPrintHtml(
     ${cols.category ? `<td>${row.category}</td>` : ""}
     ${cols.rate ? `<td class='center'>${fmtRate(row.ruleType, row.ruleValue)}</td>` : ""}
     ${cols.billAmount ? `<td class='right'>${inr(row.price)}</td>` : ""}
+    ${cols.discount ? `<td class='center'>${row.billDiscount > 0 ? fmtDiscount(discountFmt, row.billDiscount, row.billSubtotal) : "—"}</td>` : ""}
     <td class='right'>${inr(row.commission)}</td>
   </tr>`;
 
-  const totalRow = (label: string, revenue: number, commission: number) => `
+  const discountCell = (rows: PatientRow[]) => {
+    if (!cols.discount) return "";
+    const agg = uniqueBillDiscount(rows);
+    return `<td class='center'><strong>${agg.discount > 0 ? fmtDiscount(discountFmt, agg.discount, agg.subtotal) : "—"}</strong></td>`;
+  };
+
+  const totalRow = (rows: PatientRow[], revenue: number, commission: number) => `
     <tr class='total-row'>
-      <td colspan='${colCount - (cols.billAmount ? 2 : 1)}'><strong>TOTAL</strong></td>
+      <td colspan='${colCount - trailingCells}'><strong>TOTAL</strong></td>
       ${cols.billAmount ? `<td class='right'><strong>${inr(revenue)}</strong></td>` : ""}
+      ${discountCell(rows)}
       <td class='right'><strong>${inr(commission)}</strong></td>
     </tr>`;
 
@@ -174,17 +217,19 @@ function buildPrintHtml(
         ${thead}
         <tbody>
           ${e.rows.map(rowHtml).join("")}
-          ${totalRow(e.doctor.name, e.totalRevenue, e.totalCommission)}
+          ${totalRow(e.rows, e.totalRevenue, e.totalCommission)}
         </tbody>
       </table>
     `).join("");
 
     if (report.length > 1) {
+      const allRows = report.flatMap(e => e.rows);
       body += `<table style='margin-top:16px'>
         <tbody>
           <tr class='grand-row'>
-            <td colspan='${colCount - (cols.billAmount ? 2 : 1)}'><strong>GRAND TOTAL</strong></td>
+            <td colspan='${colCount - trailingCells}'><strong>GRAND TOTAL</strong></td>
             ${cols.billAmount ? `<td class='right'><strong>${inr(grandTotal.revenue)}</strong></td>` : ""}
+            ${discountCell(allRows)}
             <td class='right'><strong>${inr(grandTotal.commission)}</strong></td>
           </tr>
         </tbody>
@@ -211,6 +256,7 @@ type ColFlags = {
   category: boolean;
   rate: boolean;
   billAmount: boolean;
+  discount: boolean;
 };
 
 const DEFAULT_COLS: ColFlags = {
@@ -219,6 +265,7 @@ const DEFAULT_COLS: ColFlags = {
   category: false,
   rate: true,
   billAmount: false,
+  discount: false,
 };
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -239,6 +286,7 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
   const [doctorId, setDoctorId] = useState<number | null>(null);
   const [mode, setMode] = useState<ReportMode>("by-doctor");
   const [cols, setCols] = useState<ColFlags>(DEFAULT_COLS);
+  const [discountFmt, setDiscountFmt] = useState<DiscountFmt>("fixed");
 
   const { data: doctorsData } = useQuery({
     queryKey: ["/api/super-admin/doctors-list"],
@@ -272,7 +320,7 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
     const doctorLabel = doctorId
       ? doctors.find(d => d.id === doctorId)?.name ?? "—"
       : "All Doctors";
-    const html = buildPrintHtml(mode, report, grandTotal, from, to, doctorLabel, cols);
+    const html = buildPrintHtml(mode, report, grandTotal, from, to, doctorLabel, cols, discountFmt);
     const win = window.open("", "_blank", "width=1000,height=750");
     if (!win) { toast({ title: "Pop-up blocked", description: "Please allow pop-ups and try again.", variant: "destructive" }); return; }
     win.document.write(html);
@@ -424,6 +472,7 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
     + (cols.category ? 1 : 0)
     + (cols.rate ? 1 : 0)
     + (cols.billAmount ? 1 : 0)
+    + (cols.discount ? 1 : 0)
     + 1;
 
   return (
@@ -506,13 +555,14 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
 
             <div>
               <Label className="text-xs mb-2 block">Optional Columns</Label>
-              <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              <div className="flex flex-wrap gap-x-4 gap-y-1.5 items-center">
                 {([
                   ["billNo",     "Bill No"],
                   ["orderNo",    "Order No"],
                   ["category",   "Category"],
                   ["rate",       "Rate (% / ₹)"],
                   ["billAmount", "Bill Amount"],
+                  ["discount",   "Discount"],
                 ] as [keyof ColFlags, string][]).map(([key, label]) => (
                   <div key={key} className="flex items-center gap-1.5">
                     <Checkbox
@@ -523,6 +573,24 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
                     <label htmlFor={`col-${key}`} className="text-xs cursor-pointer select-none">{label}</label>
                   </div>
                 ))}
+                {/* Discount display format — only relevant when the Discount column is on */}
+                {cols.discount && (
+                  <div className="flex items-center gap-1 pl-2 border-l border-border">
+                    {(["fixed", "percent"] as DiscountFmt[]).map((f) => (
+                      <button
+                        key={f}
+                        onClick={() => setDiscountFmt(f)}
+                        className={`px-2 py-1 rounded-md text-[11px] font-medium border transition-colors ${
+                          discountFmt === f
+                            ? "bg-primary text-primary-foreground border-primary"
+                            : "bg-background border-border hover:bg-muted text-muted-foreground"
+                        }`}
+                      >
+                        {f === "fixed" ? "₹ Amount" : "% of Bill"}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -561,7 +629,7 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
         ) : mode === "test-summary" ? (
           <TestSummaryView report={report} grandTotal={grandTotal} cols={cols} />
         ) : (
-          <ByDoctorView report={report} grandTotal={grandTotal} cols={cols} colCount={colCount} />
+          <ByDoctorView report={report} grandTotal={grandTotal} cols={cols} colCount={colCount} discountFmt={discountFmt} />
         )}
       </div>
     </div>
@@ -570,17 +638,19 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
 
 // ── By Doctor view ────────────────────────────────────────────────────────────
 function ByDoctorView({
-  report, grandTotal, cols, colCount,
+  report, grandTotal, cols, colCount, discountFmt,
 }: {
   report: DoctorEntry[];
   grandTotal: ReportData["grandTotal"];
   cols: ColFlags;
   colCount: number;
+  discountFmt: DiscountFmt;
 }) {
+  const grandDiscount = uniqueBillDiscount(report.flatMap(e => e.rows));
   return (
     <div className="space-y-6">
       {report.map((entry, idx) => (
-        <DoctorBlock key={entry.doctor.id} entry={entry} index={idx} cols={cols} colCount={colCount} />
+        <DoctorBlock key={entry.doctor.id} entry={entry} index={idx} cols={cols} colCount={colCount} discountFmt={discountFmt} />
       ))}
 
       {report.length > 1 && (
@@ -598,6 +668,12 @@ function ByDoctorView({
                 <p className="font-bold text-base">{inr(grandTotal.revenue)}</p>
               </div>
             )}
+            {cols.discount && (
+              <div className="text-right">
+                <p className="text-xs text-muted-foreground">Total Discount</p>
+                <p className="font-bold text-base">{grandDiscount.discount > 0 ? fmtDiscount(discountFmt, grandDiscount.discount, grandDiscount.subtotal) : "—"}</p>
+              </div>
+            )}
             <div className="text-right">
               <p className="text-xs text-muted-foreground">Commission Payable</p>
               <p className="font-bold text-base text-amber-600">{inr(grandTotal.commission)}</p>
@@ -610,14 +686,16 @@ function ByDoctorView({
 }
 
 function DoctorBlock({
-  entry, index, cols, colCount,
+  entry, index, cols, colCount, discountFmt,
 }: {
   entry: DoctorEntry;
   index: number;
   cols: ColFlags;
   colCount: number;
+  discountFmt: DiscountFmt;
 }) {
   const label = ALPHA[index] ?? String(index + 1);
+  const docDiscount = uniqueBillDiscount(entry.rows);
   return (
     <div className="bg-card border border-border rounded-xl overflow-hidden">
       {/* Doctor header */}
@@ -661,6 +739,7 @@ function DoctorBlock({
               {cols.category && <th className="text-left px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">Category</th>}
               {cols.rate     && <th className="text-center px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">Rate</th>}
               {cols.billAmount && <th className="text-right px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground whitespace-nowrap">Bill Amt</th>}
+              {cols.discount && <th className="text-center px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground whitespace-nowrap">Discount</th>}
               <th className="text-right px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground whitespace-nowrap">Commission</th>
             </tr>
           </thead>
@@ -679,17 +758,23 @@ function DoctorBlock({
                   </td>
                 )}
                 {cols.billAmount && <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{inr(row.price)}</td>}
+                {cols.discount && <td className="px-4 py-2.5 text-center tabular-nums text-muted-foreground">{row.billDiscount > 0 ? fmtDiscount(discountFmt, row.billDiscount, row.billSubtotal) : "—"}</td>}
                 <td className="px-4 py-2.5 text-right font-semibold text-amber-700 tabular-nums">{inr(row.commission)}</td>
               </tr>
             ))}
             {/* Doctor total row */}
             <tr className="border-t-2 border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20">
-              <td className="px-4 py-3 font-bold text-xs uppercase tracking-wide" colSpan={colCount - (cols.billAmount ? 2 : 1)}>
+              <td className="px-4 py-3 font-bold text-xs uppercase tracking-wide" colSpan={colCount - ((cols.billAmount ? 1 : 0) + (cols.discount ? 1 : 0) + 1)}>
                 TOTAL
               </td>
               {cols.billAmount && (
                 <td className="px-4 py-3 text-right font-bold tabular-nums">
                   {inr(entry.totalRevenue)}
+                </td>
+              )}
+              {cols.discount && (
+                <td className="px-4 py-3 text-center font-bold tabular-nums">
+                  {docDiscount.discount > 0 ? fmtDiscount(discountFmt, docDiscount.discount, docDiscount.subtotal) : "—"}
                 </td>
               )}
               <td className="px-4 py-3 text-right font-bold text-base text-amber-700 tabular-nums">
