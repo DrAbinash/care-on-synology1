@@ -889,6 +889,11 @@ router.get("/report-by-patient", async (req, res) => {
     ruleType: string;
     ruleValue: number;
     ruleName: string;
+    // "Why this amount?" drill-down: the price actually used as the commission
+    // base (VIP surcharge stripped) and whether that stripping happened, so the
+    // UI can show base = price ÷ (1 + vip%) → expected → −discount → actual.
+    commissionBase: number;
+    vipAdjusted: boolean;
   };
 
   const result = filteredDoctors.map(doctor => {
@@ -929,6 +934,10 @@ router.get("/report-by-patient", async (req, res) => {
         // commission (calcTestCommission → findMatchingRule), so the displayed
         // rate always reflects the rule actually applied.
         const { commission: rawComm, ruleName, ruleType, ruleValue } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct);
+        // Mirror the VIP-surcharge stripping calcTestCommission does internally,
+        // so the drill-down can display the exact base the rate was applied to.
+        const vipAdjusted = !!ot.id && vipOrderTestIds.has(ot.id) && vipPct > 0;
+        const commissionBase = vipAdjusted ? Number(ot.price) / (1 + vipPct / 100) : Number(ot.price);
         rows.push({
           date: order.orderDate.toISOString().split("T")[0],
           patientName: `${order.patientFirstName} ${order.patientLastName}`.trim().toUpperCase(),
@@ -949,6 +958,8 @@ router.get("/report-by-patient", async (req, res) => {
           ruleType,
           ruleValue,
           ruleName,
+          commissionBase,
+          vipAdjusted,
         });
       }
     }
@@ -977,6 +988,8 @@ router.get("/report-by-patient", async (req, res) => {
 
   res.json({
     report: result,
+    // Clinic-level context for the "Why this amount?" drill-down.
+    settings: { vipPct, commissionDiscountMode },
     grandTotal: {
       doctors: result.length,
       orders: result.reduce((s, d) => s + d.orderCount, 0),

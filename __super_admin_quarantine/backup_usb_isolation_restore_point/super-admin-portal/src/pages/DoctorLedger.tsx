@@ -16,9 +16,11 @@ import {
 import {
   ArrowLeft, Search, RefreshCw, Download, IndianRupee, AlertCircle,
   TrendingUp, Users, Wallet, Receipt, Trash2, Plus, X, BookOpen, Clock,
+  RotateCcw, FileText,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { saAuthHeaders } from "@/lib/saApi";
+import { exportDoctorStatementPdf, type StatementDetail } from "@/lib/exportDoctorStatementPdf";
 import {
   useGetDoctorLedgerSummary,
   useGetDoctorLedgerDetail,
@@ -212,10 +214,27 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
     }
   };
 
+  const exportStatement = async (currentDetail: DoctorLedgerDetail) => {
+    try {
+      await exportDoctorStatementPdf(currentDetail as unknown as StatementDetail, {
+        generatedAt: new Date().toLocaleString("en-IN"),
+      });
+    } catch (err) {
+      toast({ title: "Statement export failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    }
+  };
+
+  // Only eligible (non-held) commission is payable. dueWindow / outstanding are
+  // already computed from payable-only totals server-side, so the "eligible due"
+  // is simply the outstanding (falling back to the window figure).
+  const eligibleDue = detail
+    ? (detail.summary.outstanding > 0 ? detail.summary.outstanding : detail.summary.dueWindow)
+    : 0;
+  const heldNow = detail ? ((detail.summary as { totalHeld?: number }).totalHeld ?? 0) : 0;
+  const payAmt = Number(payForm.amount) || 0;
+
   const prefillFullDue = () => {
-    if (!detail) return;
-    const due = detail.summary.outstanding > 0 ? detail.summary.outstanding : detail.summary.dueWindow;
-    if (due > 0) setPayForm(p => ({ ...p, amount: due.toFixed(2) }));
+    if (eligibleDue > 0) setPayForm(p => ({ ...p, amount: eligibleDue.toFixed(2) }));
   };
 
   const totals = data?.totals ?? { doctors: 0, earnedWindow: 0, paidWindow: 0, dueWindow: 0, outstanding: 0 };
@@ -394,12 +413,48 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
                 );
               })()}
 
+              {(() => {
+                // Clawbacks: commission that was previously eligible (payable) and has
+                // since been reversed to On Hold — a bill cancelled/refunded after the
+                // fact. Informational: it already dropped out of the due total, this
+                // just explains why.
+                const clawbacks = ((detail as { clawbacks?: ReadonlyArray<{ orderId: number; amount: number; reason: string; at: string }> }).clawbacks) ?? [];
+                const totalClawback = (detail.summary as { totalClawback?: number }).totalClawback ?? 0;
+                if (clawbacks.length === 0) return null;
+                return (
+                  <div className="rounded-xl border border-amber-300 bg-amber-50/70 dark:bg-amber-950/20 dark:border-amber-900 p-3">
+                    <div className="flex items-center justify-between gap-2 mb-1.5 text-amber-700 dark:text-amber-400">
+                      <div className="flex items-center gap-1.5">
+                        <RotateCcw size={14} />
+                        <p className="text-xs font-semibold">Reversed after eligibility ({clawbacks.length} order{clawbacks.length === 1 ? "" : "s"})</p>
+                      </div>
+                      <span className="text-xs font-mono tabular-nums">−{inr(totalClawback)}</span>
+                    </div>
+                    <div className="space-y-0.5 max-h-40 overflow-y-auto">
+                      {clawbacks.map((c) => (
+                        <div key={c.orderId} className="flex items-center justify-between gap-3 text-xs">
+                          <span className="font-mono text-muted-foreground truncate">#{c.orderId}</span>
+                          <span className="text-amber-700 dark:text-amber-400 truncate flex-1">{c.reason}</span>
+                          <span className="font-mono tabular-nums">{inr(c.amount)}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="mt-1.5 text-[10px] text-amber-600/80 dark:text-amber-500/70">
+                      Already excluded from Due / Outstanding. Shown for audit — if any amount was already paid out, recover it on the next payout.
+                    </p>
+                  </div>
+                );
+              })()}
+
               <div className="flex flex-wrap items-center gap-2">
                 <Button onClick={() => setPayDialogOpen(true)}>
                   <Plus size={14} className="mr-1" /> Record Payment
                 </Button>
                 <Button variant="outline" onClick={() => detail && exportCSV(detail)}>
                   <Download size={14} className="mr-1" /> Export CSV
+                </Button>
+                <Button variant="outline" onClick={() => detail && exportStatement(detail)}>
+                  <FileText size={14} className="mr-1" /> Statement PDF
                 </Button>
                 <div className="flex-1" />
                 <span className="text-xs text-muted-foreground">
@@ -500,14 +555,29 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
                   onChange={e => setPayForm(p => ({ ...p, amount: e.target.value }))}
                   placeholder="0.00"
                 />
-                <Button type="button" variant="outline" size="sm" onClick={prefillFullDue} disabled={!detail}>
-                  Full due
+                <Button type="button" variant="outline" size="sm" onClick={prefillFullDue} disabled={!detail || eligibleDue <= 0}>
+                  Pay eligible due
                 </Button>
               </div>
               {detail && (
                 <div className="text-xs text-muted-foreground mt-1">
-                  Window due: <span className="font-mono">{inr(detail.summary.dueWindow)}</span>
-                  {" · "}Outstanding: <span className="font-mono">{inr(detail.summary.outstanding)}</span>
+                  Eligible due: <span className="font-mono font-semibold text-foreground">{inr(eligibleDue)}</span>
+                  {" · "}Window: <span className="font-mono">{inr(detail.summary.dueWindow)}</span>
+                  {heldNow > 0 && (
+                    <>
+                      {" · "}
+                      <span className="text-rose-600 dark:text-rose-400">On hold (not payable): <span className="font-mono">{inr(heldNow)}</span></span>
+                    </>
+                  )}
+                </div>
+              )}
+              {detail && payAmt > 0 && payAmt > eligibleDue + 0.005 && (
+                <div className="mt-1.5 flex items-start gap-1.5 rounded-md border border-amber-300 bg-amber-50/70 dark:bg-amber-950/20 dark:border-amber-900 px-2 py-1.5 text-[11px] text-amber-700 dark:text-amber-400">
+                  <AlertCircle size={13} className="mt-px shrink-0" />
+                  <span>
+                    This is <span className="font-mono font-semibold">{inr(payAmt - eligibleDue)}</span> more than the eligible due
+                    {heldNow > 0 ? " — held commission is not payable until its condition is met." : "."} You can still record it if intentional (e.g. an advance).
+                  </span>
                 </div>
               )}
             </div>

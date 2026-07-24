@@ -7,9 +7,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { useToast } from "@/hooks/use-toast";
 import {
-  ArrowLeft, Printer, Stethoscope, Users, FileText, IndianRupee, TrendingUp, Download, FileSpreadsheet, Percent, Clock,
+  ArrowLeft, Printer, Stethoscope, Users, FileText, IndianRupee, TrendingUp, Download, FileSpreadsheet, Percent, Clock, HelpCircle,
 } from "lucide-react";
 import { saAuthHeaders } from "@/lib/saApi";
 import { exportCommissionPdf } from "@/lib/exportCommissionPdf";
@@ -42,6 +43,9 @@ type PatientRow = {
   ruleType: string;
   ruleValue: number;
   ruleName: string;
+  // "Why this amount?" drill-down
+  commissionBase: number;   // price used as the rate base (VIP surcharge stripped)
+  vipAdjusted: boolean;     // whether the VIP surcharge was removed from the base
 };
 
 type DiscountFmt = "fixed" | "percent";
@@ -61,6 +65,7 @@ type DoctorEntry = {
 
 type ReportData = {
   report: DoctorEntry[];
+  settings?: { vipPct: number; commissionDiscountMode: string };
   grandTotal: { doctors: number; orders: number; revenue: number; commission: number; payableCommission: number; heldCommission: number; expectedCommission: number; discount: number };
 };
 
@@ -361,6 +366,7 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
   }, [error, toast]);
 
   const report = data?.report ?? [];
+  const settings = data?.settings ?? { vipPct: 0, commissionDiscountMode: "none" };
   const grandTotal = data?.grandTotal ?? { doctors: 0, orders: 0, revenue: 0, commission: 0, payableCommission: 0, heldCommission: 0, expectedCommission: 0, discount: 0 };
 
   const handlePrint = () => {
@@ -708,7 +714,7 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
         ) : mode === "test-summary" ? (
           <TestSummaryView report={report} grandTotal={grandTotal} cols={cols} showBreakdown={showBreakdown} />
         ) : (
-          <ByDoctorView report={report} grandTotal={grandTotal} cols={cols} colCount={colCount} discountFmt={discountFmt} />
+          <ByDoctorView report={report} grandTotal={grandTotal} cols={cols} colCount={colCount} discountFmt={discountFmt} settings={settings} />
         )}
       </div>
     </div>
@@ -717,19 +723,20 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
 
 // ── By Doctor view ────────────────────────────────────────────────────────────
 function ByDoctorView({
-  report, grandTotal, cols, colCount, discountFmt,
+  report, grandTotal, cols, colCount, discountFmt, settings,
 }: {
   report: DoctorEntry[];
   grandTotal: ReportData["grandTotal"];
   cols: ColFlags;
   colCount: number;
   discountFmt: DiscountFmt;
+  settings: { vipPct: number; commissionDiscountMode: string };
 }) {
   const grandDiscount = uniqueBillDiscount(report.flatMap(e => e.rows));
   return (
     <div className="space-y-6">
       {report.map((entry, idx) => (
-        <DoctorBlock key={entry.doctor.id} entry={entry} index={idx} cols={cols} colCount={colCount} discountFmt={discountFmt} />
+        <DoctorBlock key={entry.doctor.id} entry={entry} index={idx} cols={cols} colCount={colCount} discountFmt={discountFmt} settings={settings} />
       ))}
 
       {report.length > 1 && (
@@ -764,14 +771,81 @@ function ByDoctorView({
   );
 }
 
+// "Why this amount?" drill-down — a click-to-open breakdown of exactly how a
+// single test row's commission was derived: price → (VIP stripped) → base →
+// × rate = expected → − referral discount = actual, plus any hold reason.
+function WhyCommissionPopover({
+  row, settings,
+}: {
+  row: PatientRow;
+  settings: { vipPct: number; commissionDiscountMode: string };
+}) {
+  const discountGiven = Math.max(0, row.grossCommission - row.commission);
+  const Line = ({ label, value, strong, tone }: { label: string; value: string; strong?: boolean; tone?: "muted" | "amber" | "rose" }) => (
+    <div className="flex items-center justify-between gap-6 text-xs">
+      <span className={tone === "muted" ? "text-muted-foreground" : ""}>{label}</span>
+      <span className={`font-mono tabular-nums ${strong ? "font-bold" : ""} ${tone === "amber" ? "text-amber-700 dark:text-amber-500" : tone === "rose" ? "text-rose-600 dark:text-rose-400" : ""}`}>{value}</span>
+    </div>
+  );
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="ml-1 inline-flex align-middle text-muted-foreground/60 hover:text-amber-600 transition-colors"
+          title="Why this amount?"
+          aria-label="Why this amount?"
+        >
+          <HelpCircle size={13} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-72 p-3 text-left">
+        <p className="text-xs font-semibold mb-2 flex items-center gap-1.5">
+          <HelpCircle size={13} className="text-amber-600" /> How this commission was calculated
+        </p>
+        <div className="space-y-1">
+          <Line label="Test price" value={inr(row.price)} tone="muted" />
+          {row.vipAdjusted && (
+            <>
+              <Line label={`VIP surcharge removed (${settings.vipPct}%)`} value={`−${inr(row.price - row.commissionBase)}`} tone="rose" />
+              <Line label="Commission base" value={inr(row.commissionBase)} />
+            </>
+          )}
+          <div className="my-1.5 border-t border-border" />
+          <Line label={`Rule: ${row.ruleName} (${fmtRate(row.ruleType, row.ruleValue)})`} value="" tone="muted" />
+          <Line label="Expected commission" value={inr(row.grossCommission)} />
+          {discountGiven > 0.005 && (
+            <Line
+              label={settings.commissionDiscountMode === "none" ? "Referral discount given" : "Less: bill-discount deduction"}
+              value={`−${inr(discountGiven)}`}
+              tone="rose"
+            />
+          )}
+          <div className="my-1.5 border-t border-border" />
+          <Line label="Actual commission" value={inr(row.commission)} strong tone="amber" />
+          {row.held && (
+            <div className="mt-2 rounded-md bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 px-2 py-1.5">
+              <p className="text-[11px] text-rose-600 dark:text-rose-400 flex items-start gap-1">
+                <Clock size={11} className="mt-px shrink-0" />
+                <span><span className="font-semibold">On hold — not payable yet.</span> {row.holdReason ?? "Eligibility condition not met."}</span>
+              </p>
+            </div>
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function DoctorBlock({
-  entry, index, cols, colCount, discountFmt,
+  entry, index, cols, colCount, discountFmt, settings,
 }: {
   entry: DoctorEntry;
   index: number;
   cols: ColFlags;
   colCount: number;
   discountFmt: DiscountFmt;
+  settings: { vipPct: number; commissionDiscountMode: string };
 }) {
   const label = ALPHA[index] ?? String(index + 1);
   const docDiscount = uniqueBillDiscount(entry.rows);
@@ -839,7 +913,7 @@ function DoctorBlock({
                 {cols.billAmount && <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{inr(row.price)}</td>}
                 {cols.discount && <td className="px-4 py-2.5 text-center tabular-nums text-muted-foreground">{row.billDiscount > 0 ? fmtDiscount(discountFmt, row.billDiscount, row.billSubtotal) : "—"}</td>}
                 <td className={`px-4 py-2.5 text-right font-semibold tabular-nums ${row.held ? "text-muted-foreground" : "text-amber-700"}`}>
-                  {inr(row.commission)}
+                  <span className="whitespace-nowrap">{inr(row.commission)}<WhyCommissionPopover row={row} settings={settings} /></span>
                   {row.held && (
                     <span className="block text-[10px] font-normal text-rose-500 leading-tight whitespace-nowrap">⏸ {row.holdReason ?? "On hold"}</span>
                   )}

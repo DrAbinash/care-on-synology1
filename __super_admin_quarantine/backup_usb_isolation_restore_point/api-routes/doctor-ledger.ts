@@ -12,6 +12,7 @@ import {
   testTokensTable,
   patientReportsTable,
   radiologyStudiesTable,
+  commissionStatusEventsTable,
 } from "@workspace/db/schema";
 import { eq, desc, and, gte, lte, inArray, ne, sql } from "drizzle-orm";
 import {
@@ -77,6 +78,15 @@ function calcTestCommission(
     return { commission: doctor.defaultCommissionType === "percentage" ? (price * defVal) / 100 : defVal, ruleName: "Default" };
   }
   return { commission: 0, ruleName: "None" };
+}
+
+// Applies the clinic-level commissionDiscountMode to an order's raw commission
+// and its bill discount (mirrors commission.ts) so the ledger's earned figure is
+// the same NET commission the Referral Report shows — not the gross.
+function applyDiscountDeduction(rawCommission: number, billDiscount: number, mode: string): number {
+  if (mode === "deduct") return Math.max(0, rawCommission - billDiscount);
+  if (mode === "deduct_rollover") return rawCommission - billDiscount;
+  return rawCommission;
 }
 
 // ── Commission eligibility (payment / report-aware hold) ──────────────────────
@@ -164,10 +174,12 @@ async function fetchOrderReportStatus(
 async function computeEarned(opts: { from?: string; to?: string; doctorId?: number }) {
   const [clinicRow] = await db.select({
     vipPercentage: clinicSettingsTable.vipPercentage,
+    commissionDiscountMode: clinicSettingsTable.commissionDiscountMode,
     commissionEligibilityPolicy: clinicSettingsTable.commissionEligibilityPolicy,
     commissionEligibilityMinAmount: clinicSettingsTable.commissionEligibilityMinAmount,
   }).from(clinicSettingsTable).limit(1);
   const vipPct = clinicRow?.vipPercentage ? Number(clinicRow.vipPercentage) : 50.00;
+  const discountMode = clinicRow?.commissionDiscountMode ?? "none";
   const cfg: EligibilityConfig = {
     policy: clinicRow?.commissionEligibilityPolicy ?? "full_payment_collected",
     minAmount: Number(clinicRow?.commissionEligibilityMinAmount ?? 0),
@@ -198,12 +210,12 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
 
   // Bill payment state per order (for payment-based eligibility policies).
   const billsForOrders = orderIds.length
-    ? await db.select({ orderId: billsTable.orderId, status: billsTable.status, paidAmount: billsTable.paidAmount, balanceAmount: billsTable.balanceAmount })
+    ? await db.select({ orderId: billsTable.orderId, status: billsTable.status, paidAmount: billsTable.paidAmount, balanceAmount: billsTable.balanceAmount, discount: billsTable.discount })
         .from(billsTable).where(inArray(billsTable.orderId, orderIds))
     : [];
-  const billByOrderId = new Map<number, { status: string | null; paid: number; balance: number }>();
+  const billByOrderId = new Map<number, { status: string | null; paid: number; balance: number; discount: number }>();
   for (const b of billsForOrders) {
-    if (b.orderId != null) billByOrderId.set(b.orderId, { status: b.status ?? null, paid: Number(b.paidAmount ?? 0), balance: Number(b.balanceAmount ?? 0) });
+    if (b.orderId != null) billByOrderId.set(b.orderId, { status: b.status ?? null, paid: Number(b.paidAmount ?? 0), balance: Number(b.balanceAmount ?? 0), discount: Number(b.discount ?? 0) });
   }
 
   // Report finalized/delivered per order — only fetched for the report_* policies.
@@ -228,14 +240,16 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
     for (const order of doctorOrders) {
       const tests = orderTests.filter(ot => ot.orderId === order.id);
       if (tests.length === 0) continue;
-      let r = 0, c = 0;
+      let r = 0, rawC = 0;
       for (const ot of tests) {
         const test = testMap.get(ot.testId);
         const { commission } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct);
         r += Number(ot.price);
-        c += commission;
+        rawC += commission;
       }
       const bill = billByOrderId.get(order.id);
+      // Net of the bill-discount deduction — same NET the Referral Report pays.
+      const c = applyDiscountDeduction(rawC, bill?.discount ?? 0, discountMode);
       const rep = reportStatusByOrder.get(order.id);
       const { held, reason } = computeCommissionHold({
         cfg,
@@ -448,6 +462,38 @@ doctorLedgerRouter.get("/:doctorId", async (req, res) => {
       .where(eq(doctorPayoutsTable.doctorId, doctorId));
     const lifetimePaid = Number(lifetimePaidRow[0]?.total ?? 0);
 
+    // ── Clawback: orders whose commission had become eligible (payable) and has
+    // since been reversed back to On Hold — typically a bill cancelled or refunded
+    // after the fact. Sourced from the append-only status-event audit trail so the
+    // reversal is visible even though the live order now simply reads "on hold".
+    // This is informational only: the running balance already excludes held orders,
+    // so a clawback needs no separate debit — it just explains *why* a previously
+    // payable amount is no longer in the due total.
+    const cbEvents = await db
+      .select({
+        orderId: commissionStatusEventsTable.orderId,
+        commissionAmount: commissionStatusEventsTable.commissionAmount,
+        oldStatus: commissionStatusEventsTable.oldStatus,
+        newStatus: commissionStatusEventsTable.newStatus,
+        reason: commissionStatusEventsTable.reason,
+        createdAt: commissionStatusEventsTable.createdAt,
+      })
+      .from(commissionStatusEventsTable)
+      .where(eq(commissionStatusEventsTable.doctorId, doctorId))
+      .orderBy(desc(commissionStatusEventsTable.createdAt), desc(commissionStatusEventsTable.id));
+    const latestEventByOrder = new Map<number, (typeof cbEvents)[number]>();
+    for (const e of cbEvents) if (!latestEventByOrder.has(e.orderId)) latestEventByOrder.set(e.orderId, e);
+    const clawbacks = [...latestEventByOrder.values()]
+      .filter(e => e.newStatus === "on_hold" && e.oldStatus === "eligible")
+      .map(e => ({
+        orderId: e.orderId,
+        amount: Number(e.commissionAmount),
+        reason: e.reason ?? "Reversed to On Hold",
+        at: e.createdAt,
+      }))
+      .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+    const totalClawback = clawbacks.reduce((s, e) => s + e.amount, 0);
+
     res.json({
       doctor: {
         ...doctor,
@@ -459,16 +505,19 @@ doctorLedgerRouter.get("/:doctorId", async (req, res) => {
         totalEarned,
         totalHeld,
         totalPaid,
+        totalClawback,
         dueWindow: totalEarned - totalPaid,
         lifetimeEarned,
         lifetimePaid,
         outstanding: lifetimeEarned - lifetimePaid,
         orderCount: earnedRows.length,
         heldOrderCount: earnedRows.filter(o => o.held).length,
+        clawbackCount: clawbacks.length,
         payoutCount: payouts.length,
       },
       earnedOrders: earnedRows,
       payouts: payouts.map(p => ({ ...p, amount: Number(p.amount) })),
+      clawbacks,
       ledger,
     });
   } catch (err) {
