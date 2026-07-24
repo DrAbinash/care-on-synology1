@@ -17,13 +17,19 @@
 // looked perfect. Always pass the server global here so the effective paper
 // size is the one the clinic actually configured.
 
-export type BillFormat = "classic" | "premium-a5" | "designer-a" | "designer-b" | "designer-c";
+export type BillFormat = "classic" | "modern-landscape" | "premium-a5" | "designer-a" | "designer-b" | "designer-c";
+// Ordered by recommendation, most-recommended first — "modern-landscape" is
+// the purpose-built A5-landscape layout for Epson-style ink printers (most
+// clinics' primary workflow); the older formats are kept for backward
+// compatibility so existing counters that already picked one keep printing
+// exactly the same bill.
 export const BILL_FORMATS: { id: BillFormat; label: string }[] = [
-  { id: "classic",     label: "Classic Format (Existing)" },
-  { id: "premium-a5", label: "Premium Format V1 (Existing)" },
-  { id: "designer-a", label: "Designer Layout A — Minimal Premium" },
-  { id: "designer-b", label: "Designer Layout B — Modern Diagnostic" },
-  { id: "designer-c", label: "Designer Layout C — Corporate Healthcare" },
+  { id: "modern-landscape", label: "Modern — A5 Landscape (Recommended)" },
+  { id: "classic",          label: "Classic (Legacy)" },
+  { id: "premium-a5",       label: "Premium A5 (Legacy)" },
+  { id: "designer-a",       label: "Designer A — Minimal Premium" },
+  { id: "designer-b",       label: "Designer B — Modern Diagnostic" },
+  { id: "designer-c",       label: "Designer C — Corporate Healthcare" },
 ];
 
 export type BillPaperSize = "A5-landscape" | "A5-portrait" | "half-a4" | "A4";

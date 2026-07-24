@@ -4751,8 +4751,9 @@ const LAYOUT_PRESETS = {
 } as const;
 
 const billFormats: { id: string; label: string }[] = [
-  { id: "classic",     label: "Classic Format (Existing)" },
-  { id: "premium-a5", label: "Premium Format V1 (Existing)" },
+  { id: "modern-landscape", label: "Modern — A5 Landscape (Recommended)" },
+  { id: "classic",     label: "Classic (Legacy)" },
+  { id: "premium-a5", label: "Premium A5 (Legacy)" },
   { id: "designer-a", label: "Designer Layout A — Minimal Premium" },
   { id: "designer-b", label: "Designer Layout B — Modern Diagnostic" },
   { id: "designer-c", label: "Designer Layout C — Corporate Healthcare" },
@@ -4926,59 +4927,70 @@ function BillingPrintTab() {
   return (
     <div className={`grid gap-4 items-start ${previewVisible ? "xl:grid-cols-[1fr_360px]" : "grid-cols-1"}`}>
     <div className="space-y-4">
-      <SectionCard title="Bill Format" subtitle="Choose the default bill layout and enable/disable formats.">
+      {/* One "recommended for A5-landscape ink" callout at the top of the tab
+          so a new admin knows the right combination in one glance. */}
+      <div className="rounded-xl border border-blue-200 bg-blue-50/60 dark:bg-blue-950/20 dark:border-blue-800 px-4 py-3 text-xs text-blue-900 dark:text-blue-200 leading-relaxed">
+        <strong>Recommended for most Indian diagnostic centres:</strong> Format{" "}
+        <em>Modern — A5 Landscape</em> · Paper <em>A5 Landscape</em> · Direct Print After Save <em>on</em>{" "}
+        (below). Designed for Epson/HP ink printers on half-A4 paper — dense, one-page bill,
+        cleanly-inked accent color, no wasted ink or blank margins. Watch the Live Preview on the right
+        while you tune.
+      </div>
+
+      {/* SECTION 1 — Essentials: what the bill looks like AND what paper it prints on */}
+      <SectionCard title="Format &amp; Paper" subtitle="The two decisions that determine everything else. Pick a layout, pick your paper.">
         <SelectCard
-          label="Default Bill Format"
+          label="Bill layout"
           options={billFormats}
           value={settings.defaultFormat}
           onChange={(v) => update({ defaultFormat: v as any })}
         />
-        <div className="grid grid-cols-2 gap-3">
-          <BillPrintToggleRow label="Enable Classic Format" value={settings.classicEnabled} onChange={(v) => update({ classicEnabled: v })} />
-          <BillPrintToggleRow label="Enable Premium A5 Format" value={settings.premiumA5Enabled} onChange={(v) => update({ premiumA5Enabled: v })} />
-          <BillPrintToggleRow label="Enable Designer Layout A" value={(settings as any).designerAEnabled !== false} onChange={(v) => update({ designerAEnabled: v } as any)} />
-          <BillPrintToggleRow label="Enable Designer Layout B" value={(settings as any).designerBEnabled !== false} onChange={(v) => update({ designerBEnabled: v } as any)} />
-          <BillPrintToggleRow label="Enable Designer Layout C" value={(settings as any).designerCEnabled !== false} onChange={(v) => update({ designerCEnabled: v } as any)} />
-        </div>
-        <div className="mt-3">
-          <label className="text-xs font-medium text-slate-600 block mb-1">Auto switch to A4 when tests exceed</label>
-          <div className="flex items-center gap-2">
-            <input
-              type="number" min={1} max={20}
-              value={(settings as any).autoA4Threshold ?? 5}
-              onChange={(e) => update({ autoA4Threshold: Math.max(1, Math.min(20, Number(e.target.value))) } as any)}
-              className="w-16 h-7 text-xs border border-gray-300 rounded px-2"
-            />
-            <span className="text-xs text-slate-500">investigations (default: 5)</span>
-          </div>
-        </div>
-      </SectionCard>
-
-      <SectionCard title="Paper & Copy" subtitle="Configure default paper size and copy type.">
         <SelectCard
-          label="Default Paper Size"
+          label="Paper size &amp; orientation"
           options={billPaperSizes}
           value={settings.defaultPaperSize}
           onChange={(v) => update({ defaultPaperSize: v as any })}
         />
         <SelectCard
-          label="Default Copy Type"
+          label="Copies to print"
           options={billCopyTypes}
           value={settings.defaultCopyType}
           onChange={(v) => update({ defaultCopyType: v as any })}
         />
+        <div className="mt-2 grid grid-cols-1 gap-2">
+          <label className="text-xs font-medium text-slate-600 block">
+            Long bill? Auto-switch to A4 when tests exceed:
+          </label>
+          <div className="flex items-center gap-2">
+            <input
+              type="number" min={1} max={20}
+              value={(settings as any).autoA4Threshold ?? 5}
+              onChange={(e) => update({ autoA4Threshold: Math.max(1, Math.min(20, Number(e.target.value))) } as any)}
+              className="w-16 h-7 text-xs border border-input rounded-md px-2 bg-background"
+            />
+            <span className="text-xs text-muted-foreground">investigations (default 5)</span>
+          </div>
+        </div>
+        <details className="text-xs text-muted-foreground">
+          <summary className="cursor-pointer font-medium hover:text-foreground">Enable / disable older layouts (advanced)</summary>
+          <div className="grid grid-cols-2 gap-3 mt-2">
+            <BillPrintToggleRow label="Enable Classic (legacy)" value={settings.classicEnabled} onChange={(v) => update({ classicEnabled: v })} />
+            <BillPrintToggleRow label="Enable Premium A5 (legacy)" value={settings.premiumA5Enabled} onChange={(v) => update({ premiumA5Enabled: v })} />
+            <BillPrintToggleRow label="Enable Designer A" value={(settings as any).designerAEnabled !== false} onChange={(v) => update({ designerAEnabled: v } as any)} />
+            <BillPrintToggleRow label="Enable Designer B" value={(settings as any).designerBEnabled !== false} onChange={(v) => update({ designerBEnabled: v } as any)} />
+            <BillPrintToggleRow label="Enable Designer C" value={(settings as any).designerCEnabled !== false} onChange={(v) => update({ designerCEnabled: v } as any)} />
+          </div>
+        </details>
         <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-4 py-3 text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
-          <strong>If the printout has large blank margins on 3 sides:</strong> this setting controls
-          the page size the bill is <em>designed</em> for, but your browser's print dialog still needs to
-          be told to use the same size — a website can't change that automatically. In the print dialog,
-          set <strong>Paper size</strong> to match what you picked above (e.g. A5) and set{" "}
-          <strong>Scale</strong> to <strong>&quot;Actual size&quot;</strong> / <strong>100%</strong> (not
-          &quot;Fit to page&quot;). If your printer tray is loaded with A4, either switch the tray to A5
+          <strong>Printer prints with big blank margins?</strong> This setting only decides the size
+          the bill is <em>designed</em> for — your browser's print dialog also needs the matching
+          Paper size, and <strong>Scale</strong> must be <strong>&quot;Actual size&quot;</strong> / <strong>100%</strong>
+          (not &quot;Fit to page&quot;). If the printer tray holds A4, either switch the tray to A5
           or select A4 here instead.
         </div>
       </SectionCard>
 
-      <SectionCard title="Bill Display" subtitle="Control what appears on the printed bill.">
+      <SectionCard title="What appears on the printed bill" subtitle="Optional elements. Each toggle updates the Live Preview immediately.">
         <div className="grid grid-cols-2 gap-3">
           <BillPrintToggleRow label="Show QR Code" value={settings.showQrCode} onChange={(v) => update({ showQrCode: v })} />
           <BillPrintToggleRow label="Show Amount in Words" value={settings.showAmountInWords} onChange={(v) => update({ showAmountInWords: v })} />
@@ -5059,28 +5071,27 @@ function BillingPrintTab() {
         </div>
       </SectionCard>
 
-      <SectionCard title="Print Action" subtitle="Default action when saving a bill.">
+      <SectionCard
+        title="Save &amp; Print Workflow"
+        subtitle="What happens when a bill is saved — the speed vs. safety trade-off is here."
+      >
         <SelectCard
-          label="Default Print Button Action"
+          label="Default Save button action"
           options={printActions}
           value={settings.defaultPrintAction}
           onChange={(v) => update({ defaultPrintAction: v as any })}
         />
-      </SectionCard>
-
-      <SectionCard title="Preview & Speed" subtitle="Configure how fast the billing workflow should be.">
         <div className="grid grid-cols-2 gap-3">
-          <BillPrintToggleRow label="Enable Print Preview" value={settings.enablePreview} onChange={(v) => update({ enablePreview: v })} />
-          <BillPrintToggleRow label="Direct Print After Save" value={settings.directPrintAfterSave} onChange={(v) => update({ directPrintAfterSave: v })} />
-          <BillPrintToggleRow label="Auto Open Print Dialog" value={settings.autoOpenPrintDialog} onChange={(v) => update({ autoOpenPrintDialog: v })} />
-          <BillPrintToggleRow label="Ask Before Printing" value={settings.askBeforePrint} onChange={(v) => update({ askBeforePrint: v })} />
-          <BillPrintToggleRow label="Auto Download PDF" value={settings.autoDownloadPdf} onChange={(v) => update({ autoDownloadPdf: v })} />
-          <BillPrintToggleRow label="Fast Billing Mode" value={settings.fastBillingMode} onChange={(v) => update({ fastBillingMode: v })} />
+          <BillPrintToggleRow label="Direct print after save" value={settings.directPrintAfterSave} onChange={(v) => update({ directPrintAfterSave: v })} />
+          <BillPrintToggleRow label="Auto-open browser print dialog" value={settings.autoOpenPrintDialog} onChange={(v) => update({ autoOpenPrintDialog: v })} />
+          <BillPrintToggleRow label="Show print preview first" value={settings.enablePreview} onChange={(v) => update({ enablePreview: v })} />
+          <BillPrintToggleRow label='Confirm ("Print now?") before printing' value={settings.askBeforePrint} onChange={(v) => update({ askBeforePrint: v })} />
+          <BillPrintToggleRow label="Also auto-download a PDF copy" value={settings.autoDownloadPdf} onChange={(v) => update({ autoDownloadPdf: v })} />
+          <BillPrintToggleRow label="Fast Billing Mode (minimal prompts)" value={settings.fastBillingMode} onChange={(v) => update({ fastBillingMode: v })} />
         </div>
-      </SectionCard>
-
-      <SectionCard title="Admin Lock" subtitle="When ON, users cannot override these settings.">
-        <BillPrintToggleRow label="Admin Can Force Global Print Settings" value={settings.adminLock} onChange={(v) => update({ adminLock: v })} />
+        <div className="mt-2 pt-3 border-t border-border/50">
+          <BillPrintToggleRow label="Admin Lock — apply these settings to every counter (users can't override)" value={settings.adminLock} onChange={(v) => update({ adminLock: v })} />
+        </div>
       </SectionCard>
 
       <div className="flex justify-end gap-2 pt-2">
