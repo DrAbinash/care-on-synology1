@@ -2331,7 +2331,14 @@ billsRouter.get("/gateway-payment-status/:txnRef", async (req, res): Promise<voi
           .where(eq(paymentLogsTable.id, logRecord.id));
       }
     }
-  } catch {}
+  } catch (err) {
+    // Two distinct failures were being swallowed here: a malformed stored
+    // requestPayload, and a failed status→"expired" UPDATE. The latter leaves
+    // the payment log stuck in "initiated"/"verifying" forever, so the row is
+    // never reconciled. Expiry detection is still best-effort (the response
+    // below is unaffected), but the failure is no longer invisible.
+    req.log?.warn?.({ err, txnRef, logId: logRecord.id }, "Payment-log expiry check failed");
+  }
 
   if (isExpired) {
     res.json({ status: "expired", amount: Number(logRecord.amount) });

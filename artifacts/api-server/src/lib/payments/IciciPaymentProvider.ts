@@ -133,7 +133,16 @@ export class IciciPaymentProvider implements PaymentProvider {
         if (resText.trim().startsWith("{")) {
           iciciData = JSON.parse(resText);
         }
-      } catch {}
+      } catch (err) {
+        // Never silent: an unparseable gateway response leaves iciciData empty,
+        // which reads downstream as "not successful". Log it so a gateway that
+        // starts returning malformed JSON is diagnosable instead of looking
+        // like a run of ordinary payment failures.
+        logger.warn(
+          { err, stage: "initiate", httpStatus: res.status, responseSnippet: resText.slice(0, 500) },
+          "[icici] initiate: gateway response was not valid JSON",
+        );
+      }
 
       logger.info({
         iciciUrl,
@@ -323,7 +332,17 @@ export class IciciPaymentProvider implements PaymentProvider {
         if (statusResText.trim().startsWith("{")) {
           statusData = JSON.parse(statusResText);
         }
-      } catch {}
+      } catch (err) {
+        // This is the sharpest of the three: on a parse failure statusData stays
+        // empty, so txnStatus/responseCode are undefined and a genuinely
+        // SUCCESSFUL payment is reported back as not-successful. Unlike the
+        // initiate stage, this path records no payment diagnostic, so without
+        // this log the misread would leave no trace at all.
+        logger.warn(
+          { err, stage: "status", responseSnippet: statusResText.slice(0, 500) },
+          "[icici] status-check: gateway response was not valid JSON — treating as not-successful",
+        );
+      }
 
       if (statusData.txnStatus === "SUC" || statusData.txnResponseCode === "0000" || statusData.responseCode === "000") {
         return {
@@ -398,7 +417,15 @@ export class IciciPaymentProvider implements PaymentProvider {
         if (resText.trim().startsWith("{")) {
           data = JSON.parse(resText);
         }
-      } catch {}
+      } catch (err) {
+        // A parse failure here silently reads as "refund not successful", which
+        // can mask a refund the gateway actually accepted — money out with no
+        // record. This path records no payment diagnostic either, so log it.
+        logger.warn(
+          { err, stage: "refund", responseSnippet: resText.slice(0, 500) },
+          "[icici] refund: gateway response was not valid JSON — treating as not-successful",
+        );
+      }
 
       if (data.responseCode === "R1000" || data.status === "SUC") {
         return {
