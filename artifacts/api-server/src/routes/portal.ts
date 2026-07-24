@@ -18,6 +18,7 @@ import {
   doctorsTable,
   rolePermissionsTable,
 } from "@workspace/db/schema";
+import { resolveStaffPermissions } from "../lib/staffSessionUser";
 import { eq, and, desc, gt, sql, count, or } from "drizzle-orm";
 import { sanitizePatient } from "./patients";
 import { requireStaffAuth, requireStaffPermission, normalizeRole } from "../middleware/requireStaffAuth";
@@ -451,88 +452,9 @@ portalRouter.post("/staff-login", staffLoginLimiter, async (req, res) => {
     }
   }
 
-  // ── Derive permissions from role_permissions table (source of truth) ────
-  // Query the role_permissions matrix for this user's role and translate
-  // module names into the legacy path-permission strings the ERP sidebar
-  // and middleware expect. Also add legacy piggyback paths so /form-f,
-  // /report-generator, /signatures, /patient-reports, etc. flow through.
-  const MODULE_TO_PATH: Record<string, string> = {
-    dashboard: "/dashboard",
-    patients: "/patients",
-    appointments: "/appointments",
-    queue: "/queue",
-    billing: "/billing",
-    payments: "/payments",
-    orders: "/orders",
-    tests: "/tests",
-    reports: "/reports",
-    radiology: "/radiology/worklist", // radiology gets access to all radiology subpaths
-    lab: "/samples",
-    doctors: "/doctors",
-    commission: "/referrals",
-    accounting: "/accounting",
-    inventory: "/inventory",
-    expenses: "/expenses",
-    form_f: "/form-f",
-    settings: "/settings",
-    backups: "/backups",
-    audit: "/audit",
-    banking: "/banking",
-  };
-  const LEGACY_PIGGYBACKS: Record<string, string[]> = {
-    "/reports": ["/report-generator", "/patient-reports", "/signatures"],
-    "/radiology/worklist": ["/radiology/reporting-workspace", "/radiology/pacs-dashboard", "/pacs", "/teleradiology", "/radiology/dicom-qr"],
-    "/samples": ["/scan-station", "/report-hub", "/report-delivery"],
-    "/patients": ["/register"],
-    "/billing": ["/", "/dues"],
-    "/dashboard": ["/my-daily-summary"],
-  };
-
-  let derivedPermissions: string[] = [];
-  if (normalizeRole(user.role) !== "admin" && normalizeRole(user.role) !== "super_admin") {
-    const rolePerms = await db
-      .select()
-      .from(rolePermissionsTable)
-      .where(eq(rolePermissionsTable.role, user.role));
-    for (const rp of rolePerms) {
-      if (rp.canView) {
-        const path = MODULE_TO_PATH[rp.module];
-        if (path && !derivedPermissions.includes(path)) {
-          derivedPermissions.push(path);
-          // Add piggyback paths
-          const extras = LEGACY_PIGGYBACKS[path];
-          if (extras) {
-            for (const extra of extras) {
-              if (!derivedPermissions.includes(extra)) derivedPermissions.push(extra);
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // Merge with legacy JSON stored in users.permissions (as fallback for
-  // modules not yet in the matrix, or for backward compat)
-  let legacyPermissions: string[] = [];
-  try {
-    if (user.permissions) {
-      const parsed = JSON.parse(user.permissions);
-      if (Array.isArray(parsed)) legacyPermissions = parsed.filter((p) => typeof p === "string");
-    }
-  } catch { /* ignore — empty permissions */ }
-
-  const permissions = normalizeRole(user.role) === "admin" || normalizeRole(user.role) === "super_admin"
-    ? legacyPermissions // admins keep all legacy paths (they bypass checks anyway)
-    : Array.from(new Set([...derivedPermissions, ...legacyPermissions]));
-
-  // Persist derived permissions back to users.permissions so every
-  // request uses fresh permissions without re-querying role_permissions.
-  if (normalizeRole(user.role) !== "admin" && normalizeRole(user.role) !== "super_admin") {
-    await db
-      .update(usersTable)
-      .set({ permissions: JSON.stringify(permissions) })
-      .where(eq(usersTable.id, user.id));
-  }
+  // Effective path permissions for this user. Shared with the WebAuthn
+  // login so the two staff-session payloads cannot drift.
+  const permissions = await resolveStaffPermissions(user);
 
   // ── Concurrent session limit enforcement ────────────────────────────────
   // If the user has maxConcurrentSessions > 0, use that. Otherwise fall

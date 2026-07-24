@@ -143,7 +143,11 @@ export default function FormFMonthlyRegister() {
     const incompleteCountAll = all.filter((r) => r.completionStatus === "incomplete").length;
 
     const w = window.open("", "_blank", "width=1100,height=750");
-    if (!w) return;
+    // A blocked pop-up used to make this button do nothing at all. The print
+    // document is composed here and has no on-screen equivalent, so falling
+    // back to window.print() would print the ERP instead of the register —
+    // tell the operator what to allow instead.
+    if (!w) { toast({ variant: "destructive", title: "Print window blocked", description: "Your browser blocked the print window. Allow pop-ups for this site, then print again." }); return; }
     w.document.write(`
       <!DOCTYPE html><html><head>
       <title>Form F Register (Rule 9(1)) — ${MONTH_NAMES[month - 1]} ${year}</title>

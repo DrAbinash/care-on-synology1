@@ -118,7 +118,8 @@ export default function FormFSelfReferralOpdRegister() {
     const adviceHtml = rx.adviceText.split("\n").map((l) => `<p class="advice">${esc(l)}</p>`).join("");
 
     const w = window.open("", "_blank", "width=820,height=750");
-    if (!w) return;
+    // Blocked pop-up → the Rx button silently did nothing. Say so.
+    if (!w) { toast({ variant: "destructive", title: "Print window blocked", description: "Your browser blocked the prescription window. Allow pop-ups for this site, then print again." }); return; }
     w.document.write(`
       <!DOCTYPE html><html><head>
       <title>Prescription — ${esc(rx.patientName)}</title>
@@ -199,7 +200,8 @@ export default function FormFSelfReferralOpdRegister() {
       </tr>`).join("");
 
     const w = window.open("", "_blank", "width=1000,height=750");
-    if (!w) return;
+    // Blocked pop-up → the Print Register button silently did nothing. Say so.
+    if (!w) { toast({ variant: "destructive", title: "Print window blocked", description: "Your browser blocked the print window. Allow pop-ups for this site, then print again." }); return; }
     w.document.write(`
       <!DOCTYPE html><html><head>
       <title>Self-Referral OPD Register — ${MONTH_NAMES[month - 1]} ${year}</title>

@@ -17,6 +17,7 @@ import { db } from "@workspace/db";
 import { webauthnCredentialsTable, usersTable } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { buildStaffSessionUser } from "../lib/staffSessionUser";
 import {
   storeChallenge,
   consumeChallenge,
@@ -172,15 +173,23 @@ publicRouter.post("/authenticate/complete", async (req, res) => {
   const newCounter = verification.authenticationInfo?.newCounter ?? cred.counter;
   await updateCredentialCounter(cred.id, newCounter);
 
+  // Full row: the session payload needs e-mail, permissions, theme and the
+  // rest. Returning a partial user here made readStaffSession() reject the
+  // stored session and finalizeSession() throw on user.email — a security key
+  // could never actually sign anyone in.
   const [user] = await db
-    .select({ id: usersTable.id, name: usersTable.name, role: usersTable.role })
+    .select()
     .from(usersTable)
     .where(eq(usersTable.id, cred.userId))
     .limit(1);
   if (!user) { res.status(404).json({ error: "User not found" }); return; }
 
   const token = await createWebAuthnSession(user.id, user.name);
-  return res.json({ token, expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), user: { id: user.id, name: user.name, role: user.role } });
+  return res.json({
+    token,
+    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    user: await buildStaffSessionUser(user),
+  });
 });
 
 // ── Credential management (staff auth required via middleware mount) ──
