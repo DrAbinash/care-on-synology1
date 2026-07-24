@@ -268,6 +268,26 @@ const navItems: NavEntry[] = [
     ],
   },
   {
+    // Unified Staff hub — one sidebar tab for every staff/HR surface. These
+    // used to be scattered across the Administration group, and four of them
+    // (People/Performance/Attendance/My Portal) were hidden behind ff_hr_*
+    // nav gates, so only "Staff Directory" and "HR Forms" were ever visible.
+    // They are surfaced unconditionally here; each page still self-guards its
+    // own backend behind its ff_hr_* flag and shows a "Shadow Mode — enable
+    // the flag in Settings › Feature Flags" banner until it's turned on.
+    id: "staff-grp",
+    icon: Users,
+    label: "Staff",
+    children: [
+      { path: "/staff", icon: UserPlus, label: "Staff Directory" },
+      { path: "/people", icon: Users, label: "People (360°)" },
+      { path: "/performance", icon: TrendingUp, label: "Performance" },
+      { path: "/attendance-devices", icon: Fingerprint, label: "Attendance Devices" },
+      { path: "/my-portal", icon: Gauge, label: "My Portal" },
+      { path: "/hr-forms", icon: FilePen, label: "HR Forms" },
+    ],
+  },
+  {
     id: "admin-grp",
     icon: Building2,
     label: "Administration",
@@ -281,12 +301,6 @@ const navItems: NavEntry[] = [
       { path: "/recall", icon: Bell, label: "Recall & Follow-up", featureFlag: "ff_recall_engine" },
       { path: "/feedback", icon: Star, label: "Feedback / NPS", featureFlag: "ff_feedback_nps" },
       { path: "/expenses", icon: TrendingDown, label: "Expenses" },
-      { path: "/staff", icon: Fingerprint, label: "Staff Directory" },
-      { path: "/people", icon: Users, label: "People (360°)", featureFlag: "ff_hr_staff_enhanced" },
-      { path: "/attendance-devices", icon: Fingerprint, label: "Attendance Devices", featureFlag: "ff_hr_biometric_attendance" },
-      { path: "/performance", icon: TrendingUp, label: "Performance", featureFlag: "ff_hr_performance_scoring" },
-      { path: "/my-portal", icon: Gauge, label: "My Portal", featureFlag: "ff_hr_employee_self_service" },
-      { path: "/hr-forms", icon: FilePen, label: "HR Forms" },
       { path: "/my-day-close", icon: Clock, label: "My Day Close" },
       { path: "/accounting", icon: BookOpen, label: "Accounting" },
       { path: "/banking", icon: Landmark, label: "Banking" },

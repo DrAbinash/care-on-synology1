@@ -450,7 +450,16 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   ff_radiology_usg_sugandha_mode: false,
 };
 
-const RADIOLOGY_FLAG_PREFIX = "ff_radiology_";
+// Every server-managed rollout flag is `ff_`-prefixed (ff_radiology_*,
+// ff_hr_*, ff_ops_*, ff_recall_*, ff_feedback_*, ff_report_delivery_*,
+// ff_abdm_*, ff_online_payment_*, ff_hope_care_*). Client-only per-browser
+// preference flags (billingDesk*, radiologyQuickAdd, hideDeprecatedNav,
+// hopeReferralsInbox, …) are deliberately NOT `ff_`-prefixed, so this single
+// prefix cleanly separates "server is authoritative" flags from "this browser
+// only" flags. Hydrating on `ff_` (not just `ff_radiology_`) is what makes the
+// Feature Flags admin toggle actually surface the HR / Ops / Recall / Feedback
+// nav items — previously their server values were silently dropped here.
+const SERVER_FLAG_PREFIX = "ff_";
 
 // Populated by setServerFeatureFlags() once /api/feature-flags has loaded.
 // Deliberately NOT fetched from this file — staffSession.ts must stay free
@@ -458,7 +467,7 @@ const RADIOLOGY_FLAG_PREFIX = "ff_radiology_";
 // (ERP_SESSION_KEY/StaffSession/clearStaffSession); importing `api` here
 // would create a circular module dependency. The actual fetch lives in
 // hooks/useServerFeatureFlags.ts, a layer above both.
-let serverRadiologyFlags: Record<string, boolean> | null = null;
+let serverFlags: Record<string, boolean> | null = null;
 
 export function getFeatureFlags(): Record<string, boolean> {
   let flags: Record<string, boolean>;
@@ -469,10 +478,10 @@ export function getFeatureFlags(): Record<string, boolean> {
   } catch {
     flags = { ...FEATURE_FLAG_DEFAULTS };
   }
-  // Server wins for ff_radiology_* keys once hydrated — overlaid last so
-  // neither the default nor a locally-toggled value can shadow it.
-  if (serverRadiologyFlags) {
-    return { ...flags, ...serverRadiologyFlags };
+  // Server wins for every hydrated ff_* key — overlaid last so neither the
+  // default nor a locally-toggled value can shadow it.
+  if (serverFlags) {
+    return { ...flags, ...serverFlags };
   }
   return flags;
 }
@@ -483,19 +492,20 @@ export function isFeatureEnabled(flag: string): boolean {
 
 /**
  * Called once by hooks/useServerFeatureFlags after GET /api/feature-flags
- * resolves. Only "ff_radiology_" prefixed keys are accepted — this function
- * can never be used to make a server value override any other (pre-existing,
- * client-only) flag. Re-dispatches the same "featureFlagsChanged" event the
- * existing setFeatureFlag() uses, so any component already re-rendering on
- * local toggles picks up the server values immediately, with no new
- * subscription mechanism needed.
+ * resolves. Only "ff_" prefixed keys are accepted — every server-managed
+ * rollout flag is ff_-prefixed, while client-only per-browser preference
+ * flags are not, so this function can never be used to make a server value
+ * override a purely local preference flag. Re-dispatches the same
+ * "featureFlagsChanged" event the existing setFeatureFlag() uses, so any
+ * component already re-rendering on local toggles picks up the server values
+ * immediately, with no new subscription mechanism needed.
  */
 export function setServerFeatureFlags(flags: Record<string, boolean>): void {
-  const radiologyOnly: Record<string, boolean> = {};
+  const serverManaged: Record<string, boolean> = {};
   for (const [key, value] of Object.entries(flags)) {
-    if (key.startsWith(RADIOLOGY_FLAG_PREFIX)) radiologyOnly[key] = value;
+    if (key.startsWith(SERVER_FLAG_PREFIX)) serverManaged[key] = value;
   }
-  serverRadiologyFlags = radiologyOnly;
+  serverFlags = serverManaged;
   if (typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent("featureFlagsChanged", { detail: { source: "server" } }));
   }

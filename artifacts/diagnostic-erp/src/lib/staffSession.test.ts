@@ -37,11 +37,29 @@ describe("setServerFeatureFlags", () => {
     expect(isFeatureEnabled("ff_radiology_structured_core")).toBe(true);
   });
 
-  it("only accepts ff_radiology_ prefixed keys — never overrides an unrelated flag", () => {
+  it("accepts every ff_ prefixed server key — never overrides a client-only preference flag", () => {
     setServerFeatureFlags({ showMeasurementPanel: true, ff_radiology_render_v2: true });
-    // The non-prefixed key must be silently dropped, not applied.
+    // The non-ff_ (client-only preference) key must be silently dropped, not applied.
     expect(isFeatureEnabled("showMeasurementPanel")).toBe(false);
     expect(isFeatureEnabled("ff_radiology_render_v2")).toBe(true);
+  });
+
+  it("hydrates non-radiology server ff_ flags (HR / Ops / Recall) so their nav items can surface", () => {
+    // Regression: previously only ff_radiology_ keys were hydrated, so an admin
+    // enabling ff_hr_staff_enhanced / ff_ops_cockpit on the server never made
+    // the sidebar links appear. Every server-managed rollout flag is ff_-prefixed.
+    expect(isFeatureEnabled("ff_hr_staff_enhanced")).toBe(false);
+    expect(isFeatureEnabled("ff_ops_cockpit")).toBe(false);
+    setServerFeatureFlags({
+      ff_hr_staff_enhanced: true,
+      ff_hr_performance_scoring: true,
+      ff_ops_cockpit: true,
+      ff_recall_engine: true,
+    });
+    expect(isFeatureEnabled("ff_hr_staff_enhanced")).toBe(true);
+    expect(isFeatureEnabled("ff_hr_performance_scoring")).toBe(true);
+    expect(isFeatureEnabled("ff_ops_cockpit")).toBe(true);
+    expect(isFeatureEnabled("ff_recall_engine")).toBe(true);
   });
 
   it("a later call fully replaces the previous overlay (does not merge stale keys)", () => {
