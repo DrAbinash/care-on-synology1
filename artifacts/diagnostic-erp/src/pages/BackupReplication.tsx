@@ -379,8 +379,23 @@ export default function BackupReplication() {
             </div>
           </Button>
         </div>
-        <input ref={fileInputRef} type="file" className="hidden" accept=".sql,.zip" onChange={onFileChange} />
+        {/* .enc accepted: scheduled backups are written encrypted, and the
+            restore path now decrypts them (openssl format + legacy envelopes)
+            instead of feeding ciphertext to psql. */}
+        <input ref={fileInputRef} type="file" className="hidden" accept=".sql,.zip,.enc,.gz" onChange={onFileChange} />
+        <p className="text-[11px] text-muted-foreground">
+          Browser upload is limited to a few MB. For a real database or snapshot, use
+          &ldquo;Restore from a backup on the server&rdquo; below — it reads the file directly and has no size limit.
+        </p>
       </div>
+
+      {/* Server-side restore — the path that actually works for full-size backups */}
+      <ServerBackupRestore
+        onRestore={(file, type) => {
+          setPendingImport({ type, filePath: file.filePath });
+          setShowImportConfirm(file.fileName);
+        }}
+      />
 
       {/* Synology hint */}
       <div className="rounded-xl border border-blue-200 bg-blue-50 dark:bg-blue-950/20 p-4 flex gap-3 text-xs">
@@ -498,6 +513,98 @@ export default function BackupReplication() {
               <Button variant="outline" onClick={() => setShowImportConfirm(null)}>Cancel</Button>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface ServerBackupFile {
+  filePath: string;
+  fileName: string;
+  directory: string;
+  sizeBytes: number;
+  modifiedAt: string;
+  encrypted: boolean;
+}
+
+/**
+ * Restore from a backup file the SERVER can already see.
+ *
+ * The upload-based restore path sends the whole file base64-encoded in a JSON
+ * body against a 5 MB express.json limit — roughly a 3.6 MB ceiling, which no
+ * real database dump fits under. Scheduled jobs already write to their
+ * destination (usually a NAS mount) and manual exports stay in the backup dir,
+ * so this lists what is on disk and restores it in place: no upload, no size cap.
+ */
+function ServerBackupRestore({ onRestore }: { onRestore: (file: ServerBackupFile, type: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const { data, isLoading, refetch, isFetching } = useQuery<{ files: ServerBackupFile[]; directories: string[] }>({
+    queryKey: ["backup-server-files"],
+    queryFn: () => api.get("/api/admin/backup-replication/files"),
+    enabled: open,
+  });
+  const files = data?.files ?? [];
+
+  // A .sql/.sql.enc/.sql.gz artifact is a database dump; a .zip is either a
+  // files-only export or a full snapshot, which the admin picks explicitly.
+  function typeFor(f: ServerBackupFile): string {
+    const n = f.fileName.toLowerCase();
+    if (n.includes("snapshot")) return "snapshot";
+    if (n.includes("files")) return "files";
+    return "db";
+  }
+
+  return (
+    <div className="rounded-xl border bg-card p-4 space-y-3">
+      <button type="button" className="flex w-full items-center gap-2 text-left" onClick={() => setOpen((v) => !v)}>
+        <Server size={16} className="text-blue-500" />
+        <div className="flex-1">
+          <h3 className="text-sm font-semibold">Restore from a backup on the server</h3>
+          <p className="text-[11px] text-muted-foreground">
+            No upload, no size limit — reads scheduled-job destinations and the local backup directory. Encrypted (.enc) backups are decrypted automatically.
+          </p>
+        </div>
+        {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+      </button>
+
+      {open && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" className="gap-1" onClick={() => void refetch()} disabled={isFetching}>
+              <RefreshCw size={12} className={isFetching ? "animate-spin" : ""} /> Refresh
+            </Button>
+            {data?.directories?.length ? (
+              <span className="text-[10px] text-muted-foreground truncate">Scanned: {data.directories.join(", ")}</span>
+            ) : null}
+          </div>
+
+          {isLoading ? (
+            <p className="text-xs text-muted-foreground">Loading…</p>
+          ) : files.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              No backup files found on the server. Run an export above, or set a destination path on a backup job so scheduled backups are written somewhere durable.
+            </p>
+          ) : (
+            <div className="divide-y max-h-72 overflow-y-auto rounded-md border">
+              {files.map((f) => (
+                <div key={f.filePath} className="flex items-center justify-between gap-2 px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium truncate">
+                      {f.fileName}
+                      {f.encrypted && <Badge variant="outline" className="ml-1.5 text-[9px]">encrypted</Badge>}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground truncate">
+                      {formatBytes(f.sizeBytes)} · {new Date(f.modifiedAt).toLocaleString("en-IN")} · {f.directory}
+                    </p>
+                  </div>
+                  <Button size="sm" variant="destructive" className="shrink-0 text-[11px] h-7" onClick={() => onRestore(f, typeFor(f))}>
+                    Restore
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

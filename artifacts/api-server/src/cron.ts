@@ -8,10 +8,11 @@ import {
 } from "@workspace/db/schema";
 import { sendDailySummaryEmail, sendCommissionMonthEndEmail, sendMonthlyAuditEmail } from "./email";
 import { runBooksSanity } from "./routes/books-sanity";
-import { exportDatabaseSql, exportDatabaseSqlFallback, computeSha256 } from "./routes/backupReplication";
+import { exportDatabaseSql, exportDatabaseSqlFallback, computeSha256, CONFIG_BACKUP_TABLES } from "./routes/backupReplication";
+import { promises as fsp } from "fs";
 import { auditRunsTable, watchdogStatusTable } from "@workspace/db/schema";
 import { gte, and, lte, eq, inArray, isNull, or, lt, sql, ne } from "drizzle-orm";
-import { encryptBackup } from "@workspace/crypto";
+import { encryptBackupFile, resolveBackupPassphrase } from "./lib/backupCrypto";
 import {
   startDimsePullAgent,
   stopDimsePullAgent,
@@ -264,6 +265,7 @@ export async function fireScheduledBackups() {
     let filePath: string | null = null;
     let notes = "";
     let checksum: string | null = null;
+    let encrypted = false;
 
     try {
       if (job.backupType === "DB" || job.backupType === "FULL" || job.backupType === "CONFIG") {
@@ -283,7 +285,7 @@ export async function fireScheduledBackups() {
         // silently resolving, so it lands in the catch block below and is
         // correctly recorded as "failed", never "success".
         const scopedTables: Record<string, string[] | undefined> = {
-          CONFIG: ["clinic_settings", "email_settings", "printer_settings", "pacs_settings"],
+          CONFIG: CONFIG_BACKUP_TABLES,
           DB: undefined,
           FULL: undefined,
         };
@@ -299,35 +301,58 @@ export async function fireScheduledBackups() {
 
         sizeBytes = dump.sizeBytes;
         rowCount = dump.rowCount;
-        const sql = require("fs").readFileSync(dump.filePath, "utf-8");
 
-        // Ticket E0.1d — SHA-256 over the encrypted content, exactly as it
-        // will be written to disk, so a later verifyBackupChecksum() call
-        // against the file on disk detects any corruption of the at-rest
-        // artifact (not just of the pre-encryption SQL).
-        const enc = encryptBackup(sql);
-        checksum = computeSha256(enc);
-
-        // Write to disk if destinationPath provided
-        if (job.destinationPath) {
-          try {
-            const dir = require("path").dirname(job.destinationPath);
-            require("fs").mkdirSync(dir, { recursive: true });
-            const dest = `${job.destinationPath}/backup_${job.jobName}_${new Date().toISOString().replace(/[:.]/g, "-")}.sql.enc`;
-            require("fs").writeFileSync(dest, enc);
-            filePath = dest;
-            notes = `Backup saved to ${dest} (${(sizeBytes / 1024 / 1024).toFixed(2)} MB, SHA-256: ${checksum})`;
-          } catch (e: unknown) {
-            notes = `In-memory backup; disk write failed: ${e instanceof Error ? e.message : String(e)}`;
-          }
-        } else {
-          notes = `In-memory ${job.backupType} backup (${(sizeBytes / 1024 / 1024).toFixed(2)} MB, SHA-256: ${checksum})`;
+        // A scheduled backup with nowhere to go is not a backup. This used to
+        // encrypt the dump into a local variable, throw it away, and record
+        // SUCCESS with notes reading "In-memory backup" and filePath null —
+        // a permanently green job that never persisted a single byte. The
+        // misconfiguration is now surfaced instead of hidden.
+        if (!job.destinationPath) {
+          await fsp.unlink(dump.filePath).catch(() => {});
+          throw new Error(
+            "No destinationPath configured — nothing was persisted, so this is not a usable backup. " +
+            "Set a destination path (e.g. a Synology/NAS mount) on the backup job.",
+          );
         }
 
-        // The unencrypted intermediate dump must not linger on disk.
-        require("fs").unlink(dump.filePath, () => {});
+        // Encrypt to the SAME openssl format scripts/synology-restore.sh and
+        // restoreVerification.ts already understand (see lib/backupCrypto.ts).
+        // The previous scheme (AES-256-GCM keyed on SESSION_SECRET via
+        // encryptBackup) had NO decryptor wired anywhere in the product, so
+        // every file it produced was unrestorable. File→file also keeps a
+        // multi-GB dump out of the Node heap, which readFileSync(…, "utf-8")
+        // could not.
+        const key = resolveBackupPassphrase();
+        if (!key) {
+          await fsp.unlink(dump.filePath).catch(() => {});
+          throw new Error("Neither BACKUP_PASSPHRASE nor SESSION_SECRET is set — refusing to write an unencrypted backup.");
+        }
+
+        try {
+          require("fs").mkdirSync(job.destinationPath, { recursive: true });
+          const dest = `${job.destinationPath}/backup_${job.jobName}_${new Date().toISOString().replace(/[:.]/g, "-")}.sql.enc`;
+          const encResult = await encryptBackupFile(dump.filePath, dest, key);
+          encrypted = true;
+          filePath = dest;
+
+          // Ticket E0.1d — SHA-256 over the encrypted artifact exactly as it
+          // sits on disk, so verifyBackupChecksum() later detects at-rest
+          // corruption of the real file.
+          checksum = computeSha256(await fsp.readFile(dest));
+          const encStat = await fsp.stat(dest);
+          notes = `Backup saved to ${dest} (dump ${(sizeBytes / 1024 / 1024).toFixed(2)} MB, encrypted ${(encStat.size / 1024 / 1024).toFixed(2)} MB, ` +
+            `${encResult.format}, key=${encResult.keySource}, SHA-256: ${checksum}). ` +
+            `Restore with: scripts/synology-restore.sh, or the Backup & Replication page.`;
+        } finally {
+          // The unencrypted intermediate dump must not linger on disk.
+          await fsp.unlink(dump.filePath).catch(() => {});
+        }
       } else {
-        notes = `${job.backupType} backup type not yet implemented in scheduler.`;
+        // Never record an unimplemented type as a completed backup.
+        throw new Error(
+          `Backup type "${job.backupType}" is not implemented in the scheduler — no backup was produced. ` +
+          "Use DB, FULL or CONFIG for scheduled jobs.",
+        );
       }
 
       // Retention cleanup: purge old backups from destination path
@@ -356,7 +381,7 @@ export async function fireScheduledBackups() {
         sizeBytes,
         filePath,
         notes,
-        encrypted: true,
+        encrypted,
         checksum,
       }).where(eq(backupJobLogsTable.id, logRow?.id ?? 0));
 

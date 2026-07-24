@@ -13,7 +13,8 @@ import JSZip from "jszip";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
 import { auditFromRequest } from "../lib/audit";
 import { logger } from "../lib/logger";
-import { resolveBackupDataFolders } from "../lib/backupHealth";
+import { resolveBackupDataFolders, resolveDataDir } from "../lib/backupHealth";
+import { decryptBackupToSql } from "../lib/backupCrypto";
 
 export const backupReplicationRouter = Router();
 
@@ -22,6 +23,10 @@ const streamPipeline = promisify(pipeline);
 // Temporary storage for backup exports
 const TEMP_BACKUP_DIR = process.env["BACKUP_TEMP_DIR"] ?? "/tmp/care-diagnostics-backups";
 const OLD_FILE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// Config-only backup scope. Exported so the scheduler (cron.ts) and the manual
+// "Run now" path cannot drift to different table lists for the same job type.
+export const CONFIG_BACKUP_TABLES = ["clinic_settings", "email_settings", "printer_settings", "pacs_settings"];
 
 // Protected files that should never be overwritten during import
 const PROTECTED_FILES = new Set([
@@ -219,6 +224,12 @@ export async function exportDatabaseSqlFallback(
     lines.push("-- Care Diagnostics Database Export");
     lines.push(`-- Generated: ${new Date().toISOString()}`);
     lines.push(`-- Format: PostgreSQL 16 compatible`);
+    lines.push("--");
+    lines.push("-- WARNING: DATA ONLY — this fallback exporter emits TRUNCATE + INSERT and");
+    lines.push("-- does NOT contain CREATE TABLE/INDEX statements. It can only be restored");
+    lines.push("-- into a database whose schema already exists (run migrations first).");
+    lines.push("-- It is used only when the pg_dump binary is unavailable; a pg_dump");
+    lines.push("-- artifact is schema-complete and is always preferred for disaster recovery.");
     lines.push("");
     lines.push("BEGIN;");
     lines.push("");
@@ -237,12 +248,19 @@ export async function exportDatabaseSqlFallback(
       // Truncate before insert (clean restore)
       lines.push(`TRUNCATE TABLE "${table}" CASCADE;`);
 
-      // Fetch data in batches
+      // Fetch data in batches.
+      //
+      // ORDER BY ctid is REQUIRED, not cosmetic: LIMIT/OFFSET without an ORDER
+      // BY has no defined row order in Postgres, so successive pages could
+      // silently skip rows (data missing from the backup) or repeat them
+      // (duplicate-key failures on restore). ctid is the physical row location
+      // — always present, no dependency on a primary key existing, and stable
+      // for the duration of this read.
       const batchSize = 500;
       let offset = 0;
       let rows: unknown[] = [];
       do {
-        const dataRes = await client.query(`SELECT * FROM "${table}" LIMIT ${batchSize} OFFSET ${offset}`);
+        const dataRes = await client.query(`SELECT * FROM "${table}" ORDER BY ctid LIMIT ${batchSize} OFFSET ${offset}`);
         rows = dataRes.rows;
         for (const row of rows) {
           if (!row || typeof row !== "object") continue;
@@ -304,6 +322,97 @@ export async function verifyBackupChecksum(filePath: string, expectedChecksumHex
   } catch {
     return false;
   }
+}
+
+/**
+ * Map a zip entry back to the exact file it came from.
+ *
+ * exportFilesZip() writes entries as "<label>/<nested>/<path>", where <label> is
+ * one of resolveBackupDataFolders()'s labels (uploads, reports, object-storage,
+ * attached_assets), each of which is a DIFFERENT root under CARE_DATA_DIR.
+ *
+ * The import path used to do `path.basename(name)` and write everything into a
+ * single hardcoded, CWD-relative "artifacts/api-server/data/uploads". That was
+ * wrong three ways at once, and silently:
+ *   1. It flattened the tree — "uploads/2026/07/scan.pdf" became "scan.pdf", so
+ *      every DB row pointing at the original relative path broke after a restore.
+ *   2. It merged four separate roots into one, so two files legitimately named
+ *      report.pdf in different folders overwrote each other while BOTH were
+ *      counted in filesRestored — data loss reported as success.
+ *   3. It ignored CARE_DATA_DIR, so in Docker the files landed in
+ *      /app/artifacts/... instead of the mounted /app/data volume — i.e. outside
+ *      persistent storage and where nothing reads them.
+ *
+ * Returns null for an entry that must be skipped (traversal attempt). Using
+ * basename() did incidentally prevent zip-slip, so the structural fix has to
+ * re-establish that guarantee explicitly: the resolved path must stay inside its
+ * root.
+ */
+export function resolveRestoreTarget(
+  entryName: string,
+  env: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd(),
+): { targetPath: string; label: string; relativePath: string } | null {
+  const normalized = entryName.replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!normalized || normalized.endsWith("/")) return null;
+  const segments = normalized.split("/").filter((s) => s.length > 0);
+  if (segments.length === 0) return null;
+  // Reject traversal outright rather than trying to sanitize it away.
+  if (segments.some((s) => s === "." || s === "..")) return null;
+
+  const folders = resolveBackupDataFolders(env, cwd);
+  const matched = folders.find((f) => f.label === segments[0]);
+  // A labelled entry keeps its remaining path inside that root. An unlabelled
+  // entry (a hand-made or pre-label zip) goes to the uploads root, structure
+  // intact, instead of being flattened.
+  const root = matched ? matched.path : path.join(resolveDataDir(env, cwd), "uploads");
+  const label = matched ? matched.label : "uploads";
+  const rest = matched ? segments.slice(1) : segments;
+  if (rest.length === 0) return null;
+
+  const relativePath = rest.join("/");
+  const targetPath = path.resolve(root, ...rest);
+  // Belt-and-braces: even after the ".." check, confirm containment.
+  const rootResolved = path.resolve(root);
+  if (targetPath !== rootResolved && !targetPath.startsWith(rootResolved + path.sep)) return null;
+
+  return { targetPath, label, relativePath };
+}
+
+/**
+ * Restore every file entry in a zip to its correct root, preserving structure.
+ * Shared by /import-files and /import-snapshot so the two cannot drift.
+ */
+async function restoreFilesFromZip(zip: JSZip): Promise<{
+  filesRestored: number; skippedProtected: string[]; skippedUnsafe: string[]; byLabel: Record<string, number>;
+}> {
+  let filesRestored = 0;
+  const skippedProtected: string[] = [];
+  const skippedUnsafe: string[] = [];
+  const byLabel: Record<string, number> = {};
+
+  for (const [name, entry] of Object.entries(zip.files)) {
+    if (entry.dir) continue;
+    if (PROTECTED_FILES.has(path.basename(name).toLowerCase())) {
+      skippedProtected.push(name);
+      logger.info({ file: name }, "Skipping protected file during import");
+      continue;
+    }
+    const target = resolveRestoreTarget(name);
+    if (!target) {
+      skippedUnsafe.push(name);
+      logger.warn({ file: name }, "Skipping unsafe/unmappable zip entry during import");
+      continue;
+    }
+    const parent = path.dirname(target.targetPath);
+    if (!existsSync(parent)) mkdirSync(parent, { recursive: true });
+    const fileData = await entry.async("nodebuffer");
+    await fs.writeFile(target.targetPath, fileData);
+    filesRestored++;
+    byLabel[target.label] = (byLabel[target.label] ?? 0) + 1;
+  }
+
+  return { filesRestored, skippedProtected, skippedUnsafe, byLabel };
 }
 
 async function exportFilesZip(): Promise<{ filePath: string; sizeBytes: number; includedFolders: string[]; missingFolders: string[]; fileCount: number }> {
@@ -400,20 +509,41 @@ async function exportFullSnapshot(): Promise<{ filePath: string; sizeBytes: numb
   return { filePath, sizeBytes: buffer.length, metadata };
 }
 
-async function restoreDatabaseFromSql(filePath: string): Promise<{ rowCount: number | null; message: string }> {
+/**
+ * Restore a backup artifact into the live database.
+ *
+ * Decrypts FIRST. This function used to hand `filePath` straight to
+ * `psql --file`, so every encrypted backup the scheduler produced (.sql.enc)
+ * failed here with a SQL syntax error on its own ciphertext — the scheduled
+ * backups were effectively unrestorable. decryptBackupToSql() now normalizes
+ * openssl-encrypted, legacy-envelope and plaintext dumps to plaintext SQL
+ * before psql sees them, and the temp plaintext is always removed afterwards
+ * (a decrypted clinical database must not linger on disk).
+ */
+async function restoreDatabaseFromSql(filePath: string): Promise<{ rowCount: number | null; message: string; cipherFormat: string }> {
   const creds = parseDatabaseUrl();
   if (!creds) throw new Error("DATABASE_URL not configured");
 
+  const decrypted = await decryptBackupToSql(filePath, ensureBackupDir());
+  const sqlPath = decrypted.sqlPath;
+  const cleanup = async () => {
+    if (decrypted.producedTempFile) await fs.unlink(sqlPath).catch(() => {});
+  };
+
   const env = { ...process.env, PGPASSWORD: creds.password };
 
-  return new Promise((resolve, reject) => {
+  try {
+    return await new Promise<{ rowCount: number | null; message: string; cipherFormat: string }>((resolve, reject) => {
     const psql = spawn("psql", [
       "--host", creds.host,
       "--port", creds.port,
       "--username", creds.username,
       "--dbname", creds.database,
-      "--file", filePath,
+      "--file", sqlPath,
       "--single-transaction",
+      // Without this psql reports exit 0 even when individual statements fail,
+      // which would report a half-applied restore as a success.
+      "--set", "ON_ERROR_STOP=1",
     ], { env, stdio: ["ignore", "pipe", "pipe"] });
 
     let errorOutput = "";
@@ -424,12 +554,19 @@ async function restoreDatabaseFromSql(filePath: string): Promise<{ rowCount: num
     psql.on("error", (err) => reject(new Error(`psql failed to start: ${err.message}`)));
     psql.on("close", (code) => {
       if (code === 0) {
-        resolve({ rowCount: null, message: "Database restored successfully" });
+        resolve({
+          rowCount: null,
+          message: `Database restored successfully (source: ${decrypted.format})`,
+          cipherFormat: decrypted.format,
+        });
       } else {
         reject(new Error(`psql exited with code ${code}: ${errorOutput}`));
       }
     });
-  });
+    });
+  } finally {
+    await cleanup();
+  }
 }
 
 // ─── GET /api/admin/backup-replication/jobs ───────────────────────────────────
@@ -569,10 +706,24 @@ backupReplicationRouter.post("/jobs/:id/run", requireAdmin as any, async (req, r
         sizeBytes = result.sizeBytes;
         notes = `Files ZIP exported: ${path.basename(result.filePath)} (${(result.sizeBytes / 1024 / 1024).toFixed(2)} MB). Folders: ${result.includedFolders.join(", ")}`;
       } else if (job.backupType === "CONFIG") {
-        notes = "Config backup: master data tables exported via existing /api/backup/run endpoint.";
-        rowCount = 0;
+        // Previously this recorded SUCCESS with notes claiming the tables were
+        // "exported via existing /api/backup/run endpoint" while exporting
+        // NOTHING — filePath null, sizeBytes 0, green in the UI, zero bytes on
+        // disk. It now performs the real scoped dump (same table list the
+        // scheduler uses) so a CONFIG job produces a restorable artifact.
+        const result = await exportDatabaseSql(CONFIG_BACKUP_TABLES);
+        filePath = result.filePath;
+        sizeBytes = result.sizeBytes;
+        notes = `Config tables exported: ${path.basename(result.filePath)} (${(result.sizeBytes / 1024).toFixed(1)} KB). Tables: ${CONFIG_BACKUP_TABLES.join(", ")}`;
       } else {
-        notes = `${job.backupType} backup completed (placeholder).`;
+        // Never record an unimplemented backup type as a completed backup. A
+        // green "success" row with no file is the single most dangerous thing a
+        // backup system can report — throwing puts it in the catch block below,
+        // where it is recorded as failed with an actionable message.
+        throw new Error(
+          `Backup type "${job.backupType}" is not implemented — no backup was produced. ` +
+          "Use DB, FULL, CONFIG, REPORTS or DICOM_METADATA.",
+        );
       }
 
       await db.update(backupJobLogsTable).set({
@@ -764,6 +915,61 @@ backupReplicationRouter.get("/download", requireAdmin as any, async (req, res): 
   createReadStream(filePath).pipe(res);
 });
 
+// ─── GET /api/admin/backup-replication/files ──────────────────────────────────
+// Backup artifacts already present ON THE SERVER, so a restore does not have to
+// go through the browser upload path.
+//
+// This exists because /upload receives the whole file base64-encoded inside a
+// JSON body, and app.ts caps express.json() at 5mb — with base64's ~33% overhead
+// that is a hard ceiling of roughly 3.6 MB, far below any real clinic dump. The
+// restore buttons were therefore unusable for exactly the backups that matter.
+// Scheduled jobs already write to their destinationPath (typically a NAS mount),
+// and manual exports stay in the temp backup dir, so in practice the file the
+// admin needs to restore is already reachable by the server.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+backupReplicationRouter.get("/files", requireAdmin as any, async (_req, res): Promise<void> => {
+  const dirs = new Set<string>([ensureBackupDir()]);
+  try {
+    const jobs = await db.select().from(backupJobsTable);
+    for (const j of jobs) {
+      if (j.destinationPath && j.destinationPath.trim()) dirs.add(j.destinationPath.trim());
+    }
+  } catch (err) {
+    logger.warn({ err }, "Could not read backup jobs while listing server-side backups");
+  }
+
+  const BACKUP_EXT = /\.(sql|zip|enc|gz)$/i;
+  const files: Array<{ filePath: string; fileName: string; directory: string; sizeBytes: number; modifiedAt: string; encrypted: boolean }> = [];
+  for (const dir of dirs) {
+    if (!existsSync(dir)) continue;
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch (err) {
+      logger.warn({ err, dir }, "Could not list backup directory");
+      continue;
+    }
+    for (const name of entries) {
+      if (!BACKUP_EXT.test(name)) continue;
+      const full = path.join(dir, name);
+      try {
+        const st = statSync(full);
+        if (!st.isFile()) continue;
+        files.push({
+          filePath: full,
+          fileName: name,
+          directory: dir,
+          sizeBytes: st.size,
+          modifiedAt: st.mtime.toISOString(),
+          encrypted: /\.enc$/i.test(name),
+        });
+      } catch { /* unreadable entry — skip */ }
+    }
+  }
+  files.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+  res.json({ files, directories: [...dirs] });
+});
+
 // ─── POST /api/admin/backup-replication/import-db ────────────────────────────
 // Import database from SQL file. Requires confirm=true and creates pre-restore backup.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -881,24 +1087,15 @@ backupReplicationRouter.post("/import-snapshot", requireAdmin as any, async (req
     // Extract uploads.zip if present
     const uploadsEntry = zip.file("uploads.zip");
     let filesRestored = 0;
+    let fileNotes = "";
     if (uploadsEntry) {
       const uploadsData = await uploadsEntry.async("nodebuffer");
       const uploadsZip = await JSZip.loadAsync(uploadsData);
-      for (const [name, entry] of Object.entries(uploadsZip.files)) {
-        if (entry.dir) continue;
-        const baseName = path.basename(name);
-        if (PROTECTED_FILES.has(baseName.toLowerCase())) {
-          logger.info({ file: name }, "Skipping protected file during import");
-          continue;
-        }
-        // Map to local folder
-        const targetPath = path.resolve("artifacts/api-server/data/uploads", baseName);
-        const parent = path.dirname(targetPath);
-        if (!existsSync(parent)) mkdirSync(parent, { recursive: true });
-        const fileData = await entry.async("nodebuffer");
-        await fs.writeFile(targetPath, fileData);
-        filesRestored++;
-      }
+      const restored = await restoreFilesFromZip(uploadsZip);
+      filesRestored = restored.filesRestored;
+      fileNotes = ` Files by folder: ${JSON.stringify(restored.byLabel)}.` +
+        (restored.skippedProtected.length ? ` Skipped ${restored.skippedProtected.length} protected.` : "") +
+        (restored.skippedUnsafe.length ? ` Skipped ${restored.skippedUnsafe.length} unsafe entries.` : "");
     }
 
     await auditFromRequest(sReq, {
@@ -909,10 +1106,10 @@ backupReplicationRouter.post("/import-snapshot", requireAdmin as any, async (req
       module: "backups",
       entityType: "backup_file",
       entityId: path.basename(uploadedFilePath),
-      reason: `Snapshot restored. DB + ${filesRestored} files. Pre-backup: ${preBackupFile ? path.basename(preBackupFile) : "failed"}`,
+      reason: `Snapshot restored. DB + ${filesRestored} files.${fileNotes} Pre-backup: ${preBackupFile ? path.basename(preBackupFile) : "failed"}`,
     });
 
-    res.json({ ok: true, message: "Snapshot restored", filesRestored, preBackupFile: preBackupFile ? path.basename(preBackupFile) : null });
+    res.json({ ok: true, message: "Snapshot restored", filesRestored, notes: fileNotes.trim() || undefined, preBackupFile: preBackupFile ? path.basename(preBackupFile) : null });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : "Import failed";
     logger.error({ err }, "Snapshot import failed");
@@ -948,21 +1145,8 @@ backupReplicationRouter.post("/import-files", requireAdmin as any, async (req, r
     const data = await fs.readFile(uploadedFilePath);
     const zip = await JSZip.loadAsync(data);
 
-    let filesRestored = 0;
-    for (const [name, entry] of Object.entries(zip.files)) {
-      if (entry.dir) continue;
-      const baseName = path.basename(name);
-      if (PROTECTED_FILES.has(baseName.toLowerCase())) {
-        logger.info({ file: name }, "Skipping protected file during import");
-        continue;
-      }
-      const targetPath = path.resolve("artifacts/api-server/data/uploads", baseName);
-      const parent = path.dirname(targetPath);
-      if (!existsSync(parent)) mkdirSync(parent, { recursive: true });
-      const fileData = await entry.async("nodebuffer");
-      await fs.writeFile(targetPath, fileData);
-      filesRestored++;
-    }
+    const restored = await restoreFilesFromZip(zip);
+    const filesRestored = restored.filesRestored;
 
     await auditFromRequest(sReq, {
       userId: sReq.staffSession?.subjectId ?? null,
@@ -972,10 +1156,18 @@ backupReplicationRouter.post("/import-files", requireAdmin as any, async (req, r
       module: "backups",
       entityType: "backup_file",
       entityId: path.basename(uploadedFilePath),
-      reason: `Files imported: ${filesRestored} files restored`,
+      reason: `Files imported: ${filesRestored} restored by folder ${JSON.stringify(restored.byLabel)}` +
+        (restored.skippedProtected.length ? `; ${restored.skippedProtected.length} protected skipped` : "") +
+        (restored.skippedUnsafe.length ? `; ${restored.skippedUnsafe.length} unsafe skipped` : ""),
     });
 
-    res.json({ ok: true, filesRestored });
+    res.json({
+      ok: true,
+      filesRestored,
+      byFolder: restored.byLabel,
+      skippedProtected: restored.skippedProtected.length,
+      skippedUnsafe: restored.skippedUnsafe.length,
+    });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : "Import failed";
     logger.error({ err }, "Files import failed");
