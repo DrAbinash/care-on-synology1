@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import {
-  ArrowLeft, Printer, Stethoscope, Users, FileText, IndianRupee, TrendingUp, Download, FileSpreadsheet, Percent,
+  ArrowLeft, Printer, Stethoscope, Users, FileText, IndianRupee, TrendingUp, Download, FileSpreadsheet, Percent, Clock,
 } from "lucide-react";
 import { saAuthHeaders } from "@/lib/saApi";
 import { exportCommissionPdf } from "@/lib/exportCommissionPdf";
@@ -36,6 +36,9 @@ type PatientRow = {
   // Bill-level discount (repeated on each test row of the same bill)
   billDiscount: number;
   billSubtotal: number;
+  // Payment-aware eligibility (repeated on each test row of the order)
+  held: boolean;
+  holdReason: string | null;
   ruleType: string;
   ruleValue: number;
   ruleName: string;
@@ -46,7 +49,9 @@ type DiscountFmt = "fixed" | "percent";
 type DoctorEntry = {
   doctor: { id: number; name: string; specialization: string | null };
   rows: PatientRow[];
-  totalCommission: number;            // actual
+  totalCommission: number;            // actual (all)
+  payableCommission: number;          // eligible now
+  heldCommission: number;             // on hold
   totalExpectedCommission: number;    // expected (pre-discount)
   totalDiscount: number;              // expected − actual (referral discount given up)
   totalRevenue: number;
@@ -56,7 +61,7 @@ type DoctorEntry = {
 
 type ReportData = {
   report: DoctorEntry[];
-  grandTotal: { doctors: number; orders: number; revenue: number; commission: number; expectedCommission: number; discount: number };
+  grandTotal: { doctors: number; orders: number; revenue: number; commission: number; payableCommission: number; heldCommission: number; expectedCommission: number; discount: number };
 };
 
 type ReportMode = "by-doctor" | "test-summary" | "consolidated";
@@ -356,7 +361,7 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
   }, [error, toast]);
 
   const report = data?.report ?? [];
-  const grandTotal = data?.grandTotal ?? { doctors: 0, orders: 0, revenue: 0, commission: 0, expectedCommission: 0, discount: 0 };
+  const grandTotal = data?.grandTotal ?? { doctors: 0, orders: 0, revenue: 0, commission: 0, payableCommission: 0, heldCommission: 0, expectedCommission: 0, discount: 0 };
 
   const handlePrint = () => {
     const doctorLabel = doctorId
@@ -659,20 +664,25 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
 
         {/* Summary tiles */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {(showBreakdown
-            ? [
-                { label: "Total Visits",        value: String(grandTotal.orders),          icon: <Users size={16} />,       amber: false },
-                { label: "Expected Commission", value: inr(grandTotal.expectedCommission), icon: <TrendingUp size={16} />,  amber: false },
-                { label: "Discount Given",      value: inr(grandTotal.discount),           icon: <Percent size={16} />,     amber: false },
-                { label: "Actual Commission",   value: inr(grandTotal.commission),         icon: <IndianRupee size={16} />, amber: true },
-              ]
-            : [
-                { label: "Doctors with Referrals", value: String(grandTotal.doctors), icon: <Stethoscope size={16} />, amber: false },
-                { label: "Total Visits",           value: String(grandTotal.orders),  icon: <Users size={16} />,       amber: false },
-                { label: "Total Revenue",          value: inr(grandTotal.revenue),    icon: <TrendingUp size={16} />,  amber: false },
-                { label: "Commission Payable",     value: inr(grandTotal.commission), icon: <IndianRupee size={16} />, amber: true },
-              ]
-          ).map(c => (
+          {(() => {
+            const base = showBreakdown
+              ? [
+                  { label: "Total Visits",        value: String(grandTotal.orders),          icon: <Users size={16} />,       amber: false },
+                  { label: "Expected Commission", value: inr(grandTotal.expectedCommission), icon: <TrendingUp size={16} />,  amber: false },
+                  { label: "Discount Given",      value: inr(grandTotal.discount),           icon: <Percent size={16} />,     amber: false },
+                  { label: "Payable (Actual)",    value: inr(grandTotal.payableCommission),  icon: <IndianRupee size={16} />, amber: true },
+                ]
+              : [
+                  { label: "Doctors with Referrals", value: String(grandTotal.doctors),        icon: <Stethoscope size={16} />, amber: false },
+                  { label: "Total Visits",           value: String(grandTotal.orders),         icon: <Users size={16} />,       amber: false },
+                  { label: "Total Revenue",          value: inr(grandTotal.revenue),           icon: <TrendingUp size={16} />,  amber: false },
+                  { label: "Commission Payable",     value: inr(grandTotal.payableCommission), icon: <IndianRupee size={16} />, amber: true },
+                ];
+            if (grandTotal.heldCommission > 0.005) {
+              base.push({ label: "On Hold (not payable)", value: inr(grandTotal.heldCommission), icon: <Clock size={16} />, amber: false });
+            }
+            return base;
+          })().map(c => (
             <div key={c.label} className="bg-card border border-border rounded-xl p-4">
               <div className="flex items-center gap-2 mb-1">
                 <span className={c.amber ? "text-amber-600" : "text-muted-foreground"}>{c.icon}</span>
@@ -828,7 +838,12 @@ function DoctorBlock({
                 )}
                 {cols.billAmount && <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{inr(row.price)}</td>}
                 {cols.discount && <td className="px-4 py-2.5 text-center tabular-nums text-muted-foreground">{row.billDiscount > 0 ? fmtDiscount(discountFmt, row.billDiscount, row.billSubtotal) : "—"}</td>}
-                <td className="px-4 py-2.5 text-right font-semibold text-amber-700 tabular-nums">{inr(row.commission)}</td>
+                <td className={`px-4 py-2.5 text-right font-semibold tabular-nums ${row.held ? "text-muted-foreground" : "text-amber-700"}`}>
+                  {inr(row.commission)}
+                  {row.held && (
+                    <span className="block text-[10px] font-normal text-rose-500 leading-tight whitespace-nowrap">⏸ {row.holdReason ?? "On hold"}</span>
+                  )}
+                </td>
               </tr>
             ))}
             {/* Doctor total row */}

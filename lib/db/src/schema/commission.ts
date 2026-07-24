@@ -20,3 +20,23 @@ export const commissionRulesTable = pgTable("commission_rules", {
 export const insertCommissionRuleSchema = createInsertSchema(commissionRulesTable).omit({ id: true, createdAt: true });
 export type CommissionRule = typeof commissionRulesTable.$inferSelect;
 export type InsertCommissionRule = z.infer<typeof insertCommissionRuleSchema>;
+
+// ── Commission eligibility / hold audit trail ─────────────────────────────────
+// One row per status transition of an order's referral commission under the
+// clinic's commission_eligibility_policy: "on_hold" ⇄ "eligible". Written by the
+// reconcile cron (and never mutated) so there is a complete, append-only history
+// of when each commission was held and released, and why.
+export const commissionStatusEventsTable = pgTable("commission_status_events", {
+  id: serial("id").primaryKey(),
+  orderId: integer("order_id").notNull(),
+  doctorId: integer("doctor_id").notNull(),
+  billId: integer("bill_id"),
+  commissionAmount: numeric("commission_amount", { precision: 10, scale: 2 }).notNull().default("0"),
+  oldStatus: text("old_status"),                 // null on the first observation
+  newStatus: text("new_status").notNull(),        // 'on_hold' | 'eligible'
+  policy: text("policy").notNull(),               // policy in force at the transition
+  reason: text("reason"),                          // e.g. "Outstanding dues ₹700"
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type CommissionStatusEvent = typeof commissionStatusEventsTable.$inferSelect;

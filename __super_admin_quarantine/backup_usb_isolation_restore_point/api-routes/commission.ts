@@ -10,6 +10,8 @@ import {
   billsTable,
   patientsTable,
   testTokensTable,
+  patientReportsTable,
+  radiologyStudiesTable,
 } from "@workspace/db/schema";
 import { eq, desc, and, gte, lte, inArray, ne, sql } from "drizzle-orm";
 import {
@@ -423,6 +425,85 @@ function applyDiscountDeduction(
   return { net: rawCommission, deducted: 0 };
 }
 
+// ── Commission eligibility (payment / report-aware hold) ──────────────────────
+// Decides whether an order's commission is payable yet or held. Mirrors
+// doctor-ledger.ts. Cancelled bill → never payable.
+type EligibilityConfig = { policy: string; minAmount: number };
+const NEEDS_REPORT_STATUS = (policy: string) => policy === "report_finalized" || policy === "report_delivered";
+
+function computeCommissionHold(opts: {
+  cfg: EligibilityConfig;
+  hasBill: boolean;
+  billStatus: string | null;
+  paidAmount: number;
+  balanceAmount: number;
+  reportFinalized: boolean;
+  reportDelivered: boolean;
+  commissionAmount: number;
+}): { held: boolean; reason: string | null } {
+  const rs = (n: number) => `Rs.${Math.round(n).toLocaleString("en-IN")}`;
+  if (opts.billStatus === "cancelled") return { held: true, reason: "Bill cancelled" };
+  if (!opts.hasBill) return { held: true, reason: "Not billed" };
+  switch (opts.cfg.policy) {
+    case "report_finalized":
+      return opts.reportFinalized ? { held: false, reason: null } : { held: true, reason: "Report not finalized" };
+    case "report_delivered":
+      return opts.reportDelivered ? { held: false, reason: null } : { held: true, reason: "Report not delivered" };
+    case "min_amount_collected":
+      return opts.paidAmount + 0.005 >= opts.cfg.minAmount
+        ? { held: false, reason: null }
+        : { held: true, reason: `Collected ${rs(opts.paidAmount)} < min ${rs(opts.cfg.minAmount)}` };
+    case "full_payment_collected":
+      return opts.balanceAmount <= 0.005
+        ? { held: false, reason: null }
+        : { held: true, reason: `Outstanding dues ${rs(opts.balanceAmount)}` };
+    case "collected_ge_commission":
+      return opts.paidAmount + 0.005 >= opts.commissionAmount
+        ? { held: false, reason: null }
+        : { held: true, reason: `Collected ${rs(opts.paidAmount)} < commission ${rs(opts.commissionAmount)}` };
+    case "bill_created":
+    default:
+      return { held: false, reason: null };
+  }
+}
+
+// Per-order finalized/delivered flags (only for report_* policies): an order is
+// finalized/delivered only when every non-cancelled order-test has a
+// finalized/delivered report (pathology via patient_reports, radiology via
+// radiology_studies).
+async function fetchOrderReportStatus(
+  orderIds: number[],
+  activeOrderTestIdsByOrder: Map<number, number[]>,
+): Promise<Map<number, { finalized: boolean; delivered: boolean }>> {
+  const out = new Map<number, { finalized: boolean; delivered: boolean }>();
+  if (!orderIds.length) return out;
+  const [prs, rss] = await Promise.all([
+    db.select({ orderTestId: patientReportsTable.orderTestId, status: patientReportsTable.status })
+      .from(patientReportsTable).where(inArray(patientReportsTable.orderId, orderIds)),
+    db.select({ orderTestId: radiologyStudiesTable.orderTestId, status: radiologyStudiesTable.status })
+      .from(radiologyStudiesTable).where(inArray(radiologyStudiesTable.orderId, orderIds)),
+  ]);
+  const testFinal = new Set<number>();
+  const testDeliv = new Set<number>();
+  for (const r of prs) {
+    if (r.orderTestId == null) continue;
+    if (r.status === "verified" || r.status === "delivered") testFinal.add(r.orderTestId);
+    if (r.status === "delivered") testDeliv.add(r.orderTestId);
+  }
+  for (const r of rss) {
+    if (r.orderTestId == null) continue;
+    if (r.status === "reported_final" || r.status === "delivered") testFinal.add(r.orderTestId);
+    if (r.status === "delivered") testDeliv.add(r.orderTestId);
+  }
+  for (const [orderId, otIds] of activeOrderTestIdsByOrder) {
+    out.set(orderId, {
+      finalized: otIds.length > 0 && otIds.every(id => testFinal.has(id)),
+      delivered: otIds.length > 0 && otIds.every(id => testDeliv.has(id)),
+    });
+  }
+  return out;
+}
+
 // Commission payout report (consolidated — for backwards compat)
 router.get("/report", async (req, res) => {
   const { from, to, doctorId } = req.query as Record<string, string>;
@@ -705,10 +786,16 @@ router.get("/report-by-patient", async (req, res) => {
     .select({
       commissionDiscountMode: clinicSettingsTable.commissionDiscountMode,
       vipPercentage: clinicSettingsTable.vipPercentage,
+      commissionEligibilityPolicy: clinicSettingsTable.commissionEligibilityPolicy,
+      commissionEligibilityMinAmount: clinicSettingsTable.commissionEligibilityMinAmount,
     })
     .from(clinicSettingsTable).limit(1);
   const commissionDiscountMode = clinicRow?.commissionDiscountMode ?? "none";
   const vipPct = clinicRow?.vipPercentage ? Number(clinicRow.vipPercentage) : 50.00;
+  const eligCfg: EligibilityConfig = {
+    policy: clinicRow?.commissionEligibilityPolicy ?? "full_payment_collected",
+    minAmount: Number(clinicRow?.commissionEligibilityMinAmount ?? 0),
+  };
 
   const doctors = await db.select().from(doctorsTable);
   const allRules = await db.select().from(commissionRulesTable);
@@ -743,13 +830,13 @@ router.get("/report-by-patient", async (req, res) => {
 
   const billsForOrders = orderIds.length
     ? await db
-        .select({ orderId: billsTable.orderId, billNumber: billsTable.billNumber, discount: billsTable.discount, subtotal: billsTable.subtotal })
+        .select({ orderId: billsTable.orderId, billNumber: billsTable.billNumber, discount: billsTable.discount, subtotal: billsTable.subtotal, status: billsTable.status, paidAmount: billsTable.paidAmount, balanceAmount: billsTable.balanceAmount })
         .from(billsTable).where(inArray(billsTable.orderId, orderIds))
     : [];
 
-  const billByOrderId = new Map<number, { billNumber: string; discount: number; subtotal: number }>();
+  const billByOrderId = new Map<number, { billNumber: string; discount: number; subtotal: number; status: string | null; paid: number; balance: number }>();
   for (const b of billsForOrders) {
-    if (b.orderId != null) billByOrderId.set(b.orderId, { billNumber: b.billNumber, discount: Number(b.discount ?? 0), subtotal: Number(b.subtotal ?? 0) });
+    if (b.orderId != null) billByOrderId.set(b.orderId, { billNumber: b.billNumber, discount: Number(b.discount ?? 0), subtotal: Number(b.subtotal ?? 0), status: b.status ?? null, paid: Number(b.paidAmount ?? 0), balance: Number(b.balanceAmount ?? 0) });
   }
 
   const tokens = orderIds.length
@@ -758,6 +845,18 @@ router.get("/report-by-patient", async (req, res) => {
         .where(and(inArray(testTokensTable.orderId, orderIds), sql`${testTokensTable.priority} > 0`))
     : [];
   const vipOrderTestIds = new Set(tokens.map(t => t.orderTestId).filter(Boolean) as number[]);
+
+  // Report finalized/delivered per order — only fetched for the report_* policies.
+  let reportStatusByOrder = new Map<number, { finalized: boolean; delivered: boolean }>();
+  if (NEEDS_REPORT_STATUS(eligCfg.policy)) {
+    const activeOrderTestIdsByOrder = new Map<number, number[]>();
+    for (const ot of orderTests) {
+      const arr = activeOrderTestIdsByOrder.get(ot.orderId) ?? [];
+      arr.push(ot.id);
+      activeOrderTestIdsByOrder.set(ot.orderId, arr);
+    }
+    reportStatusByOrder = await fetchOrderReportStatus(orderIds, activeOrderTestIdsByOrder);
+  }
 
   const filteredDoctors = doctors.filter(d => !doctorId || d.id === Number(doctorId));
 
@@ -783,6 +882,10 @@ router.get("/report-by-patient", async (req, res) => {
     // the selectable Bill-Discount column shown as ₹ or % of subtotal.
     billDiscount: number;
     billSubtotal: number;
+    // Payment-aware eligibility: whether this order's commission is on hold
+    // (excluded from payable) and why (repeated on each test row of the order).
+    held: boolean;
+    holdReason: string | null;
     ruleType: string;
     ruleValue: number;
     ruleName: string;
@@ -792,14 +895,26 @@ router.get("/report-by-patient", async (req, res) => {
     const doctorOrders = ordersWithPatients.filter(o => o.doctorId === doctor.id);
     const rules = allRules.filter(r => r.doctorId === doctor.id);
 
-    // Build per-order discount-adjusted commission ratio
+    // Build per-order discount-adjusted commission ratio + eligibility hold
     const orderAdjustRatio = new Map<number, number>();
+    const orderHold = new Map<number, { held: boolean; reason: string | null }>();
     for (const order of doctorOrders) {
       const ots = orderTests.filter(ot => ot.orderId === order.orderId);
       const rawOrderComm = ots.reduce((s, ot) => s + calcTestCommission(ot, testMap.get(ot.testId), rules, doctor, vipOrderTestIds, vipPct).commission, 0);
-      const billDiscount = billByOrderId.get(order.orderId)?.discount ?? 0;
-      const { net } = applyDiscountDeduction(rawOrderComm, billDiscount, commissionDiscountMode);
+      const bill = billByOrderId.get(order.orderId);
+      const { net } = applyDiscountDeduction(rawOrderComm, bill?.discount ?? 0, commissionDiscountMode);
       orderAdjustRatio.set(order.orderId, rawOrderComm > 0 ? net / rawOrderComm : 1);
+      const rep = reportStatusByOrder.get(order.orderId);
+      orderHold.set(order.orderId, computeCommissionHold({
+        cfg: eligCfg,
+        hasBill: !!bill,
+        billStatus: bill?.status ?? null,
+        paidAmount: bill?.paid ?? 0,
+        balanceAmount: bill?.balance ?? 0,
+        reportFinalized: rep?.finalized ?? false,
+        reportDelivered: rep?.delivered ?? false,
+        commissionAmount: net,
+      }));
     }
 
     const rows: PatientRow[] = [];
@@ -829,6 +944,8 @@ router.get("/report-by-patient", async (req, res) => {
           grossCommission: rawComm,      // expected (before discount deduction)
           billDiscount: bill?.discount ?? 0,
           billSubtotal: bill?.subtotal ?? 0,
+          held: orderHold.get(order.orderId)?.held ?? false,
+          holdReason: orderHold.get(order.orderId)?.reason ?? null,
           ruleType,
           ruleValue,
           ruleName,
@@ -837,7 +954,9 @@ router.get("/report-by-patient", async (req, res) => {
     }
 
     rows.sort((a, b) => a.date.localeCompare(b.date));
-    const totalCommission = rows.reduce((s, r) => s + r.commission, 0);           // actual
+    const totalCommission = rows.reduce((s, r) => s + r.commission, 0);           // actual (all)
+    const payableCommission = rows.filter(r => !r.held).reduce((s, r) => s + r.commission, 0);  // eligible now
+    const heldCommission = rows.filter(r => r.held).reduce((s, r) => s + r.commission, 0);       // on hold
     const totalExpectedCommission = rows.reduce((s, r) => s + r.grossCommission, 0); // expected
     const totalRevenue = rows.reduce((s, r) => s + r.price, 0);
     const uniqueOrders = new Set(rows.map(r => r.orderId)).size;
@@ -846,6 +965,8 @@ router.get("/report-by-patient", async (req, res) => {
       doctor: { id: doctor.id, name: doctor.name, specialization: doctor.specialization },
       rows,
       totalCommission,
+      payableCommission,
+      heldCommission,
       totalExpectedCommission,
       totalDiscount: totalExpectedCommission - totalCommission,
       totalRevenue,
@@ -861,6 +982,8 @@ router.get("/report-by-patient", async (req, res) => {
       orders: result.reduce((s, d) => s + d.orderCount, 0),
       revenue: result.reduce((s, d) => s + d.totalRevenue, 0),
       commission: result.reduce((s, d) => s + d.totalCommission, 0),
+      payableCommission: result.reduce((s, d) => s + d.payableCommission, 0),
+      heldCommission: result.reduce((s, d) => s + d.heldCommission, 0),
       expectedCommission: result.reduce((s, d) => s + d.totalExpectedCommission, 0),
       discount: result.reduce((s, d) => s + d.totalDiscount, 0),
     },

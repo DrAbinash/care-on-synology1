@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   ArrowLeft, Search, RefreshCw, Download, IndianRupee, AlertCircle,
-  TrendingUp, Users, Wallet, Receipt, Trash2, Plus, X, BookOpen,
+  TrendingUp, Users, Wallet, Receipt, Trash2, Plus, X, BookOpen, Clock,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { saAuthHeaders } from "@/lib/saApi";
@@ -234,12 +234,13 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
         </div>
 
         {/* KPI strip */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
           <KpiCard icon={<Users size={16} />} label="Doctors" value={String(totals.doctors)} />
           <KpiCard icon={<TrendingUp size={16} />} label="Earned (window)" value={inr(totals.earnedWindow)} />
           <KpiCard icon={<Wallet size={16} />} label="Paid (window)" value={inr(totals.paidWindow)} />
           <KpiCard icon={<IndianRupee size={16} />} label="Due (window)" value={inr(totals.dueWindow)} tone={totals.dueWindow > 0 ? "warn" : "ok"} />
           <KpiCard icon={<AlertCircle size={16} />} label="Outstanding (lifetime)" value={inr(totals.outstanding)} tone={totals.outstanding > 0 ? "danger" : "ok"} />
+          <KpiCard icon={<Clock size={16} />} label="On Hold (window)" value={inr((totals as { heldWindow?: number }).heldWindow ?? 0)} />
         </div>
 
         {/* Filters */}
@@ -363,12 +364,35 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
             <div className="py-12 text-center text-muted-foreground">Loading ledger…</div>
           ) : !detail ? null : (
             <div className="space-y-4">
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                 <SummaryTile label="Earned (window)" value={inr(detail.summary.totalEarned)} />
                 <SummaryTile label="Paid (window)" value={inr(detail.summary.totalPaid)} tone="ok" />
                 <SummaryTile label="Due (window)" value={inr(detail.summary.dueWindow)} tone={detail.summary.dueWindow > 0 ? "warn" : "ok"} />
                 <SummaryTile label="Outstanding (life)" value={inr(detail.summary.outstanding)} tone={detail.summary.outstanding > 0 ? "danger" : "ok"} />
+                <SummaryTile label="On Hold (window)" value={inr((detail.summary as { totalHeld?: number }).totalHeld ?? 0)} />
               </div>
+
+              {(() => {
+                const heldOrders = (((detail as { earnedOrders?: ReadonlyArray<{ orderNumber: string; commission: number; held?: boolean; holdReason?: string | null }> }).earnedOrders) ?? []).filter(o => o.held);
+                if (heldOrders.length === 0) return null;
+                return (
+                  <div className="rounded-xl border border-rose-200 bg-rose-50/60 dark:bg-rose-950/20 dark:border-rose-900 p-3">
+                    <div className="flex items-center gap-1.5 mb-1.5 text-rose-700 dark:text-rose-400">
+                      <Clock size={14} />
+                      <p className="text-xs font-semibold">On Hold — not payable yet ({heldOrders.length} order{heldOrders.length === 1 ? "" : "s"})</p>
+                    </div>
+                    <div className="space-y-0.5 max-h-40 overflow-y-auto">
+                      {heldOrders.map((o) => (
+                        <div key={o.orderNumber} className="flex items-center justify-between gap-3 text-xs">
+                          <span className="font-mono text-muted-foreground truncate">{o.orderNumber}</span>
+                          <span className="text-rose-600 dark:text-rose-400 truncate flex-1">{o.holdReason ?? "On hold"}</span>
+                          <span className="font-mono tabular-nums">{inr(o.commission)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
 
               <div className="flex flex-wrap items-center gap-2">
                 <Button onClick={() => setPayDialogOpen(true)}>

@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/select";
 import { useForm } from "react-hook-form";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Plus, Trash2, Stethoscope, Star, Percent, Search, Download, Upload } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Stethoscope, Star, Percent, Search, Download, Upload, Clock } from "lucide-react";
 import {
   useListCommissionRules,
   useCreateCommissionRule,
@@ -47,6 +47,19 @@ const DISCOUNT_MODE_OPTIONS: { value: DiscountMode; label: string; description: 
   { value: "none", label: "No Deduction", description: "Bill discounts do not affect commission payouts (default behaviour)." },
   { value: "deduct", label: "Deduct from Commission", description: "Bill discount is subtracted from the doctor's commission. Commission is floored at \u20b90 — no negative payouts." },
   { value: "deduct_rollover", label: "Deduct with Rollover", description: "Bill discount is subtracted from commission. If discount exceeds commission the balance goes negative and is carried over (deducted from future payouts)." },
+];
+
+type EligibilityPolicy =
+  | "bill_created" | "report_finalized" | "report_delivered"
+  | "min_amount_collected" | "full_payment_collected" | "collected_ge_commission";
+
+const ELIGIBILITY_OPTIONS: { value: EligibilityPolicy; label: string; description: string; recommended?: boolean }[] = [
+  { value: "bill_created", label: "Bill Created", description: "Payable as soon as billed (legacy behaviour)." },
+  { value: "report_finalized", label: "Report Finalized", description: "Payable once every test's report is verified / finalized." },
+  { value: "report_delivered", label: "Report Delivered", description: "Payable once every test's report is delivered to the patient." },
+  { value: "min_amount_collected", label: "Minimum Amount Collected", description: "Payable once collections on the bill reach the minimum amount set below." },
+  { value: "full_payment_collected", label: "Full Payment Collected", description: "Payable only once the bill is fully paid (no outstanding dues).", recommended: true },
+  { value: "collected_ge_commission", label: "Collected ≥ Commission", description: "Payable once collections on the bill cover at least the commission amount." },
 ];
 
 function TestPicker({
@@ -148,30 +161,41 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
     queryFn: async () => {
       const res = await fetch("/api/super-admin/commission-settings", { headers: saAuthHeaders() });
       if (!res.ok) throw new Error("Failed to load commission settings");
-      return res.json() as Promise<{ commissionDiscountMode: DiscountMode }>;
+      return res.json() as Promise<{ commissionDiscountMode: DiscountMode; commissionEligibilityPolicy: EligibilityPolicy; commissionEligibilityMinAmount: number }>;
     },
   });
   const currentDiscountMode: DiscountMode = commissionSettingsData?.commissionDiscountMode ?? "none";
+  const currentEligibilityPolicy: EligibilityPolicy = commissionSettingsData?.commissionEligibilityPolicy ?? "full_payment_collected";
+  const currentEligibilityMinAmount: number = commissionSettingsData?.commissionEligibilityMinAmount ?? 0;
+  const [minAmountInput, setMinAmountInput] = useState<string>("");
+  useEffect(() => { setMinAmountInput(String(currentEligibilityMinAmount)); }, [currentEligibilityMinAmount]);
 
-  const saveDiscountMode = async (mode: DiscountMode) => {
+  const patchCommissionSettings = async (body: Record<string, unknown>, successMsg: string) => {
     setDiscountModeSaving(true);
     try {
       const res = await fetch("/api/super-admin/commission-settings", {
         method: "PATCH",
         headers: { ...saAuthHeaders(), "Content-Type": "application/json" },
-        body: JSON.stringify({ commissionDiscountMode: mode }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error((body as { error?: string }).error ?? "Failed to save");
+        const b = await res.json().catch(() => ({}));
+        throw new Error((b as { error?: string }).error ?? "Failed to save");
       }
       queryClient.invalidateQueries({ queryKey: SA_COMMISSION_SETTINGS_KEY });
-      toast({ title: "Commission discount setting saved" });
+      toast({ title: successMsg });
     } catch (e) {
       toast({ title: "Save failed", description: String(e), variant: "destructive" });
     } finally {
       setDiscountModeSaving(false);
     }
+  };
+  const saveDiscountMode = (mode: DiscountMode) => patchCommissionSettings({ commissionDiscountMode: mode }, "Commission discount setting saved");
+  const saveEligibilityPolicy = (policy: EligibilityPolicy) => patchCommissionSettings({ commissionEligibilityPolicy: policy }, "Commission eligibility policy saved");
+  const saveEligibilityMinAmount = () => {
+    const n = Number(minAmountInput);
+    if (!Number.isFinite(n) || n < 0) { toast({ title: "Enter a valid amount", variant: "destructive" }); return; }
+    patchCommissionSettings({ commissionEligibilityMinAmount: n }, "Minimum amount saved");
   };
 
   const { data: rulesData, queryKey: rulesQueryKey, error: rulesError } = useListCommissionRules(
@@ -389,6 +413,60 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
               );
             })}
           </div>
+        </div>
+
+        {/* Commission eligibility (payout hold) */}
+        <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center flex-shrink-0">
+              <Clock size={15} className="text-emerald-600" />
+            </div>
+            <div>
+              <p className="font-semibold text-sm leading-tight">Commission Eligibility (Payout Hold)</p>
+              <p className="text-xs text-muted-foreground">Decides when a calculated commission becomes payable. Until then it is held — kept out of Doctor Due — and auto-released once the condition is met. Cancelled bills are never payable.</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {ELIGIBILITY_OPTIONS.map((opt) => {
+              const isActive = currentEligibilityPolicy === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  disabled={discountModeSaving}
+                  onClick={() => { if (!isActive) saveEligibilityPolicy(opt.value); }}
+                  className={[
+                    "text-left rounded-lg border px-4 py-3 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    isActive
+                      ? "border-primary bg-primary/5 ring-1 ring-primary"
+                      : "border-border hover:border-primary/40 hover:bg-muted/50",
+                    discountModeSaving ? "opacity-60 cursor-not-allowed" : "cursor-pointer",
+                  ].join(" ")}
+                >
+                  <div className="flex items-center justify-between mb-1 gap-1">
+                    <span className="text-xs font-semibold">{opt.label}</span>
+                    {isActive
+                      ? <Badge className="text-[10px] px-1.5 py-0 h-4">Active</Badge>
+                      : opt.recommended
+                      ? <Badge className="text-[10px] px-1.5 py-0 h-4 bg-emerald-100 text-emerald-700">Recommended</Badge>
+                      : null}
+                  </div>
+                  <p className="text-[11px] text-muted-foreground leading-snug">{opt.description}</p>
+                </button>
+              );
+            })}
+          </div>
+
+          {currentEligibilityPolicy === "min_amount_collected" && (
+            <div className="flex flex-wrap items-end gap-2 pt-1">
+              <div>
+                <Label className="text-xs">Minimum amount collected (₹)</Label>
+                <Input type="number" min="0" step="any" value={minAmountInput} onChange={(e) => setMinAmountInput(e.target.value)} className="mt-1 w-40" />
+              </div>
+              <Button size="sm" variant="outline" disabled={discountModeSaving} onClick={saveEligibilityMinAmount}>Save amount</Button>
+              <p className="text-[11px] text-muted-foreground pb-2">Current: {inr(currentEligibilityMinAmount)}</p>
+            </div>
+          )}
         </div>
 
         {/* Doctor selector + add button */}

@@ -767,32 +767,55 @@ superAdminRouter.delete("/audit-runs/:id", requireSuperAdminUsb, requireSuperAdm
 // Returns the current commissionDiscountMode so the super-admin portal can
 // display and toggle it without giving full clinic-settings write access.
 superAdminRouter.get("/commission-settings", requireSuperAdminUsb, requireSuperAdmin, async (_req, res) => {
-  const rows = await db.select({ commissionDiscountMode: clinicSettingsTable.commissionDiscountMode }).from(clinicSettingsTable).limit(1);
-  const mode = rows[0]?.commissionDiscountMode ?? "none";
-  res.json({ commissionDiscountMode: mode });
+  const rows = await db.select({
+    commissionDiscountMode: clinicSettingsTable.commissionDiscountMode,
+    commissionEligibilityPolicy: clinicSettingsTable.commissionEligibilityPolicy,
+    commissionEligibilityMinAmount: clinicSettingsTable.commissionEligibilityMinAmount,
+  }).from(clinicSettingsTable).limit(1);
+  res.json({
+    commissionDiscountMode: rows[0]?.commissionDiscountMode ?? "none",
+    commissionEligibilityPolicy: rows[0]?.commissionEligibilityPolicy ?? "full_payment_collected",
+    commissionEligibilityMinAmount: Number(rows[0]?.commissionEligibilityMinAmount ?? 0),
+  });
 });
 
 const CommissionDiscountModes = ["none", "deduct", "deduct_rollover"] as const;
+const CommissionEligibilityPolicies = [
+  "bill_created", "report_finalized", "report_delivered",
+  "min_amount_collected", "full_payment_collected", "collected_ge_commission",
+] as const;
+// All fields optional: the discount-mode card and the eligibility card each
+// PATCH only their own field.
 const CommissionSettingsPatch = z.object({
-  commissionDiscountMode: z.enum(CommissionDiscountModes),
+  commissionDiscountMode: z.enum(CommissionDiscountModes).optional(),
+  commissionEligibilityPolicy: z.enum(CommissionEligibilityPolicies).optional(),
+  commissionEligibilityMinAmount: z.number().nonnegative().optional(),
 });
 
 superAdminRouter.patch("/commission-settings", requireSuperAdminUsb, requireSuperAdmin, async (req, res) => {
   const parsed = CommissionSettingsPatch.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: "commissionDiscountMode must be one of: none, deduct, deduct_rollover" });
+    res.status(400).json({ error: "Invalid commission settings", details: parsed.error.issues });
+    return;
+  }
+  const data = parsed.data;
+  const updates: Record<string, unknown> = {};
+  if (data.commissionDiscountMode !== undefined) updates.commissionDiscountMode = data.commissionDiscountMode;
+  if (data.commissionEligibilityPolicy !== undefined) updates.commissionEligibilityPolicy = data.commissionEligibilityPolicy;
+  if (data.commissionEligibilityMinAmount !== undefined) updates.commissionEligibilityMinAmount = data.commissionEligibilityMinAmount.toFixed(2);
+  if (Object.keys(updates).length === 0) {
+    res.status(400).json({ error: "No settings to update" });
     return;
   }
   const rows = await db.select({ id: clinicSettingsTable.id }).from(clinicSettingsTable).limit(1);
   if (!rows[0]) {
-    // Bootstrap a default row if none exists, then set the mode.
-    await db.insert(clinicSettingsTable).values({ commissionDiscountMode: parsed.data.commissionDiscountMode });
+    await db.insert(clinicSettingsTable).values(updates as typeof clinicSettingsTable.$inferInsert);
   } else {
     await db.update(clinicSettingsTable)
-      .set({ commissionDiscountMode: parsed.data.commissionDiscountMode, updatedAt: new Date() })
+      .set({ ...updates, updatedAt: new Date() })
       .where(eq(clinicSettingsTable.id, rows[0].id));
   }
-  res.json({ ok: true, commissionDiscountMode: parsed.data.commissionDiscountMode });
+  res.json({ ok: true, ...updates });
 });
 
 // ── POST /api/super-admin/doctors/purge — irreversible delete of all data for doctor(s) ─
