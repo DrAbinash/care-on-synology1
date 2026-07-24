@@ -16,7 +16,7 @@ import FormFSelfReferralOpdRegister from "@/components/FormFSelfReferralOpdRegis
 import IdScanCapturePanel from "@/components/IdScanCapturePanel";
 import { type ScanCaptureResult, type ScanSide } from "@/components/UnifiedScanCapture";
 import { decodeQrFromBlob } from "@/lib/aadhaarQr";
-import { readStaffSession } from "@/lib/staffSession";
+import { readStaffSession, normalizeRole, FULL_ACCESS_ROLES } from "@/lib/staffSession";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
@@ -759,8 +759,15 @@ export default function FormF() {
   // (show it) rather than hide diagnostics from an already-authenticated
   // direct session — requireStaffPermission("/form-f") on the backend route
   // is the real access control; this is just UI declutter.
+  // Role must go through normalizeRole() — the same helper Layout.tsx and
+  // App.tsx use, and the same mapping the backend's requireAdminRole applies
+  // (owner/superadmin/"Super Admin" all collapse to super_admin). A raw
+  // string compare here silently hid the Monthly Register / Self-Referral OPD
+  // tabs from sessions carrying an un-normalized role (e.g. an erp_session
+  // written before login started normalizing), even though the API would
+  // have served them.
   const staffRole = readStaffSession()?.user.role;
-  const isFormFAdmin = !staffRole || staffRole === "admin" || staffRole === "super_admin";
+  const isFormFAdmin = !staffRole || FULL_ACCESS_ROLES.has(normalizeRole(staffRole));
 
   // ── Feature 2: ID Card Upload + AI OCR + Camera Scanner ──
   const [idCardFrontUrl, setIdCardFrontUrl] = useState("");
@@ -1366,8 +1373,11 @@ export default function FormF() {
           </div>
         </div>
 
-        {/* Tab buttons */}
-        <div className="flex rounded-lg border border-gray-200 overflow-hidden">
+        {/* Tab buttons. flex-wrap + shrink-0 children: with five tabs the strip
+            no longer clips its rightmost entries (Monthly Register /
+            Self-Referral OPD) on narrow screens — overflow-hidden used to cut
+            them off with no scrollbar, so they simply could not be reached. */}
+        <div className="flex flex-wrap rounded-lg border border-gray-200 overflow-hidden [&>button]:shrink-0">
           <button
             onClick={() => setActiveTab("pending")}
             className={`px-3 py-1.5 text-xs font-medium flex items-center gap-1.5 transition-colors ${activeTab === "pending" ? "bg-orange-500 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}
