@@ -772,9 +772,15 @@ router.get("/report-by-patient", async (req, res) => {
     testName: string;
     category: string;
     price: number;
+    // "actual" — commission after the clinic's bill-discount deduction
+    // (commissionDiscountMode) is applied at order level and spread per row.
     commission: number;
-    // Bill-level discount context (repeated on each test row of the bill) so
-    // the report can offer a selectable Discount column shown as % or ₹.
+    // "expected" — the commission before any discount deduction. The referral
+    // report's discount breakdown shows: expected − (expected−actual) = actual,
+    // where the deducted amount is the referral discount given up on the bill.
+    grossCommission: number;
+    // Bill-level discount context (repeated on each test row of the bill) for
+    // the selectable Bill-Discount column shown as ₹ or % of subtotal.
     billDiscount: number;
     billSubtotal: number;
     ruleType: string;
@@ -819,7 +825,8 @@ router.get("/report-by-patient", async (req, res) => {
           testName: test?.name ?? "Unknown",
           category: test?.category ?? "Other",
           price: Number(ot.price),
-          commission: rawComm * ratio,
+          commission: rawComm * ratio,   // actual (net of discount deduction)
+          grossCommission: rawComm,      // expected (before discount deduction)
           billDiscount: bill?.discount ?? 0,
           billSubtotal: bill?.subtotal ?? 0,
           ruleType,
@@ -830,7 +837,8 @@ router.get("/report-by-patient", async (req, res) => {
     }
 
     rows.sort((a, b) => a.date.localeCompare(b.date));
-    const totalCommission = rows.reduce((s, r) => s + r.commission, 0);
+    const totalCommission = rows.reduce((s, r) => s + r.commission, 0);           // actual
+    const totalExpectedCommission = rows.reduce((s, r) => s + r.grossCommission, 0); // expected
     const totalRevenue = rows.reduce((s, r) => s + r.price, 0);
     const uniqueOrders = new Set(rows.map(r => r.orderId)).size;
 
@@ -838,6 +846,8 @@ router.get("/report-by-patient", async (req, res) => {
       doctor: { id: doctor.id, name: doctor.name, specialization: doctor.specialization },
       rows,
       totalCommission,
+      totalExpectedCommission,
+      totalDiscount: totalExpectedCommission - totalCommission,
       totalRevenue,
       orderCount: uniqueOrders,
       testCount: rows.length,
@@ -851,6 +861,8 @@ router.get("/report-by-patient", async (req, res) => {
       orders: result.reduce((s, d) => s + d.orderCount, 0),
       revenue: result.reduce((s, d) => s + d.totalRevenue, 0),
       commission: result.reduce((s, d) => s + d.totalCommission, 0),
+      expectedCommission: result.reduce((s, d) => s + d.totalExpectedCommission, 0),
+      discount: result.reduce((s, d) => s + d.totalDiscount, 0),
     },
   });
 });
