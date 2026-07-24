@@ -278,7 +278,10 @@ describe("GET /form-f/register/self-referral-opd", () => {
       { ...RECORD, id: 61, referredBy: "Self", doctorName: "" },                 // self + Form-F test bill — included
       { ...RECORD, id: 62, referredBy: "Dr. Mehta", doctorName: "" },            // doctor-referred — 9(1) register, excluded here
       { ...RECORD, id: 63, referredBy: "", doctorName: "", billId: null },       // walk-in, no bill — Form F record is the evidence, included
-      { ...RECORD, id: 64, referredBy: "Self", doctorName: "Dr. R. Gupta" },     // doctor named — excluded
+      // Self-referred, but a CONDUCTING doctor is recorded (every real Form F
+      // has one — the page pre-fills it). She is still self-referred, so she
+      // belongs here; treating doctor_name as a referrer used to drop her.
+      { ...RECORD, id: 64, referredBy: "Self", doctorName: "Dr. R. Gupta" },
       { ...RECORD, id: 65, referredBy: "Self", doctorName: "", billId: 11 },     // self BUT no Form-F test on the bill — excluded
     ];
     prescriptionRows = [{ id: 500, formFRecordId: 61, signedAt: new Date("2026-07-10T06:00:00Z") }];
@@ -286,17 +289,17 @@ describe("GET /form-f/register/self-referral-opd", () => {
     await opdHandler(makeReq({ month: "7", year: "2026" }), res);
     expect(res.statusCode).toBe(200);
     expect(res.body.doctor).toBe("Dr. Sugandha Priyadarshini");
-    expect(res.body.rows.map((r: { recordId: number }) => r.recordId)).toEqual([61, 63]);
-    expect(res.body.rows.map((r: { serial: number }) => r.serial)).toEqual([1, 2]);
+    expect(res.body.rows.map((r: { recordId: number }) => r.recordId)).toEqual([61, 63, 64]);
+    expect(res.body.rows.map((r: { serial: number }) => r.serial)).toEqual([1, 2, 3]);
     for (const row of res.body.rows) {
       expect(row.natureOfService).toBe("General Obstetrical Checkup");
       expect(row.feesReceived).toBe("Complimentary / Free");
     }
-    expect(res.body.pagination.total).toBe(2);
+    expect(res.body.pagination.total).toBe(3);
     // Auto-prescription: every qualifying record is ensured (auto-saved,
     // idempotent), and saved prescriptions link into the rows.
     expect(ensureSelfReferralPrescriptions).toHaveBeenCalledTimes(1);
-    expect(ensureSelfReferralPrescriptions.mock.calls[0][0].map((r) => r.id)).toEqual([61, 63]);
+    expect(ensureSelfReferralPrescriptions.mock.calls[0][0].map((r) => r.id)).toEqual([61, 63, 64]);
     expect(res.body.rows[0].prescriptionId).toBe(500);
     expect(res.body.rows[1].prescriptionId).toBeNull();
   });

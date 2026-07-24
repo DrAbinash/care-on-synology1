@@ -201,8 +201,19 @@ export const RULE_9_1_COLUMNS: Array<{ header: string; value: (r: RegisterRow) =
     value: (r) => [r.address, r.mobile && `Ph: ${r.mobile}`].filter(Boolean).join(", "),
   },
   {
+    // The REFERRER, which lives in referred_by ("Doctor: <name>" or "Self").
+    // r.doctorName is the conducting sonologist — printing it here named the
+    // centre's own radiologist as the referring doctor on a statutory return.
     header: "Name of Referring Doctor / Self-Referral",
-    value: (r) => r.doctorName || r.referredBy || "Self",
+    value: (r) => {
+      const ref = (r.referredBy ?? "").trim();
+      if (!ref) return "Self";
+      if (/^self$|^walk-?in$/i.test(ref)) return "Self";
+      const named = ref.replace(/^doctor:\s*/i, "").trim();
+      // A doctor referral saved without a typed name ("Doctor: ") must not be
+      // reported as a self-referral — say the name is missing instead.
+      return named || "Referring doctor (name not recorded)";
+    },
   },
 ];
 
@@ -250,13 +261,22 @@ export const SELF_REFERRAL_OPD_FEES = "Complimentary / Free";
 export const SELF_REFERRAL_PRESCRIPTION_ADVICE =
   "Patient for Obstetrical Examination.\nAdvice: Sonography for Fetal Well Being (FWB).";
 
-/** A record is self-referral/walk-in when it names NO referring doctor:
- *  doctor_name blank and referred_by blank / "Self" / "walk-in". A free-text
- *  doctor name in referred_by (e.g. "Dr. Mehta") is a doctor referral. */
+/** A record is self-referral/walk-in when referred_by names no referring
+ *  doctor: blank / "Self" / "walk-in". A doctor referral is stored as
+ *  "Doctor: <name>" (FormF.tsx builds that string on save), and a free-text
+ *  name such as "Dr. Mehta" also counts as a doctor referral.
+ *
+ *  doctor_name is deliberately NOT consulted: that column is the CONDUCTING
+ *  sonologist (the Form F page labels it "Conducting Doctor" and pre-fills it
+ *  with the centre's own radiologist on every new form), not the referrer.
+ *  Treating it as a referrer made this predicate return false for every real
+ *  record, which silently emptied the Self-Referral OPD register, suppressed
+ *  the auto-prescriptions, and mis-filed self-referred women into the
+ *  Rule 9(1) register. `doctorName` stays in the parameter type so callers can
+ *  pass a whole record and so the regression stays covered by a test. */
 export function isSelfReferralRecord(
   r: Pick<RegisterSourceRecord, "referredBy" | "doctorName">,
 ): boolean {
-  if (r.doctorName?.trim()) return false;
   const ref = (r.referredBy ?? "").trim().toLowerCase();
   return ref === "" || ref === "self" || ref === "walk-in" || ref === "walkin";
 }
