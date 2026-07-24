@@ -285,6 +285,12 @@ const navItems: NavEntry[] = [
       { path: "/attendance-devices", icon: Fingerprint, label: "Attendance Devices" },
       { path: "/my-portal", icon: Gauge, label: "My Portal" },
       { path: "/hr-forms", icon: FilePen, label: "HR Forms" },
+      { path: "/leave", icon: CalendarDays, label: "Leave" },
+      { path: "/roster", icon: Clock, label: "Duty Roster" },
+      { path: "/disciplinary", icon: ShieldAlert, label: "Disciplinary" },
+      { path: "/appraisals", icon: ClipboardList, label: "Appraisals" },
+      { path: "/allowances", icon: Wallet, label: "Allowances" },
+      { path: "/awards", icon: Star, label: "Awards" },
     ],
   },
   {

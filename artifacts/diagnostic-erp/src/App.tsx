@@ -94,6 +94,12 @@ const People          = lazy(() => import("@/pages/People"));
 const AttendanceDevices = lazy(() => import("@/pages/AttendanceDevices"));
 const Performance     = lazy(() => import("@/pages/Performance"));
 const MyPortal        = lazy(() => import("@/pages/MyPortal"));
+const Leave           = lazy(() => import("@/pages/Leave"));
+const Roster          = lazy(() => import("@/pages/Roster"));
+const Disciplinary    = lazy(() => import("@/pages/Disciplinary"));
+const Appraisals      = lazy(() => import("@/pages/Appraisals"));
+const Allowances      = lazy(() => import("@/pages/Allowances"));
+const Awards          = lazy(() => import("@/pages/Awards"));
 const ReportDeliveryTracking = lazy(() => import("@/pages/ReportDeliveryTracking"));
 const Recall          = lazy(() => import("@/pages/Recall"));
 const FeedbackDashboard = lazy(() => import("@/pages/FeedbackDashboard"));
@@ -263,7 +269,7 @@ const ERP_NAV_ORDER = [
   "/echo", "/fetal-echo", "/fetal-usg", "/fetal-usg/:studyId",
   "/settings/radiology", "/backup-replication",
   "/orders", "/tests", "/packages", "/billing", "/payments", "/reports",
-  "/report-generator", "/report-hub", "/inventory", "/expenses", "/staff", "/referrals",
+  "/report-generator", "/report-hub", "/inventory", "/expenses", "/staff", "/people", "/performance", "/attendance-devices", "/my-portal", "/leave", "/roster", "/disciplinary", "/appraisals", "/allowances", "/awards", "/referrals",
   "/accounting", "/discounts", "/form-f", "/machines", "/hr-forms", "/website", "/whatsapp-chatbot", "/settings", "/knowledge-base", "/ai-caller-credentials",
   "/samples",
   "/pacs", "/dicom-nodes",
@@ -594,6 +600,12 @@ function Router() {
               <Route path="/attendance-devices" component={AttendanceDevices} />
               <Route path="/performance" component={Performance} />
               <Route path="/my-portal" component={MyPortal} />
+              <Route path="/leave" component={Leave} />
+              <Route path="/roster" component={Roster} />
+              <Route path="/disciplinary" component={Disciplinary} />
+              <Route path="/appraisals" component={Appraisals} />
+              <Route path="/allowances" component={Allowances} />
+              <Route path="/awards" component={Awards} />
               <Route path="/report-delivery-tracking" component={ReportDeliveryTracking} />
               <Route path="/recall" component={Recall} />
               <Route path="/feedback" component={FeedbackDashboard} />
