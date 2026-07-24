@@ -7,15 +7,16 @@ import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { useToast } from "@/hooks/use-toast";
 import {
-  ArrowLeft, Printer, Stethoscope, Users, FileText, IndianRupee, TrendingUp, Download, FileSpreadsheet,
+  ArrowLeft, Printer, Stethoscope, Users, FileText, IndianRupee, TrendingUp, Download, FileSpreadsheet, Percent, Clock, HelpCircle,
 } from "lucide-react";
 import { saAuthHeaders } from "@/lib/saApi";
 import { exportCommissionPdf } from "@/lib/exportCommissionPdf";
 import { exportCommissionExcel } from "@/lib/exportCommissionExcel";
 import { exportCommissionWord } from "@/lib/exportCommissionWord";
-import type { CommissionDoctorEntry, CommissionTestGroupRow } from "@workspace/api-client-react";
+import type { CommissionDoctorEntryX, CommissionTestGroupRowX } from "@/lib/exportCommissionPdf";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type SaDoctor = { id: number; name: string };
@@ -31,16 +32,32 @@ type PatientRow = {
   testName: string;
   category: string;
   price: number;
-  commission: number;
+  commission: number;        // actual — after the referral-discount deduction
+  grossCommission: number;   // expected — before the discount deduction
+  // Bill-level discount (repeated on each test row of the same bill)
+  billDiscount: number;
+  billSubtotal: number;
+  // Payment-aware eligibility (repeated on each test row of the order)
+  held: boolean;
+  holdReason: string | null;
   ruleType: string;
   ruleValue: number;
   ruleName: string;
+  // "Why this amount?" drill-down
+  commissionBase: number;   // price used as the rate base (VIP surcharge stripped)
+  vipAdjusted: boolean;     // whether the VIP surcharge was removed from the base
 };
+
+type DiscountFmt = "fixed" | "percent";
 
 type DoctorEntry = {
   doctor: { id: number; name: string; specialization: string | null };
   rows: PatientRow[];
-  totalCommission: number;
+  totalCommission: number;            // actual (all)
+  payableCommission: number;          // eligible now
+  heldCommission: number;             // on hold
+  totalExpectedCommission: number;    // expected (pre-discount)
+  totalDiscount: number;              // expected − actual (referral discount given up)
   totalRevenue: number;
   orderCount: number;
   testCount: number;
@@ -48,7 +65,8 @@ type DoctorEntry = {
 
 type ReportData = {
   report: DoctorEntry[];
-  grandTotal: { doctors: number; orders: number; revenue: number; commission: number };
+  settings?: { vipPct: number; commissionDiscountMode: string };
+  grandTotal: { doctors: number; orders: number; revenue: number; commission: number; payableCommission: number; heldCommission: number; expectedCommission: number; discount: number };
 };
 
 type ReportMode = "by-doctor" | "test-summary" | "consolidated";
@@ -65,6 +83,30 @@ const fmtDate = (iso: string) => {
 
 const fmtRate = (ruleType: string, ruleValue: number) =>
   ruleType === "percentage" ? `${ruleValue}%` : inr(ruleValue);
+
+// Format a bill discount either as a fixed ₹ amount or as a percentage of the
+// bill subtotal, depending on the selected discount display format.
+const fmtDiscount = (fmt: DiscountFmt, discount: number, subtotal: number): string => {
+  if (fmt === "percent") {
+    const pct = subtotal > 0 ? (discount / subtotal) * 100 : 0;
+    return `${pct % 1 === 0 ? pct.toFixed(0) : pct.toFixed(1)}%`;
+  }
+  return inr(discount);
+};
+
+// Discount is a bill-level figure repeated on every test row of that bill, so
+// dedupe by orderId before summing for any total.
+const uniqueBillDiscount = (rows: PatientRow[]): { discount: number; subtotal: number } => {
+  const seen = new Set<number>();
+  let discount = 0, subtotal = 0;
+  for (const r of rows) {
+    if (seen.has(r.orderId)) continue;
+    seen.add(r.orderId);
+    discount += r.billDiscount;
+    subtotal += r.billSubtotal;
+  }
+  return { discount, subtotal };
+};
 
 const ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
@@ -98,14 +140,21 @@ function buildPrintHtml(
   from: string, to: string,
   doctorLabel: string,
   cols: ColFlags,
+  discountFmt: DiscountFmt,
+  showBreakdown: boolean,
 ) {
+  const negDisc = (d: number) => (d > 0.005 ? `−${inr(d)}` : "—");
   const colCount = 3
     + (cols.billNo ? 1 : 0)
     + (cols.orderNo ? 1 : 0)
     + (cols.category ? 1 : 0)
     + (cols.rate ? 1 : 0)
     + (cols.billAmount ? 1 : 0)
+    + (cols.discount ? 1 : 0)
     + 1; // commission always shown
+
+  // Numeric columns rendered at the right end, each with its own total cell.
+  const trailingCells = (cols.billAmount ? 1 : 0) + (cols.discount ? 1 : 0) + 1;
 
   const thead = `<thead><tr>
     <th>Date</th>
@@ -116,6 +165,7 @@ function buildPrintHtml(
     ${cols.category ? "<th>Category</th>" : ""}
     ${cols.rate ? "<th class='center'>Rate</th>" : ""}
     ${cols.billAmount ? "<th class='right'>Bill Amt</th>" : ""}
+    ${cols.discount ? `<th class='center'>Discount${discountFmt === "percent" ? " %" : ""}</th>` : ""}
     <th class='right'>Commission</th>
   </tr></thead>`;
 
@@ -128,26 +178,37 @@ function buildPrintHtml(
     ${cols.category ? `<td>${row.category}</td>` : ""}
     ${cols.rate ? `<td class='center'>${fmtRate(row.ruleType, row.ruleValue)}</td>` : ""}
     ${cols.billAmount ? `<td class='right'>${inr(row.price)}</td>` : ""}
+    ${cols.discount ? `<td class='center'>${row.billDiscount > 0 ? fmtDiscount(discountFmt, row.billDiscount, row.billSubtotal) : "—"}</td>` : ""}
     <td class='right'>${inr(row.commission)}</td>
   </tr>`;
 
-  const totalRow = (label: string, revenue: number, commission: number) => `
+  const discountCell = (rows: PatientRow[]) => {
+    if (!cols.discount) return "";
+    const agg = uniqueBillDiscount(rows);
+    return `<td class='center'><strong>${agg.discount > 0 ? fmtDiscount(discountFmt, agg.discount, agg.subtotal) : "—"}</strong></td>`;
+  };
+
+  const totalRow = (rows: PatientRow[], revenue: number, commission: number) => `
     <tr class='total-row'>
-      <td colspan='${colCount - (cols.billAmount ? 2 : 1)}'><strong>TOTAL</strong></td>
+      <td colspan='${colCount - trailingCells}'><strong>TOTAL</strong></td>
       ${cols.billAmount ? `<td class='right'><strong>${inr(revenue)}</strong></td>` : ""}
+      ${discountCell(rows)}
       <td class='right'><strong>${inr(commission)}</strong></td>
     </tr>`;
 
   let body = "";
 
   if (mode === "consolidated") {
+    const commCells = (expected: number, discount: number, actual: number) => showBreakdown
+      ? `<td class='right'>${inr(expected)}</td><td class='right'>${negDisc(discount)}</td><td class='right'>${inr(actual)}</td>`
+      : `<td class='right'>${inr(actual)}</td>`;
     const rows = report.map((e, i) => `<tr>
       <td>${ALPHA[i] ?? i + 1})</td>
       <td>${e.doctor.name}</td>
       <td class='center'>${e.testCount}</td>
       <td class='center'>${e.orderCount}</td>
       ${cols.billAmount ? `<td class='right'>${inr(e.totalRevenue)}</td>` : ""}
-      <td class='right'>${inr(e.totalCommission)}</td>
+      ${commCells(e.totalExpectedCommission, e.totalDiscount, e.totalCommission)}
     </tr>`).join("");
     body = `<table style='margin-top:12px'>
       <thead><tr>
@@ -156,17 +217,48 @@ function buildPrintHtml(
         <th class='center'>Tests</th>
         <th class='center'>Visits</th>
         ${cols.billAmount ? "<th class='right'>Total Billed</th>" : ""}
-        <th class='right'>Commission</th>
+        ${showBreakdown ? "<th class='right'>Expected</th><th class='right'>Discount</th><th class='right'>Actual</th>" : "<th class='right'>Commission</th>"}
       </tr></thead>
       <tbody>
         ${rows}
         <tr class='grand-row'>
           <td colspan='${3 + (cols.billAmount ? 1 : 0)}'><strong>GRAND TOTAL (${grandTotal.doctors} doctors · ${grandTotal.orders} visits)</strong></td>
           ${cols.billAmount ? `<td class='right'><strong>${inr(grandTotal.revenue)}</strong></td>` : ""}
-          <td class='right'><strong>${inr(grandTotal.commission)}</strong></td>
+          ${showBreakdown
+            ? `<td class='right'><strong>${inr(grandTotal.expectedCommission)}</strong></td><td class='right'><strong>${negDisc(grandTotal.discount)}</strong></td><td class='right'><strong>${inr(grandTotal.commission)}</strong></td>`
+            : `<td class='right'><strong>${inr(grandTotal.commission)}</strong></td>`}
         </tr>
       </tbody>
     </table>`;
+  } else if (mode === "test-summary") {
+    // Test-grouped print per doctor, with optional Expected/Discount/Actual breakdown.
+    type TS = { testName: string; count: number; expected: number; commission: number; ruleType: string; ruleValue: number };
+    body = report.map(e => {
+      const byTest: Record<number, TS> = {};
+      for (const row of e.rows) {
+        if (!byTest[row.testId]) byTest[row.testId] = { testName: row.testName, count: 0, expected: 0, commission: 0, ruleType: row.ruleType, ruleValue: row.ruleValue };
+        byTest[row.testId].count++;
+        byTest[row.testId].expected += row.grossCommission;
+        byTest[row.testId].commission += row.commission;
+      }
+      const trows = Object.values(byTest).sort((a, b) => b.commission - a.commission);
+      const head = showBreakdown
+        ? `<tr><th>Test Name</th><th class='center'>No. of Tests</th><th class='right'>Expected</th><th class='right'>Discount</th><th class='right'>Actual</th></tr>`
+        : `<tr><th>Test Name</th><th class='center'>No. of Tests</th>${cols.rate ? "<th class='center'>% / Fixed</th>" : ""}<th class='right'>Total Amount</th></tr>`;
+      const bodyRows = trows.map(t => showBreakdown
+        ? `<tr><td>${t.testName}</td><td class='center'>${t.count}</td><td class='right'>${inr(t.expected)}</td><td class='right'>${negDisc(t.expected - t.commission)}</td><td class='right'>${inr(t.commission)}</td></tr>`
+        : `<tr><td>${t.testName}</td><td class='center'>${t.count}</td>${cols.rate ? `<td class='center'>${fmtRate(t.ruleType, t.ruleValue)}</td>` : ""}<td class='right'>${inr(t.commission)}</td></tr>`).join("");
+      const totalHtml = showBreakdown
+        ? `<tr class='total-row'><td colspan='2'><strong>TOTAL</strong></td><td class='right'><strong>${inr(e.totalExpectedCommission)}</strong></td><td class='right'><strong>${negDisc(e.totalDiscount)}</strong></td><td class='right'><strong>${inr(e.totalCommission)}</strong></td></tr>`
+        : `<tr class='total-row'><td colspan='${cols.rate ? 3 : 2}'><strong>TOTAL</strong></td><td class='right'><strong>${inr(e.totalCommission)}</strong></td></tr>`;
+      return `<div class='doctor-header'>${e.doctor.name}</div><table><thead>${head}</thead><tbody>${bodyRows}${totalHtml}</tbody></table>`;
+    }).join("");
+    if (report.length > 1) {
+      const cspan = showBreakdown ? 2 : (cols.rate ? 3 : 2);
+      body += `<table style='margin-top:16px'><tbody><tr class='grand-row'><td colspan='${cspan}'><strong>GRAND TOTAL</strong></td>${showBreakdown
+        ? `<td class='right'><strong>${inr(grandTotal.expectedCommission)}</strong></td><td class='right'><strong>${negDisc(grandTotal.discount)}</strong></td><td class='right'><strong>${inr(grandTotal.commission)}</strong></td>`
+        : `<td class='right'><strong>${inr(grandTotal.commission)}</strong></td>`}</tr></tbody></table>`;
+    }
   } else {
     body = report.map(e => `
       <div class='doctor-header'>${e.doctor.name}</div>
@@ -174,17 +266,19 @@ function buildPrintHtml(
         ${thead}
         <tbody>
           ${e.rows.map(rowHtml).join("")}
-          ${totalRow(e.doctor.name, e.totalRevenue, e.totalCommission)}
+          ${totalRow(e.rows, e.totalRevenue, e.totalCommission)}
         </tbody>
       </table>
     `).join("");
 
     if (report.length > 1) {
+      const allRows = report.flatMap(e => e.rows);
       body += `<table style='margin-top:16px'>
         <tbody>
           <tr class='grand-row'>
-            <td colspan='${colCount - (cols.billAmount ? 2 : 1)}'><strong>GRAND TOTAL</strong></td>
+            <td colspan='${colCount - trailingCells}'><strong>GRAND TOTAL</strong></td>
             ${cols.billAmount ? `<td class='right'><strong>${inr(grandTotal.revenue)}</strong></td>` : ""}
+            ${discountCell(allRows)}
             <td class='right'><strong>${inr(grandTotal.commission)}</strong></td>
           </tr>
         </tbody>
@@ -211,6 +305,7 @@ type ColFlags = {
   category: boolean;
   rate: boolean;
   billAmount: boolean;
+  discount: boolean;
 };
 
 const DEFAULT_COLS: ColFlags = {
@@ -219,6 +314,7 @@ const DEFAULT_COLS: ColFlags = {
   category: false,
   rate: true,
   billAmount: false,
+  discount: false,
 };
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -239,6 +335,10 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
   const [doctorId, setDoctorId] = useState<number | null>(null);
   const [mode, setMode] = useState<ReportMode>("by-doctor");
   const [cols, setCols] = useState<ColFlags>(DEFAULT_COLS);
+  const [discountFmt, setDiscountFmt] = useState<DiscountFmt>("fixed");
+  // Commission-discount breakdown: show Expected / Discount / Actual columns in
+  // the Test-Summary and Consolidated views (expected − discount = actual).
+  const [showBreakdown, setShowBreakdown] = useState(false);
 
   const { data: doctorsData } = useQuery({
     queryKey: ["/api/super-admin/doctors-list"],
@@ -266,13 +366,14 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
   }, [error, toast]);
 
   const report = data?.report ?? [];
-  const grandTotal = data?.grandTotal ?? { doctors: 0, orders: 0, revenue: 0, commission: 0 };
+  const settings = data?.settings ?? { vipPct: 0, commissionDiscountMode: "none" };
+  const grandTotal = data?.grandTotal ?? { doctors: 0, orders: 0, revenue: 0, commission: 0, payableCommission: 0, heldCommission: 0, expectedCommission: 0, discount: 0 };
 
   const handlePrint = () => {
     const doctorLabel = doctorId
       ? doctors.find(d => d.id === doctorId)?.name ?? "—"
       : "All Doctors";
-    const html = buildPrintHtml(mode, report, grandTotal, from, to, doctorLabel, cols);
+    const html = buildPrintHtml(mode, report, grandTotal, from, to, doctorLabel, cols, discountFmt, showBreakdown);
     const win = window.open("", "_blank", "width=1000,height=750");
     if (!win) { toast({ title: "Pop-up blocked", description: "Please allow pop-ups and try again.", variant: "destructive" }); return; }
     win.document.write(html);
@@ -283,9 +384,9 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
     setCols(prev => ({ ...prev, [key]: !prev[key] }));
 
   // ── Adapter: per-patient rows → test-grouped for export helpers ──────────
-  function toExportSections(report: DoctorEntry[]): CommissionDoctorEntry[] {
+  function toExportSections(report: DoctorEntry[]): CommissionDoctorEntryX[] {
     return report.map((entry) => {
-      const byTest: Record<number, CommissionTestGroupRow> = {};
+      const byTest: Record<number, CommissionTestGroupRowX> = {};
       for (const row of entry.rows) {
         if (!byTest[row.testId]) {
           byTest[row.testId] = {
@@ -295,6 +396,7 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
             count: 0,
             revenue: 0,
             commission: 0,
+            expected: 0,
             ruleName: row.ruleName,
             ruleType: row.ruleType,
             ruleValue: row.ruleValue,
@@ -303,6 +405,7 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
         byTest[row.testId].count++;
         byTest[row.testId].revenue += row.price;
         byTest[row.testId].commission += row.commission;
+        byTest[row.testId].expected = (byTest[row.testId].expected ?? 0) + row.grossCommission;
       }
       const grouped = Object.values(byTest).sort((a, b) => b.commission - a.commission);
       const effRate = entry.totalRevenue > 0
@@ -320,9 +423,11 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
         testCount: entry.testCount,
         totalRevenue: entry.totalRevenue,
         totalCommission: entry.totalCommission,
+        totalExpected: entry.totalExpectedCommission,
+        totalDiscount: entry.totalDiscount,
         effectiveRate: effRate,
         grouped,
-      } as unknown as CommissionDoctorEntry;
+      } as unknown as CommissionDoctorEntryX;
     });
   }
 
@@ -356,6 +461,7 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
         },
         exportMode,
         cols.rate,
+        showBreakdown,
       );
     } catch (err) {
       toast({ title: "Excel export failed", description: String(err), variant: "destructive" });
@@ -383,6 +489,7 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
         },
         exportMode,
         cols.rate,
+        showBreakdown,
       );
     } catch (err) {
       toast({ title: "Word export failed", description: String(err), variant: "destructive" });
@@ -410,6 +517,8 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
         },
         exportMode,
         cols.rate,
+        undefined,
+        showBreakdown,
       );
     } catch (err) {
       toast({ title: "PDF export failed", description: String(err), variant: "destructive" });
@@ -424,6 +533,7 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
     + (cols.category ? 1 : 0)
     + (cols.rate ? 1 : 0)
     + (cols.billAmount ? 1 : 0)
+    + (cols.discount ? 1 : 0)
     + 1;
 
   return (
@@ -505,14 +615,26 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
             </div>
 
             <div>
+              <Label className="text-xs mb-2 block">Commission Breakdown</Label>
+              <div className="flex items-center gap-1.5">
+                <Checkbox id="breakdown" checked={showBreakdown} onCheckedChange={() => setShowBreakdown((v) => !v)} />
+                <label htmlFor="breakdown" className="text-xs cursor-pointer select-none">Expected − Discount = Actual</label>
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-1 max-w-[190px] leading-snug">
+                Splits commission into expected, referral discount given, and actual (Test Summary &amp; Consolidated).
+              </p>
+            </div>
+
+            <div>
               <Label className="text-xs mb-2 block">Optional Columns</Label>
-              <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              <div className="flex flex-wrap gap-x-4 gap-y-1.5 items-center">
                 {([
                   ["billNo",     "Bill No"],
                   ["orderNo",    "Order No"],
                   ["category",   "Category"],
                   ["rate",       "Rate (% / ₹)"],
                   ["billAmount", "Bill Amount"],
+                  ["discount",   "Discount"],
                 ] as [keyof ColFlags, string][]).map(([key, label]) => (
                   <div key={key} className="flex items-center gap-1.5">
                     <Checkbox
@@ -523,6 +645,24 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
                     <label htmlFor={`col-${key}`} className="text-xs cursor-pointer select-none">{label}</label>
                   </div>
                 ))}
+                {/* Discount display format — only relevant when the Discount column is on */}
+                {cols.discount && (
+                  <div className="flex items-center gap-1 pl-2 border-l border-border">
+                    {(["fixed", "percent"] as DiscountFmt[]).map((f) => (
+                      <button
+                        key={f}
+                        onClick={() => setDiscountFmt(f)}
+                        className={`px-2 py-1 rounded-md text-[11px] font-medium border transition-colors ${
+                          discountFmt === f
+                            ? "bg-primary text-primary-foreground border-primary"
+                            : "bg-background border-border hover:bg-muted text-muted-foreground"
+                        }`}
+                      >
+                        {f === "fixed" ? "₹ Amount" : "% of Bill"}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -530,12 +670,25 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
 
         {/* Summary tiles */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {[
-            { label: "Doctors with Referrals", value: String(grandTotal.doctors), icon: <Stethoscope size={16} />, amber: false },
-            { label: "Total Visits",           value: String(grandTotal.orders),  icon: <Users size={16} />,       amber: false },
-            { label: "Total Revenue",          value: inr(grandTotal.revenue),    icon: <TrendingUp size={16} />,  amber: false },
-            { label: "Commission Payable",     value: inr(grandTotal.commission), icon: <IndianRupee size={16} />, amber: true },
-          ].map(c => (
+          {(() => {
+            const base = showBreakdown
+              ? [
+                  { label: "Total Visits",        value: String(grandTotal.orders),          icon: <Users size={16} />,       amber: false },
+                  { label: "Expected Commission", value: inr(grandTotal.expectedCommission), icon: <TrendingUp size={16} />,  amber: false },
+                  { label: "Discount Given",      value: inr(grandTotal.discount),           icon: <Percent size={16} />,     amber: false },
+                  { label: "Payable (Actual)",    value: inr(grandTotal.payableCommission),  icon: <IndianRupee size={16} />, amber: true },
+                ]
+              : [
+                  { label: "Doctors with Referrals", value: String(grandTotal.doctors),        icon: <Stethoscope size={16} />, amber: false },
+                  { label: "Total Visits",           value: String(grandTotal.orders),         icon: <Users size={16} />,       amber: false },
+                  { label: "Total Revenue",          value: inr(grandTotal.revenue),           icon: <TrendingUp size={16} />,  amber: false },
+                  { label: "Commission Payable",     value: inr(grandTotal.payableCommission), icon: <IndianRupee size={16} />, amber: true },
+                ];
+            if (grandTotal.heldCommission > 0.005) {
+              base.push({ label: "On Hold (not payable)", value: inr(grandTotal.heldCommission), icon: <Clock size={16} />, amber: false });
+            }
+            return base;
+          })().map(c => (
             <div key={c.label} className="bg-card border border-border rounded-xl p-4">
               <div className="flex items-center gap-2 mb-1">
                 <span className={c.amber ? "text-amber-600" : "text-muted-foreground"}>{c.icon}</span>
@@ -557,11 +710,11 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
             No referral data for the selected period / doctor
           </div>
         ) : mode === "consolidated" ? (
-          <ConsolidatedView report={report} grandTotal={grandTotal} cols={cols} />
+          <ConsolidatedView report={report} grandTotal={grandTotal} cols={cols} showBreakdown={showBreakdown} />
         ) : mode === "test-summary" ? (
-          <TestSummaryView report={report} grandTotal={grandTotal} cols={cols} />
+          <TestSummaryView report={report} grandTotal={grandTotal} cols={cols} showBreakdown={showBreakdown} />
         ) : (
-          <ByDoctorView report={report} grandTotal={grandTotal} cols={cols} colCount={colCount} />
+          <ByDoctorView report={report} grandTotal={grandTotal} cols={cols} colCount={colCount} discountFmt={discountFmt} settings={settings} />
         )}
       </div>
     </div>
@@ -570,17 +723,20 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
 
 // ── By Doctor view ────────────────────────────────────────────────────────────
 function ByDoctorView({
-  report, grandTotal, cols, colCount,
+  report, grandTotal, cols, colCount, discountFmt, settings,
 }: {
   report: DoctorEntry[];
   grandTotal: ReportData["grandTotal"];
   cols: ColFlags;
   colCount: number;
+  discountFmt: DiscountFmt;
+  settings: { vipPct: number; commissionDiscountMode: string };
 }) {
+  const grandDiscount = uniqueBillDiscount(report.flatMap(e => e.rows));
   return (
     <div className="space-y-6">
       {report.map((entry, idx) => (
-        <DoctorBlock key={entry.doctor.id} entry={entry} index={idx} cols={cols} colCount={colCount} />
+        <DoctorBlock key={entry.doctor.id} entry={entry} index={idx} cols={cols} colCount={colCount} discountFmt={discountFmt} settings={settings} />
       ))}
 
       {report.length > 1 && (
@@ -598,6 +754,12 @@ function ByDoctorView({
                 <p className="font-bold text-base">{inr(grandTotal.revenue)}</p>
               </div>
             )}
+            {cols.discount && (
+              <div className="text-right">
+                <p className="text-xs text-muted-foreground">Total Discount</p>
+                <p className="font-bold text-base">{grandDiscount.discount > 0 ? fmtDiscount(discountFmt, grandDiscount.discount, grandDiscount.subtotal) : "—"}</p>
+              </div>
+            )}
             <div className="text-right">
               <p className="text-xs text-muted-foreground">Commission Payable</p>
               <p className="font-bold text-base text-amber-600">{inr(grandTotal.commission)}</p>
@@ -609,15 +771,84 @@ function ByDoctorView({
   );
 }
 
+// "Why this amount?" drill-down — a click-to-open breakdown of exactly how a
+// single test row's commission was derived: price → (VIP stripped) → base →
+// × rate = expected → − referral discount = actual, plus any hold reason.
+function WhyCommissionPopover({
+  row, settings,
+}: {
+  row: PatientRow;
+  settings: { vipPct: number; commissionDiscountMode: string };
+}) {
+  const discountGiven = Math.max(0, row.grossCommission - row.commission);
+  const Line = ({ label, value, strong, tone }: { label: string; value: string; strong?: boolean; tone?: "muted" | "amber" | "rose" }) => (
+    <div className="flex items-center justify-between gap-6 text-xs">
+      <span className={tone === "muted" ? "text-muted-foreground" : ""}>{label}</span>
+      <span className={`font-mono tabular-nums ${strong ? "font-bold" : ""} ${tone === "amber" ? "text-amber-700 dark:text-amber-500" : tone === "rose" ? "text-rose-600 dark:text-rose-400" : ""}`}>{value}</span>
+    </div>
+  );
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="ml-1 inline-flex align-middle text-muted-foreground/60 hover:text-amber-600 transition-colors"
+          title="Why this amount?"
+          aria-label="Why this amount?"
+        >
+          <HelpCircle size={13} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-72 p-3 text-left">
+        <p className="text-xs font-semibold mb-2 flex items-center gap-1.5">
+          <HelpCircle size={13} className="text-amber-600" /> How this commission was calculated
+        </p>
+        <div className="space-y-1">
+          <Line label="Test price" value={inr(row.price)} tone="muted" />
+          {row.vipAdjusted && (
+            <>
+              <Line label={`VIP surcharge removed (${settings.vipPct}%)`} value={`−${inr(row.price - row.commissionBase)}`} tone="rose" />
+              <Line label="Commission base" value={inr(row.commissionBase)} />
+            </>
+          )}
+          <div className="my-1.5 border-t border-border" />
+          <Line label={`Rule: ${row.ruleName} (${fmtRate(row.ruleType, row.ruleValue)})`} value="" tone="muted" />
+          <Line label="Expected commission" value={inr(row.grossCommission)} />
+          {discountGiven > 0.005 && (
+            <Line
+              label={settings.commissionDiscountMode === "none" ? "Referral discount given" : "Less: bill-discount deduction"}
+              value={`−${inr(discountGiven)}`}
+              tone="rose"
+            />
+          )}
+          <div className="my-1.5 border-t border-border" />
+          <Line label="Actual commission" value={inr(row.commission)} strong tone="amber" />
+          {row.held && (
+            <div className="mt-2 rounded-md bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 px-2 py-1.5">
+              <p className="text-[11px] text-rose-600 dark:text-rose-400 flex items-start gap-1">
+                <Clock size={11} className="mt-px shrink-0" />
+                <span><span className="font-semibold">On hold — not payable yet.</span> {row.holdReason ?? "Eligibility condition not met."}</span>
+              </p>
+            </div>
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function DoctorBlock({
-  entry, index, cols, colCount,
+  entry, index, cols, colCount, discountFmt, settings,
 }: {
   entry: DoctorEntry;
   index: number;
   cols: ColFlags;
   colCount: number;
+  discountFmt: DiscountFmt;
+  settings: { vipPct: number; commissionDiscountMode: string };
 }) {
   const label = ALPHA[index] ?? String(index + 1);
+  const docDiscount = uniqueBillDiscount(entry.rows);
   return (
     <div className="bg-card border border-border rounded-xl overflow-hidden">
       {/* Doctor header */}
@@ -661,6 +892,7 @@ function DoctorBlock({
               {cols.category && <th className="text-left px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">Category</th>}
               {cols.rate     && <th className="text-center px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">Rate</th>}
               {cols.billAmount && <th className="text-right px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground whitespace-nowrap">Bill Amt</th>}
+              {cols.discount && <th className="text-center px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground whitespace-nowrap">Discount</th>}
               <th className="text-right px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground whitespace-nowrap">Commission</th>
             </tr>
           </thead>
@@ -679,17 +911,28 @@ function DoctorBlock({
                   </td>
                 )}
                 {cols.billAmount && <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{inr(row.price)}</td>}
-                <td className="px-4 py-2.5 text-right font-semibold text-amber-700 tabular-nums">{inr(row.commission)}</td>
+                {cols.discount && <td className="px-4 py-2.5 text-center tabular-nums text-muted-foreground">{row.billDiscount > 0 ? fmtDiscount(discountFmt, row.billDiscount, row.billSubtotal) : "—"}</td>}
+                <td className={`px-4 py-2.5 text-right font-semibold tabular-nums ${row.held ? "text-muted-foreground" : "text-amber-700"}`}>
+                  <span className="whitespace-nowrap">{inr(row.commission)}<WhyCommissionPopover row={row} settings={settings} /></span>
+                  {row.held && (
+                    <span className="block text-[10px] font-normal text-rose-500 leading-tight whitespace-nowrap">⏸ {row.holdReason ?? "On hold"}</span>
+                  )}
+                </td>
               </tr>
             ))}
             {/* Doctor total row */}
             <tr className="border-t-2 border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20">
-              <td className="px-4 py-3 font-bold text-xs uppercase tracking-wide" colSpan={colCount - (cols.billAmount ? 2 : 1)}>
+              <td className="px-4 py-3 font-bold text-xs uppercase tracking-wide" colSpan={colCount - ((cols.billAmount ? 1 : 0) + (cols.discount ? 1 : 0) + 1)}>
                 TOTAL
               </td>
               {cols.billAmount && (
                 <td className="px-4 py-3 text-right font-bold tabular-nums">
                   {inr(entry.totalRevenue)}
+                </td>
+              )}
+              {cols.discount && (
+                <td className="px-4 py-3 text-center font-bold tabular-nums">
+                  {docDiscount.discount > 0 ? fmtDiscount(discountFmt, docDiscount.discount, docDiscount.subtotal) : "—"}
                 </td>
               )}
               <td className="px-4 py-3 text-right font-bold text-base text-amber-700 tabular-nums">
@@ -710,20 +953,26 @@ type TestSummaryRow = {
   category: string;
   count: number;
   revenue: number;
-  commission: number;
+  commission: number;   // actual
+  expected: number;     // expected (pre-discount)
   ruleName: string;
   ruleType: string;
   ruleValue: number;
 };
 
+// Referral discount given up on commission, shown as a negative ₹ or an em dash.
+const fmtNegDiscount = (d: number) => (d > 0.005 ? `−${inr(d)}` : "—");
+
 function TestSummaryView({
   report,
   grandTotal,
   cols,
+  showBreakdown,
 }: {
   report: DoctorEntry[];
   grandTotal: ReportData["grandTotal"];
   cols: ColFlags;
+  showBreakdown: boolean;
 }) {
   return (
     <div className="space-y-6">
@@ -739,6 +988,7 @@ function TestSummaryView({
               count: 0,
               revenue: 0,
               commission: 0,
+              expected: 0,
               ruleName: row.ruleName,
               ruleType: row.ruleType,
               ruleValue: row.ruleValue,
@@ -747,6 +997,7 @@ function TestSummaryView({
           byTest[row.testId].count++;
           byTest[row.testId].revenue += row.price;
           byTest[row.testId].commission += row.commission;
+          byTest[row.testId].expected += row.grossCommission;
         }
         const rows = Object.values(byTest).sort((a, b) => b.commission - a.commission);
         const label = ALPHA[idx] ?? String(idx + 1);
@@ -764,7 +1015,7 @@ function TestSummaryView({
                 </p>
               </div>
               <div className="text-right">
-                <p className="text-xs text-muted-foreground">Commission</p>
+                <p className="text-xs text-muted-foreground">{showBreakdown ? "Actual Commission" : "Commission"}</p>
                 <p className="font-semibold text-sm text-amber-600">{inr(entry.totalCommission)}</p>
               </div>
             </div>
@@ -773,8 +1024,16 @@ function TestSummaryView({
                 <tr className="border-b border-border bg-muted/20">
                   <th className="text-left px-5 py-2.5 text-xs font-semibold uppercase text-muted-foreground">Test Name</th>
                   <th className="text-center px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">No. of Tests</th>
-                  {cols.rate && <th className="text-center px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">% / Fixed</th>}
-                  <th className="text-right px-5 py-2.5 text-xs font-semibold uppercase text-muted-foreground">Total Amount</th>
+                  {!showBreakdown && cols.rate && <th className="text-center px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">% / Fixed</th>}
+                  {showBreakdown ? (
+                    <>
+                      <th className="text-right px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">Expected</th>
+                      <th className="text-right px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">Discount</th>
+                      <th className="text-right px-5 py-2.5 text-xs font-semibold uppercase text-muted-foreground">Actual</th>
+                    </>
+                  ) : (
+                    <th className="text-right px-5 py-2.5 text-xs font-semibold uppercase text-muted-foreground">Total Amount</th>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -782,7 +1041,7 @@ function TestSummaryView({
                   <tr key={row.testId} className={`border-b border-border last:border-0 ${i % 2 === 1 ? "bg-muted/10" : ""}`}>
                     <td className="px-5 py-2.5 font-medium">{row.testName}</td>
                     <td className="px-4 py-2.5 text-center tabular-nums">{row.count}</td>
-                    {cols.rate && (
+                    {!showBreakdown && cols.rate && (
                       <td className="px-4 py-2.5 text-center tabular-nums text-muted-foreground">
                         {row.ruleType === "percentage"
                           ? <span className="inline-flex items-center gap-0.5">{row.ruleValue}<span className="text-xs">%</span></span>
@@ -790,12 +1049,31 @@ function TestSummaryView({
                         }
                       </td>
                     )}
-                    <td className="px-5 py-2.5 text-right font-semibold text-amber-700 tabular-nums">{inr(row.commission)}</td>
+                    {showBreakdown ? (
+                      <>
+                        <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{inr(row.expected)}</td>
+                        <td className="px-4 py-2.5 text-right tabular-nums text-rose-600">{fmtNegDiscount(row.expected - row.commission)}</td>
+                        <td className="px-5 py-2.5 text-right font-semibold text-amber-700 tabular-nums">{inr(row.commission)}</td>
+                      </>
+                    ) : (
+                      <td className="px-5 py-2.5 text-right font-semibold text-amber-700 tabular-nums">{inr(row.commission)}</td>
+                    )}
                   </tr>
                 ))}
                 <tr className="border-t-2 border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700">
-                  <td className="px-5 py-3 font-bold text-sm" colSpan={cols.rate ? 3 : 2}>Total →</td>
-                  <td className="px-5 py-3 text-right font-bold text-base text-amber-700 tabular-nums">{inr(entry.totalCommission)}</td>
+                  {showBreakdown ? (
+                    <>
+                      <td className="px-5 py-3 font-bold text-sm" colSpan={2}>Total →</td>
+                      <td className="px-4 py-3 text-right font-bold tabular-nums">{inr(entry.totalExpectedCommission)}</td>
+                      <td className="px-4 py-3 text-right font-bold tabular-nums text-rose-600">{fmtNegDiscount(entry.totalDiscount)}</td>
+                      <td className="px-5 py-3 text-right font-bold text-base text-amber-700 tabular-nums">{inr(entry.totalCommission)}</td>
+                    </>
+                  ) : (
+                    <>
+                      <td className="px-5 py-3 font-bold text-sm" colSpan={cols.rate ? 3 : 2}>Total →</td>
+                      <td className="px-5 py-3 text-right font-bold text-base text-amber-700 tabular-nums">{inr(entry.totalCommission)}</td>
+                    </>
+                  )}
                 </tr>
               </tbody>
             </table>
@@ -809,14 +1087,33 @@ function TestSummaryView({
             <p className="text-xs text-muted-foreground">{grandTotal.doctors} doctors · {grandTotal.orders} orders</p>
           </div>
           <div className="flex gap-10">
-            <div className="text-right">
-              <p className="text-xs text-muted-foreground">Total Revenue</p>
-              <p className="font-bold text-base">{inr(grandTotal.revenue)}</p>
-            </div>
-            <div className="text-right">
-              <p className="text-xs text-muted-foreground">Commission Payable</p>
-              <p className="font-bold text-base text-amber-600">{inr(grandTotal.commission)}</p>
-            </div>
+            {showBreakdown ? (
+              <>
+                <div className="text-right">
+                  <p className="text-xs text-muted-foreground">Expected</p>
+                  <p className="font-bold text-base">{inr(grandTotal.expectedCommission)}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs text-muted-foreground">Discount</p>
+                  <p className="font-bold text-base text-rose-600">{fmtNegDiscount(grandTotal.discount)}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs text-muted-foreground">Actual Commission</p>
+                  <p className="font-bold text-base text-amber-600">{inr(grandTotal.commission)}</p>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="text-right">
+                  <p className="text-xs text-muted-foreground">Total Revenue</p>
+                  <p className="font-bold text-base">{inr(grandTotal.revenue)}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs text-muted-foreground">Commission Payable</p>
+                  <p className="font-bold text-base text-amber-600">{inr(grandTotal.commission)}</p>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -826,11 +1123,12 @@ function TestSummaryView({
 
 // ── Consolidated view ─────────────────────────────────────────────────────────
 function ConsolidatedView({
-  report, grandTotal, cols,
+  report, grandTotal, cols, showBreakdown,
 }: {
   report: DoctorEntry[];
   grandTotal: ReportData["grandTotal"];
   cols: ColFlags;
+  showBreakdown: boolean;
 }) {
   return (
     <div className="bg-card border border-border rounded-xl overflow-hidden">
@@ -844,7 +1142,15 @@ function ConsolidatedView({
             {cols.billAmount && (
               <th className="text-right px-5 py-2.5 text-xs font-semibold uppercase text-muted-foreground">Total Billed</th>
             )}
-            <th className="text-right px-5 py-2.5 text-xs font-semibold uppercase text-muted-foreground">Commission</th>
+            {showBreakdown ? (
+              <>
+                <th className="text-right px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">Expected</th>
+                <th className="text-right px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">Discount</th>
+                <th className="text-right px-5 py-2.5 text-xs font-semibold uppercase text-muted-foreground">Actual</th>
+              </>
+            ) : (
+              <th className="text-right px-5 py-2.5 text-xs font-semibold uppercase text-muted-foreground">Commission</th>
+            )}
           </tr>
         </thead>
         <tbody>
@@ -862,7 +1168,15 @@ function ConsolidatedView({
               {cols.billAmount && (
                 <td className="px-5 py-3 text-right tabular-nums text-muted-foreground">{inr(entry.totalRevenue)}</td>
               )}
-              <td className="px-5 py-3 text-right font-semibold text-amber-700 tabular-nums">{inr(entry.totalCommission)}</td>
+              {showBreakdown ? (
+                <>
+                  <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">{inr(entry.totalExpectedCommission)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-rose-600">{fmtNegDiscount(entry.totalDiscount)}</td>
+                  <td className="px-5 py-3 text-right font-semibold text-amber-700 tabular-nums">{inr(entry.totalCommission)}</td>
+                </>
+              ) : (
+                <td className="px-5 py-3 text-right font-semibold text-amber-700 tabular-nums">{inr(entry.totalCommission)}</td>
+              )}
             </tr>
           ))}
           <tr className="border-t-2 border-amber-400 dark:border-amber-600 bg-amber-100 dark:bg-amber-900/40">
@@ -872,7 +1186,15 @@ function ConsolidatedView({
             {cols.billAmount && (
               <td className="px-5 py-3 text-right font-bold tabular-nums">{inr(grandTotal.revenue)}</td>
             )}
-            <td className="px-5 py-3 text-right font-bold text-amber-700 tabular-nums text-base">{inr(grandTotal.commission)}</td>
+            {showBreakdown ? (
+              <>
+                <td className="px-4 py-3 text-right font-bold tabular-nums">{inr(grandTotal.expectedCommission)}</td>
+                <td className="px-4 py-3 text-right font-bold tabular-nums text-rose-600">{fmtNegDiscount(grandTotal.discount)}</td>
+                <td className="px-5 py-3 text-right font-bold text-amber-700 tabular-nums text-base">{inr(grandTotal.commission)}</td>
+              </>
+            ) : (
+              <td className="px-5 py-3 text-right font-bold text-amber-700 tabular-nums text-base">{inr(grandTotal.commission)}</td>
+            )}
           </tr>
         </tbody>
       </table>

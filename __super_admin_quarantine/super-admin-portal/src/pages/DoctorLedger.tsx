@@ -15,10 +15,12 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   ArrowLeft, Search, RefreshCw, Download, IndianRupee, AlertCircle,
-  TrendingUp, Users, Wallet, Receipt, Trash2, Plus, X, BookOpen,
+  TrendingUp, Users, Wallet, Receipt, Trash2, Plus, X, BookOpen, Clock,
+  RotateCcw, FileText,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { saAuthHeaders } from "@/lib/saApi";
+import { exportDoctorStatementPdf, type StatementDetail } from "@/lib/exportDoctorStatementPdf";
 import {
   useGetDoctorLedgerSummary,
   useGetDoctorLedgerDetail,
@@ -212,10 +214,27 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
     }
   };
 
+  const exportStatement = async (currentDetail: DoctorLedgerDetail) => {
+    try {
+      await exportDoctorStatementPdf(currentDetail as unknown as StatementDetail, {
+        generatedAt: new Date().toLocaleString("en-IN"),
+      });
+    } catch (err) {
+      toast({ title: "Statement export failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    }
+  };
+
+  // Only eligible (non-held) commission is payable. dueWindow / outstanding are
+  // already computed from payable-only totals server-side, so the "eligible due"
+  // is simply the outstanding (falling back to the window figure).
+  const eligibleDue = detail
+    ? (detail.summary.outstanding > 0 ? detail.summary.outstanding : detail.summary.dueWindow)
+    : 0;
+  const heldNow = detail ? ((detail.summary as { totalHeld?: number }).totalHeld ?? 0) : 0;
+  const payAmt = Number(payForm.amount) || 0;
+
   const prefillFullDue = () => {
-    if (!detail) return;
-    const due = detail.summary.outstanding > 0 ? detail.summary.outstanding : detail.summary.dueWindow;
-    if (due > 0) setPayForm(p => ({ ...p, amount: due.toFixed(2) }));
+    if (eligibleDue > 0) setPayForm(p => ({ ...p, amount: eligibleDue.toFixed(2) }));
   };
 
   const totals = data?.totals ?? { doctors: 0, earnedWindow: 0, paidWindow: 0, dueWindow: 0, outstanding: 0 };
@@ -234,12 +253,13 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
         </div>
 
         {/* KPI strip */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
           <KpiCard icon={<Users size={16} />} label="Doctors" value={String(totals.doctors)} />
           <KpiCard icon={<TrendingUp size={16} />} label="Earned (window)" value={inr(totals.earnedWindow)} />
           <KpiCard icon={<Wallet size={16} />} label="Paid (window)" value={inr(totals.paidWindow)} />
           <KpiCard icon={<IndianRupee size={16} />} label="Due (window)" value={inr(totals.dueWindow)} tone={totals.dueWindow > 0 ? "warn" : "ok"} />
           <KpiCard icon={<AlertCircle size={16} />} label="Outstanding (lifetime)" value={inr(totals.outstanding)} tone={totals.outstanding > 0 ? "danger" : "ok"} />
+          <KpiCard icon={<Clock size={16} />} label="On Hold (window)" value={inr((totals as { heldWindow?: number }).heldWindow ?? 0)} />
         </div>
 
         {/* Filters */}
@@ -363,12 +383,68 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
             <div className="py-12 text-center text-muted-foreground">Loading ledger…</div>
           ) : !detail ? null : (
             <div className="space-y-4">
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                 <SummaryTile label="Earned (window)" value={inr(detail.summary.totalEarned)} />
                 <SummaryTile label="Paid (window)" value={inr(detail.summary.totalPaid)} tone="ok" />
                 <SummaryTile label="Due (window)" value={inr(detail.summary.dueWindow)} tone={detail.summary.dueWindow > 0 ? "warn" : "ok"} />
                 <SummaryTile label="Outstanding (life)" value={inr(detail.summary.outstanding)} tone={detail.summary.outstanding > 0 ? "danger" : "ok"} />
+                <SummaryTile label="On Hold (window)" value={inr((detail.summary as { totalHeld?: number }).totalHeld ?? 0)} />
               </div>
+
+              {(() => {
+                const heldOrders = (((detail as { earnedOrders?: ReadonlyArray<{ orderNumber: string; commission: number; held?: boolean; holdReason?: string | null }> }).earnedOrders) ?? []).filter(o => o.held);
+                if (heldOrders.length === 0) return null;
+                return (
+                  <div className="rounded-xl border border-rose-200 bg-rose-50/60 dark:bg-rose-950/20 dark:border-rose-900 p-3">
+                    <div className="flex items-center gap-1.5 mb-1.5 text-rose-700 dark:text-rose-400">
+                      <Clock size={14} />
+                      <p className="text-xs font-semibold">On Hold — not payable yet ({heldOrders.length} order{heldOrders.length === 1 ? "" : "s"})</p>
+                    </div>
+                    <div className="space-y-0.5 max-h-40 overflow-y-auto">
+                      {heldOrders.map((o) => (
+                        <div key={o.orderNumber} className="flex items-center justify-between gap-3 text-xs">
+                          <span className="font-mono text-muted-foreground truncate">{o.orderNumber}</span>
+                          <span className="text-rose-600 dark:text-rose-400 truncate flex-1">{o.holdReason ?? "On hold"}</span>
+                          <span className="font-mono tabular-nums">{inr(o.commission)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {(() => {
+                // Clawbacks: commission that was previously eligible (payable) and has
+                // since been reversed to On Hold — a bill cancelled/refunded after the
+                // fact. Informational: it already dropped out of the due total, this
+                // just explains why.
+                const clawbacks = ((detail as { clawbacks?: ReadonlyArray<{ orderId: number; amount: number; reason: string; at: string }> }).clawbacks) ?? [];
+                const totalClawback = (detail.summary as { totalClawback?: number }).totalClawback ?? 0;
+                if (clawbacks.length === 0) return null;
+                return (
+                  <div className="rounded-xl border border-amber-300 bg-amber-50/70 dark:bg-amber-950/20 dark:border-amber-900 p-3">
+                    <div className="flex items-center justify-between gap-2 mb-1.5 text-amber-700 dark:text-amber-400">
+                      <div className="flex items-center gap-1.5">
+                        <RotateCcw size={14} />
+                        <p className="text-xs font-semibold">Reversed after eligibility ({clawbacks.length} order{clawbacks.length === 1 ? "" : "s"})</p>
+                      </div>
+                      <span className="text-xs font-mono tabular-nums">−{inr(totalClawback)}</span>
+                    </div>
+                    <div className="space-y-0.5 max-h-40 overflow-y-auto">
+                      {clawbacks.map((c) => (
+                        <div key={c.orderId} className="flex items-center justify-between gap-3 text-xs">
+                          <span className="font-mono text-muted-foreground truncate">#{c.orderId}</span>
+                          <span className="text-amber-700 dark:text-amber-400 truncate flex-1">{c.reason}</span>
+                          <span className="font-mono tabular-nums">{inr(c.amount)}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="mt-1.5 text-[10px] text-amber-600/80 dark:text-amber-500/70">
+                      Already excluded from Due / Outstanding. Shown for audit — if any amount was already paid out, recover it on the next payout.
+                    </p>
+                  </div>
+                );
+              })()}
 
               <div className="flex flex-wrap items-center gap-2">
                 <Button onClick={() => setPayDialogOpen(true)}>
@@ -376,6 +452,9 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
                 </Button>
                 <Button variant="outline" onClick={() => detail && exportCSV(detail)}>
                   <Download size={14} className="mr-1" /> Export CSV
+                </Button>
+                <Button variant="outline" onClick={() => detail && exportStatement(detail)}>
+                  <FileText size={14} className="mr-1" /> Statement PDF
                 </Button>
                 <div className="flex-1" />
                 <span className="text-xs text-muted-foreground">
@@ -476,14 +555,29 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
                   onChange={e => setPayForm(p => ({ ...p, amount: e.target.value }))}
                   placeholder="0.00"
                 />
-                <Button type="button" variant="outline" size="sm" onClick={prefillFullDue} disabled={!detail}>
-                  Full due
+                <Button type="button" variant="outline" size="sm" onClick={prefillFullDue} disabled={!detail || eligibleDue <= 0}>
+                  Pay eligible due
                 </Button>
               </div>
               {detail && (
                 <div className="text-xs text-muted-foreground mt-1">
-                  Window due: <span className="font-mono">{inr(detail.summary.dueWindow)}</span>
-                  {" · "}Outstanding: <span className="font-mono">{inr(detail.summary.outstanding)}</span>
+                  Eligible due: <span className="font-mono font-semibold text-foreground">{inr(eligibleDue)}</span>
+                  {" · "}Window: <span className="font-mono">{inr(detail.summary.dueWindow)}</span>
+                  {heldNow > 0 && (
+                    <>
+                      {" · "}
+                      <span className="text-rose-600 dark:text-rose-400">On hold (not payable): <span className="font-mono">{inr(heldNow)}</span></span>
+                    </>
+                  )}
+                </div>
+              )}
+              {detail && payAmt > 0 && payAmt > eligibleDue + 0.005 && (
+                <div className="mt-1.5 flex items-start gap-1.5 rounded-md border border-amber-300 bg-amber-50/70 dark:bg-amber-950/20 dark:border-amber-900 px-2 py-1.5 text-[11px] text-amber-700 dark:text-amber-400">
+                  <AlertCircle size={13} className="mt-px shrink-0" />
+                  <span>
+                    This is <span className="font-mono font-semibold">{inr(payAmt - eligibleDue)}</span> more than the eligible due
+                    {heldNow > 0 ? " — held commission is not payable until its condition is met." : "."} You can still record it if intentional (e.g. an advance).
+                  </span>
                 </div>
               )}
             </div>

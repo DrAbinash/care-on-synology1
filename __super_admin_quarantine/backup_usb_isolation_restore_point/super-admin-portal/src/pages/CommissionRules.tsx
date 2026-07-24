@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/select";
 import { useForm } from "react-hook-form";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Plus, Trash2, Stethoscope, Star, Percent, Search } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Stethoscope, Star, Percent, Search, Download, Upload, Clock } from "lucide-react";
 import {
   useListCommissionRules,
   useCreateCommissionRule,
@@ -47,6 +47,19 @@ const DISCOUNT_MODE_OPTIONS: { value: DiscountMode; label: string; description: 
   { value: "none", label: "No Deduction", description: "Bill discounts do not affect commission payouts (default behaviour)." },
   { value: "deduct", label: "Deduct from Commission", description: "Bill discount is subtracted from the doctor's commission. Commission is floored at \u20b90 — no negative payouts." },
   { value: "deduct_rollover", label: "Deduct with Rollover", description: "Bill discount is subtracted from commission. If discount exceeds commission the balance goes negative and is carried over (deducted from future payouts)." },
+];
+
+type EligibilityPolicy =
+  | "bill_created" | "report_finalized" | "report_delivered"
+  | "min_amount_collected" | "full_payment_collected" | "collected_ge_commission";
+
+const ELIGIBILITY_OPTIONS: { value: EligibilityPolicy; label: string; description: string; recommended?: boolean }[] = [
+  { value: "bill_created", label: "Bill Created", description: "Payable as soon as billed (legacy behaviour)." },
+  { value: "report_finalized", label: "Report Finalized", description: "Payable once every test's report is verified / finalized." },
+  { value: "report_delivered", label: "Report Delivered", description: "Payable once every test's report is delivered to the patient." },
+  { value: "min_amount_collected", label: "Minimum Amount Collected", description: "Payable once collections on the bill reach the minimum amount set below." },
+  { value: "full_payment_collected", label: "Full Payment Collected", description: "Payable only once the bill is fully paid (no outstanding dues).", recommended: true },
+  { value: "collected_ge_commission", label: "Collected ≥ Commission", description: "Payable once collections on the bill cover at least the commission amount." },
 ];
 
 function TestPicker({
@@ -120,6 +133,8 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
   const [ruleOpen, setRuleOpen] = useState(false);
   const [editRule, setEditRule] = useState<CommissionRule | null>(null);
   const [discountModeSaving, setDiscountModeSaving] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const { data: doctorsData } = useQuery({
     queryKey: SA_DOCTORS_KEY,
@@ -146,30 +161,41 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
     queryFn: async () => {
       const res = await fetch("/api/super-admin/commission-settings", { headers: saAuthHeaders() });
       if (!res.ok) throw new Error("Failed to load commission settings");
-      return res.json() as Promise<{ commissionDiscountMode: DiscountMode }>;
+      return res.json() as Promise<{ commissionDiscountMode: DiscountMode; commissionEligibilityPolicy: EligibilityPolicy; commissionEligibilityMinAmount: number }>;
     },
   });
   const currentDiscountMode: DiscountMode = commissionSettingsData?.commissionDiscountMode ?? "none";
+  const currentEligibilityPolicy: EligibilityPolicy = commissionSettingsData?.commissionEligibilityPolicy ?? "full_payment_collected";
+  const currentEligibilityMinAmount: number = commissionSettingsData?.commissionEligibilityMinAmount ?? 0;
+  const [minAmountInput, setMinAmountInput] = useState<string>("");
+  useEffect(() => { setMinAmountInput(String(currentEligibilityMinAmount)); }, [currentEligibilityMinAmount]);
 
-  const saveDiscountMode = async (mode: DiscountMode) => {
+  const patchCommissionSettings = async (body: Record<string, unknown>, successMsg: string) => {
     setDiscountModeSaving(true);
     try {
       const res = await fetch("/api/super-admin/commission-settings", {
         method: "PATCH",
         headers: { ...saAuthHeaders(), "Content-Type": "application/json" },
-        body: JSON.stringify({ commissionDiscountMode: mode }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error((body as { error?: string }).error ?? "Failed to save");
+        const b = await res.json().catch(() => ({}));
+        throw new Error((b as { error?: string }).error ?? "Failed to save");
       }
       queryClient.invalidateQueries({ queryKey: SA_COMMISSION_SETTINGS_KEY });
-      toast({ title: "Commission discount setting saved" });
+      toast({ title: successMsg });
     } catch (e) {
       toast({ title: "Save failed", description: String(e), variant: "destructive" });
     } finally {
       setDiscountModeSaving(false);
     }
+  };
+  const saveDiscountMode = (mode: DiscountMode) => patchCommissionSettings({ commissionDiscountMode: mode }, "Commission discount setting saved");
+  const saveEligibilityPolicy = (policy: EligibilityPolicy) => patchCommissionSettings({ commissionEligibilityPolicy: policy }, "Commission eligibility policy saved");
+  const saveEligibilityMinAmount = () => {
+    const n = Number(minAmountInput);
+    if (!Number.isFinite(n) || n < 0) { toast({ title: "Enter a valid amount", variant: "destructive" }); return; }
+    patchCommissionSettings({ commissionEligibilityMinAmount: n }, "Minimum amount saved");
   };
 
   const { data: rulesData, queryKey: rulesQueryKey, error: rulesError } = useListCommissionRules(
@@ -271,6 +297,69 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
 
   const isSaving = createMutation.isPending || updateMutation.isPending;
 
+  // ── CSV export ──────────────────────────────────────────────────────────────
+  // Uses a raw fetch (not a generated hook) because the endpoint streams a
+  // text/csv file. The unified export covers ALL doctors with commission info —
+  // explicit rules AND doctors who only carry a profile default commission.
+  // Passing doctorId scopes it to the currently selected doctor; "All Doctors"
+  // exports everyone.
+  const handleExport = async () => {
+    try {
+      const params = new URLSearchParams();
+      if (selectedDoctorId != null) params.set("doctorId", String(selectedDoctorId));
+      const qs = params.toString();
+      const res = await fetch(`/api/commission/rules/export${qs ? `?${qs}` : ""}`, { headers: saAuthHeaders() });
+      if (!res.ok) throw new Error(`Export failed: ${res.status} ${res.statusText}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const who = selectedDoctorId != null
+        ? (doctors.find((d) => d.id === selectedDoctorId)?.name.replace(/[^a-z0-9]+/gi, "_") ?? "doctor")
+        : "all";
+      a.download = `commission_rules_${who}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      toast({ title: "Export failed", description: String(e), variant: "destructive" });
+    }
+  };
+
+  // ── CSV import ──────────────────────────────────────────────────────────────
+  const handleImportFile = async (file: File) => {
+    setImporting(true);
+    try {
+      const text = await file.text();
+      const res = await fetch("/api/commission/rules/import", {
+        method: "POST",
+        headers: { ...saAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ csv: text }),
+      });
+      const body = await res.json().catch(() => ({} as Record<string, unknown>));
+      const created = Number((body as { created?: number }).created ?? 0);
+      const skipped = Number((body as { skipped?: number }).skipped ?? 0);
+      if (!res.ok && created === 0) {
+        throw new Error((body as { error?: string }).error ?? `Import failed: ${res.status}`);
+      }
+      const errs = ((body as { errors?: { line: number; error: string }[] }).errors ?? []);
+      toast({
+        title: `Imported ${created} rule${created === 1 ? "" : "s"}`,
+        description: skipped
+          ? `${skipped} row${skipped === 1 ? "" : "s"} skipped — ${errs.slice(0, 3).map((e) => `line ${e.line}: ${e.error}`).join("; ")}${errs.length > 3 ? " …" : ""}`
+          : "All rows imported successfully.",
+        variant: skipped ? "destructive" : undefined,
+      });
+      queryClient.invalidateQueries({ queryKey: rulesQueryKey });
+      queryClient.invalidateQueries({ queryKey: SA_DOCTORS_KEY });
+    } catch (e) {
+      toast({ title: "Import failed", description: String(e), variant: "destructive" });
+    } finally {
+      setImporting(false);
+    }
+  };
+
   return (
     <div className="min-h-screen w-full bg-background">
       <div className="max-w-6xl mx-auto p-4 sm:p-6 space-y-5">
@@ -326,6 +415,60 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
           </div>
         </div>
 
+        {/* Commission eligibility (payout hold) */}
+        <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center flex-shrink-0">
+              <Clock size={15} className="text-emerald-600" />
+            </div>
+            <div>
+              <p className="font-semibold text-sm leading-tight">Commission Eligibility (Payout Hold)</p>
+              <p className="text-xs text-muted-foreground">Decides when a calculated commission becomes payable. Until then it is held — kept out of Doctor Due — and auto-released once the condition is met. Cancelled bills are never payable.</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {ELIGIBILITY_OPTIONS.map((opt) => {
+              const isActive = currentEligibilityPolicy === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  disabled={discountModeSaving}
+                  onClick={() => { if (!isActive) saveEligibilityPolicy(opt.value); }}
+                  className={[
+                    "text-left rounded-lg border px-4 py-3 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    isActive
+                      ? "border-primary bg-primary/5 ring-1 ring-primary"
+                      : "border-border hover:border-primary/40 hover:bg-muted/50",
+                    discountModeSaving ? "opacity-60 cursor-not-allowed" : "cursor-pointer",
+                  ].join(" ")}
+                >
+                  <div className="flex items-center justify-between mb-1 gap-1">
+                    <span className="text-xs font-semibold">{opt.label}</span>
+                    {isActive
+                      ? <Badge className="text-[10px] px-1.5 py-0 h-4">Active</Badge>
+                      : opt.recommended
+                      ? <Badge className="text-[10px] px-1.5 py-0 h-4 bg-emerald-100 text-emerald-700">Recommended</Badge>
+                      : null}
+                  </div>
+                  <p className="text-[11px] text-muted-foreground leading-snug">{opt.description}</p>
+                </button>
+              );
+            })}
+          </div>
+
+          {currentEligibilityPolicy === "min_amount_collected" && (
+            <div className="flex flex-wrap items-end gap-2 pt-1">
+              <div>
+                <Label className="text-xs">Minimum amount collected (₹)</Label>
+                <Input type="number" min="0" step="any" value={minAmountInput} onChange={(e) => setMinAmountInput(e.target.value)} className="mt-1 w-40" />
+              </div>
+              <Button size="sm" variant="outline" disabled={discountModeSaving} onClick={saveEligibilityMinAmount}>Save amount</Button>
+              <p className="text-[11px] text-muted-foreground pb-2">Current: {inr(currentEligibilityMinAmount)}</p>
+            </div>
+          )}
+        </div>
+
         {/* Doctor selector + add button */}
         <div className="flex flex-wrap gap-3 items-center justify-between bg-card border border-border rounded-xl p-4">
           <div className="w-72">
@@ -338,11 +481,26 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
               </SelectContent>
             </Select>
           </div>
-          {selectedDoctorId && (
-            <Button onClick={() => { setEditRule(null); reset({ type: "percentage", scope: "all", isExclusive: "false" }); setRuleOpen(true); }}>
-              <Plus size={14} className="mr-1" /> Add Rule
+          <div className="flex flex-wrap gap-2 items-center">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleImportFile(f); e.target.value = ""; }}
+            />
+            <Button variant="outline" size="sm" onClick={handleExport} className="gap-1.5">
+              <Download size={14} /> Export CSV
             </Button>
-          )}
+            <Button variant="outline" size="sm" disabled={importing} onClick={() => fileInputRef.current?.click()} className="gap-1.5">
+              <Upload size={14} /> {importing ? "Importing…" : "Import CSV"}
+            </Button>
+            {selectedDoctorId && (
+              <Button onClick={() => { setEditRule(null); reset({ type: "percentage", scope: "all", isExclusive: "false" }); setRuleOpen(true); }}>
+                <Plus size={14} className="mr-1" /> Add Rule
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* Doctor cards / rules table */}

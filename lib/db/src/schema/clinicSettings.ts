@@ -112,6 +112,18 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   //   "deduct_rollover" — commission = commission - bill_discount (can go negative;
   //                       negative amount is deducted from doctor's overall ledger)
   commissionDiscountMode: text("commission_discount_mode").notNull().default("none"),
+  // Referral commission eligibility policy (super-admin configurable) — decides
+  // WHEN a calculated commission becomes payable. Until the condition is met the
+  // commission is held (excluded from Doctor Due / payout totals) and released
+  // automatically once it is satisfied. Cancelled bills are never payable.
+  //   "bill_created"           — payable as soon as billed (legacy behaviour)
+  //   "report_finalized"       — payable once the order's report(s) are verified
+  //   "report_delivered"       — payable once the order's report(s) are delivered
+  //   "min_amount_collected"   — payable once collected >= commissionEligibilityMinAmount
+  //   "full_payment_collected" — payable once the bill is fully paid (balance 0)
+  //   "collected_ge_commission"— payable once collected >= the commission amount
+  commissionEligibilityPolicy: text("commission_eligibility_policy").notNull().default("full_payment_collected"),
+  commissionEligibilityMinAmount: numeric("commission_eligibility_min_amount", { precision: 10, scale: 2 }).notNull().default("0"),
   // Network access control — when enabled, non-admin staff can only log in from
   // the hospital LAN (private RFC-1918 IP ranges). Extra trusted IPs can be added
   // as a JSON array of strings in lanAllowedIps.

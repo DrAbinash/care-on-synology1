@@ -4,10 +4,13 @@
  */
 
 import { saveAs } from "file-saver";
-import type { CommissionDoctorEntry, CommissionTestGroupRow } from "@workspace/api-client-react";
+import type { CommissionDoctorEntryX, CommissionTestGroupRowX } from "@/lib/exportCommissionPdf";
 
 const INR = (n: number) =>
   "Rs." + n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// Referral discount given up on commission — shown as a negative amount.
+const NEGD = (d: number) => (d > 0.005 ? "-" + INR(d) : "-");
 
 const ALPHA = ["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z"];
 
@@ -17,16 +20,17 @@ export type CommissionWordMeta = {
   to: string;
   doctorFilter: string;
   generatedAt: string;
-  grandTotal: { doctors: number; orders: number; revenue: number; commission: number };
+  grandTotal: { doctors: number; orders: number; revenue: number; commission: number; expectedCommission?: number; discount?: number };
 };
 
 export type CommissionWordMode = "standard" | "doctor-test" | "consolidated";
 
 export async function exportCommissionWord(
-  report: CommissionDoctorEntry[],
+  report: CommissionDoctorEntryX[],
   meta: CommissionWordMeta,
   mode: CommissionWordMode,
   showPercentFixed: boolean,
+  showBreakdown = false,
 ): Promise<void> {
   const {
     Document, Packer, Paragraph, Table, TableRow, TableCell,
@@ -112,31 +116,57 @@ export async function exportCommissionWord(
   // ── Body: mode-specific ──────────────────────────────────────────────────
   if (mode === "consolidated") {
     const grandComm = report.reduce((s, e) => s + e.totalCommission, 0);
+    const grandExp = report.reduce((s, e) => s + (e.totalExpected ?? e.totalCommission), 0);
+    const grandDisc = report.reduce((s, e) => s + (e.totalDiscount ?? 0), 0);
 
     const rows = [
       new TableRow({
         tableHeader: true,
-        children: [
-          makeCell("#",                     { bold: true, bg: HEADER_BG }),
-          makeCell("Referral Doctor Name",  { bold: true, bg: HEADER_BG }),
-          makeCell("Commission Amount",     { bold: true, bg: HEADER_BG, align: AlignmentType.RIGHT }),
-        ],
+        children: showBreakdown
+          ? [
+              makeCell("#",                    { bold: true, bg: HEADER_BG }),
+              makeCell("Referral Doctor Name", { bold: true, bg: HEADER_BG }),
+              makeCell("Expected",             { bold: true, bg: HEADER_BG, align: AlignmentType.RIGHT }),
+              makeCell("Discount",             { bold: true, bg: HEADER_BG, align: AlignmentType.RIGHT }),
+              makeCell("Actual",               { bold: true, bg: HEADER_BG, align: AlignmentType.RIGHT }),
+            ]
+          : [
+              makeCell("#",                     { bold: true, bg: HEADER_BG }),
+              makeCell("Referral Doctor Name",  { bold: true, bg: HEADER_BG }),
+              makeCell("Commission Amount",     { bold: true, bg: HEADER_BG, align: AlignmentType.RIGHT }),
+            ],
       }),
       ...report.map((e, i) =>
         new TableRow({
-          children: [
-            makeCell(`${ALPHA[i]?.toUpperCase() ?? String(i + 1)})`),
-            makeCell(e.doctor.name),
-            makeCell(INR(e.totalCommission), { align: AlignmentType.RIGHT }),
-          ],
+          children: showBreakdown
+            ? [
+                makeCell(`${ALPHA[i]?.toUpperCase() ?? String(i + 1)})`),
+                makeCell(e.doctor.name),
+                makeCell(INR(e.totalExpected ?? e.totalCommission), { align: AlignmentType.RIGHT }),
+                makeCell(NEGD(e.totalDiscount ?? 0), { align: AlignmentType.RIGHT }),
+                makeCell(INR(e.totalCommission), { align: AlignmentType.RIGHT }),
+              ]
+            : [
+                makeCell(`${ALPHA[i]?.toUpperCase() ?? String(i + 1)})`),
+                makeCell(e.doctor.name),
+                makeCell(INR(e.totalCommission), { align: AlignmentType.RIGHT }),
+              ],
         }),
       ),
       new TableRow({
-        children: [
-          makeCell("",            { bg: AMBER_BG }),
-          makeCell("Grand Total", { bold: true, bg: AMBER_BG }),
-          makeCell(INR(grandComm), { bold: true, bg: AMBER_BG, color: "B45309", align: AlignmentType.RIGHT }),
-        ],
+        children: showBreakdown
+          ? [
+              makeCell("",            { bg: AMBER_BG }),
+              makeCell("Grand Total", { bold: true, bg: AMBER_BG }),
+              makeCell(INR(grandExp),  { bold: true, bg: AMBER_BG, align: AlignmentType.RIGHT }),
+              makeCell(NEGD(grandDisc), { bold: true, bg: AMBER_BG, align: AlignmentType.RIGHT }),
+              makeCell(INR(grandComm), { bold: true, bg: AMBER_BG, color: "B45309", align: AlignmentType.RIGHT }),
+            ]
+          : [
+              makeCell("",            { bg: AMBER_BG }),
+              makeCell("Grand Total", { bold: true, bg: AMBER_BG }),
+              makeCell(INR(grandComm), { bold: true, bg: AMBER_BG, color: "B45309", align: AlignmentType.RIGHT }),
+            ],
       }),
     ];
 
@@ -149,7 +179,7 @@ export async function exportCommissionWord(
 
     const dataRows: InstanceType<typeof TableRow>[] = [];
     for (const e of report) {
-      const testRows: CommissionTestGroupRow[] = Array.isArray(e.grouped) ? e.grouped : [];
+      const testRows: CommissionTestGroupRowX[] = Array.isArray(e.grouped) ? e.grouped : [];
       for (const row of testRows) {
         dataRows.push(new TableRow({
           children: [
@@ -196,7 +226,7 @@ export async function exportCommissionWord(
     // ── Standard: per-doctor sections ───────────────────────────────────────
     for (const [idx, section] of report.entries()) {
       const label = `${ALPHA[idx]?.toUpperCase() ?? String(idx + 1)})`;
-      const testRows: CommissionTestGroupRow[] = Array.isArray(section.grouped) ? section.grouped : [];
+      const testRows: CommissionTestGroupRowX[] = Array.isArray(section.grouped) ? section.grouped : [];
 
       children.push(
         new Paragraph({
@@ -211,7 +241,15 @@ export async function exportCommissionWord(
         }),
       );
 
-      const headerCols = showPercentFixed
+      const headerCols = showBreakdown
+        ? [
+            makeCell("Test Name",   { bold: true, bg: HEADER_BG }),
+            makeCell("No of Tests", { bold: true, bg: HEADER_BG, align: AlignmentType.CENTER }),
+            makeCell("Expected",    { bold: true, bg: HEADER_BG, align: AlignmentType.RIGHT }),
+            makeCell("Discount",    { bold: true, bg: HEADER_BG, align: AlignmentType.RIGHT }),
+            makeCell("Actual",      { bold: true, bg: HEADER_BG, align: AlignmentType.RIGHT }),
+          ]
+        : showPercentFixed
         ? [
             makeCell("Test Name",    { bold: true, bg: HEADER_BG }),
             makeCell("No of Tests",  { bold: true, bg: HEADER_BG, align: AlignmentType.CENTER }),
@@ -230,8 +268,17 @@ export async function exportCommissionWord(
           const rateLabel = r.ruleType === "percentage"
             ? `${r.ruleValue}%`
             : INR(r.ruleValue);
+          const exp = r.expected ?? r.commission;
           return new TableRow({
-            children: showPercentFixed
+            children: showBreakdown
+              ? [
+                  makeCell(r.testName),
+                  makeCell(String(r.count), { align: AlignmentType.CENTER }),
+                  makeCell(INR(exp),        { align: AlignmentType.RIGHT }),
+                  makeCell(NEGD(exp - r.commission), { align: AlignmentType.RIGHT }),
+                  makeCell(INR(r.commission), { align: AlignmentType.RIGHT }),
+                ]
+              : showPercentFixed
               ? [
                   makeCell(r.testName),
                   makeCell(String(r.count), { align: AlignmentType.CENTER }),
@@ -246,7 +293,15 @@ export async function exportCommissionWord(
           });
         }),
         new TableRow({
-          children: showPercentFixed
+          children: showBreakdown
+            ? [
+                makeCell("", { bg: AMBER_BG }),
+                makeCell("Total \u2192", { bold: true, bg: AMBER_BG, align: AlignmentType.RIGHT }),
+                makeCell(INR(section.totalExpected ?? section.totalCommission), { bold: true, bg: AMBER_BG, align: AlignmentType.RIGHT }),
+                makeCell(NEGD(section.totalDiscount ?? 0), { bold: true, bg: AMBER_BG, align: AlignmentType.RIGHT }),
+                makeCell(INR(section.totalCommission), { bold: true, bg: AMBER_BG, color: "B45309", align: AlignmentType.RIGHT }),
+              ]
+            : showPercentFixed
             ? [
                 makeCell("", { bg: AMBER_BG }),
                 makeCell("", { bg: AMBER_BG }),
@@ -270,15 +325,29 @@ export async function exportCommissionWord(
     // Grand total row when multiple doctors
     if (report.length > 1) {
       const grandComm = report.reduce((s, e) => s + e.totalCommission, 0);
-      const cols = showPercentFixed ? 4 : 3;
-      const grandCells: InstanceType<typeof TableCell>[] = [];
-      for (let i = 0; i < cols - 2; i++) {
-        grandCells.push(makeCell("", { bg: AMBER_BG }));
+      const label = `Grand Total — ${g.doctors} doctor${g.doctors !== 1 ? "s" : ""}  ·  ${g.orders} orders`;
+      let grandCells: InstanceType<typeof TableCell>[];
+      if (showBreakdown) {
+        const grandExp = report.reduce((s, e) => s + (e.totalExpected ?? e.totalCommission), 0);
+        const grandDisc = report.reduce((s, e) => s + (e.totalDiscount ?? 0), 0);
+        grandCells = [
+          makeCell(label, { bold: true, bg: AMBER_BG }),
+          makeCell("", { bg: AMBER_BG }),
+          makeCell(INR(grandExp),  { bold: true, bg: AMBER_BG, align: AlignmentType.RIGHT }),
+          makeCell(NEGD(grandDisc), { bold: true, bg: AMBER_BG, align: AlignmentType.RIGHT }),
+          makeCell(INR(grandComm), { bold: true, bg: AMBER_BG, color: "B45309", align: AlignmentType.RIGHT }),
+        ];
+      } else {
+        const cols = showPercentFixed ? 4 : 3;
+        grandCells = [];
+        for (let i = 0; i < cols - 2; i++) {
+          grandCells.push(makeCell("", { bg: AMBER_BG }));
+        }
+        grandCells.push(
+          makeCell(label, { bold: true, bg: AMBER_BG }),
+          makeCell(INR(grandComm), { bold: true, bg: AMBER_BG, color: "B45309", align: AlignmentType.RIGHT }),
+        );
       }
-      grandCells.push(
-        makeCell(`Grand Total — ${g.doctors} doctor${g.doctors !== 1 ? "s" : ""}  ·  ${g.orders} orders`, { bold: true, bg: AMBER_BG }),
-        makeCell(INR(grandComm), { bold: true, bg: AMBER_BG, color: "B45309", align: AlignmentType.RIGHT }),
-      );
       children.push(
         new Table({
           width: { size: 100, type: WidthType.PERCENTAGE },

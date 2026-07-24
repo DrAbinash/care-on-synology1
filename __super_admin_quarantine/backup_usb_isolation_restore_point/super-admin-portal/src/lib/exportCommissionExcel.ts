@@ -5,8 +5,8 @@
  */
 
 import { saveAs } from "file-saver";
-import type { CommissionDoctorEntry, CommissionTestGroupRow } from "@workspace/api-client-react";
-import type { CommissionPdfMeta, CommissionReportMode } from "@/lib/exportCommissionPdf";
+import type { CommissionTestGroupRow } from "@workspace/api-client-react";
+import type { CommissionPdfMeta, CommissionReportMode, CommissionDoctorEntryX, CommissionTestGroupRowX } from "@/lib/exportCommissionPdf";
 
 type RCell = {
   value?: string | number | null;
@@ -21,6 +21,9 @@ type RCell = {
 const HEADER_BG = "#F3F4F6";
 const AMBER_BG  = "#FEF3C7";
 const ALPHA = ["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z"];
+
+const expOf = (r: CommissionTestGroupRowX) => r.expected ?? r.commission;
+const discOf = (r: CommissionTestGroupRowX) => (r.expected ?? r.commission) - r.commission;
 
 function headerRows(meta: CommissionPdfMeta, spanCount: number): RCell[][] {
   const span = spanCount;
@@ -54,9 +57,10 @@ function summaryStatsRows(meta: CommissionPdfMeta): RCell[][] {
 
 // ── Standard mode ─────────────────────────────────────────────────────────────
 function buildStandardSheets(
-  report: CommissionDoctorEntry[],
+  report: CommissionDoctorEntryX[],
   meta: CommissionPdfMeta,
   showPercentFixed: boolean,
+  showBreakdown: boolean,
 ): { summaryData: RCell[][]; detailData: RCell[][] } {
   const summaryData: RCell[][] = [
     ...headerRows(meta, 7),
@@ -85,21 +89,29 @@ function buildStandardSheets(
   }
 
   const detailData: RCell[][] = [
-    ...headerRows(meta, showPercentFixed ? 4 : 3),
+    ...headerRows(meta, showBreakdown ? 5 : showPercentFixed ? 4 : 3),
   ];
 
   for (const [idx, s] of report.entries()) {
     const label = `${ALPHA[idx]?.toUpperCase() ?? String(idx + 1)})`;
-    const rows: CommissionTestGroupRow[] = Array.isArray(s.grouped) ? s.grouped : [];
+    const rows: CommissionTestGroupRowX[] = Array.isArray(s.grouped) ? s.grouped : [];
 
     detailData.push([
       { value: `${label} ${s.doctor.name}`, fontWeight: "bold" },
       { value: s.doctor.specialization ?? "", type: String },
       { value: `${s.orderCount} orders`, type: String },
-      ...(showPercentFixed ? [{ value: `Eff. Rate: ${s.effectiveRate}%`, type: String } as RCell] : []),
+      ...(showPercentFixed && !showBreakdown ? [{ value: `Eff. Rate: ${s.effectiveRate}%`, type: String } as RCell] : []),
     ]);
 
-    if (showPercentFixed) {
+    if (showBreakdown) {
+      detailData.push([
+        { value: "Test Name",      fontWeight: "bold", backgroundColor: HEADER_BG },
+        { value: "No of Tests",    fontWeight: "bold", backgroundColor: HEADER_BG, align: "center" },
+        { value: "Expected (Rs.)", fontWeight: "bold", backgroundColor: HEADER_BG, align: "right"  },
+        { value: "Discount (Rs.)", fontWeight: "bold", backgroundColor: HEADER_BG, align: "right"  },
+        { value: "Actual (Rs.)",   fontWeight: "bold", backgroundColor: HEADER_BG, align: "right"  },
+      ]);
+    } else if (showPercentFixed) {
       detailData.push([
         { value: "Test Name",          fontWeight: "bold", backgroundColor: HEADER_BG },
         { value: "No of Tests",        fontWeight: "bold", backgroundColor: HEADER_BG, align: "center" },
@@ -116,7 +128,15 @@ function buildStandardSheets(
 
     for (const r of rows) {
       const rateLabel = r.ruleType === "percentage" ? `${r.ruleValue}%` : `Rs.${r.ruleValue}`;
-      if (showPercentFixed) {
+      if (showBreakdown) {
+        detailData.push([
+          { value: r.testName,   type: String },
+          { value: r.count,      align: "center" },
+          { value: expOf(r),     align: "right" },
+          { value: discOf(r),    align: "right" },
+          { value: r.commission, align: "right" },
+        ]);
+      } else if (showPercentFixed) {
         detailData.push([
           { value: r.testName, type: String },
           { value: r.count,    align: "center" },
@@ -133,7 +153,13 @@ function buildStandardSheets(
     }
 
     detailData.push([
-      ...(showPercentFixed
+      ...(showBreakdown
+        ? [null as RCell,
+           { value: "Total \u2192", fontWeight: "bold", backgroundColor: AMBER_BG, align: "right" } as RCell,
+           { value: s.totalExpected ?? s.totalCommission, fontWeight: "bold", backgroundColor: AMBER_BG, align: "right" } as RCell,
+           { value: s.totalDiscount ?? 0, fontWeight: "bold", backgroundColor: AMBER_BG, align: "right" } as RCell,
+           { value: s.totalCommission, fontWeight: "bold", backgroundColor: AMBER_BG, color: "#B45309", align: "right" } as RCell]
+        : showPercentFixed
         ? [null as RCell, null as RCell,
            { value: "Total \u2192", fontWeight: "bold", backgroundColor: AMBER_BG, align: "right" } as RCell,
            { value: s.totalCommission, fontWeight: "bold", backgroundColor: AMBER_BG, color: "#B45309", align: "right" } as RCell]
@@ -146,14 +172,26 @@ function buildStandardSheets(
 
   if (report.length > 1) {
     const grandComm = report.reduce((s, e) => s + e.totalCommission, 0);
-    detailData.push([
-      { value: "Grand Total", fontWeight: "bold", backgroundColor: AMBER_BG },
-      ...(showPercentFixed
-        ? [null as RCell, null as RCell,
-           { value: grandComm, fontWeight: "bold", backgroundColor: AMBER_BG, color: "#B45309", align: "right" } as RCell]
-        : [null as RCell,
-           { value: grandComm, fontWeight: "bold", backgroundColor: AMBER_BG, color: "#B45309", align: "right" } as RCell]),
-    ]);
+    if (showBreakdown) {
+      const grandExp = report.reduce((s, e) => s + (e.totalExpected ?? e.totalCommission), 0);
+      const grandDisc = report.reduce((s, e) => s + (e.totalDiscount ?? 0), 0);
+      detailData.push([
+        { value: "Grand Total", fontWeight: "bold", backgroundColor: AMBER_BG },
+        null,
+        { value: grandExp,  fontWeight: "bold", backgroundColor: AMBER_BG, align: "right" },
+        { value: grandDisc, fontWeight: "bold", backgroundColor: AMBER_BG, align: "right" },
+        { value: grandComm, fontWeight: "bold", backgroundColor: AMBER_BG, color: "#B45309", align: "right" },
+      ]);
+    } else {
+      detailData.push([
+        { value: "Grand Total", fontWeight: "bold", backgroundColor: AMBER_BG },
+        ...(showPercentFixed
+          ? [null as RCell, null as RCell,
+             { value: grandComm, fontWeight: "bold", backgroundColor: AMBER_BG, color: "#B45309", align: "right" } as RCell]
+          : [null as RCell,
+             { value: grandComm, fontWeight: "bold", backgroundColor: AMBER_BG, color: "#B45309", align: "right" } as RCell]),
+      ]);
+    }
   }
 
   return { summaryData, detailData };
@@ -161,7 +199,7 @@ function buildStandardSheets(
 
 // ── Doctor-Test mode ──────────────────────────────────────────────────────────
 function buildDoctorTestSheets(
-  report: CommissionDoctorEntry[],
+  report: CommissionDoctorEntryX[],
   meta: CommissionPdfMeta,
 ): { summaryData: RCell[][]; detailData: RCell[][] } {
   const summaryData: RCell[][] = [
@@ -229,31 +267,59 @@ function buildDoctorTestSheets(
 
 // ── Consolidated mode ─────────────────────────────────────────────────────────
 function buildConsolidatedSheets(
-  report: CommissionDoctorEntry[],
+  report: CommissionDoctorEntryX[],
   meta: CommissionPdfMeta,
+  showBreakdown: boolean,
 ): { summaryData: RCell[][]; detailData: RCell[][] } {
   const grandComm = report.reduce((s, e) => s + e.totalCommission, 0);
+  const grandExp = report.reduce((s, e) => s + (e.totalExpected ?? e.totalCommission), 0);
+  const grandDisc = report.reduce((s, e) => s + (e.totalDiscount ?? 0), 0);
 
   // Summary sheet: one row per doctor with high-level totals
   const summaryData: RCell[][] = [
-    ...headerRows(meta, 4),
+    ...headerRows(meta, showBreakdown ? 6 : 4),
     ...summaryStatsRows(meta),
-    [
-      { value: "#",                    fontWeight: "bold", backgroundColor: HEADER_BG },
-      { value: "Referral Doctor Name", fontWeight: "bold", backgroundColor: HEADER_BG },
-      { value: "Specialization",       fontWeight: "bold", backgroundColor: HEADER_BG },
-      { value: "Commission Amount",    fontWeight: "bold", backgroundColor: HEADER_BG, align: "right" },
-    ],
-    ...report.map((e, i) => [
-      { value: `${ALPHA[i]?.toUpperCase() ?? String(i + 1)})`, type: String } as RCell,
-      { value: e.doctor.name, type: String } as RCell,
-      { value: e.doctor.specialization ?? "", type: String } as RCell,
-      { value: e.totalCommission, align: "right" } as RCell,
-    ]),
-    [
-      { value: "Grand Total", fontWeight: "bold", backgroundColor: AMBER_BG, span: 3 },
-      { value: grandComm, fontWeight: "bold", backgroundColor: AMBER_BG, color: "#B45309", align: "right" },
-    ],
+    showBreakdown
+      ? [
+          { value: "#",                    fontWeight: "bold", backgroundColor: HEADER_BG },
+          { value: "Referral Doctor Name", fontWeight: "bold", backgroundColor: HEADER_BG },
+          { value: "Specialization",       fontWeight: "bold", backgroundColor: HEADER_BG },
+          { value: "Expected (Rs.)",       fontWeight: "bold", backgroundColor: HEADER_BG, align: "right" },
+          { value: "Discount (Rs.)",       fontWeight: "bold", backgroundColor: HEADER_BG, align: "right" },
+          { value: "Actual (Rs.)",         fontWeight: "bold", backgroundColor: HEADER_BG, align: "right" },
+        ]
+      : [
+          { value: "#",                    fontWeight: "bold", backgroundColor: HEADER_BG },
+          { value: "Referral Doctor Name", fontWeight: "bold", backgroundColor: HEADER_BG },
+          { value: "Specialization",       fontWeight: "bold", backgroundColor: HEADER_BG },
+          { value: "Commission Amount",    fontWeight: "bold", backgroundColor: HEADER_BG, align: "right" },
+        ],
+    ...report.map((e, i) => (showBreakdown
+      ? [
+          { value: `${ALPHA[i]?.toUpperCase() ?? String(i + 1)})`, type: String } as RCell,
+          { value: e.doctor.name, type: String } as RCell,
+          { value: e.doctor.specialization ?? "", type: String } as RCell,
+          { value: e.totalExpected ?? e.totalCommission, align: "right" } as RCell,
+          { value: e.totalDiscount ?? 0, align: "right" } as RCell,
+          { value: e.totalCommission, align: "right" } as RCell,
+        ]
+      : [
+          { value: `${ALPHA[i]?.toUpperCase() ?? String(i + 1)})`, type: String } as RCell,
+          { value: e.doctor.name, type: String } as RCell,
+          { value: e.doctor.specialization ?? "", type: String } as RCell,
+          { value: e.totalCommission, align: "right" } as RCell,
+        ])),
+    showBreakdown
+      ? [
+          { value: "Grand Total", fontWeight: "bold", backgroundColor: AMBER_BG, span: 3 },
+          { value: grandExp,  fontWeight: "bold", backgroundColor: AMBER_BG, align: "right" },
+          { value: grandDisc, fontWeight: "bold", backgroundColor: AMBER_BG, align: "right" },
+          { value: grandComm, fontWeight: "bold", backgroundColor: AMBER_BG, color: "#B45309", align: "right" },
+        ]
+      : [
+          { value: "Grand Total", fontWeight: "bold", backgroundColor: AMBER_BG, span: 3 },
+          { value: grandComm, fontWeight: "bold", backgroundColor: AMBER_BG, color: "#B45309", align: "right" },
+        ],
   ];
 
   // Detailed Report sheet: per-doctor test-level breakdown
@@ -293,10 +359,11 @@ function buildConsolidatedSheets(
 
 // ── Public export ─────────────────────────────────────────────────────────────
 export async function exportCommissionExcel(
-  report: CommissionDoctorEntry[],
+  report: CommissionDoctorEntryX[],
   meta: CommissionPdfMeta,
   mode: CommissionReportMode,
   showPercentFixed: boolean,
+  showBreakdown = false,
 ): Promise<void> {
   const writeXlsxFile = (await import("write-excel-file/browser")).default as unknown as (
     sheets: Array<{ data: RCell[][]; sheet?: string; columns?: { width: number }[] }>
@@ -306,17 +373,19 @@ export async function exportCommissionExcel(
   let detailData: RCell[][];
 
   if (mode === "consolidated") {
-    ({ summaryData, detailData } = buildConsolidatedSheets(report, meta));
+    ({ summaryData, detailData } = buildConsolidatedSheets(report, meta, showBreakdown));
   } else if (mode === "doctor-test") {
     ({ summaryData, detailData } = buildDoctorTestSheets(report, meta));
   } else {
-    ({ summaryData, detailData } = buildStandardSheets(report, meta, showPercentFixed));
+    ({ summaryData, detailData } = buildStandardSheets(report, meta, showPercentFixed, showBreakdown));
   }
 
   const sheets =
     mode === "consolidated"
     ? [
-        { data: summaryData, sheet: "Summary",         columns: [{ width: 6 }, { width: 28 }, { width: 20 }, { width: 20 }] },
+        { data: summaryData, sheet: "Summary",         columns: showBreakdown
+            ? [{ width: 6 }, { width: 28 }, { width: 20 }, { width: 16 }, { width: 16 }, { width: 16 }]
+            : [{ width: 6 }, { width: 28 }, { width: 20 }, { width: 20 }] },
         { data: detailData,  sheet: "Detailed Report", columns: [{ width: 28 }, { width: 28 }, { width: 14 }, { width: 20 }] },
       ]
     : mode === "doctor-test"
@@ -326,7 +395,9 @@ export async function exportCommissionExcel(
       ]
     : [
         { data: summaryData, sheet: "Summary",         columns: [{ width: 28 }, { width: 20 }, { width: 10 }, { width: 10 }, { width: 16 }, { width: 18 }, { width: 12 }] },
-        { data: detailData,  sheet: "Detailed Report", columns: showPercentFixed
+        { data: detailData,  sheet: "Detailed Report", columns: showBreakdown
+            ? [{ width: 30 }, { width: 12 }, { width: 16 }, { width: 16 }, { width: 16 }]
+            : showPercentFixed
             ? [{ width: 30 }, { width: 14 }, { width: 14 }, { width: 18 }]
             : [{ width: 30 }, { width: 14 }, { width: 18 }] },
       ];

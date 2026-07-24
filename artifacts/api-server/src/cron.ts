@@ -5,6 +5,8 @@ import {
   doctorsTable, commissionRulesTable, orderTestsTable, ordersTable, testsTable,
   dicomNodesTable, dicomPullJobsTable, whatsappSettingsTable,
   expensesTable, patientsTable,
+  clinicSettingsTable, commissionStatusEventsTable,
+  patientReportsTable, radiologyStudiesTable, testTokensTable,
 } from "@workspace/db/schema";
 import { sendDailySummaryEmail, sendCommissionMonthEndEmail, sendMonthlyAuditEmail } from "./email";
 import { runBooksSanity } from "./routes/books-sanity";
@@ -31,6 +33,7 @@ const firedToday = new Set<string>();
 export function startCronScheduler() {
   scheduleDaily();
   scheduleMonthEndCommission();
+  scheduleCommissionReconcile();
   scheduleDicomAutoPull();
   scheduleMonthlyAudit();
   scheduleBankingAutoSync();
@@ -924,6 +927,174 @@ function scheduleMonthEndCommission() {
   });
 
   console.log("[cron] Month-end commission scheduler started (fires at 20:00 on last day of month)");
+}
+
+// ── Commission eligibility reconcile — hold/release audit trail + auto-release ──
+// Recomputes each recent order's referral commission + eligibility under the
+// clinic's commission_eligibility_policy and appends an event to
+// commission_status_events whenever an order goes On Hold or is Released. This is
+// the auto-release mechanism (a held commission's release is recorded here once
+// its payment/report condition is met) and the complete transition audit trail.
+// Self-contained (mirrors the plugin's commission.ts / doctor-ledger.ts helpers).
+const RECONCILE_LOOKBACK_DAYS = 180;
+
+function reconcileParseArr<T = unknown>(s: string | null | undefined): T[] {
+  if (!s) return [];
+  try { const v = JSON.parse(s); return Array.isArray(v) ? (v as T[]) : []; } catch { return []; }
+}
+
+function reconcileFindRule(
+  testId: number,
+  category: string | null,
+  rules: (typeof commissionRulesTable.$inferSelect)[],
+): (typeof commissionRulesTable.$inferSelect) | undefined {
+  const testMatch = (r: typeof commissionRulesTable.$inferSelect) => !!r.testIds && reconcileParseArr<number>(r.testIds).includes(testId);
+  const catMatch = (r: typeof commissionRulesTable.$inferSelect) => category !== null && !!r.categories && reconcileParseArr<string>(r.categories).includes(category || "");
+  const specific = (r: typeof commissionRulesTable.$inferSelect) => (r.scope === "test" && testMatch(r)) || (r.scope === "category" && catMatch(r));
+  let m = rules.find(r => r.isActive && r.isExclusive && specific(r));
+  if (!m) m = rules.find(r => r.isActive && specific(r));
+  if (!m) m = rules.find(r => r.isActive && r.scope === "all");
+  return m;
+}
+
+function reconcileTestCommission(
+  ot: { id: number; testId: number; price: string },
+  test: { category: string | null } | undefined,
+  rules: (typeof commissionRulesTable.$inferSelect)[],
+  doctor: typeof doctorsTable.$inferSelect,
+  vipIds: Set<number>,
+  vipPct: number,
+): number {
+  let price = Number(ot.price);
+  if (ot.id && vipIds.has(ot.id) && vipPct) price = price / (1 + vipPct / 100);
+  const m = reconcileFindRule(ot.testId, test ? (test.category ?? "") : null, rules);
+  if (m) { const v = Number(m.value); return m.type === "percentage" ? (price * v) / 100 : v; }
+  const dv = Number(doctor.defaultCommission);
+  if (dv > 0) return (doctor.defaultCommissionType || "percentage") === "percentage" ? (price * dv) / 100 : dv;
+  return 0;
+}
+
+function reconcileHold(opts: {
+  policy: string; minAmount: number; hasBill: boolean; billStatus: string | null;
+  paid: number; balance: number; reportFinalized: boolean; reportDelivered: boolean; commissionAmount: number;
+}): { held: boolean; reason: string | null } {
+  const rs = (n: number) => `Rs.${Math.round(n).toLocaleString("en-IN")}`;
+  if (opts.billStatus === "cancelled") return { held: true, reason: "Bill cancelled" };
+  if (!opts.hasBill) return { held: true, reason: "Not billed" };
+  switch (opts.policy) {
+    case "report_finalized": return opts.reportFinalized ? { held: false, reason: null } : { held: true, reason: "Report not finalized" };
+    case "report_delivered": return opts.reportDelivered ? { held: false, reason: null } : { held: true, reason: "Report not delivered" };
+    case "min_amount_collected": return opts.paid + 0.005 >= opts.minAmount ? { held: false, reason: null } : { held: true, reason: `Collected ${rs(opts.paid)} < min ${rs(opts.minAmount)}` };
+    case "full_payment_collected": return opts.balance <= 0.005 ? { held: false, reason: null } : { held: true, reason: `Outstanding dues ${rs(opts.balance)}` };
+    case "collected_ge_commission": return opts.paid + 0.005 >= opts.commissionAmount ? { held: false, reason: null } : { held: true, reason: `Collected ${rs(opts.paid)} < commission ${rs(opts.commissionAmount)}` };
+    default: return { held: false, reason: null };
+  }
+}
+
+async function fireCommissionReconcile(): Promise<{ transitions: number }> {
+  const [clinic] = await db.select({
+    policy: clinicSettingsTable.commissionEligibilityPolicy,
+    minAmount: clinicSettingsTable.commissionEligibilityMinAmount,
+    vipPercentage: clinicSettingsTable.vipPercentage,
+  }).from(clinicSettingsTable).limit(1);
+  const policy = clinic?.policy ?? "full_payment_collected";
+  const minAmount = Number(clinic?.minAmount ?? 0);
+  const vipPct = clinic?.vipPercentage ? Number(clinic.vipPercentage) : 50;
+  const needsReport = policy === "report_finalized" || policy === "report_delivered";
+
+  const since = new Date();
+  since.setDate(since.getDate() - RECONCILE_LOOKBACK_DAYS);
+
+  const orders = await db.select().from(ordersTable).where(gte(ordersTable.createdAt, since));
+  const orderIds = orders.map(o => o.id);
+  if (!orderIds.length) return { transitions: 0 };
+
+  const [doctors, rules, tests, orderTests, bills, tokens, lastEvents] = await Promise.all([
+    db.select().from(doctorsTable),
+    db.select().from(commissionRulesTable),
+    db.select({ id: testsTable.id, category: testsTable.category }).from(testsTable),
+    db.select().from(orderTestsTable).where(and(inArray(orderTestsTable.orderId, orderIds), ne(orderTestsTable.status, "cancelled"))),
+    db.select({ orderId: billsTable.orderId, status: billsTable.status, paid: billsTable.paidAmount, balance: billsTable.balanceAmount }).from(billsTable).where(inArray(billsTable.orderId, orderIds)),
+    db.select({ orderTestId: testTokensTable.orderTestId }).from(testTokensTable).where(and(inArray(testTokensTable.orderId, orderIds), sql`${testTokensTable.priority} > 0`)),
+    db.select({ orderId: commissionStatusEventsTable.orderId, newStatus: commissionStatusEventsTable.newStatus, createdAt: commissionStatusEventsTable.createdAt }).from(commissionStatusEventsTable).where(inArray(commissionStatusEventsTable.orderId, orderIds)),
+  ]);
+  const testMap = new Map(tests.map(t => [t.id, { category: t.category }]));
+  const doctorMap = new Map(doctors.map(d => [d.id, d]));
+  const rulesByDoctor = new Map<number, (typeof commissionRulesTable.$inferSelect)[]>();
+  for (const r of rules) { const a = rulesByDoctor.get(r.doctorId) ?? []; a.push(r); rulesByDoctor.set(r.doctorId, a); }
+  const billByOrder = new Map<number, { status: string | null; paid: string; balance: string }>();
+  for (const b of bills) if (b.orderId != null) billByOrder.set(b.orderId, { status: b.status ?? null, paid: b.paid, balance: b.balance });
+  const vipIds = new Set(tokens.map(t => t.orderTestId).filter(Boolean) as number[]);
+
+  let reportStatus = new Map<number, { finalized: boolean; delivered: boolean }>();
+  if (needsReport) {
+    const activeByOrder = new Map<number, number[]>();
+    for (const ot of orderTests) { const a = activeByOrder.get(ot.orderId) ?? []; a.push(ot.id); activeByOrder.set(ot.orderId, a); }
+    const [prs, rss] = await Promise.all([
+      db.select({ orderTestId: patientReportsTable.orderTestId, status: patientReportsTable.status }).from(patientReportsTable).where(inArray(patientReportsTable.orderId, orderIds)),
+      db.select({ orderTestId: radiologyStudiesTable.orderTestId, status: radiologyStudiesTable.status }).from(radiologyStudiesTable).where(inArray(radiologyStudiesTable.orderId, orderIds)),
+    ]);
+    const fin = new Set<number>(), del = new Set<number>();
+    for (const r of prs) { if (r.orderTestId == null) continue; if (r.status === "verified" || r.status === "delivered") fin.add(r.orderTestId); if (r.status === "delivered") del.add(r.orderTestId); }
+    for (const r of rss) { if (r.orderTestId == null) continue; if (r.status === "reported_final" || r.status === "delivered") fin.add(r.orderTestId); if (r.status === "delivered") del.add(r.orderTestId); }
+    for (const [oid, ids] of activeByOrder) reportStatus.set(oid, { finalized: ids.length > 0 && ids.every(i => fin.has(i)), delivered: ids.length > 0 && ids.every(i => del.has(i)) });
+  }
+
+  const lastStatusByOrder = new Map<number, string>();
+  const lastAtByOrder = new Map<number, number>();
+  for (const e of lastEvents) {
+    const t = e.createdAt ? new Date(e.createdAt).getTime() : 0;
+    if (!lastAtByOrder.has(e.orderId) || t >= (lastAtByOrder.get(e.orderId) ?? 0)) { lastAtByOrder.set(e.orderId, t); lastStatusByOrder.set(e.orderId, e.newStatus); }
+  }
+
+  const toInsert: (typeof commissionStatusEventsTable.$inferInsert)[] = [];
+  for (const order of orders) {
+    if (order.doctorId == null) continue;
+    const doctor = doctorMap.get(order.doctorId);
+    if (!doctor) continue;
+    const ots = orderTests.filter(ot => ot.orderId === order.id);
+    if (!ots.length) continue;
+    const dRules = rulesByDoctor.get(order.doctorId) ?? [];
+    let raw = 0;
+    for (const ot of ots) raw += reconcileTestCommission(ot, testMap.get(ot.testId), dRules, doctor, vipIds, vipPct);
+    const bill = billByOrder.get(order.id);
+    const rep = reportStatus.get(order.id);
+    const { held, reason } = reconcileHold({
+      policy, minAmount,
+      hasBill: !!bill, billStatus: bill?.status ?? null,
+      paid: Number(bill?.paid ?? 0), balance: Number(bill?.balance ?? 0),
+      reportFinalized: rep?.finalized ?? false, reportDelivered: rep?.delivered ?? false,
+      commissionAmount: raw,
+    });
+    const newStatus = held ? "on_hold" : "eligible";
+    const last = lastStatusByOrder.get(order.id);
+    // Log only meaningful transitions: first hold, hold→release, release→hold.
+    const shouldLog = held ? last !== "on_hold" : last === "on_hold";
+    if (!shouldLog) continue;
+    toInsert.push({
+      orderId: order.id, doctorId: order.doctorId, billId: null,
+      commissionAmount: raw.toFixed(2), oldStatus: last ?? null, newStatus, policy, reason,
+    });
+  }
+
+  if (toInsert.length) {
+    await db.insert(commissionStatusEventsTable).values(toInsert);
+    console.log(`[cron] commission reconcile: ${toInsert.length} hold/release transition(s) recorded`);
+  }
+  return { transitions: toInsert.length };
+}
+
+function scheduleCommissionReconcile() {
+  // Hourly at minute 20 — records hold/release transitions and auto-releases.
+  cron.schedule("20 * * * *", async () => {
+    try { await fireCommissionReconcile(); }
+    catch (err) { console.error("[cron] commission reconcile failed:", err); }
+  });
+  console.log("[cron] Commission eligibility reconcile scheduler started (hourly)");
+}
+
+export async function runCommissionReconcileNow(): Promise<{ transitions: number }> {
+  return fireCommissionReconcile();
 }
 
 // force=true bypasses the dailySummaryEnabled toggle, used by the manual

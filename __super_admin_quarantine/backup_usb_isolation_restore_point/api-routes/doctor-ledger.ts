@@ -10,8 +10,11 @@ import {
   billsTable,
   clinicSettingsTable,
   testTokensTable,
+  patientReportsTable,
+  radiologyStudiesTable,
+  commissionStatusEventsTable,
 } from "@workspace/db/schema";
-import { eq, desc, and, gte, lte, inArray, sql } from "drizzle-orm";
+import { eq, desc, and, gte, lte, inArray, ne, sql } from "drizzle-orm";
 import {
   CreateDoctorPayoutBody,
   CreateDoctorPayoutParams,
@@ -77,12 +80,110 @@ function calcTestCommission(
   return { commission: 0, ruleName: "None" };
 }
 
+// Applies the clinic-level commissionDiscountMode to an order's raw commission
+// and its bill discount (mirrors commission.ts) so the ledger's earned figure is
+// the same NET commission the Referral Report shows — not the gross.
+function applyDiscountDeduction(rawCommission: number, billDiscount: number, mode: string): number {
+  if (mode === "deduct") return Math.max(0, rawCommission - billDiscount);
+  if (mode === "deduct_rollover") return rawCommission - billDiscount;
+  return rawCommission;
+}
+
+// ── Commission eligibility (payment / report-aware hold) ──────────────────────
+// Decides whether an order's calculated commission is payable yet, or held until
+// its condition is met. A cancelled bill is never payable. Mirrors commission.ts.
+type EligibilityConfig = { policy: string; minAmount: number };
+const NEEDS_REPORT_STATUS = (policy: string) => policy === "report_finalized" || policy === "report_delivered";
+
+function computeCommissionHold(opts: {
+  cfg: EligibilityConfig;
+  hasBill: boolean;
+  billStatus: string | null;
+  paidAmount: number;
+  balanceAmount: number;
+  reportFinalized: boolean;
+  reportDelivered: boolean;
+  commissionAmount: number;
+}): { held: boolean; reason: string | null } {
+  const rs = (n: number) => `Rs.${Math.round(n).toLocaleString("en-IN")}`;
+  if (opts.billStatus === "cancelled") return { held: true, reason: "Bill cancelled" };
+  if (!opts.hasBill) return { held: true, reason: "Not billed" };
+  switch (opts.cfg.policy) {
+    case "report_finalized":
+      return opts.reportFinalized ? { held: false, reason: null } : { held: true, reason: "Report not finalized" };
+    case "report_delivered":
+      return opts.reportDelivered ? { held: false, reason: null } : { held: true, reason: "Report not delivered" };
+    case "min_amount_collected":
+      return opts.paidAmount + 0.005 >= opts.cfg.minAmount
+        ? { held: false, reason: null }
+        : { held: true, reason: `Collected ${rs(opts.paidAmount)} < min ${rs(opts.cfg.minAmount)}` };
+    case "full_payment_collected":
+      return opts.balanceAmount <= 0.005
+        ? { held: false, reason: null }
+        : { held: true, reason: `Outstanding dues ${rs(opts.balanceAmount)}` };
+    case "collected_ge_commission":
+      return opts.paidAmount + 0.005 >= opts.commissionAmount
+        ? { held: false, reason: null }
+        : { held: true, reason: `Collected ${rs(opts.paidAmount)} < commission ${rs(opts.commissionAmount)}` };
+    case "bill_created":
+    default:
+      return { held: false, reason: null };
+  }
+}
+
+// Per-order report finalized/delivered flags (only queried for the report_*
+// policies). An order counts as finalized/delivered only when EVERY non-cancelled
+// order-test has a finalized/delivered report — pathology via patient_reports
+// (verified/delivered), radiology via radiology_studies (reported_final/delivered).
+async function fetchOrderReportStatus(
+  orderIds: number[],
+  activeOrderTestIdsByOrder: Map<number, number[]>,
+): Promise<Map<number, { finalized: boolean; delivered: boolean }>> {
+  const out = new Map<number, { finalized: boolean; delivered: boolean }>();
+  if (!orderIds.length) return out;
+  const [prs, rss] = await Promise.all([
+    db.select({ orderTestId: patientReportsTable.orderTestId, status: patientReportsTable.status })
+      .from(patientReportsTable).where(inArray(patientReportsTable.orderId, orderIds)),
+    db.select({ orderTestId: radiologyStudiesTable.orderTestId, status: radiologyStudiesTable.status })
+      .from(radiologyStudiesTable).where(inArray(radiologyStudiesTable.orderId, orderIds)),
+  ]);
+  const testFinal = new Set<number>();
+  const testDeliv = new Set<number>();
+  for (const r of prs) {
+    if (r.orderTestId == null) continue;
+    if (r.status === "verified" || r.status === "delivered") testFinal.add(r.orderTestId);
+    if (r.status === "delivered") testDeliv.add(r.orderTestId);
+  }
+  for (const r of rss) {
+    if (r.orderTestId == null) continue;
+    if (r.status === "reported_final" || r.status === "delivered") testFinal.add(r.orderTestId);
+    if (r.status === "delivered") testDeliv.add(r.orderTestId);
+  }
+  for (const [orderId, otIds] of activeOrderTestIdsByOrder) {
+    out.set(orderId, {
+      finalized: otIds.length > 0 && otIds.every(id => testFinal.has(id)),
+      delivered: otIds.length > 0 && otIds.every(id => testDeliv.has(id)),
+    });
+  }
+  return out;
+}
+
 // Compute commission earned per doctor over a date range (or lifetime when from/to omitted).
+// Splits each doctor's commission into payable (eligible now) and held (waiting on
+// the eligibility condition), per the clinic's commission_eligibility_policy.
 async function computeEarned(opts: { from?: string; to?: string; doctorId?: number }) {
   const [clinicRow] = await db.select({
     vipPercentage: clinicSettingsTable.vipPercentage,
+    commissionDiscountMode: clinicSettingsTable.commissionDiscountMode,
+    commissionEligibilityPolicy: clinicSettingsTable.commissionEligibilityPolicy,
+    commissionEligibilityMinAmount: clinicSettingsTable.commissionEligibilityMinAmount,
   }).from(clinicSettingsTable).limit(1);
   const vipPct = clinicRow?.vipPercentage ? Number(clinicRow.vipPercentage) : 50.00;
+  const discountMode = clinicRow?.commissionDiscountMode ?? "none";
+  const cfg: EligibilityConfig = {
+    policy: clinicRow?.commissionEligibilityPolicy ?? "full_payment_collected",
+    minAmount: Number(clinicRow?.commissionEligibilityMinAmount ?? 0),
+  };
 
   const doctors = await db.select().from(doctorsTable);
   const allRules = await db.select().from(commissionRulesTable);
@@ -96,7 +197,9 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
 
   const orders = await db.select().from(ordersTable).where(conditions.length ? and(...conditions) : undefined);
   const orderIds = orders.map(o => o.id);
-  const orderTests = orderIds.length ? await db.select().from(orderTestsTable).where(inArray(orderTestsTable.orderId, orderIds)) : [];
+  // Exclude cancelled tests from commission — matches commission.ts / the other
+  // report endpoints, otherwise cancelled tests inflate the ledger's earned total.
+  const orderTests = orderIds.length ? await db.select().from(orderTestsTable).where(and(inArray(orderTestsTable.orderId, orderIds), ne(orderTestsTable.status, "cancelled"))) : [];
 
   const tokens = orderIds.length
     ? await db.select({ orderTestId: testTokensTable.orderTestId })
@@ -105,39 +208,79 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
     : [];
   const vipOrderTestIds = new Set(tokens.map(t => t.orderTestId).filter(Boolean) as number[]);
 
+  // Bill payment state per order (for payment-based eligibility policies).
+  const billsForOrders = orderIds.length
+    ? await db.select({ orderId: billsTable.orderId, status: billsTable.status, paidAmount: billsTable.paidAmount, balanceAmount: billsTable.balanceAmount, discount: billsTable.discount })
+        .from(billsTable).where(inArray(billsTable.orderId, orderIds))
+    : [];
+  const billByOrderId = new Map<number, { status: string | null; paid: number; balance: number; discount: number }>();
+  for (const b of billsForOrders) {
+    if (b.orderId != null) billByOrderId.set(b.orderId, { status: b.status ?? null, paid: Number(b.paidAmount ?? 0), balance: Number(b.balanceAmount ?? 0), discount: Number(b.discount ?? 0) });
+  }
+
+  // Report finalized/delivered per order — only fetched for the report_* policies.
+  let reportStatusByOrder = new Map<number, { finalized: boolean; delivered: boolean }>();
+  if (NEEDS_REPORT_STATUS(cfg.policy)) {
+    const activeOrderTestIdsByOrder = new Map<number, number[]>();
+    for (const ot of orderTests) {
+      const arr = activeOrderTestIdsByOrder.get(ot.orderId) ?? [];
+      arr.push(ot.id);
+      activeOrderTestIdsByOrder.set(ot.orderId, arr);
+    }
+    reportStatusByOrder = await fetchOrderReportStatus(orderIds, activeOrderTestIdsByOrder);
+  }
+
   const filteredDoctors = opts.doctorId ? doctors.filter(d => d.id === opts.doctorId) : doctors;
 
   return filteredDoctors.map(doctor => {
     const doctorOrders = orders.filter(o => o.doctorId === doctor.id);
     const rules = allRules.filter(r => r.doctorId === doctor.id);
-    let totalRevenue = 0, totalCommission = 0;
-    const orderRows: { orderId: number; orderNumber: string; date: string; revenue: number; commission: number; testCount: number }[] = [];
+    let totalRevenue = 0, totalCommission = 0, payableCommission = 0, heldCommission = 0;
+    const orderRows: { orderId: number; orderNumber: string; date: string; revenue: number; commission: number; testCount: number; held: boolean; holdReason: string | null }[] = [];
     for (const order of doctorOrders) {
       const tests = orderTests.filter(ot => ot.orderId === order.id);
-      let r = 0, c = 0;
+      if (tests.length === 0) continue;
+      let r = 0, rawC = 0;
       for (const ot of tests) {
         const test = testMap.get(ot.testId);
         const { commission } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct);
         r += Number(ot.price);
-        c += commission;
+        rawC += commission;
       }
+      const bill = billByOrderId.get(order.id);
+      // Net of the bill-discount deduction — same NET the Referral Report pays.
+      const c = applyDiscountDeduction(rawC, bill?.discount ?? 0, discountMode);
+      const rep = reportStatusByOrder.get(order.id);
+      const { held, reason } = computeCommissionHold({
+        cfg,
+        hasBill: !!bill,
+        billStatus: bill?.status ?? null,
+        paidAmount: bill?.paid ?? 0,
+        balanceAmount: bill?.balance ?? 0,
+        reportFinalized: rep?.finalized ?? false,
+        reportDelivered: rep?.delivered ?? false,
+        commissionAmount: c,
+      });
       totalRevenue += r;
       totalCommission += c;
-      if (tests.length > 0) {
-        orderRows.push({
-          orderId: order.id,
-          orderNumber: order.orderNumber,
-          date: order.createdAt.toISOString().split("T")[0],
-          revenue: r,
-          commission: c,
-          testCount: tests.length,
-        });
-      }
+      if (held) heldCommission += c; else payableCommission += c;
+      orderRows.push({
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        date: order.createdAt.toISOString().split("T")[0],
+        revenue: r,
+        commission: c,
+        testCount: tests.length,
+        held,
+        holdReason: reason,
+      });
     }
     return {
       doctor,
       totalRevenue,
-      totalCommission,
+      totalCommission,        // gross — all orders in window (reference)
+      payableCommission,      // eligible now — this is what's owed / due
+      heldCommission,         // held pending the eligibility condition
       orderCount: doctorOrders.length,
       orders: orderRows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()),
     };
@@ -167,17 +310,20 @@ doctorLedgerRouter.get("/", async (req, res) => {
       .groupBy(doctorPayoutsTable.doctorId);
     const paidLifetime = new Map(paidLifetimeRows.map(r => [r.doctorId, Number(r.total)]));
 
-    // Lifetime earned for each doctor (for outstanding balance even when window is set)
+    // Lifetime payable/held per doctor (for outstanding + held columns even when a window is set)
     const lifetimeEarned = (from || to) ? await computeEarned({}) : earnedByDoctor;
-    const lifetimeEarnedMap = new Map(lifetimeEarned.map(r => [r.doctor.id, r.totalCommission]));
+    const lifetimePayableMap = new Map(lifetimeEarned.map(r => [r.doctor.id, r.payableCommission]));
+    const lifetimeHeldMap = new Map(lifetimeEarned.map(r => [r.doctor.id, r.heldCommission]));
 
     const term = (search || "").trim().toLowerCase();
 
     const rows = earnedByDoctor
       .map(r => {
-        const earnedWindow = r.totalCommission;
+        // Only eligible (non-held) commission is owed; held commission is excluded
+        // from Due / Outstanding and reported separately.
+        const earnedWindow = r.payableCommission;
         const paidW = paidWindow.get(r.doctor.id) ?? 0;
-        const earnedLife = lifetimeEarnedMap.get(r.doctor.id) ?? 0;
+        const earnedLife = lifetimePayableMap.get(r.doctor.id) ?? 0;
         const paidLife = paidLifetime.get(r.doctor.id) ?? 0;
         return {
           doctorId: r.doctor.id,
@@ -188,9 +334,11 @@ doctorLedgerRouter.get("/", async (req, res) => {
           orderCount: r.orderCount,
           revenueWindow: r.totalRevenue,
           earnedWindow,
+          heldWindow: r.heldCommission,
           paidWindow: paidW,
           dueWindow: earnedWindow - paidW,
           earnedLifetime: earnedLife,
+          heldLifetime: lifetimeHeldMap.get(r.doctor.id) ?? 0,
           paidLifetime: paidLife,
           outstanding: earnedLife - paidLife,
         };
@@ -208,11 +356,12 @@ doctorLedgerRouter.get("/", async (req, res) => {
       (acc, r) => ({
         doctors: acc.doctors + 1,
         earnedWindow: acc.earnedWindow + r.earnedWindow,
+        heldWindow: acc.heldWindow + r.heldWindow,
         paidWindow: acc.paidWindow + r.paidWindow,
         dueWindow: acc.dueWindow + r.dueWindow,
         outstanding: acc.outstanding + r.outstanding,
       }),
-      { doctors: 0, earnedWindow: 0, paidWindow: 0, dueWindow: 0, outstanding: 0 },
+      { doctors: 0, earnedWindow: 0, heldWindow: 0, paidWindow: 0, dueWindow: 0, outstanding: 0 },
     );
 
     res.json({ rows, totals, window: { from: from ?? null, to: to ?? null } });
@@ -248,7 +397,8 @@ doctorLedgerRouter.get("/:doctorId", async (req, res) => {
 
     const earnedReport = await computeEarned({ from, to, doctorId });
     const earnedRows = earnedReport[0]?.orders ?? [];
-    const totalEarned = earnedReport[0]?.totalCommission ?? 0;
+    const totalEarned = earnedReport[0]?.payableCommission ?? 0;   // eligible (owed)
+    const totalHeld = earnedReport[0]?.heldCommission ?? 0;        // on hold (not owed)
     const totalRevenue = earnedReport[0]?.totalRevenue ?? 0;
 
     const conds = [eq(doctorPayoutsTable.doctorId, doctorId)];
@@ -264,6 +414,9 @@ doctorLedgerRouter.get("/:doctorId", async (req, res) => {
     type Entry = { kind: "earned" | "paid"; date: string; particular: string; credit: number; debit: number; ref?: string | null; id?: number };
     const entries: Entry[] = [];
     for (const o of earnedRows) {
+      // Held commission is not yet owed — it stays out of the running balance
+      // until its eligibility condition is met (it's listed under heldOrders).
+      if (o.held) continue;
       entries.push({
         kind: "earned",
         date: o.date,
@@ -299,15 +452,47 @@ doctorLedgerRouter.get("/:doctorId", async (req, res) => {
 
     const totalPaid = payouts.reduce((s, p) => s + Number(p.amount), 0);
 
-    // Lifetime totals (for outstanding regardless of window)
+    // Lifetime totals (for outstanding regardless of window) — payable only
     const lifetimeEarned = (from || to)
-      ? (await computeEarned({ doctorId }))[0]?.totalCommission ?? 0
+      ? (await computeEarned({ doctorId }))[0]?.payableCommission ?? 0
       : totalEarned;
     const lifetimePaidRow = await db
       .select({ total: sql<string>`COALESCE(SUM(${doctorPayoutsTable.amount}), 0)` })
       .from(doctorPayoutsTable)
       .where(eq(doctorPayoutsTable.doctorId, doctorId));
     const lifetimePaid = Number(lifetimePaidRow[0]?.total ?? 0);
+
+    // ── Clawback: orders whose commission had become eligible (payable) and has
+    // since been reversed back to On Hold — typically a bill cancelled or refunded
+    // after the fact. Sourced from the append-only status-event audit trail so the
+    // reversal is visible even though the live order now simply reads "on hold".
+    // This is informational only: the running balance already excludes held orders,
+    // so a clawback needs no separate debit — it just explains *why* a previously
+    // payable amount is no longer in the due total.
+    const cbEvents = await db
+      .select({
+        orderId: commissionStatusEventsTable.orderId,
+        commissionAmount: commissionStatusEventsTable.commissionAmount,
+        oldStatus: commissionStatusEventsTable.oldStatus,
+        newStatus: commissionStatusEventsTable.newStatus,
+        reason: commissionStatusEventsTable.reason,
+        createdAt: commissionStatusEventsTable.createdAt,
+      })
+      .from(commissionStatusEventsTable)
+      .where(eq(commissionStatusEventsTable.doctorId, doctorId))
+      .orderBy(desc(commissionStatusEventsTable.createdAt), desc(commissionStatusEventsTable.id));
+    const latestEventByOrder = new Map<number, (typeof cbEvents)[number]>();
+    for (const e of cbEvents) if (!latestEventByOrder.has(e.orderId)) latestEventByOrder.set(e.orderId, e);
+    const clawbacks = [...latestEventByOrder.values()]
+      .filter(e => e.newStatus === "on_hold" && e.oldStatus === "eligible")
+      .map(e => ({
+        orderId: e.orderId,
+        amount: Number(e.commissionAmount),
+        reason: e.reason ?? "Reversed to On Hold",
+        at: e.createdAt,
+      }))
+      .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+    const totalClawback = clawbacks.reduce((s, e) => s + e.amount, 0);
 
     res.json({
       doctor: {
@@ -318,16 +503,21 @@ doctorLedgerRouter.get("/:doctorId", async (req, res) => {
       summary: {
         totalRevenue,
         totalEarned,
+        totalHeld,
         totalPaid,
+        totalClawback,
         dueWindow: totalEarned - totalPaid,
         lifetimeEarned,
         lifetimePaid,
         outstanding: lifetimeEarned - lifetimePaid,
         orderCount: earnedRows.length,
+        heldOrderCount: earnedRows.filter(o => o.held).length,
+        clawbackCount: clawbacks.length,
         payoutCount: payouts.length,
       },
       earnedOrders: earnedRows,
       payouts: payouts.map(p => ({ ...p, amount: Number(p.amount) })),
+      clawbacks,
       ledger,
     });
   } catch (err) {
@@ -526,7 +716,10 @@ doctorLedgerRouter.get("/:doctorId/export", async (req, res) => {
 
     type Row = { date: string; kind: string; particular: string; credit: number; debit: number; reference: string };
     const entries: Row[] = [];
-    for (const o of earnedRows) entries.push({ date: o.date, kind: "Commission", particular: `Order ${o.orderNumber} (${o.testCount} tests)`, credit: o.commission, debit: 0, reference: o.orderNumber });
+    for (const o of earnedRows) {
+      if (o.held) continue; // held commission stays out of the running balance
+      entries.push({ date: o.date, kind: "Commission", particular: `Order ${o.orderNumber} (${o.testCount} tests)`, credit: o.commission, debit: 0, reference: o.orderNumber });
+    }
     for (const p of payouts) entries.push({ date: p.paymentDate, kind: "Payout", particular: `${p.paymentMethod}${p.notes ? " — " + p.notes : ""}`, credit: 0, debit: Number(p.amount), reference: p.reference || "" });
     entries.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime() || (a.kind === "Commission" ? -1 : 1));
 
@@ -543,12 +736,24 @@ doctorLedgerRouter.get("/:doctorId/export", async (req, res) => {
       running += e.credit - e.debit;
       lines.push([esc(e.date), esc(e.kind), esc(e.particular), e.credit ? e.credit.toFixed(2) : "", e.debit ? e.debit.toFixed(2) : "", running.toFixed(2), esc(e.reference)].join(","));
     }
-    const totalEarned = earnedRows.reduce((s, r) => s + r.commission, 0);
+    const totalEarned = earnedRows.filter(o => !o.held).reduce((s, r) => s + r.commission, 0);
     const totalPaid = payouts.reduce((s, p) => s + Number(p.amount), 0);
     lines.push("");
-    lines.push([esc(""), esc("TOTAL EARNED"), esc(""), totalEarned.toFixed(2), "", "", ""].join(","));
+    lines.push([esc(""), esc("TOTAL EARNED (payable)"), esc(""), totalEarned.toFixed(2), "", "", ""].join(","));
     lines.push([esc(""), esc("TOTAL PAID"), esc(""), "", totalPaid.toFixed(2), "", ""].join(","));
     lines.push([esc(""), esc("BALANCE DUE"), esc(""), "", "", (totalEarned - totalPaid).toFixed(2), ""].join(","));
+
+    // On-hold commission — excluded from Balance Due, listed with reasons.
+    const heldRows = earnedRows.filter(o => o.held);
+    if (heldRows.length) {
+      const totalHeld = heldRows.reduce((s, r) => s + r.commission, 0);
+      lines.push("");
+      lines.push([esc(""), esc("ON HOLD — not payable yet"), esc(""), "", "", "", ""].join(","));
+      for (const o of heldRows) {
+        lines.push([esc(o.date), esc("On Hold"), esc(`Order ${o.orderNumber} — ${o.holdReason ?? "held"}`), o.commission.toFixed(2), "", "", esc(o.orderNumber)].join(","));
+      }
+      lines.push([esc(""), esc("TOTAL ON HOLD"), esc(""), totalHeld.toFixed(2), "", "", ""].join(","));
+    }
 
     const safeName = doctor.name.replace(/[^a-z0-9]+/gi, "_");
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
