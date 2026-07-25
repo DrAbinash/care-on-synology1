@@ -3,7 +3,6 @@
  *
  * Generic layer used by:
  *  - billPrintLayout.ts  (A4 / A5 bill receipt size)
- *  - exportReport.ts     (portrait / landscape for jsPDF commission reports)
  */
 
 export type PaperOrientation = "portrait" | "landscape";

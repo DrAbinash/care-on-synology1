@@ -740,7 +740,7 @@ function ByDoctorView({
       ))}
 
       {report.length > 1 && (
-        <div className="bg-amber-50 dark:bg-amber-900/20 border-2 border-amber-300 dark:border-amber-700 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="bg-amber-900/20 border-2 border-amber-700 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="font-bold text-sm">Grand Total</p>
             <p className="text-xs text-muted-foreground">
@@ -824,7 +824,7 @@ function WhyCommissionPopover({
           <div className="my-1.5 border-t border-border" />
           <Line label="Actual commission" value={inr(row.commission)} strong tone="amber" />
           {row.held && (
-            <div className="mt-2 rounded-md bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 px-2 py-1.5">
+            <div className="mt-2 rounded-md bg-rose-950/30 border border-rose-900 px-2 py-1.5">
               <p className="text-[11px] text-rose-600 dark:text-rose-400 flex items-start gap-1">
                 <Clock size={11} className="mt-px shrink-0" />
                 <span><span className="font-semibold">On hold — not payable yet.</span> {row.holdReason ?? "Eligibility condition not met."}</span>
@@ -904,7 +904,7 @@ function DoctorBlock({
                 <td className="px-4 py-2.5">{row.testName}</td>
                 {cols.billNo   && <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{row.billNumber}</td>}
                 {cols.orderNo  && <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{row.orderNumber}</td>}
-                {cols.category && <td className="px-4 py-2.5"><span className="px-2 py-0.5 bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 rounded text-xs">{row.category}</span></td>}
+                {cols.category && <td className="px-4 py-2.5"><span className="px-2 py-0.5 bg-blue-900/30 text-blue-400 rounded text-xs">{row.category}</span></td>}
                 {cols.rate     && (
                   <td className="px-4 py-2.5 text-center tabular-nums text-xs text-muted-foreground">
                     {fmtRate(row.ruleType, row.ruleValue)}
@@ -921,7 +921,7 @@ function DoctorBlock({
               </tr>
             ))}
             {/* Doctor total row */}
-            <tr className="border-t-2 border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20">
+            <tr className="border-t-2 border-amber-700 bg-amber-900/20">
               <td className="px-4 py-3 font-bold text-xs uppercase tracking-wide" colSpan={colCount - ((cols.billAmount ? 1 : 0) + (cols.discount ? 1 : 0) + 1)}>
                 TOTAL
               </td>
@@ -1060,7 +1060,7 @@ function TestSummaryView({
                     )}
                   </tr>
                 ))}
-                <tr className="border-t-2 border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700">
+                <tr className="border-t-2 border-amber-700 bg-amber-900/20">
                   {showBreakdown ? (
                     <>
                       <td className="px-5 py-3 font-bold text-sm" colSpan={2}>Total →</td>
@@ -1081,7 +1081,7 @@ function TestSummaryView({
         );
       })}
       {report.length > 1 && (
-        <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-4 flex items-center justify-between dark:bg-amber-900/20 dark:border-amber-700">
+        <div className="bg-amber-900/20 border-2 border-amber-700 rounded-xl p-4 flex items-center justify-between">
           <div>
             <p className="font-bold text-sm">Grand Total</p>
             <p className="text-xs text-muted-foreground">{grandTotal.doctors} doctors · {grandTotal.orders} orders</p>
@@ -1179,7 +1179,7 @@ function ConsolidatedView({
               )}
             </tr>
           ))}
-          <tr className="border-t-2 border-amber-400 dark:border-amber-600 bg-amber-100 dark:bg-amber-900/40">
+          <tr className="border-t-2 border-amber-600 bg-amber-900/40">
             <td className="px-5 py-3 font-bold" colSpan={4}>
               Grand Total &nbsp;<span className="font-normal text-xs text-muted-foreground">({grandTotal.doctors} doctors · {grandTotal.orders} visits)</span>
             </td>

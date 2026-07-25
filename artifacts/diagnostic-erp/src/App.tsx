@@ -71,7 +71,6 @@ const Doctors         = lazy(() => import("@/pages/Doctors"));
 const Reports         = lazy(() => import("@/pages/Reports"));
 const ReportGenerator = lazy(() => import("@/pages/ReportGenerator"));
 const Inventory       = lazy(() => import("@/pages/Inventory"));
-const Referrals       = lazy(() => import("@/pages/Referrals"));
 const HopeReferrals   = lazy(() => import("@/pages/HopeReferrals"));
 const IntegrationAdmin = lazy(() => import("@/pages/IntegrationAdmin"));
 const Accounting      = lazy(() => import("@/pages/Accounting"));
@@ -398,7 +397,9 @@ function Router() {
               <Route path="/report-generator" component={ReportGenerator} />
               <Route path="/report-hub" component={ReportHub} />
               <Route path="/inventory" component={Inventory} />
-              <Route path="/referrals" component={Referrals} />
+              {/* Referral commission lives only in the USB-gated Super Admin
+                  portal, so /referrals is simply the Doctors directory. */}
+              <Route path="/referrals" component={Doctors} />
               <Route path="/accounting" component={Accounting} />
               <Route path="/banking" component={Banking} />
               <Route path="/register" component={Register} />

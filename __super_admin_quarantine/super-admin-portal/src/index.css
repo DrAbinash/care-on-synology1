@@ -11,10 +11,14 @@
   --color-ring: hsl(var(--ring));
   --color-card: hsl(var(--card));
   --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
   --color-primary: hsl(var(--primary));
   --color-primary-foreground: hsl(var(--primary-foreground));
   --color-muted: hsl(var(--muted));
   --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
   --color-destructive: hsl(var(--destructive));
   --color-destructive-foreground: hsl(var(--destructive-foreground));
   --font-sans: var(--app-font-sans);
@@ -32,10 +36,19 @@
   --ring: 0 84% 60%;
   --card: 222 47% 13%;
   --card-foreground: 210 40% 96%;
+  /* Floating surfaces (Select / Popover / Dropdown / Command / Calendar).
+     These MUST be defined and opaque — the shared ui/* components style
+     themselves with bg-popover, and without the token the menus render
+     fully transparent and the page bleeds through them. */
+  --popover: 222 47% 16%;
+  --popover-foreground: 210 40% 96%;
   --primary: 0 84% 60%;
   --primary-foreground: 0 0% 100%;
   --muted: 217 33% 18%;
   --muted-foreground: 215 20% 65%;
+  /* Hover/active surface inside those floating menus. */
+  --accent: 217 33% 24%;
+  --accent-foreground: 210 40% 96%;
   --destructive: 0 84% 60%;
   --destructive-foreground: 0 0% 100%;
   --app-font-sans: 'Inter', system-ui, sans-serif;

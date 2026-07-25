@@ -8,7 +8,7 @@ import {
   clinicSettingsTable, commissionStatusEventsTable,
   patientReportsTable, radiologyStudiesTable, testTokensTable,
 } from "@workspace/db/schema";
-import { sendDailySummaryEmail, sendCommissionMonthEndEmail, sendMonthlyAuditEmail } from "./email";
+import { sendDailySummaryEmail, sendMonthlyAuditEmail } from "./email";
 import { runBooksSanity } from "./routes/books-sanity";
 import { exportDatabaseSql, exportDatabaseSqlFallback, computeSha256, CONFIG_BACKUP_TABLES } from "./routes/backupReplication";
 import { promises as fsp } from "fs";
@@ -32,7 +32,6 @@ const firedToday = new Set<string>();
 
 export function startCronScheduler() {
   scheduleDaily();
-  scheduleMonthEndCommission();
   scheduleCommissionReconcile();
   scheduleDicomAutoPull();
   scheduleMonthlyAudit();
@@ -926,35 +925,6 @@ export async function runOpsAnomalyScanNow() {
   return runOpsAnomalyScan();
 }
 
-function scheduleMonthEndCommission() {
-  // Check every minute — fires at 20:00 on the last day of each month
-  cron.schedule("* * * * *", async () => {
-    try {
-      const now = new Date();
-      const hour = now.getHours();
-      const minute = now.getMinutes();
-
-      // 20:00 exactly
-      if (hour !== 20 || minute !== 0) return;
-
-      // Check if today is the last day of the month
-      const tomorrow = new Date(now);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      if (tomorrow.getMonth() === now.getMonth()) return; // not last day
-
-      const key = `commission-${now.toISOString().split("T")[0]}`;
-      if (firedToday.has(key)) return;
-      firedToday.add(key);
-
-      await fireMonthEndCommission(now);
-    } catch (err) {
-      console.error("[cron] month-end commission check failed:", err);
-    }
-  });
-
-  console.log("[cron] Month-end commission scheduler started (fires at 20:00 on last day of month)");
-}
-
 // ── Commission eligibility reconcile — hold/release audit trail + auto-release ──
 // Recomputes each recent order's referral commission + eligibility under the
 // clinic's commission_eligibility_policy and appends an event to
@@ -1022,10 +992,12 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
     policy: clinicSettingsTable.commissionEligibilityPolicy,
     minAmount: clinicSettingsTable.commissionEligibilityMinAmount,
     vipPercentage: clinicSettingsTable.vipPercentage,
+    discountMode: clinicSettingsTable.commissionDiscountMode,
   }).from(clinicSettingsTable).limit(1);
   const policy = clinic?.policy ?? "full_payment_collected";
   const minAmount = Number(clinic?.minAmount ?? 0);
   const vipPct = clinic?.vipPercentage ? Number(clinic.vipPercentage) : 50;
+  const discountMode = clinic?.discountMode ?? "none";
   const needsReport = policy === "report_finalized" || policy === "report_delivered";
 
   const since = new Date();
@@ -1040,7 +1012,7 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
     db.select().from(commissionRulesTable),
     db.select({ id: testsTable.id, category: testsTable.category }).from(testsTable),
     db.select().from(orderTestsTable).where(and(inArray(orderTestsTable.orderId, orderIds), ne(orderTestsTable.status, "cancelled"))),
-    db.select({ orderId: billsTable.orderId, status: billsTable.status, paid: billsTable.paidAmount, balance: billsTable.balanceAmount }).from(billsTable).where(inArray(billsTable.orderId, orderIds)),
+    db.select({ orderId: billsTable.orderId, status: billsTable.status, paid: billsTable.paidAmount, balance: billsTable.balanceAmount, discount: billsTable.discount }).from(billsTable).where(inArray(billsTable.orderId, orderIds)),
     db.select({ orderTestId: testTokensTable.orderTestId }).from(testTokensTable).where(and(inArray(testTokensTable.orderId, orderIds), sql`${testTokensTable.priority} > 0`)),
     db.select({ orderId: commissionStatusEventsTable.orderId, newStatus: commissionStatusEventsTable.newStatus, createdAt: commissionStatusEventsTable.createdAt }).from(commissionStatusEventsTable).where(inArray(commissionStatusEventsTable.orderId, orderIds)),
   ]);
@@ -1048,8 +1020,8 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
   const doctorMap = new Map(doctors.map(d => [d.id, d]));
   const rulesByDoctor = new Map<number, (typeof commissionRulesTable.$inferSelect)[]>();
   for (const r of rules) { const a = rulesByDoctor.get(r.doctorId) ?? []; a.push(r); rulesByDoctor.set(r.doctorId, a); }
-  const billByOrder = new Map<number, { status: string | null; paid: string; balance: string }>();
-  for (const b of bills) if (b.orderId != null) billByOrder.set(b.orderId, { status: b.status ?? null, paid: b.paid, balance: b.balance });
+  const billByOrder = new Map<number, { status: string | null; paid: string; balance: string; discount: number }>();
+  for (const b of bills) if (b.orderId != null) billByOrder.set(b.orderId, { status: b.status ?? null, paid: b.paid, balance: b.balance, discount: Number(b.discount ?? 0) });
   const vipIds = new Set(tokens.map(t => t.orderTestId).filter(Boolean) as number[]);
 
   let reportStatus = new Map<number, { finalized: boolean; delivered: boolean }>();
@@ -1084,13 +1056,23 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
     let raw = 0;
     for (const ot of ots) raw += reconcileTestCommission(ot, testMap.get(ot.testId), dRules, doctor, vipIds, vipPct);
     const bill = billByOrder.get(order.id);
+    // Judge — and record — the NET commission, i.e. after the clinic's
+    // bill-discount deduction. The Referral Report and the Doctor Ledger both
+    // work in net; using gross here would make the "collected >= commission"
+    // policy disagree with them and would record an inflated amount in the
+    // audit trail (which the ledger's clawback panel reads back).
+    const netCommission = discountMode === "deduct"
+      ? Math.max(0, raw - (bill?.discount ?? 0))
+      : discountMode === "deduct_rollover"
+        ? raw - (bill?.discount ?? 0)
+        : raw;
     const rep = reportStatus.get(order.id);
     const { held, reason } = reconcileHold({
       policy, minAmount,
       hasBill: !!bill, billStatus: bill?.status ?? null,
       paid: Number(bill?.paid ?? 0), balance: Number(bill?.balance ?? 0),
       reportFinalized: rep?.finalized ?? false, reportDelivered: rep?.delivered ?? false,
-      commissionAmount: raw,
+      commissionAmount: netCommission,
     });
     const newStatus = held ? "on_hold" : "eligible";
     const last = lastStatusByOrder.get(order.id);
@@ -1099,7 +1081,7 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
     if (!shouldLog) continue;
     toInsert.push({
       orderId: order.id, doctorId: order.doctorId, billId: null,
-      commissionAmount: raw.toFixed(2), oldStatus: last ?? null, newStatus, policy, reason,
+      commissionAmount: netCommission.toFixed(2), oldStatus: last ?? null, newStatus, policy, reason,
     });
   }
 
@@ -1129,10 +1111,6 @@ export async function runCommissionReconcileNow(): Promise<{ transitions: number
 // scheduled send later that day.
 export async function runDailySummary(force = false) {
   return fireDailySummary({ scheduled: false, force });
-}
-
-export async function runMonthEndCommission(now: Date = new Date()) {
-  return fireMonthEndCommission(now);
 }
 
 async function fireDailySummary(opts: { scheduled: boolean; force?: boolean; slot?: string }) {
@@ -1301,89 +1279,6 @@ async function fireDailySummary(opts: { scheduled: boolean; force?: boolean; slo
     console.log(`[cron] Daily summary sent for ${today}`);
   } catch (err) {
     console.error("[cron] Failed to send daily summary:", err);
-  }
-}
-
-async function fireMonthEndCommission(now: Date) {
-  try {
-    // Month boundaries
-    const fromDate = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
-    const toDate   = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-    const fromStr  = fromDate.toISOString().split("T")[0];
-    const toStr    = toDate.toISOString().split("T")[0];
-    const month    = now.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
-
-    // Fetch all doctors, rules, tests
-    const doctors  = await db.select().from(doctorsTable);
-    const allRules = await db.select().from(commissionRulesTable);
-    const allTests = await db.select().from(testsTable);
-    const testMap  = new Map(allTests.map(t => [t.id, t]));
-
-    // Fetch orders for the month
-    const orders = await db.select().from(ordersTable)
-      .where(and(gte(ordersTable.createdAt, fromDate), lte(ordersTable.createdAt, toDate)));
-
-    const orderIds = orders.map(o => o.id);
-    const orderTests = orderIds.length
-      ? await db.select().from(orderTestsTable).where(inArray(orderTestsTable.orderId, orderIds))
-      : [];
-
-    const report = doctors.map(doctor => {
-      const doctorOrders = orders.filter(o => o.doctorId === doctor.id);
-      const rules = allRules.filter(r => r.doctorId === doctor.id && r.isActive);
-
-      let totalRevenue = 0, totalCommission = 0, testCount = 0;
-      for (const order of doctorOrders) {
-        const ots = orderTests.filter(ot => ot.orderId === order.id);
-        for (const ot of ots) {
-          const test = testMap.get(ot.testId);
-          const price = Number(ot.price);
-          totalRevenue += price;
-          testCount++;
-
-          // Apply rules (same logic as commission route)
-          let matched = rules.find(r => {
-            if (!r.isExclusive) return false;
-            if (r.scope === "test" && r.testIds) return (JSON.parse(r.testIds) as number[]).includes(ot.testId);
-            if (r.scope === "category" && r.categories && test) return (JSON.parse(r.categories) as string[]).includes(test.category || "");
-            return false;
-          });
-          if (!matched) matched = rules.find(r => {
-            if (r.scope === "test" && r.testIds) return (JSON.parse(r.testIds) as number[]).includes(ot.testId);
-            if (r.scope === "category" && r.categories && test) return (JSON.parse(r.categories) as string[]).includes(test.category || "");
-            return r.scope === "all";
-          });
-          if (matched) {
-            const val = Number(matched.value);
-            totalCommission += matched.type === "percentage" ? (price * val) / 100 : val;
-          } else {
-            const defVal = Number(doctor.defaultCommission);
-            if (defVal > 0) totalCommission += doctor.defaultCommissionType === "percentage" ? (price * defVal) / 100 : defVal;
-          }
-        }
-      }
-
-      return {
-        doctor: { name: doctor.name, specialization: doctor.specialization ?? "" },
-        orderCount: doctorOrders.length,
-        testCount,
-        totalRevenue,
-        totalCommission,
-        effectiveRate: totalRevenue > 0 ? Number(((totalCommission / totalRevenue) * 100).toFixed(2)) : 0,
-      };
-    }).filter(r => r.orderCount > 0);
-
-    const grandTotal = {
-      doctors: report.length,
-      orders: report.reduce((s, r) => s + r.orderCount, 0),
-      revenue: report.reduce((s, r) => s + r.totalRevenue, 0),
-      commission: report.reduce((s, r) => s + r.totalCommission, 0),
-    };
-
-    await sendCommissionMonthEndEmail({ month, from: fromStr, to: toStr, report, grandTotal });
-    console.log(`[cron] Month-end commission email sent for ${month}`);
-  } catch (err) {
-    console.error("[cron] Failed to send month-end commission email:", err);
   }
 }
 

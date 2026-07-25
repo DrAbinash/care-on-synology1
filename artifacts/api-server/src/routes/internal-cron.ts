@@ -2,7 +2,6 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import crypto from "node:crypto";
 import {
   runDailySummary,
-  runMonthEndCommission,
   fireBankingAutoSync,
   runWhatsappAppointmentReminders,
   runWhatsappDuesReminders,
@@ -47,16 +46,6 @@ router.post("/daily-summary", async (_req, res) => {
   } catch (err) {
     logger.error({ err }, "internal-cron daily-summary failed");
     res.status(500).json({ error: "daily-summary failed" });
-  }
-});
-
-router.post("/month-end-commission", async (_req, res) => {
-  try {
-    await runMonthEndCommission(new Date());
-    res.json({ ok: true, fired: "month-end-commission", at: new Date().toISOString() });
-  } catch (err) {
-    logger.error({ err }, "internal-cron month-end-commission failed");
-    res.status(500).json({ error: "month-end-commission failed" });
   }
 });
 

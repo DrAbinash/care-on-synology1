@@ -44,7 +44,6 @@ vi.mock("@workspace/db", () => ({
 
 vi.mock("./email", () => ({
   sendDailySummaryEmail: vi.fn(),
-  sendCommissionMonthEndEmail: vi.fn(),
   sendMonthlyAuditEmail: vi.fn(),
   sendBackupFailureEmail: vi.fn(async () => undefined),
 }));

@@ -10,6 +10,11 @@ import {
 } from "@workspace/api-zod";
 import { logger } from "../lib/logger";
 import { getCached, setCached, invalidateCachedPrefix, TTL } from "../lib/ttlCache";
+import {
+  hasCommissionAccess,
+  DOCTOR_COMMISSION_FIELDS,
+  stripFields,
+} from "../middleware/commissionVisibility";
 
 const DOCTORS_LIST_CACHE_KEY = "doctors:list:all";
 
@@ -25,12 +30,26 @@ doctorsRouter.get("/", async (req, res) => {
 
   // The unfiltered "list all doctors" call (no search term) is what every
   // dropdown/select across the ERP fires on page load — cache it for 5 min.
+  // Referral commission is Super-Admin-only: a doctor's commission rate is
+  // only visible to a caller holding the pen drive. The cached payload is kept
+  // complete and USB-agnostic; the fields are removed on the way out instead,
+  // so one caller's visibility can never be cached and served to another.
+  const showCommission = hasCommissionAccess(req);
+  const shape = (payload: { doctors: unknown[]; total: number }) =>
+    showCommission
+      ? payload
+      : {
+          ...payload,
+          doctors: payload.doctors.map(d =>
+            stripFields(d as Record<string, unknown>, DOCTOR_COMMISSION_FIELDS)),
+        };
+
   // Filtered/search calls always hit the DB live (they're not the hot path
   // and caching every distinct search string isn't worth it here).
   if (!search) {
     const cached = getCached<{ doctors: unknown[]; total: number }>(DOCTORS_LIST_CACHE_KEY);
     if (cached) {
-      res.json(cached);
+      res.json(shape(cached));
       return;
     }
   }
@@ -74,7 +93,7 @@ doctorsRouter.get("/", async (req, res) => {
 
   const payload = { doctors, total: doctors.length };
   if (!search) setCached(DOCTORS_LIST_CACHE_KEY, payload, TTL.SHORT);
-  res.json(payload);
+  res.json(shape(payload));
 });
 
 doctorsRouter.post("/", async (req, res) => {
@@ -86,9 +105,17 @@ doctorsRouter.post("/", async (req, res) => {
   const ledgerId = req.body?.ledgerId !== undefined && req.body.ledgerId !== null
     ? Number(req.body.ledgerId)
     : null;
-  const [doctor] = await db.insert(doctorsTable).values({ ...parsed.data, ledgerId }).returning();
+  // Commission rates are set from the Super Admin portal only. Without the pen
+  // drive the fields are dropped and the column default applies.
+  const values = hasCommissionAccess(req)
+    ? parsed.data
+    : stripFields(parsed.data as Record<string, unknown>, DOCTOR_COMMISSION_FIELDS) as typeof parsed.data;
+  const [doctor] = await db.insert(doctorsTable).values({ ...values, ledgerId }).returning();
   invalidateCachedPrefix(DOCTORS_LIST_CACHE_KEY);
-  res.status(201).json(doctor);
+  res.status(201).json(
+    hasCommissionAccess(req)
+      ? doctor
+      : stripFields(doctor as unknown as Record<string, unknown>, DOCTOR_COMMISSION_FIELDS));
 });
 
 doctorsRouter.patch("/:id", async (req, res) => {
@@ -117,8 +144,12 @@ doctorsRouter.patch("/:id", async (req, res) => {
   if (body.area !== undefined) updates.area = body.area || null;
   // Module B: registrationNumber persists from the Doctors form so PCPNDT Form F can auto-fill it.
   if (body.registrationNumber !== undefined) updates.registrationNumber = body.registrationNumber || null;
-  if (body.defaultCommission !== undefined) updates.defaultCommission = String(body.defaultCommission);
-  if (body.defaultCommissionType !== undefined) updates.defaultCommissionType = body.defaultCommissionType;
+  // Commission rate changes require the pen drive — silently ignored otherwise,
+  // so an ordinary staff edit to a doctor's other details still succeeds.
+  if (hasCommissionAccess(req)) {
+    if (body.defaultCommission !== undefined) updates.defaultCommission = String(body.defaultCommission);
+    if (body.defaultCommissionType !== undefined) updates.defaultCommissionType = body.defaultCommissionType;
+  }
   if (body.ledgerId !== undefined) updates.ledgerId = body.ledgerId === null ? null : Number(body.ledgerId);
 
   if (Object.keys(updates).length === 0) {
@@ -132,7 +163,10 @@ doctorsRouter.patch("/:id", async (req, res) => {
     return;
   }
   invalidateCachedPrefix(DOCTORS_LIST_CACHE_KEY);
-  res.json(doctor);
+  res.json(
+    hasCommissionAccess(req)
+      ? doctor
+      : stripFields(doctor as unknown as Record<string, unknown>, DOCTOR_COMMISSION_FIELDS));
 });
 
 // ── Bulk CSV import ───────────────────────────────────────────────────────

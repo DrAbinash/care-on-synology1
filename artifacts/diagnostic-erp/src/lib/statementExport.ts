@@ -2,11 +2,10 @@
  * statementExport.ts — generic financial-statement export to PDF and Word.
  *
  * Reuses the same libraries the rest of the app already exports with
- * (jspdf + jspdf-autotable for PDF, docx + file-saver for Word — see
- * exportReport.ts). Unlike exportReport.ts, which is shaped for the referral
- * commission report, this operates on a neutral "document = ordered sheets;
- * sheet = header + one bordered table + footer" model, so the SAME row data
- * that renders on screen produces the printed/exported statement.
+ * (jspdf + jspdf-autotable for PDF, docx + file-saver for Word). Operates on a
+ * neutral "document = ordered sheets; sheet = header + one bordered table +
+ * footer" model, so the SAME row data that renders on screen produces the
+ * printed/exported statement.
  *
  * Each sheet renders on its own page (PDF: addPage; Word: page break), so the
  * Balance Sheet, Statement of Profit & Loss and Trial Balance each land on a
