@@ -476,7 +476,7 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
               </div>
 
               {(() => {
-                const heldOrders = (((detail as { earnedOrders?: ReadonlyArray<{ orderNumber: string; commission: number; held?: boolean; holdReason?: string | null }> }).earnedOrders) ?? []).filter(o => o.held);
+                const heldOrders = (((detail as { earnedOrders?: ReadonlyArray<{ orderNumber: string; commission: number; held?: boolean; holdReason?: string | null; frozen?: boolean }> }).earnedOrders) ?? []).filter(o => o.held);
                 if (heldOrders.length === 0) return null;
                 return (
                   <div className="rounded-xl border border-rose-900 bg-rose-950/30 p-3">

@@ -1,4 +1,4 @@
-import { pgTable, text, serial, timestamp, integer, numeric, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, integer, numeric, boolean, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { doctorsTable } from "./doctors";
@@ -47,3 +47,46 @@ export const commissionStatusEventsTable = pgTable("commission_status_events", {
 });
 
 export type CommissionStatusEvent = typeof commissionStatusEventsTable.$inferSelect;
+
+// ── Settled commission snapshot ───────────────────────────────────────────────
+// Every commission figure in this system is derived live from the CURRENT rules,
+// which is right for analysis and wrong for money already paid: adjusting a slab
+// today silently rewrites what last month's statement said, and moves a doctor's
+// outstanding balance on its own.
+//
+// Recording a payout therefore freezes the orders it settles. Each row is the
+// commission for one order AS IT STOOD when the payout was recorded, together
+// with the rule that produced it. The Doctor Ledger and the statement PDF read
+// these rows in preference to recomputing, so a document handed to a doctor
+// keeps saying what it said on the day it was handed over.
+//
+// Deleting a payout deletes its lines, which un-freezes those orders.
+export const commissionPayoutLinesTable = pgTable(
+  "commission_payout_lines",
+  {
+    id: serial("id").primaryKey(),
+    payoutId: integer("payout_id").notNull(),
+    doctorId: integer("doctor_id").notNull(),
+    orderId: integer("order_id").notNull(),
+    orderNumber: text("order_number").notNull().default(""),
+    orderDate: text("order_date").notNull().default(""),
+    // Net commission (after the bill-discount deduction) at freeze time — the
+    // figure actually settled.
+    commissionAmount: numeric("commission_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+    // Gross, before the deduction, so a frozen statement can still show the
+    // expected/discount/actual breakdown it showed on the day.
+    grossCommission: numeric("gross_commission", { precision: 12, scale: 2 }).notNull().default("0"),
+    revenue: numeric("revenue", { precision: 12, scale: 2 }).notNull().default("0"),
+    testCount: integer("test_count").notNull().default(0),
+    // Human-readable summary of the rules in force, e.g. "Pathology 40%".
+    ruleSummary: text("rule_summary").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    payoutIdx: index("commission_payout_lines_payout_idx").on(t.payoutId),
+    doctorIdx: index("commission_payout_lines_doctor_idx").on(t.doctorId),
+    orderIdx: index("commission_payout_lines_order_idx").on(t.orderId),
+  }),
+);
+
+export type CommissionPayoutLine = typeof commissionPayoutLinesTable.$inferSelect;
