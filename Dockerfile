@@ -58,8 +58,17 @@ FROM node:22-bookworm-slim AS api
 # dcmtk provides echoscu / findscu / dump2dcm, used by the PACS layer for real
 # C-ECHO connectivity tests, C-FIND queries, and generating Orthanc modality
 # worklist (.wl) files. Without it those paths fall back to TCP-reachability only.
+# openssl is the BINARY (not just libssl) that lib/backupCrypto.ts shells out to
+# via spawn("openssl", …). It is deliberately the openssl CLI rather than a Node
+# reimplementation so backups stay byte-compatible with the Synology shell
+# scripts and can be decrypted with nothing but openssl on a bare machine.
+# It is NOT pre-installed on node:22-bookworm-slim, and because the backup code
+# correctly refuses to ever write an unencrypted backup, its absence meant EVERY
+# backup failed with "Backup encryption failed (openssl exit -1): openssl failed
+# to start: spawn openssl ENOENT" — silently, for 16 days, until the backup
+# dead-man alert reported "last successful backup was 395.1h ago".
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tini curl dcmtk \
+ && apt-get install -y --no-install-recommends tini curl dcmtk openssl \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
