@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPrintBridgePayload } from "./pacsEnterprise";
+import { buildPrintBridgePayload, singleStudyUidFor } from "./pacsEnterprise";
 
 // Print-from-workspace bridge integration: buildPrintBridgePayload is the
 // pure core of POST /api/radiology/print-images — everything it decides
@@ -107,5 +107,97 @@ describe("buildPrintBridgePayload — clinic branding", () => {
   it("passes the images array through untouched", () => {
     const images = ["data:image/jpeg;base64,aaa", "data:image/jpeg;base64,bbb"];
     expect(buildPrintBridgePayload(images, 1, undefined, undefined, null).images).toBe(images);
+  });
+});
+
+describe("singleStudyUidFor — patient identification safety", () => {
+  it("returns the shared study UID when every image comes from it", () => {
+    expect(
+      singleStudyUidFor([
+        { studyInstanceUid: "1.2.3" },
+        { studyInstanceUid: "1.2.3" },
+      ]),
+    ).toBe("1.2.3");
+  });
+
+  it("returns null when the images span two studies", () => {
+    // The whole point: two studies could be two patients, and labelling the
+    // sheet with either one's name would be worse than labelling neither.
+    expect(
+      singleStudyUidFor([
+        { studyInstanceUid: "1.2.3" },
+        { studyInstanceUid: "9.9.9" },
+      ]),
+    ).toBeNull();
+  });
+
+  it("returns null when any image has no study UID at all", () => {
+    // An unattributed image could belong to anyone.
+    expect(singleStudyUidFor([{ studyInstanceUid: "1.2.3" }, {}])).toBeNull();
+    expect(singleStudyUidFor([{ studyInstanceUid: "1.2.3" }, { studyInstanceUid: "  " }])).toBeNull();
+  });
+
+  it("returns null for an empty request", () => {
+    expect(singleStudyUidFor([])).toBeNull();
+  });
+
+  it("tolerates surrounding whitespace", () => {
+    expect(singleStudyUidFor([{ studyInstanceUid: " 1.2.3 " }, { studyInstanceUid: "1.2.3" }])).toBe("1.2.3");
+  });
+});
+
+describe("buildPrintBridgePayload — patient", () => {
+  const patient = { name: "SHARMA^RITA", id: "USG-2026-0731", studyDate: "20260725", modality: "us" };
+
+  it("passes the patient block through, upper-casing the modality", () => {
+    const payload = buildPrintBridgePayload(["img"], 1, undefined, undefined, null, patient);
+    expect(payload.patient).toEqual({
+      name: "SHARMA^RITA",
+      id: "USG-2026-0731",
+      studyDate: "20260725",
+      modality: "US",
+    });
+  });
+
+  it("omits patient entirely when not supplied", () => {
+    expect(buildPrintBridgePayload(["img"], 1, undefined, undefined, null).patient).toBeUndefined();
+    expect(buildPrintBridgePayload(["img"], 1, undefined, undefined, null, null).patient).toBeUndefined();
+  });
+
+  it("omits patient when every field is blank rather than printing an empty line", () => {
+    expect(
+      buildPrintBridgePayload(["img"], 1, undefined, undefined, null, {
+        name: "",
+        id: "   ",
+        studyDate: "",
+        modality: "",
+      }).patient,
+    ).toBeUndefined();
+  });
+
+  it("keeps a partial patient — an ID alone is still worth printing", () => {
+    const payload = buildPrintBridgePayload(["img"], 1, undefined, undefined, null, { id: "X-9" });
+    expect(payload.patient).toEqual({ name: "", id: "X-9", studyDate: "", modality: "" });
+  });
+
+  it("trims surrounding whitespace on every field", () => {
+    const payload = buildPrintBridgePayload(["img"], 1, undefined, undefined, null, {
+      name: "  KUMAR^ANIL  ",
+      id: " CT-1 ",
+      studyDate: " 20260725 ",
+      modality: " ct ",
+    });
+    expect(payload.patient).toEqual({
+      name: "KUMAR^ANIL",
+      id: "CT-1",
+      studyDate: "20260725",
+      modality: "CT",
+    });
+  });
+
+  it("leaves clinic branding untouched when a patient is supplied", () => {
+    const payload = buildPrintBridgePayload(["img"], 1, undefined, undefined, clinicFull, patient);
+    expect((payload.header as { line2: string }).line2).toBe("Care Diagnostic Centre");
+    expect(payload.patient).toBeDefined();
   });
 });
