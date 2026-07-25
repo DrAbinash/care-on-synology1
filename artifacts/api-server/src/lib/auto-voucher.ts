@@ -98,13 +98,45 @@ function voucherBucketPrefix(type: string): string {
   return `${prefix}-${y}${m}-`;
 }
 
+// Next sequence in a per-type/per-month bucket, derived from the HIGHEST number
+// already issued — deliberately not count(*).
+//
+// count(*) counts rows that SURVIVE, not numbers that were ISSUED, so once any
+// voucher in the bucket is removed the count permanently trails the max by the
+// number removed (D). The retry loop's candidates are count+1..count+3, i.e.
+// max-D+1..max-D+3 — inside the already-occupied range. At D>=3 all three
+// attempts hit existing rows, nothing inserts, so count never changes and the
+// IDENTICAL three numbers are retried for every subsequent voucher: a permanent
+// fixed point. That is what broke production —
+//   duplicate key value violates unique constraint "vouchers_voucher_number_unique"
+// repeating on RV-202607-0006 for every receipt in the month.
+//
+// MAX has the progress guarantee count(*) lacks: every successful insert raises
+// max, so the candidate window strictly advances and there is no fixed point.
+// A 23505 is then only possible from a genuine concurrent commit, which is
+// exactly what the surrounding 3-attempt retry loop is sized for.
+//
+// The regex is anchored and requires an all-digit suffix, so a hand-entered or
+// synthetic number (the ledger view injects a non-numeric "OB" opening-balance
+// row) is filtered out BEFORE the ::int cast — Postgres only evaluates the
+// aggregate argument for rows passing every WHERE qual, so the cast cannot throw.
+// Gaps left where a voucher was deleted are correct and intentional: each
+// deletion already writes a voucher_audits row, whereas count(*) would silently
+// RE-ISSUE that number to a different transaction.
 async function nextVoucherNumber(type: string, offset = 0): Promise<string> {
   const bucket = voucherBucketPrefix(type);
   const [r] = await db
-    .select({ c: sql<number>`count(*)` })
+    .select({
+      m: sql<number>`coalesce(max(substring(${vouchersTable.voucherNumber} from ${bucket.length + 1})::int), 0)`,
+    })
     .from(vouchersTable)
-    .where(like(vouchersTable.voucherNumber, `${bucket}%`));
-  const next = Number(r?.c ?? 0) + 1 + offset;
+    .where(
+      and(
+        like(vouchersTable.voucherNumber, `${bucket}%`),
+        sql`${vouchersTable.voucherNumber} ~ ${`^${bucket}[0-9]+$`}`,
+      ),
+    );
+  const next = Number(r?.m ?? 0) + 1 + offset;
   return `${bucket}${String(next).padStart(4, "0")}`;
 }
 
