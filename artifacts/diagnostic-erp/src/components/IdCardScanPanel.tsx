@@ -91,6 +91,10 @@ export interface IdCardScanPanelProps {
   cropPadding?: number;
   jpegQuality?: number;
   maxWidth?: number;
+  /** Auto-deskew on load. Default **false** — a phone photo is often stored
+   *  sideways, and rotating it (then cropping the rotated, white-padded frame)
+   *  both mis-orients and clips the card. Staff use Rotate Left/Right instead. */
+  autoRotate?: boolean;
   /** Document type — selects the initial enhancement preset. Default "id-card". */
   docType?: ScanDocType;
   /** Title shown in the editor header / save button. Default "ID Card". */
@@ -377,6 +381,7 @@ export default function IdCardScanPanel({
   cropPadding = 12,
   jpegQuality = 92,
   maxWidth = 1600,
+  autoRotate = false,
   docType = "id-card",
   title = "ID Card",
 }: IdCardScanPanelProps) {
@@ -743,25 +748,33 @@ export default function IdCardScanPanel({
           }
         }
 
-        // Step 2: Auto-crop — always apply, confidence is a UI indicator only
+        // Step 2: Auto-crop. Only auto-APPLY a modest trim (≥60% of the frame
+        // kept). A crop that wants to throw away more than that is exactly what
+        // clips a dark or low-contrast card — the detector locks onto the one
+        // high-contrast patch (a logo) and shaves the rest. In that case we keep
+        // the full frame and ask the user to crop manually; the "Auto Crop"
+        // button still forces the detected box when they want it.
+        const fullRect = { x: 0, y: 0, w: workingCanvas.width, h: workingCanvas.height };
         let rect: typeof cropRect;
         let confidence: "high" | "medium" | "low" = "high";
 
         if (autoCropEnabled) {
           const detected = detectCardCrop(workingCanvas, cropPadding);
-          rect = { x: detected.x, y: detected.y, w: detected.w, h: detected.h };
-          confidence = detected.confidence;
+          const areaRatio = (detected.w * detected.h) / (workingCanvas.width * workingCanvas.height || 1);
+          if (areaRatio >= 0.6) {
+            rect = { x: detected.x, y: detected.y, w: detected.w, h: detected.h };
+            confidence = detected.confidence;
+            setStatus(confidence === "high" ? "Auto crop successful" : "Auto crop applied — adjust manually if needed", confidence === "high" ? "ok" : "warn");
+          } else {
+            // Aggressive/untrusted crop — don't clip. Show the whole card.
+            rect = fullRect;
+            confidence = "medium";
+            setStatus("Auto crop skipped to avoid clipping — drag the box or tap Auto Crop", "warn");
+          }
           setCropConfidence(confidence);
           setCropRect(rect);
-
-          if (confidence === "high") {
-            setStatus("Auto crop successful", "ok");
-          } else {
-            // confidence "medium" still means we found boundaries — apply it
-            setStatus("Auto crop applied — adjust manually if needed", "warn");
-          }
         } else {
-          rect = { x: 0, y: 0, w: workingCanvas.width, h: workingCanvas.height };
+          rect = fullRect;
           setCropRect(rect);
           setCropConfidence("high");
           setStatus("Ready — auto crop disabled", "info");
@@ -812,7 +825,7 @@ export default function IdCardScanPanel({
   // ── Initial load ──────────────────────────────────────────────────────────
 
   useEffect(() => {
-    runFullPipeline(imageBase64, mimeType, enhancementMode, true);
+    runFullPipeline(imageBase64, mimeType, enhancementMode, autoRotate);
   }, [imageBase64, mimeType]); // only on mount
 
   // ── Re-enhance when mode changes (reuses already-cropped image) ───────────

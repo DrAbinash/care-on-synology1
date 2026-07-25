@@ -2374,6 +2374,9 @@ export default function FormF() {
           // that fills only part of the frame still crops to a legible size.
           jpegQuality={fSettings?.jpegQuality ?? 92}
           maxWidth={fSettings?.maxScanWidth ?? 1600}
+          // Auto-deskew OFF unless an admin turns it on — it mis-orients and
+          // clips phone photos that come in sideways. Rotate Left/Right is manual.
+          autoRotate={fSettings?.autoRotateScan === true}
           onSave={async (result) => {
             // Prefer enhanced → cropped → original for Form F display
             const displayB64 = result.enhancedBase64 || result.croppedBase64 || result.originalBase64;
