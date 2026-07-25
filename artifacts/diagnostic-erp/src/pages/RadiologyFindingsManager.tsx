@@ -61,14 +61,23 @@ export default function RadiologyFindingsManager() {
 
   // ── mutations ──────────────────────────────────────────────────────────────
   const seed = useMutation({
-    mutationFn: () =>
-      api.post<{ inserted: number; alreadySeeded?: boolean }>("/api/radiology/finding-library/seed", {
+    mutationFn: (force?: boolean) =>
+      api.post<{ inserted: number; alreadySeeded?: boolean; replaced?: number }>("/api/radiology/finding-library/seed", {
+        force: force === true,
         findings: starterFindings.map((f) => ({
           modality: f.modality, section: f.section, region: f.region,
           text: f.text, abnormal: f.abnormal, impression: f.impression, frequency: f.frequency,
         })),
       }),
-    onSuccess: (r) => { invalidate(); toast({ title: r.alreadySeeded ? "Already loaded" : "Starter library loaded", description: `${r.inserted} findings now editable.` }); },
+    onSuccess: (r) => {
+      invalidate();
+      toast({
+        title: r.alreadySeeded ? "Already loaded" : r.replaced ? "Starter library reloaded" : "Starter library loaded",
+        description: r.replaced
+          ? `${r.replaced} old starter findings replaced with ${r.inserted} regrouped ones. Custom findings kept.`
+          : `${r.inserted} findings now editable.`,
+      });
+    },
     onError: (e) => toast({ title: "Seed failed", description: msg(e), variant: "destructive" }),
   });
 
@@ -118,7 +127,7 @@ export default function RadiologyFindingsManager() {
                 Load it into the database once to start adding, editing and deleting findings.
               </div>
             </div>
-            <Button onClick={() => seed.mutate()} disabled={seed.isPending} className="shrink-0">
+            <Button onClick={() => seed.mutate(undefined)} disabled={seed.isPending} className="shrink-0">
               {seed.isPending ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Database className="mr-1 h-4 w-4" />}
               Load starter library
             </Button>
@@ -126,9 +135,22 @@ export default function RadiologyFindingsManager() {
         </Card>
       )}
       {seeded && (
-        <div className="text-xs text-muted-foreground">
-          <Check className="mr-1 inline h-3 w-3 text-emerald-600" />
-          Editable library active · {metaCount.toLocaleString()} findings
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <span>
+            <Check className="mr-1 inline h-3 w-3 text-emerald-600" />
+            Editable library active · {metaCount.toLocaleString()} findings
+          </span>
+          <button
+            onClick={() => {
+              if (confirm("Reload the starter set? Old starter findings are replaced with the latest regrouped version. Your custom findings are kept.")) seed.mutate(true);
+            }}
+            disabled={seed.isPending}
+            className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 hover:bg-muted"
+            title="Replace starter findings with the latest regrouped set (custom findings are preserved)"
+          >
+            {seed.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Database className="h-3 w-3" />}
+            Reload starter (keeps custom)
+          </button>
         </div>
       )}
 

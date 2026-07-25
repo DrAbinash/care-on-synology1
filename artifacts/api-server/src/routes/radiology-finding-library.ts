@@ -156,14 +156,20 @@ radiologyFindingLibraryRouter.delete("/:id", async (req: StaffAuthRequest, res: 
   res.json({ deleted: true });
 });
 
-// ── seed starter findings (admin, once) ─────────────────────────────────────────
+// ── seed starter findings (admin; force=true replaces starter rows, keeps custom) ──
 radiologyFindingLibraryRouter.post("/seed", async (req: StaffAuthRequest, res: Response) => {
   if (!isAdmin(req)) { res.status(403).json({ error: "Only admin can seed the library." }); return; }
+  const force = req.body?.force === true;
   const [{ count: existing }] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(radiologyFindingLibraryTable)
     .where(eq(radiologyFindingLibraryTable.source, "starter"));
-  if (existing > 0) { res.json({ inserted: 0, alreadySeeded: true, existing }); return; }
+  if (existing > 0 && !force) { res.json({ inserted: 0, alreadySeeded: true, existing }); return; }
+  if (existing > 0 && force) {
+    // Replace the starter set (e.g. after a regrouped/cleaner mining pass).
+    // Custom rows (source='custom') are never touched.
+    await db.delete(radiologyFindingLibraryTable).where(eq(radiologyFindingLibraryTable.source, "starter"));
+  }
 
   const raw: Record<string, unknown>[] | null = Array.isArray(req.body?.findings) ? req.body.findings : null;
   if (!raw) { res.status(400).json({ error: "`findings` array required." }); return; }
@@ -193,5 +199,5 @@ radiologyFindingLibraryRouter.post("/seed", async (req: StaffAuthRequest, res: R
     await db.insert(radiologyFindingLibraryTable).values(batch);
     inserted += batch.length;
   }
-  res.json({ inserted, total: raw.length });
+  res.json({ inserted, total: raw.length, replaced: force ? existing : 0 });
 });
