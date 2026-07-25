@@ -967,7 +967,7 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
 
   const [doctors, rules, tests, orderTests, bills, tokens, lastEvents] = await Promise.all([
     db.select().from(doctorsTable),
-    db.select().from(commissionRulesTable),
+    db.select().from(commissionRulesTable).orderBy(commissionRulesTable.id),
     db.select({ id: testsTable.id, category: testsTable.category, testType: testsTable.testType }).from(testsTable),
     db.select().from(orderTestsTable).where(and(inArray(orderTestsTable.orderId, orderIds), ne(orderTestsTable.status, "cancelled"))),
     db.select({ orderId: billsTable.orderId, status: billsTable.status, paid: billsTable.paidAmount, balance: billsTable.balanceAmount, discount: billsTable.discount }).from(billsTable).where(inArray(billsTable.orderId, orderIds)),

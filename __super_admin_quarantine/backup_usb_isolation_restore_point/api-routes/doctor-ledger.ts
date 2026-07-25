@@ -99,7 +99,7 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
   };
 
   const doctors = await db.select().from(doctorsTable);
-  const allRules = await db.select().from(commissionRulesTable);
+  const allRules = await db.select().from(commissionRulesTable).orderBy(commissionRulesTable.id);
   const allTests = await db.select().from(testsTable);
   const testMap = new Map(allTests.map(t => [t.id, { id: t.id, name: t.name, category: t.category, price: Number(t.price), testType: t.testType }]));
 
