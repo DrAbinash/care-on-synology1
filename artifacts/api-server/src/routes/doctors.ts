@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, doctorsTable, ordersTable, billsTable, appointmentsTable, doctorPayoutsTable, commissionRulesTable } from "@workspace/db";
+import { db, doctorsTable, ordersTable, billsTable, appointmentsTable, doctorPayoutsTable, commissionRulesTable, clinicSettingsTable } from "@workspace/db";
 import { ilike, or, desc, eq, and, sql, count } from "drizzle-orm";
 import {
   ListDoctorsQueryParams,
@@ -147,7 +147,20 @@ doctorsRouter.patch("/:id", async (req, res) => {
   // Commission rate changes require the pen drive — silently ignored otherwise,
   // so an ordinary staff edit to a doctor's other details still succeeds.
   if (hasCommissionAccess(req)) {
-    if (body.defaultCommission !== undefined) updates.defaultCommission = String(body.defaultCommission);
+    // The profile default is a commission rate like any slab, so it answers to
+    // the same ceiling — otherwise the guard on the rule form is trivially
+    // bypassed by setting the rate here instead.
+    if (body.defaultCommission !== undefined) {
+      const nextType = body.defaultCommissionType ?? "percentage";
+      const nextValue = Number(body.defaultCommission);
+      const [cs] = await db.select({ max: clinicSettingsTable.commissionMaxPercent }).from(clinicSettingsTable).limit(1);
+      const max = Number(cs?.max ?? 0);
+      if (max > 0 && nextType === "percentage" && Number.isFinite(nextValue) && nextValue > max) {
+        res.status(400).json({ error: `Commission rate ${nextValue}% exceeds the clinic's maximum of ${max}%.` });
+        return;
+      }
+      updates.defaultCommission = String(body.defaultCommission);
+    }
     if (body.defaultCommissionType !== undefined) updates.defaultCommissionType = body.defaultCommissionType;
   }
   if (body.ledgerId !== undefined) updates.ledgerId = body.ledgerId === null ? null : Number(body.ledgerId);

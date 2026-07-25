@@ -133,6 +133,14 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   //   'margin' — price minus what the clinic pays the external lab, so
   //              commission can never exceed what the clinic actually earned
   commissionOutsourcedBasis: text("commission_outsourced_basis").notNull().default("price"),
+  // Guard rail on the rule form: no slab (and no doctor profile default) may be
+  // saved above this percentage. Nothing previously stopped a 90% rate being
+  // typed into something that moves money. 0 disables the check.
+  commissionMaxPercent: numeric("commission_max_percent", { precision: 5, scale: 2 }).notNull().default("60.00"),
+  // Realised-vs-configured drift: how many percentage points a doctor's realised
+  // rate may fall below their configured slab before the portal flags it.
+  // Usually it means discounts are quietly eating that doctor's band. 0 = off.
+  commissionDriftAlertPoints: numeric("commission_drift_alert_points", { precision: 5, scale: 2 }).notNull().default("10.00"),
   commissionEligibilityPolicy: text("commission_eligibility_policy").notNull().default("full_payment_collected"),
   commissionEligibilityMinAmount: numeric("commission_eligibility_min_amount", { precision: 10, scale: 2 }).notNull().default("0"),
   // Expense approval separation-of-duties toggle. Default true (self-approval

@@ -19,9 +19,12 @@ import { Label } from "@/components/ui/label";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import {
-  ArrowLeft, Printer, AlertTriangle, Grid3x3, TrendingDown, Download, Search,
+  ArrowLeft, Printer, AlertTriangle, Grid3x3, TrendingDown, Download, Search, Building2, Plus,
 } from "lucide-react";
 import { saAuthHeaders } from "@/lib/saApi";
 
@@ -43,6 +46,11 @@ type Row = {
   ruleValue: number;
   ruleScope: RuleScope;
   held: boolean;
+  isOutsourced: boolean;
+  outsourceCost: number;
+  margin: number;
+  labId: number | null;
+  labName: string;
 };
 
 type DoctorEntry = {
@@ -57,7 +65,7 @@ type DoctorEntry = {
 
 type ReportData = { report: DoctorEntry[] };
 
-type View = "gaps" | "matrix" | "variance";
+type View = "gaps" | "matrix" | "variance" | "labs";
 
 const inr = (n: number) =>
   `₹${n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -90,7 +98,74 @@ export default function RateAnalysis({ onBack }: { onBack: () => void }) {
   const [groupBy, setGroupBy] = useState<"test" | "category">("test");
   const [search, setSearch] = useState("");
 
-  const { data, isLoading, error } = useQuery<ReportData>({
+  // ── Fill a gap without leaving the report ─────────────────────────────────
+  // The gap list used to be read-only: you saw the missing slab, then went to
+  // Commission Rules and typed it in again from memory. This creates it in
+  // place, prefilled with the doctor and test that produced the gap.
+  const [slabFor, setSlabFor] = useState<null | {
+    doctorId: number; doctorName: string; testId: number; testName: string; category: string;
+  }>(null);
+  const [slabType, setSlabType] = useState<"percentage" | "fixed">("percentage");
+  const [slabValue, setSlabValue] = useState("");
+  const [slabScope, setSlabScope] = useState<"test" | "category">("test");
+  const [slabSaving, setSlabSaving] = useState(false);
+
+  const createSlab = async () => {
+    if (!slabFor) return;
+    const value = Number(slabValue);
+    if (!Number.isFinite(value) || value <= 0) {
+      toast({ title: "Enter a rate", description: "The rate must be a positive number.", variant: "destructive" });
+      return;
+    }
+    setSlabSaving(true);
+    try {
+      const res = await fetch("/api/commission/rules", {
+        method: "POST",
+        headers: { ...saAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          doctorId: slabFor.doctorId,
+          name: slabScope === "test" ? slabFor.testName : `${slabFor.category} slab`,
+          type: slabType,
+          value,
+          scope: slabScope,
+          testIds: slabScope === "test" ? [slabFor.testId] : [],
+          categories: slabScope === "category" ? [slabFor.category] : [],
+          isExclusive: false,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      // The server enforces the clinic's rate ceiling; surface its reason rather
+      // than a generic failure.
+      if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+      toast({
+        title: "Slab created",
+        description: `${slabFor.doctorName} · ${slabScope === "test" ? slabFor.testName : slabFor.category} at ${
+          slabType === "percentage" ? `${value}%` : inr(value)}. Reload the period to see it applied.`,
+      });
+      setSlabFor(null);
+      setSlabValue("");
+      await refetch();
+    } catch (e) {
+      toast({ title: "Could not create slab", description: e instanceof Error ? e.message : String(e), variant: "destructive" });
+    } finally {
+      setSlabSaving(false);
+    }
+  };
+
+  // Drift threshold: how far a doctor's realised rate may fall below their
+  // configured slab before it is worth being told about. Lives with the other
+  // commission settings, so it stays behind the pen drive like the rates do.
+  const { data: settingsData } = useQuery({
+    queryKey: ["/api/super-admin/commission-settings", "rate-analysis"],
+    queryFn: async () => {
+      const res = await fetch("/api/super-admin/commission-settings", { headers: saAuthHeaders() });
+      if (!res.ok) throw new Error("Failed to load commission settings");
+      return res.json() as Promise<{ commissionDriftAlertPoints: number }>;
+    },
+  });
+  const driftPoints = Number(settingsData?.commissionDriftAlertPoints ?? 0);
+
+  const { data, isLoading, error, refetch } = useQuery<ReportData>({
     queryKey: ["/api/commission/report-by-patient", "rate-analysis", from, to],
     queryFn: async () => {
       const res = await fetch(
@@ -188,10 +263,68 @@ export default function RateAnalysis({ onBack }: { onBack: () => void }) {
     };
   }).sort((a, b) => b.drop - a.drop), [report]);
 
+  // Doctors whose realised rate has fallen further below their configured slab
+  // than the clinic's threshold allows. Almost always discounts eating the band.
+  const drifted = useMemo(
+    () => (driftPoints > 0 ? variance.filter(v => v.drop >= driftPoints) : []),
+    [variance, driftPoints],
+  );
+
   const term = search.trim().toLowerCase();
   const gapsFiltered = term
     ? gaps.filter(g => g.doctorName.toLowerCase().includes(term) || g.testName.toLowerCase().includes(term))
     : gaps;
+
+  // ── Margin by outsourced lab ────────────────────────────────────────────────
+  // The clinic keeps price − lab cost on outsourced work, then pays commission
+  // out of that. This is the only place that answers "which lab is actually
+  // worth using": two labs at the same headline discount can leave very
+  // different amounts once the referral commission comes out.
+  const labs = useMemo(() => {
+    const byLab = new Map<string, {
+      labId: number | null; labName: string; tests: number; doctors: Set<number>;
+      revenue: number; cost: number; commission: number;
+    }>();
+    for (const e of report) {
+      for (const r of e.rows) {
+        if (!r.isOutsourced) continue;
+        const key = r.labId == null ? "unassigned" : String(r.labId);
+        let l = byLab.get(key);
+        if (!l) {
+          l = { labId: r.labId, labName: r.labName || "Unassigned lab", tests: 0, doctors: new Set(), revenue: 0, cost: 0, commission: 0 };
+          byLab.set(key, l);
+        }
+        l.tests++;
+        l.doctors.add(e.doctor.id);
+        l.revenue += r.price;
+        l.cost += r.outsourceCost ?? 0;
+        l.commission += r.commission;
+      }
+    }
+    return [...byLab.values()]
+      .map(l => {
+        const margin = l.revenue - l.cost;
+        const net = margin - l.commission;
+        return {
+          ...l,
+          doctorCount: l.doctors.size,
+          margin,
+          marginPct: l.revenue > 0 ? (margin / l.revenue) * 100 : 0,
+          net,
+          // What the clinic finally keeps, as a share of what the patient paid.
+          netPct: l.revenue > 0 ? (net / l.revenue) * 100 : 0,
+        };
+      })
+      .sort((a, b) => a.netPct - b.netPct);   // worst lab first — that is the one to act on
+  }, [report]);
+
+  const labTotals = useMemo(() => ({
+    tests: labs.reduce((s, l) => s + l.tests, 0),
+    revenue: labs.reduce((s, l) => s + l.revenue, 0),
+    cost: labs.reduce((s, l) => s + l.cost, 0),
+    commission: labs.reduce((s, l) => s + l.commission, 0),
+    net: labs.reduce((s, l) => s + l.net, 0),
+  }), [labs]);
 
   const exportCsv = () => {
     const esc = (v: unknown) => {
@@ -204,6 +337,12 @@ export default function RateAnalysis({ onBack }: { onBack: () => void }) {
       head = ["Doctor", "Test", "Category", "Rate came from", "Rate applied", "Referrals", "Revenue", "Commission"];
       body = gapsFiltered.map(g => [g.doctorName, g.testName, g.category,
         GAP_LABEL[g.scope] ?? g.scope, g.rateShown, String(g.count), g.revenue.toFixed(2), g.commission.toFixed(2)]);
+    } else if (view === "labs") {
+      name = "lab_margin";
+      head = ["Lab", "Tests", "Doctors", "Revenue", "Lab cost", "Margin", "Margin %", "Commission paid", "Net to clinic", "Net %"];
+      body = labs.map(l => [l.labName, String(l.tests), String(l.doctorCount), l.revenue.toFixed(2),
+        l.cost.toFixed(2), l.margin.toFixed(2), l.marginPct.toFixed(1), l.commission.toFixed(2),
+        l.net.toFixed(2), l.netPct.toFixed(1)]);
     } else if (view === "variance") {
       name = "rate_variance";
       head = ["Doctor", "Speciality", "Configured %", "Realised %", "Drop %", "Expected", "Actual", "Surrendered"];
@@ -263,6 +402,7 @@ export default function RateAnalysis({ onBack }: { onBack: () => void }) {
               { id: "gaps", label: "Slab Gaps", icon: AlertTriangle },
               { id: "matrix", label: "Rate Matrix", icon: Grid3x3 },
               { id: "variance", label: "Configured vs Realised", icon: TrendingDown },
+              { id: "labs", label: "Lab Margin", icon: Building2 },
             ] as const).map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
@@ -298,6 +438,26 @@ export default function RateAnalysis({ onBack }: { onBack: () => void }) {
             )}
           </div>
         </div>
+
+        {drifted.length > 0 && (
+          <button
+            onClick={() => setView("variance")}
+            className="w-full text-left rounded-xl border border-rose-900 bg-rose-950/30 px-4 py-3 flex items-start gap-2.5 hover:bg-rose-950/50 transition-colors"
+          >
+            <TrendingDown size={16} className="text-rose-400 shrink-0 mt-0.5" />
+            <span className="text-sm">
+              <span className="font-semibold text-rose-300">
+                {drifted.length} doctor{drifted.length === 1 ? "" : "s"} {drifted.length === 1 ? "is" : "are"} realising
+                at least {driftPoints}% below their configured slab
+              </span>
+              <span className="block text-xs text-rose-400/90 mt-0.5">
+                {drifted.slice(0, 3).map(v => `${v.doctorName} (−${pct(v.drop)})`).join(", ")}
+                {drifted.length > 3 ? `, and ${drifted.length - 3} more` : ""}
+                {" — "}{inr(drifted.reduce((s, v) => s + v.surrendered, 0))} surrendered to discounts. Open Configured vs Realised.
+              </span>
+            </span>
+          </button>
+        )}
 
         {isLoading ? (
           <div className="space-y-3">
@@ -340,11 +500,12 @@ export default function RateAnalysis({ onBack }: { onBack: () => void }) {
                       <th className="px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground text-center">Referrals</th>
                       <th className="px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground text-right">Revenue</th>
                       <th className="px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground text-right">Commission</th>
+                      <th className="px-4 py-2.5" />
                     </tr>
                   </thead>
                   <tbody>
                     {gapsFiltered.length === 0 ? (
-                      <tr><td colSpan={8} className="px-4 py-10 text-center text-muted-foreground text-xs">
+                      <tr><td colSpan={9} className="px-4 py-10 text-center text-muted-foreground text-xs">
                         Every referral in this period matched an explicit slab.
                       </td></tr>
                     ) : gapsFiltered.map((g, i) => (
@@ -362,11 +523,102 @@ export default function RateAnalysis({ onBack }: { onBack: () => void }) {
                         <td className="px-4 py-2.5 text-center tabular-nums">{g.count}</td>
                         <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{inr(g.revenue)}</td>
                         <td className="px-4 py-2.5 text-right tabular-nums font-semibold text-amber-500">{inr(g.commission)}</td>
+                        <td className="px-4 py-2.5 text-right">
+                          <Button
+                            size="sm" variant="outline" className="h-7 text-xs gap-1"
+                            onClick={() => {
+                              setSlabFor({ doctorId: g.doctorId, doctorName: g.doctorName, testId: g.testId, testName: g.testName, category: g.category });
+                              setSlabScope("test");
+                              setSlabType("percentage");
+                              setSlabValue("");
+                            }}
+                          >
+                            <Plus size={12} /> Add slab
+                          </Button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+            </div>
+          </>
+        ) : view === "labs" ? (
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {[
+                { l: "Outsourced tests", v: String(labTotals.tests) },
+                { l: "Paid to labs", v: inr(labTotals.cost) },
+                { l: "Commission on that work", v: inr(labTotals.commission) },
+                { l: "Net to clinic", v: inr(labTotals.net), amber: true },
+              ].map(c => (
+                <div key={c.l} className="bg-card border border-border rounded-xl p-4">
+                  <p className="text-xs text-muted-foreground">{c.l}</p>
+                  <p className={`text-xl font-bold mt-1 ${c.amber ? "text-amber-500" : ""}`}>{c.v}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="bg-card border border-border rounded-xl overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-border text-xs text-muted-foreground">
+                On outsourced work you keep <b className="text-foreground">revenue − lab cost</b>, and the referral
+                commission comes out of that. <b className="text-foreground">Net to clinic</b> is what is finally
+                left. Worst lab first — two labs at the same headline discount can leave very different amounts
+                once commission is paid.
+              </div>
+              {labs.length === 0 ? (
+                <div className="px-4 py-10 text-center text-sm text-muted-foreground">
+                  No outsourced tests in this period.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-border bg-muted/20 text-left">
+                        <th className="px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">Lab</th>
+                        <th className="px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground text-center">Tests</th>
+                        <th className="px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground text-center">Doctors</th>
+                        <th className="px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground text-right">Revenue</th>
+                        <th className="px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground text-right">Lab cost</th>
+                        <th className="px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground text-right">Margin</th>
+                        <th className="px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground text-right">Commission</th>
+                        <th className="px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground text-right">Net to clinic</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {labs.map((l, i) => (
+                        <tr key={l.labId ?? "unassigned"} className={`border-b border-border/50 last:border-0 ${i % 2 ? "bg-muted/10" : ""}`}>
+                          <td className="px-4 py-2.5 font-medium">{l.labName}</td>
+                          <td className="px-4 py-2.5 text-center tabular-nums">{l.tests}</td>
+                          <td className="px-4 py-2.5 text-center tabular-nums text-muted-foreground">{l.doctorCount}</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums">{inr(l.revenue)}</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{inr(l.cost)}</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums">
+                            {inr(l.margin)}
+                            <span className="text-[11px] text-muted-foreground ml-1.5">{pct(l.marginPct)}</span>
+                          </td>
+                          <td className="px-4 py-2.5 text-right tabular-nums text-amber-500">{inr(l.commission)}</td>
+                          <td className={`px-4 py-2.5 text-right tabular-nums font-semibold ${
+                            l.net < 0 ? "text-rose-400" : l.netPct < 10 ? "text-amber-400" : "text-emerald-400"}`}>
+                            {inr(l.net)}
+                            <span className="text-[11px] opacity-70 ml-1.5">{pct(l.netPct)}</span>
+                          </td>
+                        </tr>
+                      ))}
+                      <tr className="bg-amber-950/20 border-t-2 border-amber-900">
+                        <td className="px-4 py-2.5 font-bold text-xs uppercase">Total</td>
+                        <td className="px-4 py-2.5 text-center tabular-nums font-bold">{labTotals.tests}</td>
+                        <td className="px-4 py-2.5" />
+                        <td className="px-4 py-2.5 text-right tabular-nums font-bold">{inr(labTotals.revenue)}</td>
+                        <td className="px-4 py-2.5 text-right tabular-nums font-bold">{inr(labTotals.cost)}</td>
+                        <td className="px-4 py-2.5 text-right tabular-nums font-bold">{inr(labTotals.revenue - labTotals.cost)}</td>
+                        <td className="px-4 py-2.5 text-right tabular-nums font-bold text-amber-500">{inr(labTotals.commission)}</td>
+                        <td className="px-4 py-2.5 text-right tabular-nums font-bold">{inr(labTotals.net)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </>
         ) : view === "matrix" ? (
@@ -436,9 +688,17 @@ export default function RateAnalysis({ onBack }: { onBack: () => void }) {
                 </thead>
                 <tbody>
                   {variance.map((v, i) => (
-                    <tr key={v.doctorId} className={`border-b border-border/50 last:border-0 ${i % 2 ? "bg-muted/10" : ""}`}>
+                    <tr key={v.doctorId} className={`border-b border-border/50 last:border-0 ${
+                      driftPoints > 0 && v.drop >= driftPoints ? "bg-rose-950/20" : i % 2 ? "bg-muted/10" : ""}`}>
                       <td className="px-4 py-2.5">
-                        <div className="font-medium">{v.doctorName}</div>
+                        <div className="font-medium">
+                          {v.doctorName}
+                          {driftPoints > 0 && v.drop >= driftPoints && (
+                            <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-rose-900/50 text-rose-300 align-middle">
+                              over threshold
+                            </span>
+                          )}
+                        </div>
                         <div className="text-[11px] text-muted-foreground">{v.specialization}</div>
                       </td>
                       <td className="px-4 py-2.5 text-center tabular-nums">{v.tests}</td>
@@ -461,6 +721,65 @@ export default function RateAnalysis({ onBack }: { onBack: () => void }) {
           </div>
         )}
       </div>
+
+      {/* Create the missing slab, prefilled from the gap row */}
+      <Dialog open={!!slabFor} onOpenChange={(v) => { if (!v) setSlabFor(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Add the missing slab</DialogTitle></DialogHeader>
+          {slabFor && (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs">
+                <div><span className="text-muted-foreground">Doctor:</span> <b>{slabFor.doctorName}</b></div>
+                <div className="mt-0.5"><span className="text-muted-foreground">Test:</span> <b>{slabFor.testName}</b>
+                  <span className="text-muted-foreground"> · {slabFor.category}</span></div>
+              </div>
+
+              <div>
+                <Label className="text-xs mb-1.5 block">Cover</Label>
+                <Select value={slabScope} onValueChange={(v) => setSlabScope(v as "test" | "category")}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="test">This test only</SelectItem>
+                    <SelectItem value="category">Everything in {slabFor.category}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  A category slab closes every gap in {slabFor.category} for this doctor at once.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs mb-1.5 block">Type</Label>
+                  <Select value={slabType} onValueChange={(v) => setSlabType(v as "percentage" | "fixed")}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="percentage">Percentage (%)</SelectItem>
+                      <SelectItem value="fixed">Fixed (₹)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs mb-1.5 block">{slabType === "percentage" ? "Percentage" : "Amount (₹)"}</Label>
+                  <Input
+                    type="number" step="any" min="0" autoFocus
+                    value={slabValue}
+                    onChange={(e) => setSlabValue(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && !slabSaving) void createSlab(); }}
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-1">
+                <Button variant="outline" onClick={() => setSlabFor(null)}>Cancel</Button>
+                <Button disabled={slabSaving} onClick={() => void createSlab()}>
+                  {slabSaving ? "Saving…" : "Create slab"}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

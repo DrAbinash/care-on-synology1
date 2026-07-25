@@ -12,6 +12,7 @@ import {
   testTokensTable,
   patientReportsTable,
   radiologyStudiesTable,
+  outsourcedLabsTable,
 } from "@workspace/db/schema";
 import { eq, desc, and, gte, lte, inArray, ne, sql } from "drizzle-orm";
 import {
@@ -30,6 +31,7 @@ import {
   computeCommissionHold,
   NEEDS_REPORT_STATUS,
 } from "../lib/commissionCalc";
+import { auditFromRequest } from "../lib/audit";
 
 const router = Router();
 
@@ -55,6 +57,24 @@ router.get("/rules", async (req, res) => {
 // Which kind of test line a slab may pay on. Not in the generated OpenAPI body
 // schema, so it is read off req.body directly and allow-listed here — the same
 // approach the isActive flag below already uses.
+// Nothing previously stopped a 90% slab being typed into something that moves
+// money, and a rate change left no trace. Both are closed below: every rate is
+// checked against the clinic's ceiling, and every create/update/delete writes an
+// audit row naming who did it and what the value went from and to.
+async function commissionMaxPercent(): Promise<number> {
+  const [row] = await db.select({ v: clinicSettingsTable.commissionMaxPercent }).from(clinicSettingsTable).limit(1);
+  const n = Number(row?.v ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Returns an error message when the rate breaches the ceiling, else null. */
+function rateCeilingError(type: string, value: number, max: number): string | null {
+  if (max <= 0) return null;                 // ceiling disabled
+  if (type !== "percentage") return null;    // a fixed amount is not a percentage
+  if (value <= max) return null;
+  return `Commission rate ${value}% exceeds the clinic's maximum of ${max}%. Raise the maximum in Commission Rules settings if this is intended.`;
+}
+
 const APPLIES_TO = ["all", "inhouse", "outsourced"] as const;
 function readAppliesTo(body: unknown): string | undefined {
   const v = (body as { appliesTo?: unknown } | null | undefined)?.appliesTo;
@@ -73,6 +93,11 @@ router.post("/rules", async (req, res) => {
     res.status(400).json({ error: "doctorId is required" });
     return;
   }
+  const ceilingErr = rateCeilingError(type, value, await commissionMaxPercent());
+  if (ceilingErr) {
+    res.status(400).json({ error: ceilingErr });
+    return;
+  }
   const [rule] = await db
     .insert(commissionRulesTable)
     .values({
@@ -87,6 +112,14 @@ router.post("/rules", async (req, res) => {
       isExclusive: isExclusive ?? false,
     })
     .returning();
+  await auditFromRequest(req, {
+    action: "create",
+    module: "commission",
+    entityType: "commission_rule",
+    entityId: String(rule.id),
+    newValue: JSON.stringify({ doctorId, name, type, value, scope, appliesTo: rule.appliesTo, isExclusive: rule.isExclusive }),
+    reason: `Commission slab created: ${name} = ${type === "percentage" ? `${value}%` : `Rs.${value}`}`,
+  });
   res.status(201).json({ ...rule, value: Number(rule.value) });
 });
 
@@ -125,11 +158,36 @@ router.patch("/rules/:id", async (req, res) => {
     res.status(400).json({ error: "No fields to update" });
     return;
   }
+  const [before] = await db.select().from(commissionRulesTable).where(eq(commissionRulesTable.id, id));
+  if (!before) {
+    res.status(404).json({ error: "Rule not found" });
+    return;
+  }
+  // Check the rate that will be in force after the patch, which may come from
+  // either field — changing only the type can breach the ceiling on its own.
+  const nextType = (updates.type as string | undefined) ?? before.type;
+  const nextValue = updates.value !== undefined ? Number(updates.value) : Number(before.value);
+  const ceilingErr = rateCeilingError(nextType, nextValue, await commissionMaxPercent());
+  if (ceilingErr) {
+    res.status(400).json({ error: ceilingErr });
+    return;
+  }
   const [rule] = await db.update(commissionRulesTable).set(updates).where(eq(commissionRulesTable.id, id)).returning();
   if (!rule) {
     res.status(404).json({ error: "Rule not found" });
     return;
   }
+  await auditFromRequest(req, {
+    action: "edit",
+    module: "commission",
+    entityType: "commission_rule",
+    entityId: String(id),
+    oldValue: JSON.stringify({ name: before.name, type: before.type, value: Number(before.value), scope: before.scope, appliesTo: before.appliesTo, isActive: before.isActive }),
+    newValue: JSON.stringify({ name: rule.name, type: rule.type, value: Number(rule.value), scope: rule.scope, appliesTo: rule.appliesTo, isActive: rule.isActive }),
+    reason: Number(before.value) !== Number(rule.value) || before.type !== rule.type
+      ? `Commission rate changed: ${before.type === "percentage" ? `${Number(before.value)}%` : `Rs.${Number(before.value)}`} → ${rule.type === "percentage" ? `${Number(rule.value)}%` : `Rs.${Number(rule.value)}`}`
+      : `Commission slab updated: ${rule.name}`,
+  });
   res.json({ ...rule, value: Number(rule.value) });
 });
 
@@ -140,7 +198,18 @@ router.delete("/rules/:id", async (req, res) => {
     res.status(400).json({ error: "Invalid id", details: parsed.error.issues });
     return;
   }
+  const [before] = await db.select().from(commissionRulesTable).where(eq(commissionRulesTable.id, parsed.data.id));
   await db.delete(commissionRulesTable).where(eq(commissionRulesTable.id, parsed.data.id));
+  if (before) {
+    await auditFromRequest(req, {
+      action: "delete",
+      module: "commission",
+      entityType: "commission_rule",
+      entityId: String(parsed.data.id),
+      oldValue: JSON.stringify({ doctorId: before.doctorId, name: before.name, type: before.type, value: Number(before.value), scope: before.scope, appliesTo: before.appliesTo }),
+      reason: `Commission slab deleted: ${before.name} = ${before.type === "percentage" ? `${Number(before.value)}%` : `Rs.${Number(before.value)}`}`,
+    });
+  }
   res.json({ ok: true });
 });
 
@@ -287,6 +356,7 @@ router.post("/rules/import", async (req, res) => {
   const doctorIdByName = new Map<string, number>();
   for (const d of doctors) doctorIdByName.set(d.name.trim().toLowerCase(), d.id);
 
+  const maxPct = await commissionMaxPercent();
   const parseBool = (v: string, dflt: boolean) => (v.trim() === "" ? dflt : /^(true|1|yes|y)$/i.test(v.trim()));
   const splitList = (v: string) => v.split(/[;,]/).map(s => s.trim()).filter(Boolean);
 
@@ -311,6 +381,10 @@ router.post("/rules/import", async (req, res) => {
     if (type !== "percentage" && type !== "fixed") { errors.push({ line: lineNo, doctorName, error: `Invalid type "${type}" (expected percentage or fixed)` }); continue; }
     const value = Number(valueRaw);
     if (!Number.isFinite(value)) { errors.push({ line: lineNo, doctorName, error: `Invalid value "${valueRaw}"` }); continue; }
+    // The ceiling applies to imported rows too — a spreadsheet must not be a way
+    // around the guard on the form.
+    const ceilErr = rateCeilingError(type, value, maxPct);
+    if (ceilErr) { errors.push({ line: lineNo, doctorName, error: ceilErr }); continue; }
     if (scope !== "all" && scope !== "category" && scope !== "test") { errors.push({ line: lineNo, doctorName, error: `Invalid scope "${scope}" (expected all, category or test)` }); continue; }
     // Absent column or blank cell → "all", so files exported before this column
     // existed still import with the behaviour they had.
@@ -355,7 +429,7 @@ router.post("/rules/import", async (req, res) => {
 // The maths itself lives in ../lib/commissionCalc so that this report, the
 // Doctor Ledger and the reconcile cron cannot drift apart (they did once — the
 // old month-end email disagreed with this report for 9 of 10 doctors).
-type TestInfo = { id: number; name: string; category: string | null; price: number; testType?: string | null };
+type TestInfo = { id: number; name: string; category: string | null; price: number; testType?: string | null; outsourcedLabId?: number | null };
 type RuleInfo = typeof import("@workspace/db/schema").commissionRulesTable.$inferSelect;
 type DoctorInfo = typeof import("@workspace/db/schema").doctorsTable.$inferSelect;
 
@@ -702,7 +776,9 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
   const doctors = await db.select().from(doctorsTable);
   const allRules = await db.select().from(commissionRulesTable);
   const allTests = await db.select().from(testsTable);
-  const testMap = new Map(allTests.map(t => [t.id, { id: t.id, name: t.name, category: t.category ?? "Other", price: Number(t.price), testType: t.testType }]));
+  const testMap = new Map(allTests.map(t => [t.id, { id: t.id, name: t.name, category: t.category ?? "Other", price: Number(t.price), testType: t.testType, outsourcedLabId: t.outsourcedLabId }]));
+  const labs = await db.select({ id: outsourcedLabsTable.id, name: outsourcedLabsTable.name }).from(outsourcedLabsTable);
+  const labNameById = new Map(labs.map(l => [l.id, l.name]));
 
   const conditions = [];
   if (doctorId) conditions.push(eq(ordersTable.doctorId, Number(doctorId)));
@@ -810,6 +886,10 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
     // original ask is reported here so the reduction is never silent.
     cappedToMargin: boolean;
     uncappedCommission: number;
+    // Which external lab did this line, so margin can be totalled per lab —
+    // the question "which lab is eating my margin" is only answerable here.
+    labId: number | null;
+    labName: string;
   };
 
   const result = filteredDoctors.map(doctor => {
@@ -886,6 +966,8 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
           margin: Number(ot.price) - outsourceCost,
           cappedToMargin,
           uncappedCommission,
+          labId: isOutsourced ? (test?.outsourcedLabId ?? null) : null,
+          labName: isOutsourced ? (labNameById.get(test?.outsourcedLabId ?? -1) ?? "Unassigned lab") : "",
         });
       }
     }

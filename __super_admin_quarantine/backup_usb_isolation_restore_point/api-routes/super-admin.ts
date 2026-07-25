@@ -772,12 +772,16 @@ superAdminRouter.get("/commission-settings", requireSuperAdminUsb, requireSuperA
     commissionEligibilityPolicy: clinicSettingsTable.commissionEligibilityPolicy,
     commissionEligibilityMinAmount: clinicSettingsTable.commissionEligibilityMinAmount,
     commissionOutsourcedBasis: clinicSettingsTable.commissionOutsourcedBasis,
+    commissionMaxPercent: clinicSettingsTable.commissionMaxPercent,
+    commissionDriftAlertPoints: clinicSettingsTable.commissionDriftAlertPoints,
   }).from(clinicSettingsTable).limit(1);
   res.json({
     commissionDiscountMode: rows[0]?.commissionDiscountMode ?? "none",
     commissionEligibilityPolicy: rows[0]?.commissionEligibilityPolicy ?? "full_payment_collected",
     commissionEligibilityMinAmount: Number(rows[0]?.commissionEligibilityMinAmount ?? 0),
     commissionOutsourcedBasis: rows[0]?.commissionOutsourcedBasis ?? "price",
+    commissionMaxPercent: Number(rows[0]?.commissionMaxPercent ?? 0),
+    commissionDriftAlertPoints: Number(rows[0]?.commissionDriftAlertPoints ?? 0),
   });
 });
 
@@ -796,6 +800,9 @@ const CommissionSettingsPatch = z.object({
   commissionEligibilityPolicy: z.enum(CommissionEligibilityPolicies).optional(),
   commissionEligibilityMinAmount: z.number().nonnegative().optional(),
   commissionOutsourcedBasis: z.enum(CommissionOutsourcedBases).optional(),
+  // 0 disables either guard.
+  commissionMaxPercent: z.number().min(0).max(100).optional(),
+  commissionDriftAlertPoints: z.number().min(0).max(100).optional(),
 });
 
 superAdminRouter.patch("/commission-settings", requireSuperAdminUsb, requireSuperAdmin, async (req, res) => {
@@ -810,6 +817,8 @@ superAdminRouter.patch("/commission-settings", requireSuperAdminUsb, requireSupe
   if (data.commissionEligibilityPolicy !== undefined) updates.commissionEligibilityPolicy = data.commissionEligibilityPolicy;
   if (data.commissionEligibilityMinAmount !== undefined) updates.commissionEligibilityMinAmount = data.commissionEligibilityMinAmount.toFixed(2);
   if (data.commissionOutsourcedBasis !== undefined) updates.commissionOutsourcedBasis = data.commissionOutsourcedBasis;
+  if (data.commissionMaxPercent !== undefined) updates.commissionMaxPercent = data.commissionMaxPercent.toFixed(2);
+  if (data.commissionDriftAlertPoints !== undefined) updates.commissionDriftAlertPoints = data.commissionDriftAlertPoints.toFixed(2);
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: "No settings to update" });
     return;

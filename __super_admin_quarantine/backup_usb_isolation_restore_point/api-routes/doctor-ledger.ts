@@ -13,6 +13,7 @@ import {
   patientReportsTable,
   radiologyStudiesTable,
   commissionStatusEventsTable,
+  commissionPayoutLinesTable,
 } from "@workspace/db/schema";
 import { eq, desc, and, gte, lte, inArray, ne, sql } from "drizzle-orm";
 import {
@@ -142,28 +143,50 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
     reportStatusByOrder = await fetchOrderReportStatus(orderIds, activeOrderTestIdsByOrder);
   }
 
+  // Orders already settled by a recorded payout. Their commission is read from
+  // the snapshot taken at payout time rather than recomputed, so editing a slab
+  // today cannot change what a statement already handed over says. See
+  // commission_payout_lines.
+  const frozenRows = orderIds.length
+    ? await db.select().from(commissionPayoutLinesTable).where(inArray(commissionPayoutLinesTable.orderId, orderIds))
+    : [];
+  const frozenByOrder = new Map<number, { commission: number; gross: number; revenue: number; payoutId: number; ruleSummary: string }>();
+  for (const f of frozenRows) {
+    frozenByOrder.set(f.orderId, {
+      commission: Number(f.commissionAmount),
+      gross: Number(f.grossCommission),
+      revenue: Number(f.revenue),
+      payoutId: f.payoutId,
+      ruleSummary: f.ruleSummary,
+    });
+  }
+
   const filteredDoctors = opts.doctorId ? doctors.filter(d => d.id === opts.doctorId) : doctors;
 
   return filteredDoctors.map(doctor => {
     const doctorOrders = orders.filter(o => o.doctorId === doctor.id);
     const rules = allRules.filter(r => r.doctorId === doctor.id);
     let totalRevenue = 0, totalCommission = 0, payableCommission = 0, heldCommission = 0;
-    const orderRows: { orderId: number; orderNumber: string; date: string; revenue: number; commission: number; testCount: number; held: boolean; holdReason: string | null }[] = [];
+    const orderRows: { orderId: number; orderNumber: string; date: string; revenue: number; commission: number; grossCommission: number; testCount: number; held: boolean; holdReason: string | null; frozen: boolean; payoutId: number | null; ruleSummary: string }[] = [];
     for (const order of doctorOrders) {
       const tests = orderTests.filter(ot => ot.orderId === order.id);
       if (tests.length === 0) continue;
       let r = 0, rawC = 0;
+      const ruleNames = new Set<string>();
       for (const ot of tests) {
         const test = testMap.get(ot.testId);
-        const { commission } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis);
+        const { commission, ruleName, ruleType, ruleValue } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis);
         r += Number(ot.price);
         rawC += commission;
+        if (ruleName && ruleName !== "None") {
+          ruleNames.add(`${ruleName} (${ruleType === "percentage" ? `${ruleValue}%` : `Rs.${ruleValue}`})`);
+        }
       }
       const bill = billByOrderId.get(order.id);
       // Net of the bill-discount deduction — same NET the Referral Report pays.
-      const { net: c } = applyDiscountDeduction(rawC, bill?.discount ?? 0, discountMode);
+      const { net: liveNet } = applyDiscountDeduction(rawC, bill?.discount ?? 0, discountMode);
       const rep = reportStatusByOrder.get(order.id);
-      const { held, reason } = computeCommissionHold({
+      const live = computeCommissionHold({
         cfg,
         hasBill: !!bill,
         billStatus: bill?.status ?? null,
@@ -171,20 +194,34 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
         balanceAmount: bill?.balance ?? 0,
         reportFinalized: rep?.finalized ?? false,
         reportDelivered: rep?.delivered ?? false,
-        commissionAmount: c,
+        commissionAmount: liveNet,
       });
-      totalRevenue += r;
+
+      // A settled order uses its snapshot, and is by definition no longer held:
+      // it was eligible when it was paid, and it has been paid.
+      const frozen = frozenByOrder.get(order.id);
+      const c = frozen ? frozen.commission : liveNet;
+      const gross = frozen ? frozen.gross : rawC;
+      const revenue = frozen ? frozen.revenue : r;
+      const held = frozen ? false : live.held;
+      const reason = frozen ? null : live.reason;
+
+      totalRevenue += revenue;
       totalCommission += c;
       if (held) heldCommission += c; else payableCommission += c;
       orderRows.push({
         orderId: order.id,
         orderNumber: order.orderNumber,
         date: order.createdAt.toISOString().split("T")[0],
-        revenue: r,
+        revenue,
         commission: c,
+        grossCommission: gross,
         testCount: tests.length,
         held,
         holdReason: reason,
+        frozen: !!frozen,
+        payoutId: frozen?.payoutId ?? null,
+        ruleSummary: frozen ? frozen.ruleSummary : [...ruleNames].join(", "),
       });
     }
     return {
@@ -332,7 +369,9 @@ doctorLedgerRouter.get("/:doctorId", async (req, res) => {
       entries.push({
         kind: "earned",
         date: o.date,
-        particular: `Commission · Order ${o.orderNumber} (${o.testCount} test${o.testCount === 1 ? "" : "s"})`,
+        // A settled order is marked so the reader can tell a frozen figure from
+        // a live one — the frozen figure will not move if a slab changes later.
+        particular: `Commission · Order ${o.orderNumber} (${o.testCount} test${o.testCount === 1 ? "" : "s"})${o.frozen ? " · settled" : ""}`,
         credit: o.commission,
         debit: 0,
         ref: o.orderNumber,
@@ -439,6 +478,46 @@ doctorLedgerRouter.get("/:doctorId", async (req, res) => {
 });
 
 // ─── POST /:doctorId/payouts : record a new payout ─────────────────────────────
+// Freeze the orders a payout settles. Called immediately after the payout row
+// is written, so the figures captured are the ones the operator was looking at
+// when they pressed Record.
+//
+// Only eligible (non-held) orders are frozen — held commission is not being paid
+// — and an order already frozen by an earlier payout is left alone, so two
+// payouts in the same period cannot double-settle it. Returns how many were
+// frozen so the caller can report it.
+async function freezeOrdersForPayout(opts: {
+  payoutId: number;
+  doctorId: number;
+  periodFrom: string | null;
+  periodTo: string | null;
+}): Promise<number> {
+  const earned = await computeEarned({
+    doctorId: opts.doctorId,
+    from: opts.periodFrom ?? undefined,
+    to: opts.periodTo ?? undefined,
+  });
+  const rows = earned[0]?.orders ?? [];
+  // `frozen` is already true for anything a previous payout settled, because
+  // computeEarned reads the snapshot back.
+  const toFreeze = rows.filter(o => !o.held && !o.frozen);
+  if (!toFreeze.length) return 0;
+
+  await db.insert(commissionPayoutLinesTable).values(toFreeze.map(o => ({
+    payoutId: opts.payoutId,
+    doctorId: opts.doctorId,
+    orderId: o.orderId,
+    orderNumber: o.orderNumber,
+    orderDate: o.date,
+    commissionAmount: o.commission.toFixed(2),
+    grossCommission: o.grossCommission.toFixed(2),
+    revenue: o.revenue.toFixed(2),
+    testCount: o.testCount,
+    ruleSummary: o.ruleSummary.slice(0, 500),
+  })));
+  return toFreeze.length;
+}
+
 doctorLedgerRouter.post("/:doctorId/payouts", async (req, res) => {
   try {
     const paramsParsed = CreateDoctorPayoutParams.safeParse({ doctorId: req.params.doctorId });
@@ -502,7 +581,22 @@ doctorLedgerRouter.post("/:doctorId/payouts", async (req, res) => {
       })
       .returning();
 
-    res.status(201).json({ ...row, amount: Number(row.amount) });
+    // Freeze what this payout settled. A failure here must not lose the payout
+    // itself — the money moved — so it is reported, not thrown: the ledger falls
+    // back to live recomputation exactly as it did before this existed.
+    let frozenCount = 0;
+    try {
+      frozenCount = await freezeOrdersForPayout({
+        payoutId: row.id,
+        doctorId,
+        periodFrom: data.periodFrom ?? null,
+        periodTo: data.periodTo ?? null,
+      });
+    } catch (freezeErr) {
+      req.log?.error({ err: freezeErr, payoutId: row.id }, "doctor-ledger payout snapshot failed");
+    }
+
+    res.status(201).json({ ...row, amount: Number(row.amount), frozenOrders: frozenCount });
   } catch (err) {
     req.log?.error({ err }, "doctor-ledger payout create failed");
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -589,7 +683,11 @@ doctorLedgerRouter.delete("/payouts/:id", async (req, res) => {
       res.status(404).json({ error: "Payout not found" });
       return;
     }
-    res.json({ ok: true });
+    // Reversing the payout reverses the freeze: those orders go back to being
+    // computed live, and become payable again.
+    const unfrozen = await db.delete(commissionPayoutLinesTable)
+      .where(eq(commissionPayoutLinesTable.payoutId, id)).returning({ id: commissionPayoutLinesTable.id });
+    res.json({ ok: true, unfrozenOrders: unfrozen.length });
   } catch (err) {
     req.log?.error({ err }, "doctor-ledger payout delete failed");
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });

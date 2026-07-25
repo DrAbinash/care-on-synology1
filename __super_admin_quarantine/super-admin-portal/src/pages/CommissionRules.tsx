@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/select";
 import { useForm } from "react-hook-form";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Plus, Trash2, Stethoscope, Star, Percent, Search, Download, Upload, Clock, Building2 } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Stethoscope, Star, Percent, Search, Download, Upload, Clock, Building2, ShieldAlert } from "lucide-react";
 import {
   useListCommissionRules,
   useCreateCommissionRule,
@@ -168,13 +168,19 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
     queryFn: async () => {
       const res = await fetch("/api/super-admin/commission-settings", { headers: saAuthHeaders() });
       if (!res.ok) throw new Error("Failed to load commission settings");
-      return res.json() as Promise<{ commissionDiscountMode: DiscountMode; commissionEligibilityPolicy: EligibilityPolicy; commissionEligibilityMinAmount: number; commissionOutsourcedBasis: OutsourcedBasis }>;
+      return res.json() as Promise<{ commissionDiscountMode: DiscountMode; commissionEligibilityPolicy: EligibilityPolicy; commissionEligibilityMinAmount: number; commissionOutsourcedBasis: OutsourcedBasis; commissionMaxPercent: number; commissionDriftAlertPoints: number }>;
     },
   });
   const currentDiscountMode: DiscountMode = commissionSettingsData?.commissionDiscountMode ?? "none";
   const currentEligibilityPolicy: EligibilityPolicy = commissionSettingsData?.commissionEligibilityPolicy ?? "full_payment_collected";
   const currentEligibilityMinAmount: number = commissionSettingsData?.commissionEligibilityMinAmount ?? 0;
   const currentOutsourcedBasis: OutsourcedBasis = commissionSettingsData?.commissionOutsourcedBasis ?? "price";
+  const currentMaxPercent: number = commissionSettingsData?.commissionMaxPercent ?? 0;
+  const currentDriftPoints: number = commissionSettingsData?.commissionDriftAlertPoints ?? 0;
+  const [maxPercentInput, setMaxPercentInput] = useState<string>("");
+  const [driftInput, setDriftInput] = useState<string>("");
+  useEffect(() => { setMaxPercentInput(String(currentMaxPercent)); }, [currentMaxPercent]);
+  useEffect(() => { setDriftInput(String(currentDriftPoints)); }, [currentDriftPoints]);
   const [minAmountInput, setMinAmountInput] = useState<string>("");
   useEffect(() => { setMinAmountInput(String(currentEligibilityMinAmount)); }, [currentEligibilityMinAmount]);
 
@@ -201,6 +207,12 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
   const saveDiscountMode = (mode: DiscountMode) => patchCommissionSettings({ commissionDiscountMode: mode }, "Commission discount setting saved");
   const saveEligibilityPolicy = (policy: EligibilityPolicy) => patchCommissionSettings({ commissionEligibilityPolicy: policy }, "Commission eligibility policy saved");
   const saveOutsourcedBasis = (basis: OutsourcedBasis) => patchCommissionSettings({ commissionOutsourcedBasis: basis }, "Outsourced commission basis saved");
+  const saveGuardRails = () => {
+    const max = Number(maxPercentInput), drift = Number(driftInput);
+    if (!Number.isFinite(max) || max < 0 || max > 100) { toast({ title: "Maximum must be between 0 and 100", variant: "destructive" }); return; }
+    if (!Number.isFinite(drift) || drift < 0 || drift > 100) { toast({ title: "Drift threshold must be between 0 and 100", variant: "destructive" }); return; }
+    patchCommissionSettings({ commissionMaxPercent: max, commissionDriftAlertPoints: drift }, "Guard rails saved");
+  };
   const saveEligibilityMinAmount = () => {
     const n = Number(minAmountInput);
     if (!Number.isFinite(n) || n < 0) { toast({ title: "Enter a valid amount", variant: "destructive" }); return; }
@@ -426,6 +438,50 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
                 </button>
               );
             })}
+          </div>
+        </div>
+
+        {/* Guard rails */}
+        <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-rose-500/10 flex items-center justify-center flex-shrink-0">
+              <ShieldAlert size={15} className="text-rose-600" />
+            </div>
+            <div>
+              <p className="font-semibold text-sm leading-tight">Guard Rails</p>
+              <p className="text-xs text-muted-foreground">
+                Limits on what can be saved, and when to be told something has drifted. Set either to 0 to switch it off.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <Label className="text-xs">Maximum commission rate (%)</Label>
+              <Input type="number" min="0" max="100" step="any" value={maxPercentInput}
+                onChange={(e) => setMaxPercentInput(e.target.value)} className="mt-1 w-40" />
+              <p className="text-[11px] text-muted-foreground mt-1 leading-snug">
+                No slab, CSV import or doctor profile default may be saved above this. Stops a slip of the
+                keyboard turning 5% into 50%. Fixed-amount slabs are not percentages and are not checked.
+              </p>
+            </div>
+            <div>
+              <Label className="text-xs">Tell me when realised falls below configured by (%)</Label>
+              <Input type="number" min="0" max="100" step="any" value={driftInput}
+                onChange={(e) => setDriftInput(e.target.value)} className="mt-1 w-40" />
+              <p className="text-[11px] text-muted-foreground mt-1 leading-snug">
+                Rate Analysis shows a banner naming the doctors whose realised rate has fallen this far below
+                their slab, and how much was surrendered. Usually discounts eating the band.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <Button size="sm" variant="outline" disabled={discountModeSaving} onClick={saveGuardRails}>Save guard rails</Button>
+            <p className="text-[11px] text-muted-foreground">
+              Current: max {currentMaxPercent > 0 ? `${currentMaxPercent}%` : "off"} · alert at{" "}
+              {currentDriftPoints > 0 ? `${currentDriftPoints}%` : "off"}
+            </p>
           </div>
         </div>
 
