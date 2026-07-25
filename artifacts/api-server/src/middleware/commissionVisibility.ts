@@ -18,7 +18,25 @@ import { getUsbKeyHeader, isValidUsbKey } from "./requireSuperAdminUsb";
  * its own commission configuration.
  */
 export function hasCommissionAccess(req: Request): boolean {
-  return isValidUsbKey(getUsbKeyHeader(req));
+  return isValidUsbKey(readUsbKey(req));
+}
+
+/**
+ * Reads the USB key header without assuming a full Express Request.
+ *
+ * These routes are also driven directly by unit tests (and by internal callers)
+ * with a plain `{ body }` object that has no `header()` method, so calling it
+ * unconditionally would throw — and the surrounding try/catch would surface
+ * that as a 500 on an unrelated settings save. Fall back to the raw `headers`
+ * bag, then to "no key", which fails closed.
+ */
+function readUsbKey(req: Request): string {
+  if (typeof (req as Partial<Request>).header === "function") {
+    return getUsbKeyHeader(req);
+  }
+  const bag = (req as Partial<Request>).headers as Record<string, unknown> | undefined;
+  const raw = bag?.["x-sa-usb-key"];
+  return typeof raw === "string" ? raw.trim() : "";
 }
 
 /** Commission-bearing columns on `doctors`. */
