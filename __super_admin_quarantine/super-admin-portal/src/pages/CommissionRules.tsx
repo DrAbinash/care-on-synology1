@@ -66,7 +66,7 @@ type OutsourcedBasis = "price" | "margin";
 
 const OUTSOURCED_BASIS_OPTIONS: { value: OutsourcedBasis; label: string; description: string }[] = [
   { value: "price", label: "Full Price", description: "The rate applies to the whole test price, exactly as it does for in-house work (current behaviour)." },
-  { value: "margin", label: "Margin (price − lab cost)", description: "The rate applies only to what the clinic keeps after paying the external lab. A loss-making line pays nothing rather than a negative amount." },
+  { value: "margin", label: "Margin (price − lab cost)", description: "The rate applies only to what the clinic keeps after paying the external lab, and the payout is capped at that margin — so even a fixed-amount slab can never pay out more than the clinic earned. A loss-making line pays nothing rather than a negative amount." },
 ];
 
 function TestPicker({

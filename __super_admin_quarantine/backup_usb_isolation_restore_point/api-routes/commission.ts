@@ -805,6 +805,11 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
     isOutsourced: boolean;
     outsourceCost: number;
     margin: number;
+    // On the margin basis a fixed-amount slab can still ask for more than the
+    // clinic kept; when that happens the payout is capped at the margin and the
+    // original ask is reported here so the reduction is never silent.
+    cappedToMargin: boolean;
+    uncappedCommission: number;
   };
 
   const result = filteredDoctors.map(doctor => {
@@ -846,7 +851,7 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
         // rate always reflects the rule actually applied.
         const {
           commission: rawComm, ruleName, ruleType, ruleValue, ruleScope,
-          isOutsourced, outsourceCost, commissionBase,
+          isOutsourced, outsourceCost, commissionBase, cappedToMargin, uncappedCommission,
         } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis);
         // commissionBase comes straight from the engine — it is the exact figure
         // the rate was applied to, after the VIP surcharge is stripped and, on
@@ -879,6 +884,8 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
           isOutsourced,
           outsourceCost,
           margin: Number(ot.price) - outsourceCost,
+          cappedToMargin,
+          uncappedCommission,
         });
       }
     }

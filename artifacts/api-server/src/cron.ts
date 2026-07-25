@@ -41,6 +41,7 @@ export function startCronScheduler() {
   scheduleCommissionReconcile();
   scheduleDicomAutoPull();
   scheduleMonthlyAudit();
+  scheduleMonthlyReferralSummary();
   scheduleBankingAutoSync();
   scheduleFraudDetection();
   scheduleAutomatedBackups();
@@ -1045,6 +1046,127 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
     console.log(`[cron] commission reconcile: ${toInsert.length} hold/release transition(s) recorded`);
   }
   return { transitions: toInsert.length };
+}
+
+// ── Monthly referral-activity summary email ──────────────────────────────────
+// Answers "who referred how much work last month" for the clinic's own email
+// recipients. It counts referrals and sums what was billed; it never computes,
+// reads or mails a commission figure, rate or payout — deliberately, because
+// those stay behind the pen drive. Off by default (email_settings).
+async function fireMonthlyReferralSummary(now: Date, opts?: { force?: boolean }): Promise<{ sent: boolean; reason?: string }> {
+  const [settings] = await db.select().from(emailSettingsTable).limit(1);
+  if (!settings) return { sent: false, reason: "Email settings not configured" };
+  if (!settings.monthlyReferralSummaryEnabled && !opts?.force) return { sent: false, reason: "disabled" };
+
+  // Previous calendar month.
+  const prevEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+  const prevStart = new Date(prevEnd.getFullYear(), prevEnd.getMonth(), 1);
+  const from = `${prevStart.getFullYear()}-${pad2(prevStart.getMonth() + 1)}-${pad2(prevStart.getDate())}`;
+  const to = `${prevEnd.getFullYear()}-${pad2(prevEnd.getMonth() + 1)}-${pad2(prevEnd.getDate())}`;
+
+  // Restart-safe: a send already recorded for this period is not repeated.
+  const stamp = `${from}..${to}`;
+  if (!opts?.force && settings.monthlyReferralSummaryLastSent === stamp) {
+    return { sent: false, reason: "already sent for this period" };
+  }
+
+  const fromTs = new Date(`${from}T00:00:00.000Z`);
+  const toTs = new Date(`${to}T23:59:59.999Z`);
+
+  // One row per referring doctor: visits, tests and what was billed. Cancelled
+  // test lines are excluded, matching every other report.
+  const perDoctor = await db
+    .select({
+      name: doctorsTable.name,
+      specialization: doctorsTable.specialization,
+      visits: sql<string>`COUNT(DISTINCT ${ordersTable.id})`,
+      tests: sql<string>`COUNT(${orderTestsTable.id})`,
+      billed: sql<string>`COALESCE(SUM(${orderTestsTable.price}), 0)`,
+    })
+    .from(ordersTable)
+    .innerJoin(doctorsTable, eq(ordersTable.doctorId, doctorsTable.id))
+    .innerJoin(orderTestsTable, eq(orderTestsTable.orderId, ordersTable.id))
+    .where(and(
+      gte(ordersTable.createdAt, fromTs),
+      lte(ordersTable.createdAt, toTs),
+      ne(orderTestsTable.status, "cancelled"),
+    ))
+    .groupBy(doctorsTable.id, doctorsTable.name, doctorsTable.specialization);
+
+  const doctorRows = perDoctor
+    .map(r => ({
+      name: r.name,
+      specialization: r.specialization,
+      visits: Number(r.visits),
+      tests: Number(r.tests),
+      billed: Number(r.billed),
+    }))
+    .sort((a, b) => b.visits - a.visits || b.billed - a.billed);
+
+  const topTestsRaw = await db
+    .select({ name: testsTable.name, count: sql<string>`COUNT(*)` })
+    .from(orderTestsTable)
+    .innerJoin(ordersTable, eq(orderTestsTable.orderId, ordersTable.id))
+    .innerJoin(testsTable, eq(orderTestsTable.testId, testsTable.id))
+    .where(and(
+      gte(ordersTable.createdAt, fromTs),
+      lte(ordersTable.createdAt, toTs),
+      ne(orderTestsTable.status, "cancelled"),
+      sql`${ordersTable.doctorId} IS NOT NULL`,
+    ))
+    .groupBy(testsTable.id, testsTable.name)
+    .orderBy(sql`COUNT(*) DESC`)
+    .limit(10);
+
+  const { sendMonthlyReferralSummaryEmail } = await import("./email");
+  const result = await sendMonthlyReferralSummaryEmail({
+    periodFrom: from,
+    periodTo: to,
+    doctors: doctorRows,
+    totals: {
+      doctors: doctorRows.length,
+      visits: doctorRows.reduce((s, d) => s + d.visits, 0),
+      tests: doctorRows.reduce((s, d) => s + d.tests, 0),
+      billed: doctorRows.reduce((s, d) => s + d.billed, 0),
+    },
+    topTests: topTestsRaw.map(t => ({ name: t.name, count: Number(t.count) })),
+  }, { force: opts?.force });
+
+  if (!result.ok) {
+    console.error(`[cron] Monthly referral summary not sent: ${result.error}`);
+    return { sent: false, reason: result.error };
+  }
+
+  // Stamp only a real scheduled send, so a forced test run does not consume the
+  // month's slot.
+  if (!opts?.force) {
+    await db.update(emailSettingsTable)
+      .set({ monthlyReferralSummaryLastSent: stamp })
+      .where(eq(emailSettingsTable.id, settings.id));
+  }
+  console.log(`[cron] Monthly referral summary sent for ${from} → ${to} (${doctorRows.length} doctors)`);
+  return { sent: true };
+}
+
+function scheduleMonthlyReferralSummary() {
+  // 07:00 on day 1 — an hour after the money-trail audit, so the two monthly
+  // emails do not arrive together. The date stamp makes a missed minute
+  // recoverable on any later tick that same day.
+  cron.schedule("*/5 * * * *", async () => {
+    try {
+      const now = new Date();
+      if (now.getDate() !== 1) return;
+      if (now.getHours() < 7) return;
+      await fireMonthlyReferralSummary(now);
+    } catch (err) {
+      console.error("[cron] monthly referral summary failed:", err);
+    }
+  });
+  console.log("[cron] Monthly referral summary scheduler started (day 1, from 07:00; off unless enabled)");
+}
+
+export async function runMonthlyReferralSummaryNow(opts?: { force?: boolean }): Promise<{ sent: boolean; reason?: string }> {
+  return fireMonthlyReferralSummary(new Date(), { force: opts?.force ?? true });
 }
 
 function scheduleCommissionReconcile() {

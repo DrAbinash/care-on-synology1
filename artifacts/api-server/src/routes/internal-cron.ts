@@ -8,6 +8,7 @@ import {
   fireScheduledBackups,
   runRestoreVerificationJob,
   runBackupDeadManCheck,
+  runMonthlyReferralSummaryNow,
 } from "../cron";
 import { logger } from "../lib/logger";
 
@@ -117,6 +118,20 @@ router.post("/backup-dead-man", async (_req, res) => {
   } catch (err) {
     logger.error({ err }, "internal-cron backup-dead-man failed");
     res.status(500).json({ error: "backup-dead-man failed" });
+  }
+});
+
+// Monthly referral-activity summary. Sends referral counts and billed amounts —
+// no commission figure, rate or payout. Forced by default so an admin can verify
+// delivery before turning the scheduled send on; a forced run does not consume
+// the month's send slot.
+router.post("/monthly-referral-summary", async (_req, res) => {
+  try {
+    const result = await runMonthlyReferralSummaryNow();
+    res.json({ ok: true, fired: "monthly-referral-summary", result, at: new Date().toISOString() });
+  } catch (err) {
+    logger.error({ err }, "internal-cron monthly-referral-summary failed");
+    res.status(500).json({ error: "monthly-referral-summary failed" });
   }
 });
 
