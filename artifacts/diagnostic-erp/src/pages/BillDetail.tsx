@@ -588,8 +588,11 @@ export default function BillDetail({ id }: { id: number }) {
     new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 }).format(n);
 
   const calcAge = (dob?: string | null, ageValue?: number | null, ageUnit?: string | null) => {
-    if (ageValue != null && ageUnit) {
-      if (ageUnit === "years") return ageValue > 0 ? `${ageValue} Yrs` : null;
+    // Only commit to the (ageValue, ageUnit) path when it will produce a real
+    // string — a stored value of 0 (from a blank field on registration) must
+    // fall through to dateOfBirth instead of short-circuiting to null.
+    if (ageValue != null && ageValue > 0 && ageUnit) {
+      if (ageUnit === "years") return `${ageValue} Yrs`;
       if (ageUnit === "months") return `${ageValue} Mo`;
       if (ageUnit === "days") return `${ageValue} D`;
     }

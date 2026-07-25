@@ -273,8 +273,11 @@ function escapeHtml(s: string) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 }
 function calcAge(dateOfBirth: string, ageValue?: number | null, ageUnit?: string | null): string {
-  if (ageValue != null && ageUnit) {
-    if (ageUnit === "years") return ageValue > 0 ? `${ageValue} Yrs` : "";
+  // Only commit to the (ageValue, ageUnit) path when it will produce a real
+  // string — a stored value of 0 (from a blank field on registration) must
+  // fall through to dateOfBirth instead of short-circuiting to "".
+  if (ageValue != null && ageValue > 0 && ageUnit) {
+    if (ageUnit === "years") return `${ageValue} Yrs`;
     if (ageUnit === "months") return `${ageValue} Mo`;
     if (ageUnit === "days") return `${ageValue} D`;
   }
@@ -1120,12 +1123,17 @@ export default function BillingDesk() {
   // ── Create mutations ───────────────────────────────
   const createPatientMut = useMutation({
     mutationFn: (body: typeof newPatient) => {
-      const ageVal = Number(body.ageValue);
+      // Only treat the age field as a real value when the user typed
+      // something. Number("") is 0, which used to silently save
+      // ageValue=0 + dateOfBirth="<currentYear>-01-01" — corrupting the
+      // record so bill print later couldn't display any age.
+      const rawAge = String(body.ageValue ?? "").trim();
+      const ageVal = rawAge === "" ? NaN : Number(rawAge);
       const unit = body.ageUnit;
       let dateOfBirth = "";
       let ageValue: number | null = null;
       let ageUnit: string | null = null;
-      if (!isNaN(ageVal) && ageVal >= 0) {
+      if (!isNaN(ageVal) && ageVal > 0) {
         ageValue = Math.round(ageVal);
         ageUnit = unit;
         if (unit === "years") {

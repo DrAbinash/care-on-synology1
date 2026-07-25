@@ -3,8 +3,11 @@ export type AgeUnit = "years" | "months" | "days";
 export function formatAge(patient: { dateOfBirth: string; ageValue?: number | null; ageUnit?: string | null }): string {
   const { dateOfBirth, ageValue, ageUnit } = patient;
 
-  if (ageValue != null && ageUnit) {
-    if (ageUnit === "years") return ageValue > 0 ? `${ageValue} Yrs` : "";
+  // Only commit to the (ageValue, ageUnit) path when it will produce a real
+  // string — a stored value of 0 (from a blank field on registration) must
+  // fall through to dateOfBirth instead of short-circuiting to "".
+  if (ageValue != null && ageValue > 0 && ageUnit) {
+    if (ageUnit === "years") return `${ageValue} Yrs`;
     if (ageUnit === "months") return `${ageValue} Mo`;
     if (ageUnit === "days") return `${ageValue} D`;
   }
@@ -36,8 +39,11 @@ export function computeDateOfBirth(value: number, unit: AgeUnit): string {
 export function formatAgeForPrint(patient: { dateOfBirth?: string | null; ageValue?: number | null; ageUnit?: string | null }): string {
   const { dateOfBirth, ageValue, ageUnit } = patient;
 
-  if (ageValue != null && ageUnit) {
-    if (ageUnit === "years") return ageValue > 0 ? `${ageValue} Yrs` : "";
+  // Only commit to the (ageValue, ageUnit) path when it will produce a real
+  // string — a stored value of 0 (from a blank field on registration) must
+  // fall through to dateOfBirth instead of short-circuiting to "".
+  if (ageValue != null && ageValue > 0 && ageUnit) {
+    if (ageUnit === "years") return `${ageValue} Yrs`;
     if (ageUnit === "months") return `${ageValue} Mo`;
     if (ageUnit === "days") return `${ageValue} D`;
   }
