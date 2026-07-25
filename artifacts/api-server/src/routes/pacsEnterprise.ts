@@ -31,6 +31,7 @@ import {
   patientsTable,
   radiologyConfigChangesTable,
   clinicSettingsTable,
+  dicomStudiesTable,
 } from "@workspace/db/schema";
 import { and, asc, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
 
@@ -3400,19 +3401,47 @@ interface PrintBridgeResponse {
 
 type PrintClinic = ReturnType<typeof buildPrintClinic>;
 
+/** Patient identification printed on the sheet by the print bridge. */
+export interface PrintPatient {
+  name?: string;
+  id?: string;
+  studyDate?: string;
+  modality?: string;
+}
+
+/** Pure helper (exported for tests): the one Study Instance UID shared by
+ *  every requested image, or null.
+ *
+ *  Printing one patient's name over another patient's images is worse than
+ *  printing no name at all, so this is deliberately strict: a request that
+ *  spans two studies gets no identification line, and so does one where any
+ *  image lacks a study UID — an unattributed image could belong to anyone. */
+export function singleStudyUidFor(refs: Array<{ studyInstanceUid?: string }>): string | null {
+  if (refs.length === 0) return null;
+  const uids = refs.map((r) => (r.studyInstanceUid || "").trim());
+  if (uids.some((uid) => !uid)) return null;
+  return uids.every((uid) => uid === uids[0]) ? uids[0] : null;
+}
+
 /** Pure helper (exported for tests): builds the POST /api/v1/print-jobs body
  *  for the print bridge from already-fetched image data URLs, the caller's
  *  copies/orientation/layout choices, and the clinic's branding row. Clinic
  *  branding rides along on every request rather than relying on the print
  *  bridge's own (possibly stale, separately-configured) header/footer env
  *  vars — clinic_settings is the ERP's single source of truth for the
- *  clinic's name/logo, used identically for bills/receipts. */
+ *  clinic's name/logo, used identically for bills/receipts.
+ *
+ *  `patient` adds the identification line the bridge already prints on films
+ *  it receives from a modality, so an ERP-initiated print is just as
+ *  traceable back to a patient. It is omitted unless it carries at least one
+ *  non-empty field — a blank identification line is worse than none. */
 export function buildPrintBridgePayload(
   images: string[],
   copies: unknown,
   orientation: unknown,
   layout: { rows?: number; cols?: number } | undefined,
   clinic: PrintClinic | null,
+  patient?: PrintPatient | null,
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     images,
@@ -3434,6 +3463,17 @@ export function buildPrintBridgePayload(
     const footerLine2 = [clinic.phone, clinic.email].filter(Boolean).join("  |  ");
     if (clinic.address || footerLine2) {
       payload.footer = { line1: clinic.address || "", line2: footerLine2, align: "CENTER" };
+    }
+  }
+  if (patient) {
+    const fields = {
+      name: (patient.name || "").trim(),
+      id: (patient.id || "").trim(),
+      studyDate: (patient.studyDate || "").trim(),
+      modality: (patient.modality || "").trim().toUpperCase(),
+    };
+    if (Object.values(fields).some(Boolean)) {
+      payload.patient = fields;
     }
   }
   return payload;
@@ -3510,7 +3550,36 @@ router.post("/print-images", async (req, res): Promise<void> => {
 
   const [clinicRow] = await db.select().from(clinicSettingsTable).limit(1);
   const clinic = clinicRow ? buildPrintClinic(clinicRow) : null;
-  const printPayload = buildPrintBridgePayload(images, body.copies, body.orientation, body.layout, clinic);
+
+  // Identify the sheet, but only when every image provably belongs to one
+  // study — see singleStudyUidFor. A print that mixes studies goes out
+  // unlabelled rather than carrying one patient's name over another's images.
+  let patient: PrintPatient | null = null;
+  const studyUid = singleStudyUidFor(refs);
+  if (studyUid) {
+    const [study] = await db
+      .select({
+        patientName: dicomStudiesTable.patientName,
+        dicomPatientId: dicomStudiesTable.dicomPatientId,
+        studyDate: dicomStudiesTable.studyDate,
+        modality: dicomStudiesTable.modality,
+      })
+      .from(dicomStudiesTable)
+      .where(eq(dicomStudiesTable.studyInstanceUID, studyUid))
+      .limit(1);
+    if (study) {
+      patient = {
+        name: study.patientName ?? "",
+        id: study.dicomPatientId ?? "",
+        studyDate: study.studyDate ?? "",
+        modality: study.modality ?? "",
+      };
+    }
+  }
+
+  const printPayload = buildPrintBridgePayload(
+    images, body.copies, body.orientation, body.layout, clinic, patient,
+  );
 
   try {
     const printRes = await fetch(`${cfg.printBridge.url}/api/v1/print-jobs`, {
