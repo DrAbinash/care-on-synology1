@@ -13,6 +13,11 @@ export const expensesTable = pgTable("expenses", {
   paidTo: text("paid_to"),
   voucherId: integer("voucher_id"),
   approvedBy: text("approved_by"),
+  // Session-derived at creation time (never client-editable — same convention as
+  // the audit actors in bills.ts). Lets the approval-separation check in
+  // routes/expenses.ts compare "who created" against "who approved" even though
+  // approvedBy itself stays free text.
+  createdBy: text("created_by"),
   notes: text("notes"),
   // The scanned bill/receipt image (data URL) kept for audit parity — the source
   // document behind the OCR'd fields. Deliberately NEVER selected by the list

@@ -124,6 +124,11 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   //   "collected_ge_commission"— payable once collected >= the commission amount
   commissionEligibilityPolicy: text("commission_eligibility_policy").notNull().default("full_payment_collected"),
   commissionEligibilityMinAmount: numeric("commission_eligibility_min_amount", { precision: 10, scale: 2 }).notNull().default("0"),
+  // Expense approval separation-of-duties toggle. Default true (self-approval
+  // allowed) matches current behaviour exactly — approvedBy has always been
+  // free text set by whoever creates the expense. Admin can flip this off once
+  // there is enough staff for the creator/approver split to be practical.
+  expenseSelfApprovalAllowed: boolean("expense_self_approval_allowed").notNull().default(true),
   // Network access control — when enabled, non-admin staff can only log in from
   // the hospital LAN (private RFC-1918 IP ranges). Extra trusted IPs can be added
   // as a JSON array of strings in lanAllowedIps.
