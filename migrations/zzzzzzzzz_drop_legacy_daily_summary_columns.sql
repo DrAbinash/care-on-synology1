@@ -1,0 +1,40 @@
+-- ============================================================================
+-- Re-asserts drizzle/0010_daily_summary_multi_time.sql's intentional drops.
+--
+-- 0010 backfilled email_settings.daily_summary_time /
+-- daily_summary_last_sent_date into the new daily_summary_times /
+-- daily_summary_last_sent_slots JSON columns, then dropped the old two. The
+-- Drizzle schema and every live route/cron already use ONLY the plural
+-- columns — grep confirms zero reads/writes of the old names anywhere in the
+-- shipped api-server bundle.
+--
+-- But db-patch and db-schema-verify both apply migrations in the order
+-- Drizzle-first, then migrations/*.sql alphabetically. Two OLDER feature files
+-- sort after 0010 in that combined stream and unconditionally re-ADD the
+-- columns 0010 just dropped:
+--   migrations/daily_summary_last_sent.sql        -> daily_summary_last_sent_date
+--   migrations/zz_schema_reconcile_20260709.sql    -> daily_summary_time
+--
+-- Effect #1 (cosmetic but load-bearing for the deploy gate): the schema
+-- verifier's expected-column set ends up including both, so it reports them as
+-- "Missing columns (2)" against the live DB (which correctly does not have
+-- them) and flips schema_deploy_state to full_fail on every deploy. Non-
+-- blocking today (SCHEMA_VERIFY_STRICT defaults false) but the gate is
+-- permanently red, which masks any FUTURE genuine drift landing in the same
+-- report.
+--
+-- Effect #2 (a real latent bug, not yet triggered): on a FRESH database
+-- bootstrap, that ordering applies for real -- zz_schema_reconcile_20260709.sql
+-- would resurrect daily_summary_time as a live, NOT NULL DEFAULT '17:00'
+-- column that no application code ever reads.
+--
+-- This migration is the fix for both: sorted last (9 z's), it re-drops the two
+-- columns after every other migration -- including the two that re-add them --
+-- has run, on both existing and fresh databases. Idempotent (IF EXISTS); does
+-- NOT touch daily_summary_last_sent.sql or zz_schema_reconcile_20260709.sql
+-- themselves, since both are checksum-tracked and editing an already-applied
+-- migration file would trip detectChecksumDrift() in db-schema-verify.cjs.
+-- ============================================================================
+
+ALTER TABLE email_settings DROP COLUMN IF EXISTS daily_summary_time;
+ALTER TABLE email_settings DROP COLUMN IF EXISTS daily_summary_last_sent_date;
