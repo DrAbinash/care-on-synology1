@@ -57,8 +57,11 @@ function esc(s: string): string {
 }
 
 function calcAge(dob?: string | null, ageValue?: number | null, ageUnit?: string | null): string {
-  if (ageValue != null && ageUnit) {
-    if (ageUnit === "years") return ageValue > 0 ? `${ageValue} Y` : "";
+  // Only commit to the (ageValue, ageUnit) path when it will produce a real
+  // string — a stored value of 0 (from a blank field on registration) must
+  // fall through to dateOfBirth instead of short-circuiting to "".
+  if (ageValue != null && ageValue > 0 && ageUnit) {
+    if (ageUnit === "years") return `${ageValue} Y`;
     if (ageUnit === "months") return `${ageValue} M`;
     if (ageUnit === "days") return `${ageValue} D`;
   }
