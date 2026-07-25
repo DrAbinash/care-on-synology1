@@ -9,13 +9,15 @@
  */
 import { useState } from "react";
 import { Link } from "wouter";
-import { Wrench, Settings2, CheckCircle2, Copy, Check, ExternalLink } from "lucide-react";
+import { Wrench, Settings2, CheckCircle2, Copy, Check, ExternalLink, Download } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 export default function ScannerSetupHelp({ online }: { online: boolean }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const erp = typeof window !== "undefined" && window.location?.origin ? window.location.origin : "https://caredeoghar.com";
+  // Served from the ERP's public assets (BASE_URL is "/erp/" in production).
+  const installerUrl = `${import.meta.env.BASE_URL}scanner/install-scan-bridge.ps1`;
 
   function copyErp() {
     try {
@@ -76,14 +78,10 @@ export default function ScannerSetupHelp({ online }: { online: boolean }) {
               </li>
               <li className="flex gap-2">
                 <span className="flex-shrink-0 w-5 h-5 rounded-full bg-violet-100 text-violet-700 font-semibold flex items-center justify-center">2</span>
-                <span>Copy the <code className="bg-gray-100 px-1 rounded">scan-bridge</code> folder onto this PC.</span>
+                <span>Download the installer below, then right-click it → <b>Run with PowerShell</b>. It sets everything up on its own — no folder to copy.</span>
               </li>
               <li className="flex gap-2">
                 <span className="flex-shrink-0 w-5 h-5 rounded-full bg-violet-100 text-violet-700 font-semibold flex items-center justify-center">3</span>
-                <span>Right-click <code className="bg-gray-100 px-1 rounded">install-windows.ps1</code> → <b>Run with PowerShell</b>.</span>
-              </li>
-              <li className="flex gap-2">
-                <span className="flex-shrink-0 w-5 h-5 rounded-full bg-violet-100 text-violet-700 font-semibold flex items-center justify-center">4</span>
                 <span className="min-w-0">
                   When it asks for the ERP address, enter:
                   <span className="mt-1 flex items-center gap-1.5">
@@ -95,6 +93,17 @@ export default function ScannerSetupHelp({ online }: { online: boolean }) {
                 </span>
               </li>
             </ol>
+
+            <a
+              href={installerUrl}
+              download="install-scan-bridge.ps1"
+              className="flex items-center justify-center gap-2 rounded-lg bg-violet-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-violet-700"
+            >
+              <Download size={16} /> Download installer (install-scan-bridge.ps1)
+            </a>
+            <p className="text-[10px] text-gray-400 -mt-1">
+              If Windows blocks it: right-click the file → <b>Properties</b> → tick <b>Unblock</b> → OK, then run it.
+            </p>
 
             <p className="flex items-start gap-1.5 text-[11px] text-gray-500">
               <CheckCircle2 size={13} className="text-emerald-500 shrink-0 mt-0.5" />
