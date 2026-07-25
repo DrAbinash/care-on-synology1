@@ -150,15 +150,41 @@ function voucherBucket(type: string): string {
   return `${prefix}-${year}${month}-`;
 }
 
+// Highest numeric suffix already ISSUED in a voucher-number bucket.
+//
+// Deliberately MAX and not count(*): count(*) counts surviving rows, so once any
+// voucher in the bucket is removed the count permanently trails the max by the
+// number removed. The retry loops below then generate candidates that all sit
+// inside the already-occupied range, and once that drift reaches 3 every attempt
+// collides, nothing inserts, the count never moves, and the identical numbers are
+// retried forever. That took out receipt-voucher creation in production. See the
+// full note on nextVoucherNumber in lib/auto-voucher.ts.
+//
+// The anchored all-digit regex filters non-numeric suffixes (e.g. the synthetic
+// "OB" opening-balance row the ledger view injects) out before the ::int cast,
+// so the cast cannot throw.
+async function maxVoucherSeq(bucket: string): Promise<number> {
+  const r = await db
+    .select({
+      m: sql<number>`coalesce(max(substring(${vouchersTable.voucherNumber} from ${bucket.length + 1})::int), 0)`,
+    })
+    .from(vouchersTable)
+    .where(
+      and(
+        like(vouchersTable.voucherNumber, `${bucket}%`),
+        sql`${vouchersTable.voucherNumber} ~ ${`^${bucket}[0-9]+$`}`,
+      ),
+    );
+  return Number(r[0]?.m ?? 0);
+}
+
 // Compute the next sequence in a per-month bucket. Race-prone by itself —
 // always pair with the unique-constraint retry loop in POST /vouchers below.
+// (With MAX every candidate is strictly above all existing numbers, so the retry
+// budget is now spent only on genuine races instead of on a deterministic offset.)
 async function nextVoucherNumber(type: string, attemptOffset = 0): Promise<string> {
   const bucket = voucherBucket(type);
-  const r = await db
-    .select({ c: sql<number>`count(*)` })
-    .from(vouchersTable)
-    .where(like(vouchersTable.voucherNumber, `${bucket}%`));
-  const next = Number(r[0]?.c ?? 0) + 1 + attemptOffset;
+  const next = (await maxVoucherSeq(bucket)) + 1 + attemptOffset;
   return `${bucket}${String(next).padStart(4, "0")}`;
 }
 
@@ -1231,7 +1257,11 @@ router.post("/sync-billing", requireAdminRole, async (req, res) => {
     const debitAcc = isBankMethod && bankAcc ? bankAcc : cashAcc;
     const monthKey = item.date.slice(0, 7).replace("-", "");
     if (!monthCounts.has(monthKey)) {
-      monthCounts.set(monthKey, (await db.select().from(vouchersTable).where(like(vouchersTable.voucherNumber, `${prefix}-${monthKey}%`))).length);
+      // Seed from the highest number ISSUED, not a row count — a count seed
+      // trails the max wherever vouchers were deleted, so the very first insert
+      // of the backfill would collide and (having no try/catch here) fail the
+      // whole request with a 500, leaving the sync half-applied.
+      monthCounts.set(monthKey, await maxVoucherSeq(`${prefix}-${monthKey}-`));
     }
     const seq = (monthCounts.get(monthKey) ?? 0) + 1;
     monthCounts.set(monthKey, seq);
@@ -1344,13 +1374,15 @@ router.post("/bank-statement/import", async (req, res): Promise<void> => {
     const prefix = isDebit ? "PV" : "RV";
     const monthKey = (txn.date || new Date().toISOString().slice(0, 7)).slice(0, 7).replace("-", "");
 
-    const monthCount = await db
-      .select({ c: sql<number>`count(*)` })
-      .from(vouchersTable)
-      .where(like(vouchersTable.voucherNumber, `${prefix}-${monthKey}%`))
-      .then(r => Number(r[0]?.c ?? 0));
+    // MAX of numbers issued, re-read each iteration so it already includes the
+    // rows this loop just inserted. The previous form added `created` on top of a
+    // freshly-re-queried count, double-advancing: from C existing rows, N imported
+    // transactions took C+1, C+3, C+5, … so the count rose by N while the max rose
+    // by 2N-1. That manufactured max>count drift with no deletions at all, and the
+    // drift silently consumed the retry budget that protects the other generators.
+    const monthMax = await maxVoucherSeq(`${prefix}-${monthKey}-`);
 
-    const voucherNumber = `${prefix}-${monthKey}-${String(monthCount + created + 1).padStart(4, "0")}`;
+    const voucherNumber = `${prefix}-${monthKey}-${String(monthMax + 1).padStart(4, "0")}`;
 
     await db.insert(vouchersTable).values({
       voucherNumber,
