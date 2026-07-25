@@ -8,7 +8,7 @@ import {
   clinicSettingsTable, commissionStatusEventsTable,
   patientReportsTable, radiologyStudiesTable, testTokensTable,
 } from "@workspace/db/schema";
-import { sendDailySummaryEmail, sendCommissionMonthEndEmail, sendMonthlyAuditEmail } from "./email";
+import { sendDailySummaryEmail, sendMonthlyAuditEmail } from "./email";
 import { runBooksSanity } from "./routes/books-sanity";
 import { exportDatabaseSql, exportDatabaseSqlFallback, computeSha256, CONFIG_BACKUP_TABLES } from "./routes/backupReplication";
 import { promises as fsp } from "fs";
@@ -32,7 +32,6 @@ const firedToday = new Set<string>();
 
 export function startCronScheduler() {
   scheduleDaily();
-  scheduleMonthEndCommission();
   scheduleCommissionReconcile();
   scheduleDicomAutoPull();
   scheduleMonthlyAudit();
@@ -926,35 +925,6 @@ export async function runOpsAnomalyScanNow() {
   return runOpsAnomalyScan();
 }
 
-function scheduleMonthEndCommission() {
-  // Check every minute — fires at 20:00 on the last day of each month
-  cron.schedule("* * * * *", async () => {
-    try {
-      const now = new Date();
-      const hour = now.getHours();
-      const minute = now.getMinutes();
-
-      // 20:00 exactly
-      if (hour !== 20 || minute !== 0) return;
-
-      // Check if today is the last day of the month
-      const tomorrow = new Date(now);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      if (tomorrow.getMonth() === now.getMonth()) return; // not last day
-
-      const key = `commission-${now.toISOString().split("T")[0]}`;
-      if (firedToday.has(key)) return;
-      firedToday.add(key);
-
-      await fireMonthEndCommission(now);
-    } catch (err) {
-      console.error("[cron] month-end commission check failed:", err);
-    }
-  });
-
-  console.log("[cron] Month-end commission scheduler started (fires at 20:00 on last day of month)");
-}
-
 // ── Commission eligibility reconcile — hold/release audit trail + auto-release ──
 // Recomputes each recent order's referral commission + eligibility under the
 // clinic's commission_eligibility_policy and appends an event to
@@ -1143,10 +1113,6 @@ export async function runDailySummary(force = false) {
   return fireDailySummary({ scheduled: false, force });
 }
 
-export async function runMonthEndCommission(now: Date = new Date()) {
-  return fireMonthEndCommission(now);
-}
-
 async function fireDailySummary(opts: { scheduled: boolean; force?: boolean; slot?: string }) {
   try {
     const now = new Date();
@@ -1313,110 +1279,6 @@ async function fireDailySummary(opts: { scheduled: boolean; force?: boolean; slo
     console.log(`[cron] Daily summary sent for ${today}`);
   } catch (err) {
     console.error("[cron] Failed to send daily summary:", err);
-  }
-}
-
-async function fireMonthEndCommission(now: Date) {
-  try {
-    // Month boundaries
-    const fromDate = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
-    const toDate   = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-    const fromStr  = fromDate.toISOString().split("T")[0];
-    const toStr    = toDate.toISOString().split("T")[0];
-    const month    = now.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
-
-    // Fetch all doctors, rules, tests
-    const doctors  = await db.select().from(doctorsTable);
-    const allRules = await db.select().from(commissionRulesTable);
-    const allTests = await db.select().from(testsTable);
-    const testMap  = new Map(allTests.map(t => [t.id, t]));
-
-    // Clinic-level knobs the commission calculation depends on. These are the
-    // SAME settings the Referral Report and the Doctor Ledger read, so the
-    // emailed figures cannot drift away from what the portal shows.
-    const [clinicRow] = await db.select({
-      vipPercentage: clinicSettingsTable.vipPercentage,
-      commissionDiscountMode: clinicSettingsTable.commissionDiscountMode,
-    }).from(clinicSettingsTable).limit(1);
-    const vipPct = clinicRow?.vipPercentage ? Number(clinicRow.vipPercentage) : 50.0;
-    const discountMode = clinicRow?.commissionDiscountMode ?? "none";
-
-    // Fetch orders for the month
-    const orders = await db.select().from(ordersTable)
-      .where(and(gte(ordersTable.createdAt, fromDate), lte(ordersTable.createdAt, toDate)));
-
-    const orderIds = orders.map(o => o.id);
-    // Cancelled test lines earn no commission — same filter every other
-    // commission path applies. Without it the emailed total is inflated.
-    const orderTests = orderIds.length
-      ? await db.select().from(orderTestsTable)
-          .where(and(inArray(orderTestsTable.orderId, orderIds), ne(orderTestsTable.status, "cancelled")))
-      : [];
-
-    // VIP lines carry the clinic's VIP surcharge in their price; commission is
-    // calculated on the pre-surcharge base, so the VIP lines must be identified.
-    const vipTokens = orderIds.length
-      ? await db.select({ orderTestId: testTokensTable.orderTestId })
-          .from(testTokensTable)
-          .where(and(inArray(testTokensTable.orderId, orderIds), sql`${testTokensTable.priority} > 0`))
-      : [];
-    const vipIds = new Set(vipTokens.map(t => t.orderTestId).filter(Boolean) as number[]);
-
-    // Bill discount per order, for the clinic's commission-discount deduction.
-    const billRows = orderIds.length
-      ? await db.select({ orderId: billsTable.orderId, discount: billsTable.discount })
-          .from(billsTable).where(inArray(billsTable.orderId, orderIds))
-      : [];
-    const discountByOrder = new Map<number, number>();
-    for (const b of billRows) if (b.orderId != null) discountByOrder.set(b.orderId, Number(b.discount ?? 0));
-
-    const report = doctors.map(doctor => {
-      const doctorOrders = orders.filter(o => o.doctorId === doctor.id);
-      const rules = allRules.filter(r => r.doctorId === doctor.id && r.isActive);
-
-      let totalRevenue = 0, totalCommission = 0, testCount = 0;
-      for (const order of doctorOrders) {
-        const ots = orderTests.filter(ot => ot.orderId === order.id);
-        let rawOrderCommission = 0;
-        for (const ot of ots) {
-          const test = testMap.get(ot.testId);
-          totalRevenue += Number(ot.price);
-          testCount++;
-          // Single shared implementation: correct rule precedence
-          // (exclusive → specific → catch-all → profile default), VIP base
-          // normalisation, and malformed-JSON tolerance.
-          rawOrderCommission += reconcileTestCommission(ot, test, rules, doctor, vipIds, vipPct);
-        }
-        // Bill-discount deduction, applied per order exactly as the report does.
-        const disc = discountByOrder.get(order.id) ?? 0;
-        totalCommission += discountMode === "deduct"
-          ? Math.max(0, rawOrderCommission - disc)
-          : discountMode === "deduct_rollover"
-            ? rawOrderCommission - disc
-            : rawOrderCommission;
-      }
-
-      return {
-        doctor: { name: doctor.name, specialization: doctor.specialization ?? "" },
-        orderCount: doctorOrders.length,
-        testCount,
-        totalRevenue,
-        totalCommission,
-        effectiveRate: totalRevenue > 0 ? Number(((totalCommission / totalRevenue) * 100).toFixed(2)) : 0,
-      };
-    }).filter(r => r.orderCount > 0);
-
-    const grandTotal = {
-      doctors: report.length,
-      orders: report.reduce((s, r) => s + r.orderCount, 0),
-      revenue: report.reduce((s, r) => s + r.totalRevenue, 0),
-      commission: report.reduce((s, r) => s + r.totalCommission, 0),
-    };
-
-    await sendCommissionMonthEndEmail({ month, from: fromStr, to: toStr, report, grandTotal });
-    console.log(`[cron] Month-end commission email sent for ${month}`);
-  } catch (err) {
-    console.error("[cron] Failed to send month-end commission email:", err);
   }
 }
 

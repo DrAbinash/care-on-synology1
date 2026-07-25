@@ -7,17 +7,9 @@
  *
  * Optional CLI arg picks the job (default: "daily-summary"):
  *   pnpm --filter @workspace/scripts run trigger:cron daily-summary
- *   pnpm --filter @workspace/scripts run trigger:cron month-end-commission
- *
- * For month-end-commission, the api-server itself decides whether today is
- * actually the last day of the month before sending — so it's safe to schedule
- * this job daily at 20:00; it will no-op every day except month-end.
- * (Actually it always fires when called via this endpoint — it's the in-process
- * scheduler that has the calendar guard. So configure the scheduled deployment
- * to run on the last day of the month at 20:00 IST/your tz.)
  */
 
-const VALID_JOBS = ["daily-summary", "month-end-commission"] as const;
+const VALID_JOBS = ["daily-summary"] as const;
 type Job = (typeof VALID_JOBS)[number];
 
 function isJob(s: string): s is Job {
