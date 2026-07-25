@@ -103,6 +103,9 @@ type BookingConfig = {
   quickTestOverlayOpacity?: number;
   allowedTestIds?: number[];
   allowedPackageIds?: number[];
+  // Hope partner page selection, curated in Care's Settings (empty = not set).
+  hopeAllowedTestIds?: number[];
+  hopeAllowedPackageIds?: number[];
   bookingTimeSlots?: { value: string; label: string }[];
 };
 type DoctorOption = { id: number; name: string; specialization?: string | null };
@@ -396,20 +399,33 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
     return testCodes.length || pkgCodes.length ? { testCodes, pkgCodes } : null;
   }, [params]);
 
-  const curatedTests = useMemo(
-    () => (codeFilter ? tests.filter((t) => codeFilter.testCodes.includes((t.code || "").toLowerCase())) : tests),
-    [tests, codeFilter],
-  );
-  const curatedPkgs = useMemo(
-    () => (codeFilter ? pkgs.filter((p) => codeFilter.pkgCodes.includes((p.code || "").toLowerCase())) : pkgs),
-    [pkgs, codeFilter],
-  );
+  // Hope's own selection, curated by Care admins in Settings → Online Booking.
+  // This is the normal way to control Hope's page: Care staff tick the tests
+  // there and nothing about the link has to change. URL codes still win when
+  // present, so a one-off campaign link can still narrow things further.
+  const hopeIdFilter = useMemo(() => {
+    if (!isHope) return null;
+    const t = config?.hopeAllowedTestIds ?? [];
+    const p = config?.hopeAllowedPackageIds ?? [];
+    return t.length || p.length ? { testIds: new Set(t), pkgIds: new Set(p) } : null;
+  }, [isHope, config?.hopeAllowedTestIds, config?.hopeAllowedPackageIds]);
 
-  // Fail open: if every requested code is unknown here (typo, or the item isn't
-  // in Care's online-booking whitelist) fall back to the full catalogue rather
-  // than stranding the patient on an empty booking page.
+  const curatedTests = useMemo(() => {
+    if (codeFilter) return tests.filter((t) => codeFilter.testCodes.includes((t.code || "").toLowerCase()));
+    if (hopeIdFilter) return tests.filter((t) => hopeIdFilter.testIds.has(t.id));
+    return tests;
+  }, [tests, codeFilter, hopeIdFilter]);
+  const curatedPkgs = useMemo(() => {
+    if (codeFilter) return pkgs.filter((p) => codeFilter.pkgCodes.includes((p.code || "").toLowerCase()));
+    if (hopeIdFilter) return pkgs.filter((p) => hopeIdFilter.pkgIds.has(p.id));
+    return pkgs;
+  }, [pkgs, codeFilter, hopeIdFilter]);
+
+  // Fail open: if the curation matches nothing here — a mistyped code, or every
+  // selected item since removed from Care's online-booking whitelist — fall back
+  // to the full catalogue rather than stranding the patient on an empty page.
   const curationMissed =
-    !!codeFilter && (tests.length > 0 || pkgs.length > 0) &&
+    (!!codeFilter || !!hopeIdFilter) && (tests.length > 0 || pkgs.length > 0) &&
     curatedTests.length === 0 && curatedPkgs.length === 0;
   const shownTests = curationMissed ? tests : curatedTests;
   const shownPkgs = curationMissed ? pkgs : curatedPkgs;

@@ -1934,6 +1934,11 @@ type OnlineBookingSettings = {
   upiQrImageUrl: string;
   onlineBookingAllowedTestIds: string;
   onlineBookingAllowedPackageIds: string;
+  // Hope partner booking page (/book?source=hope) — a narrower selection of the
+  // same Care catalogue. Empty = not configured, and Hope's page falls back to
+  // the online booking selection above.
+  hopeBookingAllowedTestIds: string;
+  hopeBookingAllowedPackageIds: string;
   bookingTimeSlots: string;
   // New fields added
   onlineBookingServices?: string;
@@ -1954,14 +1959,33 @@ type OnlineBookingSettings = {
 type OBTest = { id: number; name: string; code: string; category: string; isActive: boolean };
 type OBPkg = { id: number; name: string; packageCode: string; price: number; isActive: boolean };
 
+// Renders one catalogue picker. It is used twice: once for the public online
+// booking whitelist, and once for the narrower Hope partner selection — same
+// Care catalogue, different settings field — so the two stay behaviourally
+// identical instead of drifting apart as separate copies.
 function OnlineBookingCatalogSelector({
   form,
   setForm,
   save,
+  testField = "onlineBookingAllowedTestIds",
+  pkgField = "onlineBookingAllowedPackageIds",
+  title = "Online Booking Catalog",
+  description = (
+    <>
+      Pick which tests and packages patients can book online.
+      When <strong>none are selected</strong>, all active tests/packages are shown on the website.
+    </>
+  ),
+  showTimeSlots = true,
 }: {
   form: OnlineBookingSettings;
   setForm: React.Dispatch<React.SetStateAction<OnlineBookingSettings | null>>;
   save: ReturnType<typeof useMutation<unknown, Error, OnlineBookingSettings>>;
+  testField?: "onlineBookingAllowedTestIds" | "hopeBookingAllowedTestIds";
+  pkgField?: "onlineBookingAllowedPackageIds" | "hopeBookingAllowedPackageIds";
+  title?: string;
+  description?: React.ReactNode;
+  showTimeSlots?: boolean;
 }) {
   const [testSearch, setTestSearch] = useState("");
   const [pkgSearch, setPkgSearch] = useState("");
@@ -1976,14 +2000,14 @@ function OnlineBookingCatalogSelector({
   });
 
   const allowedTestIds = useMemo(() => {
-    try { return new Set<number>(JSON.parse(form.onlineBookingAllowedTestIds || "[]")); }
+    try { return new Set<number>(JSON.parse(form[testField] || "[]")); }
     catch { return new Set<number>(); }
-  }, [form.onlineBookingAllowedTestIds]);
+  }, [form, testField]);
 
   const allowedPkgIds = useMemo(() => {
-    try { return new Set<number>(JSON.parse(form.onlineBookingAllowedPackageIds || "[]")); }
+    try { return new Set<number>(JSON.parse(form[pkgField] || "[]")); }
     catch { return new Set<number>(); }
-  }, [form.onlineBookingAllowedPackageIds]);
+  }, [form, pkgField]);
 
   // ── Booking time slots (configurable "Select time slot" options) ──────────
   const bookingSlots = useMemo<Array<{ value: string; label: string }>>(() => {
@@ -2035,7 +2059,7 @@ function OnlineBookingCatalogSelector({
   const toggleTest = (id: number) => {
     const next = new Set(allowedTestIds);
     if (next.has(id)) next.delete(id); else next.add(id);
-    setForm((prev) => prev && { ...prev, onlineBookingAllowedTestIds: JSON.stringify([...next]) });
+    setForm((prev) => prev && { ...prev, [testField]: JSON.stringify([...next]) });
   };
 
   const toggleAllTests = (selectAll: boolean) => {
@@ -2043,13 +2067,13 @@ function OnlineBookingCatalogSelector({
     if (selectAll) {
       activeTests.forEach((t) => next.add(t.id));
     }
-    setForm((prev) => prev && { ...prev, onlineBookingAllowedTestIds: JSON.stringify([...next]) });
+    setForm((prev) => prev && { ...prev, [testField]: JSON.stringify([...next]) });
   };
 
   const togglePkg = (id: number) => {
     const next = new Set(allowedPkgIds);
     if (next.has(id)) next.delete(id); else next.add(id);
-    setForm((prev) => prev && { ...prev, onlineBookingAllowedPackageIds: JSON.stringify([...next]) });
+    setForm((prev) => prev && { ...prev, [pkgField]: JSON.stringify([...next]) });
   };
 
   const toggleAllPkgs = (selectAll: boolean) => {
@@ -2057,7 +2081,7 @@ function OnlineBookingCatalogSelector({
     if (selectAll) {
       activePkgs.forEach((p) => next.add(p.id));
     }
-    setForm((prev) => prev && { ...prev, onlineBookingAllowedPackageIds: JSON.stringify([...next]) });
+    setForm((prev) => prev && { ...prev, [pkgField]: JSON.stringify([...next]) });
   };
 
   if (testsLoading || pkgsLoading) {
@@ -2070,11 +2094,10 @@ function OnlineBookingCatalogSelector({
         <div>
           <h3 className="font-bold flex items-center gap-2">
             <ClipboardList size={16} className="text-primary" />
-            Online Booking Catalog
+            {title}
           </h3>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Pick which tests and packages patients can book online.
-            When <strong>none are selected</strong>, all active tests/packages are shown on the website.
+            {description}
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -2206,6 +2229,8 @@ function OnlineBookingCatalogSelector({
         </div>
       )}
 
+      {showTimeSlots && (
+      <>
       {/* Appointment time slots — configurable "Select time slot" options shown
           on the website booking form. Saved together with the catalog by the
           Save button above. */}
@@ -2268,6 +2293,8 @@ function OnlineBookingCatalogSelector({
           <Plus size={14} /> Add time slot
         </button>
       </div>
+      </>
+      )}
     </div>
   );
 }
@@ -2652,6 +2679,8 @@ function OnlineBookingTab() {
       upiQrImageUrl: data.upiQrImageUrl || "",
       onlineBookingAllowedTestIds: data.onlineBookingAllowedTestIds || "[]",
       onlineBookingAllowedPackageIds: data.onlineBookingAllowedPackageIds || "[]",
+      hopeBookingAllowedTestIds: data.hopeBookingAllowedTestIds || "[]",
+      hopeBookingAllowedPackageIds: data.hopeBookingAllowedPackageIds || "[]",
       bookingTimeSlots: data.bookingTimeSlots || "[]",
       onlineBookingServices: data.onlineBookingServices || "{}",
       serviceImages: data.serviceImages || "{}",
@@ -2939,6 +2968,27 @@ function OnlineBookingTab() {
       </div>
 
       <OnlineBookingCatalogSelector form={form} setForm={setForm} save={save} />
+
+      {/* Hope's partner page (caredeoghar.com/book?source=hope) lists only the
+          tests Hope sends patients for. Same Care catalogue, same Care prices —
+          the booking still bills in Care — just a narrower list. */}
+      <OnlineBookingCatalogSelector
+        form={form}
+        setForm={setForm}
+        save={save}
+        testField="hopeBookingAllowedTestIds"
+        pkgField="hopeBookingAllowedPackageIds"
+        title="Hope Booking Catalog"
+        showTimeSlots={false}
+        description={
+          <>
+            Pick which tests and packages appear on the <strong>Hope</strong> booking page
+            (<code className="text-[11px]">caredeoghar.com/book?source=hope</code>).
+            When <strong>none are selected</strong>, Hope&apos;s page shows the same list as Online Booking above.
+            Prices and billing are unchanged — these are Care&apos;s own tests, booked and billed in Care.
+          </>
+        }
+      />
 
       {/* PayU India */}
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
