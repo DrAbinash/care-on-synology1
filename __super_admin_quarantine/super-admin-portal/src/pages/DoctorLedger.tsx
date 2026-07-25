@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
@@ -239,6 +240,58 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
 
   const totals = data?.totals ?? { doctors: 0, earnedWindow: 0, paidWindow: 0, dueWindow: 0, outstanding: 0 };
 
+  // ── Bulk statements for a whole payout run ────────────────────────────────
+  // The per-doctor statement answers "what do I owe Dr X". A settlement run
+  // needs the lot in one file. Each doctor's figures are fetched from the same
+  // detail endpoint the single statement uses, so a bulk statement and an
+  // individually exported one cannot say different things.
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkFormat, setBulkFormat] = useState<"pdf" | "word" | "excel">("pdf");
+  const [bulkOnlyDue, setBulkOnlyDue] = useState(true);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState(0);
+
+  const bulkCandidates = useMemo(
+    () => (bulkOnlyDue ? filteredRows.filter(r => (r.outstanding ?? 0) > 0.005) : filteredRows),
+    [filteredRows, bulkOnlyDue],
+  );
+
+  const runBulkStatements = async () => {
+    if (bulkCandidates.length === 0) return;
+    setBulkBusy(true);
+    setBulkProgress(0);
+    try {
+      const details: StatementDetail[] = [];
+      for (const r of bulkCandidates) {
+        const params = new URLSearchParams();
+        if (from) params.set("from", from);
+        if (to) params.set("to", to);
+        const qs = params.toString();
+        const res = await fetch(`/api/doctor-ledger/${r.doctorId}${qs ? `?${qs}` : ""}`, { headers: saAuthHeaders() });
+        if (!res.ok) throw new Error(`${r.doctorName}: HTTP ${res.status}`);
+        details.push(await res.json() as StatementDetail);
+        setBulkProgress(details.length);
+      }
+      const meta = {
+        generatedAt: new Date().toLocaleString("en-IN"),
+        from: from || null,
+        to: to || null,
+      };
+      const { exportBulkStatementsPdf, exportBulkStatementsWord, exportBulkStatementsExcel } =
+        await import("@/lib/exportBulkStatements");
+      if (bulkFormat === "pdf") await exportBulkStatementsPdf(details, meta);
+      else if (bulkFormat === "word") await exportBulkStatementsWord(details, meta);
+      else await exportBulkStatementsExcel(details, meta);
+      toast({ title: `${details.length} statement${details.length === 1 ? "" : "s"} exported` });
+      setBulkOpen(false);
+    } catch (err) {
+      toast({ title: "Bulk statements failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    } finally {
+      setBulkBusy(false);
+      setBulkProgress(0);
+    }
+  };
+
   // ── Batch payout worksheet ────────────────────────────────────────────────
   // One sheet for a whole settlement run: every doctor's eligible due, what is
   // being held back and why it isn't payable, a column to write the amount
@@ -379,6 +432,9 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
           </div>
           <Button variant="outline" size="sm" onClick={printPayoutWorksheet} disabled={filteredRows.length === 0}>
             <Printer size={14} className="mr-1" /> Payout Worksheet
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setBulkOpen(true)} disabled={filteredRows.length === 0}>
+            <FileText size={14} className="mr-1" /> Statements (All)
           </Button>
           <Button variant="outline" size="sm" onClick={() => refetchSummary()}>
             <RefreshCw size={14} className="mr-1" /> Refresh
@@ -737,6 +793,92 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    
+      {/* ── Statements for a whole payout run ──────────────────────────────── */}
+      <Dialog open={bulkOpen} onOpenChange={(v) => { if (!bulkBusy) setBulkOpen(v); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText size={18} className="text-amber-500" /> Statements for a payout run
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div>
+              <Label className="text-xs mb-1.5 block">Format</Label>
+              <div className="flex gap-1.5">
+                {([
+                  ["pdf", "PDF — print & sign"],
+                  ["word", "Word — editable"],
+                  ["excel", "Excel — editable"],
+                ] as [typeof bulkFormat, string][]).map(([f, label]) => (
+                  <button
+                    key={f}
+                    onClick={() => setBulkFormat(f)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                      bulkFormat === f
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "bg-background border-border hover:bg-muted text-muted-foreground"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1.5 leading-snug">
+                {bulkFormat === "pdf"
+                  ? "A cover page listing the whole run, then one statement per doctor on its own page, each with a signature line."
+                  : bulkFormat === "word"
+                  ? "The same content as the PDF, editable — for adding a note or putting it on your own letterhead."
+                  : "Three sheets: Summary (one row per doctor), Ledger (every entry, tagged by doctor) and Held & Reversed."}
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Checkbox id="bulk-only-due" checked={bulkOnlyDue} onCheckedChange={() => setBulkOnlyDue(v => !v)} />
+              <label htmlFor="bulk-only-due" className="text-xs cursor-pointer select-none">
+                Only doctors with something outstanding
+              </label>
+            </div>
+
+            <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Doctors in this run</span>
+                <span className="font-semibold">{bulkCandidates.length}</span>
+              </div>
+              <div className="flex items-center justify-between mt-1">
+                <span className="text-muted-foreground">Total outstanding</span>
+                <span className="font-mono tabular-nums font-semibold text-amber-500">
+                  {inr(bulkCandidates.reduce((sum, r) => sum + (r.outstanding ?? 0), 0))}
+                </span>
+              </div>
+              <div className="flex items-center justify-between mt-1">
+                <span className="text-muted-foreground">Period</span>
+                <span>{from || "Beginning"} to {to || "Present"}</span>
+              </div>
+            </div>
+
+            {bulkCandidates.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                No doctors match. Untick the filter above to include everyone in the list.
+              </p>
+            )}
+
+            {bulkBusy && (
+              <p className="text-xs text-muted-foreground">
+                Fetching statement {bulkProgress} of {bulkCandidates.length}…
+              </p>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" disabled={bulkBusy} onClick={() => setBulkOpen(false)}>Cancel</Button>
+            <Button disabled={bulkBusy || bulkCandidates.length === 0} onClick={() => void runBulkStatements()}>
+              {bulkBusy ? "Generating…" : `Generate ${bulkCandidates.length}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

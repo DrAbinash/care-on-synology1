@@ -44,12 +44,27 @@ export type StatementMeta = {
   orientation?: PaperOrientation;
 };
 
-export async function exportDoctorStatementPdf(detail: StatementDetail, meta: StatementMeta): Promise<void> {
+// Loose structural types: jspdf and jspdf-autotable are dynamically imported, so
+// nothing here should depend on their declaration files being resolvable.
+/* eslint-disable @typescript-eslint/no-explicit-any */
+type PdfDoc = any;
+type AutoTableFn = (doc: PdfDoc, opts: any) => void;
+
+export async function loadPdfLibs(): Promise<{ jsPDF: any; autoTable: AutoTableFn }> {
   const { default: jsPDF } = await import("jspdf");
   const { default: autoTable } = await import("jspdf-autotable");
+  return { jsPDF, autoTable };
+}
 
-  const orientation: PaperOrientation = meta.orientation ?? loadReportOrientation();
-  const doc = new jsPDF({ orientation, unit: "mm", format: "a4" });
+/**
+ * Draw ONE doctor's statement onto the current page of `doc`.
+ *
+ * Split out from exportDoctorStatementPdf so the bulk exporter renders each
+ * doctor through this same function rather than carrying its own copy of the
+ * layout — the single statement and a statement inside a payout run must not be
+ * able to drift apart.
+ */
+export function renderStatementPage(doc: PdfDoc, autoTable: AutoTableFn, detail: StatementDetail, meta: StatementMeta): void {
   const pageW = doc.internal.pageSize.getWidth();
   let y = 18;
 
@@ -208,7 +223,15 @@ export async function exportDoctorStatementPdf(detail: StatementDetail, meta: St
   doc.setTextColor(100);
   doc.text("Received by (Doctor)", 14, y);
   doc.text("Authorised signatory", pageW - 74, y);
+}
 
+export async function exportDoctorStatementPdf(detail: StatementDetail, meta: StatementMeta): Promise<void> {
+  const { jsPDF, autoTable } = await loadPdfLibs();
+  const orientation: PaperOrientation = meta.orientation ?? loadReportOrientation();
+  const doc = new jsPDF({ orientation, unit: "mm", format: "a4" });
+  renderStatementPage(doc, autoTable, detail, meta);
   const safeName = detail.doctor.name.replace(/[^a-z0-9]+/gi, "_");
+  const fromLabel = detail.window.from || "Beginning";
+  const toLabel = detail.window.to || "Present";
   doc.save(`Commission_Statement_${safeName}_${fromLabel}_to_${toLabel}.pdf`);
 }
