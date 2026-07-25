@@ -16,7 +16,7 @@ import {
 import {
   ArrowLeft, Search, RefreshCw, Download, IndianRupee, AlertCircle,
   TrendingUp, Users, Wallet, Receipt, Trash2, Plus, X, BookOpen, Clock,
-  RotateCcw, FileText,
+  RotateCcw, FileText, Printer,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { saAuthHeaders } from "@/lib/saApi";
@@ -239,6 +239,87 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
 
   const totals = data?.totals ?? { doctors: 0, earnedWindow: 0, paidWindow: 0, dueWindow: 0, outstanding: 0 };
 
+  // ── Batch payout worksheet ────────────────────────────────────────────────
+  // One sheet for a whole settlement run: every doctor's eligible due, what is
+  // being held back and why it isn't payable, a column to write the amount
+  // actually paid, and a signature column. Deliberately prints only the
+  // PAYABLE figure — held commission is shown separately so nobody settles
+  // against money that has not been collected.
+  const printPayoutWorksheet = () => {
+    const rows = filteredRows;
+    const esc = (s: unknown) => String(s ?? "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] as string));
+    const sum = (f: (r: DoctorLedgerRow) => number) => rows.reduce((s, r) => s + f(r), 0);
+    const held = (r: DoctorLedgerRow) => (r as { heldWindow?: number }).heldWindow ?? 0;
+    const period = `${from || "beginning"} to ${to || "today"}`;
+
+    const body = rows.map((r, i) => `<tr>
+      <td class="c">${i + 1}</td>
+      <td><strong>${esc(r.doctorName)}</strong>${r.specialization ? `<div class="sub">${esc(r.specialization)}</div>` : ""}</td>
+      <td class="c">${r.orderCount ?? ""}</td>
+      <td class="r">${inr(r.earnedWindow)}</td>
+      <td class="r">${inr(r.paidWindow)}</td>
+      <td class="r due"><strong>${inr(r.dueWindow)}</strong></td>
+      <td class="r hold">${held(r) > 0.005 ? inr(held(r)) : "—"}</td>
+      <td class="pay"></td>
+      <td class="sign"></td>
+    </tr>`).join("");
+
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Payout Worksheet</title><style>
+      *{box-sizing:border-box;margin:0;padding:0}
+      body{font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#111;padding:16px}
+      h1{font-size:16px;text-align:center;text-transform:uppercase;letter-spacing:.06em}
+      .meta{text-align:center;font-size:10px;color:#555;margin:4px 0 12px}
+      table{width:100%;border-collapse:collapse}
+      th{background:#f0f0f0;border:1px solid #bbb;padding:5px 6px;font-size:9px;text-transform:uppercase;color:#444}
+      td{border:1px solid #ccc;padding:6px;vertical-align:middle}
+      td.c,th.c{text-align:center}
+      td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
+      td.due{background:#fff8e6}
+      td.hold{color:#b91c1c}
+      td.pay{width:90px;background:#fafafa}
+      td.sign{width:120px}
+      .sub{font-size:9px;color:#666}
+      tfoot td{font-weight:bold;background:#fef3c7;border-top:2px solid #92400e}
+      .note{margin-top:10px;font-size:9px;color:#555;line-height:1.5}
+      .sigrow{margin-top:26px;display:flex;justify-content:space-between;font-size:10px}
+      .sigrow div{width:30%;border-top:1px solid #333;padding-top:4px;text-align:center}
+      @media print{@page{size:A4 landscape;margin:10mm}body{padding:0}}
+    </style></head><body>
+      <h1>Doctor Commission — Payout Worksheet</h1>
+      <div class="meta">Period: ${esc(period)} &nbsp;·&nbsp; ${rows.length} doctor${rows.length === 1 ? "" : "s"} &nbsp;·&nbsp; Generated ${new Date().toLocaleString("en-IN")}</div>
+      <table>
+        <thead><tr>
+          <th class="c">#</th><th>Referring Doctor</th><th class="c">Referrals</th>
+          <th class="r">Eligible Earned</th><th class="r">Already Paid</th><th class="r">Due Now</th>
+          <th class="r">On Hold<br>(not payable)</th><th class="c">Amount Paid</th><th class="c">Signature</th>
+        </tr></thead>
+        <tbody>${body}</tbody>
+        <tfoot><tr>
+          <td colspan="3" class="c">TOTAL</td>
+          <td class="r">${inr(sum(r => r.earnedWindow))}</td>
+          <td class="r">${inr(sum(r => r.paidWindow))}</td>
+          <td class="r">${inr(sum(r => r.dueWindow))}</td>
+          <td class="r">${inr(sum(held))}</td>
+          <td></td><td></td>
+        </tr></tfoot>
+      </table>
+      <div class="note">
+        <strong>Due Now</strong> is eligible commission only — it excludes anything still On Hold.
+        Held commission becomes payable automatically once its condition is met (usually the patient's
+        bill being settled in full); it is listed here for visibility, not for payment.
+      </div>
+      <div class="sigrow"><div>Prepared by</div><div>Verified by</div><div>Authorised by</div></div>
+    </body></html>`;
+
+    const win = window.open("", "_blank", "width=1100,height=800");
+    if (!win) {
+      toast({ title: "Pop-up blocked", description: "Allow pop-ups to print the worksheet.", variant: "destructive" });
+      return;
+    }
+    win.document.write(html);
+    win.document.close();
+  };
+
   return (
     <div className="min-h-screen w-full bg-background">
       <div className="max-w-7xl mx-auto p-4 sm:p-6 space-y-4">
@@ -296,6 +377,9 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
               </Button>
             ))}
           </div>
+          <Button variant="outline" size="sm" onClick={printPayoutWorksheet} disabled={filteredRows.length === 0}>
+            <Printer size={14} className="mr-1" /> Payout Worksheet
+          </Button>
           <Button variant="outline" size="sm" onClick={() => refetchSummary()}>
             <RefreshCw size={14} className="mr-1" /> Refresh
           </Button>

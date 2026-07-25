@@ -318,6 +318,12 @@ router.post("/rules/import", async (req, res) => {
 });
 
 // ─── Commission calculation helper ────────────────────────────────────────────
+// Where the rate that produced a line actually came from. Clinics that price by
+// slab (per test / per category) need to tell an intentional slab apart from a
+// line that merely fell through to the catch-all or the profile default — the
+// latter two are usually an unconfigured slab, not a decision.
+type RuleScope = "test" | "category" | "all" | "default" | "none";
+
 type TestInfo = { id: number; name: string; category: string | null; price: number };
 type RuleInfo = typeof import("@workspace/db/schema").commissionRulesTable.$inferSelect;
 type DoctorInfo = typeof import("@workspace/db/schema").doctorsTable.$inferSelect;
@@ -371,7 +377,7 @@ function calcTestCommission(
   doctor: DoctorInfo,
   vipOrderTestIds?: Set<number>,
   vipPct?: number,
-): { commission: number; ruleName: string; ruleType: string; ruleValue: number } {
+): { commission: number; ruleName: string; ruleType: string; ruleValue: number; ruleScope: RuleScope } {
   let price = Number(ot.price);
   if (ot.id && vipOrderTestIds?.has(ot.id) && vipPct) {
     price = price / (1 + vipPct / 100);
@@ -385,6 +391,9 @@ function calcTestCommission(
       ruleName: matched.name,
       ruleType: matched.type,
       ruleValue: val,
+      // "test" / "category" = an explicit slab was configured for this line.
+      // "all" = only the doctor's catch-all rule caught it, i.e. no slab.
+      ruleScope: (matched.scope === "test" || matched.scope === "category" ? matched.scope : "all"),
     };
   }
 
@@ -397,10 +406,11 @@ function calcTestCommission(
       ruleName: "Default",
       ruleType: defType,
       ruleValue: defVal,
+      ruleScope: "default",
     };
   }
 
-  return { commission: 0, ruleName: "None", ruleType: defType, ruleValue: 0 };
+  return { commission: 0, ruleName: "None", ruleType: defType, ruleValue: 0, ruleScope: "none" };
 }
 
 // ── Commission discount deduction helper ──────────────────────────────────────
@@ -779,8 +789,12 @@ router.get("/report-detailed", async (req, res) => {
 // Returns each referral doctor's rows: one row per test per patient visit,
 // with patient name, date, bill number, commission, and rule details.
 // Used by the "Referral Report (Doctor Name)" page in the super-admin portal.
-router.get("/report-by-patient", async (req, res) => {
-  const { from, to, doctorId } = req.query as Record<string, string>;
+// Computes the full per-patient referral-commission report. Extracted from the
+// route so other endpoints (the WhatsApp sender, the rate analysis views) read
+// the SAME figures instead of re-deriving them — re-deriving is exactly how the
+// month-end email drifted away from this report.
+export async function computeReferralReport(q: { from?: string; to?: string; doctorId?: string }) {
+  const { from, to, doctorId } = q;
 
   const [clinicRow] = await db
     .select({
@@ -889,6 +903,9 @@ router.get("/report-by-patient", async (req, res) => {
     ruleType: string;
     ruleValue: number;
     ruleName: string;
+    // Where the rate came from: an explicit test/category slab, the catch-all,
+    // the doctor's profile default, or nothing at all.
+    ruleScope: RuleScope;
     // "Why this amount?" drill-down: the price actually used as the commission
     // base (VIP surcharge stripped) and whether that stripping happened, so the
     // UI can show base = price ÷ (1 + vip%) → expected → −discount → actual.
@@ -933,7 +950,7 @@ router.get("/report-by-patient", async (req, res) => {
         // ruleType/ruleValue come from the same decision that produced the
         // commission (calcTestCommission → findMatchingRule), so the displayed
         // rate always reflects the rule actually applied.
-        const { commission: rawComm, ruleName, ruleType, ruleValue } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct);
+        const { commission: rawComm, ruleName, ruleType, ruleValue, ruleScope } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct);
         // Mirror the VIP-surcharge stripping calcTestCommission does internally,
         // so the drill-down can display the exact base the rate was applied to.
         const vipAdjusted = !!ot.id && vipOrderTestIds.has(ot.id) && vipPct > 0;
@@ -958,6 +975,7 @@ router.get("/report-by-patient", async (req, res) => {
           ruleType,
           ruleValue,
           ruleName,
+          ruleScope,
           commissionBase,
           vipAdjusted,
         });
@@ -986,7 +1004,7 @@ router.get("/report-by-patient", async (req, res) => {
     };
   }).filter(d => d.rows.length > 0);
 
-  res.json({
+  return {
     report: result,
     // Clinic-level context for the "Why this amount?" drill-down.
     settings: { vipPct, commissionDiscountMode },
@@ -1000,6 +1018,175 @@ router.get("/report-by-patient", async (req, res) => {
       expectedCommission: result.reduce((s, d) => s + d.totalExpectedCommission, 0),
       discount: result.reduce((s, d) => s + d.totalDiscount, 0),
     },
+  };
+}
+
+router.get("/report-by-patient", async (req, res) => {
+  const { from, to, doctorId } = req.query as Record<string, string>;
+  res.json(await computeReferralReport({ from, to, doctorId }));
+});
+
+// ─── WhatsApp: send a doctor their commission for a period ────────────────────
+// Reachable only with the pen drive (the whole commission router sits behind
+// requireSuperAdmin). There is deliberately NO scheduled/automatic variant —
+// commission leaves the building only when an operator holding the drive
+// chooses to send it.
+//
+// Three detail levels, because what a doctor should see varies:
+//   amount    — the figure only
+//   summary   — the figure plus referral/test counts (and anything on hold)
+//   breakdown — the above plus a per-test list
+const WA_DETAILS = ["amount", "summary", "breakdown"] as const;
+type WaDetail = (typeof WA_DETAILS)[number];
+
+const fmtINR = (n: number) =>
+  "Rs." + n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const fmtPeriod = (from?: string, to?: string) => {
+  const d = (s?: string) => {
+    if (!s) return null;
+    const [y, m, dd] = s.split("-");
+    return `${dd}/${m}/${y}`;
+  };
+  const a = d(from), b = d(to);
+  if (a && b) return `${a} to ${b}`;
+  if (a) return `from ${a}`;
+  if (b) return `up to ${b}`;
+  return "all time";
+};
+
+type WaEntry = {
+  doctor: { id: number; name: string };
+  rows: { testName: string; commission: number; held: boolean }[];
+  totalCommission: number;
+  payableCommission: number;
+  heldCommission: number;
+  orderCount: number;
+  testCount: number;
+};
+
+function buildCommissionMessage(
+  entry: WaEntry,
+  opts: { detail: WaDetail; basis: "payable" | "total"; period: string; clinicName: string },
+): string {
+  const amount = opts.basis === "payable" ? entry.payableCommission : entry.totalCommission;
+  const L: string[] = [];
+  L.push(`Dear Dr. ${entry.doctor.name.replace(/^Dr\.?\s*/i, "")},`);
+  L.push("");
+  L.push(`Your referral commission for ${opts.period} is *${fmtINR(amount)}*.`);
+
+  if (opts.detail !== "amount") {
+    L.push("");
+    L.push(`Referrals: ${entry.orderCount} patient${entry.orderCount === 1 ? "" : "s"}, ${entry.testCount} test${entry.testCount === 1 ? "" : "s"}.`);
+    if (opts.basis === "payable" && entry.heldCommission > 0.005) {
+      L.push(`A further ${fmtINR(entry.heldCommission)} is pending and will be released once the related bills are settled.`);
+    }
+  }
+
+  if (opts.detail === "breakdown") {
+    // One line per test, largest first. Held lines are marked so the figures
+    // visibly reconcile to the amount above.
+    const byTest = new Map<string, { amount: number; count: number; held: boolean }>();
+    for (const r of entry.rows) {
+      if (opts.basis === "payable" && r.held) continue;
+      const cur = byTest.get(r.testName) ?? { amount: 0, count: 0, held: r.held };
+      cur.amount += r.commission;
+      cur.count += 1;
+      byTest.set(r.testName, cur);
+    }
+    const list = [...byTest.entries()].sort((a, b) => b[1].amount - a[1].amount);
+    if (list.length) {
+      L.push("");
+      L.push("Breakdown:");
+      for (const [name, v] of list) {
+        L.push(`- ${name} x${v.count}: ${fmtINR(v.amount)}`);
+      }
+    }
+  }
+
+  L.push("");
+  L.push(`- ${opts.clinicName}`);
+  return L.join("\n");
+}
+
+router.post("/whatsapp/send", async (req, res) => {
+  const body = (req.body ?? {}) as {
+    doctorIds?: unknown; from?: string; to?: string;
+    detail?: string; basis?: string; dryRun?: boolean;
+  };
+  const doctorIds = Array.isArray(body.doctorIds)
+    ? body.doctorIds.map(Number).filter(n => Number.isInteger(n) && n > 0)
+    : [];
+  if (doctorIds.length === 0) {
+    res.status(400).json({ error: "doctorIds must be a non-empty array" });
+    return;
+  }
+  const detail: WaDetail = (WA_DETAILS as readonly string[]).includes(body.detail ?? "")
+    ? (body.detail as WaDetail) : "summary";
+  const basis: "payable" | "total" = body.basis === "total" ? "total" : "payable";
+  const dryRun = body.dryRun !== false;   // default to a preview — never send by accident
+
+  const [clinic] = await db.select({ name: clinicSettingsTable.name }).from(clinicSettingsTable).limit(1);
+  const clinicName = clinic?.name || "Care Diagnostics";
+  const period = fmtPeriod(body.from, body.to);
+
+  // Same computation the Referral Report shows — not a second derivation.
+  const { report } = await computeReferralReport({ from: body.from, to: body.to });
+  const byDoctorId = new Map(report.map(d => [d.doctor.id, d as unknown as WaEntry]));
+
+  const contacts = await db
+    .select({ id: doctorsTable.id, name: doctorsTable.name, phone: doctorsTable.phone })
+    .from(doctorsTable)
+    .where(inArray(doctorsTable.id, doctorIds));
+  const phoneById = new Map(contacts.map(c => [c.id, c.phone]));
+  const nameById = new Map(contacts.map(c => [c.id, c.name]));
+
+  // Imported lazily so a WhatsApp misconfiguration can never break the rest of
+  // the commission module at load time.
+  const { sendPlainWhatsappText } = await import("./whatsapp");
+
+  const results: {
+    doctorId: number; doctorName: string; phone: string | null; amount: number;
+    message: string; ok: boolean; skipped?: boolean; error?: string; messageId?: string;
+  }[] = [];
+
+  for (const id of doctorIds) {
+    const doctorName = nameById.get(id) ?? `#${id}`;
+    const entry = byDoctorId.get(id);
+    const phone = phoneById.get(id) ?? null;
+
+    if (!entry) {
+      results.push({ doctorId: id, doctorName, phone, amount: 0, message: "",
+        ok: false, skipped: true, error: "No referrals in this period" });
+      continue;
+    }
+    const amount = basis === "payable" ? entry.payableCommission : entry.totalCommission;
+    const message = buildCommissionMessage(entry, { detail, basis, period, clinicName });
+
+    if (!phone) {
+      results.push({ doctorId: id, doctorName, phone, amount, message,
+        ok: false, error: "No phone number on file" });
+      continue;
+    }
+    if (dryRun) {
+      results.push({ doctorId: id, doctorName, phone, amount, message, ok: true, skipped: true });
+      continue;
+    }
+    const sent = await sendPlainWhatsappText(phone, message);
+    results.push({
+      doctorId: id, doctorName, phone, amount, message,
+      ok: sent.ok, skipped: sent.skipped, error: sent.error, messageId: sent.messageId,
+    });
+  }
+
+  res.json({
+    dryRun,
+    detail,
+    basis,
+    period,
+    sent: results.filter(r => r.ok && !r.skipped).length,
+    failed: results.filter(r => !r.ok).length,
+    results,
   });
 });
 

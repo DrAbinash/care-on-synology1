@@ -8,9 +8,12 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+} from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import {
-  ArrowLeft, Printer, Stethoscope, Users, FileText, IndianRupee, TrendingUp, Download, FileSpreadsheet, Percent, Clock, HelpCircle,
+  ArrowLeft, Printer, Stethoscope, Users, FileText, IndianRupee, TrendingUp, Download, FileSpreadsheet, Percent, Clock, HelpCircle, MessageCircle, Send, Check, AlertTriangle,
 } from "lucide-react";
 import { saAuthHeaders } from "@/lib/saApi";
 import { exportCommissionPdf } from "@/lib/exportCommissionPdf";
@@ -70,6 +73,11 @@ type ReportData = {
 };
 
 type ReportMode = "by-doctor" | "test-summary" | "consolidated";
+
+type WaResult = {
+  doctorId: number; doctorName: string; phone: string | null; amount: number;
+  message: string; ok: boolean; skipped?: boolean; error?: string;
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const inr = (n: number) =>
@@ -369,6 +377,46 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
   const settings = data?.settings ?? { vipPct: 0, commissionDiscountMode: "none" };
   const grandTotal = data?.grandTotal ?? { doctors: 0, orders: 0, revenue: 0, commission: 0, payableCommission: 0, heldCommission: 0, expectedCommission: 0, discount: 0 };
 
+  // ── WhatsApp: send each doctor their own commission figure ────────────────
+  // Always previews first (the endpoint defaults to dryRun), so the operator
+  // reads the exact text that will leave the building before anything is sent.
+  const [waOpen, setWaOpen] = useState(false);
+  const [waSelected, setWaSelected] = useState<Set<number>>(new Set());
+  const [waDetail, setWaDetail] = useState<"amount" | "summary" | "breakdown">("summary");
+  const [waBasis, setWaBasis] = useState<"payable" | "total">("payable");
+  const [waBusy, setWaBusy] = useState(false);
+  const [waResults, setWaResults] = useState<WaResult[] | null>(null);
+  const [waSent, setWaSent] = useState(false);
+
+  const callWhatsapp = async (dryRun: boolean) => {
+    setWaBusy(true);
+    try {
+      const res = await fetch("/api/commission/whatsapp/send", {
+        method: "POST",
+        headers: { ...saAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          doctorIds: [...waSelected], from, to,
+          detail: waDetail, basis: waBasis, dryRun,
+        }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j?.error ?? `HTTP ${res.status}`);
+      setWaResults(j.results as WaResult[]);
+      setWaSent(!dryRun);
+      if (!dryRun) {
+        toast({
+          title: `Sent to ${j.sent} doctor${j.sent === 1 ? "" : "s"}`,
+          description: j.failed ? `${j.failed} could not be sent — see the list.` : undefined,
+          variant: j.failed ? "destructive" : undefined,
+        });
+      }
+    } catch (err) {
+      toast({ title: "WhatsApp failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    } finally {
+      setWaBusy(false);
+    }
+  };
+
   const handlePrint = () => {
     const doctorLabel = doctorId
       ? doctors.find(d => d.id === doctorId)?.name ?? "—"
@@ -590,6 +638,13 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
               <Button variant="outline" size="sm" onClick={handleDownloadPdf} disabled={pdfLoading || report.length === 0} className="gap-1.5">
                 <Download size={14} /> {pdfLoading ? "Exporting…" : "PDF"}
               </Button>
+              <Button
+                variant="outline" size="sm" className="gap-1.5"
+                disabled={report.length === 0}
+                onClick={() => { setWaSelected(new Set(report.map(r => r.doctor.id))); setWaOpen(true); setWaResults(null); }}
+              >
+                <MessageCircle size={14} /> WhatsApp
+              </Button>
             </div>
           </div>
 
@@ -717,6 +772,117 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
           <ByDoctorView report={report} grandTotal={grandTotal} cols={cols} colCount={colCount} discountFmt={discountFmt} settings={settings} />
         )}
       </div>
+
+      {/* ── Send commission by WhatsApp ────────────────────────────────────── */}
+      <Dialog open={waOpen} onOpenChange={(v) => { setWaOpen(v); if (!v) { setWaResults(null); setWaSent(false); } }}>
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MessageCircle size={18} className="text-emerald-500" />
+              Send commission by WhatsApp
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label className="text-xs mb-1.5 block">How much detail</Label>
+                <Select value={waDetail} onValueChange={(v) => { setWaDetail(v as typeof waDetail); setWaResults(null); }}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="amount">Amount only</SelectItem>
+                    <SelectItem value="summary">Amount + referral counts</SelectItem>
+                    <SelectItem value="breakdown">Amount + per-test breakdown</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs mb-1.5 block">Which figure</Label>
+                <Select value={waBasis} onValueChange={(v) => { setWaBasis(v as typeof waBasis); setWaResults(null); }}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="payable">Payable now (excludes On Hold)</SelectItem>
+                    <SelectItem value="total">All commission earned</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <Label className="text-xs">Doctors ({waSelected.size} of {report.length})</Label>
+                <div className="flex gap-2">
+                  <button className="text-xs text-primary hover:underline"
+                    onClick={() => { setWaSelected(new Set(report.map(r => r.doctor.id))); setWaResults(null); }}>Select all</button>
+                  <button className="text-xs text-muted-foreground hover:underline"
+                    onClick={() => { setWaSelected(new Set()); setWaResults(null); }}>Clear</button>
+                </div>
+              </div>
+              <div className="border border-border rounded-lg max-h-44 overflow-y-auto divide-y divide-border/50">
+                {report.map(e => {
+                  const amt = waBasis === "payable" ? e.payableCommission : e.totalCommission;
+                  const on = waSelected.has(e.doctor.id);
+                  return (
+                    <label key={e.doctor.id} className="flex items-center gap-3 px-3 py-2 text-sm cursor-pointer hover:bg-muted/20">
+                      <Checkbox checked={on} onCheckedChange={() => {
+                        const next = new Set(waSelected);
+                        if (on) next.delete(e.doctor.id); else next.add(e.doctor.id);
+                        setWaSelected(next); setWaResults(null);
+                      }} />
+                      <span className="flex-1 truncate">{e.doctor.name}</span>
+                      <span className="font-mono tabular-nums text-amber-500">{inr(amt)}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+
+            {waResults && (
+              <div>
+                <p className="text-xs font-semibold mb-1.5">
+                  {waSent ? "Send results" : "Preview — this is exactly what will be sent"}
+                </p>
+                <div className="border border-border rounded-lg max-h-72 overflow-y-auto divide-y divide-border/50">
+                  {waResults.map(r => (
+                    <div key={r.doctorId} className="px-3 py-2">
+                      <div className="flex items-center gap-2 text-xs mb-1">
+                        {r.ok && !r.skipped ? <Check size={13} className="text-emerald-500" />
+                          : r.ok ? <MessageCircle size={13} className="text-muted-foreground" />
+                          : <AlertTriangle size={13} className="text-rose-500" />}
+                        <span className="font-medium">{r.doctorName}</span>
+                        <span className="text-muted-foreground font-mono">{r.phone ?? "no number"}</span>
+                        {r.error && <span className="text-rose-400">— {r.error}</span>}
+                      </div>
+                      {r.message && (
+                        <pre className="text-[11px] whitespace-pre-wrap bg-muted/30 rounded p-2 leading-relaxed">{r.message}</pre>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="rounded-md border border-amber-900 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-400">
+              These messages go to the doctors' own phone numbers and contain their commission figures.
+              Preview first — nothing is sent until you press Send.
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setWaOpen(false)}>Close</Button>
+            <Button variant="outline" disabled={waBusy || waSelected.size === 0} onClick={() => callWhatsapp(true)}>
+              {waBusy ? "Working…" : "Preview"}
+            </Button>
+            <Button
+              disabled={waBusy || waSelected.size === 0 || !waResults || waSent}
+              onClick={() => callWhatsapp(false)}
+              className="gap-1.5"
+            >
+              <Send size={14} /> {waSent ? "Sent" : `Send to ${waSelected.size}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
