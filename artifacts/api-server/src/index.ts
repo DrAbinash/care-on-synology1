@@ -2528,8 +2528,17 @@ async function runStartupMigrations(): Promise<void> {
         status VARCHAR(20) NOT NULL DEFAULT 'draft',
         ai_draft TEXT,
         critical_alerts_acknowledged BOOLEAN DEFAULT FALSE,
-        reviewed_by INTEGER, reviewed_at TIMESTAMPTZ,
-        finalized_by INTEGER, finalized_at TIMESTAMPTZ,
+        -- TEXT, not INTEGER: the Drizzle schema declares these text() and the
+        -- echo routes write a reviewer NAME (staffSession.subjectName). This
+        -- DDL previously declared INTEGER and, on any database bootstrapped
+        -- from here, won the race against the Drizzle migration — making every
+        -- echo/fetal-echo Review and Finalize fail with 22P02 invalid input
+        -- syntax for integer. Existing databases are repaired by
+        -- migrations/zzzzzz_fix_echo_reviewer_columns_to_text.sql.
+        -- (fetal_usg_reports.reviewed_by stays INTEGER — that schema declares
+        -- integer() and its route writes subjectId, which is consistent.)
+        reviewed_by TEXT, reviewed_at TIMESTAMPTZ,
+        finalized_by TEXT, finalized_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
@@ -2565,8 +2574,17 @@ async function runStartupMigrations(): Promise<void> {
         status VARCHAR(20) NOT NULL DEFAULT 'draft',
         ai_draft TEXT,
         critical_alerts_acknowledged BOOLEAN DEFAULT FALSE,
-        reviewed_by INTEGER, reviewed_at TIMESTAMPTZ,
-        finalized_by INTEGER, finalized_at TIMESTAMPTZ,
+        -- TEXT, not INTEGER: the Drizzle schema declares these text() and the
+        -- echo routes write a reviewer NAME (staffSession.subjectName). This
+        -- DDL previously declared INTEGER and, on any database bootstrapped
+        -- from here, won the race against the Drizzle migration — making every
+        -- echo/fetal-echo Review and Finalize fail with 22P02 invalid input
+        -- syntax for integer. Existing databases are repaired by
+        -- migrations/zzzzzz_fix_echo_reviewer_columns_to_text.sql.
+        -- (fetal_usg_reports.reviewed_by stays INTEGER — that schema declares
+        -- integer() and its route writes subjectId, which is consistent.)
+        reviewed_by TEXT, reviewed_at TIMESTAMPTZ,
+        finalized_by TEXT, finalized_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
