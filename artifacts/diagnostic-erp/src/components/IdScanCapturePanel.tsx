@@ -21,6 +21,7 @@ import {
   Sparkles, FolderOpen, UploadCloud, Smartphone,
 } from "lucide-react";
 import UnifiedScanCapture, { type ScanCaptureResult, type ScanSource, type ScanSide } from "@/components/UnifiedScanCapture";
+import ScannerSetupHelp from "@/components/ScannerSetupHelp";
 import { checkScanBridgeHealth, type ScanBridgeState } from "@/lib/scanBridgeClient";
 import { getPreferredTvsDeviceId, getPreferredTvsDeviceLabel } from "@/lib/tvsDeviceProfile";
 import { isSecureCameraContext } from "@/lib/cameraDiagnostics";
@@ -125,9 +126,13 @@ export default function IdScanCapturePanel({
               {primaryOnline ? "Online" : "Setup"}
             </span>
           </div>
-          <Link href="/settings/scanner" className="inline-flex items-center gap-1 text-[11px] text-violet-600 hover:text-violet-700 hover:underline ml-8 mt-0.5">
-            <Settings2 size={11} /> Scanner Settings
-          </Link>
+          <div className="flex items-center gap-3 ml-8 mt-0.5">
+            <Link href="/settings/scanner" className="inline-flex items-center gap-1 text-[11px] text-violet-600 hover:text-violet-700 hover:underline">
+              <Settings2 size={11} /> Scanner Settings
+            </Link>
+            <span className="text-gray-300">·</span>
+            <ScannerSetupHelp online={bridgeOk} />
+          </div>
         </div>
 
         <div className="flex gap-1.5 shrink-0">
