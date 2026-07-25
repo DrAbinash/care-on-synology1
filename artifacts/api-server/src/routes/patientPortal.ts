@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import crypto from "crypto";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { db } from "@workspace/db";
 import {
   patientOtpTable,
@@ -71,9 +71,17 @@ const OTP_REJECT = { error: "Invalid or expired code. Please request a new one."
 // Bucket rate limiters by phone as well as IP so an attacker rotating source
 // addresses (proxy pool, IPv6 /64) can't stack the per-IP budget against one
 // target. Falls back to IP when no valid phone is supplied.
+//
+// The IP half MUST go through express-rate-limit's ipKeyGenerator, which
+// collapses an IPv6 client to its /56 prefix (the same normalisation the
+// library's own default keyGenerator applies). Interpolating raw `req.ip`
+// instead gave every address in an attacker's /64 its own bucket with a full
+// budget — so the anti-rotation property this comment claims did not actually
+// hold for IPv6, and express-rate-limit raised ERR_ERL_KEY_GEN_IPV6 on every
+// boot. The `|phone` suffix is unchanged, so ip+phone bucketing is preserved.
 function ipPlusPhoneKey(req: Request): string {
   const phone = validPhone((req.body as { phone?: string })?.phone) || "nophone";
-  return `${req.ip}|${phone}`;
+  return `${ipKeyGenerator(req.ip ?? "")}|${phone}`;
 }
 
 const otpSendLimiter = rateLimit({
