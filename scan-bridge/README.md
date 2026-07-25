@@ -18,6 +18,28 @@ The browser cannot talk to USB document scanners directly. This bridge:
 > reports. Every example below sets `ERP_BASE_URL` for this reason — do not
 > omit it, even while testing with the mock adapter.
 
+## One-click install (Windows reception PC) ⭐
+
+For a Windows reception workstation, use the bundled installer instead of the
+manual steps below:
+
+1. Install **Node.js LTS** from <https://nodejs.org> (one time).
+2. Copy this whole `scan-bridge` folder onto the reception PC.
+3. Right-click **`install-windows.ps1`** → **Run with PowerShell**.
+4. When asked, enter the ERP address (e.g. `https://caredeoghar.com`) and pick
+   the scanner type (**WIA** for any scanner in *Windows Fax and Scan*, or
+   **folder-watch** to import from a folder your scanner software writes to).
+
+The installer runs `npm install`, writes `start-scan-bridge.cmd`, registers a
+per-user **auto-start task** (`CareScanBridge`, runs at each logon — no admin
+needed), starts the bridge, and checks `http://127.0.0.1:8766/health`. When it
+succeeds, Form F's **Existing Scanner** tab shows **Online**. There's a matching
+**"Set up scanner"** shortcut in Form F's ID-capture panel that shows these
+same steps and the live status.
+
+To reconfigure later, just run `install-windows.ps1` again. To start it once by
+hand, double-click `start-scan-bridge.cmd`.
+
 ## Quick start (mock adapter — no hardware needed)
 
 ```bash
