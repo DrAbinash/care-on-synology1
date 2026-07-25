@@ -395,7 +395,7 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
                 const heldOrders = (((detail as { earnedOrders?: ReadonlyArray<{ orderNumber: string; commission: number; held?: boolean; holdReason?: string | null }> }).earnedOrders) ?? []).filter(o => o.held);
                 if (heldOrders.length === 0) return null;
                 return (
-                  <div className="rounded-xl border border-rose-200 bg-rose-50/60 dark:bg-rose-950/20 dark:border-rose-900 p-3">
+                  <div className="rounded-xl border border-rose-900 bg-rose-950/30 p-3">
                     <div className="flex items-center gap-1.5 mb-1.5 text-rose-700 dark:text-rose-400">
                       <Clock size={14} />
                       <p className="text-xs font-semibold">On Hold — not payable yet ({heldOrders.length} order{heldOrders.length === 1 ? "" : "s"})</p>
@@ -422,8 +422,8 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
                 const totalClawback = (detail.summary as { totalClawback?: number }).totalClawback ?? 0;
                 if (clawbacks.length === 0) return null;
                 return (
-                  <div className="rounded-xl border border-amber-300 bg-amber-50/70 dark:bg-amber-950/20 dark:border-amber-900 p-3">
-                    <div className="flex items-center justify-between gap-2 mb-1.5 text-amber-700 dark:text-amber-400">
+                  <div className="rounded-xl border border-amber-900 bg-amber-950/30 p-3">
+                    <div className="flex items-center justify-between gap-2 mb-1.5 text-amber-400">
                       <div className="flex items-center gap-1.5">
                         <RotateCcw size={14} />
                         <p className="text-xs font-semibold">Reversed after eligibility ({clawbacks.length} order{clawbacks.length === 1 ? "" : "s"})</p>
@@ -434,7 +434,7 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
                       {clawbacks.map((c) => (
                         <div key={c.orderId} className="flex items-center justify-between gap-3 text-xs">
                           <span className="font-mono text-muted-foreground truncate">#{c.orderId}</span>
-                          <span className="text-amber-700 dark:text-amber-400 truncate flex-1">{c.reason}</span>
+                          <span className="text-amber-400 truncate flex-1">{c.reason}</span>
                           <span className="font-mono tabular-nums">{inr(c.amount)}</span>
                         </div>
                       ))}
@@ -486,7 +486,7 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
                           <tr key={`${e.kind}-${e.id ?? e.ref ?? "x"}-${e.date}-${i}`} className="border-b border-border/50 last:border-0 hover:bg-muted/20">
                             <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap">{e.date}</td>
                             <td className="px-3 py-2">
-                              <span className={`text-[10px] px-1.5 py-0.5 rounded mr-1 ${e.kind === "earned" ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"}`}>
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded mr-1 ${e.kind === "earned" ? "bg-blue-900/30 text-blue-400" : "bg-emerald-900/30 text-emerald-400"}`}>
                                 {e.kind === "earned" ? "EARN" : "PAID"}
                               </span>
                               {e.particular}
@@ -572,7 +572,7 @@ export default function DoctorLedger({ onBack }: { onBack: () => void }) {
                 </div>
               )}
               {detail && payAmt > 0 && payAmt > eligibleDue + 0.005 && (
-                <div className="mt-1.5 flex items-start gap-1.5 rounded-md border border-amber-300 bg-amber-50/70 dark:bg-amber-950/20 dark:border-amber-900 px-2 py-1.5 text-[11px] text-amber-700 dark:text-amber-400">
+                <div className="mt-1.5 flex items-start gap-1.5 rounded-md border border-amber-900 bg-amber-950/30 px-2 py-1.5 text-[11px] text-amber-400">
                   <AlertCircle size={13} className="mt-px shrink-0" />
                   <span>
                     This is <span className="font-mono font-semibold">{inr(payAmt - eligibleDue)}</span> more than the eligible due

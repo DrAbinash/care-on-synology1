@@ -1022,10 +1022,12 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
     policy: clinicSettingsTable.commissionEligibilityPolicy,
     minAmount: clinicSettingsTable.commissionEligibilityMinAmount,
     vipPercentage: clinicSettingsTable.vipPercentage,
+    discountMode: clinicSettingsTable.commissionDiscountMode,
   }).from(clinicSettingsTable).limit(1);
   const policy = clinic?.policy ?? "full_payment_collected";
   const minAmount = Number(clinic?.minAmount ?? 0);
   const vipPct = clinic?.vipPercentage ? Number(clinic.vipPercentage) : 50;
+  const discountMode = clinic?.discountMode ?? "none";
   const needsReport = policy === "report_finalized" || policy === "report_delivered";
 
   const since = new Date();
@@ -1040,7 +1042,7 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
     db.select().from(commissionRulesTable),
     db.select({ id: testsTable.id, category: testsTable.category }).from(testsTable),
     db.select().from(orderTestsTable).where(and(inArray(orderTestsTable.orderId, orderIds), ne(orderTestsTable.status, "cancelled"))),
-    db.select({ orderId: billsTable.orderId, status: billsTable.status, paid: billsTable.paidAmount, balance: billsTable.balanceAmount }).from(billsTable).where(inArray(billsTable.orderId, orderIds)),
+    db.select({ orderId: billsTable.orderId, status: billsTable.status, paid: billsTable.paidAmount, balance: billsTable.balanceAmount, discount: billsTable.discount }).from(billsTable).where(inArray(billsTable.orderId, orderIds)),
     db.select({ orderTestId: testTokensTable.orderTestId }).from(testTokensTable).where(and(inArray(testTokensTable.orderId, orderIds), sql`${testTokensTable.priority} > 0`)),
     db.select({ orderId: commissionStatusEventsTable.orderId, newStatus: commissionStatusEventsTable.newStatus, createdAt: commissionStatusEventsTable.createdAt }).from(commissionStatusEventsTable).where(inArray(commissionStatusEventsTable.orderId, orderIds)),
   ]);
@@ -1048,8 +1050,8 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
   const doctorMap = new Map(doctors.map(d => [d.id, d]));
   const rulesByDoctor = new Map<number, (typeof commissionRulesTable.$inferSelect)[]>();
   for (const r of rules) { const a = rulesByDoctor.get(r.doctorId) ?? []; a.push(r); rulesByDoctor.set(r.doctorId, a); }
-  const billByOrder = new Map<number, { status: string | null; paid: string; balance: string }>();
-  for (const b of bills) if (b.orderId != null) billByOrder.set(b.orderId, { status: b.status ?? null, paid: b.paid, balance: b.balance });
+  const billByOrder = new Map<number, { status: string | null; paid: string; balance: string; discount: number }>();
+  for (const b of bills) if (b.orderId != null) billByOrder.set(b.orderId, { status: b.status ?? null, paid: b.paid, balance: b.balance, discount: Number(b.discount ?? 0) });
   const vipIds = new Set(tokens.map(t => t.orderTestId).filter(Boolean) as number[]);
 
   let reportStatus = new Map<number, { finalized: boolean; delivered: boolean }>();
@@ -1084,13 +1086,23 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
     let raw = 0;
     for (const ot of ots) raw += reconcileTestCommission(ot, testMap.get(ot.testId), dRules, doctor, vipIds, vipPct);
     const bill = billByOrder.get(order.id);
+    // Judge — and record — the NET commission, i.e. after the clinic's
+    // bill-discount deduction. The Referral Report and the Doctor Ledger both
+    // work in net; using gross here would make the "collected >= commission"
+    // policy disagree with them and would record an inflated amount in the
+    // audit trail (which the ledger's clawback panel reads back).
+    const netCommission = discountMode === "deduct"
+      ? Math.max(0, raw - (bill?.discount ?? 0))
+      : discountMode === "deduct_rollover"
+        ? raw - (bill?.discount ?? 0)
+        : raw;
     const rep = reportStatus.get(order.id);
     const { held, reason } = reconcileHold({
       policy, minAmount,
       hasBill: !!bill, billStatus: bill?.status ?? null,
       paid: Number(bill?.paid ?? 0), balance: Number(bill?.balance ?? 0),
       reportFinalized: rep?.finalized ?? false, reportDelivered: rep?.delivered ?? false,
-      commissionAmount: raw,
+      commissionAmount: netCommission,
     });
     const newStatus = held ? "on_hold" : "eligible";
     const last = lastStatusByOrder.get(order.id);
@@ -1099,7 +1111,7 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
     if (!shouldLog) continue;
     toInsert.push({
       orderId: order.id, doctorId: order.doctorId, billId: null,
-      commissionAmount: raw.toFixed(2), oldStatus: last ?? null, newStatus, policy, reason,
+      commissionAmount: netCommission.toFixed(2), oldStatus: last ?? null, newStatus, policy, reason,
     });
   }
 
@@ -1319,14 +1331,44 @@ async function fireMonthEndCommission(now: Date) {
     const allTests = await db.select().from(testsTable);
     const testMap  = new Map(allTests.map(t => [t.id, t]));
 
+    // Clinic-level knobs the commission calculation depends on. These are the
+    // SAME settings the Referral Report and the Doctor Ledger read, so the
+    // emailed figures cannot drift away from what the portal shows.
+    const [clinicRow] = await db.select({
+      vipPercentage: clinicSettingsTable.vipPercentage,
+      commissionDiscountMode: clinicSettingsTable.commissionDiscountMode,
+    }).from(clinicSettingsTable).limit(1);
+    const vipPct = clinicRow?.vipPercentage ? Number(clinicRow.vipPercentage) : 50.0;
+    const discountMode = clinicRow?.commissionDiscountMode ?? "none";
+
     // Fetch orders for the month
     const orders = await db.select().from(ordersTable)
       .where(and(gte(ordersTable.createdAt, fromDate), lte(ordersTable.createdAt, toDate)));
 
     const orderIds = orders.map(o => o.id);
+    // Cancelled test lines earn no commission — same filter every other
+    // commission path applies. Without it the emailed total is inflated.
     const orderTests = orderIds.length
-      ? await db.select().from(orderTestsTable).where(inArray(orderTestsTable.orderId, orderIds))
+      ? await db.select().from(orderTestsTable)
+          .where(and(inArray(orderTestsTable.orderId, orderIds), ne(orderTestsTable.status, "cancelled")))
       : [];
+
+    // VIP lines carry the clinic's VIP surcharge in their price; commission is
+    // calculated on the pre-surcharge base, so the VIP lines must be identified.
+    const vipTokens = orderIds.length
+      ? await db.select({ orderTestId: testTokensTable.orderTestId })
+          .from(testTokensTable)
+          .where(and(inArray(testTokensTable.orderId, orderIds), sql`${testTokensTable.priority} > 0`))
+      : [];
+    const vipIds = new Set(vipTokens.map(t => t.orderTestId).filter(Boolean) as number[]);
+
+    // Bill discount per order, for the clinic's commission-discount deduction.
+    const billRows = orderIds.length
+      ? await db.select({ orderId: billsTable.orderId, discount: billsTable.discount })
+          .from(billsTable).where(inArray(billsTable.orderId, orderIds))
+      : [];
+    const discountByOrder = new Map<number, number>();
+    for (const b of billRows) if (b.orderId != null) discountByOrder.set(b.orderId, Number(b.discount ?? 0));
 
     const report = doctors.map(doctor => {
       const doctorOrders = orders.filter(o => o.doctorId === doctor.id);
@@ -1335,32 +1377,23 @@ async function fireMonthEndCommission(now: Date) {
       let totalRevenue = 0, totalCommission = 0, testCount = 0;
       for (const order of doctorOrders) {
         const ots = orderTests.filter(ot => ot.orderId === order.id);
+        let rawOrderCommission = 0;
         for (const ot of ots) {
           const test = testMap.get(ot.testId);
-          const price = Number(ot.price);
-          totalRevenue += price;
+          totalRevenue += Number(ot.price);
           testCount++;
-
-          // Apply rules (same logic as commission route)
-          let matched = rules.find(r => {
-            if (!r.isExclusive) return false;
-            if (r.scope === "test" && r.testIds) return (JSON.parse(r.testIds) as number[]).includes(ot.testId);
-            if (r.scope === "category" && r.categories && test) return (JSON.parse(r.categories) as string[]).includes(test.category || "");
-            return false;
-          });
-          if (!matched) matched = rules.find(r => {
-            if (r.scope === "test" && r.testIds) return (JSON.parse(r.testIds) as number[]).includes(ot.testId);
-            if (r.scope === "category" && r.categories && test) return (JSON.parse(r.categories) as string[]).includes(test.category || "");
-            return r.scope === "all";
-          });
-          if (matched) {
-            const val = Number(matched.value);
-            totalCommission += matched.type === "percentage" ? (price * val) / 100 : val;
-          } else {
-            const defVal = Number(doctor.defaultCommission);
-            if (defVal > 0) totalCommission += doctor.defaultCommissionType === "percentage" ? (price * defVal) / 100 : defVal;
-          }
+          // Single shared implementation: correct rule precedence
+          // (exclusive → specific → catch-all → profile default), VIP base
+          // normalisation, and malformed-JSON tolerance.
+          rawOrderCommission += reconcileTestCommission(ot, test, rules, doctor, vipIds, vipPct);
         }
+        // Bill-discount deduction, applied per order exactly as the report does.
+        const disc = discountByOrder.get(order.id) ?? 0;
+        totalCommission += discountMode === "deduct"
+          ? Math.max(0, rawOrderCommission - disc)
+          : discountMode === "deduct_rollover"
+            ? rawOrderCommission - disc
+            : rawOrderCommission;
       }
 
       return {
