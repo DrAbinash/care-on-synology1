@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildPrintBridgePayload, singleStudyUidFor } from "./pacsEnterprise";
+import {
+  buildPrintBridgePayload,
+  buildPrintLabels,
+  resolvePrintPageSize,
+  singleStudyUidFor,
+} from "./pacsEnterprise";
 
 // Print-from-workspace bridge integration: buildPrintBridgePayload is the
 // pure core of POST /api/radiology/print-images — everything it decides
@@ -199,5 +204,93 @@ describe("buildPrintBridgePayload — patient", () => {
     const payload = buildPrintBridgePayload(["img"], 1, undefined, undefined, clinicFull, patient);
     expect((payload.header as { line2: string }).line2).toBe("Care Diagnostic Centre");
     expect(payload.patient).toBeDefined();
+  });
+});
+
+describe("buildPrintLabels", () => {
+  const series = { "1.2.840.1": "PLAX", "1.2.840.2": "4C VIEW" };
+
+  it("captions each frame with its series description and sheet position", () => {
+    expect(
+      buildPrintLabels(
+        [{ seriesInstanceUid: "1.2.840.1" }, { seriesInstanceUid: "1.2.840.2" }],
+        series,
+      ),
+    ).toEqual(["PLAX  #1", "4C VIEW  #2"]);
+  });
+
+  it("falls back to the position alone for an unknown series", () => {
+    expect(buildPrintLabels([{ seriesInstanceUid: "9.9.9" }, {}], series)).toEqual(["#1", "#2"]);
+  });
+
+  it("numbers by sheet position, not by the caller's original index", () => {
+    // The caller passes only the refs whose pixels arrived. If image 2 of 3
+    // failed its PACS fetch, the surviving frames must read #1 and #2 — and
+    // the second one must carry ITS OWN series, not the dropped frame's.
+    expect(
+      buildPrintLabels([{ seriesInstanceUid: "1.2.840.1" }, { seriesInstanceUid: "1.2.840.2" }], series),
+    ).toEqual(["PLAX  #1", "4C VIEW  #2"]);
+  });
+
+  it("tolerates whitespace and blank descriptions", () => {
+    expect(buildPrintLabels([{ seriesInstanceUid: " 1.2.840.1 " }], series)).toEqual(["PLAX  #1"]);
+    expect(buildPrintLabels([{ seriesInstanceUid: "1.2.840.3" }], { "1.2.840.3": "   " })).toEqual(["#1"]);
+  });
+
+  it("returns an empty list for no images", () => {
+    expect(buildPrintLabels([], series)).toEqual([]);
+  });
+});
+
+describe("resolvePrintPageSize", () => {
+  const env = { PRINT_PAGE_SIZE_CT: "A3PLUS", PRINT_PAGE_SIZE_MR: "A3", PRINT_PAGE_SIZE_DEFAULT: "A4" };
+
+  it("prefers an explicit request over everything", () => {
+    expect(resolvePrintPageSize("14X17", "CT", env)).toBe("14X17");
+  });
+  it("falls back to the modality mapping", () => {
+    expect(resolvePrintPageSize(undefined, "CT", env)).toBe("A3PLUS");
+    expect(resolvePrintPageSize(undefined, "MR", env)).toBe("A3");
+  });
+  it("normalises the modality before looking it up", () => {
+    expect(resolvePrintPageSize(undefined, " ct ", env)).toBe("A3PLUS");
+  });
+  it("falls back to the default for an unmapped modality", () => {
+    expect(resolvePrintPageSize(undefined, "US", env)).toBe("A4");
+  });
+  it("returns empty when nothing is configured, so the bridge keeps its own size", () => {
+    expect(resolvePrintPageSize(undefined, "US", {})).toBe("");
+    expect(resolvePrintPageSize("", "", {})).toBe("");
+  });
+  it("ignores a non-string request", () => {
+    expect(resolvePrintPageSize(42, "CT", env)).toBe("A3PLUS");
+  });
+});
+
+describe("buildPrintBridgePayload — labels and pageSize", () => {
+  it("passes labels and pageSize through", () => {
+    const payload = buildPrintBridgePayload(
+      ["a", "b"], 1, undefined, undefined, null, null, ["PLAX  #1", "4C  #2"], "A3PLUS",
+    );
+    expect(payload.labels).toEqual(["PLAX  #1", "4C  #2"]);
+    expect(payload.pageSize).toBe("A3PLUS");
+  });
+
+  it("omits both when not supplied — an existing install is unaffected", () => {
+    const payload = buildPrintBridgePayload(["a"], 1, undefined, undefined, null);
+    expect(payload.labels).toBeUndefined();
+    expect(payload.pageSize).toBeUndefined();
+  });
+
+  it("omits labels when every caption is blank", () => {
+    expect(
+      buildPrintBridgePayload(["a"], 1, undefined, undefined, null, null, ["", "  "], "").labels,
+    ).toBeUndefined();
+  });
+
+  it("omits pageSize when blank", () => {
+    expect(
+      buildPrintBridgePayload(["a"], 1, undefined, undefined, null, null, null, "   ").pageSize,
+    ).toBeUndefined();
   });
 });

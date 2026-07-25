@@ -32,6 +32,7 @@ import {
   radiologyConfigChangesTable,
   clinicSettingsTable,
   dicomStudiesTable,
+  dicomStudySeriesTable,
 } from "@workspace/db/schema";
 import { and, asc, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
 
@@ -3423,6 +3424,50 @@ export function singleStudyUidFor(refs: Array<{ studyInstanceUid?: string }>): s
   return uids.every((uid) => uid === uids[0]) ? uids[0] : null;
 }
 
+/** Pure helper (exported for tests): the per-frame captions the bridge prints
+ *  under each image.
+ *
+ *  `included` must be the refs whose pixels were actually fetched, in the
+ *  order they appear in the images array — a PACS fetch that failed drops its
+ *  image, and a caption list that still counted it would caption every
+ *  following frame with the wrong series.
+ *
+ *  The number is the frame's position on the sheet rather than its DICOM
+ *  Instance Number: it is what someone reading the printout can actually
+ *  count along to. */
+export function buildPrintLabels(
+  included: Array<{ seriesInstanceUid?: string }>,
+  seriesDescriptionByUid: Record<string, string>,
+): string[] {
+  return included.map((ref, index) => {
+    const description = (seriesDescriptionByUid[(ref.seriesInstanceUid || "").trim()] || "").trim();
+    const number = `#${index + 1}`;
+    return description ? `${description}  ${number}` : number;
+  });
+}
+
+/** Pure helper (exported for tests): which film size this job should print on.
+ *
+ *  An explicit request wins, then PRINT_PAGE_SIZE_<MODALITY> (so CT and MR can
+ *  go on A3+ while ultrasound stays on A4), then PRINT_PAGE_SIZE_DEFAULT.
+ *  Returns "" when nothing is configured, in which case the size is left out
+ *  of the payload entirely and the bridge's own PAGE_SIZE applies — the
+ *  behaviour every existing install already has. */
+export function resolvePrintPageSize(
+  requested: unknown,
+  modality: string | null | undefined,
+  env: Record<string, string | undefined>,
+): string {
+  const explicit = typeof requested === "string" ? requested.trim() : "";
+  if (explicit) return explicit;
+  const key = (modality || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (key) {
+    const byModality = (env[`PRINT_PAGE_SIZE_${key}`] || "").trim();
+    if (byModality) return byModality;
+  }
+  return (env.PRINT_PAGE_SIZE_DEFAULT || "").trim();
+}
+
 /** Pure helper (exported for tests): builds the POST /api/v1/print-jobs body
  *  for the print bridge from already-fetched image data URLs, the caller's
  *  copies/orientation/layout choices, and the clinic's branding row. Clinic
@@ -3442,6 +3487,8 @@ export function buildPrintBridgePayload(
   layout: { rows?: number; cols?: number } | undefined,
   clinic: PrintClinic | null,
   patient?: PrintPatient | null,
+  labels?: string[] | null,
+  pageSize?: string | null,
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     images,
@@ -3476,6 +3523,12 @@ export function buildPrintBridgePayload(
       payload.patient = fields;
     }
   }
+  if (labels && labels.length && labels.some((l) => (l || "").trim())) {
+    payload.labels = labels;
+  }
+  if ((pageSize || "").trim()) {
+    payload.pageSize = (pageSize as string).trim();
+  }
   return payload;
 }
 
@@ -3490,6 +3543,7 @@ router.post("/print-images", async (req, res): Promise<void> => {
     copies?: number;
     layout?: { rows?: number; cols?: number };
     orientation?: "PORTRAIT" | "LANDSCAPE";
+    pageSize?: string;
   };
 
   if (!Array.isArray(body.images) || body.images.length === 0) {
@@ -3543,6 +3597,11 @@ router.post("/print-images", async (req, res): Promise<void> => {
     .filter((f): f is { bytes: Buffer; mime: string } => f !== null)
     .map((f) => `data:${f.mime};base64,${f.bytes.toString("base64")}`);
 
+  // The refs behind the images that actually arrived, in the same order — a
+  // failed PACS fetch drops its image, and captions built from the full ref
+  // list would then label every following frame with the wrong series.
+  const includedRefs = refs.filter((_, i) => fetched[i] !== null);
+
   if (images.length === 0) {
     res.status(502).json({ error: "Could not fetch any of the requested images from the PACS" });
     return;
@@ -3555,6 +3614,7 @@ router.post("/print-images", async (req, res): Promise<void> => {
   // study — see singleStudyUidFor. A print that mixes studies goes out
   // unlabelled rather than carrying one patient's name over another's images.
   let patient: PrintPatient | null = null;
+  let studyModality = "";
   const studyUid = singleStudyUidFor(refs);
   if (studyUid) {
     const [study] = await db
@@ -3568,17 +3628,39 @@ router.post("/print-images", async (req, res): Promise<void> => {
       .where(eq(dicomStudiesTable.studyInstanceUID, studyUid))
       .limit(1);
     if (study) {
+      studyModality = study.modality ?? "";
       patient = {
         name: study.patientName ?? "",
         id: study.dicomPatientId ?? "",
         studyDate: study.studyDate ?? "",
-        modality: study.modality ?? "",
+        modality: studyModality,
       };
     }
   }
 
+  // Caption each frame with its series description. Unknown series just get
+  // their position on the sheet, which is still worth printing.
+  const seriesUids = [...new Set(
+    includedRefs.map((r) => (r.seriesInstanceUid || "").trim()).filter(Boolean),
+  )];
+  const seriesDescriptionByUid: Record<string, string> = {};
+  if (seriesUids.length > 0) {
+    const rows = await db
+      .select({
+        uid: dicomStudySeriesTable.seriesInstanceUID,
+        description: dicomStudySeriesTable.seriesDescription,
+      })
+      .from(dicomStudySeriesTable)
+      .where(inArray(dicomStudySeriesTable.seriesInstanceUID, seriesUids));
+    for (const row of rows) {
+      if (row.description) seriesDescriptionByUid[row.uid] = row.description;
+    }
+  }
+  const labels = buildPrintLabels(includedRefs, seriesDescriptionByUid);
+  const pageSize = resolvePrintPageSize(body.pageSize, studyModality, process.env);
+
   const printPayload = buildPrintBridgePayload(
-    images, body.copies, body.orientation, body.layout, clinic, patient,
+    images, body.copies, body.orientation, body.layout, clinic, patient, labels, pageSize,
   );
 
   try {
