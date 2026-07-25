@@ -107,7 +107,12 @@ export interface RegisterRow {
   address: string;
   mobile: string;
   referredBy: string;
+  /** The conducting sonologist. NOT the referrer — see referringDoctor. */
   doctorName: string;
+  /** Rule 9(1) column 5, resolved once on the server: the REFERRER, derived
+   *  from referred_by only. Screen, print and CSV all render this verbatim so
+   *  they cannot drift into naming different doctors on a statutory return. */
+  referringDoctor: string;
   procedure: string;
   procedurePurpose: string;
   basisDiagnosis: string;
@@ -124,6 +129,24 @@ export interface RegisterRow {
   billNumber: string;
   billId: number | null;
   fetalUsgStudyId: number | null;
+}
+
+/**
+ * Rule 9(1) column 5 — "Name of Referring Doctor / Self-Referral".
+ *
+ * Reads referred_by ONLY. doctor_name is the conducting sonologist (the Form F
+ * page labels it "Conducting Doctor" and pre-fills the centre's own
+ * radiologist), so using it here named our own radiologist as the referring
+ * doctor on a statutory return.
+ */
+export function referringDoctorLabel(referredBy: string | null | undefined): string {
+  const ref = (referredBy ?? "").trim();
+  if (!ref) return "Self";
+  if (/^self$|^walk-?in$/i.test(ref)) return "Self";
+  const named = ref.replace(/^doctor:\s*/i, "").trim();
+  // A doctor referral saved without a typed name ("Doctor: ") must not be
+  // reported as a self-referral — say the name is missing instead.
+  return named || "Referring doctor (name not recorded)";
 }
 
 function istDateTimeString(value: Date | string | null): string {
@@ -167,6 +190,7 @@ export function buildRegisterRows(
       mobile: r.mobile ?? "",
       referredBy: r.referredBy ?? "",
       doctorName: r.doctorName ?? "",
+      referringDoctor: referringDoctorLabel(r.referredBy),
       procedure: r.procedure ?? "",
       procedurePurpose: r.procedurePurpose ?? "",
       basisDiagnosis: r.basisDiagnosis ?? "",
@@ -201,19 +225,10 @@ export const RULE_9_1_COLUMNS: Array<{ header: string; value: (r: RegisterRow) =
     value: (r) => [r.address, r.mobile && `Ph: ${r.mobile}`].filter(Boolean).join(", "),
   },
   {
-    // The REFERRER, which lives in referred_by ("Doctor: <name>" or "Self").
-    // r.doctorName is the conducting sonologist — printing it here named the
-    // centre's own radiologist as the referring doctor on a statutory return.
     header: "Name of Referring Doctor / Self-Referral",
-    value: (r) => {
-      const ref = (r.referredBy ?? "").trim();
-      if (!ref) return "Self";
-      if (/^self$|^walk-?in$/i.test(ref)) return "Self";
-      const named = ref.replace(/^doctor:\s*/i, "").trim();
-      // A doctor referral saved without a typed name ("Doctor: ") must not be
-      // reported as a self-referral — say the name is missing instead.
-      return named || "Referring doctor (name not recorded)";
-    },
+    // Precomputed on the row so the CSV, the on-screen table and the A4 print
+    // cannot disagree about who referred the patient.
+    value: (r) => r.referringDoctor,
   },
 ];
 

@@ -12,6 +12,8 @@ import {
   buildRegisterRows,
   registerRowsToCsv,
   isSelfReferralRecord,
+  referringDoctorLabel,
+  RULE_9_1_COLUMNS,
   buildOpdRegisterRows,
   SELF_REFERRAL_OPD_DOCTOR,
   type RegisterSourceRecord,
@@ -234,6 +236,31 @@ describe("Rule 9(1) referring-doctor column reports the REFERRER, not the sonolo
   test("a doctor referral saved without a name is not reported as self-referral", () => {
     expect(referrerColumn({ referredBy: "Doctor: ", doctorName: SELF_REFERRAL_OPD_DOCTOR }))
       .toContain("name not recorded");
+  });
+
+  // The on-screen table and the A4 print render row.referringDoctor verbatim,
+  // while the CSV goes through RULE_9_1_COLUMNS. Both must resolve to the same
+  // string or the three views name different doctors on a statutory return.
+  test("row.referringDoctor is the single source the CSV column also uses", () => {
+    const cases: Array<[string | null, string]> = [
+      ["Doctor: Dr. Mehta", "Dr. Mehta"],
+      ["Dr. Mehta", "Dr. Mehta"],
+      ["Self", "Self"],
+      ["Walk-in", "Self"],
+      ["", "Self"],
+      [null, "Self"],
+      ["Doctor: ", "Referring doctor (name not recorded)"],
+    ];
+    for (const [referredBy, expected] of cases) {
+      expect(referringDoctorLabel(referredBy)).toBe(expected);
+      const [row] = buildRegisterRows(
+        [record({ id: 1, referredBy, doctorName: SELF_REFERRAL_OPD_DOCTOR })],
+        1,
+      );
+      expect(row.referringDoctor).toBe(expected);
+      const csvColumn = RULE_9_1_COLUMNS.find((c) => c.header.startsWith("Name of Referring Doctor"))!;
+      expect(csvColumn.value(row)).toBe(expected);
+    }
   });
 });
 

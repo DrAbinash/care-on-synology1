@@ -104,9 +104,17 @@ export const PERMISSIONED_PATHS: ReadonlySet<string> = new Set([
 // every clinic to re-grant it; aliasing keeps existing /settings users
 // flowing through unchanged.
 //
-// /form-f, /patient-reports, and /signatures piggyback on /reports:
-// they are operational screens within the clinical report workflow and
-// should be available to any role that has already been granted /reports.
+// /patient-reports and /signatures piggyback on /reports: they are
+// operational screens within the clinical report workflow and should be
+// available to any role that has already been granted /reports.
+//
+// /form-f deliberately does NOT alias to /reports, despite what this comment
+// used to claim. Form F is its own grantable permission — Settings → Users
+// lists it as "Form F (PCPNDT)" and the role matrix maps the form_f module to
+// it — because the records hold PCPNDT patient data (name, address, mobile,
+// pregnancy details) under a statute with criminal penalties. Aliasing it onto
+// /reports would hand that data to every role with report access and make the
+// explicit toggle a no-op. Grant /form-f directly instead.
 const PERMISSION_ALIASES: Readonly<Record<string, string>> = {
   "/hr-forms": "/settings",
   "/patient-reports": "/reports",

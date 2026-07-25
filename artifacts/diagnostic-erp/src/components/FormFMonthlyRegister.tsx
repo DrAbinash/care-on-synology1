@@ -31,6 +31,9 @@ interface RegisterRow {
   mobile: string;
   referredBy: string;
   doctorName: string;
+  /** Rule 9(1) col 5, resolved by the server from referred_by. Rendered
+   *  verbatim so screen, print and CSV never name different doctors. */
+  referringDoctor: string;
   procedure: string;
   linkedTests: string[];
   gestationalAge: string;
@@ -138,12 +141,16 @@ export default function FormFMonthlyRegister() {
         <td>${esc(r.dateOfProcedure)}</td>
         <td>${esc(r.patientName)}${r.husbandFatherName ? `<br/><small>Spouse/Father: ${esc(r.husbandFatherName)}</small>` : ""}</td>
         <td>${esc(r.address)}${r.mobile ? `<br/><small>Ph: ${esc(r.mobile)}</small>` : ""}</td>
-        <td>${esc(r.doctorName || r.referredBy || "Self")}</td>
+        <td>${esc(r.referringDoctor)}</td>
       </tr>`).join("");
     const incompleteCountAll = all.filter((r) => r.completionStatus === "incomplete").length;
 
     const w = window.open("", "_blank", "width=1100,height=750");
-    if (!w) return;
+    // A blocked pop-up used to make this button do nothing at all. The print
+    // document is composed here and has no on-screen equivalent, so falling
+    // back to window.print() would print the ERP instead of the register —
+    // tell the operator what to allow instead.
+    if (!w) { toast({ variant: "destructive", title: "Print window blocked", description: "Your browser blocked the print window. Allow pop-ups for this site, then print again." }); return; }
     w.document.write(`
       <!DOCTYPE html><html><head>
       <title>Form F Register (Rule 9(1)) — ${MONTH_NAMES[month - 1]} ${year}</title>
@@ -257,7 +264,7 @@ export default function FormFMonthlyRegister() {
                       {r.address || "—"}
                       <div className="text-[10px] text-muted-foreground">{r.mobile ? `Ph: ${r.mobile}` : ""}</div>
                     </td>
-                    <td className="px-2 py-1.5">{r.doctorName || r.referredBy || "Self"}</td>
+                    <td className="px-2 py-1.5">{r.referringDoctor}</td>
                     <td className="px-2 py-1.5">{r.linkedTests.length ? r.linkedTests.join(", ") : (r.procedure || "—")}</td>
                     <td className="px-2 py-1.5">
                       {r.completionStatus === "complete" ? (
