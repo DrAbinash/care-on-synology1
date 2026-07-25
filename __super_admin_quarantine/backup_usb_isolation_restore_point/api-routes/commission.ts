@@ -217,6 +217,11 @@ router.delete("/rules/:id", async (req, res) => {
 // appliesTo sits after testIds and before isExclusive. Older files that predate
 // the column still import: the reader looks columns up by name and defaults a
 // missing appliesTo to "all", which is the pre-existing behaviour.
+// The synthesised row the export writes for a doctor whose commission lives on
+// their profile rather than in a rule. The import recognises it by this exact
+// name and writes it back to the profile, so a round-trip changes nothing.
+const PROFILE_DEFAULT_NAME = "Profile Default";
+
 const CSV_HEADER = ["doctorName", "name", "type", "value", "scope", "categories", "testIds", "appliesTo", "isExclusive", "isActive"] as const;
 
 function csvEscape(v: unknown): string {
@@ -306,7 +311,7 @@ router.get("/rules/export", async (req, res) => {
     const defVal = Number(d.defaultCommission ?? 0);
     const hasActiveCatchAll = dRules.some(r => r.isActive && r.scope === "all");
     if (defVal > 0 && !hasActiveCatchAll) {
-      lines.push(line(d.name, "Profile Default", d.defaultCommissionType || "percentage", defVal, "all", "", "", "all", false, true));
+      lines.push(line(d.name, PROFILE_DEFAULT_NAME, d.defaultCommissionType || "percentage", defVal, "all", "", "", "all", false, true));
     }
   }
 
@@ -352,15 +357,48 @@ router.post("/rules/import", async (req, res) => {
     return;
   }
 
-  const doctors = await db.select({ id: doctorsTable.id, name: doctorsTable.name }).from(doctorsTable);
+  const doctors = await db.select({
+    id: doctorsTable.id, name: doctorsTable.name,
+    defaultCommission: doctorsTable.defaultCommission,
+    defaultCommissionType: doctorsTable.defaultCommissionType,
+  }).from(doctorsTable);
   const doctorIdByName = new Map<string, number>();
-  for (const d of doctors) doctorIdByName.set(d.name.trim().toLowerCase(), d.id);
+  const doctorProfileById = new Map<number, { value: number; type: string }>();
+  for (const d of doctors) {
+    doctorIdByName.set(d.name.trim().toLowerCase(), d.id);
+    doctorProfileById.set(d.id, { value: Number(d.defaultCommission ?? 0), type: d.defaultCommissionType || "percentage" });
+  }
 
   const maxPct = await commissionMaxPercent();
   const parseBool = (v: string, dflt: boolean) => (v.trim() === "" ? dflt : /^(true|1|yes|y)$/i.test(v.trim()));
   const splitList = (v: string) => v.split(/[;,]/).map(s => s.trim()).filter(Boolean);
 
-  const toInsert: (typeof commissionRulesTable.$inferInsert)[] = [];
+  // Existing rules for the doctors named in the file, so a re-import AMENDS the
+  // rule it matches instead of adding a second one. Identity is doctor + rule
+  // name, case-insensitively — the name is the only stable handle the CSV
+  // carries, and it is what an operator edits a row by.
+  const existingRules = await db.select().from(commissionRulesTable);
+  const existingByKey = new Map<string, (typeof commissionRulesTable.$inferSelect)[]>();
+  const ruleKey = (doctorId: number, name: string) => `${doctorId}\u0000${name.trim().toLowerCase()}`;
+  for (const r of existingRules) {
+    const k = ruleKey(r.doctorId, r.name);
+    const arr = existingByKey.get(k) ?? [];
+    arr.push(r);
+    existingByKey.set(k, arr);
+  }
+
+  type Pending = {
+    line: number;
+    values: typeof commissionRulesTable.$inferInsert;
+    existing: (typeof commissionRulesTable.$inferSelect) | null;
+    doctorName: string;
+  };
+  const pending: Pending[] = [];
+  // Rows that restate a doctor's PROFILE default (the synthesised "Profile
+  // Default" row the export writes) go back to the doctor profile they came
+  // from, rather than becoming a rule — otherwise a round-trip quietly moves
+  // the setting and a second round-trip leaves two catch-all rules behind.
+  const profileDefaults: { line: number; doctorId: number; doctorName: string; type: string; value: number }[] = [];
   const errors: { line: number; doctorName: string; error: string }[] = [];
 
   for (let i = 1; i < records.length; i++) {
@@ -381,44 +419,139 @@ router.post("/rules/import", async (req, res) => {
     if (type !== "percentage" && type !== "fixed") { errors.push({ line: lineNo, doctorName, error: `Invalid type "${type}" (expected percentage or fixed)` }); continue; }
     const value = Number(valueRaw);
     if (!Number.isFinite(value)) { errors.push({ line: lineNo, doctorName, error: `Invalid value "${valueRaw}"` }); continue; }
-    // The ceiling applies to imported rows too — a spreadsheet must not be a way
-    // around the guard on the form.
-    const ceilErr = rateCeilingError(type, value, maxPct);
-    if (ceilErr) { errors.push({ line: lineNo, doctorName, error: ceilErr }); continue; }
     if (scope !== "all" && scope !== "category" && scope !== "test") { errors.push({ line: lineNo, doctorName, error: `Invalid scope "${scope}" (expected all, category or test)` }); continue; }
     // Absent column or blank cell → "all", so files exported before this column
     // existed still import with the behaviour they had.
     const appliesTo = (at(idx.appliesTo) || "all").toLowerCase();
     if (!(APPLIES_TO as readonly string[]).includes(appliesTo)) { errors.push({ line: lineNo, doctorName, error: `Invalid appliesTo "${appliesTo}" (expected all, inhouse or outsourced)` }); continue; }
 
+    // The ceiling stops a spreadsheet being used to SET a rate above policy. It
+    // deliberately does not fire on a row that restates a rate already stored:
+    // the export writes out whatever exists, so checking unchanged rows would
+    // make the file the export just produced un-importable whenever some
+    // historical rate sits above the current ceiling.
+    const ceilingUnless = (unchanged: boolean) => (unchanged ? null : rateCeilingError(type, value, maxPct));
+
+    // The export synthesises this exact row from doctors.defaultCommission, so
+    // it is sent back where it came from and the round-trip is lossless.
+    if (name.trim().toLowerCase() === PROFILE_DEFAULT_NAME.toLowerCase() && scope === "all") {
+      const prof = doctorProfileById.get(dId);
+      const sameAsProfile = !!prof && Number(prof.value) === value && prof.type === type;
+      const pdErr = ceilingUnless(sameAsProfile);
+      if (pdErr) { errors.push({ line: lineNo, doctorName, error: pdErr }); continue; }
+      profileDefaults.push({ line: lineNo, doctorId: dId, doctorName, type, value });
+      continue;
+    }
+
     const categories = scope === "category" ? splitList(at(idx.categories)) : [];
     const testIds = scope === "test" ? splitList(at(idx.testIds)).map(Number).filter(n => Number.isFinite(n)) : [];
 
-    toInsert.push({
-      doctorId: dId,
-      name,
-      type,
-      value: value.toString(),
-      scope,
-      categories: categories.length ? JSON.stringify(categories) : null,
-      testIds: testIds.length ? JSON.stringify(testIds) : null,
-      appliesTo,
-      isExclusive: parseBool(at(idx.isExclusive), false),
-      isActive: parseBool(at(idx.isActive), true),
+    // More than one existing rule with this name is a pre-existing ambiguity
+    // (older imports could only ever create), and guessing which to amend would
+    // silently change what a doctor is paid. Say so instead.
+    const matches = existingByKey.get(ruleKey(dId, name)) ?? [];
+    const sameAsStored = matches.length === 1 && Number(matches[0].value) === value && matches[0].type === type;
+    const ceilErr = ceilingUnless(sameAsStored);
+    if (ceilErr) { errors.push({ line: lineNo, doctorName, error: ceilErr }); continue; }
+    if (matches.length > 1) {
+      errors.push({ line: lineNo, doctorName, error: `${matches.length} existing rules are named "${name}" for this doctor — delete the duplicates first, then re-import.` });
+      continue;
+    }
+
+    pending.push({
+      line: lineNo,
+      doctorName,
+      existing: matches[0] ?? null,
+      values: {
+        doctorId: dId,
+        name,
+        type,
+        value: value.toString(),
+        scope,
+        categories: categories.length ? JSON.stringify(categories) : null,
+        testIds: testIds.length ? JSON.stringify(testIds) : null,
+        appliesTo,
+        isExclusive: parseBool(at(idx.isExclusive), false),
+        isActive: parseBool(at(idx.isActive), true),
+      },
     });
   }
 
-  let created = 0;
-  if (toInsert.length) {
-    const inserted = await db.insert(commissionRulesTable).values(toInsert).returning({ id: commissionRulesTable.id });
-    created = inserted.length;
+  let created = 0, updated = 0, unchanged = 0;
+  const auditRows: { action: string; id: number; reason: string; oldValue?: string; newValue?: string }[] = [];
+
+  for (const p of pending) {
+    const snap = (r: { name: string; type: string; value: string | number; scope: string; appliesTo?: string | null; isExclusive: boolean; isActive: boolean }) =>
+      JSON.stringify({ name: r.name, type: r.type, value: Number(r.value), scope: r.scope, appliesTo: r.appliesTo ?? "all", isExclusive: r.isExclusive, isActive: r.isActive });
+    const rateOf = (type: string, value: number) => (type === "percentage" ? `${value}%` : `Rs.${value}`);
+
+    if (p.existing) {
+      const before = snap(p.existing);
+      const [row] = await db.update(commissionRulesTable).set(p.values).where(eq(commissionRulesTable.id, p.existing.id)).returning();
+      const after = snap(row);
+      if (before === after) { unchanged++; continue; }
+      updated++;
+      const rateMoved = Number(p.existing.value) !== Number(row.value) || p.existing.type !== row.type;
+      auditRows.push({
+        action: "edit", id: row.id, oldValue: before, newValue: after,
+        reason: rateMoved
+          ? `CSV import — rate changed: ${rateOf(p.existing.type, Number(p.existing.value))} → ${rateOf(row.type, Number(row.value))} (${row.name})`
+          : `CSV import — slab updated: ${row.name}`,
+      });
+    } else {
+      const [row] = await db.insert(commissionRulesTable).values(p.values).returning();
+      created++;
+      auditRows.push({
+        action: "create", id: row.id, newValue: snap(row),
+        reason: `CSV import — slab created: ${row.name} = ${rateOf(row.type, Number(row.value))}`,
+      });
+    }
   }
 
+  // Profile defaults, applied to the doctor rather than as rules.
+  let profileUpdated = 0;
+  for (const pd of profileDefaults) {
+    const [before] = await db.select().from(doctorsTable).where(eq(doctorsTable.id, pd.doctorId));
+    if (!before) continue;
+    if (Number(before.defaultCommission) === pd.value && (before.defaultCommissionType || "percentage") === pd.type) continue;
+    await db.update(doctorsTable)
+      .set({ defaultCommission: pd.value.toFixed(2), defaultCommissionType: pd.type })
+      .where(eq(doctorsTable.id, pd.doctorId));
+    profileUpdated++;
+    await auditFromRequest(req, {
+      action: "edit",
+      module: "commission",
+      entityType: "doctor_default_commission",
+      entityId: String(pd.doctorId),
+      oldValue: JSON.stringify({ value: Number(before.defaultCommission), type: before.defaultCommissionType }),
+      newValue: JSON.stringify({ value: pd.value, type: pd.type }),
+      reason: `CSV import — profile default for ${pd.doctorName}: ${Number(before.defaultCommission)} → ${pd.value}`,
+    });
+  }
+
+  // A bulk rate change must leave the same trail a single-rule edit does — this
+  // is the one path that can move every doctor's rate in a single request.
+  for (const a of auditRows) {
+    await auditFromRequest(req, {
+      action: a.action,
+      module: "commission",
+      entityType: "commission_rule",
+      entityId: String(a.id),
+      oldValue: a.oldValue,
+      newValue: a.newValue,
+      reason: a.reason,
+    });
+  }
+
+  const touched = created + updated + profileUpdated;
   // 400 only when nothing at all could be imported; otherwise 200 with a
   // per-row error list so the UI can report partial success.
-  res.status(created === 0 && errors.length > 0 ? 400 : 200).json({
+  res.status(touched === 0 && unchanged === 0 && errors.length > 0 ? 400 : 200).json({
     ok: errors.length === 0,
     created,
+    updated,
+    unchanged,
+    profileDefaultsUpdated: profileUpdated,
     skipped: errors.length,
     total: records.length - 1,
     errors,
@@ -485,7 +618,7 @@ router.get("/report", async (req, res) => {
   const vipPct = clinicRow?.vipPercentage ? Number(clinicRow.vipPercentage) : 50.00;
 
   const doctors = await db.select().from(doctorsTable);
-  const allRules = await db.select().from(commissionRulesTable);
+  const allRules = await db.select().from(commissionRulesTable).orderBy(commissionRulesTable.id);
   const allTests = await db.select().from(testsTable);
   const testMap = new Map(allTests.map(t => [t.id, { id: t.id, name: t.name, category: t.category, price: Number(t.price), testType: t.testType }]));
 
@@ -589,7 +722,7 @@ router.get("/report-detailed", async (req, res) => {
   const vipPct = clinicRow?.vipPercentage ? Number(clinicRow.vipPercentage) : 50.00;
 
   const doctors = await db.select().from(doctorsTable);
-  const allRules = await db.select().from(commissionRulesTable);
+  const allRules = await db.select().from(commissionRulesTable).orderBy(commissionRulesTable.id);
   const allTests = await db.select().from(testsTable);
   const testMap = new Map(allTests.map(t => [t.id, { id: t.id, name: t.name, category: t.category ?? "Other", price: Number(t.price), testType: t.testType }]));
 
@@ -774,7 +907,7 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
   };
 
   const doctors = await db.select().from(doctorsTable);
-  const allRules = await db.select().from(commissionRulesTable);
+  const allRules = await db.select().from(commissionRulesTable).orderBy(commissionRulesTable.id);
   const allTests = await db.select().from(testsTable);
   const testMap = new Map(allTests.map(t => [t.id, { id: t.id, name: t.name, category: t.category ?? "Other", price: Number(t.price), testType: t.testType, outsourcedLabId: t.outsourcedLabId }]));
   const labs = await db.select({ id: outsourcedLabsTable.id, name: outsourcedLabsTable.name }).from(outsourcedLabsTable);

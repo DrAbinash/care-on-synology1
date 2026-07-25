@@ -364,14 +364,25 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
         body: JSON.stringify({ csv: text }),
       });
       const body = await res.json().catch(() => ({} as Record<string, unknown>));
-      const created = Number((body as { created?: number }).created ?? 0);
+      const b = body as { created?: number; updated?: number; unchanged?: number; profileDefaultsUpdated?: number };
+      const created = Number(b.created ?? 0);
+      const updated = Number(b.updated ?? 0);
+      const unchanged = Number(b.unchanged ?? 0);
+      const profileUpd = Number(b.profileDefaultsUpdated ?? 0);
       const skipped = Number((body as { skipped?: number }).skipped ?? 0);
       if (!res.ok && created === 0) {
         throw new Error((body as { error?: string }).error ?? `Import failed: ${res.status}`);
       }
       const errs = ((body as { errors?: { line: number; error: string }[] }).errors ?? []);
       toast({
-        title: `Imported ${created} rule${created === 1 ? "" : "s"}`,
+        // Re-importing an exported file now amends rules rather than duplicating
+        // them, so say which happened.
+        title: [
+          created ? `${created} created` : "",
+          updated ? `${updated} updated` : "",
+          profileUpd ? `${profileUpd} profile default${profileUpd === 1 ? "" : "s"}` : "",
+          unchanged ? `${unchanged} unchanged` : "",
+        ].filter(Boolean).join(" · ") || "Nothing to import",
         description: skipped
           ? `${skipped} row${skipped === 1 ? "" : "s"} skipped — ${errs.slice(0, 3).map((e) => `line ${e.line}: ${e.error}`).join("; ")}${errs.length > 3 ? " …" : ""}`
           : "All rows imported successfully.",
