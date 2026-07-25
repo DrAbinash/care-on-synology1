@@ -18,10 +18,29 @@ The browser cannot talk to USB document scanners directly. This bridge:
 > reports. Every example below sets `ERP_BASE_URL` for this reason — do not
 > omit it, even while testing with the mock adapter.
 
-## One-click install (Windows reception PC) ⭐
+## Download-and-run install (from Form F) ⭐
 
-For a Windows reception workstation, use the bundled installer instead of the
-manual steps below:
+The easiest path for reception: in Form F's ID-capture panel, click **"Set up
+scanner" → Download installer**. That serves a **self-contained** installer
+(`install-scan-bridge.ps1`) which embeds this bridge's source, so there's no
+folder to copy — install Node.js LTS once, then right-click the downloaded file
+→ *Run with PowerShell*, enter the ERP address, and it writes the bridge into
+`%LOCALAPPDATA%\CareScanBridge`, `npm install`s, auto-starts it at logon, and
+verifies it.
+
+That downloadable installer is **generated from this folder's real source** by
+`build-web-installer.mjs` into `artifacts/diagnostic-erp/public/scanner/` (served
+at `/erp/scanner/install-scan-bridge.ps1`). Re-generate it whenever `src/**` or
+`package.json` change:
+
+```bash
+node scan-bridge/build-web-installer.mjs
+```
+
+## One-click install from the folder (Windows reception PC)
+
+If you have this `scan-bridge` folder on the PC already, use the folder
+installer instead of the manual steps below:
 
 1. Install **Node.js LTS** from <https://nodejs.org> (one time).
 2. Copy this whole `scan-bridge` folder onto the reception PC.
