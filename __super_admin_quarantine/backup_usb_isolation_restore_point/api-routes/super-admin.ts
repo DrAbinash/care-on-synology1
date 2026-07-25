@@ -771,11 +771,13 @@ superAdminRouter.get("/commission-settings", requireSuperAdminUsb, requireSuperA
     commissionDiscountMode: clinicSettingsTable.commissionDiscountMode,
     commissionEligibilityPolicy: clinicSettingsTable.commissionEligibilityPolicy,
     commissionEligibilityMinAmount: clinicSettingsTable.commissionEligibilityMinAmount,
+    commissionOutsourcedBasis: clinicSettingsTable.commissionOutsourcedBasis,
   }).from(clinicSettingsTable).limit(1);
   res.json({
     commissionDiscountMode: rows[0]?.commissionDiscountMode ?? "none",
     commissionEligibilityPolicy: rows[0]?.commissionEligibilityPolicy ?? "full_payment_collected",
     commissionEligibilityMinAmount: Number(rows[0]?.commissionEligibilityMinAmount ?? 0),
+    commissionOutsourcedBasis: rows[0]?.commissionOutsourcedBasis ?? "price",
   });
 });
 
@@ -784,12 +786,16 @@ const CommissionEligibilityPolicies = [
   "bill_created", "report_finalized", "report_delivered",
   "min_amount_collected", "full_payment_collected", "collected_ge_commission",
 ] as const;
+// On outsourced work, whether the commission rate applies to the full price or
+// only to the margin the clinic keeps after paying the external lab.
+const CommissionOutsourcedBases = ["price", "margin"] as const;
 // All fields optional: the discount-mode card and the eligibility card each
 // PATCH only their own field.
 const CommissionSettingsPatch = z.object({
   commissionDiscountMode: z.enum(CommissionDiscountModes).optional(),
   commissionEligibilityPolicy: z.enum(CommissionEligibilityPolicies).optional(),
   commissionEligibilityMinAmount: z.number().nonnegative().optional(),
+  commissionOutsourcedBasis: z.enum(CommissionOutsourcedBases).optional(),
 });
 
 superAdminRouter.patch("/commission-settings", requireSuperAdminUsb, requireSuperAdmin, async (req, res) => {
@@ -803,6 +809,7 @@ superAdminRouter.patch("/commission-settings", requireSuperAdminUsb, requireSupe
   if (data.commissionDiscountMode !== undefined) updates.commissionDiscountMode = data.commissionDiscountMode;
   if (data.commissionEligibilityPolicy !== undefined) updates.commissionEligibilityPolicy = data.commissionEligibilityPolicy;
   if (data.commissionEligibilityMinAmount !== undefined) updates.commissionEligibilityMinAmount = data.commissionEligibilityMinAmount.toFixed(2);
+  if (data.commissionOutsourcedBasis !== undefined) updates.commissionOutsourcedBasis = data.commissionOutsourcedBasis;
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: "No settings to update" });
     return;

@@ -20,6 +20,16 @@ import {
   UpdateCommissionRuleParams,
   DeleteCommissionRuleParams,
 } from "@workspace/api-zod";
+import {
+  type RuleScope,
+  type EligibilityConfig,
+  safeParseArray,
+  findMatchingRule,
+  calcTestCommission,
+  applyDiscountDeduction,
+  computeCommissionHold,
+  NEEDS_REPORT_STATUS,
+} from "../lib/commissionCalc";
 
 const router = Router();
 
@@ -35,10 +45,21 @@ router.get("/rules", async (req, res) => {
   res.json(rows.map(r => ({
     ...r,
     value: Number(r.value),
-    categories: r.categories ? JSON.parse(r.categories) : [],
-    testIds: r.testIds ? JSON.parse(r.testIds) : [],
+    // safeParseArray, not JSON.parse: one rule with malformed JSON must not take
+    // the whole rules list down.
+    categories: safeParseArray<string>(r.categories),
+    testIds: safeParseArray<number>(r.testIds),
   })));
 });
+
+// Which kind of test line a slab may pay on. Not in the generated OpenAPI body
+// schema, so it is read off req.body directly and allow-listed here — the same
+// approach the isActive flag below already uses.
+const APPLIES_TO = ["all", "inhouse", "outsourced"] as const;
+function readAppliesTo(body: unknown): string | undefined {
+  const v = (body as { appliesTo?: unknown } | null | undefined)?.appliesTo;
+  return typeof v === "string" && (APPLIES_TO as readonly string[]).includes(v) ? v : undefined;
+}
 
 // Create rule
 router.post("/rules", async (req, res) => {
@@ -62,6 +83,7 @@ router.post("/rules", async (req, res) => {
       scope,
       categories: categories ? JSON.stringify(categories) : null,
       testIds: testIds ? JSON.stringify(testIds) : null,
+      appliesTo: readAppliesTo(req.body) ?? "all",
       isExclusive: isExclusive ?? false,
     })
     .returning();
@@ -94,8 +116,11 @@ router.patch("/rules/:id", async (req, res) => {
   if (data.testIds !== undefined) updates.testIds = data.testIds ? JSON.stringify(data.testIds) : null;
   if (data.doctorId != null) updates.doctorId = data.doctorId;
   if (data.isExclusive !== undefined) updates.isExclusive = data.isExclusive;
-  // isActive is not part of the OpenAPI body schema; accept it directly when provided
+  // isActive / appliesTo are not part of the OpenAPI body schema; accept them
+  // directly when provided
   if (typeof req.body?.isActive === "boolean") updates.isActive = req.body.isActive;
+  const appliesTo = readAppliesTo(req.body);
+  if (appliesTo !== undefined) updates.appliesTo = appliesTo;
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: "No fields to update" });
     return;
@@ -120,7 +145,10 @@ router.delete("/rules/:id", async (req, res) => {
 });
 
 // ─── CSV helpers (import/export) ──────────────────────────────────────────────
-const CSV_HEADER = ["doctorName", "name", "type", "value", "scope", "categories", "testIds", "isExclusive", "isActive"] as const;
+// appliesTo sits after testIds and before isExclusive. Older files that predate
+// the column still import: the reader looks columns up by name and defaults a
+// missing appliesTo to "all", which is the pre-existing behaviour.
+const CSV_HEADER = ["doctorName", "name", "type", "value", "scope", "categories", "testIds", "appliesTo", "isExclusive", "isActive"] as const;
 
 function csvEscape(v: unknown): string {
   let s = String(v ?? "");
@@ -184,10 +212,11 @@ router.get("/rules/export", async (req, res) => {
 
   const line = (
     doctorName: string, name: string, type: string, value: number, scope: string,
-    categories: string, testIds: string, isExclusive: boolean, isActive: boolean,
+    categories: string, testIds: string, appliesTo: string, isExclusive: boolean, isActive: boolean,
   ) => [
     csvEscape(doctorName), csvEscape(name), csvEscape(type), csvEscape(value), csvEscape(scope),
-    csvEscape(categories), csvEscape(testIds), csvEscape(isExclusive ? "true" : "false"), csvEscape(isActive ? "true" : "false"),
+    csvEscape(categories), csvEscape(testIds), csvEscape(appliesTo),
+    csvEscape(isExclusive ? "true" : "false"), csvEscape(isActive ? "true" : "false"),
   ].join(",");
 
   const lines = [CSV_HEADER.join(",")];
@@ -202,13 +231,13 @@ router.get("/rules/export", async (req, res) => {
         d.name, r.name, r.type, Number(r.value), r.scope,
         safeParseArray<string>(r.categories).join(";"),
         safeParseArray<number>(r.testIds).join(";"),
-        r.isExclusive, r.isActive,
+        r.appliesTo ?? "all", r.isExclusive, r.isActive,
       ));
     }
     const defVal = Number(d.defaultCommission ?? 0);
     const hasActiveCatchAll = dRules.some(r => r.isActive && r.scope === "all");
     if (defVal > 0 && !hasActiveCatchAll) {
-      lines.push(line(d.name, "Profile Default", d.defaultCommissionType || "percentage", defVal, "all", "", "", false, true));
+      lines.push(line(d.name, "Profile Default", d.defaultCommissionType || "percentage", defVal, "all", "", "", "all", false, true));
     }
   }
 
@@ -247,7 +276,7 @@ router.post("/rules/import", async (req, res) => {
   const idx = {
     doctorName: col("doctorName"), name: col("name"), type: col("type"), value: col("value"),
     scope: col("scope"), categories: col("categories"), testIds: col("testIds"),
-    isExclusive: col("isExclusive"), isActive: col("isActive"),
+    appliesTo: col("appliesTo"), isExclusive: col("isExclusive"), isActive: col("isActive"),
   };
   if (idx.doctorName < 0 || idx.name < 0 || idx.value < 0) {
     res.status(400).json({ error: "CSV header must include at least doctorName, name and value." });
@@ -283,6 +312,10 @@ router.post("/rules/import", async (req, res) => {
     const value = Number(valueRaw);
     if (!Number.isFinite(value)) { errors.push({ line: lineNo, doctorName, error: `Invalid value "${valueRaw}"` }); continue; }
     if (scope !== "all" && scope !== "category" && scope !== "test") { errors.push({ line: lineNo, doctorName, error: `Invalid scope "${scope}" (expected all, category or test)` }); continue; }
+    // Absent column or blank cell → "all", so files exported before this column
+    // existed still import with the behaviour they had.
+    const appliesTo = (at(idx.appliesTo) || "all").toLowerCase();
+    if (!(APPLIES_TO as readonly string[]).includes(appliesTo)) { errors.push({ line: lineNo, doctorName, error: `Invalid appliesTo "${appliesTo}" (expected all, inhouse or outsourced)` }); continue; }
 
     const categories = scope === "category" ? splitList(at(idx.categories)) : [];
     const testIds = scope === "test" ? splitList(at(idx.testIds)).map(Number).filter(n => Number.isFinite(n)) : [];
@@ -295,6 +328,7 @@ router.post("/rules/import", async (req, res) => {
       scope,
       categories: categories.length ? JSON.stringify(categories) : null,
       testIds: testIds.length ? JSON.stringify(testIds) : null,
+      appliesTo,
       isExclusive: parseBool(at(idx.isExclusive), false),
       isActive: parseBool(at(idx.isActive), true),
     });
@@ -317,165 +351,13 @@ router.post("/rules/import", async (req, res) => {
   });
 });
 
-// ─── Commission calculation helper ────────────────────────────────────────────
-// Where the rate that produced a line actually came from. Clinics that price by
-// slab (per test / per category) need to tell an intentional slab apart from a
-// line that merely fell through to the catch-all or the profile default — the
-// latter two are usually an unconfigured slab, not a decision.
-type RuleScope = "test" | "category" | "all" | "default" | "none";
-
-type TestInfo = { id: number; name: string; category: string | null; price: number };
+// ─── Commission calculation ───────────────────────────────────────────────────
+// The maths itself lives in ../lib/commissionCalc so that this report, the
+// Doctor Ledger and the reconcile cron cannot drift apart (they did once — the
+// old month-end email disagreed with this report for 9 of 10 doctors).
+type TestInfo = { id: number; name: string; category: string | null; price: number; testType?: string | null };
 type RuleInfo = typeof import("@workspace/db/schema").commissionRulesTable.$inferSelect;
 type DoctorInfo = typeof import("@workspace/db/schema").doctorsTable.$inferSelect;
-
-function safeParseArray<T = unknown>(s: string | null | undefined): T[] {
-  if (!s) return [];
-  try {
-    const v = JSON.parse(s);
-    return Array.isArray(v) ? (v as T[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-// Single source of truth for "which rule applies to this test line".
-//
-// Precedence (must stay in lock-step with every report that displays the
-// matched rule's value/type — otherwise the UI shows a rule the calculation
-// never used, which is exactly the "rule not selected" bug):
-//   1) exclusive test/category rule
-//   2) non-exclusive test/category rule
-//   3) catch-all (scope="all") rule
-// Returns undefined when nothing matches (caller falls back to the doctor's
-// profile default).
-//
-// `category` is the test's category, or null when the test row is unknown —
-// in which case category-scoped rules never match (mirrors the old guard that
-// required `test` to be defined before comparing categories).
-function findMatchingRule(
-  testId: number,
-  category: string | null,
-  rules: RuleInfo[],
-): RuleInfo | undefined {
-  const testMatch = (r: RuleInfo) => !!r.testIds && safeParseArray<number>(r.testIds).includes(testId);
-  const catMatch = (r: RuleInfo) => category !== null && !!r.categories && safeParseArray<string>(r.categories).includes(category || "");
-  const specific = (r: RuleInfo) => (r.scope === "test" && testMatch(r)) || (r.scope === "category" && catMatch(r));
-
-  // 1) Exclusive specific rules (test-scoped or category-scoped)
-  let matched = rules.find(r => r.isActive && r.isExclusive && specific(r));
-  // 2) Non-exclusive specific rules
-  if (!matched) matched = rules.find(r => r.isActive && specific(r));
-  // 3) Catch-all rule
-  if (!matched) matched = rules.find(r => r.isActive && r.scope === "all");
-  return matched;
-}
-
-function calcTestCommission(
-  ot: { id?: number; testId: number; price: string },
-  test: TestInfo | undefined,
-  rules: RuleInfo[],
-  doctor: DoctorInfo,
-  vipOrderTestIds?: Set<number>,
-  vipPct?: number,
-): { commission: number; ruleName: string; ruleType: string; ruleValue: number; ruleScope: RuleScope } {
-  let price = Number(ot.price);
-  if (ot.id && vipOrderTestIds?.has(ot.id) && vipPct) {
-    price = price / (1 + vipPct / 100);
-  }
-
-  const matched = findMatchingRule(ot.testId, test ? (test.category ?? "") : null, rules);
-  if (matched) {
-    const val = Number(matched.value);
-    return {
-      commission: matched.type === "percentage" ? (price * val) / 100 : val,
-      ruleName: matched.name,
-      ruleType: matched.type,
-      ruleValue: val,
-      // "test" / "category" = an explicit slab was configured for this line.
-      // "all" = only the doctor's catch-all rule caught it, i.e. no slab.
-      ruleScope: (matched.scope === "test" || matched.scope === "category" ? matched.scope : "all"),
-    };
-  }
-
-  // Doctor default
-  const defVal = Number(doctor.defaultCommission);
-  const defType = doctor.defaultCommissionType || "percentage";
-  if (defVal > 0) {
-    return {
-      commission: defType === "percentage" ? (price * defVal) / 100 : defVal,
-      ruleName: "Default",
-      ruleType: defType,
-      ruleValue: defVal,
-      ruleScope: "default",
-    };
-  }
-
-  return { commission: 0, ruleName: "None", ruleType: defType, ruleValue: 0, ruleScope: "none" };
-}
-
-// ── Commission discount deduction helper ──────────────────────────────────────
-// Applies the clinic-level commissionDiscountMode rule to an order's raw
-// commission and the bill discount for that order.
-//   "none"            → no change (returns rawCommission unchanged)
-//   "deduct"          → commission − discount, floored at 0
-//   "deduct_rollover" → commission − discount, can be negative
-function applyDiscountDeduction(
-  rawCommission: number,
-  billDiscount: number,
-  mode: string,
-): { net: number; deducted: number } {
-  if (mode === "deduct") {
-    const net = Math.max(0, rawCommission - billDiscount);
-    return { net, deducted: rawCommission - net };
-  }
-  if (mode === "deduct_rollover") {
-    const net = rawCommission - billDiscount;
-    return { net, deducted: billDiscount };
-  }
-  return { net: rawCommission, deducted: 0 };
-}
-
-// ── Commission eligibility (payment / report-aware hold) ──────────────────────
-// Decides whether an order's commission is payable yet or held. Mirrors
-// doctor-ledger.ts. Cancelled bill → never payable.
-type EligibilityConfig = { policy: string; minAmount: number };
-const NEEDS_REPORT_STATUS = (policy: string) => policy === "report_finalized" || policy === "report_delivered";
-
-function computeCommissionHold(opts: {
-  cfg: EligibilityConfig;
-  hasBill: boolean;
-  billStatus: string | null;
-  paidAmount: number;
-  balanceAmount: number;
-  reportFinalized: boolean;
-  reportDelivered: boolean;
-  commissionAmount: number;
-}): { held: boolean; reason: string | null } {
-  const rs = (n: number) => `Rs.${Math.round(n).toLocaleString("en-IN")}`;
-  if (opts.billStatus === "cancelled") return { held: true, reason: "Bill cancelled" };
-  if (!opts.hasBill) return { held: true, reason: "Not billed" };
-  switch (opts.cfg.policy) {
-    case "report_finalized":
-      return opts.reportFinalized ? { held: false, reason: null } : { held: true, reason: "Report not finalized" };
-    case "report_delivered":
-      return opts.reportDelivered ? { held: false, reason: null } : { held: true, reason: "Report not delivered" };
-    case "min_amount_collected":
-      return opts.paidAmount + 0.005 >= opts.cfg.minAmount
-        ? { held: false, reason: null }
-        : { held: true, reason: `Collected ${rs(opts.paidAmount)} < min ${rs(opts.cfg.minAmount)}` };
-    case "full_payment_collected":
-      return opts.balanceAmount <= 0.005
-        ? { held: false, reason: null }
-        : { held: true, reason: `Outstanding dues ${rs(opts.balanceAmount)}` };
-    case "collected_ge_commission":
-      return opts.paidAmount + 0.005 >= opts.commissionAmount
-        ? { held: false, reason: null }
-        : { held: true, reason: `Collected ${rs(opts.paidAmount)} < commission ${rs(opts.commissionAmount)}` };
-    case "bill_created":
-    default:
-      return { held: false, reason: null };
-  }
-}
 
 // Per-order finalized/delivered flags (only for report_* policies): an order is
 // finalized/delivered only when every non-cancelled order-test has a
@@ -521,15 +403,17 @@ router.get("/report", async (req, res) => {
   // Fetch clinic settings to determine commission discount mode.
   const [clinicRow] = await db.select({
     commissionDiscountMode: clinicSettingsTable.commissionDiscountMode,
+    commissionOutsourcedBasis: clinicSettingsTable.commissionOutsourcedBasis,
     vipPercentage: clinicSettingsTable.vipPercentage,
   }).from(clinicSettingsTable).limit(1);
   const commissionDiscountMode = clinicRow?.commissionDiscountMode ?? "none";
+  const outsourcedBasis = clinicRow?.commissionOutsourcedBasis ?? "price";
   const vipPct = clinicRow?.vipPercentage ? Number(clinicRow.vipPercentage) : 50.00;
 
   const doctors = await db.select().from(doctorsTable);
   const allRules = await db.select().from(commissionRulesTable);
   const allTests = await db.select().from(testsTable);
-  const testMap = new Map(allTests.map(t => [t.id, { id: t.id, name: t.name, category: t.category, price: Number(t.price) }]));
+  const testMap = new Map(allTests.map(t => [t.id, { id: t.id, name: t.name, category: t.category, price: Number(t.price), testType: t.testType }]));
 
   const conditions = [];
   if (doctorId) conditions.push(eq(ordersTable.doctorId, Number(doctorId)));
@@ -572,7 +456,7 @@ router.get("/report", async (req, res) => {
         let orderRevenue = 0, rawOrderCommission = 0, lastRule = "Default";
         for (const ot of tests) {
           const test = testMap.get(ot.testId);
-          const { commission, ruleName } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct);
+          const { commission, ruleName } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis);
           orderRevenue += Number(ot.price);
           rawOrderCommission += commission;
           lastRule = ruleName;
@@ -623,15 +507,17 @@ router.get("/report-detailed", async (req, res) => {
   // Fetch clinic settings for commission discount mode.
   const [clinicRow] = await db.select({
     commissionDiscountMode: clinicSettingsTable.commissionDiscountMode,
+    commissionOutsourcedBasis: clinicSettingsTable.commissionOutsourcedBasis,
     vipPercentage: clinicSettingsTable.vipPercentage,
   }).from(clinicSettingsTable).limit(1);
   const commissionDiscountMode = clinicRow?.commissionDiscountMode ?? "none";
+  const outsourcedBasis = clinicRow?.commissionOutsourcedBasis ?? "price";
   const vipPct = clinicRow?.vipPercentage ? Number(clinicRow.vipPercentage) : 50.00;
 
   const doctors = await db.select().from(doctorsTable);
   const allRules = await db.select().from(commissionRulesTable);
   const allTests = await db.select().from(testsTable);
-  const testMap = new Map(allTests.map(t => [t.id, { id: t.id, name: t.name, category: t.category ?? "Other", price: Number(t.price) }]));
+  const testMap = new Map(allTests.map(t => [t.id, { id: t.id, name: t.name, category: t.category ?? "Other", price: Number(t.price), testType: t.testType }]));
 
   const conditions = [];
   if (doctorId) conditions.push(eq(ordersTable.doctorId, Number(doctorId)));
@@ -674,7 +560,7 @@ router.get("/report-detailed", async (req, res) => {
       const ots = orderTests.filter(ot => ot.orderId === order.id);
       for (const ot of ots) {
         const test = testMap.get(ot.testId);
-        const { commission, ruleName, ruleType, ruleValue } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct);
+        const { commission, ruleName, ruleType, ruleValue } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis);
         testRows.push({
           testId: ot.testId,
           testName: test?.name ?? "Unknown",
@@ -799,12 +685,14 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
   const [clinicRow] = await db
     .select({
       commissionDiscountMode: clinicSettingsTable.commissionDiscountMode,
+      commissionOutsourcedBasis: clinicSettingsTable.commissionOutsourcedBasis,
       vipPercentage: clinicSettingsTable.vipPercentage,
       commissionEligibilityPolicy: clinicSettingsTable.commissionEligibilityPolicy,
       commissionEligibilityMinAmount: clinicSettingsTable.commissionEligibilityMinAmount,
     })
     .from(clinicSettingsTable).limit(1);
   const commissionDiscountMode = clinicRow?.commissionDiscountMode ?? "none";
+  const outsourcedBasis = clinicRow?.commissionOutsourcedBasis ?? "price";
   const vipPct = clinicRow?.vipPercentage ? Number(clinicRow.vipPercentage) : 50.00;
   const eligCfg: EligibilityConfig = {
     policy: clinicRow?.commissionEligibilityPolicy ?? "full_payment_collected",
@@ -814,7 +702,7 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
   const doctors = await db.select().from(doctorsTable);
   const allRules = await db.select().from(commissionRulesTable);
   const allTests = await db.select().from(testsTable);
-  const testMap = new Map(allTests.map(t => [t.id, { id: t.id, name: t.name, category: t.category ?? "Other", price: Number(t.price) }]));
+  const testMap = new Map(allTests.map(t => [t.id, { id: t.id, name: t.name, category: t.category ?? "Other", price: Number(t.price), testType: t.testType }]));
 
   const conditions = [];
   if (doctorId) conditions.push(eq(ordersTable.doctorId, Number(doctorId)));
@@ -911,6 +799,12 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
     // UI can show base = price ÷ (1 + vip%) → expected → −discount → actual.
     commissionBase: number;
     vipAdjusted: boolean;
+    // Outsourced work: what the clinic pays the external lab for this line, and
+    // what it therefore keeps. Reported regardless of the configured basis, so
+    // the margin is visible even when commission is still charged on price.
+    isOutsourced: boolean;
+    outsourceCost: number;
+    margin: number;
   };
 
   const result = filteredDoctors.map(doctor => {
@@ -922,7 +816,7 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
     const orderHold = new Map<number, { held: boolean; reason: string | null }>();
     for (const order of doctorOrders) {
       const ots = orderTests.filter(ot => ot.orderId === order.orderId);
-      const rawOrderComm = ots.reduce((s, ot) => s + calcTestCommission(ot, testMap.get(ot.testId), rules, doctor, vipOrderTestIds, vipPct).commission, 0);
+      const rawOrderComm = ots.reduce((s, ot) => s + calcTestCommission(ot, testMap.get(ot.testId), rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis).commission, 0);
       const bill = billByOrderId.get(order.orderId);
       const { net } = applyDiscountDeduction(rawOrderComm, bill?.discount ?? 0, commissionDiscountMode);
       orderAdjustRatio.set(order.orderId, rawOrderComm > 0 ? net / rawOrderComm : 1);
@@ -950,11 +844,15 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
         // ruleType/ruleValue come from the same decision that produced the
         // commission (calcTestCommission → findMatchingRule), so the displayed
         // rate always reflects the rule actually applied.
-        const { commission: rawComm, ruleName, ruleType, ruleValue, ruleScope } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct);
-        // Mirror the VIP-surcharge stripping calcTestCommission does internally,
-        // so the drill-down can display the exact base the rate was applied to.
+        const {
+          commission: rawComm, ruleName, ruleType, ruleValue, ruleScope,
+          isOutsourced, outsourceCost, commissionBase,
+        } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis);
+        // commissionBase comes straight from the engine — it is the exact figure
+        // the rate was applied to, after the VIP surcharge is stripped and, on
+        // the margin basis, after the lab cost is taken off. Re-deriving it here
+        // is how the drill-down came to show a base the calculation never used.
         const vipAdjusted = !!ot.id && vipOrderTestIds.has(ot.id) && vipPct > 0;
-        const commissionBase = vipAdjusted ? Number(ot.price) / (1 + vipPct / 100) : Number(ot.price);
         rows.push({
           date: order.orderDate.toISOString().split("T")[0],
           patientName: `${order.patientFirstName} ${order.patientLastName}`.trim().toUpperCase(),
@@ -978,6 +876,9 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
           ruleScope,
           commissionBase,
           vipAdjusted,
+          isOutsourced,
+          outsourceCost,
+          margin: Number(ot.price) - outsourceCost,
         });
       }
     }
@@ -988,6 +889,9 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
     const heldCommission = rows.filter(r => r.held).reduce((s, r) => s + r.commission, 0);       // on hold
     const totalExpectedCommission = rows.reduce((s, r) => s + r.grossCommission, 0); // expected
     const totalRevenue = rows.reduce((s, r) => s + r.price, 0);
+    const outsourcedCost = rows.reduce((s, r) => s + r.outsourceCost, 0);
+    const outsourcedRevenue = rows.filter(r => r.isOutsourced).reduce((s, r) => s + r.price, 0);
+    const outsourcedCommission = rows.filter(r => r.isOutsourced).reduce((s, r) => s + r.commission, 0);
     const uniqueOrders = new Set(rows.map(r => r.orderId)).size;
 
     return {
@@ -999,6 +903,13 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
       totalExpectedCommission,
       totalDiscount: totalExpectedCommission - totalCommission,
       totalRevenue,
+      // Margin on outsourced lines = what those lines billed, less the lab cost.
+      // If outsourcedCommission exceeds it, the clinic is paying out more than
+      // it earned on that work — the case the "margin" basis exists to prevent.
+      outsourcedRevenue,
+      outsourcedCost,
+      outsourcedMargin: outsourcedRevenue - outsourcedCost,
+      outsourcedCommission,
       orderCount: uniqueOrders,
       testCount: rows.length,
     };
@@ -1007,7 +918,7 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
   return {
     report: result,
     // Clinic-level context for the "Why this amount?" drill-down.
-    settings: { vipPct, commissionDiscountMode },
+    settings: { vipPct, commissionDiscountMode, outsourcedBasis },
     grandTotal: {
       doctors: result.length,
       orders: result.reduce((s, d) => s + d.orderCount, 0),
@@ -1017,6 +928,10 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
       heldCommission: result.reduce((s, d) => s + d.heldCommission, 0),
       expectedCommission: result.reduce((s, d) => s + d.totalExpectedCommission, 0),
       discount: result.reduce((s, d) => s + d.totalDiscount, 0),
+      outsourcedRevenue: result.reduce((s, d) => s + d.outsourcedRevenue, 0),
+      outsourcedCost: result.reduce((s, d) => s + d.outsourcedCost, 0),
+      outsourcedMargin: result.reduce((s, d) => s + d.outsourcedMargin, 0),
+      outsourcedCommission: result.reduce((s, d) => s + d.outsourcedCommission, 0),
     },
   };
 }

@@ -24,112 +24,20 @@ import {
   UpdateDoctorPayoutBody,
   UpdateDoctorPayoutParams,
 } from "@workspace/api-zod";
+import {
+  type EligibilityConfig,
+  calcTestCommission,
+  applyDiscountDeduction,
+  computeCommissionHold,
+  NEEDS_REPORT_STATUS,
+} from "../lib/commissionCalc";
 
 export const doctorLedgerRouter = Router();
 
-// ─── Commission helper (mirrors commission.ts) ────────────────────────────────
-type TestInfo = { id: number; name: string; category: string | null; price: number };
-type RuleInfo = typeof commissionRulesTable.$inferSelect;
-type DoctorInfo = typeof doctorsTable.$inferSelect;
-
-function safeParseArray<T = unknown>(s: string | null | undefined): T[] {
-  if (!s) return [];
-  try {
-    const v = JSON.parse(s);
-    return Array.isArray(v) ? (v as T[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function calcTestCommission(
-  ot: { id?: number; testId: number; price: string },
-  test: TestInfo | undefined,
-  rules: RuleInfo[],
-  doctor: DoctorInfo,
-  vipOrderTestIds?: Set<number>,
-  vipPct?: number,
-): { commission: number; ruleName: string } {
-  let price = Number(ot.price);
-  if (ot.id && vipOrderTestIds?.has(ot.id) && vipPct) {
-    price = price / (1 + vipPct / 100);
-  }
-  let matched = rules.find(r => {
-    if (!r.isExclusive || !r.isActive) return false;
-    if (r.scope === "test" && r.testIds) return safeParseArray<number>(r.testIds).includes(ot.testId);
-    if (r.scope === "category" && r.categories && test) return safeParseArray<string>(r.categories).includes(test.category || "");
-    return false;
-  });
-  if (!matched) {
-    matched = rules.find(r => {
-      if (!r.isActive) return false;
-      if (r.scope === "test" && r.testIds) return safeParseArray<number>(r.testIds).includes(ot.testId);
-      if (r.scope === "category" && r.categories && test) return safeParseArray<string>(r.categories).includes(test.category || "");
-      return false;
-    });
-  }
-  if (!matched) matched = rules.find(r => r.isActive && r.scope === "all");
-  if (matched) {
-    const val = Number(matched.value);
-    return { commission: matched.type === "percentage" ? (price * val) / 100 : val, ruleName: matched.name };
-  }
-  const defVal = Number(doctor.defaultCommission);
-  if (defVal > 0) {
-    return { commission: doctor.defaultCommissionType === "percentage" ? (price * defVal) / 100 : defVal, ruleName: "Default" };
-  }
-  return { commission: 0, ruleName: "None" };
-}
-
-// Applies the clinic-level commissionDiscountMode to an order's raw commission
-// and its bill discount (mirrors commission.ts) so the ledger's earned figure is
-// the same NET commission the Referral Report shows — not the gross.
-function applyDiscountDeduction(rawCommission: number, billDiscount: number, mode: string): number {
-  if (mode === "deduct") return Math.max(0, rawCommission - billDiscount);
-  if (mode === "deduct_rollover") return rawCommission - billDiscount;
-  return rawCommission;
-}
-
-// ── Commission eligibility (payment / report-aware hold) ──────────────────────
-// Decides whether an order's calculated commission is payable yet, or held until
-// its condition is met. A cancelled bill is never payable. Mirrors commission.ts.
-type EligibilityConfig = { policy: string; minAmount: number };
-const NEEDS_REPORT_STATUS = (policy: string) => policy === "report_finalized" || policy === "report_delivered";
-
-function computeCommissionHold(opts: {
-  cfg: EligibilityConfig;
-  hasBill: boolean;
-  billStatus: string | null;
-  paidAmount: number;
-  balanceAmount: number;
-  reportFinalized: boolean;
-  reportDelivered: boolean;
-  commissionAmount: number;
-}): { held: boolean; reason: string | null } {
-  const rs = (n: number) => `Rs.${Math.round(n).toLocaleString("en-IN")}`;
-  if (opts.billStatus === "cancelled") return { held: true, reason: "Bill cancelled" };
-  if (!opts.hasBill) return { held: true, reason: "Not billed" };
-  switch (opts.cfg.policy) {
-    case "report_finalized":
-      return opts.reportFinalized ? { held: false, reason: null } : { held: true, reason: "Report not finalized" };
-    case "report_delivered":
-      return opts.reportDelivered ? { held: false, reason: null } : { held: true, reason: "Report not delivered" };
-    case "min_amount_collected":
-      return opts.paidAmount + 0.005 >= opts.cfg.minAmount
-        ? { held: false, reason: null }
-        : { held: true, reason: `Collected ${rs(opts.paidAmount)} < min ${rs(opts.cfg.minAmount)}` };
-    case "full_payment_collected":
-      return opts.balanceAmount <= 0.005
-        ? { held: false, reason: null }
-        : { held: true, reason: `Outstanding dues ${rs(opts.balanceAmount)}` };
-    case "collected_ge_commission":
-      return opts.paidAmount + 0.005 >= opts.commissionAmount
-        ? { held: false, reason: null }
-        : { held: true, reason: `Collected ${rs(opts.paidAmount)} < commission ${rs(opts.commissionAmount)}` };
-    case "bill_created":
-    default:
-      return { held: false, reason: null };
-  }
-}
+// ─── Commission calculation ───────────────────────────────────────────────────
+// Imported from ../lib/commissionCalc, not re-implemented: the ledger must pay
+// exactly what the Referral Report says is owed. This file used to carry its own
+// copy of the maths and the two slowly diverged.
 
 // Per-order report finalized/delivered flags (only queried for the report_*
 // policies). An order counts as finalized/delivered only when EVERY non-cancelled
@@ -177,9 +85,13 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
     commissionDiscountMode: clinicSettingsTable.commissionDiscountMode,
     commissionEligibilityPolicy: clinicSettingsTable.commissionEligibilityPolicy,
     commissionEligibilityMinAmount: clinicSettingsTable.commissionEligibilityMinAmount,
+    commissionOutsourcedBasis: clinicSettingsTable.commissionOutsourcedBasis,
   }).from(clinicSettingsTable).limit(1);
   const vipPct = clinicRow?.vipPercentage ? Number(clinicRow.vipPercentage) : 50.00;
   const discountMode = clinicRow?.commissionDiscountMode ?? "none";
+  // 'price' | 'margin' — on outsourced work, whether the rate applies to the
+  // full price or only to what the clinic keeps after the external lab's cost.
+  const outsourcedBasis = clinicRow?.commissionOutsourcedBasis ?? "price";
   const cfg: EligibilityConfig = {
     policy: clinicRow?.commissionEligibilityPolicy ?? "full_payment_collected",
     minAmount: Number(clinicRow?.commissionEligibilityMinAmount ?? 0),
@@ -188,7 +100,7 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
   const doctors = await db.select().from(doctorsTable);
   const allRules = await db.select().from(commissionRulesTable);
   const allTests = await db.select().from(testsTable);
-  const testMap = new Map(allTests.map(t => [t.id, { id: t.id, name: t.name, category: t.category, price: Number(t.price) }]));
+  const testMap = new Map(allTests.map(t => [t.id, { id: t.id, name: t.name, category: t.category, price: Number(t.price), testType: t.testType }]));
 
   const conditions = [];
   if (opts.doctorId) conditions.push(eq(ordersTable.doctorId, opts.doctorId));
@@ -243,13 +155,13 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
       let r = 0, rawC = 0;
       for (const ot of tests) {
         const test = testMap.get(ot.testId);
-        const { commission } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct);
+        const { commission } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis);
         r += Number(ot.price);
         rawC += commission;
       }
       const bill = billByOrderId.get(order.id);
       // Net of the bill-discount deduction — same NET the Referral Report pays.
-      const c = applyDiscountDeduction(rawC, bill?.discount ?? 0, discountMode);
+      const { net: c } = applyDiscountDeduction(rawC, bill?.discount ?? 0, discountMode);
       const rep = reportStatusByOrder.get(order.id);
       const { held, reason } = computeCommissionHold({
         cfg,

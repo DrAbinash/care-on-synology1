@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/select";
 import { useForm } from "react-hook-form";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Plus, Trash2, Stethoscope, Star, Percent, Search, Download, Upload, Clock } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Stethoscope, Star, Percent, Search, Download, Upload, Clock, Building2 } from "lucide-react";
 import {
   useListCommissionRules,
   useCreateCommissionRule,
@@ -60,6 +60,13 @@ const ELIGIBILITY_OPTIONS: { value: EligibilityPolicy; label: string; descriptio
   { value: "min_amount_collected", label: "Minimum Amount Collected", description: "Payable once collections on the bill reach the minimum amount set below." },
   { value: "full_payment_collected", label: "Full Payment Collected", description: "Payable only once the bill is fully paid (no outstanding dues).", recommended: true },
   { value: "collected_ge_commission", label: "Collected ≥ Commission", description: "Payable once collections on the bill cover at least the commission amount." },
+];
+
+type OutsourcedBasis = "price" | "margin";
+
+const OUTSOURCED_BASIS_OPTIONS: { value: OutsourcedBasis; label: string; description: string }[] = [
+  { value: "price", label: "Full Price", description: "The rate applies to the whole test price, exactly as it does for in-house work (current behaviour)." },
+  { value: "margin", label: "Margin (price − lab cost)", description: "The rate applies only to what the clinic keeps after paying the external lab. A loss-making line pays nothing rather than a negative amount." },
 ];
 
 function TestPicker({
@@ -161,12 +168,13 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
     queryFn: async () => {
       const res = await fetch("/api/super-admin/commission-settings", { headers: saAuthHeaders() });
       if (!res.ok) throw new Error("Failed to load commission settings");
-      return res.json() as Promise<{ commissionDiscountMode: DiscountMode; commissionEligibilityPolicy: EligibilityPolicy; commissionEligibilityMinAmount: number }>;
+      return res.json() as Promise<{ commissionDiscountMode: DiscountMode; commissionEligibilityPolicy: EligibilityPolicy; commissionEligibilityMinAmount: number; commissionOutsourcedBasis: OutsourcedBasis }>;
     },
   });
   const currentDiscountMode: DiscountMode = commissionSettingsData?.commissionDiscountMode ?? "none";
   const currentEligibilityPolicy: EligibilityPolicy = commissionSettingsData?.commissionEligibilityPolicy ?? "full_payment_collected";
   const currentEligibilityMinAmount: number = commissionSettingsData?.commissionEligibilityMinAmount ?? 0;
+  const currentOutsourcedBasis: OutsourcedBasis = commissionSettingsData?.commissionOutsourcedBasis ?? "price";
   const [minAmountInput, setMinAmountInput] = useState<string>("");
   useEffect(() => { setMinAmountInput(String(currentEligibilityMinAmount)); }, [currentEligibilityMinAmount]);
 
@@ -192,6 +200,7 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
   };
   const saveDiscountMode = (mode: DiscountMode) => patchCommissionSettings({ commissionDiscountMode: mode }, "Commission discount setting saved");
   const saveEligibilityPolicy = (policy: EligibilityPolicy) => patchCommissionSettings({ commissionEligibilityPolicy: policy }, "Commission eligibility policy saved");
+  const saveOutsourcedBasis = (basis: OutsourcedBasis) => patchCommissionSettings({ commissionOutsourcedBasis: basis }, "Outsourced commission basis saved");
   const saveEligibilityMinAmount = () => {
     const n = Number(minAmountInput);
     if (!Number.isFinite(n) || n < 0) { toast({ title: "Enter a valid amount", variant: "destructive" }); return; }
@@ -253,10 +262,11 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
 
   const { register, handleSubmit, reset, watch, setValue } = useForm<{
     name: string; type: string; value: string; scope: string;
-    categories: string; testIds: string; isExclusive: string;
+    categories: string; testIds: string; isExclusive: string; appliesTo: string;
   }>();
   const scope = watch("scope", "all");
   const ruleType = watch("type", "percentage");
+  const appliesTo = watch("appliesTo", "all");
 
   const openEdit = (rule: CommissionRule) => {
     setEditRule(rule);
@@ -264,6 +274,7 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
       name: rule.name, type: rule.type, value: String(rule.value), scope: rule.scope,
       categories: rule.categories.join(","), testIds: rule.testIds.join(","),
       isExclusive: rule.isExclusive ? "true" : "false",
+      appliesTo: (rule as CommissionRule & { appliesTo?: string }).appliesTo ?? "all",
     });
     setRuleOpen(true);
   };
@@ -287,7 +298,10 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
       testIds: d.scope === "test"
         ? d.testIds.split(",").map(n => Number(n)).filter(Boolean)
         : [],
-    };
+      // Not part of the generated OpenAPI body type; the server reads it off the
+      // raw body and allow-lists it (same as isActive).
+      appliesTo: d.appliesTo || "all",
+    } as Parameters<typeof createMutation.mutate>[0]["data"];
     if (editRule) {
       updateMutation.mutate({ id: editRule.id, data: body });
     } else {
@@ -415,6 +429,56 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
           </div>
         </div>
 
+        {/* Outsourced-lab commission basis */}
+        <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-sky-500/10 flex items-center justify-center flex-shrink-0">
+              <Building2 size={15} className="text-sky-600" />
+            </div>
+            <div>
+              <p className="font-semibold text-sm leading-tight">Outsourced Lab Tests</p>
+              <p className="text-xs text-muted-foreground">
+                On work sent to an external lab the clinic only keeps the price minus the lab's cost.
+                This decides what the commission rate is applied to.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {OUTSOURCED_BASIS_OPTIONS.map((opt) => {
+              const isActive = currentOutsourcedBasis === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  disabled={discountModeSaving}
+                  onClick={() => { if (!isActive) saveOutsourcedBasis(opt.value); }}
+                  className={[
+                    "text-left rounded-lg border px-4 py-3 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    isActive
+                      ? "border-primary bg-primary/5 ring-1 ring-primary"
+                      : "border-border hover:border-primary/40 hover:bg-muted/50",
+                    discountModeSaving ? "opacity-60 cursor-not-allowed" : "cursor-pointer",
+                  ].join(" ")}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-semibold">{opt.label}</span>
+                    {isActive && <Badge className="text-[10px] px-1.5 py-0 h-4">Active</Badge>}
+                  </div>
+                  <p className="text-[11px] text-muted-foreground leading-snug">{opt.description}</p>
+                </button>
+              );
+            })}
+          </div>
+
+          <p className="text-[11px] text-muted-foreground leading-snug">
+            Worked example — a &#8377;1,000 outsourced test the lab charges &#8377;700 for, at a 50% slab:
+            on <strong>full price</strong> the doctor is paid &#8377;500 against a &#8377;300 margin, so the clinic loses &#8377;200.
+            On <strong>margin</strong> the doctor is paid &#8377;150 and the clinic keeps &#8377;150.
+            Either way you can also give outsourced work its own slab, using the rule form's
+            &ldquo;Test kind&rdquo; setting.
+          </p>
+        </div>
+
         {/* Commission eligibility (payout hold) */}
         <div className="bg-card border border-border rounded-xl p-5 space-y-4">
           <div className="flex items-center gap-2">
@@ -496,7 +560,7 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
               <Upload size={14} /> {importing ? "Importing…" : "Import CSV"}
             </Button>
             {selectedDoctorId && (
-              <Button onClick={() => { setEditRule(null); reset({ type: "percentage", scope: "all", isExclusive: "false" }); setRuleOpen(true); }}>
+              <Button onClick={() => { setEditRule(null); reset({ type: "percentage", scope: "all", isExclusive: "false", appliesTo: "all" }); setRuleOpen(true); }}>
                 <Plus size={14} className="mr-1" /> Add Rule
               </Button>
             )}
@@ -559,6 +623,12 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
                         <td className="px-4 py-3 capitalize text-muted-foreground">{rule.scope}</td>
                         <td className="px-4 py-3">
                           {rule.isExclusive && <Badge className="bg-purple-100 text-purple-700 text-xs mr-1">Exclusive</Badge>}
+                          {(() => {
+                            const kind = (rule as CommissionRule & { appliesTo?: string }).appliesTo ?? "all";
+                            if (kind === "outsourced") return <Badge className="bg-sky-100 text-sky-700 text-xs mr-1">Outsourced only</Badge>;
+                            if (kind === "inhouse") return <Badge className="bg-teal-100 text-teal-700 text-xs mr-1">In-house only</Badge>;
+                            return null;
+                          })()}
                           {!rule.isActive && <Badge className="bg-gray-100 text-gray-500 text-xs">Inactive</Badge>}
                         </td>
                         <td className="px-4 py-3">
@@ -610,7 +680,7 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
               </div>
             </div>
             <div>
-              <Label>Applies To</Label>
+              <Label>Scope — which tests</Label>
               <Select onValueChange={(v) => setValue("scope", v)} defaultValue={editRule?.scope || "all"}>
                 <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -634,6 +704,27 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
                 onChange={(ids) => setValue("testIds", ids)}
               />
             )}
+            <div>
+              <Label>Test kind — in-house or outsourced</Label>
+              <Select
+                onValueChange={(v) => setValue("appliesTo", v)}
+                defaultValue={(editRule as (CommissionRule & { appliesTo?: string }) | null)?.appliesTo ?? "all"}
+              >
+                <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Both (any test)</SelectItem>
+                  <SelectItem value="inhouse">In-house tests only</SelectItem>
+                  <SelectItem value="outsourced">Outsourced tests only</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground mt-1">
+                {appliesTo === "outsourced"
+                  ? "Pays only on tests sent to an external lab — where the clinic keeps just the margin."
+                  : appliesTo === "inhouse"
+                  ? "Pays only on tests performed in-house. Outsourced work needs its own rule."
+                  : "Pays on every test. Set a separate outsourced rule if that work has a thinner margin."}
+              </p>
+            </div>
             <div>
               <Label>Priority</Label>
               <Select onValueChange={(v) => setValue("isExclusive", v)} defaultValue={editRule ? (editRule.isExclusive ? "true" : "false") : "false"}>
