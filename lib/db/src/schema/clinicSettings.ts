@@ -81,6 +81,12 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   // Online booking whitelist (tests + packages)
   onlineBookingAllowedTestIds: text("online_booking_allowed_test_ids").notNull().default("[]"),
   onlineBookingAllowedPackageIds: text("online_booking_allowed_package_ids").notNull().default("[]"),
+  // Hope partner booking (/book?source=hope) — a narrower selection picked from
+  // the same Care catalogue, so Hope's page lists only Hope's investigations.
+  // Empty "[]" = not configured, and Hope's page falls back to the global
+  // online booking whitelist above.
+  hopeBookingAllowedTestIds: text("hope_booking_allowed_test_ids").notNull().default("[]"),
+  hopeBookingAllowedPackageIds: text("hope_booking_allowed_package_ids").notNull().default("[]"),
   // Configurable appointment time slots shown in the online booking form.
   // JSON-as-text array of { value, label } objects — admins edit these in
   // Settings so the clinic can match its actual opening hours (e.g. 9 AM–11 PM)

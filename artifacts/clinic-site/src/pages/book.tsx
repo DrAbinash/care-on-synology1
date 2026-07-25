@@ -103,6 +103,9 @@ type BookingConfig = {
   quickTestOverlayOpacity?: number;
   allowedTestIds?: number[];
   allowedPackageIds?: number[];
+  // Hope partner page selection, curated in Care's Settings (empty = not set).
+  hopeAllowedTestIds?: number[];
+  hopeAllowedPackageIds?: number[];
   bookingTimeSlots?: { value: string; label: string }[];
 };
 type DoctorOption = { id: number; name: string; specialization?: string | null };
@@ -381,15 +384,61 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
     return baseTotal + vipCharge;
   }, [baseTotal, vipCharge]);
 
-  const categories = useMemo(() => ["all", ...Array.from(new Set(tests.map((t) => t.category))).sort()], [tests]);
+  // Partner deep-links (e.g. Hope: /book?source=hope&testCode=…&packageCode=HOPE)
+  // curate WHICH catalogue items are offered, not just which arrive pre-ticked:
+  // when the URL carries codes we show only those. The items are still Care's
+  // own catalogue rows — Care ids, Care prices — so the booking bills in Care
+  // exactly as a walk-in would. Codes are a display filter, not a security
+  // boundary; the server-side onlineBookingAllowed* whitelist still governs
+  // what the catalogue endpoints will hand out at all.
+  const codeFilter = useMemo(() => {
+    const parse = (v: string | null) =>
+      (v || "").split(",").map((c) => c.trim().toLowerCase()).filter(Boolean);
+    const testCodes = parse(params.get("testCode") || params.get("testCodes"));
+    const pkgCodes = parse(params.get("packageCode") || params.get("packageCodes"));
+    return testCodes.length || pkgCodes.length ? { testCodes, pkgCodes } : null;
+  }, [params]);
+
+  // Hope's own selection, curated by Care admins in Settings → Online Booking.
+  // This is the normal way to control Hope's page: Care staff tick the tests
+  // there and nothing about the link has to change. URL codes still win when
+  // present, so a one-off campaign link can still narrow things further.
+  const hopeIdFilter = useMemo(() => {
+    if (!isHope) return null;
+    const t = config?.hopeAllowedTestIds ?? [];
+    const p = config?.hopeAllowedPackageIds ?? [];
+    return t.length || p.length ? { testIds: new Set(t), pkgIds: new Set(p) } : null;
+  }, [isHope, config?.hopeAllowedTestIds, config?.hopeAllowedPackageIds]);
+
+  const curatedTests = useMemo(() => {
+    if (codeFilter) return tests.filter((t) => codeFilter.testCodes.includes((t.code || "").toLowerCase()));
+    if (hopeIdFilter) return tests.filter((t) => hopeIdFilter.testIds.has(t.id));
+    return tests;
+  }, [tests, codeFilter, hopeIdFilter]);
+  const curatedPkgs = useMemo(() => {
+    if (codeFilter) return pkgs.filter((p) => codeFilter.pkgCodes.includes((p.code || "").toLowerCase()));
+    if (hopeIdFilter) return pkgs.filter((p) => hopeIdFilter.pkgIds.has(p.id));
+    return pkgs;
+  }, [pkgs, codeFilter, hopeIdFilter]);
+
+  // Fail open: if the curation matches nothing here — a mistyped code, or every
+  // selected item since removed from Care's online-booking whitelist — fall back
+  // to the full catalogue rather than stranding the patient on an empty page.
+  const curationMissed =
+    (!!codeFilter || !!hopeIdFilter) && (tests.length > 0 || pkgs.length > 0) &&
+    curatedTests.length === 0 && curatedPkgs.length === 0;
+  const shownTests = curationMissed ? tests : curatedTests;
+  const shownPkgs = curationMissed ? pkgs : curatedPkgs;
+
+  const categories = useMemo(() => ["all", ...Array.from(new Set(shownTests.map((t) => t.category))).sort()], [shownTests]);
   const filteredTests = useMemo(() => {
-    let list = catFilter === "all" ? tests : tests.filter((t) => t.category === catFilter);
+    let list = catFilter === "all" ? shownTests : shownTests.filter((t) => t.category === catFilter);
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter((t) => (t.name + " " + t.code).toLowerCase().includes(q));
     }
     return list;
-  }, [tests, catFilter, search]);
+  }, [shownTests, catFilter, search]);
 
   const toggleTest = (id: number) => setSelTests((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const togglePkg  = (id: number) => setSelPkgs((s) => { const n = new Set(s);  n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -881,7 +930,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                 Select Test Tiles) with an adjustable white-wash overlay for readability. */}
             {(() => {
               const quickTests = (config?.quickTestIds ?? [])
-                .map((id) => (id ? tests.find((t) => t.id === id) : null))
+                .map((id) => (id ? shownTests.find((t) => t.id === id) : null))
                 .filter((t): t is TestItem => !!t);
               if (quickTests.length === 0) return null;
 
@@ -1050,13 +1099,13 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
             </div>
 
             {/* Packages */}
-            {pkgs.length > 0 && (
+            {shownPkgs.length > 0 && (
               <div style={{ marginBottom: "1.5rem" }}>
                 <h3 style={{ fontWeight: 700, fontSize: "1.05rem", marginBottom: ".75rem", display: "flex", alignItems: "center", gap: ".4rem" }}>
                   <Package size={18} style={{ color: "hsl(var(--cd-teal))" }} /> Health Packages
                 </h3>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: ".75rem" }}>
-                  {pkgs.map((p) => (
+                  {shownPkgs.map((p) => (
                     <button key={p.id} type="button" onClick={() => togglePkg(p.id)}
                       style={{
                         textAlign: "left", padding: "1rem",
@@ -1095,7 +1144,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                       }}>
                       <div>
                         <div style={{ fontWeight: 600, fontSize: ".92rem" }}>{t.name}</div>
-                        <div style={{ fontSize: ".75rem", color: "hsl(var(--cd-slate) / .55)" }}>{t.code} \u00b7 {t.category}</div>
+                        <div style={{ fontSize: ".75rem", color: "hsl(var(--cd-slate) / .55)" }}>{t.code} · {t.category}</div>
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: ".5rem" }}>
                         <span style={{ fontWeight: 700, fontSize: ".95rem", color: "hsl(var(--cd-teal))", whiteSpace: "nowrap" }}>{fmt(Number(t.price))}</span>

@@ -197,6 +197,21 @@ publicBookingRouter.get("/config", async (_req, res): Promise<void> => {
     }
   } catch { /* ignore */ }
 
+  // Hope partner page (/book?source=hope) — a narrower selection of the same
+  // Care catalogue, curated in Settings. Read-only passthrough of the two id
+  // lists; empty means "not configured" and the page falls back to the global
+  // whitelist above. Nothing here affects pricing, collection, or settlement.
+  const parseIdList = (raw: string | null | undefined): number[] => {
+    try {
+      const parsed = JSON.parse(raw || "[]");
+      return Array.isArray(parsed)
+        ? parsed.filter((v: unknown) => typeof v === "number" && Number.isInteger(v) && v > 0)
+        : [];
+    } catch { return []; }
+  };
+  const hopeAllowedTestIds = parseIdList(settings?.hopeBookingAllowedTestIds);
+  const hopeAllowedPackageIds = parseIdList(settings?.hopeBookingAllowedPackageIds);
+
   if (!onlineBookingEnabled) {
     res.json({
       enabled: false,
@@ -214,6 +229,8 @@ publicBookingRouter.get("/config", async (_req, res): Promise<void> => {
       upiQrImageUrl: "",
       allowedTestIds: [],
       allowedPackageIds: [],
+      hopeAllowedTestIds: [],
+      hopeAllowedPackageIds: [],
       quickTestIds: [],
       quickTestCategoryImages: settings.quickTestCategoryImages || "{}",
       quickTestOverlayOpacity: settings.quickTestOverlayOpacity ?? 35,
@@ -272,6 +289,8 @@ publicBookingRouter.get("/config", async (_req, res): Promise<void> => {
     upiQrImageUrl: settings.upiQrImageUrl || "",
     allowedTestIds,
     allowedPackageIds,
+    hopeAllowedTestIds,
+    hopeAllowedPackageIds,
     quickTestIds,
     quickTestCategoryImages: settings.quickTestCategoryImages || "{}",
     quickTestOverlayOpacity: settings.quickTestOverlayOpacity ?? 35,

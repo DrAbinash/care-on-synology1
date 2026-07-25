@@ -71,6 +71,8 @@ async function getOrCreate() {
       upiQrEnabled: false,
       onlineBookingAllowedTestIds: "[]",
       onlineBookingAllowedPackageIds: "[]",
+      hopeBookingAllowedTestIds: "[]",
+      hopeBookingAllowedPackageIds: "[]",
       bookingTimeSlots: DEFAULT_BOOKING_TIME_SLOTS_JSON,
       sidebarTheme: "navy",
       billDefaultPaperSize: "A5",
@@ -319,7 +321,9 @@ clinicSettingsRouter.put("/", async (req, res) => {
   
   const textFields = [
     "kioskPaymentGateway", "kioskUpiVpa", "kioskUpiName", "kioskWelcomeMessage", "kioskAllowedTestIds",
-    "onlineBookingAllowedTestIds", "onlineBookingAllowedPackageIds", "bookingTimeSlots", "razorpayKeyId", "payuMerchantKey",
+    "onlineBookingAllowedTestIds", "onlineBookingAllowedPackageIds",
+    "hopeBookingAllowedTestIds", "hopeBookingAllowedPackageIds",
+    "bookingTimeSlots", "razorpayKeyId", "payuMerchantKey",
     "phonepeMerchantId", "bharatpeMerchantId", "cashfreeAppId", "iciciMerchantId", "iciciAggregatorId",
     "iciciSecretKey", "formFTestIds", "quickTestIds", "quickDoctorIds", "footerNote", "commissionDiscountMode", "lanAllowedIps",
     "billDefaultPaperSize", "name", "tagline", "address", "registeredAddress", "email", "phone", "website",
@@ -532,7 +536,7 @@ clinicSettingsRouter.put("/", async (req, res) => {
     }
     update.iciciSecretKey = body.iciciSecretKey.trim();
   }
-  const arrayJsonTextFields = ["kioskUpiVpa", "kioskUpiName", "kioskWelcomeMessage", "kioskAllowedTestIds", "onlineBookingAllowedTestIds", "onlineBookingAllowedPackageIds", "upiVpa", "upiQrImageUrl"] as const;
+  const arrayJsonTextFields = ["kioskUpiVpa", "kioskUpiName", "kioskWelcomeMessage", "kioskAllowedTestIds", "onlineBookingAllowedTestIds", "onlineBookingAllowedPackageIds", "hopeBookingAllowedTestIds", "hopeBookingAllowedPackageIds", "upiVpa", "upiQrImageUrl"] as const;
   for (const f of arrayJsonTextFields) {
     if (body[f] !== undefined) {
       if (typeof body[f] !== "string") {
