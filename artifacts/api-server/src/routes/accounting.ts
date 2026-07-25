@@ -1211,7 +1211,16 @@ router.post("/sync-billing", requireAdminRole, async (req, res) => {
   const amt = (v: string | number | null) => Number(v ?? 0).toFixed(2);
   for (const v of vouchers) {
     if (v.paymentId != null) vouchedPaymentIds.add(v.paymentId);
-    if (v.type === "receipt" && v.billId != null) {
+    // paymentId == null here is required, not incidental: a payment_id-linked
+    // voucher is already accounted for via vouchedPaymentIds above. Without this
+    // filter it was ALSO added to the pool, so it could consume the pool slot
+    // meant for a DIFFERENT, genuinely unvouchered payment on the same bill for
+    // the same amount — e.g. two ₹500 instalments on one bill, one already
+    // vouchered: the linked voucher's own skip plus its pool entry meant the
+    // second, real gap was silently swallowed and never backfilled. The pool
+    // exists ONLY to catch legacy real-time vouchers that predate payment_id
+    // linkage, per the comment above.
+    if (v.type === "receipt" && v.billId != null && v.paymentId == null) {
       const key = `${v.billId}|${amt(v.amount)}`;
       receiptPool.set(key, (receiptPool.get(key) ?? 0) + 1);
     }

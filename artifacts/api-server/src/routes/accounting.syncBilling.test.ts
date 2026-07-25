@@ -140,6 +140,24 @@ describe("dedup", () => {
     expect(res.body.created).toBe(0);
   });
 
+  // Regression for the false-negative this dedup previously had: a
+  // payment_id-LINKED voucher was ALSO counted into the legacy amount-pool, so
+  // it could consume the pool slot meant for a DIFFERENT, genuinely unvouchered
+  // sibling payment on the same bill — split/equal-instalment payments are
+  // exactly this shape. One payment (id 20) already has a linked voucher; a
+  // second same-bill, same-amount payment (id 21) does not and must still be
+  // created, not silently swallowed by the first payment's own linked voucher.
+  test("a payment_id-linked voucher does not shadow a different unvouchered sibling payment", async () => {
+    paymentJoinRows = [pay({ id: 20, amount: "500.00" }), pay({ id: 21, amount: "500.00" })];
+    voucherRows = [{ paymentId: 20, billId: 10, amount: "500.00", type: "receipt" }];
+    monthCountRows = [];
+    const res = makeRes();
+    await handler(makeReq(), res);
+    expect(res.body.created).toBe(1);
+    expect(insertedVouchers).toHaveLength(1);
+    expect(insertedVouchers[0]).toMatchObject({ paymentId: 21, billId: 10 });
+  });
+
   test("creates a voucher for an uncovered payment, linked by payment_id and IST-dated", async () => {
     paymentJoinRows = [pay({ id: 11, amount: "999.00", method: "upi", createdAt: "2026-07-05T20:00:00Z" })];
     voucherRows = [];
