@@ -80,6 +80,7 @@ async function getOrCreate() {
       billShowCategory: true,
       dayCloseAutoPrint: true,
       commissionDiscountMode: "none",
+      expenseSelfApprovalAllowed: true,
       lanOnlyLogin: false,
       lanAllowedIps: "[]",
       fido2Enabled: false,
@@ -311,7 +312,9 @@ clinicSettingsRouter.put("/", async (req, res) => {
     // Phase 2 Scanner Settings
     "scannerGlobalEnabled", "scanStationKioskModeEnabled", "scanStationAutoClearEnabled",
     // Refactored fields
-    "enableCardPayment", "enableQrPayment", "enableVipBooking", "enablePaymentLogos", "enablePaymentTimer"
+    "enableCardPayment", "enableQrPayment", "enableVipBooking", "enablePaymentLogos", "enablePaymentTimer",
+    // Expense approval separation
+    "expenseSelfApprovalAllowed"
   ] as const;
   
   const textFields = [

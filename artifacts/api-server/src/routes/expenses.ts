@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { expensesTable, expenseCounterTable } from "@workspace/db/schema";
+import { expensesTable, expenseCounterTable, clinicSettingsTable } from "@workspace/db/schema";
 import { eq, desc, and, gte, lte, ilike, sql } from "drizzle-orm";
 import {
   CreateExpenseBody,
@@ -18,6 +18,25 @@ const router = Router();
 
 function toNum(row: Record<string, unknown>) {
   return { ...row, amount: Number(row.amount ?? 0) };
+}
+
+// Admin-configurable separation-of-duties switch (Settings). Defaults to
+// allowed (true) when the settings row doesn't exist yet, matching the
+// clinic_settings.expense_self_approval_allowed column default — self-approval
+// is today's real behaviour, not a regression, until an admin turns it off.
+async function isSelfApprovalAllowed(): Promise<boolean> {
+  const [row] = await db
+    .select({ v: clinicSettingsTable.expenseSelfApprovalAllowed })
+    .from(clinicSettingsTable)
+    .limit(1);
+  return row?.v ?? true;
+}
+
+/** Case/whitespace-insensitive name compare — both sides are free text. */
+function sameActor(a: string | null | undefined, b: string | null | undefined): boolean {
+  const an = (a ?? "").trim().toLowerCase();
+  const bn = (b ?? "").trim().toLowerCase();
+  return an.length > 0 && an === bn;
 }
 
 async function generateExpenseId(): Promise<string> {
@@ -116,6 +135,17 @@ router.post("/", async (req, res) => {
   }
   const { category, description, amount, expenseDate, paymentMode, paidTo, approvedBy, notes } = parsed.data;
 
+  // Session-derived, never client-editable — same convention as the audit
+  // actors in bills.ts. This is what the approval-separation check below
+  // compares approvedBy against.
+  const createdBy = (req as StaffAuthRequest).staffSession?.subjectName?.trim() || null;
+
+  if (approvedBy && !(await isSelfApprovalAllowed()) && sameActor(approvedBy, createdBy)) {
+    return res.status(400).json({
+      error: "Self-approval is currently disabled. This expense must be approved by someone other than its creator.",
+    });
+  }
+
   // Optional scanned receipt image (data URL). Read directly from the body —
   // it's not part of the generated CreateExpenseBody schema (which strips it),
   // so no generated code needs changing. Bounded to ~6MB of base64 to reject
@@ -138,6 +168,7 @@ router.post("/", async (req, res) => {
       paymentMode: paymentMode || "cash",
       paidTo: paidTo ?? null,
       approvedBy: approvedBy ?? null,
+      createdBy,
       notes: notes ?? null,
       receiptImageUrl,
     })
@@ -177,6 +208,17 @@ router.patch("/:id", async (req, res) => {
   // Snapshot the pre-edit row so the audit trail records what actually changed.
   const [before] = await db.select().from(expensesTable).where(eq(expensesTable.id, paramsParsed.data.id));
   if (!before) return res.status(404).json({ error: "Expense not found" });
+
+  if (
+    typeof updates.approvedBy === "string" &&
+    updates.approvedBy &&
+    !(await isSelfApprovalAllowed()) &&
+    sameActor(updates.approvedBy, before.createdBy)
+  ) {
+    return res.status(400).json({
+      error: "Self-approval is currently disabled. This expense must be approved by someone other than its creator.",
+    });
+  }
 
   const [expense] = await db
     .update(expensesTable)
