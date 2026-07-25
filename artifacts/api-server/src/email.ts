@@ -370,6 +370,127 @@ export async function sendMonthlyAuditEmail(params: {
   }
 }
 
+// ── Monthly referral-activity summary ────────────────────────────────────────
+// Replaces the month-end "Commission Report" email that was removed because it
+// mailed every doctor's commission to the clinic's recipients with no pen drive
+// involved (and computed it with its own drifted formula).
+//
+// This one answers "who referred how much work last month" WITHOUT answering
+// "what do we owe them". It is given referral counts and billed amounts and has
+// no access to a rate, a commission or a payout — the caller does not compute
+// one, and nothing here imports the commission engine. That is deliberate: it is
+// what keeps commission readable only with the drive plugged in.
+export async function sendMonthlyReferralSummaryEmail(params: {
+  periodFrom: string;
+  periodTo: string;
+  doctors: Array<{ name: string; specialization: string | null; visits: number; tests: number; billed: number }>;
+  totals: { doctors: number; visits: number; tests: number; billed: number };
+  topTests: Array<{ name: string; count: number }>;
+}, opts?: { force?: boolean }): Promise<{ ok: boolean; error?: string }> {
+  const s = await getEmailSettings();
+  if (!s) return { ok: false, error: "Email settings not configured" };
+  // `force` is used by the manual trigger so an admin can verify delivery while
+  // the scheduled send is still off.
+  if (!s.monthlyReferralSummaryEnabled && !opts?.force) return { ok: false, error: "Monthly referral summary is turned off" };
+  const to = getAllRecipients({ adminEmail: s.adminEmail, extraRecipients: s.extraRecipients });
+  if (to.length === 0) return { ok: false, error: "No recipients configured" };
+  const transport = await getTransporter();
+  if (!transport) return { ok: false, error: "SMTP transport unavailable" };
+
+  const inr = (n: number) => `₹${Number(n ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const rows = params.doctors.map((d, i) => `
+    <tr>
+      <td style="padding:8px;border-bottom:1px solid #e5e7eb;color:#6b7280">${i + 1}</td>
+      <td style="padding:8px;border-bottom:1px solid #e5e7eb;font-weight:600">${d.name}${
+        d.specialization ? `<span style="font-weight:400;color:#6b7280"> · ${d.specialization}</span>` : ""
+      }</td>
+      <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">${d.visits}</td>
+      <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">${d.tests}</td>
+      <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">${inr(d.billed)}</td>
+    </tr>`).join("");
+
+  const topTestRows = params.topTests.map((t) => `
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb">${t.name}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;text-align:right">${t.count}</td>
+    </tr>`).join("");
+
+  const html = `
+    <div style="font-family:system-ui,sans-serif;max-width:680px;margin:0 auto;padding:20px;color:#1f2937">
+      <h2 style="margin:0 0 4px">Monthly Referral Summary</h2>
+      <p style="margin:0;color:#6b7280">Period: <b>${params.periodFrom}</b> to <b>${params.periodTo}</b></p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:10px;margin:16px 0">
+        <div style="flex:1;min-width:130px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:12px">
+          <div style="font-size:11px;color:#6b7280">Referring Doctors</div>
+          <div style="font-size:18px;font-weight:700;color:#075985;margin-top:2px">${params.totals.doctors}</div>
+        </div>
+        <div style="flex:1;min-width:130px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:12px">
+          <div style="font-size:11px;color:#6b7280">Patient Visits</div>
+          <div style="font-size:18px;font-weight:700;color:#075985;margin-top:2px">${params.totals.visits}</div>
+        </div>
+        <div style="flex:1;min-width:130px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:12px">
+          <div style="font-size:11px;color:#6b7280">Tests Performed</div>
+          <div style="font-size:18px;font-weight:700;color:#075985;margin-top:2px">${params.totals.tests}</div>
+        </div>
+        <div style="flex:1;min-width:130px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:12px">
+          <div style="font-size:11px;color:#6b7280">Total Billed</div>
+          <div style="font-size:18px;font-weight:700;color:#075985;margin-top:2px">${inr(params.totals.billed)}</div>
+        </div>
+      </div>
+
+      <h3 style="margin:20px 0 8px">By Referring Doctor</h3>
+      ${rows ? `
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="background:#f9fafb">
+          <th style="padding:8px;text-align:left;border-bottom:1px solid #e5e7eb;width:28px">#</th>
+          <th style="padding:8px;text-align:left;border-bottom:1px solid #e5e7eb">Doctor</th>
+          <th style="padding:8px;text-align:right;border-bottom:1px solid #e5e7eb">Visits</th>
+          <th style="padding:8px;text-align:right;border-bottom:1px solid #e5e7eb">Tests</th>
+          <th style="padding:8px;text-align:right;border-bottom:1px solid #e5e7eb">Billed</th>
+        </tr></thead>
+        <tbody>
+          ${rows}
+          <tr style="background:#fefce8">
+            <td style="padding:8px;font-weight:700" colspan="2">TOTAL</td>
+            <td style="padding:8px;text-align:right;font-weight:700">${params.totals.visits}</td>
+            <td style="padding:8px;text-align:right;font-weight:700">${params.totals.tests}</td>
+            <td style="padding:8px;text-align:right;font-weight:700">${inr(params.totals.billed)}</td>
+          </tr>
+        </tbody>
+      </table>` : `<p style="color:#6b7280;font-size:13px">No referrals recorded in this period.</p>`}
+
+      ${topTestRows ? `
+        <h3 style="margin:20px 0 8px">Most Referred Tests</h3>
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead><tr style="background:#f9fafb">
+            <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #e5e7eb">Test</th>
+            <th style="padding:6px 8px;text-align:right;border-bottom:1px solid #e5e7eb">Count</th>
+          </tr></thead>
+          <tbody>${topTestRows}</tbody>
+        </table>` : ""}
+
+      <p style="margin-top:24px;padding:10px 12px;background:#f3f4f6;border-radius:4px;color:#6b7280;font-size:12px">
+        This summary shows referral activity only. Commission rates, amounts and payouts are
+        deliberately not included — they are visible in the Super Admin portal with the pen
+        drive plugged in.
+      </p>
+    </div>`;
+
+  try {
+    await transport.sendMail({
+      from: `"${s.fromName}" <${s.fromAddress}>`,
+      to: to.join(","),
+      subject: `[Referral Summary] ${params.periodFrom} to ${params.periodTo} — ${params.totals.visits} visits from ${params.totals.doctors} doctors`,
+      html,
+    });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Send failed" };
+  }
+}
+
 // General-purpose alert email — used by automated watchdogs (e.g. the PACS
 // pull-agent stall detector in cron.ts). Accepts an arbitrary subject and
 // HTML body so individual watchdogs can compose their own alert content

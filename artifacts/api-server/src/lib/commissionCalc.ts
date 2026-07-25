@@ -62,6 +62,10 @@ export type CalcResult = {
   outsourceCost: number;
   /** The amount the rate was actually applied to (post-VIP, post-margin). */
   commissionBase: number;
+  /** What the slab asked for, before the margin cap. Equal to commission when no cap applied. */
+  uncappedCommission: number;
+  /** True when the margin cap reduced this line's commission. */
+  cappedToMargin: boolean;
 };
 
 export function safeParseArray<T = unknown>(s: string | null | undefined): T[] {
@@ -156,47 +160,57 @@ export function calcTestCommission(
   }
   const commissionBase = price;
 
+  // Whichever slab wins, the payout is decided in one place below so the margin
+  // cap cannot be applied to some rules and forgotten on others.
+  let ruleName: string, ruleType: string, ruleValue: number, ruleScope: RuleScope, raw: number;
+
   const matched = findMatchingRule(ot.testId, test ? (test.category ?? "") : null, rules, isOutsourced);
+  const defType = doctor.defaultCommissionType || "percentage";
+  const defVal = Number(doctor.defaultCommission ?? 0);
+
   if (matched) {
-    const val = Number(matched.value);
-    return {
-      commission: matched.type === "percentage" ? (price * val) / 100 : val,
-      ruleName: matched.name,
-      ruleType: matched.type,
-      ruleValue: val,
-      // "test" / "category" = an explicit slab was configured for this line.
-      // "all" = only the doctor's catch-all caught it, i.e. no slab.
-      ruleScope: matched.scope === "test" || matched.scope === "category" ? matched.scope : "all",
-      isOutsourced,
-      outsourceCost,
-      commissionBase,
-    };
+    ruleValue = Number(matched.value);
+    ruleName = matched.name;
+    ruleType = matched.type;
+    // "test" / "category" = an explicit slab was configured for this line.
+    // "all" = only the doctor's catch-all caught it, i.e. no slab.
+    ruleScope = matched.scope === "test" || matched.scope === "category" ? matched.scope : "all";
+    raw = ruleType === "percentage" ? (price * ruleValue) / 100 : ruleValue;
+  } else if (defVal > 0) {
+    ruleValue = defVal;
+    ruleName = "Default";
+    ruleType = defType;
+    ruleScope = "default";
+    raw = defType === "percentage" ? (price * defVal) / 100 : defVal;
+  } else {
+    ruleValue = 0;
+    ruleName = "None";
+    ruleType = defType;
+    ruleScope = "none";
+    raw = 0;
   }
 
-  const defVal = Number(doctor.defaultCommission ?? 0);
-  const defType = doctor.defaultCommissionType || "percentage";
-  if (defVal > 0) {
-    return {
-      commission: defType === "percentage" ? (price * defVal) / 100 : defVal,
-      ruleName: "Default",
-      ruleType: defType,
-      ruleValue: defVal,
-      ruleScope: "default",
-      isOutsourced,
-      outsourceCost,
-      commissionBase,
-    };
-  }
+  // A percentage of the margin can never exceed the margin, but a FIXED slab
+  // ignores the base entirely — "Rs.150 per test" still pays Rs.150 on a line
+  // that only earned the clinic Rs.40. Once the clinic has said it wants to
+  // commission the margin, paying out more than that margin is precisely what
+  // it asked not to happen, so the payout is capped at the base. (A rate above
+  // 100% is caught by the same cap.) Never applies on the price basis, and
+  // never to in-house work, which has no lab cost to speak of.
+  const capped = isOutsourced && outsourcedBasis === "margin" && raw > commissionBase;
+  const commission = capped ? commissionBase : raw;
 
   return {
-    commission: 0,
-    ruleName: "None",
-    ruleType: defType,
-    ruleValue: 0,
-    ruleScope: "none",
+    commission,
+    ruleName,
+    ruleType,
+    ruleValue,
+    ruleScope,
     isOutsourced,
     outsourceCost,
     commissionBase,
+    uncappedCommission: raw,
+    cappedToMargin: capped,
   };
 }
 

@@ -9,7 +9,7 @@
  *   pnpm --filter @workspace/scripts run trigger:cron daily-summary
  */
 
-const VALID_JOBS = ["daily-summary"] as const;
+const VALID_JOBS = ["daily-summary", "monthly-referral-summary"] as const;
 type Job = (typeof VALID_JOBS)[number];
 
 function isJob(s: string): s is Job {

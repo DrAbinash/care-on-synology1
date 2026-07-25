@@ -28,6 +28,15 @@ export const emailSettingsTable = pgTable("email_settings", {
   // firing in one one-minute-wide window per day, and lets each of the (up
   // to 3) daily slots be tracked independently. See cron.ts's scheduleDaily().
   dailySummaryLastSentSlots: text("daily_summary_last_sent_slots").notNull().default("{}"),
+  // Monthly referral-activity summary — how many patients each doctor sent and
+  // what was billed on them. Deliberately carries NO commission figure, rate or
+  // payout: those are readable only with the super-admin pen drive plugged in,
+  // and the previous month-end email that did carry them was removed for
+  // exactly that reason. Off by default; nothing is sent until it is turned on.
+  monthlyReferralSummaryEnabled: boolean("monthly_referral_summary_enabled").notNull().default(false),
+  // IST date (YYYY-MM-DD) of the last successful send, so a restart during the
+  // send window catches up on the next tick instead of skipping the month.
+  monthlyReferralSummaryLastSent: text("monthly_referral_summary_last_sent").notNull().default(""),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 

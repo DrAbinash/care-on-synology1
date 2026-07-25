@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import {
-  ArrowLeft, Printer, Stethoscope, Users, FileText, IndianRupee, TrendingUp, Download, FileSpreadsheet, Percent, Clock, HelpCircle, MessageCircle, Send, Check, AlertTriangle, ChevronRight,
+  ArrowLeft, Printer, Stethoscope, Users, FileText, IndianRupee, TrendingUp, Download, FileSpreadsheet, Percent, Clock, HelpCircle, MessageCircle, Send, Check, AlertTriangle, ChevronRight, ShieldCheck,
 } from "lucide-react";
 import { saAuthHeaders } from "@/lib/saApi";
 import { exportCommissionPdf } from "@/lib/exportCommissionPdf";
@@ -56,6 +56,10 @@ type PatientRow = {
   isOutsourced: boolean;
   outsourceCost: number;
   margin: number;           // price − outsourceCost
+  // On the margin basis, a fixed-amount slab can still ask for more than the
+  // clinic kept. When that happens the payout is capped at the margin.
+  cappedToMargin: boolean;
+  uncappedCommission: number;
 };
 
 type RuleScope = "test" | "category" | "all" | "default" | "none";
@@ -149,6 +153,9 @@ type BandTest = {
   held: number;
   /** true when no test/category slab matched — the rate fell through. */
   fallback: boolean;
+  /** How many lines had their payout capped at the margin, and by how much. */
+  cappedCount: number;
+  cappedSaving: number;
   rows: (PatientRow & { doctorName: string })[];
 };
 
@@ -167,6 +174,8 @@ type RateBand = {
   expected: number;
   commission: number;
   held: number;
+  cappedCount: number;
+  cappedSaving: number;
   /** Distinct doctors and orders inside the band. */
   doctors: number;
   orders: number;
@@ -201,7 +210,7 @@ function buildRateBands(report: DoctorEntry[], categories: Set<string>): RateBan
           ruleType: row.ruleType, ruleValue: rate,
           ruleNames: [], tests: [],
           count: 0, revenue: 0, outsourceCost: 0, base: 0, expected: 0, commission: 0, held: 0,
-          doctors: 0, orders: 0,
+          cappedCount: 0, cappedSaving: 0, doctors: 0, orders: 0,
         };
         bands.set(key, band);
         bandDoctors.set(key, new Set());
@@ -216,7 +225,7 @@ function buildRateBands(report: DoctorEntry[], categories: Set<string>): RateBan
         test = {
           testId: row.testId, testName: row.testName, category: row.category,
           count: 0, revenue: 0, outsourceCost: 0, base: 0, expected: 0, commission: 0, held: 0,
-          fallback: false, rows: [],
+          fallback: false, cappedCount: 0, cappedSaving: 0, rows: [],
         };
         band.tests.push(test);
       }
@@ -224,6 +233,12 @@ function buildRateBands(report: DoctorEntry[], categories: Set<string>): RateBan
       test.base += row.commissionBase ?? 0;
       test.expected += row.grossCommission; test.commission += row.commission;
       if (row.held) test.held += row.commission;
+      if (row.cappedToMargin) {
+        test.cappedCount++;
+        test.cappedSaving += (row.uncappedCommission ?? 0) - (row.grossCommission ?? 0);
+        band.cappedCount++;
+        band.cappedSaving += (row.uncappedCommission ?? 0) - (row.grossCommission ?? 0);
+      }
       if (isFallbackScope(row.ruleScope)) test.fallback = true;
       test.rows.push(row);
 
@@ -1278,6 +1293,19 @@ function RateBandsView({
               </div>
             )}
 
+            {/* The margin cap already stopped a loss here — say so, and by how much */}
+            {band.cappedCount > 0 && (
+              <div className="mx-4 mb-3 rounded-md border border-emerald-900 bg-emerald-950/30 px-3 py-2 text-[11px] text-emerald-300 flex items-start gap-2">
+                <ShieldCheck size={13} className="shrink-0 mt-0.5" />
+                <span>
+                  {band.cappedCount} line{band.cappedCount === 1 ? "" : "s"} in this band asked for more than the
+                  clinic kept and {band.cappedCount === 1 ? "was" : "were"} capped at the margin, saving{" "}
+                  <strong>{inr(band.cappedSaving)}</strong>. A fixed-amount slab ignores the test price, so it can
+                  exceed a thin margin on its own.
+                </span>
+              </div>
+            )}
+
             {bandOpen && (
               <div className="border-t border-border">
                 {band.tests.map(test => {
@@ -1296,6 +1324,14 @@ function RateBandsView({
                         {test.fallback && (
                           <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-950 text-amber-400 border border-amber-900">
                             no slab
+                          </span>
+                        )}
+                        {test.cappedCount > 0 && (
+                          <span
+                            className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-900"
+                            title={`${test.cappedCount} line(s) capped at the margin, saving ${inr(test.cappedSaving)}`}
+                          >
+                            capped ×{test.cappedCount}
                           </span>
                         )}
                         <span className="text-xs text-muted-foreground">×{test.count}</span>
@@ -1351,6 +1387,14 @@ function RateBandsView({
                                   )}
                                   <td className="px-4 py-1.5 text-right font-mono tabular-nums text-amber-500">
                                     {inr(r.commission)}
+                                    {r.cappedToMargin && (
+                                      <span
+                                        className="ml-1.5 text-[10px] text-emerald-400"
+                                        title={`Slab asked for ${inr(r.uncappedCommission)}; capped at the ${inr(r.margin)} margin`}
+                                      >
+                                        (capped)
+                                      </span>
+                                    )}
                                     {r.held && <span className="ml-1.5 text-[10px] text-muted-foreground" title={r.holdReason ?? "On hold"}>(hold)</span>}
                                   </td>
                                 </tr>
@@ -1481,6 +1525,12 @@ function WhyCommissionPopover({
           )}
           <div className="my-1.5 border-t border-border" />
           <Line label={`Rule: ${row.ruleName} (${fmtRate(row.ruleType, row.ruleValue)})`} value="" tone="muted" />
+          {row.cappedToMargin && (
+            <>
+              <Line label="Slab asked for" value={inr(row.uncappedCommission)} tone="muted" />
+              <Line label={`Capped at margin (kept ${inr(row.margin)})`} value={`−${inr(row.uncappedCommission - row.grossCommission)}`} tone="rose" />
+            </>
+          )}
           <Line label="Expected commission" value={inr(row.grossCommission)} />
           {discountGiven > 0.005 && (
             <Line
