@@ -653,7 +653,7 @@ const USB_POLL_INTERVAL_MS = 5_000; // re-read key every 5 seconds
 function App() {
   const [usbUnlocked, setUsbUnlocked] = useState<boolean>(() => loadSaUsbKeyFromSession() !== null);
   const [session, setSession] = useState<Session | null>(null);
-  // Initial view honours `#books` / `#commission-report` / etc. so the ERP
+  // Initial view honours `#books` / `#referral-report` / etc. so the ERP
   // sidebar can deep-link straight into a specific module after PIN login.
   const [view, setView] = useState<SaView>(() => viewFromHash());
   const [autoUsbPin, setAutoUsbPin] = useState<string | null>(null);

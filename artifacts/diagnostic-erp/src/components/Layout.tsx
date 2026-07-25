@@ -837,7 +837,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   // Each entry deep-links into the matching tab in /super-admin-portal/.
   const superAdminModules: { hash: string; icon: typeof Zap; label: string }[] = [
     { hash: "books",              icon: BookOpen,    label: "Books Manager" },
-    { hash: "commission-report",  icon: ListChecks,  label: "Commission Report" },
+    { hash: "referral-report",    icon: ListChecks,  label: "Commission Report" },
     { hash: "commission-rules",   icon: HandCoins,   label: "Commission Rules" },
     { hash: "doctor-ledger",      icon: Wallet,      label: "Doctor Ledger" },
     { hash: "money-trail-audit",  icon: ShieldCheck, label: "Money Trail Audit" },
