@@ -98,3 +98,5 @@ Thumbs.db
 
 # Local test Postgres data directory (created by the DB test harness)
 .pgtest/
+.pnpm-store/
+.schema-verify-results.json
