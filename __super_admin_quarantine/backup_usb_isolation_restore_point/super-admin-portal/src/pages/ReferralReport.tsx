@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import {
-  ArrowLeft, Printer, Stethoscope, Users, FileText, IndianRupee, TrendingUp, Download, FileSpreadsheet, Percent, Clock, HelpCircle, MessageCircle, Send, Check, AlertTriangle,
+  ArrowLeft, Printer, Stethoscope, Users, FileText, IndianRupee, TrendingUp, Download, FileSpreadsheet, Percent, Clock, HelpCircle, MessageCircle, Send, Check, AlertTriangle, ChevronRight,
 } from "lucide-react";
 import { saAuthHeaders } from "@/lib/saApi";
 import { exportCommissionPdf } from "@/lib/exportCommissionPdf";
@@ -46,10 +46,19 @@ type PatientRow = {
   ruleType: string;
   ruleValue: number;
   ruleName: string;
+  // Where the rate came from: an explicit test/category slab, the catch-all,
+  // the doctor's profile default, or nothing at all.
+  ruleScope: RuleScope;
   // "Why this amount?" drill-down
   commissionBase: number;   // price used as the rate base (VIP surcharge stripped)
   vipAdjusted: boolean;     // whether the VIP surcharge was removed from the base
+  // Outsourced work: what the external lab is paid, and what the clinic keeps.
+  isOutsourced: boolean;
+  outsourceCost: number;
+  margin: number;           // price − outsourceCost
 };
+
+type RuleScope = "test" | "category" | "all" | "default" | "none";
 
 type DiscountFmt = "fixed" | "percent";
 
@@ -68,11 +77,11 @@ type DoctorEntry = {
 
 type ReportData = {
   report: DoctorEntry[];
-  settings?: { vipPct: number; commissionDiscountMode: string };
+  settings?: { vipPct: number; commissionDiscountMode: string; outsourcedBasis?: string };
   grandTotal: { doctors: number; orders: number; revenue: number; commission: number; payableCommission: number; heldCommission: number; expectedCommission: number; discount: number };
 };
 
-type ReportMode = "by-doctor" | "test-summary" | "consolidated";
+type ReportMode = "by-doctor" | "test-summary" | "consolidated" | "rate-bands";
 
 type WaResult = {
   doctorId: number; doctorName: string; phone: string | null; amount: number;
@@ -118,6 +127,134 @@ const uniqueBillDiscount = (rows: PatientRow[]): { discount: number; subtotal: n
 
 const ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
+// ── Rate bands ────────────────────────────────────────────────────────────────
+// A clinic running hundreds of tests does not want hundreds of rows: it wants to
+// see "everything I pay 50% on" in one block. A band is one commission rate, and
+// in-house work is banded separately from outsourced work because the two have
+// completely different margins even at the same headline rate.
+//
+// Built once here and reused by the screen, the print sheet and the Excel / Word
+// / PDF exports, so every output groups the same way.
+type BandTest = {
+  testId: number;
+  testName: string;
+  category: string;
+  count: number;
+  revenue: number;
+  outsourceCost: number;
+  /** Sum of the amounts the rate was actually applied to. */
+  base: number;
+  expected: number;
+  commission: number;
+  held: number;
+  /** true when no test/category slab matched — the rate fell through. */
+  fallback: boolean;
+  rows: (PatientRow & { doctorName: string })[];
+};
+
+type RateBand = {
+  key: string;
+  label: string;
+  kind: "inhouse" | "outsourced";
+  ruleType: string;
+  ruleValue: number;
+  ruleNames: string[];
+  tests: BandTest[];
+  count: number;
+  revenue: number;
+  outsourceCost: number;
+  base: number;
+  expected: number;
+  commission: number;
+  held: number;
+  /** Distinct doctors and orders inside the band. */
+  doctors: number;
+  orders: number;
+};
+
+const isFallbackScope = (s: RuleScope | undefined) => s === "all" || s === "default" || s === "none";
+
+const bandLabel = (ruleType: string, ruleValue: number) => {
+  if (!(ruleValue > 0)) return "No Commission";
+  return ruleType === "percentage" ? `${ruleValue}% Commission` : `${inr(ruleValue)} per test`;
+};
+
+function buildRateBands(report: DoctorEntry[], categories: Set<string>): RateBand[] {
+  const bands = new Map<string, RateBand>();
+  const bandDoctors = new Map<string, Set<number>>();
+  const bandOrders = new Map<string, Set<number>>();
+
+  for (const entry of report) {
+    for (const raw of entry.rows) {
+      if (categories.size > 0 && !categories.has(raw.category || "Uncategorised")) continue;
+      const row = { ...raw, doctorName: entry.doctor.name };
+      const kind: RateBand["kind"] = row.isOutsourced ? "outsourced" : "inhouse";
+      // Round the rate before keying so 25 and 25.0 land in the same band.
+      const rate = Math.round((row.ruleValue ?? 0) * 100) / 100;
+      const key = `${kind}|${row.ruleType}|${rate}`;
+
+      let band = bands.get(key);
+      if (!band) {
+        band = {
+          key, kind,
+          label: bandLabel(row.ruleType, rate),
+          ruleType: row.ruleType, ruleValue: rate,
+          ruleNames: [], tests: [],
+          count: 0, revenue: 0, outsourceCost: 0, base: 0, expected: 0, commission: 0, held: 0,
+          doctors: 0, orders: 0,
+        };
+        bands.set(key, band);
+        bandDoctors.set(key, new Set());
+        bandOrders.set(key, new Set());
+      }
+      if (row.ruleName && !band.ruleNames.includes(row.ruleName)) band.ruleNames.push(row.ruleName);
+      bandDoctors.get(key)!.add(entry.doctor.id);
+      bandOrders.get(key)!.add(row.orderId);
+
+      let test = band.tests.find(t => t.testId === row.testId);
+      if (!test) {
+        test = {
+          testId: row.testId, testName: row.testName, category: row.category,
+          count: 0, revenue: 0, outsourceCost: 0, base: 0, expected: 0, commission: 0, held: 0,
+          fallback: false, rows: [],
+        };
+        band.tests.push(test);
+      }
+      test.count++; test.revenue += row.price; test.outsourceCost += row.outsourceCost ?? 0;
+      test.base += row.commissionBase ?? 0;
+      test.expected += row.grossCommission; test.commission += row.commission;
+      if (row.held) test.held += row.commission;
+      if (isFallbackScope(row.ruleScope)) test.fallback = true;
+      test.rows.push(row);
+
+      band.count++; band.revenue += row.price; band.outsourceCost += row.outsourceCost ?? 0;
+      band.base += row.commissionBase ?? 0;
+      band.expected += row.grossCommission; band.commission += row.commission;
+      if (row.held) band.held += row.commission;
+    }
+  }
+
+  for (const [key, band] of bands) {
+    band.doctors = bandDoctors.get(key)!.size;
+    band.orders = bandOrders.get(key)!.size;
+    band.tests.sort((a, b) => b.commission - a.commission || a.testName.localeCompare(b.testName));
+    for (const t of band.tests) t.rows.sort((a, b) => a.date.localeCompare(b.date) || a.patientName.localeCompare(b.patientName));
+  }
+
+  // In-house bands first, then outsourced; inside each, the richest rate first,
+  // percentages before fixed amounts, "No Commission" always last.
+  return [...bands.values()].sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "inhouse" ? -1 : 1;
+    const aZero = !(a.ruleValue > 0), bZero = !(b.ruleValue > 0);
+    if (aZero !== bZero) return aZero ? 1 : -1;
+    if (a.ruleType !== b.ruleType) return a.ruleType === "percentage" ? -1 : 1;
+    return b.ruleValue - a.ruleValue;
+  });
+}
+
+const allCategories = (report: DoctorEntry[]): string[] =>
+  [...new Set(report.flatMap(e => e.rows.map(r => r.category || "Uncategorised")))].sort((a, b) => a.localeCompare(b));
+
 // ── Print CSS ─────────────────────────────────────────────────────────────────
 const PRINT_CSS = `
   * { box-sizing:border-box; margin:0; padding:0; }
@@ -137,6 +274,7 @@ const PRINT_CSS = `
   th.center, td.center { text-align:center; }
   td { padding:5px 8px; border:1px solid #ddd; font-size:11px; }
   .total-row td { font-weight:700; background:#fff8e6; border-top:2px solid #b45309; }
+  .test-row td { background:#f4f6f8; border-top:1px solid #bbb; }
   .grand-row td { font-weight:700; background:#fef3c7; font-size:13px; border-top:2px solid #92400e; }
   @media print { @page { margin:12mm; size:A4 landscape; } body { padding:0; } }
 `;
@@ -150,6 +288,7 @@ function buildPrintHtml(
   cols: ColFlags,
   discountFmt: DiscountFmt,
   showBreakdown: boolean,
+  bandCategories: Set<string> = new Set(),
 ) {
   const negDisc = (d: number) => (d > 0.005 ? `−${inr(d)}` : "—");
   const colCount = 3
@@ -238,6 +377,64 @@ function buildPrintHtml(
         </tr>
       </tbody>
     </table>`;
+  } else if (mode === "rate-bands") {
+    // One block per commission rate. Each block lists its tests (with band and
+    // test totals) and, underneath each test, the patient lines that make it up.
+    const bands = buildRateBands(report, bandCategories);
+    body = bands.map(b => {
+      const testBlocks = b.tests.map(t => {
+        const patientRows = t.rows.map(r => `<tr>
+          <td>${fmtDate(r.date)}</td>
+          <td>${r.patientName}</td>
+          <td>${r.doctorName}</td>
+          ${cols.billNo ? `<td>${r.billNumber}</td>` : ""}
+          ${cols.orderNo ? `<td>${r.orderNumber}</td>` : ""}
+          <td class='right'>${inr(r.price)}</td>
+          ${b.kind === "outsourced" ? `<td class='right'>${inr(r.outsourceCost)}</td>` : ""}
+          <td class='right'>${inr(r.commission)}</td>
+        </tr>`).join("");
+        const span = 3 + (cols.billNo ? 1 : 0) + (cols.orderNo ? 1 : 0);
+        return `<tr class='test-row'>
+            <td colspan='${span}'><strong>${t.testName}</strong>${t.category ? ` <span style='color:#777'>(${t.category})</span>` : ""}${t.fallback ? " <span style='color:#b45309'>[no slab]</span>" : ""} — ${t.count} test${t.count === 1 ? "" : "s"}</td>
+            <td class='right'><strong>${inr(t.revenue)}</strong></td>
+            ${b.kind === "outsourced" ? `<td class='right'><strong>${inr(t.outsourceCost)}</strong></td>` : ""}
+            <td class='right'><strong>${inr(t.commission)}</strong></td>
+          </tr>${patientRows}`;
+      }).join("");
+      const span = 3 + (cols.billNo ? 1 : 0) + (cols.orderNo ? 1 : 0);
+      return `<div class='doctor-header'>${b.label} — ${b.kind === "outsourced" ? "Outsourced" : "In-house"}
+          <span style='font-weight:400;text-transform:none;letter-spacing:0'>
+            (${b.tests.length} test type${b.tests.length === 1 ? "" : "s"} · ${b.count} test${b.count === 1 ? "" : "s"} · ${b.doctors} doctor${b.doctors === 1 ? "" : "s"})
+          </span></div>
+        <table>
+          <thead><tr>
+            <th>Date</th><th>Patient Name</th><th>Referring Doctor</th>
+            ${cols.billNo ? "<th>Bill No</th>" : ""}
+            ${cols.orderNo ? "<th>Order No</th>" : ""}
+            <th class='right'>Bill Amt</th>
+            ${b.kind === "outsourced" ? "<th class='right'>Lab Cost</th>" : ""}
+            <th class='right'>Commission</th>
+          </tr></thead>
+          <tbody>
+            ${testBlocks}
+            <tr class='total-row'>
+              <td colspan='${span}'><strong>BAND TOTAL — ${b.label} (${b.kind === "outsourced" ? "Outsourced" : "In-house"})</strong></td>
+              <td class='right'><strong>${inr(b.revenue)}</strong></td>
+              ${b.kind === "outsourced" ? `<td class='right'><strong>${inr(b.outsourceCost)}</strong></td>` : ""}
+              <td class='right'><strong>${inr(b.commission)}</strong></td>
+            </tr>
+          </tbody>
+        </table>`;
+    }).join("");
+
+    const totCount = bands.reduce((s, b) => s + b.count, 0);
+    const totRevenue = bands.reduce((s, b) => s + b.revenue, 0);
+    const totCommission = bands.reduce((s, b) => s + b.commission, 0);
+    body += `<table style='margin-top:16px'><tbody><tr class='grand-row'>
+        <td><strong>GRAND TOTAL (${bands.length} band${bands.length === 1 ? "" : "s"} · ${totCount} tests)</strong></td>
+        <td class='right'><strong>${inr(totRevenue)}</strong></td>
+        <td class='right'><strong>${inr(totCommission)}</strong></td>
+      </tr></tbody></table>`;
   } else if (mode === "test-summary") {
     // Test-grouped print per doctor, with optional Expected/Discount/Actual breakdown.
     type TS = { testName: string; count: number; expected: number; commission: number; ruleType: string; ruleValue: number };
@@ -347,6 +544,8 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
   // Commission-discount breakdown: show Expected / Discount / Actual columns in
   // the Test-Summary and Consolidated views (expected − discount = actual).
   const [showBreakdown, setShowBreakdown] = useState(false);
+  // Rate Bands: which categories/groups to include. Empty = every category.
+  const [bandCats, setBandCats] = useState<Set<string>>(new Set());
 
   const { data: doctorsData } = useQuery({
     queryKey: ["/api/super-admin/doctors-list"],
@@ -421,7 +620,7 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
     const doctorLabel = doctorId
       ? doctors.find(d => d.id === doctorId)?.name ?? "—"
       : "All Doctors";
-    const html = buildPrintHtml(mode, report, grandTotal, from, to, doctorLabel, cols, discountFmt, showBreakdown);
+    const html = buildPrintHtml(mode, report, grandTotal, from, to, doctorLabel, cols, discountFmt, showBreakdown, bandCats);
     const win = window.open("", "_blank", "width=1000,height=750");
     if (!win) { toast({ title: "Pop-up blocked", description: "Please allow pop-ups and try again.", variant: "destructive" }); return; }
     win.document.write(html);
@@ -432,7 +631,43 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
     setCols(prev => ({ ...prev, [key]: !prev[key] }));
 
   // ── Adapter: per-patient rows → test-grouped for export helpers ──────────
+  // In Rate Bands mode each *band* becomes a section (instead of each doctor),
+  // so the Excel / Word / PDF files are organised by commission rate too. The
+  // exporters carry two levels — section and test — so the patient lines under
+  // each test stay on the screen and the Print sheet, which do carry a third.
+  function toBandSections(report: DoctorEntry[]): CommissionDoctorEntryX[] {
+    return buildRateBands(report, bandCats).map((b, i) => ({
+      doctor: {
+        id: -(i + 1),
+        name: `${b.label} — ${b.kind === "outsourced" ? "Outsourced" : "In-house"}`,
+        specialization: `${b.tests.length} test type${b.tests.length === 1 ? "" : "s"} · ${b.count} test${b.count === 1 ? "" : "s"} · ${b.doctors} doctor${b.doctors === 1 ? "" : "s"}`,
+        defaultCommission: b.ruleValue,
+        defaultCommissionType: b.ruleType,
+      },
+      orderCount: b.orders,
+      testCount: b.count,
+      totalRevenue: b.revenue,
+      totalCommission: b.commission,
+      totalExpected: b.expected,
+      totalDiscount: b.expected - b.commission,
+      effectiveRate: b.base > 0 ? Math.round((b.commission / b.base) * 1000) / 10 : 0,
+      grouped: b.tests.map(t => ({
+        testId: t.testId,
+        testName: t.testName,
+        category: t.category,
+        count: t.count,
+        revenue: t.revenue,
+        commission: t.commission,
+        expected: t.expected,
+        ruleName: b.ruleNames[0] ?? "",
+        ruleType: b.ruleType,
+        ruleValue: b.ruleValue,
+      })),
+    }) as unknown as CommissionDoctorEntryX);
+  }
+
   function toExportSections(report: DoctorEntry[]): CommissionDoctorEntryX[] {
+    if (mode === "rate-bands") return toBandSections(report);
     return report.map((entry) => {
       const byTest: Record<number, CommissionTestGroupRowX> = {};
       for (const row of entry.rows) {
@@ -653,7 +888,7 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
             <div>
               <Label className="text-xs mb-2 block">Report View</Label>
               <div className="flex gap-1.5">
-                {(["by-doctor", "test-summary", "consolidated"] as ReportMode[]).map(m => (
+                {(["by-doctor", "test-summary", "rate-bands", "consolidated"] as ReportMode[]).map(m => (
                   <button
                     key={m}
                     onClick={() => setMode(m)}
@@ -663,11 +898,53 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
                         : "bg-background border-border hover:bg-muted text-muted-foreground"
                     }`}
                   >
-                    {m === "by-doctor" ? "By Doctor" : m === "test-summary" ? "Test Summary" : "Consolidated"}
+                    {m === "by-doctor" ? "By Doctor"
+                      : m === "test-summary" ? "Test Summary"
+                      : m === "rate-bands" ? "Rate Bands"
+                      : "Consolidated"}
                   </button>
                 ))}
               </div>
             </div>
+
+            {/* Category / group filter — only meaningful for the banded view */}
+            {mode === "rate-bands" && (
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <Label className="text-xs">Category / Group</Label>
+                  {bandCats.size > 0 && (
+                    <button className="text-[10px] text-primary hover:underline" onClick={() => setBandCats(new Set())}>
+                      clear ({bandCats.size})
+                    </button>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-1.5 max-w-[420px]">
+                  {allCategories(report).map(cat => {
+                    const on = bandCats.has(cat);
+                    return (
+                      <button
+                        key={cat}
+                        onClick={() => {
+                          const next = new Set(bandCats);
+                          if (on) next.delete(cat); else next.add(cat);
+                          setBandCats(next);
+                        }}
+                        className={`px-2 py-1 rounded-md text-[11px] font-medium border transition-colors ${
+                          on
+                            ? "bg-primary text-primary-foreground border-primary"
+                            : "bg-background border-border hover:bg-muted text-muted-foreground"
+                        }`}
+                      >
+                        {cat}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-1 max-w-[420px] leading-snug">
+                  Nothing selected = every category. Pick e.g. Pathology and Biochemistry to band only those.
+                </p>
+              </div>
+            )}
 
             <div>
               <Label className="text-xs mb-2 block">Commission Breakdown</Label>
@@ -766,6 +1043,12 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
           </div>
         ) : mode === "consolidated" ? (
           <ConsolidatedView report={report} grandTotal={grandTotal} cols={cols} showBreakdown={showBreakdown} />
+        ) : mode === "rate-bands" ? (
+          <RateBandsView
+            bands={buildRateBands(report, bandCats)}
+            singleDoctor={doctorId != null}
+            outsourcedBasis={settings.outsourcedBasis ?? "price"}
+          />
         ) : mode === "test-summary" ? (
           <TestSummaryView report={report} grandTotal={grandTotal} cols={cols} showBreakdown={showBreakdown} />
         ) : (
@@ -883,6 +1166,225 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+// ── Rate Bands view ───────────────────────────────────────────────────────────
+// Three levels, each collapsed by default so a clinic with hundreds of tests
+// opens onto a handful of band headers instead of thousands of rows:
+//   band (one commission rate, in-house and outsourced kept apart)
+//     └── test type, with its own totals
+//           └── the individual patient lines
+function RateBandsView({
+  bands, singleDoctor, outsourcedBasis,
+}: {
+  bands: RateBand[];
+  singleDoctor: boolean;
+  outsourcedBasis: string;
+}) {
+  const [openBands, setOpenBands] = useState<Set<string>>(new Set());
+  const [openTests, setOpenTests] = useState<Set<string>>(new Set());
+
+  const toggle = (set: Set<string>, key: string, apply: (s: Set<string>) => void) => {
+    const next = new Set(set);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    apply(next);
+  };
+
+  const totCount = bands.reduce((s, b) => s + b.count, 0);
+  const totRevenue = bands.reduce((s, b) => s + b.revenue, 0);
+  const totCommission = bands.reduce((s, b) => s + b.commission, 0);
+  const totHeld = bands.reduce((s, b) => s + b.held, 0);
+  const anyOutsourced = bands.some(b => b.kind === "outsourced");
+
+  if (bands.length === 0) {
+    return (
+      <div className="text-center py-16 text-muted-foreground text-sm bg-card border border-border rounded-xl">
+        <FileText size={32} className="mx-auto mb-3 opacity-30" />
+        No tests match the selected categories
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-muted-foreground">
+          {bands.length} rate band{bands.length === 1 ? "" : "s"} · {totCount} test{totCount === 1 ? "" : "s"}
+          {anyOutsourced && (
+            <> · outsourced commission charged on <strong>{outsourcedBasis === "margin" ? "margin (price − lab cost)" : "full price"}</strong></>
+          )}
+        </p>
+        <div className="flex gap-2">
+          <button className="text-xs text-primary hover:underline"
+            onClick={() => setOpenBands(new Set(bands.map(b => b.key)))}>Expand all bands</button>
+          <button className="text-xs text-muted-foreground hover:underline"
+            onClick={() => { setOpenBands(new Set()); setOpenTests(new Set()); }}>Collapse all</button>
+        </div>
+      </div>
+
+      {bands.map(band => {
+        const bandOpen = openBands.has(band.key);
+        // Realised against the amount the rate was actually applied to — not
+        // gross revenue. On a margin-basis outsourced band those differ a lot,
+        // and revenue would make a full-rate payout look like a small one.
+        const effRate = band.base > 0 ? (band.commission / band.base) * 100 : 0;
+        return (
+          <div key={band.key} className="bg-card border border-border rounded-xl overflow-hidden">
+            {/* Band header */}
+            <button
+              onClick={() => toggle(openBands, band.key, setOpenBands)}
+              className="w-full flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 text-left hover:bg-muted/20 transition-colors"
+            >
+              <ChevronRight size={16} className={`shrink-0 text-muted-foreground transition-transform ${bandOpen ? "rotate-90" : ""}`} />
+              <span className="font-semibold">{band.label}</span>
+              <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                band.kind === "outsourced"
+                  ? "bg-sky-950 text-sky-300 border border-sky-900"
+                  : "bg-muted text-muted-foreground border border-border"
+              }`}>
+                {band.kind === "outsourced" ? "Outsourced" : "In-house"}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {band.tests.length} test type{band.tests.length === 1 ? "" : "s"} · {band.count} test{band.count === 1 ? "" : "s"} · {band.doctors} doctor{band.doctors === 1 ? "" : "s"}
+              </span>
+              <span className="ml-auto flex items-center gap-5 text-sm">
+                <span className="text-muted-foreground">
+                  Revenue <span className="font-mono tabular-nums text-foreground">{inr(band.revenue)}</span>
+                </span>
+                {band.kind === "outsourced" && (
+                  <span className="text-muted-foreground">
+                    Lab cost <span className="font-mono tabular-nums text-foreground">{inr(band.outsourceCost)}</span>
+                  </span>
+                )}
+                <span className="text-muted-foreground" title={`Commission ÷ the amount the rate was applied to (${inr(band.base)}). Below the band rate means discounts ate into it.`}>
+                  Realised <span className="font-mono tabular-nums text-foreground">{effRate.toFixed(1)}%</span>
+                </span>
+                <span className="font-mono tabular-nums font-semibold text-amber-500">{inr(band.commission)}</span>
+              </span>
+            </button>
+
+            {/* Outsourced bands: warn when commission exceeds what the clinic keeps */}
+            {band.kind === "outsourced" && band.commission > band.revenue - band.outsourceCost + 0.005 && (
+              <div className="mx-4 mb-3 rounded-md border border-rose-900 bg-rose-950/30 px-3 py-2 text-[11px] text-rose-300 flex items-start gap-2">
+                <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+                <span>
+                  This band pays {inr(band.commission)} on work that only earned the clinic{" "}
+                  {inr(band.revenue - band.outsourceCost)} after the external lab was paid — a shortfall of{" "}
+                  <strong>{inr(band.commission - (band.revenue - band.outsourceCost))}</strong>.
+                  {outsourcedBasis === "price" && " Switch the outsourced basis to Margin, or set an outsourced-only slab."}
+                </span>
+              </div>
+            )}
+
+            {bandOpen && (
+              <div className="border-t border-border">
+                {band.tests.map(test => {
+                  const testKey = `${band.key}#${test.testId}`;
+                  const testOpen = openTests.has(testKey);
+                  return (
+                    <div key={testKey} className="border-b border-border/50 last:border-b-0">
+                      {/* Test row */}
+                      <button
+                        onClick={() => toggle(openTests, testKey, setOpenTests)}
+                        className="w-full flex flex-wrap items-center gap-x-3 gap-y-1 pl-9 pr-4 py-2 text-left text-sm hover:bg-muted/20 transition-colors"
+                      >
+                        <ChevronRight size={13} className={`shrink-0 text-muted-foreground transition-transform ${testOpen ? "rotate-90" : ""}`} />
+                        <span className="font-medium">{test.testName}</span>
+                        {test.category && <span className="text-[11px] text-muted-foreground">{test.category}</span>}
+                        {test.fallback && (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-950 text-amber-400 border border-amber-900">
+                            no slab
+                          </span>
+                        )}
+                        <span className="text-xs text-muted-foreground">×{test.count}</span>
+                        <span className="ml-auto flex items-center gap-5">
+                          <span className="text-xs text-muted-foreground">
+                            Revenue <span className="font-mono tabular-nums text-foreground">{inr(test.revenue)}</span>
+                          </span>
+                          {band.kind === "outsourced" && (
+                            <span className="text-xs text-muted-foreground">
+                              Lab cost <span className="font-mono tabular-nums text-foreground">{inr(test.outsourceCost)}</span>
+                            </span>
+                          )}
+                          <span className="font-mono tabular-nums text-amber-500">{inr(test.commission)}</span>
+                        </span>
+                      </button>
+
+                      {/* Patient lines */}
+                      {testOpen && (
+                        <div className="overflow-x-auto bg-background/40">
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="text-muted-foreground border-y border-border">
+                                <th className="text-left font-medium px-4 py-1.5 pl-14">Date</th>
+                                <th className="text-left font-medium px-4 py-1.5">Patient</th>
+                                {!singleDoctor && <th className="text-left font-medium px-4 py-1.5">Referring Doctor</th>}
+                                <th className="text-left font-medium px-4 py-1.5">Bill / Order</th>
+                                <th className="text-right font-medium px-4 py-1.5">Bill Amt</th>
+                                {band.kind === "outsourced" && <th className="text-right font-medium px-4 py-1.5">Lab Cost</th>}
+                                {band.kind === "outsourced" && <th className="text-right font-medium px-4 py-1.5">Margin</th>}
+                                <th className="text-right font-medium px-4 py-1.5">Commission</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {test.rows.map((r, i) => (
+                                <tr key={`${r.orderId}-${r.testId}-${i}`} className="border-b border-border/30 last:border-b-0">
+                                  <td className="px-4 py-1.5 pl-14 whitespace-nowrap">{fmtDate(r.date)}</td>
+                                  <td className="px-4 py-1.5">
+                                    {r.patientName}
+                                    <span className="text-muted-foreground ml-1.5 font-mono text-[10px]">{r.patientPid}</span>
+                                  </td>
+                                  {!singleDoctor && <td className="px-4 py-1.5">{r.doctorName}</td>}
+                                  <td className="px-4 py-1.5 font-mono text-[10px] text-muted-foreground">
+                                    {r.billNumber || r.orderNumber}
+                                  </td>
+                                  <td className="px-4 py-1.5 text-right font-mono tabular-nums">{inr(r.price)}</td>
+                                  {band.kind === "outsourced" && (
+                                    <td className="px-4 py-1.5 text-right font-mono tabular-nums text-muted-foreground">{inr(r.outsourceCost)}</td>
+                                  )}
+                                  {band.kind === "outsourced" && (
+                                    <td className={`px-4 py-1.5 text-right font-mono tabular-nums ${r.margin < r.commission ? "text-rose-400" : ""}`}>
+                                      {inr(r.margin)}
+                                    </td>
+                                  )}
+                                  <td className="px-4 py-1.5 text-right font-mono tabular-nums text-amber-500">
+                                    {inr(r.commission)}
+                                    {r.held && <span className="ml-1.5 text-[10px] text-muted-foreground" title={r.holdReason ?? "On hold"}>(hold)</span>}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {/* Grand total across every band */}
+      <div className="bg-amber-950/30 border border-amber-900 rounded-xl px-4 py-3 flex flex-wrap items-center gap-x-6 gap-y-1">
+        <span className="font-semibold text-amber-400">
+          GRAND TOTAL — {bands.length} band{bands.length === 1 ? "" : "s"} · {totCount} test{totCount === 1 ? "" : "s"}
+        </span>
+        <span className="ml-auto flex items-center gap-6 text-sm">
+          <span className="text-muted-foreground">
+            Revenue <span className="font-mono tabular-nums text-foreground">{inr(totRevenue)}</span>
+          </span>
+          {totHeld > 0.005 && (
+            <span className="text-muted-foreground">
+              On hold <span className="font-mono tabular-nums text-foreground">{inr(totHeld)}</span>
+            </span>
+          )}
+          <span className="font-mono tabular-nums font-bold text-amber-400 text-base">{inr(totCommission)}</span>
+        </span>
+      </div>
     </div>
   );
 }

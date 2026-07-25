@@ -12,6 +12,13 @@ export const commissionRulesTable = pgTable("commission_rules", {
   scope: text("scope").notNull().default("all"), // 'all' | 'category' | 'test'
   categories: text("categories"), // JSON array of category strings
   testIds: text("test_ids"), // JSON array of test IDs
+  // Which kind of test line this slab may apply to. Outsourced work has a very
+  // different margin (the clinic pays an external lab), so a clinic can set a
+  // separate slab for it instead of one rate across both.
+  //   'all'        — applies to any line (default; preserves existing rules)
+  //   'inhouse'    — only tests performed in-house
+  //   'outsourced' — only tests sent to an external lab
+  appliesTo: text("applies_to").notNull().default("all"),
   isExclusive: boolean("is_exclusive").notNull().default(false),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

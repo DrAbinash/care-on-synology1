@@ -128,6 +128,11 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   //   "min_amount_collected"   — payable once collected >= commissionEligibilityMinAmount
   //   "full_payment_collected" — payable once the bill is fully paid (balance 0)
   //   "collected_ge_commission"— payable once collected >= the commission amount
+  // What an outsourced test's commission is calculated on.
+  //   'price'  — the full patient price (historical behaviour, default)
+  //   'margin' — price minus what the clinic pays the external lab, so
+  //              commission can never exceed what the clinic actually earned
+  commissionOutsourcedBasis: text("commission_outsourced_basis").notNull().default("price"),
   commissionEligibilityPolicy: text("commission_eligibility_policy").notNull().default("full_payment_collected"),
   commissionEligibilityMinAmount: numeric("commission_eligibility_min_amount", { precision: 10, scale: 2 }).notNull().default("0"),
   // Expense approval separation-of-duties toggle. Default true (self-approval

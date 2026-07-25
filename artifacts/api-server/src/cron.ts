@@ -25,6 +25,12 @@ import { RADIOLOGY_JOB_HANDLERS } from "./lib/radiologyJobHandlers";
 import { runScheduledAuditChainVerification } from "./lib/auditVerification";
 import { todayIST, istHourMinute } from "./lib/istDate";
 import { classifyPaymentMethod, isDigitalSettlement, isPhysicalCash } from "./lib/paymentMethodClassifier";
+import {
+  calcTestCommission,
+  applyDiscountDeduction,
+  computeCommissionHold,
+  NEEDS_REPORT_STATUS,
+} from "./lib/commissionCalc";
 
 let currentTask: ReturnType<typeof cron.schedule> | null = null;
 // Track already-fired events per day to avoid double-firing
@@ -931,61 +937,10 @@ export async function runOpsAnomalyScanNow() {
 // commission_status_events whenever an order goes On Hold or is Released. This is
 // the auto-release mechanism (a held commission's release is recorded here once
 // its payment/report condition is met) and the complete transition audit trail.
-// Self-contained (mirrors the plugin's commission.ts / doctor-ledger.ts helpers).
+// The maths is imported from ./lib/commissionCalc — the same module the plugin's
+// commission.ts and doctor-ledger.ts use — so this job can never judge an order
+// against a different figure from the one the Referral Report shows.
 const RECONCILE_LOOKBACK_DAYS = 180;
-
-function reconcileParseArr<T = unknown>(s: string | null | undefined): T[] {
-  if (!s) return [];
-  try { const v = JSON.parse(s); return Array.isArray(v) ? (v as T[]) : []; } catch { return []; }
-}
-
-function reconcileFindRule(
-  testId: number,
-  category: string | null,
-  rules: (typeof commissionRulesTable.$inferSelect)[],
-): (typeof commissionRulesTable.$inferSelect) | undefined {
-  const testMatch = (r: typeof commissionRulesTable.$inferSelect) => !!r.testIds && reconcileParseArr<number>(r.testIds).includes(testId);
-  const catMatch = (r: typeof commissionRulesTable.$inferSelect) => category !== null && !!r.categories && reconcileParseArr<string>(r.categories).includes(category || "");
-  const specific = (r: typeof commissionRulesTable.$inferSelect) => (r.scope === "test" && testMatch(r)) || (r.scope === "category" && catMatch(r));
-  let m = rules.find(r => r.isActive && r.isExclusive && specific(r));
-  if (!m) m = rules.find(r => r.isActive && specific(r));
-  if (!m) m = rules.find(r => r.isActive && r.scope === "all");
-  return m;
-}
-
-function reconcileTestCommission(
-  ot: { id: number; testId: number; price: string },
-  test: { category: string | null } | undefined,
-  rules: (typeof commissionRulesTable.$inferSelect)[],
-  doctor: typeof doctorsTable.$inferSelect,
-  vipIds: Set<number>,
-  vipPct: number,
-): number {
-  let price = Number(ot.price);
-  if (ot.id && vipIds.has(ot.id) && vipPct) price = price / (1 + vipPct / 100);
-  const m = reconcileFindRule(ot.testId, test ? (test.category ?? "") : null, rules);
-  if (m) { const v = Number(m.value); return m.type === "percentage" ? (price * v) / 100 : v; }
-  const dv = Number(doctor.defaultCommission);
-  if (dv > 0) return (doctor.defaultCommissionType || "percentage") === "percentage" ? (price * dv) / 100 : dv;
-  return 0;
-}
-
-function reconcileHold(opts: {
-  policy: string; minAmount: number; hasBill: boolean; billStatus: string | null;
-  paid: number; balance: number; reportFinalized: boolean; reportDelivered: boolean; commissionAmount: number;
-}): { held: boolean; reason: string | null } {
-  const rs = (n: number) => `Rs.${Math.round(n).toLocaleString("en-IN")}`;
-  if (opts.billStatus === "cancelled") return { held: true, reason: "Bill cancelled" };
-  if (!opts.hasBill) return { held: true, reason: "Not billed" };
-  switch (opts.policy) {
-    case "report_finalized": return opts.reportFinalized ? { held: false, reason: null } : { held: true, reason: "Report not finalized" };
-    case "report_delivered": return opts.reportDelivered ? { held: false, reason: null } : { held: true, reason: "Report not delivered" };
-    case "min_amount_collected": return opts.paid + 0.005 >= opts.minAmount ? { held: false, reason: null } : { held: true, reason: `Collected ${rs(opts.paid)} < min ${rs(opts.minAmount)}` };
-    case "full_payment_collected": return opts.balance <= 0.005 ? { held: false, reason: null } : { held: true, reason: `Outstanding dues ${rs(opts.balance)}` };
-    case "collected_ge_commission": return opts.paid + 0.005 >= opts.commissionAmount ? { held: false, reason: null } : { held: true, reason: `Collected ${rs(opts.paid)} < commission ${rs(opts.commissionAmount)}` };
-    default: return { held: false, reason: null };
-  }
-}
 
 async function fireCommissionReconcile(): Promise<{ transitions: number }> {
   const [clinic] = await db.select({
@@ -993,12 +948,14 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
     minAmount: clinicSettingsTable.commissionEligibilityMinAmount,
     vipPercentage: clinicSettingsTable.vipPercentage,
     discountMode: clinicSettingsTable.commissionDiscountMode,
+    outsourcedBasis: clinicSettingsTable.commissionOutsourcedBasis,
   }).from(clinicSettingsTable).limit(1);
   const policy = clinic?.policy ?? "full_payment_collected";
   const minAmount = Number(clinic?.minAmount ?? 0);
   const vipPct = clinic?.vipPercentage ? Number(clinic.vipPercentage) : 50;
   const discountMode = clinic?.discountMode ?? "none";
-  const needsReport = policy === "report_finalized" || policy === "report_delivered";
+  const outsourcedBasis = clinic?.outsourcedBasis ?? "price";
+  const needsReport = NEEDS_REPORT_STATUS(policy);
 
   const since = new Date();
   since.setDate(since.getDate() - RECONCILE_LOOKBACK_DAYS);
@@ -1010,13 +967,13 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
   const [doctors, rules, tests, orderTests, bills, tokens, lastEvents] = await Promise.all([
     db.select().from(doctorsTable),
     db.select().from(commissionRulesTable),
-    db.select({ id: testsTable.id, category: testsTable.category }).from(testsTable),
+    db.select({ id: testsTable.id, category: testsTable.category, testType: testsTable.testType }).from(testsTable),
     db.select().from(orderTestsTable).where(and(inArray(orderTestsTable.orderId, orderIds), ne(orderTestsTable.status, "cancelled"))),
     db.select({ orderId: billsTable.orderId, status: billsTable.status, paid: billsTable.paidAmount, balance: billsTable.balanceAmount, discount: billsTable.discount }).from(billsTable).where(inArray(billsTable.orderId, orderIds)),
     db.select({ orderTestId: testTokensTable.orderTestId }).from(testTokensTable).where(and(inArray(testTokensTable.orderId, orderIds), sql`${testTokensTable.priority} > 0`)),
     db.select({ orderId: commissionStatusEventsTable.orderId, newStatus: commissionStatusEventsTable.newStatus, createdAt: commissionStatusEventsTable.createdAt }).from(commissionStatusEventsTable).where(inArray(commissionStatusEventsTable.orderId, orderIds)),
   ]);
-  const testMap = new Map(tests.map(t => [t.id, { category: t.category }]));
+  const testMap = new Map(tests.map(t => [t.id, { category: t.category, testType: t.testType }]));
   const doctorMap = new Map(doctors.map(d => [d.id, d]));
   const rulesByDoctor = new Map<number, (typeof commissionRulesTable.$inferSelect)[]>();
   for (const r of rules) { const a = rulesByDoctor.get(r.doctorId) ?? []; a.push(r); rulesByDoctor.set(r.doctorId, a); }
@@ -1054,23 +1011,21 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
     if (!ots.length) continue;
     const dRules = rulesByDoctor.get(order.doctorId) ?? [];
     let raw = 0;
-    for (const ot of ots) raw += reconcileTestCommission(ot, testMap.get(ot.testId), dRules, doctor, vipIds, vipPct);
+    for (const ot of ots) {
+      raw += calcTestCommission(ot, testMap.get(ot.testId), dRules, doctor, vipIds, vipPct, outsourcedBasis).commission;
+    }
     const bill = billByOrder.get(order.id);
     // Judge — and record — the NET commission, i.e. after the clinic's
     // bill-discount deduction. The Referral Report and the Doctor Ledger both
     // work in net; using gross here would make the "collected >= commission"
     // policy disagree with them and would record an inflated amount in the
     // audit trail (which the ledger's clawback panel reads back).
-    const netCommission = discountMode === "deduct"
-      ? Math.max(0, raw - (bill?.discount ?? 0))
-      : discountMode === "deduct_rollover"
-        ? raw - (bill?.discount ?? 0)
-        : raw;
+    const { net: netCommission } = applyDiscountDeduction(raw, bill?.discount ?? 0, discountMode);
     const rep = reportStatus.get(order.id);
-    const { held, reason } = reconcileHold({
-      policy, minAmount,
+    const { held, reason } = computeCommissionHold({
+      cfg: { policy, minAmount },
       hasBill: !!bill, billStatus: bill?.status ?? null,
-      paid: Number(bill?.paid ?? 0), balance: Number(bill?.balance ?? 0),
+      paidAmount: Number(bill?.paid ?? 0), balanceAmount: Number(bill?.balance ?? 0),
       reportFinalized: rep?.finalized ?? false, reportDelivered: rep?.delivered ?? false,
       commissionAmount: netCommission,
     });
