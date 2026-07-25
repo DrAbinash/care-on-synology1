@@ -2,6 +2,11 @@ import { Router } from "express";
 import { db, clinicSettingsTable, DEFAULT_BOOKING_TIME_SLOTS_JSON } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { getCached, setCached, invalidateCached, TTL } from "../lib/ttlCache";
+import {
+  hasCommissionAccess,
+  CLINIC_COMMISSION_FIELDS,
+  stripFields,
+} from "../middleware/commissionVisibility";
 
 const CLINIC_SETTINGS_CACHE_KEY = "clinic-settings:v1";
 
@@ -251,20 +256,27 @@ clinicSettingsRouter.get("/branding", async (_req, res) => {
   });
 });
 
-clinicSettingsRouter.get("/", async (_req, res) => {
+clinicSettingsRouter.get("/", async (req, res) => {
   // Clinic/hospital settings are read on nearly every page load (branding,
   // feature toggles, payment-provider enabled flags) but change rarely —
   // a 5-minute cache removes a DB round-trip from the hottest path in the
   // whole ERP. PUT / and POST /ollama invalidate this key immediately after
   // a successful write, so edits still show up within the same request.
+  //
+  // The commission settings on this row are Super-Admin-only. The cache stays
+  // complete and USB-agnostic; the fields are removed on the way out, so one
+  // caller's visibility can never be cached and served to another.
+  const shape = <T extends Record<string, unknown>>(row: T) =>
+    hasCommissionAccess(req) ? row : stripFields(row, CLINIC_COMMISSION_FIELDS);
+
   const cached = getCached<Awaited<ReturnType<typeof getOrCreate>>>(CLINIC_SETTINGS_CACHE_KEY);
   if (cached) {
-    res.json(cached);
+    res.json(shape(cached as unknown as Record<string, unknown>));
     return;
   }
   const row = await getOrCreate();
   setCached(CLINIC_SETTINGS_CACHE_KEY, row, TTL.SHORT);
-  res.json(row);
+  res.json(shape(row as unknown as Record<string, unknown>));
 });
 
 clinicSettingsRouter.put("/", async (req, res) => {
@@ -621,14 +633,25 @@ clinicSettingsRouter.put("/", async (req, res) => {
     }
     update.lanAllowedIps = body.lanAllowedIps;
   }
-  if (body.commissionDiscountMode !== undefined) {
-    const valid = ["none", "deduct", "deduct_rollover"];
-    if (!valid.includes(body.commissionDiscountMode)) {
-      console.warn("[PUT /api/clinic-settings] rejected 400:", `commissionDiscountMode must be one of: ${valid.join(", ")}`, "| received body keys:", Object.keys(body));
-      res.status(400).json({ error: `commissionDiscountMode must be one of: ${valid.join(", ")}` });
+  // Commission settings are Super-Admin-only — they belong to the pen drive,
+  // and the portal's PATCH /api/super-admin/commission-settings is the way to
+  // change them. Reject rather than silently ignore, so an unauthorised caller
+  // is never told a commission change succeeded when it did not.
+  if (CLINIC_COMMISSION_FIELDS.some(f => body[f] !== undefined)) {
+    if (!hasCommissionAccess(req)) {
+      console.warn("[PUT /api/clinic-settings] rejected 403: commission settings require the super-admin USB key", "| received body keys:", Object.keys(body));
+      res.status(403).json({ error: "Commission settings can only be changed from the Super Admin portal" });
       return;
     }
-    update.commissionDiscountMode = body.commissionDiscountMode;
+    if (body.commissionDiscountMode !== undefined) {
+      const valid = ["none", "deduct", "deduct_rollover"];
+      if (!valid.includes(body.commissionDiscountMode)) {
+        console.warn("[PUT /api/clinic-settings] rejected 400:", `commissionDiscountMode must be one of: ${valid.join(", ")}`, "| received body keys:", Object.keys(body));
+        res.status(400).json({ error: `commissionDiscountMode must be one of: ${valid.join(", ")}` });
+        return;
+      }
+      update.commissionDiscountMode = body.commissionDiscountMode;
+    }
   }
   // Form F scanner integer settings
   const intFields = ["cropPadding", "jpegQuality", "maxScanWidth", "disclaimerRefundPercentage", "disclaimerCancellationWindowHours", "scanStationResultDisplaySeconds", "queueEstimatedWaitPerPatient"] as const;
@@ -724,7 +747,9 @@ clinicSettingsRouter.put("/", async (req, res) => {
       .returning();
     if (updateResult.length > 0) {
       invalidateCached(CLINIC_SETTINGS_CACHE_KEY);
-      res.json(updateResult[0]);
+      res.json(hasCommissionAccess(req)
+        ? updateResult[0]
+        : stripFields(updateResult[0] as unknown as Record<string, unknown>, CLINIC_COMMISSION_FIELDS));
       return;
     }
   } catch (updateErr) {
@@ -744,7 +769,9 @@ clinicSettingsRouter.put("/", async (req, res) => {
       .insert(clinicSettingsTable)
       .values(insertValues)
       .returning();
-    res.json(inserted);
+    res.json(hasCommissionAccess(req)
+      ? inserted
+      : stripFields(inserted as unknown as Record<string, unknown>, CLINIC_COMMISSION_FIELDS));
     invalidateCached(CLINIC_SETTINGS_CACHE_KEY);
   } catch (insertErr) {
     const msg = insertErr instanceof Error ? insertErr.message : String(insertErr);
