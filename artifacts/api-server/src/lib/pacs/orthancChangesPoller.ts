@@ -72,18 +72,74 @@ function orthancHeaders(): Record<string, string> {
   return headers;
 }
 
+// ── Reachability backoff ─────────────────────────────────────────────────────
+// Orthanc is an OPTIONAL container. A deployment that has not deployed it — or
+// where the ERP api is simply not attached to the PACS network, so
+// `care-orthanc` does not resolve — fails on EVERY tick. At the 20s interval
+// that wrote ~4,320 identical warn lines with full stacks per day into an
+// unrotated Docker json-file log on the NAS volume: a slow silent disk fill,
+// and worse, it buried any genuine intermittent PACS error among thousands of
+// identical ones. Bounded exponential backoff with warn-once-then-throttle, the
+// same shape as the repo's existing job/outbox retry rules.
+const BACKOFF_BASE_MS = 60_000;
+const BACKOFF_MAX_MS = 30 * 60_000; // cap at 30 minutes
+let consecutiveFailures = 0;
+let nextAttemptAt = 0;
+let suppressedWarnings = 0;
+
+/** True when backoff says we should not even attempt this tick. */
+function inBackoff(): boolean {
+  return nextAttemptAt > 0 && Date.now() < nextAttemptAt;
+}
+
+function noteUnreachable(err: unknown, path: string): void {
+  consecutiveFailures += 1;
+  const retryInMs = Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** (consecutiveFailures - 1));
+  nextAttemptAt = Date.now() + retryInMs;
+  // Log the 1st, 2nd, 4th, 8th… failure only. A permanently-absent Orthanc then
+  // costs a handful of lines instead of thousands, while a real intermittent
+  // fault still surfaces promptly.
+  const isPowerOfTwo = (consecutiveFailures & (consecutiveFailures - 1)) === 0;
+  if (isPowerOfTwo) {
+    logger.warn(
+      { err, path, consecutiveFailures, retryInMs, suppressedWarnings },
+      "orthanc-poller: Orthanc unreachable — backing off",
+    );
+    suppressedWarnings = 0;
+  } else {
+    suppressedWarnings += 1;
+  }
+}
+
+function noteReachable(): void {
+  if (consecutiveFailures > 0) {
+    logger.info(
+      { afterFailures: consecutiveFailures },
+      "orthanc-poller: Orthanc reachable again — resuming normal interval",
+    );
+  }
+  consecutiveFailures = 0;
+  nextAttemptAt = 0;
+  suppressedWarnings = 0;
+}
+
 async function orthancGet<T>(base: string, path: string): Promise<T | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
   try {
     const resp = await fetch(`${base}${path}`, { headers: orthancHeaders(), signal: controller.signal });
     if (!resp.ok) {
+      // Orthanc answered, so it IS reachable — clear backoff and keep the
+      // existing per-response warning (a 4xx/5xx is a real, actionable error,
+      // not the absent-container case this backoff exists for).
+      noteReachable();
       logger.warn({ path, status: resp.status }, "orthanc-poller: GET non-2xx");
       return null;
     }
+    noteReachable();
     return (await resp.json()) as T;
   } catch (err) {
-    logger.warn({ err, path }, "orthanc-poller: GET failed");
+    noteUnreachable(err, path);
     return null;
   } finally {
     clearTimeout(timer);
@@ -356,6 +412,7 @@ export function startOrthancChangesPoller(port: number): void {
 
   const tick = async () => {
     if (ticking) return; // never overlap runs
+    if (inBackoff()) return; // Orthanc is unreachable — wait out the backoff
     ticking = true;
     try {
       await pollOnce(port);

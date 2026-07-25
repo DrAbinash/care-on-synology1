@@ -229,6 +229,22 @@ services:
       ORTHANC_URL: ${ORTHANC_URL:-}
       # Internal Docker service name for server-side health probes (never use LAN IP here)
       ORTHANC_INTERNAL_URL: ${ORTHANC_INTERNAL_URL:-http://care-orthanc:8042}
+      # ── Orthanc → ERP study sync: RUN EXACTLY ONE ─────────────────────────
+      # Two implementations of the same job exist:
+      #   1. care-erp-sync (the care_erp_sync.py container in the SEPARATE
+      #      care-pacs compose project). It sits on care-pacs-net, so
+      #      `care-orthanc` resolves for it, and it is the one actually working.
+      #   2. this ERP's in-process poller (lib/pacs/orthancChangesPoller.ts).
+      # care-pacs is a different compose project with its own bridge network, so
+      # `care-orthanc` does NOT resolve from care-api — the in-process poller
+      # just fails every 20s (getaddrinfo ENOTFOUND care-orthanc) and logs.
+      #
+      # Set this to false whenever care-erp-sync is deployed — which is exactly
+      # what that script's own header instructs, to avoid double-sync. This var
+      # was already read by the code but never passed into the container, so it
+      # could not be set at all.
+      ORTHANC_CHANGES_POLLER: ${ORTHANC_CHANGES_POLLER:-}
+      ORTHANC_POLL_INTERVAL_MS: ${ORTHANC_POLL_INTERVAL_MS:-}
       # Required for health checks and DICOM probes to reach LAN IPs (modalities, PACS)
       ALLOW_PRIVATE_IPS: ${ALLOW_PRIVATE_IPS:-true}
       # Optional: Ollama AI URL (leave blank if not installed)
