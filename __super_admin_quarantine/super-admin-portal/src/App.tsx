@@ -6,7 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useForm } from "react-hook-form";
-import { ShieldAlert, LogOut, ExternalLink, Copy, CheckCheck, Eye, EyeOff, Lock, BookOpen, HandCoins, ListChecks, Wallet, Usb, ShieldCheck, FolderOpen, Stethoscope, Database, ScrollText, Shield, Heart, CreditCard, Terminal } from "lucide-react";
+import { ShieldAlert, LogOut, ExternalLink, Copy, CheckCheck, Eye, EyeOff, Lock, BookOpen, HandCoins, ListChecks, Wallet, Usb, ShieldCheck, FolderOpen, Stethoscope, Database, ScrollText, Shield, Heart, CreditCard, Terminal, BarChart3
+} from "lucide-react";
 import { setSaToken, setSaUsbKey, loadSaUsbKeyFromSession, saUsbHeader } from "./lib/saApi";
 import {
   isFsAccessSupported,
@@ -20,6 +21,7 @@ import {
 import BooksManager from "./pages/Books";
 import CommissionRules from "./pages/CommissionRules";
 import ReferralReport from "./pages/ReferralReport";
+import RateAnalysis from "./pages/RateAnalysis";
 import DoctorLedger from "./pages/DoctorLedger";
 import MoneyTrailAudit from "./pages/MoneyTrailAudit";
 import DoctorManager from "./pages/DoctorManager";
@@ -399,12 +401,13 @@ function LoginScreen({
 }
 
 function ActiveSessionScreen({
-  session, onEject, onManageBooks, onReferralReport, onCommissionRules, onDoctorLedger, onMoneyTrailAudit, onDoctorManager, onBackups, onAuditTrail, onRolePermissions, onSystemHealth, onSecurityDashboard,
+  session, onEject, onManageBooks, onReferralReport, onRateAnalysis, onCommissionRules, onDoctorLedger, onMoneyTrailAudit, onDoctorManager, onBackups, onAuditTrail, onRolePermissions, onSystemHealth, onSecurityDashboard,
 }: {
   session: Session;
   onEject: () => void;
   onManageBooks: () => void;
   onReferralReport: () => void;
+  onRateAnalysis: () => void;
   onCommissionRules: () => void;
   onDoctorLedger: () => void;
   onMoneyTrailAudit: () => void;
@@ -531,6 +534,10 @@ function ActiveSessionScreen({
                 <HandCoins size={14} className="mr-2" />
                 Referral & Commission Report
               </Button>
+              <Button variant="outline" className="w-full justify-start" onClick={onRateAnalysis}>
+                <BarChart3 size={14} className="mr-2" />
+                Rate Analysis
+              </Button>
               <Button variant="outline" className="w-full justify-start" onClick={onCommissionRules}>
                 <ListChecks size={14} className="mr-2" />
                 Commission Rules
@@ -641,8 +648,8 @@ function ActiveSessionScreen({
   );
 }
 
-type SaView = "home" | "books" | "referral-report" | "commission-rules" | "doctor-ledger" | "money-trail-audit" | "doctor-manager" | "backups" | "audit-trail" | "role-permissions" | "system-health" | "security-dashboard" | "payment-settings" | "payment-debug";
-const HASH_VIEWS: SaView[] = ["books", "referral-report", "commission-rules", "doctor-ledger", "money-trail-audit", "doctor-manager", "backups", "audit-trail", "role-permissions", "system-health", "security-dashboard", "payment-settings", "payment-debug"];
+type SaView = "home" | "books" | "referral-report" | "rate-analysis" | "commission-rules" | "doctor-ledger" | "money-trail-audit" | "doctor-manager" | "backups" | "audit-trail" | "role-permissions" | "system-health" | "security-dashboard" | "payment-settings" | "payment-debug";
+const HASH_VIEWS: SaView[] = ["books", "referral-report", "rate-analysis", "commission-rules", "doctor-ledger", "money-trail-audit", "doctor-manager", "backups", "audit-trail", "role-permissions", "system-health", "security-dashboard", "payment-settings", "payment-debug"];
 function viewFromHash(): SaView {
   const h = (window.location.hash || "").replace(/^#/, "");
   return (HASH_VIEWS as string[]).includes(h) ? (h as SaView) : "home";
@@ -755,6 +762,8 @@ function App() {
           <BooksManager token={session.token} onBack={() => setView("home")} />
         ) : view === "referral-report" ? (
           <ReferralReport onBack={() => setView("home")} />
+        ) : view === "rate-analysis" ? (
+          <RateAnalysis onBack={() => setView("home")} />
         ) : view === "commission-rules" ? (
           <CommissionRules onBack={() => setView("home")} />
         ) : view === "doctor-ledger" ? (
@@ -783,6 +792,7 @@ function App() {
             onEject={() => { setSession(null); setView("home"); }}
             onManageBooks={() => setView("books")}
             onReferralReport={() => setView("referral-report")}
+            onRateAnalysis={() => setView("rate-analysis")}
             onCommissionRules={() => setView("commission-rules")}
             onDoctorLedger={() => setView("doctor-ledger")}
             onMoneyTrailAudit={() => setView("money-trail-audit")}
