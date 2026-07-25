@@ -1,6 +1,15 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import crypto from "node:crypto";
-import { runDailySummary, runMonthEndCommission, fireBankingAutoSync, runWhatsappAppointmentReminders, runWhatsappDuesReminders } from "../cron";
+import {
+  runDailySummary,
+  runMonthEndCommission,
+  fireBankingAutoSync,
+  runWhatsappAppointmentReminders,
+  runWhatsappDuesReminders,
+  fireScheduledBackups,
+  runRestoreVerificationJob,
+  runBackupDeadManCheck,
+} from "../cron";
 import { logger } from "../lib/logger";
 
 const router = Router();
@@ -78,6 +87,47 @@ router.post("/whatsapp-dues-reminders", async (_req, res) => {
   } catch (err) {
     logger.error({ err }, "internal-cron whatsapp-dues-reminders failed");
     res.status(500).json({ error: "whatsapp-dues-reminders failed" });
+  }
+});
+
+// ── Backup / DR jobs ─────────────────────────────────────────────────────────
+// These three had NO reachable code path in production. Every scheduler lives
+// behind the ENABLE_SCHEDULERS gate in index.ts, which production deliberately
+// does not set (see the comment at index.ts:2797), and until now internal-cron
+// exposed no endpoint for them. The net effect was that automated backups never
+// fired from the API, backups were never proven restorable, and the dead-man
+// alert designed to catch "no backup at all" could never run — so total backup
+// failure was undetectable. Same CRON_SECRET bearer auth as the routes above.
+
+router.post("/scheduled-backups", async (_req, res) => {
+  try {
+    await fireScheduledBackups();
+    res.json({ ok: true, fired: "scheduled-backups", at: new Date().toISOString() });
+  } catch (err) {
+    logger.error({ err }, "internal-cron scheduled-backups failed");
+    res.status(500).json({ error: "scheduled-backups failed" });
+  }
+});
+
+router.post("/restore-verification", async (_req, res) => {
+  try {
+    const result = await runRestoreVerificationJob("internal-cron");
+    // Report the verification verdict without failing the trigger itself: a
+    // restore that could not be proven is a real result, not a 500.
+    res.json({ ok: true, fired: "restore-verification", verified: result.ok, result, at: new Date().toISOString() });
+  } catch (err) {
+    logger.error({ err }, "internal-cron restore-verification failed");
+    res.status(500).json({ error: "restore-verification failed" });
+  }
+});
+
+router.post("/backup-dead-man", async (_req, res) => {
+  try {
+    const result = await runBackupDeadManCheck();
+    res.json({ ok: true, fired: "backup-dead-man", result, at: new Date().toISOString() });
+  } catch (err) {
+    logger.error({ err }, "internal-cron backup-dead-man failed");
+    res.status(500).json({ error: "backup-dead-man failed" });
   }
 });
 

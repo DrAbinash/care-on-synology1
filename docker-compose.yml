@@ -211,6 +211,25 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set in .env — use a 64-char random string}
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:-}
 
+      # ── Scheduled jobs ─────────────────────────────────────────────────────
+      # Neither of these was passed into the container before, so there was NO
+      # way to run any scheduled job in production:
+      #
+      #   ENABLE_SCHEDULERS — gates all 25 in-process cron timers (index.ts).
+      #     Unset = every timer is unregistered, including automated backups,
+      #     the weekly restore-verification, and the backup dead-man alert.
+      #     Set to 1 on exactly ONE always-on instance (this Synology stack) —
+      #     never on an autoscale replica, or jobs double-fire.
+      #
+      #   CRON_SECRET — bearer secret for POST /api/internal/cron/* , the
+      #     external trigger path (NAS Task Scheduler / curl). The guard returns
+      #     503 when it is unset, so those endpoints were unusable too.
+      #     Either mechanism works; set at least one or nothing runs.
+      ENABLE_SCHEDULERS: ${ENABLE_SCHEDULERS:-}
+      CRON_SECRET: ${CRON_SECRET:-}
+      # Age in hours after which the dead-man alert fires (default 26).
+      BACKUP_DEADMAN_MAX_AGE_HOURS: ${BACKUP_DEADMAN_MAX_AGE_HOURS:-}
+
       OBJECT_STORAGE_DIR: ${OBJECT_STORAGE_DIR:-/app/data/object-storage}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://caredeoghar.com}
 
