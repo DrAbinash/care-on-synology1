@@ -1454,9 +1454,18 @@ function BankStatementPanel({ accounts, onImported }: { accounts: Account[]; onI
     const reader = new FileReader();
     reader.onload = (e) => {
       const dataUrl = e.target?.result as string;
+      const base64 = dataUrl.split(",")[1] ?? "";
+      if (mt === "application/pdf") {
+        // The crop/enhance editor is canvas-based and can't decode PDF bytes
+        // as an image — send it straight through to parsing instead.
+        setImageMime(mt);
+        setImageBase64(base64);
+        setImagePreview(dataUrl);
+        return;
+      }
       // Deskew + flatten the statement photo before OCR — a full A4 page, so the
       // "document" preset (not the small-receipt one).
-      setEditing({ base64: dataUrl.split(",")[1] ?? "", mimeType: mt });
+      setEditing({ base64, mimeType: mt });
     };
     reader.readAsDataURL(file);
   };
@@ -1560,7 +1569,7 @@ function BankStatementPanel({ accounts, onImported }: { accounts: Account[]; onI
               </div>
             ) : (
               <div className="space-y-2">
-                <Label className="text-xs">Upload a scanned statement image (JPG, PNG, HEIC)</Label>
+                <Label className="text-xs">Upload a scanned statement (JPG, PNG, HEIC, or PDF)</Label>
                 <div
                   onClick={() => fileRef.current?.click()}
                   onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) handleImageFile(f); }}
@@ -1568,7 +1577,13 @@ function BankStatementPanel({ accounts, onImported }: { accounts: Account[]; onI
                   className="border-2 border-dashed border-card-border rounded-xl overflow-hidden cursor-pointer hover:border-primary transition-colors flex items-center justify-center min-h-32"
                 >
                   {imagePreview ? (
-                    <img src={imagePreview} alt="Statement preview" className="max-h-48 object-contain" />
+                    imagePreview.startsWith("data:image") ? (
+                      <img src={imagePreview} alt="Statement preview" className="max-h-48 object-contain" />
+                    ) : (
+                      <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground">
+                        <FileText size={24} /> <span className="text-sm">PDF ready for parsing</span>
+                      </div>
+                    )
                   ) : (
                     <div className="text-center p-6 text-muted-foreground">
                       <Camera size={28} className="mx-auto opacity-40 mb-2" />
@@ -1576,7 +1591,7 @@ function BankStatementPanel({ accounts, onImported }: { accounts: Account[]; onI
                     </div>
                   )}
                 </div>
-                <input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleImageFile(f); }} />
+                <input ref={fileRef} type="file" accept="image/*,application/pdf" capture="environment" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleImageFile(f); }} />
               </div>
             )}
 
