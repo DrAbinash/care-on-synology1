@@ -154,12 +154,28 @@ docker run --name "${SANDBOX_CONTAINER}" \
   -e POSTGRES_PASSWORD="${SANDBOX_PASS}" \
   -d postgres:16-alpine >/dev/null
 
-for _ in $(seq 30); do
-  docker exec "${SANDBOX_CONTAINER}" pg_isready -U "${SANDBOX_USER}" -d "${SANDBOX_DB}" >/dev/null 2>&1 && break
+# The official postgres image starts in TWO phases on a cold container: a
+# temporary internal instance runs initdb and creates ${SANDBOX_DB}, then it
+# shuts down and the real long-running server starts. pg_isready accepts
+# connections during BOTH phases — it does not check that any particular
+# database exists, only that something is listening. Waiting on it alone is a
+# race: it can report ready while the temp instance is still up (or mid
+# restart), and the very next command — the actual restore — then fails with
+# "database ... does not exist" against a backup that was never the problem.
+#
+# Poll with the exact operation the restore is about to perform instead, so
+# there is no gap between "ready" and "actually restorable".
+echo "⏳ Waiting for PostgreSQL to finish initializing ${SANDBOX_DB}..."
+READY=0
+for _ in $(seq 60); do
+  if docker exec "${SANDBOX_CONTAINER}" psql -U "${SANDBOX_USER}" -d "${SANDBOX_DB}" -c 'SELECT 1' >/dev/null 2>&1; then
+    READY=1
+    break
+  fi
   sleep 1
 done
-docker exec "${SANDBOX_CONTAINER}" pg_isready -U "${SANDBOX_USER}" -d "${SANDBOX_DB}" >/dev/null 2>&1 \
-  || fail "Throwaway PostgreSQL did not become ready."
+[[ "${READY}" -eq 1 ]] || fail "Throwaway PostgreSQL never became queryable after 60s.
+   'docker logs ${SANDBOX_CONTAINER}' may show why."
 
 echo "⚡ Restoring..."
 # ON_ERROR_STOP=1 is what makes this a test rather than a formality: without it
