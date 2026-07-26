@@ -7,7 +7,7 @@ import {
   orderTestsTable,
   testsTable,
 } from "@workspace/db/schema";
-import { and, desc, eq, gte, ilike, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, lt, ne, or, sql } from "drizzle-orm";
 import { todayIST } from "../lib/istDate";
 
 /**
@@ -173,6 +173,10 @@ mobileBillDeskRouter.get("/bills/:id", async (req, res) => {
       .select({ name: patientName, phone: patientsTable.phone })
       .from(patientsTable)
       .where(eq(patientsTable.id, bill.patientId)),
+    // Cancelled tests are excluded from bill.subtotal/totalAmount (bills.ts
+    // recalculates from active tests only on cancel/swap) — excluded here
+    // too, so the line items staff sees always sum to the Subtotal shown
+    // right below them instead of overstating it by the cancelled price.
     db
       .select({
         name: sql<string>`coalesce(${orderTestsTable.displayName}, ${testsTable.name}, 'Item')`,
@@ -180,7 +184,7 @@ mobileBillDeskRouter.get("/bills/:id", async (req, res) => {
       })
       .from(orderTestsTable)
       .leftJoin(testsTable, eq(orderTestsTable.testId, testsTable.id))
-      .where(eq(orderTestsTable.orderId, bill.orderId)),
+      .where(and(eq(orderTestsTable.orderId, bill.orderId), ne(orderTestsTable.status, "cancelled"))),
     db
       .select({
         id: paymentsTable.id,
