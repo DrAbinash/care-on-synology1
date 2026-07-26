@@ -459,8 +459,24 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   // ── Study Auto-ingest Notifications ───────────────────────────────────────────────────────────────────────────────
   const [newStudyCount, setNewStudyCount] = useState(0);
   const lastCheckRef = useRef<string>(new Date(Date.now() - 5 * 60_000).toISOString());
+  // The server mounts /api/dicom-studies behind requireStaffPermission("/dicom-nodes")
+  // (routes/index.ts). canAccess resolves "/dicom-studies" through
+  // PERMISSION_ALIASES to that same key, so this mirrors the server's rule
+  // rather than restating it and letting the two drift.
+  //
+  // Without this gate, every staff user who lacks the permission polled the
+  // endpoint forever and took a 403 each time. The catch below swallows
+  // errors, so nothing surfaced in the UI and nothing ever stopped the loop —
+  // it showed up only as a steady stream of 403s in the access log.
+  const canSeeNewStudies = canAccess(session, "/dicom-studies");
+  // readStaffSession() JSON.parses localStorage, so `session` is a NEW object
+  // on every render. Depending on it re-ran this effect on every render,
+  // tearing down the interval and firing an extra immediate poll each time —
+  // that is the burst of same-second requests in the access log, not the 30s
+  // interval. Depend on stable values instead.
+  const sessionUserId = session?.user.id;
   useEffect(() => {
-    if (!session) return;
+    if (!sessionUserId || !canSeeNewStudies) return;
     let mounted = true;
     const poll = async () => {
       try {
@@ -487,7 +503,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     void poll();
     const id = window.setInterval(() => { void poll(); }, 30_000);
     return () => { mounted = false; window.clearInterval(id); };
-  }, [session]);
+  }, [sessionUserId, canSeeNewStudies]);
 
   // Mini sidebar theme picker state
   const [themePickerOpen, setThemePickerOpen] = useState(false);
