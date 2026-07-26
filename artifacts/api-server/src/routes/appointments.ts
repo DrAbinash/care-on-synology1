@@ -6,7 +6,7 @@ import {
   patientsTable,
   doctorsTable,
 } from "@workspace/db/schema";
-import { eq, desc, and } from "drizzle-orm";
+import { eq, desc, and, inArray, ne } from "drizzle-orm";
 import {
   CreateAppointmentBody,
   UpdateAppointmentBody,
@@ -14,6 +14,37 @@ import {
 } from "@workspace/api-zod";
 
 const router = Router();
+
+// Statuses that actively hold a doctor's slot — a cancelled/completed/
+// no-show appointment no longer occupies it, so a new booking landing on the
+// same doctor+date+timeSlot is not a real conflict.
+const SLOT_HOLDING_STATUSES = ["scheduled", "confirmed"];
+
+/** Finds another appointment (excluding excludeId) that already holds this
+ *  exact doctor+date+timeSlot. Returns null when the slot is free — there
+ *  was previously no check at all here, so any number of appointments could
+ *  be booked onto the same doctor at the same time. */
+async function findSlotConflict(
+  doctorId: number,
+  appointmentDate: string,
+  timeSlot: string,
+  excludeId?: number,
+) {
+  const [conflict] = await db
+    .select({ id: appointmentsTable.id, appointmentId: appointmentsTable.appointmentId })
+    .from(appointmentsTable)
+    .where(
+      and(
+        eq(appointmentsTable.doctorId, doctorId),
+        eq(appointmentsTable.appointmentDate, appointmentDate),
+        eq(appointmentsTable.timeSlot, timeSlot),
+        inArray(appointmentsTable.status, SLOT_HOLDING_STATUSES),
+        excludeId !== undefined ? ne(appointmentsTable.id, excludeId) : undefined,
+      )
+    )
+    .limit(1);
+  return conflict ?? null;
+}
 
 async function generateAppointmentId(): Promise<string> {
   const [counter] = await db.select().from(appointmentCounterTable).limit(1);
@@ -138,6 +169,16 @@ router.post("/", async (req, res) => {
   }
   const { patientId, doctorId, packageId, appointmentDate, timeSlot, status, type, notes } = parsed.data;
 
+  if (doctorId && SLOT_HOLDING_STATUSES.includes(status || "scheduled")) {
+    const conflict = await findSlotConflict(doctorId, appointmentDate, timeSlot);
+    if (conflict) {
+      return res.status(409).json({
+        error: `This doctor already has an appointment (${conflict.appointmentId}) in that time slot`,
+        conflictingAppointmentId: conflict.appointmentId,
+      });
+    }
+  }
+
   const aptId = await generateAppointmentId();
 
   // Resolve ledger from doctor → patient → default
@@ -187,6 +228,30 @@ router.patch("/:id", async (req, res) => {
   if (Object.keys(updates).length === 0) {
     return res.status(400).json({ error: "No valid fields to update" });
   }
+
+  // Only re-check the slot when doctorId/appointmentDate/timeSlot/status is
+  // actually part of this update — a change to e.g. `notes` alone can't
+  // create a double-booking.
+  if ("doctorId" in updates || "appointmentDate" in updates || "timeSlot" in updates || "status" in updates) {
+    const [existing] = await db.select().from(appointmentsTable).where(eq(appointmentsTable.id, paramsParsed.data.id));
+    if (!existing) return res.status(404).json({ error: "Appointment not found" });
+
+    const effectiveDoctorId = "doctorId" in updates ? (updates.doctorId as number | null) : existing.doctorId;
+    const effectiveDate = "appointmentDate" in updates ? (updates.appointmentDate as string) : existing.appointmentDate;
+    const effectiveSlot = "timeSlot" in updates ? (updates.timeSlot as string) : existing.timeSlot;
+    const effectiveStatus = "status" in updates ? (updates.status as string) : existing.status;
+
+    if (effectiveDoctorId && SLOT_HOLDING_STATUSES.includes(effectiveStatus)) {
+      const conflict = await findSlotConflict(effectiveDoctorId, effectiveDate, effectiveSlot, paramsParsed.data.id);
+      if (conflict) {
+        return res.status(409).json({
+          error: `This doctor already has an appointment (${conflict.appointmentId}) in that time slot`,
+          conflictingAppointmentId: conflict.appointmentId,
+        });
+      }
+    }
+  }
+
   const [apt] = await db
     .update(appointmentsTable)
     .set(updates)
