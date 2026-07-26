@@ -23,7 +23,12 @@ const cronSrc = readFileSync(join(__dirname, "internal-cron.ts"), "utf8");
 
 describe("internal-backup.ts — full-database backup endpoint auth", () => {
   test("fails closed when INTERNAL_API_KEY is unset, in EVERY environment", () => {
-    expect(backupSrc).toContain('res.status(503).json({ error: "INTERNAL_API_KEY not configured" });');
+    // Behavioural, not literal: the 503 text now names the specific weakness
+    // (see lib/secretStrength.ts), so pinning the old string only tested the
+    // wording. What matters is that a bad/absent key yields 503 and never
+    // reaches next(). secretStrength.test.ts drives the real middleware and
+    // asserts exactly that, including for the production value "1234".
+    expect(backupSrc).toMatch(/res\.status\(503\)[\s\S]{0,120}INTERNAL_API_KEY/);
     // The non-production bypass must be gone: no NODE_ENV branch may decide
     // whether this endpoint is authenticated.
     expect(backupSrc).not.toContain('process.env["NODE_ENV"] === "production"');
@@ -38,19 +43,19 @@ describe("internal-backup.ts — full-database backup endpoint auth", () => {
 
   test("compares the bearer secret in constant time", () => {
     expect(backupSrc).toContain("crypto.timingSafeEqual(ab, bb)");
-    expect(backupSrc).toContain("if (!safeEqual(provided, expected))");
+    expect(backupSrc).toMatch(/if \(!safeEqual\(provided, \w+\)\)/);
     expect(backupSrc).not.toContain("provided !== expected");
   });
 });
 
 describe("internal-cron.ts — cron trigger endpoint auth", () => {
   test("still fails closed when CRON_SECRET is unset", () => {
-    expect(cronSrc).toContain('res.status(503).json({ error: "CRON_SECRET not configured on server" });');
+    expect(cronSrc).toMatch(/res\.status\(503\)[\s\S]{0,120}CRON_SECRET/);
   });
 
   test("compares the bearer secret in constant time", () => {
     expect(cronSrc).toContain("crypto.timingSafeEqual(ab, bb)");
-    expect(cronSrc).toContain("if (!safeEqual(provided, expected))");
+    expect(cronSrc).toMatch(/if \(!safeEqual\(provided, \w+\)\)/);
     expect(cronSrc).not.toContain("provided !== expected");
   });
 });

@@ -58,7 +58,9 @@ describe("backup/DR jobs are externally triggerable", () => {
     for (const path of ["/scheduled-backups", "/restore-verification", "/backup-dead-man"]) {
       expect(internalCronSrc.indexOf(`router.post("${path}"`)).toBeGreaterThan(guardAt);
     }
-    expect(internalCronSrc).toContain('res.status(503).json({ error: "CRON_SECRET not configured on server" })');
+    // The 503 body now names the specific weakness (lib/secretStrength.ts);
+    // assert the fail-closed behaviour, not the exact wording.
+    expect(internalCronSrc).toMatch(/res\.status\(503\)[\s\S]{0,120}CRON_SECRET/);
   });
 
   test("a restore that cannot be proven is reported, not swallowed as success", () => {

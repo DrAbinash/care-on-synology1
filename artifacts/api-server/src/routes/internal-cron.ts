@@ -1,5 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import crypto from "node:crypto";
+import { checkSecretStrength, weakSecretMessage } from "../lib/secretStrength";
 import {
   runDailySummary,
   fireBankingAutoSync,
@@ -23,15 +24,31 @@ function safeEqual(a: string, b: string): boolean {
   return crypto.timingSafeEqual(ab, bb);
 }
 
+/** Logged once per process so a hammering caller cannot flood the log. */
+let weakSecretLogged = false;
+
 function requireCronSecret(req: Request, res: Response, next: NextFunction): void {
   const expected = process.env["CRON_SECRET"];
-  if (!expected) {
-    res.status(503).json({ error: "CRON_SECRET not configured on server" });
+  // A weak secret is treated exactly like a missing one. This router is mounted
+  // under the public /api/ prefix with no IP allowlist, and its routes fire
+  // scheduled backups, the monthly money-trail audit and the restore
+  // verification job — anyone who can guess the token can trigger them at will.
+  // See lib/secretStrength.ts for why the value, not the auth logic, was the gap.
+  const weakness = checkSecretStrength(expected);
+  if (weakness) {
+    if (!weakSecretLogged) {
+      weakSecretLogged = true;
+      console.error(weakSecretMessage("CRON_SECRET", weakness));
+    }
+    res.status(503).json({ error: weakSecretMessage("CRON_SECRET", weakness) });
     return;
   }
+  // checkSecretStrength returning null already guarantees a non-empty string,
+  // but it does not narrow the type the way the old `if (!expected)` did.
+  const secret = expected as string;
   const header = req.header("authorization") ?? "";
   const provided = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (!safeEqual(provided, expected)) {
+  if (!safeEqual(provided, secret)) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
