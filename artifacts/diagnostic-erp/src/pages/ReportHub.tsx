@@ -257,10 +257,13 @@ export default function ReportHub() {
     // above — bail out before the authenticated fetch runs.
     if (!w) { toast({ title: "Popup blocked", description: "Allow popups for this site to download the PDF.", variant: "destructive" }); return; }
     try {
-      const html = await api.get<string>(`/api/patient-reports/${r.id}/pdf`);
-      w.document.write(html);
-      w.document.close();
-      w.focus();
+      // /pdf now returns a real application/pdf binary (not HTML) — fetched
+      // as a Blob (api.get's res.text() would corrupt it) and navigated to
+      // via an object URL so the browser's own PDF viewer renders it.
+      const blob = await api.getBlob(`/api/patient-reports/${r.id}/pdf`);
+      const url = URL.createObjectURL(blob);
+      w.location.href = url;
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (err) {
       w.close();
       toast({ title: "Could not open PDF view", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
