@@ -388,7 +388,15 @@ Optional but important:
 DB_USER=erp
 DB_PASSWORD=changeme        # change in production
 DB_NAME=diagnostic_erp
-DB_HOST_PORT=5400           # host port for PostgreSQL (access from Windows PC)
+DB_HOST_PORT=5400           # host port for PostgreSQL
+DB_BIND_ADDR=127.0.0.1      # interface the DB port binds to. Loopback by default:
+                            # a bare "5400:5432" binds 0.0.0.0, which put the
+                            # database on the whole clinic network (and the
+                            # internet, if the NAS forwards it). To reach it from
+                            # a Windows DB client, bind the Tailscale interface
+                            # (DB_BIND_ADDR=100.x.y.z) rather than 0.0.0.0.
+                            # Note: Ollama does NOT need this — the API calls OUT
+                            # to OLLAMA_URL, it never connects to Postgres.
 HOST_PORT=8888              # host port for the ERP web interface
 PUBLIC_BASE_URL=https://caredeoghar.com
 ORTHANC_URL=http://192.168.1.137:8042
@@ -409,7 +417,7 @@ SCHEMA_VERIFY_STRICT=false  # true = any schema drift blocks care-api startup
 
 ```
 Synology NAS (192.168.1.137)
-├── care-db          PostgreSQL 16           port 5400 (host)
+├── care-db          PostgreSQL 16           port 5400 (host, loopback-bound)
 ├── care-db-patch-v2 Migration runner        (runs once per deploy, exits)
 ├── care-api         Express.js API          port 8080 (internal)
 └── care-web         nginx (SPA + proxy)     port 8888 (host → Cloudflare)
