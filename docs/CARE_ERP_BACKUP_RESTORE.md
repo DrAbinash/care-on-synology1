@@ -1,91 +1,141 @@
 # CARE ERP — Backup & Restore
 
-_How to back up the CARE ERP database and restore from a backup. Every command here was tested round-trip (`pg_dump → restore into a fresh DB → signed report byte-identical`). All patient/report/billing data lives in one PostgreSQL database (`diagnostic_erp`) in the `care-db` container (volume `care_main_db_data`) — backing that up backs up everything._
+_Everything patient/report/billing-related lives in one PostgreSQL database (`diagnostic_erp`) in the `care-db` container — backing that up backs up everything. All commands here use `docker exec`, so nothing extra needs installing on the NAS._
 
-> **Golden rule:** a backup you have never restored is not a backup. Do the "Try it once" drill below at least once.
+> **Golden rule:** a backup you have never restored is not a backup. `verify-backup-restore.sh` below is not optional — a backup job reporting "success" does not mean the file is usable. This system ran for months with backups that reported success, matched their checksum, and could not be restored.
 
 ---
 
-## What a backup is
-A single **logical `pg_dump`** of `diagnostic_erp`, gzip-compressed. It is taken with `--clean --if-exists --no-owner --no-privileges`, so restoring it re-creates every object cleanly on any PostgreSQL 16 server. Typical size is small (a few MB) and grows with data.
+## The short version
 
-## Three ways to take a backup (pick one)
-
-### A. Automated nightly on the NAS (recommended)
-1. Copy `scripts/synology-nas-backup.sh` to `/volume1/scripts/care-backup.sh`, `chmod +x` it.
-2. (Optional) set `BACKUP_PASSPHRASE` inside it to encrypt — **store that passphrase somewhere safe; without it an encrypted backup cannot be restored.**
-3. DSM → **Control Panel → Task Scheduler → Create → Scheduled Task → User-defined script**, daily 03:00:
-   ```sh
-   bash /volume1/scripts/care-backup.sh
-   ```
-   It dumps straight from the `care-db` container (works even if `care-api` is down), verifies the gzip, encrypts if configured, and prunes copies older than `RETENTION_DAYS` (14).
-
-### B. Manual, one command (on the NAS shell)
-```sh
+```bash
+# 1. Take a backup
 docker exec care-db pg_dump -U erp -d diagnostic_erp \
   --no-owner --no-privileges --clean --if-exists \
-  | gzip > /volume1/backups/caredeoghar_$(date +%Y%m%d_%H%M%S).sql.gz
-```
-Verify it is valid before trusting it:
-```sh
-gzip -t /volume1/backups/caredeoghar_*.sql.gz && echo "gzip OK"
+  | gzip > /path/you/choose/caredeoghar_$(date +%Y%m%d_%H%M%S).sql.gz
+
+# 2. Prove it restores (mandatory — do this every time, not just once)
+bash scripts/verify-backup-restore.sh /path/you/choose
+
+# 3. If you ever need to restore for real, see "Restore" below.
 ```
 
-### C. Via the API (pull to another machine)
-`GET /api/internal/backup/download?format=gzip` with `Authorization: Bearer $INTERNAL_API_KEY` streams the same dump. Handy for pulling to an off-site box:
-```sh
-curl -fsS -H "Authorization: Bearer $INTERNAL_API_KEY" \
-  "http://<nas>:8888/api/internal/backup/download?format=gzip" -o care_backup.sql.gz
-```
-
-## Encryption (optional)
-If `BACKUP_PASSPHRASE` is set, the file is `…sql.gz.enc` (AES-256-CBC, PBKDF2). Decrypt before restoring:
-```sh
-openssl enc -d -aes-256-cbc -pbkdf2 -pass "pass:$BACKUP_PASSPHRASE" \
-  -in care_backup.sql.gz.enc -out care_backup.sql.gz
-```
+If step 2 prints **`🎉 PASS`**, you have a real, restorable backup. Anything else, keep reading.
 
 ---
 
-## Restore
+## 1. Taking a backup
 
-### Restore target rules
-- **Test / disaster recovery →** restore into a **fresh empty database** (safe, non-destructive). This is the default and what the second-NAS DR uses.
-- **Overwrite the live DB →** only when you deliberately want to roll the whole database back. Stop the app first and take a fresh backup of the current state before overwriting.
+### Manual, right now (works regardless of anything else)
 
-### Restore into a FRESH database (safe — always do this first)
-```sh
-# 1. decrypt if needed (see above), so you have care_backup.sql.gz
-# 2. create an empty DB
+```bash
+mkdir -p /path/you/choose   # any writable directory, e.g. /volume1/data/care-backups
+bash -c 'set -o pipefail
+OUT=/path/you/choose/caredeoghar_$(date +%Y%m%d_%H%M%S).sql.gz
+docker exec care-db pg_dump -U erp -d diagnostic_erp \
+  --no-owner --no-privileges --clean --if-exists | gzip > "$OUT" \
+  && echo "OK  $OUT  ($(du -h "$OUT" | cut -f1))" \
+  || { echo "FAILED — deleting truncated file"; rm -f "$OUT"; exit 1; }'
+```
+
+`gzip > file` alone hides pg_dump failures — the `bash -c 'set -o pipefail ...'` wrapper above is what makes a failed dump delete itself instead of leaving a broken file that looks fine. This runs `pg_dump` **inside** the `care-db` container and writes the output via your own shell — it does not depend on the api container, its image, or any environment variable being set correctly.
+
+### Automatic (in-app scheduler)
+
+Settings → Backup & Replication in the ERP configures scheduled jobs (`DB`, `CONFIG`, `FULL`), encrypted and written to a `destinationPath` you choose there. Check what's configured and whether it's actually working:
+
+```bash
+docker exec care-db psql -U erp -d diagnostic_erp -c \
+  "SELECT j.job_name, j.destination_path, j.is_enabled, l.status, l.completed_at, l.notes
+     FROM backup_jobs j LEFT JOIN backup_job_logs l ON l.job_id = j.id
+    ORDER BY l.completed_at DESC NULLS LAST LIMIT 5;" -x
+```
+
+Look for `exporter=pg_dump` in the `notes` of a healthy job. If it says `exporter=fallback`, that backup is **not schema-complete** and cannot rebuild a database from nothing — treat it as broken and use the manual method above instead. Then check the destination directory on the NAS actually has the file:
+
+```bash
+ls -la /path/from/the/destination_path/column/above
+```
+
+If that's empty while the job reports success, the container isn't mounted at that path — the app is writing into its own throwaway filesystem, not the NAS. Fix the mount in `docker-compose.yml` (`api.volumes`), then `docker compose up -d --force-recreate --no-deps api`, and confirm:
+
+```bash
+docker inspect care-api --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}'
+```
+
+Your `destination_path` should appear on the left of one of those lines.
+
+---
+
+## 2. Verifying a backup restores
+
+```bash
+bash scripts/verify-backup-restore.sh /path/to/backup/dir-or-file
+```
+
+This decrypts (trying `BACKUP_PASSPHRASE` then `SESSION_SECRET`, matching what the app itself tries), decompresses if needed, refuses anything that isn't schema-complete, and restores into a **throwaway** container — never your real database — then checks patients/bills actually landed. It prints `🎉 PASS` or tells you exactly what's wrong.
+
+If your artifact is encrypted, pass the passphrase:
+
+```bash
+SESSION_SECRET=YOUR_OLD_SESSION_SECRET_VALUE \
+  bash scripts/verify-backup-restore.sh /path/to/backup
+```
+
+(replace `YOUR_OLD_SESSION_SECRET_VALUE` with whatever `SESSION_SECRET` was set to when this file was written)
+
+A large backup (hundreds of MB, hundreds of tables) can legitimately take a few minutes to restore — you'll see `... still restoring (30s elapsed)` rather than silence. That's normal, not stuck.
+
+---
+
+## 3. Restore
+
+### Into a fresh test database (safe — always do this first)
+
+```bash
+# 1. If encrypted, decrypt on the host first:
+openssl enc -d -aes-256-cbc -pbkdf2 -pass "pass:$BACKUP_PASSPHRASE" \
+  -in backup.sql.gz.enc -out backup.sql.gz
+# If that errors with "bad decrypt", the file used the OLD SESSION_SECRET
+# instead — try that value in place of $BACKUP_PASSPHRASE above.
+
+# 2. If it's gzipped (filename ends .sql.gz), decompress:
+gunzip backup.sql.gz    # -> backup.sql
+# Scheduler-written files (backup_<job>_*.sql) are already plain SQL — skip this step.
+
+# 3. Create an empty test database and load into it
 docker exec care-db psql -U erp -d postgres -c "CREATE DATABASE diagnostic_erp_restore;"
-# 3. load the dump
-gunzip -c care_backup.sql.gz | docker exec -i care-db psql -U erp -d diagnostic_erp_restore
-# 4. sanity check
+docker exec -i care-db psql -v ON_ERROR_STOP=1 -U erp -d diagnostic_erp_restore < backup.sql
+
+# 4. Sanity check
 docker exec care-db psql -U erp -d diagnostic_erp_restore -tAc \
   "SELECT (SELECT count(*) FROM patients) AS patients, (SELECT count(*) FROM bills) AS bills;"
-```
-A clean restore reports no `ERROR:` lines (the `--clean --if-exists` "does not exist" NOTICEs on a fresh DB are harmless). You now have a verified copy in `diagnostic_erp_restore` without touching production.
 
-### Restore OVER the live database (deliberate rollback)
-```sh
-docker compose stop web api                       # stop writers
-docker exec care-db pg_dump -U erp -d diagnostic_erp | gzip > /volume1/backups/pre_restore_$(date +%s).sql.gz   # safety net
-gunzip -c care_backup.sql.gz | docker exec -i care-db psql -U erp -d diagnostic_erp   # --clean drops+recreates
-docker compose up -d                              # bring the app back
-pnpm operations:verify-deployment                 # confirm green
+# 5. Clean up the test copy when done
+docker exec care-db psql -U erp -d postgres -c "DROP DATABASE diagnostic_erp_restore;"
 ```
-> If the dump is **older** than the current schema, run the schema reconcile after restoring so later migrations aren't skipped as "already applied":
-> `node scripts/generate-schema-reconcile.cjs --date $(date +%Y%m%d)` then `docker compose up -d --build`. (See `HOW_TO_ADD_DB_MIGRATIONS.md`.)
+
+`ON_ERROR_STOP=1` matters — without it, `psql` can fail every single statement and still exit 0, silently reporting a restore that never happened.
+
+### Over the live database (deliberate rollback — data loss if done carelessly)
+
+Only do this when you mean to roll the whole database back to the backup's point in time.
+
+```bash
+docker compose stop web api                       # stop writers first
+
+# safety net: back up the CURRENT state before you overwrite it
+docker exec care-db pg_dump -U erp -d diagnostic_erp | gzip > pre_restore_$(date +%s).sql.gz
+
+docker exec -i care-db psql -v ON_ERROR_STOP=1 -U erp -d diagnostic_erp < backup.sql   # --clean drops+recreates objects
+
+docker compose up -d                               # bring the app back
+```
+
+If the backup is **older** than the currently-deployed schema, restart with a rebuild afterward so pending migrations reapply cleanly: `docker compose up -d --build`.
 
 ---
 
-## Try it once (10-minute drill — no risk to production)
-1. Take a manual backup (method B above).
-2. Restore it into `diagnostic_erp_restore` (the FRESH-database steps).
-3. Run the sanity check — patient/bill counts should match production.
-4. Drop the test copy when done: `docker exec care-db psql -U erp -d postgres -c "DROP DATABASE diagnostic_erp_restore;"`
+## Where to keep backups
 
-If step 3 matches, your backups are trustworthy. This drill was validated in the repo: a signed report's content hash was byte-identical after a full `pg_dump → restore` round-trip.
-
-## Where backups should live
-Keep **at least two copies in two places** — e.g. `/volume1/backups` on the primary NAS **and** a copy synced to the second NAS (Synology **Hyper Backup** or a `scp`/`rsync` in the same scheduled task). The second-NAS disaster-recovery guide relies on a backup being reachable from the standby NAS.
+At least **two copies in two places** — one on this NAS, one synced elsewhere (a second NAS, Hyper Backup, `rsync`/`scp` off-box). A backup that only exists on the machine it protects doesn't protect against that machine failing.
