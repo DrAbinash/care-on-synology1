@@ -41,6 +41,39 @@ import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 const router = Router();
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
 
+interface RawLineItem { description: string; quantity: number; unitCost: number; lineTotal: number }
+
+/** Best-effort vendor match by exact/case-insensitive name — shared by both
+ *  /scan (Gemini) and /match-lines (Tesseract fallback), since either path
+ *  starts from the same free-text vendor name a document actually printed. */
+async function lookupVendorByName(name: string): Promise<number | null> {
+  if (!name.trim()) return null;
+  const vendors = await db.select({ id: vendorsTable.id, name: vendorsTable.name })
+    .from(vendorsTable).where(eq(vendorsTable.isActive, true));
+  const hit = vendors.find((v) => v.name.trim().toLowerCase() === name.trim().toLowerCase());
+  return hit?.id ?? null;
+}
+
+/** Fuzzy-match every line against the live inventory catalog. Shared by both
+ *  /scan and /match-lines so a catalog-matching change (threshold, scoring)
+ *  applies identically no matter which OCR engine produced the line items. */
+async function matchLinesToCatalog(lineItems: RawLineItem[]) {
+  const catalog = await db.select({ id: inventoryItemsTable.id, name: inventoryItemsTable.name })
+    .from(inventoryItemsTable).where(eq(inventoryItemsTable.isActive, true));
+  return lineItems.map((li) => {
+    const match = matchInvoiceLineToCatalog(li.description, catalog);
+    return {
+      descriptionRaw: li.description,
+      quantity: li.quantity,
+      unitCost: li.unitCost,
+      lineTotal: li.lineTotal,
+      suggestedItemId: match.confidence >= AUTO_MATCH_THRESHOLD ? match.itemId : null,
+      suggestedItemName: match.confidence >= AUTO_MATCH_THRESHOLD ? match.itemName : null,
+      matchConfidence: match.confidence,
+    };
+  });
+}
+
 // ── POST /scan — OCR + catalog-match, no persistence ──────────────────────
 router.post("/scan", async (req, res) => {
   const { imageBase64, mimeType } = req.body as { imageBase64?: string; mimeType?: string };
@@ -67,32 +100,10 @@ router.post("/scan", async (req, res) => {
       dbApiKey ? { apiKey: dbApiKey } : {},
     );
 
-    const catalog = await db.select({ id: inventoryItemsTable.id, name: inventoryItemsTable.name })
-      .from(inventoryItemsTable).where(eq(inventoryItemsTable.isActive, true));
-
-    // Best-effort vendor match by exact/case-insensitive name — a real vendor
-    // pick is still required from staff before posting, this just pre-selects
-    // when there's an unambiguous hit so the common case needs no typing.
-    let vendorId: number | null = null;
-    if (ocr.vendor.trim()) {
-      const vendors = await db.select({ id: vendorsTable.id, name: vendorsTable.name })
-        .from(vendorsTable).where(eq(vendorsTable.isActive, true));
-      const hit = vendors.find((v) => v.name.trim().toLowerCase() === ocr.vendor.trim().toLowerCase());
-      vendorId = hit?.id ?? null;
-    }
-
-    const lineItems = ocr.lineItems.map((li) => {
-      const match = matchInvoiceLineToCatalog(li.description, catalog);
-      return {
-        descriptionRaw: li.description,
-        quantity: li.quantity,
-        unitCost: li.unitCost,
-        lineTotal: li.lineTotal,
-        suggestedItemId: match.confidence >= AUTO_MATCH_THRESHOLD ? match.itemId : null,
-        suggestedItemName: match.confidence >= AUTO_MATCH_THRESHOLD ? match.itemName : null,
-        matchConfidence: match.confidence,
-      };
-    });
+    const [vendorId, lineItems] = await Promise.all([
+      lookupVendorByName(ocr.vendor),
+      matchLinesToCatalog(ocr.lineItems),
+    ]);
 
     res.json({
       vendor: ocr.vendor,
@@ -112,6 +123,35 @@ router.post("/scan", async (req, res) => {
     const msg = err instanceof Error ? err.message : String(err);
     res.status(502).json({ error: "AI extraction failed: " + msg });
   }
+});
+
+// ── POST /match-lines — catalog-match ONLY, no OCR call ────────────────────
+// Used by the fully-offline Tesseract.js fallback (PurchaseInvoiceScannerPanel):
+// the client runs OCR + a deterministic text parser locally (no server round
+// trip, no Gemini/cloud dependency for the extraction itself), then calls
+// this to get the same catalog-match suggestions /scan would have produced —
+// matching needs the live DB catalog, so it can't happen fully client-side
+// regardless of which OCR engine ran.
+const MatchLinesBody = z.object({
+  vendor: z.string().trim().default(""),
+  lineItems: z.array(z.object({
+    description: z.string().trim().min(1),
+    quantity: z.number(),
+    unitCost: z.number(),
+    lineTotal: z.number(),
+  })),
+});
+
+router.post("/match-lines", async (req, res) => {
+  const parsed = MatchLinesBody.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "Invalid request", details: parsed.error.issues }); return; }
+  const { vendor, lineItems } = parsed.data;
+
+  const [vendorId, matched] = await Promise.all([
+    lookupVendorByName(vendor),
+    matchLinesToCatalog(lineItems),
+  ]);
+  res.json({ vendorId, lineItems: matched });
 });
 
 // ── POST / — persist the reviewed invoice as a draft (no stock impact) ────
