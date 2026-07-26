@@ -191,16 +191,19 @@ export default function QueuePage() {
   const [tvUrl, setTvUrl] = useState<string>("");
   const [tvUrlCopied, setTvUrlCopied] = useState(false);
 
+  // The old /display?ledgerId=&departments=&voice= page was removed when the
+  // TV board moved to clinic-site's /queue/:roomKey (see Settings.tsx's
+  // "Queue Display (TV)" tab) -- this link was never updated to match, so it
+  // 404'd (clinic-site's catch-all served "page not found" for the dead
+  // /display path) on every click. ledgerId/departments/voice are now
+  // per-room settings configured there, not URL params -- the TV board only
+  // needs the room key (path) and the display token (query). roomKey is the
+  // department name lowercased, matching the convention Settings.tsx's own
+  // room list uses (e.g. department "USG" -> roomKey "usg", its default room).
   const buildDisplayUrl = (token: string) => {
-    const p = new URLSearchParams();
-    p.set("ledgerId", String(ledgerId));
-    // Send currently-filtered dept or the defaultDepartment setting
     const selectedDept = department !== "all" ? department : defaultDepartment;
-    if (selectedDept) p.set("departments", selectedDept);
-    p.set("voice", voiceEnabled ? "1" : "0");
-    p.set("autoplayVoice", voiceEnabled ? "1" : "0");
-    if (token) p.set("displayToken", token);
-    return `/display?${p.toString()}`;
+    const roomKey = (selectedDept || "usg").toLowerCase();
+    return `/queue/${roomKey}${token ? `?displayToken=${encodeURIComponent(token)}` : ""}`;
   };
 
   const openDisplay = async () => {
