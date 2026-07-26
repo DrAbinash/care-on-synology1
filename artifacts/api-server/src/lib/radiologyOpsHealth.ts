@@ -57,6 +57,26 @@ export function jobsComponentStatus(counts: { pending: number; running: number; 
   return "HEALTHY";
 }
 
+/** Migrations/schema-verify component: db_patch_ok + schema_verify_status →
+ *  OpsStatus. "failed" (current) / "full_fail" (legacy, still accepted) and
+ *  "pass_with_warnings" both stay visible as DEGRADED — never HEALTHY, and
+ *  never escalated to UNHEALTHY on their own (db-patch-v2 itself still
+ *  completed and the schema is startup-safe). Anything unrecognized
+ *  (missing key, null, malformed value) is UNKNOWN — it never masquerades
+ *  as HEALTHY. */
+export function migrationsComponentStatus(patchOk: boolean, verify: string | undefined): OpsHealthComponent {
+  const status: OpsStatus =
+    !patchOk ? "UNHEALTHY"
+    : (verify === "failed" || verify === "full_fail") ? "DEGRADED"
+    : (verify === "sql_pass" || verify === "full_pass") ? "HEALTHY"
+    : verify === "pass_with_warnings" ? "DEGRADED"
+    : "UNKNOWN";
+  const detail = !patchOk
+    ? "db-patch-v2 did not complete"
+    : `db_patch_ok=true, schema_verify_status=${verify ?? "missing"}`;
+  return { status, detail };
+}
+
 export interface OpsHealthComponent {
   status: OpsStatus;
   detail: string;
@@ -104,24 +124,7 @@ export async function buildRadiologyOpsHealth(opts: { maskTopology: boolean }): 
     const raw = await db.execute(sql`SELECT key, value FROM public.schema_deploy_state ORDER BY key LIMIT 30`);
     const state: Record<string, string> = {};
     for (const row of raw.rows as Array<{ key: string; value: string }>) state[row.key] = row.value;
-    const patchOk = state["db_patch_ok"] === "true";
-    const verify = state["schema_verify_status"];
-    // "failed" is the current blocking-error value ("full_fail" is the
-    // legacy one, still accepted); "pass_with_warnings" means startup was
-    // safe but non-blocking drift remains — DEGRADED, same bucket as
-    // failed/full_fail, not HEALTHY, so it stays visible instead of hidden.
-    const migrationsStatus: OpsStatus =
-      !patchOk ? "UNHEALTHY"
-      : (verify === "failed" || verify === "full_fail") ? "DEGRADED"
-      : (verify === "sql_pass" || verify === "full_pass") ? "HEALTHY"
-      : verify === "pass_with_warnings" ? "DEGRADED"
-      : "UNKNOWN";
-    components.migrations = {
-      status: migrationsStatus,
-      detail: !patchOk
-        ? "db-patch-v2 did not complete"
-        : `db_patch_ok=true, schema_verify_status=${verify ?? "missing"}`,
-    };
+    components.migrations = migrationsComponentStatus(state["db_patch_ok"] === "true", state["schema_verify_status"]);
   } catch {
     components.migrations = { status: "UNKNOWN", detail: "schema_deploy_state not present (container migration pipeline not used in this environment)" };
   }
