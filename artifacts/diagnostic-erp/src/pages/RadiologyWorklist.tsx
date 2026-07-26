@@ -20,7 +20,7 @@ import {
   Search, Filter, Clock, CheckCheck, AlertCircle, MonitorPlay, Tv2,
   ClipboardList, CalendarDays, ShieldCheck, ShieldOff, Database,
   ChevronDown, ChevronUp, Eye, MessageSquare, ThumbsUp, ThumbsDown, Trash2,
-  X, Activity, Stethoscope, Printer, Gem,
+  X, Activity, Stethoscope, Printer, Gem, FileUp, Loader2,
 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
@@ -464,6 +464,10 @@ export default function RadiologyWorklist() {
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [showSentinel, setShowSentinel] = useState(false);
   const [showRawJson, setShowRawJson] = useState(false);
+  // Reports are composed in Word, not this app's structured builder — this
+  // tracks which row's file input is mid-upload, matching OutsourceWorklist's
+  // "Attach Report" pattern exactly.
+  const [attachingStudyId, setAttachingStudyId] = useState<number | null>(null);
   const [draftViewer, setDraftViewer] = useState<{ id: number; draft: Record<string, unknown> | null } | null>(null);
   // M1.6B1 — assignment management + live workload
   const [showWorkload, setShowWorkload] = useState(false);
@@ -610,6 +614,52 @@ export default function RadiologyWorklist() {
       toast({ title: "Error", description: err instanceof Error ? err.message : "Update failed", variant: "destructive" });
     },
   });
+
+  // Attach an externally-produced (Word → PDF/DOCX) final report to a study.
+  // Same two-step shape as OutsourceWorklist's "Attach Report": upload via
+  // the existing generic /api/uploads (module "reports"), then link the
+  // returned storagePath to the study.
+  const attachReportMutation = useMutation({
+    mutationFn: ({ studyId, filePath, fileName }: { studyId: number; filePath: string; fileName: string }) =>
+      api.post("/api/radiology/report-attachments", { studyId, filePath, fileName }),
+    onSuccess: () => {
+      toast({ title: "Report attached" });
+      setAttachingStudyId(null);
+    },
+    onError: (e: Error) => {
+      toast({ title: "Failed to attach report", description: e.message, variant: "destructive" });
+      setAttachingStudyId(null);
+    },
+  });
+
+  const handleAttachReport = (studyId: number, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file after a failed attempt
+    if (!file) return;
+
+    setAttachingStudyId(studyId);
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const base64Data = (reader.result as string).split(",")[1];
+      try {
+        const uploadRes = await api.post<{ storagePath: string }>("/api/uploads", {
+          module: "reports",
+          fileName: file.name,
+          mimeType: file.type,
+          base64Data,
+        });
+        attachReportMutation.mutate({ studyId, filePath: uploadRes.storagePath, fileName: file.name });
+      } catch (err) {
+        toast({ title: "Upload failed", description: (err as Error).message, variant: "destructive" });
+        setAttachingStudyId(null);
+      }
+    };
+    reader.onerror = () => {
+      toast({ title: "File read failed", variant: "destructive" });
+      setAttachingStudyId(null);
+    };
+    reader.readAsDataURL(file);
+  };
 
   const filtered = entries.filter((e) => {
     // Client-side status filter
@@ -1321,6 +1371,38 @@ export default function RadiologyWorklist() {
                                 <Printer className="h-3 w-3 mr-1" />
                                 Print
                               </Button>
+                            )}
+
+                            {/* Attach the final report as produced in Word (PDF/DOCX) — the
+                                clinic's actual reporting workflow, distinct from this app's
+                                own structured builder above. */}
+                            {entry.id !== -1 && entry.studyId != null && (
+                              attachingStudyId === entry.studyId ? (
+                                <div className="flex items-center justify-center gap-1.5 h-7 px-2 text-xs text-muted-foreground">
+                                  <Loader2 size={13} className="animate-spin text-primary" />
+                                  <span>Attaching...</span>
+                                </div>
+                              ) : (
+                                <>
+                                  <input
+                                    type="file"
+                                    accept=".pdf,.doc,.docx"
+                                    id={`attach-report-${entry.studyId}`}
+                                    className="hidden"
+                                    onChange={(e) => handleAttachReport(entry.studyId as number, e)}
+                                  />
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 px-2 text-xs"
+                                    onClick={() => document.getElementById(`attach-report-${entry.studyId}`)?.click()}
+                                    title="Attach the final report (Word/PDF) produced outside this app"
+                                  >
+                                    <FileUp className="h-3 w-3 mr-1" />
+                                    Attach Report
+                                  </Button>
+                                </>
+                              )
                             )}
                           </div>
                         </td>

@@ -119,6 +119,7 @@ import barcodeResolverRouter from "./barcode-resolver";
 import { uploadsRouter } from "./uploads";
 import { scansRouter } from "./scans";
 import { radiologyReportGeneratorRouter } from "./radiology-report-generator";
+import { radiologyReportAttachmentsRouter } from "./radiology-report-attachments";
 import { radiologyFindingLibraryRouter } from "./radiology-finding-library";
 import { structuredReportTemplatesRouter } from "./structuredReportTemplates";
 import { floorsRouter, roomsRouter, modalitiesRouter } from "./locations";
@@ -786,6 +787,16 @@ router.use(
   requireStaffAuth,
   requireStaffPermission("/radiology"),
   radiologyReportGeneratorRouter,
+);
+
+// Attach an externally-produced (Word/PDF) final report to a radiology
+// study — the clinic composes reports in Word, not this app's structured
+// builder; see radiology-report-attachments.ts for the full rationale.
+router.use(
+  "/radiology/report-attachments",
+  requireStaffAuth,
+  requireStaffPermission("/radiology"),
+  radiologyReportAttachmentsRouter,
 );
 
 // Editable findings library (Report Builder) — add/modify/delete abnormal
