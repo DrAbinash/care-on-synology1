@@ -120,6 +120,9 @@ const PERMISSION_ALIASES: Readonly<Record<string, string>> = {
   "/patient-reports": "/reports",
   "/signatures": "/reports",
   "/backup-replication": "/settings",
+  // Unified WhatsApp Cloud API settings — same permission the backend
+  // requires for every mutating route under /api/whatsapp (requireStaffPermission("/settings")).
+  "/admin/integrations/whatsapp": "/settings",
   "/dicom-studies": "/dicom-nodes",
   "/dicom-workflow": "/radiology",
   "/smart-radiology": "/radiology",

@@ -73,6 +73,7 @@ const ReportGenerator = lazy(() => import("@/pages/ReportGenerator"));
 const Inventory       = lazy(() => import("@/pages/Inventory"));
 const HopeReferrals   = lazy(() => import("@/pages/HopeReferrals"));
 const IntegrationAdmin = lazy(() => import("@/pages/IntegrationAdmin"));
+const WhatsAppIntegrationSettings = lazy(() => import("@/pages/WhatsAppIntegrationSettings"));
 const Accounting      = lazy(() => import("@/pages/Accounting"));
 const Banking         = lazy(() => import("@/pages/Banking"));
 const Register        = lazy(() => import("@/pages/Register"));
@@ -374,6 +375,7 @@ function Router() {
               <Route path="/dashboard" component={Dashboard} />
               <Route path="/hope-referrals" component={HopeReferrals} />
               <Route path="/diagnostic-integration" component={IntegrationAdmin} />
+              <Route path="/admin/integrations/whatsapp" component={WhatsAppIntegrationSettings} />
               <Route path="/diagnostics" component={Diagnostics} />
               <Route path="/measurement-registry" component={MeasurementRegistryManager} />
               <Route path="/pathology-registry" component={PathologyRegistry} />

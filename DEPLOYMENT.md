@@ -354,6 +354,11 @@ curl -s http://localhost:8888/erp/ | grep -q "Care Diagnostics" && echo "ERP OK"
 
 # 5. Migration log (how many applied)
 docker compose logs care-db-patch-v2 | tail -20
+
+# 6. WhatsApp Cloud API (if ff_whatsapp_cloud_api is enabled) — see
+#    docs/WHATSAPP_CLOUD_API_SETUP.md for first-time setup.
+curl -fsS -H "Authorization: Bearer $WHATSAPP_AUTOMATION_SECRET" \
+  http://localhost:8080/api/internal/automations/whatsapp/health
 ```
 
 Expected output:
@@ -579,7 +584,7 @@ These are checked **only when configured** (otherwise SKIPPED, never FAIL):
 | Variable | Enables the check for |
 |---|---|
 | `N8N_HEALTH_URL` (or `N8N_URL`) | n8n reachability |
-| `EVOLUTION_API_URL` | Evolution API reachability |
+| `EVOLUTION_API_URL` | Evolution API reachability — **deprecated, unrelated to CARE's WhatsApp integration** (Meta Cloud API, configured via Admin → Integrations → WhatsApp); kept only as an optional legacy probe |
 | `PUBLIC_BASE_URL` (or `NETWORK_PUBLIC_DOMAIN`) | Public website / reverse proxy reachability |
 | `ORTHANC_URL` / `ORTHANC_INTERNAL_URL` (+ `ORTHANC_USERNAME`/`ORTHANC_PASSWORD`) | Orthanc `/system` connectivity + auth |
 | `OHIF_URL` | OHIF viewer reachability |

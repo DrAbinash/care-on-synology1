@@ -22,7 +22,15 @@ export class MetaWhatsAppCloudProvider implements WhatsAppProvider {
 
   initialize(credentials: WhatsAppProviderCredentials, config?: Record<string, unknown>): void {
     this.creds = credentials;
-    if (config?.baseUrl && typeof config.baseUrl === "string") {
+    // graphApiVersion takes precedence over a full baseUrl override — this is
+    // the single knob the unified WhatsApp Settings page's
+    // whatsapp_settings.graph_api_version column controls, so every Meta API
+    // call this app makes (this provider, routes/whatsapp.ts's direct
+    // fetches, and WhatsAppOutbox.ts's dispatcher) can be kept in sync from
+    // one place instead of three independently hardcoded values.
+    if (config?.graphApiVersion && typeof config.graphApiVersion === "string") {
+      this.baseUrl = `https://graph.facebook.com/${config.graphApiVersion}`;
+    } else if (config?.baseUrl && typeof config.baseUrl === "string") {
       this.baseUrl = config.baseUrl;
     }
   }
@@ -122,16 +130,46 @@ export class MetaWhatsAppCloudProvider implements WhatsAppProvider {
     });
   }
 
-  /** Verify webhook signature using app secret */
-  async verifyWebhook(rawBody: string, signature: string): Promise<WebhookVerificationResult> {
-    const secret = this.creds.appSecret || this.creds.webhookSecret || "";
-    if (!secret) return { valid: true }; // no secret configured = pass-through in dev
+  /**
+   * Verify Meta's x-hub-signature-256 header against the raw request body.
+   *
+   * Fails CLOSED, not open: a missing secret, a missing/malformed signature
+   * header, or a mismatched digest all return { valid: false }. This used to
+   * return { valid: true } whenever no secret was configured ("pass-through
+   * in dev") -- in production, where WHATSAPP_APP_SECRET/WHATSAPP_WEBHOOK_SECRET
+   * are never set (see WhatsAppProviderFactory.ts), that meant EVERY webhook
+   * call was accepted unverified, including forged ones, since an empty
+   * secret was silently treated as "verification not required" rather than
+   * "verification impossible."
+   *
+   * `secret` here is an explicit override the caller passes in (the unified,
+   * decrypted whatsapp_settings.app_secret / per-number app_secret) -- the
+   * module-level provider instance's own this.creds.appSecret is only ever
+   * populated from environment variables at process start (see
+   * WhatsAppProviderFactory.getWhatsAppProvider), so it can never reflect a
+   * secret an admin saved through the unified settings page without a
+   * restart. Callers should always pass the freshly-read DB secret; the
+   * fallback to this.creds exists only for completeness / non-webhook uses
+   * of this provider instance.
+   */
+  async verifyWebhook(rawBody: string, signatureHeader: string, secret?: string): Promise<WebhookVerificationResult> {
+    const key = secret || this.creds.appSecret || this.creds.webhookSecret || "";
+    if (!key) return { valid: false };
+    if (!signatureHeader) return { valid: false };
+    const prefix = "sha256=";
+    if (!signatureHeader.startsWith(prefix)) return { valid: false };
+    const providedHex = signatureHeader.slice(prefix.length).trim();
+    // A malformed (non-hex, wrong-length) provided value must not reach
+    // timingSafeEqual with mismatched buffer lengths -- Node throws in that
+    // case rather than returning false, which would surface as a 500
+    // instead of a clean signature-rejection.
+    if (!/^[0-9a-fA-F]+$/.test(providedHex)) return { valid: false };
     const crypto = await import("node:crypto");
-    const expected = crypto
-      .createHmac("sha256", secret)
-      .update(rawBody)
-      .digest("hex");
-    return { valid: signature === expected };
+    const expectedHex = crypto.createHmac("sha256", key).update(rawBody, "utf8").digest("hex");
+    const providedBuf = Buffer.from(providedHex, "hex");
+    const expectedBuf = Buffer.from(expectedHex, "hex");
+    if (providedBuf.length !== expectedBuf.length) return { valid: false };
+    return { valid: crypto.timingSafeEqual(providedBuf, expectedBuf) };
   }
 
   /** Parse Meta webhook payload into normalized messages */

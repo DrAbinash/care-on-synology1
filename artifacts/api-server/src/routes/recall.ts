@@ -175,7 +175,7 @@ export async function runRecallSends(): Promise<{ skipped?: boolean; reason?: st
       await db.update(recallQueueTable).set({ status: "cancelled", lastError: "no phone" }).where(eq(recallQueueTable.id, entry.id));
       failed++; continue;
     }
-    const r = await sendPlainWhatsappText(entry.phone, entry.messageSnapshot ?? "");
+    const r = await sendPlainWhatsappText(entry.phone, entry.messageSnapshot ?? "", "recall_followup");
     if (r.skipped) return { skipped: true, reason: "WhatsApp disabled", sent, failed, total: due.length };
     if (r.ok) {
       await db.update(recallQueueTable).set({ status: "sent", sentAt: new Date(), providerMessageId: r.messageId ?? null }).where(eq(recallQueueTable.id, entry.id));

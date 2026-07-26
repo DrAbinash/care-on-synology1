@@ -9,6 +9,7 @@ import { logger } from "./lib/logger";
 import { errorHandler } from "./middleware/errorHandler";
 import { generalLimiter, dicomUploadLimiter } from "./middleware/rateLimits";
 import { dicomUploadsRouter } from "./routes/dicom-uploads";
+import { whatsappWebhookRouter } from "./routes/whatsapp";
 import { recordRequest } from "./lib/requestMetrics";
 
 // Helmet is loaded lazily so a missing optional dependency never crashes the
@@ -241,6 +242,17 @@ app.get("/api/health/schema", async (_req, res) => {
 });
 
 app.use("/api/dicom-uploads", dicomUploadLimiter, dicomUploadsRouter);
+
+// Meta WhatsApp Cloud API webhook — mounted here, BEFORE the global
+// express.json() below, same reason as dicom-uploads above: its POST route
+// verifies Meta's x-hub-signature-256 HMAC against the EXACT raw bytes Meta
+// signed, which is only possible if nothing has parsed (and thereby
+// re-serializable-different) the body first. See routes/whatsapp.ts's POST
+// handler doc comment for the full rationale. This single mount replaces
+// the old one under routes/index.ts's "/whatsapp/webhook" (removed — it ran
+// after express.json(), so req.body there was already-parsed JSON with no
+// raw bytes left to verify against).
+app.use("/api/whatsapp/webhook", whatsappWebhookRouter);
 
 // Standard JSON body parser — 5 MB for all API routes except uploads.
 // The uploads route (/api/uploads) handles JSON base64 up to 25 MB

@@ -18,12 +18,18 @@ import { WhatsAppBotEngine } from "../services/whatsapp/WhatsAppBotEngine";
 import type { ParsedIncomingMessage } from "../services/whatsapp/WhatsAppProvider";
 
 export const waChatbotRouter: IRouter = Router();
+// DEPRECATED / NOT MOUNTED — see routes/index.ts for why. Kept exported
+// (rather than deleted) only so nothing importing this module fails to
+// compile; no route in routes/index.ts or app.ts mounts it, so none of
+// the handlers below are reachable over HTTP. The single production
+// WhatsApp webhook is "/api/whatsapp/webhook" (routes/whatsapp.ts).
 export const waChatbotWebhookRouter: IRouter = Router();
 
 const service = getWhatsAppService();
 const botEngine = new WhatsAppBotEngine(service);
 
-// ── Public Webhook Receiver (POST /api/wa-chatbot/webhook/:provider) ────────────────────
+// ── DEPRECATED — unreachable, see note above. Left in place for reference
+// only. (POST /api/wa-chatbot/webhook/:provider) ────────────────────
 waChatbotWebhookRouter.post("/:provider", async (req: Request, res: Response): Promise<void> => {
   // Always respond 200 immediately to prevent provider retries
   res.status(200).json({ status: "ok" });

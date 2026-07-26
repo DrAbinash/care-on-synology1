@@ -460,9 +460,16 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
     },
   },
   {
-    id: "integ.evolution", name: "Evolution API", category: "integrations", required: false, optional: true,
+    // DEPRECATED: Evolution API is not, and was never, a supported CARE
+    // WhatsApp provider (it has no adapter in
+    // services/whatsapp/WhatsAppProviderFactory.ts's registry). This is a
+    // bare reachability probe kept only for deployments that still run a
+    // standalone Evolution instance for unrelated reasons; it has no bearing
+    // on CARE's actual WhatsApp send/receive path, which is the Meta Cloud
+    // API (see integ.whatsapp / /api/internal/automations/whatsapp/health).
+    id: "integ.evolution", name: "Evolution API (deprecated, unrelated to WhatsApp)", category: "integrations", required: false, optional: true,
     run: async (ctx) => {
-      if (!ctx.evolutionUrl) return { status: "SKIPPED", message: "Evolution API not configured (set EVOLUTION_API_URL to enable)" };
+      if (!ctx.evolutionUrl) return { status: "SKIPPED", message: "Evolution API not configured (deprecated legacy probe — safe to leave unset)" };
       const r = await ctx.probe(ctx.evolutionUrl, { parseJson: false });
       return r.ok ? { status: "PASS", message: `Evolution API reachable (${r.ms}ms)` } : { status: "WARNING", message: r.status == null ? "Evolution API unreachable" : `Evolution API returned ${r.status}` };
     },

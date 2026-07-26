@@ -54,6 +54,56 @@ export const whatsappSettingsTable = pgTable("whatsapp_settings", {
   // checked against incoming messages, which today is a Knowledge Base
   // category with no code reading it — see WHATSAPP_SYSTEM_AUDIT.md).
   aiEscalationMessage: text("ai_escalation_message").notNull().default(""),
+
+  // ── Provider (unified WhatsApp Settings — section A) ──────────────────
+  businessDisplayName: text("business_display_name").notNull().default(""),
+  graphApiVersion: text("graph_api_version").notNull().default("v21.0"),
+  lastSuccessfulCheckAt: timestamp("last_successful_check_at", { withTimezone: true }),
+  lastCheckError: text("last_check_error").notNull().default(""),
+  lastCheckErrorAt: timestamp("last_check_error_at", { withTimezone: true }),
+
+  // ── Credentials (section B) ────────────────────────────────────────────
+  // Encrypted the same way as accessToken (encryptSecret/decryptSecretTolerant).
+  appSecret: text("app_secret").notNull().default(""),
+
+  // ── Webhook diagnostics (section D) ────────────────────────────────────
+  lastWebhookVerifiedAt: timestamp("last_webhook_verified_at", { withTimezone: true }),
+  lastWebhookReceivedAt: timestamp("last_webhook_received_at", { withTimezone: true }),
+  lastValidSignatureAt: timestamp("last_valid_signature_at", { withTimezone: true }),
+  lastRejectedSignatureAt: timestamp("last_rejected_signature_at", { withTimezone: true }),
+  rejectedSignatureCount: integer("rejected_signature_count").notNull().default(0),
+
+  // ── Automation controls (section E) — all enforced server-side in
+  // whatsappEnqueue.ts, never trust the frontend to have disabled anything.
+  shadowMode: boolean("shadow_mode").notNull().default(true),
+  testAllowlist: text("test_allowlist").notNull().default("[]"), // JSON array of E.164 numbers
+  blockNonAllowlisted: boolean("block_non_allowlisted").notNull().default(true),
+  outboundMessagingEnabled: boolean("outbound_messaging_enabled").notNull().default(true),
+  inboundProcessingEnabled: boolean("inbound_processing_enabled").notNull().default(true),
+  reportReadyMessagesEnabled: boolean("report_ready_messages_enabled").notNull().default(true),
+  paymentMessagesEnabled: boolean("payment_messages_enabled").notNull().default(true),
+  quietHoursStart: text("quiet_hours_start").notNull().default(""), // "HH:MM" or "" = no quiet hours
+  quietHoursEnd: text("quiet_hours_end").notNull().default(""),
+  maxRetryAttempts: integer("max_retry_attempts").notNull().default(5),
+  retryDelayBaseSeconds: integer("retry_delay_base_seconds").notNull().default(30),
+  dailyMessageLimit: integer("daily_message_limit").notNull().default(0), // 0 = unlimited
+  monthlyMessageBudgetWarning: integer("monthly_message_budget_warning").notNull().default(0), // 0 = disabled
+  emergencyPaused: boolean("emergency_paused").notNull().default(false),
+  emergencyPausedReason: text("emergency_paused_reason").notNull().default(""),
+  emergencyPausedAt: timestamp("emergency_paused_at", { withTimezone: true }),
+
+  // ── Consent and safety (section G) — stopStartHandlingEnabled and
+  // phiProtectionEnabled are DISPLAY-ONLY: WhatsAppBotEngine's STOP/START
+  // opt-out and DOB gate are always-on regardless of these columns, so a
+  // misconfigured settings page can never disable a legal opt-out or a PHI
+  // safeguard. See the migration comment for the full rationale.
+  transactionalMessagesAllowed: boolean("transactional_messages_allowed").notNull().default(true),
+  reminderMessagesAllowed: boolean("reminder_messages_allowed").notNull().default(true),
+  marketingMessagesAllowed: boolean("marketing_messages_allowed").notNull().default(false),
+  stopStartHandlingEnabled: boolean("stop_start_handling_enabled").notNull().default(true),
+  phiProtectionEnabled: boolean("phi_protection_enabled").notNull().default(true),
+  secureReportLinkRequired: boolean("secure_report_link_required").notNull().default(true),
+
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

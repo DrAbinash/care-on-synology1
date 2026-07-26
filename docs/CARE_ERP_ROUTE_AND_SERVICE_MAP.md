@@ -43,8 +43,9 @@ These run outside the CARE compose stack (on the NAS, a Windows PC, or the LAN) 
 | Ollama (LLM) | `OLLAMA_URL` / `OLLAMA_PRIMARY_URL` / `OLLAMA_FALLBACK_URL` | Windows PC / LAN `http://172.16.1.140:11434` | `GET /api/tags` (+ model-pulled check) |
 | CARE AI Gateway | `AI_GATEWAY_URL` / `USG_AI_GATEWAY_URL` | custom gateway | `GET /health` |
 | Conquest PACS (alt) | `CONQUEST_URL`, `CONQUEST_HOST`, `CONQUEST_PORT`, `CONQUEST_AE_TITLE` | LAN | (n/a — used when `PACS_PROVIDER=conquest`) |
-| WhatsApp (Evolution) | `EVOLUTION_API_URL` (+ `WHATSAPP_*`) | LAN / cloud | `GET /` |
-| n8n automations | `N8N_URL` | LAN / cloud | `GET /healthz` |
+| WhatsApp (Meta Cloud API) | `WHATSAPP_*` (unified settings page preferred over env) | Meta `graph.facebook.com` | `POST /api/whatsapp/webhook` (Meta-signed), `GET /api/internal/automations/whatsapp/health` |
+| n8n automations | `N8N_URL`, `WHATSAPP_AUTOMATION_SECRET` | LAN / cloud | `GET /healthz`, `GET /api/internal/automations/whatsapp/health` |
+| Evolution API (deprecated) | `EVOLUTION_API_URL` | LAN / cloud | `GET /` — optional legacy reachability probe only; not CARE's WhatsApp provider |
 | Document scan bridge | `VITE_SCAN_BRIDGE_URL` | each billing PC `:8766` | (per-workstation) |
 | Fingerprint bridge | `FINGERPRINT_BRIDGE_SECRET` | each workstation | (per-workstation) |
 

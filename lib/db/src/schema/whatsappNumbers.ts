@@ -15,6 +15,15 @@ export const whatsappNumbersTable = pgTable("whatsapp_numbers", {
   role: text("role").notNull().default("general"),
   enabled: boolean("enabled").notNull().default(true),
   isDefault: boolean("is_default").notNull().default(false),
+  // Per-number credential overrides (unified WhatsApp Settings — section C).
+  // Empty = falls back to the global whatsapp_settings row, same pattern
+  // accessToken above already uses.
+  appSecret: text("app_secret").notNull().default(""),
+  businessAccountId: text("business_account_id").notNull().default(""),
+  lastInboundAt: timestamp("last_inbound_at", { withTimezone: true }),
+  lastOutboundAt: timestamp("last_outbound_at", { withTimezone: true }),
+  lastReceiptAt: timestamp("last_receipt_at", { withTimezone: true }),
+  connectionStatus: text("connection_status").notNull().default("unknown"), // unknown | ok | error
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

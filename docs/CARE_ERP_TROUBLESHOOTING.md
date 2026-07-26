@@ -135,11 +135,11 @@ The verifier's PASS/FAIL/WARNING/SKIPPED lines point you straight at the failing
 - **When not to proceed:** never mark a bill paid manually to "unblock" without confirming the gateway record — reconcile first.
 
 ### 15. WhatsApp unavailable
-- **Likely cause:** Evolution API / provider down or creds expired.
-- **Affected:** report-delivery notifications only.
-- **First log/command:** `curl -I $EVOLUTION_API_URL` (verifier: Messaging).
-- **Safe correction:** restore the provider / refresh creds; delivery retries persist.
-- **When not to proceed:** don't disable delivery tracking to hide failures — reports are still available in-app.
+- **Likely cause:** Meta Cloud API credentials expired/revoked, `ff_whatsapp_cloud_api` disabled, emergency pause active, or shadow mode + empty allowlist blocking real sends. (Evolution API is **not** CARE's WhatsApp provider — ignore `EVOLUTION_API_URL` for this issue; see the deprecation note in `CARE_ERP_ENVIRONMENT_MATRIX.md`.)
+- **Affected:** report-delivery notifications, appointment/dues reminders, OTP, payment links — all queue durably in `wa_outbox` and retry; nothing is silently lost.
+- **First log/command:** `curl -fsS -H "Authorization: Bearer $WHATSAPP_AUTOMATION_SECRET" $CARE_URL/api/internal/automations/whatsapp/health` (verifier: Messaging); check Admin → Integrations → WhatsApp → Health for queued/dead-letter counts and the emergency-pause/shadow-mode state.
+- **Safe correction:** refresh credentials via the unified settings page; resume from emergency pause if set; retry dead-lettered messages from the Health panel once fixed.
+- **When not to proceed:** don't disable delivery tracking to hide failures — reports are still available in-app, and queued messages resume automatically once the underlying issue is fixed.
 
 ### 16. Disk full ("no space left on device")
 - **Likely cause:** uploads/backups/build artifacts accumulation.
