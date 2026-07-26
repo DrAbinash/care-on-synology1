@@ -12,6 +12,7 @@ import {
   getGetAppointmentStatsQueryKey,
   type Appointment,
 } from "@workspace/api-client-react";
+import { todayISO, shiftISODate } from "@/lib/dateRangePresets";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -65,10 +66,6 @@ const TIME_SLOTS = [
   "17:00", "17:30",
 ];
 
-function toDateString(d: Date) {
-  return d.toISOString().slice(0, 10);
-}
-
 function formatDate(s: string) {
   return new Date(s + "T00:00:00").toLocaleDateString("en-IN", { weekday: "short", year: "numeric", month: "short", day: "numeric" });
 }
@@ -76,7 +73,7 @@ function formatDate(s: string) {
 export default function Appointments() {
   const { toast } = useToast();
   const qc = useQueryClient();
-  const today = toDateString(new Date());
+  const today = todayISO();
 
   const [selectedDate, setSelectedDate] = useState(today);
   const [statusFilter, setStatusFilter] = useState("all");
@@ -159,9 +156,7 @@ export default function Appointments() {
   }
 
   function navigateDate(offset: number) {
-    const d = new Date(selectedDate + "T00:00:00");
-    d.setDate(d.getDate() + offset);
-    setSelectedDate(toDateString(d));
+    setSelectedDate(shiftISODate(selectedDate, offset));
   }
 
   const filteredPatients = form.patientSearch
