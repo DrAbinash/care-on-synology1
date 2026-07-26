@@ -515,31 +515,6 @@ router.delete("/failed-queue/:id", async (req, res) => {
 
 // ─── WEASIS VIEWER LAUNCH ─────────────────────────────────────────────────────
 
-// Browser-followable launch: 302-redirects straight to the weasis:// URL so an
-// <a href>/window.open hands off to the OS Weasis protocol handler without any
-// client JS. The sibling /weasis-launch below returns the same URL as JSON for
-// JS-driven navigation. (Reported missing in PACS_CURRENT_STATE_REPORT.md.)
-router.get("/studies/:studyInstanceUID/weasis-launch-redirect", async (req, res) => {
-  const { studyInstanceUID } = req.params;
-  const cfg = await getRadiologyConfig();
-  const wadoUrl = cfg.weasis.wadoUrl;
-  const manifestTemplate = cfg.weasis.launchTemplate;
-
-  if (!wadoUrl && !manifestTemplate) {
-    res.status(503).json({ error: "Viewer settings are not configured. Go to PACS / DICOM Settings → Viewer Settings and click Load Clinic Viewer Defaults." });
-    return;
-  }
-
-  const weasisUrl = manifestTemplate
-    ? manifestTemplate
-        .replace(/\{WADO_URL\}/g, wadoUrl)
-        .replace(/\{wado_url\}/g, wadoUrl)
-        .replace(/\{studyInstanceUID\}/g, studyInstanceUID)
-    : `weasis://$dicom:get -w "${wadoUrl}" -r "studyUID=${studyInstanceUID}"`;
-
-  res.redirect(302, weasisUrl);
-});
-
 router.get("/studies/:studyInstanceUID/weasis-launch", async (req, res) => {
   const { studyInstanceUID } = req.params;
   const cfg = await getRadiologyConfig();
@@ -602,7 +577,13 @@ router.get("/studies/:studyInstanceUID/weasis-launch", async (req, res) => {
 });
 
 // GET /api/radiology/studies/:studyInstanceUID/weasis-launch-redirect
-// Redirects client browser to local weasis:// protocol handler directly
+// Redirects to the weasis:// protocol handler. This route (like the rest of
+// this router) requires requireStaffAuth — a plain browser navigation
+// (window.open/<a href>) can never carry the Authorization header that
+// needs, so it 401s for any real user before this handler ever runs. Kept
+// for any authenticated non-browser caller; the frontend uses the sibling
+// JSON /weasis-launch endpoint via an authenticated fetch instead (see
+// openWeasisLaunchRedirect in diagnostic-erp/src/lib/viewerService.ts).
 router.get("/studies/:studyInstanceUID/weasis-launch-redirect", async (req, res) => {
   const { studyInstanceUID } = req.params;
   const cfg = await getRadiologyConfig();

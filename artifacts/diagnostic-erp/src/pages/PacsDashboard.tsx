@@ -28,6 +28,7 @@ import {
 import {
   RisMonitorCommandGrid,
 } from "@/components/risMonitoring/RisMonitorCards";
+import { openWeasisLaunchRedirect } from "@/lib/viewerService";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -967,7 +968,7 @@ export default function PacsDashboard() {
                               <MonitorPlay size={10} /> OHIF
                             </Button>
                             <Button size="sm" variant="ghost" className="h-6 text-[10px] gap-0.5"
-                              onClick={() => window.open(`/api/radiology/studies/${p.studyInstanceUID}/weasis-launch-redirect`, "_blank")}>
+                              onClick={() => void openWeasisLaunchRedirect(p.studyInstanceUID, toast)}>
                               <Tv2 size={10} />
                             </Button>
                           </div>

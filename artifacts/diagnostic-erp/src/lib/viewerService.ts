@@ -258,16 +258,35 @@ export function recordFailedLaunch(stage: string, url: string, status: string) {
 // ─── LAUNCH LOGIC ─────────────────────────────────────────────────────────────
 
 /**
- * M1.1 consolidation — the two redirect-style launches the canonical
- * Reporting Workspace uses. Previously inlined (window.open with hand-built
- * URLs) in RadiologyReportingWorkspace and RadiologyReportEditor; shared here
- * so every reporting surface launches viewers through this one module.
- * The server-side redirect endpoint handles profile adaptation itself, so
- * these need no settings — use launchViewer() below when client-side
- * LAN/Tailscale URL adaptation is required.
+ * M1.1 consolidation — shared so every reporting surface launches Weasis
+ * through this one module. This used to be a plain
+ * `window.open("/api/radiology/.../weasis-launch-redirect")` — a bare
+ * browser navigation that can never carry the `Authorization: Bearer`
+ * header this app requires on every staff route. Since /weasis-launch-redirect
+ * is gated by requireStaffAuth (routes/index.ts), every click 401'd instead
+ * of launching Weasis. The sibling /weasis-launch endpoint returns the same
+ * weasis:// URL as JSON specifically for this reason (see its doc comment in
+ * pacsEnterprise.ts) — fetch it authenticated via `api`, then navigate a
+ * pre-opened tab to the resolved weasis:// URI (which itself needs no auth
+ * header at all — the browser just hands it to the OS protocol handler).
+ * The tab is opened synchronously before the await so popup blockers don't
+ * treat it as an unsolicited popup.
  */
-export function openWeasisLaunchRedirect(studyInstanceUID: string): void {
-  window.open(`/api/radiology/studies/${encodeURIComponent(studyInstanceUID)}/weasis-launch-redirect`, "_blank");
+export async function openWeasisLaunchRedirect(
+  studyInstanceUID: string,
+  toast?: (options: { title: string; description?: string; variant?: "default" | "destructive" }) => void,
+): Promise<void> {
+  const w = window.open("", "_blank");
+  try {
+    const data = await api.get<{ weasisUrl: string }>(
+      `/api/radiology/studies/${encodeURIComponent(studyInstanceUID)}/weasis-launch`
+    );
+    if (w) w.location.href = data.weasisUrl;
+    else window.open(data.weasisUrl);
+  } catch (err) {
+    w?.close();
+    toast?.({ title: "Failed to open Weasis", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+  }
 }
 
 /** Opens the in-app OHIF viewer page (/radiology/viewer/:uid) in a new tab. */
