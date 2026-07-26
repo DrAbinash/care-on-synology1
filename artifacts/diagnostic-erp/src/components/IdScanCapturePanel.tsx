@@ -14,7 +14,7 @@
  * the `onCapture(result)` contract are unchanged — the result still flows to
  * Form F's existing handler, crop/enhance editor and OCR.
  */
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "wouter";
 import {
   Camera, ScanLine, Upload, Settings2, CheckCircle2, ChevronRight,
@@ -27,6 +27,16 @@ import { getPreferredTvsDeviceId, getPreferredTvsDeviceLabel } from "@/lib/tvsDe
 import { isSecureCameraContext } from "@/lib/cameraDiagnostics";
 
 type CaptureMethod = "camera" | "bridge" | "mobile" | "upload";
+
+/** Coerce the clinic's "preferred scanning source" setting (a free-form
+ *  string from clinic_settings — "bridge" | "camera" | "mobile", or unset) into
+ *  a valid initial tab. Anything unrecognized falls back to "bridge" (the
+ *  flatbed scanner) since it's the sharpest, most consistent capture with no
+ *  focus/glare/orientation issues — not because it overrides the setting. */
+function resolveDefaultMethod(pref: string | undefined): CaptureMethod {
+  if (pref === "camera" || pref === "bridge" || pref === "mobile") return pref;
+  return "bridge";
+}
 
 const ACCEPTED_UPLOAD_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf"];
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB, matches the panel's stated limit
@@ -42,18 +52,25 @@ export interface IdScanCapturePanelProps {
   onError?: (message: string) => void;
   /** Optional — show a "View saved records" affordance in the footer. */
   onViewSaved?: () => void;
+  /** Clinic setting (Settings → Scanner → "Preferred Scanning Source") for
+   *  which capture method opens pre-selected: "bridge" (Flatbed Scanner),
+   *  "camera" (Webcam / TVS), or "mobile" (Phone). Any other value, or none,
+   *  falls back to "bridge". All methods remain one tap away regardless —
+   *  this only picks which tab is active when the panel first renders. */
+  defaultMethod?: string;
 }
 
 export default function IdScanCapturePanel({
-  frontDone, backDone, busy = false, onCapture, onError, onViewSaved,
+  frontDone, backDone, busy = false, defaultMethod, onCapture, onError, onViewSaved,
 }: IdScanCapturePanelProps) {
-  // Primary camera device — a bound TVS PDS 8M if an admin has configured one,
-  // otherwise a generic webcam.
+  // Fallback camera device — a bound TVS PDS 8M if an admin has configured
+  // one, otherwise a generic webcam. Kept as a secondary method; a flatbed
+  // scan is sharper and needs no focus/lighting fuss, so it's the default.
   const tvsDeviceId = getPreferredTvsDeviceId();
   const tvsLabel = getPreferredTvsDeviceLabel();
   const cameraIsTvs = !!tvsDeviceId;
   const cameraSource: ScanSource = cameraIsTvs ? "tvs" : "webcam";
-  const primaryLabel = cameraIsTvs ? (tvsLabel || "TVS PDS 8M") : "Webcam";
+  const cameraLabel = cameraIsTvs ? (tvsLabel || "TVS PDS 8M") : "Webcam";
   const cameraReady = isSecureCameraContext();
 
   // Live scanner-bridge health for the header/tab, polled while mounted.
@@ -70,9 +87,37 @@ export default function IdScanCapturePanel({
   }, []);
   const bridgeOk = bridgeState === "ok";
 
-  const [method, setMethod] = useState<CaptureMethod>(cameraReady ? "camera" : "upload");
+  // Default method comes from the clinic's "Preferred Scanning Source"
+  // setting (Settings → Scanner) — Scanner Bridge (flatbed) unless the clinic
+  // has configured Webcam/TVS or Mobile as primary instead. Whichever methods
+  // aren't the default remain one tap away as fallbacks. The header's
+  // "Primary Scanner" status reflects the CONFIGURED default specifically
+  // (not whichever tab happens to be selected right now), so staff can see at
+  // a glance whether their primary hardware is ready regardless of what
+  // they're currently browsing.
+  const resolvedDefault = resolveDefaultMethod(defaultMethod);
+  const [method, setMethod] = useState<CaptureMethod>(resolvedDefault);
   const [dragOver, setDragOver] = useState(false);
-  const primaryOnline = method === "bridge" ? bridgeOk : method === "camera" ? cameraReady : true;
+
+  // `defaultMethod` arrives from an async clinic-settings query in FormF.tsx
+  // and typically resolves AFTER this panel's first render (useState's initial
+  // value only applies on mount). Sync `method` to the resolved default
+  // whenever it changes, but stop once the staff member has manually picked a
+  // tab — the setting should decide what opens by default, never yank the
+  // tab out from under someone mid-workflow.
+  const userPickedMethodRef = useRef(false);
+  useEffect(() => {
+    if (!userPickedMethodRef.current) setMethod(resolvedDefault);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedDefault]);
+  const primaryLabel =
+    resolvedDefault === "bridge" ? "Flatbed Scanner" :
+    resolvedDefault === "camera" ? cameraLabel :
+    "Mobile Phone";
+  const primaryOnline =
+    resolvedDefault === "bridge" ? bridgeOk :
+    resolvedDefault === "camera" ? cameraReady :
+    true; // mobile has no persistent "online" state — always shown available
 
   // ── Drag & drop → route to a side (first drop fills Front, next fills Back) ──
   function acceptDroppedFile(file: File | undefined) {
@@ -89,9 +134,11 @@ export default function IdScanCapturePanel({
     onCapture({ file, mimeType: file.type, source: "upload", filename: file.name, side });
   }
 
+  // Scanner listed first — it's the default/recommended method; the others
+  // are fallbacks for when the flatbed isn't available.
   const tabs: { key: CaptureMethod; label: string; icon: typeof Camera; dot?: boolean }[] = [
-    { key: "camera", label: "Webcam", icon: Camera, dot: cameraReady },
     { key: "bridge", label: "Scanner", icon: ScanLine, dot: bridgeOk },
+    { key: "camera", label: "Webcam", icon: Camera, dot: cameraReady },
     { key: "mobile", label: "Mobile", icon: Smartphone },
     { key: "upload", label: "Upload", icon: Upload },
   ];
@@ -100,7 +147,7 @@ export default function IdScanCapturePanel({
   const captureSource: ScanSource = method === "bridge" ? "bridge" : method === "mobile" ? "mobile" : cameraSource;
   const tileIcon = method === "mobile" ? Smartphone : Camera;
   const tileDisabled = (method === "bridge" && !bridgeOk) || (method === "camera" && !cameraReady);
-  const captureLabel = method === "bridge" ? "Existing Scanner" : method === "mobile" ? "Mobile Phone" : primaryLabel;
+  const captureLabel = method === "bridge" ? "Existing Scanner" : method === "mobile" ? "Mobile Phone" : cameraLabel;
 
   return (
     <div className="rounded-xl border border-gray-200 bg-gradient-to-b from-white to-gray-50/60 shadow-sm p-3">
@@ -143,7 +190,7 @@ export default function IdScanCapturePanel({
               <button
                 key={t.key}
                 type="button"
-                onClick={() => setMethod(t.key)}
+                onClick={() => { userPickedMethodRef.current = true; setMethod(t.key); }}
                 title={t.label}
                 className={`relative flex flex-col items-center justify-center gap-0.5 w-[52px] h-[44px] rounded-lg border transition-colors ${
                   active

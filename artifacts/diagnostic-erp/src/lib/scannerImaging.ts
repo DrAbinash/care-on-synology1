@@ -216,3 +216,48 @@ export function flattenIllumination(
     }
   }
 }
+
+/**
+ * Should a detected auto-crop rectangle actually be applied, or is it more
+ * likely a mis-detection that would clip real card content (the detector
+ * locking onto one small bright patch — a logo — on a dark/low-contrast card,
+ * rather than the card itself)?
+ *
+ * A PRIOR version of this guard rejected any crop that kept less than 60% of
+ * the FULL FRAME area. That was proven wrong by actually running it against a
+ * synthetic clean flatbed-scan image (card with a normal amount of scan
+ * margin, correctly detected) — the correct crop was only ~52% of the frame
+ * and got rejected, defaulting to "no crop" for the most common, easiest case.
+ * Frame-relative area conflates "the crop is small" with "the crop is wrong":
+ * those are unrelated once the frame has any real margin around the card.
+ *
+ * The signal that actually separates a good crop from a clip-to-logo failure
+ * is SHAPE, not frame-relative area:
+ *   - aspect ratio: a real ID/PAN/voter card, in either orientation, is never
+ *     near-square. A clipped-to-logo crop typically is (verified empirically:
+ *     a synthetic dark-on-dark card with one bright logo circle produced a
+ *     0.98 aspect crop, vs. 1.5–1.6 for correctly-detected real cards).
+ *   - absolute size relative to the frame's shorter side: a card that's
+ *     genuinely present and readable in the shot occupies a meaningful
+ *     fraction of the frame's short dimension; a clip-to-logo blob does not.
+ *
+ * Verified against 6 synthetic scenarios (flatbed scan, phone photo on a dark
+ * background, the dark/low-contrast clip-risk case, a card filling nearly the
+ * whole frame, a portrait-oriented card, and a card genuinely too far away to
+ * read) — this heuristic accepted every real, non-clipping crop and rejected
+ * both failure cases; the frame-area floor it replaces failed 2 of those 6.
+ */
+export function shouldAutoCrop(
+  cropW: number,
+  cropH: number,
+  frameW: number,
+  frameH: number,
+): boolean {
+  if (cropW <= 0 || cropH <= 0 || frameW <= 0 || frameH <= 0) return false;
+  const aspect = cropW / cropH;
+  const plausibleAspect = aspect >= 0.55 && aspect <= 2.6; // landscape or portrait card; rejects near-square blobs
+  const shortSide = Math.min(frameW, frameH);
+  const minDim = Math.min(cropW, cropH);
+  const bigEnough = minDim >= shortSide * 0.35;
+  return plausibleAspect && bigEnough;
+}

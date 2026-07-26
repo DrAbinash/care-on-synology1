@@ -39,6 +39,7 @@ import {
 import {
   lumaHistogram, percentileFromHistogram, otsuThreshold,
   grayWorldGains, applyChannelGains, flattenIllumination, suppressGlare,
+  shouldAutoCrop,
 } from "@/lib/scannerImaging";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -154,6 +155,19 @@ const DEFAULT_MODE_FOR_DOC: Record<ScanDocType, EnhancementMode> = {
   "id-card": "original",
   receipt: "receipt",
   document: "document",
+};
+
+/** Which enhancement modes are offered per document type. ID cards are
+ *  primarily captured via a flatbed scanner now (sharp, evenly lit, no glare
+ *  or focus issues), so the 6 modes built for phone/webcam photos (glare,
+ *  lighting casts, receipt-specific shadow removal, etc.) are just noise —
+ *  reduced to Original (the scan as-is) and Document/Text (sharpen faint text
+ *  on an old or faded physical card). Receipt/document scanning (Accounting,
+ *  bill/bank capture) keeps the full set — those ARE mostly phone photos. */
+const MODES_FOR_DOC: Record<ScanDocType, EnhancementMode[]> = {
+  "id-card": ["original", "document"],
+  receipt: Object.keys(MODE_LABELS) as EnhancementMode[],
+  document: Object.keys(MODE_LABELS) as EnhancementMode[],
 };
 
 // ── Image Processing Pipeline ──────────────────────────────────────────────────
@@ -652,13 +666,23 @@ export default function IdCardScanPanel({
     return { x: X, y: Y, w: cropW, h: cropH, confidence };
   }
 
-  // ── Guarded auto-crop: the single place the ≥60%-kept safety floor is
-  // applied, so every entry point that can trigger auto-crop (initial load,
-  // the "Auto Crop" button, and re-running after rotate) behaves consistently.
-  // Previously only the initial-load path had this guard — the "Auto Crop"
-  // button (which the UI explicitly tells staff to tap when the whole image is
-  // kept) applied detectCardCrop's result directly, so following that exact
-  // instruction could still clip a dark/low-contrast card down to its logo.
+  // ── Guarded auto-crop: the single place the safety floor (shouldAutoCrop —
+  // see scannerImaging.ts) is applied, so every entry point that can trigger
+  // auto-crop (initial load, the "Auto Crop" button, and re-running after
+  // rotate) behaves consistently. Previously only the initial-load path had a
+  // guard — the "Auto Crop" button (which the UI explicitly tells staff to tap
+  // when the whole image is kept) applied detectCardCrop's result directly, so
+  // following that exact instruction could still clip a dark/low-contrast card
+  // down to its logo.
+  //
+  // The guard itself was ALSO wrong until it was actually run against
+  // synthetic test images (not just reasoned about) — see shouldAutoCrop's own
+  // doc comment: a "keep >=60% of frame area" floor rejected a correct crop on
+  // a clean flatbed scan (the primary capture method) because a normal scan
+  // margin legitimately keeps well under 60% of the frame. shouldAutoCrop
+  // replaces that with an aspect-ratio + relative-size check, verified against
+  // 6 scenarios including that exact regression.
+  //
   // Returns confidence "none" when auto-crop was skipped (kept the full frame)
   // so callers can distinguish "cropped, and confidently" from "not cropped" —
   // the header badge previously showed a green "Auto crop ok" in both cases. ──
@@ -672,8 +696,7 @@ export default function IdCardScanPanel({
     statusType: "ok" | "warn";
   } {
     const detected = detectCardCrop(canvas, padding);
-    const areaRatio = (detected.w * detected.h) / (canvas.width * canvas.height || 1);
-    if (areaRatio >= 0.6) {
+    if (shouldAutoCrop(detected.w, detected.h, canvas.width, canvas.height)) {
       return {
         rect: { x: detected.x, y: detected.y, w: detected.w, h: detected.h },
         confidence: detected.confidence === "low" ? "medium" : detected.confidence,
@@ -1257,7 +1280,7 @@ export default function IdCardScanPanel({
               <Sparkles size={10} /> Enhancement Mode
             </div>
             <div className="flex flex-wrap gap-1.5">
-              {(Object.keys(MODE_LABELS) as EnhancementMode[]).map((mode) => (
+              {MODES_FOR_DOC[docType].map((mode) => (
                 <button
                   key={mode}
                   onClick={() => reEnhance(mode)}

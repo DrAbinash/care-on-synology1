@@ -5,6 +5,7 @@ import { describe, it, expect } from "vitest";
 import {
   lumaHistogram, percentileFromHistogram, otsuThreshold,
   grayWorldGains, applyChannelGains, flattenIllumination, suppressGlare,
+  shouldAutoCrop,
 } from "./scannerImaging";
 
 /** Build RGBA data of `n` pixels with a per-pixel (r,g,b) from `fn`. */
@@ -127,5 +128,40 @@ describe("suppressGlare", () => {
     const d = rgba(4, () => [255, 255, 255]);
     suppressGlare(d, 200, 32, 0);
     expect(d[0]).toBe(255);
+  });
+});
+
+describe("shouldAutoCrop", () => {
+  // Fixture crop dimensions below are the EXACT output of the real
+  // detectCardCrop() (IdCardScanPanel.tsx), run against synthetic test images
+  // via node-canvas in a throwaway sandbox script — not invented numbers. That
+  // exercise is what caught the bug this replaces: the previous guard ("keep
+  // >=60% of the full FRAME area") rejected the flatbed-scan case below (a
+  // correct, non-clipping crop at just 52% of frame area) because it
+  // conflated "small crop" with "wrong crop" — unrelated once the frame has
+  // any real scan margin, which is the normal case.
+  it("accepts a clean flatbed scan (a correct crop the old 60%-frame-area floor wrongly rejected)", () => {
+    expect(shouldAutoCrop(947, 597, 1200, 900)).toBe(true);
+  });
+  it("accepts a phone photo on a dark background with normal margins", () => {
+    expect(shouldAutoCrop(915, 612, 1080, 1440)).toBe(true);
+  });
+  it("rejects a dark-on-dark clip-risk detection (locked onto a small near-square logo blob)", () => {
+    expect(shouldAutoCrop(251, 257, 1000, 1400)).toBe(false);
+  });
+  it("accepts a card that fills nearly the whole frame", () => {
+    expect(shouldAutoCrop(898, 559, 900, 560)).toBe(true);
+  });
+  it("accepts a portrait-oriented card (taller than wide)", () => {
+    expect(shouldAutoCrop(697, 997, 900, 1200)).toBe(true);
+  });
+  it("rejects a card genuinely too small/far-away to be a reliable crop", () => {
+    expect(shouldAutoCrop(303, 232, 2000, 1500)).toBe(false);
+  });
+  it("rejects zero/negative dimensions instead of throwing", () => {
+    expect(shouldAutoCrop(0, 100, 1000, 1000)).toBe(false);
+    expect(shouldAutoCrop(100, 0, 1000, 1000)).toBe(false);
+    expect(shouldAutoCrop(100, 100, 0, 1000)).toBe(false);
+    expect(shouldAutoCrop(-10, 100, 1000, 1000)).toBe(false);
   });
 });

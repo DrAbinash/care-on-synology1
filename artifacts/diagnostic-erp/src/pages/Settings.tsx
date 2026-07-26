@@ -10152,11 +10152,12 @@ function ScannerSettingsTab() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="bridge">Flatbed Scanner / Scan Bridge</SelectItem>
+                  <SelectItem value="camera">Webcam / TVS PDS 8M</SelectItem>
                   <SelectItem value="mobile">Wireless Mobile Scan</SelectItem>
-                  <SelectItem value="bridge">Local Scanner / Scan Bridge</SelectItem>
                 </SelectContent>
               </Select>
-              <p className="text-[11px] text-muted-foreground">Default selection when staff clicks "Scan ID" on desktop.</p>
+              <p className="text-[11px] text-muted-foreground">Default capture method pre-selected on Form F's ID Scan panel.</p>
             </div>
             
             <div className="flex items-center gap-3 pt-6">

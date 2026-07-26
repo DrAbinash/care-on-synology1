@@ -839,6 +839,7 @@ export default function FormF() {
     cropPadding?: number;
     jpegQuality?: number;
     maxScanWidth?: number;
+    preferredScanner?: string;
   }>({
     queryKey: ["clinic-settings-formf"],
     queryFn: () => api.get("/api/clinic-settings"),
@@ -1001,22 +1002,20 @@ export default function FormF() {
       if (qr.format === "unsupported") {
         toast({
           title: "QR code detected but not readable",
-          description: "This looks like a newer Aadhaar Secure QR format, which isn't decoded yet — falling back to OCR text extraction instead.",
+          description: "This looks like a newer Aadhaar Secure QR format, which isn't decoded yet — falling back to crop + OCR instead.",
         });
       }
 
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const dataUrl = String(reader.result ?? "");
-        const base64 = dataUrl.split(",")[1];
-        if (!base64) { toast({ title: "Failed to read image", variant: "destructive" }); setIdCardUploading(false); return; }
-        setIdCardFrontUrl(dataUrl);
-        setLastIdImage({ base64, mimeType: file.type });
-        await runIdCardOcr(base64, file.type);
-        setIdCardUploading(false);
-      };
-      reader.readAsDataURL(file);
-    } catch { toast({ title: "Upload failed", variant: "destructive" }); setIdCardUploading(false); }
+      // No usable QR — route through the crop/enhance editor (auto-crop, then
+      // OCR runs on the cropped/enhanced result via the editor's own onSave)
+      // rather than running OCR on the raw, uncropped scan straight off the
+      // scanner/disk. A flatbed scan in particular is sharp and evenly lit, so
+      // auto-crop is reliable here and gives OCR a clean, properly-framed
+      // image instead of one that may include the scanner's background
+      // border — the single biggest lever for OCR accuracy on this path.
+      await openScanEditor(file, file.type || "image/jpeg", "front");
+    } catch { toast({ title: "Upload failed", variant: "destructive" }); }
+    finally { setIdCardUploading(false); }
   }
 
   // ── Retry OCR — re-runs OCR on the already-uploaded ID image without
@@ -1928,6 +1927,7 @@ export default function FormF() {
                     frontDone={!!idCardFrontUrl}
                     backDone={!!idCardBackUrl}
                     busy={idCardUploading}
+                    defaultMethod={fSettings?.preferredScanner}
                     onCapture={handleIdCapture}
                     onError={(msg) => toast({ title: "Scan failed", description: msg, variant: "destructive" })}
                     onViewSaved={() => setActiveTab("records")}
