@@ -58,7 +58,7 @@ interface MirrorOpts {
   useStructured: boolean;
   impression: string[];
   recommendation: string;
-  imageRefs: { seriesNumber: string; imageNumber: string; description: string }[];
+  imageRefs: { displayOrder: number; description: string; isKeyImage?: boolean }[];
   headingCase?: "all_caps" | "title_case";
   sectionSpacing?: "spaced" | "compact";
   impressionStyle?: "bulleted" | "numbered" | "plain";
@@ -106,9 +106,10 @@ function mirrorBuildPreviewHtml(opts: MirrorOpts): string {
 
   const hStyle = (margin: string) => `margin:${margin};break-after:avoid-page;page-break-after:avoid;`;
 
-  const imagesHtml = opts.imageRefs.length > 0
+  const orderedImageRefs = [...opts.imageRefs].sort((a, b) => a.displayOrder - b.displayOrder);
+  const imagesHtml = orderedImageRefs.length > 0
     ? `<h3 style="${hStyle(`${sp2} 0 ${sp}`)}"><u>${fmtHeadingMirror("Key Images", hc)}</u></h3>
-    <ul style="margin:4px 0 0 18px;padding:0;">${opts.imageRefs.map((img) => `<li>Series ${escHtmlMirror(img.seriesNumber)} Image ${escHtmlMirror(img.imageNumber)}: ${escHtmlMirror(img.description)}</li>`).join("")}</ul>`
+    <ul style="margin:4px 0 0 18px;padding:0;">${orderedImageRefs.map((img, i) => `<li>Image ${i + 1}${img.isKeyImage ? " (KEY)" : ""}: ${escHtmlMirror(img.description)}</li>`).join("")}</ul>`
     : "";
 
   return `<div style="font-family:Arial,sans-serif;font-size:13px;line-height:1.45;color:#111;max-width:720px;margin:0 auto;">
@@ -266,18 +267,24 @@ describe("parseReportHtmlToBlocks — against a faithful mirror of buildPreviewH
     expect(list!.items).toHaveLength(2);
   });
 
-  test("key images render as a list block with series/image numbers intact", () => {
+  test("key images render as a list block, ordered by displayOrder, KEY images marked", () => {
     const html = mirrorBuildPreviewHtml({
       ...BASE_OPTS,
-      imageRefs: [{ seriesNumber: "3", imageNumber: "12", description: "Axial mid-ventricle" }],
+      imageRefs: [
+        { displayOrder: 1, description: "Sagittal T2", isKeyImage: false },
+        { displayOrder: 0, description: "Axial mid-ventricle", isKeyImage: true },
+      ],
     });
     const blocks = parseReportHtmlToBlocks(html);
     const imagesHeading = blocks.find((b) => b.type === "heading2" && (b as { text: string }).text.includes("KEY IMAGES"));
     expect(imagesHeading).toBeTruthy();
-    const list = blocks.find(
-      (b) => b.type === "list" && (b as { items: { text: string }[][] }).items.some((item) => item.some((s) => s.text.includes("Axial mid-ventricle"))),
-    );
+    const list = blocks.find((b) => b.type === "list") as { type: "list"; items: { text: string }[][] } | undefined;
     expect(list).toBeTruthy();
+    // Sorted by displayOrder, so the isKeyImage:true item (displayOrder 0)
+    // comes first and is marked "(KEY)", even though it was passed second.
+    const itemTexts = list!.items.map((item) => item.map((s) => s.text).join(""));
+    expect(itemTexts[0]).toContain("Image 1 (KEY): Axial mid-ventricle");
+    expect(itemTexts[1]).toContain("Image 2: Sagittal T2");
   });
 
   test("section dividers (<hr>) between header/body/footer are preserved", () => {
