@@ -90,6 +90,33 @@ export const radiologyFilmIssuesTable = pgTable("radiology_film_issues", {
   issuedAt: timestamp("issued_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Externally-produced final reports (composed in Word, exported as PDF/DOCX)
+// attached against a radiology study. Deliberately NOT a patient_reports row:
+// that table drives the versioned/amendment/signature pipeline in
+// reportPresentation.ts, which an already-finished external document has no
+// need to participate in. This is a simple file-attachment record, modeled
+// directly on outsource_reports (outsourcedLabs.ts) — same shape, same
+// upload path (POST /api/uploads, module "reports"), same "just store the
+// path" simplicity.
+export const radiologyReportAttachmentsTable = pgTable(
+  "radiology_report_attachments",
+  {
+    id: serial("id").primaryKey(),
+    studyId: integer("study_id").notNull(),
+    patientId: integer("patient_id").notNull(),
+    // storagePath as returned by POST /api/uploads — relative to data/uploads/.
+    filePath: text("file_path").notNull(),
+    fileName: text("file_name").notNull(),
+    uploadedBy: text("uploaded_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    byStudy: index("radiology_report_attachments_study_idx").on(t.studyId),
+  }),
+);
+
+export type RadiologyReportAttachment = typeof radiologyReportAttachmentsTable.$inferSelect;
+
 // Saved AI prompts for the radiology report modal. A radiologist can store
 // reusable instruction snippets (e.g. "Use RSNA 2.0 structured format") that
 // auto-paste into the dictation pane so the AI generates in a fixed layout.
