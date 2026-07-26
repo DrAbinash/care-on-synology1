@@ -106,7 +106,7 @@ app.use(
 // /api/health/schema → full schema readiness probe
 //   Gates 1-4:
 //   1. db_patch_ok=true (db-patch-v2 completed)
-//   2. schema_verify_status=sql_pass|full_pass (SQL verification passed)
+//   2. schema_verify_status=sql_pass|full_pass|pass_with_warnings (SQL verification passed)
 //   3. Critical columns verified inline
 //   4. Migration count sanity check (≥6 Drizzle + some feature migrations)
 app.get("/health", (_req, res) => {
@@ -142,8 +142,13 @@ app.get("/api/health/schema", async (_req, res) => {
       }
 
       // ── Gate 2: SQL schema verification status ───────────────────────────────
+      // pass_with_warnings means all required schema objects exist and
+      // startup is safe — only non-blocking drift (missing indexes, type/
+      // nullability mismatches, extra tables) remains. It must gate the same
+      // as full_pass here, or a healthy-but-warned deploy would start
+      // returning 503 from this readiness probe.
       const svStatus = state["schema_verify_status"];
-      if (svStatus !== "sql_pass" && svStatus !== "full_pass") {
+      if (svStatus !== "sql_pass" && svStatus !== "full_pass" && svStatus !== "pass_with_warnings") {
         res.status(503).json({
           ok: false,
           error: `Schema verification not passed (status: ${svStatus ?? "missing"})`,

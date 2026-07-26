@@ -203,8 +203,12 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
       const patchOk = state["db_patch_ok"] === "true";
       const verify = state["schema_verify_status"];
       if (!patchOk) return { status: "FAIL", message: "db-patch-v2 did not complete (db_patch_ok≠true)", recommendedAction: "Inspect the care-db-patch-v2 container logs from the last deploy." };
-      if (verify === "full_fail") return { status: "WARNING", message: "schema_verify_status=full_fail — schema drift detected", metadata: { verify } };
+      // "full_fail" is the legacy value; "failed" is the current one (see
+      // classifySchemaStatus in scripts/db-schema-verify.cjs) — both accepted
+      // so an already-persisted legacy value isn't misreported as UNKNOWN.
+      if (verify === "failed" || verify === "full_fail") return { status: "WARNING", message: `schema_verify_status=${verify} — schema drift detected`, metadata: { verify } };
       if (verify === "sql_pass" || verify === "full_pass") return { status: "PASS", message: `db_patch_ok=true, schema_verify_status=${verify}` };
+      if (verify === "pass_with_warnings") return { status: "WARNING", message: "db_patch_ok=true, schema_verify_status=pass_with_warnings — non-blocking schema drift, startup is safe", metadata: { verify } };
       return { status: "UNKNOWN", message: `db_patch_ok=true, schema_verify_status=${verify ?? "missing"}` };
     },
   },

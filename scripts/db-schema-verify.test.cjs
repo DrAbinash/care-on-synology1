@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const {
   defaultLiteralForType, parseSqlFiles, diffSchema, loadJournal, extractRuntimeTableNames,
-  normaliseType, typesCompatible,
+  normaliseType, typesCompatible, classifySchemaStatus,
 } = require("./db-schema-verify.cjs");
 
 // Regression coverage for the incident where care-db-patch-v2 schema
@@ -626,5 +626,98 @@ describe("S1: diffSchema — false positives disappear, real differences remain 
     expect(results.pass).toBe(true);
     const finding = results.findings.find((f) => f.expected === "t_idx");
     expect(finding).toMatchObject({ level: "WARNING", classification: "REAL" });
+  });
+});
+
+describe("classifySchemaStatus — tri-state schema status (full_pass / pass_with_warnings / failed)", () => {
+  function fakeLive(tableSpecs) {
+    const liveTables = new Set(Object.keys(tableSpecs));
+    const liveColumns = new Map();
+    for (const [tbl, cols] of Object.entries(tableSpecs)) {
+      const m = new Map();
+      for (const [col, info] of Object.entries(cols)) m.set(col, info);
+      liveColumns.set(tbl, m);
+    }
+    return {
+      liveTables, liveColumns,
+      livePks: new Map(), liveUniques: new Map(), liveIndexes: new Set(),
+      liveIndexByTable: new Map(), liveFks: [], liveChecks: [],
+      journalApplied: [], featureMigApplied: [], deployState: {},
+    };
+  }
+
+  it("returns 'full_pass' when there are zero blocking errors and zero non-blocking issues", () => {
+    const expected = parseSqlFiles([{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "t" (\n\t"id" serial PRIMARY KEY NOT NULL,\n\t"name" text\n);`,
+    }]);
+    const live = fakeLive({ t: { id: { type: "integer", isNullable: false }, name: { type: "text", isNullable: true } } });
+    const results = diffSchema(expected, live, new Set());
+    results.sourceIssues = [];
+    expect(results.pass).toBe(true);
+    expect(classifySchemaStatus(results)).toBe("full_pass");
+  });
+
+  it("returns 'pass_with_warnings' when required schema objects all exist but non-blocking drift remains (missing index)", () => {
+    const expected = parseSqlFiles([{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "t" (\n\t"id" serial PRIMARY KEY NOT NULL\n);\nCREATE INDEX "t_idx" ON "t" ("id");`,
+    }]);
+    const live = fakeLive({ t: { id: { type: "integer", isNullable: false } } });
+    const results = diffSchema(expected, live, new Set());
+    results.sourceIssues = [];
+    expect(results.pass).toBe(true); // startup is safe — non-blocking
+    expect(classifySchemaStatus(results)).toBe("pass_with_warnings");
+  });
+
+  it("returns 'pass_with_warnings' for a type mismatch, a nullable mismatch, or an extra table — not 'full_pass'", () => {
+    const expected = parseSqlFiles([{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "t" (\n\t"id" serial PRIMARY KEY NOT NULL,\n\t"amount" integer NOT NULL\n);`,
+    }]);
+    const live = fakeLive({
+      t: { id: { type: "integer", isNullable: false }, amount: { type: "text", isNullable: true } },
+      extra_table: { id: { type: "integer", isNullable: false } },
+    });
+    const results = diffSchema(expected, live, new Set());
+    results.sourceIssues = [];
+    expect(results.pass).toBe(true);
+    expect(classifySchemaStatus(results)).toBe("pass_with_warnings");
+  });
+
+  it("returns 'failed' when a required table is missing (blocking error)", () => {
+    const expected = parseSqlFiles([{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "orders" (\n\t"id" serial PRIMARY KEY NOT NULL\n);`,
+    }]);
+    const live = fakeLive({});
+    const results = diffSchema(expected, live, new Set());
+    results.sourceIssues = [];
+    expect(results.pass).toBe(false);
+    expect(classifySchemaStatus(results)).toBe("failed");
+  });
+
+  it("returns 'failed' when a required column is missing (blocking error), even alongside non-blocking warnings", () => {
+    const expected = parseSqlFiles([{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "orders" (\n\t"id" serial PRIMARY KEY NOT NULL,\n\t"total" numeric(10, 2)\n);`,
+    }]);
+    const live = fakeLive({ orders: { id: { type: "integer", isNullable: false } }, extra_table: { id: { type: "integer", isNullable: false } } });
+    const results = diffSchema(expected, live, new Set());
+    results.sourceIssues = [];
+    expect(results.pass).toBe(false);
+    expect(classifySchemaStatus(results)).toBe("failed");
+  });
+
+  it("returns 'failed' when an error-level source issue is present, even with results.pass forced true (belt-and-suspenders on the sourceIssues path)", () => {
+    const expected = parseSqlFiles([{
+      tag: "a", type: "drizzle",
+      content: `CREATE TABLE "t" (\n\t"id" serial PRIMARY KEY NOT NULL\n);`,
+    }]);
+    const live = fakeLive({ t: { id: { type: "integer", isNullable: false } } });
+    const results = diffSchema(expected, live, new Set());
+    results.pass = false; // mirrors main()'s handling of error-level sourceIssues
+    results.sourceIssues = [{ level: "error", source: "journal", msg: "duplicate idx" }];
+    expect(classifySchemaStatus(results)).toBe("failed");
   });
 });

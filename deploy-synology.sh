@@ -69,7 +69,22 @@ info "Building and starting containers (this takes 3-5 minutes)..."
 echo ""
 
 sudo docker compose down --remove-orphans 2>/dev/null || true
-sudo docker compose up -d --build
+# `sudo` resets the environment by default, so the GIT_COMMIT/GIT_BRANCH/
+# ERP_VERSION/etc. exported above never reached docker compose's
+# ${GIT_COMMIT:-unknown}-style substitution — every deploy silently baked in
+# the "unknown"/"0" fallbacks regardless of what was actually deployed.
+# Passing them as explicit VAR=value assignments on the sudo command line
+# forwards them into the child process regardless of the sudoers env_reset
+# policy (unlike relying on `sudo -E`, which some sudoers configs restrict).
+sudo \
+  GIT_COMMIT="$GIT_COMMIT" \
+  GIT_BRANCH="$GIT_BRANCH" \
+  GIT_TAG="$GIT_TAG" \
+  BUILD_DATE="$BUILD_DATE" \
+  ERP_VERSION="$ERP_VERSION" \
+  BUILD_NUMBER="$BUILD_NUMBER" \
+  RELEASE_NAME="$RELEASE_NAME" \
+  docker compose up -d --build
 
 echo ""
 ok "Containers started"
