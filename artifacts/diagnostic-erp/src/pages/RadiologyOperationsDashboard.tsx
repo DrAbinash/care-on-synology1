@@ -1107,7 +1107,16 @@ export default function RadiologyOperationsDashboard() {
             Test Modalities
           </Button>
 
-          <Button onClick={() => window.open("/api/radiology/network/config/export")} variant="outline" className="text-xs h-9 justify-start gap-2 border-slate-800 hover:bg-slate-900 text-slate-300">
+          <Button
+            onClick={() => {
+              // /api/radiology/network/config/export is staff-authed —
+              // window.open(url) can never carry the Authorization header
+              // this app requires, so it always 401'd instead of exporting.
+              void api.downloadFile("/api/radiology/network/config/export", "pacs-config-export.json").catch((err) => {
+                toast({ title: "Export failed", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
+              });
+            }}
+            variant="outline" className="text-xs h-9 justify-start gap-2 border-slate-800 hover:bg-slate-900 text-slate-300">
             <Download size={13} />
             Export Settings
           </Button>

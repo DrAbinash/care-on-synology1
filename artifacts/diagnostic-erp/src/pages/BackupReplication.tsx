@@ -467,9 +467,21 @@ export default function BackupReplication() {
                           {log.rowCount && <span>{log.rowCount} rows</span>}
                           {log.errorMessage && <span className="text-red-500 truncate">{log.errorMessage}</span>}
                           {log.filePath && (
-                            <a href={`/api/admin/backup-replication/download?file=${encodeURIComponent(log.filePath.split("/").pop() ?? "")}`} target="_blank" rel="noreferrer" className="text-blue-500 hover:underline">
+                            // Staff/admin-authed route — a plain <a href> navigation can
+                            // never carry the Authorization header, so this always 401'd
+                            // instead of downloading the backup.
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const fileName = log.filePath!.split("/").pop() ?? "";
+                                void api.downloadFile(`/api/admin/backup-replication/download?file=${encodeURIComponent(fileName)}`, fileName).catch((err) => {
+                                  toast({ title: "Download failed", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
+                                });
+                              }}
+                              className="text-blue-500 hover:underline"
+                            >
                               <Download size={10} className="inline" />
-                            </a>
+                            </button>
                           )}
                         </div>
                       ))}

@@ -1135,7 +1135,14 @@ export default function NetworkControlCenter() {
                 <Button
                   size="sm"
                   className="w-full bg-sky-50 text-sky-700 hover:bg-sky-100 border border-sky-200"
-                  onClick={() => window.open("/api/radiology/network/lua-hook/conquest")}
+                  onClick={() => {
+                    // Staff-authed route — window.open(url) can never carry
+                    // the Authorization header, so it always 401'd instead
+                    // of downloading the hook.
+                    void api.downloadFile("/api/radiology/network/lua-hook/conquest", "erp_notify.lua").catch((err) => {
+                      toast({ title: "Download failed", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
+                    });
+                  }}
                 >
                   <Download className="h-3.5 w-3.5 mr-1" />
                   Download Conquest Lua Hook
@@ -1150,7 +1157,11 @@ export default function NetworkControlCenter() {
                 <Button
                   size="sm"
                   className="w-full bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200"
-                  onClick={() => window.open("/api/radiology/network/lua-hook/orthanc")}
+                  onClick={() => {
+                    void api.downloadFile("/api/radiology/network/lua-hook/orthanc", "orthanc_erp_notify.lua").catch((err) => {
+                      toast({ title: "Download failed", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
+                    });
+                  }}
                 >
                   <Download className="h-3.5 w-3.5 mr-1" />
                   Download Orthanc Lua Hook

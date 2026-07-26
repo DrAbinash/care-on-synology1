@@ -720,6 +720,30 @@ export default function RadiologyWorklist() {
     window.open(url, "_blank");
   }
 
+  // /api/patient-reports/:id/print is staff-authed (Authorization: Bearer
+  // <token>, checked only on the request header — this app has no cookie
+  // fallback), so a plain window.open(url) navigation can never carry it and
+  // always 401'd here (opened a blank tab showing the JSON error body
+  // instead of the report). Same fix ReportHub.tsx's openPrint() already
+  // uses: open a blank tab synchronously (popup-blocker safe), fetch the
+  // HTML via the authenticated client, then write it into that tab.
+  async function openPrintReport(reportId: number) {
+    const w = window.open("", "_blank", "noopener,noreferrer");
+    if (!w) {
+      toast({ title: "Popup blocked", description: "Allow popups for this site to print.", variant: "destructive" });
+      return;
+    }
+    try {
+      const html = await api.get<string>(`/api/patient-reports/${reportId}/print`);
+      w.document.write(html);
+      w.document.close();
+      w.focus();
+    } catch (err) {
+      w.close();
+      toast({ title: "Could not open print view", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    }
+  }
+
   function handleClearCache() {
     void qc.resetQueries({ queryKey: ["radiology-pacs-worklist"] });
     void qc.resetQueries({ queryKey: ["radiology-pacs-worklist-count"] });
@@ -1365,7 +1389,7 @@ export default function RadiologyWorklist() {
                                 size="sm"
                                 variant="outline"
                                 className="h-7 px-2 text-xs"
-                                onClick={() => window.open(`/api/patient-reports/${entry.reportId}/print`, "_blank", "noopener,noreferrer")}
+                                onClick={() => void openPrintReport(entry.reportId!)}
                                 title="Print / Share report"
                               >
                                 <Printer className="h-3 w-3 mr-1" />
