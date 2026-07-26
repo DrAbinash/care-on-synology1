@@ -121,8 +121,13 @@ export interface IdCardScanPanelProps {
    *  sideways, and rotating it (then cropping the rotated, white-padded frame)
    *  both mis-orients and clips the card. Staff use Rotate Left/Right instead. */
   autoRotate?: boolean;
-  /** Auto-crop on load. Default **false** — the whole card is shown so nothing
-   *  is silently clipped; staff crop manually or tap "Auto Crop". */
+  /** Auto-crop on load. Default **true** — runs through the same ≥60%-kept
+   *  safety floor as the "Auto Crop" button (see applyGuardedAutoCrop): a
+   *  confident, non-clipping crop is applied automatically so the common case
+   *  needs no extra tap; a crop that would throw away too much (the signature
+   *  of clipping a dark/low-contrast card down to its logo) is skipped and the
+   *  whole frame is kept for a manual crop instead — so this can never
+   *  reproduce the "auto-crop cut off my card" failure the guard exists for. */
   autoCropOnLoad?: boolean;
   /** Document type — selects the initial enhancement preset. Default "id-card". */
   docType?: ScanDocType;
@@ -411,7 +416,7 @@ export default function IdCardScanPanel({
   jpegQuality = 92,
   maxWidth = 1600,
   autoRotate = false,
-  autoCropOnLoad = false,
+  autoCropOnLoad = true,
   docType = "id-card",
   title = "ID Card",
 }: IdCardScanPanelProps) {
@@ -422,13 +427,24 @@ export default function IdCardScanPanel({
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null); // shows crop overlay for manual adjustment
   const enhancedCanvasRef = useRef<HTMLCanvasElement>(null); // shows enhanced result
 
+  // runFullPipeline does its own crop+enhance pass inline (Steps 3-4 below) AND
+  // sets cropRect/imgSize state, which the separate "re-crop when cropRect
+  // changes" effect below ALSO reacts to — without this guard, every load /
+  // rotate / auto-crop ran the (full-resolution, pixel-by-pixel unsharp-mask)
+  // enhancement pass TWICE per action. Set true right before runFullPipeline's
+  // own state writes; the effect checks it first and skips its redundant re-run
+  // exactly once. Manual drag / rotateImage / runAutoCrop never touch this
+  // ref, so they still trigger the effect normally — it's the ONLY place that
+  // does the actual crop+enhance for those paths.
+  const skipNextCropEffectRef = useRef(false);
+
   // Core state
   const [originalBase64, setOriginalBase64] = useState(imageBase64);
   const [croppedBase64, setCroppedBase64]   = useState("");
   const [enhancedBase64, setEnhancedBase64] = useState("");
   const [cropRect, setCropRect]             = useState({ x: 0, y: 0, w: 0, h: 0 });
   const [imgSize, setImgSize]               = useState({ w: 0, h: 0 });
-  const [cropConfidence, setCropConfidence] = useState<"high" | "medium" | "low">("high");
+  const [cropConfidence, setCropConfidence] = useState<"high" | "medium" | "none">("none");
   const [enhancementMode, setEnhancementMode] = useState<EnhancementMode>(DEFAULT_MODE_FOR_DOC[docType]);
   const [processing, setProcessing]         = useState(false);
   const [deskewAngle, setDeskewAngle]       = useState(0);
@@ -636,6 +652,43 @@ export default function IdCardScanPanel({
     return { x: X, y: Y, w: cropW, h: cropH, confidence };
   }
 
+  // ── Guarded auto-crop: the single place the ≥60%-kept safety floor is
+  // applied, so every entry point that can trigger auto-crop (initial load,
+  // the "Auto Crop" button, and re-running after rotate) behaves consistently.
+  // Previously only the initial-load path had this guard — the "Auto Crop"
+  // button (which the UI explicitly tells staff to tap when the whole image is
+  // kept) applied detectCardCrop's result directly, so following that exact
+  // instruction could still clip a dark/low-contrast card down to its logo.
+  // Returns confidence "none" when auto-crop was skipped (kept the full frame)
+  // so callers can distinguish "cropped, and confidently" from "not cropped" —
+  // the header badge previously showed a green "Auto crop ok" in both cases. ──
+  function applyGuardedAutoCrop(
+    canvas: HTMLCanvasElement,
+    padding: number,
+  ): {
+    rect: { x: number; y: number; w: number; h: number };
+    confidence: "high" | "medium" | "none";
+    message: string;
+    statusType: "ok" | "warn";
+  } {
+    const detected = detectCardCrop(canvas, padding);
+    const areaRatio = (detected.w * detected.h) / (canvas.width * canvas.height || 1);
+    if (areaRatio >= 0.6) {
+      return {
+        rect: { x: detected.x, y: detected.y, w: detected.w, h: detected.h },
+        confidence: detected.confidence === "low" ? "medium" : detected.confidence,
+        message: detected.confidence === "high" ? "Auto crop successful" : "Auto crop applied — adjust manually if needed",
+        statusType: detected.confidence === "high" ? "ok" : "warn",
+      };
+    }
+    return {
+      rect: { x: 0, y: 0, w: canvas.width, h: canvas.height },
+      confidence: "none",
+      message: "Auto crop skipped to avoid clipping — drag the box to crop manually",
+      statusType: "warn",
+    };
+  }
+
   // ── Apply crop to produce a cropped canvas ─────────────────────────────────
 
   function cropToCanvas(
@@ -767,6 +820,11 @@ export default function IdCardScanPanel({
         const resizedDataUrl = source.toDataURL("image/jpeg", jpegQuality / 100);
         const resizedB64 = resizedDataUrl.split(",")[1];
         setOriginalBase64(resizedB64);
+        // From here on this function always goes on to set cropRect/imgSize
+        // itself (Step 2) and do its own crop+enhance (Steps 3-4) — mark that
+        // so the reactive effect skips the one redundant run it would
+        // otherwise do in response to those same state writes.
+        skipNextCropEffectRef.current = true;
         setImgSize({ w: displayW, h: displayH });
 
         // Step 1: Deskew if requested
@@ -789,35 +847,21 @@ export default function IdCardScanPanel({
           }
         }
 
-        // Step 2: Auto-crop. On load we do NOT auto-crop by default (doAutoCrop
-        // is false) — the whole card is shown so nothing is ever silently
-        // clipped; staff crop with the manual box (all corners/edges) or tap
-        // "Auto Crop". When auto-crop IS requested, only a modest trim (≥60% of
-        // the frame kept) is applied; a bigger proposed cut is the signature of
-        // clipping a dark/low-contrast card down to its logo, so we keep the
-        // full frame instead.
-        const fullRect = { x: 0, y: 0, w: workingCanvas.width, h: workingCanvas.height };
+        // Step 2: Auto-crop, via the same guarded helper the "Auto Crop" button
+        // and post-rotate re-crop use — a detected crop that would keep less
+        // than 60% of the frame is rejected as a probable clip-to-logo on a
+        // dark/low-contrast card, and the whole image is kept instead.
         let rect: typeof cropRect;
-        let confidence: "high" | "medium" | "low" = "high";
-
         if (autoCropEnabled && doAutoCrop) {
-          const detected = detectCardCrop(workingCanvas, cropPadding);
-          const areaRatio = (detected.w * detected.h) / (workingCanvas.width * workingCanvas.height || 1);
-          if (areaRatio >= 0.6) {
-            rect = { x: detected.x, y: detected.y, w: detected.w, h: detected.h };
-            confidence = detected.confidence;
-            setStatus(confidence === "high" ? "Auto crop successful" : "Auto crop applied — adjust manually if needed", confidence === "high" ? "ok" : "warn");
-          } else {
-            rect = fullRect;
-            confidence = "medium";
-            setStatus("Auto crop skipped to avoid clipping — drag the box or tap Auto Crop", "warn");
-          }
-          setCropConfidence(confidence);
+          const guarded = applyGuardedAutoCrop(workingCanvas, cropPadding);
+          rect = guarded.rect;
+          setCropConfidence(guarded.confidence);
+          setStatus(guarded.message, guarded.statusType);
           setCropRect(rect);
         } else {
-          rect = fullRect;
+          rect = { x: 0, y: 0, w: workingCanvas.width, h: workingCanvas.height };
           setCropRect(rect);
-          setCropConfidence("high");
+          setCropConfidence("none");
           setStatus(autoCropEnabled ? "Whole image kept — drag the box to crop, or tap Auto Crop" : "Ready — auto crop disabled", "info");
         }
 
@@ -883,8 +927,18 @@ export default function IdCardScanPanel({
   }
 
   // ── Re-crop manually when cropRect changes (from drag) ───────────────────
+  // Also the ONLY place that re-crops/re-enhances for runAutoCrop, rotateImage
+  // and manual drag (none of them touch pixels themselves — they just set
+  // cropRect/imgSize and let this effect do the work). runFullPipeline is the
+  // one exception: it does its own crop+enhance inline AND sets this same
+  // state, so skipNextCropEffectRef suppresses the one redundant re-run that
+  // would otherwise happen right after it (see its comment above).
 
   useEffect(() => {
+    if (skipNextCropEffectRef.current) {
+      skipNextCropEffectRef.current = false;
+      return;
+    }
     if (imgSize.w === 0) return;
     const source = sourceCanvasRef.current;
     if (!source) return;
@@ -934,12 +988,13 @@ export default function IdCardScanPanel({
     setOriginalBase64(dataUrl.split(",")[1]);
     setImgSize({ w: source.width, h: source.height });
 
-    // Re-run auto-crop on rotated image
+    // Re-run auto-crop on rotated image (same guarded helper as on-load and
+    // the Auto Crop button — see applyGuardedAutoCrop)
     if (autoCropEnabled) {
-      const rect = detectCardCrop(source, cropPadding);
-      setCropRect({ x: rect.x, y: rect.y, w: rect.w, h: rect.h });
-      setCropConfidence(rect.confidence);
-      setStatus(rect.confidence === "high" ? "Auto crop successful" : "Adjust crop manually", rect.confidence === "high" ? "ok" : "warn");
+      const guarded = applyGuardedAutoCrop(source, cropPadding);
+      setCropRect(guarded.rect);
+      setCropConfidence(guarded.confidence);
+      setStatus(guarded.message, guarded.statusType);
     } else {
       setCropRect({ x: 0, y: 0, w: source.width, h: source.height });
     }
@@ -960,14 +1015,10 @@ export default function IdCardScanPanel({
   function runAutoCrop() {
     const source = sourceCanvasRef.current;
     if (!source) return;
-    const rect = detectCardCrop(source, cropPadding);
-    setCropRect({ x: rect.x, y: rect.y, w: rect.w, h: rect.h });
-    setCropConfidence(rect.confidence);
-    if (rect.confidence === "high") {
-      setStatus("Auto crop successful", "ok");
-    } else {
-      setStatus("Auto crop applied — adjust manually if needed", "warn");
-    }
+    const guarded = applyGuardedAutoCrop(source, cropPadding);
+    setCropRect(guarded.rect);
+    setCropConfidence(guarded.confidence);
+    setStatus(guarded.message, guarded.statusType);
   }
 
   // ── Manual crop drag ──────────────────────────────────────────────────────
