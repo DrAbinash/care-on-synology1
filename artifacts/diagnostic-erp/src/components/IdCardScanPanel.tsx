@@ -64,6 +64,32 @@ export type ScanDocType = "id-card" | "receipt" | "document";
  *  math can test them with `.includes`. */
 type DragMode = "move" | "tl" | "tr" | "bl" | "br" | "t" | "b" | "l" | "r" | null;
 
+/**
+ * Load an image with EXIF orientation applied, so a phone photo (which often
+ * carries an orientation flag) comes in upright instead of drawn sideways to the
+ * canvas. Prefers createImageBitmap({ imageOrientation: "from-image" }); falls
+ * back to an <img> element. Resolves null if the browser can't decode it.
+ */
+async function loadOrientedImage(
+  dataUrl: string,
+): Promise<{ src: CanvasImageSource; w: number; h: number } | null> {
+  try {
+    if (typeof createImageBitmap === "function") {
+      const blob = await (await fetch(dataUrl)).blob();
+      const bmp = await createImageBitmap(blob, { imageOrientation: "from-image" });
+      return { src: bmp, w: bmp.width, h: bmp.height };
+    }
+  } catch {
+    // fall through to the <img> path
+  }
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve({ src: img, w: img.naturalWidth, h: img.naturalHeight });
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+}
+
 /** CSS cursor matching the active (or idle) crop drag handle. */
 function cursorForDrag(mode: DragMode): string {
   switch (mode) {
@@ -95,6 +121,9 @@ export interface IdCardScanPanelProps {
    *  sideways, and rotating it (then cropping the rotated, white-padded frame)
    *  both mis-orients and clips the card. Staff use Rotate Left/Right instead. */
   autoRotate?: boolean;
+  /** Auto-crop on load. Default **false** — the whole card is shown so nothing
+   *  is silently clipped; staff crop manually or tap "Auto Crop". */
+  autoCropOnLoad?: boolean;
   /** Document type — selects the initial enhancement preset. Default "id-card". */
   docType?: ScanDocType;
   /** Title shown in the editor header / save button. Default "ID Card". */
@@ -382,6 +411,7 @@ export default function IdCardScanPanel({
   jpegQuality = 92,
   maxWidth = 1600,
   autoRotate = false,
+  autoCropOnLoad = false,
   docType = "id-card",
   title = "ID Card",
 }: IdCardScanPanelProps) {
@@ -700,27 +730,38 @@ export default function IdCardScanPanel({
     mime: string,
     mode: EnhancementMode,
     doDeskew: boolean,
+    doAutoCrop: boolean,
   ) => {
     setProcessing(true);
     setStatus("Processing…", "info");
 
-    await new Promise<void>((resolve) => {
-      const img = new Image();
-      img.onload = () => {
-        const naturalW = img.naturalWidth;
-        const naturalH = img.naturalHeight;
+    // Load with EXIF orientation applied — a phone photo is often stored with an
+    // orientation flag, and without honouring it the canvas draws it sideways /
+    // portrait. createImageBitmap({ imageOrientation: "from-image" }) gives an
+    // already-upright bitmap; fall back to <img> if it's unavailable.
+    const loaded = await loadOrientedImage(`data:${mime};base64,${base64}`);
+    if (!loaded) {
+      setStatus("Couldn't open this file for editing — the image format may be unsupported. Please use a JPG or PNG.", "warn");
+      setProcessing(false);
+      return;
+    }
+
+    {
+      const { src, w: naturalW, h: naturalH } = loaded;
+      {
         const scaleFactor = maxWidth > 0 && naturalW > maxWidth ? maxWidth / naturalW : 1;
         const displayW = Math.round(naturalW * scaleFactor);
         const displayH = Math.round(naturalH * scaleFactor);
 
         // Draw to source canvas
         const source = sourceCanvasRef.current;
-        if (!source) { resolve(); return; }
+        if (!source) { setProcessing(false); return; }
         source.width = displayW;
         source.height = displayH;
         const sCtx = source.getContext("2d");
-        if (!sCtx) { resolve(); return; }
-        sCtx.drawImage(img, 0, 0, displayW, displayH);
+        if (!sCtx) { setProcessing(false); return; }
+        sCtx.drawImage(src, 0, 0, displayW, displayH);
+        if (typeof ImageBitmap !== "undefined" && src instanceof ImageBitmap) src.close();
 
         // Update original base64 with possibly-rescaled version
         const resizedDataUrl = source.toDataURL("image/jpeg", jpegQuality / 100);
@@ -748,17 +789,18 @@ export default function IdCardScanPanel({
           }
         }
 
-        // Step 2: Auto-crop. Only auto-APPLY a modest trim (≥60% of the frame
-        // kept). A crop that wants to throw away more than that is exactly what
-        // clips a dark or low-contrast card — the detector locks onto the one
-        // high-contrast patch (a logo) and shaves the rest. In that case we keep
-        // the full frame and ask the user to crop manually; the "Auto Crop"
-        // button still forces the detected box when they want it.
+        // Step 2: Auto-crop. On load we do NOT auto-crop by default (doAutoCrop
+        // is false) — the whole card is shown so nothing is ever silently
+        // clipped; staff crop with the manual box (all corners/edges) or tap
+        // "Auto Crop". When auto-crop IS requested, only a modest trim (≥60% of
+        // the frame kept) is applied; a bigger proposed cut is the signature of
+        // clipping a dark/low-contrast card down to its logo, so we keep the
+        // full frame instead.
         const fullRect = { x: 0, y: 0, w: workingCanvas.width, h: workingCanvas.height };
         let rect: typeof cropRect;
         let confidence: "high" | "medium" | "low" = "high";
 
-        if (autoCropEnabled) {
+        if (autoCropEnabled && doAutoCrop) {
           const detected = detectCardCrop(workingCanvas, cropPadding);
           const areaRatio = (detected.w * detected.h) / (workingCanvas.width * workingCanvas.height || 1);
           if (areaRatio >= 0.6) {
@@ -766,7 +808,6 @@ export default function IdCardScanPanel({
             confidence = detected.confidence;
             setStatus(confidence === "high" ? "Auto crop successful" : "Auto crop applied — adjust manually if needed", confidence === "high" ? "ok" : "warn");
           } else {
-            // Aggressive/untrusted crop — don't clip. Show the whole card.
             rect = fullRect;
             confidence = "medium";
             setStatus("Auto crop skipped to avoid clipping — drag the box or tap Auto Crop", "warn");
@@ -777,7 +818,7 @@ export default function IdCardScanPanel({
           rect = fullRect;
           setCropRect(rect);
           setCropConfidence("high");
-          setStatus("Ready — auto crop disabled", "info");
+          setStatus(autoCropEnabled ? "Whole image kept — drag the box to crop, or tap Auto Crop" : "Ready — auto crop disabled", "info");
         }
 
         // Draw crop overlay (manual adjustment view)
@@ -802,22 +843,8 @@ export default function IdCardScanPanel({
           if (eCtx) eCtx.drawImage(cropped, 0, 0);
           setEnhancedBase64(croppedB64);
         }
-
-        resolve();
-      };
-      // The editor is canvas-based, so it can only open images the browser can
-      // decode. Without this handler a format it can't decode (a PDF, or HEIC on
-      // a non-Safari browser) would fire neither onload nor a rejection, leaving
-      // the Promise unresolved and the modal stuck on "Processing…" forever with
-      // Save disabled. Resolving here reaches setProcessing(false) below so the
-      // dialog recovers and the user can Cancel (callers pre-screen undecodable
-      // files, but this keeps the editor safe against any input).
-      img.onerror = () => {
-        setStatus("Couldn't open this file for editing — the image format may be unsupported. Please use a JPG or PNG.", "warn");
-        resolve();
-      };
-      img.src = `data:${mime};base64,${base64}`;
-    });
+      }
+    }
 
     setProcessing(false);
   }, [autoCropEnabled, cropPadding, jpegQuality, maxWidth]);
@@ -825,7 +852,7 @@ export default function IdCardScanPanel({
   // ── Initial load ──────────────────────────────────────────────────────────
 
   useEffect(() => {
-    runFullPipeline(imageBase64, mimeType, enhancementMode, autoRotate);
+    runFullPipeline(imageBase64, mimeType, enhancementMode, autoRotate, autoCropOnLoad);
   }, [imageBase64, mimeType]); // only on mount
 
   // ── Re-enhance when mode changes (reuses already-cropped image) ───────────
@@ -922,7 +949,7 @@ export default function IdCardScanPanel({
   // ── Restore original ──────────────────────────────────────────────────────
 
   function restoreOriginal() {
-    runFullPipeline(imageBase64, mimeType, "original", false);
+    runFullPipeline(imageBase64, mimeType, "original", false, false);
     setEnhancementMode("original");
     setStatus("Original preserved", "info");
     toast({ title: "Original restored" });
