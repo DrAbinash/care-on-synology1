@@ -320,6 +320,28 @@ services:
     volumes:
       - object_storage:/app/data/object-storage
       - uploads_data:/app/data/uploads
+      # Backup destination — was completely MISSING, and it is the reason
+      # every "successful" scheduled backup has never actually reached the
+      # NAS.
+      #
+      # Backup & Replication jobs are configured (via the admin UI) with a
+      # destinationPath like /volume1/docker/backups/db. That path is
+      # meaningful only on the HOST. Without a matching bind mount, the same
+      # string is just an ordinary path INSIDE the container — encryptBackupFile
+      # (cron.ts) happily mkdir's it and writes the .enc file there, the job
+      # logs "success", the SHA-256 matches, the dead-man check stays green —
+      # and the file lives entirely in the container's ephemeral writable
+      # layer. It is not on this NAS. It is deleted the moment this container
+      # is recreated (an image update, `docker compose up --build`, even a
+      # crash-restart under some storage drivers), with no error anywhere.
+      #
+      # Default matches the destinationPath already configured on the
+      # existing Nightly/config/DB jobs, so this requires NO change to those
+      # job rows — the same string now resolves to a real, persistent
+      # directory on the NAS instead of a phantom one inside the container.
+      # Override BACKUP_HOST_DIR in .env only if your jobs use a different
+      # destinationPath.
+      - ${BACKUP_HOST_DIR:-/volume1/docker/backups}:/volume1/docker/backups
     healthcheck:
       # ── Liveness probe (process alive + port responding) ───────────────────
       # Hits GET /health — registered on the Express app with no auth, no
