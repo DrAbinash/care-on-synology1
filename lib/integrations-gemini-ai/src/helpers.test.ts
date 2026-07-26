@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   geminiGenerate,
   geminiTranscribe,
+  geminiOcrBill,
   geminiOcrInvoice,
   buildClinicalNotePrompt,
   buildBillingInsightsPrompt,
@@ -952,6 +953,85 @@ describe("buildRadiologyImpressionPrompt", () => {
 
     expect(ctPrompt).not.toBe(usPrompt);
     expect(usPrompt).toContain("Ultrasound");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// geminiOcrBill
+// ---------------------------------------------------------------------------
+
+describe("geminiOcrBill", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("parses a full valid response", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeGeminiResponse(JSON.stringify({
+      vendor: "City Medical Supplies", date: "2026-07-15", amount: 2360, gstAmount: 360,
+      category: "Medical Supplies", description: "Gloves, syringes, gauze",
+      paymentMode: "upi", confidence: "high", confidencePercent: 96,
+    })));
+
+    const result = await geminiOcrBill("base64data", "image/jpeg", { apiKey: "test-key" });
+
+    expect(result.vendor).toBe("City Medical Supplies");
+    expect(result.amount).toBe(2360);
+    expect(result.confidencePercent).toBe(96);
+  });
+
+  it("strips markdown code fences before parsing", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeGeminiResponse(
+      "```json\n" + JSON.stringify({ vendor: "X", date: "", amount: 100, gstAmount: 0, category: "Miscellaneous", description: "", paymentMode: "cash", confidence: "low", confidencePercent: 50 }) + "\n```"
+    ));
+
+    const result = await geminiOcrBill("base64data", "image/jpeg");
+
+    expect(result.vendor).toBe("X");
+  });
+
+  it("falls back to safe defaults on malformed JSON instead of throwing", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeGeminiResponse("not json"));
+
+    const result = await geminiOcrBill("base64data", "image/jpeg");
+
+    expect(result).toEqual({
+      vendor: "", date: "", amount: 0, gstAmount: 0, category: "Miscellaneous",
+      description: "", paymentMode: "cash", confidence: "low", confidencePercent: 55,
+    });
+  });
+
+  it("derives confidencePercent from the qualitative band when the model omits the number", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeGeminiResponse(JSON.stringify({
+      vendor: "V", date: "", amount: 0, gstAmount: 0, category: "Miscellaneous",
+      description: "", paymentMode: "cash", confidence: "high",
+    })));
+
+    const result = await geminiOcrBill("base64data", "image/jpeg");
+
+    expect(result.confidencePercent).toBe(97);
+  });
+
+  it("passes application/pdf mimeType through as inlineData, not just images", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeGeminiResponse(JSON.stringify({
+      vendor: "V", date: "", amount: 0, gstAmount: 0, category: "Miscellaneous",
+      description: "", paymentMode: "cash", confidence: "high", confidencePercent: 95,
+    })));
+
+    await geminiOcrBill("pdfBase64Data", "application/pdf", { apiKey: "test-key" });
+
+    const [, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.contents[0].parts[1]).toEqual({ inlineData: { mimeType: "application/pdf", data: "pdfBase64Data" } });
+  });
+
+  it("throws on a non-ok HTTP response", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeGeminiResponse("server error", false, 500));
+
+    await expect(geminiOcrBill("base64data", "image/jpeg")).rejects.toThrow(/Gemini OCR error/);
   });
 });
 

@@ -1,7 +1,7 @@
 import { Router, type Response } from "express";
 import { db, billsTable, paymentsTable, patientsTable } from "@workspace/db";
 import { accountsTable, vouchersTable, voucherAuditsTable } from "@workspace/db/schema";
-import { eq, desc, and, gte, lte, like, sql } from "drizzle-orm";
+import { eq, desc, and, or, gte, lte, like, sql } from "drizzle-orm";
 import { z } from "zod/v4";
 import { apiError, apiErrorFromZod } from "../lib/api-error";
 import { geminiParseBankStatement, type BankTransaction } from "@workspace/integrations-gemini-ai";
@@ -10,6 +10,8 @@ import { auditFromRequest } from "../lib/audit";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { buildTrialBalance, buildProfitLoss, buildBalanceSheet, type AmountMap } from "../lib/accounting/reportBuilders";
+import { preprocessScanImage } from "../lib/ocr/idCardPipeline";
+import { getProviderApiKey } from "@workspace/ai-providers";
 
 const router = Router();
 
@@ -1314,6 +1316,8 @@ router.post("/sync-billing", requireAdminRole, async (req, res) => {
 // POST /api/accounting/bank-statement/parse
 // Body: { text?: string } | { imageBase64: string; mimeType: string }
 // Returns: { transactions: BankTransaction[] }
+const BANK_STATEMENT_ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf"];
+
 router.post("/bank-statement/parse", async (req, res): Promise<void> => {
   const body = req.body as {
     text?: string;
@@ -1326,14 +1330,38 @@ router.post("/bank-statement/parse", async (req, res): Promise<void> => {
     return;
   }
 
-  const input: Parameters<typeof geminiParseBankStatement>[0] =
-    body.text
-      ? { text: body.text }
-      : { imageBase64: body.imageBase64!, mimeType: body.mimeType! };
+  let input: Parameters<typeof geminiParseBankStatement>[0];
+  if (body.text) {
+    input = { text: body.text };
+  } else {
+    // The text path has no upstream size/type gate either (it's plain JSON
+    // text, cheap either way) — image/PDF input previously had NONE of the
+    // validation the bill-scan route (/api/expenses/scan-bill) already has,
+    // so an oversized or wrong-type upload went straight to Gemini instead
+    // of failing fast with a clear error.
+    if (!body.mimeType || !BANK_STATEMENT_ALLOWED_TYPES.includes(body.mimeType)) {
+      apiError(res, 400, "Unsupported file type. Use JPEG, PNG, WebP, HEIC, or PDF.");
+      return;
+    }
+    if (body.imageBase64!.length > 11_000_000) {
+      apiError(res, 400, "File too large. Maximum 8 MB.");
+      return;
+    }
+    input = { imageBase64: body.imageBase64!, mimeType: body.mimeType };
+  }
 
   try {
-    const transactions = await geminiParseBankStatement(input);
-    res.json({ transactions });
+    let blurInfo: { blurScore: number; isBlurred: boolean } | null = null;
+    if ("imageBase64" in input) {
+      // Same shared pre-processing as ID-card OCR and bill scanning (auto-
+      // orient/trim/normalize + blur score; passes PDFs through unchanged).
+      const pre = await preprocessScanImage(input.imageBase64, input.mimeType);
+      input = { imageBase64: pre.buffer.toString("base64"), mimeType: pre.mimeType };
+      blurInfo = { blurScore: pre.blurScore, isBlurred: pre.isBlurred };
+    }
+    const dbApiKey = await getProviderApiKey("gemini").catch(() => null);
+    const transactions = await geminiParseBankStatement(input, dbApiKey ? { apiKey: dbApiKey } : {});
+    res.json({ transactions, ...blurInfo });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     apiError(res, 502, "AI parsing failed: " + msg);
@@ -1375,13 +1403,45 @@ router.post("/bank-statement/import", async (req, res): Promise<void> => {
   const toImport = transactions.filter(t => t.selected !== false && (t.debit > 0 || t.credit > 0));
   if (toImport.length === 0) { apiError(res, 400, "No transactions selected for import"); return; }
 
+  // Duplicate guard: re-uploading the same statement (a network hiccup, or
+  // staff not realizing an earlier import already went through) previously
+  // double-posted every row with nothing catching it — a bank-statement
+  // import has no natural unique key from the source data, only what a row
+  // itself says, so match on (date, amount, reference-or-description) against
+  // vouchers already posted against this bank account. Also de-dupes WITHIN
+  // the same submitted batch, since a statement can legitimately show the
+  // same date+amount twice for unrelated rows only if the description also
+  // differs — this key already accounts for that.
+  const dupKey = (date: string, amount: number, reference: string, description: string) =>
+    `${date}|${amount.toFixed(2)}|${(reference || description || "").trim().toLowerCase()}`;
+
+  const dates = toImport.map(t => t.date || todayIST());
+  const minDate = dates.reduce((a, b) => (a < b ? a : b));
+  const maxDate = dates.reduce((a, b) => (a > b ? a : b));
+  const existingForAccount = await db.select({
+    date: vouchersTable.date, amount: vouchersTable.amount,
+    reference: vouchersTable.reference, particular: vouchersTable.particular,
+  }).from(vouchersTable).where(and(
+    gte(vouchersTable.date, minDate),
+    lte(vouchersTable.date, maxDate),
+    or(eq(vouchersTable.debitAccountId, String(bankAccountId)), eq(vouchersTable.creditAccountId, String(bankAccountId))),
+  ));
+  const seenKeys = new Set(existingForAccount.map(v => dupKey(v.date, Number(v.amount), v.reference ?? "", v.particular ?? "")));
+
   let created = 0;
+  let skippedDuplicates = 0;
   for (const txn of toImport) {
     const isDebit = txn.debit > 0;
     const amount = isDebit ? txn.debit : txn.credit;
+    const date = txn.date || todayIST();
+
+    const key = dupKey(date, amount, txn.reference, txn.description);
+    if (seenKeys.has(key)) { skippedDuplicates++; continue; }
+    seenKeys.add(key);
+
     const vType = isDebit ? "payment" : "receipt";
     const prefix = isDebit ? "PV" : "RV";
-    const monthKey = (txn.date || new Date().toISOString().slice(0, 7)).slice(0, 7).replace("-", "");
+    const monthKey = date.slice(0, 7).replace("-", "");
 
     // MAX of numbers issued, re-read each iteration so it already includes the
     // rows this loop just inserted. The previous form added `created` on top of a
@@ -1396,7 +1456,7 @@ router.post("/bank-statement/import", async (req, res): Promise<void> => {
     await db.insert(vouchersTable).values({
       voucherNumber,
       type: vType,
-      date: txn.date || todayIST(),
+      date,
       debitAccountId: isDebit ? String(contraAccountId) : String(bankAccountId),
       creditAccountId: isDebit ? String(bankAccountId) : String(contraAccountId),
       amount: String(amount),
@@ -1407,7 +1467,7 @@ router.post("/bank-statement/import", async (req, res): Promise<void> => {
     created++;
   }
 
-  res.json({ imported: created });
+  res.json({ imported: created, skippedDuplicates });
 });
 
 function escapeXml(s: string): string {
