@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { worstStatus, statusFromPersistedCheck, jobsComponentStatus, type OpsStatus } from "./radiologyOpsHealth";
+import { worstStatus, statusFromPersistedCheck, jobsComponentStatus, migrationsComponentStatus, type OpsStatus } from "./radiologyOpsHealth";
 import { startupHealth, type StartupState } from "./startupState";
 import { classifyRecipeRows } from "./auditVerification";
 import { evaluateBackupFile } from "./restoreVerification";
@@ -32,6 +32,59 @@ describe("Phase 4 — health status derivation", () => {
     expect(jobsComponentStatus({ pending: 0, running: 1, deadLetter: 0 })).toBe("HEALTHY");
     expect(jobsComponentStatus({ pending: 5, running: 0, deadLetter: 1 })).toBe("DEGRADED");
     expect(jobsComponentStatus({ pending: 500, running: 0, deadLetter: 0 })).toBe("DEGRADED");
+  });
+});
+
+describe("migrationsComponentStatus — schema_verify_status → OpsStatus", () => {
+  it("full_pass (patch ok, sql fully verified): HEALTHY, detail carries no warning", () => {
+    const c = migrationsComponentStatus(true, "full_pass");
+    expect(c.status).toBe("HEALTHY");
+    expect(c.detail).not.toMatch(/warn|fail/i);
+    expect(c.detail).toContain("schema_verify_status=full_pass");
+  });
+
+  it("sql_pass (earlier-stage pass value) is also HEALTHY", () => {
+    expect(migrationsComponentStatus(true, "sql_pass").status).toBe("HEALTHY");
+  });
+
+  it("pass_with_warnings: non-fatal (DEGRADED, not UNHEALTHY) and the warning is clearly exposed in detail", () => {
+    const c = migrationsComponentStatus(true, "pass_with_warnings");
+    expect(c.status).toBe("DEGRADED");
+    expect(c.status).not.toBe("UNHEALTHY");
+    expect(c.detail).toContain("schema_verify_status=pass_with_warnings");
+    // Confirm non-fatal at the overall-health rollup too: with every other
+    // component HEALTHY, a lone pass_with_warnings pulls overall to
+    // DEGRADED, never UNHEALTHY — it cannot masquerade as fatal.
+    expect(worstStatus(["HEALTHY", "HEALTHY", c.status])).toBe("DEGRADED");
+  });
+
+  it("failed: reported as a genuine problem, not HEALTHY (current 'failed' and legacy 'full_fail' both covered)", () => {
+    for (const verify of ["failed", "full_fail"]) {
+      const c = migrationsComponentStatus(true, verify);
+      expect(c.status).not.toBe("HEALTHY");
+      expect(c.status).toBe("DEGRADED");
+      expect(c.detail).toContain(`schema_verify_status=${verify}`);
+    }
+  });
+
+  it("db-patch-v2 itself not completing is UNHEALTHY regardless of schema_verify_status", () => {
+    expect(migrationsComponentStatus(false, "full_pass").status).toBe("UNHEALTHY");
+    expect(migrationsComponentStatus(false, undefined).status).toBe("UNHEALTHY");
+  });
+
+  it("missing, undefined, null-as-string, or unrecognized schema_verify_status is UNKNOWN — never silently HEALTHY", () => {
+    expect(migrationsComponentStatus(true, undefined).status).toBe("UNKNOWN");
+    expect(migrationsComponentStatus(true, "").status).toBe("UNKNOWN");
+    expect(migrationsComponentStatus(true, "null").status).toBe("UNKNOWN");
+    expect(migrationsComponentStatus(true, "some_garbage_value").status).toBe("UNKNOWN");
+    // Never masquerades as a pass — this is the actual safety property.
+    for (const verify of [undefined, "", "null", "some_garbage_value"]) {
+      expect(migrationsComponentStatus(true, verify).status).not.toBe("HEALTHY");
+    }
+  });
+
+  it("missing schema_verify_status still names it 'missing' in the detail (not a blank/undefined string)", () => {
+    expect(migrationsComponentStatus(true, undefined).detail).toContain("schema_verify_status=missing");
   });
 });
 
