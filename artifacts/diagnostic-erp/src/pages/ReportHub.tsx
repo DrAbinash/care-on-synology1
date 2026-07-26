@@ -154,6 +154,22 @@ function StatusPill({ status }: { status: string }) {
 
 function emptyParam(): Param { return { name: "", result: "", unit: "", refRange: "", flag: "normal" }; }
 
+// HL7-style AbnormalFlag ("N"/"L"/"H"/"LL"/"HH"/"A"/"AA"/"") from the
+// pathology registry → this grid's 4-state flag. Categorical abnormal
+// ("A"/"AA") and "unknown" (unresolvable analyte, non-numeric result,
+// implausible value) have no clean low/high mapping — return null so the
+// caller leaves the manual flag untouched rather than guessing.
+function mapAbnormalFlag(flag: string): Param["flag"] | null {
+  switch (flag) {
+    case "N": return "normal";
+    case "L": return "low";
+    case "H": return "high";
+    case "LL": return "critical";
+    case "HH": return "critical";
+    default: return null;
+  }
+}
+
 function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
@@ -725,6 +741,37 @@ function EditorDialog({
     setParams((arr) => arr.map((p, idx) => (idx === i ? { ...p, [field]: v } : p)));
   }
 
+  // Best-effort assist, never a dictate: suggests a flag and reference range
+  // from the pathology registry (sex/age-aware) after a result is entered,
+  // but never disables or overrides the manual Flag dropdown above it — a
+  // subsequent manual change simply overwrites whatever was suggested here,
+  // same as it always could. Silent on any failure (unresolvable analyte
+  // name, network error, no registry match) since this is a convenience on
+  // top of manual entry, not a required step.
+  async function suggestFlag(i: number) {
+    const row = params[i];
+    if (!row || !row.name.trim() || !row.result.trim()) return;
+    try {
+      const res = await api.post<{
+        result: { flag: string; rangeDisplay: string };
+      }>("/api/pathology-flag-preview", {
+        patientId: report?.patientId,
+        analyte: row.name.trim(),
+        value: row.result,
+        unit: row.unit.trim() || undefined,
+      });
+      setParams((arr) => arr.map((p, idx) => {
+        if (idx !== i) return p;
+        const mapped = mapAbnormalFlag(res.result.flag);
+        return {
+          ...p,
+          flag: mapped ?? p.flag,
+          refRange: p.refRange.trim() || (res.result.rangeDisplay !== "—" ? res.result.rangeDisplay : p.refRange),
+        };
+      }));
+    } catch { /* best-effort — manual entry is always available regardless */ }
+  }
+
   if (!report) {
     return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent><DialogHeader><DialogTitle>Loading…</DialogTitle></DialogHeader></DialogContent></Dialog>;
   }
@@ -782,8 +829,8 @@ function EditorDialog({
                       {params.map((p, i) => (
                         <tr key={i} className={`border-t ${p.flag !== "normal" ? "bg-rose-50/50" : ""}`}>
                           <td className="px-2 py-1"><Input className="h-7 text-xs" disabled={!editable} value={p.name} onChange={(e) => updateParam(i, "name", e.target.value)} /></td>
-                          <td className="px-2 py-1"><Input className="h-7 text-xs" disabled={!editable} value={p.result} onChange={(e) => updateParam(i, "result", e.target.value)} /></td>
-                          <td className="px-2 py-1 w-24"><Input className="h-7 text-xs" disabled={!editable} value={p.unit} onChange={(e) => updateParam(i, "unit", e.target.value)} /></td>
+                          <td className="px-2 py-1"><Input className="h-7 text-xs" disabled={!editable} value={p.result} onChange={(e) => updateParam(i, "result", e.target.value)} onBlur={() => void suggestFlag(i)} /></td>
+                          <td className="px-2 py-1 w-24"><Input className="h-7 text-xs" disabled={!editable} value={p.unit} onChange={(e) => updateParam(i, "unit", e.target.value)} onBlur={() => void suggestFlag(i)} /></td>
                           <td className="px-2 py-1 w-32"><Input className="h-7 text-xs" disabled={!editable} value={p.refRange} onChange={(e) => updateParam(i, "refRange", e.target.value)} /></td>
                           <td className="px-2 py-1 w-28">
                             <Select value={p.flag} onValueChange={(v) => updateParam(i, "flag", v)} disabled={!editable}>

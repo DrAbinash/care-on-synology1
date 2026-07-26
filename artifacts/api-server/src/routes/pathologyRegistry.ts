@@ -82,8 +82,13 @@ pathologyRegistryRouter.get("/panels/:id", (req, res) => {
 });
 
 // POST /api/pathology-registry/flag — preview the flag + reference range for a
-// value in a patient context. Pure computation; no DB read/write. The
-// result-entry grid uses this so the flag it shows matches the platform.
+// value in a patient context. Pure computation; no DB read/write. Admin-only
+// (this whole router is), for registry authoring/validation — e.g. checking
+// how a definition classifies a value while editing it. The live
+// result-entry grid (ReportHub.tsx) calls the differently-permissioned
+// POST /api/pathology-flag-preview instead (pathologyFlagPreview.ts), which
+// wraps these same flagValue()/resolveReferenceInterval() functions behind
+// the ordinary reporting-staff permission the grid's users actually have.
 // Body: { analyte, value, unit?, sex?, ageYears?, condition? }
 pathologyRegistryRouter.post("/flag", (req, res) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
