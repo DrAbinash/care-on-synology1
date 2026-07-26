@@ -9,6 +9,8 @@ import {
   RefreshCw, Wifi, WifiOff, Clock, CheckCircle2, AlertCircle,
   Activity, Search, XCircle, Radio, Server, Zap, MonitorPlay, Tv2,
 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { openWeasisLaunchRedirect } from "@/lib/viewerService";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -154,6 +156,7 @@ function AgentCard({ agent }: { agent: AgentStatus }) {
 // ── Main Page ──────────────────────────────────────────────────────────────────
 
 export function DicomAgentPanel() {
+  const { toast } = useToast();
   const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
   const [filters, setFilters] = useState({
@@ -349,15 +352,14 @@ export function DicomAgentPanel() {
                           >
                             <MonitorPlay size={10} /> OHIF
                           </a>
-                          <a
-                            href={`/api/radiology/studies/${log.studyInstanceUID}/weasis-launch-redirect`}
-                            target="_blank"
-                            rel="noreferrer"
+                          <button
+                            type="button"
+                            onClick={() => void openWeasisLaunchRedirect(log.studyInstanceUID!, toast)}
                             className="inline-flex items-center gap-0.5 text-[10px] rounded px-1.5 py-0.5 bg-slate-100 text-slate-700 hover:bg-slate-200 font-medium"
                             title="Open in Weasis"
                           >
                             <Tv2 size={10} />
-                          </a>
+                          </button>
                         </div>
                       ) : (
                         <span className="text-muted-foreground">—</span>
