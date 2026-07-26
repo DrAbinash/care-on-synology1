@@ -326,11 +326,23 @@ export async function fireScheduledBackups() {
         };
         const tableFilter = scopedTables[job.backupType];
 
+        // Which exporter actually produced the artifact is recorded below. The
+        // two are NOT interchangeable for disaster recovery: pg_dump is
+        // schema-complete, the fallback emits TRUNCATE + INSERT only (see its
+        // own "-- WARNING: DATA ONLY" header) and can restore only into a
+        // database whose schema already exists. Without this being written
+        // down, a run that quietly fell through to the fallback was
+        // indistinguishable from a real one — same "success" row, same
+        // SHA-256, same green dead-man check — and the difference only
+        // surfaced during an actual restore, which is the worst possible time
+        // to discover it.
         let dump: { filePath: string; sizeBytes: number; rowCount: number | null };
+        let usedPgDump = true;
         try {
           dump = await exportDatabaseSql(tableFilter);
         } catch (pgDumpErr) {
           console.warn(`[cron] pg_dump unavailable for backup job #${job.id}, using fallback exporter:`, pgDumpErr);
+          usedPgDump = false;
           dump = await exportDatabaseSqlFallback(tableFilter);
         }
 
@@ -376,8 +388,13 @@ export async function fireScheduledBackups() {
           checksum = computeSha256(await fsp.readFile(dest));
           const encStat = await fsp.stat(dest);
           notes = `Backup saved to ${dest} (dump ${(sizeBytes / 1024 / 1024).toFixed(2)} MB, encrypted ${(encStat.size / 1024 / 1024).toFixed(2)} MB, ` +
-            `${encResult.format}, key=${encResult.keySource}, SHA-256: ${checksum}). ` +
+            `${encResult.format}, key=${encResult.keySource}, exporter=${usedPgDump ? "pg_dump" : "fallback"}, SHA-256: ${checksum}). ` +
             `Restore with: scripts/synology-restore.sh, or the Backup & Replication page.`;
+          if (!usedPgDump) {
+            notes += " WARNING: pg_dump was unavailable, so this artifact is DATA ONLY (TRUNCATE + INSERT, no CREATE TABLE/INDEX). " +
+              "It can only be restored into a database whose schema already exists — run migrations first. " +
+              "Install the postgresql-client package in the api image to get schema-complete backups.";
+          }
         } finally {
           // The unencrypted intermediate dump must not linger on disk.
           await fsp.unlink(dump.filePath).catch(() => {});

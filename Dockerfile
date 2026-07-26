@@ -67,9 +67,33 @@ FROM node:22-bookworm-slim AS api
 # backup failed with "Backup encryption failed (openssl exit -1): openssl failed
 # to start: spawn openssl ENOENT" — silently, for 16 days, until the backup
 # dead-man alert reported "last successful backup was 395.1h ago".
+# postgresql-client-16 provides pg_dump AND psql, both of which the backup/
+# restore path shells out to. Without pg_dump every scheduled backup silently
+# fell through to exportDatabaseSqlFallback(), whose own header states it is
+# "DATA ONLY ... does NOT contain CREATE TABLE/INDEX statements" — so the
+# nightly 191 MB artifacts were NOT restorable, while the job, the SHA-256 and
+# the dead-man alert all reported green. psql is needed too: both
+# scripts/synology-restore.sh and the in-app restore pipe into it.
+#
+# It MUST be the PGDG build of major 16, not Debian bookworm's default: bookworm
+# ships client 15, and pg_dump refuses outright when the server is newer
+# ("aborting because of server version mismatch") — the server here is 16.14.
+# The version assertion at the end fails the build rather than shipping an image
+# that would silently fall back again.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tini curl dcmtk openssl \
- && rm -rf /var/lib/apt/lists/*
+ && apt-get install -y --no-install-recommends tini curl dcmtk openssl ca-certificates gnupg \
+ && install -d /usr/share/postgresql-common/pgdg \
+ && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+      -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+ && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+      > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends postgresql-client-16 \
+ && apt-get purge -y gnupg && apt-get autoremove -y \
+ && rm -rf /var/lib/apt/lists/* \
+ && pg_dump --version && psql --version \
+ && pg_dump --version | grep -q " 16\." \
+ && openssl version
 
 WORKDIR /app
 ENV NODE_ENV=production

@@ -459,10 +459,19 @@ async function exportFullSnapshot(): Promise<{ filePath: string; sizeBytes: numb
   const filePath = path.join(dir, `caredeoghar-snapshot-${timestamp}.zip`);
 
   // 1. Export database
+  //
+  // pgDumpUsed in the metadata below used to be the literal `true`, written
+  // even when this catch branch had just run — so a snapshot built from the
+  // DATA-ONLY fallback exporter shipped a metadata.json asserting it was a
+  // schema-complete pg_dump. That is the one field an operator would check
+  // before trusting the artifact, and it was the field that lied.
   let dbResult: { filePath: string; sizeBytes: number; rowCount: number | null };
+  let pgDumpUsed = true;
   try {
     dbResult = await exportDatabaseSql();
-  } catch {
+  } catch (pgDumpErr) {
+    logger.warn({ err: pgDumpErr }, "[backup] pg_dump unavailable for snapshot — falling back to the DATA-ONLY exporter");
+    pgDumpUsed = false;
     dbResult = await exportDatabaseSqlFallback();
   }
 
@@ -487,7 +496,13 @@ async function exportFullSnapshot(): Promise<{ filePath: string; sizeBytes: numb
     filesWarning: filesResult.fileCount === 0
       ? `No files captured (missing folders: ${filesResult.missingFolders.join(", ") || "none"}). Check CARE_DATA_DIR / the /app/data volume mount.`
       : null,
-    pgDumpUsed: true,
+    pgDumpUsed,
+    // Spelled out next to the flag so metadata.json is self-explaining to
+    // whoever opens it mid-incident, without them having to know what the
+    // fallback exporter is.
+    databaseSqlWarning: pgDumpUsed
+      ? null
+      : "database.sql came from the fallback exporter and is DATA ONLY (TRUNCATE + INSERT, no CREATE TABLE/INDEX). Restore it only into a database whose schema already exists — run migrations first.",
   };
   if (filesResult.fileCount === 0) {
     logger.warn({ missingFolders: filesResult.missingFolders }, "[backup] files snapshot captured ZERO files — data path likely misconfigured");
