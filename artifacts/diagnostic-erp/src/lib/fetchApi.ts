@@ -162,7 +162,10 @@ async function doFetch(path: string, init?: RequestInit): Promise<Response> {
   return fetch(path, { headers: buildHeaders(init), ...init });
 }
 
-export async function fetchApi<T = unknown>(path: string, init?: RequestInit): Promise<T> {
+// Shared by fetchApi (below) and fetchApiBlob: the auth/retry/error-handling
+// core, returning the raw successful Response so each caller reads the body
+// its own way (text/JSON vs. binary).
+async function fetchWithRetry(path: string, init?: RequestInit): Promise<Response> {
   let lastErr: unknown;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -217,18 +220,31 @@ export async function fetchApi<T = unknown>(path: string, init?: RequestInit): P
       throw new Error(message);
     }
 
-    // Success
-    const text = await res.text();
-    if (!text.trim()) return {} as T;
-    try { return JSON.parse(text) as T; } catch { return text as unknown as T; }
+    return res;
   }
 
   // Should never reach here, but TypeScript needs a return path
   throw lastErr ?? new Error("Request failed after retries");
 }
 
+export async function fetchApi<T = unknown>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetchWithRetry(path, init);
+  const text = await res.text();
+  if (!text.trim()) return {} as T;
+  try { return JSON.parse(text) as T; } catch { return text as unknown as T; }
+}
+
+// Same auth/retry/error handling as fetchApi, but reads the body as a Blob
+// instead of text/JSON — for binary responses (generated PDFs, etc.) where
+// fetchApi's res.text() would corrupt the bytes by decoding them as UTF-8.
+export async function fetchApiBlob(path: string, init?: RequestInit): Promise<Blob> {
+  const res = await fetchWithRetry(path, init);
+  return res.blob();
+}
+
 export const api = {
   get: <T>(path: string) => fetchApi<T>(path),
+  getBlob: (path: string) => fetchApiBlob(path),
   post: <T>(path: string, body: unknown) =>
     fetchApi<T>(path, { method: "POST", body: JSON.stringify(body) }),
   put: <T>(path: string, body: unknown) =>

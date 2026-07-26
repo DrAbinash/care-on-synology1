@@ -18,6 +18,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { useToast } from "@/hooks/use-toast";
 import { TrendingUp, FlaskConical, Sparkles, RefreshCw, CalendarDays, ArrowUpDown, CreditCard, ChevronDown, ChevronUp, Download, Truck } from "lucide-react";
 
 // Module A (compliance): Commission tab removed — moved to Super Admin Portal.
@@ -72,6 +73,7 @@ type DailySummaryData = {
 };
 
 export default function Reports() {
+  const { toast } = useToast();
   const searchParams = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
   const [period, setPeriod] = useState<"daily" | "weekly" | "monthly">("monthly");
   const [activeTab, setActiveTab] = useState<string>(() => searchParams.get("tab") || "daily");
@@ -124,8 +126,28 @@ export default function Reports() {
   };
   const methodLabel = (m: string) =>
     ({ cash: "Cash", upi: "UPI", card: "Card", bank_transfer: "Bank Transfer", insurance: "Insurance", cheque: "Cheque" })[m] ?? m.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-  const downloadDailyPdf = () => {
-    window.open(`/api/reports/daily-summary/pdf?date=${dailyDate}`, "_blank");
+  // GET /reports/daily-summary/pdf is staff-authed (Authorization: Bearer
+  // <token>, checked ONLY on the request header — this app has no cookie
+  // session fallback), so a plain window.open(url) navigation can never
+  // carry that header and always 401s. Opens a blank tab synchronously
+  // (popup-blocker safe), fetches the real PDF via the authenticated client
+  // as a Blob, then navigates the tab to an object URL so the browser's own
+  // PDF viewer renders it — same pattern ReportHub.tsx uses for report PDFs.
+  const downloadDailyPdf = async () => {
+    const w = window.open("", "_blank", "noopener,noreferrer");
+    if (!w) {
+      toast({ title: "Popup blocked", description: "Allow popups for this site to download the report.", variant: "destructive" });
+      return;
+    }
+    try {
+      const blob = await api.getBlob(`/api/reports/daily-summary/pdf?date=${dailyDate}`);
+      const url = URL.createObjectURL(blob);
+      w.location.href = url;
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      w.close();
+      toast({ title: "Could not open report", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    }
   };
 
   return (
@@ -270,7 +292,7 @@ export default function Reports() {
                 <Label className="text-xs">Date</Label>
                 <Input type="date" value={dailyDate} onChange={e => setDailyDate(e.target.value)} className="mt-1 w-40" />
               </div>
-              <Button variant="outline" onClick={downloadDailyPdf} className="h-9">
+              <Button variant="outline" onClick={() => void downloadDailyPdf()} className="h-9">
                 <Download size={14} className="mr-1" /> PDF
               </Button>
             </div>
