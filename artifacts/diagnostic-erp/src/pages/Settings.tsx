@@ -5228,7 +5228,7 @@ function WhatsappNumbersTab() {
   const [showToken, setShowToken] = useState(false);
   const [testPhone, setTestPhone] = useState("");
   const [testingId, setTestingId] = useState<number | null>(null);
-  const [testResult, setTestResult] = useState<{ok:boolean;error?:string;messageId?:string}|null>(null);
+  const [testResult, setTestResult] = useState<{ok:boolean;skipped?:boolean;error?:string;messageId?:string}|null>(null);
 
   const { register, handleSubmit, reset, watch, setValue, formState: { errors } } = useForm<{
     name: string; phoneNumberId: string; displayNumber: string; accessToken: string;
@@ -5249,7 +5249,7 @@ function WhatsappNumbersTab() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["whatsapp-numbers"] }),
   });
   const test = useMutation({
-    mutationFn: ({ id, phone }: { id: number; phone: string }) => api.post<{ ok: boolean; error?: string; messageId?: string }>(`/api/whatsapp/numbers/${id}/test`, { phone }),
+    mutationFn: ({ id, phone }: { id: number; phone: string }) => api.post<{ ok: boolean; skipped?: boolean; error?: string; messageId?: string }>(`/api/whatsapp/numbers/${id}/test`, { phone }),
     onSuccess: (data) => { setTestResult(data); setTestingId(null); },
     onError: (e: Error) => { setTestResult({ ok: false, error: e.message || "Test failed" }); setTestingId(null); },
   });
@@ -5382,8 +5382,12 @@ function WhatsappNumbersTab() {
             </Button>
           </div>
           {testResult && (
-            <p className={`text-xs ${testResult.ok ? "text-green-600" : "text-destructive"}`}>
-              {testResult.ok ? `Sent ✓ (msg id: ${testResult.messageId ?? "—"})` : `Failed: ${testResult.error}`}
+            <p className={`text-xs ${testResult.ok && !testResult.skipped ? "text-green-600" : testResult.skipped ? "text-amber-600" : "text-destructive"}`}>
+              {testResult.ok && !testResult.skipped
+                ? `Sent ✓ (msg id: ${testResult.messageId ?? "—"})`
+                : testResult.skipped
+                ? "Skipped — WhatsApp sending is disabled, paused, or shadow mode blocked this number"
+                : `Failed: ${testResult.error}`}
             </p>
           )}
         </div>
@@ -5470,7 +5474,7 @@ function WhatsappTab() {
     onSuccess: (saved) => { qc.invalidateQueries({ queryKey: ["whatsapp-settings"] }); setForm(saved as WhatsappCfg); },
   });
   const test = useMutation({
-    mutationFn: (phone: string) => api.post<{ ok: boolean; error?: string; messageId?: string }>("/api/whatsapp/test", { phone }),
+    mutationFn: (phone: string) => api.post<{ ok: boolean; skipped?: boolean; error?: string; messageId?: string }>("/api/whatsapp/test", { phone }),
   });
 
   if (!cur) return <div className="bg-card border border-card-border rounded-xl p-8 text-center text-muted-foreground">Loading WhatsApp settings…</div>;
@@ -5629,8 +5633,12 @@ function WhatsappTab() {
               </Button>
             </div>
             {test.data && (
-              <p className={`text-xs mt-3 ${test.data.ok ? "text-green-600" : "text-destructive"}`}>
-                {test.data.ok ? `Sent ✓  (msg id: ${test.data.messageId ?? "—"})` : `Failed: ${test.data.error}`}
+              <p className={`text-xs mt-3 ${test.data.ok && !test.data.skipped ? "text-green-600" : test.data.skipped ? "text-amber-600" : "text-destructive"}`}>
+                {test.data.ok && !test.data.skipped
+                  ? `Sent ✓  (msg id: ${test.data.messageId ?? "—"})`
+                  : test.data.skipped
+                  ? "Skipped — WhatsApp sending is disabled, paused, or shadow mode blocked this number"
+                  : `Failed: ${test.data.error}`}
               </p>
             )}
             {!cur.enabled && <p className="text-xs text-muted-foreground mt-3">Enable WhatsApp above to send test messages.</p>}

@@ -254,6 +254,15 @@ services:
       #     Either mechanism works; set at least one or nothing runs.
       ENABLE_SCHEDULERS: ${ENABLE_SCHEDULERS:-}
       CRON_SECRET: ${CRON_SECRET:-}
+      # Bearer secret for n8n's WhatsApp automation triggers
+      # (POST /api/internal/automations/whatsapp/*) — deliberately separate
+      # from CRON_SECRET (see internal-automations-whatsapp.ts). Same
+      # fail-closed-when-unset guard as CRON_SECRET above: unset means those
+      # endpoints return 503, not an open door. There is no DB-settings
+      # equivalent for this one (unlike WhatsApp credentials, which live in
+      # the unified Admin -> Integrations -> WhatsApp settings page) — it
+      # must be set here or n8n can never reach the dispatch/health endpoints.
+      WHATSAPP_AUTOMATION_SECRET: ${WHATSAPP_AUTOMATION_SECRET:-}
       # Age in hours after which the dead-man alert fires (default 26).
       BACKUP_DEADMAN_MAX_AGE_HOURS: ${BACKUP_DEADMAN_MAX_AGE_HOURS:-}
       # Dedicated backup encryption key (lib/backupCrypto.ts resolveBackupPassphrase).
