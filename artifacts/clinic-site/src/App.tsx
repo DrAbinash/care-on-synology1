@@ -172,7 +172,9 @@ function PoliciesRoute({ settings }: { settings: SiteSettings }) {
 function AppShell({ settings, pages, popups, isPreview }: { settings: SiteSettings; pages: Page[]; popups: Popup[]; isPreview: boolean }) {
   const [loc] = useLocation();
   const slug = loc === "/" || loc === "" ? "home" : loc.replace(/^\//, "").split("/")[0];
-  const roomKey = loc.startsWith("/queue/") ? loc.replace(/^\/queue\//, "").split("/")[0] : null;
+  const roomKey = loc.startsWith("/queue/") ? loc.replace(/^\/queue\//, "").split("/")[0]
+    : loc.startsWith("/display/") ? loc.replace(/^\/display\//, "").split("/")[0]
+    : null;
 
   // Scroll to hash anchor — fires on mount AND whenever the hash changes.
   // Redirect #appointment → /book (legacy CMS section links).
@@ -239,7 +241,11 @@ function AppShell({ settings, pages, popups, isPreview }: { settings: SiteSettin
     );
   }
 
-  if (slug === "queue") {
+  // "/display/:roomKey" is the pre-migration TV board URL. Any physical TV
+  // still bookmarked at the old address (before the board moved to
+  // /queue/:roomKey) needs this to keep working -- queue-display.tsx's own
+  // doc comment already claims this backward compatibility, so make it real.
+  if (slug === "queue" || slug === "display") {
     if (roomKey) {
       return <QueueDisplay roomKey={roomKey} />;
     }
