@@ -69,7 +69,12 @@ echo "✅ Artifact: ${BACKUP}"
 note "size: $(du -h "${BACKUP}" | cut -f1)   modified: $(date -r "${BACKUP}" '+%Y-%m-%d %H:%M:%S')"
 
 WORK="$(mktemp -d)"
+HEARTBEAT_PID=""
 cleanup() {
+  # If interrupted mid-restore (Ctrl+C), the heartbeat loop below would
+  # otherwise be orphaned and print forever — kill it on every exit path,
+  # not just the normal one.
+  [[ -n "${HEARTBEAT_PID}" ]] && kill "${HEARTBEAT_PID}" >/dev/null 2>&1
   rm -rf "${WORK}"
   docker rm -f "${SANDBOX_CONTAINER}" >/dev/null 2>&1 || true
 }
@@ -148,11 +153,30 @@ docker rm -f "${SANDBOX_CONTAINER}" >/dev/null 2>&1 || true
 echo "🐋 Starting throwaway PostgreSQL 16..."
 # No published port: nothing outside this host needs to reach the sandbox, and
 # a restore sandbox full of real patient data must not be exposed.
+# Durability is deliberately OFF. This container is docker rm -f'd the moment
+# this script exits, success or failure — it never survives to be relied on,
+# so there is nothing here for fsync/WAL-sync to protect. Restoring is
+# otherwise almost entirely fsync-bound: a real 96 MB/439-table/~1270-index
+# production dump was observed taking several minutes with defaults, on this
+# exact NAS, with the postgres log showing a checkpoint that synced just 774
+# buffers (4.7%) taking 92 seconds — 11s of that in fsync across 1148 files.
+# From the outside that is indistinguishable from a hang. The point of this
+# script is to prove the SQL and the data are correct, not to prove crash
+# safety of a database that is deleted seconds later — so pay none of that
+# cost. Arguments after the image name are passed to the postgres server
+# (this is the official image's own supported form; any leading "-c" is
+# auto-prefixed with the `postgres` command by its entrypoint).
 docker run --name "${SANDBOX_CONTAINER}" \
   -e POSTGRES_DB="${SANDBOX_DB}" \
   -e POSTGRES_USER="${SANDBOX_USER}" \
   -e POSTGRES_PASSWORD="${SANDBOX_PASS}" \
-  -d postgres:16-alpine >/dev/null
+  -d postgres:16-alpine \
+  -c fsync=off \
+  -c synchronous_commit=off \
+  -c full_page_writes=off \
+  -c checkpoint_timeout=30min \
+  -c max_wal_size=4GB \
+  >/dev/null
 
 # The official postgres image starts in TWO phases on a cold container: a
 # temporary internal instance runs initdb and creates ${SANDBOX_DB}, then it
@@ -177,13 +201,31 @@ done
 [[ "${READY}" -eq 1 ]] || fail "Throwaway PostgreSQL never became queryable after 60s.
    'docker logs ${SANDBOX_CONTAINER}' may show why."
 
-echo "⚡ Restoring..."
+echo "⚡ Restoring — a large dump can legitimately take several minutes; a heartbeat below confirms it is still working, not stuck."
+# A large restore with no visible output for minutes is indistinguishable
+# from a hang. Print progress in the background so it never looks dead again.
+( SECS=0
+  while true; do
+    sleep 30
+    SECS=$((SECS + 30))
+    echo "   ... still restoring (${SECS}s elapsed)"
+  done
+) &
+HEARTBEAT_PID=$!
+
 # ON_ERROR_STOP=1 is what makes this a test rather than a formality: without it
 # psql exits 0 having failed every single statement.
 RESTORE_LOG="${WORK}/restore.log"
-if ! docker exec -i "${SANDBOX_CONTAINER}" \
+RESTORE_OK=1
+docker exec -i "${SANDBOX_CONTAINER}" \
       psql -v ON_ERROR_STOP=1 -U "${SANDBOX_USER}" -d "${SANDBOX_DB}" \
-      < "${PAYLOAD}" > "${RESTORE_LOG}" 2>&1; then
+      < "${PAYLOAD}" > "${RESTORE_LOG}" 2>&1 || RESTORE_OK=0
+
+kill "${HEARTBEAT_PID}" >/dev/null 2>&1 || true
+wait "${HEARTBEAT_PID}" 2>/dev/null || true
+HEARTBEAT_PID=""
+
+if [[ "${RESTORE_OK}" -eq 0 ]]; then
   echo "── last 20 lines of restore output ──"
   tail -20 "${RESTORE_LOG}"
   fail "psql aborted on the first error (ON_ERROR_STOP). This artifact does not restore cleanly."
