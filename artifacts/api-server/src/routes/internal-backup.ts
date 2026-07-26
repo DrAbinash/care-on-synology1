@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import { logger } from "../lib/logger";
+import { checkSecretStrength, weakSecretMessage } from "../lib/secretStrength";
 
 const router = Router();
 
@@ -14,6 +15,9 @@ function safeEqual(a: string, b: string): boolean {
   return crypto.timingSafeEqual(ab, bb);
 }
 
+/** Logged once per process so a hammering caller cannot flood the log. */
+let weakKeyLogged = false;
+
 function requireInternalApiKey(req: Request, res: Response, next: () => void): void {
   const expected = process.env["INTERNAL_API_KEY"];
   // Fail CLOSED in every environment. This endpoint streams full-database
@@ -21,14 +25,28 @@ function requireInternalApiKey(req: Request, res: Response, next: () => void): v
   // box that was not explicitly NODE_ENV=production served backups to any
   // caller that could reach the port. Matches internal-cron.ts, which has
   // always returned 503 unconditionally when its secret is unset.
-  if (!expected) {
-    logger.error("INTERNAL_API_KEY is not set — internal backup endpoint disabled");
-    res.status(503).json({ error: "INTERNAL_API_KEY not configured" });
+  //
+  // A WEAK key is treated identically to a missing one. This router is mounted
+  // under the public /api/ prefix (routes/index.ts) with no IP allowlist, so
+  // the bearer token is the only thing in front of a full patient-database
+  // export. Production shipped with INTERNAL_API_KEY=1234, which the
+  // constant-time compare below accepted perfectly happily — the auth logic was
+  // never the problem, the value was, and nothing could tell the difference.
+  const weakness = checkSecretStrength(expected);
+  if (weakness) {
+    if (!weakKeyLogged) {
+      weakKeyLogged = true;
+      logger.error(weakSecretMessage("INTERNAL_API_KEY", weakness));
+    }
+    res.status(503).json({ error: weakSecretMessage("INTERNAL_API_KEY", weakness) });
     return;
   }
+  // checkSecretStrength returning null already guarantees a non-empty string,
+  // but it does not narrow the type the way the old `if (!expected)` did.
+  const key = expected as string;
   const header = req.header("authorization") ?? "";
   const provided = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (!safeEqual(provided, expected)) {
+  if (!safeEqual(provided, key)) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }

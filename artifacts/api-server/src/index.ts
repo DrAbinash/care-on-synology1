@@ -21,6 +21,7 @@ import { initializePluginLoader } from "./plugin-loader";
 initializePluginLoader(app);
 
 import { logger } from "./lib/logger";
+import { reportWeakGuardedSecrets } from "./lib/secretStrength";
 import { NETWORK_LAN_HOST } from "./lib/networkDefaults";
 import { startCronScheduler } from "./cron";
 import { startIntegrationScheduler } from "./services/integration/scheduler";
@@ -2745,6 +2746,15 @@ if (Number.isNaN(port) || port <= 0) {
 
 const server = app.listen({ port, exclusive: true }, () => {
   logger.info({ port }, "Server listening");
+
+  // Weak secrets guarding internet-reachable endpoints. Production ran with
+  // INTERNAL_API_KEY=1234, which the constant-time compares accepted happily —
+  // nothing in the system could tell a strong secret from a placeholder, so it
+  // went unnoticed. The full-database export is now blocked outright when the
+  // key is weak (routes/internal-backup.ts), but DICOM intake and HL7 share
+  // the same key and cannot be blocked without stopping study ingestion. This
+  // makes what is still exposed loud on every boot rather than silent.
+  reportWeakGuardedSecrets((msg) => logger.error(msg));
 
   // Cron schedulers must NOT run on autoscale deployments: containers can
   // scale to zero and miss firing windows, and every cold start would
