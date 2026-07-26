@@ -26,6 +26,7 @@ import {
 } from "@workspace/db/schema";
 import { sendReportEmail } from "../email";
 import { requireStaffAuth, type StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { renderHtmlToPdf } from "../lib/htmlToPdf";
 import { isObstetricUsgStudy } from "../lib/usgModality";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
 // ── Ticket D5 — structured signed-report path (flag-gated, legacy default) ───
@@ -458,7 +459,7 @@ async function auditDeliveryResolution(
 function versionedFilename(version: ResolvedReportVersion): string {
   const base = (version.resolvedReport.reportNumber || `report-${version.resolvedReportId}`).replace(/[^A-Za-z0-9._-]+/g, "_");
   const suffix = version.totalVersions > 1 ? `-v${version.sequenceNumber}of${version.totalVersions}${version.resolvedSuperseded ? "-SUPERSEDED" : ""}` : "";
-  return `${base}${suffix}.html`;
+  return `${base}${suffix}.pdf`;
 }
 
 // ── Ticket D9 — amendment verify-path hardening ──────────────────────────────
@@ -2771,7 +2772,9 @@ patientReportsRouter.get("/:id/print", async (req, res) => {
   res.send(artifact.html);
 });
 
-// PDF endpoint = same HTML but without auto-print (browser/user can save as PDF).
+// PDF endpoint — the same artifact HTML the /print route serves, rendered to
+// a real PDF via headless Chromium (see htmlToPdf.ts) rather than sent as
+// HTML with a misleading Content-Type.
 patientReportsRouter.get("/:id/pdf", async (req, res) => {
   const id = Number(req.params.id);
   const useUpdatedStyle = req.query.useUpdatedStyle === "true";
@@ -2788,12 +2791,13 @@ patientReportsRouter.get("/:id/pdf", async (req, res) => {
   await markDeliveredIfVerified(servedId).catch(() => {});
   const session = (req as StaffAuthRequest).staffSession;
   await auditDeliveryResolution("pdf", artifact.version, { userId: session?.subjectId, userName: session?.subjectName, role: session?.role });
-  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  const pdfBuffer = await renderHtmlToPdf(artifact.html);
+  res.setHeader("Content-Type", "application/pdf");
   // R1.3 — patient data (incl. inlined DICOM key images) is never cacheable.
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Content-Disposition", `inline; filename="${versionedFilename(artifact.version)}"`);
   setVersionHeaders(res, artifact.version);
-  res.send(artifact.html);
+  res.send(pdfBuffer);
 });
 
 // PUBLIC tokenized PDF — no staff auth. Looked up by random token, only
@@ -2835,11 +2839,12 @@ publicReportsRouter.get("/:token/pdf", async (req, res) => {
   }).catch(() => undefined);
   await markDeliveredIfVerified(servedId).catch(() => undefined);
   await auditDeliveryResolution("public_pdf", artifact.version, { userName: "patient-link", role: "public" }, { tokenReportId: row.id });
-  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  const pdfBuffer = await renderHtmlToPdf(artifact.html);
+  res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Content-Disposition", `inline; filename="${versionedFilename(artifact.version)}"`);
   setVersionHeaders(res, artifact.version);
-  res.send(artifact.html);
+  res.send(pdfBuffer);
 });
 
 async function markDeliveredIfVerified(id: number) {

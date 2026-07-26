@@ -114,6 +114,13 @@ vi.mock("@workspace/db", () => {
 
 vi.mock("../lib/featureFlags", () => ({ isFeatureEnabledServer: async (key: string) => flags[key] ?? false }));
 
+// PDF rendering (htmlToPdf.ts) launches a real headless Chromium — stub it to
+// a passthrough so /pdf tests stay fast and can still assert on the artifact
+// HTML that reached it, without actually invoking Playwright.
+vi.mock("../lib/htmlToPdf", () => ({
+  renderHtmlToPdf: async (html: string) => Buffer.from(html),
+}));
+
 const whatsappCalls: unknown[] = [];
 vi.mock("./whatsapp", () => ({
   sendReportWhatsapp: async (args: unknown) => { whatsappCalls.push(args); return { ok: true }; },
@@ -419,7 +426,7 @@ describe("D8 — print/PDF default to latest; explicit historical is watermarked
     linkageQueryScript = [[], [L1], [L1]];
     joinedQueryScript = [joined(ROW_909)];
     const res = await getSurface("/:id/pdf", "900");
-    expect(res.headers["Content-Disposition"]).toBe('inline; filename="RPT-A1-v2of2.html"');
+    expect(res.headers["Content-Disposition"]).toBe('inline; filename="RPT-A1-v2of2.pdf"');
   });
 
   test("historical PDF filename is marked SUPERSEDED", async () => {
@@ -427,7 +434,7 @@ describe("D8 — print/PDF default to latest; explicit historical is watermarked
     linkageQueryScript = [[], [L1], [L1]];
     joinedQueryScript = [joined(ROW_900)];
     const res = await getSurface("/:id/pdf", "900", { version: "specific" });
-    expect(res.headers["Content-Disposition"]).toBe('inline; filename="RPT-ROOT-v1of2-SUPERSEDED.html"');
+    expect(res.headers["Content-Disposition"]).toBe('inline; filename="RPT-ROOT-v1of2-SUPERSEDED.pdf"');
   });
 
   test("flag OFF: print serves the requested row but the superseded watermark still protects it", async () => {
@@ -475,8 +482,8 @@ describe("D8 — public token resolves to the latest valid signed amendment", ()
     joinedQueryScript = [joined(ROW_909)];
     const res = await getPublicPdf(TOKEN);
     expect(res.statusCode).toBe(200);
-    expect(res.body).toContain("AMENDED SIGNED BODY");
-    expect(res.body).toContain("AMENDED REPORT — Version 2 of 2");
+    expect(res.body.toString()).toContain("AMENDED SIGNED BODY");
+    expect(res.body.toString()).toContain("AMENDED REPORT — Version 2 of 2");
     expect(res.headers["X-Report-Delivered-Id"]).toBe("909");
     expect((shares()[0].values as Record<string, unknown>).reportId).toBe(909);
     expect(auditLogCalls).toHaveLength(1);
@@ -490,13 +497,13 @@ describe("D8 — public token resolves to the latest valid signed amendment", ()
     joinedQueryScript = [joined(ROW_900_TOK)];
     const res = await getPublicPdf(TOKEN);
     expect(res.statusCode).toBe(200);
-    expect(res.body).toContain("ROOT SIGNED BODY");
-    expect(res.body).toContain("SUPERSEDED — A NEWER SIGNED AMENDMENT EXISTS");
-    expect(res.body).toContain('class="superseded-watermark"');
+    expect(res.body.toString()).toContain("ROOT SIGNED BODY");
+    expect(res.body.toString()).toContain("SUPERSEDED — A NEWER SIGNED AMENDMENT EXISTS");
+    expect(res.body.toString()).toContain('class="superseded-watermark"');
     expect(res.headers["X-Report-Superseded"]).toBe("true");
     expect(String(auditLogCalls[0].newValue)).toContain('"superseded":true');
     // The draft amendment never leaked.
-    expect(res.body).not.toContain("DRAFT AMENDMENT BODY");
+    expect(res.body.toString()).not.toContain("DRAFT AMENDMENT BODY");
   });
 
   test("expired token stays rejected (410) before any resolution", async () => {
