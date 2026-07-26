@@ -630,6 +630,8 @@ export default function ReportGenerator() {
     setUploadContent("");
     setUploadFormat("text");
     setUploadIsDefault(templatesByTest(testId).length === 0);
+    setUploadTags("");
+    setUploadModality("");
     setUploadDialogOpen(true);
   };
 
@@ -658,6 +660,13 @@ export default function ReportGenerator() {
         format: uploadFormat,
         content: uploadContent,
         isDefault: uploadIsDefault,
+        // Collected by this same dialog but never sent before — the server
+        // has always accepted and persisted these; pickTemplateFromTags()
+        // auto-selects a template by matching them against a test's
+        // remarks/results, which could never work for a template created
+        // here since tags/modality were always stored as null.
+        tags: uploadTags.trim(),
+        modality: uploadModality.trim(),
       });
     } catch (err) {
       toast({ title: "Could not save template", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
