@@ -11,7 +11,7 @@
  * Options:
  *   --json                 machine-readable JSON to stdout
  *   --base-url <url>       API base to probe (default $SMOKE_BASE_URL / $API_BASE_URL / http://localhost:$PORT)
- *   --include-optional     also run optional integration checks (n8n, Evolution, …)
+ *   --include-optional     also run optional integration checks (n8n, payment gateway, …)
  *   --timeout <ms>         per-check timeout (default 5000)
  *   --save-result          persist the run into operational_health_runs
  *   --transactional        also run the rollback-isolated create/read/update probe

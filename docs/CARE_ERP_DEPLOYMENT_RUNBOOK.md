@@ -7,7 +7,7 @@ _Exact steps to deploy CARE ERP on the Synology NAS (Container Manager / `docker
 ## 0. Pre-flight (once per environment)
 1. `.env` exists next to `docker-compose.yml` with at least: `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `JWT_SECRET`, `SESSION_SECRET`, `ICICI_SECRET_KEY`. See `CARE_ERP_ENVIRONMENT_MATRIX.md`.
 2. External DB volume exists: `docker volume create care_main_db_data` (only if not already present — **never** recreate over real data).
-3. Optional integrations (Orthanc, OHIF, Ollama, Evolution, n8n) configured only if in use.
+3. Optional integrations (Orthanc, OHIF, Ollama, n8n) configured only if in use.
 
 ## 1. Standard deploy (automated)
 The repo ships `deploy-synology.sh`, which does exactly:

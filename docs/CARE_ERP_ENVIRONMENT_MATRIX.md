@@ -112,10 +112,10 @@ encrypted credentials) rather than environment variables where possible —
 env vars below are fallbacks/legacy only. `evolution` is **not** a valid
 `WHATSAPP_PROVIDER` value and was never implemented as a provider adapter
 (see `WhatsAppProviderFactory.ts`'s registry: `mock | meta | twilio |
-gupshup | wati | interakt`) — `EVOLUTION_API_URL` remains solely as an
-optional, deprecated reachability health-probe for a self-hosted Evolution
-API instance some deployments still run alongside CARE for other purposes;
-it has no connection to CARE's actual WhatsApp send/receive path.
+gupshup | wati | interakt`). The Evolution API health-probe that used to
+exist here (`EVOLUTION_API_URL`) has been removed outright — it never
+verified anything about CARE's actual WhatsApp send/receive path, only
+the reachability of an unrelated, optional self-hosted Evolution instance.
 
 | Variable | Req | Secret | Notes |
 |---|---|---|---|
@@ -126,7 +126,6 @@ it has no connection to CARE's actual WhatsApp send/receive path.
 | `WHATSAPP_VERIFY_TOKEN` / `_WEBHOOK_SECRET` | ⬜ | 🔑 | webhook verification — env-var fallback only |
 | `WHATSAPP_DEFAULT_COUNTRY_CODE` | ⬜ | — | `91` |
 | `N8N_URL` | ⬜ | — | automations (verifier: Messaging/n8n) |
-| `EVOLUTION_API_URL` | ⬜ | — | **deprecated** — optional reachability probe only, not a WhatsApp provider (see above) |
 
 ---
 

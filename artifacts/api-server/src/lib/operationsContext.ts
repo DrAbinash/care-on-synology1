@@ -146,7 +146,6 @@ export async function buildOpsContext(input: BuildCtxInput): Promise<OpsCtx> {
     publicBaseUrl: publicBase,
     displayToken,
     n8nUrl: stripSlash(env.N8N_HEALTH_URL || env.N8N_URL),
-    evolutionUrl: stripSlash(env.EVOLUTION_API_URL),
     paymentGatewayConfigured: paymentConfigured,
     storageDir,
     diskFree,
