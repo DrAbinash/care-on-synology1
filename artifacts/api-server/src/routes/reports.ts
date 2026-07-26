@@ -4,6 +4,7 @@ import { accountsTable, vouchersTable } from "@workspace/db/schema";
 import { eq, sql, gte, lte, and, desc, isNotNull, isNull, inArray, type SQL } from "drizzle-orm";
 import { z } from "zod/v4";
 import { GetRevenueReportQueryParams } from "@workspace/api-zod";
+import { renderHtmlToPdf } from "../lib/htmlToPdf";
 
 export const reportsRouter = Router();
 
@@ -59,6 +60,9 @@ function formatCurrency(n: number) {
   return `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(n)}`;
 }
 
+// Rendered server-side to a real PDF (renderHtmlToPdf, below) — no
+// print-and-close script here; that only made sense back when this HTML was
+// sent straight to a browser tab for the user to print manually.
 function buildReportHtml(title: string, subtitle: string, rows: { label: string; value: string }[], signatureName = "Authorized Signature") {
   return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
     <style>
@@ -82,7 +86,6 @@ function buildReportHtml(title: string, subtitle: string, rows: { label: string;
       <table class="rows">${rows.map((r) => `<tr><td>${r.label}</td><td>${r.value}</td></tr>`).join("")}</table>
       <div class="sig"><div>${signatureName}</div><div>Admin Signature</div></div>
       <div class="ftr">Generated on ${new Date().toLocaleString("en-IN")}</div>
-      <script>window.onload = () => { window.print(); setTimeout(() => window.close(), 300); };</script>
     </body></html>`;
 }
 
@@ -620,8 +623,7 @@ reportsRouter.get("/daily-summary/pdf", async (req, res) => {
   const partialBills = activeBills.filter((r) => r.b.status === "partial").length;
   const pendingBills = activeBills.filter((r) => r.b.status === "pending").length;
 
-  res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.send(buildReportHtml(
+  const html = buildReportHtml(
     `Daily Report ${date}`,
     `Date: ${date}`,
     [
@@ -632,7 +634,11 @@ reportsRouter.get("/daily-summary/pdf", async (req, res) => {
       { label: "Paid / Partial / Pending", value: `${paidBills} / ${partialBills} / ${pendingBills}` },
     ],
     "Prepared By Accounts / Admin",
-  ));
+  );
+  const pdfBuffer = await renderHtmlToPdf(html);
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `inline; filename="daily-report-${date}.pdf"`);
+  res.send(pdfBuffer);
 });
 
 reportsRouter.get("/outsourced-cost", async (req, res) => {
