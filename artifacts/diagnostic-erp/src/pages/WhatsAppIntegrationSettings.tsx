@@ -69,7 +69,6 @@ interface WaSettings {
   emergencyPausedAt: string | null;
   transactionalMessagesAllowed: boolean;
   reminderMessagesAllowed: boolean;
-  marketingMessagesAllowed: boolean;
   stopStartHandlingEnabled: boolean;
   phiProtectionEnabled: boolean;
   secureReportLinkRequired: boolean;
@@ -497,7 +496,6 @@ export default function WhatsAppIntegrationSettings() {
                   {([
                     ["transactionalMessagesAllowed", "Transactional messages (bills, reports, OTP)"],
                     ["reminderMessagesAllowed", "Reminder messages (appointments, dues)"],
-                    ["marketingMessagesAllowed", "Marketing messages"],
                     ["secureReportLinkRequired", "Require secure/tokenized report links"],
                   ] as const).map(([key, label]) => (
                     <div key={key} className="flex items-center justify-between">
