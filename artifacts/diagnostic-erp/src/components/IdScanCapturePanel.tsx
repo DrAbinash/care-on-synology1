@@ -47,13 +47,14 @@ export interface IdScanCapturePanelProps {
 export default function IdScanCapturePanel({
   frontDone, backDone, busy = false, onCapture, onError, onViewSaved,
 }: IdScanCapturePanelProps) {
-  // Primary camera device — a bound TVS PDS 8M if an admin has configured one,
-  // otherwise a generic webcam.
+  // Fallback camera device — a bound TVS PDS 8M if an admin has configured
+  // one, otherwise a generic webcam. Kept as a secondary method; a flatbed
+  // scan is sharper and needs no focus/lighting fuss, so it's the default.
   const tvsDeviceId = getPreferredTvsDeviceId();
   const tvsLabel = getPreferredTvsDeviceLabel();
   const cameraIsTvs = !!tvsDeviceId;
   const cameraSource: ScanSource = cameraIsTvs ? "tvs" : "webcam";
-  const primaryLabel = cameraIsTvs ? (tvsLabel || "TVS PDS 8M") : "Webcam";
+  const cameraLabel = cameraIsTvs ? (tvsLabel || "TVS PDS 8M") : "Webcam";
   const cameraReady = isSecureCameraContext();
 
   // Live scanner-bridge health for the header/tab, polled while mounted.
@@ -70,9 +71,16 @@ export default function IdScanCapturePanel({
   }, []);
   const bridgeOk = bridgeState === "ok";
 
-  const [method, setMethod] = useState<CaptureMethod>(cameraReady ? "camera" : "upload");
+  // Scanner Bridge (flatbed) is the primary, default method — sharpest,
+  // most consistent capture with no focus/glare/orientation issues. Webcam,
+  // Mobile and Upload remain one tap away as fallbacks when the scanner isn't
+  // available. The header's "Primary Scanner" status always reflects the
+  // bridge specifically, independent of which tab is currently selected, so
+  // staff can see at a glance whether the flatbed is ready.
+  const [method, setMethod] = useState<CaptureMethod>("bridge");
   const [dragOver, setDragOver] = useState(false);
-  const primaryOnline = method === "bridge" ? bridgeOk : method === "camera" ? cameraReady : true;
+  const primaryLabel = "Flatbed Scanner";
+  const primaryOnline = bridgeOk;
 
   // ── Drag & drop → route to a side (first drop fills Front, next fills Back) ──
   function acceptDroppedFile(file: File | undefined) {
@@ -89,9 +97,11 @@ export default function IdScanCapturePanel({
     onCapture({ file, mimeType: file.type, source: "upload", filename: file.name, side });
   }
 
+  // Scanner listed first — it's the default/recommended method; the others
+  // are fallbacks for when the flatbed isn't available.
   const tabs: { key: CaptureMethod; label: string; icon: typeof Camera; dot?: boolean }[] = [
-    { key: "camera", label: "Webcam", icon: Camera, dot: cameraReady },
     { key: "bridge", label: "Scanner", icon: ScanLine, dot: bridgeOk },
+    { key: "camera", label: "Webcam", icon: Camera, dot: cameraReady },
     { key: "mobile", label: "Mobile", icon: Smartphone },
     { key: "upload", label: "Upload", icon: Upload },
   ];
@@ -100,7 +110,7 @@ export default function IdScanCapturePanel({
   const captureSource: ScanSource = method === "bridge" ? "bridge" : method === "mobile" ? "mobile" : cameraSource;
   const tileIcon = method === "mobile" ? Smartphone : Camera;
   const tileDisabled = (method === "bridge" && !bridgeOk) || (method === "camera" && !cameraReady);
-  const captureLabel = method === "bridge" ? "Existing Scanner" : method === "mobile" ? "Mobile Phone" : primaryLabel;
+  const captureLabel = method === "bridge" ? "Existing Scanner" : method === "mobile" ? "Mobile Phone" : cameraLabel;
 
   return (
     <div className="rounded-xl border border-gray-200 bg-gradient-to-b from-white to-gray-50/60 shadow-sm p-3">

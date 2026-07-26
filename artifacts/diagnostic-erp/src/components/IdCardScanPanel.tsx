@@ -156,6 +156,19 @@ const DEFAULT_MODE_FOR_DOC: Record<ScanDocType, EnhancementMode> = {
   document: "document",
 };
 
+/** Which enhancement modes are offered per document type. ID cards are
+ *  primarily captured via a flatbed scanner now (sharp, evenly lit, no glare
+ *  or focus issues), so the 6 modes built for phone/webcam photos (glare,
+ *  lighting casts, receipt-specific shadow removal, etc.) are just noise —
+ *  reduced to Original (the scan as-is) and Document/Text (sharpen faint text
+ *  on an old or faded physical card). Receipt/document scanning (Accounting,
+ *  bill/bank capture) keeps the full set — those ARE mostly phone photos. */
+const MODES_FOR_DOC: Record<ScanDocType, EnhancementMode[]> = {
+  "id-card": ["original", "document"],
+  receipt: Object.keys(MODE_LABELS) as EnhancementMode[],
+  document: Object.keys(MODE_LABELS) as EnhancementMode[],
+};
+
 // ── Image Processing Pipeline ──────────────────────────────────────────────────
 
 /**
@@ -1257,7 +1270,7 @@ export default function IdCardScanPanel({
               <Sparkles size={10} /> Enhancement Mode
             </div>
             <div className="flex flex-wrap gap-1.5">
-              {(Object.keys(MODE_LABELS) as EnhancementMode[]).map((mode) => (
+              {MODES_FOR_DOC[docType].map((mode) => (
                 <button
                   key={mode}
                   onClick={() => reEnhance(mode)}
