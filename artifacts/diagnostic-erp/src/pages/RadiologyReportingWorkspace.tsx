@@ -17,6 +17,7 @@ import { queryAiReporting } from "@/lib/aiReportingClient";
 // RadiologyWorklist and the deprecated Cockpit) — reused, not duplicated.
 import { toUnifiedStatus, priorityInfo, worklistRoleView } from "@/lib/radiologyStatus";
 import { finalizeRadiologyReport, saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
+import { exportRadiologyReportToWord, safeFileNamePart } from "@/lib/radiologyReportWordExport";
 import { exportRadiologyReportToPdf } from "@/lib/radiologyReportPdfExport";
 import { type ReportImageRef } from "@/lib/reportImageRefs";
 import OpenStudyPanel from "@/components/radiology/OpenStudyPanel";
@@ -26,7 +27,7 @@ import {
   Share2, AlertCircle, X, Send, Zap, BookOpen, MonitorPlay,
   LayoutTemplate, BarChart3, Monitor, PanelLeftClose, PanelLeftOpen,
   PanelRightClose, PanelRightOpen, Brain, GitCompare, FileText,
-  Maximize2, Columns2, AppWindow, FileOutput,
+  Maximize2, Columns2, AppWindow, FileOutput, FileDown,
 } from "lucide-react";
 import EmbeddedWadoViewer from "@/components/EmbeddedWadoViewer";
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@/components/ui/resizable";
@@ -876,6 +877,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // ── Loading ───────────────────────────────────────────────────────────────
   const [saving, setSaving] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
+  const [exportingWord, setExportingWord] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [teachingNotes, setTeachingNotes] = useState("");
   const [savingTeaching, setSavingTeaching] = useState(false);
@@ -3325,6 +3327,28 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       impressionStyle,
     ]
   );
+
+  // The clinic composes final reports in Word, not this app's structured
+  // builder — every finalize here runs the LEGACY path (see the banner
+  // below). This exports the SAME content already shown in the Preview pane
+  // above (previewHtml, from the exact same buildPreviewHtml() call this
+  // memo makes) as a .docx starting point, so a radiologist can continue
+  // from what they already typed here instead of retyping it in Word.
+  async function handleExportWord() {
+    setExportingWord(true);
+    try {
+      const fileName = `${safeFileNamePart(entry?.patientName || "patient")}_${safeFileNamePart(entry?.accessionNumber || "report")}`;
+      await exportRadiologyReportToWord(previewHtml, fileName);
+    } catch (err) {
+      toast({
+        title: "Export failed",
+        description: err instanceof Error ? err.message : "Could not build the Word document",
+        variant: "destructive",
+      });
+    } finally {
+      setExportingWord(false);
+    }
+  }
 
   // Real PDF (jsPDF, via reportPdfGenerator.ts — the same generator already
   // used in production by USG/Echo/Fetal reporting), including whatever
@@ -5999,6 +6023,17 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               }}
             >
               <Eye size={12} /> {previewMode ? "Hide Preview" : "Preview"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 text-xs gap-1.5"
+              onClick={() => void handleExportWord()}
+              disabled={exportingWord}
+              title="Download this draft as a Word document to finish and sign there"
+            >
+              {exportingWord ? <RefreshCw size={12} className="animate-spin" /> : <FileDown size={12} />}
+              Export to Word
             </Button>
             <Button
               size="sm"
