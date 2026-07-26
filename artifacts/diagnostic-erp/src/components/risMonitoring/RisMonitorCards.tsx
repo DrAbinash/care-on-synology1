@@ -301,6 +301,7 @@ export function DowntimeModeCard() {
 // ── 6. Audit Export ────────────────────────────────────────────────────────────────────────────────────────────
 
 export function AuditExportCard() {
+  const { toast } = useToast();
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [user, setUser] = useState("");
@@ -315,13 +316,18 @@ export function AuditExportCard() {
     setRows(data.rows ?? []);
   };
 
+  // /api/ris-monitor/audit-export is staff-authed — window.open(url) can
+  // never carry the Authorization header, so this always 401'd instead of
+  // downloading the CSV.
   const downloadCsv = () => {
     const params = new URLSearchParams();
     if (from) params.set("from", from);
     if (to) params.set("to", to);
     if (user) params.set("user", user);
     params.set("format", "csv");
-    window.open(`/api/ris-monitor/audit-export?${params.toString()}`, "_blank");
+    void api.downloadFile(`/api/ris-monitor/audit-export?${params.toString()}`, "audit-export.csv").catch((err) => {
+      toast({ title: "Export failed", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
+    });
   };
 
   return (

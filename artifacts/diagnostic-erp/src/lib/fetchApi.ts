@@ -242,9 +242,28 @@ export async function fetchApiBlob(path: string, init?: RequestInit): Promise<Bl
   return res.blob();
 }
 
+// Downloads a staff-authed file (CSV/JSON/generated script exports, etc.) as
+// a save-file dialog with the given filename. A plain `window.open(url)` /
+// `<a href>` navigation to one of these routes can never carry
+// Authorization: Bearer <token> (this app has no cookie-session fallback),
+// so it 401s instead of downloading — fetches the file as an authenticated
+// Blob first, then triggers the download via a synthetic <a download>.
+export async function downloadAuthenticatedFile(path: string, filename: string): Promise<void> {
+  const blob = await fetchApiBlob(path);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
 export const api = {
   get: <T>(path: string) => fetchApi<T>(path),
   getBlob: (path: string) => fetchApiBlob(path),
+  downloadFile: (path: string, filename: string) => downloadAuthenticatedFile(path, filename),
   post: <T>(path: string, body: unknown) =>
     fetchApi<T>(path, { method: "POST", body: JSON.stringify(body) }),
   put: <T>(path: string, body: unknown) =>
