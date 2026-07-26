@@ -839,6 +839,7 @@ export default function FormF() {
     cropPadding?: number;
     jpegQuality?: number;
     maxScanWidth?: number;
+    preferredScanner?: string;
   }>({
     queryKey: ["clinic-settings-formf"],
     queryFn: () => api.get("/api/clinic-settings"),
@@ -1926,6 +1927,7 @@ export default function FormF() {
                     frontDone={!!idCardFrontUrl}
                     backDone={!!idCardBackUrl}
                     busy={idCardUploading}
+                    defaultMethod={fSettings?.preferredScanner}
                     onCapture={handleIdCapture}
                     onError={(msg) => toast({ title: "Scan failed", description: msg, variant: "destructive" })}
                     onViewSaved={() => setActiveTab("records")}
