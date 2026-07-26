@@ -415,8 +415,14 @@ export function CriticalEscalationCard() {
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ["ris-monitor", "critical-escalation"] }); toast({ title: "Acknowledged" }); },
   });
   const escMut = useMutation({
-    mutationFn: (id: number) => api.patch(`/api/ris-monitor/critical-escalation/${id}/escalate`, { escalatedTo: "Head Radiologist", escalatedToRole: "head", notificationMethod: "phone" }),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["ris-monitor", "critical-escalation"] }); toast({ title: "Escalated" }); },
+    // notificationMethod: "phone" used to be sent unconditionally the instant
+    // this button was clicked -- asserting a phone call was placed when
+    // nothing here actually dials anyone. No channel is wired up (no
+    // worker/cron/integration consumes this table -- it's a bookkeeping
+    // update only), so "other" records that this was a manual escalation
+    // without claiming a specific, unverified delivery channel.
+    mutationFn: (id: number) => api.patch(`/api/ris-monitor/critical-escalation/${id}/escalate`, { escalatedTo: "Head Radiologist", escalatedToRole: "head", notificationMethod: "other" }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["ris-monitor", "critical-escalation"] }); toast({ title: "Escalation logged", description: "No call was placed automatically — contact them directly." }); },
   });
 
   const open = (data?.openFindings ?? []).slice(0, 6);
