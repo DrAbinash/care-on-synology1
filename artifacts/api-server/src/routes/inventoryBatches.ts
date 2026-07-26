@@ -25,6 +25,70 @@ import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 const router = Router();
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
 
+type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+export interface ReceiveBatchParams {
+  itemId: number;
+  lotNumber?: string | null;
+  expiryDate?: string | null;
+  quantity: number;
+  unitCost?: number | null;
+  vendorId?: number | null;
+  invoiceNumber?: string | null;
+  notes?: string | null;
+  performedBy?: string | null;
+}
+
+/**
+ * Core "receive a lot" logic: insert the batch, bump the item's current
+ * stock, log an inventory 'in' transaction, and close any open reorder
+ * request for the item. Must run inside a caller-owned db.transaction — this
+ * does not open its own, so multiple lines (e.g. every matched line item on
+ * a scanned purchase invoice, see routes/purchaseInvoices.ts) can post
+ * atomically as one transaction instead of each becoming its own commit.
+ *
+ * Extracted from the POST /batches handler below (which now just wraps this
+ * in its own single-line transaction) so both callers share one code path
+ * for the stock math instead of two copies drifting apart.
+ */
+export async function receiveBatchTx(tx: DbTx, b: ReceiveBatchParams): Promise<{ batch: typeof inventoryBatchesTable.$inferSelect; stock: number }> {
+  const [item] = await tx.select().from(inventoryItemsTable).where(eq(inventoryItemsTable.id, b.itemId)).limit(1);
+  if (!item) throw new Error("ITEM_NOT_FOUND");
+  const before = n(item.currentStock);
+  const after = Math.round((before + b.quantity + Number.EPSILON) * 100) / 100;
+
+  const [batch] = await tx.insert(inventoryBatchesTable).values({
+    itemId: b.itemId,
+    lotNumber: b.lotNumber ?? "",
+    expiryDate: b.expiryDate ?? null,
+    qtyReceived: String(b.quantity),
+    qtyRemaining: String(b.quantity),
+    unitCost: b.unitCost == null ? null : String(b.unitCost),
+    vendorId: b.vendorId ?? null,
+    invoiceNumber: b.invoiceNumber ?? null,
+    status: "active",
+    notes: b.notes ?? null,
+  }).returning();
+
+  await tx.update(inventoryItemsTable).set({ currentStock: String(after) }).where(eq(inventoryItemsTable.id, b.itemId));
+
+  await tx.insert(inventoryTransactionsTable).values({
+    itemId: b.itemId, type: "in", quantity: String(b.quantity),
+    stockBefore: String(before), stockAfter: String(after),
+    reason: "batch received" + (b.lotNumber ? ` (lot ${b.lotNumber})` : ""),
+    reference: batch.invoiceNumber ?? null, performedBy: b.performedBy ?? null,
+    vendorId: b.vendorId ?? null, invoiceNumber: b.invoiceNumber ?? null,
+    unitCost: b.unitCost == null ? null : String(b.unitCost),
+  });
+
+  // close an open reorder request for this item, if any
+  await tx.update(inventoryReorderRequestsTable)
+    .set({ status: "received", receivedAt: new Date() })
+    .where(and(eq(inventoryReorderRequestsTable.itemId, b.itemId), sql`${inventoryReorderRequestsTable.status} IN ('suggested','ordered')`));
+
+  return { batch, stock: after };
+}
+
 // ── Batches ──────────────────────────────────────────────────────────────────
 
 // GET /api/inventory/batches?itemId=123 — all batches for one item (newest first)
@@ -56,43 +120,7 @@ router.post("/batches", async (req: StaffAuthRequest, res) => {
   if (!parsed.success) { res.status(400).json({ error: "Invalid request", details: parsed.error.issues }); return; }
   const b = parsed.data;
   try {
-    const result = await db.transaction(async (tx) => {
-      const [item] = await tx.select().from(inventoryItemsTable).where(eq(inventoryItemsTable.id, b.itemId)).limit(1);
-      if (!item) throw new Error("ITEM_NOT_FOUND");
-      const before = n(item.currentStock);
-      const after = Math.round((before + b.quantity + Number.EPSILON) * 100) / 100;
-
-      const [batch] = await tx.insert(inventoryBatchesTable).values({
-        itemId: b.itemId,
-        lotNumber: b.lotNumber ?? "",
-        expiryDate: b.expiryDate ?? null,
-        qtyReceived: String(b.quantity),
-        qtyRemaining: String(b.quantity),
-        unitCost: b.unitCost == null ? null : String(b.unitCost),
-        vendorId: b.vendorId ?? null,
-        invoiceNumber: b.invoiceNumber ?? null,
-        status: "active",
-        notes: b.notes ?? null,
-      }).returning();
-
-      await tx.update(inventoryItemsTable).set({ currentStock: String(after) }).where(eq(inventoryItemsTable.id, b.itemId));
-
-      await tx.insert(inventoryTransactionsTable).values({
-        itemId: b.itemId, type: "in", quantity: String(b.quantity),
-        stockBefore: String(before), stockAfter: String(after),
-        reason: "batch received" + (b.lotNumber ? ` (lot ${b.lotNumber})` : ""),
-        reference: batch.invoiceNumber ?? null, performedBy: req.staffSession?.subjectName ?? null,
-        vendorId: b.vendorId ?? null, invoiceNumber: b.invoiceNumber ?? null,
-        unitCost: b.unitCost == null ? null : String(b.unitCost),
-      });
-
-      // close an open reorder request for this item, if any
-      await tx.update(inventoryReorderRequestsTable)
-        .set({ status: "received", receivedAt: new Date() })
-        .where(and(eq(inventoryReorderRequestsTable.itemId, b.itemId), sql`${inventoryReorderRequestsTable.status} IN ('suggested','ordered')`));
-
-      return { batch, stock: after };
-    });
+    const result = await db.transaction((tx) => receiveBatchTx(tx, { ...b, performedBy: req.staffSession?.subjectName ?? null }));
     res.status(201).json({ ...result.batch, currentStock: result.stock });
   } catch (e: any) {
     if (String(e?.message) === "ITEM_NOT_FOUND") { res.status(404).json({ error: "Item not found" }); return; }

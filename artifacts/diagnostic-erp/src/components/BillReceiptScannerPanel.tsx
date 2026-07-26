@@ -4,7 +4,7 @@ import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Camera, ScanLine, Upload, X, CheckCircle2 } from "lucide-react";
+import { Camera, ScanLine, Upload, X, CheckCircle2, FileText } from "lucide-react";
 import IdCardScanPanel from "@/components/IdCardScanPanel";
 
 type BillOcrResult = {
@@ -56,8 +56,17 @@ export default function BillReceiptScannerPanel() {
     const reader = new FileReader();
     reader.onload = (e) => {
       const dataUrl = e.target?.result as string;
+      const base64 = dataUrl.split(",")[1] ?? "";
+      if (mt === "application/pdf") {
+        // The crop/enhance editor is canvas-based and can't decode PDF bytes
+        // as an image — send it straight through to OCR instead.
+        setMimeType(mt);
+        setImageBase64(base64);
+        setPreview(dataUrl);
+        return;
+      }
       // Open the crop/enhance editor first — the enhanced image scans far better.
-      setEditing({ base64: dataUrl.split(",")[1] ?? "", mimeType: mt });
+      setEditing({ base64, mimeType: mt });
     };
     reader.readAsDataURL(file);
   }, []);
@@ -136,7 +145,7 @@ export default function BillReceiptScannerPanel() {
       <div className="space-y-3">
         <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
           <h3 className="font-semibold flex items-center gap-2"><Camera size={15} /> Capture Bill Image</h3>
-          <p className="text-xs text-muted-foreground">Take a photo on your mobile or upload an existing image. Supports JPG, PNG, WebP, HEIC.</p>
+          <p className="text-xs text-muted-foreground">Take a photo on your mobile or upload an existing file. Supports JPG, PNG, WebP, HEIC, PDF.</p>
 
           {/* Drop zone */}
           <div
@@ -148,7 +157,13 @@ export default function BillReceiptScannerPanel() {
           >
             {preview ? (
               <>
-                <img src={preview} alt="Bill preview" className="w-full object-contain max-h-72" />
+                {preview.startsWith("data:image") ? (
+                  <img src={preview} alt="Bill preview" className="w-full object-contain max-h-72" />
+                ) : (
+                  <div className="flex items-center justify-center gap-2 h-52 text-muted-foreground">
+                    <FileText size={24} /> <span className="text-sm">PDF ready for scanning</span>
+                  </div>
+                )}
                 <button onClick={e => { e.stopPropagation(); reset(); }} className="absolute top-2 right-2 bg-black/60 text-white rounded-full p-1">
                   <X size={14} />
                 </button>
@@ -166,7 +181,7 @@ export default function BillReceiptScannerPanel() {
           <input
             ref={fileRef}
             type="file"
-            accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+            accept="image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf"
             capture="environment"
             className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }}

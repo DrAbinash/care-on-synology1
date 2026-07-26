@@ -9,6 +9,7 @@ import { billsRouter, paymentsRouter } from "./bills";
 import { reportsRouter } from "./reports";
 import inventoryRouter from "./inventory";
 import inventoryBatchesRouter from "./inventoryBatches";
+import { purchaseInvoicesRouter } from "./purchaseInvoices";
 import accountingRouter from "./accounting";
 import usersRouter from "./users";
 import emailSettingsRouter from "./email-settings";
@@ -412,6 +413,10 @@ router.use("/pathology-registry", requireStaffAuth, requireAdminRole, pathologyR
 router.use("/inventory", requireStaffAuth, requireStaffPermission("/inventory"), inventoryRouter);
 // Reagent batch/lot + expiry + auto-reorder — additive, same /inventory prefix + guards.
 router.use("/inventory", requireStaffAuth, requireStaffPermission("/inventory"), inventoryBatchesRouter);
+// Scan a supplier invoice -> OCR + catalog-match -> review -> post as stock-in.
+// Same /inventory permission — this is an alternate entry point to the same
+// Stock In flow, not a distinct module.
+router.use("/purchase-invoices", requireStaffAuth, requireStaffPermission("/inventory"), purchaseInvoicesRouter);
 
 // ABDM / ABHA management — /settings permission. Callbacks are mounted publicly
 // above (/abdm/callback); this staff-gated router handles the rest of /abdm.

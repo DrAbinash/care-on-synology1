@@ -24,7 +24,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Camera, Upload, X, Loader2, ScanLine, RefreshCcw } from "lucide-react";
+import { Camera, Upload, X, Loader2, ScanLine, RefreshCcw, FileText } from "lucide-react";
 import IdCardScanPanel, { type ScanDocType } from "@/components/IdCardScanPanel";
 
 export interface DocumentScanCaptureProps<TResult = unknown> {
@@ -53,7 +53,7 @@ export interface DocumentScanCaptureProps<TResult = unknown> {
   onImage?: (base64: string, mimeType: string) => void;
 }
 
-const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
+const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf"];
 
 export default function DocumentScanCapture<TResult = unknown>({
   endpoint,
@@ -127,13 +127,13 @@ export default function DocumentScanCapture<TResult = unknown>({
 
   const submitFile = async (file: File) => {
     if (!ACCEPTED_TYPES.includes(file.type)) {
-      const msg = "Unsupported file type. Use JPEG, PNG, WebP, or HEIC.";
+      const msg = "Unsupported file type. Use JPEG, PNG, WebP, HEIC, or PDF.";
       onError?.(msg);
       toast({ title: "Unsupported file", description: msg, variant: "destructive" });
       return;
     }
     if (file.size > maxSizeMB * 1024 * 1024) {
-      const msg = `Image too large. Maximum ${maxSizeMB} MB.`;
+      const msg = `File too large. Maximum ${maxSizeMB} MB.`;
       onError?.(msg);
       toast({ title: "File too large", description: msg, variant: "destructive" });
       return;
@@ -143,7 +143,10 @@ export default function DocumentScanCapture<TResult = unknown>({
     reader.onload = (e) => {
       const dataUrl = e.target?.result as string;
       const base64 = dataUrl.split(",")[1] ?? "";
-      if (enableEditor) {
+      // The crop/enhance editor is canvas-based and can't decode PDF bytes as
+      // an image — send PDFs straight to OCR, same as the enableEditor=false path.
+      const isPdf = file.type === "application/pdf";
+      if (enableEditor && !isPdf) {
         // Show the crop/enhance editor first; OCR runs on the enhanced image.
         setEditing({ base64, mimeType: file.type });
       } else {
@@ -238,7 +241,13 @@ export default function DocumentScanCapture<TResult = unknown>({
         </div>
       ) : preview && scanning ? (
         <div className="space-y-2">
-          <img src={preview} alt="Captured document" className="w-full rounded-lg max-h-64 object-contain bg-black/5" />
+          {preview.startsWith("data:image") ? (
+            <img src={preview} alt="Captured document" className="w-full rounded-lg max-h-64 object-contain bg-black/5" />
+          ) : (
+            <div className="w-full rounded-lg bg-black/5 flex items-center justify-center gap-2 py-8 text-muted-foreground">
+              <FileText size={24} /> <span className="text-sm">PDF ready for scanning</span>
+            </div>
+          )}
           <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground py-2">
             <Loader2 size={16} className="animate-spin" /> Reading document with AI…
           </div>
@@ -252,7 +261,7 @@ export default function DocumentScanCapture<TResult = unknown>({
             dragOver ? "border-primary bg-primary/5" : "border-muted-foreground/25"
           }`}
         >
-          <p className="text-xs text-muted-foreground mb-3">Drag &amp; drop an image here, or:</p>
+          <p className="text-xs text-muted-foreground mb-3">Drag &amp; drop an image or PDF here, or:</p>
           <div className="flex items-center justify-center gap-2">
             <Button type="button" size="sm" onClick={startCamera} className="gap-1.5">
               <Camera size={14} /> Use Camera

@@ -266,13 +266,13 @@ router.post("/scan-bill", async (req, res) => {
   if (!imageBase64 || !mimeType) {
     return res.status(400).json({ error: "imageBase64 and mimeType are required" });
   }
-  const allowedTypes = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
+  const allowedTypes = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf"];
   if (!allowedTypes.includes(mimeType)) {
-    return res.status(400).json({ error: "Unsupported image type. Use JPEG, PNG, WebP, or HEIC." });
+    return res.status(400).json({ error: "Unsupported file type. Use JPEG, PNG, WebP, HEIC, or PDF." });
   }
-  // Reject images >8 MB (base64 is ~33% larger than raw bytes)
+  // Reject files >8 MB (base64 is ~33% larger than raw bytes)
   if (imageBase64.length > 11_000_000) {
-    return res.status(400).json({ error: "Image too large. Maximum 8 MB." });
+    return res.status(400).json({ error: "File too large. Maximum 8 MB." });
   }
   try {
     // Same shared pre-processing (auto-orient/trim/normalize + blur score)
