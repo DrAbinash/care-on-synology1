@@ -28,18 +28,38 @@ artifact instead of a dump it just made (PR #263). But:
 - **No post-fix backup has been confirmed yet.** Nobody has seen a job log
   saying `exporter=pg_dump`.
 
-**To close this:**
+**To close this — fastest path first:**
 
 ```bash
-# 1. After deploying, wait for one scheduled backup, then check its notes:
-#    it must contain  exporter=pg_dump
-#    if it says       exporter=fallback  → the image did not pick up
-#                     postgresql-client-16; get the build log.
+# 1. Get a known-good backup RIGHT NOW. This does not depend on the api image
+#    at all: care-db is postgres:16-alpine, which ships pg_dump 16 (matching
+#    the 16.14 server). One command, guaranteed schema-complete.
+docker exec care-db pg_dump -U erp -d diagnostic_erp \
+  --no-owner --no-privileges --clean --if-exists \
+  | gzip > /volume1/backups/caredeoghar_$(date +%Y%m%d_%H%M%S).sql.gz
 
-# 2. Then force the restore test rather than waiting for Monday 03:30:
+# 2. PROVE it restores. Restores into a throwaway container and either prints
+#    PASS or says exactly why not. Exit 0 means restorable; nothing in between.
+bash scripts/verify-backup-restore.sh /volume1/backups/caredeoghar
+
+# 3. Now check the SCHEDULER's own output the same way. Pass SESSION_SECRET for
+#    anything written before BACKUP_PASSPHRASE was wired in (PR #257) —
+#    production logs showed key=SESSION_SECRET.
+SESSION_SECRET=... bash scripts/verify-backup-restore.sh /path/to/job/destinationPath
+
+# 4. And confirm the pipeline itself: a good job records  exporter=pg_dump
+#    in its notes. If it says  exporter=fallback , the api image did not pick
+#    up postgresql-client-16 — get the build log.
+
+# 5. Optionally force the in-app weekly test instead of waiting for Mon 03:30:
 curl -X POST -H "Authorization: Bearer $CRON_SECRET" \
   https://<host>/api/internal/cron/restore-verification
 ```
+
+> `scripts/verify-backup-restore.sh` was itself unable to read the scheduler's
+> artifacts until PR #265 — it searched only for `caredeoghar_*.sql.gz[.enc]`,
+> gunzipped unconditionally, and ran `psql` without `ON_ERROR_STOP`, so its
+> restore step could not fail. Use the post-#265 version.
 
 A **failure on a pre-#257 artifact is the correct result** — it means the job
 is finally doing what it always claimed to. The first *pass* is the first
