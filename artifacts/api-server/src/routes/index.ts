@@ -983,22 +983,20 @@ router.use("/users", requireStaffAuth, requireStaffSubPermission("/settings", "u
 // Staff-facing conversation inbox, contacts, templates, audit logs and
 // manual-send API — genuinely reusable and kept mounted.
 //
-// waChatbotWebhookRouter (the "/wa-chatbot/webhook/:provider" POST/GET
-// receiver defined alongside waChatbotRouter in ./waChatbot) is
-// deliberately NOT mounted here anymore. It was a second, divergent
-// inbound-message pipeline: its signature check re-serialized the
-// already-JSON-parsed body via JSON.stringify() before verifying, which
-// can never match Meta's HMAC over the original raw bytes, and its GET
-// verification read WHATSAPP_VERIFY_TOKEN from the environment directly
-// instead of the unified encrypted whatsapp_settings used everywhere
-// else. The one production webhook is now
-// "/api/whatsapp/webhook" (mounted in app.ts, before express.json(), so
-// it can verify against the true raw body) — its inbound handler already
-// delegates to the same WhatsAppBotEngine instance this module uses (see
-// the comment above sharedBotEngine in routes/whatsapp.ts), so no bot
-// behavior is lost by retiring this second route. No dependency on this
-// URL was found in the frontend or deployment docs; if a Meta app is
-// still configured to call it, repoint it at "/api/whatsapp/webhook".
+// The "/wa-chatbot/webhook/:provider" POST/GET receiver that used to live
+// alongside waChatbotRouter in ./waChatbot has been deleted outright (not
+// just unmounted) — it was a second, divergent inbound-message pipeline
+// whose signature check re-serialized the already-JSON-parsed body via
+// JSON.stringify() before verifying, which could never match Meta's HMAC
+// over the original raw bytes, and whose GET verification read
+// WHATSAPP_VERIFY_TOKEN from the environment directly instead of the
+// unified encrypted whatsapp_settings used everywhere else. The one
+// production webhook is "/api/whatsapp/webhook" (mounted in app.ts, before
+// express.json(), so it can verify against the true raw body) — its inbound
+// handler already delegates to the same WhatsAppBotEngine used by that
+// deleted route (see the comment above sharedBotEngine in
+// routes/whatsapp.ts), so no bot behavior was lost. If a Meta app is still
+// configured to call the old URL, repoint it at "/api/whatsapp/webhook".
 router.use("/wa-chatbot", requireStaffAuth, requireStaffSubPermission("/settings", "notifications"), waChatbotRouter);
 
 // ─── Banking module ────────────────────────────────────────────────────────────
