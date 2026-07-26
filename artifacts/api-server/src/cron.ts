@@ -164,16 +164,77 @@ function scheduleAutomatedBackups() {
 // restore-verification. Production does not set ENABLE_SCHEDULERS (see the gate
 // in index.ts), so without an endpoint this safety job had NO reachable code
 // path at all and backups were never proven restorable.
+/**
+ * Finds the newest backup artifact this product actually wrote and that is
+ * still on disk, so the restore test can be run against a REAL file.
+ *
+ * Returns null when there is nothing to verify (no successful backup yet, or
+ * the recorded file has since been pruned by retention).
+ */
+async function latestRealBackupArtifact(): Promise<{ path: string; loggedAt: Date | null } | null> {
+  // Same dynamic-import shape the dead-man check below uses.
+  const { backupJobLogsTable } = await import("@workspace/db/schema");
+  const { desc, eq, and, isNotNull } = await import("drizzle-orm");
+
+  const rows = await db
+    .select({ filePath: backupJobLogsTable.filePath, completedAt: backupJobLogsTable.completedAt })
+    .from(backupJobLogsTable)
+    .where(and(eq(backupJobLogsTable.status, "success"), isNotNull(backupJobLogsTable.filePath)))
+    .orderBy(desc(backupJobLogsTable.completedAt))
+    .limit(10);
+
+  for (const row of rows) {
+    if (!row.filePath) continue;
+    // Retention prunes old files, so the newest DB row is not necessarily the
+    // newest file still present. Walk back until one exists.
+    const exists = await fsp.stat(row.filePath).then(() => true).catch(() => false);
+    if (exists) return { path: row.filePath, loggedAt: row.completedAt ?? null };
+  }
+  return null;
+}
+
 export async function runRestoreVerificationJob(ranBy = "cron") {
   const { runRestoreVerification } = await import("./lib/restoreVerification");
-  const r = await runRestoreVerification({ ranBy });
-  console.log(`[cron] Restore verification: ${r.ok ? "PASS" : "FAIL"}`);
+
+  // Verify the artifact the scheduler ACTUALLY WROTE, not a fresh dump.
+  //
+  // This job used to call runRestoreVerification({ ranBy }) with no
+  // backupPath. With no path, the engine takes its own fresh pg_dump into a
+  // throwaway database and restores that — which proves pg_dump and psql work,
+  // and nothing whatsoever about the files sitting on the NAS. The failure
+  // email even said it "could not restore the latest backup", which was never
+  // what it tested.
+  //
+  // That gap is exactly how months of DATA-ONLY fallback artifacts stayed
+  // green: the artifacts were unrestorable, and the job that exists to catch
+  // that never opened one. The engine already accepts a backupPath and already
+  // knows how to decrypt every format the product has written (see
+  // lib/backupCrypto.decryptBackupToSql) — it was simply never given one.
+  const artifact = await latestRealBackupArtifact().catch(() => null);
+
+  const r = await runRestoreVerification(
+    artifact ? { ranBy, backupPath: artifact.path } : { ranBy },
+  );
+
+  const what = artifact
+    ? `artifact ${artifact.path}`
+    : "a fresh pg_dump (NO stored backup artifact was available to test)";
+  console.log(`[cron] Restore verification: ${r.ok ? "PASS" : "FAIL"} — verified ${what}`);
+
   if (!r.ok) {
     const { sendAlertEmail } = await import("./email");
     await sendAlertEmail({
       subject: "⚠️ CARE backup restore-verification FAILED",
-      html: `<p>The weekly automated restore test could not restore the latest backup.</p><pre>${(r.steps ?? []).map((s) => `${s.ok ? "✓" : "✗"} ${s.name}: ${s.detail}`).join("\n")}</pre>`,
+      html:
+        `<p>The weekly automated restore test failed against <b>${what}</b>.</p>` +
+        `<pre>${(r.steps ?? []).map((s) => `${s.ok ? "✓" : "✗"} ${s.name}: ${s.detail}`).join("\n")}</pre>`,
     });
+  } else if (!artifact) {
+    // A pass that proved nothing about real backups must not read as a pass.
+    console.warn(
+      "[cron] Restore verification passed, but NO stored backup artifact existed to test — " +
+      "this proves pg_dump/psql work, not that your backups are restorable.",
+    );
   }
   return r;
 }
