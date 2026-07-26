@@ -229,6 +229,17 @@ services:
       CRON_SECRET: ${CRON_SECRET:-}
       # Age in hours after which the dead-man alert fires (default 26).
       BACKUP_DEADMAN_MAX_AGE_HOURS: ${BACKUP_DEADMAN_MAX_AGE_HOURS:-}
+      # Dedicated backup encryption key (lib/backupCrypto.ts resolveBackupPassphrase).
+      # This was NOT passed into the container before, so setting it in .env had
+      # no effect whatsoever and every backup silently fell back to encrypting
+      # with SESSION_SECRET (confirmed in production: "key=SESSION_SECRET").
+      #
+      # That matters on rotation: candidatePassphrases() only ever tries
+      # BACKUP_PASSPHRASE and the CURRENT SESSION_SECRET — there is no
+      # previous-secret slot — so rotating SESSION_SECRET without this set makes
+      # the app unable to decrypt every older .enc file. Set this to the
+      # PREVIOUS SESSION_SECRET when rotating and older backups stay readable.
+      BACKUP_PASSPHRASE: ${BACKUP_PASSPHRASE:-}
 
       OBJECT_STORAGE_DIR: ${OBJECT_STORAGE_DIR:-/app/data/object-storage}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://caredeoghar.com}
