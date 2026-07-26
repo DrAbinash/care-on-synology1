@@ -130,11 +130,56 @@ export default function PurchaseInvoiceScannerPanel() {
   // (worker/core/traineddata) are served from this app's own /tesseract/
   // origin — not tesseract.js's CDN defaults — so this genuinely has no
   // internet dependency at scan time, not just an aspirational claim.
+  const OFFLINE_ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp"];
+  const OFFLINE_MAX_BYTES = 15 * 1024 * 1024;
+
+  /** Plain Tesseract does no EXIF-orientation correction, so a phone photo
+   *  taken in portrait (which carries an orientation flag rather than
+   *  physically rotated pixels) gets OCR'd sideways — same real-world issue
+   *  IdCardScanPanel.tsx's loadOrientedImage() already fixes for camera
+   *  captures. Draws through createImageBitmap({ imageOrientation:
+   *  "from-image" }) onto a canvas Tesseract can read upright; returns null
+   *  (caller falls back to the raw File) if the browser can't decode it. */
+  async function loadOrientedCanvas(file: File): Promise<HTMLCanvasElement | null> {
+    try {
+      const bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
+      const canvas = document.createElement("canvas");
+      canvas.width = bmp.width;
+      canvas.height = bmp.height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      ctx.drawImage(bmp, 0, 0);
+      return canvas;
+    } catch {
+      return null;
+    }
+  }
+
   const scanOffline = async (file: File) => {
-    setError(""); setOfflineScanning(true); setOfflineProgress("Loading OCR engine…");
+    setError("");
+    if (!OFFLINE_ACCEPTED_TYPES.includes(file.type)) {
+      // The input's `accept` attribute is advisory only — some file pickers
+      // let staff override it (e.g. an "All Files" toggle) — so a PDF or
+      // other non-image can still reach here. Tesseract only reads raster
+      // images, so fail with a clear message instead of a low-level error.
+      setError("Offline scan only supports JPG, PNG, or WebP images (no PDF) — use the AI scan above for PDFs.");
+      return;
+    }
+    if (file.size > OFFLINE_MAX_BYTES) {
+      setError(`Image too large for offline scan. Maximum ${OFFLINE_MAX_BYTES / (1024 * 1024)} MB.`);
+      return;
+    }
+
+    setOfflineScanning(true); setOfflineProgress("Loading OCR engine…");
+    // Tracked outside the try block so a failure anywhere after the worker
+    // is created (recognize(), or even an error thrown before this
+    // function's own try/catch is reached) still gets torn down in
+    // `finally` — otherwise a failed scan leaks a live Web Worker + loaded
+    // WASM module every time staff retries after an error.
+    let worker: Awaited<ReturnType<typeof import("tesseract.js").createWorker>> | null = null;
     try {
       const { createWorker } = await import("tesseract.js");
-      const worker = await createWorker("eng", 1, {
+      worker = await createWorker("eng", 1, {
         workerPath: "/tesseract/worker.min.js",
         corePath: "/tesseract/tesseract-core.wasm.js",
         langPath: "/tesseract",
@@ -144,8 +189,8 @@ export default function PurchaseInvoiceScannerPanel() {
           if (m.status === "recognizing text") setOfflineProgress(`Reading text… ${Math.round(m.progress * 100)}%`);
         },
       });
-      const { data } = await worker.recognize(file);
-      await worker.terminate();
+      const oriented = await loadOrientedCanvas(file);
+      const { data } = await worker.recognize(oriented ?? file);
 
       const parsed = parseInvoiceText(data.text);
       if (parsed.lineItems.length === 0 && !parsed.invoiceNumber && !parsed.totalAmount) {
@@ -183,6 +228,7 @@ export default function PurchaseInvoiceScannerPanel() {
     } catch (e: unknown) {
       setError((e as Error).message || "Offline scan failed");
     } finally {
+      if (worker) { try { await worker.terminate(); } catch { /* best-effort cleanup */ } }
       setOfflineScanning(false); setOfflineProgress("");
     }
   };
