@@ -487,7 +487,16 @@ function scheduleSessionIdleSweep() {
       const result = await db.delete(portalSessionsTable).where(
         and(
           eq(portalSessionsTable.scope, "staff"),
-          sql`${portalSessionsTable.lastActivityAt} < NOW() - INTERVAL '${idleMinutes} minutes'`,
+          // Multiply a bound integer by a constant interval rather than
+          // interpolating into the literal. In a Drizzle sql`` template an
+          // interpolated value becomes a BOUND PARAMETER, so the previous
+          // `INTERVAL '${idleMinutes} minutes'` rendered as
+          // `INTERVAL '$1 minutes'` — the placeholder trapped inside the
+          // quoted literal, where Postgres does not treat it as a placeholder
+          // at all. The statement declared zero parameters while one was
+          // supplied, so every run was rejected and swallowed by the catch
+          // below. This sweep had never deleted a row.
+          sql`${portalSessionsTable.lastActivityAt} < NOW() - (${idleMinutes}::int * INTERVAL '1 minute')`,
         ),
       );
       if (result.rowCount && result.rowCount > 0) {
