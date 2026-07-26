@@ -75,6 +75,7 @@ import { abnormalFindingsRouter } from "./abnormal-findings";
 import formFRouter from "./form-f";
 import { portalRouter } from "./portal";
 import { patientReportsRouter, signaturesRouter, publicReportsRouter } from "./patient-reports";
+import { pathologyFlagPreviewRouter } from "./pathologyFlagPreview";
 import { teleradiologyRouter } from "./teleradiology";
 import { machinesRouter } from "./machines";
 import { departmentsRouter } from "./departments";
@@ -869,6 +870,9 @@ router.use(
 router.use("/form-f", requireStaffAuth, requireStaffPermission("/form-f"), formFRouter);
 router.use("/patient-reports", requireStaffAuth, requireStaffPermission("/reports"), patientReportsRouter);
 router.use("/signatures", requireStaffAuth, requireStaffPermission("/reports"), signaturesRouter);
+// Same permission as /patient-reports — this is the result-entry grid's own
+// flag-suggestion call, not the admin-only /pathology-registry console.
+router.use("/pathology-flag-preview", requireStaffAuth, requireStaffPermission("/reports"), pathologyFlagPreviewRouter);
 // Staff-selected WhatsApp report delivery + read-receipt tracking + reminders.
 // Gated additionally by ff_report_delivery_receipts (Shadow Mode) inside the router.
 router.use("/report-delivery-tracking", requireStaffAuth, requireStaffPermission("/reports"), reportDeliveryTrackingRouter);
