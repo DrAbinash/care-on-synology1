@@ -42,7 +42,34 @@ services:
     container_name: care-db
     restart: unless-stopped
     ports:
-      - "${DB_HOST_PORT:-5400}:5432"
+      # Bind the published Postgres port to LOOPBACK by default.
+      #
+      # This was "${DB_HOST_PORT:-5400}:5432", which docker binds to 0.0.0.0 —
+      # the database was reachable from every machine on the clinic network
+      # (and from the internet if the NAS forwards the port), with the default
+      # password `changeme` still in place:
+      #
+      #   psql -h <nas-ip> -p 5400 -U erp -d diagnostic_erp
+      #
+      # That is full read/write on patients, bills and reports, bypassing every
+      # permission check, rate limit and audit trail in the application —
+      # nothing in the ERP would even log it. SOP/RECOVERY/07_SECURITY/
+      # ERP_SECURITY_AUDIT.md already rated this High and recommended exactly
+      # this change; it was never applied.
+      #
+      # Nothing in the repo needs the host port: all 11 maintenance scripts
+      # reach the database with `docker exec`, and the api container connects
+      # over the compose network, not the host. So loopback costs nothing here.
+      #
+      # DEPLOYMENT.md documents this port as "access from Windows PC". If you
+      # still need that, do NOT set 0.0.0.0 — bind to the Tailscale interface
+      # instead, which is authenticated and not exposed to the LAN:
+      #
+      #   DB_BIND_ADDR=100.x.y.z      # this host's Tailscale IP
+      #
+      # Setting DB_BIND_ADDR=0.0.0.0 restores the old, exposed behaviour and
+      # should only ever be paired with a strong DB_PASSWORD.
+      - "${DB_BIND_ADDR:-127.0.0.1}:${DB_HOST_PORT:-5400}:5432"
     environment:
       POSTGRES_USER: ${DB_USER:-erp}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
