@@ -407,6 +407,15 @@ services:
       target: web
     container_name: care-web
     restart: unless-stopped
+    # Build traceability for the static nginx image, matching the api
+    # service's labels below — inspectable via `docker inspect care-web`.
+    # The web container itself is static and has no runtime env, so this is
+    # the only place its build identity is recorded (the SPA already gets
+    # accurate version/commit data at runtime from /api/system/version).
+    labels:
+      com.caredeoghar.version: ${ERP_VERSION:-2.0.0}
+      com.caredeoghar.build: ${BUILD_NUMBER:-0}
+      com.caredeoghar.git-commit: ${GIT_COMMIT:-unknown}
     ports:
       - "${HOST_PORT:-8888}:80"
     depends_on:

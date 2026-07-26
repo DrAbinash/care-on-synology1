@@ -2746,6 +2746,16 @@ if (Number.isNaN(port) || port <= 0) {
 
 const server = app.listen({ port, exclusive: true }, () => {
   logger.info({ port }, "Server listening");
+  logger.info(
+    {
+      version: process.env.ERP_VERSION || "0.0.0",
+      build: process.env.BUILD_NUMBER || "0",
+      gitCommit: (process.env.GIT_COMMIT || "unknown").slice(0, 12),
+      gitBranch: process.env.GIT_BRANCH || "unknown",
+      buildDate: process.env.BUILD_DATE || "unknown",
+    },
+    "Build metadata",
+  );
 
   // Weak secrets guarding internet-reachable endpoints. Production ran with
   // INTERNAL_API_KEY=1234, which the constant-time compares accepted happily —

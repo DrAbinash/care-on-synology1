@@ -1247,6 +1247,32 @@ function diffSchema(expected, live, runtimeTableNames) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// TRI-STATE SCHEMA STATUS CLASSIFICATION
+// ════════════════════════════════════════════════════════════════════════════
+// r.pass only ever tracks "no blocking errors" (missing tables/columns, or an
+// error-level source issue) — it was previously reported as "full_pass" even
+// when real, non-blocking drift was present (type mismatches, nullable
+// mismatches, missing indexes, extra tables), which hid genuine warnings
+// behind an all-clear status. This adds the missing middle state so a
+// perfectly clean deploy and a deploy with non-blocking drift are no longer
+// reported identically.
+//
+//   "full_pass"          — zero blocking errors AND zero non-blocking issues.
+//   "pass_with_warnings" — all required schema objects present, startup is
+//                          safe, but non-blocking issues remain (missing
+//                          indexes, type/nullability mismatches, extra
+//                          tables, non-error source issues).
+//   "failed"              — required tables/columns/migrations missing or
+//                          invalid (r.pass === false).
+function classifySchemaStatus(results) {
+  if (!results.pass) return "failed";
+  const hasNonBlockingIssues =
+    results.findings.some((f) => f.classification === "REAL" && f.level !== "ERROR") ||
+    (results.sourceIssues || []).some((i) => i.level !== "error");
+  return hasNonBlockingIssues ? "pass_with_warnings" : "full_pass";
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // PRINT RESULTS
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -1356,11 +1382,14 @@ function printResults(r, git, pgVersion, stats) {
 
   console.log("");
 
+  const schemaStatus = classifySchemaStatus(r);
   if (r.pass) {
     console.log(c.bold(c.green("  ✓ SCHEMA VERIFICATION PASSED")));
+    console.log(c.dim(`    Status: ${schemaStatus}`));
     console.log(c.dim(`    ${r.tablesPassed} tables, ${r.columnsPassed} columns verified`));
   } else {
     console.log(c.bold(c.red("  ✗ SCHEMA VERIFICATION FAILED")));
+    console.log(c.dim(`    Status: ${schemaStatus}`));
     if (r.missingTables.length > 0) console.log(c.red(`    Missing tables:   ${r.missingTables.length}`));
     if (r.missingColumns.length > 0) console.log(c.red(`    Missing columns:  ${r.missingColumns.length}`));
     console.log("");
@@ -1381,11 +1410,13 @@ function printResults(r, git, pgVersion, stats) {
 function writeStartupMd(r, git, live, stats, allEntries, crossIssues) {
   const now = new Date().toISOString();
   const pass = r.pass;
+  const schemaStatus = classifySchemaStatus(r);
   const lines = [];
 
   lines.push(`# STARTUP_SCHEMA_VERIFICATION`);
   lines.push(``);
   lines.push(`**Status:** ${pass ? "✅ PASS" : "❌ FAIL"}  `);
+  lines.push(`**Schema Status:** \`${schemaStatus}\`  `);
   lines.push(`**Timestamp:** ${now}  `);
   lines.push(`**Mode:** ${MODE.toUpperCase()}  `);
   lines.push(``);
@@ -1416,6 +1447,7 @@ function writeStartupMd(r, git, live, stats, allEntries, crossIssues) {
   lines.push(`| Deploy State db_patch_ok | ${r.deployState.db_patch_ok ?? "MISSING"} |`);
   lines.push(`| Live Table Count | ${r.deployState.live_table_count ?? live.liveTables.size} |`);
   lines.push(`| Verification Result | ${pass ? "✅ PASS" : "❌ FAIL"} |`);
+  lines.push(`| Schema Status | \`${schemaStatus}\` |`);
   lines.push(``);
 
   if (r.missingTables.length > 0) {
@@ -1933,13 +1965,13 @@ async function main() {
         ('schema_verify_issues',     $5)
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
     `, [
-      results.pass ? "full_pass" : "full_fail",
+      classifySchemaStatus(results),
       new Date().toISOString(),
       String(results.tablesPassed),
       String(results.columnsPassed),
       String(results.missingTables.length + results.missingColumns.length),
     ]);
-    infoLog(`Schema state updated: ${results.pass ? "full_pass" : "full_fail"}`);
+    infoLog(`Schema state updated: ${classifySchemaStatus(results)}`);
   } catch (e) {
     // Non-fatal — schema_deploy_state table might not exist yet (pre-patch DB)
     if (VERBOSE) warnLog(`Could not update schema_deploy_state: ${e.message}`);
@@ -1977,5 +2009,5 @@ if (require.main === module) {
 module.exports = {
   normaliseType, typesCompatible, defaultLiteralForType, parseSqlFiles,
   diffSchema, crossCheckSources, loadJournal, extractRuntimeTableNames,
-  TYPE_TOKEN_COLUMN_RE, DEFAULT_VALUE_RE,
+  TYPE_TOKEN_COLUMN_RE, DEFAULT_VALUE_RE, classifySchemaStatus,
 };

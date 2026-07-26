@@ -106,8 +106,18 @@ export async function buildRadiologyOpsHealth(opts: { maskTopology: boolean }): 
     for (const row of raw.rows as Array<{ key: string; value: string }>) state[row.key] = row.value;
     const patchOk = state["db_patch_ok"] === "true";
     const verify = state["schema_verify_status"];
+    // "failed" is the current blocking-error value ("full_fail" is the
+    // legacy one, still accepted); "pass_with_warnings" means startup was
+    // safe but non-blocking drift remains — DEGRADED, same bucket as
+    // failed/full_fail, not HEALTHY, so it stays visible instead of hidden.
+    const migrationsStatus: OpsStatus =
+      !patchOk ? "UNHEALTHY"
+      : (verify === "failed" || verify === "full_fail") ? "DEGRADED"
+      : (verify === "sql_pass" || verify === "full_pass") ? "HEALTHY"
+      : verify === "pass_with_warnings" ? "DEGRADED"
+      : "UNKNOWN";
     components.migrations = {
-      status: !patchOk ? "UNHEALTHY" : verify === "full_fail" ? "DEGRADED" : (verify === "sql_pass" || verify === "full_pass") ? "HEALTHY" : "UNKNOWN",
+      status: migrationsStatus,
       detail: !patchOk
         ? "db-patch-v2 did not complete"
         : `db_patch_ok=true, schema_verify_status=${verify ?? "missing"}`,
