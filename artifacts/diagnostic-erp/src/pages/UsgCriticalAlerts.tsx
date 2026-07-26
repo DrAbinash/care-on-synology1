@@ -146,7 +146,7 @@ export default function UsgCriticalAlerts() {
                 <CardTitle className="text-base flex items-center gap-2">
                   <AlertCircle className="h-4 w-4 text-red-500" /> Flag a Critical USG Finding
                 </CardTitle>
-                <CardDescription>The clinician on duty will be notified.</CardDescription>
+                <CardDescription>No automated alert is sent — notify the on-call clinician directly (phone or in person) after flagging.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

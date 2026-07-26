@@ -179,7 +179,12 @@ router.post("/alerts/:id/escalate", async (req, res) => {
     .set({
       status: "escalated",
       escalatedTo: b.escalatedTo ?? staffOf(req).subjectName ?? "staff",
-      escalationSent: true,
+      // notifyEscalation() below is a placeholder — it never confirms real
+      // delivery over any channel (see its own comment) — so this must stay
+      // false. Recording the escalation itself (status/escalatedTo) is an
+      // honest manual event; claiming a notification was sent when nothing
+      // dispatched is not.
+      escalationSent: false,
     })
     .where(and(
       eq(criticalFindingsAlertsTable.id, id),
