@@ -265,13 +265,6 @@ type NormalSnippet = {
   recommendation: string | null;
 };
 
-type ImageReference = {
-  id?: number;
-  seriesNumber: string;
-  imageNumber: string;
-  description: string;
-};
-
 type StylePreferences = {
   impressionStyle: "concise" | "detailed" | "academic" | "diagnostic";
   terminologyLevel: "simple" | "standard" | "advanced";
@@ -420,7 +413,7 @@ function buildPreviewHtml(opts: {
   useStructured: boolean;
   impression: string[];
   recommendation: string;
-  imageRefs: ImageReference[];
+  imageRefs: ReportImageRef[];
   headingCase?: "all_caps" | "title_case";
   sectionSpacing?: "spaced" | "compact";
   impressionStyle?: "bulleted" | "numbered" | "plain";
@@ -482,9 +475,10 @@ function buildPreviewHtml(opts: {
   // reach the printed/PDF/delivered document).
   const hStyle = (margin: string) => `margin:${margin};break-after:avoid-page;page-break-after:avoid;`;
 
-  const imagesHtml = opts.imageRefs.length > 0
+  const orderedImageRefs = [...opts.imageRefs].sort((a, b) => a.displayOrder - b.displayOrder);
+  const imagesHtml = orderedImageRefs.length > 0
     ? `<h3 style="${hStyle(`${sp2} 0 ${sp}`)}"><u>${fmtHeading("Key Images", hc)}</u></h3>
-    <ul style="margin:4px 0 0 18px;padding:0;">${opts.imageRefs.map((img) => `<li>Series ${escHtml(img.seriesNumber)} Image ${escHtml(img.imageNumber)}: ${escHtml(img.description)}</li>`).join("")}</ul>`
+    <ul style="margin:4px 0 0 18px;padding:0;">${orderedImageRefs.map((img, i) => `<li>Image ${i + 1}${img.isKeyImage ? " (KEY)" : ""}: ${escHtml(img.description)}</li>`).join("")}</ul>`
     : "";
 
   return `<div style="font-family:Arial,sans-serif;font-size:13px;line-height:1.45;color:#111;max-width:720px;margin:0 auto;">
@@ -654,7 +648,6 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const [recommendation, setRecommendation] = useState("");
   const [rawFindings, setRawFindings] = useState("");
   const [useStructured, setUseStructured] = useState(true);
-  const [imageRefs] = useState<ImageReference[]>([]);
 
   // ── Chocolate Box quick-macro engine (freeform findings only) ───────────
   const findingsTextareaRef = useRef<FindingsHighlightEditorHandle>(null);
@@ -3288,6 +3281,19 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const offerBackupRestore = !isLocked && draftBackup.restoreAvailable &&
     shouldOfferBackupRestore(draftBackup.peek(), existingDraft?.updatedAt ?? null, serverDraftContent);
 
+  // R1.1 — the images selected in the Report Images panel below, persisted
+  // as DICOM references. Reuses the SAME query key ReportImagePicker/
+  // ReportImagePanel already use, so this never issues a second network
+  // round trip when that panel is open. Feeds buildPreviewHtml() below (so
+  // Preview/finalize/Word export all show them) and the PDF export further
+  // down — previously this was a local useState([]) with no setter, so the
+  // selected images never reached any of those artifacts.
+  const { data: imageRefs = [] } = useQuery<ReportImageRef[]>({
+    queryKey: ["report-image-references", draftId],
+    queryFn: () => api.get(`/api/radiology/report-generator/image-references?draftId=${draftId}`),
+    enabled: !!draftId,
+  });
+
   const previewHtml = useMemo(
     () =>
       buildPreviewHtml({
@@ -3352,10 +3358,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
   // Real PDF (jsPDF, via reportPdfGenerator.ts — the same generator already
   // used in production by USG/Echo/Fetal reporting), including whatever
-  // images are currently selected in the Report Images panel below. Reuses
-  // the SAME react-query keys ReportImagePicker/ReportImagePanel use for the
-  // DICOMweb base and the persisted image references, so this never issues a
-  // second network round trip when that panel is already open.
+  // images are currently selected in the Report Images panel below (the
+  // SAME imageRefs query above feeds this — no second network round trip).
   const { data: clinicSettings } = useQuery({
     queryKey: ["clinic-settings"],
     queryFn: () => api.get("/api/clinic-settings/branding"),
@@ -3366,11 +3370,6 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     queryFn: () => api.get(`/api/radiology/studies/${encodeURIComponent(entry!.studyInstanceUID!)}/ohif-launch`),
     enabled: !!entry?.studyInstanceUID,
     staleTime: 5 * 60_000,
-  });
-  const { data: pdfImageRefs = [] } = useQuery<ReportImageRef[]>({
-    queryKey: ["report-image-references", draftId],
-    queryFn: () => api.get(`/api/radiology/report-generator/image-references?draftId=${draftId}`),
-    enabled: !!draftId,
   });
 
   async function handleExportPdf() {
@@ -3395,7 +3394,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         studyName: selectedTemplate?.templateName || entry?.studyDescription || "Radiology Report",
         headingCase,
         dicomWebBase: pdfViewerLaunch?.dicomWebBaseUrl ?? null,
-        imageRefs: pdfImageRefs,
+        imageRefs,
         clinic: clinicSettings ?? null,
       });
     } catch (err) {
