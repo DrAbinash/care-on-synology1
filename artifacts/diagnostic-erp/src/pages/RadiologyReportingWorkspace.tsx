@@ -4131,17 +4131,25 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     setTimeout(() => { w.print(); w.close(); }, 250);
   }
 
+  // Was posting to /api/whatsapp/send-report, which does not exist — every
+  // click 404'd. The real send path is the same /:id/share endpoint the
+  // report-hub's Share dialog already uses (patient-reports.ts), which
+  // needs a finalized report id (it requires the row to be verified or
+  // delivered) and falls back to the patient's phone on file when no
+  // explicit recipient is given.
   async function shareWhatsApp() {
-    if (!entry?.patientId) {
-      toast({ title: "No patient linked", variant: "destructive" });
+    if (!linkedReportId) {
+      toast({ title: "Finalize the report first", description: "WhatsApp delivery needs a signed report.", variant: "destructive" });
       return;
     }
     try {
-      await api.post("/api/whatsapp/send-report", {
-        patientId: entry.patientId,
-        reportType: "radiology",
-        message: `Your radiology report for ${entry.studyDescription || "study"} (Acc: ${entry.accessionNumber}) is ready.`,
+      const result = await api.post<{ ok: boolean; error?: string }>(`/api/patient-reports/${linkedReportId}/share`, {
+        channel: "whatsapp",
       });
+      if (!result.ok) {
+        toast({ title: "Failed", description: result.error || "WhatsApp send failed", variant: "destructive" });
+        return;
+      }
       toast({ title: "Report sent" });
     } catch (err) {
       toast({
@@ -6117,7 +6125,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               variant="outline"
               className="h-8 text-xs gap-1.5"
               onClick={shareWhatsApp}
-              disabled={!entry?.patientId}
+              disabled={!linkedReportId}
+              title={linkedReportId ? "Send the finalized report via WhatsApp" : "Finalize the report first"}
             >
               <Share2 size={12} /> Send Report
             </Button>
