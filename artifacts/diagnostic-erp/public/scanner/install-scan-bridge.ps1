@@ -488,12 +488,18 @@ function classifyError(msg) {
 
 function buildPsScanScript(outputPath, deviceIndex, dpi, colorMode) {
   // Values are embedded directly — no param() block, so no parameter passing issues.
+  // NOTE: PowerShell comments are '#', not '//'. Using '//' here previously made
+  // the script a parse/cast failure ("Specified cast is not valid").
   const safePath = outputPath.replace(/'/g, "''");
   return `
 $OutputPath = '${safePath}'
 $DeviceIndex = ${deviceIndex}
 $DPI = ${dpi}
 $ColorMode = ${colorMode}
+$ErrorActionPreference = "Stop"
+
+# wiaFormatJPEG / wiaFormatBMP GUIDs
+$wiaFormatJPEG = "{B96B3CAE-0728-11D3-9D7B-0000F81EF32E}"
 
 try {
   $deviceManager = New-Object -ComObject WIA.DeviceManager
@@ -501,57 +507,54 @@ try {
     Write-Error "No WIA devices found"
     exit 1
   }
-  if ($DeviceIndex -gt $deviceManager.DeviceInfos.Count) {
-    Write-Error "Device index $DeviceIndex exceeds available devices ($($deviceManager.DeviceInfos.Count))"
-    exit 1
-  }
+  if ($DeviceIndex -gt $deviceManager.DeviceInfos.Count -or $DeviceIndex -lt 1) { $DeviceIndex = 1 }
   $deviceInfo = $deviceManager.DeviceInfos.Item($DeviceIndex)
   $device = $deviceInfo.Connect()
   $item = $device.Items.Item(1)
-  $props = $item.Properties
 
-  // Set only safe optional properties — silently skip on any error.
-  // WIA property names are accessed by string key via the collection method.
-  try {
-    $p = $props.Item("Horizontal Resolution")
-    if ($p -ne $null) { $p.Value = $DPI }
-  } catch {}
-  try {
-    $p = $props.Item("Vertical Resolution")
-    if ($p -ne $null) { $p.Value = $DPI }
-  } catch {}
-  try {
-    $p = $props.Item("Current Intent")
-    if ($p -ne $null) { $p.Value = $ColorMode }
-  } catch {}
+  # Best-effort DPI via WIA property IDs (6147 = Horizontal, 6148 = Vertical
+  # Resolution; 6146 = Current Intent). Numeric IDs are far more reliable than
+  # string names across drivers. Each set is wrapped so a rejection never aborts
+  # the scan.
+  foreach ($propId in 6147, 6148) {
+    try { $item.Properties.Item($propId).Value = $DPI } catch { }
+  }
+  try { $item.Properties.Item(6146).Value = $ColorMode } catch { }
 
-  // Scan fallback order:
-  // 1. Direct item.Transfer()
-  // 2. WIA.CommonDialog.ShowTransfer(item)
-  $imageFile = $null
+  # Transfer as JPEG. Passing the format GUID stops the driver returning a raw
+  # type (BMP/TIFF) that then fails to cast/save. If the driver rejects an
+  # explicit format, retry with its default and convert to JPEG below.
+  $image = $null
   try {
-    $imageFile = $item.Transfer()
+    $image = $item.Transfer($wiaFormatJPEG)
   } catch {
-    try {
-      $dialog = New-Object -ComObject WIA.CommonDialog
-      $imageFile = $dialog.ShowTransfer($item)
-    } catch {
-      // ShowTransfer failed too
-    }
+    try { $image = $item.Transfer() } catch { }
   }
 
-  if ($imageFile -eq $null) {
-    Write-Error "Transfer failed: driver does not support direct WIA scan. Try folder-watch mode."
+  if ($null -eq $image) {
+    Write-Error "Transfer failed: the scanner driver does not support direct WIA scan. Use folder-watch mode instead."
     exit 1
   }
 
-  $imageFile.SaveFile($OutputPath)
+  # If it came back as something other than JPEG, convert it so SaveFile writes a
+  # real JPEG (not BMP bytes in a .jpg).
+  try {
+    if ($image.FormatID -ne $wiaFormatJPEG) {
+      $conv = New-Object -ComObject WIA.ImageProcess
+      $conv.Filters.Add($conv.FilterInfos.Item("Convert").FilterID)
+      $conv.Filters.Item($conv.Filters.Count).Properties.Item("FormatID").Value = $wiaFormatJPEG
+      $image = $conv.Apply($image)
+    }
+  } catch { }
+
+  if (Test-Path $OutputPath) { Remove-Item -LiteralPath $OutputPath -Force -ErrorAction SilentlyContinue }
+  $image.SaveFile($OutputPath)
   Write-Output "OK"
 } catch {
   $msg = $_.Exception.Message
   if ($msg -match "busy|in use|0x80210006|0x8021000A|already in use|another app") {
     Write-Error "Scanner is busy"
-  } elseif ($msg -match "0x80210015|0x8021000D|not supported|unsupported|specified cast is not valid") {
+  } elseif ($msg -match "0x80210015|0x8021000D|not supported|unsupported") {
     Write-Error "Driver does not support direct WIA scan"
   } else {
     Write-Error $msg
