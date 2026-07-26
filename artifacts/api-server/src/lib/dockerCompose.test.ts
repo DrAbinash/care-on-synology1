@@ -102,3 +102,49 @@ describe("docker-compose.yml — the database is not exposed to the network", ()
     expect(webBlock).not.toContain("127.0.0.1:");
   });
 });
+
+// ── Backup destination must be a real, persistent mount ───────────────────────
+//
+// Backup & Replication jobs are configured with a destinationPath like
+// /volume1/docker/backups/db — meaningful only on the HOST. Without a bind
+// mount at that exact path, it is just an ordinary path INSIDE the api
+// container: encryptBackupFile() happily creates it and writes the .enc file
+// there, the job logs "success", the checksum matches, the dead-man check
+// stays green — and the file lives in the container's ephemeral writable
+// layer, not on the NAS. It is deleted the moment the container is recreated,
+// with no error anywhere.
+//
+// docker inspect on the running container confirmed this directly: only
+// object_storage and uploads_data were mounted. Nothing backed the path every
+// existing backup job was configured to write to.
+
+describe("docker-compose.yml — the backup destination is a real bind mount, not ephemeral", () => {
+  const composeText = readFileSync(COMPOSE_PATH, "utf-8");
+  const apiBlock = getServiceBlock(composeText, "api");
+
+  test("api has a volume mount covering /volume1/docker/backups", () => {
+    expect(apiBlock).toMatch(/:\/volume1\/docker\/backups\s*$/m);
+  });
+
+  test("the mount is a bind mount (contains a real path), not a Docker-managed named volume", () => {
+    // A bare name like "object_storage:/app/data/..." is a named volume —
+    // Docker-managed, and still NOT the same location an operator can find
+    // with `ls` on the NAS or point scripts/verify-backup-restore.sh at. The
+    // host side here must contain a slash.
+    const line = apiBlock.match(/^\s*-\s*(\S*:\/volume1\/docker\/backups)\s*$/m)?.[1] ?? "";
+    const hostSide = line.split(":/volume1/docker/backups")[0];
+    expect(hostSide, `host side "${hostSide}" of "${line}" must be a real path`).toMatch(/\//);
+  });
+
+  test("the default host path matches what the existing Nightly/config/DB jobs already use", () => {
+    // So this fix requires zero changes to already-configured backup_jobs
+    // rows — the same destinationPath string now resolves to a persistent
+    // directory instead of a phantom one inside the container.
+    expect(apiBlock).toContain("${BACKUP_HOST_DIR:-/volume1/docker/backups}:/volume1/docker/backups");
+  });
+
+  test("the other two api volumes are untouched", () => {
+    expect(apiBlock).toContain("object_storage:/app/data/object-storage");
+    expect(apiBlock).toContain("uploads_data:/app/data/uploads");
+  });
+});
