@@ -305,7 +305,7 @@ export async function geminiOcrBill(
     options.baseUrl ?? process.env.AI_INTEGRATIONS_GEMINI_BASE_URL ?? "https://generativelanguage.googleapis.com";
   const apiKey = options.apiKey ?? process.env.AI_INTEGRATIONS_GEMINI_API_KEY ?? "";
 
-  const prompt = `You are an accounting assistant. Extract the following fields from this bill / invoice / receipt image and return ONLY valid JSON — no markdown fences, no explanation.
+  const prompt = `You are an accounting assistant reading a bill / invoice / receipt (image or PDF — if multi-page, use the page(s) showing the total payable; if several distinct receipts appear, extract only the first one). Extract the following fields and return ONLY valid JSON — no markdown fences, no explanation.
 
 JSON schema:
 {

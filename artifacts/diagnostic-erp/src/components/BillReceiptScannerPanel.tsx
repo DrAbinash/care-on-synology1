@@ -12,6 +12,12 @@ type BillOcrResult = {
   category: string; description: string; paymentMode: string;
   confidence: "high" | "medium" | "low";
   confidencePercent?: number;
+  // Computed server-side (preprocessScanImage, shared with Form F's ID-card
+  // OCR) but previously never read here — the backend already flagged a
+  // blurry capture, the UI just silently dropped the signal instead of
+  // warning staff before they trust a shaky extraction.
+  blurScore?: number;
+  isBlurred?: boolean;
 };
 
 // Same tiering convention as Form F's ID-card OCR (ocrConfidenceTier in
@@ -227,6 +233,11 @@ export default function BillReceiptScannerPanel() {
               </span>
             </div>
             <p className="text-xs text-muted-foreground">Review and edit the extracted fields before saving to expenses.</p>
+            {draft.isBlurred && (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                This capture looks blurry — retake the photo for a more reliable extraction, or verify every field carefully before saving.
+              </p>
+            )}
             {billConfidenceTier(draft.confidencePercent) === "manual" && (
               <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">
                 Low OCR confidence — verify every field against the original bill before saving, don't rely on this extraction as-is.

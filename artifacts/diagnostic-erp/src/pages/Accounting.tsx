@@ -1440,6 +1440,7 @@ function BankStatementPanel({ accounts, onImported }: { accounts: Account[]; onI
   const [contraAccountId, setContraAccountId] = useState("");
   const [importing, setImporting] = useState(false);
   const [imported, setImported] = useState(0);
+  const [skippedDuplicates, setSkippedDuplicates] = useState(0);
   const [error, setError] = useState("");
   // Captured statement photo awaiting the crop/enhance editor before parsing.
   const [editing, setEditing] = useState<{ base64: string; mimeType: string } | null>(null);
@@ -1449,7 +1450,7 @@ function BankStatementPanel({ accounts, onImported }: { accounts: Account[]; onI
   const expenseAccounts = accounts.filter(a => a.type === "expense" || a.type === "income" || a.type === "asset" || a.type === "liability");
 
   const handleImageFile = (file: File) => {
-    setError(""); setTxns([]); setImported(0);
+    setError(""); setTxns([]); setImported(0); setSkippedDuplicates(0);
     const mt = file.type || "image/jpeg";
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -1471,7 +1472,7 @@ function BankStatementPanel({ accounts, onImported }: { accounts: Account[]; onI
   };
 
   const parse = async () => {
-    setParsing(true); setError(""); setTxns([]); setImported(0);
+    setParsing(true); setError(""); setTxns([]); setImported(0); setSkippedDuplicates(0);
     try {
       const payload =
         inputMode === "text"
@@ -1492,12 +1493,13 @@ function BankStatementPanel({ accounts, onImported }: { accounts: Account[]; onI
     if (!bankAccountId || !contraAccountId) { setError("Select both accounts before importing."); return; }
     setImporting(true); setError("");
     try {
-      const data = await api.post<{ imported: number }>("/api/accounting/bank-statement/import", {
+      const data = await api.post<{ imported: number; skippedDuplicates?: number }>("/api/accounting/bank-statement/import", {
         bankAccountId: Number(bankAccountId),
         contraAccountId: Number(contraAccountId),
         transactions: txns,
       });
       setImported(data.imported);
+      setSkippedDuplicates(data.skippedDuplicates ?? 0);
       onImported();
       setTxns([]);
     } catch (e: unknown) {
@@ -1528,14 +1530,19 @@ function BankStatementPanel({ accounts, onImported }: { accounts: Account[]; onI
           onCancel={() => setEditing(null)}
         />
       )}
-      {imported > 0 && (
+      {(imported > 0 || skippedDuplicates > 0) && (
         <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center gap-3">
           <CheckCircle2 size={20} className="text-green-500 shrink-0" />
           <div>
-            <p className="font-semibold text-green-800">{imported} transactions imported successfully!</p>
-            <p className="text-sm text-green-700">They have been added to the vouchers ledger.</p>
+            <p className="font-semibold text-green-800">
+              {imported > 0 ? `${imported} transaction${imported === 1 ? "" : "s"} imported successfully!` : "No new transactions imported."}
+            </p>
+            <p className="text-sm text-green-700">
+              {imported > 0 && "They have been added to the vouchers ledger."}
+              {skippedDuplicates > 0 && (imported > 0 ? " " : "") + `${skippedDuplicates} row${skippedDuplicates === 1 ? "" : "s"} skipped — already imported for this bank account (matched by date, amount, and reference/description).`}
+            </p>
           </div>
-          <Button variant="outline" size="sm" className="ml-auto" onClick={() => setImported(0)}>Import More</Button>
+          <Button variant="outline" size="sm" className="ml-auto" onClick={() => { setImported(0); setSkippedDuplicates(0); }}>Import More</Button>
         </div>
       )}
 
