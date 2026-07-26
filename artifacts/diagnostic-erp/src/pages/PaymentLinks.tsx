@@ -45,8 +45,18 @@ export default function PaymentLinks() {
   });
 
   const sendMut = useMutation({
-    mutationFn: (id: number) => api.post(`/api/bill-payment-links/${id}/send`, {}),
-    onSuccess: () => { toast({ title: "Link sent on WhatsApp" }); qc.invalidateQueries({ queryKey: ["pay-links", bill?.id] }); },
+    // The route can respond HTTP 200 with { ok: false, error } on a genuine
+    // WhatsApp send failure (bad phone, provider error) -- it isn't only a
+    // network/HTTP-level failure. Check the body before claiming success.
+    mutationFn: (id: number) => api.post<{ ok: boolean; error?: string }>(`/api/bill-payment-links/${id}/send`, {}),
+    onSuccess: (data) => {
+      if (!data.ok) {
+        toast({ title: "Send failed", description: data.error, variant: "destructive" });
+        return;
+      }
+      toast({ title: "Link sent on WhatsApp" });
+      qc.invalidateQueries({ queryKey: ["pay-links", bill?.id] });
+    },
     onError: (e) => toast({ title: "Send failed", description: (e as Error).message, variant: "destructive" }),
   });
 
