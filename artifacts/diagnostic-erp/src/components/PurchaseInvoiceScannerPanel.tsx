@@ -11,14 +11,15 @@
  * stock until "Post to Stock" — matching the backend's draft -> posted split
  * (routes/purchaseInvoices.ts) so staff can review before either commitment.
  */
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import DocumentScanCapture from "@/components/DocumentScanCapture";
-import { CheckCircle2, AlertTriangle, Trash2 } from "lucide-react";
+import { CheckCircle2, AlertTriangle, Trash2, WifiOff } from "lucide-react";
+import { parseInvoiceText } from "@/lib/invoiceTextParser";
 
 type Vendor = { id: number; name: string; code: string; isActive: boolean };
 type CatalogItem = { id: number; name: string; unit: string; isActive: boolean };
@@ -78,6 +79,12 @@ export default function PurchaseInvoiceScannerPanel() {
   const [savedInvoiceId, setSavedInvoiceId] = useState<number | null>(null);
   const [postResult, setPostResult] = useState<{ posted: number[]; skipped: { descriptionRaw: string; reason: string }[] } | null>(null);
   const [error, setError] = useState("");
+  // Offline (Tesseract.js) scan — runs OCR entirely in the browser (no Gemini/
+  // cloud call for the extraction itself), then only hits the server for
+  // catalog matching (which needs the live DB catalog regardless of OCR engine).
+  const [offlineScanning, setOfflineScanning] = useState(false);
+  const [offlineProgress, setOfflineProgress] = useState("");
+  const offlineFileRef = useRef<HTMLInputElement>(null);
 
   const { data: vendors = [] } = useQuery<Vendor[]>({ queryKey: ["vendors-for-invoice-scan"], queryFn: () => api.get("/api/vendors") });
   const { data: items = [] } = useQuery<CatalogItem[]>({ queryKey: ["inventory-items-for-invoice-scan"], queryFn: () => api.get("/api/inventory") });
@@ -117,6 +124,113 @@ export default function PurchaseInvoiceScannerPanel() {
         lineTotal: li.lineTotal,
       })),
     });
+  };
+
+  // ── Offline scan: Tesseract.js runs entirely client-side. Assets
+  // (worker/core/traineddata) are served from this app's own /tesseract/
+  // origin — not tesseract.js's CDN defaults — so this genuinely has no
+  // internet dependency at scan time, not just an aspirational claim.
+  const OFFLINE_ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp"];
+  const OFFLINE_MAX_BYTES = 15 * 1024 * 1024;
+
+  /** Plain Tesseract does no EXIF-orientation correction, so a phone photo
+   *  taken in portrait (which carries an orientation flag rather than
+   *  physically rotated pixels) gets OCR'd sideways — same real-world issue
+   *  IdCardScanPanel.tsx's loadOrientedImage() already fixes for camera
+   *  captures. Draws through createImageBitmap({ imageOrientation:
+   *  "from-image" }) onto a canvas Tesseract can read upright; returns null
+   *  (caller falls back to the raw File) if the browser can't decode it. */
+  async function loadOrientedCanvas(file: File): Promise<HTMLCanvasElement | null> {
+    try {
+      const bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
+      const canvas = document.createElement("canvas");
+      canvas.width = bmp.width;
+      canvas.height = bmp.height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      ctx.drawImage(bmp, 0, 0);
+      return canvas;
+    } catch {
+      return null;
+    }
+  }
+
+  const scanOffline = async (file: File) => {
+    setError("");
+    if (!OFFLINE_ACCEPTED_TYPES.includes(file.type)) {
+      // The input's `accept` attribute is advisory only — some file pickers
+      // let staff override it (e.g. an "All Files" toggle) — so a PDF or
+      // other non-image can still reach here. Tesseract only reads raster
+      // images, so fail with a clear message instead of a low-level error.
+      setError("Offline scan only supports JPG, PNG, or WebP images (no PDF) — use the AI scan above for PDFs.");
+      return;
+    }
+    if (file.size > OFFLINE_MAX_BYTES) {
+      setError(`Image too large for offline scan. Maximum ${OFFLINE_MAX_BYTES / (1024 * 1024)} MB.`);
+      return;
+    }
+
+    setOfflineScanning(true); setOfflineProgress("Loading OCR engine…");
+    // Tracked outside the try block so a failure anywhere after the worker
+    // is created (recognize(), or even an error thrown before this
+    // function's own try/catch is reached) still gets torn down in
+    // `finally` — otherwise a failed scan leaks a live Web Worker + loaded
+    // WASM module every time staff retries after an error.
+    let worker: Awaited<ReturnType<typeof import("tesseract.js").createWorker>> | null = null;
+    try {
+      const { createWorker } = await import("tesseract.js");
+      worker = await createWorker("eng", 1, {
+        workerPath: "/tesseract/worker.min.js",
+        corePath: "/tesseract/tesseract-core.wasm.js",
+        langPath: "/tesseract",
+        cachePath: "/tesseract",
+        gzip: true,
+        logger: (m: { status: string; progress: number }) => {
+          if (m.status === "recognizing text") setOfflineProgress(`Reading text… ${Math.round(m.progress * 100)}%`);
+        },
+      });
+      const oriented = await loadOrientedCanvas(file);
+      const { data } = await worker.recognize(oriented ?? file);
+
+      const parsed = parseInvoiceText(data.text);
+      if (parsed.lineItems.length === 0 && !parsed.invoiceNumber && !parsed.totalAmount) {
+        setError("Couldn't read this invoice offline — try the AI scan above, or a clearer / higher-contrast photo.");
+        return;
+      }
+
+      setOfflineProgress("Matching line items to your catalog…");
+      const match = await api.post<{ vendorId: number | null; lineItems: ScanLineItem[] }>("/api/purchase-invoices/match-lines", {
+        vendor: parsed.vendor,
+        lineItems: parsed.lineItems.map((li) => ({ description: li.description, quantity: li.quantity, unitCost: li.unitCost, lineTotal: li.lineTotal })),
+      });
+
+      const reader = new FileReader();
+      reader.onload = (e) => setSourceImage(e.target?.result as string);
+      reader.readAsDataURL(file);
+
+      handleScanResult({
+        vendor: parsed.vendor,
+        vendorId: match.vendorId,
+        invoiceNumber: parsed.invoiceNumber,
+        date: parsed.date,
+        subtotal: parsed.subtotal,
+        gstAmount: parsed.gstAmount,
+        totalAmount: parsed.totalAmount,
+        // Offline text parsing has no self-assessed confidence the way a
+        // vision model does — always tag it "low" so staff review every
+        // field rather than trusting a heuristic regex parse at face value.
+        confidence: "low",
+        confidencePercent: 0,
+        lineItems: match.lineItems,
+        blurScore: 0,
+        isBlurred: false,
+      });
+    } catch (e: unknown) {
+      setError((e as Error).message || "Offline scan failed");
+    } finally {
+      if (worker) { try { await worker.terminate(); } catch { /* best-effort cleanup */ } }
+      setOfflineScanning(false); setOfflineProgress("");
+    }
   };
 
   const updateLine = (idx: number, patch: Partial<DraftLine>) => {
@@ -215,6 +329,28 @@ export default function PurchaseInvoiceScannerPanel() {
             onResult={handleScanResult}
             onError={setError}
           />
+
+          <div className="border-t border-border pt-3 space-y-2">
+            <div className="flex items-center gap-1.5">
+              <WifiOff size={13} className="text-muted-foreground" />
+              <p className="text-xs font-medium">No internet or AI provider configured?</p>
+            </div>
+            <p className="text-xs text-muted-foreground">Runs fully offline in your browser (Tesseract) — no cloud call, but less reliable at reading line items than the AI scan above. Image only, no PDF.</p>
+            <Button
+              variant="outline" size="sm" disabled={offlineScanning}
+              onClick={() => offlineFileRef.current?.click()}
+            >
+              {offlineScanning ? (offlineProgress || "Scanning…") : "Scan Offline (No Cloud)"}
+            </Button>
+            <input
+              ref={offlineFileRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              className="hidden"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) void scanOffline(f); e.target.value = ""; }}
+            />
+          </div>
+
           {error && <p className="text-xs text-red-500 bg-red-50 border border-red-200 rounded p-2">{error}</p>}
         </div>
       </div>
