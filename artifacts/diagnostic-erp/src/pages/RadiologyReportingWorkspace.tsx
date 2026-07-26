@@ -17,6 +17,8 @@ import { queryAiReporting } from "@/lib/aiReportingClient";
 // RadiologyWorklist and the deprecated Cockpit) — reused, not duplicated.
 import { toUnifiedStatus, priorityInfo, worklistRoleView } from "@/lib/radiologyStatus";
 import { finalizeRadiologyReport, saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
+import { exportRadiologyReportToPdf } from "@/lib/radiologyReportPdfExport";
+import { type ReportImageRef } from "@/lib/reportImageRefs";
 import OpenStudyPanel from "@/components/radiology/OpenStudyPanel";
 import {
   ArrowLeft, ExternalLink, Sparkles, Save, CheckCircle2, AlertTriangle,
@@ -24,7 +26,7 @@ import {
   Share2, AlertCircle, X, Send, Zap, BookOpen, MonitorPlay,
   LayoutTemplate, BarChart3, Monitor, PanelLeftClose, PanelLeftOpen,
   PanelRightClose, PanelRightOpen, Brain, GitCompare, FileText,
-  Maximize2, Columns2, AppWindow,
+  Maximize2, Columns2, AppWindow, FileOutput,
 } from "lucide-react";
 import EmbeddedWadoViewer from "@/components/EmbeddedWadoViewer";
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@/components/ui/resizable";
@@ -874,6 +876,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // ── Loading ───────────────────────────────────────────────────────────────
   const [saving, setSaving] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
   const [teachingNotes, setTeachingNotes] = useState("");
   const [savingTeaching, setSavingTeaching] = useState(false);
 
@@ -3322,6 +3325,65 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       impressionStyle,
     ]
   );
+
+  // Real PDF (jsPDF, via reportPdfGenerator.ts — the same generator already
+  // used in production by USG/Echo/Fetal reporting), including whatever
+  // images are currently selected in the Report Images panel below. Reuses
+  // the SAME react-query keys ReportImagePicker/ReportImagePanel use for the
+  // DICOMweb base and the persisted image references, so this never issues a
+  // second network round trip when that panel is already open.
+  const { data: clinicSettings } = useQuery({
+    queryKey: ["clinic-settings"],
+    queryFn: () => api.get("/api/clinic-settings/branding"),
+    staleTime: 5 * 60_000,
+  });
+  const { data: pdfViewerLaunch } = useQuery<{ dicomWebBaseUrl?: string | null }>({
+    queryKey: ["viewer-launch", entry?.studyInstanceUID],
+    queryFn: () => api.get(`/api/radiology/studies/${encodeURIComponent(entry!.studyInstanceUID!)}/ohif-launch`),
+    enabled: !!entry?.studyInstanceUID,
+    staleTime: 5 * 60_000,
+  });
+  const { data: pdfImageRefs = [] } = useQuery<ReportImageRef[]>({
+    queryKey: ["report-image-references", draftId],
+    queryFn: () => api.get(`/api/radiology/report-generator/image-references?draftId=${draftId}`),
+    enabled: !!draftId,
+  });
+
+  async function handleExportPdf() {
+    setExportingPdf(true);
+    try {
+      await exportRadiologyReportToPdf({
+        patientName: entry?.patientName || "",
+        age: entry?.age || "",
+        sex: entry?.sex || "",
+        accessionNumber: entry?.accessionNumber || "",
+        studyDate: entry?.studyDate || "",
+        referringDoctor: entry?.referringDoctor || "",
+        modality: entry?.modality || "",
+        bodyPart: entry?.studyDescription || "",
+        clinicalHistory,
+        technique,
+        useStructured,
+        findingsMap,
+        rawFindings,
+        impression,
+        recommendation,
+        studyName: selectedTemplate?.templateName || entry?.studyDescription || "Radiology Report",
+        headingCase,
+        dicomWebBase: pdfViewerLaunch?.dicomWebBaseUrl ?? null,
+        imageRefs: pdfImageRefs,
+        clinic: clinicSettings ?? null,
+      });
+    } catch (err) {
+      toast({
+        title: "Export failed",
+        description: err instanceof Error ? err.message : "Could not build the PDF",
+        variant: "destructive",
+      });
+    } finally {
+      setExportingPdf(false);
+    }
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   // ACTIONS
@@ -5937,6 +5999,17 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               }}
             >
               <Eye size={12} /> {previewMode ? "Hide Preview" : "Preview"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 text-xs gap-1.5"
+              onClick={() => void handleExportPdf()}
+              disabled={exportingPdf}
+              title="Download a real PDF, including any images selected below in Report Images"
+            >
+              {exportingPdf ? <RefreshCw size={12} className="animate-spin" /> : <FileOutput size={12} />}
+              Export as PDF
             </Button>
             <Button
               size="sm"
