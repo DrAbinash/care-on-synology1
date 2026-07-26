@@ -226,8 +226,19 @@ function TrackingTab() {
   });
 
   const remindMut = useMutation({
-    mutationFn: (id: number) => api.post<{ ok: boolean }>(`/api/report-delivery-tracking/remind/${id}`, {}),
-    onSuccess: () => { toast({ title: "Reminder sent" }); qc.invalidateQueries({ queryKey: ["delivery-receipts"] }); },
+    // The route can respond HTTP 200 with { ok: false, error } on a genuine
+    // WhatsApp send failure -- it isn't only a network/HTTP-level failure.
+    // Check the body before claiming success (the bulk "Send Reports" flow
+    // elsewhere on this page already does this correctly via r.sent/r.failed).
+    mutationFn: (id: number) => api.post<{ ok: boolean; error?: string }>(`/api/report-delivery-tracking/remind/${id}`, {}),
+    onSuccess: (data) => {
+      if (!data.ok) {
+        toast({ title: "Reminder failed", description: data.error, variant: "destructive" });
+        return;
+      }
+      toast({ title: "Reminder sent" });
+      qc.invalidateQueries({ queryKey: ["delivery-receipts"] });
+    },
     onError: (e) => toast({ title: "Reminder failed", description: (e as Error).message, variant: "destructive" }),
   });
 
