@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   geminiGenerate,
   geminiTranscribe,
+  geminiOcrInvoice,
   buildClinicalNotePrompt,
   buildBillingInsightsPrompt,
   buildPatientMessagePrompt,
@@ -951,5 +952,125 @@ describe("buildRadiologyImpressionPrompt", () => {
 
     expect(ctPrompt).not.toBe(usPrompt);
     expect(usPrompt).toContain("Ultrasound");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// geminiOcrInvoice
+// ---------------------------------------------------------------------------
+
+describe("geminiOcrInvoice", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("parses a full header + line-items response", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeGeminiResponse(JSON.stringify({
+      vendor: "Apex Pharma Distributors",
+      invoiceNumber: "INV-2026-0417",
+      date: "2026-07-20",
+      subtotal: 4500,
+      gstAmount: 810,
+      totalAmount: 5310,
+      lineItems: [
+        { description: "Paracetamol 500mg Tab 10x10", quantity: 50, unitCost: 20, lineTotal: 1000 },
+        { description: "Amoxicillin 250mg Cap 10x10", quantity: 35, unitCost: 100, lineTotal: 3500 },
+      ],
+      confidence: "high",
+      confidencePercent: 96,
+    })));
+
+    const result = await geminiOcrInvoice("base64data", "image/jpeg", { apiKey: "test-key" });
+
+    expect(result.vendor).toBe("Apex Pharma Distributors");
+    expect(result.invoiceNumber).toBe("INV-2026-0417");
+    expect(result.totalAmount).toBe(5310);
+    expect(result.lineItems).toHaveLength(2);
+    expect(result.lineItems[0]).toEqual({ description: "Paracetamol 500mg Tab 10x10", quantity: 50, unitCost: 20, lineTotal: 1000 });
+    expect(result.confidencePercent).toBe(96);
+  });
+
+  it("strips markdown code fences before parsing", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeGeminiResponse(
+      "```json\n" + JSON.stringify({ vendor: "X", invoiceNumber: "1", date: "", subtotal: 0, gstAmount: 0, totalAmount: 0, lineItems: [], confidence: "low", confidencePercent: 40 }) + "\n```"
+    ));
+
+    const result = await geminiOcrInvoice("base64data", "image/jpeg");
+
+    expect(result.vendor).toBe("X");
+  });
+
+  it("falls back to safe defaults on malformed JSON instead of throwing", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeGeminiResponse("not json at all"));
+
+    const result = await geminiOcrInvoice("base64data", "image/jpeg");
+
+    expect(result).toEqual({
+      vendor: "", invoiceNumber: "", date: "",
+      subtotal: 0, gstAmount: 0, totalAmount: 0,
+      lineItems: [], confidence: "low", confidencePercent: 55,
+    });
+  });
+
+  it("derives confidencePercent from the qualitative band when the model omits the number", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeGeminiResponse(JSON.stringify({
+      vendor: "V", invoiceNumber: "1", date: "", subtotal: 0, gstAmount: 0, totalAmount: 0,
+      lineItems: [], confidence: "medium",
+    })));
+
+    const result = await geminiOcrInvoice("base64data", "image/jpeg");
+
+    expect(result.confidencePercent).toBe(87);
+  });
+
+  it("coerces missing numeric line-item fields to 0 rather than NaN/undefined", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeGeminiResponse(JSON.stringify({
+      vendor: "V", invoiceNumber: "1", date: "", subtotal: 0, gstAmount: 0, totalAmount: 0,
+      lineItems: [{ description: "Gauze Roll" }],
+      confidence: "low", confidencePercent: 60,
+    })));
+
+    const result = await geminiOcrInvoice("base64data", "image/jpeg");
+
+    expect(result.lineItems).toEqual([{ description: "Gauze Roll", quantity: 0, unitCost: 0, lineTotal: 0 }]);
+  });
+
+  it("drops line items with an empty description (summary/tax rows the model mis-included)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeGeminiResponse(JSON.stringify({
+      vendor: "V", invoiceNumber: "1", date: "", subtotal: 0, gstAmount: 0, totalAmount: 0,
+      lineItems: [
+        { description: "Paracetamol 500mg", quantity: 10, unitCost: 5, lineTotal: 50 },
+        { description: "", quantity: 0, unitCost: 0, lineTotal: 0 },
+      ],
+      confidence: "high", confidencePercent: 98,
+    })));
+
+    const result = await geminiOcrInvoice("base64data", "image/jpeg");
+
+    expect(result.lineItems).toHaveLength(1);
+    expect(result.lineItems[0].description).toBe("Paracetamol 500mg");
+  });
+
+  it("passes the mimeType and base64 through as inlineData (PDF included, not just images)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeGeminiResponse(JSON.stringify({
+      vendor: "V", invoiceNumber: "1", date: "", subtotal: 0, gstAmount: 0, totalAmount: 0,
+      lineItems: [], confidence: "high", confidencePercent: 95,
+    })));
+
+    await geminiOcrInvoice("pdfBase64Data", "application/pdf", { apiKey: "test-key" });
+
+    const [, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.contents[0].parts[1]).toEqual({ inlineData: { mimeType: "application/pdf", data: "pdfBase64Data" } });
+  });
+
+  it("throws on a non-ok HTTP response", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeGeminiResponse("quota exceeded", false, 429));
+
+    await expect(geminiOcrInvoice("base64data", "image/jpeg")).rejects.toThrow(/Gemini invoice OCR error/);
   });
 });

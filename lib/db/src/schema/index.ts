@@ -6,6 +6,7 @@ export * from "./orders";
 export * from "./bills";
 export * from "./vendors";
 export * from "./inventory";
+export * from "./purchaseInvoices";
 export * from "./accounting";
 export * from "./commission";
 export * from "./users";

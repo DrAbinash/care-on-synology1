@@ -32,7 +32,8 @@ import {
 } from "@/lib/inventoryExports";
 import { useToast } from "@/hooks/use-toast";
 import { buildCsv, downloadCsv, parseCsv } from "@/lib/csv";
-import { Upload } from "lucide-react";
+import { Upload, ScanLine } from "lucide-react";
+import PurchaseInvoiceScannerPanel from "@/components/PurchaseInvoiceScannerPanel";
 
 type Item = {
   id: number; name: string; unit: string; category: string;
@@ -551,6 +552,9 @@ export default function Inventory() {
               Vendors
               <span className="ml-2 bg-muted text-muted-foreground rounded-full text-xs px-1.5 py-0.5">{vendors.length}</span>
             </TabsTrigger>
+            <TabsTrigger value="scan-invoice">
+              <ScanLine size={13} className="mr-1" /> Scan Invoice
+            </TabsTrigger>
           </TabsList>
 
           {/* ── Items Tab ── */}
@@ -978,6 +982,10 @@ export default function Inventory() {
                 </div>
               </div>
             )}
+          </TabsContent>
+
+          <TabsContent value="scan-invoice" className="space-y-4">
+            <PurchaseInvoiceScannerPanel />
           </TabsContent>
         </Tabs>
       </div>

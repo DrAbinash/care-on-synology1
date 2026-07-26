@@ -376,6 +376,137 @@ Return ONLY the JSON object.`;
 }
 
 // ---------------------------------------------------------------------------
+// Multimodal OCR — supplier/vendor invoice parsing (header + line items)
+// ---------------------------------------------------------------------------
+
+export interface InvoiceLineItemOcr {
+  description: string; // raw line text as printed, e.g. "Paracetamol 500mg Tab 10x10"
+  quantity: number;
+  unitCost: number;    // cost per unit, excluding GST
+  lineTotal: number;   // quantity * unitCost, or as printed if the invoice shows it directly
+}
+
+export interface InvoiceOcrResult {
+  vendor: string;
+  invoiceNumber: string;
+  date: string;          // YYYY-MM-DD or empty
+  subtotal: number;
+  gstAmount: number;
+  totalAmount: number;
+  lineItems: InvoiceLineItemOcr[];
+  confidence: "high" | "medium" | "low";
+  confidencePercent: number;
+}
+
+/**
+ * Send a supplier/vendor invoice (image or PDF) to Gemini Vision and extract
+ * the header fields plus every line item. Line items are NOT matched to the
+ * inventory catalog here — that's a separate, catalog-aware fuzzy-match pass
+ * (see invoiceLineMatching.ts in api-server) run after this returns, so this
+ * function stays a pure "what does the invoice say" extraction with no DB
+ * dependency, same separation as the ID-card OCR / QR-decode split.
+ */
+export async function geminiOcrInvoice(
+  imageBase64: string,
+  mimeType: string,
+  options: GeminiGenerateOptions = {}
+): Promise<InvoiceOcrResult> {
+  const baseUrl =
+    options.baseUrl ?? process.env.AI_INTEGRATIONS_GEMINI_BASE_URL ?? "https://generativelanguage.googleapis.com";
+  const apiKey = options.apiKey ?? process.env.AI_INTEGRATIONS_GEMINI_API_KEY ?? "";
+
+  const prompt = `You are an accounting assistant reading a supplier/vendor invoice (image or PDF — if multi-page, use the page(s) containing the invoice header and its line items; if several distinct invoices appear, extract only the first one). Extract the following and return ONLY valid JSON — no markdown fences, no explanation.
+
+JSON schema:
+{
+  "vendor": "string — supplier/company name issuing the invoice",
+  "invoiceNumber": "string — the invoice/bill number as printed, empty string if not found",
+  "date": "string — invoice date in YYYY-MM-DD format, empty string if not found",
+  "subtotal": number — sum of line items before tax (0 if not shown separately),
+  "gstAmount": number — GST/tax portion only (0 if not shown),
+  "totalAmount": number — grand total payable (after tax),
+  "lineItems": [
+    {
+      "description": "string — the item/product/medicine name exactly as printed, including dosage/pack size if shown",
+      "quantity": number,
+      "unitCost": number — cost per unit before tax,
+      "lineTotal": number — this line's total (quantity * unitCost, or as printed)
+    }
+  ],
+  "confidence": "string — one of: high, medium, low — your confidence in the extracted data",
+  "confidencePercent": "number — your own 0-100 numeric confidence self-assessment: 95-100 if every field including all line items is clearly legible, 80-94 if mostly legible with minor uncertainty, below 80 if you had to guess significant portions"
+}
+
+Rules:
+- List every line item on the invoice, in the order printed. Do not summarize or merge distinct items.
+- If a line's total isn't printed, compute it as quantity * unitCost.
+- Skip summary/subtotal/tax rows themselves — those go into subtotal/gstAmount/totalAmount, not lineItems.
+- Return ONLY the JSON object.`;
+
+  const url = `${baseUrl}/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{
+        role: "user",
+        parts: [
+          { text: prompt },
+          { inlineData: { mimeType, data: imageBase64 } },
+        ],
+      }],
+      // Invoices can carry many line items — a receipt/bill's 1024-token cap
+      // (geminiOcrBill) is too tight for a multi-item invoice's JSON array.
+      generationConfig: { maxOutputTokens: 4096, temperature: 0.1 },
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Gemini invoice OCR error: ${res.status} ${err}`);
+  }
+
+  const data = (await res.json()) as {
+    candidates?: { content?: { parts?: { text?: string }[] } }[];
+  };
+  const raw = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "{}";
+
+  let parsed: Partial<InvoiceOcrResult> = {};
+  try {
+    const clean = raw.replace(/^```[a-z]*\n?/, "").replace(/```$/, "").trim();
+    parsed = JSON.parse(clean) as Partial<InvoiceOcrResult>;
+  } catch { /* fall through to defaults */ }
+
+  const invoiceConfidence = parsed.confidence ?? "low";
+  const invoiceFallback: Record<InvoiceOcrResult["confidence"], number> = { high: 97, medium: 87, low: 55 };
+  const invoiceRawPercent = Number(parsed.confidencePercent);
+  const invoiceConfidencePercent = Number.isFinite(invoiceRawPercent)
+    ? Math.max(0, Math.min(100, Math.round(invoiceRawPercent)))
+    : invoiceFallback[invoiceConfidence];
+
+  const lineItems = Array.isArray(parsed.lineItems)
+    ? parsed.lineItems.map((l) => ({
+        description: l?.description ?? "",
+        quantity: Number(l?.quantity ?? 0),
+        unitCost: Number(l?.unitCost ?? 0),
+        lineTotal: Number(l?.lineTotal ?? 0),
+      })).filter((l) => l.description.trim().length > 0)
+    : [];
+
+  return {
+    vendor: parsed.vendor ?? "",
+    invoiceNumber: parsed.invoiceNumber ?? "",
+    date: parsed.date ?? "",
+    subtotal: Number(parsed.subtotal ?? 0),
+    gstAmount: Number(parsed.gstAmount ?? 0),
+    totalAmount: Number(parsed.totalAmount ?? 0),
+    lineItems,
+    confidence: invoiceConfidence,
+    confidencePercent: invoiceConfidencePercent,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Multimodal OCR — bank statement parsing
 // ---------------------------------------------------------------------------
 
