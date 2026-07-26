@@ -797,6 +797,15 @@ export default function FormF() {
   // Which side the editor is currently cropping — decides where onSave lands
   // (front → OCR + front slot, back → back slot, image only).
   const [scanPanelSide, setScanPanelSide] = useState<ScanSide>("front");
+  // A mobile QR session can deliver BOTH front and back in one go (the phone
+  // captures both, then uploads both together — see UnifiedScanCapture's
+  // mobile poll). Only one editor is ever shown at a time, so a second
+  // delivery that arrives while the first is still open must queue rather than
+  // overwrite the panel state out from under the user. Refs (not state) so the
+  // check is synchronous even when both deliveries land in the same tick,
+  // before React has flushed the first one's state update.
+  const scanQueueRef = useRef<{ base64: string; mime: string; side: ScanSide }[]>([]);
+  const scanEditorBusyRef = useRef(false);
 
   // ── PCPNDT Portal bookmarklet dialog ──
   const [portalOpen, setPortalOpen] = useState(false);
@@ -1037,6 +1046,42 @@ export default function FormF() {
     });
   }
 
+  // ── Show a capture in the editor, or queue it if one is already open. Used
+  // by every entry point that opens IdCardScanPanel (file-decoded scans,
+  // webcam capture) so two near-simultaneous deliveries — notably a Form F
+  // mobile QR session handing back BOTH front and back at once — never race:
+  // the second capture's state write can't land before the first is even
+  // rendered, since the busy check + write happen synchronously against a ref,
+  // not React state. ──
+  function enqueueOrOpenScan(base64: string, mime: string, side: ScanSide) {
+    if (scanEditorBusyRef.current) {
+      scanQueueRef.current.push({ base64, mime, side });
+      toast({ title: `${side === "back" ? "Back" : "Front"} image queued`, description: "It will open once you finish the current one." });
+      return;
+    }
+    scanEditorBusyRef.current = true;
+    setScanPanelSide(side);
+    setScanPanelBase64(base64);
+    setScanPanelMime(mime);
+    setScanPanelOpen(true);
+  }
+
+  // ── Called when the editor closes (save or cancel). Opens the next queued
+  // capture (if any) in its place, or fully closes when the queue is empty. ──
+  function advanceScanQueue() {
+    const next = scanQueueRef.current.shift();
+    if (next) {
+      setScanPanelSide(next.side);
+      setScanPanelBase64(next.base64);
+      setScanPanelMime(next.mime);
+      setScanPanelOpen(true);
+    } else {
+      scanEditorBusyRef.current = false;
+      setScanPanelOpen(false);
+      setScanPanelBase64("");
+    }
+  }
+
   // ── Open the crop/enhance editor on a captured blob for the given side. The
   // editor's onSave (see the <IdCardScanPanel/> at the bottom) reads
   // scanPanelSide to decide where the result lands. Files the editor can't
@@ -1061,10 +1106,7 @@ export default function FormF() {
         }
         return;
       }
-      setScanPanelSide(side);
-      setScanPanelBase64(base64);
-      setScanPanelMime(mime);
-      setScanPanelOpen(true);
+      enqueueOrOpenScan(base64, mime, side);
     } catch {
       toast({ title: "Failed to process image", variant: "destructive" });
     } finally {
@@ -1125,10 +1167,7 @@ export default function FormF() {
     const base64 = dataUrl.split(",")[1];
     stopCamera();
     setCameraOpen(false);
-    setScanPanelSide("front");
-    setScanPanelBase64(base64);
-    setScanPanelMime("image/jpeg");
-    setScanPanelOpen(true);
+    enqueueOrOpenScan(base64, "image/jpeg", "front");
     toast({ title: "Webcam image captured — adjust crop and enhancement before saving" });
   }
 
@@ -2363,6 +2402,11 @@ export default function FormF() {
       {/* ── ID Card Scan Editor (crop, rotate, adjust) ── */}
       {scanPanelOpen && scanPanelBase64 && (
         <IdCardScanPanel
+          // Remounts on every queue advance (see enqueueOrOpenScan /
+          // advanceScanQueue above) so internal state — crop rect, chosen
+          // enhancement mode, etc. — starts fresh for each image rather than
+          // carrying over from the previous one in the queue.
+          key={`${scanPanelSide}:${scanPanelBase64.slice(0, 24)}`}
           imageBase64={scanPanelBase64}
           mimeType={scanPanelMime}
           docType="id-card"
@@ -2378,35 +2422,37 @@ export default function FormF() {
           // clips phone photos that come in sideways. Rotate Left/Right is manual.
           autoRotate={fSettings?.autoRotateScan === true}
           onSave={async (result) => {
+            // Capture the side up front — advanceScanQueue() (called at the end)
+            // moves scanPanelSide on to the NEXT queued item, so the rest of this
+            // closure must not read scanPanelSide again after that call.
+            const savedSide = scanPanelSide;
             // Prefer enhanced → cropped → original for Form F display
             const displayB64 = result.enhancedBase64 || result.croppedBase64 || result.originalBase64;
             const dataUrl = `data:${result.mimeType};base64,${displayB64}`;
             const modeLabel = result.enhancementMode && result.enhancementMode !== "original"
               ? ` · ${result.enhancementMode} enhancement`
               : "";
-            setScanPanelOpen(false);
-            setScanPanelBase64("");
-            if (scanPanelSide === "back") {
+            if (savedSide === "back") {
               // Back side: store the cropped/enhanced image only — no OCR, and
               // never touch the Front slot or the extracted-field state.
               setIdCardBackUrl(dataUrl);
               toast({ title: `ID back saved${modeLabel}` });
-              return;
+            } else {
+              // Front side. NOTE: a front scan must NOT touch the Back slot.
+              // Previously the uncropped original was stuffed into idCardBackUrl
+              // "for audit", which made one front scan appear to capture two
+              // images and printed a duplicate of the front as "ID Back" on the
+              // statutory Form F. The Back slot is reserved exclusively for a real
+              // back-side capture.
+              setIdCardFrontUrl(dataUrl);
+              // Run OCR on the enhanced/cropped image for better text extraction
+              await runOcrOnImage(displayB64, result.mimeType);
+              toast({ title: `ID card saved${modeLabel}` });
             }
-            // Front side. NOTE: a front scan must NOT touch the Back slot.
-            // Previously the uncropped original was stuffed into idCardBackUrl
-            // "for audit", which made one front scan appear to capture two
-            // images and printed a duplicate of the front as "ID Back" on the
-            // statutory Form F. The Back slot is reserved exclusively for a real
-            // back-side capture.
-            setIdCardFrontUrl(dataUrl);
-            // Run OCR on the enhanced/cropped image for better text extraction
-            await runOcrOnImage(displayB64, result.mimeType);
-            toast({ title: `ID card saved${modeLabel}` });
+            advanceScanQueue();
           }}
           onCancel={() => {
-            setScanPanelOpen(false);
-            setScanPanelBase64("");
+            advanceScanQueue();
           }}
         />
       )}

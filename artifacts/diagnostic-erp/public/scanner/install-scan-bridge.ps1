@@ -797,7 +797,12 @@ export default {
     return {
       imageBase64: buffer.toString("base64"),
       mimeType: mimeFromExt(newest.name),
-      fileName: newest.name,
+      // index.js's POST /scan handler reads `result.filename` (lowercase n) on
+      // whatever adapter it calls; this was `fileName`, so the response always
+      // carried filename: null for folder-watch scans (the image itself still
+      // came through — a cosmetic miss, not a failure, but worth matching the
+      // shared contract every other adapter (wia.js, mock.js) already uses).
+      filename: newest.name,
     };
   },
 };
