@@ -2077,18 +2077,23 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
       updatedAt: new Date(),
     }).where(eq(ordersTable.id, bill.orderId));
 
-    // 6) Recalculate bill
+    // 6) Recalculate bill — same discount-cap / floor-at-zero / +tax formula
+    // cancel-test and cancel-refund-tests already use below; this endpoint
+    // was missing all three, so swapping to a cheaper test could leave
+    // oldDiscount exceeding the new subtotal and drive totalAmount negative.
     const oldSubtotal = Number(bill.subtotal);
     const oldDiscount = Number(bill.discount);
     const newSubtotal = newOrderTotal;
-    const newTotal = newSubtotal - oldDiscount;
+    const newDiscount = Math.min(oldDiscount, newSubtotal); // cap discount at new subtotal
+    const newTotal = Math.max(0, Math.round((newSubtotal - newDiscount + Number(bill.taxAmount)) * 100) / 100);
     const paidAmount = Number(bill.paidAmount);
     const refundAmount = Number(bill.refundAmount || 0);
-    const newBalance = Math.max(0, newTotal - paidAmount - refundAmount);
+    const newBalance = Math.max(0, Math.round((newTotal - paidAmount - refundAmount) * 100) / 100);
     const newStatus = newBalance <= 0.01 && paidAmount > 0 ? "paid" : paidAmount > 0 ? "partial" : "pending";
 
     await tx.update(billsTable).set({
       subtotal: newSubtotal.toFixed(2),
+      discount: newDiscount.toFixed(2),
       totalAmount: newTotal.toFixed(2),
       balanceAmount: newBalance.toFixed(2),
       status: newStatus,
