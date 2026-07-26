@@ -307,15 +307,39 @@ export default function UnifiedScanCapture({
     async function poll() {
       if (!active) return;
       try {
-        const data = await api.get<{ status?: string; frontImageUrl?: string }>(`/api/scan-sessions/status/${sessionToken}`);
+        const data = await api.get<{ status?: string; frontImageUrl?: string; backImageUrl?: string }>(`/api/scan-sessions/status/${sessionToken}`);
         if (data.status === "completed" && active) {
           setSessionStatus("completed");
-          if (data.frontImageUrl) {
-            const resp = await fetch(`/uploads/${data.frontImageUrl}`);
-            const blob = await resp.blob();
-            onCapture({ file: blob, mimeType: blob.type || "image/jpeg", source: "mobile", filename: data.frontImageUrl, side });
-            setOpen(false);
+          // The phone's /scan-mobile flow lets staff capture front AND back in
+          // one session and uploads both in a single request — the session can
+          // carry both frontImageUrl and backImageUrl at once. Previously only
+          // frontImageUrl was ever read here, so a back capture the phone had
+          // already uploaded was silently dropped. For Form F (the only caller
+          // that renders separate Front/Back triggers), deliver whichever of
+          // the two the session actually has, each tagged with ITS OWN real
+          // side — not the fixed `side` prop of whichever tile started this
+          // session — so scanning via either tile still fills both slots when
+          // the phone captured both. Other modules (a single photo, no back
+          // concept) keep the original one-image, prop-side behavior.
+          const deliveries: { url: string; side: ScanSide }[] =
+            module === "form-f"
+              ? [
+                  ...(data.frontImageUrl ? [{ url: data.frontImageUrl, side: "front" as const }] : []),
+                  ...(data.backImageUrl ? [{ url: data.backImageUrl, side: "back" as const }] : []),
+                ]
+              : data.frontImageUrl
+                ? [{ url: data.frontImageUrl, side }]
+                : [];
+          for (const d of deliveries) {
+            try {
+              const resp = await fetch(`/uploads/${d.url}`);
+              const blob = await resp.blob();
+              onCapture({ file: blob, mimeType: blob.type || "image/jpeg", source: "mobile", filename: d.url, side: d.side });
+            } catch {
+              // one side failing to fetch shouldn't block delivering the other
+            }
           }
+          setOpen(false);
           return;
         }
         if (data.status === "expired" && active) {
