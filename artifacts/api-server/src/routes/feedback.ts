@@ -113,7 +113,8 @@ export async function runFeedbackInvites(): Promise<{ skipped?: boolean; reason?
     } catch (err) { logger.warn({ err }, "[feedback] request insert failed"); continue; }
 
     if (!c.phone || !base) {
-      await db.update(feedbackRequestsTable).set({ status: "sent", lastError: !c.phone ? "no phone" : "no base url" }).where(eq(feedbackRequestsTable.id, requestId));
+      await db.update(feedbackRequestsTable).set({ status: "failed", lastError: !c.phone ? "no phone" : "no base url" }).where(eq(feedbackRequestsTable.id, requestId));
+      failed++;
       continue;
     }
     const link = `${base}/api/f/${token}`;
@@ -121,7 +122,7 @@ export async function runFeedbackInvites(): Promise<{ skipped?: boolean; reason?
     const r = await sendPlainWhatsappText(c.phone, body, "feedback_invite");
     if (r.skipped) { return { skipped: true, reason: "WhatsApp disabled", created, sent, failed }; }
     if (r.ok) { await db.update(feedbackRequestsTable).set({ status: "sent", sentAt: new Date(), providerMessageId: r.messageId ?? null }).where(eq(feedbackRequestsTable.id, requestId)); sent++; }
-    else { await db.update(feedbackRequestsTable).set({ status: "sent", lastError: r.error ?? "send failed" }).where(eq(feedbackRequestsTable.id, requestId)); failed++; }
+    else { await db.update(feedbackRequestsTable).set({ status: "failed", lastError: r.error ?? "send failed" }).where(eq(feedbackRequestsTable.id, requestId)); failed++; }
   }
   return { created, sent, failed };
 }

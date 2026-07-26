@@ -684,7 +684,11 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
     }).catch(() => {/* already logged inside */});
   }
 
-  // Fire WhatsApp send asynchronously — don't block the response
+  // Fire WhatsApp send asynchronously — don't block the response.
+  // sendBillWhatsapp never rejects (it always resolves with {ok, error, ...}
+  // per the wa_outbox contract), so the .catch() below only covers genuinely
+  // unexpected throws; a resolved ok:false must be logged separately here or
+  // a bill-notification failure would be completely invisible to staff/ops.
   if (pat?.phone && tokenInfo) {
     sendBillWhatsapp({
       phone: pat.phone,
@@ -692,6 +696,8 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
       billNumber: bill.billNumber,
       totalAmount,
       tokenNo: tokenInfo.tokenNo,
+    }).then((result) => {
+      if (!result.ok && !result.skipped) console.warn(`WhatsApp bill notification failed for bill ${bill.billNumber}:`, result.error);
     }).catch((err) => console.warn("WhatsApp send failed:", err));
   }
 

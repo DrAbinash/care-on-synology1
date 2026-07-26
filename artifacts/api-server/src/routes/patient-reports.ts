@@ -2288,12 +2288,21 @@ patientReportsRouter.post("/:id/verify", async (req, res) => {
         reportUrl,
         viewerUrl,
       });
-      const status = result.ok ? "sent" : "failed";
+      // result.ok alone is not "sent" anymore -- sendReportDelivery now goes
+      // through the wa_outbox chokepoint, where ok:true can also mean
+      // "shadow-mode suppressed, never reached Meta" (result.skipped) or
+      // "durably queued, not yet attempted." Recording that as sent/delivered
+      // would falsely mark a report as reaching the patient. reportSharesTable
+      // has no third "skipped" state, so a skipped send is recorded as
+      // "failed" (honest: it was NOT sent) rather than falsely "sent".
+      const actuallySent = result.ok && !result.skipped;
+      const status = actuallySent ? "sent" : "failed";
       await db.insert(reportSharesTable).values({
         reportId: id, channel: "whatsapp", recipient: info.phone,
-        sharedBy: "auto-on-verify", status, errorMessage: result.error ?? null,
+        sharedBy: "auto-on-verify", status,
+        errorMessage: result.skipped ? "WhatsApp sending is disabled/suppressed" : (result.error ?? null),
       }).catch(() => undefined);
-      if (result.ok) {
+      if (actuallySent) {
         await db.update(patientReportsTable)
           .set({ status: "delivered", deliveredAt: new Date() })
           .where(eq(patientReportsTable.id, id))
@@ -2918,7 +2927,12 @@ patientReportsRouter.post("/:id/share", async (req, res) => {
       return;
     }
     const result = await sendReportWhatsapp({ phone: recipient, patientName, reportNumber: row.r.reportNumber, testName: row.testName ?? "Lab Report", reportUrl: url });
-    if (!result.ok) { status = "failed"; errorMessage = result.error ?? "WhatsApp send failed"; }
+    // Not just !result.ok -- sendReportWhatsapp goes through wa_outbox, where
+    // ok:true also covers shadow-mode-suppressed sends (result.skipped) that
+    // never reached Meta at all. Treating that as "sent" would falsely mark
+    // this report delivered and complete a BEND-1 re-delivery obligation for
+    // a message that was never sent.
+    if (!result.ok || result.skipped) { status = "failed"; errorMessage = result.skipped ? "WhatsApp sending is disabled/suppressed" : (result.error ?? "WhatsApp send failed"); }
   } else if (channel === "email") {
     if (!recipient) {
       res.status(400).json({ error: "No email on file. Provide recipient." });
