@@ -370,13 +370,18 @@ export default function ReportGenerator() {
   const [savingTeachingCase, setSavingTeachingCase] = useState(false);
   const [findingForm, setFindingForm] = useState<Partial<AbnormalFinding>>({ severity: "moderate", isActive: true });
 
+  // report-templates and abnormal-findings are both staff-authed
+  // (Authorization: Bearer <token>) — must go through the api client, which
+  // attaches that header; a raw fetch() never carries it and 401s.
   const loadTemplates = async () => {
-    const r = await fetch("/api/report-templates");
-    if (r.ok) setTemplates(await r.json());
+    try {
+      setTemplates(await api.get<ReportTemplate[]>("/api/report-templates"));
+    } catch { /* best-effort — page still renders without templates */ }
   };
   const loadFindingsLib = async () => {
-    const r = await fetch("/api/abnormal-findings?limit=500");
-    if (r.ok) setFindingsLib(await r.json());
+    try {
+      setFindingsLib(await api.get<AbnormalFinding[]>("/api/abnormal-findings?limit=500"));
+    } catch { /* best-effort — autocomplete just has nothing to suggest */ }
   };
   useEffect(() => { loadTemplates(); loadFindingsLib(); }, []);
 
@@ -573,10 +578,8 @@ export default function ReportGenerator() {
 
   const saveFinding = async () => {
     if (!findingForm.keyword || !findingForm.description) return;
-    const r = await fetch("/api/abnormal-findings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    try {
+      await api.post("/api/abnormal-findings", {
         testId: findingForm.testId ?? null,
         modality: findingForm.modality ?? null,
         category: findingForm.category ?? null,
@@ -585,10 +588,9 @@ export default function ReportGenerator() {
         description: String(findingForm.description),
         severity: (findingForm.severity as AbnormalFinding["severity"]) || "moderate",
         isActive: findingForm.isActive ?? true,
-      }),
-    });
-    if (!r.ok) {
-      toast({ title: "Could not save finding", variant: "destructive" });
+      });
+    } catch (err) {
+      toast({ title: "Could not save finding", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
       return;
     }
     setFindingFormOpen(false);
@@ -648,23 +650,19 @@ export default function ReportGenerator() {
       toast({ title: "Name and content are required", variant: "destructive" });
       return;
     }
-    const r = await fetch("/api/report-templates", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    let created: ReportTemplate;
+    try {
+      created = await api.post<ReportTemplate>("/api/report-templates", {
         testId: uploadForTestId,
         name: uploadName.trim(),
         format: uploadFormat,
         content: uploadContent,
         isDefault: uploadIsDefault,
-      }),
-    });
-    if (!r.ok) {
-      const err = await r.json().catch(() => ({}));
-      toast({ title: "Could not save template", description: err.error ?? r.statusText, variant: "destructive" });
+      });
+    } catch (err) {
+      toast({ title: "Could not save template", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
       return;
     }
-    const created: ReportTemplate = await r.json();
     setTemplates((prev) => {
       const others = uploadIsDefault
         ? prev.map((t) => t.testId === created.testId ? { ...t, isDefault: false } : t)
@@ -688,25 +686,15 @@ export default function ReportGenerator() {
     }
     setSavingTeachingCase(true);
     try {
-      const r = await fetch("/api/teaching-cases/generate-from-report", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          modality: order.tests?.[0]?.test?.code ?? "",
-          testName: order.tests?.[0]?.test?.name ?? "",
-          bodyPart: (order.tests?.[0]?.test as any)?.department ?? order.tests?.[0]?.test?.category ?? "",
-          clinicalHistory: teachingNotes.trim() || undefined,
-          findings: allRemarks,
-          impression: allRemarks,
-          category: "general",
-        }),
+      const created = await api.post<{ case?: { title?: string } }>("/api/teaching-cases/generate-from-report", {
+        modality: order.tests?.[0]?.test?.code ?? "",
+        testName: order.tests?.[0]?.test?.name ?? "",
+        bodyPart: (order.tests?.[0]?.test as any)?.department ?? order.tests?.[0]?.test?.category ?? "",
+        clinicalHistory: teachingNotes.trim() || undefined,
+        findings: allRemarks,
+        impression: allRemarks,
+        category: "general",
       });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
-        toast({ title: "Could not generate teaching case", description: (err as any).error ?? r.statusText, variant: "destructive" });
-        return;
-      }
-      const created = await r.json();
       toast({
         title: "Teaching case created",
         description: created.case?.title
@@ -715,6 +703,8 @@ export default function ReportGenerator() {
       });
       setSaveTeachingCaseOpen(false);
       setTeachingNotes("");
+    } catch (err) {
+      toast({ title: "Could not generate teaching case", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
     } finally {
       setSavingTeachingCase(false);
     }
@@ -722,23 +712,23 @@ export default function ReportGenerator() {
 
   const deleteTemplate = async (id: number) => {
     if (!confirm("Delete this template?")) return;
-    const r = await fetch(`/api/report-templates/${id}`, { method: "DELETE" });
-    if (r.ok) {
-      setTemplates((prev) => prev.filter((t) => t.id !== id));
-      toast({ title: "Template deleted" });
+    try {
+      await api.delete(`/api/report-templates/${id}`);
+    } catch {
+      return;
     }
+    setTemplates((prev) => prev.filter((t) => t.id !== id));
+    toast({ title: "Template deleted" });
   };
 
   const setDefaultTemplate = async (t: ReportTemplate) => {
-    const r = await fetch(`/api/report-templates/${t.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ isDefault: true }),
-    });
-    if (r.ok) {
-      setTemplates((prev) => prev.map((x) => x.testId === t.testId ? { ...x, isDefault: x.id === t.id } : x));
-      toast({ title: `Default set: ${t.name}` });
+    try {
+      await api.patch(`/api/report-templates/${t.id}`, { isDefault: true });
+    } catch {
+      return;
     }
+    setTemplates((prev) => prev.map((x) => x.testId === t.testId ? { ...x, isDefault: x.id === t.id } : x));
+    toast({ title: `Default set: ${t.name}` });
   };
 
   const useTemplateForTest = (testId: number, templateId: number) => {
