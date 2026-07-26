@@ -38,6 +38,20 @@ export function toISTDateStr(iso: string): string {
   return new Date(iso).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 }
 
+/** Shifts a "YYYY-MM-DD" calendar-day string by `days` (negative to go
+ *  back). Anchored to UTC internally purely as a date-identity trick — the
+ *  string never represents a real moment, so this never crosses a local- or
+ *  IST-timezone boundary the way `new Date(iso + "T00:00:00")` (parsed as
+ *  local midnight) followed by `.toISOString()` (re-serialized as UTC)
+ *  would: IST midnight is 18:30 UTC the previous day, so that round-trip
+ *  silently shifts every date by up to a day depending on the offset sign. */
+export function shiftISODate(iso: string, days: number): string {
+  const [y, m, day] = iso.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1, day));
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 export const DATE_PRESETS = [
   { label: "Today", from: () => todayISO(), to: () => todayISO() },
   { label: "Yesterday", from: () => daysAgoISO(1), to: () => daysAgoISO(1) },
