@@ -1,109 +1,209 @@
 #!/usr/bin/env bash
-# ─── Care Diagnostics Backup Verification Script ──────────────────────────────
-# Automatically tests the integrity of the latest backup file by restoring it
-# into a temporary sandbox PostgreSQL Docker container and running queries.
+# ─── Care Diagnostics — Prove a backup is RESTORABLE ──────────────────────────
+#
+# Restores a real backup artifact into a throwaway PostgreSQL container and
+# queries it. Exit 0 means the artifact genuinely restores. Anything else means
+# it does not. There is no in-between and no "probably fine".
 #
 # Usage:
-#   bash verify-backup-restore.sh [/volume1/backups/caredeoghar]
+#   bash verify-backup-restore.sh [BACKUP_DIR_OR_FILE]
 #
+#   BACKUP_PASSPHRASE=...   # or SESSION_SECRET=... for scheduler-written files
+#   bash verify-backup-restore.sh /volume1/backups/caredeoghar
+#
+# ── Why this was rewritten ────────────────────────────────────────────────────
+# The previous version could not verify the backups this product actually
+# writes. Four defects, each of which alone produced a false "successful":
+#
+#   1. It searched only for  caredeoghar_*.sql.gz[.enc]  — the naming used by
+#      scripts/synology-backup.sh. The in-app scheduler writes
+#      backup_<jobName>_<timestamp>.sql.enc, so the hourly backups were never
+#      found at all.
+#   2. It piped unconditionally through `gunzip -c`. The scheduler's artifact is
+#      NOT gzipped, so decryption succeeded and decompression then died with
+#      "not in gzip format".
+#   3. It ran psql without ON_ERROR_STOP. A DATA-ONLY dump (TRUNCATE + INSERT,
+#      no CREATE TABLE — what exportDatabaseSqlFallback emits when pg_dump is
+#      missing) errors on every statement while psql still exits 0.
+#   4. It printed "100% valid" on a restore that produced ZERO rows.
+#
+# Defect 3 is not hypothetical. Production ran for months on DATA-ONLY
+# artifacts that reported success, matched their SHA-256, and kept the backup
+# dead-man alert green.
 # ──────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
 
-BACKUP_DIR="${1:-/volume1/backups/caredeoghar}"
+TARGET="${1:-/volume1/backups/caredeoghar}"
 SANDBOX_CONTAINER="care-db-restore-sandbox"
-SANDBOX_PORT="5499"
 SANDBOX_DB="diagnostic_erp_restore_test"
 SANDBOX_USER="postgres"
-SANDBOX_PASS="sandbox-password-123"
+SANDBOX_PASS="sandbox-$$-$(date +%s)"
 
-# 1. Locate the latest backup file (supports both encrypted and plaintext)
-echo "🔍 Searching for latest backup in ${BACKUP_DIR}..."
-LATEST_BACKUP=$(find "${BACKUP_DIR}" -type f \( -name "caredeoghar_*.sql.gz" -o -name "caredeoghar_*.sql.gz.enc" \) -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -f2- -d' ')
+fail() { echo ""; echo "❌ VERIFICATION FAILED: $*"; echo ""; exit 1; }
+note() { echo "   $*"; }
 
-if [[ -z "${LATEST_BACKUP}" ]]; then
-  # Fallback to current directory or standard local backups path
-  BACKUP_DIR="./"
-  LATEST_BACKUP=$(find "${BACKUP_DIR}" -maxdepth 1 -type f \( -name "caredeoghar_*.sql.gz" -o -name "caredeoghar_*.sql.gz.enc" -o -name "care_db_daily_*.sql.gz" \) -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -f2- -d' ')
+for bin in docker openssl; do
+  command -v "$bin" >/dev/null 2>&1 || fail "'$bin' is not installed or not on PATH."
+done
+
+# ── 1. Locate the artifact ────────────────────────────────────────────────────
+# Both naming families, newest first:
+#   caredeoghar_*.sql.gz[.enc]   scripts/synology-backup.sh   (gzipped)
+#   backup_*_*.sql[.enc]         the in-app scheduler         (NOT gzipped)
+if [[ -f "${TARGET}" ]]; then
+  BACKUP="${TARGET}"
+else
+  [[ -d "${TARGET}" ]] || fail "No such file or directory: ${TARGET}"
+  echo "🔍 Searching ${TARGET} for the newest backup artifact..."
+  BACKUP=$(find "${TARGET}" -maxdepth 2 -type f \
+    \( -name "caredeoghar_*.sql.gz" -o -name "caredeoghar_*.sql.gz.enc" \
+       -o -name "backup_*.sql" -o -name "backup_*.sql.enc" \
+       -o -name "care_db_daily_*.sql.gz" \) \
+    -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+  [[ -n "${BACKUP}" ]] || fail "No backup artifact found in ${TARGET}.
+   Looked for caredeoghar_*.sql.gz[.enc] and backup_*.sql[.enc]."
 fi
 
-if [[ -z "${LATEST_BACKUP}" ]]; then
-  echo "❌ ERROR: No backup file found in ${BACKUP_DIR}."
-  exit 1
+echo "✅ Artifact: ${BACKUP}"
+note "size: $(du -h "${BACKUP}" | cut -f1)   modified: $(date -r "${BACKUP}" '+%Y-%m-%d %H:%M:%S')"
+
+WORK="$(mktemp -d)"
+cleanup() {
+  rm -rf "${WORK}"
+  docker rm -f "${SANDBOX_CONTAINER}" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+PAYLOAD="${WORK}/payload"
+
+# ── 2. Decrypt ────────────────────────────────────────────────────────────────
+# Mirrors lib/backupCrypto.candidatePassphrases(): BACKUP_PASSPHRASE first, then
+# SESSION_SECRET. The scheduler encrypts with whichever is set, and production
+# ran on SESSION_SECRET for a long time, so trying only one is not enough.
+if [[ "${BACKUP}" == *.enc ]]; then
+  DECRYPTED=0
+  for label in BACKUP_PASSPHRASE SESSION_SECRET; do
+    pass="${!label:-}"
+    [[ -n "${pass}" ]] || continue
+    if openssl enc -d -aes-256-cbc -pbkdf2 -pass "pass:${pass}" \
+         -in "${BACKUP}" -out "${PAYLOAD}" 2>/dev/null; then
+      echo "✅ Decrypted using ${label}"
+      DECRYPTED=1
+      break
+    fi
+  done
+  if [[ "${DECRYPTED}" -eq 0 ]]; then
+    fail "Could not decrypt. Set BACKUP_PASSPHRASE (or SESSION_SECRET) to the value
+   that was in force WHEN THIS FILE WAS WRITTEN.
+   Rotating SESSION_SECRET without first setting BACKUP_PASSPHRASE to the previous
+   value makes older artifacts undecryptable — candidatePassphrases() has no
+   previous-secret slot."
+  fi
+else
+  cp "${BACKUP}" "${PAYLOAD}"
 fi
 
-echo "✅ Found latest backup: ${LATEST_BACKUP}"
-
-# 2. Cleanup any leftover sandbox container
-if docker ps -a --format '{{.Names}}' | grep -Eq "^${SANDBOX_CONTAINER}$"; then
-  echo "🧹 Removing old sandbox container..."
-  docker rm -f "${SANDBOX_CONTAINER}" >/dev/null 2>&1
+# ── 3. Decompress only if it really is gzip ───────────────────────────────────
+# Sniff the magic bytes rather than trusting the filename: both families end in
+# .enc but only one is compressed.
+if [[ "$(head -c 2 "${PAYLOAD}" | od -An -tx1 | tr -d ' \n')" == "1f8b" ]]; then
+  gzip -t "${PAYLOAD}" 2>/dev/null || fail "Payload looks like gzip but fails 'gzip -t' — the artifact is corrupt."
+  gunzip -c "${PAYLOAD}" > "${PAYLOAD}.sql"
+  mv "${PAYLOAD}.sql" "${PAYLOAD}"
+  echo "✅ Decompressed (gzip)"
+else
+  echo "✅ Not compressed — using as-is"
 fi
 
-# 3. Spin up PostgreSQL sandbox container
-echo "🐋 Starting sandbox PostgreSQL Docker container..."
+SQL_BYTES=$(stat -c%s "${PAYLOAD}")
+[[ "${SQL_BYTES}" -gt 0 ]] || fail "Decoded payload is empty."
+note "decoded SQL: $(numfmt --to=iec "${SQL_BYTES}" 2>/dev/null || echo "${SQL_BYTES} bytes")"
+
+# ── 4. Refuse a DATA-ONLY dump before touching a database ─────────────────────
+# This is the check that would have caught the real incident. A schema-complete
+# pg_dump contains CREATE TABLE; exportDatabaseSqlFallback emits TRUNCATE +
+# INSERT only and stamps its own "WARNING: DATA ONLY" header.
+if ! grep -qim1 '^CREATE TABLE' "${PAYLOAD}"; then
+  fail "This artifact is DATA ONLY — no CREATE TABLE statements.
+   It cannot rebuild the database from nothing; it can only be loaded into a
+   schema that already exists.
+
+   Cause: pg_dump was unavailable in the api container, so the scheduler fell
+   through to exportDatabaseSqlFallback(). Check the backup job's notes — a good
+   artifact records  exporter=pg_dump.
+
+   Take a known-good backup RIGHT NOW, straight from the database container.
+   postgres:16-alpine ships pg_dump, so this does not depend on the api image:
+
+     docker exec care-db pg_dump -U erp -d diagnostic_erp \\
+       --no-owner --no-privileges --clean --if-exists \\
+       | gzip > /volume1/backups/caredeoghar_\$(date +%Y%m%d_%H%M%S).sql.gz
+
+   Then re-run this script against that file."
+fi
+echo "✅ Schema-complete (CREATE TABLE present)"
+
+# ── 5. Restore into a throwaway container ─────────────────────────────────────
+docker rm -f "${SANDBOX_CONTAINER}" >/dev/null 2>&1 || true
+echo "🐋 Starting throwaway PostgreSQL 16..."
+# No published port: nothing outside this host needs to reach the sandbox, and
+# a restore sandbox full of real patient data must not be exposed.
 docker run --name "${SANDBOX_CONTAINER}" \
   -e POSTGRES_DB="${SANDBOX_DB}" \
   -e POSTGRES_USER="${SANDBOX_USER}" \
   -e POSTGRES_PASSWORD="${SANDBOX_PASS}" \
-  -p "${SANDBOX_PORT}:5432" \
   -d postgres:16-alpine >/dev/null
 
-# Setup cleanup trap to ensure container is removed on script exit/failure
-cleanup() {
-  echo "🧹 Cleaning up sandbox container..."
-  docker rm -f "${SANDBOX_CONTAINER}" >/dev/null 2>&1
-}
-trap cleanup EXIT
-
-# 4. Wait for PostgreSQL to become fully ready
-echo "⏳ Waiting for PostgreSQL to initialize..."
-RETRIES=30
-until docker exec "${SANDBOX_CONTAINER}" pg_isready -U "${SANDBOX_USER}" -d "${SANDBOX_DB}" >/dev/null 2>&1 || [ $RETRIES -eq 0 ]; do
+for _ in $(seq 30); do
+  docker exec "${SANDBOX_CONTAINER}" pg_isready -U "${SANDBOX_USER}" -d "${SANDBOX_DB}" >/dev/null 2>&1 && break
   sleep 1
-  RETRIES=$((RETRIES-1))
+done
+docker exec "${SANDBOX_CONTAINER}" pg_isready -U "${SANDBOX_USER}" -d "${SANDBOX_DB}" >/dev/null 2>&1 \
+  || fail "Throwaway PostgreSQL did not become ready."
+
+echo "⚡ Restoring..."
+# ON_ERROR_STOP=1 is what makes this a test rather than a formality: without it
+# psql exits 0 having failed every single statement.
+RESTORE_LOG="${WORK}/restore.log"
+if ! docker exec -i "${SANDBOX_CONTAINER}" \
+      psql -v ON_ERROR_STOP=1 -U "${SANDBOX_USER}" -d "${SANDBOX_DB}" \
+      < "${PAYLOAD}" > "${RESTORE_LOG}" 2>&1; then
+  echo "── last 20 lines of restore output ──"
+  tail -20 "${RESTORE_LOG}"
+  fail "psql aborted on the first error (ON_ERROR_STOP). This artifact does not restore cleanly."
+fi
+echo "✅ Restore completed with no errors"
+
+# ── 6. Prove data actually landed ─────────────────────────────────────────────
+q() {
+  docker exec -i "${SANDBOX_CONTAINER}" psql -U "${SANDBOX_USER}" -d "${SANDBOX_DB}" \
+    -t -A -c "$1" 2>/dev/null || echo "ERROR"
+}
+
+TABLES=$(q "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE';")
+[[ "${TABLES}" != "ERROR" && "${TABLES}" -gt 0 ]] || fail "No tables present after restore."
+
+echo "📊 Restored contents:"
+printf '   %-22s %s\n' "tables" "${TABLES}"
+ZERO_CORE=0
+for t in patients bills payments vouchers patient_reports; do
+  c=$(q "SELECT count(*) FROM ${t};")
+  printf '   %-22s %s\n' "${t}" "${c}"
+  [[ "${c}" == "ERROR" ]] && fail "Core table '${t}' is missing from the restored database."
+  if [[ "${t}" == "patients" || "${t}" == "bills" ]] && [[ "${c}" == "0" ]]; then
+    ZERO_CORE=1
+  fi
 done
 
-if [ $RETRIES -eq 0 ]; then
-  echo "❌ ERROR: Sandbox PostgreSQL container failed to start in time."
-  exit 1
-fi
-echo "✅ PostgreSQL sandbox container is healthy."
-
-# 5. Restore Database
-LOCAL_DB_URL="postgresql://${SANDBOX_USER}:${SANDBOX_PASS}@localhost:${SANDBOX_PORT}/${SANDBOX_DB}"
-
-# Use synology-restore.sh logic
-echo "⚡ Executing restore on sandbox database..."
-if [[ "${LATEST_BACKUP}" == *.enc ]]; then
-  if [[ -z "${BACKUP_PASSPHRASE:-}" ]]; then
-    echo "❌ ERROR: BACKUP_PASSPHRASE is not set. Encrypted backups cannot be auto-verified without the passphrase."
-    exit 1
-  fi
-  
-  openssl enc -d -aes-256-cbc -pbkdf2 -pass "pass:${BACKUP_PASSPHRASE}" -in "${LATEST_BACKUP}" | gunzip -c | docker exec -i "${SANDBOX_CONTAINER}" psql -U "${SANDBOX_USER}" -d "${SANDBOX_DB}" >/dev/null
-else
-  gunzip -c "${LATEST_BACKUP}" | docker exec -i "${SANDBOX_CONTAINER}" psql -U "${SANDBOX_USER}" -d "${SANDBOX_DB}" >/dev/null
+# A live clinic with zero patients AND zero bills is not a successful restore.
+# The previous script reported "100% valid" in exactly that case.
+if [[ "${ZERO_CORE}" -eq 1 ]]; then
+  fail "Schema restored, but patients/bills are EMPTY. For a running clinic that is
+   an empty backup, not a valid one. Check what the backup job actually captured."
 fi
 
-echo "✅ Restore step complete."
-
-# 6. Run Sanity Checks / Queries
-echo "📋 Running database integrity checks..."
-
-# Check if vital tables exist and query patient counts
-PATIENT_COUNT=$(docker exec -i "${SANDBOX_CONTAINER}" psql -U "${SANDBOX_USER}" -d "${SANDBOX_DB}" -t -A -c "SELECT COUNT(*) FROM patients;" 2>/dev/null || echo "ERROR")
-BILL_COUNT=$(docker exec -i "${SANDBOX_CONTAINER}" psql -U "${SANDBOX_USER}" -d "${SANDBOX_DB}" -t -A -c "SELECT COUNT(*) FROM bills;" 2>/dev/null || echo "ERROR")
-VOUCHER_COUNT=$(docker exec -i "${SANDBOX_CONTAINER}" psql -U "${SANDBOX_USER}" -d "${SANDBOX_DB}" -t -A -c "SELECT COUNT(*) FROM vouchers;" 2>/dev/null || echo "ERROR")
-
-if [[ "${PATIENT_COUNT}" == "ERROR" ]]; then
-  echo "❌ INTEGRITY FAILURE: Core tables were not found or failed to query."
-  exit 1
-fi
-
-echo "📊 Sanity Check Metrics:"
-echo "   - Patients: ${PATIENT_COUNT}"
-echo "   - Bills:    ${BILL_COUNT}"
-echo "   - Vouchers: ${VOUCHER_COUNT}"
-
-echo "🎉 BACKUP VERIFICATION SUCCESSFUL! Backup file integrity is 100% valid."
+echo ""
+echo "🎉 PASS — this artifact is restorable."
+echo "   $(basename "${BACKUP}") → ${TABLES} tables, core data present."
+echo ""
+echo "   Keep it. Until now nothing in this system had been proven to restore."
